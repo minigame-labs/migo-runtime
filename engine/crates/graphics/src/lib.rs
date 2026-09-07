@@ -89,7 +89,17 @@ mod render_wait;
 mod renderergl;
 pub(crate) mod shader_cache;
 mod surface_binding;
-pub mod surface_system;
+// Crate-private, and that is the point rather than tidiness.
+//
+// `SurfaceSystem` is the Surface lifecycle state machine, and it belongs to the thread
+// that presents. `RenderService` used to keep a second one on the session thread: seven
+// write sites, zero reads, a full state machine nobody consulted. Two copies of one state
+// machine is how two paths come to disagree about it, and this branch spent its whole
+// length on exactly that class of defect.
+//
+// Unreachable from `core` is stronger than a test asserting the session does not hold one:
+// re-adding the field does not compile.
+pub(crate) mod surface_system;
 pub mod text_measurer_impl;
 pub mod texture_import;
 // `upload_policy` was removed rather than wired up, and the reason belongs here
@@ -129,7 +139,6 @@ pub(crate) use canvas::*;
 pub(crate) use legacy_frame_bridge::LegacyFrameBridge;
 pub use render_server::RenderServer;
 pub use render_thread::*;
-pub use surface_system::{SurfaceLifecycleState, SurfaceSystem};
 
 pub(crate) use renderergl::*;
 

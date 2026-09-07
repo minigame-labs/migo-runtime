@@ -1,6 +1,6 @@
 use tracing::{info, warn};
 
-use graphics::{RenderThread, SurfaceSystem};
+use graphics::RenderThread;
 
 use shared::{
     error::{EngineError, EngineResult, ErrorCode},
@@ -14,7 +14,6 @@ use super::{SurfaceAttachmentSlot, SurfaceTransitionError};
 pub(crate) struct RenderService {
     host_id: i32,
     attachment: SurfaceAttachmentSlot,
-    surface_system: SurfaceSystem,
     /// Where the Surface to install is published. Held rather than only handed to
     /// the render thread, because every update publishes through it.
     surface_control: std::sync::Arc<shared::surface::SurfaceControl>,
@@ -124,7 +123,6 @@ impl RenderService {
             dyn Fn(shared::surface::SurfaceCandidateRevision) + Send + Sync,
         >,
     ) -> EngineResult<Self> {
-        let surface_size = initial_surface.as_ref().map(|lease| lease.size());
         // Published for the render thread to read rather than handed to it, so a
         // host that detaches while the GPU is still coming up is answered at once
         // instead of waiting out EGL initialization. The logical owner of the
@@ -164,10 +162,6 @@ impl RenderService {
             .send(RenderCommand::FrameRate(shared::frame_rate::clamp_fps(
                 target_fps.max(0) as u32,
             )));
-        let mut surface_system = SurfaceSystem::new();
-        if let Some(surface_size) = surface_size {
-            surface_system.on_surface_available(surface_size);
-        }
         Ok(Self {
             host_id,
             attachment: match initial_surface {
@@ -179,7 +173,6 @@ impl RenderService {
                 // initial one would have.
                 None => SurfaceAttachmentSlot::empty(),
             },
-            surface_system,
             surface_control,
             outstanding: None,
             thread,
@@ -283,15 +276,12 @@ impl RenderService {
         // retired between the install and this report -- the host taking its Surface
         // back -- arrives as `None` instead of as an attachment to publish.
         let Some(lease) = self.surface_control.live_candidate_for(revision) else {
-            self.surface_system.on_surface_destroyed();
             return false;
         };
         let size = lease.size();
         if self.attachment.commit(lease).is_err() {
-            self.surface_system.on_surface_destroyed();
             return false;
         }
-        self.surface_system.on_surface_available(size);
         info!(
             "[Host {}] Surface install confirmed: publication={revision}, {}x{}",
             self.host_id, size.0, size.1
@@ -344,7 +334,6 @@ impl RenderService {
 
     /// Pause rendering (stop RAF ticker and frame presentation).
     pub(crate) fn pause(&mut self) {
-        self.surface_system.on_pause();
         // Bounded-blocking: dropping Pause/Resume on a full render queue
         // desynchronizes lifecycle state and can leave the app frozen.
         let _ = self.sender().send_blocking_bounded(RenderCommand::Pause);
@@ -357,7 +346,6 @@ impl RenderService {
         if !self.attachment.detach(generation) {
             return;
         }
-        self.surface_system.on_surface_destroyed();
         // Deliberately override SurfaceDestroyed's drop-on-full lifecycle
         // policy so render-side state converges promptly. Presentation safety
         // does not depend on delivery: the retired generation token is the
@@ -369,7 +357,6 @@ impl RenderService {
 
     /// Resume rendering (restart RAF ticker and frame presentation).
     pub(crate) fn resume(&mut self) {
-        self.surface_system.on_resume();
         let _ = self.sender().send_blocking_bounded(RenderCommand::Resume);
     }
 

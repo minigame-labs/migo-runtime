@@ -879,7 +879,7 @@ mod tests {
         mark_surface_destroyed, next_vsync_frame_decision, packet_safe_to_reorder,
         report_recovery_failure, retire_unexpected_surface,
     };
-    use crate::{SurfaceSystem, frame_scheduler::FrameScheduler};
+    use crate::{frame_scheduler::FrameScheduler, surface_system::SurfaceSystem};
     use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
     use shared::protocol::render_cmd::{
         Canvas2DCmd, CanvasBatchPayload, CanvasId, DirtyRect, GLCmd, GlBatchPayload,

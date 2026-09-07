@@ -315,7 +315,7 @@ pub(crate) fn assert_resynchronizes_after_long_stall() {
 
 #[cfg(test)]
 pub(crate) fn assert_does_not_present_when_surface_is_not_ready() {
-    use crate::SurfaceSystem;
+    use crate::surface_system::SurfaceSystem;
 
     let mut scheduler = FrameScheduler::new(60);
     let surface = SurfaceSystem::new();
