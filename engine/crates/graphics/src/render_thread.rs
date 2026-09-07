@@ -2132,7 +2132,6 @@ impl RenderThread {
                             shared::protocol::render_cmd::CanvasCmd::RecreateOnscreen {
                                 revision: requested,
                                 pixel_ratio,
-                                resp,
                             } => {
                                 // Read now rather than carried here, so the host's
                                 // Surface was never pinned by this command sitting
@@ -2140,14 +2139,16 @@ impl RenderThread {
                                 // request names*, so a request that outlived its own
                                 // candidate cannot adopt the one that replaced it.
                                 // `None` covers both: the host retired it, or a
-                                // newer one superseded it. Either way the session
-                                // observes a cancelled update.
+                                // newer one superseded it. Either way there is
+                                // nothing to install and nothing to report: the host
+                                // is the party that retired it, and a newer request
+                                // is already queued behind this one.
                                 let Some(lease) = surface_control.live_candidate_for(requested)
                                 else {
-                                    let _ = resp.send(Err(EngineError::new(ErrorCode::Cancelled)
-                                        .with_msg(
-                                            "recreate onscreen: Surface retired before install",
-                                        )));
+                                    debug!(
+                                        "CanvasCmd::RecreateOnscreen: publication {requested} \
+                                         was retired before install"
+                                    );
                                     return LoopCtl::Continue;
                                 };
                                 let size = lease.size();
@@ -2179,7 +2180,6 @@ impl RenderThread {
                                         }
                                         vsync_armed.set(false);
                                         *dirty = true;
-                                        let _ = resp.send(Ok(()));
                                         info!(
                                             generation = generation.get(),
                                             width = size.0,
@@ -2210,7 +2210,6 @@ impl RenderThread {
                                             mark_surface_destroyed(surface_system);
                                             vsync_armed.set(false);
                                         }
-                                        let _ = resp.send(Err(e.clone()));
                                         error!(
                                             generation = generation.get(),
                                             "CanvasCmd::RecreateOnscreen failed: {}",

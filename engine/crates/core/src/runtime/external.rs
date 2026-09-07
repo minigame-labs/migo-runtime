@@ -784,29 +784,27 @@ fn handle_command(
             }
             if let Err(error) = render.update_surface(lease, pixel_ratio) {
                 error!("[Host {id}] update_surface failed: {error:?}");
-                // The host handed over a Surface the renderer cannot use, and the
-                // reply channel that carried the reason ends here. `attach` has
-                // already returned, so nothing else can answer for it -- and the
-                // embedded execution has told its host about this class of failure
-                // all along, through the render-error path this lane had none of.
+                // The host handed over a Surface the renderer could not even be asked
+                // about, and `attach` has already returned, so nothing else can answer
+                // for it -- the embedded execution has told its host about this class of
+                // failure all along, through the render-error path this lane had none of.
                 //
-                // Cancelled is excluded, and not as a special case: it means this
-                // update did not happen because what it was for is gone. Either the
-                // host retired the Surface, in which case the party that made it gone
-                // is the party being told, or the render worker is gone, in which case
-                // `RenderExit` reports it with the reason this arm does not have. A
-                // normal attach/detach race would otherwise reach the host as
+                // Reaching here means the request never entered the queue: a local
+                // preflight refusal or a dispatch the queue would not take within its
+                // 8 ms bound. Nothing will report it later, which is what makes it this
+                // arm's to report. An install that *was* queued reports its own outcome
+                // on the must-deliver stream -- `SurfaceInstalled` or `SurfaceLost` --
+                // so this is not the place to guess at one.
+                //
+                // Cancelled is excluded, and not as a special case: it means this update
+                // did not happen because what it was for is gone. Either the host retired
+                // the Surface, in which case the party that made it gone is the party
+                // being told, or the render worker is gone, in which case `RenderExit`
+                // reports it with the reason this arm does not have. A normal
+                // attach/detach race would otherwise reach the host as
                 // MIGO_ERROR_INTERNAL, because that is what the C boundary maps every
                 // engine error onto.
-                // And not while a reconciliation is still possible. The service keeps
-                // the last publication outstanding when its request was enqueued and
-                // has not answered, so the install may yet land and commit -- reporting
-                // now would announce a failure for a slow recreate that then succeeds,
-                // as MIGO_ERROR_INTERNAL, which is what the C boundary maps every engine
-                // error onto. A request that never reached the queue records nothing, so
-                // its failure is reported here immediately, which is the case that
-                // genuinely has no second chance.
-                if error.code != ErrorCode::Cancelled && !render.install_pending() {
+                if error.code != ErrorCode::Cancelled {
                     platform.notify_error(
                         id,
                         error.code.as_u16(),
@@ -814,27 +812,11 @@ fn handle_command(
                         error.detail.as_deref().unwrap_or(""),
                     );
                 }
-            } else if !backgrounded.load(Ordering::Relaxed) {
-                // The other half of a handover `OnShow` already documents and this
-                // arm never performed. `OnShow` with no live Surface deliberately
-                // does not resume -- a renderer with nothing to present into would
-                // run for nothing -- and says the resume belongs to the
-                // `UpdateSurface` that follows. It did not: `SurfaceSystem`
-                // preserves `Paused` across `on_surface_available`, so the Surface
-                // installed and no frame could be presented until some unrelated
-                // `OnShow` arrived.
-                //
-                // Reaching it took the surface-loss callback starting to fire: a host
-                // that hears its Surface is gone detaches, attaches a replacement,
-                // and stays foregrounded throughout, so nothing else was coming.
-                //
-                // Guarded on `backgrounded` for the reason the embedded execution
-                // guards it: a host may install a Surface while hidden, and resuming
-                // then runs render and audio in the background. In that case the
-                // Surface is live but paused, and `OnShow` drives the resume.
-                render.resume();
-                audio.resume();
             }
+            // Nothing to resume on here: the request has only been queued. The resume
+            // belongs to the `SurfaceInstalled` arm, which is where a Surface actually
+            // becomes usable -- see the handover `OnShow` documents and this arm used to
+            // perform against a merely-queued request.
         }
 
         HostCommand::SurfaceDestroyed { generation } => {
@@ -842,10 +824,15 @@ fn handle_command(
         }
 
         HostCommand::SurfaceInstalled { revision } => {
-            // The renderer installed something. Ordinarily the reply already committed
-            // it and this confirms nothing; when the reply was given up on, this is the
-            // only thing that will -- and without it the session believed it had no
-            // Surface while the renderer held a live one and stayed paused.
+            // Where a Surface becomes usable, and the only place: nothing waits for a
+            // recreate, so this report is what commits the attachment and what the
+            // resume hangs off. The `UpdateSurface` arm used to do both against a
+            // request that had only been queued.
+            //
+            // Guarded on `backgrounded` for the reason the embedded execution guards it:
+            // a host may install a Surface while hidden, and resuming then runs render
+            // and audio in the background. The Surface is live but paused, and `OnShow`
+            // drives the resume once it clears.
             if render.confirm_install(revision) && !backgrounded.load(Ordering::Relaxed) {
                 render.resume();
                 audio.resume();

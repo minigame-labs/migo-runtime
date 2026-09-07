@@ -475,28 +475,34 @@ pub enum CanvasCmd {
     /// command would sit in a bounded queue holding the Surface hostage behind
     /// whatever the render thread is doing -- including, before the first frame,
     /// EGL initialization, measured at 5.7-41 s on the iOS simulator. The payload
-    /// is a level on `SurfaceControl` instead, which a retirement revokes; this is
-    /// the wake and the reply channel for it.
+    /// is a level on `SurfaceControl` instead, which a retirement revokes.
+    ///
+    /// It carries no reply channel either, and the absence is the point: nobody waits
+    /// for this. It used to answer on a `SyncResp`, and `RenderService` blocked the
+    /// session thread on that answer for up to 500 ms per attempt -- the thread that
+    /// runs JavaScript in the embedded product, so a resize could stall content for
+    /// 1.5 s while EGL was busy. Both outcomes already travel on the must-deliver
+    /// Host control stream instead: `HostCommand::SurfaceInstalled` names the
+    /// publication that landed, `HostCommand::SurfaceLost` the one the platform
+    /// refused. A response field reappearing here is a caller waiting again.
     RecreateOnscreen {
         /// Which publication of the Surface this request is for.
         ///
         /// Not the Surface itself: a revision is `Copy` and pins nothing, so it
         /// costs the host nothing to have one sitting in a queue. But the request
-        /// does have to name one. `RenderService` gives up on the reply after
-        /// 500 ms while the request stays queued, so a worker can reach it after the
-        /// host has resized or reattached -- and a request that could not say which
-        /// Surface it was for would install the newer one under these presentation
-        /// parameters, answer on this channel, and on failure retire the generation
-        /// the host was actively using.
+        /// does have to name one. The request stays queued while the host may resize
+        /// or reattach, so a worker can reach it after either -- and a request that
+        /// could not say which Surface it was for would install the newer one under
+        /// these presentation parameters and, on failure, retire the generation the
+        /// host was actively using.
         ///
-        /// A *publication* and not a generation: a resize rebuilds the native target
-        /// and mints a lease against the same live generation, so a generation does
-        /// not tell two requests apart.
+        /// A *publication* and not a generation: a resize rebuilds the descriptor over
+        /// the attachment's own native resource and mints a lease against the same live
+        /// generation, so a generation does not tell two requests apart.
         revision: SurfaceCandidateRevision,
         /// Transactional DPR update. The backend commits this only after the
         /// Surface installation succeeds; `None` preserves the current value.
         pixel_ratio: Option<PixelRatio>,
-        resp: RenderCmdResp<()>,
     },
 
     ResizeCanvas {

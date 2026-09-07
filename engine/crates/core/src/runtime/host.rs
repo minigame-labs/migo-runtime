@@ -771,9 +771,10 @@ impl Host {
                 Ok(())
             }
             HostCommand::SurfaceInstalled { revision } => {
-                // The renderer installed something. Ordinarily the reply already
-                // committed it and this confirms nothing; when the reply was given up
-                // on, this is the only thing that will.
+                // Where a Surface becomes usable, and the only place: nothing waits for
+                // a recreate, so this report is what commits the attachment and what the
+                // resume hangs off. `on_update_surface` used to do both against a request
+                // that had only been queued.
                 if self.render.confirm_install(revision) {
                     self.resume_foreground_if_visible();
                 }
@@ -1378,24 +1379,15 @@ impl Host {
             self.id, w, h
         );
 
-        // The bounded retry this used to run lives in `RenderService::update_surface`
-        // now, so the external-frame execution gets it too: only this one had it, and
-        // the same transient queue pressure stranded that product and not this one.
-        let result = self.render.update_surface(lease.clone(), pixel_ratio);
-
-        // Resume the foreground after the surface is (re)created — but only when
-        // actually foregrounded. Android can deliver surfaceCreated/Changed while
-        // still hidden (before onResume) or recreate a surface while backgrounded;
-        // resuming then would run render/audio in the background. In that case the
-        // surface is marked live but stays paused, and the OnShow live-surface
-        // path drives the resume once `backgrounded` clears.
-        if result.is_ok() {
-            self.resume_foreground_if_visible();
-            info!("[Host {}] on_update_surface completed", self.id);
-        } else if let Err(ref e) = result {
+        // Asks, and does not wait: `update_surface` returns once the renderer has been
+        // told. So there is nothing to resume on here -- the Surface is not usable yet,
+        // and resuming would run render and audio against one that may never install.
+        // The resume belongs to the `SurfaceInstalled` report, which is also the only
+        // thing that commits the attachment.
+        let result = self.render.update_surface(lease, pixel_ratio);
+        if let Err(ref e) = result {
             warn!("[Host {}] on_update_surface failed: {}", self.id, e);
         }
-
         result
     }
 
@@ -1406,10 +1398,9 @@ impl Host {
     /// audio in the background. In that case the Surface is live but stays paused, and
     /// the OnShow live-surface path drives the resume once `backgrounded` clears.
     ///
-    /// Shared by the two places a Surface becomes usable -- the update's own reply, and
-    /// a `SurfaceInstalled` report for an update this host had stopped waiting for.
-    /// One copy, because the guard is the part that matters and two copies is how two
-    /// paths come to disagree about it.
+    /// Shared by the two places a Surface becomes usable -- the `SurfaceInstalled` report
+    /// and `OnShow` finding one already live. One copy, because the guard is the part
+    /// that matters and two copies is how two paths come to disagree about it.
     fn resume_foreground_if_visible(&mut self) {
         if self.backgrounded.load(Ordering::Relaxed) {
             return;

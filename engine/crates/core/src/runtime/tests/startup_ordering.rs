@@ -249,20 +249,31 @@ fn installing_a_surface_retries_for_both_products_from_one_place() {
 }
 
 #[test]
-fn an_install_whose_reply_was_given_up_on_is_still_reconciled() {
-    // The property: the outcome of an install cannot be lost.
+fn an_installs_outcome_travels_only_on_the_must_deliver_stream() {
+    // The property: the outcome of an install cannot be lost, and nobody waits for it.
     //
-    // `RenderService` gives up on the recreate reply after 500 ms while the request
-    // stays queued, so the renderer can install afterwards. The session's slot then
-    // stayed uncommitted while the renderer held a live Surface, and -- because the
-    // resume runs only on the reply's success -- the renderer stayed paused with
-    // nothing coming. That is the same state a lost-and-replaced Surface used to end
-    // in, reached by a different route, so closing one and not the other would have
-    // left the bug reachable.
-    //
-    // Every successful install is reported, not only the ones whose reply was lost:
-    // the worker cannot know whether anyone is still listening, and a report nobody
-    // needs is a no-op.
+    // The recreate used to answer on a `SyncResp` that `RenderService` blocked the
+    // session thread on -- up to 500 ms per attempt, on the thread that runs JavaScript
+    // in the embedded product, and EGL is exactly what makes that wait long. So a resize
+    // could stall content for 1.5 s. What replaced it was already there: both outcomes
+    // travel on the must-deliver Host control stream.
+    assert!(
+        !code_only(RENDER_CMD)
+            .split("RecreateOnscreen {")
+            .nth(1)
+            .expect("the recreate command must remain present")
+            .split("    },")
+            .next()
+            .expect("it must end")
+            .contains("resp"),
+        "RecreateOnscreen must carry no reply channel: a response field is a caller \
+         waiting on the session thread again"
+    );
+    assert!(
+        !code_only(RENDER_SERVICE).contains("recv_timeout"),
+        "installing a Surface must not wait for an answer anywhere"
+    );
+
     assert!(
         RENDER_THREAD.contains("report_surface_installed(revision);"),
         "the startup install must report what it installed"
@@ -299,28 +310,39 @@ fn an_install_whose_reply_was_given_up_on_is_still_reconciled() {
          discards a publication that is still waiting"
     );
 
-    // Only a request the queue accepted can ever be reported, so only that one is
-    // recorded. One that never reached the queue would leave the service waiting for a
-    // report nobody sends -- and, with the timeout suppressed while a reconciliation is
-    // pending, leave the host told nothing either.
+    // Recorded only once the queue has accepted the request, because that is when an
+    // answer becomes owed. Recording it before the dispatch would leave the service
+    // waiting on a report nobody is going to send.
+    let install = RENDER_SERVICE
+        .split("    fn install_surface(")
+        .nth(1)
+        .expect("the single install path must remain present")
+        .split("\n    /// ")
+        .next()
+        .expect("it must end");
+    let dispatched = install
+        .find(".dispatch(RenderCommand::Canvas(")
+        .expect("the request must be dispatched");
+    let recorded = install
+        .find("self.outstanding = Some(revision);")
+        .expect("the accepted request must be recorded");
     assert!(
-        RENDER_SERVICE.contains("self.outstanding = failure.in_flight;"),
-        "only an in-flight request may be recorded as outstanding"
+        dispatched < recorded,
+        "the request must be recorded as outstanding only after the queue took it"
     );
-    assert!(
-        RENDER_SERVICE.contains("fn in_flight(") && RENDER_SERVICE.contains("fn not_enqueued("),
-        "the two outcomes must be named apart at the point they are produced"
-    );
-    assert!(
-        EXTERNAL.contains("!render.install_pending()"),
-        "a timeout must not be announced while its install may still land: it would \
-         report a failure for a slow recreate that then succeeds"
-    );
+
     assert!(
         confirm.contains("self.surface_control.live_candidate_for(revision)"),
         "the lease must be read back from the level, which answers only while that \
          publication is live -- so a generation retired between the install and the \
          report arrives as None rather than as an attachment to publish"
+    );
+    // `confirm_install` is now the only commit path, so a commit anywhere else is a
+    // second one -- which is how the two would come to disagree about the attachment.
+    assert_eq!(
+        RENDER_SERVICE.matches("self.attachment.commit(").count(),
+        1,
+        "a Surface may become the Host's attachment in exactly one place"
     );
 
     // And the record must not be a pin. Keeping the lease here would hold the host's
@@ -340,7 +362,7 @@ fn an_install_whose_reply_was_given_up_on_is_still_reconciled() {
          already holds it and hands it back only while it is live"
     );
 
-    // And both executions reconcile, because both can give up on a reply.
+    // And both executions reconcile, because both install Surfaces this way.
     for (source, which) in [(HOST, "the embedded"), (EXTERNAL, "the external-frame")] {
         assert!(
             source.contains("confirm_install(revision)"),
@@ -355,14 +377,18 @@ fn the_handover_onshow_defers_to_is_actually_performed() {
     //
     // `OnShow` with no live Surface deliberately does not resume -- a renderer with
     // nothing to present into would run for nothing -- and its comment says the
-    // resume belongs to the `UpdateSurface` that follows. That handover was never
-    // implemented on this execution, and `SurfaceSystem` preserves `Paused` across
-    // `on_surface_available`, so a Surface installed while paused presented nothing
-    // until some unrelated `OnShow` arrived.
+    // resume belongs to the Surface that follows. That handover was never implemented on
+    // this execution, and `SurfaceSystem` preserves `Paused` across
+    // `on_surface_available`, so a Surface installed while paused presented nothing until
+    // some unrelated `OnShow` arrived.
     //
     // It became reachable when the surface-loss callback started firing: a host that
     // hears its Surface is gone detaches, attaches a replacement, and stays
     // foregrounded throughout, so nothing else was coming.
+    //
+    // The arm that performs it is `SurfaceInstalled`, not `UpdateSurface`, and that is
+    // not a detail: an update only *asks*, so resuming there would run render and audio
+    // against a Surface that has not been installed and may never be.
     let handler = EXTERNAL
         .split("fn handle_command(")
         .nth(1)
@@ -387,25 +413,35 @@ fn the_handover_onshow_defers_to_is_actually_performed() {
             .find("\n        HostCommand::")
             .map_or(handler.len(), |offset| update + offset)];
     assert!(
-        update_arm.contains("render.resume();"),
-        "the update must perform the resume OnShow deferred to it, or a Surface \
+        !code_only(update_arm).contains("render.resume();"),
+        "the update must not resume: it has only queued a request, and the Surface it \
+         asked for may never install"
+    );
+
+    let installed = handler
+        .find("HostCommand::SurfaceInstalled {")
+        .expect("the install report must be handled");
+    let installed_arm = &handler[installed
+        ..handler[installed..]
+            .find("\n        HostCommand::")
+            .map_or(handler.len(), |offset| installed + offset)];
+    assert!(
+        installed_arm.contains("render.resume();"),
+        "the install report must perform the resume OnShow deferred to it, or a Surface \
          installed while paused presents nothing"
     );
     assert!(
-        update_arm.contains("audio.resume();"),
+        installed_arm.contains("audio.resume();"),
         "and resume audio with it, as OnShow would have"
     );
     assert!(
-        update_arm.contains("!backgrounded.load(Ordering::Relaxed)"),
+        installed_arm.contains("!backgrounded.load(Ordering::Relaxed)"),
         "guarded on backgrounded, for the reason the embedded execution guards it: a \
          host may install a Surface while hidden, and resuming then runs render and \
          audio in the background"
     );
     // The guard is the whole point of the pairing, so the embedded half must still
-    // have it too -- otherwise this asserts a symmetry with one side. It lives in one
-    // method there now, shared by the update's own reply and the reconciliation of an
-    // install this host had stopped waiting for: two copies is how two paths come to
-    // disagree about a guard.
+    // have it too -- otherwise this asserts a symmetry with one side.
     let resume = HOST
         .split("fn resume_foreground_if_visible(&mut self) {")
         .nth(1)
@@ -417,11 +453,24 @@ fn the_handover_onshow_defers_to_is_actually_performed() {
         resume.contains("if self.backgrounded.load(Ordering::Relaxed) {"),
         "the embedded execution must still gate its resume on being foregrounded"
     );
+    // Exactly the install report. It used to be two -- the update's own reply as well --
+    // and the reply is what went away.
     assert_eq!(
         HOST.matches("self.resume_foreground_if_visible();").count(),
-        2,
-        "both places a Surface becomes usable must go through it: the update's reply \
-         and the SurfaceInstalled reconciliation"
+        1,
+        "the embedded execution must resume where a Surface becomes usable, and only \
+         there"
+    );
+    let embedded_installed = HOST
+        .split("HostCommand::SurfaceInstalled { revision } => {")
+        .nth(1)
+        .expect("the embedded install report must be handled")
+        .split("\n            HostCommand::")
+        .next()
+        .expect("its arm must end");
+    assert!(
+        embedded_installed.contains("self.resume_foreground_if_visible();"),
+        "and that place is the install report, not the update that asked for it"
     );
 }
 
@@ -860,8 +909,7 @@ fn the_initial_surface_is_claimed_after_gpu_init_and_by_one_route_only() {
     // The second route that used to exist, and the reason the level is read rather
     // than consumed. `RecreateOnscreen` carried an owning lease, so a pre-ready
     // re-attach left the host's Surface pinned in a bounded queue behind the same
-    // initialization -- unbounded, because `RenderService` gives up on the reply
-    // after 500 ms and the lease stays queued regardless.
+    // initialization -- for as long as the request sat there, which nothing bounded.
     let command = RENDER_CMD
         .split("    RecreateOnscreen {")
         .nth(1)
@@ -871,15 +919,15 @@ fn the_initial_surface_is_claimed_after_gpu_init_and_by_one_route_only() {
         .expect("the RecreateOnscreen command must end");
     assert!(
         !code_only(command).contains("SurfaceLease"),
-        "RecreateOnscreen must carry no Surface: it is the wake and the reply \
-         channel for a level, not the delivery of a lease"
+        "RecreateOnscreen must carry no Surface: it is the wake for a level, not the \
+         delivery of a lease"
     );
     // It must still say *which* Surface, though. A request can outlive its own
-    // candidate -- the reply times out after 500 ms while the request stays queued --
-    // and one that could not name a generation would install whatever replaced it,
-    // under its own stale presentation parameters, and on failure retire the
-    // generation the host had just attached. Carrying its own lease used to make it
-    // self-identifying; a generation does the same and pins nothing.
+    // candidate -- it stays queued while the host may resize or reattach -- and one that
+    // could not name a publication would install whatever replaced it, under its own
+    // stale presentation parameters, and on failure retire the generation the host had
+    // just attached. Carrying its own lease used to make it self-identifying; a
+    // publication does the same and pins nothing.
     // A publication, not a generation: `attach_or_update` reuses the live generation,
     // so a resize republishes one and two queued requests could name the same
     // generation -- letting the older match the newer's candidate.
@@ -896,9 +944,15 @@ fn the_initial_surface_is_claimed_after_gpu_init_and_by_one_route_only() {
         "the recreate path must read the level for the generation it was asked \
          about, not whatever is published when it gets there"
     );
+    // Moved, not cloned. Nothing in the install path needs the lease after it is
+    // published: the level holds it, and `confirm_install` reads it back only while that
+    // publication is live. It used to be cloned because the reply path re-checked
+    // `is_live()` and committed the copy, which is one more place the host's Surface was
+    // held while the renderer worked.
     assert!(
-        RENDER_SERVICE.contains("self.surface_control.publish_candidate(lease.clone());"),
-        "an update must publish through the control plane"
+        RENDER_SERVICE.contains("self.surface_control.publish_candidate(lease);"),
+        "an update must publish through the control plane, handing the lease over \
+         rather than keeping a copy"
     );
 
     // And the control plane must actually be able to revoke what it parked.

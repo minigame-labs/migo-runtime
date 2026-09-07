@@ -102,25 +102,44 @@ require_multiline_regex "$CRATES/shared/src/protocol/render_cmd.rs" \
 # compiles its Metal shaders cold. `migo_surface_begin_detach` could not complete
 # for the whole of it, so a host could not shut down before its renderer came up.
 # `RenderService` giving up on the reply after 500 ms did not help: the lease
-# stayed queued regardless.
+# stayed queued regardless -- and that reply is itself gone now, for the reason
+# the second check below records.
 #
 # THE DRIFT THIS EXISTS TO CATCH is the payload coming back. The Surface is now a
 # level on `SurfaceControl`, which a retirement revokes, and this command is only
-# the wake and the reply channel for it -- but re-adding a field is a two-line
-# change that reads like an optimisation, and nothing else in the build reports
-# that a detach has quietly become gated on the GPU again.
+# the wake for it -- but re-adding a field is a two-line change that reads like an
+# optimisation, and nothing else in the build reports that a detach has quietly
+# become gated on the GPU again.
 if rg -qU 'RecreateOnscreen[[:space:]]*\{[^}]*SurfaceLease' \
     "$CRATES/shared/src/protocol/render_cmd.rs"; then
     fail "onscreen recreation carries a SurfaceLease again; the Surface must travel \
 as a revocable level on SurfaceControl ($CRATES/shared/src/protocol/render_cmd.rs)"
+fi
+# And nothing waits for the install. The recreate used to answer on a SyncResp that
+# `RenderService` blocked the session thread on -- up to 500 ms per attempt, three
+# attempts, on the thread that runs JavaScript in the embedded product. EGL is what
+# makes that wait long, so a resize arriving mid-initialization stalled content for
+# 1.5 s. Both outcomes already travelled on the must-deliver Host stream, so the wait
+# bought nothing. Two halves, because either can come back on its own: a reply field
+# on the command, or a receive in the service.
+if rg -qU 'RecreateOnscreen[[:space:]]*\{[^}]*resp' \
+    "$CRATES/shared/src/protocol/render_cmd.rs"; then
+    fail "onscreen recreation carries a reply channel again; its outcome must travel \
+on the must-deliver Host stream so no caller waits on the session thread \
+($CRATES/shared/src/protocol/render_cmd.rs)"
+fi
+if rg -q 'recv_timeout' "$CRATES/core/src/services/render.rs"; then
+    fail "a Surface install waits for an answer again; the session thread must not \
+block on EGL ($CRATES/core/src/services/render.rs)"
 fi
 require_literal "$CRATES/shared/src/surface/control.rs" \
     "candidate: Mutex<Option<(SurfaceCandidateRevision, SurfaceLease)>>" \
     "SurfaceControl does not publish the Surface a render worker installs, paired with \
 the publication a request can name"
 require_literal "$CRATES/core/src/services/render.rs" \
-    "self.surface_control.publish_candidate(lease.clone());" \
-    "a Surface update does not publish through the queue-independent control plane"
+    "self.surface_control.publish_candidate(lease);" \
+    "a Surface update does not publish through the queue-independent control plane, or \
+keeps a copy of the lease instead of handing it over"
 require_literal "$CRATES/graphics/src/render_thread.rs" \
     "let claimed = surface_control.live_candidate();" \
     "render startup does not read the Surface level; a lease handed in at spawn is \
