@@ -523,6 +523,45 @@ fn staleness_is_classified_as_cancellation_where_it_is_known() {
         EXTERNAL.contains("error.code != ErrorCode::Cancelled"),
         "the session must decide on the code the mappers set"
     );
+
+    // The third site with the same shape, and it had the same defect: a dispatch that
+    // failed because the queue stayed full and one that failed because the worker is
+    // gone both produced `Cancelled`, which the session excludes -- so a full queue
+    // reached nobody and the app sat on a stale-sized frame with no further Surface
+    // callback coming. Only the second one is genuinely "do not report this": the
+    // worker's own `RenderExit` carries the reason.
+    let dispatch = RENDER_SERVICE
+        .split(".dispatch(RenderCommand::Canvas(")
+        .nth(1)
+        .expect("the recreate dispatch must remain present")
+        .split("\n        // Recorded")
+        .next()
+        .expect("its error mapping must end before the record");
+    assert!(
+        dispatch.contains("SendError::Disconnected => ErrorCode::Cancelled"),
+        "a dispatch that failed because the worker is gone must be Cancelled: \
+         RenderExit reports that with the reason this site does not have"
+    );
+    assert!(
+        dispatch.contains("SendError::Timeout | SendError::Overflow => ErrorCode::Timeout"),
+        "a queue that would not take the request must not borrow Cancelled's silence: \
+         the worker is alive, nothing else will install this Surface, and the host has \
+         to hear about it to attach another"
+    );
+    // Counted, not merely present. An extra arm ahead of these two satisfies both
+    // assertions above while making one of them dead code -- which is how a literal
+    // check degenerates into "at least one line says the right thing". Exactly one
+    // outcome may be silent, and it is the one whose reason travels elsewhere.
+    assert_eq!(
+        code_only(dispatch).matches("ErrorCode::Cancelled").count(),
+        1,
+        "exactly one dispatch failure may be classified as Cancelled"
+    );
+    assert_eq!(
+        code_only(dispatch).matches("ErrorCode::Timeout").count(),
+        1,
+        "and exactly one as Timeout, so the mapping stays a partition of the variants"
+    );
 }
 
 #[test]

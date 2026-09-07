@@ -5,6 +5,7 @@ use graphics::RenderThread;
 use shared::{
     error::{EngineError, EngineResult, ErrorCode},
     protocol::render_cmd::{CanvasCmd, RenderCommand},
+    render_command_sender::SendError,
     render_event::RenderEventReceiver,
     surface::{PixelRatio, SurfaceGeneration, SurfaceLease},
 };
@@ -315,10 +316,26 @@ impl RenderService {
                 revision,
                 pixel_ratio,
             }))
-            .map_err(|e| {
-                EngineError::new(ErrorCode::Cancelled)
+            .map_err(|error| {
+                // Two different facts, and the consumer decides whether to report on the
+                // code, so they must not share one. Both used to be `Cancelled`, which
+                // the session excludes -- so a queue that stayed full reached nobody and
+                // the app sat on a stale-sized frame with no further Surface callback
+                // coming. This is the same shape as flattening every arbitration variant
+                // onto `InvalidOperation`: the distinction cannot be recovered later,
+                // because choosing the code is where it was destroyed.
+                let code = match error {
+                    // The worker is gone. `RenderExit` reports the reason this does not
+                    // have, and the session is right to stay quiet about it.
+                    SendError::Disconnected => ErrorCode::Cancelled,
+                    // The worker is alive and did not take the request within its 8 ms
+                    // bound. Nothing else will ever install this Surface, so the host
+                    // has to hear about it to attach another.
+                    SendError::Timeout | SendError::Overflow => ErrorCode::Timeout,
+                };
+                EngineError::new(code)
                     .with_msg("recreate onscreen: send failed")
-                    .with_detail(e.to_string())
+                    .with_detail(error.to_string())
             })?;
 
         // Recorded only once the queue has accepted it, because that is exactly when
