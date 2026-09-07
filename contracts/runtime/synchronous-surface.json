@@ -200,12 +200,6 @@
       "producer_answers_locally": "n_a",
       "note": "Host lifecycle; the reply is what makes teardown ordered."
     },
-    "CanvasCmd::RecreateOnscreen": {
-      "api": null,
-      "reply": "always",
-      "producer_answers_locally": "n_a",
-      "note": "Host lifecycle: surface replacement."
-    },
     "CanvasCmd::LoadImage": {
       "api": null,
       "reply": "always",
