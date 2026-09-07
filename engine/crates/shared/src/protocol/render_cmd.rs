@@ -1449,10 +1449,18 @@ pub enum GLCmd {
     /// `clientWaitSync(sync, flags, timeout_ns)` — returns one of the
     /// `GL_ALREADY_SIGNALED`, `GL_CONDITION_SATISFIED`, `GL_TIMEOUT_EXPIRED`,
     /// or `GL_WAIT_FAILED` enums.
+    /// Poll a fence. Carries no timeout, and the absence is the guarantee.
+    ///
+    /// `MAX_CLIENT_WAIT_TIMEOUT_WEBGL` is zero for these contexts, so polling is
+    /// the whole of the contract. A timeout field could only ever carry zero from
+    /// a conforming producer -- and from a non-conforming one it would carry a
+    /// request to block the render thread, which is shared by every canvas and by
+    /// the frame loop. On the external-frame lane that producer is content
+    /// JavaScript in another process. Removing the field is what makes the request
+    /// unrepresentable rather than merely rejected.
     ClientWaitSync {
         sync: SyncId,
         flags: u32,
-        timeout_ns: u64,
         resp: RenderCmdResp<u32>,
     },
 
@@ -2453,7 +2461,6 @@ impl GLCmd {
             GLCmd::ClientWaitSync {
                 sync: _,
                 flags: _,
-                timeout_ns: _,
                 resp: _,
             } => None,
             GLCmd::GetTransformFeedbackVarying {

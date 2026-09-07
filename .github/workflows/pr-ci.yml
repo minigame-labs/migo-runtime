@@ -391,6 +391,17 @@ jobs:
       - name: Stats packet offset contract
         run: bash scripts/test-stats-packet-offset-contract.sh
 
+      # A GL constant the executor can hand to content must be one content can name.
+      # A missing one is not an error but a silent wrong branch: `gl.THAT_NAME` is
+      # `undefined`, which is a fine argument to a GL call and a fine thing to compare
+      # against. That has shipped four times in 01_constants.js -- UNIFORM_BUFFER (a UBO
+      # upload targeted undefined, nothing visible), INVALID_INDEX (the documented check
+      # never took its branch), the whole WebGL 2 sync set (fenceSync got undefined as its
+      # condition), and DRAW_FRAMEBUFFER (blitFramebuffer implemented and unreachable).
+      # Fixing them one at a time did not converge; this derives the set instead.
+      - name: WebGL constant reach contract
+        run: bash scripts/test-webgl-constant-reach-contract.sh
+
       # The inbound half of the same boundary, and the same reason a compiler
       # cannot help: `platform/src/android/jni/**` is `cfg(target_os =
       # "android")`, so nothing in it is executed by any test on any machine here.

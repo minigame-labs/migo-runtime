@@ -7045,24 +7045,12 @@ pub fn op_delete_sync(state: &mut OpState, #[smi] sync: u32) {
 
 #[op2(fast)]
 #[smi]
-pub fn op_client_wait_sync(
-    state: &mut OpState,
-    #[smi] sync: u32,
-    #[smi] flags: u32,
-    timeout_ns: f64,
-) -> u32 {
-    let timeout_ns = if timeout_ns.is_finite() && timeout_ns >= 0.0 {
-        timeout_ns as u64
-    } else {
-        0
-    };
+pub fn op_client_wait_sync(state: &mut OpState, #[smi] sync: u32, #[smi] flags: u32) -> u32 {
+    // No timeout parameter: `MAX_CLIENT_WAIT_TIMEOUT_WEBGL` is zero, the shim
+    // rejects anything above it before reaching here, and the command carries no
+    // field for one. See `GLCmd::ClientWaitSync`.
     send_gl_sync_with_flush(state, |resp| {
-        RenderCommand::GL(GLCmd::ClientWaitSync {
-            sync,
-            flags,
-            timeout_ns,
-            resp,
-        })
+        RenderCommand::GL(GLCmd::ClientWaitSync { sync, flags, resp })
     })
     // WAIT_FAILED = 0x911D per GLES 3.0 spec.
     .unwrap_or(0x911D)

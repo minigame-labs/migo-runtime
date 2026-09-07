@@ -3027,12 +3027,7 @@ impl RendererGL {
                 }
                 Ok(DamageEffect::NoDamage)
             }
-            GLCmd::ClientWaitSync {
-                sync,
-                flags,
-                timeout_ns,
-                resp,
-            } => {
+            GLCmd::ClientWaitSync { sync, flags, resp } => {
                 // clientWaitSync must run on the owning context; rebind if
                 // we're not already there.
                 let meta = cm.syncs.get(&sync).cloned();
@@ -3043,15 +3038,28 @@ impl RendererGL {
                         let _ = self.bind_for_contextless_gl(cm)?;
                     }
                     if let Some(h) = meta.gl_handle {
-                        // Route through `CanvasManager::client_wait_sync_u64`
-                        // so the full GLuint64 timeout range is preserved.
-                        // `glow::HasContext::client_wait_sync` takes `i32`
-                        // and would silently clamp anything above
-                        // `i32::MAX` ns (~2.147 s) — unacceptable for
-                        // WebGL 2 sync semantics.  The helper loads the
-                        // raw symbol via EGL once and dispatches directly.
-                        let _ = gl; // kept in scope for surrounding cases
-                        cm.client_wait_sync_u64(h.0 as *const std::ffi::c_void, flags, timeout_ns)
+                        // Zero, whatever the producer asked for, and the reason is
+                        // that this thread is not the producer's to spend.
+                        //
+                        // `MAX_CLIENT_WAIT_TIMEOUT_WEBGL` is zero for this context, so
+                        // a conforming producer only ever asks for zero and the shim
+                        // rejects anything else with INVALID_OPERATION. But on the
+                        // external-frame lane the producer is content JavaScript in
+                        // another process: it composes this command itself, and the
+                        // envelope validator checks framing rather than GL semantics.
+                        // A large `timeout_ns` arriving here would block the render
+                        // thread inside the driver -- a thread shared by every canvas
+                        // and by the frame loop -- for as long as content asked.
+                        //
+                        // The previous comment argued for preserving the full 64-bit
+                        // range because `glow`'s `client_wait_sync` takes `i32` and
+                        // would silently clamp above ~2.147 s. That argument was about
+                        // not misrepresenting a wait, and it stops applying once the
+                        // answer is that there is no wait to misrepresent: polling is
+                        // the whole of the contract, and `client_wait_sync_u64` is kept
+                        // because it is the path that takes the value without narrowing
+                        // it, which is still what a zero should travel through.
+                        cm.client_wait_sync_u64(h.0 as *const std::ffi::c_void, flags, 0)
                     } else {
                         glow::WAIT_FAILED
                     }

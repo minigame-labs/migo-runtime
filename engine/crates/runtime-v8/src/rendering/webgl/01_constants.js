@@ -124,6 +124,27 @@ const WebglConstants = {
     COLOR_CLEAR_VALUE: 3106,
     COLOR_WRITEMASK: 3107,
     UNPACK_ALIGNMENT: 3317,
+    // WebGL 2's pixel-store parameters. Sixth instance, and the same half-pair shape
+    // as every one before it: the WebGL 1 pair PACK_ALIGNMENT/UNPACK_ALIGNMENT above
+    // was declared and the WebGL 2 additions were not. `pixelStorei` is implemented and
+    // forwards `pname` verbatim, so the standard sub-rectangle upload --
+    //
+    //     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, srcWidth);
+    //     gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x);
+    //     gl.texSubImage2D(...);
+    //
+    // -- set `undefined` as the parameter name. Found only after moving
+    // backend/gl/state_tracker.rs out of `internal_only`: it shadows these because
+    // *content* sets them, so classifying it as internal left the only file that names
+    // them unchecked.
+    PACK_ROW_LENGTH: 3330,
+    PACK_SKIP_PIXELS: 3332,
+    PACK_SKIP_ROWS: 3331,
+    UNPACK_ROW_LENGTH: 3314,
+    UNPACK_SKIP_PIXELS: 3316,
+    UNPACK_SKIP_ROWS: 3315,
+    UNPACK_IMAGE_HEIGHT: 32878,
+    UNPACK_SKIP_IMAGES: 32877,
     PACK_ALIGNMENT: 3333,
     MAX_TEXTURE_SIZE: 3379,
     MAX_VIEWPORT_DIMS: 3386,
@@ -302,6 +323,35 @@ const WebglConstants = {
     RENDERBUFFER_ALPHA_SIZE: 36179,
     RENDERBUFFER_DEPTH_SIZE: 36180,
     RENDERBUFFER_STENCIL_SIZE: 36181,
+    // WebGL 2.0 sync objects. The third time this file has paid for a missing
+    // constant, and the same shape both previous times: `UNIFORM_BUFFER` absent
+    // meant a UBO upload targeted `undefined` and nothing was visible, and
+    // `INVALID_INDEX` absent meant the documented `if (index === gl.INVALID_INDEX)`
+    // compared against `undefined` and never took that branch.
+    //
+    // `fenceSync` / `deleteSync` / `clientWaitSync` are implemented, and every
+    // constant reachable through those three was missing. So the standard async
+    // readback pattern -- fence, then poll -- passed `undefined` as the fence
+    // condition and compared the status against `undefined` for every branch:
+    //
+    //     const s = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    //     if (gl.clientWaitSync(s, 0, 0) === gl.ALREADY_SIGNALED) { ... }
+    //
+    // Exactly the seven that those three methods can reach. `TIMEOUT_IGNORED`,
+    // `SYNC_STATUS` and the rest of GLES' sync enums belong to `waitSync` and
+    // `getSyncParameter`, which are not implemented -- declaring them would
+    // promise an API that is not there.
+    //
+    // Values checked against `glow`'s own definitions rather than transcribed:
+    // 0x9117, 0x1, 0x911A, 0x911B, 0x911C, 0x911D. The last one is WebGL-only and
+    // comes from the WebGL 2 specification, 0x9247.
+    SYNC_GPU_COMMANDS_COMPLETE: 37143,
+    SYNC_FLUSH_COMMANDS_BIT: 1,
+    ALREADY_SIGNALED: 37146,
+    TIMEOUT_EXPIRED: 37147,
+    CONDITION_SATISFIED: 37148,
+    WAIT_FAILED: 37149,
+    MAX_CLIENT_WAIT_TIMEOUT_WEBGL: 37447,
     FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: 36048,
     FRAMEBUFFER_ATTACHMENT_OBJECT_NAME: 36049,
     FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL: 36050,
@@ -317,6 +367,19 @@ const WebglConstants = {
     FRAMEBUFFER_INCOMPLETE_DIMENSIONS: 36057,
     FRAMEBUFFER_UNSUPPORTED: 36061,
     FRAMEBUFFER_BINDING: 36006,
+    // WebGL 2's two framebuffer binding points. Fourth instance of this file's
+    // recorded defect class: `blitFramebuffer` is implemented, and it is reached
+    // only by binding these two targets -- so without them
+    // `bindFramebuffer(gl.READ_FRAMEBUFFER, fb)` passed `undefined` as the target
+    // and the whole blit path was unusable. Found by deriving the constants the GL
+    // executor can hand to content and diffing against this table, not by reading.
+    //
+    // DRAW_FRAMEBUFFER_BINDING is deliberately absent: GLES 3 gives it the same
+    // enum as FRAMEBUFFER_BINDING (0x8CA6), so declaring both names would imply
+    // two queries where there is one.
+    READ_FRAMEBUFFER: 36008,
+    DRAW_FRAMEBUFFER: 36009,
+    READ_FRAMEBUFFER_BINDING: 36010,
     RENDERBUFFER_BINDING: 36007,
     MAX_RENDERBUFFER_SIZE: 34024,
     INVALID_FRAMEBUFFER_OPERATION: 1286,
@@ -325,6 +388,72 @@ const WebglConstants = {
     CONTEXT_LOST_WEBGL: 37442,
     UNPACK_COLORSPACE_CONVERSION_WEBGL: 37443,
     BROWSER_DEFAULT_WEBGL: 37444,
+    // WebGL 2 sized internal formats. Fifth instance of this file's recorded defect
+    // class and the largest: six methods that take one are implemented --
+    // texStorage2D/3D, renderbufferStorage, renderbufferStorageMultisample,
+    // texImage2D/3D -- and only RGB8 and RGBA8 were declared, so
+    // `texStorage2D(t, 1, gl.RGBA16F, w, h)` passed `undefined` as the internal
+    // format. texStorage2D is the WebGL 2 way to allocate an immutable texture and
+    // DEPTH24_STENCIL8 is the standard depth-stencil renderbuffer format; neither is
+    // exotic. The two that were declared are the shape of the whole problem: added
+    // one at a time as someone tripped over the consequence.
+    //
+    // The set is exactly what `graphics/src/webgl_gpu_budget.rs` accounts for, i.e.
+    // the engine's own list of formats it supports -- derived, not transcribed from a
+    // spec table, so it cannot drift from what the engine actually handles. Values
+    // checked against glow.
+    DEPTH24_STENCIL8: 35056,
+    DEPTH32F_STENCIL8: 36013,
+    DEPTH_COMPONENT24: 33190,
+    DEPTH_COMPONENT32F: 36012,
+    R11F_G11F_B10F: 35898,
+    R16F: 33325,
+    R16I: 33331,
+    R16UI: 33332,
+    R32F: 33326,
+    R32I: 33333,
+    R32UI: 33334,
+    R8: 33321,
+    R8I: 33329,
+    R8UI: 33330,
+    R8_SNORM: 36756,
+    RG16F: 33327,
+    RG16I: 33337,
+    RG16UI: 33338,
+    RG32F: 33328,
+    RG32I: 33339,
+    RG32UI: 33340,
+    RG8: 33323,
+    RG8I: 33335,
+    RG8UI: 33336,
+    RG8_SNORM: 36757,
+    RGB10_A2: 32857,
+    RGB10_A2UI: 36975,
+    RGB16F: 34843,
+    RGB16I: 36233,
+    RGB16UI: 36215,
+    RGB32F: 34837,
+    RGB32I: 36227,
+    RGB32UI: 36209,
+    RGB8I: 36239,
+    RGB8UI: 36221,
+    RGB8_SNORM: 36758,
+    RGB9_E5: 35901,
+    RGBA16F: 34842,
+    RGBA16I: 36232,
+    RGBA16UI: 36214,
+    RGBA32F: 34836,
+    RGBA32I: 36226,
+    RGBA32UI: 36208,
+    RGBA8I: 36238,
+    RGBA8UI: 36220,
+    RGBA8_SNORM: 36759,
+    SRGB8: 35905,
+    SRGB8_ALPHA8: 35907,
+    // Mip range for texParameteri, which is implemented and forwards `pname`
+    // verbatim. Same half-pair shape as READ/DRAW_FRAMEBUFFER: neither was declared.
+    TEXTURE_BASE_LEVEL: 33084,
+    TEXTURE_MAX_LEVEL: 33085,
     RGB8: 32849,
     RGBA8: 32856
 };
