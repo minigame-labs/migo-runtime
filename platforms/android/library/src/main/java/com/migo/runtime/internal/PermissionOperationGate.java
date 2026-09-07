@@ -125,6 +125,24 @@ public final class PermissionOperationGate {
         }
     }
 
+    /**
+     * Whether this id belonged to a session that has since closed.
+     *
+     * <p>Separate from {@link #admit} because a caller may need the fact without claiming
+     * the id — `NativeExports` retains a late surface-loss report only for a session that
+     * has not registered *yet*, and "absent from the live map" alone cannot tell that from
+     * "already gone". Answering it from the set that already exists is what keeps there
+     * from being a second process-life record of the same fact.
+     *
+     * <p>Not a substitute for `admit`'s answer: this is a query, so a concurrent close can
+     * make it stale the moment it returns. Only use it where a stale `false` is harmless.
+     */
+    public boolean isRetired(int sessionId) {
+        synchronized (openGuard) {
+            return retiredSessionIds.contains(sessionId);
+        }
+    }
+
     public Result update(
             int sessionId,
             String scope,

@@ -173,6 +173,27 @@ public final class PermissionOperationGateTest {
     }
 
     @Test
+    public void retirementIsQueryableWithoutClaimingTheId() {
+        // The distinction `NativeExports` needs before retaining a late surface-loss
+        // report: "has not registered yet" and "already closed" are both absent from the
+        // live session map, and only the first is worth keeping an entry for.
+        PermissionOperationGate gate = new PermissionOperationGate();
+
+        assertFalse("an id nobody has opened is not retired", gate.isRetired(3201));
+        assertEquals(Admission.ADMITTED, gate.admit(3201));
+        assertFalse("a live id is not retired", gate.isRetired(3201));
+
+        assertNull(gate.close(3201).failure());
+        assertTrue("a closed id is retired", gate.isRetired(3201));
+
+        // And the query must not have claimed anything on the way: an unopened neighbour
+        // is still admissible, and asking about it repeatedly does not change that.
+        assertFalse(gate.isRetired(3202));
+        assertFalse(gate.isRetired(3202));
+        assertEquals(Admission.ADMITTED, gate.admit(3202));
+    }
+
+    @Test
     public void perEventAdmissionDoesNotWaitForTheAdmissionGuard() throws Exception {
         PermissionOperationGate gate = new PermissionOperationGate();
         assertEquals(Admission.ADMITTED, gate.admit(31));
