@@ -34,6 +34,17 @@ pub(crate) type SessionEngine = migo_core::ExternalFrameSession;
 pub(crate) struct StartedEngine {
     pub(crate) engine: SessionEngine,
     pub(crate) resource: SurfaceResourceLease,
+    /// The session's own direct data-plane handles, from the registration that
+    /// published them.
+    ///
+    /// Handed over rather than looked up. `attach` used to recover this by asking
+    /// the process-global Host registry for the id it had just started -- and a
+    /// session whose renderer failed removes its own entry on the way out, so the
+    /// lookup was racing the teardown of the very thing it was installing.
+    /// Measured on the iOS simulator with no ANGLE present, `attach` lost that race
+    /// about two runs in three, answering MIGO_ERROR_INTERNAL where the other third
+    /// answered MIGO_OK for one input. A host cannot program against that.
+    pub(crate) ingress: migo_core::HostIngress,
 }
 
 /// Start a session against a Surface whose public generation the caller owns.
@@ -63,6 +74,7 @@ pub(crate) fn spawn_tracked(
         Ok(StartedEngine {
             engine: started.host,
             resource: started.resource,
+            ingress: started.ingress,
         })
     }
     #[cfg(feature = "external-frames")]
@@ -83,6 +95,7 @@ pub(crate) fn spawn_tracked(
             resource: started
                 .resource
                 .expect("a tracked spawn passes a Surface, so a resource lease exists"),
+            ingress: started.ingress,
         })
     }
 }

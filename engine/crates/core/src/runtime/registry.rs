@@ -351,6 +351,28 @@ impl HostIngress {
 
 static NEXT_HOST_ID: AtomicI32 = AtomicI32::new(1);
 
+impl HostHandle {
+    /// The direct data-plane ingress these endpoints add up to.
+    ///
+    /// One construction site, reached both by the registration that publishes the
+    /// handle and by a later lookup, so the two cannot come to describe different
+    /// sets of endpoints -- which is what a separate registry for the frame clock's
+    /// sender invited, since only the lookup knew to consult it.
+    fn ingress(&self, host_id: HostId) -> HostIngress {
+        HostIngress {
+            host_id,
+            tx: self.tx.clone(),
+            runtime_generation: self.runtime_generation.clone(),
+            vsync_tx: self.vsync_tx.clone(),
+            touch_pool: self.touch_pool.clone(),
+            gamepad_pool: self.gamepad_pool.clone(),
+            ble_pool: self.ble_pool.clone(),
+            input_saturation_notified: Arc::clone(&self.input_saturation_notified),
+            stats: Arc::clone(&self.stats),
+        }
+    }
+}
+
 /// Per-host control handle published to platform callback threads.
 ///
 /// The shutdown flag and Surface generation gate are queue-independent state:
@@ -372,6 +394,16 @@ pub(crate) struct HostHandle {
     ble_pool: RecyclePool<BleCharacteristicData>,
     input_saturation_notified: Arc<AtomicBool>,
     stats: Arc<shared::stats::DebugStats>,
+    /// The externally paced frame clock's sender, or `None` where the engine paces
+    /// itself.
+    ///
+    /// Held here rather than in a registry of its own. It used to live in a second
+    /// process-global map whose only purpose was to move this one endpoint from the
+    /// session thread, which created it, to the caller thread, which needed it --
+    /// and whose lifetime nobody owned on the external-frame product, so every
+    /// Apple session leaked an entry. Beside the command senders it is unregistered
+    /// by the same call that unregisters them, on every exit path there is.
+    vsync_tx: Option<crossbeam_channel::Sender<f64>>,
 }
 
 static HOST_SENDERS: OnceLock<RwLock<HashMap<HostId, HostHandle>>> = OnceLock::new();
@@ -387,6 +419,17 @@ pub(crate) fn alloc_host_id() -> HostId {
 
 /// Register sender for a host.
 /// Returns the previous sender if existed (should normally be None).
+/// Publish a Host's control and data-plane endpoints, and answer with the direct
+/// ingress they add up to.
+///
+/// Returning the ingress is what makes `attach` deterministic. It used to be
+/// recovered afterwards by looking this id up again -- and the session thread
+/// removes its own entry on the way out, so a renderer that failed to start took
+/// the entry away while `attach` was still walking towards it. Measured on the iOS
+/// simulator, `attach` lost that race about two runs in three and answered
+/// MIGO_ERROR_INTERNAL where the other third answered MIGO_OK, for one input. Every
+/// part of the ingress exists here, before any thread does, so there is nothing to
+/// look up and nothing to lose.
 pub(crate) fn register_sender(
     id: HostId,
     tx: HostTx,
@@ -394,7 +437,8 @@ pub(crate) fn register_sender(
     surface_control: Arc<SurfaceControl>,
     runtime_generation: RuntimeGenerationReader,
     log_level: shared::config::LogLevel,
-) -> Option<HostHandle> {
+    vsync_tx: Option<crossbeam_channel::Sender<f64>>,
+) -> HostIngress {
     // Resolved before the registry lock is taken. Acquiring one process-wide lock
     // while holding another is how a lock cycle starts, and these two are reached
     // from different threads at bring-up.
@@ -404,21 +448,26 @@ pub(crate) fn register_sender(
     // configuration. The Android path used to set one process-wide level at
     // `init`, which let a session starting with `Off` silence a live one.
     shared::log_level::register_session(id, log_level);
+    let handle = HostHandle {
+        tx,
+        runtime_generation,
+        critical_tx,
+        surface_control,
+        touch_pool: PayloadPool::new(HOST_PAYLOAD_POOL_CAPACITY),
+        gamepad_pool: PayloadPool::new(HOST_PAYLOAD_POOL_CAPACITY),
+        ble_pool: RecyclePool::new(HOST_BLE_POOL_CAPACITY),
+        input_saturation_notified: Arc::new(AtomicBool::new(false)),
+        stats,
+        vsync_tx,
+    };
+    let ingress = handle.ingress(id);
     let mut map = host_senders().write();
-    map.insert(
-        id,
-        HostHandle {
-            tx,
-            runtime_generation,
-            critical_tx,
-            surface_control,
-            touch_pool: PayloadPool::new(HOST_PAYLOAD_POOL_CAPACITY),
-            gamepad_pool: PayloadPool::new(HOST_PAYLOAD_POOL_CAPACITY),
-            ble_pool: RecyclePool::new(HOST_BLE_POOL_CAPACITY),
-            input_saturation_notified: Arc::new(AtomicBool::new(false)),
-            stats,
-        },
-    )
+    debug_assert!(
+        !map.contains_key(&id),
+        "host ids are allocated once and never reused"
+    );
+    map.insert(id, handle);
+    ingress
 }
 
 /// Unregister sender for a host.
@@ -447,43 +496,19 @@ fn registered_surface_control(host_id: HostId) -> Result<Arc<SurfaceControl>, St
     })
 }
 
-/// Capture direct data-plane handles after Host initialization completes.
+/// Look up a live Host's direct data-plane handles.
+///
+/// For callers that only have an id: the platform callback threads, whose whole
+/// question is whether the session is still there. A miss means it is not, and
+/// every such caller treats it that way. The session's *own* ingress is not
+/// obtained here -- [`register_sender`] hands it back, so a starting session never
+/// races its own teardown for it.
 pub fn host_ingress(host_id: HostId) -> Result<HostIngress, String> {
-    let (
-        tx,
-        runtime_generation,
-        touch_pool,
-        gamepad_pool,
-        ble_pool,
-        input_saturation_notified,
-        stats,
-    ) = {
-        let map = host_senders().read();
-        map.get(&host_id).map(|handle| {
-            (
-                handle.tx.clone(),
-                handle.runtime_generation.clone(),
-                handle.touch_pool.clone(),
-                handle.gamepad_pool.clone(),
-                handle.ble_pool.clone(),
-                Arc::clone(&handle.input_saturation_notified),
-                Arc::clone(&handle.stats),
-            )
-        })
-    }
-    .ok_or_else(|| format!("Cannot find host_id={host_id} ingress"))?;
-
-    Ok(HostIngress {
-        host_id,
-        tx,
-        runtime_generation,
-        vsync_tx: crate::runtime::vsync::sender(host_id),
-        touch_pool,
-        gamepad_pool,
-        ble_pool,
-        input_saturation_notified,
-        stats,
-    })
+    host_senders()
+        .read()
+        .get(&host_id)
+        .map(|handle| handle.ingress(host_id))
+        .ok_or_else(|| format!("Cannot find host_id={host_id} ingress"))
 }
 
 fn issue_surface_token(host_id: HostId) -> Result<shared::surface::SurfaceLivenessToken, String> {
@@ -681,17 +706,18 @@ mod tests {
     fn register_test_host(id: HostId) -> RegisteredHost {
         let (tx, critical_tx, _rx) = shared::host_channel::channel(1);
         let control = Arc::new(SurfaceControl::new());
-        assert!(
-            register_sender(
-                id,
-                tx,
-                critical_tx,
-                control,
-                crate::runtime::restart_boundary::RestartBoundary::new().reader(),
-                shared::config::LogLevel::Warn
-            )
-            .is_none()
+        let ingress = register_sender(
+            id,
+            tx,
+            critical_tx,
+            control,
+            crate::runtime::restart_boundary::RestartBoundary::new().reader(),
+            shared::config::LogLevel::Warn,
+            None,
         );
+        // The registration answers with the ingress it published, and a caller
+        // that never has to look one up cannot lose a race for it.
+        assert_eq!(ingress.host_id(), id);
         RegisteredHost(id)
     }
 
@@ -790,7 +816,7 @@ mod tests {
     fn critical_commands_bypass_saturated_normal_budget_in_fifo_order() {
         let id = alloc_host_id();
         let (tx, critical_tx, mut rx) = shared::host_channel::channel(1);
-        assert!(
+        assert_eq!(
             register_sender(
                 id,
                 tx,
@@ -798,8 +824,10 @@ mod tests {
                 Arc::new(SurfaceControl::new()),
                 crate::runtime::restart_boundary::RestartBoundary::new().reader(),
                 shared::config::LogLevel::Warn,
+                None,
             )
-            .is_none()
+            .host_id(),
+            id
         );
         let _registration = RegisteredHost(id);
 
@@ -820,7 +848,7 @@ mod tests {
     fn reliable_host_callback_bypasses_saturated_normal_budget() {
         let id = alloc_host_id();
         let (tx, critical_tx, mut rx) = shared::host_channel::channel(1);
-        assert!(
+        assert_eq!(
             register_sender(
                 id,
                 tx,
@@ -828,8 +856,10 @@ mod tests {
                 Arc::new(SurfaceControl::new()),
                 crate::runtime::restart_boundary::RestartBoundary::new().reader(),
                 shared::config::LogLevel::Warn,
+                None,
             )
-            .is_none()
+            .host_id(),
+            id
         );
         let _registration = RegisteredHost(id);
 

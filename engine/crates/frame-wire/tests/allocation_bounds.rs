@@ -21,13 +21,37 @@
 //! built, because the inputs themselves allocate and a probe that measures its
 //! own setup reports a number nobody can act on.
 //!
-//! This file holds exactly one test on purpose. The counters are global, Rust
-//! runs tests in the same binary on several threads, and a second test would
-//! make this one's number depend on scheduling.
+//! The counters are per-thread, and that is the correction rather than a detail.
+//! They were process-global, so while the window was armed *any* thread's
+//! allocation was charged to the call being measured. This file limited itself to
+//! one test to keep other tests out of the window -- and that defence covered only
+//! half of it, because libtest's own harness thread runs throughout: it registers
+//! the blocking receive, formats event and case names, and does its own bookkeeping,
+//! and whether those allocations land inside the window depends on which thread the
+//! scheduler picks. On a 2-core runner that is not the same probability as on a
+//! 32-core development machine, and it showed: identical code, three runs, two green
+//! and one reporting "validate allocated 4 times" -- 400 local runs under full load,
+//! 300 pinned to one core with `taskset`, and 10 of CI's exact command reproduced
+//! nothing.
+//!
+//! Raising the expected count would have switched the probe off. The claim is that
+//! *this* call does not allocate, which is a claim about the thread making it, so the
+//! counters follow the thread.
+//!
+//! Which thread supplied CI's four is still not known, and no longer needs to be:
+//! `Interloper` below makes the pollution reproducible on demand -- restore the
+//! counters to statics and this file reports over a thousand -- so the property that
+//! holds now is "no other thread can appear in this number", which is stronger than
+//! having identified one that did. `const`-initialised `Cell`s, so nothing here can
+//! allocate or register a destructor -- an allocator hook that allocated to record an
+//! allocation would recurse -- and `try_with`, so a thread tearing down cannot make
+//! the hook panic.
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    cell::Cell,
+    hint::{black_box, spin_loop},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use frame_wire::{
@@ -36,18 +60,44 @@ use frame_wire::{
     stamp_checksum, validate,
 };
 
-static ARMED: AtomicBool = AtomicBool::new(false);
-static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
-static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    static ARMED: Cell<bool> = const { Cell::new(false) };
+    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+    static ALLOCATED_BYTES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Charge one allocation to the calling thread, if that thread is measuring.
+///
+/// `try_with` on every access: this runs inside the global allocator, on every
+/// thread in the process, including threads on their way out. A failed access means
+/// this thread is not measuring, which is the right answer for every thread but one.
+fn record(size: usize) {
+    let _ = ARMED.try_with(|armed| {
+        if armed.get() {
+            let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+            let _ = ALLOCATED_BYTES.try_with(|bytes| bytes.set(bytes.get() + size as u64));
+        }
+    });
+}
+
+fn arm(measuring: bool) {
+    ARMED.with(|armed| armed.set(measuring));
+}
+
+/// The count so far, and reset it to zero.
+fn take_allocations() -> u64 {
+    ALLOCATIONS.with(|count| count.replace(0))
+}
+
+fn take_allocated_bytes() -> u64 {
+    ALLOCATED_BYTES.with(|bytes| bytes.replace(0))
+}
 
 struct Counting;
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if ARMED.load(Ordering::Relaxed) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-            ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
-        }
+        record(layout.size());
         unsafe { System.alloc(layout) }
     }
 
@@ -56,16 +106,72 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if ARMED.load(Ordering::Relaxed) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-            ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
-        }
+        record(new_size);
         unsafe { System.realloc(pointer, layout, new_size) }
     }
 }
 
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
+
+/// A helper thread that allocates hard, on command, inside the measured window.
+///
+/// This is the scenario that made this file fail on CI while passing everywhere it
+/// was reproduced: another thread allocating while the window is armed. With the
+/// counters process-global it charged those allocations to the call being measured;
+/// with them per-thread it cannot, and asserting that on every run is worth more
+/// than having reasoned it once.
+///
+/// Coordination is two atomics and a spin, deliberately. Anything richer -- a
+/// channel, a condvar, a join -- would allocate on *this* thread inside the window
+/// and the probe would be measuring its own test harness, which is the mistake one
+/// layer up.
+struct Interloper {
+    go: &'static AtomicBool,
+    done: &'static AtomicBool,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+static INTERLOPER_GO: AtomicBool = AtomicBool::new(false);
+static INTERLOPER_DONE: AtomicBool = AtomicBool::new(false);
+
+impl Interloper {
+    /// Spawned *before* the window opens: spawning allocates on the caller.
+    fn spawn() -> Self {
+        let join = std::thread::spawn(|| {
+            while !INTERLOPER_GO.load(Ordering::Acquire) {
+                spin_loop();
+            }
+            // Enough that a global counter could not have missed it.
+            let mut sink: Vec<Vec<u8>> = Vec::new();
+            for size in 0..1024usize {
+                sink.push(vec![0xA5u8; size % 97 + 1]);
+            }
+            black_box(&sink);
+            INTERLOPER_DONE.store(true, Ordering::Release);
+        });
+        Self {
+            go: &INTERLOPER_GO,
+            done: &INTERLOPER_DONE,
+            join: Some(join),
+        }
+    }
+
+    /// Let it run and wait for it to finish, without allocating here.
+    fn run_inside_the_window(&self) {
+        self.go.store(true, Ordering::Release);
+        while !self.done.load(Ordering::Acquire) {
+            spin_loop();
+        }
+    }
+
+    /// Joined after the window closes, because joining allocates.
+    fn finish(mut self) {
+        if let Some(join) = self.join.take() {
+            join.join().expect("the interloper thread must not panic");
+        }
+    }
+}
 
 /// A deterministic byte generator. A fuzzer belongs in the fuzz target; what
 /// this needs is a fixed sweep that runs on every `cargo test`.
@@ -158,7 +264,9 @@ fn the_parser_allocates_nothing_and_a_warm_ingress_allocates_nothing() {
     // No warm-up to hide behind. "Validate before allocating" is the first rule
     // in this crate's threat model, and it has to hold for the first packet a
     // session ever sees.
-    ARMED.store(true, Ordering::SeqCst);
+    let interloper = Interloper::spawn();
+
+    arm(true);
     let mut walked = 0usize;
     for bytes in &inputs {
         if let Ok(frame) = validate(bytes) {
@@ -171,13 +279,18 @@ fn the_parser_allocates_nothing_and_a_warm_ingress_allocates_nothing() {
             walked += usize::from(frame.references_resources());
         }
     }
-    ARMED.store(false, Ordering::SeqCst);
-    let parser_allocations = ALLOCATIONS.swap(0, Ordering::SeqCst);
-    ALLOCATED_BYTES.store(0, Ordering::SeqCst);
+    // Inside the window on purpose. See `Interloper`.
+    interloper.run_inside_the_window();
+    arm(false);
+    let parser_allocations = take_allocations();
+    let _ = take_allocated_bytes();
+    interloper.finish();
     assert_eq!(
         parser_allocations, 0,
         "validate allocated {parser_allocations} times; content must not be able to make \
-         the parser allocate, and it has no warm-up to hide behind"
+         the parser allocate, and it has no warm-up to hide behind. Another thread \
+         allocated 1024 times inside this same window and must not appear in this \
+         number -- if it does, the counters have gone back to being process-global"
     );
     assert!(walked > 0, "no section was ever walked");
 
@@ -216,7 +329,7 @@ fn the_parser_allocates_nothing_and_a_warm_ingress_allocates_nothing() {
     // probe that measures its own inputs reports a number nobody can act on.
     let stream: Vec<Vec<u8>> = (0..64).map(|offset| valid_at(sequence + offset)).collect();
 
-    ARMED.store(true, Ordering::SeqCst);
+    arm(true);
     let mut accepted = 0u64;
     let mut codes = 0usize;
     for bytes in &stream {
@@ -235,10 +348,10 @@ fn the_parser_allocates_nothing_and_a_warm_ingress_allocates_nothing() {
         drop(frame);
         codes += outcome.wire_error_code as usize;
     }
-    ARMED.store(false, Ordering::SeqCst);
+    arm(false);
 
-    let allocations = ALLOCATIONS.load(Ordering::SeqCst);
-    let bytes_allocated = ALLOCATED_BYTES.load(Ordering::SeqCst);
+    let allocations = take_allocations();
+    let bytes_allocated = take_allocated_bytes();
     assert_eq!(
         allocations,
         0,

@@ -36,7 +36,7 @@ use shared::{
     surface::SurfaceLease,
 };
 
-use crate::runtime::{HostId, vsync};
+use crate::runtime::HostId;
 use crate::services::{AudioService, PlatformServices, RenderService};
 
 /// Cleans process-global registrations if `Host::new` exits before ownership
@@ -44,7 +44,6 @@ use crate::services::{AudioService, PlatformServices, RenderService};
 pub(crate) struct HostStartupGuard {
     id: HostId,
     armed: bool,
-    vsync_registered: bool,
     console_registered: bool,
 }
 
@@ -53,13 +52,8 @@ impl HostStartupGuard {
         Self {
             id,
             armed: true,
-            vsync_registered: false,
             console_registered: false,
         }
-    }
-
-    fn mark_vsync_registered(&mut self) {
-        self.vsync_registered = true;
     }
 
     fn mark_console_registered(&mut self) {
@@ -68,7 +62,6 @@ impl HostStartupGuard {
 
     pub(crate) fn disarm(&mut self) {
         self.armed = false;
-        self.vsync_registered = false;
         self.console_registered = false;
     }
 }
@@ -78,9 +71,12 @@ impl Drop for HostStartupGuard {
         if self.console_registered {
             shared::console_log::unregister_console_log(self.id);
         }
-        if self.vsync_registered {
-            vsync::unregister_vsync_sender(self.id);
-        }
+        // The frame clock's sender used to need a branch here, and needing one was
+        // the problem: it lived in a registry of its own, so somebody had to
+        // remember to retire it on each of spawn failure, startup failure and
+        // ordinary exit. The external-frame product had no such owner and leaked an
+        // entry per session. It now sits in the Host registry handle and is retired
+        // by `unregister_sender`, which every exit path already goes through.
         // The text texture cache registers itself lazily, from whichever
         // of the render thread or the JS extension reaches this session
         // first, so there is no `mark_*_registered` edge to hang this on.
@@ -129,6 +125,10 @@ pub(crate) struct SessionShell {
     pub(crate) network_policy: NetworkPolicy,
     pub(crate) gpu_caps: Arc<shared::device::gpu_caps::GpuCaps>,
     pub(crate) context_lost: Arc<shared::op_state::ContextLostState>,
+    /// Why the render worker stopped, if it stopped on its own. Whichever mode
+    /// observes the frame clock closing reads this, because nothing the worker
+    /// could send would be drained after that.
+    pub(crate) render_exit: Arc<shared::render_exit::RenderExit>,
 
     /// The frame clock. Both modes need it; they differ only in where the tick
     /// goes -- an async op resolving in this process, or a control message to a
@@ -156,6 +156,7 @@ impl SessionShell {
         platform: &Arc<dyn PlatformServices>,
         init_options: &InitOptions,
         surface_control: Arc<shared::surface::SurfaceControl>,
+        vsync_rx: Option<crossbeam_channel::Receiver<f64>>,
     ) -> EngineResult<Self> {
         // ---- Startup timing instrumentation ----
         let t_start = Instant::now();
@@ -172,19 +173,20 @@ impl SessionShell {
         raf_demand.begin_session();
 
         // ---- VSync channel (Choreographer JNI → render thread) ----
-        // Only platforms that actually publish external timestamps get this
-        // receiver. Passing a never-fed `Some(receiver)` on desktop would make
-        // RenderThread wait for frame timestamps nobody sends, freezing the loop.
+        // Created with its sender before this thread existed, and handed in: the
+        // sender belongs to the direct ingress the caller receives from the Host
+        // registration, and the caller receives that before the thread runs. Whether
+        // there is one at all is still the same question, asked in the one place
+        // that can answer it early enough. Passing a never-fed `Some(receiver)`
+        // where the engine paces itself would make RenderThread wait for timestamps
+        // nobody sends, freezing the loop.
         let uses_external_vsync = platform.uses_external_vsync();
+        debug_assert_eq!(
+            vsync_rx.is_some(),
+            uses_external_vsync,
+            "the frame clock's two ends must agree about whether it exists"
+        );
         let mut startup_guard = HostStartupGuard::new(id);
-        let vsync_rx = if uses_external_vsync {
-            let (vsync_tx, vsync_rx) = crossbeam_channel::bounded::<f64>(2);
-            vsync::register_vsync_sender(id, vsync_tx);
-            startup_guard.mark_vsync_registered();
-            Some(vsync_rx)
-        } else {
-            None
-        };
 
         // Immutable per-host policy. Audio captures this in a lazy client
         // factory; JS network ops keep the same snapshot across restarts.
@@ -217,6 +219,10 @@ impl SessionShell {
         // Survives JS runtime restarts (same GL context / render thread) via the
         // shared `Arc`.
         let context_lost = Arc::new(shared::op_state::ContextLostState::default());
+
+        // Created here, beside the other levels the render thread writes and the
+        // session reads. The worker publishes into it on the way out.
+        let render_exit = Arc::new(shared::render_exit::RenderExit::default());
 
         // Coalescing render-feedback wake: the render thread's event channel
         // fires this after every successfully enqueued event, so the host loop
@@ -260,6 +266,12 @@ impl SessionShell {
                 })),
             )
         };
+        let install_reporter_tx = critical_host_tx.clone();
+        let report_surface_installed: Arc<
+            dyn Fn(shared::surface::SurfaceCandidateRevision) + Send + Sync,
+        > = Arc::new(move |revision| {
+            let _ = install_reporter_tx.send(HostCommand::SurfaceInstalled { revision });
+        });
         let report_surface_loss: Arc<
             dyn Fn(shared::surface::PublicSurfaceGeneration, shared::surface::SurfaceLossReason)
                 + Send
@@ -283,6 +295,7 @@ impl SessionShell {
             Some(init_options.cache_dir().to_path_buf()),
             gpu_caps.clone(),
             context_lost.clone(),
+            render_exit.clone(),
             render_wake,
             raf_demand.clone(),
             // The render thread's own arm route is its clock when the engine paces
@@ -291,6 +304,7 @@ impl SessionShell {
             uses_external_vsync.then(|| request_vsync.clone()).flatten(),
             surface_control,
             report_surface_loss,
+            report_surface_installed,
         )?;
         // Preserve the old two-second render-startup budget. V8 construction
         // below consumes this same deadline while the render thread initializes.
@@ -323,6 +337,7 @@ impl SessionShell {
             network_policy,
             gpu_caps,
             context_lost,
+            render_exit,
             raf_rx,
             raf_demand,
             request_vsync,

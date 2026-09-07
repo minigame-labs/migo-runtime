@@ -78,6 +78,22 @@ public final class NativeExports {
     private static final ConcurrentHashMap<Integer, GameSession> sSessions =
             new ConcurrentHashMap<>();
 
+    /**
+     * Surface-loss reports that arrived before their session could receive them.
+     *
+     * <p>The window is real only for {@code createSession(Context, ...)}, which is
+     * documented for Service use and does not require the main thread; the
+     * {@code Activity} overload does, so main-thread serialization already puts
+     * registration ahead of any posted report.
+     *
+     * <p>What this does <em>not</em> close: {@code setListener} is a separate call, so a
+     * replay can still arrive before a listener exists. That is not specific to this
+     * callback — {@code notifyGameReady} and {@code notifyError} drop on a null listener
+     * too — and inventing retention for one of them would make the set inconsistent. This
+     * takes delivery from impossible to likely, which is the part that was broken.
+     */
+    private static final PendingSurfaceLoss sPendingSurfaceLoss = new PendingSurfaceLoss();
+
     /** Per-session auth handlers set via GameSession API. */
     private static final ConcurrentHashMap<Integer, AuthHandler> sAuthHandlers =
             new ConcurrentHashMap<>();
@@ -260,6 +276,19 @@ public final class NativeExports {
             // registering a generation for one it refused would leave a session
             // numbered here that exists nowhere else.
             RuntimeGenerationBoundary.registerSession(sessionId);
+            // A loss the renderer reported while this session was still being
+            // constructed. Posted rather than delivered inline: this runs on the
+            // constructor's thread, which `MigoRuntime.createSession` does not require to
+            // be the main one, and the callback contract is that it is.
+            long[] pending = sPendingSurfaceLoss.drain(sessionId);
+            if (pending != null) {
+                sMainHandler.post(() -> {
+                    GameSession live = sSessions.get(sessionId);
+                    if (live != null) {
+                        live.notifySurfaceLost(pending[0], (int) pending[1]);
+                    }
+                });
+            }
         }
     }
 
@@ -352,6 +381,10 @@ public final class NativeExports {
      */
     public static void unregisterSession(int sessionId) {
         sSessions.remove(sessionId);
+        // A loss retained for a session that never registered has nobody left to tell,
+        // and leaving it here would keep one entry per such session for the process's
+        // life -- and hand it to whoever next used the id if ids were ever reused.
+        sPendingSurfaceLoss.discard(sessionId);
         // Every token this session issued becomes stale rather than current by
         // default, so anything still holding one stops reporting.
         RuntimeGenerationBoundary.unregisterSession(sessionId);
@@ -505,6 +538,44 @@ public final class NativeExports {
                 }
             });
         }
+    }
+
+    /**
+     * Called from native code (Rust) when a live Surface was retired after the engine
+     * failed to present to it.
+     * <p>
+     * The opposite direction from {@link GameSession#onSurfaceDestroyed()}: that one is
+     * the host taking its Surface back, this one is the engine reporting that the
+     * Surface the host still believes in is gone. Nothing else carries it — the render
+     * worker stays alive, so no channel closes and no reply arrives.
+     * <p>
+     * JNI signature: {@code (IJI)V}
+     *
+     * @param hostId     Session/host ID
+     * @param generation The host-facing Surface generation that was lost
+     * @param reason     0 unknown, 1 host destroyed, 2 device lost, 3 platform error
+     */
+    public static void onSurfaceLost(int hostId, long generation, int reason) {
+        sMainHandler.post(() -> {
+            GameSession session = sSessions.get(hostId);
+            if (session != null) {
+                session.notifySurfaceLost(generation, reason);
+                return;
+            }
+            // Absent from the live map means either "has not registered yet" or "already
+            // closed", and only the first is worth an entry: nothing will ever register a
+            // closed id again, so one made for it would sit there for the life of the
+            // process. `unregisterSession` removing it does not cover this -- a report
+            // posted before the close can run after it.
+            if (sPermissionOperations.isRetired(hostId)) return;
+            long[] mine = sPendingSurfaceLoss.retainOrTakeBack(
+                    hostId, generation, reason, sSessions::containsKey);
+            if (mine == null) return;
+            GameSession registered = sSessions.get(hostId);
+            if (registered != null) {
+                registered.notifySurfaceLost(mine[0], (int) mine[1]);
+            }
+        });
     }
 
     // ==================== Image Decoding ====================

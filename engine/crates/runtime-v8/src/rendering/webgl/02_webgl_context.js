@@ -936,7 +936,11 @@ class WebGLRenderingContext {
         this._arrayBufferBinding = null;
         this._elementArrayBufferBinding = null;
         this._programBinding = null;
-        this._framebufferBinding = null;
+        // Two, because WebGL 2 has two framebuffer binding points. A single slot
+        // made `getParameter` answer the draw binding for a read bind and vice
+        // versa, which is only invisible while READ_FRAMEBUFFER is unreachable.
+        this._framebufferBinding = null;      // DRAW, and FRAMEBUFFER_BINDING
+        this._readFramebufferBinding = null;  // READ_FRAMEBUFFER_BINDING
         this._renderbufferBinding = null;
 
         // Producer-side capability shadow; see _TOGGLEABLE_CAPS above.
@@ -1481,8 +1485,16 @@ class WebGLRenderingContext {
             case 0x8894: return this._arrayBufferBinding; // ARRAY_BUFFER_BINDING
             case 0x8895: return this._elementArrayBufferBinding; // ELEMENT_ARRAY_BUFFER_BINDING
             case 0x8b8d: return this._programBinding; // CURRENT_PROGRAM
-            case 0x8ca6: return this._framebufferBinding; // FRAMEBUFFER_BINDING
+            // FRAMEBUFFER_BINDING and DRAW_FRAMEBUFFER_BINDING are one enum
+            // (0x8CA6) in GLES 3, so this arm answers both.
+            case 0x8ca6: return this._framebufferBinding;
+            case 0x8caa: return this._readFramebufferBinding; // READ_FRAMEBUFFER_BINDING
             case 0x8ca7: return this._renderbufferBinding; // RENDERBUFFER_BINDING
+            // MAX_CLIENT_WAIT_TIMEOUT_WEBGL. Answered here because it is a
+            // WebGL-only limit this context chooses, not something the driver
+            // knows -- asking it would have crossed for a constant. Zero: see
+            // `clientWaitSync`.
+            case 0x9247: return 0;
             default: break;
         }
         // A capability queried through getParameter is the same GLboolean
@@ -2385,7 +2397,18 @@ class WebGLRenderingContext {
         if (fb && fb.id !== undefined) _rawDeleteFramebuffer(fb.id);
     }
     bindFramebuffer(target, fb) {
-        this._framebufferBinding = fb || null;
+        // FRAMEBUFFER binds both points; the other two bind one each. Tracked here
+        // rather than asked of the driver because `getParameter` must return this
+        // context's own wrapper object, not a name.
+        const bound = fb || null;
+        if (target === 36008) {          // READ_FRAMEBUFFER
+            this._readFramebufferBinding = bound;
+        } else if (target === 36009) {   // DRAW_FRAMEBUFFER
+            this._framebufferBinding = bound;
+        } else {                         // FRAMEBUFFER, or an enum the driver rejects
+            this._framebufferBinding = bound;
+            this._readFramebufferBinding = bound;
+        }
         const fbId = fb ? fb.id : -1;
         // opcode 12: H C U I.
         if (typeof target === "number" && typeof fbId === "number") {
@@ -2654,14 +2677,33 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         if (sync && sync._id) _rawDeleteSync(sync._id);
     }
     /**
-     * clientWaitSync(sync, flags, timeout) -- WebGL spec says timeout is
-     * an Int64.  JS numbers max out at 2^53, which is larger than GLES'
-     * effective timeout range so a `number` is safe here.  Pass `0` to
-     * poll without blocking.
+     * clientWaitSync(sync, flags, timeout) -- poll only.
+     *
+     * `timeout` is bounded by MAX_CLIENT_WAIT_TIMEOUT_WEBGL, which this context
+     * reports as zero. That is what browsers report and the WebGL 2 conformance
+     * suite requires only that it be non-negative and no greater than one second,
+     * so zero is conformant and is what content written for the web already
+     * assumes: the standard pattern is fence, then poll with timeout 0 on later
+     * frames.
+     *
+     * Zero and not one second, because the timeout was previously unbounded and
+     * honoured to its full 64-bit range on the render thread. That thread is
+     * shared by every canvas and by the frame loop, so content asking for a long
+     * wait stalled the whole engine -- while its own JavaScript thread was
+     * blocked on the reply as well. Both threads, for as long as content asked.
+     * Bounding it at zero removes the wait rather than shortening it.
      */
     clientWaitSync(sync, flags, timeout) {
-        if (!sync || !sync._id) return 0x911D; // WAIT_FAILED
-        return _rawClientWaitSync(sync._id, flags, Number(timeout) || 0);
+        if (!sync || !sync._id) return 37149; // WAIT_FAILED
+        // Per the WebGL 2 specification: a timeout above the maximum is
+        // INVALID_OPERATION, and the call returns WAIT_FAILED without doing
+        // anything. Rejected here rather than clamped, so content is told rather
+        // than silently given different semantics than it asked for.
+        if ((Number(timeout) || 0) > 0) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return 37149; // WAIT_FAILED
+        }
+        return _rawClientWaitSync(sync._id, flags);
     }
 
     // ---- Draw / read buffer selection --------------------------

@@ -88,6 +88,22 @@ impl HostNotifier for AndroidPlatform {
             );
         }
     }
+
+    fn notify_surface_lost(
+        &self,
+        host_id: i32,
+        public_generation: shared::surface::PublicSurfaceGeneration,
+        reason: shared::surface::SurfaceLossReason,
+    ) {
+        if let Err(e) = jni::notify_surface_lost(host_id, public_generation.get(), reason.as_u32())
+        {
+            error!(
+                "[Host {host_id}] Failed to notify Java of Surface loss \
+                 (generation={}, reason={reason:?}): {e}",
+                public_generation.get()
+            );
+        }
+    }
 }
 
 impl migo_core::RuntimeGenerationNotifier for AndroidPlatform {

@@ -80,6 +80,7 @@ pub fn spawn_host_thread_tracked(
         resource: started
             .resource
             .expect("tracked spawn passes a Surface, so a resource lease exists"),
+        ingress: started.ingress,
     })
 }
 
@@ -96,6 +97,7 @@ fn run_embedded_session(ctx: SessionThreadContext) {
         platform_for_error,
         opt,
         surface_control,
+        vsync_rx,
         restart_boundary,
         ready_tx,
     } = ctx;
@@ -108,6 +110,7 @@ fn run_embedded_session(ctx: SessionThreadContext) {
         platform,
         opt,
         Arc::clone(&surface_control),
+        vsync_rx,
         restart_boundary,
     ) {
         Ok(h) => h,

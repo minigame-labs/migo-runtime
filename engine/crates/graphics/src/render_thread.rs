@@ -168,10 +168,42 @@ fn mark_surface_destroyed(surface: &mut SurfaceSystem) {
 
 type SurfaceLossReporter = Arc<dyn Fn(PublicSurfaceGeneration, SurfaceLossReason) + Send + Sync>;
 
+/// Reports that the publication named was installed.
+///
+/// A second closure rather than one carrying an enum, because there are two reports and
+/// each type says what it carries. `graphics` cannot name `HostCommand`, which is why
+/// either one is a closure at all.
+type SurfaceInstallReporter = Arc<dyn Fn(shared::surface::SurfaceCandidateRevision) + Send + Sync>;
+
 /// Retire exactly the generation whose still-live native target failed, then
 /// report it over the reliable Host control stream. A concurrent expected
 /// detach wins the generation CAS and makes this a no-op, so host destruction
 /// can never be misreported as platform loss.
+/// Retire the publication a worker acted on, and report its loss.
+///
+/// Distinct from [`retire_unexpected_surface`], which retires by generation. That is
+/// the right question for a Surface already installed and found unusable at present
+/// time; it is the wrong one for a request whose install failed, because a resize
+/// republishes the live generation and retiring on it alone revokes the replacement
+/// too. See `SurfaceControl::retire_publication_and_request`.
+fn retire_published_surface(
+    surface_control: &SurfaceControl,
+    revision: shared::surface::SurfaceCandidateRevision,
+    public_generation: PublicSurfaceGeneration,
+    reason: SurfaceLossReason,
+    report: &SurfaceLossReporter,
+) -> bool {
+    if surface_control
+        .retire_publication_and_request(revision)
+        .is_some()
+    {
+        report(public_generation, reason);
+        true
+    } else {
+        false
+    }
+}
+
 fn retire_unexpected_surface(
     surface_control: &SurfaceControl,
     expected_generation: shared::surface::SurfaceGeneration,
@@ -202,8 +234,22 @@ fn destroy_render_owner(cm: &mut CanvasManager, render_binding: &mut RenderSurfa
     }
 }
 
+/// Classify a binding rejection by what it means, not by where it happened.
+///
+/// A stale generation is the host having taken its Surface back while this request was
+/// in flight -- benign, and `Cancelled` is what the session reads to mean "do not
+/// report this". The other two are ordering errors: two live generations at once, or a
+/// recreate already in progress, neither of which a host causes.
+///
+/// All three used to be `InvalidOperation`, and the session decides whether to report
+/// on the code, so a host detaching mid-update reached it as MIGO_ERROR_INTERNAL.
 fn binding_error(context: &'static str, error: SurfaceBindingError) -> EngineError {
-    EngineError::new(ErrorCode::InvalidOperation)
+    let code = match error {
+        SurfaceBindingError::StaleGeneration => ErrorCode::Cancelled,
+        SurfaceBindingError::ConflictingLiveGeneration
+        | SurfaceBindingError::RecreateInProgress => ErrorCode::InvalidOperation,
+    };
+    EngineError::new(code)
         .with_msg(context)
         .with_detail(error.to_string())
 }
@@ -833,7 +879,7 @@ mod tests {
         mark_surface_destroyed, next_vsync_frame_decision, packet_safe_to_reorder,
         report_recovery_failure, retire_unexpected_surface,
     };
-    use crate::{SurfaceSystem, frame_scheduler::FrameScheduler};
+    use crate::{frame_scheduler::FrameScheduler, surface_system::SurfaceSystem};
     use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
     use shared::protocol::render_cmd::{
         Canvas2DCmd, CanvasBatchPayload, CanvasId, DirtyRect, GLCmd, GlBatchPayload,
@@ -1670,7 +1716,6 @@ impl RenderThread {
         vsync_rx: Option<Receiver<f64>>,
         frame_demand_rx: Option<Receiver<()>>,
         host_id: i32,
-        initial_surface: Option<SurfaceLease>,
         graphics_platform: crate::egl_platform::GraphicsPlatform,
         dpi: f32,
         app_cache_dir: Option<std::path::PathBuf>,
@@ -1711,13 +1756,24 @@ impl RenderThread {
         // graphics stays decoupled from `platform` (it only invokes a closure).
         request_vsync: Option<Arc<dyn Fn() + Send + Sync>>,
         // Queue-independent native-lifetime control plane. It owns the
-        // generation gate and installs a dedicated must-deliver command stream
-        // before the render worker can touch the initial candidate.
+        // generation gate, installs a dedicated must-deliver command stream, and
+        // parks the initial candidate Surface -- which this thread claims once it
+        // can use one, rather than being handed at spawn. See
+        // `SurfaceControl::take_live_handoff` for why that difference matters.
         surface_control: Arc<SurfaceControl>,
         // Reliable control-plane report back to the Host. The generation gate
         // is retired before this closure runs, and expected host detach never
         // reaches it.
         report_surface_loss: SurfaceLossReporter,
+        // The other must-deliver report: which publication is now installed. The
+        // session commits its attachment slot from the recreate reply when that
+        // arrives in time and from this when it does not, and neither side can promise
+        // "in time" -- the reply is given up on after 500 ms while the request stays
+        // queued.
+        report_surface_installed: SurfaceInstallReporter,
+        // Where this thread says why it stopped, for the session that will observe
+        // its frame clock closing and otherwise have nothing to tell the host.
+        render_exit: Arc<shared::render_exit::RenderExit>,
     ) -> EngineResult<Self> {
         let (cmd_tx, cmd_rx) = CommandSender::new();
         let (surface_control_tx, surface_control_rx) = crossbeam_channel::bounded(1);
@@ -1766,7 +1822,16 @@ impl RenderThread {
                 shared::thread_priority::set_current_thread_priority(
                     shared::thread_priority::Priority::Display,
                 );
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // The body answers one question on the way out: was it asked to
+                // stop, or did it fail before it could render? It returns a
+                // `Result`, so that every way out of it has to say which of the
+                // two it is. Only the tail publishes, which is what makes
+                // "nothing recorded means it was asked to stop" a property of the
+                // type rather than of everyone remembering to record. See
+                // `shared::render_exit::RenderExit` for why the host cannot learn
+                // this from an event.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<(), EngineError> {
                 // Declared before CanvasManager so unwind drops EGL ownership
                 // first and the retained native Surface lease last.
                 let mut render_binding = RenderSurfaceBinding::new();
@@ -1784,17 +1849,34 @@ impl RenderThread {
                     Err(e) => {
                         gpu_caps.set_failed(format!("CanvasManager init failed: {}", e));
                         error!("CanvasManager init failed: {}", e);
-                        return;
+                        return Err(EngineError::new(ErrorCode::Render2DInitError)
+                            .with_msg("the renderer could not initialise")
+                            .with_detail(e.to_string()));
                     }
                 };
 
-                let has_initial_surface = initial_surface.is_some();
-                let initial_surface_size = initial_surface.as_ref().map(|surface| surface.size());
-                let mut initial_onscreen_ok = false;
-                let mut startup_failed = false;
+                // Read here, and deliberately not handed in at spawn.
+                //
+                // A `SurfaceLease` pins the host's native Surface, and RELEASED is
+                // published by the last one going away. Owning the candidate from
+                // spawn meant owning it across the `CanvasManager` construction
+                // above -- which names no window and so cannot touch that Surface
+                // -- and for all of that time a host asking for its Surface back
+                // could not be answered. That is 33 ms on macOS and a measured
+                // 5.7-41 s on the iOS simulator, where ANGLE compiles its Metal
+                // shaders cold, and it bought nothing: the candidate's liveness is
+                // re-checked below regardless. See `SurfaceControl::live_candidate`.
+                let claimed = surface_control.live_candidate();
+                let mut initial_onscreen: Option<(u32, u32)> = None;
 
-                // If an initial surface is provided, create the onscreen context immediately.
-                if let Some(lease) = initial_surface {
+                // With a Surface still live, create the onscreen context immediately.
+                if let Some((revision, lease)) = claimed {
+                    let size = lease.size();
+                    // Taken before the lease moves. Both are `Copy`, so naming the
+                    // publication this install was for costs no second pin on the
+                    // host's Surface -- which is the whole reason the candidate is a
+                    // level rather than a payload.
+                    let public_generation = lease.public_generation();
                     let initial_result = install_surface_lease(
                         &graphics_platform,
                         &mut cm,
@@ -1806,24 +1888,79 @@ impl RenderThread {
                     match initial_result {
                         Ok(kind) => {
                             debug_assert_eq!(kind, RecreateKind::Initial);
-                            initial_onscreen_ok = true;
+                            initial_onscreen = Some(size);
+                            report_surface_installed(revision);
+                        }
+                        // The host retired it in the window between the claim and
+                        // the preflight. Cancellation, not failure: the GPU came up,
+                        // there is simply no Surface to draw into, which is the
+                        // state a warm-started session begins in and which the next
+                        // `UpdateSurface` resolves. Publishing Failed here would
+                        // fail the host's GPU join and abort a launch over a
+                        // Surface the host itself took back.
+                        Err(SurfaceRecreateError::Binding(SurfaceBindingError::StaleGeneration)) => {
+                            debug!(
+                                "[RenderThread host={}] initial Surface retired before install",
+                                host_id
+                            );
                         }
                         Err(error) => {
                             let (e, _) =
                                 recreate_engine_error("initial Surface rejected", error);
                             error!("create_onscreen failed: {}", e);
-                            gpu_caps.set_failed(format!("create_onscreen failed: {}", e));
-                            startup_failed = true;
+                            // Deliberately not `gpu_caps.set_failed`. It used to be, and
+                            // that conflated two questions: `gpu_caps` answers "are the
+                            // published capability values real", and after this failure
+                            // they are -- they came from `DeviceCapabilities::detect`
+                            // against the resource context, which is up, and
+                            // `publish_gpu_caps` reads nothing an onscreen surface
+                            // contributes to. Worse, `set_failed` latches, so
+                            // `ensure_gpu_ready` failed for the rest of the session and
+                            // content could never start, while the loss reported below
+                            // told the host to attach a Surface this session could then
+                            // never use.
+                            //
+                            // It survived only because it was the last signal Android
+                            // could hear: publishing Ready here makes this state
+                            // indistinguishable from a warm start, which legitimately
+                            // begins with no Surface, so the launch cannot treat it as a
+                            // failure. `AndroidPlatform` now implements
+                            // `notify_surface_lost`, so the loss below reaches a Java
+                            // host through `NativeExports.onSurfaceLost`, and the caps
+                            // question goes back to being about the GPU.
+                            //
+                            // The same route the update path takes for the same
+                            // failure, and the asymmetry was the defect: an initial
+                            // install that genuinely fails leaves this thread alive
+                            // and running, so nothing closes, nothing replies, and
+                            // there is no edge for a session to observe. On the
+                            // external-frame product that meant a host whose Surface
+                            // could not be used was never told -- it does not read
+                            // `gpu_caps`, and the frame clock stays open because the
+                            // worker has not stopped.
+                            //
+                            // Retiring first is what makes it deliverable: the report
+                            // travels on the must-deliver control channel and its
+                            // contract is that the generation is already dead when it
+                            // arrives, so the host can attach another.
+                            retire_published_surface(
+                                &surface_control,
+                                revision,
+                                public_generation,
+                                SurfaceLossReason::PlatformError,
+                                &report_surface_loss,
+                            );
                         }
                     }
                 }
 
-                // Publish Ready only after every startup step represented by the
-                // host's GPU join has succeeded. A surface failure has already
-                // published Failed and must never be overwritten by Ready.
-                if !startup_failed {
-                    cm.publish_gpu_caps();
-                }
+                // Published unconditionally, because by here the question it
+                // answers has an answer: `CanvasManager` construction is what detects
+                // the capabilities, and reaching this line means it succeeded. Whether
+                // an onscreen surface was installed is a different question, asked and
+                // answered elsewhere -- see the surface-rejection arm above for why
+                // conflating the two made a recoverable failure permanent.
+                cm.publish_gpu_caps();
 
                 // Build the text context here, and not before.
                 //
@@ -1837,7 +1974,7 @@ impl RenderThread {
                 // directions: after the caps that unblock the host, and long
                 // before any game code can ask for a glyph, so no first
                 // `fillText` pays for it either.
-                if !startup_failed {
+                {
                     let built = std::time::Instant::now();
                     shared_text_ctx.lock().get();
                     debug!(
@@ -1884,13 +2021,12 @@ impl RenderThread {
                 // the command-handling closure can reset it via shared capture.
                 let vsync_armed = std::cell::Cell::new(false);
                 let mut surface_system = SurfaceSystem::new();
-                if initial_onscreen_ok {
+                // The `on_resume` arm this used to carry was unreachable: the size
+                // and the "was there a surface" flag were two mappings of one
+                // Option, so the size was always present wherever the flag was.
+                if let Some(size) = initial_onscreen {
                     if render_binding.is_live() {
-                        if let Some(size) = initial_surface_size {
                         surface_system.on_surface_available(size);
-                        } else if has_initial_surface {
-                            surface_system.on_resume();
-                        }
                     } else {
                         surface_system.on_surface_destroyed();
                     }
@@ -1940,9 +2076,18 @@ impl RenderThread {
                 let pause_started_at: core::cell::Cell<Option<Instant>> =
                     core::cell::Cell::new(None);
 
+                /// What the command handler tells the loop to do next.
+                ///
+                /// `Failed` exists because one stop has a reason worth keeping: a
+                /// direct `ReleaseOnscreen` that cannot prove the driver let go of the
+                /// native reference terminates the worker, and that EGL error is the
+                /// only account of why. Returning the same `Shutdown` a requested stop
+                /// returns discarded it, and the session then reported "the renderer
+                /// stopped; it recorded no reason" while holding the reason.
                 enum LoopCtl {
                     Continue,
                     Shutdown,
+                    Failed(EngineError),
                 }
 
                 let handle_one_cmd = |cmd: RenderCommand,
@@ -1985,10 +2130,27 @@ impl RenderThread {
 
                         RenderCommand::Canvas(canvas_cmd) => match canvas_cmd {
                             shared::protocol::render_cmd::CanvasCmd::RecreateOnscreen {
-                                lease,
+                                revision: requested,
                                 pixel_ratio,
-                                resp,
                             } => {
+                                // Read now rather than carried here, so the host's
+                                // Surface was never pinned by this command sitting
+                                // in the queue -- but read *for the generation this
+                                // request names*, so a request that outlived its own
+                                // candidate cannot adopt the one that replaced it.
+                                // `None` covers both: the host retired it, or a
+                                // newer one superseded it. Either way there is
+                                // nothing to install and nothing to report: the host
+                                // is the party that retired it, and a newer request
+                                // is already queued behind this one.
+                                let Some(lease) = surface_control.live_candidate_for(requested)
+                                else {
+                                    debug!(
+                                        "CanvasCmd::RecreateOnscreen: publication {requested} \
+                                         was retired before install"
+                                    );
+                                    return LoopCtl::Continue;
+                                };
                                 let size = lease.size();
                                 let generation = lease.generation();
                                 let public_generation = lease.public_generation();
@@ -2010,6 +2172,7 @@ impl RenderThread {
 
                                 match recreate {
                                     Ok(_) => {
+                                        report_surface_installed(requested);
                                         if render_binding.is_live() {
                                             surface_system.on_surface_available(size);
                                         } else {
@@ -2017,7 +2180,6 @@ impl RenderThread {
                                         }
                                         vsync_armed.set(false);
                                         *dirty = true;
-                                        let _ = resp.send(Ok(()));
                                         info!(
                                             generation = generation.get(),
                                             width = size.0,
@@ -2034,9 +2196,9 @@ impl RenderThread {
                                             error,
                                         );
                                         let unexpectedly_retired = loss_candidate.is_live()
-                                            && retire_unexpected_surface(
+                                            && retire_published_surface(
                                                 &surface_control,
-                                                generation,
+                                                requested,
                                                 public_generation,
                                                 SurfaceLossReason::PlatformError,
                                                 &report_surface_loss,
@@ -2048,7 +2210,6 @@ impl RenderThread {
                                             mark_surface_destroyed(surface_system);
                                             vsync_armed.set(false);
                                         }
-                                        let _ = resp.send(Err(e.clone()));
                                         error!(
                                             generation = generation.get(),
                                             "CanvasCmd::RecreateOnscreen failed: {}",
@@ -2321,11 +2482,18 @@ impl RenderThread {
                                 }
                             }
 
-                            let release_failed = result.is_err();
+                            // Kept before the diagnostic consumes `result`, because
+                            // this is the only account of why the worker is about to
+                            // stop and the session has nothing else to report.
+                            let release_failure = result.as_ref().err().map(|error| {
+                                EngineError::new(ErrorCode::RenderBackendError)
+                                    .with_msg("the renderer could not release the host's Surface")
+                                    .with_detail(error.to_string())
+                            });
                             if let Some(diagnostic) = diagnostic {
                                 let _ = diagnostic.send(result);
                             }
-                            if release_failed {
+                            if let Some(failure) = release_failure {
                                 // Ordinary teardown could not prove the driver
                                 // released its native reference. Terminate this
                                 // render owner immediately. The common owner
@@ -2333,7 +2501,7 @@ impl RenderThread {
                                 // with explicit-destroy/eglTerminate proof and
                                 // otherwise quarantines both for process life.
                                 destroy_render_owner(cm, render_binding);
-                                return LoopCtl::Shutdown;
+                                return LoopCtl::Failed(failure);
                             }
                         }
 
@@ -2510,7 +2678,7 @@ impl RenderThread {
                             Ok(cmd) => {
                                 match handle_one_cmd(cmd, cm, gl, canvas_handler, renderer_2d, renderer_gl, fps, frame_scheduler, frame_clock, dirty, paused, has_vsync, surface_system, render_binding, render_server) {
                                     LoopCtl::Continue => {}
-                                    LoopCtl::Shutdown => return LoopCtl::Shutdown,
+                                    stop => return stop,
                                 }
                             }
                             Err(_) => break,
@@ -2925,7 +3093,7 @@ impl RenderThread {
                         info!("RenderThread observed shutdown request");
                         destroy_render_owner(&mut cm, &mut render_binding);
                         shared::stats::unregister_stats(host_id);
-                        return;
+                        return Ok(());
                     }
 
                     // --- Deferred EGL context recovery ---
@@ -3002,7 +3170,11 @@ impl RenderThread {
                                     LoopCtl::Continue => {}
                                     LoopCtl::Shutdown => {
                                         shared::stats::unregister_stats(host_id);
-                                        return;
+                                        return Ok(());
+                                    }
+                                    LoopCtl::Failed(failure) => {
+                                        shared::stats::unregister_stats(host_id);
+                                        return Err(failure);
                                     }
                                 }
                             }
@@ -3043,7 +3215,11 @@ impl RenderThread {
                                 LoopCtl::Continue => {}
                                 LoopCtl::Shutdown => {
                                     shared::stats::unregister_stats(host_id);
-                                    return;
+                                    return Ok(());
+                                }
+                                LoopCtl::Failed(failure) => {
+                                    shared::stats::unregister_stats(host_id);
+                                    return Err(failure);
                                 }
                             }
 
@@ -3133,7 +3309,11 @@ impl RenderThread {
                                 LoopCtl::Continue => {}
                                 LoopCtl::Shutdown => {
                                     shared::stats::unregister_stats(host_id);
-                                    return;
+                                    return Ok(());
+                                }
+                                LoopCtl::Failed(failure) => {
+                                    shared::stats::unregister_stats(host_id);
+                                    return Err(failure);
                                 }
                             }
 
@@ -3156,7 +3336,11 @@ impl RenderThread {
                                         LoopCtl::Continue => {}
                                         LoopCtl::Shutdown => {
                                             shared::stats::unregister_stats(host_id);
-                                            return;
+                                            return Ok(());
+                                        }
+                                        LoopCtl::Failed(failure) => {
+                                            shared::stats::unregister_stats(host_id);
+                                            return Err(failure);
                                         }
                                     }
                                     // Drain remaining pending commands.
@@ -3164,7 +3348,11 @@ impl RenderThread {
                                         LoopCtl::Continue => {}
                                         LoopCtl::Shutdown => {
                                             shared::stats::unregister_stats(host_id);
-                                            return;
+                                            return Ok(());
+                                        }
+                                        LoopCtl::Failed(failure) => {
+                                            shared::stats::unregister_stats(host_id);
+                                            return Err(failure);
                                         }
                                     }
                                     // Eager upload drain: LoadImage ops
@@ -3203,34 +3391,51 @@ impl RenderThread {
                                     info!("Command channel closed, exiting RenderThread");
                                     destroy_render_owner(&mut cm, &mut render_binding);
                                     shared::stats::unregister_stats(host_id);
-                                    return;
+                                    return Ok(());
                                 }
                             }
                         }
                     }
                 }
                 })); // end catch_unwind
-                if let Err(panic_info) = result {
-                    let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
-                        s.clone()
-                    } else if let Some(s) = panic_info.downcast_ref::<&str>() {
-                        s.to_string()
-                    } else {
-                        "Unknown panic".to_string()
-                    };
-                    if !gpu_caps.is_ready() {
-                        gpu_caps.set_failed(format!(
-                            "RenderThread panicked during initialization: {msg}"
-                        ));
-                    }
-                    error!("[RenderThread host={}] PANIC: {}", host_id, msg);
-                    if let Some(stats) = shared::stats::get_stats(host_id) {
-                        stats.fatal_error_code.store(
-                            shared::error::ErrorCode::Internal.as_u16() as u32,
-                            std::sync::atomic::Ordering::Relaxed,
+                // The one place any of this is published. Nothing recorded means
+                // the body returned `Ok(())`, which it can only do having been
+                // asked to stop.
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(failure)) => render_exit.publish_failure(failure),
+                    Err(panic_info) => {
+                        let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                            s.clone()
+                        } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else {
+                            "Unknown panic".to_string()
+                        };
+                        if !gpu_caps.is_ready() {
+                            gpu_caps.set_failed(format!(
+                                "RenderThread panicked during initialization: {msg}"
+                            ));
+                        }
+                        error!("[RenderThread host={}] PANIC: {}", host_id, msg);
+                        // Published whether or not caps were already ready. A panic
+                        // after the first frame leaves `gpu_caps` saying Ready, so
+                        // that level cannot be what tells the host its renderer is
+                        // gone -- which is exactly the case a `is_ready` guard here
+                        // used to leave with no account anywhere.
+                        render_exit.publish_failure(
+                            EngineError::new(ErrorCode::Internal)
+                                .with_msg("the render thread panicked")
+                                .with_detail(msg),
                         );
+                        if let Some(stats) = shared::stats::get_stats(host_id) {
+                            stats.fatal_error_code.store(
+                                shared::error::ErrorCode::Internal.as_u16() as u32,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                        }
+                        shared::stats::unregister_stats(host_id);
                     }
-                    shared::stats::unregister_stats(host_id);
                 }
             })
             .map_err(|e| {

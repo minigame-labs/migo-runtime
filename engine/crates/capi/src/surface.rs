@@ -20,8 +20,8 @@ use std::{mem::size_of, thread};
 
 use graphics::egl_platform::PlatformIdentity;
 use migo_core::{
-    PlatformServices, host_ingress, lease_surface_tracked, lease_surface_with_resource,
-    retire_surface, send_critical_command_to_host,
+    PlatformServices, lease_surface_tracked, lease_surface_with_resource, retire_surface,
+    send_critical_command_to_host,
 };
 use shared::surface::{HostWindowMetrics, HostWindowState};
 use shared::{
@@ -407,89 +407,48 @@ pub unsafe extern "C" fn migo_session_attach_surface(
                         options,
                         launch_nonce,
                     ) {
-                        Ok(mut started) => {
+                        Ok(started) => {
                             let host = started.engine.id();
-                            let ingress = match host_ingress(host) {
-                                Ok(ingress) => ingress,
-                                Err(error) => {
-                                    tracing::error!(
-                                        "migo_session_attach_surface: ingress capture failed: {error}"
-                                    );
-                                    // The session this call spawned has already
-                                    // gone: the renderer failed to initialise
-                                    // and tore it down between the spawn
-                                    // returning and this line. Measured on the
-                                    // iOS simulator with no ANGLE present,
-                                    // where it is a race attach loses about two
-                                    // runs in three -- and the host was told
-                                    // nothing, because only failures raised
-                                    // INSIDE the session thread report through
-                                    // on_error.
-                                    if let Some(notifier) = &notifier {
-                                        notifier.error(
-                                            MIGO_ERROR_INTERNAL,
-                                            format!(
-                                                "the session exited while attach was still \
-                                                 installing it: {error}"
-                                            ),
-                                        );
-                                    }
-                                    let _ = retire_surface(host);
-                                    if let Err(error) = started.engine.shutdown_and_join() {
-                                        tracing::error!(
-                                            "migo_session_attach_surface: rollback join failed: {error}"
-                                        );
-                                    }
-                                    rollback_surface_transition(&session);
-                                    return MIGO_ERROR_INTERNAL;
-                                }
-                            };
+                            // Handed over by the spawn. It used to be recovered
+                            // here by asking the Host registry for the id that had
+                            // just been started, which meant racing this session's
+                            // own teardown: a renderer that failed to initialise
+                            // takes the session down, and the session removes its
+                            // registry entry on the way out. On the iOS simulator
+                            // with no ANGLE present, this call lost that race about
+                            // two runs in three. What the host was told either way
+                            // was a bare MIGO_ERROR_INTERNAL, or MIGO_OK, for one
+                            // input -- and the renderer's own account of what went
+                            // wrong reached nobody, which is now `RenderExit`'s job.
+                            debug_assert_eq!(started.ingress.host_id(), host);
                             (
                                 host,
                                 started.resource,
                                 notifier,
-                                Some(ingress),
+                                Some(started.ingress),
                                 window_state,
                                 Some(started.engine),
                             )
                         }
                         Err(error) => {
                             tracing::error!("migo_session_attach_surface: spawn failed: {error:?}");
-                            // And tell the host, which nothing here did.
+                            // Deliberately not reported here.
                             //
-                            // Every failure INSIDE the session thread reports
-                            // through `notify_error`; a failure to get that
-                            // thread up reported through `tracing` alone. The
-                            // difference matters because `tracing` needs a
-                            // subscriber the library refuses to install by
-                            // default, so on any platform where the host has no
-                            // other window into the process, the entire class of
-                            // "the session did not start" arrived as a bare
-                            // MIGO_ERROR_INTERNAL with no reason attached.
+                            // `spawn_tracked` inherits `spawn_session_thread`'s
+                            // contract: every startup `Err` it returns has
+                            // already reached the host through `on_error`
+                            // exactly once, carrying the failing thread's own
+                            // account of why it stopped.
                             //
-                            // Found on the iOS simulator, where attach returns
-                            // this roughly half the time and the reason -- the
-                            // session thread's own account of why it exited --
-                            // reached nobody. `session.h` promises on_error
-                            // carries "runtime errors"; a session that never
-                            // started is the first one a host needs.
-                            if let Some(notifier) = &notifier {
-                                let detail = error.detail.as_deref().unwrap_or("");
-                                let text = if detail.is_empty() {
-                                    format!(
-                                        "session thread did not start: {} (engine code {})",
-                                        error.msg,
-                                        error.code.as_u16()
-                                    )
-                                } else {
-                                    format!(
-                                        "session thread did not start: {}: {detail} (engine code {})",
-                                        error.msg,
-                                        error.code.as_u16()
-                                    )
-                                };
-                                notifier.error(MIGO_ERROR_INTERNAL, text);
-                            }
+                            // A report here used to sit in this branch, and it
+                            // double-notified for the common case. The two
+                            // causes -- a thread that never started, and a
+                            // thread that started and then failed -- are
+                            // distinguishable at this level only by matching on
+                            // the error message, and the one this branch can
+                            // describe is always the vaguer of the two. So the
+                            // report lives where the silence actually was:
+                            // beside the spawn that failed.
                             rollback_surface_transition(&session);
                             return MIGO_ERROR_INTERNAL;
                         }

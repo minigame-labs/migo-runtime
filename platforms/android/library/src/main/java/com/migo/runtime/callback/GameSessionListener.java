@@ -101,4 +101,19 @@ public interface GameSessionListener {
      * Called when the session is being destroyed.
      */
     default void onDestroyed() {}
+
+    // ==================== Surface (optional) ====================
+
+    /**
+     * Called when the engine gave up a Surface it could not present to.
+     * <p>
+     * Not the same as the app taking its own Surface back: this is reported only for a
+     * Surface the app still holds and still believes is live. Nothing will be drawn
+     * until another is attached, so the recovery is to call
+     * {@code session.updateSurface(surface)} once the {@code SurfaceHolder} has a valid
+     * one — or, if it does not, to wait for {@code surfaceCreated} and attach then.
+     *
+     * @param reason 0 unknown, 1 host destroyed, 2 device lost, 3 platform error
+     */
+    default void onSurfaceLost(int reason) {}
 }

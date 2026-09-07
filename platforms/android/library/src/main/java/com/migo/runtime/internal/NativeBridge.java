@@ -597,14 +597,32 @@ final class NativeBridge {
     // ==================== Debug Stats ====================
 
     /**
-     * Get debug statistics from the render thread.
-     * Returns a 20-byte array containing (all little-endian u32):
+     * Get debug statistics from the render thread, as a versioned binary packet.
+     *
+     * <p>The field layout is deliberately not repeated here. This comment used to
+     * carry one, describing a 20-byte header-less packet whose first field was at
+     * offset 0; by then the engine was writing 144 bytes at version 6, behind a
+     * 4-byte header, so every offset in the description was wrong by four and more
+     * than fifteen fields were missing entirely. Nothing in the build noticed,
+     * because both real readers had been updated and only the prose had not. A
+     * description that duplicates a versioned layout goes stale on the next version.
+     *
+     * <p>The one writer is {@code DebugStats::as_le_bytes} in
+     * {@code engine/crates/shared/src/stats.rs}, and its module comment lists what
+     * each version appended. Read that, not this.
+     *
+     * <p>What is stable, and what a reader has to do:
      * <ul>
-     *   <li>[0..4) fps_x10 — FPS multiplied by 10 (e.g., 598 = 59.8 FPS)</li>
-     *   <li>[4..8) frame_time_us — Last frame time in microseconds</li>
-     *   <li>[8..12) dropped_frames — Total dropped RAF signals</li>
-     *   <li>[12..16) fatal_error_code — Last fatal engine error code (0 = none)</li>
-     *   <li>[16..20) first_frame_ms — Milliseconds from render thread start to first frame (0 = not yet)</li>
+     *   <li>Bytes [0..2) are the magic {@code 0x4D47} and [2..4) the format version,
+     *       both little-endian u16. Check the magic and give up if it does not
+     *       match: that is a Rust/Java protocol mismatch, not a value.</li>
+     *   <li>The payload starts at byte 4. Read every field at its payload-relative
+     *       offset plus that header length, never at an absolute one.</li>
+     *   <li>Every payload field is a little-endian u32.</li>
+     *   <li>Versions only ever append at the tail, so guard each read on
+     *       {@code data.length}: an older engine simply stops early and a newer one
+     *       carries fields this caller does not know about. Never assume a total
+     *       size.</li>
      * </ul>
      *
      * @param sessionId The session ID

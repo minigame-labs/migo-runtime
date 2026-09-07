@@ -26,7 +26,6 @@ mod session_thread;
 // JavaScript agent in another process, and links no engine of its own.
 #[cfg(feature = "external-frames")]
 pub mod external;
-pub mod vsync;
 
 #[cfg(all(test, feature = "embedded-v8"))]
 mod tests;

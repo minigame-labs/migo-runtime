@@ -89,10 +89,14 @@ fn tearing_down_a_session_still_drops_its_gpu_image_aliases() {
     );
 }
 
-/// `on_evaluate_module`, from its signature to the start of the next method.
-fn on_evaluate_module_body() -> &'static str {
+/// The launch path's body, from its signature to the start of the next method.
+///
+/// `launch_content` and not `on_evaluate_module`: the latter is now the thin
+/// announcement pairing around it, so the work this file asserts about lives one
+/// level down.
+fn launch_content_body() -> &'static str {
     let start = HOST
-        .find("async fn on_evaluate_module(")
+        .find("async fn launch_content(")
         .expect("the launch path must remain present");
     let rest = &HOST[start..];
     // Bounded by whichever member-indented method declaration comes first, so a
@@ -106,7 +110,7 @@ fn on_evaluate_module_body() -> &'static str {
     .iter()
     .filter_map(|marker| rest[1..].find(marker).map(|offset| offset + 1))
     .min()
-    .expect("on_evaluate_module must end before the next method");
+    .expect("launch_content must end before the next method");
     &rest[..end]
 }
 
@@ -136,12 +140,12 @@ fn a_sessions_temp_directory_is_owned_for_removal_at_teardown() {
     );
 }
 
-/// A runtime restart re-enters `on_evaluate_module` with the same session id and
+/// A runtime restart re-enters the launch path with the same session id and
 /// game id, and `/tmp` must survive it — a restart is the same session. So the
 /// guard is created once, gated on its own absence, not rebuilt each eval.
 #[test]
 fn the_temp_directory_is_prepared_once_and_survives_a_restart() {
-    let body = on_evaluate_module_body();
+    let body = launch_content_body();
     let prepare = body
         .find("SessionTemp::prepare(")
         .expect("the first module eval must prepare this session's /tmp");

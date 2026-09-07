@@ -46,7 +46,8 @@ use std::num::NonZeroI64;
 use crate::{
     payload_pool::{Pooled, Recycled},
     surface::{
-        PixelRatio, PublicSurfaceGeneration, SurfaceGeneration, SurfaceLease, SurfaceLossReason,
+        PixelRatio, PublicSurfaceGeneration, SurfaceCandidateRevision, SurfaceGeneration,
+        SurfaceLease, SurfaceLossReason,
     },
 };
 
@@ -417,6 +418,17 @@ pub enum HostCommand {
         /// Exact retired generation; delayed commands cannot affect a newer one.
         generation: SurfaceGeneration,
     },
+
+    /// The renderer installed the Surface a publication asked it to.
+    ///
+    /// Sent on every successful install, not only the ones whose reply was lost. The
+    /// session commits its attachment slot from the reply when the reply arrives in
+    /// time and from this when it does not -- and `RenderService` gives up on that
+    /// reply after 500 ms while the request stays queued, so "in time" is not
+    /// something either side can promise. Committing twice is a no-op; committing
+    /// never left the session believing it had no Surface while the renderer held a
+    /// live one, and the renderer paused with nothing coming.
+    SurfaceInstalled { revision: SurfaceCandidateRevision },
 
     /// The renderer retired a still-live Surface after an unrecoverable native
     /// presentation failure. Expected host detach never emits this command.
@@ -1001,6 +1013,7 @@ impl HostCommand {
             | Self::InnerAudioEvent { .. }
             | Self::UpdateSurface { .. }
             | Self::SurfaceDestroyed { .. }
+            | Self::SurfaceInstalled { .. }
             | Self::SurfaceLost { .. }
             | Self::OnTouch(..)
             | Self::OnDeviceOrientationChange { .. }

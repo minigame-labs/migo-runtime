@@ -178,6 +178,10 @@ const JAVA_CORE: &[JniMethod] = methods![
     ("onError", "(IILjava/lang/String;Ljava/lang/String;)V"),
     ("onExit", "(I)V"),
     ("onHostMessage", "(ILjava/lang/String;)V"),
+    // Core for the same reason `beginRuntimeRestart` is: every profile presents, and
+    // a Slim session whose Surface died at swap time would otherwise never be told --
+    // the render worker stays alive, so no channel closes and no reply arrives.
+    ("onSurfaceLost", "(IJI)V"),
 ];
 
 const JAVA_SENSORS: &[JniMethod] = methods![
@@ -446,8 +450,10 @@ mod tests {
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
         // which nothing in the engine called and which resolved an Activity
-        // through whichever session came first).
-        assert_eq!(java.len(), 126, "full NativeExports surface changed");
+        // through whichever session came first). Surface-loss delivery adds
+        // +1 Java (`onSurfaceLost`), Core: it is the only signal that reaches
+        // an Android host when presentation fails on a Surface it still holds.
+        assert_eq!(java.len(), 127, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

@@ -1203,6 +1203,32 @@ jni_void!(notify_exit, "onExit");
 // `{"type":"...","payload":"..."}` envelope built by the `op_send_to_host` op.
 jni_void_json!(notify_host_message, "onHostMessage");
 
+/// Tell the Java layer that a live Surface was retired after a presentation failure.
+///
+/// Calls `NativeExports.onSurfaceLost(hostId, generation, reason)`. Distinct from
+/// `onSurfaceDestroyed`, which travels the other way: that one is Java telling the
+/// engine it is taking its Surface back, and this one is the engine telling Java that
+/// the Surface Java still believes in is gone. Nothing else carries that direction --
+/// the render worker stays alive, no channel closes and no reply arrives -- so without
+/// this an Android host had no way to learn it and no reason to attach another.
+///
+/// The generation is the one that was lost, so a host that has already moved on can
+/// recognise a report for a Surface it replaced.
+pub fn notify_surface_lost(host_id: i32, generation: u64, reason: u32) -> Result<(), String> {
+    call_static_method(
+        "onSurfaceLost",
+        ReturnType::Primitive(Primitive::Void),
+        |_env, _| Ok(()),
+        &[
+            jvalue { i: host_id },
+            jvalue {
+                j: generation as i64,
+            },
+            jvalue { i: reason as i32 },
+        ],
+    )
+}
+
 /// Notify the Java layer about a fatal engine error.
 ///
 /// Calls `NativeExports.onError(hostId, errorCode, message, detail)`.

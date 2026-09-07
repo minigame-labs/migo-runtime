@@ -91,9 +91,79 @@ require_multiline_regex "$CRATES/shared/src/protocol/host_cmd.rs" \
 require_multiline_regex "$CRATES/shared/src/protocol/render_cmd.rs" \
     'SurfaceDestroyed[[:space:]]*\{[[:space:]]*generation:[[:space:]]*SurfaceGeneration' \
     "render SurfaceDestroyed command is not generation-tagged"
+# The reverse of what this line used to require, and the reason is the whole
+# point of the arrangement it now guards.
+#
+# `RecreateOnscreen` used to carry the `SurfaceLease`. A lease pins the host's
+# native Surface and RELEASED is published by the last one going away, so a lease
+# riding a queued command held the Surface hostage behind whatever the render
+# thread was doing -- and before the first frame that is EGL initialization,
+# measured at 33 ms on macOS and 5.7-41 s on the iOS simulator, where ANGLE
+# compiles its Metal shaders cold. `migo_surface_begin_detach` could not complete
+# for the whole of it, so a host could not shut down before its renderer came up.
+# `RenderService` giving up on the reply after 500 ms did not help: the lease
+# stayed queued regardless -- and that reply is itself gone now, for the reason
+# the second check below records.
+#
+# THE DRIFT THIS EXISTS TO CATCH is the payload coming back. The Surface is now a
+# level on `SurfaceControl`, which a retirement revokes, and this command is only
+# the wake for it -- but re-adding a field is a two-line change that reads like an
+# optimisation, and nothing else in the build reports that a detach has quietly
+# become gated on the GPU again.
+if rg -qU 'RecreateOnscreen[[:space:]]*\{[^}]*SurfaceLease' \
+    "$CRATES/shared/src/protocol/render_cmd.rs"; then
+    fail "onscreen recreation carries a SurfaceLease again; the Surface must travel \
+as a revocable level on SurfaceControl ($CRATES/shared/src/protocol/render_cmd.rs)"
+fi
+# And nothing waits for the install. The recreate used to answer on a SyncResp that
+# `RenderService` blocked the session thread on -- up to 500 ms per attempt, three
+# attempts, on the thread that runs JavaScript in the embedded product. EGL is what
+# makes that wait long, so a resize arriving mid-initialization stalled content for
+# 1.5 s. Both outcomes already travelled on the must-deliver Host stream, so the wait
+# bought nothing. Two halves, because either can come back on its own: a reply field
+# on the command, or a receive in the service.
+if rg -qU 'RecreateOnscreen[[:space:]]*\{[^}]*resp' \
+    "$CRATES/shared/src/protocol/render_cmd.rs"; then
+    fail "onscreen recreation carries a reply channel again; its outcome must travel \
+on the must-deliver Host stream so no caller waits on the session thread \
+($CRATES/shared/src/protocol/render_cmd.rs)"
+fi
+if rg -q 'recv_timeout' "$CRATES/core/src/services/render.rs"; then
+    fail "a Surface install waits for an answer again; the session thread must not \
+block on EGL ($CRATES/core/src/services/render.rs)"
+fi
+require_literal "$CRATES/shared/src/surface/control.rs" \
+    "candidate: Mutex<Option<(SurfaceCandidateRevision, SurfaceLease)>>" \
+    "SurfaceControl does not publish the Surface a render worker installs, paired with \
+the publication a request can name"
+require_literal "$CRATES/core/src/services/render.rs" \
+    "self.surface_control.publish_candidate(lease);" \
+    "a Surface update does not publish through the queue-independent control plane, or \
+keeps a copy of the lease instead of handing it over"
+require_literal "$CRATES/graphics/src/render_thread.rs" \
+    "let claimed = surface_control.live_candidate();" \
+    "render startup does not read the Surface level; a lease handed in at spawn is \
+pinned across GPU initialization"
+require_literal "$CRATES/graphics/src/render_thread.rs" \
+    "let Some(lease) = surface_control.live_candidate_for(requested)" \
+    "onscreen recreation reads the Surface level without saying which generation it \
+was asked about; a request that outlived its candidate would then install the one \
+that replaced it, under the old request's parameters, and on failure retire the \
+generation the host had just attached"
+# A *publication* and not a generation, which is a distinction this line learned the
+# hard way. `attach_or_update` reuses the live generation, so a resize republishes one
+# -- and two queued requests naming the same generation let the older one match the
+# newer one's candidate: installed under stale presentation parameters, answered on a
+# dead channel, and on failure retiring the generation the host was actively using.
 require_multiline_regex "$CRATES/shared/src/protocol/render_cmd.rs" \
-    'RecreateOnscreen[[:space:]]*\{[[:space:]]*lease:[[:space:]]*SurfaceLease' \
-    "onscreen recreation does not carry a SurfaceLease"
+    'RecreateOnscreen[[:space:]]*\{[^}]*revision:[[:space:]]*SurfaceCandidateRevision' \
+    "the onscreen recreate request must name the publication it is for"
+if rg -qU 'RecreateOnscreen[[:space:]]*\{[^}]*generation:[[:space:]]*SurfaceGeneration' \
+    "$CRATES/shared/src/protocol/render_cmd.rs"; then
+    fail "onscreen recreation is identified by a generation again; one generation is \
+published more than once, so it cannot tell two requests apart \
+($CRATES/shared/src/protocol/render_cmd.rs)"
+fi
 # Two literals, because the gate moved behind SurfaceControl: the registry holds
 # the control, and the control holds the gate. Pinning only the registry field
 # would pass for a SurfaceControl that had quietly stopped owning a gate, which

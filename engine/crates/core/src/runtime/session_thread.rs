@@ -37,7 +37,7 @@ use shared::{
 // process-wide Migo-IO executor instead.
 const HOST_BLOCKING_FALLBACK_THREADS: usize = 4;
 
-use crate::runtime::{HostId, registry, restart_boundary::RestartBoundary};
+use crate::runtime::{HostId, registry, registry::HostIngress, restart_boundary::RestartBoundary};
 use crate::services::PlatformServices;
 
 /// Result of starting a Host whose initial Surface belongs to a public
@@ -45,6 +45,10 @@ use crate::services::PlatformServices;
 pub struct SpawnedSurfaceHost {
     pub host: HostThread,
     pub resource: SurfaceResourceLease,
+    /// The session's own direct data-plane handles. Handed over by the spawn rather
+    /// than looked up afterwards, so a caller cannot race this session's teardown
+    /// for its own ingress.
+    pub ingress: HostIngress,
 }
 
 /// Owning handle for one Migo Host thread.
@@ -186,6 +190,11 @@ pub(crate) struct SessionThreadContext {
     pub(crate) platform_for_error: Arc<dyn PlatformServices>,
     pub(crate) opt: InitOptions,
     pub(crate) surface_control: Arc<SurfaceControl>,
+    /// The externally paced frame clock's receiver, or `None` where the engine
+    /// paces itself. Created with its sender before this thread exists, because the
+    /// sender belongs to the ingress the caller is handed and the caller is handed
+    /// it before the thread runs.
+    pub(crate) vsync_rx: Option<crossbeam_channel::Receiver<f64>>,
     pub(crate) restart_boundary: RestartBoundary,
     /// Sent once construction has succeeded far enough that a caller waiting on
     /// a cold start can stop waiting. Dropped without sending on failure, which
@@ -194,11 +203,39 @@ pub(crate) struct SessionThreadContext {
     pub(crate) ready_tx: crossbeam_channel::Sender<()>,
 }
 
+/// Report a startup failure that no session thread can report, because there is
+/// no session thread yet.
+///
+/// Both of [`spawn_session_thread`]'s pre-thread exits come through here, which
+/// is what makes that function's reporting contract total: a caller never has to
+/// guess whether a returned `Err` was announced.
+fn report_unspawned_failure(platform: &Arc<dyn PlatformServices>, id: HostId, error: &EngineError) {
+    platform.notify_error(
+        id,
+        error.code.as_u16(),
+        &error.msg,
+        error.detail.as_deref().unwrap_or(""),
+    );
+}
+
 /// Start a session thread and run `body` on it.
 ///
 /// `body` owns the session for the thread's whole life. It is called inside the
 /// panic barrier, so a panic in any execution mode is reported and unregistered
 /// the same way rather than each mode remembering to.
+///
+/// **Every `Err` returned here has already been reported through
+/// `notify_error`, exactly once.** Each failure inside the thread announces its
+/// own reason before dropping `ready_tx` -- and dropping `ready_tx` unsent is
+/// precisely what the caller's handshake failure below observes -- while the two
+/// failures that happen before a thread exists report through
+/// [`report_unspawned_failure`].
+///
+/// A caller that adds its own report for a returned `Err` therefore delivers two
+/// `on_error` callbacks for one failure, and the host has no way to collapse
+/// them: the notifier posts every event independently. Worse, the caller cannot
+/// tell the two apart without matching on the error message, so the reason it
+/// would add is the *generic* one while the thread's own is the specific one.
 pub(crate) fn spawn_session_thread<Body>(
     surface: Option<SurfaceRef>,
     graphics_platform: graphics::egl_platform::GraphicsPlatform,
@@ -226,8 +263,10 @@ where
     let initial_surface = match surface {
         Some(surface) => {
             let initial_token = surface_control.attach_or_update().map_err(|_| {
-                EngineError::new(ErrorCode::InvalidOperation)
-                    .with_msg("initial Surface generation exhausted")
+                let error = EngineError::new(ErrorCode::InvalidOperation)
+                    .with_msg("initial Surface generation exhausted");
+                report_unspawned_failure(&platform, id, &error);
+                error
             })?;
             Some(match public_generation {
                 Some(public_generation) => {
@@ -261,18 +300,36 @@ where
     // Host thread; the registry keeps only a reader.
     let restart_boundary = crate::runtime::restart_boundary::RestartBoundary::new();
     let log_level = opt.log_level();
-    registry::register_sender(
+    // Only platforms that publish external timestamps get a frame clock at all;
+    // handing a never-fed receiver to the render thread would make it wait for
+    // timestamps nobody sends. `uses_external_vsync` is a property of the platform
+    // services, which exist here, so the question is answerable before the thread
+    // is -- and it has to be, because the sender travels in the ingress this
+    // function returns.
+    let (vsync_tx, vsync_rx) = if platform.uses_external_vsync() {
+        let (tx, rx) = crossbeam_channel::bounded::<f64>(2);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let ingress = registry::register_sender(
         id,
         host_tx.clone(),
         critical_host_tx.clone(),
         Arc::clone(&surface_control),
         restart_boundary.reader(),
         log_level,
+        vsync_tx,
     );
 
     // Clone the platform Arc so we can use it in the catch_unwind path
     // to notify Java about errors from any context (host loop, panic, etc.).
     let platform_for_error = platform.clone();
+    // And a third handle, for the one failure that happens after this function
+    // has committed to a thread and before that thread exists. The closure below
+    // moves the other two, so this has to be taken now or the spawn-failure
+    // branch has nothing left to report through.
+    let platform_if_never_spawned = platform.clone();
 
     let spawn_result = thread::Builder::new()
         .name(format!("Migo-Main-{}", id))
@@ -294,6 +351,7 @@ where
                     platform_for_error: Arc::clone(&platform_for_error),
                     opt,
                     surface_control,
+                    vsync_rx,
                     restart_boundary,
                     ready_tx,
                 });
@@ -350,9 +408,11 @@ where
         Err(error) => {
             error!("[Host {}] failed to spawn thread: {}", id, error);
             registry::unregister_sender(id);
-            return Err(EngineError::new(ErrorCode::Internal)
+            let startup_error = EngineError::new(ErrorCode::Internal)
                 .with_msg("failed to spawn host thread")
-                .with_detail(error.to_string()));
+                .with_detail(error.to_string());
+            report_unspawned_failure(&platform_if_never_spawned, id, &startup_error);
+            return Err(startup_error);
         }
     };
     let host = HostThread::new(id, join);
@@ -377,12 +437,18 @@ where
         return Ok(StartedHost {
             host,
             resource: initial_resource,
+            ingress,
         });
     }
 
     if ready_rx.recv().is_err() {
         error!("[Host {}] failed to start (init panic / early exit)", id);
         registry::unregister_sender(id);
+        // Deliberately not reported here. This branch does not observe a failure;
+        // it observes `ready_tx` being dropped unsent, which every failing path
+        // in the thread body does *after* announcing its own specific reason
+        // (and a panic after the barrier has announced it). Reporting again
+        // would replace nothing and add a second, vaguer callback.
         let error = EngineError::new(ErrorCode::Internal)
             .with_msg("host thread failed to start")
             .with_detail("init panic / early exit".to_string());
@@ -392,6 +458,7 @@ where
     Ok(StartedHost {
         host,
         resource: initial_resource,
+        ingress,
     })
 }
 
@@ -400,6 +467,10 @@ where
 pub(crate) struct StartedHost {
     pub(crate) host: HostThread,
     pub(crate) resource: Option<SurfaceResourceLease>,
+    /// The session's own direct data-plane handles, from the registration that
+    /// published them. Handed over rather than looked up: the caller would
+    /// otherwise be racing this session's teardown for its own ingress.
+    pub(crate) ingress: HostIngress,
 }
 fn join_failed_start(mut host: HostThread, startup_error: EngineError) -> EngineError {
     match host.join() {

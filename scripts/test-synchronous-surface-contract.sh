@@ -177,6 +177,35 @@ for name, kind in sorted(derived.items()):
     if not entry.get("note"):
         problems.append(f"{name}: has no note saying why it waits or why it need not")
 
+# The other product's synchronous surface, which this gate does not cover and cannot
+# yet. On the Apple Performance+ lane a blocked producer's request travels on the sync
+# barrier as `SyncRequest.operation: u32` -- a bare integer with no enumeration, no
+# classification and nothing deriving a set from it. So the number printed below is the
+# Android surface; the Apple one is undefined.
+#
+# That matters more than a coverage note usually would, because the header of this file
+# argues Worker-vs-Window from the *size* of this set. The argument is derived for one
+# product and unmeasured for the other.
+#
+# Not invented here on purpose: which operations survive is a design decision that
+# depends on which of them can be answered by pushing state downstream with the tick
+# instead of pulling it. Freezing a code space now would freeze the wrong one.
+#
+# So the blocker is asserted instead of remembered. The moment `operation` becomes an
+# enum, this fails in the build of whoever made it one, and names what to do.
+SYNC = Path("engine/crates/frame-wire/src/sync.rs")
+if not SYNC.is_file():
+    problems.append(f"{SYNC} is missing; the Apple lane's sync surface cannot be checked")
+elif "pub operation: u32," not in strip_line_comments(SYNC.read_text(encoding="utf-8")):
+    problems.append(
+        f"{SYNC}: SyncRequest.operation is no longer a bare u32, so the Apple lane's "
+        "synchronous surface is now enumerable -- add that file to "
+        f"{CONTRACT}'s `sources`, derive the operation set from the new type, and "
+        "classify each one the way the commands above are classified. Until then this "
+        "gate's count covers the embedded product only, while this file's header argues "
+        "Worker-vs-Window from it"
+    )
+
 print()
 content = {
     name: entry

@@ -81,6 +81,11 @@ pub struct ExternalFrameSession {
 pub struct SpawnedExternalSession {
     pub session: ExternalFrameSession,
     pub resource: Option<shared::surface::SurfaceResourceLease>,
+    /// The session's own direct data-plane handles. Handed over by the spawn rather
+    /// than looked up afterwards, so a caller cannot race this session's teardown
+    /// for its own ingress -- which on the iOS simulator it lost about two runs in
+    /// three whenever the renderer failed to start.
+    pub ingress: crate::runtime::registry::HostIngress,
 }
 
 /// Why a frame that the ingress accepted still did not reach the renderer.
@@ -505,6 +510,7 @@ pub fn spawn_external_frame_session(
             clock,
         },
         resource: started.resource,
+        ingress: started.ingress,
     })
 }
 
@@ -526,6 +532,7 @@ fn run_external_session(
         platform_for_error,
         opt,
         surface_control,
+        vsync_rx,
         restart_boundary,
         ready_tx,
     } = ctx;
@@ -539,6 +546,7 @@ fn run_external_session(
         &platform,
         &opt,
         surface_control,
+        vsync_rx,
     ) {
         Ok(shell) => shell,
         Err(error) => {
@@ -577,6 +585,10 @@ fn run_external_session(
         context_lost: _context_lost,
         timer_backgrounded: _timer_backgrounded,
         gpu_init_started: _gpu_init_started,
+        // Why the render worker stopped, read at the one place this session
+        // observes it stopping. `gpu_caps` cannot answer it: a panic after the
+        // first frame leaves that level saying Ready.
+        render_exit,
         t_start: _t_start,
     } = shell;
 
@@ -643,6 +655,7 @@ fn run_external_session(
     startup_guard.disarm();
 
     let mut last_context_epoch = 0u64;
+    let mut last_swap_report: Option<std::time::Instant> = None;
     runtime.block_on(async move {
         loop {
             tokio::select! {
@@ -653,12 +666,20 @@ fn run_external_session(
                     };
                     if !handle_command(
                         id, command, &mut render, &mut audio, &backgrounded, &ingress,
+                        &platform_for_error,
                     ) {
                         break;
                     }
                 }
                 () = render_notify.notified() => {
-                    drain_render_events(id, &render_events, &ingress, &mut last_context_epoch);
+                    drain_render_events(
+                        id,
+                        &render_events,
+                        &ingress,
+                        &mut last_context_epoch,
+                        &platform_for_error,
+                        &mut last_swap_report,
+                    );
                 }
                 timestamp = raf_rx.recv(raf_demand.session_ticket()) => {
                     match timestamp {
@@ -678,7 +699,47 @@ fn run_external_session(
                             // The render thread is gone. Nothing else will
                             // arrive on this channel, and continuing to select
                             // on it would spin.
-                            info!("[Host {id}] frame clock closed");
+                            //
+                            // And this is the only place that observes it going,
+                            // so this is where the host is told. It used to be
+                            // told by nothing: the worker logged its reason and
+                            // dropped this sender, and the line below was the
+                            // whole of the engine's response. On the iOS
+                            // simulator, where the renderer failed for want of
+                            // ANGLE, the host's only signal was `attach` losing a
+                            // race for a registry entry the exiting session was
+                            // removing -- so it arrived about two runs in three,
+                            // as a bare MIGO_ERROR_INTERNAL with no reason.
+                            //
+                            // `RenderExit` records nothing when the worker was
+                            // asked to stop, and this branch cannot be reached
+                            // that way: a requested shutdown breaks this loop from
+                            // the command arm before the clock closes. So a worker
+                            // that arrived here without a reason is one that
+                            // stopped without saying why, and saying *that* is
+                            // still more use to a host than silence.
+                            let failure = render_exit.failure();
+                            info!(
+                                "[Host {id}] frame clock closed: {}",
+                                failure.map_or_else(
+                                    || "no reason recorded".to_string(),
+                                    ToString::to_string
+                                )
+                            );
+                            match failure {
+                                Some(failure) => platform_for_error.notify_error(
+                                    id,
+                                    failure.code.as_u16(),
+                                    &failure.msg,
+                                    failure.detail.as_deref().unwrap_or(""),
+                                ),
+                                None => platform_for_error.notify_error(
+                                    id,
+                                    ErrorCode::Internal.as_u16(),
+                                    "the renderer stopped",
+                                    "it recorded no reason",
+                                ),
+                            }
                             break;
                         }
                     }
@@ -703,6 +764,7 @@ fn handle_command(
     audio: &mut crate::services::AudioService,
     backgrounded: &Arc<std::sync::atomic::AtomicBool>,
     ingress: &Arc<Mutex<FrameIngress>>,
+    platform: &Arc<dyn PlatformServices>,
 ) -> bool {
     use std::sync::atomic::Ordering;
 
@@ -722,11 +784,59 @@ fn handle_command(
             }
             if let Err(error) = render.update_surface(lease, pixel_ratio) {
                 error!("[Host {id}] update_surface failed: {error:?}");
+                // The host handed over a Surface the renderer could not even be asked
+                // about, and `attach` has already returned, so nothing else can answer
+                // for it -- the embedded execution has told its host about this class of
+                // failure all along, through the render-error path this lane had none of.
+                //
+                // Reaching here means the request never entered the queue: a local
+                // preflight refusal or a dispatch the queue would not take within its
+                // 8 ms bound. Nothing will report it later, which is what makes it this
+                // arm's to report. An install that *was* queued reports its own outcome
+                // on the must-deliver stream -- `SurfaceInstalled` or `SurfaceLost` --
+                // so this is not the place to guess at one.
+                //
+                // Cancelled is excluded, and not as a special case: it means this update
+                // did not happen because what it was for is gone. Either the host retired
+                // the Surface, in which case the party that made it gone is the party
+                // being told, or the render worker is gone, in which case `RenderExit`
+                // reports it with the reason this arm does not have. A normal
+                // attach/detach race would otherwise reach the host as
+                // MIGO_ERROR_INTERNAL, because that is what the C boundary maps every
+                // engine error onto.
+                if error.code != ErrorCode::Cancelled {
+                    platform.notify_error(
+                        id,
+                        error.code.as_u16(),
+                        &error.msg,
+                        error.detail.as_deref().unwrap_or(""),
+                    );
+                }
             }
+            // Nothing to resume on here: the request has only been queued. The resume
+            // belongs to the `SurfaceInstalled` arm, which is where a Surface actually
+            // becomes usable -- see the handover `OnShow` documents and this arm used to
+            // perform against a merely-queued request.
         }
 
         HostCommand::SurfaceDestroyed { generation } => {
             render.on_surface_destroyed(generation);
+        }
+
+        HostCommand::SurfaceInstalled { revision } => {
+            // Where a Surface becomes usable, and the only place: nothing waits for a
+            // recreate, so this report is what commits the attachment and what the
+            // resume hangs off. The `UpdateSurface` arm used to do both against a
+            // request that had only been queued.
+            //
+            // Guarded on `backgrounded` for the reason the embedded execution guards it:
+            // a host may install a Surface while hidden, and resuming then runs render
+            // and audio in the background. The Surface is live but paused, and `OnShow`
+            // drives the resume once it clears.
+            if render.confirm_install(revision) && !backgrounded.load(Ordering::Relaxed) {
+                render.resume();
+                audio.resume();
+            }
         }
 
         HostCommand::SurfaceLost {
@@ -734,6 +844,12 @@ fn handle_command(
             reason,
         } => {
             warn!("[Host {id}] surface {public_generation:?} lost: {reason:?}");
+            // `MigoOnSurfaceLostFn` is declared in `session.h`, wired through the C
+            // boundary, and was never fired by this execution -- a public callback
+            // that could not happen on the Apple product. The embedded execution has
+            // forwarded this since the command existed; the difference was an
+            // omission, not a decision.
+            platform.notify_surface_lost(id, public_generation, reason);
             render.pause();
         }
 
@@ -778,11 +894,21 @@ fn handle_command(
 
 /// Drain what the renderer has to say, and keep the ingress on the same
 /// timeline it is.
+/// Minimum spacing between repeats of one render-error report.
+///
+/// Only presentation needs it: a Surface that rejects every swap produces one
+/// event per frame, and `on_error` is a call into host code. The other reports here
+/// happen at most once per attach or per loss episode, so they are not spaced --
+/// suppressing a report that fires once would suppress the only one there was.
+const RENDER_ERROR_NOTIFY_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 fn drain_render_events(
     id: crate::runtime::HostId,
     events: &shared::render_event::RenderEventReceiver,
     ingress: &Arc<Mutex<FrameIngress>>,
     last_context_epoch: &mut u64,
+    platform: &Arc<dyn PlatformServices>,
+    last_swap_report: &mut Option<std::time::Instant>,
 ) {
     while let Ok(event) = events.try_recv() {
         match event {
@@ -801,10 +927,48 @@ fn drain_render_events(
             }
             RenderEvent::ContextRecovered { success } => {
                 info!("[Host {id}] GL context recovered: success={success}");
+                // The unrecoverable case, and the only one of the pair the host is
+                // told about. A loss on its own is recoverable -- the render thread
+                // rebuilds the share group and always follows up with this event --
+                // and `on_error` is delivered as non-recoverable, so reporting every
+                // loss would tell a compliant host to tear down a session that
+                // recovered milliseconds later. Not spaced: the render thread already
+                // reports once per loss episode.
+                if !success {
+                    platform.notify_error(
+                        id,
+                        ErrorCode::RenderBackendError.as_u16(),
+                        "render context recovery failed",
+                        "",
+                    );
+                }
             }
             RenderEvent::SwapFailed { message } => {
                 warn!("[Host {id}] swap failed: {message}");
+                // Presentation is the host's own Surface refusing the frame, so the
+                // host is the one who can act on it. Spaced, because a Surface that
+                // rejects every swap produces one of these per frame.
+                let now = std::time::Instant::now();
+                let due = last_swap_report.is_none_or(|last| {
+                    now.duration_since(last) >= RENDER_ERROR_NOTIFY_MIN_INTERVAL
+                });
+                if due {
+                    *last_swap_report = Some(now);
+                    platform.notify_error(
+                        id,
+                        ErrorCode::RenderBackendError.as_u16(),
+                        "render swap failed",
+                        &message,
+                    );
+                }
             }
+            // Deliberately not reported to the host: a failed drawing command is the
+            // producer's, not the embedder's. In this lane the producer is a separate
+            // process that already learns about its own errors -- WebGL through the
+            // queue `getError` drains, and anything that invalidates its resource ids
+            // through the epoch bump above, which makes the next packet naming a dead
+            // id fail loudly. Handing them to `on_error` as well would report a
+            // content bug to the one party that cannot fix it.
             other => {
                 debug!("[Host {id}] render event: {other:?}");
             }

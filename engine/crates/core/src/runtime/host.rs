@@ -42,7 +42,6 @@ use crate::{
         HostId,
         input_state::{InputRetraction, InputState},
         session_temp::SessionTemp,
-        vsync,
     },
     services::{AudioService, PlatformServices, RenderService},
 };
@@ -224,7 +223,6 @@ impl Drop for Host {
         );
         self.render.shutdown();
         self.audio.shutdown();
-        vsync::unregister_vsync_sender(self.id);
         // NOTE: stats lifecycle is owned by the render thread — it registers
         // on entry and unregisters on all exit paths (Shutdown, channel close,
         // panic). Do not call unregister_stats here to avoid a double-free.
@@ -294,6 +292,7 @@ impl Host {
         platform: Arc<dyn PlatformServices>,
         init_options: InitOptions,
         surface_control: Arc<shared::surface::SurfaceControl>,
+        vsync_rx: Option<crossbeam_channel::Receiver<f64>>,
         restart_boundary: crate::runtime::restart_boundary::RestartBoundary,
     ) -> EngineResult<Self> {
         // The engine-neutral half: render thread, frame clock, audio, platform
@@ -309,6 +308,7 @@ impl Host {
             &platform,
             &init_options,
             surface_control,
+            vsync_rx,
         )?;
         let SessionShell {
             t_start,
@@ -321,6 +321,13 @@ impl Host {
             network_policy,
             gpu_caps,
             context_lost,
+            // Not read on this path, and the reason is that this execution has no
+            // point at which it observes the render worker going away: the frame
+            // clock is consumed by `op_await_next_frame` inside the JavaScript
+            // event loop, not by a `select!` arm that could notice it closing.
+            // What this execution notices instead is `gpu_caps` reporting Failed
+            // when `ensure_gpu_ready` joins it before the first line of launch JS.
+            render_exit: _render_exit,
             raf_rx,
             raf_demand,
             request_vsync,
@@ -763,6 +770,17 @@ impl Host {
                 self.render.on_surface_destroyed(generation);
                 Ok(())
             }
+            HostCommand::SurfaceInstalled { revision } => {
+                // Where a Surface becomes usable, and the only place: nothing waits for
+                // a recreate, so this report is what commits the attachment and what the
+                // resume hangs off. `on_update_surface` used to do both against a request
+                // that had only been queued.
+                if self.render.confirm_install(revision) {
+                    self.resume_foreground_if_visible();
+                }
+                Ok(())
+            }
+
             HostCommand::SurfaceLost {
                 public_generation,
                 reason,
@@ -1181,7 +1199,48 @@ impl Host {
         }
     }
 
+    /// Launch content, announcing the outcome either way.
+    ///
+    /// Only success used to be announced. `launch_content` ends in
+    /// `notify_game_ready`; its `Err` went to `handle_command`, which logs every
+    /// failure and reports none -- so of the two outcomes of loading content, one
+    /// reached the embedder and one did not.
+    ///
+    /// Nothing else covered the gap. `migo_session_load_content` returns as soon as
+    /// it has enqueued its command, so the caller's stack is gone by the time the
+    /// answer exists; `tracing` needs a subscriber the library refuses to install by
+    /// default; and `DebugStats.fatal_error_code`, which might have carried it, is
+    /// written only for panics and read by nothing in the Java SDK. That silence
+    /// covers the renderer having failed to come up, because `ensure_gpu_ready`
+    /// raises it from here.
+    ///
+    /// `session.h` already promised the behaviour: `on_error` carries "failures
+    /// raised while the content runs, because by then the caller's stack is long
+    /// gone". Content that never started is the first such failure an embedder needs.
+    ///
+    /// The pairing lives here rather than at the caller because there is more than
+    /// one caller: a restart reloads the previous module through the same path, and a
+    /// report attached to the launch command alone left that reload announcing its
+    /// successes and swallowing its failures.
+    ///
+    /// Deliberately unthrottled, unlike the render-error reports elsewhere in this
+    /// file. Those exist because a game hammering a broken pipeline can emit one per
+    /// frame; this runs once per launch or restart, so there is no burst to coalesce
+    /// and a suppressed first report would be the only report there was.
     async fn on_evaluate_module(&mut self, game_id: String, entry: String) -> EngineResult<()> {
+        let outcome = self.launch_content(game_id, entry).await;
+        if let Err(error) = &outcome {
+            self.platform.notify_error(
+                self.id,
+                error.code.as_u16(),
+                &error.msg,
+                error.detail.as_deref().unwrap_or(""),
+            );
+        }
+        outcome
+    }
+
+    async fn launch_content(&mut self, game_id: String, entry: String) -> EngineResult<()> {
         let t_eval_start = Instant::now();
         self.last_game_id = Some(game_id.clone());
         self.last_entry = Some(entry.clone());
@@ -1320,42 +1379,37 @@ impl Host {
             self.id, w, h
         );
 
-        // Retry a bounded number of times: a transiently full render command
-        // queue can make the bounded-blocking recreate send/reply time out, and a
-        // dropped recreate would strand the app on a black frame with no further
-        // surface callback from Java. Surface updates are rare, so a few host-
-        // thread retries are an acceptable tradeoff for not losing the surface.
-        let mut result = self.render.update_surface(lease.clone(), pixel_ratio);
-        let mut attempts = 1u32;
-        while result.is_err() && lease.is_live() && attempts < 3 {
-            attempts += 1;
-            warn!(
-                "[Host {}] on_update_surface attempt {} after error: {:?}",
-                self.id, attempts, result
-            );
-            result = self.render.update_surface(lease.clone(), pixel_ratio);
-        }
-
-        // Resume the foreground after the surface is (re)created — but only when
-        // actually foregrounded. Android can deliver surfaceCreated/Changed while
-        // still hidden (before onResume) or recreate a surface while backgrounded;
-        // resuming then would run render/audio in the background. In that case the
-        // surface is marked live but stays paused, and the OnShow live-surface
-        // path drives the resume once `backgrounded` clears.
-        if result.is_ok() {
-            if !self.backgrounded.load(Ordering::Relaxed) {
-                self.enter_foreground();
-                if let Some(args) = self.pending_on_show_args.take() {
-                    self.js.set_timer_backgrounded(false);
-                    self.js.invoke_host_hook("_internalTriggerOnShow", &args);
-                }
-            }
-            info!("[Host {}] on_update_surface completed", self.id);
-        } else if let Err(ref e) = result {
+        // Asks, and does not wait: `update_surface` returns once the renderer has been
+        // told. So there is nothing to resume on here -- the Surface is not usable yet,
+        // and resuming would run render and audio against one that may never install.
+        // The resume belongs to the `SurfaceInstalled` report, which is also the only
+        // thing that commits the attachment.
+        let result = self.render.update_surface(lease, pixel_ratio);
+        if let Err(ref e) = result {
             warn!("[Host {}] on_update_surface failed: {}", self.id, e);
         }
-
         result
+    }
+
+    /// Resume after a Surface became usable, but only when actually foregrounded.
+    ///
+    /// Android can deliver surfaceCreated/Changed while still hidden (before onResume)
+    /// or recreate a Surface while backgrounded; resuming then would run render and
+    /// audio in the background. In that case the Surface is live but stays paused, and
+    /// the OnShow live-surface path drives the resume once `backgrounded` clears.
+    ///
+    /// Shared by the two places a Surface becomes usable -- the `SurfaceInstalled` report
+    /// and `OnShow` finding one already live. One copy, because the guard is the part
+    /// that matters and two copies is how two paths come to disagree about it.
+    fn resume_foreground_if_visible(&mut self) {
+        if self.backgrounded.load(Ordering::Relaxed) {
+            return;
+        }
+        self.enter_foreground();
+        if let Some(args) = self.pending_on_show_args.take() {
+            self.js.set_timer_backgrounded(false);
+            self.js.invoke_host_hook("_internalTriggerOnShow", &args);
+        }
     }
 
     fn retract_input_for_focus_loss(&mut self) {

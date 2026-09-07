@@ -134,6 +134,7 @@
   public default void onLoadingStart();
   public default void onPaused();
   public default void onResumed();
+  public default void onSurfaceLost(int);
   public default void openSetting(com.migo.runtime.callback.SettingSink);
   public default void requestMidasPayment(com.migo.runtime.callback.PaymentHandler$PaymentRequest, com.migo.runtime.callback.PaymentSink);
   public default void requestMidasPaymentGameItem(com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest, com.migo.runtime.callback.PaymentSink);
@@ -315,6 +316,7 @@
   public void evaluateJavaScript(java.lang.String);
   public void loadGame(java.lang.String, java.lang.String);
   public void notifyGameReady();
+  public void notifySurfaceLost(long, int);
   public void onActivityCreated(android.app.Activity, android.os.Bundle);
   public void onActivityDestroyed(android.app.Activity);
   public void onActivityPaused(android.app.Activity);

@@ -50,11 +50,14 @@ impl CanvasHandler {
                 let _ = resp.send(res);
             }
 
-            CanvasCmd::RecreateOnscreen { resp, .. } => {
-                let error = EngineError::new(ErrorCode::InvalidOperation)
-                    .with_msg("RecreateOnscreen must be preflighted by the render thread");
-                let _ = resp.send(Err(error.clone()));
-                return Err(error);
+            CanvasCmd::RecreateOnscreen { .. } => {
+                // Unreachable in production: the render loop matches this variant before
+                // it delegates here, because installing a Surface needs the binding and
+                // the control plane that only the loop holds. Answering with an error
+                // rather than ignoring it keeps that fact checkable -- a caller that ever
+                // reaches this gets a refusal it can log, not a silent no-op.
+                return Err(EngineError::new(ErrorCode::InvalidOperation)
+                    .with_msg("RecreateOnscreen must be preflighted by the render thread"));
             }
 
             CanvasCmd::ResizeCanvas { id, w, h } => {

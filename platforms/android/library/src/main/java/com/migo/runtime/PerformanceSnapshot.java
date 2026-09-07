@@ -1,5 +1,7 @@
 package com.migo.runtime;
 
+import com.migo.runtime.internal.StatsProtocol;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -44,24 +46,25 @@ public final class PerformanceSnapshot {
     }
 
     static PerformanceSnapshot fromStatsPacket(byte[] data) {
-        if (data == null || data.length < 16) return null;
+        if (data == null || !StatsProtocol.has(data, StatsProtocol.OFFSET_DROPPED_FRAMES)) {
+            return null;
+        }
         ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
-        if ((buffer.getShort(0) & 0xFFFF) != 0x4D47) return null;
+        if ((buffer.getShort(0) & 0xFFFF) != StatsProtocol.MAGIC) return null;
 
         int version = buffer.getShort(2) & 0xFFFF;
-        if (version >= 6 && data.length < 144) return null;
+        if (version >= StatsProtocol.VERSION && data.length < StatsProtocol.BYTE_LEN) return null;
 
-        int h = 4;
-        int fpsX10 = buffer.getInt(h);
-        int frameTimeUs = buffer.getInt(h + 4);
-        int dropped = buffer.getInt(h + 8);
-        int firstFrameMs = data.length >= h + 20 ? buffer.getInt(h + 16) : 0;
-        int commandDrops = data.length >= h + 24 ? buffer.getInt(h + 20) : 0;
-        int inputCoalesced = data.length >= h + 132 ? buffer.getInt(h + 128) : 0;
+        int fpsX10 = buffer.getInt(StatsProtocol.OFFSET_FPS_X10);
+        int frameTimeUs = buffer.getInt(StatsProtocol.OFFSET_FRAME_TIME_US);
+        int dropped = buffer.getInt(StatsProtocol.OFFSET_DROPPED_FRAMES);
+        int firstFrameMs = read(buffer, data, StatsProtocol.OFFSET_FIRST_FRAME_MS);
+        int commandDrops = read(buffer, data, StatsProtocol.OFFSET_COMMAND_DROPS);
+        int inputCoalesced = read(buffer, data, StatsProtocol.OFFSET_INPUT_COALESCED);
         int inputReliableReserveUses =
-                data.length >= h + 136 ? buffer.getInt(h + 132) : 0;
+                read(buffer, data, StatsProtocol.OFFSET_INPUT_RELIABLE_RESERVE_USES);
         int inputSaturationEvents =
-                data.length >= h + 140 ? buffer.getInt(h + 136) : 0;
+                read(buffer, data, StatsProtocol.OFFSET_INPUT_SATURATION_EVENTS);
 
         return new PerformanceSnapshot(
                 (fpsX10 & 0xFFFFFFFFL) / 10f,
@@ -72,6 +75,10 @@ public final class PerformanceSnapshot {
                 inputCoalesced,
                 inputReliableReserveUses,
                 inputSaturationEvents);
+    }
+
+    private static int read(ByteBuffer buffer, byte[] data, int offset) {
+        return StatsProtocol.has(data, offset) ? buffer.getInt(offset) : 0;
     }
 
     @Override

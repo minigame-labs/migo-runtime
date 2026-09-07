@@ -42,7 +42,9 @@ mod control;
 mod geometry;
 mod host_window;
 
-pub use control::{SurfaceControl, SurfaceControlAttachError, SurfaceControlInstallError};
+pub use control::{
+    SurfaceCandidateRevision, SurfaceControl, SurfaceControlAttachError, SurfaceControlInstallError,
+};
 pub use host_window::{HostWindowInfo, HostWindowMetrics, HostWindowState};
 
 pub use attachment::{
