@@ -79,23 +79,12 @@ public final class NativeExports {
             new ConcurrentHashMap<>();
 
     /**
-     * A surface loss reported before its session was registered, kept until it can be
-     * delivered.
-     *
-     * <p>{@code init} spawns the render thread, and only then does the {@code GameSession}
-     * constructor register. A session started <em>with</em> a Surface can therefore have
-     * that Surface refused inside that window — and dropping the report would leave the
-     * app with no signal that it must attach another. This is the one callback where that
-     * matters: it is the only way an app learns that.
+     * Surface-loss reports that arrived before their session could receive them.
      *
      * <p>The window is real only for {@code createSession(Context, ...)}, which is
      * documented for Service use and does not require the main thread; the
      * {@code Activity} overload does, so main-thread serialization already puts
      * registration ahead of any posted report.
-     *
-     * <p>The first is kept rather than the last, as at the C boundary: a second loss in
-     * that window is for a Surface whose predecessor's loss has not been delivered yet, so
-     * replaying the newer one would skip the one the app needs.
      *
      * <p>What this does <em>not</em> close: {@code setListener} is a separate call, so a
      * replay can still arrive before a listener exists. That is not specific to this
@@ -103,8 +92,7 @@ public final class NativeExports {
      * too — and inventing retention for one of them would make the set inconsistent. This
      * takes delivery from impossible to likely, which is the part that was broken.
      */
-    private static final ConcurrentHashMap<Integer, long[]> sPendingSurfaceLoss =
-            new ConcurrentHashMap<>();
+    private static final PendingSurfaceLoss sPendingSurfaceLoss = new PendingSurfaceLoss();
 
     /** Per-session auth handlers set via GameSession API. */
     private static final ConcurrentHashMap<Integer, AuthHandler> sAuthHandlers =
@@ -292,7 +280,7 @@ public final class NativeExports {
             // constructed. Posted rather than delivered inline: this runs on the
             // constructor's thread, which `MigoRuntime.createSession` does not require to
             // be the main one, and the callback contract is that it is.
-            long[] pending = sPendingSurfaceLoss.remove(sessionId);
+            long[] pending = sPendingSurfaceLoss.drain(sessionId);
             if (pending != null) {
                 sMainHandler.post(() -> {
                     GameSession live = sSessions.get(sessionId);
@@ -396,7 +384,7 @@ public final class NativeExports {
         // A loss retained for a session that never registered has nobody left to tell,
         // and leaving it here would keep one entry per such session for the process's
         // life -- and hand it to whoever next used the id if ids were ever reused.
-        sPendingSurfaceLoss.remove(sessionId);
+        sPendingSurfaceLoss.discard(sessionId);
         // Every token this session issued becomes stale rather than current by
         // default, so anything still holding one stops reporting.
         RuntimeGenerationBoundary.unregisterSession(sessionId);
@@ -572,14 +560,20 @@ public final class NativeExports {
             GameSession session = sSessions.get(hostId);
             if (session != null) {
                 session.notifySurfaceLost(generation, reason);
-            } else if (!sPermissionOperations.isRetired(hostId)) {
-                // Absent from the live map means either "has not registered yet" or
-                // "already closed", and only the first is worth keeping: nothing will
-                // ever register a closed id again, so an entry made for one would sit
-                // here for the life of the process. `unregisterSession` removing the
-                // entry does not cover this -- a report posted before the close can run
-                // after it and put a new one back.
-                sPendingSurfaceLoss.putIfAbsent(hostId, new long[] {generation, reason});
+                return;
+            }
+            // Absent from the live map means either "has not registered yet" or "already
+            // closed", and only the first is worth an entry: nothing will ever register a
+            // closed id again, so one made for it would sit there for the life of the
+            // process. `unregisterSession` removing it does not cover this -- a report
+            // posted before the close can run after it.
+            if (sPermissionOperations.isRetired(hostId)) return;
+            long[] mine = sPendingSurfaceLoss.retainOrTakeBack(
+                    hostId, generation, reason, sSessions::containsKey);
+            if (mine == null) return;
+            GameSession registered = sSessions.get(hostId);
+            if (registered != null) {
+                registered.notifySurfaceLost(mine[0], (int) mine[1]);
             }
         });
     }
