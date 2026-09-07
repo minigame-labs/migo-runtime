@@ -507,6 +507,30 @@ public final class NativeExports {
         }
     }
 
+    /**
+     * Called from native code (Rust) when a live Surface was retired after the engine
+     * failed to present to it.
+     * <p>
+     * The opposite direction from {@link GameSession#onSurfaceDestroyed()}: that one is
+     * the host taking its Surface back, this one is the engine reporting that the
+     * Surface the host still believes in is gone. Nothing else carries it — the render
+     * worker stays alive, so no channel closes and no reply arrives.
+     * <p>
+     * JNI signature: {@code (IJI)V}
+     *
+     * @param hostId     Session/host ID
+     * @param generation The host-facing Surface generation that was lost
+     * @param reason     0 unknown, 1 host destroyed, 2 device lost, 3 platform error
+     */
+    public static void onSurfaceLost(int hostId, long generation, int reason) {
+        sMainHandler.post(() -> {
+            GameSession session = sSessions.get(hostId);
+            if (session != null) {
+                session.notifySurfaceLost(generation, reason);
+            }
+        });
+    }
+
     // ==================== Image Decoding ====================
 
     /**

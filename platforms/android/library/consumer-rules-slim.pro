@@ -44,4 +44,5 @@
     public static *** onError(...);
     public static *** onExit(...);
     public static *** onHostMessage(...);
+    public static *** onSurfaceLost(...);
 }

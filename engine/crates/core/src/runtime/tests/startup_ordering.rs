@@ -14,9 +14,10 @@ const HOST_CMD: &str = include_str!("../../../../shared/src/protocol/host_cmd.rs
 const EXTERNAL: &str = include_str!("../external.rs");
 const REGISTRY: &str = include_str!("../registry.rs");
 const CAPI_SURFACE: &str = include_str!("../../../../capi/src/surface.rs");
-/// Android's `HostNotifier`. The one platform whose host cannot hear a surface
-/// loss: `notify_surface_lost` is implemented only by the C boundary's
-/// `CapiHostKit`, and this impl takes the trait's no-op default.
+/// Android's `HostNotifier`. Once the one platform whose host could not hear a surface
+/// loss -- `notify_surface_lost` was implemented only by the C boundary's `CapiHostKit`
+/// and this impl took the trait's no-op default, which is what forced a refused Surface
+/// to latch `gpu_caps` instead.
 const ANDROID_PLATFORM: &str = include_str!("../../../../platform/src/android/platform.rs");
 
 /// A region with its line comments removed.
@@ -751,30 +752,33 @@ fn gpu_failure_detail_is_initialized_before_ready_publication() {
 }
 
 #[test]
-fn a_refused_surface_declares_the_gpu_unusable_only_while_android_cannot_hear_a_loss() {
-    // A deferral, asserted so that it expires by itself.
+fn a_refused_surface_does_not_declare_the_gpu_unusable() {
+    // What a refused *onscreen* install may and may not touch.
     //
-    // `gpu_caps` answers "are the published capability values real", and after a
-    // refused *onscreen* install they are: they come from
-    // `DeviceCapabilities::detect` against the resource context, which is up, and
-    // `publish_gpu_caps` reads nothing an onscreen surface contributes to. Worse,
-    // `set_failed` latches, so `ensure_gpu_ready` fails for the rest of the session
-    // and content can never start -- while the surface loss reported alongside tells
-    // the host to attach a Surface this session could then never use.
+    // `gpu_caps` answers "are the published capability values real", and after this
+    // failure they are: they come from `DeviceCapabilities::detect` against the
+    // resource context, which is up, and `publish_gpu_caps` reads nothing an onscreen
+    // surface contributes to. `set_failed` also latches, so declaring failure here made
+    // `ensure_gpu_ready` fail for the rest of the session -- content could never start
+    // -- while the surface loss reported alongside told the host to attach a Surface
+    // this session could then never use. A recoverable failure made permanent.
     //
-    // It stays anyway, because the alternative is silence on the platform that ships.
-    // Publishing Ready makes the state indistinguishable from a warm start, which
-    // legitimately begins with no Surface, so the launch cannot treat it as a failure
-    // -- and the only remaining signal is the loss, which on Android reaches nobody.
-    //
-    // So the blocker is asserted rather than remembered.
+    // It survived for one reason, and this test used to assert that reason so it would
+    // expire by itself: publishing Ready makes the state indistinguishable from a warm
+    // start, which legitimately begins with no Surface, so the launch cannot treat it as
+    // a failure -- leaving the loss as the only signal, and on Android the loss reached
+    // nobody. Android delivering it is what retired the compromise, so what was the
+    // blocker assertion is now the delivery assertion: the latch may not come back
+    // while the signal that replaced it exists, and the signal may not quietly go away.
     assert!(
-        !ANDROID_PLATFORM.contains("fn notify_surface_lost"),
-        "AndroidPlatform now implements notify_surface_lost, so a refused Surface can \
-         be reported without latching gpu_caps: delete the set_failed in the refused-\
-         Surface arm of render_thread.rs, and the caps question stops being conflated \
-         with the Surface question. The C boundary has always delivered this callback; \
-         Android taking the trait default is what made the latch the only signal"
+        ANDROID_PLATFORM.contains("fn notify_surface_lost"),
+        "AndroidPlatform must keep delivering a Surface loss: it is what a host learns \
+         from instead of a latched gpu_caps, and removing it would silently restore \
+         'content announces ready, draws nothing, reports nothing'"
+    );
+    assert!(
+        ANDROID_PLATFORM.contains("jni::notify_surface_lost("),
+        "and it must reach Java, not stop at the trait impl"
     );
 
     let manager_start = CANVAS_MANAGER
@@ -790,13 +794,14 @@ fn a_refused_surface_declares_the_gpu_unusable_only_while_android_cannot_hear_a_
     );
     assert!(CANVAS_MANAGER.contains("pub(crate) fn publish_gpu_caps(&self)"));
 
-    // Derived rather than listed: construction failing, a panic before it finished,
-    // and the refused Surface above. A fourth appearing is the drift to catch.
+    // Derived rather than listed: construction failing and a panic before it finished.
+    // Both are the GPU genuinely not coming up. A third appearing is the drift to
+    // catch, and the third that used to be here was the refused Surface.
     let failures = RENDER_THREAD.matches("gpu_caps.set_failed(").count();
     assert_eq!(
-        failures, 3,
-        "exactly three sites may declare the GPU unusable -- construction, the panic \
-         barrier, and the deferral above -- and {failures} do"
+        failures, 2,
+        "only the GPU failing to come up may declare it unusable -- construction and \
+         the panic barrier -- and {failures} sites do"
     );
 
     // The publication itself is no longer gated on a flag: reaching it means
@@ -807,8 +812,7 @@ fn a_refused_surface_declares_the_gpu_unusable_only_while_android_cannot_hear_a_
     );
     assert!(
         !code_only(RENDER_THREAD).contains("startup_failed"),
-        "the flag that gated the publication is gone; the latch above is the whole of \
-         what a refused Surface still does to readiness"
+        "the flag that gated the publication is gone, and nothing replaced it"
     );
 }
 
@@ -1089,12 +1093,13 @@ fn a_surface_the_host_took_back_is_cancellation_and_one_it_refused_is_a_loss() {
         "cancellation must not declare the GPU unusable: the host took its own \
          Surface back and the capabilities were never in question"
     );
-    // The refused arm does, deliberately and conditionally -- see
-    // `a_refused_surface_declares_the_gpu_unusable_only_while_android_cannot_hear_a_loss`.
+    // Neither does the refused arm, now that a loss reaches every host. It did until
+    // Android could hear one -- see `a_refused_surface_does_not_declare_the_gpu_unusable`
+    // for what that latch cost and what replaced it.
     assert!(
-        refused.contains("set_failed"),
-        "a refused Surface must keep failing readiness while that is the only signal \
-         Android can hear"
+        !refused.contains("set_failed"),
+        "a refused Surface says nothing about the GPU: the capabilities are real and \
+         the latch made a recoverable failure permanent"
     );
 }
 

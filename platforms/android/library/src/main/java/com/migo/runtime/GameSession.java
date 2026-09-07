@@ -956,6 +956,35 @@ public final class GameSession implements Closeable {
         });
     }
 
+    /**
+     * @hide Called from {@link com.migo.runtime.internal.NativeExports#onSurfaceLost}
+     * on the main thread when the engine retired a Surface it could not present to.
+     * <p>
+     * The engine has already given the Surface up, so this session's belief that one is
+     * live is stale and is corrected first — leaving vsync armed would keep asking a
+     * renderer with nothing to draw into for frames. Only then is the listener told,
+     * because an app that re-attaches from inside the callback must find the session in
+     * the state a fresh {@link #updateSurface(Surface)} expects.
+     * <p>
+     * No automatic re-attach: this session does not hold the Surface (the app supplies
+     * it), and a Surface that is genuinely gone would make retrying a loop. The C
+     * boundary reports and waits for the same reason.
+     */
+    public void notifySurfaceLost(long generation, int reason) {
+        ThreadCheck.ensureMainThread();
+        synchronized (lock) {
+            if (state.get() == SessionState.DESTROYED) return;
+            Log.w(TAG, "surface lost: session=" + sessionId + ", generation=" + generation
+                    + ", reason=" + reason);
+            hasLiveSurface = false;
+            vsyncScheduler.setSurfaceReady(false);
+        }
+        GameSessionListener l = listener;
+        if (l != null) {
+            l.onSurfaceLost(reason);
+        }
+    }
+
     // ==================== Debug ====================
 
     /**

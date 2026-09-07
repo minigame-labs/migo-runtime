@@ -1908,33 +1908,26 @@ impl RenderThread {
                             let (e, _) =
                                 recreate_engine_error("initial Surface rejected", error);
                             error!("create_onscreen failed: {}", e);
-                            // This does conflate two questions, and the conflation is
-                            // deliberate until one thing is built.
+                            // Deliberately not `gpu_caps.set_failed`. It used to be, and
+                            // that conflated two questions: `gpu_caps` answers "are the
+                            // published capability values real", and after this failure
+                            // they are -- they came from `DeviceCapabilities::detect`
+                            // against the resource context, which is up, and
+                            // `publish_gpu_caps` reads nothing an onscreen surface
+                            // contributes to. Worse, `set_failed` latches, so
+                            // `ensure_gpu_ready` failed for the rest of the session and
+                            // content could never start, while the loss reported below
+                            // told the host to attach a Surface this session could then
+                            // never use.
                             //
-                            // `gpu_caps` answers "are the published capability values
-                            // real", and after this failure they are: they came from
-                            // `DeviceCapabilities::detect` against the resource
-                            // context, which is up, and `publish_gpu_caps` reads
-                            // nothing an onscreen surface contributes to. Worse,
-                            // `set_failed` latches -- there is no way back -- so
-                            // `ensure_gpu_ready` fails for the rest of the session and
-                            // content can never start, while the loss reported below
-                            // tells the host to attach a Surface this session could
-                            // then never use.
-                            //
-                            // It stays because the alternative is silence on the
-                            // platform that ships. Publishing Ready here makes this
-                            // state indistinguishable from a warm start -- which
-                            // legitimately begins with no Surface -- so the launch
-                            // cannot treat it as a failure, and the only remaining
-                            // signal is the surface loss below. `notify_surface_lost`
-                            // has no implementation in `platform` and no Java bridge,
-                            // so on Android that signal reaches nobody: content would
-                            // announce ready, draw nothing, and report nothing.
-                            //
-                            // ⇒ Remove this the moment Android can deliver a surface
-                            // loss. Not before.
-                            gpu_caps.set_failed(format!("create_onscreen failed: {}", e));
+                            // It survived only because it was the last signal Android
+                            // could hear: publishing Ready here makes this state
+                            // indistinguishable from a warm start, which legitimately
+                            // begins with no Surface, so the launch cannot treat it as a
+                            // failure. `AndroidPlatform` now implements
+                            // `notify_surface_lost`, so the loss below reaches a Java
+                            // host through `NativeExports.onSurfaceLost`, and the caps
+                            // question goes back to being about the GPU.
                             //
                             // The same route the update path takes for the same
                             // failure, and the asymmetry was the defect: an initial

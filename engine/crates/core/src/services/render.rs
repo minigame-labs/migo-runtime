@@ -308,7 +308,12 @@ impl RenderService {
     ///
     /// A caller deciding whether to announce a timeout needs this: while it is true the
     /// operation has not failed, it has only not answered yet.
+    ///
+    /// Asked only by the external-frame session, and cfg'd to it rather than left for
+    /// every build to warn about. The embedded session never reaches the decision: its
+    /// `UpdateSurface` has no host to report an error to.
     #[inline]
+    #[cfg(feature = "external-frames")]
     pub(crate) fn install_pending(&self) -> bool {
         self.outstanding.is_some()
     }
