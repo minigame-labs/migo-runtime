@@ -45,12 +45,12 @@ impl From<SurfaceGenerationError> for SurfaceControlAttachError {
 ///
 /// A distinct type from [`SurfaceGeneration`] on purpose, and the reason is a defect
 /// this replaced. A generation identifies an *attachment*, and one attachment is
-/// published more than once: a resize rebuilds the native target and mints a lease
-/// against the same live generation. So two queued requests could name the same
-/// generation, and the older one -- still queued after its reply timed out -- matched
-/// the newer one's candidate, installed it under the older request's presentation
-/// parameters, answered on the older request's channel, and on failure retired the
-/// generation the host was actively using.
+/// published more than once: a resize rebuilds the descriptor over the attachment's own
+/// native resource and mints a lease against the same live generation. So two queued
+/// requests could name the same generation, and the older one -- still queued after its
+/// reply timed out -- matched the newer one's candidate, installed it under the older
+/// request's presentation parameters, answered on the older request's channel, and on
+/// failure retired the generation the host was actively using.
 ///
 /// Naming this a generation would have made that mistake available again; naming it
 /// something else makes the compiler refuse it.
@@ -277,11 +277,16 @@ impl SurfaceControl {
     /// Retire the generation only while `revision` is still the published candidate.
     ///
     /// A generation is not enough here, and the gap is the same one
-    /// [`SurfaceCandidateRevision`] exists for. A resize republishes the live
-    /// generation with a new native target, so a worker whose install failed can hold
-    /// a generation that still matches the gate while the candidate behind it is
-    /// already a valid replacement. Retiring on the generation alone would revoke that
-    /// replacement and report its loss to a host that had just supplied it.
+    /// [`SurfaceCandidateRevision`] exists for. A resize republishes the live generation
+    /// with a new descriptor, so a worker whose install failed can hold a generation that
+    /// still matches the gate while the candidate behind it is already a valid
+    /// replacement. Retiring on the generation alone would revoke that replacement and
+    /// report its loss to a host that had just supplied it.
+    ///
+    /// For a Surface already installed and found unusable at present time, this is the
+    /// wrong question and [`Self::retire_generation_and_request`] is the right one: what
+    /// failed there is the native window, which every publication of that generation
+    /// shares. See `a_surface_found_unusable_while_presenting_must_retire_by_generation`.
     ///
     /// The check and the transition share the candidate lock, so a publication cannot
     /// slip between them: publishing takes the same lock.
@@ -411,6 +416,21 @@ mod tests {
 
         fn size(&self) -> (u32, u32) {
             (640, 480)
+        }
+    }
+
+    /// The descriptor a resize rebuilds: a different size over the same native
+    /// resource, which is the only thing that changes on that path.
+    #[derive(Debug)]
+    struct ResizedSurface;
+
+    impl Surface for ResizedSurface {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn size(&self) -> (u32, u32) {
+            (480, 800)
         }
     }
 
@@ -602,13 +622,13 @@ mod tests {
     #[test]
     fn two_requests_for_one_generation_are_still_told_apart() {
         // The case a generation cannot express, and the reason the request carries a
-        // revision instead. A resize rebuilds the native target and mints a lease
-        // against the *same* live generation -- `attach_or_update` reuses it while the
-        // gate is live -- so two queued requests can name one generation. The older
-        // one, still queued after its reply timed out, would then match the newer
-        // one's candidate: install it under the older request's presentation
-        // parameters, answer on the older request's channel, and on failure retire the
-        // generation the host is actively using.
+        // revision instead. A resize rebuilds the descriptor over the attachment's own
+        // native resource and mints a lease against the *same* live generation --
+        // `attach_or_update` reuses it while the gate is live -- so two queued requests
+        // can name one generation. The older one, still queued after its reply timed out,
+        // would then match the newer one's candidate: install it under the older
+        // request's presentation parameters, answer on the older request's channel, and
+        // on failure retire the generation the host is actively using.
         let control = Arc::new(SurfaceControl::new());
         let token = control.attach_or_update().unwrap();
         let first: SurfaceRef = Arc::new(TestSurface);
@@ -642,10 +662,11 @@ mod tests {
     fn retiring_a_failed_publication_spares_the_replacement_that_shares_its_generation() {
         // The failure this prevents. A worker reads the candidate, its EGL install
         // takes a while, and a resize republishes the *same* generation with a new
-        // native target -- legitimate, and the host now considers that replacement its
-        // live Surface. The old install then fails. Retiring on the generation alone,
-        // which is all it had, revoked the replacement too and reported a loss for a
-        // Surface the host had just supplied and which was fine.
+        // descriptor over the same native resource -- legitimate, and the host now
+        // considers that replacement its live Surface. The old install then fails.
+        // Retiring on the generation alone, which is all it had, revoked the replacement
+        // too and reported a loss for a Surface the host had just supplied and which was
+        // fine.
         let control = Arc::new(SurfaceControl::new());
         let token = control.attach_or_update().unwrap();
         let generation = PublicSurfaceGeneration::new(1).unwrap();
@@ -685,6 +706,83 @@ mod tests {
         assert!(!live.is_live());
         assert!(control.live_candidate().is_none());
         drop((failed, live));
+    }
+
+    #[test]
+    fn a_surface_found_unusable_while_presenting_must_retire_by_generation() {
+        // The other half of the rule above, and the reason `retire_generation_and_request`
+        // still exists. A resize keeps the native resource and rebuilds only the
+        // descriptor around it -- `migo_surface_update` clones `active.resource` and
+        // passes it to `SurfaceLease::with_resource` -- so a republication of one
+        // generation is the *same* window at a new size.
+        //
+        // So when a swap fails and the driver reports the window unusable, what is dead
+        // is the window, not one publication of it. Retiring by the installed revision
+        // would retire nothing at all in exactly the case that matters: superseded, it
+        // matches no publication, so the gate stays live over a dead window, the host is
+        // never told, and the queued request installs it.
+        let control = Arc::new(SurfaceControl::new());
+        let token = control.attach_or_update().unwrap();
+        let public = PublicSurfaceGeneration::new(1).unwrap();
+        let installed =
+            SurfaceLease::new_tracked(Arc::new(TestSurface) as SurfaceRef, token.clone(), public);
+        let resized = SurfaceLease::with_resource(
+            Arc::new(ResizedSurface) as SurfaceRef,
+            token,
+            installed.resource_lease(),
+        )
+        .expect("a resize reuses the live generation's own resource");
+        assert_ne!(
+            installed.size(),
+            resized.size(),
+            "this must model a resize, not a re-attach"
+        );
+
+        let pending = Arc::new(AtomicUsize::new(0));
+        let release = installed
+            .prepare_release(Arc::clone(&pending), None)
+            .expect("the resource is registered once, through either lease");
+        assert!(
+            resized.prepare_release(Arc::clone(&pending), None).is_err(),
+            "both leases must name one native resource, which is what makes the \
+             replacement share the installed window's fate"
+        );
+
+        let installed_revision = control.publish_candidate(installed.clone());
+        let replacement = control.publish_candidate(resized.clone());
+
+        assert!(
+            control
+                .retire_publication_and_request(installed_revision)
+                .is_none(),
+            "the installed publication is superseded, so the revision form retires \
+             nothing -- this is the regression, not the fix"
+        );
+        assert!(
+            installed.is_live(),
+            "and leaves the dead window live for the queued request to install"
+        );
+
+        assert!(
+            control.retire_generation_and_request(installed.generation()),
+            "the generation form is the one that closes the window that failed"
+        );
+        assert!(!installed.is_live());
+        assert!(!resized.is_live(), "one window, one fate");
+        assert!(
+            control.live_candidate_for(replacement).is_none(),
+            "the replacement must not survive as something a worker would install"
+        );
+
+        let release = release.commit();
+        assert_eq!(
+            release.phase(),
+            SurfaceReleasePhase::Pending,
+            "the host's own two leases still hold the resource"
+        );
+        drop((installed, resized));
+        assert_eq!(release.phase(), SurfaceReleasePhase::Released);
+        assert_eq!(pending.load(Ordering::Acquire), 0);
     }
 
     #[test]

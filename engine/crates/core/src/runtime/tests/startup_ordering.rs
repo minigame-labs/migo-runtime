@@ -1001,6 +1001,46 @@ fn an_initial_surface_that_cannot_be_installed_is_reported_like_a_later_one() {
 }
 
 #[test]
+fn a_surface_that_fails_at_swap_time_is_retired_by_generation_not_by_publication() {
+    // The complement of the previous test, and it is not symmetry for its own sake:
+    // three of the four retirement sites moved to the publication form, so the fourth
+    // now looks like an oversight. Swept along with them it would be a regression, and
+    // nothing here would have noticed -- the assertions above only say the *request*
+    // paths must not use the generation form, which stays true when the generation form
+    // has no callers left at all.
+    //
+    // What is dead at swap time is the native window, and every publication of one
+    // generation is that same window: a resize rebuilds the descriptor over the
+    // attachment's own resource. Retiring by the installed publication would therefore
+    // retire nothing whenever a resize had superseded it -- gate still live over a dead
+    // window, host never told, queued request free to install it. Proven in
+    // `a_surface_found_unusable_while_presenting_must_retire_by_generation`.
+    let presentation = RENDER_THREAD
+        .split("} else if cm.is_surface_unavailable() {")
+        .nth(1)
+        .expect("the swap path must still classify an unusable Surface")
+        .split("\n                                } else {")
+        .next()
+        .expect("that arm must end");
+
+    assert!(
+        presentation.contains("retire_unexpected_surface("),
+        "a Surface the driver refused at swap time must be retired by generation: the \
+         window is what failed, and a resize republishes that window"
+    );
+    assert!(
+        !code_only(presentation).contains("retire_published_surface("),
+        "the publication form must not be swept in here: superseded by a resize it \
+         retires nothing, leaving a dead window live and the host untold"
+    );
+    assert!(
+        presentation.contains("render_binding.generation()"),
+        "and the generation must come from what is installed, not from what is \
+         published: they differ exactly when this matters"
+    );
+}
+
+#[test]
 fn a_surface_the_host_took_back_is_cancellation_and_one_it_refused_is_a_loss() {
     // The property: the two ways an initial install can fail to install are told
     // apart, and each is answered with the thing that is true of it.
