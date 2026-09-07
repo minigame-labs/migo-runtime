@@ -20,6 +20,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.migo.runtime.internal.NativeMethods;
+import com.migo.runtime.internal.StatsProtocol;
 
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -34,9 +35,6 @@ import java.nio.ByteOrder;
  *
  */
 public class DebugOverlayView extends LinearLayout {
-
-    private static final int STATS_MAGIC      = 0x4D47; // 'M' 'G'
-    private static final int STATS_HEADER_LEN = 4;      // 2 magic + 2 version
 
     private static final int BG_COLOR      = 0xCC1B1B1B; // 80% dark
     private static final int TEXT_COLOR     = 0xFFE0E0E0; // Grey 300
@@ -264,51 +262,50 @@ public class DebugOverlayView extends LinearLayout {
         }
     }
 
+    /** Zero for a field a shorter packet from an older engine does not carry. */
+    private static int read(ByteBuffer buffer, byte[] data, int offset) {
+        return StatsProtocol.has(data, offset) ? buffer.getInt(offset) : 0;
+    }
+
     private void refreshStats() {
         byte[] data = NativeMethods.getDebugStats(sessionId);
-        if (data == null || data.length < STATS_HEADER_LEN + 12) return;
+        if (data == null || !StatsProtocol.has(data, StatsProtocol.OFFSET_DROPPED_FRAMES)) return;
 
         ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         // Validate magic header to detect Rust/Java protocol mismatch.
         int magic = buf.getShort(0) & 0xFFFF;
-        if (magic != STATS_MAGIC) return;
+        if (magic != StatsProtocol.MAGIC) return;
 
-        int h = STATS_HEADER_LEN; // payload starts at byte 4
-        int fpsX10      = buf.getInt(h + 0);
-        int frameTimeUs = buf.getInt(h + 4);
-        int dropped     = buf.getInt(h + 8);
-        int fatalError  = data.length >= h + 16 ? buf.getInt(h + 12) : 0;
-        int firstFrameMs = data.length >= h + 20 ? buf.getInt(h + 16) : 0;
-        int cmdDrops     = data.length >= h + 24 ? buf.getInt(h + 20) : 0;
-        int rafLatencyUs = data.length >= h + 28 ? buf.getInt(h + 24) : 0;
-        int swapBlockUs = data.length >= h + 32 ? buf.getInt(h + 28) : 0;
-        int uploadQueueDepth = data.length >= h + 36 ? buf.getInt(h + 32) : 0;
-        int glyphAtlasMiss = data.length >= h + 40 ? buf.getInt(h + 36) : 0;
-        // Render optimization metrics (appended at payload byte 40+).
-        int partialDamageFrames = data.length >= h + 44 ? buf.getInt(h + 40) : 0;
-        int fullSurfaceFrames   = data.length >= h + 48 ? buf.getInt(h + 44) : 0;
-        int damageAreaKpx       = data.length >= h + 52 ? buf.getInt(h + 48) : 0;
-        int uploadFrameReject   = data.length >= h + 56 ? buf.getInt(h + 52) : 0;
-        int droppedUploadRecov  = data.length >= h + 60 ? buf.getInt(h + 56) : 0;
-        // v4 queue / cache observability at payload offsets 92..112.
-        // Tail-append only; a v3 native (payload 92) will simply
-        // short-circuit these reads to 0 via the length guards.
-        int renderQueueLen      = data.length >= h + 96  ? buf.getInt(h + 92)  : 0;
-        int collectorFramePeak  = data.length >= h + 100 ? buf.getInt(h + 96)  : 0;
-        int webglErrOverflow    = data.length >= h + 104 ? buf.getInt(h + 100) : 0;
-        int skImageWrappers     = data.length >= h + 108 ? buf.getInt(h + 104) : 0;
-        int deferredUploads     = data.length >= h + 112 ? buf.getInt(h + 108) : 0;
-        // v5 Canvas2D zero-readback snapshot counters at payload
-        // offsets 112..128.  Older natives short-circuit to 0.
-        int snapTaken           = data.length >= h + 116 ? buf.getInt(h + 112) : 0;
-        int snapFallback        = data.length >= h + 120 ? buf.getInt(h + 116) : 0;
-        int snapUpload          = data.length >= h + 124 ? buf.getInt(h + 120) : 0;
-        int snapForcedReadback  = data.length >= h + 128 ? buf.getInt(h + 124) : 0;
-        // v6 bounded input transport counters at payload offsets 128..140.
-        int inputCoalesced      = data.length >= h + 132 ? buf.getInt(h + 128) : 0;
-        int inputReserveUses    = data.length >= h + 136 ? buf.getInt(h + 132) : 0;
-        int inputSaturation     = data.length >= h + 140 ? buf.getInt(h + 136) : 0;
+        int fpsX10      = buf.getInt(StatsProtocol.OFFSET_FPS_X10);
+        int frameTimeUs = buf.getInt(StatsProtocol.OFFSET_FRAME_TIME_US);
+        int dropped     = buf.getInt(StatsProtocol.OFFSET_DROPPED_FRAMES);
+        int fatalError  = read(buf, data, StatsProtocol.OFFSET_FATAL_ERROR_CODE);
+        int firstFrameMs = read(buf, data, StatsProtocol.OFFSET_FIRST_FRAME_MS);
+        int cmdDrops     = read(buf, data, StatsProtocol.OFFSET_COMMAND_DROPS);
+        int rafLatencyUs = read(buf, data, StatsProtocol.OFFSET_RAF_LATENCY_US);
+        int swapBlockUs = read(buf, data, StatsProtocol.OFFSET_SWAP_BLOCK_US);
+        int uploadQueueDepth = read(buf, data, StatsProtocol.OFFSET_UPLOAD_QUEUE_DEPTH);
+        int glyphAtlasMiss = read(buf, data, StatsProtocol.OFFSET_GLYPH_ATLAS_MISS);
+        int partialDamageFrames = read(buf, data, StatsProtocol.OFFSET_PARTIAL_DAMAGE_FRAMES);
+        int fullSurfaceFrames   = read(buf, data, StatsProtocol.OFFSET_FULL_SURFACE_FRAMES);
+        int damageAreaKpx       = read(buf, data, StatsProtocol.OFFSET_DAMAGE_AREA_K_PIXELS);
+        int uploadFrameReject   = read(buf, data, StatsProtocol.OFFSET_UPLOAD_FRAME_REJECTIONS);
+        int droppedUploadRecov  = read(buf, data, StatsProtocol.OFFSET_DROPPED_UPLOAD_RECOVERIES);
+        int renderQueueLen      = read(buf, data, StatsProtocol.OFFSET_RENDER_QUEUE_LEN);
+        int collectorFramePeak  = read(buf, data, StatsProtocol.OFFSET_COLLECTOR_PENDING_BYTES);
+        int webglErrOverflow    = read(buf, data, StatsProtocol.OFFSET_WEBGL_ERROR_OVERFLOW);
+        int skImageWrappers     = read(buf, data, StatsProtocol.OFFSET_SK_IMAGE_WRAPPERS);
+        int deferredUploads     = read(buf, data, StatsProtocol.OFFSET_DEFERRED_UPLOADS);
+        int snapTaken           = read(buf, data, StatsProtocol.OFFSET_CANVAS2D_SNAPSHOTS_TAKEN);
+        int snapFallback        = read(buf, data, StatsProtocol.OFFSET_CANVAS2D_SNAPSHOT_FALLBACKS);
+        int snapUpload          = read(buf, data, StatsProtocol.OFFSET_CANVAS2D_SNAPSHOT_UPLOADS);
+        int snapForcedReadback =
+                read(buf, data, StatsProtocol.OFFSET_CANVAS2D_SNAPSHOT_FORCED_READBACKS);
+        int inputCoalesced      = read(buf, data, StatsProtocol.OFFSET_INPUT_COALESCED);
+        int inputReserveUses =
+                read(buf, data, StatsProtocol.OFFSET_INPUT_RELIABLE_RESERVE_USES);
+        int inputSaturation     = read(buf, data, StatsProtocol.OFFSET_INPUT_SATURATION_EVENTS);
 
         float fps     = (fpsX10 & 0xFFFFFFFFL) / 10f;
         float frameMs = (frameTimeUs & 0xFFFFFFFFL) / 1000f;

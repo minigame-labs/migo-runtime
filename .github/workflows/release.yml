@@ -357,6 +357,16 @@ jobs:
       - name: JNI outbound signature contract
         run: bash scripts/test-jni-outbound-signature-contract.sh
 
+      # The third spelling of that same boundary: the stats packet crosses as a raw
+      # little-endian byte[], so its layout is written twice and both sides compile.
+      # A disagreement is not a crash but a number -- the overlay and
+      # PerformanceSnapshot report a neighbouring counter under the wrong name, and
+      # the Java test used to assert the offsets it was written against, so a reader
+      # taking input_coalesced out of the Canvas2D tail agreed with its own test.
+      # Instruments are what memory and CPU claims are argued from.
+      - name: Stats packet offset contract
+        run: bash scripts/test-stats-packet-offset-contract.sh
+
       # The inbound half of the same boundary, and the same reason a compiler
       # cannot help: `platform/src/android/jni/**` is `cfg(target_os =
       # "android")`, so nothing in it is executed by any test on any machine here.
