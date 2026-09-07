@@ -78,6 +78,24 @@ public final class NativeExports {
     private static final ConcurrentHashMap<Integer, GameSession> sSessions =
             new ConcurrentHashMap<>();
 
+    /**
+     * A surface loss reported before its session was registered, kept until it can be
+     * delivered.
+     *
+     * <p>{@code init} spawns the render thread, and only then does the {@code GameSession}
+     * constructor register. A session started <em>with</em> a Surface can therefore have
+     * that Surface refused inside that window — and dropping the report would leave the
+     * wrapper believing a Surface is live that the engine has already retired, with no
+     * later signal to correct it. This is the one callback where that matters: it is the
+     * only way an app learns it must attach another.
+     *
+     * <p>The first is kept rather than the last, as at the C boundary: a second loss in
+     * that window is for a Surface the app has not yet been told about the loss of the
+     * first of, so replaying the newer one would skip the one it needs.
+     */
+    private static final ConcurrentHashMap<Integer, long[]> sPendingSurfaceLoss =
+            new ConcurrentHashMap<>();
+
     /** Per-session auth handlers set via GameSession API. */
     private static final ConcurrentHashMap<Integer, AuthHandler> sAuthHandlers =
             new ConcurrentHashMap<>();
@@ -260,6 +278,19 @@ public final class NativeExports {
             // registering a generation for one it refused would leave a session
             // numbered here that exists nowhere else.
             RuntimeGenerationBoundary.registerSession(sessionId);
+            // A loss the renderer reported while this session was still being
+            // constructed. Posted rather than delivered inline: this runs on the
+            // constructor's thread, which `MigoRuntime.createSession` does not require to
+            // be the main one, and the callback contract is that it is.
+            long[] pending = sPendingSurfaceLoss.remove(sessionId);
+            if (pending != null) {
+                sMainHandler.post(() -> {
+                    GameSession live = sSessions.get(sessionId);
+                    if (live != null) {
+                        live.notifySurfaceLost(pending[0], (int) pending[1]);
+                    }
+                });
+            }
         }
     }
 
@@ -352,6 +383,10 @@ public final class NativeExports {
      */
     public static void unregisterSession(int sessionId) {
         sSessions.remove(sessionId);
+        // A loss retained for a session that never registered has nobody left to tell,
+        // and leaving it here would keep one entry per such session for the process's
+        // life -- and hand it to whoever next used the id if ids were ever reused.
+        sPendingSurfaceLoss.remove(sessionId);
         // Every token this session issued becomes stale rather than current by
         // default, so anything still holding one stops reporting.
         RuntimeGenerationBoundary.unregisterSession(sessionId);
@@ -527,6 +562,8 @@ public final class NativeExports {
             GameSession session = sSessions.get(hostId);
             if (session != null) {
                 session.notifySurfaceLost(generation, reason);
+            } else {
+                sPendingSurfaceLoss.putIfAbsent(hostId, new long[] {generation, reason});
             }
         });
     }

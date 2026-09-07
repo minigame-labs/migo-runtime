@@ -960,25 +960,31 @@ public final class GameSession implements Closeable {
      * @hide Called from {@link com.migo.runtime.internal.NativeExports#onSurfaceLost}
      * on the main thread when the engine retired a Surface it could not present to.
      * <p>
-     * The engine has already given the Surface up, so this session's belief that one is
-     * live is stale and is corrected first — leaving vsync armed would keep asking a
-     * renderer with nothing to draw into for frames. Only then is the listener told,
-     * because an app that re-attaches from inside the callback must find the session in
-     * the state a fresh {@link #updateSurface(Surface)} expects.
+     * Reports and changes nothing else, and both halves of that are deliberate.
      * <p>
-     * No automatic re-attach: this session does not hold the Surface (the app supplies
-     * it), and a Surface that is genuinely gone would make retrying a loop. The C
-     * boundary reports and waits for the same reason.
+     * It first cleared {@code hasLiveSurface} and disarmed vsync, which was a race with
+     * the shape this whole area exists to remove. The report is posted to the main thread
+     * from a render thread, so an {@code updateSurface} for a replacement can run in
+     * between — and the callback would then have declared the replacement dead. Nothing
+     * here can tell the two apart: the engine names the generation it lost, and this side
+     * has never been told the generation of what it holds.
+     * <p>
+     * It also did not need to. The state has one truthful source, which is the app's
+     * answer: {@link #updateSurface(Surface)} sets it for a replacement,
+     * {@link #onSurfaceDestroyed()} sets it for a teardown, and until one of them arrives
+     * the engine's own {@code SurfaceSystem} has already stopped asking for frames — a
+     * retained request winds down rather than pumping an empty renderer. So this is the C
+     * boundary's contract exactly: the engine marks its own attachment lost and tells the
+     * host; the host decides.
+     * <p>
+     * No automatic re-attach either, for the reason the C boundary gives: this session
+     * does not hold the Surface, and one that is genuinely gone would make retrying a loop.
      */
     public void notifySurfaceLost(long generation, int reason) {
         ThreadCheck.ensureMainThread();
-        synchronized (lock) {
-            if (state.get() == SessionState.DESTROYED) return;
-            Log.w(TAG, "surface lost: session=" + sessionId + ", generation=" + generation
-                    + ", reason=" + reason);
-            hasLiveSurface = false;
-            vsyncScheduler.setSurfaceReady(false);
-        }
+        if (state.get() == SessionState.DESTROYED) return;
+        Log.w(TAG, "surface lost: session=" + sessionId + ", generation=" + generation
+                + ", reason=" + reason);
         GameSessionListener l = listener;
         if (l != null) {
             l.onSurfaceLost(reason);
