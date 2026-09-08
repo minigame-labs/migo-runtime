@@ -96,7 +96,7 @@ final class MigoProbeViewController: UIViewController {
     }
 
     @objc private func runTapped() {
-        guard let webView, let existing = gate else { return }
+        guard let webView, let gate else { return }
 
         let lockdown: MigoLockdownMode = {
             switch lockdownControl.selectedSegmentIndex {
@@ -113,18 +113,8 @@ final class MigoProbeViewController: UIViewController {
             }
         }()
 
-        // A fresh gate per run, so a second run cannot inherit the first run's
-        // attestation or its listener port.
-        _ = existing
-        guard
-            let gate = try? MigoCapabilityGate(
-                attestation: .init(lockdownMode: lockdown, localNetworkPromptObserved: prompt))
-        else {
-            status.text = "the gate could not be built"
-            return
-        }
-        self.gate = gate
-
+        // One gate for the life of the screen, because it owns this web view's
+        // configuration. The attestation is per run and is passed per run.
         runButton.isEnabled = false
         status.text = "running..."
 
@@ -132,7 +122,11 @@ final class MigoProbeViewController: UIViewController {
         // record is assembled synchronously and evaluateJavaScript is not.
         MigoProbeEnvironment.primeUserAgent(webView: webView) { [weak self] in
             DispatchQueue.main.async {
-                gate.run(in: webView) { result in
+                gate.run(
+                    in: webView,
+                    attestation: .init(
+                        lockdownMode: lockdown, localNetworkPromptObserved: prompt)
+                ) { result in
                     self?.finish(result)
                 }
             }

@@ -54,25 +54,60 @@ public final class MigoCapabilityGate: NSObject {
         case resourcesMissing(String)
         case pageFailed(String)
         case noReport(String)
+        case timedOut(String)
 
         public var description: String {
             switch self {
             case .resourcesMissing(let name): return "the probe resource \(name) is not in the bundle"
             case .pageFailed(let reason): return "the probe page failed to load: \(reason)"
             case .noReport(let reason): return "the probe page produced no report: \(reason)"
+            case .timedOut(let reason): return "the gate gave up waiting: \(reason)"
             }
         }
     }
 
-    private let attestation: Attestation
+    /// How long one origin may take before the run is reported as a hang.
+    ///
+    /// The page's own probes are bounded -- thirty seconds for the Worker, ten
+    /// for the socket -- so anything past this is the page not running at all,
+    /// which is a different failure and has to be reported as one. Without it a
+    /// page that never loads leaves the gate waiting forever and an operator
+    /// watching a label that says "running...", which is the least actionable
+    /// thing a lab tool can do.
+    public static let originTimeout: TimeInterval = 120
+
+    /// The attestation belongs to a RUN, not to the gate.
+    ///
+    /// It was an initialiser parameter, which forced a caller who wanted fresh
+    /// attestations to build a fresh gate -- and a fresh gate does not own the
+    /// web view the first one made, so its message handlers were never
+    /// registered and its `pending` was never called. The page ran, answered
+    /// nine capabilities, displayed them, and the run timed out at 120 s
+    /// reporting that the page had said nothing. Making the lifetime match the
+    /// thing's actual scope removes the whole class rather than the instance.
+    private var attestation: Attestation
     private let listener: MigoLoopbackListener
     private let schemeHandler: MigoProbeSchemeHandler
     private var pending: ((Result<[String: Any], Error>) -> Void)?
     private var webView: WKWebView?
+    private var watchdog: DispatchWorkItem?
+    /// Everything the page logged, kept so a failure can say what the page said
+    /// rather than only that it said nothing.
+    private var consoleLines: [String] = []
 
-    public init(attestation: Attestation = Attestation()) throws {
-        self.attestation = attestation
-        let resources = try Self.loadResources()
+    /// Takes the bundle rather than nothing.
+    ///
+    /// A bare `init() throws` cannot exist on an `NSObject` subclass: it
+    /// collides with the inherited non-throwing `init()`. The parameter is not
+    /// a workaround for that -- it is the honest signature, because the
+    /// resources are an input and a test that wants to run this against a
+    /// different set of probe scripts should not have to rebuild the package.
+    /// `Bundle?` and not `Bundle = .module`: SwiftPM's generated `Bundle.module`
+    /// is internal to the target, so it cannot appear in a public default
+    /// argument. `nil` means the target's own bundle.
+    public init(bundle: Bundle? = nil) throws {
+        self.attestation = Attestation()
+        let resources = try Self.loadResources(from: bundle ?? .module)
         self.listener = MigoLoopbackListener(resources: resources)
         self.schemeHandler = MigoProbeSchemeHandler(resources: resources)
         super.init()
@@ -80,7 +115,9 @@ public final class MigoCapabilityGate: NSObject {
 
     // MARK: - resources
 
-    static func loadResources() throws -> [String: (mime: String, body: Data)] {
+    static func loadResources(from bundle: Bundle = .module) throws
+        -> [String: (mime: String, body: Data)]
+    {
         let files: [(String, String)] = [
             ("capability-probe.html", "text/html; charset=utf-8"),
             ("capability-probe.js", "text/javascript; charset=utf-8"),
@@ -91,7 +128,7 @@ public final class MigoCapabilityGate: NSObject {
             let stem = (name as NSString).deletingPathExtension
             let suffix = (name as NSString).pathExtension
             guard
-                let url = Bundle.module.url(forResource: stem, withExtension: suffix),
+                let url = bundle.url(forResource: stem, withExtension: suffix),
                 let body = try? Data(contentsOf: url)
             else {
                 throw GateError.resourcesMissing(name)
@@ -112,8 +149,10 @@ public final class MigoCapabilityGate: NSObject {
         // the previous run.
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.add(self, name: "migoProbe")
+        configuration.userContentController.add(self, name: "migoConsole")
 
         let view = WKWebView(frame: .zero, configuration: configuration)
+        view.navigationDelegate = self
         webView = view
         return view
     }
@@ -125,8 +164,16 @@ public final class MigoCapabilityGate: NSObject {
     /// Sequential rather than concurrent. Two pages measuring JIT warmup at the
     /// same time on the same device measure each other.
     public func run(
-        in webView: WKWebView, completion: @escaping (Result<[MigoCapabilityRecord], Error>) -> Void
+        in webView: WKWebView,
+        attestation: Attestation = Attestation(),
+        completion: @escaping (Result<[MigoCapabilityRecord], Error>) -> Void
     ) {
+        precondition(
+            webView === self.webView,
+            "the gate must run in the web view it configured: the message handlers and the "
+                + "scheme handler are registered on that view's configuration, and a run in "
+                + "any other one waits for a report that reaches a different object")
+        self.attestation = attestation
         do {
             try listener.start()
         } catch {
@@ -206,9 +253,20 @@ public final class MigoCapabilityGate: NSObject {
                 source: "window.__migoProbeConfig = \(json);",
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: true))
+        // Console forwarding, injected rather than relied upon. A page that
+        // throws before it reaches its own error handler leaves nothing behind
+        // otherwise, and "the gate hung" is a diagnosis nobody can act on.
+        controller.addUserScript(
+            WKUserScript(
+                source: Self.consoleBridge,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false))
 
+        consoleLines.removeAll()
         pending = { [weak self] result in
             guard let self else { return }
+            self.watchdog?.cancel()
+            self.watchdog = nil
             switch result {
             case .failure(let error):
                 completion(.failure(error))
@@ -216,8 +274,56 @@ public final class MigoCapabilityGate: NSObject {
                 completion(.success(self.assemble(report: report, origin: origin, webView: webView)))
             }
         }
+
+        // The page's own probes are bounded, so past this the page is not
+        // running. Reported as a distinct failure, carrying whatever the page
+        // managed to log, because "no report" and "no page" need different
+        // fixes.
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self, let handler = self.pending else { return }
+            self.pending = nil
+            let tail = self.consoleLines.suffix(8).joined(separator: " | ")
+            handler(
+                .failure(
+                    GateError.timedOut(
+                        "\(origin.rawValue) produced no report within "
+                            + "\(Int(Self.originTimeout)) s"
+                            + (tail.isEmpty ? "; the page logged nothing" : "; the page logged: \(tail)"))))
+        }
+        self.watchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.originTimeout, execute: watchdog)
+
         webView.load(URLRequest(url: pageURL))
     }
+
+    /// Forwards console output and uncaught errors to the native side.
+    ///
+    /// `forMainFrameOnly: false` so a Worker's parent document is covered too;
+    /// a Worker's own scope is not reachable from a user script, which is why
+    /// the Worker reports its failures as capability answers instead.
+    static let consoleBridge = """
+        (function () {
+          function send(kind, args) {
+            try {
+              var text = Array.prototype.map.call(args, function (a) {
+                try { return typeof a === 'string' ? a : JSON.stringify(a); }
+                catch (e) { return String(a); }
+              }).join(' ');
+              window.webkit.messageHandlers.migoConsole.postMessage(kind + ': ' + text);
+            } catch (e) { /* a console bridge that throws must not break the page */ }
+          }
+          ['log', 'warn', 'error'].forEach(function (kind) {
+            var original = console[kind];
+            console[kind] = function () { send(kind, arguments); return original.apply(console, arguments); };
+          });
+          window.addEventListener('error', function (event) {
+            send('uncaught', [event.message + ' at ' + event.filename + ':' + event.lineno]);
+          });
+          window.addEventListener('unhandledrejection', function (event) {
+            send('unhandled-rejection', [String(event.reason)]);
+          });
+        })();
+        """
 
     private func assemble(
         report: [String: Any], origin: MigoProbeOrigin, webView: WKWebView
@@ -288,12 +394,59 @@ public final class MigoCapabilityGate: NSObject {
     }
 }
 
+/// A page that fails to load must fail the run.
+///
+/// Without this the gate waited on a message handler that a failed navigation
+/// can never reach, and an operator watched a label that said "running..." for
+/// as long as they were willing to.
+extension MigoCapabilityGate: WKNavigationDelegate {
+    public func webView(
+        _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        failLoad("the navigation never started: \(error.localizedDescription)")
+    }
+
+    public func webView(
+        _ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error
+    ) {
+        failLoad("the page load failed: \(error.localizedDescription)")
+    }
+
+    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // A3/A4: WebContent has its own memory budget and its own reasons to be
+        // killed. A run that lost the process did not measure a slow device.
+        failLoad("WebContent was terminated during the run")
+    }
+
+    private func failLoad(_ reason: String) {
+        guard let handler = pending else { return }
+        pending = nil
+        watchdog?.cancel()
+        watchdog = nil
+        let tail = consoleLines.suffix(8).joined(separator: " | ")
+        handler(
+            .failure(
+                GateError.pageFailed(reason + (tail.isEmpty ? "" : "; the page logged: \(tail)"))))
+    }
+}
+
 extension MigoCapabilityGate: WKScriptMessageHandler {
     public func userContentController(
         _ controller: WKUserContentController, didReceive message: WKScriptMessage
     ) {
+        if message.name == "migoConsole" {
+            if let line = message.body as? String {
+                // Bounded: a page in a logging loop must not become the run's
+                // memory profile.
+                if consoleLines.count < 200 { consoleLines.append(line) }
+            }
+            return
+        }
         guard let handler = pending else { return }
         pending = nil
+        watchdog?.cancel()
+        watchdog = nil
         guard
             let text = message.body as? String,
             let data = text.data(using: .utf8),
