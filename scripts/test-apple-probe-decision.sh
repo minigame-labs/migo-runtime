@@ -71,6 +71,32 @@ if rules["min_samples_per_arm"] < 20:
         f"FAIL: min_samples_per_arm is {rules['min_samples_per_arm']}. Below twenty, the "
         "interval this tool reports is wider than the effect it is looking for."
     )
+
+# `held_fixed` is what makes "one variable at a time" a check rather than a
+# sentence. Emptying it restores the state this tool shipped in, where the four
+# entries of `variables` were held fixed and the device, the OS build, the
+# payload size, the refresh rate and whether JIT was on were not -- so twenty
+# samples from a slow phone and twenty from a fast one were the two arms of a
+# transport comparison and a winner came out. The unit suite catches that; this
+# check is here so the schema cannot be emptied and read as merely "configured".
+held = schema["record"].get("held_fixed")
+if not held:
+    raise SystemExit(
+        "FAIL: the schema lists nothing as held fixed, so a comparison may mix devices, "
+        "OS builds, payload sizes and power states inside one arm."
+    )
+for field in ("hardware_identifier", "payload_class_bytes", "jit_enabled"):
+    if field not in held:
+        raise SystemExit(
+            f"FAIL: {field} is not held fixed, so two records that differ in it are treated "
+            "as two samples of the same measurement."
+        )
+if "thermal_state" in held:
+    raise SystemExit(
+        "FAIL: thermal_state is held fixed. It varies across the samples of a single arm by "
+        "nature, so holding it fixed splits every arm below the sample floor and rejects "
+        "every run -- a gate that refuses everything is not stricter, it is off."
+    )
 PY
 
 python3 "$TESTS"

@@ -64,6 +64,7 @@
       "layout",
       "origin",
       "transport",
+      "transport_owner",
       "clock",
       "payload_class_bytes",
       "refresh_hz",
@@ -71,6 +72,7 @@
 
       "thermal_state",
       "power_state",
+      "jit_enabled",
 
       "input_to_present_p50_ms",
       "input_to_present_p95_ms",
@@ -92,12 +94,56 @@
       "webcontent_footprint_bytes",
       "notes"
     ],
+    "held_fixed": [
+      "hardware_identifier",
+      "ram_bytes",
+      "os_version",
+      "os_build",
+      "webkit_build",
+      "app_build",
+      "origin",
+      "payload_class_bytes",
+      "refresh_hz",
+      "duration_s",
+      "power_state",
+      "jit_enabled"
+    ],
+    "_held_fixed_comment": [
+      "Rule 2 above says every dimension is recorded even when it is not the",
+      "variable, 'because one variable at a time can only be checked against",
+      "records that say what all the other variables were'. Recording them was",
+      "only half of that sentence: until this list existed, decide.py held",
+      "fixed the four entries of `variables` and nothing else, so twenty",
+      "samples taken on an iPhone 11 at 4 MiB and twenty taken on an iPhone 15",
+      "at 4 KiB were the two arms of a transport comparison and the tool named",
+      "a winner. Every field here is part of the condition a comparison is",
+      "made under, so two records that differ in one of them are not two",
+      "measurements of the same question.",
+      "",
+      "thermal_state is deliberately NOT here. It varies across the samples of",
+      "a single arm by nature -- a thirty-minute soak passes through several --",
+      "so holding it fixed would split every arm into fragments below the",
+      "sample floor and reject everything. It stays required and reported.",
+      "",
+      "jit_enabled is here because of A24: Lockdown Mode disables JIT for web",
+      "content, so 'WebContent has JIT' is a device state to probe, not an",
+      "invariant to assume. Two otherwise identical records that differ in it",
+      "are measuring two different engines."
+    ],
+    "combination_rules": [
+      {
+        "when": {"agent": "window"},
+        "forbid": {"transport_owner": "window_relay"},
+        "reason": "a Window agent has no Window to relay to; a record saying so mislabelled which context owned the socket"
+      }
+    ],
     "enums": {
       "device_class": ["device", "simulator"],
       "agent": ["window", "dedicated_worker"],
       "layout": ["attached_visible", "transparent_overlay", "one_by_one", "off_screen", "occluded"],
       "origin": ["loopback", "custom_scheme"],
-      "transport": ["loopback_websocket", "scheme_request", "hybrid"],
+      "transport": ["loopback_websocket", "scheme_request", "sync_xhr_rpc", "hybrid"],
+      "transport_owner": ["same_context", "window_relay", "io_worker"],
       "clock": ["worker_raf", "window_raf_relay", "display_link_relay"],
       "thermal_state": ["nominal", "fair", "serious", "critical"],
       "power_state": ["plugged", "battery", "low_power"]
@@ -111,9 +157,24 @@
   },
 
   "variables": {
-    "_comment": "The four G0 choices. A decision may be made for one of these only when the matrix isolates it.",
-    "agent": "Window versus Dedicated Worker. Note that Window cannot serve synchronous content at all, so a Window win is an admission rule, never a replacement of the default.",
-    "transport": "Loopback WebSocket versus a custom-scheme binary request path.",
+    "_comment": [
+      "The G0 choices. A decision may be made for one of these only when the",
+      "matrix isolates it.",
+      "",
+      "transport_owner joined this list on 2026-09-09, after the 2026-09-07",
+      "adversarial review turned A22 from settled into falsified. `WebSocket`",
+      "is exposed to Workers, so a Window relay is not a requirement of the",
+      "API -- it is a consequence of a Worker blocked in Atomics.wait being",
+      "unable to service its own socket. That admits a third topology nobody",
+      "had considered, an I/O Worker that owns the socket and notifies the",
+      "content Worker. Without this dimension all three record as",
+      "agent=dedicated_worker, transport=loopback_websocket, which does not",
+      "merely lose a label: it pools two different architectures into one arm",
+      "of a comparison against scheme_request."
+    ],
+    "agent": "Where content JavaScript runs: the Window, or a Dedicated Worker. A22 is why this no longer implies who owns the socket -- see transport_owner. A21 is why a Window win is no longer excluded on capability grounds alone: synchronous XHR is a second public blocking primitive, so `Window cannot serve synchronous content` is a claim the capability gate settles, not a premise.",
+    "transport": "The wire mechanism: a loopback WebSocket, a custom-scheme binary request, a synchronous-XHR RPC, or a hybrid split by direction. sync_xhr_rpc is here because A21 named it as an arm of the pure-transport gate; leaving it out of the enum would have made the one arm that tests A21 unrecordable.",
+    "transport_owner": "Which JavaScript context owns the transport: the same context that runs content (same_context), a Window relaying for it (window_relay), or a second I/O Worker (io_worker). This is what tells the five arms of measurement gate 2 apart.",
     "clock": "Worker rAF where feature detection finds it, Window rAF relayed, or a host CADisplayLink relayed.",
     "layout": "The WKWebView host shape."
   }
