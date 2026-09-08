@@ -301,6 +301,37 @@ impl FrameIngress {
     /// on how busy the renderer is. The alternative answers `WouldBlock` to
     /// malformed bytes and invites the producer to resend them forever.
     pub fn submit(&mut self, bytes: &[u8]) -> (IngressOutcome, Option<PooledFrame>) {
+        let (outcome, frame) = self.admit(bytes);
+        if frame.is_some() {
+            self.last_accepted_sequence = outcome.accepted_sequence;
+        }
+        (outcome, frame)
+    }
+
+    /// Commit sequence admission only after the consumer has validated and
+    /// queued the frame. A refused frame can be retried with the same sequence.
+    /// The consumer must drop its frame/credit on failure and return a nonzero
+    /// error code. `&mut self` keeps admission and dispatch in the same order.
+    pub fn submit_with(
+        &mut self,
+        bytes: &[u8],
+        consume: impl FnOnce(PooledFrame) -> Result<(), u32>,
+    ) -> IngressOutcome {
+        let (mut outcome, frame) = self.admit(bytes);
+        let Some(frame) = frame else {
+            return outcome;
+        };
+        match consume(frame) {
+            Ok(()) => {
+                self.last_accepted_sequence = outcome.accepted_sequence;
+                outcome.remaining_credits = self.remaining_credits();
+                outcome
+            }
+            Err(code) => IngressOutcome::refused(code, self.remaining_credits()),
+        }
+    }
+
+    fn admit(&mut self, bytes: &[u8]) -> (IngressOutcome, Option<PooledFrame>) {
         // The session ceiling first, before the parser walks anything: it is a
         // length comparison, and a packet above it is refused whatever else is
         // wrong with it.
@@ -427,7 +458,6 @@ impl FrameIngress {
             );
         };
 
-        self.last_accepted_sequence = sequence;
         (
             IngressOutcome {
                 decision: IngressDecision::Accepted,

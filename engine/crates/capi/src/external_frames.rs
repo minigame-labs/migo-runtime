@@ -57,6 +57,16 @@ pub unsafe extern "C" fn migo_session_submit_external_frame(
             return MIGO_ERROR_INVALID_ARGUMENT;
         }
 
+        // Validate the caller's output before accepting work. Otherwise a null
+        // or incompatible output can report failure after the frame was queued
+        // and its sequence committed, leaving the caller unable to retry it.
+        // SAFETY: the versioned-output contract guarantees a readable header.
+        if let Err(error) = unsafe {
+            migo_capi_abi::validate_header(out_outcome.cast(), size_of::<MigoFrameIngressOutcome>())
+        } {
+            return error;
+        }
+
         let Ok(state) = session.state.lock() else {
             return MIGO_ERROR_INTERNAL;
         };
@@ -218,6 +228,49 @@ mod tests {
                 MIGO_ERROR_INVALID_ARGUMENT,
                 "a zero-length packet is shorter than the header, not an empty frame"
             );
+        });
+    }
+
+    #[test]
+    fn output_is_validated_before_reaching_the_renderer() {
+        with_session("external-submit-invalid-output", |session| {
+            let packet = [0u8; 96];
+            assert_eq!(
+                unsafe {
+                    migo_session_submit_external_frame(
+                        session,
+                        packet.as_ptr(),
+                        packet.len(),
+                        std::ptr::null_mut(),
+                    )
+                },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+            for (size, version, expected) in [
+                (8, 1, MIGO_ERROR_INVALID_ARGUMENT),
+                (
+                    size_of::<MigoFrameIngressOutcome>() as u32,
+                    99,
+                    migo_capi_abi::MIGO_ERROR_UNSUPPORTED_ABI,
+                ),
+            ] {
+                let mut out = outcome();
+                out.header.struct_size = size;
+                out.header.abi_version = version;
+                let before = out;
+                assert_eq!(
+                    unsafe {
+                        migo_session_submit_external_frame(
+                            session,
+                            packet.as_ptr(),
+                            packet.len(),
+                            &mut out,
+                        )
+                    },
+                    expected
+                );
+                assert_eq!(out, before);
+            }
         });
     }
 

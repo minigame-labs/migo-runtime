@@ -67,7 +67,7 @@ pub enum StreamError {
     BadMagic,
     /// `word[1] != STREAM_VERSION`.
     BadVersion,
-    /// `used_words > min(words.len(), 8192)`.
+    /// The used prefix exceeds the backing slice or the caller's stream limit.
     UsedTooLarge,
     /// Record header has `word_count == 0`.
     ZeroWordCount,
@@ -155,7 +155,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
 // ─── ValidatedStream ─────────────────────────────────────────────────────────
 
 /// A slice that has passed Pass 1 structural validation.
-/// Only constructible via `validate_stream`.
+/// Only constructible via the batch or full-frame structural validators.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ValidatedStream<'a> {
     words: &'a [u32],
@@ -176,18 +176,36 @@ impl<'a> ValidatedStream<'a> {
 /// `Err(StreamError)` on any structural violation. Never panics on any input.
 /// No I/O, no OpState, no error_state, no collector.
 pub fn validate_stream(words: &[u32], used_words: u32) -> Result<ValidatedStream<'_>, StreamError> {
+    validate_stream_with_limit(words, used_words, 8192)
+}
+
+/// Validate one complete external frame's COMMAND_STREAM.
+///
+/// The embedded runtime submits batches of at most 8192 words; the external
+/// lane submits a whole frame, bounded by the outer wire envelope instead.
+/// Record limits (including each uniform's payload limit) remain identical.
+pub fn validate_frame_stream(
+    words: &[u32],
+    used_words: u32,
+) -> Result<ValidatedStream<'_>, StreamError> {
+    validate_stream_with_limit(
+        words,
+        used_words,
+        crate::MAX_TOTAL_BYTES as usize / size_of::<u32>(),
+    )
+}
+
+fn validate_stream_with_limit(
+    words: &[u32],
+    used_words: u32,
+    max_words: usize,
+) -> Result<ValidatedStream<'_>, StreamError> {
     // Validate used_words bounds.
     // Must be >= 2 (magic + version at minimum).
     if used_words < 2 {
         return Err(StreamError::TooShort);
     }
-    // Upper bound: min(words.len(), 8192)
-    let max_used = words.len().min(8192) as u32;
-    if used_words > max_used {
-        // used_words > 8192 OR used_words > words.len()
-        if words.len() < used_words as usize {
-            return Err(StreamError::UsedTooLarge);
-        }
+    if used_words as usize > words.len().min(max_words) {
         return Err(StreamError::UsedTooLarge);
     }
 
@@ -313,6 +331,39 @@ mod tests {
     // where these cases need it.
     use crate::canvas2d::*;
     use crate::gl::*;
+
+    #[test]
+    fn a_complete_frame_can_exceed_the_runtime_batch_limit() {
+        // This is the external lane's complete COMMAND_STREAM, not one V8 batch.
+        let mut words = vec![MAGIC, STREAM_VERSION];
+        words.resize(8194, pack_header(OP2D_SAVE, 1));
+        assert!(super::validate_frame_stream(&words, words.len() as u32).is_ok());
+        assert_eq!(
+            validate_stream(&words, words.len() as u32),
+            Err(StreamError::UsedTooLarge)
+        );
+    }
+
+    #[test]
+    fn frame_stream_is_bounded_by_the_wire_frame_limit() {
+        let max_words = crate::MAX_TOTAL_BYTES as usize / size_of::<u32>();
+        let mut words = vec![MAGIC, STREAM_VERSION];
+        words.resize(max_words + 1, pack_header(OP2D_SAVE, 1));
+        assert!(super::validate_frame_stream(&words, max_words as u32).is_ok());
+        assert_eq!(
+            super::validate_frame_stream(&words, (max_words + 1) as u32),
+            Err(StreamError::UsedTooLarge)
+        );
+        assert_eq!(
+            super::validate_frame_stream(&words[..2], 3),
+            Err(StreamError::UsedTooLarge)
+        );
+        words[max_words - 1] = pack_header(OP_DEPTH_MASK, 3);
+        assert_eq!(
+            super::validate_frame_stream(&words, max_words as u32),
+            Err(StreamError::Truncated)
+        );
+    }
 
     // ── Header codec ──────────────────────────────────────────────────────────
 

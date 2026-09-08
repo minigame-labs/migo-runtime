@@ -57,8 +57,10 @@ use migo_capi_abi::surface::{
 pub struct MigoSurfaceAttachment {
     session: NonNull<MigoSession>,
     public_generation: PublicSurfaceGeneration,
-    resource: SurfaceResourceLease,
+    // Drop the resize target's native ownership before the resource lease can
+    // publish RELEASED and synchronously notify the host.
     target: PlatformTarget,
+    resource: SurfaceResourceLease,
     width_pixels: u32,
     height_pixels: u32,
     pixel_ratio: PixelRatio,

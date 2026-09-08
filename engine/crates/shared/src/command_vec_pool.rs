@@ -81,6 +81,16 @@ impl<T: Pooled> PooledVec<T> {
             inner: T::pool().take(),
         }
     }
+
+    /// Loan a vector reserved for at most this many elements. Oversized
+    /// retained allocations remain reusable when there is room for both; they
+    /// cannot make a small admitted batch exceed its memory estimate or starve
+    /// the new scene of reusable storage.
+    pub fn take_with_capacity_limit(max_capacity: usize) -> Self {
+        Self {
+            inner: T::pool().take_with_capacity_limit(max_capacity),
+        }
+    }
 }
 
 impl<T: Pooled> Default for PooledVec<T> {
@@ -262,38 +272,89 @@ impl<T> CommandVecPool<T> {
         commands
     }
 
+    fn take_with_capacity_limit(&self, max_capacity: usize) -> Vec<T> {
+        if max_capacity == 0 {
+            return Vec::new();
+        }
+        for _ in 0..self.receiver.len() {
+            let Ok(mut commands) = self.receiver.try_recv() else {
+                break;
+            };
+            self.retained_bytes
+                .fetch_sub(Self::bytes_of(commands.capacity()), Ordering::Relaxed);
+            if commands.capacity() <= max_capacity {
+                commands.reserve_exact(max_capacity);
+                return commands;
+            }
+            let needed =
+                Self::bytes_of(commands.capacity()).saturating_add(Self::bytes_of(max_capacity));
+            let leaves_bytes = self
+                .retained_bytes
+                .load(Ordering::Relaxed)
+                .saturating_add(needed)
+                <= self.retained_byte_budget;
+            let leaves_slot = self.receiver.len() + 1 < self.receiver.capacity().unwrap_or(0);
+            if leaves_bytes && leaves_slot {
+                let _ = self.try_recycle(commands);
+            }
+        }
+        Vec::with_capacity(max_capacity)
+    }
+
     #[inline]
     fn recycle(&self, commands: Vec<T>) -> bool {
-        if !commands.is_empty() {
+        if !commands.is_empty() || commands.capacity() == 0 {
             return false;
         }
         let bytes = Self::bytes_of(commands.capacity());
-        // Reserve first, then place. Both refusals below give the reservation
-        // back: one that outlived its vector would shrink the budget for the rest
-        // of the process, and a pool that has quietly stopped retaining anything
-        // looks exactly like a pool that is working — every caller still gets a
-        // vector, just a freshly allocated one every time.
-        //
-        // This one check also turns away the pathological frame the budget exists
-        // for, the single vector that would fill the pool by itself: it is over
-        // budget even from an empty pool, so it is refused like any other
-        // overflow. An explicit `bytes > budget` test ahead of this one would read
-        // like a second guard while changing no outcome, and mutation says so —
-        // removing it killed no test.
-        //
-        // Under concurrent recyclers the counter can transiently read high, never
-        // low, so the pool may refuse slightly early but can never over-retain.
-        if self.retained_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes
-            > self.retained_byte_budget
+        if bytes > self.retained_byte_budget {
+            return false;
+        }
+        let mut commands = match self.try_recycle(commands) {
+            Ok(()) => return true,
+            Err(commands) => commands,
+        };
+        // Cold overflow: a tiny vector returned by a flush must not prevent
+        // the large batch from returning forever. Prefer the larger reusable
+        // allocation, without increasing either slots or retained bytes.
+        // A fixed number of attempts also bounds work under concurrent returns.
+        for _ in 0..self.receiver.len() {
+            let Ok(victim) = self.receiver.try_recv() else {
+                break;
+            };
+            let victim_bytes = Self::bytes_of(victim.capacity());
+            self.retained_bytes
+                .fetch_sub(victim_bytes, Ordering::Relaxed);
+            if victim_bytes >= bytes {
+                let _ = self.try_recycle(victim);
+                continue;
+            }
+            drop(victim);
+            commands = match self.try_recycle(commands) {
+                Ok(()) => return true,
+                Err(commands) => commands,
+            };
+        }
+        false
+    }
+
+    fn try_recycle(&self, commands: Vec<T>) -> Result<(), Vec<T>> {
+        let bytes = Self::bytes_of(commands.capacity());
+        if self
+            .retained_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |retained| {
+                retained
+                    .checked_add(bytes)
+                    .filter(|total| *total <= self.retained_byte_budget)
+            })
+            .is_err()
         {
-            self.retained_bytes.fetch_sub(bytes, Ordering::Relaxed);
-            return false;
+            return Err(commands);
         }
-        if self.sender.try_send(commands).is_err() {
+        self.sender.try_send(commands).map_err(|error| {
             self.retained_bytes.fetch_sub(bytes, Ordering::Relaxed);
-            return false;
-        }
-        true
+            error.into_inner()
+        })
     }
 
     /// Empties a returned loan and offers it back. Separate from [`Self::recycle`]
@@ -588,6 +649,54 @@ mod tests {
         assert_eq!(reused.as_ptr(), allocation);
         assert_eq!(reused.capacity(), capacity);
         assert!(reused.is_empty());
+    }
+
+    #[test]
+    fn a_full_budget_vector_displaces_the_small_flush_replacement() {
+        let pool = CommandVecPool::<u32>::new(16, 8, 512);
+        let mut commands = pool.take();
+        commands.reserve_exact(8192);
+        let allocation = commands.as_ptr();
+        // A decoder used to take this replacement just before handing over the
+        // big batch. It returns before the renderer releases that batch.
+        let replacement = pool.take();
+        assert!(pool.recycle(replacement));
+        assert!(
+            pool.recycle(commands),
+            "the small replacement stranded the full budget allocation"
+        );
+        assert!(pool.retained_bytes() <= pool.retained_byte_budget());
+        let reused = pool.take();
+        assert_eq!(reused.as_ptr(), allocation);
+        assert_eq!(reused.capacity(), 8192);
+    }
+
+    #[test]
+    fn a_bounded_loan_does_not_inherit_a_previous_frames_large_capacity() {
+        let pool = CommandVecPool::<u32>::new(4, 4, 512);
+        assert!(pool.recycle(Vec::with_capacity(1024)));
+        let bounded = pool.take_with_capacity_limit(8);
+        assert_eq!(bounded.capacity(), 8);
+        assert_eq!(
+            pool.take().capacity(),
+            1024,
+            "large allocation remains reusable"
+        );
+    }
+
+    #[test]
+    fn a_smaller_scene_can_reuse_loans_after_a_full_budget_frame() {
+        let pool = CommandVecPool::<u32>::new(16, 8, 512);
+        assert!(pool.recycle(Vec::with_capacity(8192)));
+        let small = pool.take_with_capacity_limit(8);
+        let allocation = small.as_ptr();
+        assert!(
+            pool.recycle(small),
+            "the obsolete large allocation starved small batches"
+        );
+        let reused = pool.take_with_capacity_limit(8);
+        assert_eq!(reused.as_ptr(), allocation);
+        assert!(pool.retained_bytes() <= pool.retained_byte_budget());
     }
 
     #[test]

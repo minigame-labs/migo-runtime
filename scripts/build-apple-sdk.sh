@@ -35,6 +35,8 @@ PRODUCT=""
 PRINT_TARGET=""
 PRINT_SLICES=""
 PRINT_PLATFORMS=0
+ASSEMBLE_ONLY=0
+REQUIRE_ALL_SLICES=0
 
 err()  { printf '\033[0;31m[apple-sdk] %s\033[0m\n' "$*" >&2; }
 ok()   { printf '\033[0;32m[apple-sdk] %s\033[0m\n' "$*"; }
@@ -43,9 +45,10 @@ info() { printf '\033[0;36m[apple-sdk] %s\033[0m\n' "$*"; }
 usage() {
     cat <<'USAGE'
 usage: build-apple-sdk.sh --platform <ios|ios-simulator|macos>
-                          [--product <performance-plus|macos-v8>]
+                          [--product <performance-plus|macos-v8|external-frames-diagnostic>]
                           [--configuration Debug|Release]
                           [--code-signing on|off]
+                          [--assemble-only] [--require-all-slices]
        build-apple-sdk.sh --print-deployment-target <ios|macos>
        build-apple-sdk.sh --print-slices <ios|ios-simulator|macos>
        build-apple-sdk.sh --print-platforms
@@ -78,6 +81,10 @@ Products, and why they are separate builds:
                     default crate and reusing it here would quietly break it.
   macos-v8          default features. In-process V8 with JIT, which macOS
                     allows under the public hardened-runtime entitlement.
+  external-frames-diagnostic
+                    macOS external-frame tests only. Writes an isolated package
+                    under $MIGO_APPLE_BUILD_ROOT/diagnostics/<configuration>/package;
+                    never replaces the shipping MigoEngine.xcframework.
 
   There is deliberately no `webkit-host` product. That lane is WKWebView
   running migo-web-adapter; it drives no native renderer, so it links none of
@@ -95,7 +102,16 @@ Slices, and why each exists:
                    x86_64-apple-darwin        slices -- Rosetta is not a slice
 
 Output: $MIGO_APPLE_BUILD_ROOT (default /tmp/migo-apple-build), with the
-finished xcframework copied to platforms/apple/Frameworks/.
+finished shipping xcframework in platforms/apple/Frameworks/. Staged groups
+are namespaced by product/configuration/platform. Each assembly includes all
+staged shipping groups of that configuration; use the same build root for
+successive platform builds. --assemble-only assembles already built groups.
+--require-all-slices refuses a partial shipping artifact.
+
+Install pinned ANGLE first (scripts/fetch-apple-angle.sh <platform>). Both
+runtime libraries for each assembled platform are required. The package also
+declares the iOS framework pair, so install at least one iOS group when building
+only macOS. No dependencies are downloaded by this build script.
 USAGE
 }
 
@@ -108,6 +124,8 @@ while [ $# -gt 0 ]; do
         --print-deployment-target) PRINT_TARGET="${2:-}"; shift 2 ;;
         --print-slices)  PRINT_SLICES="${2:-}"; shift 2 ;;
         --print-platforms) PRINT_PLATFORMS=1; shift ;;
+        --assemble-only) ASSEMBLE_ONLY=1; shift ;;
+        --require-all-slices) REQUIRE_ALL_SLICES=1; shift ;;
         -h|--help)       usage; exit 0 ;;
         *)               err "unknown argument: $1"; usage >&2; exit 2 ;;
     esac
@@ -266,8 +284,19 @@ if [ -z "$PRODUCT" ]; then
 fi
 case "$PRODUCT" in
     performance-plus)
+        if [ "$PLATFORM" = "macos" ]; then
+            err "performance-plus ships on iOS only; use external-frames-diagnostic for macOS tests"
+            exit 2
+        fi
         # No default features: `profile-full` implies an embedded engine, and
         # this archive's entire claim is that it has none.
+        cargo_feature_flags=(--no-default-features --features external-frames)
+        ;;
+    external-frames-diagnostic)
+        if [ "$PLATFORM" != "macos" ]; then
+            err "external-frames-diagnostic is a macOS test product"
+            exit 2
+        fi
         cargo_feature_flags=(--no-default-features --features external-frames)
         ;;
     macos-v8)
@@ -284,7 +313,7 @@ case "$PRODUCT" in
         exit 2
         ;;
     *)
-        err "unknown product: $PRODUCT (expected performance-plus or macos-v8)"
+        err "unknown product: $PRODUCT (expected performance-plus, macos-v8 or external-frames-diagnostic)"
         exit 2
         ;;
 esac
@@ -302,7 +331,11 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 
 missing=0
-for tool in xcodebuild lipo cargo; do
+required_tools=(xcodebuild python3)
+if [ "$ASSEMBLE_ONLY" = "0" ]; then
+    required_tools=(xcodebuild python3 lipo cargo rustup)
+fi
+for tool in ${required_tools[@]+"${required_tools[@]}"}; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         err "required tool not on PATH: $tool"
         missing=1
@@ -310,6 +343,7 @@ for tool in xcodebuild lipo cargo; do
 done
 [ "$missing" -eq 0 ] || exit 1
 
+if [ "$ASSEMBLE_ONLY" = "0" ]; then
 for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
     if ! rustup target list --installed 2>/dev/null | grep -qx "$target"; then
         err "Rust target not installed: $target"
@@ -317,12 +351,20 @@ for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
         exit 1
     fi
 done
+fi
 
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
 
-STAGE="$BUILD_ROOT/$PLATFORM-$CONFIGURATION"
+BUILD_ROOT="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$BUILD_ROOT")" || exit 1
+STAGE="$BUILD_ROOT/$PRODUCT/$CONFIGURATION/$PLATFORM"
+
+# Check the runtime closure before an expensive compile or replacing any output.
+python3 "$SCRIPT_DIR/apple-sdk-package.py" check-runtime \
+    --repo-root "$REPO_ROOT" --platform "$PLATFORM" || exit 1
+
+if [ "$ASSEMBLE_ONLY" = "0" ]; then
 rm -rf "$STAGE"
 mkdir -p "$STAGE/libs" "$STAGE/headers/migo"
 
@@ -434,39 +476,30 @@ module MigoEngine {
 }
 MODULEMAP
 
-mkdir -p "$FRAMEWORKS_DIR"
+python3 "$SCRIPT_DIR/apple-sdk-package.py" record \
+    --stage "$STAGE" --platform "$PLATFORM" --product "$PRODUCT" \
+    --configuration "$CONFIGURATION" --deployment-target "$DEPLOYMENT_TARGET" || exit 1
+fi
+
+# A diagnostic external-frame archive must never masquerade as macOS V8 in
+# the shipping package. Copy the Swift sources into an explicitly separate
+# package so CI can exercise the same ABI without claiming a V8 artifact.
+# The assembler stages those sources before publishing any generated output.
+if [ "$PRODUCT" = "external-frames-diagnostic" ]; then
+    PACKAGE_DIR="$BUILD_ROOT/diagnostics/$CONFIGURATION/package"
+    FRAMEWORKS_DIR="$PACKAGE_DIR/Frameworks"
+    WEBCONTENT_DEST="$PACKAGE_DIR/Sources/MigoApplePerformancePlus/Resources"
+fi
+
 XCFRAMEWORK="$FRAMEWORKS_DIR/MigoEngine.xcframework"
-rm -rf "$XCFRAMEWORK"
-if ! xcodebuild -create-xcframework \
-        -library "$STAGE/libmigo.a" \
-        -headers "$STAGE/headers" \
-        -output "$XCFRAMEWORK"; then
-    err "xcodebuild -create-xcframework failed"
-    exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# The WebContent producer bundle
-# ---------------------------------------------------------------------------
-
-if [ -d "$WEBCONTENT_SRC/src" ]; then
-    info "staging the WebContent producer"
-    rm -rf "${WEBCONTENT_DEST:?}"/*
-    mkdir -p "$WEBCONTENT_DEST"
-    # `src/` only, and that is not tidiness. The producer directory also holds
-    # its node test suite and the packet emitter the Rust reader is checked
-    # against; copying the whole directory put both inside the shipped app
-    # bundle, where they are dead weight that reads the repository's golden
-    # corpus by relative path -- a path that does not exist on a phone.
-    #
-    # Copied rather than bundled while the producer is still source-only. The
-    # bundling step lands with the producer itself; doing it now would be a
-    # build step over nothing.
-    cp -R "$WEBCONTENT_SRC/src"/. "$WEBCONTENT_DEST/" || exit 1
-elif [ -d "$WEBCONTENT_SRC" ]; then
-    err "$WEBCONTENT_SRC exists but has no src/; the producer bundle would be empty"
-    exit 1
-fi
+# Copy only producer src/, keeping node tests and packet fixtures out of apps.
+# Helpers, resources and all native artifacts are staged and published together;
+# no fallible package mutation belongs after this call.
+python3 "$SCRIPT_DIR/apple-sdk-package.py" assemble \
+    --repo-root "$REPO_ROOT" --build-root "$BUILD_ROOT" \
+    --configuration "$CONFIGURATION" --product "$PRODUCT" \
+    --webcontent-source "$WEBCONTENT_SRC/src" --webcontent-destination "$WEBCONTENT_DEST" \
+    --output "$XCFRAMEWORK" --require-all-slices "$REQUIRE_ALL_SLICES" || exit 1
 
 if [ "$CODE_SIGNING" = "on" ]; then
     info "code signing requested; the signing identity and entitlements are the"
@@ -475,5 +508,5 @@ if [ "$CODE_SIGNING" = "on" ]; then
 fi
 
 ok "built $XCFRAMEWORK"
-ok "deployment target $DEPLOYMENT_TARGET, slices ${RUST_TARGETS[*]}"
+ok "product/configuration and every included group are recorded in migo-build.json"
 exit 0

@@ -43,7 +43,6 @@ use crate::{
 };
 use crossbeam_channel::Receiver;
 use glow::HasContext;
-use shared::command_vec_pool::PooledVec;
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::protocol::CanvasIdSet;
 use shared::protocol::render_cmd::{CanvasBatchPayload, CanvasId, GlBatchPayload, RenderCommand};
@@ -682,40 +681,38 @@ fn packet_safe_to_reorder(ops: &[FrameOp]) -> bool {
 /// **It does not materialise a reordered vector.** It used to build two —
 /// `phase1` and `phase2`, each sized for the whole packet — concatenate them and
 /// drop the original: three allocations and a full extra move of every op, per
-/// frame, to express an ordering the loop can simply take. Running the first
-/// phase as the packet is consumed and holding only the second collapses that to
-/// one pooled vector, which is the deferred phase itself and is usually the
-/// smaller half.
+/// frame, to express an ordering the loop can simply take. Reuse the packet's
+/// existing storage: execute immediate operations in place, then consume the
+/// remaining GL/present operations. No second op vector inflates admission's
+/// decoded-memory estimate while the original allocation is still held.
 ///
 /// **Separated from the executor so the ordering is testable at all.** The
 /// reorder is the one part of packet execution that can produce wrong pixels
 /// rather than slow ones — running a Canvas2D read of a WebGL canvas before the
 /// WebGL work that fills it — and until this split there was no way to observe
 /// its output without a live GL context, so nothing did.
-fn run_frame_phases(
-    ops: shared::command_vec_pool::PooledVec<FrameOp>,
-    mut execute: impl FnMut(FrameOp) -> bool,
-) -> bool {
-    let mut should_present = false;
-    if packet_safe_to_reorder(&ops) {
-        let mut deferred = PooledVec::<FrameOp>::take();
-        for op in ops {
-            match &op {
-                FrameOp::GlBatch(_) | FrameOp::Present => deferred.push(op),
-                FrameOp::BeginFrame | FrameOp::CanvasBatch(_) | FrameOp::Materialize { .. } => {
+fn run_frame_phases(ops: shared::FrameOps, mut execute: impl FnMut(FrameOp) -> bool) -> bool {
+    ops.consume(|mut ops| {
+        let mut should_present = false;
+        if packet_safe_to_reorder(&ops) {
+            for op in ops.iter_mut() {
+                if !matches!(op, FrameOp::GlBatch(_) | FrameOp::Present) {
+                    // BeginFrame owns no resources and is skipped on pass two.
+                    should_present |= execute(std::mem::replace(op, FrameOp::BeginFrame));
+                }
+            }
+            for op in ops {
+                if matches!(op, FrameOp::GlBatch(_) | FrameOp::Present) {
                     should_present |= execute(op);
                 }
             }
+        } else {
+            for op in ops {
+                should_present |= execute(op);
+            }
         }
-        for op in deferred {
-            should_present |= execute(op);
-        }
-    } else {
-        for op in ops {
-            should_present |= execute(op);
-        }
-    }
-    should_present
+        should_present
+    })
 }
 
 /// Executes one op and reports whether it made the surface worth presenting.

@@ -2532,7 +2532,7 @@ mod tests {
     /// Returns the ops inside the packet.
     fn recv_one_frame_packet(
         render_rx: &crossbeam_channel::Receiver<RenderCommand>,
-    ) -> shared::command_vec_pool::PooledVec<FrameOp> {
+    ) -> shared::FrameOps {
         let timeout = std::time::Duration::from_secs(2);
         loop {
             match render_rx
@@ -2549,7 +2549,7 @@ mod tests {
         render_rx: crossbeam_channel::Receiver<RenderCommand>,
     ) -> (
         std::thread::JoinHandle<()>,
-        std::sync::mpsc::Receiver<shared::command_vec_pool::PooledVec<FrameOp>>,
+        std::sync::mpsc::Receiver<shared::FrameOps>,
     ) {
         use shared::protocol::render_cmd::CanvasCmd;
 
@@ -2899,8 +2899,7 @@ mod tests {
         // Spawn a helper thread that responds to Canvas GetInfo requests
         // (required by the Canvas constructor called inside createCanvas())
         // and forwards the first FramePacket back through a standard channel.
-        let (packet_tx, packet_rx) =
-            std::sync::mpsc::sync_channel::<shared::command_vec_pool::PooledVec<FrameOp>>(1);
+        let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<shared::FrameOps>(1);
         let handle = std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
@@ -3018,15 +3017,11 @@ mod tests {
     ///
     /// The helper thread answers the `GetInfo` the Canvas constructor makes and
     /// forwards the first frame packet; without it `createCanvas` blocks.
-    fn run_2d_frame(
-        name: &'static str,
-        source: &str,
-    ) -> shared::command_vec_pool::PooledVec<FrameOp> {
+    fn run_2d_frame(name: &'static str, source: &str) -> shared::FrameOps {
         use shared::protocol::render_cmd::CanvasCmd;
 
         let (mut runtime, render_rx) = new_webgl_runtime();
-        let (packet_tx, packet_rx) =
-            std::sync::mpsc::sync_channel::<shared::command_vec_pool::PooledVec<FrameOp>>(1);
+        let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<shared::FrameOps>(1);
         let handle = std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {

@@ -41,7 +41,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-python3 - "$ROOT" <<'PY'
+python3 - "${MIGO_APPLE_PACKAGE_CONTRACT_ROOT:-$ROOT}" <<'PY'
 from __future__ import annotations
 
 import pathlib
@@ -91,7 +91,13 @@ def balanced(text: str, start: int, opening: str, closing: str) -> str:
 # --- parse the manifest's targets --------------------------------------------
 
 targets: dict[str, dict] = {}
+covered_until = -1
 for match in re.finditer(r"\.(binaryTarget|target|testTarget|executableTarget)\(", manifest):
+    # A conditional dependency also spells .target(...). It is inside an
+    # already parsed declaration, not a second declaration that may overwrite
+    # the real binary target and erase its artifact path.
+    if match.start() < covered_until:
+        continue
     kind = match.group(1)
     block = balanced(manifest, match.end() - 1, "(", ")")
     if not block:
@@ -99,6 +105,7 @@ for match in re.finditer(r"\.(binaryTarget|target|testTarget|executableTarget)\(
             f"a .{kind}( in Package.swift has unbalanced parentheses; the parser stopped there"
         )
         continue
+    covered_until = match.end() - 1 + len(block)
 
     name_match = re.search(r'name:\s*"([^"]+)"', block)
     if not name_match:
@@ -226,6 +233,21 @@ if targets and ENGINE_TARGET in targets:
                 notes.append(f"{ENGINE_FREE_LANE} does not reach {ENGINE_TARGET}")
 
 # --- 3. every source directory is a target -----------------------------------
+# The iOS runtime libraries must both travel through the native dependency
+# closure. libEGL dlopens libGLESv2, so a linker cannot infer the second edge.
+for runtime, artifact in (
+    ("libEGL", "Frameworks/ANGLELibEGL-ios.xcframework"),
+    ("libGLESv2", "Frameworks/ANGLELibGLESv2-ios.xcframework"),
+):
+    target = targets.get(runtime, {})
+    if target.get("kind") != "binaryTarget" or target.get("path") != artifact:
+        problems.append(f"ANGLE dependency {runtime} must name binary artifact '{artifact}'")
+    for lane in ("MigoApplePerformancePlus", "MigoMacV8"):
+        if not path_to(lane, runtime):
+            problems.append(f"ANGLE dependency {runtime} is absent from {lane}'s native renderer closure")
+    if path_to(ENGINE_FREE_LANE, runtime):
+        problems.append(f"{ENGINE_FREE_LANE} reaches ANGLE dependency {runtime}")
+
 # Binary targets are excluded on purpose: their path is a build output, checked
 # against the script that produces it in section 4 rather than for existence.
 source_paths = {

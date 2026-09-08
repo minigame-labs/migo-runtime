@@ -84,8 +84,6 @@ local.properties
 *.temp
 AI_PROJECT_OVERVIEW.md
 
-!docs/
-
 # Python bytecode from the packaging scripts
 __pycache__/
 *.pyc
@@ -170,9 +168,22 @@ tests/c_host/linux/c-host
 # tooling. These are deliberately not published: they are the accumulated
 # record of which trap was hit on which device and how each was resolved,
 # which is the expensive half of this project to rebuild and is worth nothing
-# to someone consuming the runtime. What a consumer needs is README.md,
-# docs/BUILD.md, docs/multiplatform-architecture.md and include/migo/.
-# Placed last so these win over the `!docs/` re-inclusion above.
+# to someone consuming the runtime. What a consumer needs is the tracked tree
+# itself -- the consumer-facing documents all live at the repository root, next
+# to include/migo/.
+#
+# This comment used to name `docs/BUILD.md` and `docs/multiplatform-architecture.md`,
+# and both were wrong: BUILD.md lives at the root and the architecture document
+# does not exist anywhere in the tree. Naming published paths from memory is how
+# that happened, so it no longer names any: a list of files here has no reader who
+# would notice it going stale, and `test-doc-links-contract.sh` is what actually
+# checks that a published document's links resolve.
+#
+# `docs/` here is the ONLY rule that ignores it. There used to be a bare `!docs/`
+# above with no comment, and this line claimed to override it; `git check-ignore -v`
+# on a scratch repo with these exact bytes answers `docs/` for every path under
+# docs/ both with that line and without it, so it re-included nothing and the
+# claim described a conflict that did not exist. Removed rather than re-explained.
 CLAUDE.md
 AGENTS.md
 GEMINI.md

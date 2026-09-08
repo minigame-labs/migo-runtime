@@ -1741,6 +1741,7 @@ dependencies = [
 name = "migo-frame-decode"
 version = "0.9.6"
 dependencies = [
+ "migo-alloc-probe",
  "migo-frame-wire",
  "migo-shared",
 ]
@@ -1894,6 +1895,7 @@ dependencies = [
  "md-5",
  "migo-alloc-probe",
  "migo-contention-probe",
+ "migo-frame-wire",
  "parking_lot",
  "serde",
  "serde_json",

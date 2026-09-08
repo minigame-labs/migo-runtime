@@ -17,3 +17,6 @@ name = "frame_decode"
 [dependencies]
 shared = { package = "migo-shared", path = "../shared", default-features = false }
 migo-frame-wire = { path = "../frame-wire", default-features = false }
+
+[dev-dependencies]
+migo-alloc-probe = { path = "../../testing/alloc-probe", default-features = false }

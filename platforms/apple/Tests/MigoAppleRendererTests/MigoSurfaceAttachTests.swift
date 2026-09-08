@@ -144,11 +144,9 @@ final class MigoSurfaceAttachTests: XCTestCase {
         /// stricter, final gate -- it is a thread-completion barrier, and "only
         /// after it returns may the host destroy native display/window resources".
         ///
-        /// A `CAMetalLayer` created as a local in the test method is released by
-        /// ARC the moment that method returns -- before teardown has retired
-        /// anything -- and `Unmanaged.passUnretained` does not retain, so nothing
-        /// else keeps it alive. This array is cleared last, after
-        /// `migo_engine_destroy` has returned.
+        /// Most tests keep a host reference through shutdown. The ownership
+        /// regression opts out so it can check Migo's independent native retain.
+        /// This array is cleared after `migo_engine_destroy` has returned.
         private var retained: [AnyObject] = []
 
         /// Held by the fixture because the engine is handed an unretained
@@ -347,44 +345,47 @@ final class MigoSurfaceAttachTests: XCTestCase {
         /// the same expression rather than typed twice.
         ///
         /// `hostObject` is the native object the payload points at, and taking it
-        /// here is what guarantees it outlives the attachment: the fixture holds
-        /// it until after teardown has seen RELEASED. A successful attachment is
-        /// recorded on the fixture for the same reason -- it has to be retired
-        /// before the Session may be destroyed.
+        /// here normally keeps a host reference until teardown sees RELEASED.
+        /// The ownership regression opts out and leaves Migo's retain responsible
+        /// for the layer's lifetime. A successful attachment is recorded on the
+        /// fixture so it is retired before the Session is destroyed.
         private func attach<Payload>(
             kind: MigoPlatformKind,
             payload: inout Payload,
             payloadSize: UInt32,
-            hostObject: AnyObject
+            hostObject: AnyObject,
+            retainHostObject: Bool = true
         ) -> MigoResult {
-            retained.append(hostObject)
+            if retainHostObject { retained.append(hostObject) }
             var produced: OpaquePointer?
-            let result = withUnsafePointer(to: &payload) { raw -> MigoResult in
-                var descriptor = MigoSurfaceDescriptor()
-                descriptor.struct_size = UInt32(MemoryLayout<MigoSurfaceDescriptor>.size)
-                descriptor.abi_version = MIGO_ABI_VERSION_CURRENT
-                // Generations start at 1 and must strictly increase per session.
-                descriptor.generation = 1
-                descriptor.platform_kind = kind
-                descriptor.width_pixels = 256
-                descriptor.height_pixels = 256
-                descriptor.scale_factor = 1.0
-                descriptor.color_space = MIGO_COLOR_SPACE_SRGB
-                // OPAQUE, and not PREMULTIPLIED, which is what a layer-backed
-                // renderer would reach for first. `validate_configuration`
-                // answers PREMULTIPLIED and POSTMULTIPLIED with
-                // MIGO_ERROR_UNSUPPORTED_CAPABILITY on purpose -- capability bits
-                // and modes are requirements rather than hints, and the renderer
-                // has not plumbed alpha semantics end to end -- so asking for it
-                // here would fail during configuration validation and never reach
-                // the platform layer this test is about. The same reasoning fixes
-                // `capability_flags` at zero: any non-zero bit is refused for the
-                // same documented reason.
-                descriptor.alpha_mode = MIGO_ALPHA_MODE_OPAQUE
-                descriptor.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT
-                descriptor.platform_descriptor_size = payloadSize
-                descriptor.platform_descriptor = UnsafeRawPointer(raw)
-                return migo_session_attach_surface(session, &descriptor, &produced)
+            let result = withExtendedLifetime(hostObject) {
+                withUnsafePointer(to: &payload) { raw -> MigoResult in
+                    var descriptor = MigoSurfaceDescriptor()
+                    descriptor.struct_size = UInt32(MemoryLayout<MigoSurfaceDescriptor>.size)
+                    descriptor.abi_version = MIGO_ABI_VERSION_CURRENT
+                    // Generations start at 1 and must strictly increase per session.
+                    descriptor.generation = 1
+                    descriptor.platform_kind = kind
+                    descriptor.width_pixels = 256
+                    descriptor.height_pixels = 256
+                    descriptor.scale_factor = 1.0
+                    descriptor.color_space = MIGO_COLOR_SPACE_SRGB
+                    // OPAQUE, and not PREMULTIPLIED, which is what a layer-backed
+                    // renderer would reach for first. `validate_configuration`
+                    // answers PREMULTIPLIED and POSTMULTIPLIED with
+                    // MIGO_ERROR_UNSUPPORTED_CAPABILITY on purpose -- capability bits
+                    // and modes are requirements rather than hints, and the renderer
+                    // has not plumbed alpha semantics end to end -- so asking for it
+                    // here would fail during configuration validation and never reach
+                    // the platform layer this test is about. The same reasoning fixes
+                    // `capability_flags` at zero: any non-zero bit is refused for the
+                    // same documented reason.
+                    descriptor.alpha_mode = MIGO_ALPHA_MODE_OPAQUE
+                    descriptor.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT
+                    descriptor.platform_descriptor_size = payloadSize
+                    descriptor.platform_descriptor = UnsafeRawPointer(raw)
+                    return migo_session_attach_surface(session, &descriptor, &produced)
+                }
             }
             attachment = produced
             return result
@@ -431,6 +432,55 @@ final class MigoSurfaceAttachTests: XCTestCase {
                 What the engine said: \(engineErrors.summary)
                 """)
             XCTAssertNotNil(attachment, "attach reported success and produced no attachment")
+        #else
+            throw XCTSkip("this package is built for macOS and iOS only")
+        #endif
+    }
+
+    func testMetalLayerIsRetainedUntilNativeRetirementCompletes() throws {
+        #if os(macOS) || os(iOS)
+            weak var observedLayer: CAMetalLayer?
+            let result = autoreleasepool { () -> MigoResult in
+                let layer = CAMetalLayer()
+                observedLayer = layer
+                layer.drawableSize = CGSize(width: 256, height: 256)
+                layer.frame = CGRect(x: 0, y: 0, width: 256, height: 256)
+
+                var payload = LayerPayload()
+                payload.struct_size = UInt32(MemoryLayout<LayerPayload>.size)
+                payload.abi_version = MIGO_ABI_VERSION_CURRENT
+                payload.platform_kind = layerKind
+                payload.ca_metal_layer = Unmanaged.passUnretained(layer).toOpaque()
+                return attach(
+                    kind: layerKind, payload: &payload, payloadSize: payload.struct_size,
+                    hostObject: layer, retainHostObject: false)
+            }
+            XCTAssertEqual(result, MIGO_OK, "attach failed: \(engineErrors.summary)")
+            XCTAssertNotNil(observedLayer, "Migo must retain the layer before attach returns")
+
+            let live = try XCTUnwrap(attachment)
+            var release: OpaquePointer?
+            let began = migo_surface_begin_detach(live, &release)
+            XCTAssertEqual(began, MIGO_OK)
+            if began == MIGO_OK { attachment = nil }
+            let observer = try XCTUnwrap(release)
+
+            var status = MigoSurfaceReleaseStatus()
+            status.struct_size = UInt32(MemoryLayout<MigoSurfaceReleaseStatus>.size)
+            status.abi_version = MIGO_ABI_VERSION_CURRENT
+            var released = false
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                XCTAssertEqual(migo_surface_release_query(observer, &status), MIGO_OK)
+                if status.state == MIGO_SURFACE_RELEASE_RELEASED {
+                    released = true
+                    break
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.001))
+            }
+            XCTAssertTrue(released, "native retirement must complete before releasing the layer")
+            XCTAssertNil(observedLayer, "RELEASED must follow the engine's final layer release")
+            XCTAssertEqual(migo_surface_release_destroy(observer), MIGO_OK)
         #else
             throw XCTSkip("this package is built for macOS and iOS only")
         #endif

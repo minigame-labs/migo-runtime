@@ -775,7 +775,7 @@ pub mod resource;
 /// The synchronous barrier: the few calls whose return value is the answer.
 pub mod sync;
 pub use ingress::{FrameIngress, IngressDecision, IngressOutcome};
-pub use pool::{CreditWindow, FramePool, PooledFrame};
+pub use pool::{CreditWindow, FrameCredit, FramePool, PooledFrame};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod builder;

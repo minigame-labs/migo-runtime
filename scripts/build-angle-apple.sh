@@ -171,6 +171,9 @@ SDK_SCRIPT="$REPO_ROOT/scripts/build-apple-sdk.sh"
 PATCH_DIR="$REPO_ROOT/engine/third_party/angle-patches/apple"
 INSTALL_ROOT="$REPO_ROOT/engine/third_party"
 FRAMEWORKS_DIR="$REPO_ROOT/platforms/apple/Frameworks"
+# The SDK assembler builds the dependency set in a temporary directory before
+# replacing a previously usable package. Standalone ANGLE builds keep the default.
+FRAMEWORKS_DIR="${MIGO_APPLE_FRAMEWORKS_DIR:-$FRAMEWORKS_DIR}"
 
 BUILD_ROOT="${MIGO_ANGLE_APPLE_BUILD_ROOT:-/tmp/migo-angle-apple}"
 SOURCE="${MIGO_ANGLE_APPLE_SRC:-$BUILD_ROOT/src}"
@@ -681,12 +684,14 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 1
 fi
 
-ANGLE_ROOT="$(angle_root)"
-head="$(cd "$ANGLE_ROOT" && git rev-parse HEAD)"
-if [ "$head" != "$REVISION" ]; then
-    err "the checkout at $ANGLE_ROOT is at $head, not the pinned $REVISION"
-    err "run: scripts/build-angle-apple.sh --fetch --source $SOURCE"
-    exit 1
+if [ "$MODE" = "build" ]; then
+    ANGLE_ROOT="$(angle_root)"
+    head="$(cd "$ANGLE_ROOT" && git rev-parse HEAD)"
+    if [ "$head" != "$REVISION" ]; then
+        err "the checkout at $ANGLE_ROOT is at $head, not the pinned $REVISION"
+        err "run: scripts/build-angle-apple.sh --fetch --source $SOURCE"
+        exit 1
+    fi
 fi
 
 # What a ninja target actually produced, asked of the output directory.

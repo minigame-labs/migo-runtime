@@ -18,8 +18,10 @@ typedef struct MigoMacosNsViewDescriptor {
 
 /*
  * ca_metal_layer is a CAMetalLayer*. Keeping this separate from NSView avoids
- * a tagless pointer and permits a compositor-owned layer integration. A future
- * implementation retains it through asynchronous Surface retirement.
+ * a tagless pointer and permits a compositor-owned layer integration. Migo
+ * retains it before attach returns success, keeps it through asynchronous
+ * native Surface retirement, and releases its reference before publishing
+ * MIGO_SURFACE_RELEASE_RELEASED. The host controls geometry and the display link.
  */
 typedef struct MigoMacosMetalLayerDescriptor {
     uint32_t struct_size;

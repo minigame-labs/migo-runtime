@@ -53,6 +53,8 @@ code-signing = ["vfs", "dep:ed25519-dalek"]
 contention-probe = []
 
 [dependencies]
+# Engine-free frame ownership crosses the producer/renderer boundary too.
+migo-frame-wire = { path = "../frame-wire", default-features = false }
 base64 = { version = "0.22.1", optional = true }
 hex = { version = "0.4.3", optional = true }
 digest = { version = "0.10", optional = true }
@@ -88,6 +90,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+migo-frame-wire = { path = "../frame-wire", default-features = false, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt"] }
 # Test-only by construction: a `[dependencies]` entry here would carry a
 # `#[global_allocator]` into every cdylib that links this crate.

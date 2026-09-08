@@ -1,40 +1,11 @@
 name: Apple SDK
 
-# The expensive half of the Apple lane, on a cadence rather than on every PR.
-#
-# `apple-ci.yml` deliberately stops at the engine-free layer: the Rust crates
-# that link no engine, and the Swift package that links no xcframework. Its own
-# header says why the graphics path is excluded -- `migo-capi --features
-# external-frames` pulls in skia-bindings, which compiles Skia from source, and
-# that is an hour of C++ per cold cache. Paying it on every pull request would
-# buy a very long red build and, most days, no new fact.
-#
-# What it would buy on a cadence is a fact nobody has: THE ENGINE HAS NEVER BEEN
-# BUILT FOR AN APPLE TARGET. `scripts/build-apple-sdk.sh` has never run.
-# `MigoEngine.xcframework` has never existed. The shipping Swift package has
-# therefore never resolved, and the archive half of
-# `test-apple-performance-rust-closure.sh` -- the one that reads a real symbol
-# table rather than a dependency graph -- has never had an artifact to read.
-#
-# Every one of those is a thing the plan currently defers to "when a Mac
-# arrives". A free unmetered macOS runner can answer all of them now, and the
-# answer is worth having BEFORE the purchase decision rather than after.
-#
-# It runs weekly, on demand, and on `apple/**` branches. Not on pull requests:
-# a job measured in hours must not be something a contributor waits on, and the
-# properties a PR needs are already checked by the cheap lane.
-#
-# It is allowed to fail. That is not laxity -- nothing depends on it and no
-# merge is gated by it -- it is the point: the first run's output is the fact,
-# whichever way it goes, and a failure here names the specific thing that has to
-# be solved before an Apple product exists.
-
+# iOS builds the shipping external-frame product. The macOS external-frame
+# build is a renderer/ABI diagnostic in an isolated package; it does not prove
+# the shipping macOS V8 supply chain. No release is published by this workflow.
 on:
   workflow_dispatch:
   schedule:
-    # Sunday 03:00 UTC. Weekly because what it catches -- an upstream Skia or
-    # Xcode image change breaking the Apple build -- moves on that scale, and a
-    # daily run of an hour-long job is a lot of somebody's shared quota.
     - cron: '0 3 * * 0'
   push:
     branches:
@@ -49,51 +20,33 @@ permissions:
 
 jobs:
   performance-plus:
-    # The Performance+ product -- no default features, no embedded engine -- for
-    # each Apple slice group. Not `macos-v8`, which needs a V8 archive built for
-    # Apple and no such archive exists in this repository yet; asking for it here
-    # would fail for a reason that says nothing about the Apple toolchain.
-    #
-    # Three platforms rather than one, and the second of them is why. `ios` has a
-    # single slice, so it takes the `cp` branch in build-apple-sdk.sh.
-    # `ios-simulator` and `macos` have two each and take the `lipo` branch --
-    # which, like everything else in that script, had never been executed. A
-    # branch nobody has run is the same thing as a gate nobody has seen fail.
-    #
-    # `fail-fast: false` on purpose: this lane exists to produce facts, and the
-    # first platform to break must not cancel the answer for the other two.
     runs-on: macos-15
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
-          # `destination` is what xcodebuild is told to build the Swift package
-          # for, and it is per-platform for a reason that only became real when
-          # a target started depending on the xcframework: SwiftPM's own `swift
-          # build` builds for the host, so on these legs it would hand an
-          # iOS-only artifact a request for a macOS slice.
-          #
-          # `host_slice` marks the one leg whose xcframework contains a slice
-          # the runner itself can run. Only there can the package be linked into
-          # a test bundle and executed.
           - platform: ios
+            product: performance-plus
             targets: aarch64-apple-ios
             destination: generic/platform=iOS
+            package_path: platforms/apple
             host_slice: false
           - platform: ios-simulator
+            product: performance-plus
             targets: aarch64-apple-ios-sim,x86_64-apple-ios
             destination: generic/platform=iOS Simulator
+            package_path: platforms/apple
             host_slice: false
           - platform: macos
+            product: external-frames-diagnostic
             targets: aarch64-apple-darwin,x86_64-apple-darwin
             destination: platform=macOS
+            package_path: build/apple/diagnostics/Debug/package
             host_slice: true
-
     env:
-      # Inside the workspace so the archive the gate audits has a path the
-      # workflow can name without knowing the script's default.
       MIGO_APPLE_BUILD_ROOT: ${{ github.workspace }}/build/apple
+      MIGO_APPLE_PACKAGE_ROOT: ${{ github.workspace }}/${{ matrix.package_path }}
 
     steps:
       - name: Checkout
@@ -104,70 +57,49 @@ jobs:
         with:
           targets: ${{ matrix.targets }}
 
-      # Its own cache key, per platform, and not shared with apple-ci: each
-      # platform's target directory holds a separately compiled Skia, and one key
-      # for all of them would have each evicting the others' work.
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: engine -> target
-          key: apple-sdk-${{ matrix.platform }}
+          key: apple-sdk-${{ matrix.product }}-${{ matrix.platform }}
           cache-on-failure: true
 
-      - name: Record the toolchain that is answering
+      - name: Record the toolchain
         run: |
           rustc --version --verbose
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
           bash scripts/build-apple-sdk.sh --print-deployment-target ios
           bash scripts/build-apple-sdk.sh --print-deployment-target macos
 
-      # The build. Debug rather than Release: the question this job answers first
-      # is whether the graph compiles and links for the target at all, and a
-      # Debug build reaches that answer sooner. Release belongs to the release
-      # workflow, once there is a release to cut.
-      - name: Build the Performance+ xcframework for ${{ matrix.platform }}
+      - name: Check the packaging contract and failure controls
+        run: |
+          bash scripts/test-apple-shipping-package-contract.sh
+          bash scripts/test-apple-sdk-packaging.sh
+
+      # All declared binary paths must exist when SwiftPM resolves a package,
+      # even when a dependency is conditional on the destination platform.
+      - name: Install the pinned ANGLE runtime dependencies
+        run: |
+          bash scripts/fetch-apple-angle.sh ios
+          bash scripts/fetch-apple-angle.sh ios-simulator
+          bash scripts/fetch-apple-angle.sh macos
+
+      - name: Build ${{ matrix.product }} for ${{ matrix.platform }}
         run: >-
           bash scripts/build-apple-sdk.sh
           --platform ${{ matrix.platform }}
-          --product performance-plus
+          --product ${{ matrix.product }}
           --configuration Debug
           --code-signing off
 
-      # The archive half of the no-engine claim, which until now had no archive.
-      # Its Cargo half runs on Linux every PR; this is the first time the same
-      # gate has been able to read a symbol table produced by Apple's toolchain.
-      # The staged archive, not one slice's. For the two multi-slice platforms
-      # this is the lipo output, so what is audited is the bytes that go into the
-      # xcframework rather than one of the inputs.
-      - name: The built archive contains no engine symbols
+      - name: The external-frame archive contains no engine symbols
         run: >-
           bash scripts/test-apple-performance-rust-closure.sh
-          --artifact "$MIGO_APPLE_BUILD_ROOT/${{ matrix.platform }}-Debug/libmigo.a"
+          --artifact "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
 
-      # With the artifact present, the shipping Swift package resolves and is
-      # compiled for the platform this leg built it for.
-      #
-      # `xcodebuild -destination` and not `swift build`: SwiftPM builds for the
-      # host. That distinction was invisible while no target named the binary
-      # target -- SwiftPM never had to find a slice, so `swift build` passed on
-      # all three legs without ever reading the xcframework, and the lane whose
-      # purpose is to check the artifact was green while checking nothing about
-      # it. MigoAppleRenderer now depends on MigoEngine, which is the property
-      # scripts/test-apple-shipping-package-contract.sh keeps.
-      #
-      # `-list` first, so a future scheme rename is a readable failure rather
-      # than "does not contain a scheme named X" with no list of what it does
-      # contain.
-      #
-      # MigoApplePerformancePlus is the scheme because its closure is the whole
-      # lane: the renderer, the WebKit baseline and the engine-free core. The
-      # one target outside it, MigoMacV8, is macOS-only and is covered by the
-      # `swift build` below on the leg where that means something.
-      - name: The shipping Swift package builds for ${{ matrix.platform }}
-        working-directory: platforms/apple
+      - name: The package builds for its artifact destination
+        working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
         run: |
-          ls -la Frameworks/
           xcodebuild -list
           xcodebuild build \
             -scheme MigoApplePerformancePlus \
@@ -175,31 +107,7 @@ jobs:
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO
 
-      # What a non-Rust consumer has to link alongside the archive.
-      #
-      # A Rust binary gets these from cargo, which reads them out of every
-      # dependency's build script. A Swift or Objective-C host linking
-      # libmigo.a gets nothing: the directives are cargo metadata and are not in
-      # the archive. So the list is asked of rustc rather than written down, and
-      # printed here whether or not the link below succeeds -- when it fails,
-      # the answer is already in the log next to the failure.
-      #
-      # Every leg, not just the one that links. The lists differ by platform and
-      # the difference is the interesting part: macOS answers `-framework
-      # OpenGL`, the legacy desktop GL framework, which has no iOS counterpart --
-      # the measured form of why the Apple renderer needs ANGLE-Metal rather
-      # than a system GL.
-      #
-      # `--target` and not a host build: cargo keeps `--target <host>` and no
-      # `--target` in different directories, so omitting it would compile Skia
-      # again for bytes the step above already built. The first target of the
-      # leg, because the slices of one leg share a link line.
-      #
-      # `continue-on-error` because this step reports, it does not decide. The
-      # question that matters is whether the tests link and run, and a failure
-      # to produce a convenience listing must not be what stops the lane from
-      # answering it.
-      - name: Record what a C consumer must link alongside the archive
+      - name: Record the native static-library dependencies
         continue-on-error: true
         working-directory: engine
         env:
@@ -209,193 +117,110 @@ jobs:
           --no-default-features --features external-frames
           -- --print native-static-libs
 
-      # The only leg that can do this, and the first execution of this
-      # repository's C ABI on Apple hardware.
-      #
-      # `swift build` covers every target including MigoMacV8; `swift test`
-      # links a real binary -- the first time anything has linked libmigo.a
-      # rather than compiled against its headers -- and runs assertions that
-      # call migo_query_capabilities. Compilation cannot answer whether the
-      # archive is complete; only a link can.
-      # The published ANGLE archives, for every leg that RUNS something.
-      #
-      # ⚠️ THE COMMENT THAT USED TO BE HERE SAID THE OPPOSITE, and it was wrong in
-      # a way that made an evidence test a coin flip. It read: "Deliberately not
-      # given to `swift test`... putting ANGLE on its loader path would let its
-      # render thread reach a CAMetalLayer that is in no window hierarchy, where
-      # `nextDrawable` has nothing to hand back." The premise was that the attach
-      # test does not need the renderer. It does -- not to draw, but to stay
-      # alive.
-      #
-      # What actually happens without ANGLE, measured 2026-09-06 once the engine
-      # log reached this lane at all: `graphics::render_thread` reports
-      # "CanvasManager init failed: load ANGLE failed: not linked into the
-      # process", the external-frame session exits, and
-      # `migo_session_attach_surface` -- which returned as soon as the tokio
-      # runtime was up, by design -- then races that teardown for the session's
-      # ingress. Whoever wins decides whether attach answers MIGO_OK or
-      # MIGO_ERROR_INTERNAL. On the macOS runner attach won every time; on the
-      # iOS simulator it lost roughly two runs in three, which is how the flake
-      # was found.
-      #
-      # An external-frame session that is never handed a packet never presents a
-      # frame, so `nextDrawable` is not reached and the original worry does not
-      # apply to this test.
-      # Only the legs that RUN something. The `ios` leg builds a device slice
-      # this runner cannot execute, so its archives would be bytes nothing opens
-      # -- which is what the previous version of this step got right.
-      - name: Fetch the pinned ANGLE this leg will run against
-        if: matrix.host_slice || matrix.platform == 'ios-simulator'
-        run: bash scripts/fetch-apple-angle.sh ${{ matrix.platform }}
-
-      # Which simulator the tests below will use, decided once.
-      - name: Choose the simulator
-        if: matrix.platform == 'ios-simulator'
-        run: |
-          set -euo pipefail
-          udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
-          echo "MIGO_SIM_UDID=$udid" >> "$GITHUB_ENV"
-
-      - name: The shipping Swift package links and its tests run on Apple silicon
+      # This uses the same helper shipped to app consumers. SwiftPM's CLI test
+      # runner has no .app embedding phase, so its loader directory is explicit.
+      - name: Embed the macOS diagnostic runtime pair
         if: matrix.host_slice
-        working-directory: platforms/apple
-        env:
-          DYLD_LIBRARY_PATH: ${{ github.workspace }}/engine/third_party/angle-apple-macos
+        run: |
+          bash "$MIGO_APPLE_PACKAGE_ROOT/Frameworks/Scripts/embed-apple-angle.sh" \
+            --frameworks-dir "$MIGO_APPLE_PACKAGE_ROOT/Frameworks" \
+            --destination "$RUNNER_TEMP/migo-diagnostic-angle" \
+            --architectures 'arm64 x86_64'
+          echo "MIGO_DIAGNOSTIC_ANGLE=$RUNNER_TEMP/migo-diagnostic-angle" >> "$GITHUB_ENV"
+
+      - name: The isolated diagnostic package links and runs its ABI tests
+        if: matrix.host_slice
+        working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
         run: |
           swift build
-          swift test
+          DYLD_LIBRARY_PATH="$MIGO_DIAGNOSTIC_ANGLE" swift test
 
-
-      # The presenter's own tests, on Apple hardware, and the only place ANGLE is
-      # asked to load.
-      #
-      # scripts/test-apple-egl-loader-name-contract.sh proves the presenter names
-      # the file the recipe produces; that is a text comparison and it runs on
-      # Linux. This is the other half: a file answers to that name, exports the
-      # EGL entry points, and `eglInitialize` finds a backend behind it. Until
-      # this step existed, `APPLE_EGL_LIBRARY` was a string literal no code path
-      # had ever read.
-      #
-      # `--no-default-features --features external-frames`, matching the product
-      # this lane builds, and not a preference: the default `profile-full` links
-      # V8, and there is no macOS V8 component -- building that supply chain is
-      # its own unstarted piece of work. Asking for it here would fail on a
-      # missing `librusty_v8.a` and say nothing about the presenter.
-      #
-      # `--target <host>` rather than no `--target`: cargo keeps the two in
-      # different directories, so omitting it compiles Skia a second time for
-      # bytes the xcframework step above already built. The host triple is asked
-      # of rustc rather than taken from the matrix, because this step has to run
-      # a binary and only the host can.
       - name: The Apple presenter's ANGLE bring-up runs on Apple silicon
         if: matrix.host_slice
         working-directory: engine
         run: |
-          set -euo pipefail
           host="$(rustc -vV | sed -n 's/^host: //p')"
-          echo "running migo-platform's tests for $host"
-          DYLD_LIBRARY_PATH="$GITHUB_WORKSPACE/engine/third_party/angle-apple-macos" \
+          DYLD_LIBRARY_PATH="$MIGO_DIAGNOSTIC_ANGLE" \
             cargo test -p migo-platform --locked --target "$host" \
             --no-default-features --features external-frames
 
-      # The same assertions, on the platform they are actually about.
-      #
-      # `swift test` above runs them on macOS, where `#if os(iOS)` is false. So
-      # the iOS arm of `MigoEngineCapabilities.hostSurfaceKind` -- and every
-      # assertion that reads it -- has been compiled for iOS and never executed
-      # on it. This repository has been bitten by precisely that before, and
-      # apple-ci.yml's header records it: the ILP32 assertions in the C ABI lane
-      # were written, compiled once, and two of them were wrong about pointer
-      # width the moment anything ran them. Writing a platform arm twice is not
-      # testing it twice.
-      #
-      # It is also the first time the simulator slices are loaded rather than
-      # merely linked: the `lipo` output this leg produces is what an app would
-      # embed, and nothing had ever asked dyld to accept it.
-      #
-      # The simulator is chosen, not named. A hardcoded `name=iPhone 16` is one
-      # runner-image bump away from failing for a reason that has nothing to do
-      # with this repository, so the destination is the udid of whichever iPhone
-      # runtime the image actually carries, newest first. If it carries none,
-      # that is a fact about the image and the step says so.
-      #
-      # `Migo-Package` and not a product scheme: `xcodebuild -list` on this
-      # package reports Migo-Package, MigoApplePerformancePlus, MigoAppleWebKit
-      # and MigoMacV8, and only the first contains the test target. There is no
-      # MigoAppleRenderer scheme -- it is a target, not a product.
-      - name: The ABI tests run on iOS
+      # The runtime is supplied by Package.swift's framework dependencies.
+      # No copy into DerivedData or test products repairs the package afterward.
+      - name: The ABI tests run on iOS with package-embedded ANGLE
         if: matrix.platform == 'ios-simulator'
-        working-directory: platforms/apple
+        working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
         run: |
-          set -euo pipefail
-          udid="$MIGO_SIM_UDID"
-          dd="$GITHUB_WORKSPACE/build/apple-sim-dd"
-          angle="$GITHUB_WORKSPACE/engine/third_party/angle-apple-ios-simulator"
-
-          # Build first, plant ANGLE, then run -- rather than one `xcodebuild
-          # test` -- because the only way to put a library where this process
-          # will find it is to put it where dyld already looks.
-          #
-          # Two env-var routes were tried on 2026-09-06 and neither reached the
-          # process: `simctl spawn ... launchctl setenv DYLD_LIBRARY_PATH`, and
-          # `TEST_RUNNER_DYLD_FRAMEWORK_PATH` on the xcodebuild command line. The
-          # failing run's own dlopen diagnostic is what settled it -- its "tried:"
-          # list contains only bundle-relative and @rpath entries and no
-          # DYLD_-supplied directory at all, while naming the two directories
-          # below verbatim.
-          #
-          # Both destinations, because the two lookups are different questions:
-          # the presenter dlopens "libEGL.framework/libEGL", which dyld answers
-          # from the products directory and the test bundle; and libEGL then
-          # opens libGLESv2 itself by composing a path against its own location,
-          # which is why GLESv2 has to sit beside it wherever it lands.
-          xcodebuild build-for-testing \
+          udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
+          xcodebuild test \
             -scheme Migo-Package \
             -destination "platform=iOS Simulator,id=$udid" \
-            -derivedDataPath "$dd" \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/apple-sim-dd" \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO
 
-          products="$dd/Build/Products/Debug-iphonesimulator"
-          planted=0
-          for dest in "$products/PackageFrameworks" "$products"/*.xctest/Frameworks; do
-            mkdir -p "$dest"
-            cp -R "$angle"/*.framework "$dest/"
-            echo "planted ANGLE in $dest"
-            planted=$((planted + 1))
-          done
-          # A copy that silently landed nowhere would leave this step testing the
-          # same thing it tested before the fix.
-          if [ "$planted" -eq 0 ]; then
-            echo "no destination for ANGLE under $products" >&2
-            exit 1
-          fi
-
-          xcodebuild test-without-building \
-            -scheme Migo-Package \
-            -destination "platform=iOS Simulator,id=$udid" \
-            -derivedDataPath "$dd" \
-            CODE_SIGNING_ALLOWED=NO
-
-      # The half of the deployment-floor contract that reads the product rather
-      # than the declaration -- and the half its own header calls the one that
-      # matters, citing the Android library whose floor was declared correctly
-      # for API 26 while the shipped bytes carried a strong reference to an API
-      # 29 symbol. Every declaration agreed; the artifact was wrong.
-      #
-      # It has never had an artifact to read, because no Apple artifact existed.
-      # Now one does, so it reads LC_BUILD_VERSION out of every Mach-O in the
-      # xcframework and checks minos against contracts/apple/deployment-floor.json.
-      - name: The built Mach-O files carry the declared deployment target
+      - name: The assembled artifact honors the deployment floor
         run: >-
           bash scripts/test-apple-deployment-floor-contract.sh
-          --artifacts platforms/apple/Frameworks/MigoEngine.xcframework
+          --artifacts "$MIGO_APPLE_PACKAGE_ROOT/Frameworks/MigoEngine.xcframework"
 
-      - name: Keep the xcframework
+      - name: Keep the package artifacts and consumer helper
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: MigoEngine-xcframework-${{ matrix.platform }}-debug
-          path: platforms/apple/Frameworks/MigoEngine.xcframework
+          name: apple-sdk-${{ matrix.product }}-${{ matrix.platform }}-debug
+          path: |
+            ${{ env.MIGO_APPLE_PACKAGE_ROOT }}/Frameworks/
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep the validated shipping group for iOS assembly
+        if: matrix.product == 'performance-plus'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: apple-engine-${{ matrix.platform }}-debug
+          path: ${{ env.MIGO_APPLE_BUILD_ROOT }}/performance-plus/Debug/${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble-ios:
+    needs: performance-plus
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      MIGO_APPLE_BUILD_ROOT: ${{ github.workspace }}/build/apple
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download the device group
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: apple-engine-ios-debug
+          path: ${{ env.MIGO_APPLE_BUILD_ROOT }}/performance-plus/Debug/ios
+      - name: Download the simulator group
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: apple-engine-ios-simulator-debug
+          path: ${{ env.MIGO_APPLE_BUILD_ROOT }}/performance-plus/Debug/ios-simulator
+      - name: Install the pinned iOS runtime pair
+        run: |
+          bash scripts/fetch-apple-angle.sh ios
+          bash scripts/fetch-apple-angle.sh ios-simulator
+      - name: Assemble the iOS family from both validated groups
+        run: |
+          bash scripts/build-apple-sdk.sh --platform ios --configuration Debug --assemble-only
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+          receipt = json.loads(Path('platforms/apple/Frameworks/MigoEngine.xcframework/migo-build.json').read_text())
+          assert not receipt['diagnostic']
+          assert {s['platform']: s['product'] for s in receipt['slices']} == {
+              'ios': 'performance-plus', 'ios-simulator': 'performance-plus'}
+          PYTHON
+      - name: Keep the assembled iOS family
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: apple-sdk-performance-plus-ios-family-debug
+          path: |
+            platforms/apple/Frameworks/
+          if-no-files-found: error
           retention-days: 14

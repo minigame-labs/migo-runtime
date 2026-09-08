@@ -21,7 +21,7 @@ pub mod send;
 
 pub use self::{
     canvas_id_set::CanvasIdSet,
-    frame_packet::{FrameOp, FramePacket, FramePacketBuilder},
+    frame_packet::{FrameOp, FrameOps, FramePacket, FramePacketBuilder},
     render_cmd::{CanvasBatchPayload, DirtyRect, GlBatchPayload},
 };
 // Re-exported at the old path so every call site keeps saying

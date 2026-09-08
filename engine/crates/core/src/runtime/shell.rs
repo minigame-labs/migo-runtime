@@ -14,7 +14,7 @@
 //! use site in a 1800-line file for no property either mode gains.
 //!
 //! The ordering here is load-bearing and was measured, not guessed. See
-//! `docs/PROGRESS-apple-android.md` and the Android startup work: the render
+//! `docs/archive/PROGRESS-apple-android.md` and the Android startup work: the render
 //! thread is launched before the JavaScript runtime is built so GPU bring-up
 //! and V8 construction overlap, and `gpu_init_started` is taken at the launch
 //! rather than at the wait so the two-second budget is not restarted by

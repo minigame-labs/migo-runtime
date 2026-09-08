@@ -123,7 +123,7 @@ pub use surface::{SafeArea, Surface, SurfaceRef, WindowInfo};
 /// Prefer `use shared::protocol::...` in downstream crates.
 /// `frame_packet` stays re-exported here as an explicit protocol exception for this plan stage.
 pub use protocol::{
-    frame_packet::{FrameOp, FramePacket, FramePacketBuilder},
+    frame_packet::{FrameOp, FrameOps, FramePacket, FramePacketBuilder},
     host_cmd::HostCommand,
     render_cmd::RenderCommand,
 };

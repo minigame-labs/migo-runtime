@@ -185,11 +185,96 @@ impl Surface for AppleOffscreenSurface {
     }
 }
 
-/// Onscreen render target wrapping a `CAMetalLayer` the **host** owns.
+/// Shared ownership of one native `CAMetalLayer` retain.
 ///
-/// The host creates, sizes, positions and destroys the layer; the engine only
-/// renders into it. That is the same ownership rule the X11, Wayland and Win32
-/// targets follow, and it is what keeps the SDK from owning a window.
+/// Surface payloads, prepared EGL targets and resize targets share this owner.
+/// The final owner releases the object after native rendering has retired.
+#[derive(Clone, Debug)]
+pub struct RetainedMetalLayer(Arc<MetalLayerOwner>);
+
+#[derive(Debug)]
+struct MetalLayerOwner {
+    layer: NonNull<c_void>,
+    release: unsafe fn(NonNull<c_void>),
+}
+
+// SAFETY: Objective-C retain/release may run on either lifecycle thread. All
+// drawing and host layout still follow the existing CAMetalLayer/EGL contract;
+// this owner exposes no Rust reference or mutable access to the object.
+unsafe impl Send for MetalLayerOwner {}
+unsafe impl Sync for MetalLayerOwner {}
+
+impl Drop for MetalLayerOwner {
+    fn drop(&mut self) {
+        // SAFETY: construction acquired exactly one reference, and Arc runs
+        // this destructor only after every surface/target owner has retired.
+        unsafe { (self.release)(self.layer) };
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+#[link(name = "objc")]
+unsafe extern "C" {
+    fn objc_retain(object: *mut c_void) -> *mut c_void;
+    fn objc_release(object: *mut c_void);
+}
+
+impl RetainedMetalLayer {
+    /// Acquire ownership before a surface can be published to another thread.
+    ///
+    /// # Safety
+    /// `layer` must point to a live `CAMetalLayer` for this call. The host must
+    /// continue to synchronize layout and native rendering while attached.
+    pub unsafe fn retain(layer: NonNull<c_void>) -> Self {
+        #[cfg(target_vendor = "apple")]
+        {
+            unsafe fn retain(layer: NonNull<c_void>) {
+                unsafe { objc_retain(layer.as_ptr()) };
+            }
+            unsafe fn release(layer: NonNull<c_void>) {
+                unsafe { objc_release(layer.as_ptr()) };
+            }
+            unsafe { Self::with_refcount(layer, retain, release) }
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = layer;
+            panic!("native CAMetalLayer ownership requires an Apple target")
+        }
+    }
+
+    unsafe fn with_refcount(
+        layer: NonNull<c_void>,
+        retain: unsafe fn(NonNull<c_void>),
+        release: unsafe fn(NonNull<c_void>),
+    ) -> Self {
+        unsafe { retain(layer) };
+        Self(Arc::new(MetalLayerOwner { layer, release }))
+    }
+
+    /// Inject native refcount operations for portable lifecycle tests.
+    ///
+    /// # Safety
+    /// Both callbacks must implement a balanced, thread-safe retain/release
+    /// pair for `layer`, and their backing storage must outlive the final owner.
+    #[cfg(any(test, feature = "test-support"))]
+    pub unsafe fn retain_for_test(
+        layer: NonNull<c_void>,
+        retain: unsafe fn(NonNull<c_void>),
+        release: unsafe fn(NonNull<c_void>),
+    ) -> Self {
+        unsafe { Self::with_refcount(layer, retain, release) }
+    }
+
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.0.layer.as_ptr()
+    }
+}
+
+/// Onscreen render target retaining a `CAMetalLayer` the host creates.
+///
+/// The host creates, sizes and positions the layer. The engine retains it for
+/// the attachment and asynchronous native retirement, without owning a window.
 ///
 /// A layer and not a view, on both platforms, because that is what the public
 /// headers already decided: `include/migo/platform/ios.h` says the layer path
@@ -200,25 +285,21 @@ impl Surface for AppleOffscreenSurface {
 /// that cannot be drawn to.
 #[derive(Debug)]
 pub struct AppleMetalLayerSurface {
-    layer: NonNull<c_void>,
+    layer: RetainedMetalLayer,
     width: u32,
     height: u32,
 }
 
-// SAFETY: the pointer is an opaque token handed to EGL and never dereferenced
-// here. The render thread creates the surface from it while the host services
-// the layer on its own thread, which is sound because the host guarantees
-// (documented on `apple_metal_layer_graphics_platform`) that the layer outlives
-// the attachment.
-unsafe impl Send for AppleMetalLayerSurface {}
-unsafe impl Sync for AppleMetalLayerSurface {}
-
 impl AppleMetalLayerSurface {
     /// # Safety
     ///
-    /// `layer` must be a live `CAMetalLayer` that stays valid until the engine
-    /// reports the surface released.
+    /// `layer` must be a live `CAMetalLayer` for this call. The surface acquires
+    /// a native reference before returning; layout remains host-controlled.
     pub unsafe fn new(layer: NonNull<c_void>, width: u32, height: u32) -> Self {
+        Self::from_retained_layer(unsafe { RetainedMetalLayer::retain(layer) }, width, height)
+    }
+
+    pub fn from_retained_layer(layer: RetainedMetalLayer, width: u32, height: u32) -> Self {
         Self {
             layer,
             width,
@@ -285,7 +366,7 @@ impl EglSurfaceFactory for AppleEglSurfaceFactory {
             AppleSurfaceTarget::MetalLayer => {
                 if let Some(layer) = any.downcast_ref::<AppleMetalLayerSurface>() {
                     return Ok(Arc::new(ApplePreparedSurface::MetalLayer {
-                        layer: layer.layer,
+                        layer: layer.layer.clone(),
                         width: layer.width,
                         height: layer.height,
                     }));
@@ -307,15 +388,11 @@ pub enum ApplePreparedSurface {
         height: u32,
     },
     MetalLayer {
-        layer: NonNull<c_void>,
+        layer: RetainedMetalLayer,
         width: u32,
         height: u32,
     },
 }
-
-// SAFETY: see `AppleMetalLayerSurface` -- the pointer is only ever passed to EGL.
-unsafe impl Send for ApplePreparedSurface {}
-unsafe impl Sync for ApplePreparedSurface {}
 
 impl PreparedEglSurface for ApplePreparedSurface {
     fn backend_id(&self) -> GraphicsBackendId {
@@ -334,7 +411,9 @@ impl PreparedEglSurface for ApplePreparedSurface {
             // Identity for a layer is the layer, not its size: a resized layer
             // is still the same native surface, and treating it as a new one
             // would retire an attachment the host never replaced.
-            (Self::MetalLayer { layer: a, .. }, Self::MetalLayer { layer: b, .. }) => a == b,
+            (Self::MetalLayer { layer: a, .. }, Self::MetalLayer { layer: b, .. }) => {
+                a.as_ptr() == b.as_ptr()
+            }
             (
                 Self::Offscreen {
                     width: aw,
@@ -355,13 +434,13 @@ impl PreparedEglSurface for ApplePreparedSurface {
         display: egl::Display,
         config: egl::Config,
     ) -> EngineResult<egl::Surface> {
-        match *self {
+        match self {
             Self::Offscreen { width, height } => {
                 let attributes = [
                     egl::WIDTH,
-                    width as egl::Int,
+                    *width as egl::Int,
                     egl::HEIGHT,
-                    height as egl::Int,
+                    *height as egl::Int,
                     egl::NONE,
                 ];
                 egl.create_pbuffer_surface(display, config, &attributes)
@@ -408,9 +487,9 @@ pub fn apple_graphics_platform() -> EngineResult<GraphicsPlatform> {
 
 /// Onscreen Apple graphics platform rendering into a host-owned `CAMetalLayer`.
 ///
-/// The caller keeps ownership of the layer: it must stay valid for as long as
-/// the attachment lives, and the host keeps driving its own layout and display
-/// link. The engine never creates, resizes or destroys the layer.
+/// The caller creates the layer and drives its layout and display link. Surface
+/// wrappers retain it until native retirement completes; the engine never
+/// creates or resizes it.
 pub fn apple_metal_layer_graphics_platform() -> EngineResult<GraphicsPlatform> {
     GraphicsPlatform::try_new(
         Arc::new(AppleEglProvider::new()),
@@ -421,9 +500,114 @@ pub fn apple_metal_layer_graphics_platform() -> EngineResult<GraphicsPlatform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct LayerRefcounts {
+        retains: AtomicUsize,
+        releases: AtomicUsize,
+    }
+
+    unsafe fn retain_counted_layer(layer: NonNull<c_void>) {
+        let counts = unsafe { layer.cast::<LayerRefcounts>().as_ref() };
+        counts.retains.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe fn release_counted_layer(layer: NonNull<c_void>) {
+        let counts = unsafe { layer.cast::<LayerRefcounts>().as_ref() };
+        counts.releases.fetch_add(1, Ordering::SeqCst);
+    }
+
+    // The native refcount seam lets Linux exercise the same ownership path as
+    // Apple, without treating identity-only test pointers as Objective-C objects.
+    unsafe fn counted_surface(counts: &LayerRefcounts) -> AppleMetalLayerSurface {
+        let pointer = NonNull::from(counts).cast();
+        let layer = unsafe {
+            RetainedMetalLayer::retain_for_test(
+                pointer,
+                retain_counted_layer,
+                release_counted_layer,
+            )
+        };
+        AppleMetalLayerSurface::from_retained_layer(layer, 800, 600)
+    }
+
+    #[test]
+    fn constructing_a_layer_surface_retains_before_it_can_be_published() {
+        let counts = LayerRefcounts::default();
+        let surface = unsafe { counted_surface(&counts) };
+        assert_eq!(counts.retains.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.releases.load(Ordering::SeqCst), 0);
+        drop(surface);
+        assert_eq!(counts.releases.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn prepared_surface_keeps_the_layer_until_its_final_reference_is_retired() {
+        let counts = LayerRefcounts::default();
+        let surface = unsafe { counted_surface(&counts) };
+        let prepared = AppleEglSurfaceFactory::metal_layer()
+            .prepare(&surface)
+            .expect("prepare retained layer");
+        let retiring = prepared.clone();
+        drop(surface);
+        drop(prepared);
+        assert_eq!(counts.releases.load(Ordering::SeqCst), 0);
+        drop(retiring);
+        assert_eq!(counts.retains.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.releases.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn release_notification_follows_the_final_native_layer_release() {
+        use shared::surface::{SurfaceGenerationGate, SurfaceLease, SurfaceReleasePhase};
+        let counts = Arc::new(LayerRefcounts::default());
+        let gate = Arc::new(SurfaceGenerationGate::new());
+        let lease = SurfaceLease::new(
+            Arc::new(unsafe { counted_surface(&counts) }),
+            gate.attach_or_update().expect("attach generation"),
+        );
+        let prepared = apple_metal_layer_graphics_platform()
+            .expect("graphics platform")
+            .prepare_surface_for_lease(&lease)
+            .expect("prepare resource-bound layer");
+        let pending = Arc::new(AtomicUsize::new(0));
+        let notified = Arc::new(AtomicUsize::new(0));
+        let notification_counts = counts.clone();
+        let notification_calls = notified.clone();
+        let release = lease
+            .prepare_release(
+                pending.clone(),
+                Some(Box::new(move |_| {
+                    assert_eq!(notification_counts.releases.load(Ordering::SeqCst), 1);
+                    notification_calls.fetch_add(1, Ordering::SeqCst);
+                })),
+            )
+            .expect("prepare release")
+            .commit();
+        gate.retire_current();
+        drop(lease);
+        assert_eq!(release.phase(), SurfaceReleasePhase::Pending);
+        assert_eq!(counts.releases.load(Ordering::SeqCst), 0);
+
+        std::thread::spawn(move || drop(prepared))
+            .join()
+            .expect("retirement thread");
+        assert_eq!(release.phase(), SurfaceReleasePhase::Released);
+        assert_eq!(counts.releases.load(Ordering::SeqCst), 1);
+        assert_eq!(notified.load(Ordering::SeqCst), 1);
+        assert_eq!(pending.load(Ordering::SeqCst), 0);
+    }
 
     fn layer(value: usize) -> NonNull<c_void> {
         NonNull::new(value as *mut c_void).expect("test handle must be non-null")
+    }
+
+    fn fake_surface(value: usize, width: u32, height: u32) -> AppleMetalLayerSurface {
+        unsafe fn no_refcount(_: NonNull<c_void>) {}
+        let layer =
+            unsafe { RetainedMetalLayer::retain_for_test(layer(value), no_refcount, no_refcount) };
+        AppleMetalLayerSurface::from_retained_layer(layer, width, height)
     }
 
     /// Both targets report back the size they were handed, in that order.
@@ -441,10 +625,7 @@ mod tests {
     #[test]
     fn both_targets_report_the_size_they_were_given() {
         assert_eq!(AppleOffscreenSurface::new(320, 240).size(), (320, 240));
-        assert_eq!(
-            unsafe { AppleMetalLayerSurface::new(layer(0x1234), 1024, 768) }.size(),
-            (1024, 768)
-        );
+        assert_eq!(fake_surface(0x1234, 1024, 768).size(), (1024, 768));
     }
 
     #[test]
@@ -462,7 +643,7 @@ mod tests {
     #[test]
     fn an_offscreen_factory_refuses_a_layer_surface() {
         let factory = AppleEglSurfaceFactory::offscreen();
-        let surface = unsafe { AppleMetalLayerSurface::new(layer(0x1234), 800, 600) };
+        let surface = fake_surface(0x1234, 800, 600);
         assert!(
             factory.prepare(&surface).is_err(),
             "a pbuffer factory must not silently render into a layer"
@@ -482,13 +663,13 @@ mod tests {
     fn layer_identity_is_the_layer_not_the_size() {
         let factory = AppleEglSurfaceFactory::metal_layer();
         let before = factory
-            .prepare(&unsafe { AppleMetalLayerSurface::new(layer(0x1234), 800, 600) })
+            .prepare(&fake_surface(0x1234, 800, 600))
             .expect("prepare");
         let after = factory
-            .prepare(&unsafe { AppleMetalLayerSurface::new(layer(0x1234), 1024, 768) })
+            .prepare(&fake_surface(0x1234, 1024, 768))
             .expect("prepare");
         let other = factory
-            .prepare(&unsafe { AppleMetalLayerSurface::new(layer(0x5678), 800, 600) })
+            .prepare(&fake_surface(0x5678, 800, 600))
             .expect("prepare");
 
         assert!(before.same_native_surface(after.as_ref()));
@@ -544,7 +725,7 @@ mod tests {
             .prepare(&AppleOffscreenSurface::new(800, 600))
             .expect("prepare offscreen");
         let onscreen = AppleEglSurfaceFactory::metal_layer()
-            .prepare(&unsafe { AppleMetalLayerSurface::new(layer(0x1234), 800, 600) })
+            .prepare(&fake_surface(0x1234, 800, 600))
             .expect("prepare layer");
 
         assert!(!offscreen.same_native_surface(onscreen.as_ref()));

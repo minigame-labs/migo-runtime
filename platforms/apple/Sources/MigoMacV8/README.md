@@ -20,3 +20,10 @@ Requirements:
 - Code cache keys include content hash, V8 build, flags, ABI and cache schema.
 - arm64 on Apple silicon and x86_64 on Intel, as real slices. Rosetta is not a
   substitute for a native slice.
+
+The shipping SDK maps the macOS `MigoEngine` slice to `macos-v8` and records
+that product in the assembled receipt. The Apple SDK workflow's separate
+`external-frames-diagnostic` package does not establish a working V8 product.
+The adjacent ANGLE dylibs must be installed with the generated
+`Frameworks/Scripts/embed-apple-angle.sh` helper before signing the host app;
+see the package README for the build phase and runtime search path.
