@@ -168,11 +168,21 @@ public final class MigoCapabilityGate: NSObject {
         attestation: Attestation = Attestation(),
         completion: @escaping (Result<[MigoCapabilityRecord], Error>) -> Void
     ) {
-        precondition(
-            webView === self.webView,
-            "the gate must run in the web view it configured: the message handlers and the "
-                + "scheme handler are registered on that view's configuration, and a run in "
-                + "any other one waits for a report that reaches a different object")
+        // Reported rather than a `precondition`. It is a programming error, and
+        // the idiomatic answer to one of those is a trap -- but this runs on a
+        // bench at the far end of a lab session, and an app that vanishes tells
+        // the operator less than a line of text does. The message is the same
+        // either way; only the person reading it changes.
+        guard webView === self.webView else {
+            completion(
+                .failure(
+                    GateError.pageFailed(
+                        "the gate must run in the web view it configured: the message handlers "
+                            + "and the scheme handler are registered on that view's "
+                            + "configuration, so a run in any other one waits for a report that "
+                            + "reaches a different object")))
+            return
+        }
         self.attestation = attestation
         do {
             try listener.start()
