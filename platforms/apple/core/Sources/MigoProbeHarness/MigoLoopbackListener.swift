@@ -139,7 +139,16 @@ public final class MigoLoopbackListener {
     /// more. A server that assumed one read per request would answer the
     /// synchronous-XHR probe with a truncated body and report it as a transport
     /// failure -- the probe would be measuring this file.
+    ///
+    /// It parses what it already holds BEFORE reading again. The bytes after a
+    /// completed request stay in the buffer, and one TCP segment can carry two
+    /// requests -- the page fetches its two scripts back to back. Going
+    /// straight to `receive` with a whole request already buffered waits for
+    /// bytes the client has no reason to send.
     private func receiveRequest(on connection: NWConnection, accumulated: Data) {
+        if handleBufferedRequest(on: connection, buffer: accumulated) {
+            return
+        }
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
             [weak self] chunk, _, isComplete, error in
             guard let self else { return }
@@ -150,79 +159,93 @@ public final class MigoLoopbackListener {
             var buffer = accumulated
             if let chunk { buffer.append(chunk) }
 
-            guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else {
-                if buffer.count > 64 * 1024 {
-                    self.respond(on: connection, status: "431 Request Header Fields Too Large")
-                    return
-                }
-                self.receiveRequest(on: connection, accumulated: buffer)
+            if self.handleBufferedRequest(on: connection, buffer: buffer) {
                 return
             }
-
-            let head = String(decoding: buffer[..<headerEnd.lowerBound], as: UTF8.self)
-            let lines = head.split(separator: "\r\n", omittingEmptySubsequences: false)
-            guard let requestLine = lines.first else {
-                self.respond(on: connection, status: "400 Bad Request")
+            if buffer.count > 64 * 1024 {
+                self.respond(on: connection, status: "431 Request Header Fields Too Large")
                 return
             }
-            let parts = requestLine.split(separator: " ")
-            guard parts.count >= 2 else {
-                self.respond(on: connection, status: "400 Bad Request")
-                return
-            }
-            let method = String(parts[0])
-            let path = String(parts[1])
-
-            var headers: [String: String] = [:]
-            for line in lines.dropFirst() where line.contains(":") {
-                let pair = line.split(separator: ":", maxSplits: 1)
-                if pair.count == 2 {
-                    headers[pair[0].lowercased().trimmingCharacters(in: .whitespaces)] =
-                        pair[1].trimmingCharacters(in: .whitespaces)
-                }
-            }
-
-            if headers["upgrade"]?.lowercased() == "websocket" {
-                self.completeWebSocketHandshake(on: connection, path: path, headers: headers)
-                return
-            }
-
-            let declared = Int(headers["content-length"] ?? "0") ?? 0
-            let bodyStart = headerEnd.upperBound
-            let have = buffer.count - bodyStart
-            if have < declared {
-                self.receiveRequest(on: connection, accumulated: buffer)
-                return
-            }
-            let body = buffer[bodyStart..<(bodyStart + declared)]
-            self.route(on: connection, method: method, path: path, body: Data(body))
+            self.receiveRequest(on: connection, accumulated: buffer)
         }
     }
 
-    private func route(on connection: NWConnection, method: String, path: String, body: Data) {
+    /// Routes one whole request out of `buffer`, or reports that there is not
+    /// one yet. Returns true when it took responsibility for the connection.
+    private func handleBufferedRequest(on connection: NWConnection, buffer: Data) -> Bool {
+        guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else {
+            return false
+        }
+
+        let head = String(decoding: buffer[..<headerEnd.lowerBound], as: UTF8.self)
+        let lines = head.split(separator: "\r\n", omittingEmptySubsequences: false)
+        guard let requestLine = lines.first else {
+            respond(on: connection, status: "400 Bad Request")
+            return true
+        }
+        let parts = requestLine.split(separator: " ")
+        guard parts.count >= 2 else {
+            respond(on: connection, status: "400 Bad Request")
+            return true
+        }
+        let method = String(parts[0])
+        let path = String(parts[1])
+
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() where line.contains(":") {
+            let pair = line.split(separator: ":", maxSplits: 1)
+            if pair.count == 2 {
+                headers[pair[0].lowercased().trimmingCharacters(in: .whitespaces)] =
+                    pair[1].trimmingCharacters(in: .whitespaces)
+            }
+        }
+
+        if headers["upgrade"]?.lowercased() == "websocket" {
+            completeWebSocketHandshake(on: connection, path: path, headers: headers)
+            return true
+        }
+
+        let declared = Int(headers["content-length"] ?? "0") ?? 0
+        let bodyStart = headerEnd.upperBound
+        guard buffer.count - bodyStart >= declared else {
+            return false
+        }
+        let body = Data(buffer[bodyStart..<(bodyStart + declared)])
+        let leftover = Data(buffer[(bodyStart + declared)...])
+        route(on: connection, method: method, path: path, body: body, leftover: leftover)
+        return true
+    }
+
+    private func route(
+        on connection: NWConnection, method: String, path: String, body: Data, leftover: Data
+    ) {
         let route = path.split(separator: "?").first.map(String.init) ?? path
 
         if method == "POST", route == "/echo-body" {
             // The probe compares what comes back with what it sent, so this
             // echoes the bytes exactly and never a summary of them.
             respond(
-                on: connection, status: "200 OK", mime: "application/octet-stream", body: body)
+                on: connection, status: "200 OK", mime: "application/octet-stream", body: body,
+                leftover: leftover)
             return
         }
 
         let name = route == "/" ? "capability-probe.html" : String(route.dropFirst())
         guard let resource = resources[name] else {
-            respond(on: connection, status: "404 Not Found")
+            respond(on: connection, status: "404 Not Found", leftover: leftover)
             return
         }
-        respond(on: connection, status: "200 OK", mime: resource.mime, body: resource.body)
+        respond(
+            on: connection, status: "200 OK", mime: resource.mime, body: resource.body,
+            leftover: leftover)
     }
 
     private func respond(
         on connection: NWConnection,
         status: String,
         mime: String = "text/plain; charset=utf-8",
-        body: Data = Data()
+        body: Data = Data(),
+        leftover: Data = Data()
     ) {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(mime)\r\n"
@@ -250,7 +273,7 @@ public final class MigoLoopbackListener {
                 // Keep-alive: the page fetches three resources and then POSTs,
                 // and a server that closed after each would make the
                 // synchronous probe measure connection setup.
-                self?.receiveRequest(on: connection, accumulated: Data())
+                self?.receiveRequest(on: connection, accumulated: leftover)
             })
     }
 
