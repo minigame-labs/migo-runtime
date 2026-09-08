@@ -237,14 +237,31 @@ public final class MigoCapabilityGate: NSObject {
         // the HTML: the same bytes are served at both origins, and a page that
         // differed between them would be a second variable in a gate whose
         // whole purpose is to vary one.
+        // `NSNull()` and not `loopbackOrigin as Any`. A nil String boxed as Any
+        // is an `Optional`, which JSONSerialization refuses -- so on the one
+        // path where the listener failed to come up, the whole config would
+        // have failed to serialise and the page would have received `{}`. The
+        // arm that was supposed to degrade to "no loopback listener was
+        // supplied" would instead have lost its Worker URL as well, and the
+        // custom-scheme origin would have answered nothing for a reason that
+        // has nothing to do with the custom scheme.
         let config: [String: Any] = [
             "workerUrl": "capability-probe-worker.js",
-            "loopbackOrigin": loopbackOrigin as Any,
+            "loopbackOrigin": loopbackOrigin ?? NSNull(),
             "schemeOrigin": MigoProbeSchemeHandler.origin,
         ]
-        let json =
-            (try? JSONSerialization.data(withJSONObject: config))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        guard
+            let configData = try? JSONSerialization.data(withJSONObject: config),
+            let json = String(data: configData, encoding: .utf8)
+        else {
+            // Not a silent `{}` fallback: a page with no config runs a
+            // different experiment, and reporting that as a set of capability
+            // answers is worse than reporting the failure.
+            pending = nil
+            completion(
+                .failure(GateError.pageFailed("the probe configuration could not be encoded")))
+            return
+        }
 
         let controller = webView.configuration.userContentController
         controller.removeAllUserScripts()
