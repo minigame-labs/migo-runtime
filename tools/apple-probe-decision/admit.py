@@ -172,23 +172,48 @@ def candidate_space(performance_schema: dict[str, Any], capability_schema: dict[
 
 def blockers(
     candidate: dict[str, str], answers: dict[str, Any], rules: list[dict[str, Any]]
-) -> list[str]:
-    """Why this candidate cannot run here, or an empty list."""
-    reasons: list[str] = []
+) -> tuple[list[str], list[str]]:
+    """Why this candidate cannot run here, and what nobody asked.
+
+    Two lists, not one, and the split is the contract's own rule rather than a
+    refinement of it. `not_probed` means nobody asked, and the capability
+    schema says that must never be quietly read as a no -- so a requirement
+    that is `not_probed` cannot eliminate a candidate. It leaves it unmeasured,
+    which is a different thing to fix: one needs a different architecture, the
+    other needs somebody to run the probe.
+
+    The case that forced this is the ordinary one. `no_local_network_prompt`
+    defaults to `not_probed` whenever nobody attested, and the loopback origin
+    requires it -- so an unattended run eliminated every loopback candidate and
+    said so as though loopback had been ruled out.
+    """
+    blocked: list[str] = []
+    unmeasured: list[str] = []
+
+    def note(name: str, state: Any, reason: str) -> None:
+        line = f"{name} is {state}: {reason}"
+        (unmeasured if state == "not_probed" else blocked).append(line)
+
     for rule in rules:
         if not all(candidate.get(key) == value for key, value in rule["when"].items()):
             continue
         for name in rule.get("requires", []):
             state = (answers.get(name) or {}).get("state")
             if state != "available":
-                reasons.append(f"{name} is {state}: {rule['reason']}")
+                note(name, state, rule["reason"])
         alternatives = rule.get("requires_any", [])
         if alternatives:
             states = {name: (answers.get(name) or {}).get("state") for name in alternatives}
             if not any(state == "available" for state in states.values()):
                 listed = ", ".join(f"{name} is {state}" for name, state in states.items())
-                reasons.append(f"none of {listed}: {rule['reason']}")
-    return reasons
+                line = f"none of {listed}: {rule['reason']}"
+                # A disjunction nobody asked about at all is unmeasured; one
+                # where every arm came back no is blocked.
+                if all(state == "not_probed" for state in states.values()):
+                    unmeasured.append(line)
+                else:
+                    blocked.append(line)
+    return blocked, unmeasured
 
 
 def build_admission(
@@ -236,29 +261,37 @@ def build_admission(
     for candidate in candidate_space(performance_schema, capability_schema):
         runs_on: list[str] = []
         blocked_on: list[dict[str, Any]] = []
+        unmeasured_on: list[dict[str, Any]] = []
         for key, answers in sorted(conditions.items()):
             if key[3] != candidate["origin"]:
                 continue
-            why = blockers(candidate, answers, rules)
+            blocked, unmeasured = blockers(candidate, answers, rules)
             label = f"{key[0]} {key[1]} ({key[2]})"
-            if why:
-                blocked_on.append({"condition": label, "reasons": why})
+            if blocked:
+                blocked_on.append({"condition": label, "reasons": blocked})
+            elif unmeasured:
+                unmeasured_on.append({"condition": label, "reasons": unmeasured})
             else:
                 runs_on.append(label)
 
-        entry = {"candidate": candidate, "runs_on": runs_on, "blocked_on": blocked_on}
-        if not runs_on and not blocked_on:
+        entry = {
+            "candidate": candidate,
+            "runs_on": runs_on,
+            "blocked_on": blocked_on,
+            "unmeasured_on": unmeasured_on,
+        }
+        if not runs_on and not blocked_on and not unmeasured_on:
             # No record for this origin at all. Not eliminated -- unmeasured,
             # and calling it eliminated would let a missing record read as a
             # finding.
             entry["state"] = "unmeasured"
             conditional.append(entry)
-        elif not blocked_on:
-            entry["state"] = "admitted"
-            admitted.append(entry)
-        elif not runs_on:
+        elif blocked_on and not runs_on and not unmeasured_on:
             entry["state"] = "eliminated"
             eliminated.append(entry)
+        elif not blocked_on and not unmeasured_on:
+            entry["state"] = "admitted"
+            admitted.append(entry)
         else:
             entry["state"] = "conditional"
             conditional.append(entry)

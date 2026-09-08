@@ -146,6 +146,47 @@ check(
     lockdown["verdict"] == "rejected" and not lockdown["admitted"],
     f"a device without JIT admits no Performance+ candidate: {lockdown['verdict']}")
 
+# `not_probed` is nobody asking, and the contract says that must never be read
+# as a no. It is also the ordinary case: no_local_network_prompt defaults to it
+# whenever the operator did not attest, and the loopback origin requires it -- so
+# reading it as a no eliminated every loopback candidate and reported it as
+# though loopback had been ruled out.
+unattested = run([
+    with_answer(record("loopback"), "no_local_network_prompt", "not_probed"),
+    record("custom_scheme"),
+])
+loopback_eliminated = [
+    entry for entry in unattested["eliminated"] if entry["candidate"]["origin"] == "loopback"
+]
+check(
+    not loopback_eliminated,
+    f"a capability nobody probed does not eliminate a candidate: "
+    f"{len(loopback_eliminated)} loopback candidates were eliminated")
+loopback_conditional = [
+    entry for entry in unattested["conditional"]
+    if entry["candidate"]["origin"] == "loopback" and entry["unmeasured_on"]
+]
+check(
+    bool(loopback_conditional),
+    "it leaves them unmeasured instead, which is a different thing to fix: one needs "
+    "another architecture, the other needs somebody to run the probe")
+check(
+    any("no_local_network_prompt" in reason
+        for entry in loopback_conditional
+        for block in entry["unmeasured_on"]
+        for reason in block["reasons"]),
+    "and it names the question nobody asked")
+
+# The same capability answered `unavailable` -- the operator watched and saw the
+# alert -- IS an elimination. The two must not collapse into each other.
+attested_bad = run([
+    with_answer(record("loopback"), "no_local_network_prompt", "unavailable"),
+    record("custom_scheme"),
+])
+check(
+    any(entry["candidate"]["origin"] == "loopback" for entry in attested_bad["eliminated"]),
+    "an alert the operator actually saw does eliminate the loopback origin")
+
 # --- the refusals ------------------------------------------------------------
 simulator = run([record("loopback", device_class="simulator"),
                  record("custom_scheme", device_class="simulator")])
