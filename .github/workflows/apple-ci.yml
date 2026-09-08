@@ -167,3 +167,25 @@ jobs:
           -destination 'generic/platform=iOS'
           -skipPackagePluginValidation
           CODE_SIGNING_ALLOWED=NO
+
+      # G0.1b, the probe app, built for the platform it will run on.
+      #
+      # It links no engine on purpose: the plan defines measurement gate 1 as
+      # the gate that runs with no renderer and no validator, so the app that
+      # carries it has nothing to link and costs this lane a few seconds rather
+      # than an hour of Skia.
+      #
+      # Compiling it here is what keeps it honest. Everything that decides an
+      # answer lives in the package above and is tested natively; what is left
+      # in the app target is a window, a web view and two segmented controls --
+      # and an Xcode target that no lane builds is a target that stops building
+      # without anybody finding out until the devices are already booked.
+      - name: Compile the G0 probe app for iOS
+        working-directory: platforms/apple/ProbeApp
+        run: >-
+          xcodebuild build
+          -project MigoProbe.xcodeproj
+          -scheme MigoProbe
+          -destination 'generic/platform=iOS'
+          -skipPackagePluginValidation
+          CODE_SIGNING_ALLOWED=NO

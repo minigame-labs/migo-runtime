@@ -80,6 +80,7 @@ PACKAGE_SWIFT="$REPO_ROOT/platforms/apple/Package.swift"
 CORE_PACKAGE_SWIFT="$REPO_ROOT/platforms/apple/core/Package.swift"
 FLOOR_SWIFT="$REPO_ROOT/platforms/apple/core/Sources/MigoAppleCore/MigoDeploymentFloor.swift"
 BUILD_SCRIPT="$REPO_ROOT/scripts/build-apple-sdk.sh"
+PROBE_PBXPROJ="$REPO_ROOT/platforms/apple/ProbeApp/MigoProbe.xcodeproj/project.pbxproj"
 
 ARTIFACT_DIR=""
 
@@ -237,6 +238,29 @@ check_literal "$FLOOR_SWIFT" "let macOS = $(swift_tuple "$macos_floor")" \
 check_literal "$FLOOR_SWIFT" "let performancePlusMinimumIOS = $(swift_tuple "$perfplus_min")" \
     "the runtime mirror of the Performance+ lane minimum"
 
+# The probe app's Xcode project.
+#
+# An .xcodeproj holds literals: there is no point at which it could read the
+# contract, so IPHONEOS_DEPLOYMENT_TARGET is a text mirror exactly like the
+# Swift ones and is checked the same way. It appears in the allowlist above
+# BECAUSE it is checked here; an allowlist entry with no check beside it is the
+# vacuous exemption this gate exists to prevent, and would let the probe app
+# drift to whatever SDK default Xcode picks while the sweep stayed green.
+#
+# Both configurations, because a Debug-only floor is the one an operator
+# actually installs on a phone and a Release-only floor is the one a lane
+# builds -- either alone would leave the other unchecked.
+if [ -f "$PROBE_PBXPROJ" ]; then
+    probe_hits="$(grep -cF "IPHONEOS_DEPLOYMENT_TARGET = $ios_floor;" "$PROBE_PBXPROJ" || true)"
+    if [ "$probe_hits" -lt 2 ]; then
+        fail "${PROBE_PBXPROJ#$REPO_ROOT/} carries $probe_hits of the 2 expected 'IPHONEOS_DEPLOYMENT_TARGET = $ios_floor;' settings (Debug and Release)"
+    else
+        info "ok: the probe app targets iOS $ios_floor in $probe_hits configuration(s)"
+    fi
+else
+    info "skip: the probe app's Xcode project does not exist yet"
+fi
+
 # The build script is asked, not read.
 #
 # Grepping it for the literal would have been the easy check and the wrong one:
@@ -291,6 +315,7 @@ allowed_to_declare() {
         platforms/apple/core/Package.swift) return 0 ;;
         platforms/apple/core/Sources/MigoAppleCore/MigoDeploymentFloor.swift) return 0 ;;
         scripts/build-apple-sdk.sh) return 0 ;;
+        platforms/apple/ProbeApp/MigoProbe.xcodeproj/project.pbxproj) return 0 ;;
         scripts/test-apple-deployment-floor-contract.sh) return 0 ;;
         docs/*) return 0 ;;
         *) return 1 ;;
