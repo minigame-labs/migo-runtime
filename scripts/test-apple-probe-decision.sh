@@ -27,8 +27,11 @@ cd "$ROOT"
 TOOL="tools/apple-probe-decision/decide.py"
 TESTS="tools/apple-probe-decision/tests/test_decide.py"
 SCHEMA="contracts/apple/performance-probe.schema.json"
+ADMIT="tools/apple-probe-decision/admit.py"
+ADMIT_TESTS="tools/apple-probe-decision/tests/test_admit.py"
+CAPABILITY_SCHEMA="contracts/apple/capability-probe.schema.json"
 
-for required in "$TOOL" "$TESTS" "$SCHEMA"; do
+for required in "$TOOL" "$TESTS" "$SCHEMA" "$ADMIT" "$ADMIT_TESTS" "$CAPABILITY_SCHEMA"; do
     if [[ ! -f "$required" ]]; then
         echo "FAIL: $required is missing; the G0 decision procedure cannot be checked." >&2
         exit 1
@@ -99,4 +102,33 @@ if "thermal_state" in held:
     )
 PY
 
+# The admission side has the same rules and a different failure mode. decide.py
+# picks a winner from arms that ran; admit.py decides which arms may run at all,
+# and a permissive bug there does not look like a failure -- it looks like a
+# matrix with more coverage.
+python3 - "$CAPABILITY_SCHEMA" <<'PYCAP'
+import json, sys
+schema = json.load(open(sys.argv[1], encoding="utf-8"))
+for section in ("probe_rules", "record", "capabilities", "answer", "admission"):
+    if section not in schema:
+        raise SystemExit(f"FAIL: {sys.argv[1]} has no {section!r} section")
+if schema["probe_rules"]["simulator_counts_as_evidence"]:
+    raise SystemExit(
+        "FAIL: the capability schema admits simulator answers as evidence. The simulator runs "
+        "the host's JavaScriptCore on the host's CPU, so it answers 'is JIT on' with the host's "
+        "answer -- yes on every Mac, and nothing about a phone in Lockdown Mode."
+    )
+if not schema["admission"]["rules"]:
+    raise SystemExit(
+        "FAIL: the contract declares no admission rules, so every candidate would be admitted "
+        "without anything having been checked. An empty rule set looks like a gate that passed."
+    )
+if "evidence" not in schema["answer"]["required"]:
+    raise SystemExit(
+        "FAIL: a capability answer may be written without evidence. 'available' with nothing "
+        "behind it is indistinguishable from a probe that returned a default."
+    )
+PYCAP
+
 python3 "$TESTS"
+python3 "$ADMIT_TESTS"

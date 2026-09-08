@@ -128,6 +128,80 @@
     "no_local_network_prompt": "A6/G0.3. Whether this origin works WITHOUT the local-network permission alert. `unavailable` means the alert appeared, which is a review and onboarding problem and not only a latency one. `unsupported` for an origin that opens no socket."
   },
 
+  "admission": {
+    "_comment": [
+      "What gate 1's answers do to the candidate set, as data.",
+      "",
+      "The measurement order says gate 1 cuts the candidates every later gate",
+      "draws from, and that sentence is only true if something performs the",
+      "cut. Left in prose it becomes a paragraph nobody runs, and the first",
+      "person to build a matrix builds the full cross product -- including the",
+      "arms no device can host, whose numbers are then the numbers of whatever",
+      "ran instead.",
+      "",
+      "Enforced by tools/apple-probe-decision/admit.py. Each rule is a partial",
+      "assignment over the performance schema's variables plus `origin`, and",
+      "the capabilities that assignment needs. `requires` is all of them;",
+      "`requires_any` is at least one, which is how a disjunction that is",
+      "genuinely a disjunction gets written down instead of being flattened to",
+      "whichever half somebody remembered."
+    ],
+    "rules": [
+      {
+        "when": {},
+        "requires": ["jit_enabled"],
+        "reason": "A1/A24. The lane exists because WebContent has JIT and the app process does not. On a device where it does not -- Lockdown Mode is the case that ships -- every candidate here is slower than the WebKit lane it would replace."
+      },
+      {
+        "when": {},
+        "requires": ["secure_context"],
+        "reason": "An insecure context has no cross-origin isolation and no SharedArrayBuffer, and is not a place to run content that will later need either."
+      },
+      {
+        "when": {"origin": "loopback"},
+        "requires": ["no_local_network_prompt"],
+        "reason": "A6/G0.3. A permission alert on first launch is an onboarding and App Review problem, not a latency one, and it is not fixed by measuring faster."
+      },
+      {
+        "when": {"transport": "loopback_websocket", "transport_owner": "same_context", "agent": "dedicated_worker"},
+        "requires": ["websocket_in_worker"],
+        "reason": "A22. The content Worker owns the socket itself, so the Worker has to be able to open one."
+      },
+      {
+        "when": {"transport": "loopback_websocket", "transport_owner": "io_worker"},
+        "requires": ["websocket_in_worker", "shared_array_buffer", "atomics_wait"],
+        "reason": "A22's third topology. The I/O Worker opens the socket and the content Worker blocks; waking it across Workers needs a shared buffer and a real blocking wait."
+      },
+      {
+        "when": {"transport": "sync_xhr_rpc"},
+        "requires": ["sync_xhr_binary"],
+        "reason": "A21. A synchronous RPC that cannot return binary is not this transport."
+      },
+      {
+        "when": {"transport": "scheme_request"},
+        "requires": ["request_body_delivery"],
+        "reason": "A5. An upstream frame is a request body. WebKit 191362 is RESOLVED FIXED, so this is measured rather than presumed -- in either direction."
+      },
+      {
+        "when": {"clock": "worker_raf"},
+        "requires": ["worker_raf"],
+        "reason": "A18. The design does not depend on Worker rAF, but a candidate that names it does."
+      },
+      {
+        "when": {"agent": "dedicated_worker", "transport_owner": "same_context"},
+        "requires_any": ["atomics_wait", "sync_xhr_binary"],
+        "reason": "A21. A Worker that serves synchronous content has to be able to block, and there are two public ways to do it. Recording only the SharedArrayBuffer one is what made D2 look like a capability exclusion when it is a performance trade."
+      }
+    ],
+    "_no_rule_comment": [
+      "A level with no rule is admitted by every device, which is the correct",
+      "default for the ones that need nothing: a Window agent, a Window relay,",
+      "the host CADisplayLink clock, and every WKWebView host shape. Absence",
+      "here is a statement, not an omission, and admit.py prints the count so",
+      "an accidental empty rule set cannot read as a permissive one."
+    ]
+  },
+
   "answer": {
     "_comment": [
       "One capability's answer. `evidence` is required on every one, including",

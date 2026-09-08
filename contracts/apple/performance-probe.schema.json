@@ -135,6 +135,11 @@
         "when": {"agent": "window"},
         "forbid": {"transport_owner": "window_relay"},
         "reason": "a Window agent has no Window to relay to; a record saying so mislabelled which context owned the socket"
+      },
+      {
+        "when": {"agent": "window"},
+        "forbid": {"clock": "worker_raf"},
+        "reason": "a Window agent has no Worker whose requestAnimationFrame could drive the clock; the arm that was actually measured was the Window's own rAF, and recording it here files it against the wrong level"
       }
     ],
     "enums": {

@@ -164,13 +164,25 @@ final class MigoProbeHarnessTests: XCTestCase {
             String(decoding: resources["capability-probe.js"]!.body, as: UTF8.self)
             + String(decoding: resources["capability-probe-worker.js"]!.body, as: UTF8.self)
 
-        let pattern = try NSRegularExpression(
-            pattern: #"(?m)^\s*(?:capabilities\.)?([a-z][a-z0-9_]{4,})\s*[:=]\s*(?:probe|answer|unsupported|available|unavailable)"#)
+        // Two forms, because the scripts genuinely use two: a property
+        // assignment onto the result object (`capabilities.x = ...`,
+        // `results.x = ...`), and an object-literal key whose value is a probe.
+        // Matching only the second missed `request_body_delivery` and
+        // `websocket_in_worker`, both of which are assigned a variable holding
+        // an already-resolved answer -- a scanner narrow enough to miss a real
+        // assignment reports a capability as unanswered when it is answered.
+        let patterns = [
+            #"(?m)^\s*(?:capabilities|results)\.([a-z][a-z0-9_]{4,})\s*="#,
+            #"(?m)^\s*([a-z][a-z0-9_]{4,})\s*:\s*(?:probe|answer|unsupported|available|unavailable)"#,
+        ]
         let range = NSRange(script.startIndex..<script.endIndex, in: script)
         var written: Set<String> = []
-        pattern.enumerateMatches(in: script, range: range) { match, _, _ in
-            guard let match, let found = Range(match.range(at: 1), in: script) else { return }
-            written.insert(String(script[found]))
+        for pattern in patterns {
+            let regex = try NSRegularExpression(pattern: pattern)
+            regex.enumerateMatches(in: script, range: range) { match, _, _ in
+                guard let match, let found = Range(match.range(at: 1), in: script) else { return }
+                written.insert(String(script[found]))
+            }
         }
         return written
     }
