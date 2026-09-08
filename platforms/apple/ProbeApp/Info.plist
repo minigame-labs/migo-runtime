@@ -4,7 +4,7 @@
 
   NSAllowsArbitraryLoads is deliberately ABSENT. The loopback origin is plain
   HTTP, and the shortest way to make it load is to turn App Transport Security
-  off for everything -- which would make the probe measure a configuration the
+  off for everything. That would make the probe measure a configuration the
   shipping product may not use, and would carry an App Review problem into the
   one gate whose job is to find them early. NSAllowsLocalNetworking permits
   cleartext to loopback and link-local addresses and nothing else.
@@ -12,6 +12,11 @@
   There is no Bonjour key here either, for the same reason: G0.3's list is
   "no NSAllowsArbitraryLoads, no Bonjour, public API only", and a probe app
   that needs an exemption the product cannot ship has measured the exemption.
+
+  Note on the prose above: an XML comment may not contain two consecutive
+  hyphens. This file was well-formed enough for Xcode to build and run the app
+  with a comment that did contain them, which is why the gate that reads it
+  parses it strictly.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
