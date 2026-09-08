@@ -1,4 +1,4 @@
-use crate::command_vec_pool::PooledVec;
+use crate::command_vec_pool::{PooledIntoIter, PooledVec};
 use crate::protocol::render_cmd::{Canvas2DCmd, CanvasBatchPayload, DirtyRect, GlBatchPayload};
 
 #[derive(Debug)]
@@ -19,6 +19,75 @@ pub struct FramePacket {
     frame_id: u64,
     raf_time_ms: f64,
     ops: PooledVec<FrameOp>,
+    credit: Option<frame_wire::FrameCredit>,
+}
+
+/// Owned frame operations and their admission credit. The credit is returned
+/// after the operations are consumed or discarded, including early iterator exit.
+#[derive(Debug)]
+pub struct FrameOps {
+    ops: PooledVec<FrameOp>,
+    credit: Option<frame_wire::FrameCredit>,
+}
+
+impl FrameOps {
+    /// Execute all phases inside this scope, including any deferred operations.
+    /// The callback must not move operations into work that outlives this scope.
+    pub fn consume<R>(self, consume: impl FnOnce(PooledVec<FrameOp>) -> R) -> R {
+        let Self { ops, credit } = self;
+        let result = consume(ops);
+        drop(credit);
+        result
+    }
+}
+
+impl std::ops::Deref for FrameOps {
+    type Target = [FrameOp];
+
+    fn deref(&self) -> &Self::Target {
+        &self.ops
+    }
+}
+
+pub struct FrameOpsIter {
+    ops: PooledIntoIter<FrameOp>,
+    // Field order keeps the credit alive while unconsumed operations are dropped.
+    _credit: Option<frame_wire::FrameCredit>,
+}
+
+impl Iterator for FrameOpsIter {
+    type Item = FrameOp;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.ops.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.ops.size_hint()
+    }
+}
+
+impl ExactSizeIterator for FrameOpsIter {}
+
+impl IntoIterator for FrameOps {
+    type Item = FrameOp;
+    type IntoIter = FrameOpsIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        FrameOpsIter {
+            ops: self.ops.into_iter(),
+            _credit: self.credit,
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a FrameOps {
+    type Item = &'a FrameOp;
+    type IntoIter = std::slice::Iter<'a, FrameOp>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.ops.iter()
+    }
 }
 
 pub struct FramePacketBuilder {
@@ -44,9 +113,23 @@ impl FramePacketBuilder {
         }
     }
 
+    /// Use the capacity computed by frame admission, avoiding an oversized
+    /// cached allocation left behind by a previous frame.
+    pub fn with_op_capacity(frame_id: u64, raf_time_ms: f64, capacity: usize) -> Self {
+        Self {
+            frame_id,
+            raf_time_ms,
+            ops: PooledVec::take_with_capacity_limit(capacity),
+        }
+    }
+
     pub fn push(mut self, op: FrameOp) -> Self {
-        self.ops.push(op);
+        self.push_op(op);
         self
+    }
+
+    pub fn push_op(&mut self, op: FrameOp) {
+        self.ops.push(op);
     }
 
     pub fn finish(self) -> FramePacket {
@@ -54,11 +137,21 @@ impl FramePacketBuilder {
             frame_id: self.frame_id,
             raf_time_ms: self.raf_time_ms,
             ops: self.ops,
+            credit: None,
         }
     }
 }
 
 impl FramePacket {
+    pub fn with_credit(mut self, credit: frame_wire::FrameCredit) -> Self {
+        assert!(
+            self.credit.is_none(),
+            "frame already owns an admission credit"
+        );
+        self.credit = Some(credit);
+        self
+    }
+
     pub fn for_canvas_batch(
         frame_id: u64,
         raf_time_ms: f64,
@@ -96,8 +189,11 @@ impl FramePacket {
 
     /// Hands over the ops *and the loan that holds them*, so a consumer that
     /// simply lets the result go out of scope returns the allocation.
-    pub fn into_ops(self) -> PooledVec<FrameOp> {
-        self.ops
+    pub fn into_ops(self) -> FrameOps {
+        FrameOps {
+            ops: self.ops,
+            credit: self.credit,
+        }
     }
 
     /// Convenience constructor for a WebGL-only frame packet.

@@ -13,25 +13,14 @@
 //! `scripts/test-apple-performance-rust-closure.sh` measures the resolved
 //! dependency graph to prove no engine is reachable from here.
 //!
-//! # What is not here yet
-//!
-//! Frame submission. The ingress exists and its identity, sequence, generation
-//! and resource rules are enforced, but nothing hands it bytes: doing that
-//! correctly needs the pooled buffer a packet is copied into and the RAII token
-//! that returns its credit when the renderer is finished, and those belong with
-//! the renderer connection rather than ahead of it. An entry point that
-//! accepted frames and dropped them would report credits nobody consumed, which
-//! is worse than not having one -- an exported symbol that always succeeds is
-//! how a Windows SDK once shipped able to load and unable to attach.
-//!
-//! What *is* wired is the half that has to be right before frames arrive: the
-//! ingress learns about surface changes and context loss from the same events
-//! the renderer does, so a producer's packet is measured against the timeline
-//! the renderer is actually on.
+//! Accepted packets are decoded into owned render operations. Their admission
+//! credits follow those operations until execution or discard; frame-clock ticks
+//! only request production and do not acknowledge completion. Surface and
+//! resource generations are updated from the renderer's lifecycle events.
 
 use std::collections::VecDeque;
 use std::sync::{
-    Arc, OnceLock,
+    Arc, OnceLock, Weak,
     atomic::{AtomicU64, Ordering},
 };
 
@@ -46,7 +35,9 @@ use shared::{
     surface::SurfaceRef,
 };
 
-use frame_wire::{FrameIngress, IngressDecision, IngressOutcome, PooledFrame, stream};
+#[cfg(test)]
+use frame_wire::IngressDecision;
+use frame_wire::{FrameIngress, IngressOutcome, PooledFrame, stream};
 
 use crate::runtime::session_thread::{
     HostThread, SessionThreadContext, StartedHost, create_basic_runtime,
@@ -60,9 +51,8 @@ use crate::services::PlatformServices;
 /// The ingress is shared rather than owned by the thread because the transport
 /// that will feed it runs on whichever thread the host's networking uses, and a
 /// frame has to be validated and credited before it is queued. The lock is
-/// taken once per frame, not once per drawing command -- at 120 Hz that is a
-/// handful of microseconds a second, and the alternative is a channel hop on
-/// the latency path this lane exists to shorten.
+/// taken once per frame through queue submission, so concurrent producers cannot
+/// dispatch accepted sequences out of order.
 #[must_use = "a spawned session must be shut down and joined"]
 pub struct ExternalFrameSession {
     host: HostThread,
@@ -97,6 +87,11 @@ pub const EXTERNAL_ERROR_NO_COMMAND_STREAM: u32 = 2002;
 pub const EXTERNAL_ERROR_BAD_COMMAND_STREAM: u32 = 2003;
 pub const EXTERNAL_ERROR_RENDERER_UNREACHABLE: u32 = 2004;
 
+/// Hard per-frame decoded-storage ceiling. Together with the two-credit window
+/// this bounds queued command storage independently of the 4 MiB wire ceiling.
+/// It is a safety limit, not a measurement of total process or GPU memory.
+const MAX_DECODED_FRAME_BYTES: usize = 4 * 1024 * 1024;
+
 /// The most WebGL errors kept per canvas before the oldest is dropped.
 ///
 /// WebGL's own queue is unbounded in the specification and bounded in every
@@ -104,14 +99,16 @@ pub const EXTERNAL_ERROR_RENDERER_UNREACHABLE: u32 = 2004;
 /// one per call. Sixteen is enough for `getError` to drain a burst and small
 /// enough that a runaway producer cannot spend memory here.
 const MAX_PENDING_ERRORS_PER_CANVAS: usize = 16;
+// Canvas identifiers arrive from content. A bound within each queue alone
+// allows arbitrary identifiers to grow the outer table for the whole session.
+const MAX_ERROR_CANVASES: usize = 256;
 
 /// WebGL errors the decoder recorded, waiting for the producer to ask.
 ///
 /// In this lane `getError` is a synchronous call from another process, so the
 /// answers accumulate here until the control channel carries the question.
-/// Bounded per canvas, and the bound drops the *oldest*: the first error is
-/// usually the cause and the rest are consequences, so keeping the newest would
-/// throw away the useful one.
+/// Keeps the latest bounded burst per canvas. The total table is bounded too;
+/// when full, existing canvas queues keep their errors and new ids are ignored.
 #[derive(Debug, Default)]
 pub struct ExternalGlErrors {
     queues: Mutex<Vec<(u32, VecDeque<u32>)>>,
@@ -123,7 +120,13 @@ impl ExternalGlErrors {
         let queue = match queues.iter_mut().find(|(id, _)| *id == canvas_id) {
             Some((_, queue)) => queue,
             None => {
-                queues.push((canvas_id, VecDeque::new()));
+                if queues.len() == MAX_ERROR_CANVASES {
+                    return;
+                }
+                queues.push((
+                    canvas_id,
+                    VecDeque::with_capacity(MAX_PENDING_ERRORS_PER_CANVAS),
+                ));
                 &mut queues.last_mut().expect("just pushed").1
             }
         };
@@ -135,19 +138,24 @@ impl ExternalGlErrors {
 
     fn take(&self, canvas_id: u32) -> Option<u32> {
         let mut queues = self.queues.lock();
-        queues
-            .iter_mut()
-            .find(|(id, _)| *id == canvas_id)
-            .and_then(|(_, queue)| queue.pop_front())
+        let index = queues.iter().position(|(id, _)| *id == canvas_id)?;
+        let error = queues[index].1.pop_front();
+        if queues[index].1.is_empty() {
+            queues.swap_remove(index);
+        }
+        error
     }
 }
 
 /// The decoder's view of an external session.
-struct ExternalDecodeContext<'a>(&'a ExternalGlErrors);
+struct ExternalDecodeContext<'a> {
+    errors: &'a ExternalGlErrors,
+    builder: shared::FramePacketBuilder,
+}
 
 impl frame_decode::GlDecodeContext for ExternalDecodeContext<'_> {
     fn push_error(&mut self, canvas_id: u32, code: u32) {
-        self.0.push(canvas_id, code);
+        self.errors.push(canvas_id, code);
     }
 
     fn transform_feedback_captures(&self, _canvas_id: u32) -> bool {
@@ -159,13 +167,45 @@ impl frame_decode::GlDecodeContext for ExternalDecodeContext<'_> {
     }
 }
 
+impl frame_decode::RenderSink for ExternalDecodeContext<'_> {
+    fn canvas_batch(
+        &mut self,
+        canvas_id: u32,
+        commands: shared::command_vec_pool::PooledVec<shared::protocol::render_cmd::Canvas2DCmd>,
+    ) {
+        self.builder.push_op(shared::FrameOp::CanvasBatch(
+            shared::protocol::render_cmd::CanvasBatchPayload {
+                canvas_id,
+                commands,
+                present: false,
+                dirty_rect: None,
+            },
+        ));
+    }
+
+    fn gl_batch(
+        &mut self,
+        commands: shared::command_vec_pool::PooledVec<shared::protocol::render_cmd::GLCmd>,
+        _approx_bytes: usize,
+    ) {
+        self.builder.push_op(shared::FrameOp::GlBatch(
+            shared::protocol::render_cmd::GlBatchPayload { commands },
+        ));
+    }
+
+    fn materialize(&mut self, canvas_id: u32) {
+        self.builder
+            .push_op(shared::FrameOp::Materialize { canvas_id });
+    }
+}
+
 /// What the submit path needs from the session thread, published once the
 /// renderer is up.
 struct RenderDispatch {
-    sender: shared::render_command_sender::CommandSender,
-    /// Accepted frames whose credit the renderer still holds. Bounded by the
-    /// credit window, so this is at most two deep.
-    in_flight: Mutex<VecDeque<PooledFrame>>,
+    // The running session thread owns the strong sender. A public session
+    // handle may outlive that thread; retaining a sender here would also keep
+    // abandoned queue contents and their frame credits alive after shutdown.
+    sender: Weak<shared::render_command_sender::CommandSender>,
     /// Reused word buffer for the byte-to-word copy. One per session, behind
     /// the same lock as the submit path, because submits are serialized by the
     /// ingress anyway.
@@ -255,33 +295,15 @@ impl SubmitPath {
     /// to do that would put a scheduling delay on the latency path this lane
     /// exists to shorten.
     ///
-    /// The borrowed bytes do not outlive this call. They are copied once into a
-    /// pooled buffer on acceptance, and that buffer carries the credit until
-    /// the renderer asks for another frame.
+    /// The bytes are borrowed only for this call. Decode returns the wire
+    /// storage to its pool while the owned render packet keeps the credit.
     pub fn submit_frame(&self, bytes: &[u8]) -> IngressOutcome {
-        // The lock covers identity, ordering, admission and the copy, and is
-        // released before decoding: decoding is the expensive part and nothing
-        // in it needs the ingress.
-        let (outcome, frame) = self.ingress.lock().submit(bytes);
-        let Some(frame) = frame else {
-            return outcome;
-        };
-
-        match self.render(frame) {
-            Ok(()) => outcome,
-            Err(code) => {
-                // The frame is dropped here, which returns its credit: a packet
-                // that never reached the renderer is not in flight, and holding
-                // its credit would stall the producer for a frame nobody is
-                // working on.
-                IngressOutcome {
-                    decision: IngressDecision::Rejected,
-                    remaining_credits: self.ingress.lock().remaining_credits(),
-                    accepted_sequence: 0,
-                    wire_error_code: code,
-                }
-            }
-        }
+        // Serialize through decode and queue submission too: releasing this
+        // lock earlier lets concurrent callers dispatch N+1 before N, and
+        // commits rejected frames before their decoder or queue can refuse them.
+        self.ingress
+            .lock()
+            .submit_with(bytes, |frame| self.render(frame))
     }
 
     /// Decode one accepted frame and hand it to the renderer.
@@ -290,6 +312,10 @@ impl SubmitPath {
             // The session thread has not finished bringing the renderer up.
             return Err(EXTERNAL_ERROR_RENDERER_NOT_READY);
         };
+        let sender = dispatch
+            .sender
+            .upgrade()
+            .ok_or(EXTERNAL_ERROR_RENDERER_UNREACHABLE)?;
 
         let parsed = frame.frame().map_err(|error| error.code())?;
         let stream = parsed
@@ -310,39 +336,34 @@ impl SubmitPath {
                 .chunks_exact(4)
                 .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]])),
         );
-        let validated = stream::validate_stream(&scratch, scratch.len() as u32)
+        let validated = stream::validate_frame_stream(&scratch, scratch.len() as u32)
             .map_err(|_| EXTERNAL_ERROR_BAD_COMMAND_STREAM)?;
 
-        // The mixed decoder, not the GL-only one: a producer's frame carries
-        // both kinds and the order between them is the frame. The batches come
-        // back already grouped, with the materialize barriers a GL batch drawn
-        // over 2D content needs.
-        let mut ops = Vec::new();
-        frame_decode::decode_render_stream(
-            &mut ExternalDecodeContext(&self.errors),
-            validated,
-            &mut ops,
-        );
+        let budget = frame_decode::validate_frame_budget(&validated, MAX_DECODED_FRAME_BYTES)
+            .map_err(|_| EXTERNAL_ERROR_BAD_COMMAND_STREAM)?;
+        let mut sink = ExternalDecodeContext {
+            errors: &self.errors,
+            builder: shared::FramePacketBuilder::with_op_capacity(
+                u64::from(parsed.frame_id()),
+                0.0,
+                budget.frame_op_capacity(),
+            )
+            .push(shared::FrameOp::BeginFrame),
+        };
+        frame_decode::decode_render_stream_into(&mut sink, validated);
         drop(scratch);
+        let packet = sink
+            .builder
+            .push(shared::FrameOp::Present)
+            .finish()
+            .with_credit(frame.into_credit());
 
-        let mut builder = shared::FramePacketBuilder::new(u64::from(parsed.frame_id()), 0.0)
-            .push(shared::protocol::FrameOp::BeginFrame);
-        for op in ops {
-            builder = builder.push(op);
-        }
-        let packet = builder.push(shared::protocol::FrameOp::Present).finish();
-
-        dispatch
-            .sender
+        sender
             .dispatch(shared::protocol::render_cmd::RenderCommand::FramePacket(
                 packet,
             ))
             .map_err(|_| EXTERNAL_ERROR_RENDERER_UNREACHABLE)?;
 
-        // The credit travels with the frame from here: it comes back when the
-        // renderer asks for another one, which is the signal that says it
-        // finished this one.
-        dispatch.in_flight.lock().push_back(frame);
         Ok(())
     }
 }
@@ -602,9 +623,9 @@ fn run_external_session(
     // Published together with the clock, and only now: a transport that
     // submitted before the renderer existed would be told the renderer is not
     // ready, which is the truthful answer.
+    let lifecycle_sender = Arc::new(render.sender());
     let _ = dispatch.set(RenderDispatch {
-        sender: render.sender(),
-        in_flight: Mutex::new(VecDeque::new()),
+        sender: Arc::downgrade(&lifecycle_sender),
         words: Mutex::new(Vec::new()),
     });
 
@@ -684,15 +705,8 @@ fn run_external_session(
                 timestamp = raf_rx.recv(raf_demand.session_ticket()) => {
                     match timestamp {
                         Some(timestamp) => {
-                            // The renderer is asking for another frame, which is
-                            // the signal that it finished the last one. Releasing
-                            // exactly one held frame returns exactly one credit;
-                            // releasing all of them would let the producer run
-                            // ahead of a renderer that is still behind.
-                            if let Some(dispatch) = dispatch.get() {
-                                let finished = dispatch.in_flight.lock().pop_front();
-                                drop(finished);
-                            }
+                            // A tick is demand for production; queued render
+                            // packets return their own credits when consumed.
                             clock.record(timestamp);
                         }
                         None => {
@@ -752,6 +766,7 @@ fn run_external_session(
         // going away.
         audio.shutdown();
         render.shutdown();
+        drop(lifecycle_sender);
         info!("[Host {id}] external-frame session exited");
     });
 }
@@ -1099,17 +1114,211 @@ mod tests {
 
         // And the sequence did not advance past it either, so the producer can
         // resend the same packet once the renderer is up.
-        assert_eq!(submit.ingress.lock().last_accepted_sequence(), 1);
+        assert_eq!(submit.ingress.lock().last_accepted_sequence(), 0);
     }
 
     #[test]
-    fn the_error_queue_is_bounded_per_canvas_and_keeps_the_oldest() {
+    fn error_state_is_bounded_across_canvas_ids() {
+        let errors = ExternalGlErrors::default();
+        for canvas_id in 1..=4096 {
+            errors.push(canvas_id, 0x0500);
+        }
+        assert!(errors.queues.lock().len() <= 256);
+        assert_eq!(
+            errors.take(1),
+            Some(0x0500),
+            "preserve existing errors under pressure"
+        );
+    }
+
+    fn ready_submit() -> (
+        SubmitPath,
+        crossbeam_channel::Receiver<shared::protocol::render_cmd::RenderCommand>,
+        Arc<shared::render_command_sender::CommandSender>,
+    ) {
+        let (sender, receiver) = shared::render_command_sender::CommandSender::new();
+        let lifecycle_sender = Arc::new(sender);
+        let dispatch = OnceLock::new();
+        assert!(
+            dispatch
+                .set(RenderDispatch {
+                    sender: Arc::downgrade(&lifecycle_sender),
+                    words: Mutex::new(Vec::new()),
+                })
+                .is_ok()
+        );
+        (
+            SubmitPath {
+                ingress: Arc::new(Mutex::new(FrameIngress::new(
+                    NONCE,
+                    INITIAL_RUNTIME_GENERATION,
+                ))),
+                errors: Arc::new(ExternalGlErrors::default()),
+                dispatch: Arc::new(dispatch),
+            },
+            receiver,
+            lifecycle_sender,
+        )
+    }
+
+    fn stream_packet(sequence: u64, words: &[u32]) -> Vec<u8> {
+        let mut frame = frame_wire::builder::WireFrameBuilder::new();
+        frame.launch_nonce = NONCE;
+        frame.sequence = sequence;
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        frame
+            .section(
+                frame_wire::SECTION_KIND_COMMAND_STREAM,
+                words.len() as u32,
+                &bytes,
+            )
+            .build()
+    }
+
+    #[test]
+    fn rejected_decode_can_retry_the_same_sequence() {
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        let bad = stream_packet(1, &[0, stream::STREAM_VERSION]);
+        let rejected = submit.submit_frame(&bad);
+        assert_eq!(rejected.wire_error_code, EXTERNAL_ERROR_BAD_COMMAND_STREAM);
+        assert_eq!(submit.ingress.lock().last_accepted_sequence(), 0);
+        assert_eq!(rejected.remaining_credits, 2);
+        let good = stream_packet(1, &[stream::MAGIC, stream::STREAM_VERSION]);
+        assert_eq!(
+            submit.submit_frame(&good).decision,
+            IngressDecision::Accepted
+        );
+        assert!(receiver.try_recv().is_ok());
+    }
+
+    #[test]
+    fn queued_frames_hold_credits_until_their_commands_are_dropped() {
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        for sequence in 1..=2 {
+            let bytes = stream_packet(sequence, &[stream::MAGIC, stream::STREAM_VERSION]);
+            assert_eq!(
+                submit.submit_frame(&bytes).decision,
+                IngressDecision::Accepted
+            );
+        }
+        assert_eq!(submit.ingress.lock().remaining_credits(), 0);
+        let bytes = stream_packet(3, &[stream::MAGIC, stream::STREAM_VERSION]);
+        assert_eq!(
+            submit.submit_frame(&bytes).decision,
+            IngressDecision::WouldBlock
+        );
+        drop(receiver.try_recv().unwrap());
+        assert_eq!(submit.ingress.lock().remaining_credits(), 1);
+        assert_eq!(
+            submit.submit_frame(&bytes).decision,
+            IngressDecision::Accepted
+        );
+        // Model renderer exit followed by its session thread ending while
+        // the public SubmitPath (and its published dispatch) remains alive.
+        drop(receiver);
+        assert_eq!(submit.ingress.lock().remaining_credits(), 0);
+        drop(_lifecycle_sender);
+        assert_eq!(submit.ingress.lock().remaining_credits(), 2);
+        let bytes = stream_packet(4, &[stream::MAGIC, stream::STREAM_VERSION]);
+        assert_eq!(
+            submit.submit_frame(&bytes).wire_error_code,
+            EXTERNAL_ERROR_RENDERER_UNREACHABLE
+        );
+        assert_eq!(submit.ingress.lock().last_accepted_sequence(), 3);
+    }
+
+    #[test]
+    fn disconnected_renderer_returns_credit_without_committing_sequence() {
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        drop(receiver);
+        let bytes = stream_packet(1, &[stream::MAGIC, stream::STREAM_VERSION]);
+        let outcome = submit.submit_frame(&bytes);
+        assert_eq!(outcome.wire_error_code, EXTERNAL_ERROR_RENDERER_UNREACHABLE);
+        assert_eq!(outcome.remaining_credits, 2);
+        assert_eq!(submit.ingress.lock().last_accepted_sequence(), 0);
+    }
+
+    #[test]
+    fn full_renderer_queue_returns_credit_and_allows_retry() {
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        let dispatch = submit.dispatch.get().unwrap();
+        for _ in 0..receiver.capacity().unwrap() {
+            dispatch
+                .sender
+                .upgrade()
+                .unwrap()
+                .dispatch(shared::protocol::render_cmd::RenderCommand::Pause)
+                .unwrap();
+        }
+        let bytes = stream_packet(1, &[stream::MAGIC, stream::STREAM_VERSION]);
+        let outcome = submit.submit_frame(&bytes);
+        assert_eq!(outcome.wire_error_code, EXTERNAL_ERROR_RENDERER_UNREACHABLE);
+        assert_eq!(outcome.remaining_credits, 2);
+        assert_eq!(submit.ingress.lock().last_accepted_sequence(), 0);
+        drop(receiver.try_recv().unwrap());
+        assert_eq!(
+            submit.submit_frame(&bytes).decision,
+            IngressDecision::Accepted
+        );
+    }
+
+    #[test]
+    fn full_frame_accepts_more_than_one_embedded_batch() {
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        let mut words = vec![
+            stream::MAGIC,
+            stream::STREAM_VERSION,
+            stream::pack_header(frame_wire::canvas2d::OP2D_SELECT_CANVAS, 2),
+            1,
+        ];
+        words.extend(std::iter::repeat_n(
+            stream::pack_header(frame_wire::canvas2d::OP2D_SAVE, 1),
+            8192,
+        ));
+        assert_eq!(
+            submit.submit_frame(&stream_packet(1, &words)).decision,
+            IngressDecision::Accepted
+        );
+        assert!(receiver.try_recv().is_ok());
+    }
+
+    #[test]
+    fn excessive_decoded_memory_is_refused_before_queueing() {
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        let mut words = vec![
+            stream::MAGIC,
+            stream::STREAM_VERSION,
+            stream::pack_header(frame_wire::canvas2d::OP2D_SELECT_CANVAS, 2),
+            1,
+        ];
+        words.extend(std::iter::repeat_n(
+            stream::pack_header(frame_wire::canvas2d::OP2D_SAVE, 1),
+            100_000,
+        ));
+        let outcome = submit.submit_frame(&stream_packet(1, &words));
+        assert_eq!(outcome.decision, IngressDecision::Rejected);
+        assert_eq!(outcome.wire_error_code, EXTERNAL_ERROR_BAD_COMMAND_STREAM);
+        assert_eq!(outcome.remaining_credits, 2);
+        assert_eq!(submit.ingress.lock().last_accepted_sequence(), 0);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn draining_errors_releases_the_canvas_entry() {
+        let errors = ExternalGlErrors::default();
+        errors.push(1, 0x0500);
+        assert_eq!(errors.take(1), Some(0x0500));
+        assert!(errors.queues.lock().is_empty());
+    }
+
+    #[test]
+    fn the_error_queue_is_bounded_per_canvas_and_keeps_the_latest_burst() {
         let errors = ExternalGlErrors::default();
         for index in 0..(MAX_PENDING_ERRORS_PER_CANVAS + 4) {
             errors.push(1, 0x0500 + index as u32);
         }
-        // The first error is usually the cause and the rest are consequences,
-        // so the bound drops the newest arrivals, not the oldest record.
+        // Preserve the existing bounded FIFO behavior: discard the oldest
+        // item when full, then drain the retained burst in arrival order.
         assert_eq!(errors.take(1), Some(0x0500 + 4));
 
         let mut drained = 1;

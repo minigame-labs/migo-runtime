@@ -48,11 +48,14 @@ use frame_wire::gl::{
 };
 use frame_wire::stream::{ValidatedStream, opcode_of, word_count_of};
 
+mod budget;
 /// Canvas2D records. See its module docs for why 2D and GL share one stream.
 pub mod canvas2d;
 pub mod codes;
+mod scratch;
 pub mod validate;
 
+pub use budget::{FrameDecodeBudget, FrameDecodeBudgetError, validate_frame_budget};
 pub use validate::GlDecodeContext;
 
 use validate::{
@@ -1156,25 +1159,26 @@ pub fn decode_render_stream_into<T: GlDecodeContext + RenderSink>(
     let used = words.len();
 
     let mut decoded = 0usize;
-    let mut gl: PooledVec<GLCmd> = PooledVec::take();
+    let mut gl: Option<PooledVec<GLCmd>> = None;
     // Counted as the commands are built rather than walked again afterwards.
     // The walk is a match per command on the render path, and the sink needs
     // the number for exactly one batch at a time.
     let mut gl_bytes = 0usize;
-    let mut canvas: PooledVec<Canvas2DCmd> = PooledVec::take();
+    let mut canvas: Option<PooledVec<Canvas2DCmd>> = None;
     // The canvas the 2D records apply to. `None` until a SELECT_CANVAS arrives,
     // and a 2D record before one is a producer that never said where to draw.
     let mut canvas_id: Option<u32> = None;
     // Canvases whose 2D work the renderer has not flushed yet.
-    let mut pending_materialize: Vec<u32> = Vec::new();
+    let plan = budget::estimate(&stream);
+    let mut pending_materialize = scratch::MaterializeScratch::take(plan.pending_canvas_capacity);
 
     // Flushing 2D before GL, never the other way round: the whole point of the
     // barrier is that GL sees materialized 2D content.
     macro_rules! flush_canvas {
         () => {
-            if !canvas.is_empty() {
+            if let Some(commands) = canvas.take() {
                 let id = canvas_id.unwrap_or(0);
-                target.canvas_batch(id, std::mem::replace(&mut canvas, PooledVec::take()));
+                target.canvas_batch(id, commands);
                 if !pending_materialize.contains(&id) {
                     pending_materialize.push(id);
                 }
@@ -1183,17 +1187,15 @@ pub fn decode_render_stream_into<T: GlDecodeContext + RenderSink>(
     }
     macro_rules! flush_gl {
         () => {
-            if !gl.is_empty() {
-                target.gl_batch(
-                    std::mem::replace(&mut gl, PooledVec::take()),
-                    std::mem::take(&mut gl_bytes),
-                );
+            if let Some(commands) = gl.take() {
+                target.gl_batch(commands, std::mem::take(&mut gl_bytes));
             }
         };
     }
 
     let mut cursor = 2; // past magic and version
     while cursor < used {
+        let record_start = cursor;
         let header = words[cursor];
         let opcode = opcode_of(header);
         let word_count = word_count_of(header) as usize;
@@ -1218,22 +1220,37 @@ pub fn decode_render_stream_into<T: GlDecodeContext + RenderSink>(
             }
             flush_gl!();
             if let Some(command) = canvas2d::decode_record(opcode, record) {
-                canvas.push(command);
+                canvas
+                    .get_or_insert_with(|| {
+                        PooledVec::take_with_capacity_limit(budget::batch_capacity(
+                            words,
+                            record_start,
+                            true,
+                            true,
+                        ))
+                    })
+                    .push(command);
                 decoded += 1;
             }
             continue;
         }
 
         // GL. Anything pending on the 2D side has to reach the surface first.
-        if !canvas.is_empty() {
-            flush_canvas!();
-        }
+        flush_canvas!();
         for id in pending_materialize.drain(..) {
             target.materialize(id);
         }
         if let Some(command) = decode_record(target, opcode, record) {
             gl_bytes = gl_bytes.saturating_add(cmd_approx_bytes(&command));
-            gl.push(command);
+            gl.get_or_insert_with(|| {
+                PooledVec::take_with_capacity_limit(budget::batch_capacity(
+                    words,
+                    record_start,
+                    false,
+                    canvas_id.is_some(),
+                ))
+            })
+            .push(command);
             decoded += 1;
         }
     }

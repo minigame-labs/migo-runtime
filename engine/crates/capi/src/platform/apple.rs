@@ -12,6 +12,7 @@ use migo_capi_abi::surface::{
     MIGO_PLATFORM_IOS_CA_METAL_LAYER, MIGO_PLATFORM_MACOS_CA_METAL_LAYER, SurfaceDescriptorRef,
     ValidatedPlatformSurface,
 };
+use platform::apple::presenter::{AppleMetalLayerSurface, RetainedMetalLayer};
 use shared::surface::SurfaceRef;
 
 use migo_capi_abi::{MIGO_ERROR_INTERNAL, MIGO_ERROR_UNSUPPORTED_PLATFORM, MigoResult};
@@ -25,23 +26,16 @@ pub(crate) enum PlatformContext {
 
 /// Native identity retained for a later resize.
 ///
-/// A copied token, never a pointer into caller-owned descriptor storage. The
-/// host owns the layer, its geometry and its display link; Migo neither creates
-/// the layer nor drives its layout.
-#[derive(Clone, Copy)]
+/// Shared native ownership, never a pointer into caller-owned descriptor
+/// storage. The host controls the layer's geometry and display link.
+#[derive(Clone)]
 pub(crate) enum PlatformTarget {
     MetalLayer {
-        layer: NonNull<c_void>,
+        layer: RetainedMetalLayer,
     },
     #[cfg(test)]
     TestOnly,
 }
-
-// SAFETY: this is a copied native identity token, never a Rust reference and
-// never dereferenced by this type. Native/EGL access happens only through the
-// platform Surface wrapper on the render lifecycle defined by the host.
-unsafe impl Send for PlatformTarget {}
-unsafe impl Sync for PlatformTarget {}
 
 /// The layer kind THIS build can attach.
 ///
@@ -89,13 +83,9 @@ pub(crate) fn rebuild_surface(
     height: u32,
 ) -> Result<SurfaceRef, MigoResult> {
     match target {
-        // SAFETY: the pointer reached us through a validated descriptor, and the
-        // header obliges the host to keep the layer live until the release
-        // observer reports RELEASED. A rebuild happens strictly inside that
-        // window.
-        PlatformTarget::MetalLayer { layer } => Ok(Arc::new(unsafe {
-            platform::apple::presenter::AppleMetalLayerSurface::new(layer, width, height)
-        })),
+        PlatformTarget::MetalLayer { layer } => Ok(Arc::new(
+            AppleMetalLayerSurface::from_retained_layer(layer, width, height),
+        )),
         #[cfg(test)]
         PlatformTarget::TestOnly => Err(MIGO_ERROR_UNSUPPORTED_PLATFORM),
     }
@@ -105,6 +95,22 @@ pub(crate) fn rebuild_surface(
 pub(crate) fn build_target(
     descriptor: SurfaceDescriptorRef,
     existing: Option<&PlatformContext>,
+) -> Result<
+    (
+        SurfaceRef,
+        GraphicsPlatform,
+        PlatformTarget,
+        PlatformContext,
+    ),
+    MigoResult,
+> {
+    build_target_with_retain(descriptor, existing, RetainedMetalLayer::retain)
+}
+
+fn build_target_with_retain(
+    descriptor: SurfaceDescriptorRef,
+    existing: Option<&PlatformContext>,
+    retain: unsafe fn(NonNull<c_void>) -> RetainedMetalLayer,
 ) -> Result<
     (
         SurfaceRef,
@@ -164,15 +170,14 @@ pub(crate) fn build_target(
         }
     };
 
-    // SAFETY: as in `rebuild_surface` -- validated non-null by the ABI parse,
-    // and kept live by the host until release completes.
-    let surface: SurfaceRef = Arc::new(unsafe {
-        platform::apple::presenter::AppleMetalLayerSurface::new(
-            layer,
-            configuration.width_pixels(),
-            configuration.height_pixels(),
-        )
-    });
+    // SAFETY: the host supplies a live CAMetalLayer for this call. Retain it
+    // before constructing objects that attach can publish to another thread.
+    let layer = unsafe { retain(layer) };
+    let surface: SurfaceRef = Arc::new(AppleMetalLayerSurface::from_retained_layer(
+        layer.clone(),
+        configuration.width_pixels(),
+        configuration.height_pixels(),
+    ));
     let graphics_platform = match existing {
         Some(PlatformContext::Graphics(graphics_platform)) => graphics_platform.clone(),
         #[cfg(test)]
@@ -219,6 +224,99 @@ mod tests {
 
     const WIDTH: u32 = 640;
     const HEIGHT: u32 = 480;
+
+    #[derive(Default)]
+    struct Refcounts {
+        retains: std::sync::atomic::AtomicUsize,
+        releases: std::sync::atomic::AtomicUsize,
+    }
+
+    unsafe fn counted_retain(layer: NonNull<c_void>) -> RetainedMetalLayer {
+        unsafe fn retain(layer: NonNull<c_void>) {
+            let counts = unsafe { layer.cast::<Refcounts>().as_ref() };
+            counts
+                .retains
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        unsafe fn release(layer: NonNull<c_void>) {
+            let counts = unsafe { layer.cast::<Refcounts>().as_ref() };
+            counts
+                .releases
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        unsafe { RetainedMetalLayer::retain_for_test(layer, retain, release) }
+    }
+
+    #[test]
+    fn attach_target_retains_before_publication_and_shares_ownership_with_rebuilds() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let counts = Refcounts::default();
+        let descriptor = own_layer(NonNull::from(&counts).as_ptr() as usize);
+        let (surface, graphics, target, _) =
+            build_target_with_retain(descriptor, None, counted_retain).expect("retained target");
+        assert_eq!(
+            counts.retains.load(SeqCst),
+            1,
+            "retain before attach can publish"
+        );
+
+        let rebuilt = rebuild_surface(target.clone(), 1024, 768).expect("rebuild");
+        let prepared = graphics.prepare_surface(rebuilt.as_ref()).expect("prepare");
+        drop(surface);
+        drop(target);
+        drop(rebuilt);
+        assert_eq!(
+            counts.releases.load(SeqCst),
+            0,
+            "EGL target still owns the layer"
+        );
+        drop(prepared);
+        assert_eq!(
+            counts.retains.load(SeqCst),
+            1,
+            "resize shares the original retain"
+        );
+        assert_eq!(
+            counts.releases.load(SeqCst),
+            1,
+            "release after the final owner"
+        );
+    }
+
+    #[test]
+    fn failed_target_construction_releases_its_native_retain() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let counts = Refcounts::default();
+        let descriptor = own_layer(NonNull::from(&counts).as_ptr() as usize);
+        assert_eq!(
+            build_target_with_retain(descriptor, Some(&PlatformContext::TestOnly), counted_retain)
+                .err(),
+            Some(MIGO_ERROR_INTERNAL),
+        );
+        assert_eq!(counts.retains.load(SeqCst), 1);
+        assert_eq!(counts.releases.load(SeqCst), 1);
+    }
+
+    // Identity-only tests intentionally use opaque integers on every host,
+    // including Apple. Never send those values to the Objective-C runtime.
+    fn build_test_target(
+        descriptor: SurfaceDescriptorRef,
+        existing: Option<&PlatformContext>,
+    ) -> Result<
+        (
+            SurfaceRef,
+            GraphicsPlatform,
+            PlatformTarget,
+            PlatformContext,
+        ),
+        MigoResult,
+    > {
+        unsafe fn retain(layer: NonNull<c_void>) -> RetainedMetalLayer {
+            unsafe fn no_refcount(_: NonNull<c_void>) {}
+            unsafe { RetainedMetalLayer::retain_for_test(layer, no_refcount, no_refcount) }
+        }
+        build_target_with_retain(descriptor, existing, retain)
+    }
 
     fn envelope(kind: u32, payload_size: usize, payload: *const c_void) -> MigoSurfaceDescriptor {
         MigoSurfaceDescriptor {
@@ -361,9 +459,9 @@ mod tests {
         ))
     }
 
-    fn layer_of(target: PlatformTarget) -> NonNull<c_void> {
+    fn layer_of(target: &PlatformTarget) -> *mut c_void {
         match target {
-            PlatformTarget::MetalLayer { layer } => layer,
+            PlatformTarget::MetalLayer { layer } => layer.as_ptr(),
             #[cfg(test)]
             PlatformTarget::TestOnly => panic!("expected a layer target"),
         }
@@ -411,9 +509,9 @@ mod tests {
     #[test]
     fn a_host_owned_layer_becomes_engine_objects_carrying_that_layer() {
         let (surface, graphics_platform, target, context) =
-            build_target(own_layer(0x1234), None).expect("this build's own layer kind");
+            build_test_target(own_layer(0x1234), None).expect("this build's own layer kind");
 
-        assert_eq!(layer_of(target).as_ptr() as usize, 0x1234);
+        assert_eq!(layer_of(&target) as usize, 0x1234);
         assert_eq!(surface.size(), (WIDTH, HEIGHT));
         assert_eq!(
             graphics_platform.platform_identity(),
@@ -429,8 +527,8 @@ mod tests {
     #[test]
     fn a_second_attach_reuses_the_graphics_platform_it_was_given() {
         let (_, first, _, context) =
-            build_target(own_layer(0x1234), None).expect("cold layer target");
-        let (_, reused, _, _) = build_target(own_layer(0x5678), Some(&context))
+            build_test_target(own_layer(0x1234), None).expect("cold layer target");
+        let (_, reused, _, _) = build_test_target(own_layer(0x5678), Some(&context))
             .expect("a second layer must reuse the stored platform");
 
         assert!(
@@ -446,11 +544,11 @@ mod tests {
     #[test]
     fn a_view_descriptor_is_refused_rather_than_resolved_to_a_layer() {
         assert_eq!(
-            build_target(ns_view(0x1234), None).err(),
+            super::build_target(ns_view(0x1234), None).err(),
             Some(MIGO_ERROR_UNSUPPORTED_PLATFORM)
         );
         assert_eq!(
-            build_target(ui_view(0x1234), None).err(),
+            super::build_target(ui_view(0x1234), None).err(),
             Some(MIGO_ERROR_UNSUPPORTED_PLATFORM)
         );
     }
@@ -461,7 +559,7 @@ mod tests {
     #[test]
     fn the_other_apple_platforms_layer_kind_is_refused() {
         assert_eq!(
-            build_target(other_apple_layer(0x1234), None).err(),
+            super::build_target(other_apple_layer(0x1234), None).err(),
             Some(MIGO_ERROR_UNSUPPORTED_PLATFORM)
         );
     }
@@ -469,7 +567,7 @@ mod tests {
     #[test]
     fn a_non_apple_payload_is_refused() {
         assert_eq!(
-            build_target(x11_window(0x1000), None).err(),
+            super::build_target(x11_window(0x1000), None).err(),
             Some(MIGO_ERROR_UNSUPPORTED_PLATFORM)
         );
     }
@@ -487,7 +585,7 @@ mod tests {
     #[test]
     fn a_stored_context_does_not_excuse_a_descriptor_this_build_refuses() {
         let (_, _, _, context) =
-            build_target(own_layer(0x1234), None).expect("a cold attach to store a context");
+            build_test_target(own_layer(0x1234), None).expect("a cold attach to store a context");
 
         for (what, descriptor) in [
             ("a view", ns_view(0x2222)),
@@ -498,7 +596,7 @@ mod tests {
             ("a non-Apple payload", x11_window(0x4444)),
         ] {
             assert_eq!(
-                build_target(descriptor, Some(&context)).err(),
+                build_test_target(descriptor, Some(&context)).err(),
                 Some(MIGO_ERROR_UNSUPPORTED_PLATFORM),
                 "{what} was accepted once a context existed"
             );
@@ -510,11 +608,11 @@ mod tests {
     /// deciding it.
     #[test]
     fn a_rebuild_keeps_the_layer_and_takes_the_new_size() {
-        let (_, _, target, _) = build_target(own_layer(0x1234), None).expect("layer target");
-        let rebuilt = rebuild_surface(target, 1024, 768).expect("rebuild");
+        let (_, _, target, _) = build_test_target(own_layer(0x1234), None).expect("layer target");
+        let rebuilt = rebuild_surface(target.clone(), 1024, 768).expect("rebuild");
 
         assert_eq!(rebuilt.size(), (1024, 768));
-        assert_eq!(layer_of(target).as_ptr() as usize, 0x1234);
+        assert_eq!(layer_of(&target) as usize, 0x1234);
     }
 
     /// The test-only seam is refused by both paths that could mistake it for a
@@ -528,7 +626,7 @@ mod tests {
             Some(MIGO_ERROR_UNSUPPORTED_PLATFORM)
         );
         assert_eq!(
-            build_target(own_layer(0x1234), Some(&test_platform_context())).err(),
+            build_test_target(own_layer(0x1234), Some(&test_platform_context())).err(),
             Some(MIGO_ERROR_INTERNAL)
         );
     }

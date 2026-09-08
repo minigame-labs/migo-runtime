@@ -22,7 +22,7 @@ is whether a compiler has seen it, so that is what this section reports.
 | | Where it is checked |
 |---|---|
 | `core/` (`MigoAppleCore`) | built, tested and cross-compiled for `aarch64-apple-ios` on every pull request, on an Apple silicon runner |
-| `Sources/MigoAppleRenderer` | compiled for iOS, iOS Simulator and macOS by `.github/workflows/apple-sdk.yml`, and on the macOS leg linked into a test binary and executed on Apple silicon -- the only place the C ABI has ever run on an Apple machine |
+| `Sources/MigoAppleRenderer` | the Apple SDK workflow builds iOS/simulator shipping slices and an isolated macOS external-frame diagnostic package; the macOS diagnostic is not a V8 product test |
 | `Sources/MigoAppleWebKit`, `Sources/MigoMacV8` | placeholders; they compile, and they do nothing |
 | `WebContent/PerformancePlus` | its encoder runs against the same golden corpus as the Rust one, under node, on every pull request |
 | `ProbeApp/` | a README. No sources exist, and none should until there is a device to run them on |
@@ -107,14 +107,10 @@ platforms/apple/
     Tests/
   Package.swift              the shipping package; floor values derived from
                              contracts/apple/deployment-floor.json
-  Frameworks/                generated, gitignored: MigoEngine.xcframework and,
-                             from scripts/build-angle-apple.sh --xcframework,
-                             ANGLELib{EGL,GLESv2}-{ios,macos}.xcframework -- four,
-                             because an xcframework cannot hold ANGLE's iOS
-                             framework bundles beside its macOS libraries and
-                             repackaging either one breaks ANGLE's own lookup of
-                             libGLESv2 (`--print-loader-layout` says what the
-                             layout has to be, and why)
+  Frameworks/                generated, gitignored: MigoEngine.xcframework
+                             (iOS external frames, macOS V8, with migo-build.json)
+                             ANGLELib{EGL,GLESv2}-{ios,macos}.xcframework
+    Scripts/                  generated macOS ANGLE embedding helper
   Sources/
     MigoAppleRenderer/       internal: CAMetalLayer, display link, surface attach
     MigoAppleWebKit/         lane 1
@@ -146,48 +142,140 @@ answering it when a new iOS version ships.
 
 ## Building
 
-`swift build` fails until the engine binary exists:
+The shipping matrix has one native product per platform group:
+
+| Platform group | Rust product | Archive features |
+|---|---|---|
+| iOS device | `performance-plus` | `--no-default-features --features external-frames` |
+| iOS simulator | `performance-plus` | `--no-default-features --features external-frames` |
+| macOS | `macos-v8` | default V8 features |
+
+These groups share the `MigoEngine` C module and XCFramework because their
+platforms are disjoint. A macOS Performance+ shipping build is rejected. The
+Swift product placeholders do not yet implement application sessions; compiling
+them does not establish that the corresponding runtime product is complete.
+
+Build on macOS with Xcode, Python 3.9 or newer, and the Rust targets reported by
+`build-apple-sdk.sh --print-slices <platform>`. First install the pinned ANGLE
+runtime archives; the SDK script never downloads ANGLE itself:
 
 ```sh
-bash scripts/build-apple-sdk.sh --platform macos --configuration Debug
+bash scripts/fetch-apple-angle.sh ios
+bash scripts/fetch-apple-angle.sh ios-simulator
+export MIGO_APPLE_BUILD_ROOT=/tmp/migo-apple-build
+bash scripts/build-apple-sdk.sh --platform ios --configuration Release
+bash scripts/build-apple-sdk.sh --platform ios-simulator --configuration Release
 ```
 
-That is deliberate. The alternative -- `unsafeFlags` pointing at a local
-`libmigo.a` -- would make this package impossible for anyone else to depend on,
-which SwiftPM enforces by refusing such packages as dependencies.
+Both groups remain in `platforms/apple/Frameworks/MigoEngine.xcframework`.
+Staging is keyed by **product/configuration/platform** under the build root.
+Each invocation reassembles every staged shipping group of that configuration;
+Debug and Release never mix. Use the same build root for consecutive builds.
+A failed build or publication restores the previous generated Frameworks and
+WebContent Resources together. Helper scripts and resources are staged before
+publication; the isolated diagnostic package is replaced as a whole. Rebuild
+all groups when the engine sources change; staging is a local
+build cache, not a release provenance system.
 
-### ANGLE
+`MigoEngine.xcframework/migo-build.json` records each group's product,
+configuration, deployment target, archive hash and header hashes. Assembly
+rejects changed archives, changed headers and incompatible header sets. The
+receipt's `complete` field means that all three shipping groups are present;
+an iOS-only artifact intentionally has `complete: false`.
 
-The renderer needs a GL implementation and iOS does not have one. Asked of rustc
-rather than assumed: the link line the engine requires on macOS ends in
-`-framework OpenGL`, the legacy desktop GL framework, and the iOS link line
-contains no GL framework at all -- there is none to contain. ANGLE over Metal is
-what fills that gap, and it is also why "use system GL for macOS first" buys iOS
-nothing: it links a thing iOS does not have.
+After the real Apple V8 archives and their build prerequisites are available,
+the macOS shipping group can be added to the same Release artifact:
 
 ```sh
-bash scripts/build-angle-apple.sh --fetch            # 12 GB, about four minutes
-bash scripts/build-angle-apple.sh --platform ios     # about five minutes per slice
+bash scripts/fetch-apple-angle.sh macos
+bash scripts/build-apple-sdk.sh --platform macos --product macos-v8 \
+  --configuration Release --require-all-slices
+```
+
+`--require-all-slices` refuses an incomplete shipping matrix.
+`--assemble-only` reuses staged groups, including groups downloaded from the
+same CI run, without compiling Rust. The SDK workflow assembles the validated
+iOS device and simulator groups into one artifact; it does not publish a
+release or claim that a macOS V8 archive was built.
+
+The macOS external-frame renderer/ABI tests use a separate diagnostic product:
+
+```sh
+bash scripts/build-apple-sdk.sh --platform macos \
+  --product external-frames-diagnostic --configuration Debug
+```
+
+Its Swift package lives at
+`$MIGO_APPLE_BUILD_ROOT/diagnostics/Debug/package`, and its receipt carries
+`diagnostic: true`. It never replaces the shipping engine artifact. This test
+package exercises the renderer with external frames; it cannot prove that the
+macOS V8 dependency closure, startup or JIT entitlement works.
+
+### ANGLE dependencies and embedding
+
+The SDK assembler includes ANGLE for the installed platform groups and requires
+both runtime libraries for every engine group. It uses the pinned recipe's
+original layouts: adjacent `libEGL.framework` and `libGLESv2.framework` on iOS,
+and adjacent `libEGL.dylib` and `libGLESv2.dylib` on macOS. Wrapping the macOS
+dylibs in separate frameworks changes the directory where EGL searches for GLES
+and breaks loading.
+
+On iOS, `Package.swift` declares both framework binary targets as conditional
+dependencies of `MigoAppleRenderer`. Both edges are required because EGL opens
+GLES dynamically and the linker cannot infer that dependency. Xcode supplies
+the app's framework embedding phase. The iOS simulator CI test now consumes
+that package directly, without copying ANGLE into its built test output.
+Local SwiftPM binary paths must exist even on a different destination, so a
+macOS-only build also needs at least one installed iOS ANGLE group.
+
+On macOS, the SDK includes the dylib XCFramework pair and an embedding helper;
+automatic SwiftPM embedding of bare dylibs is not assumed. In the host app's
+build phase, before signing the app, run:
+
+```sh
+bash "$MIGO_PACKAGE/Frameworks/Scripts/embed-apple-angle.sh" \
+  --frameworks-dir "$MIGO_PACKAGE/Frameworks" \
+  --destination "$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH" \
+  --architectures "$ARCHS" \
+  --sign "$EXPANDED_CODE_SIGN_IDENTITY"
+```
+
+`MIGO_PACKAGE` is the generated package directory. The helper validates that
+both XCFrameworks have one macOS slice supporting the requested architectures,
+copies the pair with its original names, and signs the copies with the supplied
+host identity. Omit `--sign` for unsigned local test output. The app must include
+`@executable_path/../Frameworks` in its runtime search paths. The macOS V8 app
+also needs its own JIT entitlement and signing/notarization setup.
+
+The command-line diagnostic test runner has no app embedding phase; CI uses the
+same helper and gives that output directory to the runner through
+`DYLD_LIBRARY_PATH`. This is diagnostic loader coverage, not a signed app
+embedding or minimum-OS release test.
+
+To build ANGLE from source instead of installing the pinned runtime archives:
+
+```sh
+bash scripts/build-angle-apple.sh --fetch
+bash scripts/build-angle-apple.sh --platform ios
 bash scripts/build-angle-apple.sh --platform ios-simulator
 bash scripts/build-angle-apple.sh --platform macos
 bash scripts/build-angle-apple.sh --xcframework
 ```
 
-Needs macOS and depot_tools; `--check` reports what is missing without spending
-the checkout. `.github/workflows/apple-angle.yml` runs exactly these commands on
-a free hosted runner, which is where the artifacts come from today.
+The source build requires macOS and depot_tools. XCFramework assembly from
+already installed runtime archives requires Xcode, but no ANGLE source checkout.
+The pin and GN arguments live in
+`contracts/artifact-manifest/apple-angle.lock.json`; the engine script owns the
+slice list. `scripts/test-apple-angle-recipe-contract.sh` checks their agreement.
 
-The revision and the gn arguments are pinned in
-`contracts/artifact-manifest/apple-angle.lock.json`; the slices come from
-`scripts/build-apple-sdk.sh --print-slices`, because both xcframeworks are
-linked into the same application and a slice set that disagrees with the
-engine's fails in a consumer's link step naming neither script.
-`scripts/test-apple-angle-recipe-contract.sh` checks all of that on every pull
-request without a Mac.
+Host checks are available without Xcode:
 
-Two xcframeworks rather than one: `xcodebuild -create-xcframework` holds one
-library per platform, and this ships `libEGL` and `libGLESv2`. They are shared
-libraries because every presenter in this repository resolves EGL at load time
-and hands `eglGetProcAddress` to `glow` -- Android and OpenHarmony open
-`libEGL.so`, Linux `libEGL.so.1`, Windows ANGLE's own `libEGL.dll`. ANGLE's
-`//:angle_static` exists and is deliberately not what is built.
+```sh
+bash scripts/test-apple-shipping-package-contract.sh
+bash scripts/test-apple-sdk-packaging.sh
+```
+
+The packaging tests use clearly marked temporary toolchain fixtures. They test
+slice preservation, product isolation, dependency closure and failure behavior;
+real Mach-O validity, Xcode embedding, code signing and runtime startup still
+require the macOS/iOS lanes and release evidence.

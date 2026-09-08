@@ -30,9 +30,10 @@ typedef struct MigoIosUiViewDescriptor {
  * ca_metal_layer is a CAMetalLayer*. Kept separate from UIView for the reason
  * macOS keeps NSView and CAMetalLayer separate: a tagless void* would let a
  * host set the wrong kind, compile cleanly, and hand a UIView* to code that
- * calls nextDrawable on it. A future implementation retains the Objective-C
- * object before attach returns success and releases it only after asynchronous
- * Surface retirement reaches MIGO_SURFACE_RELEASE_RELEASED.
+ * calls nextDrawable on it. Migo retains the Objective-C object before attach
+ * returns success, keeps it through asynchronous native Surface retirement,
+ * and releases its reference before publishing MIGO_SURFACE_RELEASE_RELEASED.
+ * The host continues to control the layer's geometry and display link.
  */
 typedef struct MigoIosMetalLayerDescriptor {
     uint32_t struct_size;

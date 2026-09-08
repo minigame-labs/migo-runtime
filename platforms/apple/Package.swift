@@ -19,10 +19,11 @@ let package = Package(
         // real-device selection and the release gates.
         //
         // Keep the products separate so the compatibility baseline does not
-        // link ANGLE, Skia, or a renderer it will never call. The Performance+
-        // no-V8 claim belongs to the future release gate: this skeleton and
-        // product baseline have not proved it, and the current dependency
-        // chain may still link V8. An umbrella product would obscure that gate.
+        // link ANGLE, Skia, or a renderer it will never call. The engine
+        // archive uses external-frames on iOS and V8 on macOS. These are
+        // disjoint shipping platforms, not interchangeable builds of one slice.
+        // Performance+ is an iOS product; the macOS external-frame package is
+        // an explicitly isolated diagnostic output, never a shipping product.
         .library(name: "MigoAppleWebKit", targets: ["MigoAppleWebKit"]),
         .library(name: "MigoApplePerformancePlus", targets: ["MigoApplePerformancePlus"]),
         .library(name: "MigoMacV8", targets: ["MigoMacV8"]),
@@ -61,23 +62,41 @@ let package = Package(
             name: "MigoEngine",
             path: "Frameworks/MigoEngine.xcframework"
         ),
+        // ANGLE's iOS framework modules keep their upstream names. Both must
+        // be dependency edges: libEGL opens libGLESv2 dynamically, which is
+        // invisible to the linker. Xcode embeds the framework dependencies.
+        .binaryTarget(
+            name: "libEGL",
+            path: "Frameworks/ANGLELibEGL-ios.xcframework"
+        ),
+        .binaryTarget(
+            name: "libGLESv2",
+            path: "Frameworks/ANGLELibGLESv2-ios.xcframework"
+        ),
 
         // Internal. CAMetalLayer ownership, surface attach/update/retire, and
         // the display link. Not a product: it is shared by two lanes and is not
         // a supported thing to depend on directly.
         .target(
             name: "MigoAppleRenderer",
-            dependencies: [.product(name: "MigoAppleCore", package: "core"), "MigoEngine"],
+            dependencies: [
+                .product(name: "MigoAppleCore", package: "core"),
+                "MigoEngine",
+                .target(name: "libEGL", condition: .when(platforms: [.iOS])),
+                .target(name: "libGLESv2", condition: .when(platforms: [.iOS])),
+            ],
             path: "Sources/MigoAppleRenderer"
         ),
 
-        // Runs only where the xcframework has a slice for the host, which is
-        // the macOS build. That is not a gap: the assertions are about the ABI
-        // -- record sizes, a fail-closed write, a bitmask -- and the arm64
-        // macOS slice and the arm64 iOS slice are the same Rust compiled for
-        // the same architecture. What the iOS slice needs proved about it is
-        // that it compiles and links for iOS, which is what the iOS legs of
-        // .github/workflows/apple-sdk.yml do with xcodebuild.
+        // macOS keeps ANGLE's adjacent dylibs rather than moving them inside
+        // framework bundles (which changes its GLES lookup directory). The
+        // SDK includes their XCFrameworks; embed-apple-angle.sh selects and
+        // signs them into the host app's Contents/Frameworks. SwiftPM is not
+        // claimed to embed these bare dynamic libraries automatically.
+
+        // Executes against the iOS simulator shipping slice and the isolated
+        // macOS external-frame diagnostic slice in apple-sdk.yml. The iOS
+        // device build is compiled here; real-device evidence is separate.
         .testTarget(
             name: "MigoAppleRendererTests",
             dependencies: ["MigoAppleRenderer", "MigoEngine"],

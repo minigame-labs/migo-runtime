@@ -213,16 +213,29 @@ impl FramePool {
     }
 }
 
+/// One consumer's place in the bounded frame window. Moving this guard does
+/// not allocate. It returns its credit on consumption, cancellation or unwind.
+#[derive(Debug)]
+pub struct FrameCredit {
+    window: Arc<CreditWindow>,
+}
+
+impl Drop for FrameCredit {
+    fn drop(&mut self) {
+        self.window.release();
+    }
+}
+
 /// One accepted frame: the bytes, owned, and the credit they hold.
 ///
 /// Dropping this returns the buffer to the pool and the credit to the window.
-/// There is no way to keep one without keeping the credit, which is what makes
-/// "every path returns the credit" true by construction rather than by review.
+/// After decoding, `into_credit` returns the bytes to their pool while moving
+/// the credit into the owned render operations that still await consumption.
 #[derive(Debug)]
 pub struct PooledFrame {
     bytes: Vec<u8>,
     pool: Arc<FramePool>,
-    credits: Arc<CreditWindow>,
+    credit: Option<FrameCredit>,
     /// The sequence this frame was accepted as, for correlating a completion
     /// with the packet that caused it.
     sequence: u64,
@@ -240,7 +253,9 @@ impl PooledFrame {
         Some(Self {
             bytes,
             pool: Arc::clone(pool),
-            credits: Arc::clone(credits),
+            credit: Some(FrameCredit {
+                window: Arc::clone(credits),
+            }),
             sequence,
         })
     }
@@ -256,6 +271,11 @@ impl PooledFrame {
         self.sequence
     }
 
+    /// Return wire storage now, keeping the consumer's credit outstanding.
+    pub fn into_credit(mut self) -> FrameCredit {
+        self.credit.take().expect("a frame owns exactly one credit")
+    }
+
     /// Re-validate the owned copy.
     ///
     /// The borrowed slice was validated before the copy; this exists so a
@@ -269,7 +289,6 @@ impl PooledFrame {
 
 impl Drop for PooledFrame {
     fn drop(&mut self) {
-        self.credits.release();
         let buffer = std::mem::take(&mut self.bytes);
         self.pool.release(buffer);
     }

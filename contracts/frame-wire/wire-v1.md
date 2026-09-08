@@ -184,6 +184,10 @@ opcode, high 20 bits word count). This layer does not know which opcodes exist,
 and that is deliberate: envelope correctness must not need updating every time
 an opcode is added.
 
+Complete external frames use `validate_frame_stream`, bounded by the packet
+ceiling. The embedded runtime's `validate_stream` retains its separate
+8192-word batch limit; that batch limit does not cap an entire external frame.
+
 ## Ceilings
 
 | Ceiling | Value | Where it lives |
@@ -211,6 +215,13 @@ Two credits, so the producer can build frame N+1 while the renderer works on N,
 and no deeper: every additional credit is another frame of input latency and
 another packet's worth of memory in flight.
 
+The external session additionally caps decoded owned storage at 4 MiB per frame
+before constructing commands. Admission accounts for command-vector capacities,
+uniform spills, materialization scratch and packet operations. Wire size alone
+cannot provide this bound: a one-word record can become a much larger command.
+This implementation limit excludes independently bounded wire/pool caches and
+GPU/process memory; it is not a whole-device memory budget.
+
 ## Identity, ordering and resource admission
 
 These are the ingress's rules rather than the parser's — the parser cannot know
@@ -228,6 +239,10 @@ them, because they depend on state the host owns.
   `contracts/apple/profile-policy.json` answers `wire_validation_failed` by
   terminating the content and voiding the generation, so there is no "skip the
   bad one and continue" path for a gap to serve.
+  The external submit path commits an accepted sequence only after structural
+  command validation, decoded-storage admission and queue submission succeed.
+  A renderer/queue refusal does not advance the sequence or consume a credit;
+  concurrent submissions are serialized through that decision.
 - **Timeline.** `surface_generation` and `resource_epoch` only ever advance. The
   host's setters refuse to move either backwards and say so, rather than
   quietly accepting a value that would make a stale packet valid again.
@@ -237,10 +252,10 @@ them, because they depend on state the host owns.
   rebuilt and nothing in it is ready yet by definition. In v1 readiness is
   per-epoch; the per-resource, hash-verified form arrives with the resource
   protocol and can only narrow this rule.
-- **Validity does not depend on load.** Every check above runs before the credit
-  check, so whether a packet is *legal* never depends on how busy the renderer
-  is. The alternative answers "wait" to malformed bytes and invites the producer
-  to resend them forever.
+- **Envelope checks precede load checks.** Envelope, identity, sequence and
+  resource checks run before credit reservation. The external session validates
+  the typed command stream and its decoded budget after reserving a credit;
+  failure returns that reservation without committing the sequence.
 
 ## Frame ownership
 
@@ -257,14 +272,17 @@ lane whose case rests on memory. Allocation therefore happens while the pool
 fills and not afterwards; that is the property the render path needs, and it is
 asserted by a counting allocator rather than described.
 
-The credit travels with the frame. It is taken **before** the copy -- so a
-packet that cannot get one is never copied -- and returned when the frame is
-dropped. Five paths return a credit (the renderer finished, it rejected the
-frame after accepting it, the context was lost, the generation went away, the
-session shut down) and a counter decremented by hand at each of them is five
-places to forget. Forgetting stalls the producer permanently, which presents on
-a device as a hang rather than an error. Ownership makes the five paths one, and
-makes returning a credit twice impossible rather than merely discouraged.
+The credit is taken **before** the wire copy, so a packet without a credit is
+never copied. After decoding, the wire buffer returns to its pool immediately
+and the owned render packet takes the credit. The credit returns only after
+its operations are consumed or discarded, including both rendering phases and
+early exits. A frame-clock/rAF tick requests new production and does not
+acknowledge completion; this credit is not a GPU completion fence.
+
+The public session holds only a weak reference to the running worker's sender.
+When the renderer and worker exit, abandoned queue contents release their
+credits even if the public session handle remains alive. RAII also returns the
+credit on decode refusal, queue failure and unwinding.
 
 ## Checksum
 

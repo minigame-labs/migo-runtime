@@ -43,14 +43,11 @@ windows-sdk-0.1.0 declared the Win32 descriptors, pinned their layout with C
 assertions, exported every entry point, loaded, and advertised no attachable
 platform kind at all, because the Rust half did not exist.
 
-**Today the Apple answer is "nothing attachable".** `migo-capi` selects its
-`unsupported` platform module for every target that is not Android, Linux,
-OpenHarmony or Windows, so an Apple build reports `platform_kinds == 0` and
-`preflight()` refuses. That is the honest state of the port, and it is
-deliberately not written into a test as an expected value: an assertion that
-pinned it would go red on the day the presenter lands. The tests assert the
-relationship between the mask and the verdict instead, on masks they construct,
-so they hold on both sides of that change.
+Apple now selects its own platform module. It advertises the iOS or macOS
+`CAMetalLayer` kind for the target being built, and the preflight compares that
+actual capability with the host's expected kind. The simulator and isolated
+macOS diagnostic tests exercise the linked ABI; real-device presentation and
+release validation remain separate evidence.
 
 The dependency also does something no Swift here did before: it makes
 `.github/workflows/apple-sdk.yml` check the artifact it builds. While no target
@@ -58,3 +55,9 @@ named the `MigoEngine` binary target, SwiftPM never had to resolve a slice, so
 `swift build` passed on an xcframework it never opened.
 `scripts/test-apple-shipping-package-contract.sh` keeps that from silently
 reverting.
+
+The shipping `MigoEngine` XCFramework selects external frames on iOS and V8 on
+macOS. The macOS external-frame tests use an isolated diagnostic package. The
+renderer declares both iOS ANGLE framework dependencies; macOS consumers embed
+the adjacent dylib pair using the generated package helper. Neither native
+dependency enters the WebKit compatibility lane.

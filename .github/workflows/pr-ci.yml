@@ -520,6 +520,9 @@ jobs:
       - name: Apple shipping Swift package consumes the engine it declares
         run: bash scripts/test-apple-shipping-package-contract.sh
 
+      - name: Apple SDK assembly preserves slices and runtime dependencies
+        run: bash scripts/test-apple-sdk-packaging.sh
+
       # ANGLE-Metal is what fills the hole apple-sdk.yml measured: there is no GL
       # framework on iOS, so the renderer has no GL to link. Building it is a
       # 12 GB checkout and half an hour on a macOS runner (.github/workflows/apple-angle.yml),

@@ -2,9 +2,11 @@
 
 Conditional native-rendering lane. Content JavaScript and WebAssembly remain
 in WebKit's WebContent process while Migo owns the bounded, validated render
-ingress. Performance+ does not currently prove a no-V8 dependency closure: the
-skeleton/product baseline may still link V8. A future release gate must prove
-the final artifact and dependency tree do not link V8.
+ingress. The shipping build is iOS/simulator only and selects the engine-free
+`external-frames` Rust feature set. Its staged and assembled archive identity is
+recorded by the SDK packager; the dependency and symbol gates still need to be
+applied to release bytes before making a release-level no-V8 claim. macOS
+external-frame builds are isolated renderer diagnostics, not this product.
 
 ## What is decided, what is leading, and what an adversarial review has reopened
 
