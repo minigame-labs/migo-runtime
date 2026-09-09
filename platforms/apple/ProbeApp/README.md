@@ -109,7 +109,33 @@ unknown:
 Defaulting either to the common case is how a Lockdown-Mode device's answers get
 filed as a JIT device's.
 
-### Building and running
+### One command
+
+`scripts/run-apple-probe.sh` builds, installs, launches, waits for the records and
+runs the admission. It is the supported way to run this gate; the manual steps below
+are what it does, kept for when one of them needs to be debugged on its own.
+
+```sh
+# A device. Produces evidence, and therefore demands both attestations -- the two
+# answers no API reports. Without them the record says `not_probed`, the loopback
+# origin requires the alert answer, and the admission then reports every loopback
+# candidate as unmeasured, which reads as though loopback had been ruled out.
+scripts/run-apple-probe.sh --device <udid> --lockdown off --local-network-prompt none
+
+# A simulator. Proves the harness and never the platform: the records land outside
+# the evidence directory and no admission is computed for them.
+scripts/run-apple-probe.sh --simulator
+
+# What a run would do, on any machine, without an Apple toolchain.
+scripts/run-apple-probe.sh --device <udid> --lockdown off \
+    --local-network-prompt none --dry-run
+```
+
+A device build needs a signing identity: set `MIGO_PROBE_TEAM` to a team id. A free
+Apple ID is enough -- this target declares no entitlements, and the JIT that A24 is
+about belongs to WebKit's own process, not to this app.
+
+### The steps underneath
 
 ```sh
 # The engine-free package, natively and for iOS. This is the half that has
