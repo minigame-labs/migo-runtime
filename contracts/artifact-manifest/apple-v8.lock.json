@@ -112,17 +112,26 @@
     "measured_on": "2026-09-09",
     "runner": "macos-15, Apple silicon",
     "_comment": [
-      "Five answers, and one of them changes the recipe.",
+      "Five answers, and TWO of them changed the recipe. One of the five was also",
+      "wrong, and the way it was wrong is the most useful thing in this block.",
       "",
       "1. V8_FROM_SOURCE works on a hosted macOS runner. The host triple built in",
       "   57 minutes and left 37 GiB free on a 320 GiB volume, so disk -- the thing",
       "   the ANGLE round had to correct an inherited assumption about -- is not the",
       "   constraint here either.",
       "",
-      "2. x86_64-apple-darwin cross-builds as a first-class case: a plain",
-      "   `cargo build --release --target x86_64-apple-darwin -p v8` with no extra",
-      "   arguments and no pinned v8_snapshot_toolchain. OpenHarmony needed one and",
-      "   its recipe has two code paths because of it; darwin needs one.",
+      "2. WRONG AS FIRST RECORDED. The probe reported that x86_64-apple-darwin",
+      "   cross-builds with no extra arguments, on the evidence that",
+      "   `cargo build --target x86_64-apple-darwin -p v8` exited 0. It does exit 0,",
+      "   and it builds the WRONG ARCHITECTURE: rusty_v8's build.rs sets target_cpu",
+      "   when the target arch is aarch64, and again for Android cross-builds, and",
+      "   nowhere else -- so on an arm64 runner gn falls back to host_cpu and writes",
+      "   an arm64 archive into the x86_64 target directory.",
+      "   Caught by the first real build, because scripts/build-v8-apple.sh records",
+      "   the archive's sha256 and the two triples came back byte-identical. The",
+      "   recipe now passes target_cpu/v8_target_cpu AND asks otool what the object",
+      "   actually is, because a --target the build system ignores produces a green",
+      "   build, a correctly-named directory and the wrong bytes.",
       "",
       "3. src_binding.rs IS generated here (870 lines). ohos-v8.lock.json records a",
       "   pre-committed binding as structural because that SDK's clang is too old for",
@@ -132,15 +141,13 @@
       "   minus clang_base_path, which names a path inside the runner's temp",
       "   directory and is machine-local by construction.",
       "",
-      "5. THE ONE THAT CHANGES THE RECIPE: the archive carries `minos 12.0`, and",
-      "   this file's own macos.deployment_target is 11.0. Left alone the build",
-      "   inherits whatever the runner's SDK defaults to -- 12.0 on this image, with",
-      "   an SDK of 15.5 -- so a macOS product linking it would fail to load on the",
-      "   macOS 11 the deployment floor declares, and the floor would be a claim the",
-      "   product does not meet. It is exactly the shape of the ANGLE loader-path",
-      "   trap: correct on the machine that built it, wrong on a consumer's. The",
-      "   recipe must PASS the deployment target explicitly and a gate must check",
-      "   what the bytes say, not what the recipe intended."
+      "5. The archive carried `minos 12.0` while this file's own",
+      "   macos.deployment_target is 11.0 -- it inherits whatever the runner's SDK",
+      "   defaults to. A macOS product linking that would fail to load on the oldest",
+      "   macOS this project supports, and the floor would be a claim the bytes do",
+      "   not meet. The recipe passes mac_deployment_target and then asks vtool; the",
+      "   first real build came back 11.0 on both triples, so the argument does",
+      "   decide it -- which is a fact about the bytes and not about the name."
     ],
     "host_build_seconds": 3439,
     "cross_build_seconds": 3356,
@@ -170,6 +177,12 @@
     ],
     "gn_args_excluded": {
       "clang_base_path": "Names a path inside the runner's temp directory. Machine-local, so it is not part of what a pin can assert."
-    }
+    },
+    "first_build_run": "https://github.com/minigame-labs/migo-runtime/actions/runs/34315678226",
+    "first_build_findings": [
+      "minos 11.0 on both triples: mac_deployment_target decides it.",
+      "Both archives byte-identical (sha256 bec78147...): the x86_64 job built arm64.",
+      "Build times 3082 s and 3220 s, consistent with the probe's 57 and 56 minutes."
+    ]
   }
 }
