@@ -249,9 +249,15 @@ CARGO_ARGS=(build --release --target "$TRIPLE" -p v8)
 [[ -n "${MIGO_V8_JOBS:-}" ]] && CARGO_ARGS+=(--jobs "$MIGO_V8_JOBS")
 
 info "building (the probe measured about 56 minutes per triple)"
+# A stopwatch, and it stays out of build-metadata.json on purpose. How long a
+# build took is a fact about the build, not about its output: putting it in the
+# metadata would make two builds of one commit differ, and that file is the one a
+# reproducibility check would compare. Emitted the way apple-v8-probe.yml emits
+# its own timings, as a line for a log rather than a field in an artifact.
 BUILD_START=$(date +%s)
 (cd "$SRC_DIR" && cargo "${CARGO_ARGS[@]}")
 BUILD_SECONDS=$(($(date +%s) - BUILD_START))
+echo "build_seconds=$BUILD_SECONDS"
 ok "built in ${BUILD_SECONDS}s"
 
 GN_OUT="$SRC_DIR/target/$TRIPLE/release/gn_out"
@@ -319,13 +325,13 @@ cp "$BINDING" "$OUT_DIR/src_binding.rs"
 # build accepted, and the same holds for every build after it.
 python3 - "$ARGS_GN" "$OUT_DIR/build-metadata.json" \
     "$ARCH" "$TRIPLE" "$RUSTY_V8_REVISION" "$DEPLOYMENT_TARGET" "$OBSERVED" \
-    "$BUILD_SECONDS" "$OUT_DIR/librusty_v8.a" <<'PY'
+    "$OUT_DIR/librusty_v8.a" <<'PY'
 import hashlib
 import json
 import pathlib
 import sys
 
-args_gn, output, arch, triple, revision, declared, observed, seconds, archive = sys.argv[1:10]
+args_gn, output, arch, triple, revision, declared, observed, archive = sys.argv[1:9]
 
 # Machine-local keys. `clang_base_path` names a path inside whatever temporary
 # directory this build used, so it describes the machine and not the build.
@@ -352,7 +358,6 @@ pathlib.Path(output).write_text(
             "rusty_v8_revision": revision,
             "declared_deployment_target": declared,
             "observed_minos": observed,
-            "build_seconds": int(seconds),
             "archive_sha256": digest,
             "archive_bytes": pathlib.Path(archive).stat().st_size,
             "normalized_gn_args": sorted(normalized),
@@ -364,6 +369,10 @@ pathlib.Path(output).write_text(
                 "observed_minos is what vtool read out of an object in the archive, not what",
                 "the build was asked for. Those are different claims and only one of them is",
                 "about the bytes a consumer links.",
+                "",
+                "How long the build took is deliberately absent: it is a fact about the build",
+                "and not about its output, and a field that differs between two builds of one",
+                "commit is a field that defeats the comparison this file would be used for.",
             ],
         },
         indent=2,

@@ -61,6 +61,13 @@ NOT_AN_ARTIFACT = {
     # overwrite the one before it under the same name. The records land in docs/,
     # which is gitignored, and nothing this script writes is packaged or committed.
     "scripts/run-apple-probe.sh": "a capability-gate lab run, where the clock names the run and two runs must not collide",
+    # A stopwatch, which this gate's own header says looks identical to a build
+    # stamp under a regular expression. The distinction is real here and was made
+    # real rather than asserted: the duration was originally a field in
+    # build-metadata.json, which would have made two builds of one commit differ.
+    # It was moved out to a log line first, and only then does this line state
+    # something true -- nothing the script writes carries a clock.
+    "scripts/build-v8-apple.sh": "times its own build and prints the number; the metadata it writes carries no clock",
 }
 
 sources = sorted(

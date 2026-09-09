@@ -127,7 +127,6 @@ jobs:
               print(f"  archive      {data['archive_bytes']} bytes")
               print(f"  sha256       {data['archive_sha256']}")
               print(f"  minos        {data['observed_minos']} (declared {data['declared_deployment_target']})")
-              print(f"  build        {data['build_seconds']}s")
               print("  gn args:")
               for arg in data["normalized_gn_args"]:
                   print(f"    {arg}")
