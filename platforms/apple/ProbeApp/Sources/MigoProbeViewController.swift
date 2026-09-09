@@ -35,6 +35,12 @@ final class MigoProbeViewController: UIViewController {
         // Two answers no API reports, so the operator declares them and the
         // record says who said so. Defaulting them to the common case is how a
         // Lockdown-Mode device's numbers get filed as a JIT device's.
+        //
+        // The launch arguments seed the controls rather than bypassing them, so
+        // there is one place the run reads its attestation from whether a person
+        // tapped it in or a script declared it. A run driven by
+        // `scripts/run-apple-probe.sh` shows on screen exactly what it will
+        // record.
         lockdownControl.selectedSegmentIndex = 0
         promptControl.selectedSegmentIndex = 0
 
@@ -66,16 +72,40 @@ final class MigoProbeViewController: UIViewController {
 
         // A lab tool that can only be driven by a finger is a lab tool that
         // cannot be regression-tested. `--migo-autorun` runs the gate once the
-        // view is on screen and prints the records, so a simulator smoke test
-        // exercises the same path an operator does. The attestations stay
-        // unknown under it, which is correct: nobody was watching.
-        if ProcessInfo.processInfo.arguments.contains("--migo-autorun") {
-            autorun = true
+        // view is on screen and prints the records, so an automated run exercises
+        // the same path an operator does -- and `--migo-lockdown` /
+        // `--migo-local-network-prompt` let the person who checked the device
+        // state declare it without staying at the bench to tap it.
+        //
+        // A misparsed declaration does not run. `unknown` is what a run nobody
+        // attested says, so silently recording it here would file an attested run
+        // as an unattended one, and the record would not say which happened. The
+        // parser is in the harness package, where a lane compiles it and tests it;
+        // this target only reports what it said.
+        do {
+            let options = try MigoProbeLaunchOptions.parse(
+                arguments: ProcessInfo.processInfo.arguments)
+            switch options.lockdownMode {
+            case .off: lockdownControl.selectedSegmentIndex = 1
+            case .on: lockdownControl.selectedSegmentIndex = 2
+            case .unknown: break
+            }
+            if let observed = options.localNetworkPromptObserved {
+                promptControl.selectedSegmentIndex = observed ? 2 : 1
+            }
+            launchRunId = options.runId
+            autorun = options.autorun
+        } catch {
+            status.text = "the launch arguments were refused: \(error)"
+            runButton.isEnabled = false
+            FileHandle.standardError.write(
+                Data("MIGO_PROBE_REFUSED \(error)\n".utf8))
         }
     }
 
     private var autorun = false
     private var hasAutorun = false
+    private var launchRunId: String?
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -113,6 +143,14 @@ final class MigoProbeViewController: UIViewController {
             }
         }()
 
+        // Named by the caller when there was one, so the collector asks for the
+        // file this run wrote instead of globbing the directory -- a glob returns
+        // the previous run's records when this run wrote none, and both are valid
+        // JSON. Consumed once: a second tap must not overwrite a record somebody
+        // has already collected under that name.
+        let runId = launchRunId ?? UUID().uuidString
+        launchRunId = nil
+
         // One gate for the life of the screen, because it owns this web view's
         // configuration. The attestation is per run and is passed per run.
         runButton.isEnabled = false
@@ -125,7 +163,8 @@ final class MigoProbeViewController: UIViewController {
                 gate.run(
                     in: webView,
                     attestation: .init(
-                        lockdownMode: lockdown, localNetworkPromptObserved: prompt)
+                        lockdownMode: lockdown, localNetworkPromptObserved: prompt,
+                        runId: runId)
                 ) { result in
                     self?.finish(result)
                 }
