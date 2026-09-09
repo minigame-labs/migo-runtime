@@ -555,6 +555,54 @@ mod tests {
         assert_eq!(counts.releases.load(Ordering::SeqCst), 1);
     }
 
+    // What `native_owner_count` is for, stated as the case that motivated it.
+    //
+    // Three things clone the layer's owner on the attach path: the surface, the
+    // resize target the attachment keeps, and the prepared EGL surface the canvas
+    // manager installs. Only the first is reachable through the `SurfaceRef`, so
+    // a release check that counts `SurfaceRef`s sees one owner where there are
+    // three -- and reports nothing while the host's `CAMetalLayer` is still
+    // reachable from the renderer.
+    //
+    // The prepared surface is the interesting one because it is the owner that
+    // outlives its `SurfaceRef` by design: `prepare` exists so the render thread
+    // can hold the native target without holding the attachment.
+    #[test]
+    fn the_layer_owner_count_sees_owners_the_surface_reference_count_cannot() {
+        let counts = LayerRefcounts::default();
+        let surface = unsafe { counted_surface(&counts) };
+        assert_eq!(
+            surface.native_owner_count(),
+            Some(1),
+            "a surface that nothing has prepared is the only owner of its layer"
+        );
+
+        let prepared = AppleEglSurfaceFactory::metal_layer()
+            .prepare(&surface)
+            .expect("prepare retained layer");
+        assert_eq!(
+            surface.native_owner_count(),
+            Some(2),
+            "preparing an EGL target clones the layer's owner. This is the count the release \
+             boundary has to read: the surface is still a single Arc, so a check that reads \
+             Arc::strong_count on the SurfaceRef is looking at a 1 here"
+        );
+        assert_eq!(
+            counts.releases.load(Ordering::SeqCst),
+            0,
+            "and nothing has been released yet, which is what makes the second owner matter"
+        );
+
+        drop(prepared);
+        assert_eq!(
+            surface.native_owner_count(),
+            Some(1),
+            "retiring the prepared target hands ownership back"
+        );
+        drop(surface);
+        assert_eq!(counts.releases.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn prepared_surface_keeps_the_layer_until_its_final_reference_is_retired() {
         let counts = LayerRefcounts::default();
