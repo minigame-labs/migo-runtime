@@ -350,11 +350,22 @@ for tool in ${required_tools[@]+"${required_tools[@]}"}; do
 done
 [ "$missing" -eq 0 ] || exit 1
 
+# Asked from `engine/`, which is where the build below runs cargo from -- and
+# rustup resolves a toolchain from the working directory. `engine/rust-toolchain.toml`
+# pins 1.95.0, so a machine whose *default* toolchain is something else has two
+# different answers to "is this target installed", and this check was reading the
+# one the build does not use. Measured on a Mac whose default was stable and whose
+# pinned 1.95.0 had both darwin targets: the build refused a target it had.
+#
+# On CI the two agree, because the workflow's toolchain action installs the
+# targets into the toolchain it also makes default -- which is exactly why a check
+# that asks the wrong one stays green there.
 if [ "$ASSEMBLE_ONLY" = "0" ]; then
+installed_targets="$(cd "$ENGINE_DIR" && rustup target list --installed 2>/dev/null)"
 for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
-    if ! rustup target list --installed 2>/dev/null | grep -qx "$target"; then
-        err "Rust target not installed: $target"
-        err "  rustup target add $target"
+    if ! printf '%s\n' "$installed_targets" | grep -qx "$target"; then
+        err "Rust target not installed for the toolchain $ENGINE_DIR pins: $target"
+        err "  (cd $ENGINE_DIR && rustup target add $target)"
         exit 1
     fi
 done
