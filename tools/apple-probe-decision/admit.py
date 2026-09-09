@@ -62,7 +62,17 @@ def load_records(directory: Path) -> list[dict[str, Any]]:
     if not directory.is_dir():
         raise SystemExit(f"--input {directory} is not a directory")
     records: list[dict[str, Any]] = []
-    for path in sorted(directory.rglob("*.json")):
+    # `capability-*.json` and not `*.json`. The evidence directory is not a
+    # directory of records: scripts/run-apple-probe.sh writes its own
+    # `devices-*.json`, `install-*.json`, `launch-*.json` and `copy-*.json`
+    # there from devicectl, and then writes this tool's own `admission.json`
+    # into it as well. Reading everything meant the FIRST successful device run
+    # ended in `rejected`, with the reasons naming devicectl's output for
+    # missing fields a launch receipt was never going to have -- a correct run,
+    # a complete set of records, and a verdict that reads as bad data. Nothing
+    # exercised that path: the runner's contract test stops at --dry-run, and
+    # every earlier device attempt failed before it got this far.
+    for path in sorted(directory.rglob("capability-*.json")):
         loaded = load_json(path)
         items = loaded if isinstance(loaded, list) else [loaded]
         for item in items:
@@ -71,7 +81,12 @@ def load_records(directory: Path) -> list[dict[str, Any]]:
             item["_source"] = str(path.relative_to(directory))
             records.append(item)
     if not records:
-        raise SystemExit(f"--input {directory} contains no *.json records")
+        raise SystemExit(
+            f"--input {directory} contains no capability-*.json records. Records are "
+            f"named for the run that produced them (capability-<run-id>.json), which is "
+            f"what run-apple-probe.sh writes and what the probe app writes into its "
+            f"Documents directory."
+        )
     return records
 
 
