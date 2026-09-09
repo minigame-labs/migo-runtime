@@ -254,6 +254,20 @@ jobs:
           swift build
           DYLD_LIBRARY_PATH="$MIGO_DIAGNOSTIC_ANGLE" swift test
 
+      # `migo-shared` carries two things that only exist on Apple and that every
+      # other lane compiles out: the Objective-C autorelease pool the render thread
+      # depends on, and the release-boundary check that reads a surface's native
+      # owner count. Their cross-platform tests pass against a `new()` that pushes
+      # nothing; the one that would not is `#[cfg(target_vendor = "apple")]`, and
+      # until this step no job ran it. A test no lane executes is a test that has
+      # never been seen to fail.
+      - name: The engine's Apple-only unit tests run
+        if: matrix.host_slice
+        working-directory: engine
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo test -p migo-shared --locked --target "$host"
+
       - name: The Apple presenter's ANGLE bring-up runs on Apple silicon
         if: matrix.host_slice
         working-directory: engine
