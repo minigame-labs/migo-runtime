@@ -108,6 +108,18 @@ def validate(records: list[dict[str, Any]], schema: dict[str, Any]) -> list[str]
             value = record.get(field)
             if value is not None and not isinstance(value, (int, float)):
                 problems.append(f"{source}: {field} must be a number, found {type(value).__name__}")
+
+        # A combination the product cannot have is a harness that mislabelled a
+        # run, and a mislabelled run is worse than a missing one: it is counted.
+        for rule in schema["record"].get("combination_rules", []):
+            if all(record.get(k) == v for k, v in rule["when"].items()) and all(
+                record.get(k) == v for k, v in rule["forbid"].items()
+            ):
+                condition = ", ".join(f"{k}={v!r}" for k, v in rule["when"].items())
+                forbidden = ", ".join(f"{k}={v!r}" for k, v in rule["forbid"].items())
+                problems.append(
+                    f"{source}: {condition} cannot occur with {forbidden}: {rule['reason']}"
+                )
     return problems
 
 
@@ -139,9 +151,24 @@ def usable(records: list[dict[str, Any]], schema: dict[str, Any]) -> tuple[list[
     return kept, notes
 
 
-def arm_key(record: dict[str, Any], variable: str, dimensions: list[str]) -> tuple:
-    """The values of every dimension except the one under test."""
-    return tuple(record[dimension] for dimension in dimensions if dimension != variable)
+def condition_fields(schema: dict[str, Any], variable: str) -> list[str]:
+    """Everything that must be identical for two records to be one comparison.
+
+    The design dimensions except the one under test, plus the recorded
+    conditions the schema lists as held fixed. The second half is the part that
+    was missing: `variables` names the four things G0 chooses between, and
+    holding only those fixed leaves the device, the OS build, the payload size,
+    the refresh rate, the power state and whether JIT was even on free to differ
+    inside a single arm.
+    """
+    dimensions = [name for name in schema["variables"] if name != "_comment"]
+    held = schema["record"].get("held_fixed", [])
+    return [name for name in dimensions if name != variable] + list(held)
+
+
+def group_key(record: dict[str, Any], fields: list[str]) -> tuple:
+    """The condition a record was measured under, as a hashable key."""
+    return tuple(record.get(field) for field in fields)
 
 
 def bootstrap_interval(values: list[float], rules: dict[str, Any]) -> tuple[float, float]:
@@ -167,20 +194,35 @@ def bootstrap_interval(values: list[float], rules: dict[str, Any]) -> tuple[floa
 def decide_variable(
     records: list[dict[str, Any]], variable: str, schema: dict[str, Any]
 ) -> dict[str, Any]:
-    """Compare the levels of one variable, holding every other one fixed."""
+    """Compare the levels of one variable, holding every recorded condition fixed.
+
+    Each condition decides on its own and the conditions must then agree. The
+    earlier version pooled every condition into one set of arms with a running
+    mean and a min/max interval, which had two consequences worth naming
+    because neither announced itself:
+
+      * a transport measured on a fast phone against a rival measured on a slow
+        one produced a winner, and
+
+      * a transport that won at 4 KiB and lost at 4 MiB produced a winner too,
+        because the two results were averaged before anything compared them.
+
+    A condition that does not separate its arms is reported and does not veto:
+    absence of evidence is not contrary evidence. A condition that selects a
+    *different* winner is contrary evidence, and rejects.
+    """
     rules = schema["decision_rules"]
     metric = schema["primary_metric"]["name"]
-    dimensions = list(schema["variables"].keys())
-    dimensions.remove("_comment")
+    fields = condition_fields(schema, variable)
 
     groups: dict[tuple, dict[str, list[float]]] = {}
     for record in records:
-        key = arm_key(record, variable, dimensions)
+        key = group_key(record, fields)
         groups.setdefault(key, {}).setdefault(record[variable], []).append(float(record[metric]))
 
-    # Only a group that actually holds the other dimensions fixed AND has
-    # enough levels can decide anything. A group with one level is not a
-    # comparison, however many samples it has.
+    # Only a group that actually holds the conditions fixed AND has enough
+    # levels can decide anything. A group with one level is not a comparison,
+    # however many samples it has.
     comparable = {
         key: levels
         for key, levels in groups.items()
@@ -191,10 +233,10 @@ def decide_variable(
     if not comparable:
         shortfalls = []
         for key, levels in sorted(groups.items(), key=lambda item: str(item[0])):
+            held = dict(zip(fields, key))
             if len(levels) < rules["min_arms_per_variable"]:
                 shortfalls.append(
-                    f"holding {dict(zip([d for d in dimensions if d != variable], key))}: "
-                    f"only {len(levels)} level(s) of {variable} were measured"
+                    f"holding {held}: only {len(levels)} level(s) of {variable} were measured"
                 )
             else:
                 thin = {
@@ -203,8 +245,8 @@ def decide_variable(
                     if len(samples) < rules["min_samples_per_arm"]
                 }
                 shortfalls.append(
-                    f"holding {dict(zip([d for d in dimensions if d != variable], key))}: "
-                    f"{thin} sample(s), below the floor of {rules['min_samples_per_arm']}"
+                    f"holding {held}: {thin} sample(s), below the floor of "
+                    f"{rules['min_samples_per_arm']}"
                 )
         return {
             "variable": variable,
@@ -212,55 +254,98 @@ def decide_variable(
             "reasons": shortfalls or [f"no records carry {variable}"],
         }
 
-    arms: dict[str, dict[str, Any]] = {}
-    for key, levels in comparable.items():
-        for level, samples in levels.items():
+    conditions: list[dict[str, Any]] = []
+    for key, levels in sorted(comparable.items(), key=lambda item: str(item[0])):
+        arms: dict[str, dict[str, Any]] = {}
+        for level, samples in sorted(levels.items()):
             low, high = bootstrap_interval(samples, rules)
-            entry = arms.setdefault(
-                level, {"samples": 0, "mean_ms": 0.0, "ci_low_ms": low, "ci_high_ms": high}
+            arms[level] = {
+                "samples": len(samples),
+                "mean_ms": sum(samples) / len(samples),
+                "ci_low_ms": low,
+                "ci_high_ms": high,
+            }
+        ordered = sorted(arms.items(), key=lambda item: item[1]["mean_ms"])
+        best_name, best = ordered[0]
+        runner_name, runner = ordered[1]
+        entry: dict[str, Any] = {"held": dict(zip(fields, key)), "arms": arms}
+
+        # Non-overlapping intervals, or no winner. Two arms whose intervals
+        # overlap have not been told apart by this data, and naming the lower
+        # mean anyway is the whole failure mode this tool exists to prevent.
+        if best["ci_high_ms"] >= runner["ci_low_ms"]:
+            entry["decision"] = "rejected"
+            entry["reason"] = (
+                f"{best_name} and {runner_name} have overlapping "
+                f"{int(rules['confidence'] * 100)}% intervals "
+                f"({best['ci_low_ms']:.3f}-{best['ci_high_ms']:.3f} vs "
+                f"{runner['ci_low_ms']:.3f}-{runner['ci_high_ms']:.3f} ms): this data does "
+                f"not separate them"
             )
-            total = entry["samples"] + len(samples)
-            entry["mean_ms"] = (
-                entry["mean_ms"] * entry["samples"] + sum(samples)
-            ) / total
-            entry["samples"] = total
-            entry["ci_low_ms"] = min(entry["ci_low_ms"], low)
-            entry["ci_high_ms"] = max(entry["ci_high_ms"], high)
+        else:
+            entry["decision"] = "selected"
+            entry["winner"] = best_name
+            entry["margin_ms"] = runner["mean_ms"] - best["mean_ms"]
+        conditions.append(entry)
 
-    ordered = sorted(arms.items(), key=lambda item: item[1]["mean_ms"])
-    best_name, best = ordered[0]
-    runner_name, runner = ordered[1]
+    decisive = [entry for entry in conditions if entry["decision"] == "selected"]
+    winners = sorted({entry["winner"] for entry in decisive})
 
-    # Non-overlapping intervals, or no winner. Two arms whose intervals overlap
-    # have not been told apart by this data, and naming the lower mean anyway is
-    # the whole failure mode this tool exists to prevent.
-    if best["ci_high_ms"] >= runner["ci_low_ms"]:
+    if len(winners) > 1:
         return {
             "variable": variable,
             "decision": "rejected",
-            "arms": arms,
+            "conditions": conditions,
             "reasons": [
-                f"{best_name} and {runner_name} have overlapping {int(rules['confidence'] * 100)}% "
-                f"intervals ({best['ci_low_ms']:.3f}-{best['ci_high_ms']:.3f} vs "
-                f"{runner['ci_low_ms']:.3f}-{runner['ci_high_ms']:.3f} ms): this data does not "
-                f"separate them"
+                f"the conditions disagree: "
+                + "; ".join(
+                    f"{entry['winner']} wins holding {entry['held']}" for entry in decisive
+                )
+                + ". A choice that depends on the condition is not a choice this matrix made"
             ],
+        }
+
+    if not winners:
+        return {
+            "variable": variable,
+            "decision": "rejected",
+            "conditions": conditions,
+            "reasons": [entry["reason"] for entry in conditions],
         }
 
     return {
         "variable": variable,
         "decision": "selected",
-        "winner": best_name,
-        "arms": arms,
+        "winner": winners[0],
+        "conditions": conditions,
         "metric": metric,
-        "margin_ms": runner["mean_ms"] - best["mean_ms"],
+        "margin_ms": min(entry["margin_ms"] for entry in decisive),
+        "_margin_comment": (
+            "The smallest margin across the conditions that separated, not the "
+            "average: a claim is only as strong as the condition it holds least in."
+        ),
     }
+
+
+def collapse(reasons: list[str]) -> list[str]:
+    """Identical reasons, once each, with how many records said it.
+
+    A matrix is forty records per arm, so one bad enum value produced forty
+    copies of one sentence. Nobody reads to the bottom of that, which is where
+    a second, different problem would have been.
+    """
+    counts: dict[str, int] = {}
+    for reason in reasons:
+        counts[reason] = counts.get(reason, 0) + 1
+    return [
+        reason if count == 1 else f"{reason} (x{count})" for reason, count in counts.items()
+    ]
 
 
 def build_decision(records: list[dict[str, Any]], schema: dict[str, Any]) -> dict[str, Any]:
     problems = validate(records, schema)
     if problems:
-        raise RunRejected(problems)
+        raise RunRejected(collapse(problems))
 
     kept, notes = usable(records, schema)
     if not kept:

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The probe app's Info.plist is itself part of what G0.3 checks.
+
+  NSAllowsArbitraryLoads is deliberately ABSENT. The loopback origin is plain
+  HTTP, and the shortest way to make it load is to turn App Transport Security
+  off for everything. That would make the probe measure a configuration the
+  shipping product may not use, and would carry an App Review problem into the
+  one gate whose job is to find them early. NSAllowsLocalNetworking permits
+  cleartext to loopback and link-local addresses and nothing else.
+
+  There is no Bonjour key here either, for the same reason: G0.3's list is
+  "no NSAllowsArbitraryLoads, no Bonjour, public API only", and a probe app
+  that needs an exemption the product cannot ship has measured the exemption.
+
+  Note on the prose above: an XML comment may not contain two consecutive
+  hyphens. This file was well-formed enough for Xcode to build and run the app
+  with a comment that did contain them, which is why the gate that reads it
+  parses it strictly.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Migo Probe</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!--
+	  The records are the output of a run. Without these the operator needs a
+	  debugger attached to get them off the device, and a gate whose result can
+	  only be read on the bench is a gate whose result does not leave the bench.
+	-->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+</dict>
+</plist>

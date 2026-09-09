@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "_comment": [
+    "What measurement gate 1 -- the capability gate -- records.",
+    "",
+    "WHY THIS FILE EXISTS. performance-probe.schema.json requires",
+    "input_to_present_p50/p95/p99, missed_vsync_ratio and gpu_bytes on every",
+    "record. Gate 1 is defined as the gate that runs with NO RENDERER AND NO",
+    "VALIDATOR, so it cannot produce a single one of them. The first gate in the",
+    "measurement order therefore had no way to write down its result, and the",
+    "only shapes available were to invent numbers for fields that were not",
+    "measured, or to keep the answers in prose. Both are how a capability",
+    "becomes an assumption again.",
+    "",
+    "The measurement order in the plan is itself a conclusion: gate 1 cuts the",
+    "candidate set every later gate draws from. A candidate that no device",
+    "supports must be removed before it is benchmarked, not after, because a",
+    "benchmark of an unavailable arm is a benchmark of the fallback that ran",
+    "instead.",
+    "",
+    "SO THE RULE HERE IS DIFFERENT FROM THE PERFORMANCE SCHEMA'S. There, a",
+    "missing field rejects the run because a sample nobody can characterise",
+    "cannot be averaged. Here, an UNANSWERED capability is a legitimate result",
+    "-- some answers need an entitlement, a region, or an OS this device is not",
+    "-- but it must be recorded as `unsupported` or `not_probed` with evidence,",
+    "never omitted. An absent key and a false answer are the same thing to a",
+    "reader, and they are not the same thing to a decision."
+  ],
+
+  "probe_rules": {
+    "_comment": [
+      "Enforced by tools/apple-probe-decision/admit.py.",
+      "",
+      "simulator_counts_as_evidence is false here for a narrower reason than in",
+      "the performance schema. The simulator runs the host's JavaScriptCore on",
+      "the host's CPU, so it answers 'is JIT on' with the host's answer, which",
+      "is yes on every Mac and tells you nothing about an iPhone in Lockdown",
+      "Mode. Some answers here -- whether a JS API is exposed at all -- would",
+      "in fact be the same, and admitting the schema-shaped half while",
+      "rejecting the device-shaped half is exactly the split nobody maintains",
+      "correctly. One rule, applied to the record."
+    ],
+    "simulator_counts_as_evidence": false,
+    "min_devices_per_os_minor": 1,
+    "required_os_minors": ["15.0", "15.1", "15.2", "current"],
+    "_required_os_minors_comment": [
+      "A21/A23/A24 are all version-sensitive, and 15.2 is the SharedArrayBuffer",
+      "boundary the coverage arithmetic turns on. A capability admitted from",
+      "one OS is a capability admitted for one OS."
+    ]
+  },
+
+  "record": {
+    "required": [
+      "schema_version",
+      "run_id",
+      "captured_at",
+
+      "device_class",
+      "hardware_identifier",
+      "ram_bytes",
+      "os_version",
+      "os_build",
+      "webkit_build",
+      "app_build",
+
+      "lockdown_mode",
+      "origin",
+      "capabilities"
+    ],
+    "optional": [
+      "notes"
+    ],
+    "enums": {
+      "device_class": ["device", "simulator"],
+      "lockdown_mode": ["off", "on", "unknown"],
+      "origin": ["loopback", "custom_scheme"]
+    },
+    "_origin_comment": [
+      "ONE RECORD PER ORIGIN, not one per device. Half the questions below are",
+      "answered by the origin and not by the device: whether the page is a",
+      "secure context, whether it is cross-origin isolated, and therefore",
+      "whether SharedArrayBuffer constructs at all. A single record per device",
+      "would have to hold two answers under one key, and the way that resolves",
+      "in practice is that whichever origin ran last wins silently.",
+      "",
+      "The origin-independent answers -- JIT, Worker rAF -- are repeated in",
+      "both records. Repetition is the cheap half of this trade; a reader",
+      "comparing them across origins for a device is entitled to expect them to",
+      "agree, and a disagreement is a finding rather than a bookkeeping error."
+    ],
+    "_lockdown_comment": [
+      "A24. Lockdown Mode disables JIT for web content unless the app is",
+      "explicitly excluded, so 'WebContent has JIT' is a device state and not",
+      "an admission invariant. `unknown` is honest and is not the same as",
+      "`off`: iOS exposes no public query for it, so a probe that cannot infer",
+      "it from the JIT answer must say so rather than assume the common case."
+    ]
+  },
+
+  "capabilities": {
+    "_comment": [
+      "The closed set of questions gate 1 asks about one origin on one device.",
+      "Each settles a numbered assumption in the plan's ledger, and each names",
+      "the assumption so a reader can find out what turns on the answer.",
+      "",
+      "POLARITY IS FIXED: `available` always means the architecture MAY use",
+      "this. That is why the local-network question is phrased as the absence",
+      "of a prompt rather than its presence -- a set of capabilities where",
+      "`available` means good for nine entries and bad for the tenth is a set",
+      "whose admission rule has to special-case one of them, and the",
+      "special case is what gets lost.",
+      "",
+      "Closed on purpose, for the same reason the performance enums are: a",
+      "capability name the decision cannot recognise is a probe measuring",
+      "something nothing consumes, and accepting it silently reports coverage",
+      "that does not exist."
+    ],
+    "jit_enabled": "A24. Whether WebContent actually got JIT, probed rather than inferred. The whole architecture rests on this and Lockdown Mode can turn it off. Origin-independent; recorded in both records so a disagreement is visible.",
+    "secure_context": "A5/A6/A23. Whether this origin is a secure context. For the custom scheme this is A23, whose claim that it needs private API rests on a specification that in fact lets a user agent designate trustworthy schemes.",
+    "cross_origin_isolated": "A7/A23. Whether this origin reports crossOriginIsolated === true with COOP and COEP actually served.",
+    "shared_array_buffer": "A15. Whether SharedArrayBuffer constructs in a Worker at this origin. Downstream of cross_origin_isolated, and recorded separately because the two have been observed to disagree.",
+    "atomics_wait": "A21. Whether Atomics.wait blocks and wakes in a Worker, measured by elapsed time and not by the function existing.",
+    "sync_xhr_binary": "A21. Whether a synchronous XMLHttpRequest in a Worker returns a binary body. The second public blocking primitive, and the one that decides whether Window is excluded on capability grounds at all.",
+    "websocket_in_worker": "A22. Whether WebSocket is constructible and connectable from a Worker, which is what makes the Window relay a consequence of blocking rather than an API requirement.",
+    "worker_raf": "A18. Whether DedicatedWorkerGlobalScope.requestAnimationFrame exists. The design does not depend on it; the probe exists so the feature detection has a measured answer in both directions.",
+    "request_body_delivery": "A5. Whether a POST body reaches the other side of this origin's transport intact. For the custom scheme that is the WKURLSchemeHandler, and WebKit 191362 is RESOLVED FIXED, so this measures shipping behaviour rather than restating a bug report.",
+    "no_local_network_prompt": "A6/G0.3. Whether this origin works WITHOUT the local-network permission alert. `unavailable` means the alert appeared, which is a review and onboarding problem and not only a latency one. `unsupported` for an origin that opens no socket."
+  },
+
+  "admission": {
+    "_comment": [
+      "What gate 1's answers do to the candidate set, as data.",
+      "",
+      "The measurement order says gate 1 cuts the candidates every later gate",
+      "draws from, and that sentence is only true if something performs the",
+      "cut. Left in prose it becomes a paragraph nobody runs, and the first",
+      "person to build a matrix builds the full cross product -- including the",
+      "arms no device can host, whose numbers are then the numbers of whatever",
+      "ran instead.",
+      "",
+      "Enforced by tools/apple-probe-decision/admit.py. Each rule is a partial",
+      "assignment over the performance schema's variables plus `origin`, and",
+      "the capabilities that assignment needs. `requires` is all of them;",
+      "`requires_any` is at least one, which is how a disjunction that is",
+      "genuinely a disjunction gets written down instead of being flattened to",
+      "whichever half somebody remembered."
+    ],
+    "rules": [
+      {
+        "when": {},
+        "requires": ["jit_enabled"],
+        "reason": "A1/A24. The lane exists because WebContent has JIT and the app process does not. On a device where it does not -- Lockdown Mode is the case that ships -- every candidate here is slower than the WebKit lane it would replace."
+      },
+      {
+        "when": {},
+        "requires": ["secure_context"],
+        "reason": "An insecure context has no cross-origin isolation and no SharedArrayBuffer, and is not a place to run content that will later need either."
+      },
+      {
+        "when": {"origin": "loopback"},
+        "requires": ["no_local_network_prompt"],
+        "reason": "A6/G0.3. A permission alert on first launch is an onboarding and App Review problem, not a latency one, and it is not fixed by measuring faster."
+      },
+      {
+        "when": {"transport": "loopback_websocket", "transport_owner": "same_context", "agent": "dedicated_worker"},
+        "requires": ["websocket_in_worker"],
+        "reason": "A22. The content Worker owns the socket itself, so the Worker has to be able to open one."
+      },
+      {
+        "when": {"transport": "loopback_websocket", "transport_owner": "io_worker"},
+        "requires": ["websocket_in_worker", "shared_array_buffer", "atomics_wait"],
+        "reason": "A22's third topology. The I/O Worker opens the socket and the content Worker blocks; waking it across Workers needs a shared buffer and a real blocking wait."
+      },
+      {
+        "when": {"transport": "sync_xhr_rpc"},
+        "requires": ["sync_xhr_binary"],
+        "reason": "A21. A synchronous RPC that cannot return binary is not this transport."
+      },
+      {
+        "when": {"transport": "scheme_request"},
+        "requires": ["request_body_delivery"],
+        "reason": "A5. An upstream frame is a request body. WebKit 191362 is RESOLVED FIXED, so this is measured rather than presumed -- in either direction."
+      },
+      {
+        "when": {"clock": "worker_raf"},
+        "requires": ["worker_raf"],
+        "reason": "A18. The design does not depend on Worker rAF, but a candidate that names it does."
+      },
+      {
+        "when": {"agent": "dedicated_worker", "transport_owner": "same_context"},
+        "requires_any": ["atomics_wait", "sync_xhr_binary"],
+        "reason": "A21. A Worker that serves synchronous content has to be able to block, and there are two public ways to do it. Recording only the SharedArrayBuffer one is what made D2 look like a capability exclusion when it is a performance trade."
+      }
+    ],
+    "_no_rule_comment": [
+      "A level with no rule is admitted by every device, which is the correct",
+      "default for the ones that need nothing: a Window agent, a Window relay,",
+      "the host CADisplayLink clock, and every WKWebView host shape. Absence",
+      "here is a statement, not an omission, and admit.py prints the count so",
+      "an accidental empty rule set cannot read as a permissive one."
+    ]
+  },
+
+  "answer": {
+    "_comment": [
+      "One capability's answer. `evidence` is required on every one, including",
+      "the yeses: 'true' with no evidence is indistinguishable from a probe",
+      "that returned a default, and this project has already recorded a case",
+      "where a lane reported success while checking nothing."
+    ],
+    "required": ["state", "evidence"],
+    "optional": ["value"],
+    "enums": {
+      "state": ["available", "unavailable", "unsupported", "not_probed"]
+    },
+    "_state_comment": [
+      "`unavailable` means the probe ran and the answer was no.",
+      "`unsupported` means this OS or device cannot be asked -- the API is not",
+      "present to fail. `not_probed` means nobody asked, which is the one that",
+      "must never be quietly read as no."
+    ]
+  }
+}

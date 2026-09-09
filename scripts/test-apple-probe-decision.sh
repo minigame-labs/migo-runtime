@@ -27,8 +27,11 @@ cd "$ROOT"
 TOOL="tools/apple-probe-decision/decide.py"
 TESTS="tools/apple-probe-decision/tests/test_decide.py"
 SCHEMA="contracts/apple/performance-probe.schema.json"
+ADMIT="tools/apple-probe-decision/admit.py"
+ADMIT_TESTS="tools/apple-probe-decision/tests/test_admit.py"
+CAPABILITY_SCHEMA="contracts/apple/capability-probe.schema.json"
 
-for required in "$TOOL" "$TESTS" "$SCHEMA"; do
+for required in "$TOOL" "$TESTS" "$SCHEMA" "$ADMIT" "$ADMIT_TESTS" "$CAPABILITY_SCHEMA"; do
     if [[ ! -f "$required" ]]; then
         echo "FAIL: $required is missing; the G0 decision procedure cannot be checked." >&2
         exit 1
@@ -71,6 +74,61 @@ if rules["min_samples_per_arm"] < 20:
         f"FAIL: min_samples_per_arm is {rules['min_samples_per_arm']}. Below twenty, the "
         "interval this tool reports is wider than the effect it is looking for."
     )
+
+# `held_fixed` is what makes "one variable at a time" a check rather than a
+# sentence. Emptying it restores the state this tool shipped in, where the four
+# entries of `variables` were held fixed and the device, the OS build, the
+# payload size, the refresh rate and whether JIT was on were not -- so twenty
+# samples from a slow phone and twenty from a fast one were the two arms of a
+# transport comparison and a winner came out. The unit suite catches that; this
+# check is here so the schema cannot be emptied and read as merely "configured".
+held = schema["record"].get("held_fixed")
+if not held:
+    raise SystemExit(
+        "FAIL: the schema lists nothing as held fixed, so a comparison may mix devices, "
+        "OS builds, payload sizes and power states inside one arm."
+    )
+for field in ("hardware_identifier", "payload_class_bytes", "jit_enabled"):
+    if field not in held:
+        raise SystemExit(
+            f"FAIL: {field} is not held fixed, so two records that differ in it are treated "
+            "as two samples of the same measurement."
+        )
+if "thermal_state" in held:
+    raise SystemExit(
+        "FAIL: thermal_state is held fixed. It varies across the samples of a single arm by "
+        "nature, so holding it fixed splits every arm below the sample floor and rejects "
+        "every run -- a gate that refuses everything is not stricter, it is off."
+    )
 PY
 
+# The admission side has the same rules and a different failure mode. decide.py
+# picks a winner from arms that ran; admit.py decides which arms may run at all,
+# and a permissive bug there does not look like a failure -- it looks like a
+# matrix with more coverage.
+python3 - "$CAPABILITY_SCHEMA" <<'PYCAP'
+import json, sys
+schema = json.load(open(sys.argv[1], encoding="utf-8"))
+for section in ("probe_rules", "record", "capabilities", "answer", "admission"):
+    if section not in schema:
+        raise SystemExit(f"FAIL: {sys.argv[1]} has no {section!r} section")
+if schema["probe_rules"]["simulator_counts_as_evidence"]:
+    raise SystemExit(
+        "FAIL: the capability schema admits simulator answers as evidence. The simulator runs "
+        "the host's JavaScriptCore on the host's CPU, so it answers 'is JIT on' with the host's "
+        "answer -- yes on every Mac, and nothing about a phone in Lockdown Mode."
+    )
+if not schema["admission"]["rules"]:
+    raise SystemExit(
+        "FAIL: the contract declares no admission rules, so every candidate would be admitted "
+        "without anything having been checked. An empty rule set looks like a gate that passed."
+    )
+if "evidence" not in schema["answer"]["required"]:
+    raise SystemExit(
+        "FAIL: a capability answer may be written without evidence. 'available' with nothing "
+        "behind it is indistinguishable from a probe that returned a default."
+    )
+PYCAP
+
 python3 "$TESTS"
+python3 "$ADMIT_TESTS"

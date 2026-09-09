@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Migo capability gate</title>
+<style>
+  body { font: 13px -apple-system, system-ui, sans-serif; margin: 12px; }
+  pre  { white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<!--
+  The page measurement gate 1 runs in. It carries no renderer and no validator
+  by definition: what it answers is which architectures this device can host,
+  and every later gate draws its candidates from that answer.
+
+  The visible output is for a person watching a phone on a bench. The record
+  the run produces goes to the native side over the message handler, because a
+  number a human reads off a screen is a number nobody can re-check.
+-->
+<p id="status">running the capability gate...</p>
+<pre id="report"></pre>
+<script src="capability-probe.js"></script>
+<script>
+  (function () {
+    var config = {
+      // Written by the native side before the page is loaded, so the page does
+      // not have to guess which port the listener took or whether there is one.
+      workerUrl: window.__migoProbeConfig.workerUrl,
+      loopbackOrigin: window.__migoProbeConfig.loopbackOrigin,
+      schemeOrigin: window.__migoProbeConfig.schemeOrigin
+    };
+    self.migoRunCapabilityProbe(config).then(function (report) {
+      document.getElementById("status").textContent =
+        "done at " + report.origin + " (" + Object.keys(report.capabilities).length + " answered)";
+      document.getElementById("report").textContent = JSON.stringify(report, null, 2);
+    }).catch(function (error) {
+      document.getElementById("status").textContent = "the gate itself failed: " + error;
+      // A harness that fails silently is a harness that reports an empty matrix
+      // as a completed run, so the failure goes to the native side too.
+      window.webkit.messageHandlers.migoProbe.postMessage(
+        JSON.stringify({ harness_error: String(error) }));
+    });
+  })();
+</script>
+</body>
+</html>

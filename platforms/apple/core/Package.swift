@@ -47,6 +47,8 @@ let package = Package(
     ],
     products: [
         .library(name: "MigoAppleCore", targets: ["MigoAppleCore"]),
+        .library(name: "MigoProbeCore", targets: ["MigoProbeCore"]),
+        .library(name: "MigoProbeHarness", targets: ["MigoProbeHarness"]),
     ],
     targets: [
         // Shared, engine-agnostic host services: profile resolution, lifecycle,
@@ -60,6 +62,45 @@ let package = Package(
             name: "MigoAppleCoreTests",
             dependencies: ["MigoAppleCore"],
             path: "Tests/MigoAppleCoreTests"
+        ),
+        // The G0 probe record types. Engine-free by construction -- the
+        // capability gate is defined as the gate that runs with no renderer and
+        // no validator, so the app that carries these links nothing this
+        // package could not build.
+        //
+        // They are HERE rather than in the probe app because the app is an
+        // Xcode target that only a Mac builds, and these are the types whose
+        // field names have to agree with contracts/apple/*.json. Agreement is
+        // checked by a gate that reads the schema and this source; putting the
+        // source somewhere no compiler visits would put it back in the state
+        // apple-ci.yml exists to prevent.
+        .target(
+            name: "MigoProbeCore",
+            path: "Sources/MigoProbeCore"
+        ),
+        .testTarget(
+            name: "MigoProbeCoreTests",
+            dependencies: ["MigoProbeCore"],
+            path: "Tests/MigoProbeCoreTests"
+        ),
+        // Measurement gate 1's machinery: the loopback origin, the custom
+        // scheme, and the page that asks both of them the same questions.
+        //
+        // It links WebKit and Network and it does NOT link the engine, which is
+        // not a coincidence -- the plan defines gate 1 as the gate that runs
+        // with no renderer and no validator, so the harness that runs it has
+        // nothing to link. That is what lets the whole capability gate be built
+        // and tested on the free macOS runner in seconds.
+        .target(
+            name: "MigoProbeHarness",
+            dependencies: ["MigoProbeCore"],
+            path: "Sources/MigoProbeHarness",
+            resources: [.process("Resources")]
+        ),
+        .testTarget(
+            name: "MigoProbeHarnessTests",
+            dependencies: ["MigoProbeHarness"],
+            path: "Tests/MigoProbeHarnessTests"
         ),
     ]
 )

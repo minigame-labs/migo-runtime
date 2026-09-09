@@ -496,6 +496,9 @@ jobs:
       - name: Apple shipping Swift package consumes the engine it declares
         run: bash scripts/test-apple-shipping-package-contract.sh
 
+      - name: Apple SDK assembly preserves slices and runtime dependencies
+        run: bash scripts/test-apple-sdk-packaging.sh
+
       # ANGLE-Metal is what fills the hole apple-sdk.yml measured: there is no GL
       # framework on iOS, so the renderer has no GL to link. Building it is a
       # 12 GB checkout and half an hour on a macOS runner (.github/workflows/apple-angle.yml),
@@ -633,6 +636,19 @@ jobs:
 
       - name: Apple probe decision procedure
         run: bash scripts/test-apple-probe-decision.sh
+
+      # The harness half of the same lab day. The decision tool refuses a whole
+      # run over one missing field, so a record shape that disagrees with the
+      # contract turns a session on borrowed devices into a folder of JSON that
+      # decides nothing -- and says so only once the devices are gone.
+      - name: Apple probe records match their contracts
+        run: bash scripts/test-apple-probe-record-contract.sh
+
+      # G0.3's static half. The loopback origin is cleartext, and the one-line
+      # way to make it load is to turn App Transport Security off for
+      # everything -- which measures a configuration the product cannot ship.
+      - name: The probe app needs no exemption the product cannot ship
+        run: bash scripts/test-apple-probe-app-ats-contract.sh
 
       - name: OpenHarmony host and package metadata contracts
         run: |
