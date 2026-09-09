@@ -182,6 +182,22 @@ jobs:
 
       # The runtime is supplied by Package.swift's framework dependencies.
       # No copy into DerivedData or test products repairs the package afterward.
+      #
+      # `-parallel-testing-enabled NO`, and it is measured rather than cautious.
+      # This package grew a second test bundle (MigoAppleWebKitTests) and
+      # xcodebuild runs bundles concurrently by default -- so two suites that both
+      # drive one simulator's WebKit and GPU began racing each other, on the one
+      # simulator they share. The evidence is that whichever lost the race failed:
+      # in one run MigoSurfaceAttachTests' release assertion failed while every
+      # WebView test passed, and in the next run on the same code the WebView
+      # bundle's first test exceeded a 120-second budget while the release
+      # assertion passed in 0.388 seconds.
+      #
+      # Serial is the honest configuration for what these are. They are not unit
+      # tests that happen to share a process: one waits on a native surface
+      # retirement and the other mounts real web views, and timing is the thing
+      # both of them assert about. Parallelism here does not make them faster than
+      # it makes them wrong -- the whole step is about six minutes either way.
       - name: The ABI tests run on iOS with package-embedded ANGLE
         if: matrix.platform == 'ios-simulator'
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
@@ -190,6 +206,7 @@ jobs:
           xcodebuild test \
             -scheme Migo-Package \
             -destination "platform=iOS Simulator,id=$udid" \
+            -parallel-testing-enabled NO \
             -derivedDataPath "$GITHUB_WORKSPACE/build/apple-sim-dd" \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO
