@@ -209,6 +209,17 @@ if [[ "$MODE" == "simulator" && ( "$OUT_DIR" == "$EVIDENCE_ABS" || "$OUT_DIR" ==
 fi
 
 RECORD_FILE="$OUT_DIR/capability-$RUN_ID.json"
+# Everything this script produces that is NOT the record goes here instead of
+# beside it: the build log, devicectl's three receipts, the derived-data
+# directory and the pull staging area. The evidence directory should hold
+# evidence.
+#
+# admit.py no longer reads anything but capability-*.json, so this is the second
+# half of the same fix rather than the whole of it -- and it is the half that
+# also helps the person who opens the directory expecting records and finds a
+# launch receipt. Keeping the run id in the path means two runs' logs do not
+# overwrite each other.
+WORK_DIR="$OUT_DIR/run-logs"
 APP_ARGS=(--migo-autorun "--migo-run-id=$RUN_ID")
 [[ -n "$LOCKDOWN" ]] && APP_ARGS+=("--migo-lockdown=$LOCKDOWN")
 [[ -n "$PROMPT" ]] && APP_ARGS+=("--migo-local-network-prompt=$PROMPT")
@@ -218,7 +229,7 @@ APP_ARGS=(--migo-autorun "--migo-run-id=$RUN_ID")
 ADMIT_INPUT=""
 [[ "$MODE" == "device" ]] && ADMIT_INPUT="$OUT_DIR"
 
-DERIVED="$OUT_DIR/derived-$RUN_ID"
+DERIVED="$WORK_DIR/derived-$RUN_ID"
 
 if ((DRY_RUN)); then
   cat <<PLAN
@@ -243,7 +254,7 @@ fi
 command -v xcrun >/dev/null || fail "xcrun is not on PATH"
 command -v xcodebuild >/dev/null || fail "xcodebuild is not on PATH"
 
-mkdir -p "$OUT_DIR"
+mkdir -p "$OUT_DIR" "$WORK_DIR"
 
 # ---------------------------------------------------------------------------
 # A device has two names and the tools disagree about which one they take.
@@ -254,7 +265,7 @@ mkdir -p "$OUT_DIR"
 # ---------------------------------------------------------------------------
 DEVICE_UDID=""
 if [[ "$MODE" == "device" ]]; then
-  DEVICE_LIST="$OUT_DIR/devices-$RUN_ID.json"
+  DEVICE_LIST="$WORK_DIR/devices-$RUN_ID.json"
   xcrun devicectl list devices --json-output "$DEVICE_LIST" >/dev/null 2>&1 \
     || fail "xcrun devicectl list devices failed; is a device paired and unlocked?"
   RESOLVED="$(python3 - "$DEVICE_LIST" "$TARGET" <<'RESOLVE'
@@ -329,8 +340,8 @@ fi
 if [[ -n "${MIGO_PROBE_TEAM:-}" ]]; then
   BUILD_ARGS+=("DEVELOPMENT_TEAM=$MIGO_PROBE_TEAM")
 fi
-xcodebuild "${BUILD_ARGS[@]}" build >"$OUT_DIR/build-$RUN_ID.log" 2>&1 \
-  || fail "the build failed; see $OUT_DIR/build-$RUN_ID.log$SIGNING_HINT"
+xcodebuild "${BUILD_ARGS[@]}" build >"$WORK_DIR/build-$RUN_ID.log" 2>&1 \
+  || fail "the build failed; see $WORK_DIR/build-$RUN_ID.log$SIGNING_HINT"
 
 APP="$(find "$DERIVED/Build/Products" -maxdepth 2 -name "$SCHEME.app" -print -quit)"
 [[ -n "$APP" ]] || fail "the build produced no $SCHEME.app under $DERIVED/Build/Products"
@@ -359,13 +370,13 @@ if [[ "$MODE" == "simulator" ]]; then
 else
   echo "[2/5] installing on device $TARGET"
   xcrun devicectl device install app --device "$TARGET" "$APP" \
-    --json-output "$OUT_DIR/install-$RUN_ID.json" \
-    || fail "devicectl install failed; see $OUT_DIR/install-$RUN_ID.json"
+    --json-output "$WORK_DIR/install-$RUN_ID.json" \
+    || fail "devicectl install failed; see $WORK_DIR/install-$RUN_ID.json"
 
   echo "[3/5] launching with ${APP_ARGS[*]}"
   # Not --console: it waits for the app to exit and the probe app does not.
   if ! xcrun devicectl device process launch --device "$TARGET" --terminate-existing \
-    --json-output "$OUT_DIR/launch-$RUN_ID.json" \
+    --json-output "$WORK_DIR/launch-$RUN_ID.json" \
     "$BUNDLE_ID" "${APP_ARGS[@]}"; then
     # The install succeeding and the launch being refused is one specific thing
     # on a free team, and the message iOS returns for it names three causes at
@@ -374,10 +385,10 @@ else
     # it is always the third, and the fix is on the phone rather than on the Mac
     # -- which is worth saying, because everything else in this script is fixed
     # on the Mac.
-    if grep -q "explicitly trusted" "$OUT_DIR/launch-$RUN_ID.json" 2>/dev/null; then
+    if grep -q "explicitly trusted" "$WORK_DIR/launch-$RUN_ID.json" 2>/dev/null; then
       fail "the device refused to launch $BUNDLE_ID because this developer certificate is not trusted on it yet. On the phone: Settings > General > VPN & Device Management > Developer App > trust the certificate, then run this again. It is once per certificate, not once per build"
     fi
-    fail "devicectl launch failed; see $OUT_DIR/launch-$RUN_ID.json"
+    fail "devicectl launch failed; see $WORK_DIR/launch-$RUN_ID.json"
   fi
 
   echo "[4/5] waiting up to ${TIMEOUT}s for Documents/capability-$RUN_ID.json"
@@ -388,15 +399,15 @@ else
   # because the guess would be found wrong on a bench with the device in hand and a
   # gate half measured. This path is the one thing in this script no test exercises:
   # it needs a device.
-  COPY_DIR="$OUT_DIR/pull-$RUN_ID"
+  COPY_DIR="$WORK_DIR/pull-$RUN_ID"
   rm -rf "$COPY_DIR"
   mkdir -p "$COPY_DIR"
   DEADLINE=$((SECONDS + TIMEOUT))
   until xcrun devicectl device copy from --device "$TARGET" \
     --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
     --source "Documents/capability-$RUN_ID.json" --destination "$COPY_DIR" \
-    --json-output "$OUT_DIR/copy-$RUN_ID.json" >/dev/null 2>&1; do
-    ((SECONDS < DEADLINE)) || fail "no records after ${TIMEOUT}s. The app writes them when the run finishes and the screen says what it is doing; the last copy attempt is in $OUT_DIR/copy-$RUN_ID.json"
+    --json-output "$WORK_DIR/copy-$RUN_ID.json" >/dev/null 2>&1; do
+    ((SECONDS < DEADLINE)) || fail "no records after ${TIMEOUT}s. The app writes them when the run finishes and the screen says what it is doing; the last copy attempt is in $WORK_DIR/copy-$RUN_ID.json"
     sleep 5
   done
 
@@ -405,7 +416,7 @@ else
     # The other reading: the destination itself became the file.
     PULLED="$(find "$COPY_DIR" -type f -print -quit)"
   fi
-  [[ -n "$PULLED" ]] || fail "devicectl reported success and left nothing under $COPY_DIR; see $OUT_DIR/copy-$RUN_ID.json"
+  [[ -n "$PULLED" ]] || fail "devicectl reported success and left nothing under $COPY_DIR; see $WORK_DIR/copy-$RUN_ID.json"
   mv "$PULLED" "$RECORD_FILE"
   rmdir "$COPY_DIR" 2>/dev/null || true
 fi
