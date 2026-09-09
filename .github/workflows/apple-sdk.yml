@@ -115,7 +115,28 @@ jobs:
         with:
           targets: ${{ matrix.targets }}
 
+      # Not for macos-v8, and this is a rule this repository already settled on
+      # three other lanes -- pr-ci's Android build, release's Android build and
+      # build-snapshot all say "NO Rust cache" for the same reason. The new
+      # product simply did not inherit it.
+      #
+      # Swatinem/rust-cache prunes large files out of each crate's build-script
+      # OUT_DIR to shrink the cache, and `librusty_v8.a` is one: the v8 crate's
+      # build script copies the archive to `target/<triple>/debug/gn_out/obj` and
+      # records `cargo:rustc-link-search` pointing there. The cache keeps the
+      # fingerprint that says that script is fresh and drops the file it produced,
+      # so on a warm run cargo replays the search path without re-running the
+      # copy, and the link fails with "could not find native static library
+      # rusty_v8".
+      #
+      # Measured here rather than assumed: the first run built green on a cold
+      # cache, the next two failed on `full match: true` restores of the same key,
+      # and a step that listed the restored tree showed `gn_out/obj` and the
+      # materialise directories both present and EMPTY while the recorded output
+      # still named them. A cold build of both darwin slices is 13 minutes against
+      # a 180-minute timeout.
       - name: Rust cache
+        if: matrix.product != 'macos-v8'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: engine -> target
@@ -141,40 +162,6 @@ jobs:
           bash scripts/fetch-apple-angle.sh ios
           bash scripts/fetch-apple-angle.sh ios-simulator
           bash scripts/fetch-apple-angle.sh macos
-
-      # TEMPORARY, and it comes out of this branch before it merges.
-      #
-      # macos-v8 built green on a cold cache and then failed twice in a row --
-      # once on the run, once on a re-run against the same restored cache -- with
-      # "could not find native static library `rusty_v8`", after the same log
-      # line said the archive had been fetched, verified and materialised at a
-      # path that exists. Both failures restored the same cache key with a full
-      # match, so the state cargo is reasoning about comes out of that tarball
-      # and every explanation for it so far has been a guess. This prints the
-      # three things that decide the outcome -- what is in the materialise root,
-      # whether cargo kept a v8 build directory, and what link search that
-      # directory's recorded output actually names -- before the build consumes
-      # them.
-      - name: What the restored cache says about V8
-        if: matrix.product == 'macos-v8'
-        continue-on-error: true
-        run: |
-          echo "--- engine/target top level"
-          ls -la engine/target 2>&1 | head -20
-          echo "--- materialise root"
-          ls -laR engine/target/v8-materialised 2>&1 | head -20
-          echo "--- v8 build dirs"
-          ls -la engine/target/*/debug/build 2>/dev/null | grep -i 'v8' | head
-          echo "--- what the v8 build script left in OUT_DIR"
-          ls -laR engine/target/*/debug/build/v8-*/out 2>&1 | head -30
-          echo "--- recorded build-script output (link flags only; the rerun-if-env"
-          echo "    preamble is 40 lines long and a head(1) on the whole file hides them)"
-          for out in engine/target/*/debug/build/v8-*/output; do
-            echo "== $out"
-            grep -iE 'link-search|link-lib' "$out" 2>/dev/null || echo "  (no link flags recorded)"
-          done
-          echo "--- v8 fingerprints"
-          ls -la engine/target/*/debug/.fingerprint 2>/dev/null | grep -i v8 | head
 
       - name: Build ${{ matrix.product }} for ${{ matrix.platform }}
         run: >-
