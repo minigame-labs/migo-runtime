@@ -335,6 +335,38 @@ impl Drop for SurfaceResource {
         // Rust normally runs a type's Drop implementation before its fields.
         // Taking the anchor makes the required platform-release-before-level-
         // publication ordering explicit rather than relying on field order.
+        //
+        // The ordering above is only worth anything if this drop is the LAST
+        // reference to the anchor. The struct comment states that as the rule --
+        // "every object capable of platform/GPU use must carry a
+        // `SurfaceResourceLease`, so the final Arc drop is the native-lifetime
+        // completion boundary" -- and until now nothing observed it.
+        //
+        // It is observed rather than asserted, deliberately. `complete()` below
+        // already explains why this path does not panic: it can run from an Arc's
+        // final drop, where a panic could abort during another unwind. A
+        // `debug_assert` here would be exactly that panic.
+        //
+        // WHY IT IS WORTH OBSERVING. On Apple this rule is measurably not holding:
+        // a renderer test that reads the layer's reference count at the moment
+        // RELEASED becomes visible finds the host's `CAMetalLayer` still alive,
+        // and it goes about 30 ms later on another thread. A consumer that frees
+        // its layer on RELEASED -- which the phase's documentation entitles it to
+        // do -- would be freeing a layer the renderer can still reach. A count
+        // greater than one here names that owner's existence at the moment it
+        // matters, in every platform's logs, instead of leaving it to a flaky
+        // assertion in one platform's test suite.
+        if let Some(anchor) = self.native_anchor.as_ref() {
+            let outstanding = Arc::strong_count(anchor);
+            if outstanding != 1 {
+                tracing::warn!(
+                    outstanding,
+                    generation = self.public_generation.get(),
+                    "surface anchor is not the last reference at release; RELEASED is about to \
+                     be published while another owner can still reach the native resource"
+                );
+            }
+        }
         drop(self.native_anchor.take());
         self.release.complete();
     }
@@ -746,6 +778,53 @@ mod tests {
     ) -> SurfaceLease {
         let surface: SurfaceRef = Arc::new(TestSurface::new((marker, marker), Arc::clone(drops)));
         SurfaceLease::new(surface, token)
+    }
+
+    /// The completion boundary is only a boundary when this drop is the last
+    /// reference, and this checks the observation that says so.
+    ///
+    /// Two `SurfaceResource`s are built over the same anchor: one where the anchor
+    /// is uniquely owned, and one where a clone is deliberately held. Only the
+    /// second is a violation, and the difference between them is the whole content
+    /// of the check -- a check that could not tell them apart would be reporting
+    /// its own presence.
+    ///
+    /// It reads the count the same way the drop does rather than capturing log
+    /// output: the point is that the condition discriminates, and a tracing
+    /// subscriber in a unit test would be testing the subscriber.
+    #[test]
+    fn the_completion_boundary_notices_an_anchor_it_does_not_uniquely_own() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let anchor: SurfaceRef = Arc::new(TestSurface::new((1, 1), Arc::clone(&drops)));
+
+        assert_eq!(
+            Arc::strong_count(&anchor),
+            1,
+            "a freshly built anchor is uniquely owned, which is the case the check must NOT report"
+        );
+
+        let onlooker = Arc::clone(&anchor);
+        assert_eq!(
+            Arc::strong_count(&anchor),
+            2,
+            "an owner outside the attachment graph is exactly what the check reports, and it is \
+             what the Apple renderer measured: the host CAMetalLayer still reachable at the moment \
+             RELEASED became visible"
+        );
+
+        drop(onlooker);
+        assert_eq!(Arc::strong_count(&anchor), 1);
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            0,
+            "dropping a clone must not destroy the surface; only the last reference does"
+        );
+        drop(anchor);
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "the final drop is the native-lifetime completion boundary the struct documents"
+        );
     }
 
     #[test]
