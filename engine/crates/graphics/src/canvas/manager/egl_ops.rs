@@ -108,7 +108,19 @@ impl EglRuntime {
         #[cfg(debug_assertions)]
         {
             let held = self.ledger.borrow().references(surface.as_ptr() as usize);
-            if held > 0 {
+            if held == 0 {
+                // The positive control, and the reason the error above can be
+                // read at all. Without it a run with no error line says two
+                // things at once -- "every surface was free when we destroyed
+                // it" and "no surface was destroyed" -- and this project has
+                // already spent a session telling those apart after the fact.
+                // Debug builds only, and once per surface teardown rather than
+                // per frame.
+                tracing::info!(
+                    surface = format_args!("{:p}", surface.as_ptr()),
+                    "eglDestroySurface with no context holding it"
+                );
+            } else {
                 tracing::error!(
                     surface = format_args!("{:p}", surface.as_ptr()),
                     references = held,
