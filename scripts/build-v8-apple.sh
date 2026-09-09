@@ -283,9 +283,14 @@ ARGS_GN="$GN_OUT/args.gn"
 
 info "asking the object what floor it actually carries"
 PROBE_DIR="$(mktemp -d)"
-(cd "$PROBE_DIR" && ar x "$ARCHIVE")
-MEMBER="$(find "$PROBE_DIR" -maxdepth 1 -name '*.o' -print -quit)"
-[[ -n "$MEMBER" ]] || err "no object member in $ARCHIVE to inspect"
+# One member, named first and extracted second. A bare `ar x` unpacks the whole
+# archive -- about 126 MiB of object files, per the probe's measurement -- to read
+# a single load command out of one of them.
+MEMBER_NAME="$(ar t "$ARCHIVE" | grep -m1 '\.o$' || true)"
+[[ -n "$MEMBER_NAME" ]] || err "no object member in $ARCHIVE to inspect"
+(cd "$PROBE_DIR" && ar x "$ARCHIVE" "$MEMBER_NAME")
+MEMBER="$PROBE_DIR/$MEMBER_NAME"
+[[ -f "$MEMBER" ]] || err "ar named $MEMBER_NAME and then did not extract it"
 
 OBSERVED="$(vtool -show-build "$MEMBER" 2>/dev/null | awk '/minos/ {print $2; exit}')"
 rm -rf "$PROBE_DIR"
