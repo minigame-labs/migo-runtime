@@ -263,6 +263,9 @@ export V8_FROM_SOURCE=1
 export EXTRA_GN_ARGS="mac_deployment_target=\"$DEPLOYMENT_TARGET\" target_cpu=\"$GN_CPU\" v8_target_cpu=\"$GN_CPU\""
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
 
+# Guarded expansion below, because macOS ships bash 3.2 and it treats an array
+# expansion under `set -u` as an unbound variable -- a script that runs on every
+# machine here and dies on the only OS that can build an Apple product.
 CARGO_ARGS=(build --release --target "$TRIPLE" -p v8)
 [[ -n "${MIGO_V8_JOBS:-}" ]] && CARGO_ARGS+=(--jobs "$MIGO_V8_JOBS")
 
@@ -273,7 +276,7 @@ info "building (the probe measured about 56 minutes per triple)"
 # reproducibility check would compare. Emitted the way apple-v8-probe.yml emits
 # its own timings, as a line for a log rather than a field in an artifact.
 BUILD_START=$(date +%s)
-(cd "$SRC_DIR" && cargo "${CARGO_ARGS[@]}")
+(cd "$SRC_DIR" && cargo ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
 BUILD_SECONDS=$(($(date +%s) - BUILD_START))
 echo "build_seconds=$BUILD_SECONDS"
 ok "built in ${BUILD_SECONDS}s"
