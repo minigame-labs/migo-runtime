@@ -133,6 +133,37 @@ import XCTest
             // the two records say which side stopped, and neither says it alone.
             if XCTWaiter().wait(for: [arrived], timeout: timeout) != .completed {
                 let webView = session.webView
+                // One question the two records cannot answer between them, asked
+                // only here, on the failure path, where it costs a green run
+                // nothing.
+                //
+                // The first red to carry both records said: the host answered in
+                // full (delivered == promised == 431) and WebKit started a
+                // provisional navigation and then neither committed, nor failed,
+                // nor lost its content process. That eliminates under-delivery,
+                // refusal, navigation failure and a crash, and leaves one shape
+                // -- WebContent had a complete response and did nothing with it
+                // -- which is still two different faults: a content process that
+                // never came up, and one that is up and stalled on this load.
+                //
+                // `about:blank` separates them. It needs no host, no origin and
+                // no network; a live content process commits it, and the
+                // navigation record already counts commits. It is allowed
+                // through `decidePolicyFor` by name, so this asks the shipping
+                // policy rather than going around it.
+                let commitsBeforeBlank = session.navigation.commits
+                var blankCommitted = false
+                if let webView {
+                    webView.load(URLRequest(url: URL(string: "about:blank")!))
+                    let deadline = Date().addingTimeInterval(5)
+                    while Date() < deadline {
+                        if session.navigation.commits > commitsBeforeBlank {
+                            blankCommitted = true
+                            break
+                        }
+                        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                    }
+                }
                 XCTFail(
                     "no diagnostic within \(Int(timeout))s."
                         + " url=\(webView?.url?.absoluteString ?? "nil")"
@@ -145,6 +176,7 @@ import XCTest
                         + " rebuilds=\(recorder.rebuilds)"
                         + " origin=\(session.originActivity)"
                         + " navigation=\(session.navigation)"
+                        + " aboutBlankCommitted=\(blankCommitted)"
                         + ". Read the two records together. origin.started=0 means WebKit"
                         + " never asked the host for the page. origin.started>0 with"
                         + " finished=0 means the host never answered. origin.finished=1"
@@ -152,7 +184,10 @@ import XCTest
                         + " WebKit did not take it -- look at"
                         + " navigation.contentProcessTerminations and lastError, and at"
                         + " promised against delivered, which is the same stall when a"
-                        + " body is short of its own Content-Length.")
+                        + " body is short of its own Content-Length."
+                        + " aboutBlankCommitted=false says the content process never"
+                        + " came up at all, which is a different fault from one that"
+                        + " is up and stalled on this particular load.")
             }
             return try XCTUnwrap(recorder.diagnostics.first)
         }
