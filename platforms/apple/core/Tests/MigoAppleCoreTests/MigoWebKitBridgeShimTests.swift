@@ -76,9 +76,9 @@ import XCTest
         func testAServedMethodPostsToItsOwnHandler() throws {
             let context = try context(withHandlers: Shim.handlerNames(for: .default))
             _ = evaluate(Shim.script(for: .default), in: context)
-            _ = evaluate("\(Shim.namespace).content.read({ path: 'a.png' })", in: context)
+            _ = evaluate("\(Shim.namespace).diagnostics.report({ level: 'error' })", in: context)
             let posted = evaluate("JSON.stringify(globalThis.__posted)", in: context)?.toString()
-            XCTAssertEqual(posted, #"[["migo_content_read",{"path":"a.png"}]]"#)
+            XCTAssertEqual(posted, #"[["migo_diagnostics_report",{"level":"error"}]]"#)
         }
 
         func testACallWithNoArgumentPostsNullRatherThanNothing() throws {
@@ -141,20 +141,20 @@ import XCTest
             // because it is what a developer sees when they try.
             for attempt in [
                 "globalThis.\(Shim.namespace) = {}",
-                "\(Shim.namespace).content = {}",
-                "\(Shim.namespace).content.read = () => 'mine'",
-                "delete \(Shim.namespace).content",
+                "\(Shim.namespace).diagnostics = {}",
+                "\(Shim.namespace).diagnostics.report = () => 'mine'",
+                "delete \(Shim.namespace).diagnostics",
             ] {
                 _ = evaluate(
                     "(() => { try { \(attempt); } catch (e) {} })()", in: context)
                 XCTAssertEqual(
-                    evaluate("typeof \(Shim.namespace).content.read", in: context)?.toString(),
+                    evaluate("typeof \(Shim.namespace).diagnostics.report", in: context)?.toString(),
                     "function", "the shim did not survive: \(attempt)")
                 _ = evaluate("globalThis.__posted = []", in: context)
-                _ = evaluate("\(Shim.namespace).content.read(1)", in: context)
+                _ = evaluate("\(Shim.namespace).diagnostics.report(1)", in: context)
                 XCTAssertEqual(
                     evaluate("JSON.stringify(globalThis.__posted)", in: context)?.toString(),
-                    #"[["migo_content_read",1]]"#,
+                    #"[["migo_diagnostics_report",1]]"#,
                     "the method still exists but no longer reaches its handler after: \(attempt)")
             }
 
@@ -163,7 +163,7 @@ import XCTest
             let strict = evaluate(
                 """
                 (() => { 'use strict';
-                   try { \(Shim.namespace).content.read = () => 'mine'; return 'accepted'; }
+                   try { \(Shim.namespace).diagnostics.report = () => 'mine'; return 'accepted'; }
                    catch (error) { return error.constructor.name; } })()
                 """, in: context)?.toString()
             XCTAssertEqual(strict, "TypeError")
@@ -178,13 +178,13 @@ import XCTest
             _ = evaluate(
                 """
                 globalThis.__outcome = 'pending';
-                \(Shim.namespace).content.read(null).then(
+                \(Shim.namespace).diagnostics.report(null).then(
                   () => { globalThis.__outcome = 'resolved'; },
                   (error) => { globalThis.__outcome = String(error.message); });
                 """, in: context)
             let outcome = try XCTUnwrap(evaluate("globalThis.__outcome", in: context)?.toString())
             XCTAssertTrue(
-                outcome.contains("migo_content_read"),
+                outcome.contains("migo_diagnostics_report"),
                 "the rejection has to name the missing handler: \(outcome)")
         }
 
@@ -291,11 +291,11 @@ import XCTest
             // could reach. Handed a table that shares a group, it must still run.
             let entries = [
                 Surface.Entry(
-                    .contentBundleRead, .hostBridge, defaultEnabled: true,
-                    bridgeMethod: "content.read"),
+                    .diagnostics, .hostBridge, defaultEnabled: true,
+                    bridgeMethod: "content.read", bridgeKind: .call),
                 Surface.Entry(
                     .environment, .hostBridge, defaultEnabled: true,
-                    bridgeMethod: "content.describe"),
+                    bridgeMethod: "content.describe", bridgeKind: .call),
             ]
             let script = Shim.script(for: .default, entries: entries)
             let context = try context(withHandlers: [
@@ -313,11 +313,11 @@ import XCTest
         func testTwoGroupsSharingALeafNameDoNotCollide() throws {
             let entries = [
                 Surface.Entry(
-                    .contentBundleRead, .hostBridge, defaultEnabled: true,
-                    bridgeMethod: "a.shared.read"),
+                    .diagnostics, .hostBridge, defaultEnabled: true,
+                    bridgeMethod: "a.shared.read", bridgeKind: .call),
                 Surface.Entry(
                     .environment, .hostBridge, defaultEnabled: true,
-                    bridgeMethod: "b.shared.read"),
+                    bridgeMethod: "b.shared.read", bridgeKind: .call),
             ]
             let context = try context(withHandlers: [
                 "migo_a_shared_read", "migo_b_shared_read",
@@ -338,7 +338,8 @@ import XCTest
             let entries = [
                 Surface.Entry(
                     .diagnostics, .hostBridge, defaultEnabled: false,
-                    bridgeMethod: #"weird'); globalThis.__escaped = true; ('"#)
+                    bridgeMethod: #"weird'); globalThis.__escaped = true; ('"#,
+                    bridgeKind: .call)
             ]
             let context = try context(withHandlers: [])
             _ = evaluate(Shim.script(for: .default, entries: entries), in: context)

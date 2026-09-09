@@ -226,6 +226,19 @@ for name, entry in sorted(declared.items()):
         problems.append(
             f"{name}: WebKit grants it to any page and the contract marks it off. That states a "
             "control the runtime does not have")
+    if provenance == "host_origin":
+        if not entry.get("served_by"):
+            problems.append(
+                f"{name}: host_origin with no served_by. The content of that provenance is which "
+                "loader answers content's requests")
+        if not entry.get("default_enabled"):
+            problems.append(
+                f"{name}: the origin the lane loads content from is marked off, which describes a "
+                "session that loads nothing")
+        if not entry.get("bounded_by"):
+            problems.append(
+                f"{name}: host_origin with no bounded_by. An origin served by host code without a "
+                "stated boundary is a filesystem reachable by fetch")
     if provenance == "absent" and entry.get("default_enabled"):
         problems.append(f"{name}: nothing reaches it and the contract marks it on")
     if provenance == "host_granted" and not entry.get("granted_by"):

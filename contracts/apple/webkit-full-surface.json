@@ -60,16 +60,17 @@
     "web_platform": "WebKit provides it to any page; the host has no switch and claims none.",
     "host_granted": "A web-platform capability WebKit asks the host to allow, through a delegate callback.",
     "host_bridge": "A native capability reached by a script message. 4.7.2 applies to these.",
-    "absent": "Reachable by neither route. There is no request to refuse."
+    "absent": "Reachable by neither route. There is no request to refuse.",
+    "host_origin": "The host serves the origin the content is loaded from, so every request content makes to it is answered by host code. A native surface, but reached by loading a URL rather than by calling a method."
   },
   "review_position": {
     "guideline": "4.7 / 4.7.2",
     "claim": [
-      "The lane ships a browser engine's own capabilities plus a bridge whose",
-      "default surface carries no native capability that requires a user",
-      "permission or a device radio. Every capability that does is off by default,",
-      "refuses with a reason naming this contract, and can only be turned on by the",
-      "host app -- which is the party that would hold Apple's permission, not us."
+      "The lane ships a browser engine's own capabilities, an origin the host serves the",
+      "content's own files from, and three bridge methods that carry no user permission",
+      "and no device radio. Every capability that does carry one is off by default,",
+      "refuses with a reason naming this contract, and can only be turned on by the host",
+      "app -- which is the party that would hold Apple's permission, not us."
     ],
     "not_claimed": [
       "That the lane can withhold canvas, WebGL, Web Audio, storage, timers,",
@@ -108,13 +109,12 @@
       "default_enabled": true,
       "reason": "fetch, XMLHttpRequest and WebSocket, subject to App Transport Security. The host adds no network bridge: a native HTTP method would be a native API in 4.7.2's sense and would buy nothing the web platform does not already do."
     },
-    "content_bundle_read": {
-      "provenance": "host_bridge",
+    "content_origin": {
+      "provenance": "host_origin",
       "default_enabled": true,
-      "bridge_method": "content.read",
-      "bridge_kind": "call",
-      "reason": "Reads a file out of the content package that the host is already serving to this web view. It exposes no filesystem the content did not arrive in, so there is no native capability behind it to permit.",
-      "bounded_by": "The content package for this session only. Paths are resolved inside it and a traversal is a refusal, not a clamp."
+      "served_by": "A WKURLSchemeHandler for the content scheme, reading inside the content package.",
+      "reason": "How content gets its own bytes. It replaces a `content.read` bridge method that was specified here first and then removed: content loaded from a host-served origin can already fetch every file in its package, so the method was a second path to the same bytes and a native method under 4.7.2 for no gain. The origin is not optional -- without it the lane loads nothing -- so it is not a switch either.",
+      "bounded_by": "Files inside the content package for this session. A path that resolves outside it is a refusal and not a clamp: a clamp answers a different question than the one asked, and the content cannot tell that it did."
     },
     "lifecycle": {
       "provenance": "host_bridge",

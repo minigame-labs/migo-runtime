@@ -46,6 +46,22 @@ final class MigoWebKitSurfaceTests: XCTestCase {
         }
     }
 
+    func testEveryBridgeRowDeclaresItsDirection() {
+        for entry in Surface.entries {
+            if entry.provenance == .hostBridge {
+                XCTAssertNotNil(
+                    entry.bridgeKind,
+                    "\(entry.capability.rawValue) does not say whether content awaits a reply or "
+                        + "registers a listener, and the generator would have to pick")
+            } else {
+                XCTAssertNil(
+                    entry.bridgeKind,
+                    "\(entry.capability.rawValue) is \(entry.provenance.rawValue) and declares a "
+                        + "bridge direction it has no bridge for")
+            }
+        }
+    }
+
     func testBridgeMethodsAreUnique() {
         let methods = Surface.entries.compactMap(\.bridgeMethod)
         XCTAssertEqual(
@@ -69,7 +85,8 @@ final class MigoWebKitSurfaceTests: XCTestCase {
         for capability in Surface.default.enabled {
             let provenance = Surface.entry(for: capability).provenance
             XCTAssertTrue(
-                provenance == .webPlatform || provenance == .hostBridge,
+                provenance == .webPlatform || provenance == .hostBridge
+                    || provenance == .hostOrigin,
                 "\(capability.rawValue) is \(provenance.rawValue) and is on by default. The lane's "
                     + "review position is that its default surface carries no capability needing a "
                     + "user permission or a device radio")
@@ -101,9 +118,9 @@ final class MigoWebKitSurfaceTests: XCTestCase {
     func testTheServedMethodListIsWhatTheHostShouldInstall() throws {
         XCTAssertEqual(
             Surface.default.servedBridgeMethods,
-            ["content.read", "diagnostics.report", "environment.get", "lifecycle.observe"])
-        let surface = try Surface.configured(withholding: [.contentBundleRead, .diagnostics])
-        XCTAssertEqual(surface.servedBridgeMethods, ["environment.get", "lifecycle.observe"])
+            ["diagnostics.report", "environment.get", "lifecycle.observe"])
+        let surface = try Surface.configured(withholding: [.environment, .diagnostics])
+        XCTAssertEqual(surface.servedBridgeMethods, ["lifecycle.observe"])
         for method in surface.servedBridgeMethods {
             guard case .serve = surface.decision(forBridgeMethod: method) else {
                 return XCTFail("\(method) is listed as served and is not served")
@@ -126,9 +143,13 @@ final class MigoWebKitSurfaceTests: XCTestCase {
         }
     }
 
-    func testACapabilityWebKitGrantsAnywayCannotBeWithheld() {
+    func testWhatTheHostDoesNotHoldCannotBeWithheld() {
+        // Not "is it web platform" but "does the host hold it": the origin the lane
+        // loads content from is host code and is still not a switch, because a
+        // session without it loads nothing.
         for capability in Capability.allCases
-        where Surface.entry(for: capability).provenance == .webPlatform {
+        where !Surface.entry(for: capability).isWithholdable
+            && Surface.entry(for: capability).provenance != .absent {
             XCTAssertThrowsError(try Surface.configured(withholding: [capability])) { error in
                 XCTAssertEqual(
                     error as? Surface.ConfigurationError, .notWithholdable(capability))

@@ -28,6 +28,11 @@ public struct MigoWebKitSurface: Sendable, Equatable {
         case hostGranted = "host_granted"
         /// A native call across the script-message boundary. 4.7.2 applies here.
         case hostBridge = "host_bridge"
+        /// The host serves the origin content loads from, so every request content
+        /// makes to it is answered by host code. Native, and reached by loading a
+        /// URL rather than by calling a method -- which is why it is not a bridge
+        /// row and has no method name.
+        case hostOrigin = "host_origin"
         /// Neither route exists. There is no request to refuse.
         case absent
     }
@@ -45,7 +50,7 @@ public struct MigoWebKitSurface: Sendable, Equatable {
         case pointerInput = "pointer_input"
         case webStorage = "web_storage"
         case webNetwork = "web_network"
-        case contentBundleRead = "content_bundle_read"
+        case contentOrigin = "content_origin"
         case lifecycle
         case environment
         case diagnostics
@@ -87,6 +92,16 @@ public struct MigoWebKitSurface: Sendable, Equatable {
         /// Which direction it runs in, for `hostBridge` only.
         public let bridgeKind: BridgeKind?
 
+        /// Whether a host can decline to offer it.
+        ///
+        /// What the host holds is what it can withhold: the bridge methods it
+        /// installs, and the permission callbacks WebKit asks it to answer. WebKit's
+        /// own capabilities and the origin the content is loaded from are neither --
+        /// the first is not ours and the second is what a session is.
+        public var isWithholdable: Bool {
+            provenance == .hostBridge || provenance == .hostGranted
+        }
+
         init(
             _ capability: Capability, _ provenance: Provenance, defaultEnabled: Bool,
             bridgeMethod: String? = nil, bridgeKind: BridgeKind? = nil
@@ -107,9 +122,7 @@ public struct MigoWebKitSurface: Sendable, Equatable {
         Entry(.pointerInput, .webPlatform, defaultEnabled: true),
         Entry(.webStorage, .webPlatform, defaultEnabled: true),
         Entry(.webNetwork, .webPlatform, defaultEnabled: true),
-        Entry(
-            .contentBundleRead, .hostBridge, defaultEnabled: true,
-            bridgeMethod: "content.read", bridgeKind: .call),
+        Entry(.contentOrigin, .hostOrigin, defaultEnabled: true),
         Entry(
             .lifecycle, .hostBridge, defaultEnabled: true,
             bridgeMethod: "lifecycle.observe", bridgeKind: .subscription),
@@ -170,8 +183,10 @@ public struct MigoWebKitSurface: Sendable, Equatable {
                     + "json says which each is"
             case .notWithholdable(let capability):
                 return
-                    "\(capability.rawValue) cannot be withheld: WebKit gives it to any page it "
-                    + "loads, and this lane is WebKit. Accepting the request would record a "
+                    "\(capability.rawValue) cannot be withheld: it is not a switch the host holds. "
+                    + "WebKit gives its own capabilities to any page it loads, and the content "
+                    + "origin is what the lane loads content from -- a session without it loads "
+                    + "nothing. Accepting the request would record a "
                     + "compliance posture the runtime does not enforce, which is worse than "
                     + "refusing it -- the content would still have the capability and the surface "
                     + "would say otherwise"
@@ -214,7 +229,7 @@ public struct MigoWebKitSurface: Sendable, Equatable {
         for capability in additional.sorted(by: keyOrder) where entry(for: capability).provenance == .absent {
             throw ConfigurationError.notReachable(capability)
         }
-        for capability in removed.sorted(by: keyOrder) where entry(for: capability).provenance == .webPlatform {
+        for capability in removed.sorted(by: keyOrder) where !entry(for: capability).isWithholdable {
             throw ConfigurationError.notWithholdable(capability)
         }
         return MigoWebKitSurface(
