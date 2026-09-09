@@ -24,8 +24,14 @@
 # would buy nothing, because the hash is re-checked on every call, which detects an
 # in-place edit that a permission bit would only discourage.
 
+# `${BASH_SOURCE[0]%/*}` rather than a `$(cd ... && pwd)` substitution, so that a
+# static reader can follow it. scripts/test-macos-bash32-contract.sh walks the
+# source graph of every macOS-facing script, and a path it cannot expand is a file
+# it cannot check -- which it reports rather than silently skipping. This helper
+# entered that graph when build-apple-sdk.sh began sourcing it, and the two forms
+# name the same directory for every way this file is actually sourced.
 # shellcheck source=scripts/lib/python-cmd.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/python-cmd.sh"
+source "${BASH_SOURCE[0]%/*}/python-cmd.sh"
 
 _v8_mat_err() { printf '  ✗ %s\n' "$*" >&2; }
 
