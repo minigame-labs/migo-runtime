@@ -270,6 +270,18 @@ jobs:
         # Swift assertion measures the layer's reference count and cannot tell
         # those apart; the engine can, and without a subscriber it says so into a
         # void.
+        #
+        # `TEST_RUNNER_MIGO_CAPI_LOG` and not a plain `env:`, because the test
+        # process does not run in this shell: it runs inside the simulator, which
+        # does not inherit the runner's environment. xcodebuild's documented way
+        # in is a `TEST_RUNNER_`-prefixed build setting, passed to the test process
+        # with the prefix removed. The plain `env:` below is left because it costs
+        # nothing and covers the xcodebuild process itself; it is not what reaches
+        # the engine.
+        #
+        # This is the same shape as the defect that made the first version of this
+        # instrumentation useless: a diagnostic aimed at a channel nobody is
+        # reading is indistinguishable from a diagnostic with nothing to say.
         env:
           MIGO_CAPI_LOG: warn
         run: |
@@ -280,6 +292,7 @@ jobs:
             -parallel-testing-enabled NO \
             -derivedDataPath "$GITHUB_WORKSPACE/build/apple-sim-dd" \
             -skipPackagePluginValidation \
+            TEST_RUNNER_MIGO_CAPI_LOG=warn \
             CODE_SIGNING_ALLOWED=NO
 
       - name: The assembled artifact honors the deployment floor
