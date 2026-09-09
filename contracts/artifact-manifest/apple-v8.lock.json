@@ -25,7 +25,13 @@
     "JIT -- an embedded V8 there would be interpreted, which is the arrangement",
     "the project already rejected for in-process JavaScriptCore. macOS is the one",
     "Apple platform with no architectural obstacle to in-process V8: the public",
-    "hardened-runtime entitlement allows JIT."
+    "hardened-runtime entitlement allows JIT.",
+    "",
+    "MEASURED 2026-09-09 by .github/workflows/apple-v8-probe.yml, run 34299937361,",
+    "on macos-15 (Apple silicon). The five questions that lane existed to answer,",
+    "answered -- so what follows is a record of a real build rather than a plausible",
+    "argument list, which is the whole reason the probe ran before this file grew a",
+    "recipe. See `measured` below for the numbers."
   ],
   "rusty_v8_version": "145.0.0",
   "rusty_v8_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
@@ -100,5 +106,70 @@
     "whether the ARCHIVE requires them is a question about what the compiler",
     "emitted, and nothing has compiled it yet. Raising a baseline is a claim about",
     "bytes; it belongs in the same change as the bytes."
-  ]
+  ],
+  "measured": {
+    "probe_run": "https://github.com/minigame-labs/migo-runtime/actions/runs/34299937361",
+    "measured_on": "2026-09-09",
+    "runner": "macos-15, Apple silicon",
+    "_comment": [
+      "Five answers, and one of them changes the recipe.",
+      "",
+      "1. V8_FROM_SOURCE works on a hosted macOS runner. The host triple built in",
+      "   57 minutes and left 37 GiB free on a 320 GiB volume, so disk -- the thing",
+      "   the ANGLE round had to correct an inherited assumption about -- is not the",
+      "   constraint here either.",
+      "",
+      "2. x86_64-apple-darwin cross-builds as a first-class case: a plain",
+      "   `cargo build --release --target x86_64-apple-darwin -p v8` with no extra",
+      "   arguments and no pinned v8_snapshot_toolchain. OpenHarmony needed one and",
+      "   its recipe has two code paths because of it; darwin needs one.",
+      "",
+      "3. src_binding.rs IS generated here (870 lines). ohos-v8.lock.json records a",
+      "   pre-committed binding as structural because that SDK's clang is too old for",
+      "   bindgen; Xcode's is not, so darwin has no such exception.",
+      "",
+      "4. gn_args_measured below is the verbatim args.gn the accepted build used,",
+      "   minus clang_base_path, which names a path inside the runner's temp",
+      "   directory and is machine-local by construction.",
+      "",
+      "5. THE ONE THAT CHANGES THE RECIPE: the archive carries `minos 12.0`, and",
+      "   this file's own macos.deployment_target is 11.0. Left alone the build",
+      "   inherits whatever the runner's SDK defaults to -- 12.0 on this image, with",
+      "   an SDK of 15.5 -- so a macOS product linking it would fail to load on the",
+      "   macOS 11 the deployment floor declares, and the floor would be a claim the",
+      "   product does not meet. It is exactly the shape of the ANGLE loader-path",
+      "   trap: correct on the machine that built it, wrong on a consumer's. The",
+      "   recipe must PASS the deployment target explicitly and a gate must check",
+      "   what the bytes say, not what the recipe intended."
+    ],
+    "host_build_seconds": 3439,
+    "cross_build_seconds": 3356,
+    "job_wall_clock_minutes": 115,
+    "job_timeout_minutes": 120,
+    "_budget_comment": [
+      "115 of a 120-minute cap, for two builds and nothing else -- no archiving, no",
+      "hashing, no upload. So the shipping recipe cannot put both triples in one job",
+      "the way this probe did. One triple per job, and the assembly that joins them",
+      "is a third. That is a conclusion about the LANE, not about the build, and it",
+      "is recorded here because the next person to write the lane will otherwise",
+      "copy the probe's shape and discover the cap with a green-looking cancellation."
+    ],
+    "host_archive_bytes": 131862848,
+    "src_binding_generated": true,
+    "src_binding_lines": 870,
+    "mach_o_minos_observed": "12.0",
+    "mach_o_sdk_observed": "15.5",
+    "gn_args_measured": [
+      "is_debug = false",
+      "use_custom_libcxx = true",
+      "v8_enable_sandbox = false",
+      "v8_enable_pointer_compression = false",
+      "v8_enable_v8_checks = false",
+      "host_cpu = \"arm64\"",
+      "target_cpu = \"arm64\""
+    ],
+    "gn_args_excluded": {
+      "clang_base_path": "Names a path inside the runner's temp directory. Machine-local, so it is not part of what a pin can assert."
+    }
+  }
 }
