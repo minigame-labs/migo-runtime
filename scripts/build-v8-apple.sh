@@ -255,6 +255,27 @@ else
         || err "the checkout at $SRC_DIR is $ACTUAL and the lock pins $RUSTY_V8_REVISION"
 fi
 
+# Both revisions the manifest will record, checked now rather than in an hour.
+#
+# write-apple-v8-component-manifest.py reads HEAD from the checkout AND from its
+# `v8` submodule, and refuses to describe a build whose sources drifted from the
+# lock. That refusal is correct and it happens at the END, after the compile. The
+# same comparison costs nothing here, where the answer is still cheap to act on.
+#
+# The submodule is the one worth checking: the recipe checks out the pinned
+# rusty_v8 revision explicitly, so that side is right by construction, while the
+# V8 revision arrives through `git submodule update` and nothing above asserts it.
+ACTUAL_RUSTY_V8="$(git -C "$SRC_DIR" rev-parse HEAD)"
+[[ "$ACTUAL_RUSTY_V8" == "$RUSTY_V8_REVISION" ]] \
+    || err "the checkout is at $ACTUAL_RUSTY_V8 and the lock pins $RUSTY_V8_REVISION"
+V8_REVISION="$(read_json "$LOCK" "v8_revision")"
+ACTUAL_V8="$(git -C "$SRC_DIR/v8" rev-parse HEAD 2>/dev/null || true)"
+[[ -n "$ACTUAL_V8" ]] \
+    || err "no git revision for $SRC_DIR/v8; the submodule did not come up, and the component manifest records its revision"
+[[ "$ACTUAL_V8" == "$V8_REVISION" ]] \
+    || err "the V8 submodule is at $ACTUAL_V8 and the lock pins $V8_REVISION"
+info "sources       rusty_v8 ${ACTUAL_RUSTY_V8:0:12}, v8 ${ACTUAL_V8:0:12}"
+
 rustup target add "$TRIPLE" >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
