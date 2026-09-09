@@ -153,8 +153,20 @@ final class MigoSurfaceAttachTests: XCTestCase {
         /// pointer to it and may call back from its own thread.
         private let engineErrors = EngineErrors()
 
+        /// Set by the retirement test when the host's layer outlived RELEASED, so
+        /// that teardown can answer the one question that separates "Migo leaked"
+        /// from "somebody else still holds it".
+        ///
+        /// `migo_engine_destroy` is the thread-completion barrier, and it is where
+        /// ANGLE's display goes. If the layer is gone once that returns, the owner
+        /// was display-level ANGLE state Migo kept alive -- ours to fix. If it is
+        /// still there, no part of Migo held it and the assertion at RELEASED was
+        /// asking for something the C ABI never promised.
+        private var layerThatOutlivedRelease: (() -> Bool)?
+
         override func setUpWithError() throws {
             try super.setUpWithError()
+            layerThatOutlivedRelease = nil
 
             // Turn the engine's own diagnostics on before anything creates an
             // engine: `migo_engine_create` reads MIGO_CAPI_LOG once and installs
@@ -327,7 +339,28 @@ final class MigoSurfaceAttachTests: XCTestCase {
                 let result = migo_engine_destroy(engine)
                 XCTAssertEqual(result, MIGO_OK, "migo_engine_destroy returned \(result)")
                 self.engine = nil
+
+                // Asked only when a test already failed for outliving RELEASED, so
+                // a green run pays nothing and reports nothing.
+                if let stillAlive = layerThatOutlivedRelease {
+                    XCTFail(
+                        stillAlive()
+                            ? "the layer that outlived RELEASED is STILL alive after "
+                                + "migo_engine_destroy returned. Nothing of Migo's is left at "
+                                + "that point -- the display, its contexts and the render "
+                                + "thread are all gone -- so no part of Migo was holding it, "
+                                + "and the assertion at RELEASED was asking for a deallocation "
+                                + "the C ABI does not promise: surface.h requires the host to "
+                                + "keep the resource alive UNTIL RELEASED, not that the object "
+                                + "dies then."
+                            : "the layer that outlived RELEASED went away once "
+                                + "migo_engine_destroy returned. That is a Migo leak and not a "
+                                + "host one: the owner was display-level ANGLE state the engine "
+                                + "kept past the surface it belonged to, and RELEASED promised a "
+                                + "retirement that had not finished.")
+                }
             }
+            layerThatOutlivedRelease = nil
             // Last, and only now: `migo_engine_destroy` is the thread-completion
             // barrier, and its header says only after it returns may the host
             // destroy native display or window resources.
@@ -480,6 +513,70 @@ final class MigoSurfaceAttachTests: XCTestCase {
             }
             XCTAssertTrue(released, "native retirement must complete before releasing the layer")
             XCTAssertNil(observedLayer, "RELEASED must follow the engine's final layer release")
+
+            // If it is still alive, say WHICH failure this is. The assertion above
+            // cannot tell an ordering window from a retained reference, and the two
+            // need different fixes: one is a publication that ran ahead of a drop,
+            // the other is an owner nobody released. Waiting here changes no verdict
+            // -- the test has already failed -- it only turns "the layer is still
+            // alive" into something the next person can act on.
+            //
+            // Added because this assertion started failing on loaded CI runners while
+            // passing in two seconds on an idle one, and a red that reports only the
+            // symptom cost a full lane iteration to learn nothing from.
+            if observedLayer != nil {
+                // Hand the "who was holding it" question to teardown, which is the
+                // only place that runs after `migo_engine_destroy` -- the point
+                // every remaining piece of Migo is gone. The closure captures the
+                // weak binding, so holding it here keeps nothing alive.
+                layerThatOutlivedRelease = { observedLayer != nil }
+
+                // The strong binding is scoped, and that matters: held across the
+                // poll below it would keep the layer alive itself and make the
+                // ordering-versus-leak answer always say "leak" -- a diagnostic
+                // that reports its own effect.
+                if let stillAlive = observedLayer {
+                    // How many references are left, and whose. Only meaningful in a
+                    // branch that has already failed, which is why it is here and not
+                    // in the assertion: CFGetRetainCount is explicitly not a number to
+                    // reason about in working code. As a clue it is the strongest one
+                    // available -- it separates "one other owner" from "several", and
+                    // the next question is which.
+                    //
+                    // One of the references counted is this binding: `observedLayer` is
+                    // weak, and binding it takes a strong one.
+                    let counted = CFGetRetainCount(stillAlive)
+                    XCTFail(
+                        "at the moment RELEASED was observed the layer had \(counted) reference(s), "
+                            + "one of which is this test's own binding. Everything in Migo's own "
+                            + "graph is accounted for -- SurfaceResource::drop releases the anchor "
+                            + "before publishing, and the canvas manager holds exactly one "
+                            + "PreparedEglSurfaceRef and clears it before release_onscreen returns "
+                            + "-- so an owner outside that graph is the remaining candidate, ANGLE's "
+                            + "own retain on the CAMetalLayer for its window surface being the first "
+                            + "to check")
+                }
+
+                let observationStart = Date()
+                let observationDeadline = observationStart.addingTimeInterval(2)
+                while observedLayer != nil, Date() < observationDeadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+                }
+                let waited = Int(Date().timeIntervalSince(observationStart) * 1000)
+                if observedLayer == nil {
+                    XCTFail(
+                        "the layer cleared \(waited) ms AFTER RELEASED was observed, so this is an "
+                            + "ordering window and not a leak: something published completion "
+                            + "before the last reference went. SurfaceResource::drop orders the "
+                            + "anchor drop before complete(), so the reference that outlived it is "
+                            + "held somewhere else")
+                } else {
+                    XCTFail(
+                        "the layer was still alive 2 s after RELEASED, so this is a retained "
+                            + "reference rather than an ordering window: some owner was never "
+                            + "released, and RELEASED reported a retirement that did not happen")
+                }
+            }
             XCTAssertEqual(migo_surface_release_destroy(observer), MIGO_OK)
         #else
             throw XCTSkip("this package is built for macOS and iOS only")

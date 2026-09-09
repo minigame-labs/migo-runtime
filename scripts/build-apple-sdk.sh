@@ -20,6 +20,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# The shared V8 materialiser: verifies an archive against its component manifest
+# and exports a path named by that archive's own hash. Sourced the way
+# build-ohos-sdk.sh sources it, so both platforms use one implementation of the
+# rule rather than two that agree today.
+# shellcheck source=scripts/lib/v8-materialise.sh
+source "$SCRIPT_DIR/lib/v8-materialise.sh"
 ENGINE_DIR="$REPO_ROOT/engine"
 CONTRACT="$REPO_ROOT/contracts/apple/deployment-floor.json"
 WEBCONTENT_SRC="$REPO_ROOT/platforms/apple/WebContent/PerformancePlus"
@@ -343,11 +350,31 @@ for tool in ${required_tools[@]+"${required_tools[@]}"}; do
 done
 [ "$missing" -eq 0 ] || exit 1
 
+# Asked from `engine/`, which is where the build below runs cargo from -- and
+# rustup resolves a toolchain from the working directory. `engine/rust-toolchain.toml`
+# pins 1.95.0, so a machine whose *default* toolchain is something else has two
+# different answers to "is this target installed", and this check was reading the
+# one the build does not use. Measured on a Mac whose default was stable and whose
+# pinned 1.95.0 had both darwin targets: the build refused a target it had.
+#
+# On CI the two agree, because the workflow's toolchain action installs the
+# targets into the toolchain it also makes default -- which is exactly why a check
+# that asks the wrong one stays green there.
 if [ "$ASSEMBLE_ONLY" = "0" ]; then
+# Announced, because resolving that toolchain can BLOCK: rustup installs
+# whatever `rust-toolchain.toml` declares the first time it resolves it, and that
+# file names the Android and OpenHarmony targets too. On a machine missing them
+# with a slow or intercepted path to static.rust-lang.org, this line waits with
+# nothing on screen -- measured, for eight minutes, on a Mac whose TLS path to
+# that host presents a certificate for the wrong name. `cargo build` below would
+# wait in exactly the same place; the difference a printed line makes is that the
+# wait is attributable.
+info "checking installed Rust targets (resolving ${ENGINE_DIR#"$REPO_ROOT"/}'s toolchain)"
+installed_targets="$(cd "$ENGINE_DIR" && rustup target list --installed 2>/dev/null)"
 for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
-    if ! rustup target list --installed 2>/dev/null | grep -qx "$target"; then
-        err "Rust target not installed: $target"
-        err "  rustup target add $target"
+    if ! printf '%s\n' "$installed_targets" | grep -qx "$target"; then
+        err "Rust target not installed for the toolchain $ENGINE_DIR pins: $target"
+        err "  (cd $ENGINE_DIR && rustup target add $target)"
         exit 1
     fi
 done
@@ -420,6 +447,36 @@ for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
         ios)   export IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" ;;
         macos) export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" ;;
     esac
+
+    # macos-v8 is the only product here that links V8, and the only one that needs
+    # an archive supplied. Without this, rusty_v8's build script decides for itself
+    # -- downloading a prebuilt for the host triple, or building V8 from source
+    # inside a packaging run that budgeted minutes for Skia and not an hour for V8.
+    # Neither is a supply chain: what a shipped product links has to be the archive
+    # with a component manifest behind it.
+    #
+    # `v8_materialise` verifies the archive against that manifest and exports a
+    # path named by its own hash, so cargo reruns the v8 build script when the
+    # archive's *value* changes rather than reusing an rlib built from a previous
+    # one.
+    unset RUSTY_V8_ARCHIVE RUSTY_V8_SRC_BINDING_PATH
+    if [ "$PRODUCT" = "macos-v8" ]; then
+        v8_dir="$REPO_ROOT/engine/third_party/rusty_v8/$target"
+        if [ ! -f "$v8_dir/librusty_v8.a" ]; then
+            info "$target: fetching the pinned V8 archive"
+            if ! bash "$SCRIPT_DIR/fetch-v8-archives.sh" "$target"; then
+                err "could not fetch the V8 archive for $target"
+                exit 1
+            fi
+        fi
+        if ! v8_materialise "$v8_dir" "$REPO_ROOT/engine/target/v8-materialised"; then
+            err "the V8 archive for $target does not match its component manifest"
+            exit 1
+        fi
+        info "$target: V8 materialised at ${V8_MATERIALISED_ARCHIVE#"$REPO_ROOT"/}"
+        export RUSTY_V8_ARCHIVE="$V8_MATERIALISED_ARCHIVE"
+        export RUSTY_V8_SRC_BINDING_PATH="$V8_MATERIALISED_BINDING"
+    fi
     # `${a[@]+"${a[@]}"}` and not `"${a[@]}"`: macOS ships bash 3.2 as /bin/bash,
     # and there expanding an EMPTY array under `set -u` is an unbound-variable
     # error rather than nothing. Both of these are empty on real invocations --

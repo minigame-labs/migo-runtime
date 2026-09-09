@@ -64,6 +64,7 @@ pub mod image_id;
 pub mod js_escape;
 pub mod log_level;
 pub mod log_throttle;
+pub mod objc_autorelease;
 // Behind `vfs`, not because it is a filesystem but because it holds
 // `VirtualFS`, `MountTable` and `GamePaths` by value. See the manifest.
 #[cfg(feature = "vfs")]

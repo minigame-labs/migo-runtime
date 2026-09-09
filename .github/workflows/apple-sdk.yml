@@ -67,19 +67,41 @@ jobs:
             targets: aarch64-apple-ios
             destination: generic/platform=iOS
             package_path: platforms/apple
+            scheme: MigoApplePerformancePlus
             host_slice: false
           - platform: ios-simulator
             product: performance-plus
             targets: aarch64-apple-ios-sim,x86_64-apple-ios
             destination: generic/platform=iOS Simulator
             package_path: platforms/apple
+            scheme: MigoApplePerformancePlus
             host_slice: false
           - platform: macos
             product: external-frames-diagnostic
             targets: aarch64-apple-darwin,x86_64-apple-darwin
             destination: platform=macOS
             package_path: build/apple/diagnostics/Debug/package
+            scheme: MigoApplePerformancePlus
             host_slice: true
+          # The macOS V8 product, and the reason this row exists at all:
+          # `MigoMacV8` is a target no lane has ever compiled. It sat as a one-line
+          # placeholder because the product links in-process V8 and there was no
+          # macOS V8 archive to link -- which stopped being true on 2026-09-09,
+          # when scripts/build-v8-apple.sh produced both darwin triples, they were
+          # published, and scripts/fetch-v8-archives.sh verified them against their
+          # committed component manifests.
+          #
+          # Everything A2.3 adds after this lands in that target, so landing it
+          # before the code is the whole point: this repository has twice shipped an
+          # arm nothing compiled, and both times the defect was found by a customer's
+          # toolchain rather than by a lane.
+          - platform: macos
+            product: macos-v8
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+            destination: platform=macOS
+            package_path: platforms/apple
+            scheme: MigoMacV8
+            host_slice: false
     env:
       MIGO_APPLE_BUILD_ROOT: ${{ github.workspace }}/build/apple
       MIGO_APPLE_PACKAGE_ROOT: ${{ github.workspace }}/${{ matrix.package_path }}
@@ -93,7 +115,29 @@ jobs:
         with:
           targets: ${{ matrix.targets }}
 
+      # Not for macos-v8. The rule and its mechanism are written once, in
+      # `scripts/lib/v8-materialise.sh`'s header, next to the code they are about;
+      # this repository had already settled it on three other lanes and the new
+      # product did not inherit it, which is what moving it there is meant to stop
+      # happening a fifth time.
+      #
+      # Swatinem/rust-cache prunes large files out of each crate's build-script
+      # OUT_DIR to shrink the cache, and `librusty_v8.a` is one: the v8 crate's
+      # build script copies the archive to `target/<triple>/debug/gn_out/obj` and
+      # records `cargo:rustc-link-search` pointing there. The cache keeps the
+      # fingerprint that says that script is fresh and drops the file it produced,
+      # so on a warm run cargo replays the search path without re-running the
+      # copy, and the link fails with "could not find native static library
+      # rusty_v8".
+      #
+      # Measured here rather than assumed: the first run built green on a cold
+      # cache, the next two failed on `full match: true` restores of the same key,
+      # and a step that listed the restored tree showed `gn_out/obj` and the
+      # materialise directories both present and EMPTY while the recorded output
+      # still named them. A cold build of both darwin slices is 13 minutes against
+      # a 180-minute timeout.
       - name: Rust cache
+        if: matrix.product != 'macos-v8'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: engine -> target
@@ -128,7 +172,35 @@ jobs:
           --configuration Debug
           --code-signing off
 
+      # Linking is not running, and until this step the macOS V8 supply chain had
+      # only ever been shown to link. `migo-runtime-v8`'s two integration tests
+      # create a V8 startup snapshot and restore it, which is real execution: the
+      # bug they were written for -- `delete globalThis.Deno` baked into the
+      # snapshot -- surfaced as a panic during restore, not as a link error.
+      #
+      # It reuses the archive the build step already fetched, verified and
+      # materialised, through the same helper, so this asserts the SHIPPED bytes
+      # run rather than whatever rusty_v8 would have downloaded for itself.
+      - name: The macOS V8 archive runs JavaScript, not just links
+        if: matrix.product == 'macos-v8'
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          # shellcheck source=scripts/lib/v8-materialise.sh
+          source scripts/lib/v8-materialise.sh
+          v8_materialise "engine/third_party/rusty_v8/$host" \
+            "$PWD/engine/target/v8-materialised"
+          export RUSTY_V8_ARCHIVE="$V8_MATERIALISED_ARCHIVE"
+          export RUSTY_V8_SRC_BINDING_PATH="$V8_MATERIALISED_BINDING"
+          cd engine
+          cargo test -p migo-runtime-v8 --locked --target "$host"
+
+      # Not for macos-v8, and the exclusion is the product's definition rather
+      # than an exemption: that archive links in-process V8 on purpose, so an
+      # assertion that it carries no engine symbols would be asserting the
+      # opposite of what the product is. The other three carry no engine and this
+      # is what holds them to it.
       - name: The external-frame archive contains no engine symbols
+        if: matrix.product != 'macos-v8'
         run: >-
           bash scripts/test-apple-performance-rust-closure.sh
           --artifact "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
@@ -138,7 +210,7 @@ jobs:
         run: |
           xcodebuild -list
           xcodebuild build \
-            -scheme MigoApplePerformancePlus \
+            -scheme ${{ matrix.scheme }} \
             -destination '${{ matrix.destination }}' \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO
@@ -166,10 +238,33 @@ jobs:
 
       - name: The isolated diagnostic package links and runs its ABI tests
         if: matrix.host_slice
+        # No MIGO_CAPI_LOG here, and that is a correction rather than an
+        # omission. It was added on the theory that the engine's release warning
+        # was speaking into a void; the engine's own "diagnostics installed"
+        # line then reported `level=Info` on a step that had set `warn`, because
+        # MigoSurfaceAttachTests' setUp already does
+        # `setenv("MIGO_CAPI_LOG", "info", 1)` with overwrite. The subscriber was
+        # never missing on this lane -- 28 engine lines are in the log of the run
+        # that established this -- so setting it here changed nothing and said
+        # something untrue about why.
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
         run: |
           swift build
           DYLD_LIBRARY_PATH="$MIGO_DIAGNOSTIC_ANGLE" swift test
+
+      # `migo-shared` carries two things that only exist on Apple and that every
+      # other lane compiles out: the Objective-C autorelease pool the render thread
+      # depends on, and the release-boundary check that reads a surface's native
+      # owner count. Their cross-platform tests pass against a `new()` that pushes
+      # nothing; the one that would not is `#[cfg(target_vendor = "apple")]`, and
+      # until this step no job ran it. A test no lane executes is a test that has
+      # never been seen to fail.
+      - name: The engine's Apple-only unit tests run
+        if: matrix.host_slice
+        working-directory: engine
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo test -p migo-shared --locked --target "$host"
 
       - name: The Apple presenter's ANGLE bring-up runs on Apple silicon
         if: matrix.host_slice
@@ -182,14 +277,42 @@ jobs:
 
       # The runtime is supplied by Package.swift's framework dependencies.
       # No copy into DerivedData or test products repairs the package afterward.
+      #
+      # `-parallel-testing-enabled NO`, and it is measured rather than cautious.
+      # This package grew a second test bundle (MigoAppleWebKitTests) and
+      # xcodebuild runs bundles concurrently by default -- so two suites that both
+      # drive one simulator's WebKit and GPU began racing each other, on the one
+      # simulator they share. The evidence is that whichever lost the race failed:
+      # in one run MigoSurfaceAttachTests' release assertion failed while every
+      # WebView test passed, and in the next run on the same code the WebView
+      # bundle's first test exceeded a 120-second budget while the release
+      # assertion passed in 0.388 seconds.
+      #
+      # Serial is the honest configuration for what these are. They are not unit
+      # tests that happen to share a process: one waits on a native surface
+      # retirement and the other mounts real web views, and timing is the thing
+      # both of them assert about. Parallelism here does not make them faster than
+      # it makes them wrong -- the whole step is about six minutes either way.
       - name: The ABI tests run on iOS with package-embedded ANGLE
         if: matrix.platform == 'ios-simulator'
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
+        # 🔴 THE ENGINE'S OWN LOG IS NOT VISIBLE ON THIS LANE. Measured, on one
+        # run, from identical test code: 28 lines matching `INFO graphics::` etc.
+        # in the macOS leg's log and ZERO in this one -- while
+        # MigoSurfaceAttachTests' setUp had turned the subscriber on in both, with
+        # its own `setenv`. A process running inside the simulator writes its
+        # stderr somewhere `xcodebuild` does not collect.
+        #
+        # So do not set MIGO_CAPI_LOG (or TEST_RUNNER_MIGO_CAPI_LOG) here expecting
+        # engine output: this step had both for a while and neither produced a
+        # line. An engine-side question asked on this lane has to be answered
+        # through an assertion the test can make, or on the macOS leg.
         run: |
           udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
           xcodebuild test \
             -scheme Migo-Package \
             -destination "platform=iOS Simulator,id=$udid" \
+            -parallel-testing-enabled NO \
             -derivedDataPath "$GITHUB_WORKSPACE/build/apple-sim-dd" \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO

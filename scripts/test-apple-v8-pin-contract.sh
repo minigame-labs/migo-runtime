@@ -189,13 +189,27 @@ else:
                 f"{triple} is pinned but scripts/fetch-v8-archives.sh cannot fetch it",
             )
 
-# ------------------------------------ the artifact half is absent, not partial
+# ------------------------------------ the artifact half belongs elsewhere
+#
+# The reason this assertion exists changed on 2026-09-09 and the assertion did
+# not, which is worth stating rather than quietly leaving a stale message behind.
+# It used to say "no macOS runner has built any bytes yet". Runners have now built
+# them, they are published, and scripts/fetch-v8-archives.sh downloads and
+# verifies both -- so that reason is false while the rule is still right.
+#
+# The rule is right because of where this family keeps its hashes: every V8 lock
+# (android, linux, ohos, windows) pins IDENTITY, and the sha256 of the bytes lives
+# in the per-target component-manifest.json that the fetcher verifies against.
+# Duplicating them here would create a second place to update and a second thing
+# to disagree with the archive. The ANGLE lock does carry hashes, and that is a
+# different family with a different fetcher -- not a precedent for this one.
 for forbidden in ("release", "targets_hashes", "hashes"):
     if forbidden in lock:
         report(
             "artifact-half-present-too-early",
-            f"the lock carries {forbidden!r}; hashes are the sha256 of real bytes and no "
-            "macOS runner has built any -- see .github/workflows/apple-v8-probe.yml",
+            f"the lock carries {forbidden!r}; a V8 lock pins identity and the sha256 of the "
+            "bytes lives in engine/third_party/rusty_v8/<triple>/component-manifest.json, "
+            "which scripts/fetch-v8-archives.sh verifies against",
         )
 for arch, entry in sorted(targets.items()):
     for forbidden in ("sha256", "size_bytes", "asset"):

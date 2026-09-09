@@ -19,13 +19,39 @@
 # different bytes are a different path, so cargo's own staleness rule is correct, and the
 # stamp and the clean are gone rather than maintained.
 #
+# **A CI cache that keeps build-script fingerprints must not keep this crate's
+# build-script outputs.** Stated here because it is a property of what the `v8`
+# crate does, and until now it was stated only in comments on three workflow
+# jobs -- which is why a fourth job was written without it and failed exactly the
+# way those comments describe.
+#
+# Given `RUSTY_V8_ARCHIVE`, rusty_v8's build script COPIES the archive to
+# `target/<triple>/<profile>/gn_out/obj/librusty_v8.a` and records
+# `cargo:rustc-link-search` pointing there. `Swatinem/rust-cache` prunes large
+# files out of build-script output directories to shrink the cache while keeping
+# the fingerprint that says that script is fresh. On the next run cargo replays
+# the recorded search path without re-running the copy, and the link fails with
+# "could not find native static library `rusty_v8`" -- reliably on the SECOND
+# run, which is why it reads as flakiness rather than as a configuration error.
+#
+# So a job that links V8 either does not cache the target directory, or it is
+# broken on every warm run. `pr-ci.yml`'s Android build, `release.yml`'s Android
+# build, `build-snapshot.yml` and `apple-sdk.yml`'s `macos-v8` row all say so at
+# their cache step; if you are adding a fifth, this is the reason.
+#
 # The path is not made read-only, deliberately. A hard link shares its inode with
 # `third_party`, so `chmod 444` here would make the *producer* fail its next `cp` -- and it
 # would buy nothing, because the hash is re-checked on every call, which detects an
 # in-place edit that a permission bit would only discourage.
 
+# `${BASH_SOURCE[0]%/*}` rather than a `$(cd ... && pwd)` substitution, so that a
+# static reader can follow it. scripts/test-macos-bash32-contract.sh walks the
+# source graph of every macOS-facing script, and a path it cannot expand is a file
+# it cannot check -- which it reports rather than silently skipping. This helper
+# entered that graph when build-apple-sdk.sh began sourcing it, and the two forms
+# name the same directory for every way this file is actually sourced.
 # shellcheck source=scripts/lib/python-cmd.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/python-cmd.sh"
+source "${BASH_SOURCE[0]%/*}/python-cmd.sh"
 
 _v8_mat_err() { printf '  ✗ %s\n' "$*" >&2; }
 

@@ -290,6 +290,28 @@ else
     info "skip: $BUILD_SCRIPT does not exist yet"
 fi
 
+# The V8 recipe is asked the same way, and is on the sweep's allowed list only
+# because of this check.
+#
+# It names MACOSX_DEPLOYMENT_TARGET, which the sweep matches, and it has to: the
+# probe measured the archive carrying `minos 12.0` when nothing passed a target,
+# against a declared floor of 11.0 -- so a macOS product linking it would fail to
+# load on the oldest macOS this project supports. An allowance without a check
+# would let that number drift back to whatever the runner's SDK defaults to,
+# which is exactly the state the recipe exists to leave.
+V8_SCRIPT="$REPO_ROOT/scripts/build-v8-apple.sh"
+if [ -f "$V8_SCRIPT" ]; then
+    if ! reported="$(bash "$V8_SCRIPT" --print-deployment-target 2>&1)"; then
+        fail "build-v8-apple.sh could not report its macOS deployment target: $reported"
+    elif [ "$reported" != "$macos_floor" ]; then
+        fail "build-v8-apple.sh would build V8 against $reported, contract says $macos_floor"
+    else
+        info "ok: build-v8-apple.sh reports macos $reported"
+    fi
+else
+    info "skip: $V8_SCRIPT does not exist yet"
+fi
+
 # ---------------------------------------------------------------------------
 # 3. Nobody else sets a deployment target
 # ---------------------------------------------------------------------------
@@ -315,6 +337,7 @@ allowed_to_declare() {
         platforms/apple/core/Package.swift) return 0 ;;
         platforms/apple/core/Sources/MigoAppleCore/MigoDeploymentFloor.swift) return 0 ;;
         scripts/build-apple-sdk.sh) return 0 ;;
+        scripts/build-v8-apple.sh) return 0 ;;
         platforms/apple/ProbeApp/MigoProbe.xcodeproj/project.pbxproj) return 0 ;;
         scripts/test-apple-deployment-floor-contract.sh) return 0 ;;
         docs/*) return 0 ;;

@@ -10,6 +10,7 @@ import importlib.util
 import os
 from pathlib import Path
 import plistlib
+import hashlib
 import shutil
 import subprocess
 import tempfile
@@ -79,10 +80,36 @@ class SDKPackaging(unittest.TestCase):
         for name in ("build-apple-sdk.sh", "build-angle-apple.sh", "apple-sdk-package.py", "embed-apple-angle.sh", "test-apple-shipping-package-contract.sh"):
             if (ROOT/"scripts"/name).exists():
                 shutil.copy2(ROOT/"scripts"/name, self.root/"scripts"/name)
+        # The V8 materialiser and the helper it sources. The macos-v8 product links
+        # V8, so the packager now verifies an archive against its component manifest
+        # before building -- and a fixture that omitted this would exercise a
+        # different code path than the one that ships.
+        (self.root/"scripts/lib").mkdir()
+        for name in ("v8-materialise.sh", "python-cmd.sh"):
+            shutil.copy2(ROOT/"scripts/lib"/name, self.root/"scripts/lib"/name)
         shutil.copy2(ROOT/"platforms/apple/Package.swift", self.root/"platforms/apple/Package.swift")
         (self.root/"contracts/artifact-manifest").mkdir()
         shutil.copy2(ROOT/"contracts/artifact-manifest/apple-angle.lock.json", self.root/"contracts/artifact-manifest/apple-angle.lock.json")
         (self.root/"engine").mkdir()
+        # A V8 component per darwin triple: three files and two hashes that match
+        # them, which is exactly what scripts/lib/v8-materialise.sh checks. Mocked
+        # the way the compilers above are mocked -- the packager's V8 step is what
+        # is under test, not V8 itself. Fetching instead would put a 126 MiB
+        # download and a network dependency inside a unit test.
+        for triple in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
+            v8 = self.root/"engine/third_party/rusty_v8"/triple
+            v8.mkdir(parents=True)
+            archive = f"fixture librusty_v8 {triple}".encode()
+            binding = f"// fixture src_binding {triple}\n".encode()
+            (v8/"librusty_v8.a").write_bytes(archive)
+            (v8/"src_binding.rs").write_bytes(binding)
+            (v8/"component-manifest.json").write_text(json.dumps({
+                "schema": "migo-v8-component-manifest/v1",
+                "hashes": {
+                    "archive": hashlib.sha256(archive).hexdigest(),
+                    "rust_binding": hashlib.sha256(binding).hexdigest(),
+                },
+            }, indent=2) + "\n")
         for platform in ("ios", "ios-simulator", "macos"):
             angle = self.root/"engine/third_party"/f"angle-apple-{platform}"
             angle.mkdir(parents=True)

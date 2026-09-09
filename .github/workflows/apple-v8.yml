@@ -1,0 +1,154 @@
+name: Apple V8
+
+# Builds the macOS librusty_v8.a the `macos-v8` product links against, one triple
+# per job.
+#
+# WHY ONE TRIPLE PER JOB, and it is measured rather than cautious.
+# .github/workflows/apple-v8-probe.yml (run 34299937361, 2026-09-09) spent 57
+# minutes on the host triple and 56 on the cross -- 115 of a 120-minute cap for
+# the two builds and nothing else. No archiving, no hashing, no upload. A lane
+# that copied the probe's single-job shape would meet the cap as a cancellation,
+# which reads like a flake rather than like a budget. So the triples are separate
+# jobs and the numbers live in contracts/artifact-manifest/apple-v8.lock.json's
+# `measured` block.
+#
+# WHY IT PUBLISHES NOTHING. The archive is not publishable until the bytes carry
+# the declared floor, and whether they do is the open question this lane's first
+# run answers: the probe measured `minos 12.0` against a declared floor of 11.0,
+# and scripts/build-v8-apple.sh now passes `mac_deployment_target` and then asks
+# `vtool` whether that argument actually decided anything. It fails closed if not.
+# Until a run has come back green there is nothing worth publishing, and stamping
+# hashes into the lock before that would pin bytes nobody has checked -- which is
+# the mistake the probe existed to prevent one layer down.
+#
+# NOT `apple/**`. That prefix triggers apple-sdk.yml, and dragging an hour of
+# Skia along with two hours of V8 is the mistake #188's branch already made once.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'v8-apple/**'
+
+concurrency:
+  group: apple-v8-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # `macos-15` and not `macos-latest`: a floating label changes the toolchain
+    # under a green run without a commit, and this lane's whole output is a claim
+    # about what a specific toolchain produced.
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        with:
+          targets: ${{ matrix.arch }}-apple-darwin
+
+      - name: What this runner starts with
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          df -h /
+          sysctl -n hw.ncpu hw.memsize
+
+      # The recipe reads the floor from contracts/apple/deployment-floor.json,
+      # passes it, and then asks vtool what the object actually carries. A failure
+      # here names the number, which is the difference between "the build broke"
+      # and "the argument did not decide what its name suggests".
+      - name: Build librusty_v8.a for ${{ matrix.arch }}-apple-darwin
+        run: bash scripts/build-v8-apple.sh --arch ${{ matrix.arch }}
+
+      - name: What the build produced
+        run: |
+          set -euo pipefail
+          cat "build/apple/v8/${{ matrix.arch }}/build-metadata.json"
+
+      - name: Keep the archive and its metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: apple-v8-${{ matrix.arch }}
+          path: |
+            build/apple/v8/${{ matrix.arch }}/librusty_v8.a
+            build/apple/v8/${{ matrix.arch }}/src_binding.rs
+            build/apple/v8/${{ matrix.arch }}/build-metadata.json
+            build/apple/v8/${{ matrix.arch }}/component-manifest.json
+          retention-days: 7
+          if-no-files-found: error
+
+  # Joins what the two jobs produced and says what a person has to decide next.
+  # Deliberately not a publish step: see the header.
+  report:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # continue-on-error here and nowhere else: when both builds fail there is
+      # nothing to download, and the download failing would replace the report
+      # that says which of them failed. The next step still exits non-zero on an
+      # empty collection, so the failure is reported rather than absorbed.
+      - name: Collect what the builds said
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: collected
+          pattern: apple-v8-*
+
+      - name: The two builds, side by side
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+
+          rows = sorted(pathlib.Path("collected").glob("*/build-metadata.json"))
+          if not rows:
+              raise SystemExit("no metadata collected; both builds failed")
+          for path in rows:
+              data = json.loads(path.read_text())
+              print(f"--- {data['triple']} ---")
+              print(f"  archive      {data['archive_bytes']} bytes")
+              print(f"  sha256       {data['archive_sha256']}")
+              print(f"  minos        {data['observed_minos']} (declared {data['declared_deployment_target']})")
+              print("  gn args:")
+              for arg in data["normalized_gn_args"]:
+                  print(f"    {arg}")
+
+          if len(rows) == 2:
+              first, second = (json.loads(path.read_text()) for path in rows)
+              if first["normalized_gn_args"] != second["normalized_gn_args"]:
+                  # Not fatal: target_cpu legitimately differs. Printed so the
+                  # difference is read rather than assumed to be only that.
+                  only_first = set(first["normalized_gn_args"]) - set(second["normalized_gn_args"])
+                  only_second = set(second["normalized_gn_args"]) - set(first["normalized_gn_args"])
+                  print("\nthe two builds' arguments differ:")
+                  print(f"  only {first['triple']}: {sorted(only_first)}")
+                  print(f"  only {second['triple']}: {sorted(only_second)}")
+          else:
+              print("\nonly one triple produced metadata; the pin needs both")
+
+          print(
+              "\nNext, and only if both carried the declared floor: publish the two archives"
+              "\nas a release asset and stamp their sha256 and sizes into"
+              "\ncontracts/artifact-manifest/apple-v8.lock.json's targets half. Build first,"
+              "\npin second -- the same order A2.1's ANGLE round used."
+          )
+          PY

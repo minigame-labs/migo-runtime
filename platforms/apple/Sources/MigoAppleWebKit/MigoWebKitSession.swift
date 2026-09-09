@@ -93,6 +93,14 @@ import WebKit
         public static let diagnosticsPerSecond = 20
 
         private let origin: MigoWebKitContentOrigin
+
+        /// What the content origin has been asked for and has answered.
+        ///
+        /// Exposed because a stalled load is the one failure this lane cannot
+        /// diagnose from the outside: `WKWebView` reports that a load began and how
+        /// far it got, and nothing about whether the request ever reached the host
+        /// code that serves it. See `MigoWebKitContentOrigin.Activity`.
+        public var originActivity: MigoWebKitContentOrigin.Activity { origin.activity }
         private var recovery: MigoWebContentRecovery
         private var handlerMethods: [String: String] = [:]
         private var lifecycleSubscribed = false

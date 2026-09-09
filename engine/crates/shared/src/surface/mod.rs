@@ -84,6 +84,26 @@ pub trait Surface: std::fmt::Debug + Send + Sync {
     ///
     /// Tuple of `(width, height)` in physical pixels.
     fn size(&self) -> (u32, u32);
+
+    /// How many owners the *native* handle has, when this surface holds it
+    /// behind a reference count of its own.
+    ///
+    /// `None` means this platform does not track one -- **not** that the handle
+    /// is unowned. A caller may only conclude something from `Some`.
+    ///
+    /// It exists because the `SurfaceRef` count and the native handle's count
+    /// are two different numbers, and the release contract is written about the
+    /// second one. On Apple the `CAMetalLayer` is kept alive by an
+    /// `Arc<MetalLayerOwner>` that `attach` deliberately clones twice -- once
+    /// into the surface, once into the resize target -- so a surface that is
+    /// uniquely referenced can still be one of several owners of the layer. A
+    /// guard that watched only the `SurfaceRef` count therefore stayed silent
+    /// through a release that left the host's layer alive, which is the exact
+    /// failure the phase's documentation entitles a host to rely on not
+    /// happening.
+    fn native_owner_count(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Thread-safe reference to a surface.
