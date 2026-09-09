@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "lane": "ios_webkit_full",
+  "_comment": [
+    "What content can reach in the WebKit Full lane, and who gives it. The single",
+    "source for the lane's compliance surface; the Swift mirror is checked against",
+    "this file by scripts/test-apple-webkit-surface-contract.sh.",
+    "",
+    "WHY A CONTRACT AND NOT A LIST IN THE CODE. App Review guideline 4.7 permits",
+    "mini games, and 4.7.2 requires Apple's prior permission before an app exposes",
+    "native APIs to them. That makes the set of things this lane hands to content a",
+    "reviewable fact about the product rather than an implementation detail, and a",
+    "fact stated in one file is a fact somebody can check against a submission.",
+    "",
+    "PROVENANCE IS THE POINT, AND IT WAS MISSING FROM THE DESIGN THIS REPLACES.",
+    "The plan's D18 said the iOS tier keeps canvas, WebGL, audio, input, storage,",
+    "network and lifecycle and defaults camera, bluetooth, payment, sensors and",
+    "clipboard off. Read as a list of switches that is not implementable, because",
+    "the first seven are not ours to switch: in this lane WebKit runs the",
+    "JavaScript, so canvas, WebGL, Web Audio, touch events, localStorage and fetch",
+    "arrive with the web platform whether or not this product has an opinion. A",
+    "capability list that claims to gate them describes a control that does not",
+    "exist, which is worse than no list -- it is a compliance claim nothing",
+    "enforces.",
+    "",
+    "So every entry names how content would reach it, and there are four answers,",
+    "which are four different things and must not be collapsed:",
+    "",
+    "  web_platform - WebKit gives it to any page. The host cannot withhold it and",
+    "                 does not claim to. It is listed so a reader can see it was",
+    "                 considered, and because 4.7.2 is about native APIs: these are",
+    "                 not native APIs, they are the browser.",
+    "  host_granted - a web-platform capability WebKit asks the host about before",
+    "                 granting (media capture, geolocation). The decision is a",
+    "                 delegate callback, so the host really does hold it, and the",
+    "                 default is deny.",
+    "  host_bridge  - a native call across the script-message boundary. These, and",
+    "                 only these, are what 4.7.2 calls exposing native APIs.",
+    "  absent       - no web API and no bridge method. Nothing to refuse, because",
+    "                 there is no way to ask. Distinguished from a denial on",
+    "                 purpose: a denial means the mechanism exists and said no, and",
+    "                 the two are different things to report to a host app asking",
+    "                 why its content cannot do something.",
+    "",
+    "DEFAULT OFF IS NOT THE SAME AS UNSUPPORTED. A capability with",
+    "default_enabled false and a stated mechanism is one the host app can turn on",
+    "after obtaining what Apple requires for it. One with no mechanism cannot be",
+    "turned on by configuration at all. The reason field says which is which, so",
+    "the answer to \"can we ship this to a customer who needs the camera\" is in the",
+    "file rather than in somebody's memory of a review thread."
+  ],
+  "provenances": {
+    "web_platform": "WebKit provides it to any page; the host has no switch and claims none.",
+    "host_granted": "A web-platform capability WebKit asks the host to allow, through a delegate callback.",
+    "host_bridge": "A native capability reached by a script message. 4.7.2 applies to these.",
+    "absent": "Reachable by neither route. There is no request to refuse."
+  },
+  "review_position": {
+    "guideline": "4.7 / 4.7.2",
+    "claim": [
+      "The lane ships a browser engine's own capabilities plus a bridge whose",
+      "default surface carries no native capability that requires a user",
+      "permission or a device radio. Every capability that does is off by default,",
+      "refuses with a reason naming this contract, and can only be turned on by the",
+      "host app -- which is the party that would hold Apple's permission, not us."
+    ],
+    "not_claimed": [
+      "That the lane can withhold canvas, WebGL, Web Audio, storage, timers,",
+      "network or input. WebKit grants those to any page and a claim to gate them",
+      "would be a control that does not exist."
+    ]
+  },
+  "capabilities": {
+    "canvas_2d": {
+      "provenance": "web_platform",
+      "default_enabled": true,
+      "reason": "The DOM canvas. WebKit's own, and the reason this lane exists at all."
+    },
+    "webgl": {
+      "provenance": "web_platform",
+      "default_enabled": true,
+      "reason": "WebGL 1 and 2 from WebKit. No ANGLE and no Skia are linked in this lane."
+    },
+    "web_audio": {
+      "provenance": "web_platform",
+      "default_enabled": true,
+      "reason": "Web Audio and HTMLAudioElement. Content that depends on browser audio modules is one of the cases D9 lists as running better here than in Performance+."
+    },
+    "pointer_input": {
+      "provenance": "web_platform",
+      "default_enabled": true,
+      "reason": "Touch, pointer and keyboard events from WebKit's own event loop."
+    },
+    "web_storage": {
+      "provenance": "web_platform",
+      "default_enabled": true,
+      "reason": "localStorage, sessionStorage and IndexedDB, scoped to the content origin by WebKit."
+    },
+    "web_network": {
+      "provenance": "web_platform",
+      "default_enabled": true,
+      "reason": "fetch, XMLHttpRequest and WebSocket, subject to App Transport Security. The host adds no network bridge: a native HTTP method would be a native API in 4.7.2's sense and would buy nothing the web platform does not already do."
+    },
+    "content_bundle_read": {
+      "provenance": "host_bridge",
+      "default_enabled": true,
+      "bridge_method": "content.read",
+      "reason": "Reads a file out of the content package that the host is already serving to this web view. It exposes no filesystem the content did not arrive in, so there is no native capability behind it to permit.",
+      "bounded_by": "The content package for this session only. Paths are resolved inside it and a traversal is a refusal, not a clamp."
+    },
+    "lifecycle": {
+      "provenance": "host_bridge",
+      "default_enabled": true,
+      "bridge_method": "lifecycle.observe",
+      "reason": "Foreground, background, and the host's own suspend and resume. The page's visibility events do not cover an app the system is about to suspend, and content that cannot hear that saves nothing before it is frozen.",
+      "bounded_by": "Delivery only. Content cannot ask the host to change its own lifecycle state."
+    },
+    "environment": {
+      "provenance": "host_bridge",
+      "default_enabled": true,
+      "bridge_method": "environment.get",
+      "reason": "Safe-area insets, device pixel ratio, preferred locale, host app version, and the selected runtime lane. None is a user permission and none identifies a device; the lane name is here because content that was built for a lane needs to know which one it got.",
+      "bounded_by": "No identifier that survives a reinstall, and no field a fingerprinter could not read from navigator already."
+    },
+    "diagnostics": {
+      "provenance": "host_bridge",
+      "default_enabled": true,
+      "bridge_method": "diagnostics.report",
+      "reason": "Content reports its own errors and readiness to the host, which is how a host app finds out its content failed rather than hearing it from a user.",
+      "bounded_by": "Write-only, and rate-limited by the host. Content cannot read back what it or anything else reported."
+    },
+    "camera": {
+      "provenance": "host_granted",
+      "default_enabled": false,
+      "granted_by": "WKUIDelegate media-capture permission decision, and NSCameraUsageDescription in the host app.",
+      "reason": "getUserMedia reaches WebKit, which asks the host. Off by default because a mini game that needs the camera is a 4.7.2 conversation the host app has with Apple, and because the usage description is the host app's to declare."
+    },
+    "microphone": {
+      "provenance": "host_granted",
+      "default_enabled": false,
+      "granted_by": "WKUIDelegate media-capture permission decision, and NSMicrophoneUsageDescription in the host app.",
+      "reason": "Same route and same reason as the camera."
+    },
+    "geolocation": {
+      "provenance": "host_granted",
+      "default_enabled": false,
+      "granted_by": "The host app's Core Location authorisation. WebKit will not grant a page more than the app itself holds.",
+      "reason": "Off by default. A game that needs a position is asking the host app to hold a location authorisation, which is a decision about the app, not about the content."
+    },
+    "clipboard_write": {
+      "provenance": "web_platform",
+      "default_enabled": true,
+      "reason": "WebKit allows a clipboard write in response to a user gesture and this lane does not change that. Listed because D18 named the clipboard as default-off: it cannot be, on this route, and a contract that said otherwise would be describing a switch nobody has. A native clipboard bridge is what is absent -- see clipboard_read."
+    },
+    "clipboard_read": {
+      "provenance": "absent",
+      "default_enabled": false,
+      "reason": "No bridge method, and WebKit gates a programmatic read behind its own user-mediated paste. Absent rather than denied: there is nothing for the host to refuse."
+    },
+    "bluetooth": {
+      "provenance": "absent",
+      "default_enabled": false,
+      "reason": "WebKit ships no Web Bluetooth and this lane adds no bridge. A radio is the clearest case of a native API 4.7.2 is about, and the first customer to need one is the point at which it gets designed."
+    },
+    "payment": {
+      "provenance": "absent",
+      "default_enabled": false,
+      "reason": "No bridge. In-app purchase from mini-game content is a 3.1.1 question before it is a 4.7.2 one, and neither is answered by a method that quietly exists."
+    },
+    "motion_sensors": {
+      "provenance": "host_granted",
+      "default_enabled": false,
+      "granted_by": "WebKit's own DeviceMotionEvent.requestPermission, which iOS gates behind a user gesture and a prompt.",
+      "reason": "Off by default. The web route exists, so this is a denial rather than an absence, and turning it on means a host app that has decided to let content prompt for motion."
+    },
+    "photo_library": {
+      "provenance": "absent",
+      "default_enabled": false,
+      "reason": "No bridge. A file input reaching the photo picker is WebKit's own and is not a capability this lane installs."
+    },
+    "push_notifications": {
+      "provenance": "absent",
+      "default_enabled": false,
+      "reason": "No bridge. Notifications belong to the host app's own registration, and content that could raise one would be raising it in the host app's name."
+    },
+    "share": {
+      "provenance": "absent",
+      "default_enabled": false,
+      "reason": "No bridge. A share sheet raised by content is the host app's UI presented on content's behalf, which is a product decision nobody has made."
+    },
+    "advertising": {
+      "provenance": "absent",
+      "default_enabled": false,
+      "reason": "No bridge. The engine's ad path is host-authoritative by construction and its rewards are settled by the host SDK; reproducing any part of that here before a customer exists would be new surface with no caller."
+    },
+    "login": {
+      "provenance": "absent",
+      "default_enabled": false,
+      "reason": "No bridge. An identity the host holds is not content's to ask for, and the one integration that wanted it wanted a specific vendor's."
+    }
+  }
+}
