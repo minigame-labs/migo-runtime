@@ -115,10 +115,11 @@ jobs:
         with:
           targets: ${{ matrix.targets }}
 
-      # Not for macos-v8, and this is a rule this repository already settled on
-      # three other lanes -- pr-ci's Android build, release's Android build and
-      # build-snapshot all say "NO Rust cache" for the same reason. The new
-      # product simply did not inherit it.
+      # Not for macos-v8. The rule and its mechanism are written once, in
+      # `scripts/lib/v8-materialise.sh`'s header, next to the code they are about;
+      # this repository had already settled it on three other lanes and the new
+      # product did not inherit it, which is what moving it there is meant to stop
+      # happening a fifth time.
       #
       # Swatinem/rust-cache prunes large files out of each crate's build-script
       # OUT_DIR to shrink the cache, and `librusty_v8.a` is one: the v8 crate's
