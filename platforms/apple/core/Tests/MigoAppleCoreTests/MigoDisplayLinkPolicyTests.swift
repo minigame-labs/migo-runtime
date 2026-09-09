@@ -133,6 +133,42 @@ final class MigoDisplayLinkPolicyTests: XCTestCase {
         XCTAssertFalse(decision.requestWasReduced)
     }
 
+    // MARK: - the link's own lifetime
+
+    func testALinkDroppedWithoutBeingStoppedIsStillDeallocated() {
+        // The bug this asserts against was in the first version of MigoDisplayLink,
+        // on both platforms. `CADisplayLink` retains its target and the CVDisplayLink
+        // callback context retained the owner, so the owner held the link and the link
+        // held the owner -- and `deinit`, the one place that stops it, could never run.
+        // A host that forgets `stop()` then has a display link firing for the life of
+        // the process, which on a phone is a battery complaint with nothing to blame.
+        weak var observed: MigoDisplayLink?
+        autoreleasepool {
+            let link = MigoDisplayLink(
+                decision: Policy.decide(.init(platform: .macOS, osMajor: 14)),
+                onTick: { _, _ in })
+            observed = link
+            #if os(iOS)
+                link.start()
+            #elseif os(macOS)
+                link.start()
+            #endif
+        }
+        XCTAssertNil(
+            observed,
+            "the link kept itself alive, so it runs until the process ends and deinit never fires")
+    }
+
+    func testStoppingTwiceAndStoppingWithoutStartingAreBothHarmless() {
+        // The legacy path retains a context and releases it in `stop`. A second
+        // release would be an over-release, which is a crash rather than an error.
+        let link = MigoDisplayLink(
+            decision: Policy.decide(.init(platform: .macOS, osMajor: 12)), onTick: { _, _ in })
+        link.stop()
+        link.stop()
+        XCTAssertFalse(link.isRunning)
+    }
+
     func testEveryDecisionCarriesAReason() {
         // Walked over a cross product rather than listed, so a branch added without
         // a reason is caught by the shape of the type rather than by review.

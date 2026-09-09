@@ -9,6 +9,42 @@ import Foundation
     import QuartzCore
 #endif
 
+/// A weak stand-in between a link and its owner.
+///
+/// `CADisplayLink` **retains its target**, and a `CVDisplayLink` callback needs a
+/// pointer that stays valid for as long as the link runs. Doing either directly
+/// against the owner keeps the owner alive forever: the owner holds the link, the
+/// link holds the owner, and `deinit` -- the one place that stops it -- can never
+/// run. A host that forgets to call `stop()` then has a display link firing for the
+/// life of the process, which on a phone is a battery complaint with no owner.
+///
+/// So the link holds this, this holds the owner weakly, and the owner's `deinit` is
+/// reachable again.
+private final class MigoDisplayLinkProxy: NSObject {
+    weak var owner: MigoDisplayLink?
+
+    init(owner: MigoDisplayLink) {
+        self.owner = owner
+        super.init()
+    }
+
+    /// Typed `Any` rather than `CADisplayLink`, because on macOS that type does not
+    /// exist below macOS 14 and a selector's signature cannot carry an availability
+    /// annotation.
+    @objc func fire(_ sender: Any) {
+        guard let owner else { return }
+        #if os(iOS)
+            if let link = sender as? CADisplayLink {
+                owner.deliver(targetTimestamp: link.targetTimestamp, duration: link.duration)
+            }
+        #elseif os(macOS)
+            if #available(macOS 14.0, *), let link = sender as? CADisplayLink {
+                owner.deliver(targetTimestamp: link.targetTimestamp, duration: link.duration)
+            }
+        #endif
+    }
+}
+
 /// The presenter's vsync source, on whichever API this OS has.
 ///
 /// It lives in the engine-free package for the reason that decided where every other
@@ -51,14 +87,22 @@ public final class MigoDisplayLink {
         stop()
     }
 
+    /// One delivery point, so both platforms and both macOS mechanisms hand the tick
+    /// over the same way.
+    fileprivate func deliver(targetTimestamp: CFTimeInterval, duration: CFTimeInterval) {
+        onTick(targetTimestamp, duration)
+    }
+
     // MARK: - iOS
 
     #if os(iOS)
         private var link: CADisplayLink?
+        private var proxy: MigoDisplayLinkProxy?
 
         public func start() {
             guard !isRunning else { return }
-            let link = CADisplayLink(target: self, selector: #selector(fire(_:)))
+            let proxy = MigoDisplayLinkProxy(owner: self)
+            let link = CADisplayLink(target: proxy, selector: #selector(MigoDisplayLinkProxy.fire(_:)))
             switch decision.cadence {
             case .systemDefault:
                 // Deliberately nothing. A range equal to the default is not the same
@@ -74,17 +118,15 @@ public final class MigoDisplayLink {
             // is a game that looks frozen for the length of the gesture.
             link.add(to: .main, forMode: .common)
             self.link = link
+            self.proxy = proxy
             isRunning = true
         }
 
         public func stop() {
             link?.invalidate()
             link = nil
+            proxy = nil
             isRunning = false
-        }
-
-        @objc private func fire(_ link: CADisplayLink) {
-            onTick(link.targetTimestamp, link.duration)
         }
     #endif
 
@@ -96,12 +138,14 @@ public final class MigoDisplayLink {
         /// deployment target. The cast happens inside the one `#available` block that
         /// can name the type.
         private var modernLink: AnyObject?
+        private var proxy: MigoDisplayLinkProxy?
         private var legacyLink: CVDisplayLink?
-        /// Retained for the C callback's lifetime. A `CVDisplayLink` callback receives
-        /// an opaque pointer, and the object it points at has to outlive the link, or
-        /// the callback runs against freed memory on a real-time thread -- a crash with
-        /// no Swift frame to blame it on.
-        private var legacyContext: Unmanaged<MigoDisplayLink>?
+        /// Retained for the C callback's lifetime, and it is the **proxy** that is
+        /// retained rather than the owner. A `CVDisplayLink` callback receives an
+        /// opaque pointer whose target has to outlive the link, so something must be
+        /// kept alive -- and keeping the owner alive is what made `deinit`
+        /// unreachable, so the link ran until the process ended.
+        private var legacyContext: Unmanaged<MigoDisplayLinkProxy>?
 
         /// Start delivering ticks.
         ///
@@ -114,7 +158,9 @@ public final class MigoDisplayLink {
             guard !isRunning else { return }
             if decision.mechanism == .caDisplayLink, let view {
                 if #available(macOS 14.0, *) {
-                    let link = view.displayLink(target: self, selector: #selector(fireModern(_:)))
+                    let proxy = MigoDisplayLinkProxy(owner: self)
+                    let link = view.displayLink(
+                        target: proxy, selector: #selector(MigoDisplayLinkProxy.fire(_:)))
                     switch decision.cadence {
                     case .systemDefault:
                         break
@@ -125,6 +171,7 @@ public final class MigoDisplayLink {
                     }
                     link.add(to: .main, forMode: .common)
                     modernLink = link
+                    self.proxy = proxy
                     isRunning = true
                     return
                 }
@@ -137,6 +184,7 @@ public final class MigoDisplayLink {
                 (modernLink as? CADisplayLink)?.invalidate()
             }
             modernLink = nil
+            proxy = nil
             if let legacyLink {
                 CVDisplayLinkStop(legacyLink)
                 self.legacyLink = nil
@@ -148,31 +196,31 @@ public final class MigoDisplayLink {
             isRunning = false
         }
 
-        @available(macOS 14.0, *)
-        @objc private func fireModern(_ link: CADisplayLink) {
-            onTick(link.targetTimestamp, link.duration)
-        }
-
         private func startLegacy() {
             var created: CVDisplayLink?
             guard CVDisplayLinkCreateWithActiveCGDisplays(&created) == kCVReturnSuccess,
                 let link = created
             else { return }
 
-            // `passUnretained` plus an explicit retain rather than `passRetained`: the
-            // retain has to be paired with a release in `stop`, and pairing it this way
-            // puts both halves in one file where a reader can see they match.
-            let context = Unmanaged.passUnretained(self)
-            _ = context.retain()
+            // The proxy is what the callback reaches, and what is retained. Paired
+            // with the release in `stop`, which `deinit` also calls -- reachable now
+            // that nothing retains the owner.
+            let proxy = MigoDisplayLinkProxy(owner: self)
+            let context = Unmanaged.passRetained(proxy)
             legacyContext = context
             legacyLink = link
+            self.proxy = proxy
 
             CVDisplayLinkSetOutputCallback(
                 link,
                 { _, inNow, inOutputTime, _, _, pointer in
                     guard let pointer else { return kCVReturnSuccess }
-                    let owner = Unmanaged<MigoDisplayLink>.fromOpaque(pointer)
+                    let proxy = Unmanaged<MigoDisplayLinkProxy>.fromOpaque(pointer)
                         .takeUnretainedValue()
+                    // The owner may already be gone: the link is stopped by `deinit`,
+                    // and a callback can be in flight on the display's own thread at
+                    // that moment. A weak read that comes back nil is the answer.
+                    guard let owner = proxy.owner else { return kCVReturnSuccess }
                     let outputTime = inOutputTime.pointee
                     let nowTime = inNow.pointee
                     guard outputTime.videoTimeScale != 0, nowTime.videoTimeScale != 0 else {
@@ -187,7 +235,9 @@ public final class MigoDisplayLink {
                     // Hopped to the main queue. This callback runs on a real-time
                     // thread the system drops frames to protect, and doing renderer
                     // work there is how a display link becomes the glitch source.
-                    DispatchQueue.main.async { owner.onTick(target, duration) }
+                    DispatchQueue.main.async {
+                        owner.deliver(targetTimestamp: target, duration: duration)
+                    }
                     return kCVReturnSuccess
                 }, context.toOpaque())
 
