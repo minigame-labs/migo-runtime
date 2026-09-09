@@ -358,18 +358,49 @@ impl Drop for SurfaceResource {
         // assertion in one platform's test suite.
         if let Some(anchor) = self.native_anchor.as_ref() {
             let outstanding = Arc::strong_count(anchor);
-            if outstanding != 1 {
+            // TWO counts, because they answer two different questions and the
+            // first one alone was misleading. `outstanding` is how many
+            // `SurfaceRef`s exist; `native_owners` is how many owners the
+            // platform handle inside them has. On Apple the second can exceed
+            // the first -- `attach` clones the layer's owner into the resize
+            // target as well as into the surface -- so a uniquely referenced
+            // surface can still not be the last thing holding the host's layer.
+            //
+            // This started as a check on `outstanding` alone. It stayed silent
+            // through a release that left a host `CAMetalLayer` alive, and that
+            // silence was read as "Migo's side is clean" for a full CI
+            // iteration. A guard has to watch the reference the contract is
+            // written about.
+            let native_owners = anchor.native_owner_count();
+            if !anchor_is_sole_owner(outstanding, native_owners) {
                 tracing::warn!(
                     outstanding,
+                    native_owners = ?native_owners,
                     generation = self.public_generation.get(),
-                    "surface anchor is not the last reference at release; RELEASED is about to \
-                     be published while another owner can still reach the native resource"
+                    "surface anchor is not the last owner at release; RELEASED is about to be \
+                     published while another owner can still reach the native resource"
                 );
             }
         }
         drop(self.native_anchor.take());
         self.release.complete();
     }
+}
+
+/// Whether the anchor about to be dropped is the last owner of the resource.
+///
+/// Split out of `SurfaceResource::drop` so the decision can be tested. Inside
+/// Drop it can only be observed through a log line, and a condition whose only
+/// evidence is a message somebody has to be watching for is a condition nobody
+/// checks: the first version of this check was wrong -- it read the
+/// `SurfaceRef` count alone -- and no test failed.
+///
+/// `None` for `native_owners` is "this platform does not track one", so it
+/// carries no verdict either way and the `SurfaceRef` count decides alone.
+/// Treating `None` as clean would be the same mistake as reading silence as
+/// proof.
+fn anchor_is_sole_owner(outstanding: usize, native_owners: Option<usize>) -> bool {
+    outstanding == 1 && native_owners.unwrap_or(1) == 1
 }
 
 /// A cloneable proof that a consumer may still reach a native Surface.
@@ -739,7 +770,7 @@ mod tests {
     use super::{
         PublicSurfaceGeneration, SurfaceGenerationError, SurfaceGenerationGate, SurfaceLease,
         SurfaceReleaseDisposition, SurfaceReleasePhase, SurfaceReleaseTransactionError,
-        release_retired_resource,
+        anchor_is_sole_owner, release_retired_resource,
     };
     use crate::surface::{Surface, SurfaceRef};
 
@@ -778,6 +809,38 @@ mod tests {
     ) -> SurfaceLease {
         let surface: SurfaceRef = Arc::new(TestSurface::new((marker, marker), Arc::clone(drops)));
         SurfaceLease::new(surface, token)
+    }
+
+    // The case the first version of the check was blind to, and the reason the
+    // decision was pulled out of Drop: on Apple the layer's owner count and the
+    // SurfaceRef count are different numbers, and only the first one decides
+    // when the host's CAMetalLayer is released.
+    #[test]
+    fn a_uniquely_referenced_surface_can_still_not_be_the_last_owner() {
+        assert!(
+            anchor_is_sole_owner(1, Some(1)),
+            "one reference, one native owner: the release boundary is clean and must not report"
+        );
+        assert!(
+            !anchor_is_sole_owner(1, Some(2)),
+            "the anchor is the only SurfaceRef and the native handle still has another owner. \
+             This is the Apple attach shape -- the layer's retain is cloned into the resize \
+             target as well as into the surface -- and a check that reads only the SurfaceRef \
+             count reports nothing here"
+        );
+        assert!(
+            !anchor_is_sole_owner(2, Some(1)),
+            "another SurfaceRef exists, which is reportable whatever the native count says"
+        );
+        assert!(
+            !anchor_is_sole_owner(2, None),
+            "a platform that tracks no native count must not suppress the SurfaceRef verdict"
+        );
+        assert!(
+            anchor_is_sole_owner(1, None),
+            "and it must not invent one either: None is 'not measured', so the SurfaceRef count \
+             decides alone"
+        );
     }
 
     /// The completion boundary is only a boundary when this drop is the last

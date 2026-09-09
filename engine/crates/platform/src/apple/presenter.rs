@@ -269,6 +269,15 @@ impl RetainedMetalLayer {
     pub fn as_ptr(&self) -> *mut c_void {
         self.0.layer.as_ptr()
     }
+
+    /// How many `RetainedMetalLayer` values share this one native retain.
+    ///
+    /// One means this value's drop is the `objc_release`. More means it is not,
+    /// and whoever is reasoning about when the host's layer goes has to account
+    /// for the others first.
+    pub fn owner_count(&self) -> usize {
+        Arc::strong_count(&self.0)
+    }
 }
 
 /// Onscreen render target retaining a `CAMetalLayer` the host creates.
@@ -315,6 +324,10 @@ impl Surface for AppleMetalLayerSurface {
 
     fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    fn native_owner_count(&self) -> Option<usize> {
+        Some(self.layer.owner_count())
     }
 }
 
