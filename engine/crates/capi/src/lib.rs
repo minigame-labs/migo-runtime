@@ -965,6 +965,21 @@ fn init_dev_logging() {
             return;
         };
         crate::platform::install_dev_logging(level);
+        // A positive control, and it is here because its absence is the thing
+        // that keeps being misread. Three CI iterations have now turned on this
+        // switch to look for one specific warning, found nothing, and had no way
+        // to tell "the engine had nothing to report" from "the variable never
+        // reached this process" -- which on the iOS simulator is a real
+        // possibility, because a test host runs inside the simulator and does not
+        // inherit the runner's environment.
+        //
+        // One line, at the level the switch itself selected, so it appears
+        // wherever the diagnostics being looked for would appear. If it is
+        // missing, nothing else from the engine was ever going to be there.
+        tracing::warn!(
+            ?level,
+            "migo engine diagnostics installed from MIGO_CAPI_LOG"
+        );
     });
 }
 
