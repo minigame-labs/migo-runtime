@@ -153,8 +153,20 @@ final class MigoSurfaceAttachTests: XCTestCase {
         /// pointer to it and may call back from its own thread.
         private let engineErrors = EngineErrors()
 
+        /// Set by the retirement test when the host's layer outlived RELEASED, so
+        /// that teardown can answer the one question that separates "Migo leaked"
+        /// from "somebody else still holds it".
+        ///
+        /// `migo_engine_destroy` is the thread-completion barrier, and it is where
+        /// ANGLE's display goes. If the layer is gone once that returns, the owner
+        /// was display-level ANGLE state Migo kept alive -- ours to fix. If it is
+        /// still there, no part of Migo held it and the assertion at RELEASED was
+        /// asking for something the C ABI never promised.
+        private var layerThatOutlivedRelease: (() -> Bool)?
+
         override func setUpWithError() throws {
             try super.setUpWithError()
+            layerThatOutlivedRelease = nil
 
             // Turn the engine's own diagnostics on before anything creates an
             // engine: `migo_engine_create` reads MIGO_CAPI_LOG once and installs
@@ -327,7 +339,28 @@ final class MigoSurfaceAttachTests: XCTestCase {
                 let result = migo_engine_destroy(engine)
                 XCTAssertEqual(result, MIGO_OK, "migo_engine_destroy returned \(result)")
                 self.engine = nil
+
+                // Asked only when a test already failed for outliving RELEASED, so
+                // a green run pays nothing and reports nothing.
+                if let stillAlive = layerThatOutlivedRelease {
+                    XCTFail(
+                        stillAlive()
+                            ? "the layer that outlived RELEASED is STILL alive after "
+                                + "migo_engine_destroy returned. Nothing of Migo's is left at "
+                                + "that point -- the display, its contexts and the render "
+                                + "thread are all gone -- so no part of Migo was holding it, "
+                                + "and the assertion at RELEASED was asking for a deallocation "
+                                + "the C ABI does not promise: surface.h requires the host to "
+                                + "keep the resource alive UNTIL RELEASED, not that the object "
+                                + "dies then."
+                            : "the layer that outlived RELEASED went away once "
+                                + "migo_engine_destroy returned. That is a Migo leak and not a "
+                                + "host one: the owner was display-level ANGLE state the engine "
+                                + "kept past the surface it belonged to, and RELEASED promised a "
+                                + "retirement that had not finished.")
+                }
             }
+            layerThatOutlivedRelease = nil
             // Last, and only now: `migo_engine_destroy` is the thread-completion
             // barrier, and its header says only after it returns may the host
             // destroy native display or window resources.
@@ -492,6 +525,12 @@ final class MigoSurfaceAttachTests: XCTestCase {
             // passing in two seconds on an idle one, and a red that reports only the
             // symptom cost a full lane iteration to learn nothing from.
             if observedLayer != nil {
+                // Hand the "who was holding it" question to teardown, which is the
+                // only place that runs after `migo_engine_destroy` -- the point
+                // every remaining piece of Migo is gone. The closure captures the
+                // weak binding, so holding it here keeps nothing alive.
+                layerThatOutlivedRelease = { observedLayer != nil }
+
                 // The strong binding is scoped, and that matters: held across the
                 // poll below it would keep the layer alive itself and make the
                 // ordering-versus-leak answer always say "leak" -- a diagnostic
