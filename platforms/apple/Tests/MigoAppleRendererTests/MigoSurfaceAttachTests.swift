@@ -492,6 +492,32 @@ final class MigoSurfaceAttachTests: XCTestCase {
             // passing in two seconds on an idle one, and a red that reports only the
             // symptom cost a full lane iteration to learn nothing from.
             if observedLayer != nil {
+                // The strong binding is scoped, and that matters: held across the
+                // poll below it would keep the layer alive itself and make the
+                // ordering-versus-leak answer always say "leak" -- a diagnostic
+                // that reports its own effect.
+                if let stillAlive = observedLayer {
+                    // How many references are left, and whose. Only meaningful in a
+                    // branch that has already failed, which is why it is here and not
+                    // in the assertion: CFGetRetainCount is explicitly not a number to
+                    // reason about in working code. As a clue it is the strongest one
+                    // available -- it separates "one other owner" from "several", and
+                    // the next question is which.
+                    //
+                    // One of the references counted is this binding: `observedLayer` is
+                    // weak, and binding it takes a strong one.
+                    let counted = CFGetRetainCount(stillAlive)
+                    XCTFail(
+                        "at the moment RELEASED was observed the layer had \(counted) reference(s), "
+                            + "one of which is this test's own binding. Everything in Migo's own "
+                            + "graph is accounted for -- SurfaceResource::drop releases the anchor "
+                            + "before publishing, and the canvas manager holds exactly one "
+                            + "PreparedEglSurfaceRef and clears it before release_onscreen returns "
+                            + "-- so an owner outside that graph is the remaining candidate, ANGLE's "
+                            + "own retain on the CAMetalLayer for its window surface being the first "
+                            + "to check")
+                }
+
                 let observationStart = Date()
                 let observationDeadline = observationStart.addingTimeInterval(2)
                 while observedLayer != nil, Date() < observationDeadline {
