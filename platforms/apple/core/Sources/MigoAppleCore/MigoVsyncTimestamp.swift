@@ -38,14 +38,14 @@ public enum MigoVsyncTimestamp {
     /// which shows up as a frame interval a fraction short at every cadence.
     public static func nanoseconds(fromSeconds seconds: CFTimeInterval) -> Result<Int64, Rejection>
     {
-        guard seconds.isFinite else { return .failure(.notFinite) }
-        guard seconds >= 0 else { return .failure(.negative) }
+        guard seconds.isFinite else { return .failure(Rejection.notFinite) }
+        guard seconds >= 0 else { return .failure(Rejection.negative) }
         let nanoseconds = (seconds * 1_000_000_000).rounded()
         // Compared against the exact power of two rather than Int64.max: the
         // literal Int64.max is not representable as a Double, so the comparison
         // would be made against the next value up and let one unrepresentable
         // case through into a trapping conversion.
-        guard nanoseconds < 9_223_372_036_854_775_808.0 else { return .failure(.tooLarge) }
+        guard nanoseconds < 9_223_372_036_854_775_808.0 else { return .failure(Rejection.tooLarge) }
         return .success(Int64(nanoseconds))
     }
 }
