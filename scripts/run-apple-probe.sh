@@ -261,8 +261,14 @@ SIGNING_HINT=""
 if [[ "$MODE" == "simulator" ]]; then
   BUILD_ARGS+=(-sdk iphonesimulator -destination "generic/platform=iOS Simulator")
 else
-  BUILD_ARGS+=(-destination "generic/platform=iOS")
-  SIGNING_HINT=". A device build needs a signing identity: set MIGO_PROBE_TEAM to your team id (Xcode > Settings > Accounts creates a free personal team)"
+  # -allowProvisioningUpdates is not a convenience. A free personal team has no
+  # profile for dev.migo.probe until one is asked for, and the device has to be
+  # registered against the team the same way; without the flag xcodebuild
+  # refuses with "Automatic signing is disabled and unable to generate a
+  # profile", which is the first thing a lab day with a phone in hand hits and
+  # reads as a signing-identity problem rather than a missing flag.
+  BUILD_ARGS+=(-destination "generic/platform=iOS" -allowProvisioningUpdates)
+  SIGNING_HINT=". A device build needs a signing identity: set MIGO_PROBE_TEAM to your team id (Xcode > Settings > Accounts creates a free personal team). The identity has to be in this user's keychain -- signing runs as whoever runs this script, so an Xcode signed in as another user does not lend it one"
 fi
 if [[ -n "${MIGO_PROBE_TEAM:-}" ]]; then
   BUILD_ARGS+=("DEVELOPMENT_TEAM=$MIGO_PROBE_TEAM")
