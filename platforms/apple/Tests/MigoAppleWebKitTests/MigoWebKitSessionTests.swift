@@ -138,9 +138,12 @@ import XCTest
                         + " inWindow=\(webView?.window != nil)"
                         + " diagnostics=\(recorder.diagnostics.count)"
                         + " refusals=\(recorder.refusals.map(\.absoluteString))"
+                        + " origin=\(session.originActivity)"
                         + ". A url of nil means the load never began; a url with"
                         + " loading=false and no diagnostic means the page loaded and its"
-                        + " script never reported.")
+                        + " script never reported. origin.started=0 means WebKit never"
+                        + " asked the host for the page, which is a different failure from"
+                        + " started>0 with settled=0 -- that one is the host not answering.")
             }
             return try XCTUnwrap(recorder.diagnostics.first)
         }

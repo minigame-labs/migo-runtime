@@ -62,6 +62,39 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     private var live = Set<ObjectIdentifier>()
     private let liveLock = NSLock()
 
+    /// What this origin has actually been asked for and has actually answered.
+    ///
+    /// It exists because a stalled page load looks identical from the outside
+    /// whichever side is stuck. A test that timed out on CI could say the load had
+    /// begun and had reached ten percent, and nothing more -- and "WebKit never
+    /// asked us" and "we never answered" need opposite investigations. These four
+    /// numbers separate them in one line of a failure message.
+    public struct Activity: Sendable, Equatable {
+        /// How many times WebKit has called `webView(_:start:)`.
+        public var started: Int = 0
+        /// How many tasks were finished, refused or failed.
+        public var settled: Int = 0
+        /// Body bytes handed to WebKit.
+        public var delivered: Int = 0
+        /// Why the last refusal happened, if there was one.
+        public var lastRefusal: String?
+    }
+
+    private var record = Activity()
+
+    /// A snapshot of what this origin has served.
+    public var activity: Activity {
+        liveLock.lock()
+        defer { liveLock.unlock() }
+        return record
+    }
+
+    private func note(_ change: (inout Activity) -> Void) {
+        liveLock.lock()
+        change(&record)
+        liveLock.unlock()
+    }
+
     /// How much is read and handed over at a time.
     ///
     /// 256 KiB has a failure mode on each side: smaller costs a main-queue hop per
@@ -80,6 +113,7 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     public func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         liveLock.lock()
         live.insert(ObjectIdentifier(task))
+        record.started += 1
         liveLock.unlock()
 
         let request = task.request
@@ -119,7 +153,12 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
 
     private func retire(_ task: WKURLSchemeTask) {
         liveLock.lock()
-        live.remove(ObjectIdentifier(task))
+        // Counted only when the task was still live: WebKit also calls `stop`, and a
+        // settled count that included those would say a task was answered when it
+        // was taken away.
+        if live.remove(ObjectIdentifier(task)) != nil {
+            record.settled += 1
+        }
         liveLock.unlock()
     }
 
@@ -138,6 +177,7 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     // MARK: - responses
 
     private func refuse(_ task: WKURLSchemeTask, status: Int, reason: String) {
+        note { $0.lastRefusal = "\(status): \(reason)" }
         onTask(task) { [weak self] task in
             let body = Data(reason.utf8)
             if let response = HTTPURLResponse(
@@ -278,6 +318,7 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
                 return
             }
             task.didReceive(chunk)
+            self.note { $0.delivered += chunk.count }
             self.queue.async { [weak self] in
                 self?.pump(handle: handle, remaining: remaining - chunk.count, task: task)
             }
