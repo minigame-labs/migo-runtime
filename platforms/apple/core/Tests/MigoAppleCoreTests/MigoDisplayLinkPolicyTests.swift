@@ -135,28 +135,49 @@ final class MigoDisplayLinkPolicyTests: XCTestCase {
 
     // MARK: - the link's own lifetime
 
-    func testALinkDroppedWithoutBeingStoppedIsStillDeallocated() {
-        // The bug this asserts against was in the first version of MigoDisplayLink,
-        // on both platforms. `CADisplayLink` retains its target and the CVDisplayLink
+    func testTheProxyDoesNotKeepItsOwnerAlive() {
+        // The bug this asserts against was in the first version of MigoDisplayLink, on
+        // both platforms. `CADisplayLink` retains its target and the CVDisplayLink
         // callback context retained the owner, so the owner held the link and the link
         // held the owner -- and `deinit`, the one place that stops it, could never run.
         // A host that forgets `stop()` then has a display link firing for the life of
         // the process, which on a phone is a battery complaint with nothing to blame.
+        //
+        // Asserted against the proxy directly, and not by starting a link. The first
+        // version of this test did start one and **passed against the bug
+        // deliberately reintroduced**: on a Mac reached over ssh there is no active
+        // display, so no link is created, so nothing is retained and nothing can leak.
+        // A test that cannot fail is not evidence, whichever way it comes out.
         weak var observed: MigoDisplayLink?
+        var proxy: MigoDisplayLinkProxy?
         autoreleasepool {
             let link = MigoDisplayLink(
                 decision: Policy.decide(.init(platform: .macOS, osMajor: 14)),
                 onTick: { _, _ in })
             observed = link
-            #if os(iOS)
-                link.start()
-            #elseif os(macOS)
-                link.start()
-            #endif
+            proxy = MigoDisplayLinkProxy(owner: link)
         }
+        XCTAssertNotNil(proxy, "the proxy has to outlive the owner; the link holds it")
         XCTAssertNil(
             observed,
-            "the link kept itself alive, so it runs until the process ends and deinit never fires")
+            "the proxy holds its owner strongly, so the owner outlives every reference to it and "
+                + "deinit never fires")
+        XCTAssertNil(proxy?.owner, "the weak reference did not clear")
+    }
+
+    func testStartingAndDroppingALinkDoesNotCrash() {
+        // A smoke test, and honest about being one: on a machine with no active
+        // display no link is created, so this exercises the paths that lead to the
+        // attempt rather than the link itself.
+        weak var observed: MigoDisplayLink?
+        autoreleasepool {
+            let link = MigoDisplayLink(
+                decision: Policy.decide(.init(platform: .macOS, osMajor: 12)),
+                onTick: { _, _ in })
+            observed = link
+            link.start()
+        }
+        XCTAssertNil(observed)
     }
 
     func testStoppingTwiceAndStoppingWithoutStartingAreBothHarmless() {

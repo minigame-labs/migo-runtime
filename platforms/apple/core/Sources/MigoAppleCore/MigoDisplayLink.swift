@@ -20,7 +20,12 @@ import Foundation
 ///
 /// So the link holds this, this holds the owner weakly, and the owner's `deinit` is
 /// reachable again.
-private final class MigoDisplayLinkProxy: NSObject {
+/// Internal rather than private so a test can construct one. The lifetime property
+/// that matters -- that this does not keep its owner alive -- is otherwise only
+/// observable when a link really starts, and a link does not start on a machine with
+/// no display: the first version of that test passed against a deliberately
+/// reintroduced strong reference, on a Mac reached over ssh.
+final class MigoDisplayLinkProxy: NSObject {
     weak var owner: MigoDisplayLink?
 
     init(owner: MigoDisplayLink) {
