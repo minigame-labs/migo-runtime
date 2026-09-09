@@ -700,10 +700,19 @@ mod tests {
 /// the question a retirement has to answer -- did we leave one behind? -- is
 /// answerable here, at the call, instead of inferred later from a live layer.
 ///
-/// SCOPE. One ledger per `EglRuntime`, and an `EglRuntime` is used from the
-/// thread that owns the canvas manager. The upload thread loads its own EGL
-/// instance and binds only its own pbuffer, so it cannot name a surface this
-/// ledger tracks; nothing else calls `eglMakeCurrent` on this display.
+/// SCOPE, and what its silence does not cover. One ledger per `EglRuntime`, and
+/// an `EglRuntime` is used from the thread that owns the canvas manager. The
+/// upload thread loads its own EGL instance and binds only its own pbuffer, so
+/// it cannot name a surface this ledger tracks; nothing else calls
+/// `eglMakeCurrent` on this display.
+///
+/// `EglRuntime::shutdown` is deliberately outside it: that path calls the
+/// instance directly, under `catch_unwind`, because it runs while a render
+/// thread may already be unwinding and a panic there would be the second one.
+/// So a run with no line from this ledger says "no surface was destroyed
+/// through `destroy_surface`" and says nothing about the root pbuffer the final
+/// teardown takes down. Written here because the difference matters exactly
+/// once -- when somebody reads a quiet run and has to say what the quiet means.
 ///
 /// COST. Debug builds only. `make_current` runs a few hundred times a frame on a
 /// busy scene -- a map lookup per call is not a price a shipping build should pay
