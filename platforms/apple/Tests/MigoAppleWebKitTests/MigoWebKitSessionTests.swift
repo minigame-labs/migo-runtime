@@ -93,9 +93,23 @@ import XCTest
             """
         }
 
+        /// How long a mounted page is given to report.
+        ///
+        /// A timeout is here to turn a hang into a failure, so its value has to be
+        /// longer than the slowest legitimate run on the slowest machine this suite
+        /// runs on -- not just above what a warm Mac does. Twenty seconds was the
+        /// latter, and it failed exactly once in CI: on the alphabetically first test,
+        /// which pays the cold launch of the whole WebKit stack in a simulator that
+        /// has just booted. The other nine, running behind it, passed on the same
+        /// machine in the same run.
+        ///
+        /// A warm-up in `setUp` would hide the cost rather than budget for it, and
+        /// would need a timeout of its own.
+        static let reportTimeout: TimeInterval = 120
+
         private func firstDiagnostic(
             from script: String, surface: MigoWebKitSurface = .default,
-            timeout: TimeInterval = 20
+            timeout: TimeInterval = MigoWebKitSessionTests.reportTimeout
         ) throws -> [String: Any] {
             try write(page(reporting: script), to: "index.html")
             let recorder = Recorder()
@@ -127,7 +141,7 @@ import XCTest
             recorder.onDiagnostic = { _ in arrived.fulfill() }
             let session = MigoWebKitSession(contentRoot: root, delegate: recorder)
             mount(session)
-            wait(for: [arrived], timeout: 20)
+            wait(for: [arrived], timeout: Self.reportTimeout)
             let diagnostic = try XCTUnwrap(recorder.diagnostics.first)
             XCTAssertEqual(
                 diagnostic["lane"] as? String, MigoWebKitSurface.lane,
@@ -274,11 +288,11 @@ import XCTest
             }
             let session = MigoWebKitSession(contentRoot: root, delegate: recorder)
             mount(session)
-            wait(for: [ready], timeout: 20)
+            wait(for: [ready], timeout: Self.reportTimeout)
 
             NotificationCenter.default.post(
                 name: UIApplication.didEnterBackgroundNotification, object: nil)
-            wait(for: [delivered], timeout: 10)
+            wait(for: [delivered], timeout: Self.reportTimeout)
         }
 
         // MARK: - navigation
@@ -297,15 +311,22 @@ import XCTest
             recorder.onDiagnostic = { _ in ready.fulfill() }
             let session = MigoWebKitSession(contentRoot: root, delegate: recorder)
             mount(session)
-            wait(for: [ready], timeout: 20)
+            wait(for: [ready], timeout: Self.reportTimeout)
 
+            // Polled rather than checked once after a fixed delay. A single look three
+            // seconds later is a race that the machine wins on a busy CI runner, and
+            // it fails by waiting out the whole timeout -- a slow red with a message
+            // about the wrong thing.
             let refused = expectation(description: "the navigation was refused")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            let poll = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { timer in
                 if recorder.refusals.contains(where: { $0.host == "example.com" }) {
+                    timer.invalidate()
                     refused.fulfill()
                 }
             }
-            wait(for: [refused], timeout: 10)
+            RunLoop.main.add(poll, forMode: .common)
+            wait(for: [refused], timeout: Self.reportTimeout)
+            poll.invalidate()
             XCTAssertEqual(
                 session.webView?.url?.scheme, MigoWebKitContentOrigin.scheme,
                 "the web view left the content origin")
