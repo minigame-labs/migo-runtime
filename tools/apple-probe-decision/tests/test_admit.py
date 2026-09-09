@@ -76,7 +76,12 @@ def run(records: list[dict], *extra: str) -> dict:
     with tempfile.TemporaryDirectory() as directory:
         raw = Path(directory) / "raw"
         raw.mkdir()
-        (raw / "records.json").write_text(json.dumps(records), encoding="utf-8")
+        # Named the way the tool looks for records, which is the way
+        # run-apple-probe.sh and the probe app write them. The fixture used to be
+        # `records.json`; that stopped being a record the moment the tool learned
+        # to ignore everything that is not one, and a fixture the tool cannot see
+        # is a test that passes by testing nothing.
+        (raw / "capability-fixture.json").write_text(json.dumps(records), encoding="utf-8")
         output = Path(directory) / "admission.json"
         result = subprocess.run(
             [sys.executable, str(TOOL), "--input", str(raw), "--output", str(output), *extra],
@@ -234,6 +239,44 @@ check(
 check(
     run(both, "--require-admission") is not None,
     "the stricter flag does not crash the tool")
+
+# --- the evidence directory is not a directory of records --------------------
+#
+# run-apple-probe.sh writes devicectl's own `devices-*.json`, `install-*.json`,
+# `launch-*.json` and `copy-*.json` into the directory it then admits from, and
+# writes this tool's `admission.json` there too. Reading every *.json meant the
+# FIRST successful device run ended in `rejected`, naming a launch receipt for
+# fields it was never going to have: a correct run, a complete set of records,
+# and a verdict that reads as bad data. Nothing exercised it -- the runner's
+# contract test stops at --dry-run.
+def run_beside_operational_artifacts(records: list[dict]) -> dict:
+    with tempfile.TemporaryDirectory() as directory:
+        raw = Path(directory) / "raw"
+        raw.mkdir()
+        (raw / "capability-fixture.json").write_text(json.dumps(records), encoding="utf-8")
+        # Shaped like what devicectl --json-output actually writes.
+        (raw / "launch-probe-1.json").write_text(
+            json.dumps({"info": {"outcome": "success"}, "result": {"process": {"processIdentifier": 1}}}),
+            encoding="utf-8")
+        (raw / "devices-probe-1.json").write_text(
+            json.dumps({"info": {"outcome": "success"}, "result": {"devices": []}}), encoding="utf-8")
+        # And this tool's own output from the previous run of the same directory.
+        (raw / "admission.json").write_text(json.dumps({"verdict": "provisional"}), encoding="utf-8")
+        output = Path(directory) / "out.json"
+        subprocess.run(
+            [sys.executable, str(TOOL), "--input", str(raw), "--output", str(output)],
+            capture_output=True, text=True)
+        return json.loads(output.read_text(encoding="utf-8"))
+
+
+beside = run_beside_operational_artifacts(both)
+check(
+    beside["verdict"] == run(both)["verdict"],
+    f"a run's own devicectl output and a previous admission.json must not change the "
+    f"verdict: {beside['verdict']} beside them, {run(both)['verdict']} without")
+check(
+    len(beside["admitted"]) == len(run(both)["admitted"]),
+    "the same records admit the same candidates whether or not the run's logs sit beside them")
 
 # --- reproducibility ---------------------------------------------------------
 check(
