@@ -54,8 +54,16 @@ public final class MigoProbeSchemeHandler: NSObject, WKURLSchemeHandler {
             // `httpBody` is how "the body was lost" gets reported for a body
             // that arrived: the stream form is the common one for a fetch with
             // a typed array.
-            let body = Self.readBody(from: task.request)
-            finish(task, status: 200, mime: "application/octet-stream", body: body)
+            switch Self.readBody(from: task.request) {
+            case .complete(let body):
+                finish(task, status: 200, mime: "application/octet-stream", body: body)
+            case .failed(let reason):
+                // 500 with the reason, not a short body with a 200. The page compares
+                // bytes, so a truncated echo would be recorded as a lost body -- which
+                // is the finding A5 already got wrong once.
+                finish(
+                    task, status: 500, mime: "text/plain", body: Data(reason.utf8))
+            }
             return
         }
 
@@ -73,24 +81,66 @@ public final class MigoProbeSchemeHandler: NSObject, WKURLSchemeHandler {
         lock.unlock()
     }
 
+    /// What came out of the body stream.
+    ///
+    /// Two outcomes and not one `Data`, because a short read and a complete small
+    /// body are the same value. This handler echoes what it read and the page
+    /// compares bytes, so a truncation is reported by the page as "the other side
+    /// received N of M bytes" -- which is A5's own failure mode, restated. A5 is
+    /// the assumption that a POST body is lost on the way to the handler, citing a
+    /// WebKit bug that is RESOLVED FIXED; a truncated read here would resurrect a
+    /// fixed bug as a measurement and eliminate the custom-scheme transport.
+    enum BodyOutcome: Equatable {
+        case complete(Data)
+        case failed(String)
+    }
+
+    /// The largest body this handler will assemble. Same bound and same reason as
+    /// the loopback listener's: four times the largest payload class the matrix
+    /// measures, so a measurement never meets it and a runaway claim always does.
+    static let maximumBodyBytes = 16 * 1024 * 1024
+
     /// The body of a scheme task, from whichever of the two places WebKit put it.
-    static func readBody(from request: URLRequest) -> Data {
+    ///
+    /// WHY THE LOOP IS NOT GATED ON `hasBytesAvailable`. That property is not an EOF
+    /// indicator for anything but a memory-backed stream: for a stream fed
+    /// incrementally it answers false whenever the next bytes have not arrived yet,
+    /// so a loop conditioned on it stops early and returns a *prefix* of the body.
+    /// With the eight-byte payload the probe sends today that can never happen, which
+    /// is exactly why it would have gone unnoticed until the transport matrix posted
+    /// four megabytes. `read` returning 0 is the end of the stream and -1 is an
+    /// error, and those are the two conditions that end the loop.
+    ///
+    /// It reads synchronously on WebKit's calling thread, which is acceptable *here*
+    /// and stated so it is not copied: this answers a capability question, not a
+    /// latency one. A transport arm that times a round trip must not reuse it.
+    static func readBody(from request: URLRequest) -> BodyOutcome {
         if let inline = request.httpBody {
-            return inline
+            return .complete(inline)
         }
         guard let stream = request.httpBodyStream else {
-            return Data()
+            return .complete(Data())
         }
         stream.open()
         defer { stream.close() }
         var collected = Data()
-        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
-        while stream.hasBytesAvailable {
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
             let read = stream.read(&buffer, maxLength: buffer.count)
-            if read <= 0 { break }
+            if read == 0 { break }
+            if read < 0 {
+                let reason = stream.streamError?.localizedDescription ?? "unknown stream error"
+                return .failed(
+                    "the body stream failed after \(collected.count) byte(s): \(reason)")
+            }
             collected.append(contentsOf: buffer[0..<read])
+            if collected.count > maximumBodyBytes {
+                return .failed(
+                    "the body exceeded \(maximumBodyBytes) bytes, which is four times the largest "
+                        + "payload class the matrix measures")
+            }
         }
-        return collected
+        return .complete(collected)
     }
 
     private func finish(_ task: WKURLSchemeTask, status: Int, mime: String, body: Data) {
