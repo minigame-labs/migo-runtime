@@ -52,12 +52,21 @@ public enum MigoWebKitOriginRules {
         guard requestHost == host else { return .wrongHost(requestHost) }
         var path = requestPath
         if path.isEmpty || path == "/" { path = "/" + indexPath }
-        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
-        // Relative to the root, then standardised: `URL(fileURLWithPath:relativeTo:)`
-        // happily resolves `..` past the root and hands back somewhere else, which is
-        // why the check is on the result and never on the input.
-        let candidate = URL(fileURLWithPath: String(path.dropFirst()), relativeTo: root)
-            .resolvingSymlinksInPath().standardizedFileURL.path
+        let resolvedRootURL = root.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedRoot = resolvedRootURL.path
+        // `appendingPathComponent`, not `URL(fileURLWithPath:relativeTo:)`. The latter
+        // treats a base without a trailing slash as a *file* and resolves the relative
+        // part against its parent, so every request under a root like
+        // `/tmp/x/package` landed on `/tmp/x/<path>` -- a sibling of the package. Every
+        // path then failed containment, which is the safe direction and still wrong:
+        // the lane served nothing at all. A test against a real directory found it; a
+        // test that passed the root with a trailing slash would not have.
+        //
+        // The root is resolved before appending so the prefix comparison is between
+        // two paths in the same namespace: on macOS `/var` is a link to `/private/var`,
+        // and resolving only one side compares `/var/...` against `/private/var/...`.
+        let candidate = resolvedRootURL.appendingPathComponent(String(path.dropFirst()))
+            .standardizedFileURL.resolvingSymlinksInPath().standardizedFileURL.path
         let prefix = resolvedRoot.hasSuffix("/") ? resolvedRoot : resolvedRoot + "/"
         guard candidate == resolvedRoot || candidate.hasPrefix(prefix) else {
             return .outsidePackage

@@ -151,6 +151,15 @@ if missing_rows:
 declared = {k: v for k, v in contract["capabilities"].items() if not k.startswith("_")}
 notes.append(f"read {len(declared)} capability row(s) out of the contract")
 
+lane_match = re.search(r'static let lane = "([^"]+)"', swift)
+if not lane_match:
+    problems.append("the Swift surface no longer names the lane it belongs to")
+elif lane_match.group(1) != contract.get("lane"):
+    problems.append(
+        f"the contract is for lane {contract.get('lane')!r} and the runtime reports "
+        f"{lane_match.group(1)!r}, so every diagnostic content sends is labelled with the wrong "
+        "lane")
+
 if set(contract.get("bridge_kinds", {})) != set(kind_raw.values()):
     problems.append(
         "the contract's bridge_kinds and the Swift BridgeKind enum are different sets: "

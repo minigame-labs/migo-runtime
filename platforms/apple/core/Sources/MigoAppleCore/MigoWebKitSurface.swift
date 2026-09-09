@@ -18,6 +18,13 @@ import Foundation
 /// compliance posture nothing enforces.
 public struct MigoWebKitSurface: Sendable, Equatable {
 
+    /// The lane this surface belongs to, as the contract names it.
+    ///
+    /// A string and not `MigoRuntimeProfile`'s numeric raw value: this is what the
+    /// host reports to content and to its own telemetry, and a number would make
+    /// every collected diagnostic depend on a mapping nobody shipped.
+    public static let lane = "ios_webkit_full"
+
     /// How content would reach a capability. Four answers, because they are four
     /// different facts and collapsing any two of them produces a wrong report.
     public enum Provenance: String, Sendable, CaseIterable, Codable {
