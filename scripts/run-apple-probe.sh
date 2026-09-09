@@ -308,14 +308,33 @@ else
     || fail "devicectl launch failed; see $OUT_DIR/launch-$RUN_ID.json"
 
   echo "[4/5] waiting up to ${TIMEOUT}s for Documents/capability-$RUN_ID.json"
+  # Copied into a directory, then located inside it. `devicectl device copy from`
+  # documents --destination only as "the location to which the item should be
+  # copied", which leaves open whether a non-existent path is created as the file or
+  # treated as a directory to place it in. Both are handled rather than guessed,
+  # because the guess would be found wrong on a bench with the device in hand and a
+  # gate half measured. This path is the one thing in this script no test exercises:
+  # it needs a device.
+  COPY_DIR="$OUT_DIR/pull-$RUN_ID"
+  rm -rf "$COPY_DIR"
+  mkdir -p "$COPY_DIR"
   DEADLINE=$((SECONDS + TIMEOUT))
   until xcrun devicectl device copy from --device "$TARGET" \
     --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
-    --source "Documents/capability-$RUN_ID.json" --destination "$RECORD_FILE" \
+    --source "Documents/capability-$RUN_ID.json" --destination "$COPY_DIR" \
     --json-output "$OUT_DIR/copy-$RUN_ID.json" >/dev/null 2>&1; do
     ((SECONDS < DEADLINE)) || fail "no records after ${TIMEOUT}s. The app writes them when the run finishes and the screen says what it is doing; the last copy attempt is in $OUT_DIR/copy-$RUN_ID.json"
     sleep 5
   done
+
+  PULLED="$(find "$COPY_DIR" -type f -name "capability-$RUN_ID.json" -print -quit)"
+  if [[ -z "$PULLED" ]]; then
+    # The other reading: the destination itself became the file.
+    PULLED="$(find "$COPY_DIR" -type f -print -quit)"
+  fi
+  [[ -n "$PULLED" ]] || fail "devicectl reported success and left nothing under $COPY_DIR; see $OUT_DIR/copy-$RUN_ID.json"
+  mv "$PULLED" "$RECORD_FILE"
+  rmdir "$COPY_DIR" 2>/dev/null || true
 fi
 
 [[ -s "$RECORD_FILE" ]] || fail "$RECORD_FILE is empty"
