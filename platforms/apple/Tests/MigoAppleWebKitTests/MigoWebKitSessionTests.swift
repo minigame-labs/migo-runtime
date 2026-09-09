@@ -118,7 +118,30 @@ import XCTest
             let session = MigoWebKitSession(
                 surface: surface, contentRoot: root, delegate: recorder)
             mount(session)
-            wait(for: [arrived], timeout: timeout)
+
+            // On timeout, say what state the session reached. A bare "the
+            // expectation was not fulfilled" is the least informative red a lane
+            // can produce, and this one has now cost three CI iterations: the
+            // alphabetically first test in this bundle times out on the runner
+            // while the other nine pass in about twelve seconds together, which
+            // 120 seconds of cold start does not explain. What distinguishes
+            // "slow" from "stuck" is whether the load ever started, whether it
+            // finished, and whether the page said anything at all -- none of
+            // which the expectation reports.
+            if XCTWaiter().wait(for: [arrived], timeout: timeout) != .completed {
+                let webView = session.webView
+                XCTFail(
+                    "no diagnostic within \(Int(timeout))s."
+                        + " url=\(webView?.url?.absoluteString ?? "nil")"
+                        + " loading=\(webView.map { String($0.isLoading) } ?? "nil")"
+                        + " progress=\(webView.map { String(format: "%.2f", $0.estimatedProgress) } ?? "nil")"
+                        + " inWindow=\(webView?.window != nil)"
+                        + " diagnostics=\(recorder.diagnostics.count)"
+                        + " refusals=\(recorder.refusals.map(\.absoluteString))"
+                        + ". A url of nil means the load never began; a url with"
+                        + " loading=false and no diagnostic means the page loaded and its"
+                        + " script never reported.")
+            }
             return try XCTUnwrap(recorder.diagnostics.first)
         }
 
