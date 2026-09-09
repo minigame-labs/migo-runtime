@@ -113,6 +113,19 @@ let package = Package(
             path: "Sources/MigoAppleWebKit"
         ),
 
+        // Runs on the iOS simulator leg of apple-sdk.yml. Everything the lane
+        // *decides* is tested in the engine-free package on every pull request; what
+        // needs a real WKWebView is whether those decisions are wired to each other
+        // -- whether the injected shim reaches the handlers the session installed,
+        // and whether the origin answers the requests WebKit itself makes. A
+        // simulator is enough for that: it is not a measurement, and the capability
+        // gate's rule about simulator evidence is about what a device can host.
+        .testTarget(
+            name: "MigoAppleWebKitTests",
+            dependencies: ["MigoAppleWebKit"],
+            path: "Tests/MigoAppleWebKitTests"
+        ),
+
         // Lane 2: content JavaScript stays in WebKit's WebContent process;
         // G0 selects Window versus Dedicated Worker, transport, clock, and
         // host shape from the ProbeApp evidence.
