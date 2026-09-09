@@ -1819,6 +1819,21 @@ impl RenderThread {
                 shared::thread_priority::set_current_thread_priority(
                     shared::thread_priority::Priority::Display,
                 );
+                // The outer Objective-C autorelease pool, covering setup and
+                // teardown; the frame loop pushes its own per iteration.
+                //
+                // Both are needed and they bound different things. EGL/ANGLE
+                // bring-up and the final teardown happen outside the loop and
+                // autorelease too -- an isolated probe run under
+                // OBJC_DEBUG_MISSING_POOLS reported NSBundle and NSDictionary
+                // instances leaking across ANGLE's EGL bring-up on a poolless
+                // thread, before any frame is drawn -- so a loop-only
+                // pool leaves those to the runtime's hidden thread-exit pool. The
+                // inner one is what keeps a long-lived thread from accumulating a
+                // session's worth of per-frame drawables in this one.
+                //
+                // Zero-sized off Apple, so neither carries a `cfg`.
+                let _autorelease_thread = shared::objc_autorelease::autorelease_scope();
                 // The body answers one question on the way out: was it asked to
                 // stop, or did it fail before it could render? It returns a
                 // `Result`, so that every way out of it has to say which of the
