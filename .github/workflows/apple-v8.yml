@@ -86,6 +86,7 @@ jobs:
             build/apple/v8/${{ matrix.arch }}/librusty_v8.a
             build/apple/v8/${{ matrix.arch }}/src_binding.rs
             build/apple/v8/${{ matrix.arch }}/build-metadata.json
+            build/apple/v8/${{ matrix.arch }}/component-manifest.json
           retention-days: 7
           if-no-files-found: error
 

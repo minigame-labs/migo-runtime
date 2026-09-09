@@ -422,7 +422,35 @@ pathlib.Path(output).write_text(
 )
 PY
 
+# ---------------------------------------------------------------------------
+# The component manifest, which is the artefact the supply chain actually
+# consumes: scripts/fetch-v8-archives.sh verifies a downloaded archive against
+# the `hashes.archive` in a COMMITTED manifest, so this is the file that makes a
+# published archive trustable rather than merely present.
+#
+# Written by the same tool that validates it -- tools/artifact-manifest already
+# carries `validate_apple_v8_target`, so the shape is not this script's to invent.
+# ---------------------------------------------------------------------------
+
+info "writing and verifying the component manifest"
+python3 "$SCRIPT_DIR/write-apple-v8-component-manifest.py" \
+    --arch "$ARCH" \
+    --repo-root "$PROJECT_ROOT" \
+    --rusty-v8-src "$SRC_DIR" \
+    --gn-args "$(cat "$ARGS_GN")" \
+    --archive "$OUT_DIR/librusty_v8.a" \
+    --binding "$OUT_DIR/src_binding.rs" \
+    --observed-floor "$OBSERVED" \
+    --deployment-target "$DEPLOYMENT_TARGET" \
+    --output "$OUT_DIR/component-manifest.json" \
+    --lock "$LOCK" \
+    --rustc-version "$(rustc --version --verbose | tr '\n' '|')" \
+    --compiler "$(clang --version | head -1)" \
+    --sdk "$(xcrun --show-sdk-version 2>/dev/null || echo unknown) ($(xcrun --show-sdk-path 2>/dev/null || echo unknown))" \
+    --linker "$(ld -v 2>&1 | head -1)"
+
 ok "done"
 info "  $OUT_DIR/librusty_v8.a ($(stat -f %z "$OUT_DIR/librusty_v8.a") bytes)"
 info "  $OUT_DIR/src_binding.rs"
 info "  $OUT_DIR/build-metadata.json"
+info "  $OUT_DIR/component-manifest.json"
