@@ -109,7 +109,27 @@ import XCTest
         ///
         /// A warm-up in `setUp` would hide the cost rather than budget for it, and
         /// would need a timeout of its own.
-        static let reportTimeout: TimeInterval = 120
+        ///
+        /// 120 was still a guess about the slowest machine. It is now a measurement.
+        /// WebKit logs its own helper-process launch times, and across three reds and
+        /// one green on the same lane:
+        ///
+        ///     red   WebContent 48.9 s   59.0 s   37.5 s
+        ///           GPU        37.0 s   58.6 s   39.5 s
+        ///     green WebContent  1.3-2.2 s
+        ///
+        /// So the cold launch this number is supposed to cover is not the ~2 s a
+        /// healthy runner takes -- it is up to 59 s, on a machine starved enough that
+        /// everything after the launch is slow by the same factor. 120 left about a
+        /// minute for the load itself at 30x, which is why it kept landing just the
+        /// wrong side of the line.
+        ///
+        /// 240 is twice the measured worst launch plus room for the load behind it.
+        /// What it costs is two extra minutes on a genuinely hung run; what it buys
+        /// is that a starved runner stops being reported as a product defect. It does
+        /// not hide one either: the two records and the about:blank probe below still
+        /// say what happened, and a real stall still fails -- just later.
+        static let reportTimeout: TimeInterval = 240
 
         private func firstDiagnostic(
             from script: String, surface: MigoWebKitSurface = .default,
