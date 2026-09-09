@@ -98,9 +98,10 @@ import WebKit
         private var lifecycleSubscribed = false
         private var lifecycleObservers: [NSObjectProtocol] = []
 
-        private var diagnosticWindowStart = Date.distantPast
-        private var diagnosticsInWindow = 0
-        private var diagnosticsDropped = 0
+        /// The bound lives in the engine-free package, where a pull request runs it
+        /// against its boundary cases with the clock as a parameter.
+        private var diagnosticLimiter = MigoRateLimiter(
+            perWindow: MigoWebKitSession.diagnosticsPerSecond)
 
         public init(
             surface: MigoWebKitSurface = .default,
@@ -257,19 +258,10 @@ import WebKit
         }
 
         private func admitDiagnostic() -> Int? {
-            let now = Date()
-            if now.timeIntervalSince(diagnosticWindowStart) >= 1 {
-                diagnosticWindowStart = now
-                diagnosticsInWindow = 0
+            switch diagnosticLimiter.admit(at: Date()) {
+            case .admitted(let dropped): return dropped
+            case .refused: return nil
             }
-            guard diagnosticsInWindow < Self.diagnosticsPerSecond else {
-                diagnosticsDropped += 1
-                return nil
-            }
-            diagnosticsInWindow += 1
-            let dropped = diagnosticsDropped
-            diagnosticsDropped = 0
-            return dropped
         }
     }
 
@@ -326,7 +318,8 @@ import WebKit
                     replyHandler(
                         nil,
                         "migoHost: diagnostics are rate-limited to "
-                            + "\(Self.diagnosticsPerSecond) per second and this one was dropped")
+                            + "\(Self.diagnosticsPerSecond) per second; this one was dropped and "
+                            + "\(diagnosticLimiter.pendingDropCount) are waiting to be counted")
                     return
                 }
                 var diagnostic = message.body as? [String: Any] ?? ["body": message.body]
