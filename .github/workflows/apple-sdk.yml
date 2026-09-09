@@ -194,6 +194,17 @@ jobs:
 
       - name: The isolated diagnostic package links and runs its ABI tests
         if: matrix.host_slice
+        # MIGO_CAPI_LOG installs the engine's log subscriber, which is opt-in
+        # because a library has no business hijacking a process's global logger.
+        # It is on here because the engine now reports one thing these tests
+        # cannot otherwise see: SurfaceResource::drop warns when it is not the
+        # last reference to the anchor, and that warning is the difference between
+        # "Migo still held the surface" and "only owners outside Migo did". The
+        # Swift assertion measures the layer's reference count and cannot tell
+        # those apart; the engine can, and without a subscriber it says so into a
+        # void.
+        env:
+          MIGO_CAPI_LOG: warn
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
         run: |
           swift build
@@ -229,6 +240,17 @@ jobs:
       - name: The ABI tests run on iOS with package-embedded ANGLE
         if: matrix.platform == 'ios-simulator'
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
+        # MIGO_CAPI_LOG installs the engine's log subscriber, which is opt-in
+        # because a library has no business hijacking a process's global logger.
+        # It is on here because the engine now reports one thing these tests
+        # cannot otherwise see: SurfaceResource::drop warns when it is not the
+        # last reference to the anchor, and that warning is the difference between
+        # "Migo still held the surface" and "only owners outside Migo did". The
+        # Swift assertion measures the layer's reference count and cannot tell
+        # those apart; the engine can, and without a subscriber it says so into a
+        # void.
+        env:
+          MIGO_CAPI_LOG: warn
         run: |
           udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
           xcodebuild test \
