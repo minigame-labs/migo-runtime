@@ -650,6 +650,15 @@ jobs:
       - name: The probe app needs no exemption the product cannot ship
         run: bash scripts/test-apple-probe-app-ats-contract.sh
 
+      # The runner's two refusals, executed rather than read. Gate 1's answers
+      # include two nobody can query -- Lockdown Mode and the local-network alert
+      # -- so an unattended device run records them as not_probed, and admit.py
+      # then calls every arm that needed one unmeasured. On the page that reads as
+      # an arm the device ruled out, which is what the first unattended run of
+      # this gate actually produced.
+      - name: The probe runner refuses an unattested device run
+        run: bash scripts/test-apple-probe-run-contract.sh
+
       - name: OpenHarmony host and package metadata contracts
         run: |
           bash scripts/test-ohos-host-contract.sh
