@@ -165,6 +165,34 @@ command -v vtool >/dev/null || err "vtool is not on PATH; the floor could not be
 [[ -f "$LOCK" ]] || err "$LOCK is missing"
 [[ -f "$FLOOR" ]] || err "$FLOOR is missing"
 
+# The toolchain probes, asked now rather than in an hour.
+#
+# The component manifest written at the end records rustc, the compiler, the SDK
+# and the linker, and tools/artifact-manifest refuses a manifest whose toolchain
+# fields are empty (`require_non_placeholder`, four of them). Every one of those
+# values comes from a command run at the end of the build -- so a machine where
+# one of them answers nothing turns an hour of compiling into a seal that fails
+# on a blank string. `rustc` is the realistic case: it is on PATH through rustup,
+# and a non-login shell does not always have it.
+#
+# Cheap, and it is the difference between failing in the first second and failing
+# in the sixtieth minute.
+# Both conditions, and the first version of this check had only the second --
+# which made it a check that could not fail. `rustc --version` on a machine
+# without rustup on PATH exits 127 and prints "command not found" to stderr, and
+# a test that captured `2>&1` and asked whether anything came back counted that
+# as an answer. Measured rather than assumed: on a real Mac, rustc-missing is
+# exit 127 with empty stdout, and `ld -v` is exit 0 with its banner on stderr and
+# nothing on stdout -- so neither the status nor the stream alone separates the
+# two cases.
+for probe in "rustc --version" "clang --version" "xcrun --show-sdk-version" "ld -v"; do
+    if ! probe_output="$(eval "$probe" 2>&1)"; then
+        err "\`$probe\` failed, and the component manifest records its output. tools/artifact-manifest refuses a manifest with an empty toolchain field, so this build would compile for an hour and then fail to seal on a blank string"
+    fi
+    [[ -n "$probe_output" ]] \
+        || err "\`$probe\` succeeded and printed nothing, and the component manifest records its output"
+done
+
 # ---------------------------------------------------------------------------
 # Everything numeric comes from a contract. A number typed here is a number that
 # drifts from the file that decides it, silently, in the direction of whatever
