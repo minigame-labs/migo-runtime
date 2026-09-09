@@ -1,0 +1,54 @@
+{
+  "schema": "migo-v8-component-manifest/v1",
+  "component_id": "6ce1723d17fcd36b21379a6ca68e92816143cd01711985e535b4fac5fb66c0d1",
+  "target": {
+    "triple": "aarch64-apple-darwin",
+    "os": "macos",
+    "arch": "aarch64",
+    "abi": "darwin",
+    "cpu_baseline": "armv8-a",
+    "required_cpu_features": [
+      "neon"
+    ],
+    "runtime_floor": {
+      "macos": "11.0"
+    }
+  },
+  "toolchain": {
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)|binary: rustc|commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860|commit-date: 2026-04-14|host: aarch64-apple-darwin|release: 1.95.0|LLVM version: 22.1.2|",
+    "compiler": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+    "sdk": "15.5 (/Applications/Xcode_16.4.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk)",
+    "linker": "@(#)PROGRAM:ld PROJECT:ld-1167.5"
+  },
+  "runtime": {
+    "backend": "v8",
+    "rusty_v8_version": "145.0.0",
+    "rusty_v8_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
+    "v8_revision": "8defb67673c5483ae56258a2de01b07e947dc921",
+    "normalized_gn_args": [
+      "host_cpu=\"arm64\"",
+      "is_debug=false",
+      "mac_deployment_target=\"11.0\"",
+      "target_cpu=\"arm64\"",
+      "use_custom_libcxx=true",
+      "v8_enable_pointer_compression=false",
+      "v8_enable_sandbox=false",
+      "v8_enable_v8_checks=false",
+      "v8_target_cpu=\"arm64\""
+    ],
+    "patches": []
+  },
+  "hashes": {
+    "archive": "bec781471bb3dea300085e0e44cbbcc6e9480519e7216afcfab4e8406d6a7365",
+    "rust_binding": "299bb6913bef836cd8beb097908f62765006660a3213d2016faeede0a1222e05"
+  },
+  "provenance": {
+    "source_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
+    "build_recipe": "scripts/build-v8-apple.sh",
+    "build_recipe_sha256": "748cf078d9d78782652f724df7c2e6e099999029ff95a3a76fbc7c78932f0eac",
+    "licenses": [
+      "BSD-3-Clause",
+      "MIT"
+    ]
+  }
+}
