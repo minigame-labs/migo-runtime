@@ -327,6 +327,7 @@ final class MigoSurfaceAttachTests: XCTestCase {
                 }
             }
 
+            var wentAtSessionDestroy = false
             if let session {
                 let result = migo_session_destroy(session)
                 XCTAssertEqual(
@@ -334,6 +335,14 @@ final class MigoSurfaceAttachTests: XCTestCase {
                     "migo_session_destroy returned \(result); a refusal means something was "
                         + "still attached or still PENDING")
                 self.session = nil
+                // Halves the search. Session destroy takes the render thread, its
+                // canvas manager and every EGL context down; engine destroy is
+                // what terminates the display. A layer that survives RELEASED and
+                // goes here is held by something inside the renderer; one that
+                // survives to the next step is held at display level.
+                if let stillAlive = layerThatOutlivedRelease {
+                    wentAtSessionDestroy = !stillAlive()
+                }
             }
             if let engine {
                 let result = migo_engine_destroy(engine)
@@ -344,7 +353,12 @@ final class MigoSurfaceAttachTests: XCTestCase {
                 // a green run pays nothing and reports nothing.
                 if let stillAlive = layerThatOutlivedRelease {
                     XCTFail(
-                        stillAlive()
+                        wentAtSessionDestroy
+                            ? "the layer that outlived RELEASED went away at "
+                                + "migo_session_destroy, before the engine was destroyed. The "
+                                + "owner is inside the renderer -- the render thread, the canvas "
+                                + "manager or one of their EGL contexts -- and not the display."
+                            : stillAlive()
                             ? "the layer that outlived RELEASED is STILL alive after "
                                 + "migo_engine_destroy returned. Nothing of Migo's is left at "
                                 + "that point -- the display, its contexts and the render "
@@ -353,11 +367,12 @@ final class MigoSurfaceAttachTests: XCTestCase {
                                 + "the C ABI does not promise: surface.h requires the host to "
                                 + "keep the resource alive UNTIL RELEASED, not that the object "
                                 + "dies then."
-                            : "the layer that outlived RELEASED went away once "
-                                + "migo_engine_destroy returned. That is a Migo leak and not a "
-                                + "host one: the owner was display-level ANGLE state the engine "
-                                + "kept past the surface it belonged to, and RELEASED promised a "
-                                + "retirement that had not finished.")
+                            : "the layer that outlived RELEASED survived "
+                                + "migo_session_destroy and went away only when "
+                                + "migo_engine_destroy returned. The owner is DISPLAY-level: "
+                                + "eglTerminate is what freed it, so ANGLE deferred the window "
+                                + "surface's destruction past the eglDestroySurface that "
+                                + "reported success.")
                 }
             }
             layerThatOutlivedRelease = nil
