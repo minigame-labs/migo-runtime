@@ -241,8 +241,26 @@ rustup target add "$TRIPLE" >/dev/null 2>&1 || true
 # environment rather than the gn arg. Belt and braces on purpose: which of the
 # two the object file ends up honouring is exactly what the check below asks,
 # rather than something this comment gets to assert.
+#
+# `target_cpu` is passed too, and that is not belt and braces -- it is a defect
+# in rusty_v8's build.rs that a green build hides. That file sets `target_cpu`
+# when the target arch is aarch64, and again for Android cross-builds, and
+# NOWHERE ELSE. So `cargo build --target x86_64-apple-darwin` on an arm64 runner
+# leaves it unset, gn falls back to `host_cpu`, and the build produces an **arm64**
+# archive inside the x86_64 target directory. It exits 0. The apple-v8-probe run
+# recorded "cross-builds with no extra arguments" on exactly that evidence.
+#
+# It was caught here because this script records the archive's sha256: the two
+# triples came back byte-identical, which two architectures cannot be. The
+# verification below now asks the object what it is, for the same reason the floor
+# is asked rather than assumed.
+case "$ARCH" in
+    aarch64) GN_CPU="arm64" ;;
+    x86_64) GN_CPU="x64" ;;
+esac
+
 export V8_FROM_SOURCE=1
-export EXTRA_GN_ARGS="mac_deployment_target=\"$DEPLOYMENT_TARGET\""
+export EXTRA_GN_ARGS="mac_deployment_target=\"$DEPLOYMENT_TARGET\" target_cpu=\"$GN_CPU\" v8_target_cpu=\"$GN_CPU\""
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
 
 CARGO_ARGS=(build --release --target "$TRIPLE" -p v8)
@@ -293,8 +311,21 @@ MEMBER="$PROBE_DIR/$MEMBER_NAME"
 [[ -f "$MEMBER" ]] || err "ar named $MEMBER_NAME and then did not extract it"
 
 OBSERVED="$(vtool -show-build "$MEMBER" 2>/dev/null | awk '/minos/ {print $2; exit}')"
+
+# What architecture did it actually build? Asked, never inferred from the flag.
+# A `--target` that the build system silently ignores produces a green build, a
+# correctly-named directory and the wrong bytes -- and the only thing that catches
+# it is looking at them.
+case "$(otool -hv "$MEMBER" 2>/dev/null | awk 'NR==4 {print $2}')" in
+    ARM64) OBSERVED_ARCH="aarch64" ;;
+    X86_64) OBSERVED_ARCH="x86_64" ;;
+    *) OBSERVED_ARCH="unknown" ;;
+esac
 rm -rf "$PROBE_DIR"
 [[ -n "$OBSERVED" ]] || err "vtool reported no minos for $MEMBER, so the floor is unverified"
+[[ "$OBSERVED_ARCH" == "$ARCH" ]] \
+    || err "asked for $ARCH and the archive contains $OBSERVED_ARCH. rusty_v8's build.rs sets target_cpu only for aarch64 and for Android cross-builds, so a darwin cross-build without an explicit target_cpu builds the host architecture into a correctly-named directory and exits 0"
+ok "the object is $OBSERVED_ARCH, which is what was asked for"
 
 # Compared as numbers, because "11.0" and "11" are the same floor and different
 # strings, and a build that failed on that would fail for a formatting reason.
@@ -330,13 +361,13 @@ cp "$BINDING" "$OUT_DIR/src_binding.rs"
 # build accepted, and the same holds for every build after it.
 python3 - "$ARGS_GN" "$OUT_DIR/build-metadata.json" \
     "$ARCH" "$TRIPLE" "$RUSTY_V8_REVISION" "$DEPLOYMENT_TARGET" "$OBSERVED" \
-    "$OUT_DIR/librusty_v8.a" <<'PY'
+    "$OBSERVED_ARCH" "$OUT_DIR/librusty_v8.a" <<'PY'
 import hashlib
 import json
 import pathlib
 import sys
 
-args_gn, output, arch, triple, revision, declared, observed, archive = sys.argv[1:9]
+args_gn, output, arch, triple, revision, declared, observed, observed_arch, archive = sys.argv[1:10]
 
 # Machine-local keys. `clang_base_path` names a path inside whatever temporary
 # directory this build used, so it describes the machine and not the build.
@@ -363,6 +394,7 @@ pathlib.Path(output).write_text(
             "rusty_v8_revision": revision,
             "declared_deployment_target": declared,
             "observed_minos": observed,
+            "observed_arch": observed_arch,
             "archive_sha256": digest,
             "archive_bytes": pathlib.Path(archive).stat().st_size,
             "normalized_gn_args": sorted(normalized),
