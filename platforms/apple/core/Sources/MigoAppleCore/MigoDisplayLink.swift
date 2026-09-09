@@ -1,13 +1,12 @@
 import Foundation
 
-#if canImport(QuartzCore)
-    import QuartzCore
-#endif
 #if os(iOS)
+    import QuartzCore
     import UIKit
 #elseif os(macOS)
     import AppKit
     import CoreVideo
+    import QuartzCore
 #endif
 
 /// The presenter's vsync source, on whichever API this OS has.
@@ -20,8 +19,12 @@ import Foundation
 /// `#if os(macOS)` branch there would be the second arm this repository has already
 /// shipped wrong twice.
 ///
-/// Three mechanisms, two of them on macOS, because `NSView.displayLink` arrived in
-/// macOS 14 and the deployment floor is macOS 11.
+/// That paid for itself on the first build. `CADisplayLink` exists on macOS only from
+/// macOS 14, and `contracts/apple/deployment-floor.json` puts the floor at macOS 11 --
+/// so a stored `CADisplayLink?` property does not compile for this package's own
+/// deployment target, and neither does `CAFrameRateRange`. The first version of this
+/// file had both. On iOS the type has been there since iOS 3, which is why the two
+/// platforms are written separately rather than shared and guarded.
 ///
 /// **What it does not decide.** The cadence comes from `MigoDisplayLinkPolicy`, which
 /// takes the host's target and says what is admissible. And this is the presenter's
@@ -32,27 +35,12 @@ public final class MigoDisplayLink {
 
     /// One vsync. `targetTimestamp` is when the frame being drawn is due to appear,
     /// which is the one a presenter should pace against -- `timestamp` is when the
-    /// previous frame appeared, and pacing against it is pacing one frame late.
+    /// previous frame appeared, and pacing against that is pacing one frame late.
     public typealias Tick = (_ targetTimestamp: CFTimeInterval, _ duration: CFTimeInterval) -> Void
 
     public let decision: MigoDisplayLinkPolicy.Decision
     private let onTick: Tick
-
-    /// Whether a tick is currently being delivered, so `stop()` from inside a tick
-    /// cannot tear down the object delivering it.
-    private var isRunning = false
-
-    #if os(iOS)
-        private var link: CADisplayLink?
-    #elseif os(macOS)
-        private var link: CADisplayLink?
-        private var legacyLink: CVDisplayLink?
-        /// Retained for the C callback's lifetime. A `CVDisplayLink` callback receives
-        /// an opaque pointer, and the object it points at has to outlive the link or
-        /// the callback runs against freed memory on a real-time thread -- a crash with
-        /// no Swift frame to blame.
-        private var legacyContext: Unmanaged<MigoDisplayLink>?
-    #endif
+    public private(set) var isRunning = false
 
     public init(decision: MigoDisplayLinkPolicy.Decision, onTick: @escaping Tick) {
         self.decision = decision
@@ -63,44 +51,92 @@ public final class MigoDisplayLink {
         stop()
     }
 
-    /// Start delivering ticks.
-    ///
-    /// `view` is used only on macOS 14 and later, where the display link belongs to
-    /// the view whose display it should follow. Passing nil there falls back to the
-    /// `CVDisplayLink` branch rather than guessing a display: a link driven by the
-    /// wrong display presents at the wrong cadence on a two-monitor Mac, which is a
-    /// stutter with no error attached.
+    // MARK: - iOS
+
     #if os(iOS)
+        private var link: CADisplayLink?
+
         public func start() {
             guard !isRunning else { return }
             let link = CADisplayLink(target: self, selector: #selector(fire(_:)))
-            apply(cadence: decision.cadence, to: link)
+            switch decision.cadence {
+            case .systemDefault:
+                // Deliberately nothing. A range equal to the default is not the same
+                // as no range: it tells the system a rate was requested, and the
+                // system then has less freedom to lower it under thermal pressure.
+                break
+            case .range(let minimum, let preferred, let maximum):
+                link.preferredFrameRateRange = CAFrameRateRange(
+                    minimum: Float(minimum), maximum: Float(maximum), preferred: Float(preferred))
+            }
+            // `.common` so the link keeps firing while a scroll or a modal is
+            // tracking. A game that stops presenting because a system gesture began
+            // is a game that looks frozen for the length of the gesture.
             link.add(to: .main, forMode: .common)
             self.link = link
             isRunning = true
         }
-    #elseif os(macOS)
-        public func start(view: NSView? = nil) {
-            guard !isRunning else { return }
-            if decision.mechanism == .caDisplayLink, #available(macOS 14.0, *), let view {
-                let link = view.displayLink(target: self, selector: #selector(fire(_:)))
-                apply(cadence: decision.cadence, to: link)
-                link.add(to: .main, forMode: .common)
-                self.link = link
-                isRunning = true
-                return
-            }
-            startLegacy()
+
+        public func stop() {
+            link?.invalidate()
+            link = nil
+            isRunning = false
+        }
+
+        @objc private func fire(_ link: CADisplayLink) {
+            onTick(link.targetTimestamp, link.duration)
         }
     #endif
 
-    public func stop() {
-        #if os(iOS)
-            link?.invalidate()
-            link = nil
-        #elseif os(macOS)
-            link?.invalidate()
-            link = nil
+    // MARK: - macOS
+
+    #if os(macOS)
+        /// `AnyObject` because a stored property cannot carry an availability
+        /// annotation, and `CADisplayLink` does not exist at this package's macOS
+        /// deployment target. The cast happens inside the one `#available` block that
+        /// can name the type.
+        private var modernLink: AnyObject?
+        private var legacyLink: CVDisplayLink?
+        /// Retained for the C callback's lifetime. A `CVDisplayLink` callback receives
+        /// an opaque pointer, and the object it points at has to outlive the link, or
+        /// the callback runs against freed memory on a real-time thread -- a crash with
+        /// no Swift frame to blame it on.
+        private var legacyContext: Unmanaged<MigoDisplayLink>?
+
+        /// Start delivering ticks.
+        ///
+        /// `view` is used only on macOS 14 and later, where the display link belongs
+        /// to the view whose display it should follow. Without one, this falls back to
+        /// `CVDisplayLink` rather than guessing a display: a link driven by the wrong
+        /// display presents at the wrong cadence on a two-monitor Mac, which is a
+        /// stutter with nothing attached to it.
+        public func start(view: NSView? = nil) {
+            guard !isRunning else { return }
+            if decision.mechanism == .caDisplayLink, let view {
+                if #available(macOS 14.0, *) {
+                    let link = view.displayLink(target: self, selector: #selector(fireModern(_:)))
+                    switch decision.cadence {
+                    case .systemDefault:
+                        break
+                    case .range(let minimum, let preferred, let maximum):
+                        link.preferredFrameRateRange = CAFrameRateRange(
+                            minimum: Float(minimum), maximum: Float(maximum),
+                            preferred: Float(preferred))
+                    }
+                    link.add(to: .main, forMode: .common)
+                    modernLink = link
+                    isRunning = true
+                    return
+                }
+            }
+            startLegacy()
+        }
+
+        public func stop() {
+            if #available(macOS 14.0, *) {
+                (modernLink as? CADisplayLink)?.invalidate()
+            }
+            modernLink = nil
             if let legacyLink {
                 CVDisplayLinkStop(legacyLink)
                 self.legacyLink = nil
@@ -109,43 +145,23 @@ public final class MigoDisplayLink {
             // running on the display's own thread at the moment stop is called.
             legacyContext?.release()
             legacyContext = nil
-        #endif
-        isRunning = false
-    }
+            isRunning = false
+        }
 
-    // MARK: - CADisplayLink
-
-    #if canImport(QuartzCore)
-        @objc private func fire(_ link: CADisplayLink) {
+        @available(macOS 14.0, *)
+        @objc private func fireModern(_ link: CADisplayLink) {
             onTick(link.targetTimestamp, link.duration)
         }
 
-        private func apply(cadence: MigoDisplayLinkPolicy.Cadence, to link: CADisplayLink) {
-            switch cadence {
-            case .systemDefault:
-                // Deliberately nothing. Setting a range equal to the default is not
-                // the same as setting none: it tells the system a rate was requested,
-                // and the system then has less freedom to lower it.
-                break
-            case .range(let minimum, let preferred, let maximum):
-                link.preferredFrameRateRange = CAFrameRateRange(
-                    minimum: Float(minimum), maximum: Float(maximum), preferred: Float(preferred))
-            }
-        }
-    #endif
-
-    // MARK: - CVDisplayLink, for macOS 11 to 13
-
-    #if os(macOS)
         private func startLegacy() {
             var created: CVDisplayLink?
             guard CVDisplayLinkCreateWithActiveCGDisplays(&created) == kCVReturnSuccess,
                 let link = created
             else { return }
 
-            // `passUnretained` plus an explicit retain, rather than
-            // `passRetained`: the retain has to be paired with a release in `stop`,
-            // and pairing it here makes both halves visible in one file.
+            // `passUnretained` plus an explicit retain rather than `passRetained`: the
+            // retain has to be paired with a release in `stop`, and pairing it this way
+            // puts both halves in one file where a reader can see they match.
             let context = Unmanaged.passUnretained(self)
             _ = context.retain()
             legacyContext = context
@@ -155,19 +171,23 @@ public final class MigoDisplayLink {
                 link,
                 { _, inNow, inOutputTime, _, _, pointer in
                     guard let pointer else { return kCVReturnSuccess }
-                    let link = Unmanaged<MigoDisplayLink>.fromOpaque(pointer).takeUnretainedValue()
-                    // CVDisplayLink reports host time in a media timebase; the
-                    // presenter wants seconds, and the interval between this frame's
-                    // output time and the previous one is the duration.
-                    let target = CFTimeInterval(inOutputTime.pointee.videoTime)
-                        / CFTimeInterval(inOutputTime.pointee.videoTimeScale)
-                    let now = CFTimeInterval(inNow.pointee.videoTime)
-                        / CFTimeInterval(inNow.pointee.videoTimeScale)
+                    let owner = Unmanaged<MigoDisplayLink>.fromOpaque(pointer)
+                        .takeUnretainedValue()
+                    let outputTime = inOutputTime.pointee
+                    let nowTime = inNow.pointee
+                    guard outputTime.videoTimeScale != 0, nowTime.videoTimeScale != 0 else {
+                        return kCVReturnSuccess
+                    }
+                    let target =
+                        CFTimeInterval(outputTime.videoTime)
+                        / CFTimeInterval(outputTime.videoTimeScale)
+                    let now =
+                        CFTimeInterval(nowTime.videoTime) / CFTimeInterval(nowTime.videoTimeScale)
                     let duration = max(0, target - now)
-                    // Onto the main queue. The callback runs on a real-time thread
-                    // the system will drop frames to protect, and doing renderer work
-                    // there is how a display link becomes a glitch source.
-                    DispatchQueue.main.async { link.onTick(target, duration) }
+                    // Hopped to the main queue. This callback runs on a real-time
+                    // thread the system drops frames to protect, and doing renderer
+                    // work there is how a display link becomes the glitch source.
+                    DispatchQueue.main.async { owner.onTick(target, duration) }
                     return kCVReturnSuccess
                 }, context.toOpaque())
 
