@@ -245,6 +245,56 @@ command -v xcodebuild >/dev/null || fail "xcodebuild is not on PATH"
 
 mkdir -p "$OUT_DIR"
 
+# ---------------------------------------------------------------------------
+# A device has two names and the tools disagree about which one they take.
+# `devicectl` speaks its own CoreDevice identifier (a UUID); `xcodebuild`
+# destinations speak the hardware UDID. They are different strings for the same
+# phone, and `--device` accepts either rather than making the operator know
+# which tool is downstream of the flag.
+# ---------------------------------------------------------------------------
+DEVICE_UDID=""
+if [[ "$MODE" == "device" ]]; then
+  DEVICE_LIST="$OUT_DIR/devices-$RUN_ID.json"
+  xcrun devicectl list devices --json-output "$DEVICE_LIST" >/dev/null 2>&1 \
+    || fail "xcrun devicectl list devices failed; is a device paired and unlocked?"
+  RESOLVED="$(python3 - "$DEVICE_LIST" "$TARGET" <<'RESOLVE'
+import json, sys
+
+wanted = sys.argv[2]
+devices = json.load(open(sys.argv[1]))["result"]["devices"]
+for d in devices:
+    ident = d.get("identifier", "")
+    hardware = d.get("hardwareProperties", {})
+    udid = hardware.get("udid", "")
+    name = d.get("deviceProperties", {}).get("name", "")
+    if wanted in (ident, udid, name):
+        print("%s\t%s" % (ident, udid))
+        break
+else:
+    sys.stderr.write(
+        "not found: %s. Paired devices: %s\n"
+        % (
+            wanted,
+            ", ".join(
+                "%s (%s, udid %s)"
+                % (
+                    d.get("deviceProperties", {}).get("name", "?"),
+                    d.get("identifier", "?"),
+                    d.get("hardwareProperties", {}).get("udid", "?"),
+                )
+                for d in devices
+            )
+            or "none",
+        )
+    )
+    sys.exit(1)
+RESOLVE
+  )" || fail "--device $TARGET names no paired device"
+  TARGET="${RESOLVED%%$'\t'*}"
+  DEVICE_UDID="${RESOLVED##*$'\t'}"
+  [[ -n "$DEVICE_UDID" ]] || fail "the device resolved to no hardware udid, which xcodebuild needs to name a destination"
+fi
+
 cleanup() {
   if ((KEEP_DERIVED == 0)) && [[ -d "$DERIVED" ]]; then
     rm -rf "$DERIVED"
@@ -261,8 +311,20 @@ SIGNING_HINT=""
 if [[ "$MODE" == "simulator" ]]; then
   BUILD_ARGS+=(-sdk iphonesimulator -destination "generic/platform=iOS Simulator")
 else
-  BUILD_ARGS+=(-destination "generic/platform=iOS")
-  SIGNING_HINT=". A device build needs a signing identity: set MIGO_PROBE_TEAM to your team id (Xcode > Settings > Accounts creates a free personal team)"
+  # -allowProvisioningUpdates is not a convenience. A free personal team has no
+  # profile for dev.migo.probe until one is asked for, and the device has to be
+  # registered against the team the same way; without the flag xcodebuild
+  # refuses with "Automatic signing is disabled and unable to generate a
+  # profile", which is the first thing a lab day with a phone in hand hits and
+  # reads as a signing-identity problem rather than a missing flag.
+  #
+  # The destination names the phone rather than `generic/platform=iOS` for the
+  # other half of the same problem: a generic destination gives Xcode no device
+  # to add to the team, and the portal then answers "Your team has no devices
+  # from which to generate a provisioning profile" with the device sitting on
+  # the desk, connected.
+  BUILD_ARGS+=(-destination "id=$DEVICE_UDID" -allowProvisioningUpdates)
+  SIGNING_HINT=". A device build needs a signing identity: set MIGO_PROBE_TEAM to your team id (Xcode > Settings > Accounts creates a free personal team). The identity has to be in this user's keychain -- signing runs as whoever runs this script, so an Xcode signed in as another user does not lend it one"
 fi
 if [[ -n "${MIGO_PROBE_TEAM:-}" ]]; then
   BUILD_ARGS+=("DEVELOPMENT_TEAM=$MIGO_PROBE_TEAM")
@@ -302,10 +364,21 @@ else
 
   echo "[3/5] launching with ${APP_ARGS[*]}"
   # Not --console: it waits for the app to exit and the probe app does not.
-  xcrun devicectl device process launch --device "$TARGET" --terminate-existing \
+  if ! xcrun devicectl device process launch --device "$TARGET" --terminate-existing \
     --json-output "$OUT_DIR/launch-$RUN_ID.json" \
-    "$BUNDLE_ID" "${APP_ARGS[@]}" \
-    || fail "devicectl launch failed; see $OUT_DIR/launch-$RUN_ID.json"
+    "$BUNDLE_ID" "${APP_ARGS[@]}"; then
+    # The install succeeding and the launch being refused is one specific thing
+    # on a free team, and the message iOS returns for it names three causes at
+    # once ("invalid code signature, inadequate entitlements or its profile has
+    # not been explicitly trusted"). On a build that just signed and installed,
+    # it is always the third, and the fix is on the phone rather than on the Mac
+    # -- which is worth saying, because everything else in this script is fixed
+    # on the Mac.
+    if grep -q "explicitly trusted" "$OUT_DIR/launch-$RUN_ID.json" 2>/dev/null; then
+      fail "the device refused to launch $BUNDLE_ID because this developer certificate is not trusted on it yet. On the phone: Settings > General > VPN & Device Management > Developer App > trust the certificate, then run this again. It is once per certificate, not once per build"
+    fi
+    fail "devicectl launch failed; see $OUT_DIR/launch-$RUN_ID.json"
+  fi
 
   echo "[4/5] waiting up to ${TIMEOUT}s for Documents/capability-$RUN_ID.json"
   # Copied into a directory, then located inside it. `devicectl device copy from`

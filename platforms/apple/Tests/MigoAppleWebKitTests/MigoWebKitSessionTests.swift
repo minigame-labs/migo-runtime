@@ -59,6 +59,7 @@ import XCTest
             var diagnostics: [[String: Any]] = []
             var refusals: [URL] = []
             var terminalFailures: [Int] = []
+            var rebuilds: [Int] = []
             var extraFields: [String: String] = [:]
             var onDiagnostic: (([String: Any]) -> Void)?
 
@@ -73,6 +74,9 @@ import XCTest
             }
             func session(_ session: MigoWebKitSession, didFailTerminallyAfter count: Int) {
                 terminalFailures.append(count)
+            }
+            func session(_ session: MigoWebKitSession, willRebuildAfterTermination count: Int) {
+                rebuilds.append(count)
             }
             func sessionEnvironmentFields(_ session: MigoWebKitSession) -> [String: String] {
                 extraFields
@@ -121,13 +125,12 @@ import XCTest
 
             // On timeout, say what state the session reached. A bare "the
             // expectation was not fulfilled" is the least informative red a lane
-            // can produce, and this one has now cost three CI iterations: the
-            // alphabetically first test in this bundle times out on the runner
-            // while the other nine pass in about twelve seconds together, which
-            // 120 seconds of cold start does not explain. What distinguishes
-            // "slow" from "stuck" is whether the load ever started, whether it
-            // finished, and whether the page said anything at all -- none of
-            // which the expectation reports.
+            // can produce, and this one has now cost four CI iterations. The third
+            // added the host's side and the fourth read it: a run reported
+            // `started: 1, delivered: 431` with the page still at ten percent, so
+            // the host had served the whole page and WebKit had done nothing with
+            // it. That is why the navigation counters are here too -- between them
+            // the two records say which side stopped, and neither says it alone.
             if XCTWaiter().wait(for: [arrived], timeout: timeout) != .completed {
                 let webView = session.webView
                 XCTFail(
@@ -138,12 +141,18 @@ import XCTest
                         + " inWindow=\(webView?.window != nil)"
                         + " diagnostics=\(recorder.diagnostics.count)"
                         + " refusals=\(recorder.refusals.map(\.absoluteString))"
+                        + " terminalFailures=\(recorder.terminalFailures)"
+                        + " rebuilds=\(recorder.rebuilds)"
                         + " origin=\(session.originActivity)"
-                        + ". A url of nil means the load never began; a url with"
-                        + " loading=false and no diagnostic means the page loaded and its"
-                        + " script never reported. origin.started=0 means WebKit never"
-                        + " asked the host for the page, which is a different failure from"
-                        + " started>0 with settled=0 -- that one is the host not answering.")
+                        + " navigation=\(session.navigation)"
+                        + ". Read the two records together. origin.started=0 means WebKit"
+                        + " never asked the host for the page. origin.started>0 with"
+                        + " finished=0 means the host never answered. origin.finished=1"
+                        + " with navigation.commits=0 means the host answered in full and"
+                        + " WebKit did not take it -- look at"
+                        + " navigation.contentProcessTerminations and lastError, and at"
+                        + " promised against delivered, which is the same stall when a"
+                        + " body is short of its own Content-Length.")
             }
             return try XCTUnwrap(recorder.diagnostics.first)
         }

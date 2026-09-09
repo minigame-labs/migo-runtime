@@ -133,7 +133,19 @@ scripts/run-apple-probe.sh --device <udid> --lockdown off \
 
 A device build needs a signing identity: set `MIGO_PROBE_TEAM` to a team id. A free
 Apple ID is enough -- this target declares no entitlements, and the JIT that A24 is
-about belongs to WebKit's own process, not to this app.
+about belongs to WebKit's own process, not to this app. The team id is the `OU` of
+the signing certificate, which is **not** the identifier printed in the certificate's
+common name:
+
+```sh
+security find-identity -v -p codesigning          # names the identity
+security find-certificate -c '<that name>' -p | openssl x509 -noout -subject
+# subject= /UID=.../CN=Apple Development: you@example.com (XXXXXXXXXX)/OU=TEAMIDHERE/...
+```
+
+A free team also has no provisioning profile for `dev.migo.probe` until one is asked
+for, so a device build passes `-allowProvisioningUpdates`; `run-apple-probe.sh` does
+that for you.
 
 ### The steps underneath
 
@@ -150,10 +162,12 @@ cd platforms/apple/ProbeApp
 xcodebuild -project MigoProbe.xcodeproj -scheme MigoProbe \
   -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' build
 
-# The device build needs a signing identity; everything else about it is the
-# same.
+# The device build needs a signing identity, and -allowProvisioningUpdates so a
+# free team can mint the profile and register the device; everything else about
+# it is the same.
 xcodebuild -project MigoProbe.xcodeproj -scheme MigoProbe \
-  -destination 'generic/platform=iOS' DEVELOPMENT_TEAM=<team> build
+  -destination 'generic/platform=iOS' -allowProvisioningUpdates \
+  DEVELOPMENT_TEAM=<team> build
 ```
 
 `Info.plist` carries `NSAllowsLocalNetworking` and **not**
