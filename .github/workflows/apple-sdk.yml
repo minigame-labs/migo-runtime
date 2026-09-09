@@ -165,10 +165,13 @@ jobs:
           ls -laR engine/target/v8-materialised 2>&1 | head -20
           echo "--- v8 build dirs"
           ls -la engine/target/*/debug/build 2>/dev/null | grep -i 'v8' | head
-          echo "--- recorded build-script output"
+          echo "--- what the v8 build script left in OUT_DIR"
+          ls -laR engine/target/*/debug/build/v8-*/out 2>&1 | head -30
+          echo "--- recorded build-script output (link flags only; the rerun-if-env"
+          echo "    preamble is 40 lines long and a head(1) on the whole file hides them)"
           for out in engine/target/*/debug/build/v8-*/output; do
             echo "== $out"
-            grep -iE 'link-search|link-lib|rerun-if-env' "$out" 2>/dev/null | head
+            grep -iE 'link-search|link-lib' "$out" 2>/dev/null || echo "  (no link flags recorded)"
           done
           echo "--- v8 fingerprints"
           ls -la engine/target/*/debug/.fingerprint 2>/dev/null | grep -i v8 | head
