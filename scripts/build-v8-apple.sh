@@ -73,6 +73,17 @@ usage: build-v8-apple.sh --arch <aarch64|x86_64> [--out <dir>] [--src <dir>]
                            directory's parent.
   --keep-src               Do not delete a checkout this script created.
 
+  --print-deployment-target
+                           Print the macOS deployment target this build would
+                           use and exit. Exists so
+                           scripts/test-apple-deployment-floor-contract.sh can
+                           ASK rather than read: grepping for the literal would
+                           pass a script that holds the number in a comment and
+                           computes something else, and fail the script that
+                           does the right thing and holds no copy at all. It
+                           runs before the macOS check, so the gate can ask it
+                           anywhere.
+
 Environment:
   MIGO_V8_JOBS             Passed to cargo as --jobs.
 
@@ -86,6 +97,7 @@ ARCH=""
 OUT_DIR=""
 SRC_DIR=""
 KEEP_SRC=0
+PRINT_DEPLOYMENT_TARGET=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -108,6 +120,10 @@ while [[ $# -gt 0 ]]; do
             KEEP_SRC=1
             shift
             ;;
+        --print-deployment-target)
+            PRINT_DEPLOYMENT_TARGET=1
+            shift
+            ;;
         -h | --help)
             usage
             exit 0
@@ -115,6 +131,23 @@ while [[ $# -gt 0 ]]; do
         *) err "$1 is not an option this script takes; --help lists them" ;;
     esac
 done
+
+read_json() {
+    python3 -c "
+import json,sys
+with open(sys.argv[1]) as handle:
+    value = json.load(handle)
+for key in sys.argv[2].split('.'):
+    value = value[key]
+print(value)
+" "$1" "$2"
+}
+
+if ((PRINT_DEPLOYMENT_TARGET)); then
+    [[ -f "$FLOOR" ]] || err "$FLOOR is missing"
+    read_json "$FLOOR" "platforms.macos.deployment_target"
+    exit 0
+fi
 
 case "$ARCH" in
     aarch64 | x86_64) ;;
@@ -137,17 +170,6 @@ command -v vtool >/dev/null || err "vtool is not on PATH; the floor could not be
 # drifts from the file that decides it, silently, in the direction of whatever
 # the machine happened to default to.
 # ---------------------------------------------------------------------------
-
-read_json() {
-    python3 -c "
-import json,sys
-with open(sys.argv[1]) as handle:
-    value = json.load(handle)
-for key in sys.argv[2].split('.'):
-    value = value[key]
-print(value)
-" "$1" "$2"
-}
 
 RUSTY_V8_REVISION="$(read_json "$LOCK" "rusty_v8_revision")"
 RUSTY_V8_URL="https://github.com/denoland/rusty_v8"
