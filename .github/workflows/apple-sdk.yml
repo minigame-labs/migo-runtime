@@ -67,19 +67,41 @@ jobs:
             targets: aarch64-apple-ios
             destination: generic/platform=iOS
             package_path: platforms/apple
+            scheme: MigoApplePerformancePlus
             host_slice: false
           - platform: ios-simulator
             product: performance-plus
             targets: aarch64-apple-ios-sim,x86_64-apple-ios
             destination: generic/platform=iOS Simulator
             package_path: platforms/apple
+            scheme: MigoApplePerformancePlus
             host_slice: false
           - platform: macos
             product: external-frames-diagnostic
             targets: aarch64-apple-darwin,x86_64-apple-darwin
             destination: platform=macOS
             package_path: build/apple/diagnostics/Debug/package
+            scheme: MigoApplePerformancePlus
             host_slice: true
+          # The macOS V8 product, and the reason this row exists at all:
+          # `MigoMacV8` is a target no lane has ever compiled. It sat as a one-line
+          # placeholder because the product links in-process V8 and there was no
+          # macOS V8 archive to link -- which stopped being true on 2026-09-09,
+          # when scripts/build-v8-apple.sh produced both darwin triples, they were
+          # published, and scripts/fetch-v8-archives.sh verified them against their
+          # committed component manifests.
+          #
+          # Everything A2.3 adds after this lands in that target, so landing it
+          # before the code is the whole point: this repository has twice shipped an
+          # arm nothing compiled, and both times the defect was found by a customer's
+          # toolchain rather than by a lane.
+          - platform: macos
+            product: macos-v8
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+            destination: platform=macOS
+            package_path: platforms/apple
+            scheme: MigoMacV8
+            host_slice: false
     env:
       MIGO_APPLE_BUILD_ROOT: ${{ github.workspace }}/build/apple
       MIGO_APPLE_PACKAGE_ROOT: ${{ github.workspace }}/${{ matrix.package_path }}
@@ -128,7 +150,13 @@ jobs:
           --configuration Debug
           --code-signing off
 
+      # Not for macos-v8, and the exclusion is the product's definition rather
+      # than an exemption: that archive links in-process V8 on purpose, so an
+      # assertion that it carries no engine symbols would be asserting the
+      # opposite of what the product is. The other three carry no engine and this
+      # is what holds them to it.
       - name: The external-frame archive contains no engine symbols
+        if: matrix.product != 'macos-v8'
         run: >-
           bash scripts/test-apple-performance-rust-closure.sh
           --artifact "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
@@ -138,7 +166,7 @@ jobs:
         run: |
           xcodebuild -list
           xcodebuild build \
-            -scheme MigoApplePerformancePlus \
+            -scheme ${{ matrix.scheme }} \
             -destination '${{ matrix.destination }}' \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO
