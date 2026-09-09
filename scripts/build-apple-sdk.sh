@@ -361,6 +361,15 @@ done
 # targets into the toolchain it also makes default -- which is exactly why a check
 # that asks the wrong one stays green there.
 if [ "$ASSEMBLE_ONLY" = "0" ]; then
+# Announced, because resolving that toolchain can BLOCK: rustup installs
+# whatever `rust-toolchain.toml` declares the first time it resolves it, and that
+# file names the Android and OpenHarmony targets too. On a machine missing them
+# with a slow or intercepted path to static.rust-lang.org, this line waits with
+# nothing on screen -- measured, for eight minutes, on a Mac whose TLS path to
+# that host presents a certificate for the wrong name. `cargo build` below would
+# wait in exactly the same place; the difference a printed line makes is that the
+# wait is attributable.
+info "checking installed Rust targets (resolving ${ENGINE_DIR#"$REPO_ROOT"/}'s toolchain)"
 installed_targets="$(cd "$ENGINE_DIR" && rustup target list --installed 2>/dev/null)"
 for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
     if ! printf '%s\n' "$installed_targets" | grep -qx "$target"; then
