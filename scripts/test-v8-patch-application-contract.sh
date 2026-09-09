@@ -561,9 +561,43 @@ done
 info "every V8 patch stage routes through the shared library"
 for s in "$SCRIPT_DIR"/build-v8-*.sh; do
     name="$(basename "$s")"
-    # build-v8-linux.sh drives patching through rusty_v8's own --patch argument
-    # and already decides applied-ness with `git apply --reverse --check`.
-    [[ "$name" == "build-v8-linux.sh" ]] && continue
+    # Two scripts are exempt for two different reasons, and NEITHER exemption is
+    # taken on trust. A skip list that only names files is a rule that stops
+    # being true silently: the moment an exempt script starts patching, it routes
+    # patching around the one place that decides applied-ness and the gate says
+    # nothing. So each exemption asserts the fact it rests on.
+    case "$name" in
+        build-v8-linux.sh)
+            # It drives patching through rusty_v8's own `--patch` argument and
+            # decides applied-ness with `git apply --reverse --check`. If it ever
+            # stops passing --patch, the reason for this exemption is gone.
+            if grep -qE -- '[-]-patch ' "$s"; then
+                pass "$name still delegates patching to rusty_v8's --patch"
+            else
+                fail "$name no longer passes --patch, so the reason it is exempt from the shared library no longer holds"
+            fi
+            continue
+            ;;
+        build-v8-apple.sh)
+            # It applies no patches at all. That is not an oversight -- the
+            # header records that darwin needed none of the workarounds the other
+            # four platforms carry, measured by apple-v8-probe.yml before the
+            # script existed. A script that patches nothing cannot route patching
+            # anywhere, so requiring it to source the library would be requiring
+            # an import it has no use for.
+            #
+            # This blanket rule was written before that script existed and went
+            # red the day it landed, on a gate no workflow ran. Both halves are
+            # fixed here.
+            if offenders="$(grep -nE 'git apply|patch -p[0-9]|[-]-patch |v8_require_patch' "$s")"; then
+                fail "$name now applies patches, so it can no longer be exempt from the shared library:"
+                echo "$offenders" >&2
+            else
+                pass "$name applies no patches, which is what its exemption rests on"
+            fi
+            continue
+            ;;
+    esac
     if grep -q 'lib/v8-patch-apply.sh' "$s"; then
         pass "$name sources the shared library"
     else

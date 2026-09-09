@@ -314,6 +314,7 @@ jobs:
           bash scripts/test-r8-install-receipt.sh
           bash scripts/test-r9-worker-snapshot.sh
           bash scripts/test-v8-gn-pin-contract.sh
+          bash scripts/test-v8-patch-application-contract.sh
 
       # And the rule itself, so the list above cannot grow again in silence.
       - name: Every contract gate is invoked by something

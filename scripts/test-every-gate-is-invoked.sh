@@ -48,17 +48,34 @@ for gate in scripts/test-*.sh; do
     name="$(basename "$gate")"
     [[ "$name" == "$self" ]] && continue
 
-    # A reference is a mention outside the gate itself -- a workflow step or
-    # another script. `--exclude` is the whole trick: the first pass at this
-    # audit grepped scripts/ without it, every gate names itself somewhere in its
-    # own usage text, and four orphans came back clean.
+    # A reference has to be something that could RUN the gate, not something
+    # that merely names it. Comment lines are excluded, and that is not
+    # pedantry: on 2026-09-10 test-v8-patch-application-contract.sh was found
+    # red on master, invoked by nothing, and passing this audit -- because
+    # another gate's comment mentioned it while explaining where its fixtures
+    # lived. That is exactly the state this file's own header describes as the
+    # reason it exists ("existed, passed when invoked by hand, and no path in
+    # the project ever invoked it"), and a bare mention had made it invisible
+    # again.
+    #
+    # `--exclude` is the other half: the first pass at this audit grepped
+    # scripts/ without it, every gate names itself somewhere in its own usage
+    # text, and four orphans came back clean.
     #
     # docs/ is deliberately NOT searched even though runbooks live there. It is
     # git-ignored, so counting a mention in one would make this gate answer
     # differently on a maintainer's machine than in CI -- and the environment
     # where it would go quiet is the one that matters.
-    if grep -rlF --exclude="$name" "$name" \
-        .github/ scripts/ >/dev/null 2>&1; then
+    # `grep -c` and NOT `grep -q`. A `-q` at the end of this pipe exits on its
+    # first selected line and SIGPIPEs the recursive grep still walking the
+    # tree; under `set -o pipefail` that 141 becomes the pipeline's status, and
+    # a properly invoked gate is reported as an orphan. Which gates it hits
+    # depends on how much tree was left to scan when the reader quit, so it is
+    # not even reliably wrong -- the first version of this change reported five
+    # orphans, three of which are invoked from a workflow by name.
+    runnable="$(grep -rnF --exclude="$name" "$name" .github/ scripts/ 2>/dev/null \
+        | grep -cvE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+    if (( runnable > 0 )); then
         continue
     fi
     orphans+=("$name")
