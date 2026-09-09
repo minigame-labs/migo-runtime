@@ -31,6 +31,29 @@ public enum MigoWebKitBridgeShim {
     /// The global the host's own services hang from. Deliberately not `migo`.
     public static let namespace = "migoHost"
 
+    /// The property the host calls to deliver a subscription event.
+    ///
+    /// Reached from `evaluateJavaScript`, so its name is part of the contract
+    /// between the two halves rather than an implementation detail of either.
+    public static let deliveryEntryPoint = "deliver"
+
+    /// The channel a subscription method delivers on.
+    ///
+    /// The method minus its verb: `lifecycle.observe` delivers on `lifecycle`. One
+    /// derivation, so the host and the shim cannot disagree about the name a
+    /// delivery is addressed to -- and a disagreement there is a listener that is
+    /// registered and never called.
+    public static func channel(forMethod method: String) -> String {
+        let parts = method.split(separator: ".").map(String.init)
+        return parts.count > 1 ? parts.dropLast().joined(separator: ".") : method
+    }
+
+    /// The JavaScript a host evaluates to deliver one event.
+    public static func deliveryScript(channel: String, payloadJSON: String) -> String {
+        "globalThis.\(namespace) && globalThis.\(namespace).\(deliveryEntryPoint)"
+            + "(\(quote(channel)), \(payloadJSON))"
+    }
+
     /// The message-handler name for a dotted method.
     ///
     /// Dots are legal in a handler name and reach JavaScript only through bracket
@@ -88,6 +111,39 @@ public enum MigoWebKitBridgeShim {
             "    return root[name];",
             "  };",
             "  const root = {};",
+            // Subscriptions. The registry is a closure variable rather than a
+            // property, so content cannot empty somebody else's listener list, and
+            // the delivery entry point is a property because the host reaches it by
+            // name from evaluateJavaScript. Content can reach it too -- everything
+            // in a shared world can reach everything -- and content that delivers
+            // itself a fake lifecycle event has only misled itself. Hiding it would
+            // be obscurity, not a boundary.
+            "  const listeners = new Map();",
+            "  const subscribe = (channel, handler, fn) => {",
+            "    if (typeof fn !== 'function') {",
+            "      throw new TypeError('migoHost: ' + channel +",
+            "        ' takes a function; the host delivers to it and there is nothing to call');",
+            "    }",
+            "    if (!listeners.has(channel)) { listeners.set(channel, []); }",
+            "    listeners.get(channel).push(fn);",
+            "    return post(handler, { channel });",
+            "  };",
+            "  const deliver = (channel, payload) => {",
+            "    const registered = listeners.get(channel);",
+            "    if (!registered) { return 0; }",
+            // One listener throwing must not stop the rest: a lifecycle event that
+            // reaches half its listeners because the first one threw is a save that
+            // half happened, and the host has no way to see it.
+            "    let delivered = 0;",
+            "    for (const fn of registered.slice()) {",
+            "      try { fn(payload); delivered += 1; } catch (error) {",
+            "        if (globalThis.console && console.error) {",
+            "          console.error('migoHost: a ' + channel + ' listener threw', error);",
+            "        }",
+            "      }",
+            "    }",
+            "    return delivered;",
+            "  };",
         ]
 
         var declaredGroups: Set<String> = []
@@ -108,9 +164,16 @@ public enum MigoWebKitBridgeShim {
 
             if surface.isEnabled(entry.capability) {
                 let handler = handlerName(forMethod: method)
-                lines.append(
-                    "  define(\(target), \(quote(leaf)), "
-                        + "(payload) => post(\(quote(handler)), payload === undefined ? null : payload));")
+                switch entry.bridgeKind ?? .call {
+                case .call:
+                    lines.append(
+                        "  define(\(target), \(quote(leaf)), "
+                            + "(payload) => post(\(quote(handler)), payload === undefined ? null : payload));")
+                case .subscription:
+                    lines.append(
+                        "  define(\(target), \(quote(leaf)), "
+                            + "(fn) => subscribe(\(quote(channel(forMethod: method))), \(quote(handler)), fn));")
+                }
             } else {
                 // A throwing stub, not a missing property: this capability has a
                 // mechanism and the host chose not to serve it, and the message
@@ -126,6 +189,7 @@ public enum MigoWebKitBridgeShim {
         }
 
         lines += [
+            "  define(root, \(quote(deliveryEntryPoint)), deliver);",
             "  const freeze = (node) => {",
             "    for (const key of Object.keys(node)) {",
             "      if (node[key] && typeof node[key] === 'object') { freeze(node[key]); }",

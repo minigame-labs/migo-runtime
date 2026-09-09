@@ -64,6 +64,18 @@ public struct MigoWebKitSurface: Sendable, Equatable {
         case login
     }
 
+    /// Which direction a bridge method runs in.
+    ///
+    /// Declared rather than chosen at the call site, because the two are different
+    /// shapes at both ends: a call returns a promise the host settles, and a
+    /// subscription registers a listener the host later invokes. A method declared
+    /// as one and built as the other is a promise nobody settles or a listener
+    /// nobody calls, and both present as content that hangs rather than as an error.
+    public enum BridgeKind: String, Sendable, CaseIterable, Codable {
+        case call
+        case subscription
+    }
+
     /// One row of the tier.
     public struct Entry: Sendable, Equatable {
         public let capability: Capability
@@ -72,15 +84,18 @@ public struct MigoWebKitSurface: Sendable, Equatable {
         public let defaultEnabled: Bool
         /// The script message this capability answers, for `hostBridge` only.
         public let bridgeMethod: String?
+        /// Which direction it runs in, for `hostBridge` only.
+        public let bridgeKind: BridgeKind?
 
         init(
             _ capability: Capability, _ provenance: Provenance, defaultEnabled: Bool,
-            bridgeMethod: String? = nil
+            bridgeMethod: String? = nil, bridgeKind: BridgeKind? = nil
         ) {
             self.capability = capability
             self.provenance = provenance
             self.defaultEnabled = defaultEnabled
             self.bridgeMethod = bridgeMethod
+            self.bridgeKind = bridgeKind
         }
     }
 
@@ -92,10 +107,18 @@ public struct MigoWebKitSurface: Sendable, Equatable {
         Entry(.pointerInput, .webPlatform, defaultEnabled: true),
         Entry(.webStorage, .webPlatform, defaultEnabled: true),
         Entry(.webNetwork, .webPlatform, defaultEnabled: true),
-        Entry(.contentBundleRead, .hostBridge, defaultEnabled: true, bridgeMethod: "content.read"),
-        Entry(.lifecycle, .hostBridge, defaultEnabled: true, bridgeMethod: "lifecycle.observe"),
-        Entry(.environment, .hostBridge, defaultEnabled: true, bridgeMethod: "environment.get"),
-        Entry(.diagnostics, .hostBridge, defaultEnabled: true, bridgeMethod: "diagnostics.report"),
+        Entry(
+            .contentBundleRead, .hostBridge, defaultEnabled: true,
+            bridgeMethod: "content.read", bridgeKind: .call),
+        Entry(
+            .lifecycle, .hostBridge, defaultEnabled: true,
+            bridgeMethod: "lifecycle.observe", bridgeKind: .subscription),
+        Entry(
+            .environment, .hostBridge, defaultEnabled: true,
+            bridgeMethod: "environment.get", bridgeKind: .call),
+        Entry(
+            .diagnostics, .hostBridge, defaultEnabled: true,
+            bridgeMethod: "diagnostics.report", bridgeKind: .call),
         Entry(.camera, .hostGranted, defaultEnabled: false),
         Entry(.microphone, .hostGranted, defaultEnabled: false),
         Entry(.geolocation, .hostGranted, defaultEnabled: false),

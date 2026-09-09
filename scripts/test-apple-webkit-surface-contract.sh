@@ -85,8 +85,9 @@ def raw_values(body: str) -> dict[str, str]:
 
 capability_raw = raw_values(enum_body(swift, "Capability"))
 provenance_raw = raw_values(enum_body(swift, "Provenance"))
+kind_raw = raw_values(enum_body(swift, "BridgeKind"))
 
-if not capability_raw or not provenance_raw:
+if not capability_raw or not provenance_raw or not kind_raw:
     print(
         "FAIL: the Swift enums could not be read, so every agreement reported below would be "
         "an agreement between the contract and nothing",
@@ -105,10 +106,14 @@ if not table_match:
 
 row = re.compile(
     r"Entry\(\s*\.(\w+),\s*\.(\w+),\s*defaultEnabled:\s*(true|false)"
-    r"(?:,\s*bridgeMethod:\s*\"([^\"]+)\")?\s*\)")
+    r"(?:,\s*bridgeMethod:\s*\"([^\"]+)\")?"
+    r"(?:,\s*bridgeKind:\s*\.(\w+))?\s*\)")
 swift_rows: dict[str, dict] = {}
 for match in row.finditer(table_match.group(1)):
-    case, provenance, default, method = match.groups()
+    case, provenance, default, method, kind = match.groups()
+    if kind is not None and kind not in kind_raw:
+        problems.append(f"the table names .{kind}, which the BridgeKind enum does not declare")
+        continue
     if case not in capability_raw:
         problems.append(f"the table names .{case}, which the Capability enum does not declare")
         continue
@@ -122,6 +127,7 @@ for match in row.finditer(table_match.group(1)):
         "provenance": provenance_raw[provenance],
         "default_enabled": default == "true",
         "bridge_method": method,
+        "bridge_kind": kind_raw[kind] if kind is not None else None,
     }
 
 if len(swift_rows) < 2:
@@ -144,6 +150,12 @@ if missing_rows:
 
 declared = {k: v for k, v in contract["capabilities"].items() if not k.startswith("_")}
 notes.append(f"read {len(declared)} capability row(s) out of the contract")
+
+if set(contract.get("bridge_kinds", {})) != set(kind_raw.values()):
+    problems.append(
+        "the contract's bridge_kinds and the Swift BridgeKind enum are different sets: "
+        f"contract has {', '.join(sorted(contract.get('bridge_kinds', {})))}, Swift has "
+        f"{', '.join(sorted(kind_raw.values()))}")
 
 if set(contract["provenances"]) != set(provenance_raw.values()):
     problems.append(
@@ -172,6 +184,11 @@ for name in sorted(set(declared) & set(swift_rows)):
         problems.append(
             f"{name}: the contract has default_enabled={want['default_enabled']} and the runtime "
             f"has {have['default_enabled']}")
+    if want.get("bridge_kind") != have["bridge_kind"]:
+        problems.append(
+            f"{name}: the contract calls it a {want.get('bridge_kind')!r} and the runtime a "
+            f"{have['bridge_kind']!r}. A call and a subscription are different shapes at both "
+            "ends, and the mismatch is a promise nobody settles or a listener nobody calls")
     if want.get("bridge_method") != have["bridge_method"]:
         problems.append(
             f"{name}: the contract's bridge method is {want.get('bridge_method')!r} and the "
@@ -191,6 +208,16 @@ for name, entry in sorted(declared.items()):
     has_method = bool(entry.get("bridge_method"))
     if provenance == "host_bridge" and not has_method:
         problems.append(f"{name}: a native bridge with no method name cannot be called or refused")
+    has_kind = bool(entry.get("bridge_kind"))
+    if provenance == "host_bridge" and not has_kind:
+        problems.append(
+            f"{name}: a native bridge with no declared direction. Whether content awaits a reply "
+            "or registers a listener is not an implementation detail of either side")
+    if provenance != "host_bridge" and has_kind:
+        problems.append(f"{name}: {provenance} and it declares a bridge direction")
+    if has_kind and entry["bridge_kind"] not in contract.get("bridge_kinds", {}):
+        problems.append(
+            f"{name}: bridge_kind {entry['bridge_kind']!r} is not one the contract defines")
     if provenance != "host_bridge" and has_method:
         problems.append(
             f"{name}: {provenance} and it names a bridge method. A native call wearing a web "

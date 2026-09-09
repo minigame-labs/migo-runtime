@@ -130,17 +130,43 @@ import XCTest
         func testContentCannotReplaceTheShim() throws {
             let context = try context(withHandlers: Shim.handlerNames(for: .default))
             _ = evaluate(Shim.script(for: .default), in: context)
+
+            // Whether the attempt *throws* is the caller's business, not the
+            // shim's: a non-writable assignment raises a TypeError in strict mode
+            // and fails silently in sloppy mode, and content chooses which mode it
+            // runs in. The first version of this test asserted the throw and failed
+            // against a shim that was in fact holding -- the assignment was
+            // discarded and the wrapper simply never raised. So the assertion is on
+            // the effect, and the strict-mode diagnostic is checked separately
+            // because it is what a developer sees when they try.
             for attempt in [
                 "globalThis.\(Shim.namespace) = {}",
                 "\(Shim.namespace).content = {}",
                 "\(Shim.namespace).content.read = () => 'mine'",
                 "delete \(Shim.namespace).content",
             ] {
-                let outcome = evaluate(
-                    "(() => { try { \(attempt); return 'accepted'; } catch (e) { return 'refused'; } })()",
-                    in: context)?.toString()
-                XCTAssertEqual(outcome, "refused", "content was able to run: \(attempt)")
+                _ = evaluate(
+                    "(() => { try { \(attempt); } catch (e) {} })()", in: context)
+                XCTAssertEqual(
+                    evaluate("typeof \(Shim.namespace).content.read", in: context)?.toString(),
+                    "function", "the shim did not survive: \(attempt)")
+                _ = evaluate("globalThis.__posted = []", in: context)
+                _ = evaluate("\(Shim.namespace).content.read(1)", in: context)
+                XCTAssertEqual(
+                    evaluate("JSON.stringify(globalThis.__posted)", in: context)?.toString(),
+                    #"[["migo_content_read",1]]"#,
+                    "the method still exists but no longer reaches its handler after: \(attempt)")
             }
+
+            // And under strict mode, which is what a module or a class body gets by
+            // default, the same attempt is an error the developer can see.
+            let strict = evaluate(
+                """
+                (() => { 'use strict';
+                   try { \(Shim.namespace).content.read = () => 'mine'; return 'accepted'; }
+                   catch (error) { return error.constructor.name; } })()
+                """, in: context)?.toString()
+            XCTAssertEqual(strict, "TypeError")
         }
 
         func testAHandlerTheHostForgotToInstallRejectsRatherThanHanging() throws {
@@ -169,6 +195,92 @@ import XCTest
             for name in names {
                 XCTAssertTrue(script.contains("'\(name)'"), "\(name) is installed and never posted to")
             }
+        }
+
+        // MARK: - subscriptions
+
+        func testASubscriptionRegistersAndTheHostDeliversToIt() throws {
+            let context = try context(withHandlers: Shim.handlerNames(for: .default))
+            _ = evaluate(Shim.script(for: .default), in: context)
+            _ = evaluate(
+                """
+                globalThis.__events = [];
+                \(Shim.namespace).lifecycle.observe((event) => { globalThis.__events.push(event); });
+                """, in: context)
+            // Registering tells the host somebody is listening; without that the
+            // host has to evaluate JavaScript into a page that may have no listener.
+            XCTAssertEqual(
+                evaluate("JSON.stringify(globalThis.__posted)", in: context)?.toString(),
+                #"[["migo_lifecycle_observe",{"channel":"lifecycle"}]]"#)
+
+            let delivered = evaluate(
+                Shim.deliveryScript(channel: "lifecycle", payloadJSON: #"{"phase":"background"}"#),
+                in: context)
+            XCTAssertEqual(delivered?.toInt32(), 1)
+            XCTAssertEqual(
+                evaluate("JSON.stringify(globalThis.__events)", in: context)?.toString(),
+                #"[{"phase":"background"}]"#)
+        }
+
+        func testTheChannelTheHostAddressesIsTheOneTheShimRegistered() {
+            // Two derivations of one name is a listener that is registered and never
+            // called, and nothing anywhere reports it.
+            XCTAssertEqual(Shim.channel(forMethod: "lifecycle.observe"), "lifecycle")
+            XCTAssertEqual(Shim.channel(forMethod: "a.b.observe"), "a.b")
+            XCTAssertEqual(Shim.channel(forMethod: "bare"), "bare")
+        }
+
+        func testDeliveringToNobodyIsHarmless() throws {
+            let context = try context(withHandlers: Shim.handlerNames(for: .default))
+            _ = evaluate(Shim.script(for: .default), in: context)
+            let delivered = evaluate(
+                Shim.deliveryScript(channel: "lifecycle", payloadJSON: "{}"), in: context)
+            XCTAssertEqual(
+                delivered?.toInt32(), 0,
+                "a host that delivers before content subscribed must get a count, not an error")
+        }
+
+        func testOneThrowingListenerDoesNotSwallowTheEventForTheRest() throws {
+            let context = try context(withHandlers: Shim.handlerNames(for: .default))
+            _ = evaluate(Shim.script(for: .default), in: context)
+            _ = evaluate(
+                """
+                globalThis.__seen = 0;
+                \(Shim.namespace).lifecycle.observe(() => { throw new Error('first'); });
+                \(Shim.namespace).lifecycle.observe(() => { globalThis.__seen += 1; });
+                """, in: context)
+            let delivered = evaluate(
+                Shim.deliveryScript(channel: "lifecycle", payloadJSON: #"{"phase":"suspend"}"#),
+                in: context)
+            XCTAssertEqual(
+                evaluate("globalThis.__seen", in: context)?.toInt32(), 1,
+                "a suspend that reaches half its listeners is a save that half happened")
+            XCTAssertEqual(delivered?.toInt32(), 1, "the count reports who actually received it")
+        }
+
+        func testSubscribingWithSomethingUncallableIsRefused() throws {
+            let context = try context(withHandlers: Shim.handlerNames(for: .default))
+            _ = evaluate(Shim.script(for: .default), in: context)
+            let outcome = evaluate(
+                """
+                (() => { try { \(Shim.namespace).lifecycle.observe({}); return 'accepted'; }
+                         catch (error) { return error.constructor.name; } })()
+                """, in: context)?.toString()
+            XCTAssertEqual(
+                outcome, "TypeError",
+                "a registration the host can never call has to fail where it was made, not the "
+                    + "first time the app goes to the background")
+        }
+
+        func testASubscriptionIsNotShapedLikeACall() {
+            // The shapes are declared, so this checks the generator honours the
+            // declaration rather than picking one.
+            let script = Shim.script(for: .default)
+            XCTAssertTrue(script.contains("subscribe('lifecycle', 'migo_lifecycle_observe'"))
+            XCTAssertTrue(script.contains("post('migo_environment_get'"))
+            XCTAssertFalse(
+                script.contains("subscribe('environment'"),
+                "a call built as a subscription registers a listener nobody calls")
         }
 
         // MARK: - tables the shipping one cannot currently produce

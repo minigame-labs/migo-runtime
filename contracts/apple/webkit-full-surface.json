@@ -47,7 +47,14 @@
     "after obtaining what Apple requires for it. One with no mechanism cannot be",
     "turned on by configuration at all. The reason field says which is which, so",
     "the answer to \"can we ship this to a customer who needs the camera\" is in the",
-    "file rather than in somebody's memory of a review thread."
+    "file rather than in somebody's memory of a review thread.",
+    "",
+    "BRIDGE KIND IS PART OF THE DECLARATION, not an implementation choice. A call",
+    "and a subscription are different shapes at both ends -- one returns a promise",
+    "the host settles, the other registers a listener the host later invokes -- and",
+    "a method declared as one and built as the other is a promise nobody settles or",
+    "a listener nobody calls. Both present as content that hangs rather than as an",
+    "error, which is why the shape is written down where the gate can compare it."
   ],
   "provenances": {
     "web_platform": "WebKit provides it to any page; the host has no switch and claims none.",
@@ -105,6 +112,7 @@
       "provenance": "host_bridge",
       "default_enabled": true,
       "bridge_method": "content.read",
+      "bridge_kind": "call",
       "reason": "Reads a file out of the content package that the host is already serving to this web view. It exposes no filesystem the content did not arrive in, so there is no native capability behind it to permit.",
       "bounded_by": "The content package for this session only. Paths are resolved inside it and a traversal is a refusal, not a clamp."
     },
@@ -112,6 +120,7 @@
       "provenance": "host_bridge",
       "default_enabled": true,
       "bridge_method": "lifecycle.observe",
+      "bridge_kind": "subscription",
       "reason": "Foreground, background, and the host's own suspend and resume. The page's visibility events do not cover an app the system is about to suspend, and content that cannot hear that saves nothing before it is frozen.",
       "bounded_by": "Delivery only. Content cannot ask the host to change its own lifecycle state."
     },
@@ -119,6 +128,7 @@
       "provenance": "host_bridge",
       "default_enabled": true,
       "bridge_method": "environment.get",
+      "bridge_kind": "call",
       "reason": "Safe-area insets, device pixel ratio, preferred locale, host app version, and the selected runtime lane. None is a user permission and none identifies a device; the lane name is here because content that was built for a lane needs to know which one it got.",
       "bounded_by": "No identifier that survives a reinstall, and no field a fingerprinter could not read from navigator already."
     },
@@ -126,6 +136,7 @@
       "provenance": "host_bridge",
       "default_enabled": true,
       "bridge_method": "diagnostics.report",
+      "bridge_kind": "call",
       "reason": "Content reports its own errors and readiness to the host, which is how a host app finds out its content failed rather than hearing it from a user.",
       "bounded_by": "Write-only, and rate-limited by the host. Content cannot read back what it or anything else reported."
     },
@@ -198,5 +209,9 @@
       "default_enabled": false,
       "reason": "No bridge. An identity the host holds is not content's to ask for, and the one integration that wanted it wanted a specific vendor's."
     }
+  },
+  "bridge_kinds": {
+    "call": "Content asks, the host answers once. The shim returns a promise the host's reply settles.",
+    "subscription": "The host tells content when something happened. Content registers a listener and the host delivers; a call shape would make content poll for a state change it cannot predict."
   }
 }
