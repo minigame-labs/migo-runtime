@@ -193,20 +193,52 @@ import XCTest
             XCTAssertEqual(diagnostic["body"] as? String, "abcdefghij")
         }
 
-        func testAFileOutsideThePackageIsRefusedAndNotServed() throws {
+        func testNoEncodingOfATraversalServesAFileOutsideThePackage() throws {
+            // The first version of this test expected a 403 and got a 404, which is
+            // the more interesting answer: WebKit's URL layer normalises `/../x` to
+            // `/x` before the request is ever handed to the scheme handler, so a
+            // plain traversal cannot reach the origin's own containment check at all.
+            // That check is defence in depth -- and it is tested directly, against a
+            // real directory, in MigoWebKitOriginRulesTests.
+            //
+            // So what this asserts is the property that actually matters and holds
+            // whatever the URL layer does: no spelling of the escape returns the file.
+            // The statuses are reported rather than asserted, because which layer
+            // refused is WebKit's business and may change with a WebKit release; that
+            // the bytes stay outside is ours.
             let outside = root.deletingLastPathComponent()
                 .appendingPathComponent("outside-\(UUID().uuidString).txt")
             try Data("secret".utf8).write(to: outside)
             defer { try? FileManager.default.removeItem(at: outside) }
+            let name = outside.lastPathComponent
             let diagnostic = try firstDiagnostic(
                 from: """
-                    const response = await fetch('/../\(outside.lastPathComponent)');
-                    return { status: response.status, body: (await response.text()).slice(0, 40) };
+                    const attempts = ['/../\(name)', '/%2e%2e/\(name)', '/%2E%2E%2F\(name)',
+                                      '/assets/../../\(name)', '/.%2e/\(name)'];
+                    const results = [];
+                    for (const path of attempts) {
+                      try {
+                        const response = await fetch(path);
+                        results.push({ path, status: response.status,
+                                       body: (await response.text()).slice(0, 20) });
+                      } catch (error) {
+                        results.push({ path, threw: String(error && error.message || error) });
+                      }
+                    }
+                    return { results };
                     """)
-            XCTAssertNotEqual(
-                diagnostic["body"] as? String, "secret",
-                "the origin served a file from outside the content package")
-            XCTAssertEqual(diagnostic["status"] as? Int, 403)
+            let results = try XCTUnwrap(diagnostic["results"] as? [[String: Any]])
+            XCTAssertEqual(results.count, 5, "not every spelling was attempted: \(diagnostic)")
+            for result in results {
+                XCTAssertNotEqual(
+                    result["body"] as? String, "secret",
+                    "\(result["path"] ?? "?") served a file from outside the content package")
+                if let status = result["status"] as? Int {
+                    XCTAssertNotEqual(
+                        status, 200,
+                        "\(result["path"] ?? "?") answered 200 for something outside the package")
+                }
+            }
         }
 
         func testAMissingFileIsAFourOhFourAndNotTheIndexPage() throws {
