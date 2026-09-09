@@ -17,7 +17,7 @@ import Foundation
 public enum MigoVsyncTimestamp {
 
     /// Why a tick could not be expressed as a vsync timestamp.
-    public enum Rejection: Equatable, Sendable {
+    public enum Rejection: Error, Equatable, Sendable {
         /// The clock reported something that is not a number, which is what a
         /// display link does on the tick after its display goes away.
         case notFinite
