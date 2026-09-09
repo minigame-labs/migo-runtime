@@ -3082,6 +3082,23 @@ impl RenderThread {
                 }
 
                 loop {
+                    // One Objective-C autorelease pool per iteration, and it is
+                    // the first thing in the body so that the shutdown path
+                    // below -- which tears the EGL owner down and is where the
+                    // last native references go -- is inside it too.
+                    //
+                    // Off Apple this is a zero-sized value and the whole
+                    // statement compiles away, which is why there is no `cfg`
+                    // here. On Apple it is the difference between a per-frame
+                    // Metal object being released this iteration and being held
+                    // until the thread exits: ANGLE's Metal backend returns
+                    // autoreleased objects (`nextDrawable`, `commandBuffer`),
+                    // this thread is a plain `std::thread` with no pool of its
+                    // own, and the runtime's fallback for that case is a hidden
+                    // pool drained at thread destruction. See
+                    // `shared::objc_autorelease` for the full account.
+                    let _autorelease_pool = shared::objc_autorelease::autorelease_scope();
+
                     // Shutdown has an out-of-band level because the bounded
                     // command queue deliberately drops lifecycle commands when
                     // full. The best-effort Shutdown command wakes an idle loop;

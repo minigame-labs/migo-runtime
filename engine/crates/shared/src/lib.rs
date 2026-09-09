@@ -67,6 +67,7 @@ pub mod log_throttle;
 // Behind `vfs`, not because it is a filesystem but because it holds
 // `VirtualFS`, `MountTable` and `GamePaths` by value. See the manifest.
 #[cfg(feature = "vfs")]
+pub mod objc_autorelease;
 pub mod op_state;
 pub mod payload_pool;
 pub mod protocol;
