@@ -238,17 +238,15 @@ jobs:
 
       - name: The isolated diagnostic package links and runs its ABI tests
         if: matrix.host_slice
-        # MIGO_CAPI_LOG installs the engine's log subscriber, which is opt-in
-        # because a library has no business hijacking a process's global logger.
-        # It is on here because the engine now reports one thing these tests
-        # cannot otherwise see: SurfaceResource::drop warns when it is not the
-        # last reference to the anchor, and that warning is the difference between
-        # "Migo still held the surface" and "only owners outside Migo did". The
-        # Swift assertion measures the layer's reference count and cannot tell
-        # those apart; the engine can, and without a subscriber it says so into a
-        # void.
-        env:
-          MIGO_CAPI_LOG: warn
+        # No MIGO_CAPI_LOG here, and that is a correction rather than an
+        # omission. It was added on the theory that the engine's release warning
+        # was speaking into a void; the engine's own "diagnostics installed"
+        # line then reported `level=Info` on a step that had set `warn`, because
+        # MigoSurfaceAttachTests' setUp already does
+        # `setenv("MIGO_CAPI_LOG", "info", 1)` with overwrite. The subscriber was
+        # never missing on this lane -- 28 engine lines are in the log of the run
+        # that established this -- so setting it here changed nothing and said
+        # something untrue about why.
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
         run: |
           swift build
@@ -298,29 +296,17 @@ jobs:
       - name: The ABI tests run on iOS with package-embedded ANGLE
         if: matrix.platform == 'ios-simulator'
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
-        # MIGO_CAPI_LOG installs the engine's log subscriber, which is opt-in
-        # because a library has no business hijacking a process's global logger.
-        # It is on here because the engine now reports one thing these tests
-        # cannot otherwise see: SurfaceResource::drop warns when it is not the
-        # last reference to the anchor, and that warning is the difference between
-        # "Migo still held the surface" and "only owners outside Migo did". The
-        # Swift assertion measures the layer's reference count and cannot tell
-        # those apart; the engine can, and without a subscriber it says so into a
-        # void.
+        # 🔴 THE ENGINE'S OWN LOG IS NOT VISIBLE ON THIS LANE. Measured, on one
+        # run, from identical test code: 28 lines matching `INFO graphics::` etc.
+        # in the macOS leg's log and ZERO in this one -- while
+        # MigoSurfaceAttachTests' setUp had turned the subscriber on in both, with
+        # its own `setenv`. A process running inside the simulator writes its
+        # stderr somewhere `xcodebuild` does not collect.
         #
-        # `TEST_RUNNER_MIGO_CAPI_LOG` and not a plain `env:`, because the test
-        # process does not run in this shell: it runs inside the simulator, which
-        # does not inherit the runner's environment. xcodebuild's documented way
-        # in is a `TEST_RUNNER_`-prefixed build setting, passed to the test process
-        # with the prefix removed. The plain `env:` below is left because it costs
-        # nothing and covers the xcodebuild process itself; it is not what reaches
-        # the engine.
-        #
-        # This is the same shape as the defect that made the first version of this
-        # instrumentation useless: a diagnostic aimed at a channel nobody is
-        # reading is indistinguishable from a diagnostic with nothing to say.
-        env:
-          MIGO_CAPI_LOG: warn
+        # So do not set MIGO_CAPI_LOG (or TEST_RUNNER_MIGO_CAPI_LOG) here expecting
+        # engine output: this step had both for a while and neither produced a
+        # line. An engine-side question asked on this lane has to be answered
+        # through an assertion the test can make, or on the macOS leg.
         run: |
           udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
           xcodebuild test \
@@ -329,7 +315,6 @@ jobs:
             -parallel-testing-enabled NO \
             -derivedDataPath "$GITHUB_WORKSPACE/build/apple-sim-dd" \
             -skipPackagePluginValidation \
-            TEST_RUNNER_MIGO_CAPI_LOG=warn \
             CODE_SIGNING_ALLOWED=NO
 
       - name: The assembled artifact honors the deployment floor
