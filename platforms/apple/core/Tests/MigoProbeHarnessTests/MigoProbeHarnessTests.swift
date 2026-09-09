@@ -126,14 +126,62 @@ final class MigoProbeHarnessTests: XCTestCase {
         let payload = Data([0x6d, 0x69, 0x67, 0x6f, 0x00, 0xff, 0x10, 0x20])
         request.httpBodyStream = InputStream(data: payload)
 
-        XCTAssertEqual(MigoProbeSchemeHandler.readBody(from: request), payload)
+        XCTAssertEqual(MigoProbeSchemeHandler.readBody(from: request), .complete(payload))
     }
 
     func testAnInlineRequestBodyIsRead() {
         var request = URLRequest(url: URL(string: "migo-probe://probe/echo-body")!)
         request.httpMethod = "POST"
         request.httpBody = Data([0x01, 0x02])
-        XCTAssertEqual(MigoProbeSchemeHandler.readBody(from: request), Data([0x01, 0x02]))
+        XCTAssertEqual(
+            MigoProbeSchemeHandler.readBody(from: request), .complete(Data([0x01, 0x02])))
+    }
+
+    func testABodyThatArrivesInPiecesIsReadWholeAndNotAsAPrefix() throws {
+        // The case `hasBytesAvailable` gets wrong. It is not an EOF indicator for
+        // anything but a memory-backed stream: fed incrementally, it answers false
+        // whenever the next bytes have not arrived yet, so a loop conditioned on it
+        // returns a *prefix*. This handler echoes what it read and the page compares
+        // bytes, so a prefix is reported as "the other side received N of M bytes" --
+        // A5's own failure mode, produced by this file rather than by the platform.
+        //
+        // A bound stream pair is the only way to build that shape locally: an
+        // InputStream(data:) always has its bytes available and cannot fail the way
+        // the real one can.
+        var input: InputStream?
+        var output: OutputStream?
+        Stream.getBoundStreams(
+            withBufferSize: 512, inputStream: &input, outputStream: &output)
+        let inputStream = try XCTUnwrap(input)
+        let outputStream = try XCTUnwrap(output)
+
+        let payload = Data((0..<4096).map { UInt8($0 % 251) })
+        outputStream.open()
+        let writer = Thread {
+            var sent = 0
+            payload.withUnsafeBytes { raw in
+                guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+                while sent < payload.count {
+                    // A gap between chunks is the whole point: it is the window in
+                    // which hasBytesAvailable is false and the body is not finished.
+                    Thread.sleep(forTimeInterval: 0.01)
+                    let wrote = outputStream.write(
+                        base + sent, maxLength: min(256, payload.count - sent))
+                    if wrote <= 0 { break }
+                    sent += wrote
+                }
+            }
+            outputStream.close()
+        }
+        writer.start()
+
+        var request = URLRequest(url: URL(string: "migo-probe://probe/echo-body")!)
+        request.httpMethod = "POST"
+        request.httpBodyStream = inputStream
+
+        XCTAssertEqual(
+            MigoProbeSchemeHandler.readBody(from: request), .complete(payload),
+            "the body was read as a prefix, which the page reports as a lost body")
     }
 
     // MARK: - the resources actually ship

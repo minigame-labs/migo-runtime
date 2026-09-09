@@ -303,13 +303,33 @@ public final class MigoLoopbackListener {
 
     /// Read client frames and echo their payloads back unmasked.
     ///
-    /// Only what the probe sends has to be understood: a single binary frame,
-    /// masked as every client frame must be, and a close. Continuation frames
-    /// and fragmentation are not produced by the probe, so they are refused
-    /// explicitly rather than mishandled quietly -- a server that echoed a
-    /// fragment as a whole message would answer A22 with a corrupted round trip
-    /// and blame the platform.
-    private func receiveFrame(on connection: NWConnection, accumulated: Data) {
+    /// WHAT CHANGED HERE AND WHY IT MATTERED. This loop used to accept a single
+    /// unfragmented frame and cancel on anything else, with a comment saying that
+    /// fragments were "refused explicitly rather than mishandled quietly". Three
+    /// things were wrong with that, and all three would have surfaced as a platform
+    /// verdict rather than as a bug in this file:
+    ///
+    ///   1. **It did not look at FIN.** A fragmented message's *first* frame carries
+    ///      opcode 0x1 or 0x2 with FIN clear, so it was echoed as a whole message
+    ///      carrying only the first fragment -- precisely the corrupted round trip
+    ///      the comment claimed to prevent. Only continuation frames were refused.
+    ///   2. **Refusing fragments is the wrong answer anyway.** The performance matrix
+    ///      runs payloads up to 4 MiB, and whether WebKit's WebSocket fragments a
+    ///      send that large is not something this project has measured. If it does,
+    ///      a refusal cancels the connection and the record says the loopback
+    ///      transport failed at 4 MiB -- an architectural conclusion drawn from this
+    ///      function's limitation. So fragments are assembled.
+    ///   3. **A malformed frame and an incomplete one were the same answer.** Both
+    ///      returned nil, so a broken client waited forever instead of being told.
+    ///      A lab tool that hangs reports nothing.
+    ///
+    /// The assembly state travels as parameters rather than living on the listener:
+    /// two connections must not share a half-received message, and the compiler
+    /// enforces that when there is nothing shared to get wrong.
+    private func receiveFrame(
+        on connection: NWConnection, accumulated: Data, pendingOpcode: UInt8? = nil,
+        pending: Data = Data()
+    ) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
             [weak self] chunk, _, isComplete, error in
             guard let self else { return }
@@ -320,80 +340,240 @@ public final class MigoLoopbackListener {
             var buffer = accumulated
             if let chunk { buffer.append(chunk) }
 
-            while true {
-                guard let frame = Self.parseFrame(buffer) else { break }
-                buffer.removeFirst(frame.consumed)
+            var offset = 0
+            var pendingOpcode = pendingOpcode
+            var pending = pending
 
-                switch frame.opcode {
-                case 0x8:  // close
-                    connection.cancel()
-                    return
-                case 0x9:  // ping
+            loop: while true {
+                switch Self.parse(buffer, at: offset) {
+                case .needMoreBytes:
+                    break loop
+                case .protocolError(let reason):
+                    // Told, not dropped. The close code is 1002 (protocol error) so
+                    // the page's `onclose` carries the reason into the record instead
+                    // of an opaque 1006.
                     connection.send(
-                        content: Self.encodeFrame(opcode: 0xA, payload: frame.payload),
-                        completion: .idempotent)
-                case 0x1, 0x2:
-                    connection.send(
-                        content: Self.encodeFrame(opcode: frame.opcode, payload: frame.payload),
-                        completion: .idempotent)
-                case 0x0:
-                    // A fragment. The probe never sends one; echoing it as a
-                    // whole message would corrupt the round trip silently.
-                    connection.cancel()
+                        content: Self.encodeClose(code: 1002, reason: reason),
+                        completion: .contentProcessed { _ in connection.cancel() })
                     return
-                default:
-                    connection.cancel()
-                    return
+                case .frame(let frame):
+                    offset += frame.consumed
+
+                    switch frame.opcode {
+                    case 0x8:
+                        // Echo the close before cancelling. Cancelling outright makes
+                        // a clean shutdown arrive at the page as 1006 (abnormal),
+                        // which a probe records as a transport failure.
+                        connection.send(
+                            content: Self.encodeFrame(opcode: 0x8, payload: frame.payload),
+                            completion: .contentProcessed { _ in connection.cancel() })
+                        return
+                    case 0x9:
+                        connection.send(
+                            content: Self.encodeFrame(opcode: 0xA, payload: frame.payload),
+                            completion: .idempotent)
+                    case 0xA:
+                        // A pong. Nothing to answer, and cancelling on it would kill a
+                        // connection whose client was checking liveness.
+                        break
+                    case 0x1, 0x2:
+                        guard pendingOpcode == nil else {
+                            connection.send(
+                                content: Self.encodeClose(
+                                    code: 1002,
+                                    reason: "a new message began while one was still fragmented"),
+                                completion: .contentProcessed { _ in connection.cancel() })
+                            return
+                        }
+                        if frame.fin {
+                            connection.send(
+                                content: Self.encodeFrame(
+                                    opcode: frame.opcode, payload: frame.payload),
+                                completion: .idempotent)
+                        } else {
+                            pendingOpcode = frame.opcode
+                            pending = frame.payload
+                        }
+                    case 0x0:
+                        guard let opcode = pendingOpcode else {
+                            connection.send(
+                                content: Self.encodeClose(
+                                    code: 1002, reason: "a continuation frame began a message"),
+                                completion: .contentProcessed { _ in connection.cancel() })
+                            return
+                        }
+                        guard pending.count + frame.payload.count <= Self.maximumMessageBytes else {
+                            connection.send(
+                                content: Self.encodeClose(
+                                    code: 1009,
+                                    reason: "a fragmented message exceeded "
+                                        + "\(Self.maximumMessageBytes) bytes"),
+                                completion: .contentProcessed { _ in connection.cancel() })
+                            return
+                        }
+                        pending.append(frame.payload)
+                        if frame.fin {
+                            connection.send(
+                                content: Self.encodeFrame(opcode: opcode, payload: pending),
+                                completion: .idempotent)
+                            pendingOpcode = nil
+                            pending = Data()
+                        }
+                    default:
+                        connection.send(
+                            content: Self.encodeClose(
+                                code: 1002, reason: "opcode \(frame.opcode) is not a frame type"),
+                            completion: .contentProcessed { _ in connection.cancel() })
+                        return
+                    }
                 }
             }
-            self.receiveFrame(on: connection, accumulated: buffer)
+
+            // Compacted once per receive rather than per frame. `removeFirst` is
+            // linear, and a 4 MiB message arriving in 64 KiB chunks would pay that
+            // cost sixty-four times over -- the harness's own copying attributed to
+            // the transport it is measuring.
+            if offset > 0 { buffer.removeFirst(offset) }
+            self.receiveFrame(
+                on: connection, accumulated: buffer, pendingOpcode: pendingOpcode,
+                pending: pending)
         }
     }
 
+    /// The largest message this listener will assemble.
+    ///
+    /// The performance matrix's largest payload class is 4 MiB; this is four times
+    /// that, so a measurement never meets the bound and a runaway length claim
+    /// always does. Without it a client claiming a 64-bit length would have this
+    /// process buffer until the system killed it, which on a bench looks exactly
+    /// like the platform refusing to carry the payload.
+    public static let maximumMessageBytes = 16 * 1024 * 1024
+
     struct Frame {
         let opcode: UInt8
+        let fin: Bool
         let payload: Data
         let consumed: Int
     }
 
+    enum ParseOutcome {
+        case frame(Frame)
+        /// The buffer does not hold a whole frame yet.
+        case needMoreBytes
+        /// It never will: this is not a frame. Distinguished from `needMoreBytes`
+        /// because waiting for more bytes after a malformed header is a hang.
+        case protocolError(String)
+    }
+
     /// Returns nil when the buffer does not yet hold a whole frame.
+    ///
+    /// Kept because the tests written against it describe real wire cases; it
+    /// answers nil for both "incomplete" and "invalid", which is why the loop above
+    /// uses `parse` instead.
     static func parseFrame(_ buffer: Data) -> Frame? {
-        let bytes = [UInt8](buffer)
-        guard bytes.count >= 2 else { return nil }
-        let opcode = bytes[0] & 0x0F
-        let masked = (bytes[1] & 0x80) != 0
-        var length = Int(bytes[1] & 0x7F)
+        if case .frame(let frame) = parse(buffer, at: 0) { return frame }
+        return nil
+    }
+
+    /// Parse one frame starting `offset` bytes into `buffer`.
+    ///
+    /// Indexed rather than copied. The previous version began with
+    /// `[UInt8](buffer)`, which copies the whole accumulated buffer on every parse
+    /// attempt -- so a 4 MiB message arriving in 64 KiB chunks copied up to 4 MiB
+    /// sixty-four times before the frame was complete. That is quadratic in the
+    /// payload size, in the one function whose cost is subtracted from nothing when
+    /// the transport is timed.
+    static func parse(_ buffer: Data, at offset: Int) -> ParseOutcome {
+        let base = buffer.startIndex + offset
+        let available = buffer.count - offset
+        guard available >= 2 else { return .needMoreBytes }
+
+        let first = buffer[base]
+        let second = buffer[base + 1]
+        let fin = (first & 0x80) != 0
+        // RFC 6455 reserves these; a peer setting one without a negotiated extension
+        // is speaking a protocol this listener does not implement, and guessing which
+        // one would corrupt the payload rather than fail.
+        guard (first & 0x70) == 0 else {
+            return .protocolError("a reserved frame bit was set")
+        }
+        let opcode = first & 0x0F
+        let masked = (second & 0x80) != 0
+        var length = Int(second & 0x7F)
         var cursor = 2
 
+        let isControl = (opcode & 0x08) != 0
+        if isControl {
+            // Control frames carry at most 125 bytes and are never fragmented.
+            // Accepting a fragmented one would leave the assembler holding a message
+            // that can never complete.
+            guard length <= 125 else {
+                return .protocolError("a control frame claimed \(length) bytes")
+            }
+            guard fin else { return .protocolError("a control frame was fragmented") }
+        }
+
         if length == 126 {
-            guard bytes.count >= cursor + 2 else { return nil }
-            length = Int(bytes[cursor]) << 8 | Int(bytes[cursor + 1])
+            guard available >= cursor + 2 else { return .needMoreBytes }
+            length = Int(buffer[base + cursor]) << 8 | Int(buffer[base + cursor + 1])
             cursor += 2
         } else if length == 127 {
-            guard bytes.count >= cursor + 8 else { return nil }
-            var wide = 0
+            guard available >= cursor + 8 else { return .needMoreBytes }
+            var wide: UInt64 = 0
             for index in 0..<8 {
-                wide = wide << 8 | Int(bytes[cursor + index])
+                wide = wide << 8 | UInt64(buffer[base + cursor + index])
             }
-            length = wide
+            // The high bit must be clear per RFC 6455, and the value must fit both
+            // Int and the bound below. Reading it into an Int first is what the
+            // previous version did, and a value above Int.max landed as a negative
+            // length that passed the "enough bytes?" check and then crashed slicing
+            // a range whose lower bound exceeded its upper.
+            guard wide <= UInt64(Self.maximumMessageBytes) else {
+                return .protocolError("a frame claimed \(wide) bytes")
+            }
+            length = Int(wide)
             cursor += 8
         }
+        guard length <= Self.maximumMessageBytes else {
+            return .protocolError("a frame claimed \(length) bytes")
+        }
 
-        var mask = [UInt8]()
+        var mask = [UInt8](repeating: 0, count: 4)
         if masked {
-            guard bytes.count >= cursor + 4 else { return nil }
-            mask = Array(bytes[cursor..<(cursor + 4)])
+            guard available >= cursor + 4 else { return .needMoreBytes }
+            for index in 0..<4 { mask[index] = buffer[base + cursor + index] }
             cursor += 4
         }
-        guard bytes.count >= cursor + length else { return nil }
+        guard available >= cursor + length else { return .needMoreBytes }
 
-        var payload = Array(bytes[cursor..<(cursor + length)])
+        var payload = Data(buffer[(base + cursor)..<(base + cursor + length)])
         if masked {
-            for index in 0..<payload.count {
-                payload[index] ^= mask[index % 4]
+            payload.withUnsafeMutableBytes { raw in
+                guard let bytes = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+                for index in 0..<length { bytes[index] ^= mask[index % 4] }
             }
         }
-        return Frame(opcode: opcode, payload: Data(payload), consumed: cursor + length)
+        return .frame(
+            Frame(opcode: opcode, fin: fin, payload: payload, consumed: cursor + length))
+    }
+
+    /// A close frame carrying a status code and a reason.
+    ///
+    /// The reason is what reaches the page's `onclose`, and it is the difference
+    /// between a record that says "the transport failed" and one that says which
+    /// frame this listener could not read.
+    static func encodeClose(code: UInt16, reason: String) -> Data {
+        var payload = Data([UInt8(code >> 8), UInt8(code & 0xFF)])
+        // 125 total, two of which are the code. Truncating on a scalar boundary
+        // rather than a byte, because a half-written UTF-8 sequence makes the whole
+        // reason unreadable instead of shorter.
+        var text = ""
+        for scalar in reason.unicodeScalars {
+            if text.utf8.count + String(scalar).utf8.count > 123 { break }
+            text.unicodeScalars.append(scalar)
+        }
+        payload.append(Data(text.utf8))
+        return encodeFrame(opcode: 0x8, payload: payload)
     }
 
     /// Server frames are never masked, and this only ever writes whole messages.

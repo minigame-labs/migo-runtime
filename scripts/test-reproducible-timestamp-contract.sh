@@ -55,6 +55,12 @@ NOT_AN_ARTIFACT = {
     "scripts/ci/check_migo_test_suite.py": "a CI test-suite report read by a human, not packaged",
     "scripts/ci/compare_baseline.py": "a CI comparison report against a stored baseline",
     "scripts/ci/collect_metrics.sh": "device measurements, where elapsed wall time is the measurement",
+    # A lab run, and the clock is naming the run rather than stamping an artifact.
+    # Two runs of one commit MUST differ here: the timestamp becomes the records
+    # filename, and pinning it to SOURCE_DATE_EPOCH would have this morning's run
+    # overwrite the one before it under the same name. The records land in docs/,
+    # which is gitignored, and nothing this script writes is packaged or committed.
+    "scripts/run-apple-probe.sh": "a capability-gate lab run, where the clock names the run and two runs must not collide",
 }
 
 sources = sorted(

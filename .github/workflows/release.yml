@@ -650,6 +650,24 @@ jobs:
       - name: The probe app needs no exemption the product cannot ship
         run: bash scripts/test-apple-probe-app-ats-contract.sh
 
+      # The runner's two refusals, executed rather than read. Gate 1's answers
+      # include two nobody can query -- Lockdown Mode and the local-network alert
+      # -- so an unattended device run records them as not_probed, and admit.py
+      # then calls every arm that needed one unmeasured. On the page that reads as
+      # an arm the device ruled out, which is what the first unattended run of
+      # this gate actually produced.
+      - name: The probe runner refuses an unattested device run
+        run: bash scripts/test-apple-probe-run-contract.sh
+
+      # The WebKit Full lane's compliance surface, which is the fact an App Store
+      # submission rests on. 4.7.2 requires Apple's prior permission before an app
+      # exposes native APIs to mini games, so a bridge method present in the
+      # runtime and absent from the contract is exactly the finding that guideline
+      # produces -- and it is invisible, because the file a reader checks is the
+      # contract and the file content meets is the Swift.
+      - name: The WebKit Full surface says one thing in both files
+        run: bash scripts/test-apple-webkit-surface-contract.sh
+
       - name: OpenHarmony host and package metadata contracts
         run: |
           bash scripts/test-ohos-host-contract.sh

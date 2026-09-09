@@ -10,9 +10,45 @@ on:
   push:
     branches:
       - 'apple/**'
+  # Apple-touching pull requests, because until this trigger existed the Swift in
+  # the shipping package was compiled by nothing a pull request runs.
+  #
+  # platforms/apple/Package.swift declares a .binaryTarget for an xcframework that
+  # scripts/build-apple-sdk.sh produces, and SwiftPM validates every binary target
+  # when it loads the manifest -- so `swift build --target MigoAppleWebKit` in a
+  # checkout without the artifact fails on the artifact, not on the target. Asked
+  # on the Mac, it reports all three missing frameworks and builds nothing. That
+  # makes every source file under platforms/apple/Sources code no cheap lane has
+  # ever compiled, which is the exact state apple-ci.yml was created to end for
+  # the engine-free package next door, and the state that put two wrong pointer
+  # widths into the C ABI's ILP32 assertions.
+  #
+  # The reason it was not here before was a cost estimate that measurement has
+  # since retired: this lane was budgeted at an hour of Skia and actually runs in
+  # 7 to 19 minutes wall clock across its three-platform matrix, on runners that
+  # are free for a public repository. The path filter keeps that bill where the
+  # risk is -- a pull request that touches no Apple path pays nothing, and an
+  # engine-wide change that breaks the Apple build is still caught by the weekly
+  # cron, which is the cadence expensive verification is supposed to get.
+  pull_request:
+    paths:
+      - 'platforms/apple/**'
+      - 'contracts/apple/**'
+      - 'engine/crates/capi/**'
+      - 'engine/crates/frame-wire/**'
+      - 'engine/crates/frame-decode/**'
+      - 'scripts/build-apple-sdk.sh'
+      - 'scripts/apple-sdk-package.py'
+      - 'scripts/embed-apple-angle.sh'
+      - 'scripts/fetch-apple-angle.sh'
+      - 'scripts/test-apple-*.sh'
+      - '.github/workflows/apple-sdk.yml'
 
 concurrency:
-  group: apple-sdk-${{ github.ref }}
+  # One group for a branch however this lane was reached. A push to apple/foo and
+  # a pull request from apple/foo are two events for one tree, and two 19-minute
+  # matrices for one tree is the bill this filter exists to keep down.
+  group: apple-sdk-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
