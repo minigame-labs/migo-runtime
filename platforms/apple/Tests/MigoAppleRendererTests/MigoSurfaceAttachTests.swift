@@ -480,6 +480,38 @@ final class MigoSurfaceAttachTests: XCTestCase {
             }
             XCTAssertTrue(released, "native retirement must complete before releasing the layer")
             XCTAssertNil(observedLayer, "RELEASED must follow the engine's final layer release")
+
+            // If it is still alive, say WHICH failure this is. The assertion above
+            // cannot tell an ordering window from a retained reference, and the two
+            // need different fixes: one is a publication that ran ahead of a drop,
+            // the other is an owner nobody released. Waiting here changes no verdict
+            // -- the test has already failed -- it only turns "the layer is still
+            // alive" into something the next person can act on.
+            //
+            // Added because this assertion started failing on loaded CI runners while
+            // passing in two seconds on an idle one, and a red that reports only the
+            // symptom cost a full lane iteration to learn nothing from.
+            if observedLayer != nil {
+                let observationStart = Date()
+                let observationDeadline = observationStart.addingTimeInterval(2)
+                while observedLayer != nil, Date() < observationDeadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+                }
+                let waited = Int(Date().timeIntervalSince(observationStart) * 1000)
+                if observedLayer == nil {
+                    XCTFail(
+                        "the layer cleared \(waited) ms AFTER RELEASED was observed, so this is an "
+                            + "ordering window and not a leak: something published completion "
+                            + "before the last reference went. SurfaceResource::drop orders the "
+                            + "anchor drop before complete(), so the reference that outlived it is "
+                            + "held somewhere else")
+                } else {
+                    XCTFail(
+                        "the layer was still alive 2 s after RELEASED, so this is a retained "
+                            + "reference rather than an ordering window: some owner was never "
+                            + "released, and RELEASED reported a retirement that did not happen")
+                }
+            }
             XCTAssertEqual(migo_surface_release_destroy(observer), MIGO_OK)
         #else
             throw XCTSkip("this package is built for macOS and iOS only")
