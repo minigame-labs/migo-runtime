@@ -171,6 +171,28 @@ jobs:
           --configuration Debug
           --code-signing off
 
+      # Linking is not running, and until this step the macOS V8 supply chain had
+      # only ever been shown to link. `migo-runtime-v8`'s two integration tests
+      # create a V8 startup snapshot and restore it, which is real execution: the
+      # bug they were written for -- `delete globalThis.Deno` baked into the
+      # snapshot -- surfaced as a panic during restore, not as a link error.
+      #
+      # It reuses the archive the build step already fetched, verified and
+      # materialised, through the same helper, so this asserts the SHIPPED bytes
+      # run rather than whatever rusty_v8 would have downloaded for itself.
+      - name: The macOS V8 archive runs JavaScript, not just links
+        if: matrix.product == 'macos-v8'
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          # shellcheck source=scripts/lib/v8-materialise.sh
+          source scripts/lib/v8-materialise.sh
+          v8_materialise "engine/third_party/rusty_v8/$host" \
+            "$PWD/engine/target/v8-materialised"
+          export RUSTY_V8_ARCHIVE="$V8_MATERIALISED_ARCHIVE"
+          export RUSTY_V8_SRC_BINDING_PATH="$V8_MATERIALISED_BINDING"
+          cd engine
+          cargo test -p migo-runtime-v8 --locked --target "$host"
+
       # Not for macos-v8, and the exclusion is the product's definition rather
       # than an exemption: that archive links in-process V8 on purpose, so an
       # assertion that it carries no engine symbols would be asserting the
