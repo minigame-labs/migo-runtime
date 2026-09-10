@@ -249,6 +249,66 @@ check(
 # fields it was never going to have: a correct run, a complete set of records,
 # and a verdict that reads as bad data. Nothing exercised it -- the runner's
 # contract test stops at --dry-run.
+# --- Lockdown Mode is a device state, not an admission invariant ---------------
+#
+# The contract says that in as many words, and until 2026-09-10 the tool did not
+# implement it. Two runs of one phone -- Lockdown off and Lockdown on -- collided
+# as "a disagreement this tool cannot resolve", because the condition key had no
+# room for the state the record carries `lockdown_mode` to describe. Given room,
+# they then turned every candidate from admitted into conditional and the run into
+# `rejected`, which reads as "nothing works on this phone" when what was measured
+# is "nothing works while its owner has Lockdown Mode on".
+
+both_states = [
+    record("loopback"),
+    with_answer(record("loopback", lockdown_mode="on", run_id="g0-2"), "jit_enabled",
+                "unavailable"),
+]
+two_states = run(both_states)
+check(
+    two_states["verdict"] != "rejected",
+    "two device states of one phone are two conditions, not a disagreement: the run "
+    f"came back {two_states['verdict']}",
+)
+check(
+    len(two_states["admitted"]) > 0,
+    "a candidate that runs with Lockdown off is admitted even though Lockdown on "
+    "blocks it; the fallback there is the WebKit lane, not a verdict on the "
+    "architecture",
+)
+check(
+    any(entry.get("blocked_by_device_state") for entry in two_states["admitted"]),
+    "the Lockdown answer is RECORDED on the candidates it blocks; admitting without "
+    "saying so would lose the answer A24 asked for",
+)
+check(
+    all(
+        "lockdown=on" in blocked["condition"]
+        for entry in two_states["admitted"]
+        for blocked in entry.get("blocked_by_device_state", [])
+    ),
+    "the recorded device-state blocker names the state",
+)
+
+# The exemption is for the state and not for the phone: a blocker with Lockdown
+# OFF still eliminates. Without this, "device state" would become a way to admit
+# anything.
+lockdown_off_blocked = run([with_answer(record("loopback"), "jit_enabled", "unavailable")])
+check(
+    len(lockdown_off_blocked["admitted"]) == 0,
+    "a capability missing with Lockdown OFF still blocks; the exemption is for the "
+    "state, not for the device",
+)
+
+# Two records for one state are still a disagreement. The key grew a field; it did
+# not stop being a key.
+same_state_twice = run([record("loopback"), record("loopback", run_id="g0-3")])
+check(
+    same_state_twice["verdict"] == "rejected",
+    "two records for one device state remain a disagreement the tool refuses",
+)
+
+
 def run_beside_operational_artifacts(records: list[dict]) -> dict:
     with tempfile.TemporaryDirectory() as directory:
         raw = Path(directory) / "raw"
