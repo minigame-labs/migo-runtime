@@ -561,15 +561,44 @@ final class MigoSurfaceAttachTests: XCTestCase {
                     // One of the references counted is this binding: `observedLayer` is
                     // weak, and binding it takes a strong one.
                     let counted = CFGetRetainCount(stillAlive)
+
+                    // A layer Migo never saw, held by exactly one owner and read
+                    // the same way, so `counted` has something to be compared
+                    // against. Without it the number is an absolute, and an
+                    // absolute CFGetRetainCount is not interpretable: a freshly
+                    // created object can already carry a reference nobody wrote,
+                    // and reading one through a strong binding adds another. The
+                    // first reading of this failure said "3 references, one of
+                    // which is this test's" and the arithmetic from there --
+                    // therefore two unknown owners -- assumed a baseline nobody
+                    // had measured.
+                    //
+                    // Same shape on both sides, which means the same weak-then-
+                    // strong read: a layer with exactly ONE owner, read that way,
+                    // measured 3 on macOS 26.6. The failing reading was also 3.
+                    // So there is one owner beyond this test's read path, not two,
+                    // and the earlier arithmetic -- "3 references, one of which is
+                    // this test's binding, therefore two unknown owners" -- was
+                    // subtracting a baseline nobody had measured.
+                    var controlOwner: CAMetalLayer? = CAMetalLayer()
+                    controlOwner?.drawableSize = CGSize(width: 256, height: 256)
+                    weak var controlWeak: CAMetalLayer? = controlOwner
+                    let control = controlWeak.map { CFGetRetainCount($0) } ?? -1
+                    controlOwner = nil
+
                     XCTFail(
                         "at the moment RELEASED was observed the layer had \(counted) reference(s), "
-                            + "one of which is this test's own binding. Everything in Migo's own "
-                            + "graph is accounted for -- SurfaceResource::drop releases the anchor "
-                            + "before publishing, and the canvas manager holds exactly one "
-                            + "PreparedEglSurfaceRef and clears it before release_onscreen returns "
-                            + "-- so an owner outside that graph is the remaining candidate, ANGLE's "
-                            + "own retain on the CAMetalLayer for its window surface being the first "
-                            + "to check")
+                            + "against \(control) for a layer with exactly one owner read the same "
+                            + "way -- so \(counted - control) owner(s) beyond a single one. "
+                            + "Everything in Migo's own graph is accounted for: SurfaceResource::drop "
+                            + "releases the anchor before publishing, and the canvas manager holds "
+                            + "exactly one PreparedEglSurfaceRef and clears it before "
+                            + "release_onscreen returns. It is NOT ANGLE: measured 2026-09-10, this "
+                            + "path logs no create_onscreen and the render thread reports "
+                            + "current_generation=None, so no window surface was ever created for "
+                            + "ANGLE to retain the layer for. Read `has_anchor` in the engine's "
+                            + "surface-resource line above: it says whether the owner check applied "
+                            + "at all")
                 }
 
                 let observationStart = Date()
