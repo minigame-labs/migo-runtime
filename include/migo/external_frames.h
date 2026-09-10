@@ -14,12 +14,18 @@
  * links a JavaScript engine; this record is the whole of what it sees coming
  * back.
  *
- * DECLARATIONS ONLY, ON PURPOSE. There is no submit function here yet. The
- * layout is pinned now because the Swift side is written against it and because
- * a layout agreed late is a layout agreed twice; the entry point lands with the
- * implementation behind it. An exported symbol that always fails is the shape
- * that shipped a Windows SDK which loaded, resolved every entry point, and
- * could attach nothing.
+ * THE ENTRY POINTS ARE HERE AND SO IS WHAT IS BEHIND THEM. This comment used to
+ * say the opposite -- "declarations only, on purpose... there is no submit
+ * function here yet" -- and it was written when that was true. The rule it
+ * states is still the rule and is worth keeping: an entry point lands with its
+ * implementation, because an exported symbol that always fails is the shape that
+ * shipped a Windows SDK which loaded, resolved every entry point, and could
+ * attach nothing.
+ *
+ * What changed is that the implementation landed and the comment did not. A
+ * public header describing an API it does not have is the same failure the rule
+ * exists to prevent, pointed the other way: a reader who trusts it plans around
+ * a submit function that is right there.
  */
 
 typedef uint32_t MigoFrameIngressDecision;

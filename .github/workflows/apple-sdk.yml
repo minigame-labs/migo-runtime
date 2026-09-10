@@ -219,6 +219,27 @@ jobs:
           bash scripts/test-macos-archive-runs-js.sh
           --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
 
+      # Pixel evidence that ANGLE-Metal draws what it is told, rather than that it
+      # links and turns frames.
+      #
+      # G0's P2 asks for `glReadPixels` verification and not for somebody looking
+      # at a screen. The half of it that is reachable today runs here: macOS is
+      # the Apple platform whose shipping product carries an engine, so content
+      # JavaScript runs in process and can read its own framebuffer back. It
+      # exercises the SAME presenter iOS will use -- `platform/src/apple/
+      # presenter.rs` on ANGLE's Metal backend against a CAMetalLayer.
+      #
+      # The other half waits: on iOS content runs in WebKit's WebContent process,
+      # so there is no in-process readPixels, and `include/migo/external_frames.h`
+      # offers submit, request and take-error and no readback. P2 on a phone falls
+      # out of A3's bring-up rather than preceding it.
+      - name: ANGLE-Metal draws the pixels it was told to
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+          --content headless-webgl-probe
+
       # The configuration macos-v8 actually ships in, which until now nothing ran.
       #
       # `Sources/MigoMacV8/README.md` states the requirement: "Hardened runtime
