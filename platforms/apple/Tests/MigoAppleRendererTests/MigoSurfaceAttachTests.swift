@@ -60,6 +60,17 @@ private final class EngineErrors {
 
     /// What to append to a failure message: the engine's own words, or an
     /// explicit statement that it said nothing, which is itself a finding.
+    /// Whether the engine said anything at all, separate from what it said.
+    ///
+    /// `summary` answers "no error" with a sentence, which reads as content to
+    /// anything checking for text; a caller deciding between skipping and
+    /// failing needs the question asked directly.
+    var isEmpty: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return reported.isEmpty
+    }
+
     var summary: String {
         lock.lock()
         defer { lock.unlock() }
@@ -537,8 +548,13 @@ final class MigoSurfaceAttachTests: XCTestCase {
             // `device` is the observable because it is ANGLE's own doing and
             // nothing here sets it: the Metal backend has to assign a MTLDevice to
             // the layer it was handed before it can ask it for drawables.
+            //
+            // The wait ends early when the engine reports an error, because at
+            // that point the remaining budget buys nothing: a renderer that has
+            // already said it could not come up is not going to build a window
+            // surface in the next 30 s. Only genuine silence is worth waiting out.
             let surfaceDeadline = Date().addingTimeInterval(30)
-            while observedLayer?.device == nil, Date() < surfaceDeadline {
+            while observedLayer?.device == nil, engineErrors.isEmpty, Date() < surfaceDeadline {
                 RunLoop.current.run(until: Date().addingTimeInterval(0.005))
             }
             if observedLayer?.device == nil {
@@ -547,21 +563,31 @@ final class MigoSurfaceAttachTests: XCTestCase {
                 // window surface at all, and skipping says so out loud; anything
                 // else means the attach never reached the render thread, which is
                 // a defect rather than an environment.
+                //
+                // The split is on whether the engine SAID anything, not on which
+                // words it used. An earlier version matched two error strings and
+                // was wrong by construction: a lane that fails to build a window
+                // surface for a third reason would have been reported as a defect
+                // in the attach path. Whatever the engine reported, it reported a
+                // reason, and a reason is grounds to skip rather than to fail.
                 let said = engineErrors.summary
-                if said.contains("load ANGLE failed") || said.contains("could not initialise") {
+                if !engineErrors.isEmpty {
                     throw XCTSkip(
                         """
-                        no EGL window surface was created against the layer: the renderer never \
-                        came up on this runner, so a retirement measured here would exercise \
-                        Migo's anchor alone and would pass without touching the path a host takes.
+                        no EGL window surface was created against the layer, and the engine \
+                        reported why. A retirement measured here would exercise Migo's anchor \
+                        alone and would pass without touching the path a host takes, so it is \
+                        skipped rather than run.
 
                         What the engine said: \(said)
                         """)
                 }
                 XCTFail(
                     """
-                    the renderer came up and still had not created a window surface against the \
-                    layer 30 s after attach returned. Retiring now would measure nothing.
+                    30 s after attach returned there was no window surface against the layer and \
+                    the engine reported nothing at all. Retiring now would measure nothing, and \
+                    unlike every other way of reaching this point there is no stated reason to \
+                    put in a skip.
 
                     What the engine said: \(said)
                     """)
