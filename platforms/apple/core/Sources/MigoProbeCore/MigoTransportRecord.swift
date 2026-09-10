@@ -30,6 +30,20 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
     public var webkitBuild: String
     public var appBuild: String
     public var lockdownMode: MigoLockdownMode
+
+    /// `debug` or `release`, and required rather than optional.
+    ///
+    /// Half of what a transport number measures is the host's own code: the
+    /// loopback arm's server parses frames and unmasks every byte the page
+    /// sends, in this repository, while the custom-scheme arm's server is
+    /// WebKit's machinery plus a copy. Measured 2026-09-10 with a debug host, a
+    /// mebibyte round-tripped in 252 ms over the socket and 6.4 ms over the
+    /// scheme -- four megabytes a second is not a socket's speed, it is an
+    /// unoptimised loop's, and that number would have eliminated an arm.
+    ///
+    /// A missing field reads as `release` to anyone hoping it does, so there is
+    /// no default.
+    public var hostBuildConfiguration: String
     public var origin: MigoProbeOrigin
 
     /// Which channel, by the same names the candidate space uses. A string
@@ -63,6 +77,7 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
         webkitBuild: String,
         appBuild: String,
         lockdownMode: MigoLockdownMode,
+        hostBuildConfiguration: String,
         origin: MigoProbeOrigin,
         transport: String,
         payloadBytes: Int,
@@ -86,6 +101,7 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
         self.webkitBuild = webkitBuild
         self.appBuild = appBuild
         self.lockdownMode = lockdownMode
+        self.hostBuildConfiguration = hostBuildConfiguration
         self.origin = origin
         self.transport = transport
         self.payloadBytes = payloadBytes
@@ -111,6 +127,7 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
         case webkitBuild = "webkit_build"
         case appBuild = "app_build"
         case lockdownMode = "lockdown_mode"
+        case hostBuildConfiguration = "host_build_configuration"
         case origin
         case transport
         case payloadBytes = "payload_bytes"
@@ -145,6 +162,7 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
         try container.encode(webkitBuild, forKey: .webkitBuild)
         try container.encode(appBuild, forKey: .appBuild)
         try container.encode(lockdownMode, forKey: .lockdownMode)
+        try container.encode(hostBuildConfiguration, forKey: .hostBuildConfiguration)
         try container.encode(origin, forKey: .origin)
         try container.encode(transport, forKey: .transport)
         try container.encode(payloadBytes, forKey: .payloadBytes)

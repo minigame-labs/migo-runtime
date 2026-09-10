@@ -64,12 +64,32 @@
     ]
   },
 
+  "_host_build_comment": [
+    "WHY THE HOST'S BUILD CONFIGURATION IS A REQUIRED FIELD.",
+    "",
+    "Half of what these numbers measure is the host's own code. The loopback",
+    "arm's server is a WebSocket implementation in this repository -- it parses",
+    "frames and unmasks every byte the page sends -- while the custom-scheme",
+    "arm's server is WebKit's machinery plus a copy. A debug build of the first",
+    "against a release build of the second is not a comparison of transports.",
+    "",
+    "Measured 2026-09-10 on a simulator with a DEBUG host: 1 MiB round-tripped",
+    "in 252 ms over the loopback WebSocket and 6.4 ms over the custom scheme.",
+    "Four megabytes a second is not a socket's speed; it is an unoptimised",
+    "unmasking loop's. That number would have eliminated an arm.",
+    "",
+    "So the configuration is recorded, and a comparison across two of them is",
+    "not a comparison. It is required rather than optional because a missing",
+    "field reads as `release` to anyone hoping it does."
+  ],
+
   "record": {
     "required": [
       "schema_version", "run_id", "captured_at",
       "device_class", "hardware_identifier", "ram_bytes",
       "os_version", "os_build", "webkit_build", "app_build",
-      "lockdown_mode", "origin", "transport", "payload_bytes",
+      "lockdown_mode", "host_build_configuration",
+      "origin", "transport", "payload_bytes",
       "samples", "mean_round_trip_ms", "clock_step_ms",
       "p50_round_trip_ms", "p95_round_trip_ms", "p99_round_trip_ms",
       "errors"
@@ -78,7 +98,8 @@
       "device_class": ["device", "simulator"],
       "lockdown_mode": ["off", "on", "unknown"],
       "origin": ["loopback", "custom_scheme"],
-      "transport": ["loopback_websocket", "scheme_request", "sync_xhr_rpc"]
+      "transport": ["loopback_websocket", "scheme_request", "sync_xhr_rpc"],
+      "host_build_configuration": ["debug", "release"]
     },
     "nullable": ["p50_round_trip_ms", "p95_round_trip_ms", "p99_round_trip_ms"],
     "_nullable_comment": [

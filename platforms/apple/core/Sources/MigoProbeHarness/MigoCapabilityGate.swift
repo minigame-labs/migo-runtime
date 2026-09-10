@@ -425,6 +425,19 @@ public final class MigoCapabilityGate: NSObject {
             capabilities: answers)
     }
 
+    /// How this host was built, which half of a transport number belongs to.
+    ///
+    /// `#if DEBUG` and not a launch flag: what matters is how the code that
+    /// echoes the bytes was compiled, and only the compiler knows that. A flag
+    /// would record what somebody meant to build.
+    static var hostBuildConfiguration: String {
+        #if DEBUG
+            return "debug"
+        #else
+            return "release"
+        #endif
+    }
+
     /// The transport batches this origin reported, as records.
     ///
     /// A batch the page could not run is absent rather than zero-filled. A
@@ -461,6 +474,7 @@ public final class MigoCapabilityGate: NSObject {
                 webkitBuild: environment.webkitBuild,
                 appBuild: environment.appBuild,
                 lockdownMode: attestation.lockdownMode,
+                hostBuildConfiguration: Self.hostBuildConfiguration,
                 origin: origin,
                 transport: transport,
                 payloadBytes: payloadBytes,
