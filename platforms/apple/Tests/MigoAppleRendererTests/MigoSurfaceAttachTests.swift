@@ -508,24 +508,59 @@ final class MigoSurfaceAttachTests: XCTestCase {
 
             let live = try XCTUnwrap(attachment)
             var release: OpaquePointer?
-            let began = migo_surface_begin_detach(live, &release)
-            XCTAssertEqual(began, MIGO_OK)
-            if began == MIGO_OK { attachment = nil }
-            let observer = try XCTUnwrap(release)
-
-            var status = MigoSurfaceReleaseStatus()
-            status.struct_size = UInt32(MemoryLayout<MigoSurfaceReleaseStatus>.size)
-            status.abi_version = MIGO_ABI_VERSION_CURRENT
+            var observer: OpaquePointer?
             var released = false
-            let deadline = Date().addingTimeInterval(5)
-            while Date() < deadline {
-                XCTAssertEqual(migo_surface_release_query(observer, &status), MIGO_OK)
-                if status.state == MIGO_SURFACE_RELEASE_RELEASED {
-                    released = true
-                    break
+
+            // Retirement runs inside a pool of its own, and the weak reference is
+            // read after that pool has drained.
+            //
+            // XCTest does not drain an autorelease pool between statements, so
+            // anything autoreleased while retiring -- by Core Animation, by ANGLE,
+            // by any framework this crosses -- sits in the test method's pool until
+            // the method returns. A weak reference to an object in an undrained
+            // pool does not clear. Read before the drain, `observedLayer` is partly
+            // a question about pool timing and only partly about ownership.
+            //
+            // That is not a hypothesis. Measured 2026-09-10: on a run where this
+            // test FAILED, the engine reported `has_anchor=true outstanding=1
+            // native_owners=Some(1)` at every retirement -- identical to the runs
+            // where it passes -- so at the moment RELEASED was published, Migo's
+            // anchor was the only owner the engine knows of. And a CAMetalLayer
+            // with exactly one owner, read through the weak-then-strong path used
+            // below, measures CFGetRetainCount == 3 on macOS 26.6, which is
+            // exactly what the failing run reported. One owner, uncounted by the
+            // engine, cleared at times that match a pool draining: "7 ms after
+            // RELEASED" on one run, "at migo_session_destroy" -- where the render
+            // thread's own outer pool goes -- on another.
+            //
+            // The two earlier explanations, ANGLE's window surface and then two
+            // unknown owners, were each refuted by their own evidence: this path
+            // logs no create_onscreen and reports current_generation=None, so no
+            // window surface was ever created, and the "two owners" arithmetic
+            // subtracted a baseline nobody had measured.
+            //
+            // The assertion below still means what it meant. If a real owner
+            // outlives RELEASED, a drained pool does not save it.
+            try autoreleasepool {
+                let began = migo_surface_begin_detach(live, &release)
+                XCTAssertEqual(began, MIGO_OK)
+                if began == MIGO_OK { attachment = nil }
+                observer = try XCTUnwrap(release)
+
+                var status = MigoSurfaceReleaseStatus()
+                status.struct_size = UInt32(MemoryLayout<MigoSurfaceReleaseStatus>.size)
+                status.abi_version = MIGO_ABI_VERSION_CURRENT
+                let deadline = Date().addingTimeInterval(5)
+                while Date() < deadline {
+                    XCTAssertEqual(migo_surface_release_query(observer!, &status), MIGO_OK)
+                    if status.state == MIGO_SURFACE_RELEASE_RELEASED {
+                        released = true
+                        break
+                    }
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.001))
                 }
-                RunLoop.current.run(until: Date().addingTimeInterval(0.001))
             }
+            let observerHandle = try XCTUnwrap(observer)
             XCTAssertTrue(released, "native retirement must complete before releasing the layer")
             XCTAssertNil(observedLayer, "RELEASED must follow the engine's final layer release")
 
@@ -621,7 +656,7 @@ final class MigoSurfaceAttachTests: XCTestCase {
                             + "released, and RELEASED reported a retirement that did not happen")
                 }
             }
-            XCTAssertEqual(migo_surface_release_destroy(observer), MIGO_OK)
+            XCTAssertEqual(migo_surface_release_destroy(observerHandle), MIGO_OK)
         #else
             throw XCTSkip("this package is built for macOS and iOS only")
         #endif
