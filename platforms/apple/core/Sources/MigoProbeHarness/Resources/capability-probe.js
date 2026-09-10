@@ -51,6 +51,30 @@ function unsupported(evidence) {
 // the cut can apply their own to the number in the record.
 const JIT_WARMUP_RATIO_THRESHOLD = 3.0;
 
+// The smallest step this origin's clock can report, measured rather than
+// assumed.
+//
+// It matters because it bounds every number below it. WebKit reduces
+// `performance.now()` resolution outside a cross-origin-isolated context, and
+// the custom scheme is not isolated while the loopback listener is -- so the two
+// origins are timed with two different rulers. That is visible in the first
+// device records without anyone looking for it: every custom-scheme timing came
+// back a whole number of milliseconds (11.0, 7.0, 4.0, 4.0) while the loopback
+// ones did not (5.6, 4.2, 18.1). A 4 ms measurement read through a 1 ms ruler
+// carries 25% quantisation, which is larger than most of the differences these
+// probes are asked about.
+function clockStepMs() {
+  const started = Date.now();
+  const t0 = performance.now();
+  let t1 = t0;
+  // Bounded by a second clock: if performance.now() never advances, the loop
+  // has to end anyway, and 50 ms is far longer than any plausible step.
+  while (t1 === t0 && Date.now() - started < 50) {
+    t1 = performance.now();
+  }
+  return t1 - t0;
+}
+
 function probeJit() {
   // Two structurally identical functions, measured one after the other. The
   // second one is the control, and it exists because the first reading on a
@@ -101,6 +125,7 @@ function probeJit() {
 
   const batchSize = 3000000;
   const batches = 12;
+  const step = clockStepMs();
   let sink = 0;
 
   function series(fn) {
@@ -150,7 +175,10 @@ function probeJit() {
     " ms cold and " +
     controlWarm.toFixed(1) +
     " ms warm, ratio " +
-    controlRatio.toFixed(2);
+    controlRatio.toFixed(2) +
+    "; the clock these were read with steps by " +
+    step.toFixed(3) +
+    " ms";
   return ratio >= JIT_WARMUP_RATIO_THRESHOLD
     ? available(evidence, ratio.toFixed(2))
     : answer(
