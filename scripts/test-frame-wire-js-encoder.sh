@@ -24,8 +24,10 @@ TEST="platforms/apple/WebContent/PerformancePlus/test/golden-corpus.test.mjs"
 ENCODER="platforms/apple/WebContent/PerformancePlus/src/wire-frame-packet.mjs"
 SYNC_TEST="platforms/apple/WebContent/PerformancePlus/test/sync-mailbox.test.mjs"
 SYNC_SRC="platforms/apple/WebContent/PerformancePlus/src/sync-mailbox.mjs"
+RELAY_TEST="platforms/apple/WebContent/PerformancePlus/test/sync-relay.test.mjs"
+RELAY_SRC="platforms/apple/WebContent/PerformancePlus/src/sync-relay.mjs"
 
-for required in "$TEST" "$ENCODER" "$SYNC_TEST" "$SYNC_SRC"; do
+for required in "$TEST" "$ENCODER" "$SYNC_TEST" "$SYNC_SRC" "$RELAY_TEST" "$RELAY_SRC"; do
     if [[ ! -f "$required" ]]; then
         echo "FAIL: $required is missing; the cross-language corpus check cannot run." >&2
         exit 1
@@ -82,6 +84,14 @@ node "$TEST"
 # woken by a real worker -- "it blocks" is the entire claim, and a test whose
 # host answered before the wait began would exercise every line except that one.
 node "$SYNC_TEST"
+
+# --- and the two halves against each other ----------------------------------
+#
+# Each half being correct alone is not the property that matters. This runs a
+# real Worker blocked in `Atomics.wait` and a real relay answering it, because
+# what has to hold is that a blocked agent is always woken and never with the
+# wrong bytes -- and neither half can establish that by itself.
+node "$RELAY_TEST"
 
 # --- and the other direction ------------------------------------------------
 #
