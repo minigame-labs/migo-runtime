@@ -179,8 +179,9 @@ typedef struct MigoSyncOutcome {
  *
  * The descriptor is a fixed rendezvous record the producer polls with atomics;
  * carrying per-operation arguments in it would size it by the largest operation
- * anyone ever adds. They travel beside the request instead, as this many
- * little-endian 32-bit words, in this order:
+ * anyone ever adds. They travel beside the request instead, as eight
+ * little-endian 32-bit words -- MIGO_SYNC_READ_PIXELS_PARAM_BYTES below is the
+ * byte count, not the word count -- in this order:
  *
  *     canvas_id, x, y, width, height, format, type, reserved
  *
