@@ -59,14 +59,26 @@ fn the_committed_frames_are_packets_addressed_to_the_session_that_uses_them() {
 
         // Each is a field the ingress checks. Naming them here means a drift is
         // reported as "the nonce changed" rather than as a refusal code.
-        assert_eq!(frame.launch_nonce(), 0xa3, "{name}: nonce, matching the session config");
+        assert_eq!(
+            frame.launch_nonce(),
+            0xa3,
+            "{name}: nonce, matching the session config"
+        );
         assert_eq!(frame.sequence(), *sequence, "{name}: sequence");
-        assert_eq!(frame.runtime_generation(), 1, "{name}: INITIAL_RUNTIME_GENERATION");
+        assert_eq!(
+            frame.runtime_generation(),
+            1,
+            "{name}: INITIAL_RUNTIME_GENERATION"
+        );
         // Accepted whether or not the renderer has reported the surface yet: the
         // ingress skips this check while its own generation is still 0, and
         // matches it once it is 1. Both readings accept 1, which is what makes
         // these fixtures deterministic rather than a race.
-        assert_eq!(frame.surface_generation(), 1, "{name}: surface generation, as attached");
+        assert_eq!(
+            frame.surface_generation(),
+            1,
+            "{name}: surface generation, as attached"
+        );
         // This one is checked exactly, and nothing has advanced it.
         assert_eq!(frame.resource_epoch(), 0, "{name}: resource epoch");
     }
@@ -81,7 +93,11 @@ fn the_committed_frames_clear_to_the_colours_their_consumer_asserts_on() {
             .command_stream()
             .expect("every packet carries a COMMAND_STREAM section");
 
-        assert_eq!(section.bytes.len() % 4, 0, "{name}: a command stream is whole words");
+        assert_eq!(
+            section.bytes.len() % 4,
+            0,
+            "{name}: a command stream is whole words"
+        );
         let words: Vec<u32> = section
             .bytes
             .chunks_exact(4)
@@ -96,11 +112,19 @@ fn the_committed_frames_clear_to_the_colours_their_consumer_asserts_on() {
         // and the question here is only whether these are the frames the
         // emitter says they are.
         let words = validated.words();
-        assert_eq!(words.len(), 2 + 6 + 3, "{name}: header, one CLEAR_COLOR, one CLEAR");
+        assert_eq!(
+            words.len(),
+            2 + 6 + 3,
+            "{name}: header, one CLEAR_COLOR, one CLEAR"
+        );
         assert_eq!(words[0], stream::MAGIC, "{name}: stream magic");
         assert_eq!(words[1], stream::STREAM_VERSION, "{name}: stream version");
 
-        assert_eq!(stream::opcode_of(words[2]), frame_wire::gl::OP_CLEAR_COLOR, "{name}");
+        assert_eq!(
+            stream::opcode_of(words[2]),
+            frame_wire::gl::OP_CLEAR_COLOR,
+            "{name}"
+        );
         assert_eq!(words[3], 1, "{name}: canvas id");
         for (index, component) in rgba.iter().enumerate() {
             assert_eq!(
@@ -110,7 +134,11 @@ fn the_committed_frames_clear_to_the_colours_their_consumer_asserts_on() {
             );
         }
 
-        assert_eq!(stream::opcode_of(words[8]), frame_wire::gl::OP_CLEAR, "{name}");
+        assert_eq!(
+            stream::opcode_of(words[8]),
+            frame_wire::gl::OP_CLEAR,
+            "{name}"
+        );
         assert_eq!(words[9], 1, "{name}: canvas id");
         assert_eq!(words[10], 0x4000, "{name}: GL_COLOR_BUFFER_BIT");
     }
@@ -137,7 +165,11 @@ fn the_committed_scissor_frame_is_the_two_colour_frame_its_consumer_reads() {
     let words = validated.words();
 
     // Header, CLEAR_COLOR, CLEAR, ENABLE, SCISSOR, CLEAR_COLOR, CLEAR, DISABLE.
-    assert_eq!(words.len(), 2 + 6 + 3 + 3 + 6 + 6 + 3 + 3, "{name}: record count");
+    assert_eq!(
+        words.len(),
+        2 + 6 + 3 + 3 + 6 + 6 + 3 + 3,
+        "{name}: record count"
+    );
 
     // The order is the point: a scissor that arrived after the second clear
     // would paint the whole surface red and the consumer would still see two
@@ -161,7 +193,11 @@ fn the_committed_scissor_frame_is_the_two_colour_frame_its_consumer_reads() {
     );
 
     // Blue first, then the quadrant, then red.
-    assert_eq!(f32::from_bits(words[6]), 1.0, "{name}: the background is blue");
+    assert_eq!(
+        f32::from_bits(words[6]),
+        1.0,
+        "{name}: the background is blue"
+    );
     // SCISSOR is H C I I I I: the header is at 14 and the canvas id at 15, so
     // the rectangle starts at 16. Writing 15 here was an off-by-one, and the
     // assertion caught it with "scissor x: left 1" -- which is the canvas id.
@@ -169,5 +205,9 @@ fn the_committed_scissor_frame_is_the_two_colour_frame_its_consumer_reads() {
     assert_eq!(words[17], 0, "{name}: scissor y");
     assert_eq!(words[18], 32, "{name}: scissor width");
     assert_eq!(words[19], 32, "{name}: scissor height");
-    assert_eq!(f32::from_bits(words[22]), 1.0, "{name}: the quadrant is red");
+    assert_eq!(
+        f32::from_bits(words[22]),
+        1.0,
+        "{name}: the quadrant is red"
+    );
 }
