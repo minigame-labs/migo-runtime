@@ -118,6 +118,60 @@ final class MigoLoopbackListenerTests: XCTestCase {
         }
     }
 
+    /// A body larger than the header cap is accepted; a header that large is not.
+    ///
+    /// The cap used to bound the whole accumulated buffer and answer `431
+    /// Request Header Fields Too Large` for a body of 64 KiB or more -- a status
+    /// naming a cause that was not the cause. P3's synchronous-XHR arm found it
+    /// the expensive way: 200 clean round trips at 4 KiB, a batch that died
+    /// partway through 64 KiB depending on how the chunks landed, and not one
+    /// completed round trip at a mebibyte. Recorded without this test, that is
+    /// "the blocking transport cannot carry a frame" -- an architectural verdict
+    /// produced by this file.
+    func testALargeBodyIsAcceptedAndOnlyLargeHeadersAreRefused() throws {
+        let (listener, port) = try makeListener()
+        defer { listener.stop() }
+
+        // Comfortably past the 64 KiB header cap, and past the size the sync-XHR
+        // arm died at. Filled with a loop rather than a mapped range: the
+        // one-expression form defeats the type checker outright here, which is a
+        // compile error and not a style opinion.
+        var body = Data(count: 256 * 1024)
+        for index in 0..<body.count {
+            body[index] = UInt8((index &* 31 &+ 7) & 0xFF)
+        }
+        // Built in pieces: one interpolated multi-line literal here defeated the
+        // type checker outright ("unable to type-check this expression in
+        // reasonable time"), which is a compile error and not a style opinion.
+        var head = "POST /echo-body HTTP/1.1\r\n"
+        head += "Host: 127.0.0.1\r\n"
+        head += "Content-Length: "
+        head += String(body.count)
+        head += "\r\n\r\n"
+        var post = Data(head.utf8)
+        post.append(body)
+        let answer = try exchange(port: port, request: post, expecting: 1)
+        XCTAssertTrue(
+            answer.hasPrefix("HTTP/1.1 200"),
+            "a \(body.count)-byte body was refused: \(answer.prefix(80))")
+        XCTAssertTrue(
+            answer.contains("Content-Length: \(body.count)"),
+            "the echo did not return the whole body")
+
+        // The same number of bytes, in headers, is a header problem and says so.
+        let padding = String(repeating: "x", count: 128 * 1024)
+        var oversizedHead = "GET / HTTP/1.1\r\n"
+        oversizedHead += "Host: 127.0.0.1\r\n"
+        oversizedHead += "X-Padding: "
+        oversizedHead += padding
+        oversizedHead += "\r\n\r\n"
+        let oversizedHeaders = Data(oversizedHead.utf8)
+        let refusal = try exchange(port: port, request: oversizedHeaders, expecting: 1)
+        XCTAssertTrue(
+            refusal.hasPrefix("HTTP/1.1 431"),
+            "oversized headers should be 431 and were: \(refusal.prefix(80))")
+    }
+
     func testAnUnknownPathIsARefusalAndNotAPlausibleDefault() throws {
         // A probe that received 200 and an empty body from a path nobody
         // implemented would record an available capability.

@@ -135,6 +135,19 @@ public final class MigoLoopbackListener {
         receiveRequest(on: connection, accumulated: Data())
     }
 
+    /// A request's headers may not exceed this. Only the headers: a body is
+    /// bounded by `maximumRequestBytes`, and conflating the two is what made a
+    /// 64 KiB POST look like a transport that could not carry one.
+    static let maximumHeaderBytes = 64 * 1024
+
+    /// A whole request may not exceed this.
+    ///
+    /// Sized from what the measurement carries rather than from a round number:
+    /// `contracts/apple/transport-probe.schema.json` requires payload classes up
+    /// to 1 MiB, and the performance matrix runs to 4 MiB. Eight leaves room for
+    /// both plus headers, and still refuses a client that has lost its mind.
+    static let maximumRequestBytes = 8 * 1024 * 1024
+
     /// Read until the headers are complete, then read exactly `Content-Length`
     /// more. A server that assumed one read per request would answer the
     /// synchronous-XHR probe with a truncated body and report it as a transport
@@ -162,8 +175,30 @@ public final class MigoLoopbackListener {
             if self.handleBufferedRequest(on: connection, buffer: buffer) {
                 return
             }
-            if buffer.count > 64 * 1024 {
+            // The header cap applies to HEADERS, which is what it says and what
+            // it did not do.
+            //
+            // It used to bound the whole accumulated buffer at 64 KiB and answer
+            // `431 Request Header Fields Too Large` -- so a POST whose BODY was
+            // 64 KiB or more was refused, with a status naming a cause that was
+            // not the cause. P3's synchronous-XHR arm measured 200 clean round
+            // trips at 4 KiB, died partway through 64 KiB depending on how the
+            // chunks landed, and could not complete one at a mebibyte. That
+            // would have been recorded as "the blocking transport cannot carry a
+            // frame" -- an architectural verdict produced by this listener's own
+            // cap.
+            //
+            // So: before the headers are complete, a buffer this large really is
+            // a header problem. Once they are, the body has a bound of its own
+            // and a status of its own, because a client that sent too much needs
+            // to be told which too much it sent.
+            let headersComplete = buffer.range(of: Data("\r\n\r\n".utf8)) != nil
+            if !headersComplete, buffer.count > Self.maximumHeaderBytes {
                 self.respond(on: connection, status: "431 Request Header Fields Too Large")
+                return
+            }
+            if headersComplete, buffer.count > Self.maximumRequestBytes {
+                self.respond(on: connection, status: "413 Payload Too Large")
                 return
             }
             self.receiveRequest(on: connection, accumulated: buffer)
