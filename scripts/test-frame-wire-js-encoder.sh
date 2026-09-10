@@ -139,6 +139,46 @@ if ! printf '%s\n' "$output" | grep -qE 'validated 128 JavaScript-encoded packet
     exit 1
 fi
 
+# --- the committed clear-to-blue frame still comes out of the emitter --------
+#
+# The committed clear-to-blue frame is committed so that a
+# consumer needing a valid packet does not build one itself -- building one in a
+# third language is the failure mode the wire document exists to prevent. A
+# committed artifact then needs a reason to still be trustworthy, and this is it:
+# the emitter is run and its bytes compared to the committed ones.
+#
+# `frame-wire`'s `clear_frame_fixture` test reads the same file and asserts what
+# is IN it. The two answer different questions -- "is it still what the emitter
+# makes" and "is it still a valid frame saying what it claims" -- and a committed
+# fixture needs both.
+
+FIXTURES="platforms/apple/Tests/MigoAppleRendererTests/Fixtures"
+REGENERATED="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED"' EXIT
+node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs "$REGENERATED" >/dev/null
+
+committed=0
+for regenerated in "$REGENERATED"/*.bin; do
+    name="$(basename "$regenerated")"
+    if [[ ! -f "$FIXTURES/$name" ]]; then
+        echo "FAIL: the emitter writes $name and $FIXTURES does not have it." >&2
+        exit 1
+    fi
+    if ! cmp -s "$FIXTURES/$name" "$regenerated"; then
+        echo "FAIL: the emitter no longer reproduces $FIXTURES/$name byte for byte." >&2
+        echo "      Either the encoder changed and the fixtures need regenerating, or one" >&2
+        echo "      was edited by hand. Regenerate with:" >&2
+        echo "        node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs" >&2
+        exit 1
+    fi
+    committed=$((committed + 1))
+done
+if (( committed < 3 )); then
+    echo "FAIL: the emitter wrote $committed frames; it writes two flat ones and one scissored." >&2
+    exit 1
+fi
+echo "the $committed committed frames still come out of the emitter byte for byte"
+
 # --- the synchronous barrier's argument record, across the two languages -----
 #
 # Same shape, same reason. The producer encodes `readPixels`' arguments and
