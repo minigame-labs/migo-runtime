@@ -485,6 +485,8 @@ public final class MigoCapabilityGate: NSObject {
                 p95RoundTripMs: batch["p95_round_trip_ms"] as? Double,
                 p99RoundTripMs: batch["p99_round_trip_ms"] as? Double,
                 errors: errors,
+                hostCpuMs: batch["host_cpu_ms"] as? Double,
+                hostWakeups: batch["host_wakeups"] as? Int,
                 note: batch["note"] as? String)
         }
     }

@@ -64,6 +64,30 @@
     ]
   },
 
+  "_host_cost_comment": [
+    "A32's threshold has two halves -- \"合计 CPU 5% 或 p99 0.25 ms\" -- and latency",
+    "is only one of them. `host_cpu_ms` and `host_wakeups` are the other, read",
+    "from this process's Mach counters around each batch.",
+    "",
+    "They matter because the two channels have different SHAPES of cost. A",
+    "WebSocket is one connection and a message's framing per call; a",
+    "custom-scheme request is a task constructed, dispatched and torn down per",
+    "call. At sixty calls a second the second shape can lose on CPU while",
+    "looking level on latency, which is what A32 says to check before declaring",
+    "a winner.",
+    "",
+    "🔴 THIS IS THE HOST'S HALF AND NOT THE WHOLE. The page's own work -- the",
+    "JavaScript, WebKit's framing, the response buffer -- happens in the",
+    "WebContent process, and iOS gives an app no public way to read another",
+    "process's CPU. So these numbers say what the host spends serving a",
+    "transport, which is what A32 asks, and say nothing about what WebContent",
+    "spends using it. Reporting them as a total would be the measurement",
+    "claiming a reach it does not have.",
+    "",
+    "Nullable, and null is not zero: a batch that spent nothing and a counter",
+    "that could not be read are different answers."
+  ],
+
   "_host_build_comment": [
     "WHY THE HOST'S BUILD CONFIGURATION IS A REQUIRED FIELD.",
     "",
@@ -91,6 +115,7 @@
       "lockdown_mode", "host_build_configuration",
       "origin", "transport", "payload_bytes",
       "samples", "mean_round_trip_ms", "clock_step_ms",
+      "host_cpu_ms", "host_wakeups",
       "p50_round_trip_ms", "p95_round_trip_ms", "p99_round_trip_ms",
       "errors"
     ],
@@ -101,7 +126,10 @@
       "transport": ["loopback_websocket", "scheme_request", "sync_xhr_rpc"],
       "host_build_configuration": ["debug", "release"]
     },
-    "nullable": ["p50_round_trip_ms", "p95_round_trip_ms", "p99_round_trip_ms"],
+    "nullable": [
+      "p50_round_trip_ms", "p95_round_trip_ms", "p99_round_trip_ms",
+      "host_cpu_ms", "host_wakeups"
+    ],
     "_nullable_comment": [
       "Null where the origin's clock cannot resolve a single round trip. Null is",
       "not zero and it is not a failure: it is the measurement declining to",

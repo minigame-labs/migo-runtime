@@ -165,6 +165,56 @@ function schemeRoundTrip(url, payload) {
 
 // --- the batch --------------------------------------------------------------
 
+/// The host's CPU and wakeups, read across the loopback listener.
+///
+/// Null when it cannot be read -- a page with no listener, a kernel that
+/// declined -- and null travels into the record as null. A zero would be
+/// indistinguishable from a batch that cost nothing.
+async function hostUsage(loopbackOrigin) {
+  if (!loopbackOrigin) {
+    return null;
+  }
+  try {
+    const response = await fetch(loopbackOrigin + "/usage", { cache: "no-store" });
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    return null;
+  }
+}
+
+function usageDelta(before, after) {
+  if (!before || !after) {
+    return { cpu_ms: null, wakeups: null };
+  }
+  const cpu = before.cpu_ms === null || after.cpu_ms === null
+    ? null
+    : Number((after.cpu_ms - before.cpu_ms).toFixed(3));
+  const wakeups = before.wakeups === null || after.wakeups === null
+    ? null
+    : after.wakeups - before.wakeups;
+  return { cpu_ms: cpu, wakeups: wakeups };
+}
+
+/// A batch, bracketed by two host-usage reads.
+///
+/// The reads sit outside the timed samples and inside the CPU window, so the
+/// window carries two extra round trips of the host's own work. Against two
+/// hundred samples that is under a percent, and stating it beats the
+/// alternative: sampling the counter inside the loop would charge every sample
+/// for the sampling.
+async function measureBatchWithUsage(transport, payloadBytes, roundTrip, step, loopbackOrigin) {
+  const before = await hostUsage(loopbackOrigin);
+  const measurement = await measureBatch(transport, payloadBytes, roundTrip, step);
+  const after = await hostUsage(loopbackOrigin);
+  const delta = usageDelta(before, after);
+  measurement.host_cpu_ms = delta.cpu_ms;
+  measurement.host_wakeups = delta.wakeups;
+  return measurement;
+}
+
 async function measureBatch(transport, payloadBytes, roundTrip, step) {
   const payload = filledBuffer(payloadBytes);
   const timings = [];
@@ -193,6 +243,54 @@ async function measureBatch(transport, payloadBytes, roundTrip, step) {
   return summarise(transport, payloadBytes, timings, step, errors);
 }
 
+function measureSyncXhrInWorker(config) {
+  return new Promise(function (resolve, reject) {
+    let worker;
+    try {
+      worker = new Worker(config.workerUrl);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    // Generous: the batch blocks its own thread, and the worker enforces its
+    // own per-class deadline. This only catches a worker that never answers at
+    // all, which is a different failure and needs a different message.
+    const timer = setTimeout(function () {
+      worker.terminate();
+      reject(new Error("the sync-XHR worker did not report"));
+    }, 120000);
+    worker.onerror = function (error) {
+      clearTimeout(timer);
+      worker.terminate();
+      reject(new Error("the sync-XHR worker errored: " + (error.message || error)));
+    };
+    worker.onmessage = function (event) {
+      clearTimeout(timer);
+      worker.terminate();
+      // Summarised HERE, with the one implementation of the rule. The worker
+      // reports raw timings and the clock it took them with; deciding whether
+      // percentiles are reportable is the same decision for every arm and is
+      // made in one place.
+      const batches = (event.data && event.data.batches) || [];
+      resolve(batches.map(function (batch) {
+        const measurement = summarise(
+          batch.transport, batch.payload_bytes, batch.timings,
+          batch.clock_step_ms, batch.errors);
+        measurement.host_cpu_ms = batch.host_cpu_ms;
+        measurement.host_wakeups = batch.host_wakeups;
+        return measurement;
+      }));
+    };
+    worker.postMessage({
+      kind: "transport",
+      loopbackOrigin: config.loopbackOrigin,
+      classes: TRANSPORT_PAYLOAD_CLASSES,
+      samples: TRANSPORT_SAMPLES,
+      timeoutMs: TRANSPORT_BATCH_TIMEOUT_MS
+    });
+  });
+}
+
 /// Every transport this origin can reach, at every payload class.
 ///
 /// A transport this origin cannot use produces NO measurement rather than a
@@ -209,9 +307,9 @@ self.migoMeasureTransports = async function (config) {
       socket = await openEchoSocket(config.loopbackOrigin);
       for (const bytes of TRANSPORT_PAYLOAD_CLASSES) {
         measurements.push(
-          await measureBatch("loopback_websocket", bytes, function (payload) {
+          await measureBatchWithUsage("loopback_websocket", bytes, function (payload) {
             return socketRoundTrip(socket, payload);
-          }, step));
+          }, step, config.loopbackOrigin));
       }
     } catch (error) {
       measurements.push({
@@ -233,15 +331,38 @@ self.migoMeasureTransports = async function (config) {
     }
   }
 
+  // A21's arm, and it has to run in a Worker: a synchronous request may block
+  // one and may not block a Window. It is measured last because it blocks the
+  // thread it runs on for the whole batch, and a socket callback that could not
+  // be serviced while it ran would be measured as the socket's cost.
+  if (config.loopbackOrigin && config.workerUrl) {
+    try {
+      measurements.push(...(await measureSyncXhrInWorker(config)));
+    } catch (error) {
+      measurements.push({
+        transport: "sync_xhr_rpc",
+        payload_bytes: 0,
+        samples: 0,
+        clock_step_ms: Number(step.toFixed(3)),
+        errors: 1,
+        mean_round_trip_ms: null,
+        p50_round_trip_ms: null,
+        p95_round_trip_ms: null,
+        p99_round_trip_ms: null,
+        note: String(error)
+      });
+    }
+  }
+
   // Same-origin only. The scheme handler is reachable from the scheme origin
   // and from nowhere else, which is the point of it.
   if (location.origin === config.schemeOrigin) {
     const url = config.schemeOrigin + "/echo-body";
     for (const bytes of TRANSPORT_PAYLOAD_CLASSES) {
       measurements.push(
-        await measureBatch("scheme_request", bytes, function (payload) {
+        await measureBatchWithUsage("scheme_request", bytes, function (payload) {
           return schemeRoundTrip(url, payload);
-        }, step));
+        }, step, config.loopbackOrigin));
     }
   }
 
