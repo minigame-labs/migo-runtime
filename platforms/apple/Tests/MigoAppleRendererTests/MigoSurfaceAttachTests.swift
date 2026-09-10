@@ -562,6 +562,23 @@ final class MigoSurfaceAttachTests: XCTestCase {
             }
             let observerHandle = try XCTUnwrap(observer)
             XCTAssertTrue(released, "native retirement must complete before releasing the layer")
+
+            // Commit this test's own Core Animation transaction before reading the
+            // weak reference.
+            //
+            // Setting `frame` and `drawableSize` above opened an implicit
+            // CATransaction, and an open transaction holds the layers it touches
+            // until it commits -- on a run loop turn, not on a pool drain, which
+            // is why draining pools on either side changed nothing. It is also why
+            // the delay between RELEASED and the layer clearing has been measured
+            // at 6 ms, 7 ms and 51 ms: those are run-loop turns, not a leak with a
+            // fixed cost.
+            //
+            // This flushes a transaction the TEST opened, over properties Migo
+            // never touches, so it hides nothing about Migo's own references. What
+            // it removes is a holder this test created and then asked the engine
+            // to account for.
+            CATransaction.flush()
             XCTAssertNil(observedLayer, "RELEASED must follow the engine's final layer release")
 
             // If it is still alive, say WHICH failure this is. The assertion above
