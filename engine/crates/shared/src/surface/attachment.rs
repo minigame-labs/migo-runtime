@@ -368,6 +368,8 @@ impl Drop for SurfaceResource {
         // already ask for; it runs once per retirement, not per frame.
         tracing::info!(
             has_anchor = self.native_anchor.is_some(),
+            outstanding = self.native_anchor.as_ref().map(Arc::strong_count),
+            native_owners = ?self.native_anchor.as_ref().and_then(|a| a.native_owner_count()),
             generation = self.public_generation.get(),
             "surface resource dropping; the owner check below applies only with an anchor"
         );
