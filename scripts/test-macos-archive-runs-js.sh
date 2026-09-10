@@ -21,6 +21,8 @@ BUILD_ROOT="${MIGO_APPLE_BUILD_ROOT:-$ROOT/build/apple}"
 PRODUCT="macos-v8"
 CONFIGURATION="Debug"
 ANGLE_DIR=""
+DRAWABLES=""
+CONTENT="headless-js-probe"
 KEEP=0
 
 fail() {
@@ -39,6 +41,12 @@ usage: test-macos-archive-runs-js.sh [--archive <libmigo.a>] [options]
   --angle <dir>          Where libEGL.dylib and libGLESv2.dylib live. Defaults
                          to the pinned runtime dependency that
                          scripts/fetch-apple-angle.sh macos installs.
+  --content <name>       Which fixture under scripts/fixtures to run. Default
+                         headless-js-probe, which proves the archive runs. Use
+                         headless-perf-probe for a throughput measurement.
+  --drawables <2|3>      maximumDrawableCount for the layer. Omitted leaves the
+                         layer's own default, which is not the same as asking for
+                         it.
   --keep                 Leave the staged game and the built host in place.
 
 The archive is a required input rather than something this script builds: the
@@ -54,6 +62,8 @@ while [[ $# -gt 0 ]]; do
     --product) [[ $# -ge 2 ]] || fail "--product needs a name"; PRODUCT="$2"; shift 2 ;;
     --configuration) [[ $# -ge 2 ]] || fail "--configuration needs a value"; CONFIGURATION="$2"; shift 2 ;;
     --angle) [[ $# -ge 2 ]] || fail "--angle needs a directory"; ANGLE_DIR="$2"; shift 2 ;;
+    --content) [[ $# -ge 2 ]] || fail "--content needs a fixture name"; CONTENT="$2"; shift 2 ;;
+    --drawables) [[ $# -ge 2 ]] || fail "--drawables needs 2 or 3"; DRAWABLES="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) fail "unknown argument: $1" ;;
@@ -100,7 +110,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-CONTENT_ID="headless-js-probe"
+CONTENT_ID="$CONTENT"
 CODE_DIR="$WORK/files/migo/games/$CONTENT_ID/code"
 mkdir -p "$CODE_DIR" "$WORK/cache" "$WORK/code-cache"
 for name in game.json game.js; do
@@ -128,7 +138,7 @@ clang -fobjc-arc -fmodules -O0 -g \
 
 echo "[2/2] running a game through it, with ANGLE from $ANGLE_DIR"
 DYLD_LIBRARY_PATH="$ANGLE_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
-  "$HOST" "$WORK/files" "$CONTENT_ID" \
+  "$HOST" "$WORK/files" "$CONTENT_ID" ${DRAWABLES:+"$DRAWABLES"} \
   || fail "the shipping archive did not run the content to completion"
 
 echo "PASS: the shipping macOS archive evaluated JavaScript, turned frames on ANGLE/Metal against a windowless CAMetalLayer, and installed the migo surface"
