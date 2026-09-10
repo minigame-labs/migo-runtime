@@ -123,15 +123,26 @@ static void MIGO_CALL on_exit_requested(void *user_data, MigoSession *session) {
 }
 
 /*
- * "Schedule exactly one frame." Nothing here presents, so the request is
- * counted and answered on the waiting thread rather than serviced: a frame
- * driven from inside this callback would be re-entering the engine from its own
- * thread, which the ABI does not ask for and a host should not invent.
+ * "Schedule exactly one frame."
+ *
+ * Counted here and answered on the waiting thread, never from inside this
+ * callback: answering inline would re-enter the engine from its own thread,
+ * which the ABI does not ask for and a host should not invent. A real host
+ * answers from a display link -- MigoDisplayLink is exactly that -- and this
+ * one answers from its wait loop, which is the same shape with a cheaper clock.
  */
 static void MIGO_CALL on_request_frame(void *user_data, MigoSession *session) {
     (void)user_data;
     (void)session;
     atomic_fetch_add(&g_frames_requested, 1);
+}
+
+/* A monotonic frame timestamp in nanoseconds, which is what the ABI asks for and
+ * what AChoreographer hands an Android host. */
+static int64_t now_nanos(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
 static int fail(const char *what, MigoResult result) {
@@ -259,11 +270,54 @@ int main(int argc, char **argv) {
     clock_gettime(CLOCK_REALTIME, &deadline);
     deadline.tv_sec += DEADLINE_SECONDS;
 
+    /*
+     * The frame loop. Every request the engine makes is answered exactly once,
+     * from this thread, with a real timestamp -- which is what turns this from
+     * "the archive evaluated a module" into "the archive turned frames": the
+     * content's requestAnimationFrame callbacks only run when a vsync it asked
+     * for comes back.
+     *
+     * The wait is short rather than a condvar sleep because there are two things
+     * to wake for and only one of them signals. 4 ms is well under a display
+     * period, so it never becomes the thing limiting the cadence.
+     */
+    int frames_answered = 0;
     pthread_mutex_lock(&g_lock);
     while (g_outcome == OUTCOME_PENDING) {
-        if (pthread_cond_timedwait(&g_signal, &g_lock, &deadline) == ETIMEDOUT) {
+        struct timespec slice;
+        clock_gettime(CLOCK_REALTIME, &slice);
+        slice.tv_nsec += 4 * 1000 * 1000;
+        if (slice.tv_nsec >= 1000000000L) {
+            slice.tv_nsec -= 1000000000L;
+            slice.tv_sec += 1;
+        }
+        pthread_cond_timedwait(&g_signal, &g_lock, &slice);
+        if (g_outcome != OUTCOME_PENDING) {
             break;
         }
+        pthread_mutex_unlock(&g_lock);
+
+        /* Outside the lock: notify_vsync reaches the engine, and the engine is
+         * entitled to call back into this host inline. */
+        int requested = atomic_load(&g_frames_requested);
+        while (frames_answered < requested) {
+            MigoResult vsync = migo_session_notify_vsync(session, now_nanos());
+            if (vsync != MIGO_OK) {
+                fprintf(stderr, "[macos-headless] notify_vsync returned %d after %d frames\n",
+                        (int)vsync, frames_answered);
+                break;
+            }
+            frames_answered += 1;
+        }
+
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        if (now.tv_sec > deadline.tv_sec
+            || (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+            pthread_mutex_lock(&g_lock);
+            break;
+        }
+        pthread_mutex_lock(&g_lock);
     }
     Outcome outcome = g_outcome;
     char message[sizeof(g_error_message)];
@@ -273,8 +327,10 @@ int main(int argc, char **argv) {
     int status;
     switch (outcome) {
         case OUTCOME_EXIT_REQUESTED:
-            printf("[macos-headless] the shipping archive evaluated JavaScript: the content "
-                   "summed to 500500 and reached migo.exitMiniProgram()\n");
+            printf("[macos-headless] the shipping archive evaluated JavaScript AND turned "
+                   "frames: the content summed to 500500, ran its requestAnimationFrame loop "
+                   "across %d answered vsyncs, and reached migo.exitMiniProgram()\n",
+                   frames_answered);
             status = 0;
             break;
         case OUTCOME_ERROR:
@@ -286,10 +342,12 @@ int main(int argc, char **argv) {
         default:
             fprintf(stderr,
                     "[macos-headless] nothing was heard from the content in %d seconds. ready=%d "
-                    "frames_requested=%d -- a ready callback with no exit means the script was "
-                    "evaluated and did not finish; neither means it was never evaluated\n",
+                    "frames_requested=%d frames_answered=%d -- ready=1 with frames requested and "
+                    "answered says the script was evaluated and the render loop did not reach its "
+                    "last frame; ready=1 with no frames requested says the surface never came up; "
+                    "ready=0 says the script was never evaluated\n",
                     DEADLINE_SECONDS, atomic_load(&g_ready),
-                    atomic_load(&g_frames_requested));
+                    atomic_load(&g_frames_requested), frames_answered);
             status = 1;
             break;
     }

@@ -20,8 +20,30 @@ if (sum !== 500500) {
   throw new Error("migo-headless-probe: the loop summed to " + sum + ", not 500500");
 }
 
-// The capability surface has to be installed for this to resolve at all, which
-// is the second thing worth proving: an engine that evaluated the script but
-// installed no `migo` namespace would reach here and throw a TypeError, and the
-// host would print it.
-migo.exitMiniProgram();
+// Then the render loop, which is the second question and a strictly harder one.
+// Evaluating a module needs V8 and a thread; turning frames needs the surface to
+// have been installed, the EGL context to be current and the presenter to be
+// answering -- on macOS that is ANGLE on Metal against a CAMetalLayer with no
+// window. Nothing in this repository had ever asked for that from a host.
+//
+// The two verdicts stay separable on purpose. If the loop never advances, the
+// host times out with ready=1, which says the script was evaluated and the
+// frames did not come; a script that never ran reports ready=0. One run, two
+// distinguishable failures.
+const FRAMES = 30;
+let frames = 0;
+
+function step() {
+  frames += 1;
+  if (frames >= FRAMES) {
+    // The capability surface has to be installed for this to resolve at all,
+    // which is the third thing worth proving: an engine that evaluated the
+    // script and rendered but installed no `migo` namespace would reach here
+    // and throw a TypeError, and the host would print it.
+    migo.exitMiniProgram();
+    return;
+  }
+  requestAnimationFrame(step);
+}
+
+requestAnimationFrame(step);
