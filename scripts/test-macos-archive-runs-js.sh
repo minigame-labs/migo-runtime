@@ -70,6 +70,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Argument problems are named before anything expensive happens, and before the
+# platform check, because they are true on any machine. A bad --drawables would
+# otherwise be found by the host after a link, and a misspelled --content by a
+# `cp` reporting a path.
+if [[ -n "$DRAWABLES" && "$DRAWABLES" != "2" && "$DRAWABLES" != "3" ]]; then
+  fail "--drawables takes 2 or 3 (CAMetalLayer allows 2..3); got '$DRAWABLES'"
+fi
+if [[ ! -d "$ROOT/scripts/fixtures/$CONTENT" ]]; then
+  fail "no fixture named '$CONTENT' under scripts/fixtures. The ones this test uses are: $(cd "$ROOT/scripts/fixtures" && ls -d headless-* 2>/dev/null | tr '\n' ' ')"
+fi
+
 [[ "$(uname -s)" == "Darwin" ]] || fail "this test links a macOS archive and needs macOS"
 
 if [[ -z "$ARCHIVE" ]]; then
