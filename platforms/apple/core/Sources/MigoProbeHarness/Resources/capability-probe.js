@@ -51,8 +51,71 @@ function unsupported(evidence) {
 // the cut can apply their own to the number in the record.
 const JIT_WARMUP_RATIO_THRESHOLD = 3.0;
 
+// The smallest step this origin's clock can report, measured rather than
+// assumed.
+//
+// It matters because it bounds every number below it. WebKit reduces
+// `performance.now()` resolution outside a cross-origin-isolated context, and
+// the custom scheme is not isolated while the loopback listener is -- so the two
+// origins are timed with two different rulers. That is visible in the first
+// device records without anyone looking for it: every custom-scheme timing came
+// back a whole number of milliseconds (11.0, 7.0, 4.0, 4.0) while the loopback
+// ones did not (5.6, 4.2, 18.1). A 4 ms measurement read through a 1 ms ruler
+// carries 25% quantisation, which is larger than most of the differences these
+// probes are asked about.
+function clockStepMs() {
+  const started = Date.now();
+  const t0 = performance.now();
+  let t1 = t0;
+  // Bounded by a second clock: if performance.now() never advances, the loop
+  // has to end anyway, and 50 ms is far longer than any plausible step.
+  while (t1 === t0 && Date.now() - started < 50) {
+    t1 = performance.now();
+  }
+  return t1 - t0;
+}
+
 function probeJit() {
+  // Two structurally identical functions, measured one after the other. The
+  // second one is the control, and it exists because the first reading on a
+  // real iPhone was wrong in a way the ratio alone could not show.
+  //
+  // On iPhone13,2 / 17.0.3 the loopback origin read 21.0 ms cold against 4.2 ms
+  // warm -- a ratio of 5.0, "the tiers engaged" -- and the custom-scheme origin,
+  // measured seconds later in the same app, read 8.0 ms cold against 4.0 ms
+  // warm, a ratio of 2.0, which the cut below called `unavailable` and which
+  // eliminated all 260 custom-scheme candidates. But the two warm numbers are
+  // the same to within 5%. Both origins were plainly running compiled code; the
+  // first origin's larger cold number was the CPU ramping and the process
+  // starting, not the tiers engaging, and the second origin inherited a machine
+  // already at speed.
+  //
+  // So a self-ratio measured once per origin cannot separate "the tiers
+  // engaged" from "the CPU was cold". `control` is that separation: it is
+  // compiled fresh, but it runs on a process and a CPU the first series has
+  // already warmed. If its ratio collapses toward 1 while the first series
+  // showed 5, the first ratio was measuring warm-up. If it stays high, tiering
+  // is real and per-function.
+  //
+  // The cut is deliberately unchanged. Recutting it needs a jitless reading from
+  // the same device class -- Lockdown Mode produces one -- and moving a
+  // threshold to fit one machine before that reading exists would replace a
+  // measured wrong answer with an unmeasured one. Until then this reports
+  // everything a later cut needs, in the evidence, so the recut costs no second
+  // visit to a phone.
   function work(iterations) {
+    let accumulator = 0;
+    for (let i = 0; i < iterations; i += 1) {
+      accumulator = (accumulator + Math.imul(i, 2654435761)) >>> 0;
+    }
+    return accumulator;
+  }
+
+  // A separate function object, so it is compiled separately rather than
+  // reusing the first one's optimised code. Written out rather than produced by
+  // a factory: a factory would hand back closures over one function body, and
+  // JavaScriptCore compiles a body.
+  function control(iterations) {
     let accumulator = 0;
     for (let i = 0; i < iterations; i += 1) {
       accumulator = (accumulator + Math.imul(i, 2654435761)) >>> 0;
@@ -62,20 +125,30 @@ function probeJit() {
 
   const batchSize = 3000000;
   const batches = 12;
-  const timings = [];
+  const step = clockStepMs();
   let sink = 0;
-  for (let batch = 0; batch < batches; batch += 1) {
-    const started = performance.now();
-    sink += work(batchSize);
-    timings.push(performance.now() - started);
+
+  function series(fn) {
+    const timings = [];
+    for (let batch = 0; batch < batches; batch += 1) {
+      const started = performance.now();
+      sink += fn(batchSize);
+      timings.push(performance.now() - started);
+    }
+    return timings;
   }
-  // `sink` is read so the loop cannot be eliminated as dead by any tier.
+
+  const timings = series(work);
+  const controlTimings = series(control);
+  // `sink` is read so neither loop can be eliminated as dead by any tier.
   if (sink === -1) {
     throw new Error("unreachable");
   }
 
   const first = timings[0];
   const warm = Math.min.apply(null, timings.slice(batches / 2));
+  const controlFirst = controlTimings[0];
+  const controlWarm = Math.min.apply(null, controlTimings.slice(batches / 2));
   if (!(first > 0) || !(warm > 0)) {
     return unsupported(
       "performance.now() did not advance across a " +
@@ -84,6 +157,7 @@ function probeJit() {
     );
   }
   const ratio = first / warm;
+  const controlRatio = controlWarm > 0 ? controlFirst / controlWarm : 0;
   const evidence =
     "a " +
     batchSize +
@@ -93,17 +167,29 @@ function probeJit() {
     warm.toFixed(1) +
     " ms warm over " +
     batches +
-    " batches";
+    " batches (" +
+    (batchSize / warm / 1000).toFixed(0) +
+    "M iterations/s warm); an identical second function, compiled fresh on the " +
+    "now-warm process, took " +
+    controlFirst.toFixed(1) +
+    " ms cold and " +
+    controlWarm.toFixed(1) +
+    " ms warm, ratio " +
+    controlRatio.toFixed(2) +
+    "; the clock these were read with steps by " +
+    step.toFixed(3) +
+    " ms";
   return ratio >= JIT_WARMUP_RATIO_THRESHOLD
     ? available(evidence, ratio.toFixed(2))
     : answer(
         "unavailable",
         evidence +
-          ", a ratio of " +
+          ", a first-series ratio of " +
           ratio.toFixed(2) +
           " below the " +
           JIT_WARMUP_RATIO_THRESHOLD +
-          " cut; the tiers did not engage",
+          " cut; the tiers did not engage, unless the process was already warm " +
+          "-- which the control ratio above is there to say",
         ratio.toFixed(2)
       );
 }
