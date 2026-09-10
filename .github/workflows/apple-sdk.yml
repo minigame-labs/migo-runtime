@@ -5,6 +5,14 @@ name: Apple SDK
 # the shipping macOS V8 supply chain. No release is published by this workflow.
 on:
   workflow_dispatch:
+    inputs:
+      measure_drawables:
+        description: >-
+          Also measure throughput at maximumDrawableCount 2 and 3, back to back
+          on the macos-v8 archive. Off by default: it is a measurement, not a
+          gate, and it costs a minute of a runner nobody is waiting on.
+        type: boolean
+        default: false
   schedule:
     - cron: '0 3 * * 0'
   push:
@@ -211,6 +219,26 @@ jobs:
           bash scripts/test-macos-archive-runs-js.sh
           --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
 
+      # The drawable pool, measured rather than argued about -- and measured as a
+      # PAIR, in one job, minutes apart on one machine. A shared runner is no
+      # place for an absolute frame rate, but the question here is relative: does
+      # a pool of 2 cost throughput against a pool of 3? Both runs see the same
+      # cold caches, the same neighbours and the same thermal state, which is
+      # most of what a CI runner gets wrong about a measurement.
+      #
+      # Off unless asked for, because it answers a question nobody is blocked on
+      # per commit. The other half of what maximumDrawableCount buys -- latency
+      # to a display -- is not answerable here at all: there is no display.
+      - name: Throughput at drawable pool 2 against 3
+        if: matrix.product == 'macos-v8' && inputs.measure_drawables
+        run: |
+          archive="$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+          for pool in 3 2 3 2; do
+            bash scripts/test-macos-archive-runs-js.sh \
+              --archive "$archive" --content headless-perf-probe --drawables "$pool" \
+              | grep throughput
+          done
+
       # Not for macos-v8, and the exclusion is the product's definition rather
       # than an exemption: that archive links in-process V8 on purpose, so an
       # assertion that it carries no engine symbols would be asserting the
@@ -313,17 +341,24 @@ jobs:
       - name: The ABI tests run on iOS with package-embedded ANGLE
         if: matrix.platform == 'ios-simulator'
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
-        # 🔴 THE ENGINE'S OWN LOG IS NOT VISIBLE ON THIS LANE. Measured, on one
-        # run, from identical test code: 28 lines matching `INFO graphics::` etc.
-        # in the macOS leg's log and ZERO in this one -- while
-        # MigoSurfaceAttachTests' setUp had turned the subscriber on in both, with
-        # its own `setenv`. A process running inside the simulator writes its
-        # stderr somewhere `xcodebuild` does not collect.
+        # The engine's own log IS visible on this lane, and this comment used to
+        # say the opposite.
         #
-        # So do not set MIGO_CAPI_LOG (or TEST_RUNNER_MIGO_CAPI_LOG) here expecting
-        # engine output: this step had both for a while and neither produced a
-        # line. An engine-side question asked on this lane has to be answered
-        # through an assertion the test can make, or on the macOS leg.
+        # It said so on a real measurement -- 28 `INFO graphics::` lines in the
+        # macOS leg and zero here, from identical test code -- but that was taken
+        # before `install_dev_logging` was changed to write to stderr rather than
+        # stdout, which is the stream `xcodebuild` folds into its log. The fix
+        # landed and this comment did not, and what it advised was to stop asking
+        # engine-side questions on the one lane where this defect reproduces.
+        #
+        # Re-measured 2026-09-10: `gh run view --job <this job> --log` returns
+        # lines prefixed with THIS job's name carrying
+        # `shared::surface::attachment: ... has_anchor=true outstanding=1
+        # native_owners=Some(1)`, which is how the surface-retirement
+        # investigation read the engine's account of a red run. Check the job
+        # prefix when reading, because a run-level log carries every job's lines
+        # and it is easy to read the macOS leg's answer and believe it came from
+        # here.
         run: |
           udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
           xcodebuild test \

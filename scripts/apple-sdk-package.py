@@ -86,11 +86,21 @@ def assemble(args):
     stages = []
     for platform, product in products.items():
         stage = args.build_root / product / args.configuration / platform
-        if not stage.exists():
+        # A stage with no receipt is a build that started and did not finish --
+        # an interrupted one leaves the directory behind. Treated as absent
+        # rather than read, because reading it raised a bare FileNotFoundError
+        # naming migo-build.json, which reads as "the packager is broken" and is
+        # actually "that group was never built". Assembling an iOS product on a
+        # machine that cannot build the macOS one is a legitimate thing to want.
+        receipt_path = stage / "migo-build.json"
+        if not stage.exists() or not receipt_path.exists():
             if args.require_all_slices == "1":
-                raise ValueError(f"missing required {platform} group ({product}, {args.configuration})")
+                detail = "was never built" if not stage.exists() else (
+                    f"left a stage with no receipt at {stage}; an interrupted build does that")
+                raise ValueError(
+                    f"missing required {platform} group ({product}, {args.configuration}): {detail}")
             continue
-        receipt = json.loads((stage / "migo-build.json").read_text())
+        receipt = json.loads(receipt_path.read_text())
         expected = dict(platform=platform, product=product, configuration=args.configuration)
         if any(receipt.get(key) != value for key, value in expected.items()):
             raise ValueError(f"staged product identity mismatch: {stage}")
