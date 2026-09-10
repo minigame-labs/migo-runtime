@@ -152,11 +152,20 @@ static int fail(const char *what, MigoResult result) {
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <files-dir> <content-id>\n", argv[0]);
+        fprintf(stderr, "usage: %s <files-dir> <content-id> [max-drawables]\n", argv[0]);
         return 2;
     }
     const char *files_dir = argv[1];
     const char *content_id = argv[2];
+    // 0 means "leave the layer's own default alone", which is not the same as
+    // asking for whatever that default happens to be: setting the property tells
+    // Core Animation a pool size was chosen.
+    long max_drawables = (argc > 3) ? strtol(argv[3], NULL, 10) : 0;
+    if (max_drawables != 0 && (max_drawables < 2 || max_drawables > 3)) {
+        fprintf(stderr, "[macos-headless] maximumDrawableCount accepts 2 or 3; got %ld\n",
+                max_drawables);
+        return 2;
+    }
 
     char cache_dir[1024];
     char code_cache_dir[1024];
@@ -225,6 +234,12 @@ int main(int argc, char **argv) {
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.drawableSize = CGSizeMake(SURFACE_WIDTH, SURFACE_HEIGHT);
     layer.framebufferOnly = NO;
+    // The host's property, and the reason Migo takes a layer rather than a view:
+    // handed a plain CALayer, ANGLE allocates its own metal layer and the host
+    // loses this setting along with contentsScale and presentsWithTransaction.
+    if (max_drawables != 0) {
+        layer.maximumDrawableCount = (NSUInteger)max_drawables;
+    }
 
     MigoMacosMetalLayerDescriptor macos;
     memset(&macos, 0, sizeof(macos));
@@ -266,6 +281,7 @@ int main(int argc, char **argv) {
     result = migo_session_load_content(session, &content);
     if (result != MIGO_OK) return fail("migo_session_load_content", result);
 
+    int64_t run_started = now_nanos();
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
     deadline.tv_sec += DEADLINE_SECONDS;
@@ -326,13 +342,22 @@ int main(int argc, char **argv) {
 
     int status;
     switch (outcome) {
-        case OUTCOME_EXIT_REQUESTED:
+        case OUTCOME_EXIT_REQUESTED: {
+            double elapsed = (double)(now_nanos() - run_started) / 1e9;
             printf("[macos-headless] the shipping archive evaluated JavaScript AND turned "
                    "frames: the content summed to 500500, ran its requestAnimationFrame loop "
                    "across %d answered vsyncs, and reached migo.exitMiniProgram()\n",
                    frames_answered);
+            // Throughput, not a frame rate against a display: there is no display
+            // here. It is reported so a drawable-pool A/B has a number, and
+            // labelled so nobody reads it as one.
+            printf("[macos-headless] throughput: %d frames in %.3f s = %.1f frames/s "
+                   "(max_drawables=%ld, headless, no display to pace against)\n",
+                   frames_answered, elapsed,
+                   elapsed > 0 ? (double)frames_answered / elapsed : 0.0, max_drawables);
             status = 0;
             break;
+        }
         case OUTCOME_ERROR:
             fprintf(stderr,
                     "[macos-headless] the content raised an error rather than finishing: %s\n",
