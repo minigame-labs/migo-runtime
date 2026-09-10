@@ -154,6 +154,23 @@ final class MigoSessionFrameClockABITests: XCTestCase {
         #if os(macOS) || os(iOS)
             let session = try XCTUnwrap(self.session)
 
+            // Whether this machine can answer at all, decided BEFORE anything is
+            // attached. Skipping after an attach would leave the attachment live,
+            // and `migo_session_destroy` refuses while one is -- so the skip would
+            // arrive as a teardown failure on exactly the machines the skip exists
+            // for. A throwaway link asks the question without touching the
+            // session's statistics, which the assertions below read.
+            let probe = MigoDisplayLink(
+                decision: MigoDisplayLinkPolicy.decide(.init(platform: .macOS, osMajor: 12)),
+                onTick: { _, _ in })
+            probe.start()
+            let displayAvailable = probe.isRunning
+            probe.stop()
+            try XCTSkipUnless(
+                displayAvailable,
+                "no display link started on this machine, so no vsync can arrive. That is the "
+                    + "headless case and not a failure")
+
             let layer = CAMetalLayer()
             layer.drawableSize = CGSize(width: 256, height: 256)
             layer.frame = CGRect(x: 0, y: 0, width: 256, height: 256)
@@ -199,10 +216,9 @@ final class MigoSessionFrameClockABITests: XCTestCase {
                 decision: MigoDisplayLinkPolicy.decide(.init(platform: platform, osMajor: major)))
 
             clock.start()
-            try XCTSkipUnless(
+            XCTAssertTrue(
                 clock.isRunning,
-                "no display link started on this machine, so no vsync can arrive. That is the "
-                    + "headless case and not a failure")
+                "the probe above started a link on this machine and the clock's did not")
 
             // A real host calls requestFrame from `on_request_frame`, and nothing
             // requests frames here because no content is running -- this product
