@@ -122,6 +122,7 @@ public final class MigoCapabilityGate: NSObject {
             ("capability-probe.html", "text/html; charset=utf-8"),
             ("capability-probe.js", "text/javascript; charset=utf-8"),
             ("capability-probe-worker.js", "text/javascript; charset=utf-8"),
+            ("transport-probe.js", "text/javascript; charset=utf-8"),
         ]
         var loaded: [String: (mime: String, body: Data)] = [:]
         for (name, mime) in files {
@@ -163,10 +164,30 @@ public final class MigoCapabilityGate: NSObject {
     ///
     /// Sequential rather than concurrent. Two pages measuring JIT warmup at the
     /// same time on the same device measure each other.
+    /// What one visit produces: the capability answers, and the transport
+    /// batches taken in the same visit.
+    ///
+    /// One type rather than two calls, because the two are measured on one
+    /// device in one state. Run separately they would be compared across
+    /// whatever changed between them -- a phone that warmed up, a listener on a
+    /// different port, an operator who picked the device up.
+    public struct Outcome: Sendable, Equatable {
+        public var capabilities: [MigoCapabilityRecord]
+        public var transports: [MigoTransportRecord]
+
+        public init(
+            capabilities: [MigoCapabilityRecord] = [],
+            transports: [MigoTransportRecord] = []
+        ) {
+            self.capabilities = capabilities
+            self.transports = transports
+        }
+    }
+
     public func run(
         in webView: WKWebView,
         attestation: Attestation = Attestation(),
-        completion: @escaping (Result<[MigoCapabilityRecord], Error>) -> Void
+        completion: @escaping (Result<Outcome, Error>) -> Void
     ) {
         // Reported rather than a `precondition`. It is a programming error, and
         // the idiomatic answer to one of those is a trap -- but this runs on a
@@ -194,9 +215,9 @@ public final class MigoCapabilityGate: NSObject {
         }
 
         let loopbackOrigin = listener.origin
-        var records: [MigoCapabilityRecord] = []
+        var outcome = Outcome()
 
-        func finish(_ result: Result<[MigoCapabilityRecord], Error>) {
+        func finish(_ result: Result<Outcome, Error>) {
             listener.stop()
             completion(result)
         }
@@ -211,9 +232,10 @@ public final class MigoCapabilityGate: NSObject {
                 switch result {
                 case .failure(let error):
                     finish(.failure(error))
-                case .success(let record):
-                    records.append(record)
-                    finish(.success(records))
+                case .success(let visit):
+                    outcome.capabilities.append(visit.capabilities)
+                    outcome.transports.append(contentsOf: visit.transports)
+                    finish(.success(outcome))
                 }
             }
         }
@@ -228,11 +250,19 @@ public final class MigoCapabilityGate: NSObject {
             switch result {
             case .failure(let error):
                 finish(.failure(error))
-            case .success(let record):
-                records.append(record)
+            case .success(let visit):
+                outcome.capabilities.append(visit.capabilities)
+                outcome.transports.append(contentsOf: visit.transports)
                 runScheme()
             }
         }
+    }
+
+    /// One origin's answers. Internal because the shape callers see is
+    /// `Outcome`, which is both origins.
+    struct Visit {
+        var capabilities: MigoCapabilityRecord
+        var transports: [MigoTransportRecord]
     }
 
     private func load(
@@ -240,7 +270,7 @@ public final class MigoCapabilityGate: NSObject {
         origin: MigoProbeOrigin,
         pageURL: URL,
         loopbackOrigin: String?,
-        completion: @escaping (Result<MigoCapabilityRecord, Error>) -> Void
+        completion: @escaping (Result<Visit, Error>) -> Void
     ) {
         // The page cannot guess which port the listener took, so the config is
         // injected before any document script runs rather than substituted into
@@ -298,7 +328,11 @@ public final class MigoCapabilityGate: NSObject {
             case .failure(let error):
                 completion(.failure(error))
             case .success(let report):
-                completion(.success(self.assemble(report: report, origin: origin, webView: webView)))
+                completion(.success(Visit(
+                    capabilities: self.assemble(
+                        report: report, origin: origin, webView: webView),
+                    transports: self.assembleTransports(
+                        report: report, origin: origin, webView: webView))))
             }
         }
 
@@ -389,6 +423,70 @@ public final class MigoCapabilityGate: NSObject {
             lockdownMode: attestation.lockdownMode,
             origin: origin,
             capabilities: answers)
+    }
+
+    /// How this host was built, which half of a transport number belongs to.
+    ///
+    /// `#if DEBUG` and not a launch flag: what matters is how the code that
+    /// echoes the bytes was compiled, and only the compiler knows that. A flag
+    /// would record what somebody meant to build.
+    static var hostBuildConfiguration: String {
+        #if DEBUG
+            return "debug"
+        #else
+            return "release"
+        #endif
+    }
+
+    /// The transport batches this origin reported, as records.
+    ///
+    /// A batch the page could not run is absent rather than zero-filled. A
+    /// transport recorded at zero milliseconds would win the comparison it
+    /// could not enter -- a page at the loopback origin cannot POST to the
+    /// custom scheme, and that is a fact about reachability, not a latency.
+    private func assembleTransports(
+        report: [String: Any], origin: MigoProbeOrigin, webView: WKWebView
+    ) -> [MigoTransportRecord] {
+        guard let batches = report["transport"] as? [[String: Any]] else { return [] }
+        let environment = MigoProbeEnvironment.capture(webView: webView)
+        let capturedAt = ISO8601DateFormatter().string(from: Date())
+        return batches.compactMap { batch in
+            guard
+                let transport = batch["transport"] as? String,
+                let payloadBytes = batch["payload_bytes"] as? Int,
+                let samples = batch["samples"] as? Int,
+                let clockStep = batch["clock_step_ms"] as? Double,
+                let errors = batch["errors"] as? Int
+            else {
+                // Dropped rather than defaulted. A batch missing the fields
+                // that say what it measured is not a measurement, and giving
+                // it zeros would put it in the comparison anyway.
+                return nil
+            }
+            return MigoTransportRecord(
+                runId: attestation.runId,
+                capturedAt: capturedAt,
+                deviceClass: environment.deviceClass,
+                hardwareIdentifier: environment.hardwareIdentifier,
+                ramBytes: environment.ramBytes,
+                osVersion: environment.osVersion,
+                osBuild: environment.osBuild,
+                webkitBuild: environment.webkitBuild,
+                appBuild: environment.appBuild,
+                lockdownMode: attestation.lockdownMode,
+                hostBuildConfiguration: Self.hostBuildConfiguration,
+                origin: origin,
+                transport: transport,
+                payloadBytes: payloadBytes,
+                samples: samples,
+                clockStepMs: clockStep,
+                meanRoundTripMs: batch["mean_round_trip_ms"] as? Double,
+                p50RoundTripMs: batch["p50_round_trip_ms"] as? Double,
+                p95RoundTripMs: batch["p95_round_trip_ms"] as? Double,
+                p99RoundTripMs: batch["p99_round_trip_ms"] as? Double,
+                errors: errors,
+                note: batch["note"] as? String)
+        }
     }
 
     /// A6/G0.3, and the one answer no code can take alone.

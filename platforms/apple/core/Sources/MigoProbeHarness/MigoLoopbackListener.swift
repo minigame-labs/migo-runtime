@@ -548,9 +548,45 @@ public final class MigoLoopbackListener {
 
         var payload = Data(buffer[(base + cursor)..<(base + cursor + length)])
         if masked {
+            // Eight bytes per XOR, with the mask word loaded the same way the
+            // payload is.
+            //
+            // Every client-to-server frame is masked, so this runs over every
+            // byte the page ever sends, and P3 sends a mebibyte at a time two
+            // hundred times at four payload classes. The first version read
+            // `mask[index % 4]`: a division and a bounds-checked subscript per
+            // byte, in an app built Debug because that is what a probe is built
+            // as. This is one XOR per eight bytes.
+            //
+            // The mask word is built with `loadUnaligned` from the mask's own
+            // four bytes rather than by shifting them into place, so it is
+            // assembled in the same byte order the payload is read in and the
+            // XOR lines up on either endianness. Shifting would have been
+            // correct on every Apple CPU and correct for the wrong reason.
+            //
+            // The stride is a multiple of the mask's four-byte period, so the
+            // word stays in phase for the whole run and only the tail -- at
+            // most seven bytes -- needs a position within the period.
+            //
+            // `loadUnaligned` and unaligned `storeBytes` are SE-0349, emitted
+            // into the client, and compile and run at this package's macOS 11
+            // floor: checked rather than assumed, because the first version of
+            // this comment asserted the opposite and used it to justify a
+            // slower loop.
+            let maskWord = mask.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+            let maskPair = UInt64(maskWord) | (UInt64(maskWord) << 32)
             payload.withUnsafeMutableBytes { raw in
+                var index = 0
+                while index + 8 <= length {
+                    let word = raw.loadUnaligned(fromByteOffset: index, as: UInt64.self)
+                    raw.storeBytes(of: word ^ maskPair, toByteOffset: index, as: UInt64.self)
+                    index += 8
+                }
                 guard let bytes = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-                for index in 0..<length { bytes[index] ^= mask[index % 4] }
+                while index < length {
+                    bytes[index] ^= mask[index & 3]
+                    index += 1
+                }
             }
         }
         return .frame(

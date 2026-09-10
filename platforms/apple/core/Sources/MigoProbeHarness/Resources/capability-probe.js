@@ -395,9 +395,14 @@ function run(config) {
   });
 }
 
+// Measures and returns. It does NOT post the report.
+//
+// It used to, and that made the page unable to add anything: the transport
+// batches run after these answers, in the same visit, and a report already on
+// its way to the native side cannot carry them. Reporting is the page's job
+// because the page is what knows when the visit is finished -- and there is
+// exactly one message per origin either way, which is what the native side
+// waits for.
 self.migoRunCapabilityProbe = function (config) {
-  return run(config).then(function (report) {
-    window.webkit.messageHandlers.migoProbe.postMessage(JSON.stringify(report));
-    return report;
-  });
+  return run(config);
 };

@@ -172,23 +172,41 @@ final class MigoProbeViewController: UIViewController {
         }
     }
 
-    private func finish(_ result: Result<[MigoCapabilityRecord], Error>) {
+    private func finish(_ result: Result<MigoCapabilityGate.Outcome, Error>) {
         runButton.isEnabled = true
         switch result {
         case .failure(let error):
             status.text = "the run failed: \(error)"
             output.text = ""
-        case .success(let records):
+        case .success(let outcome):
             do {
                 let encoder = MigoProbeRecord.makeEncoder()
-                let data = try encoder.encode(records)
-                let name = "capability-\(records.first?.runId ?? "run").json"
-                let url = try FileManager.default
+                let runId = outcome.capabilities.first?.runId ?? "run"
+                let documents = try FileManager.default
                     .url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                    .appendingPathComponent(name)
-                try data.write(to: url)
-                status.text = "wrote \(records.count) record(s) to Documents/\(name)"
-                output.text = String(decoding: data, as: UTF8.self)
+
+                let capabilityData = try encoder.encode(outcome.capabilities)
+                let capabilityName = "capability-\(runId).json"
+                try capabilityData.write(to: documents.appendingPathComponent(capabilityName))
+
+                // Two files rather than one, and the capability file is written
+                // FIRST. They answer different questions and the collector pulls
+                // them separately; writing the one gate 1 exists for before the
+                // one the gate after it draws on means a run interrupted between
+                // them still produced its own answer.
+                //
+                // The transport file is written even when empty, because absent
+                // and empty are different: absent is a build that cannot measure
+                // transports, empty is a visit where no transport could be
+                // reached. A collector that had to tell those apart from a
+                // missing file could not.
+                let transportData = try encoder.encode(outcome.transports)
+                let transportName = "transport-\(runId).json"
+                try transportData.write(to: documents.appendingPathComponent(transportName))
+
+                status.text = "wrote \(outcome.capabilities.count) capability and "
+                    + "\(outcome.transports.count) transport record(s) to Documents/"
+                output.text = String(decoding: capabilityData, as: UTF8.self)
             } catch {
                 status.text = "the records could not be written: \(error)"
             }
