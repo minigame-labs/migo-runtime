@@ -181,6 +181,10 @@ final class MigoSessionFrameClockABITests: XCTestCase {
             payload.platform_kind = layerKind
             payload.ca_metal_layer = Unmanaged.passUnretained(layer).toOpaque()
 
+            // Read out before the pointer is taken: reading `payload.struct_size`
+            // inside `withUnsafePointer(to: &payload)` is an overlapping access
+            // and the compiler refuses it.
+            let payloadSize = payload.struct_size
             var attachment: OpaquePointer?
             let attached = withExtendedLifetime(layer) {
                 withUnsafePointer(to: &payload) { raw -> MigoResult in
@@ -195,7 +199,7 @@ final class MigoSessionFrameClockABITests: XCTestCase {
                     descriptor.color_space = MIGO_COLOR_SPACE_SRGB
                     descriptor.alpha_mode = MIGO_ALPHA_MODE_OPAQUE
                     descriptor.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT
-                    descriptor.platform_descriptor_size = payload.struct_size
+                    descriptor.platform_descriptor_size = payloadSize
                     descriptor.platform_descriptor = UnsafeRawPointer(raw)
                     return migo_session_attach_surface(session, &descriptor, &attachment)
                 }
