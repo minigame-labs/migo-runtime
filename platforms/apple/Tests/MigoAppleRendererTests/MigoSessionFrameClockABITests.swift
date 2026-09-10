@@ -234,6 +234,13 @@ final class MigoSessionFrameClockABITests: XCTestCase {
             let enough = expectation(description: "\(wanted) delivered frames")
             var fulfilled = false
             let pump = Timer.scheduledTimer(withTimeInterval: 1.0 / 240.0, repeats: true) { _ in
+                // Twice per fire, and that is what makes the coalescing assertion
+                // below deterministic rather than a bet on scheduling. Once per
+                // fire, coalescing depends on this timer outpacing the display --
+                // true at 240 Hz against 60 Hz on an idle machine and not
+                // guaranteed on a starved one, which is what this lane is. Two
+                // requests between two ticks coalesce whatever the cadence.
+                clock.requestFrame()
                 clock.requestFrame()
                 if !fulfilled, clock.currentStatistics.delivered >= wanted {
                     fulfilled = true
@@ -241,7 +248,10 @@ final class MigoSessionFrameClockABITests: XCTestCase {
                 }
             }
             defer { pump.invalidate() }
-            wait(for: [enough], timeout: 10)
+            // 60 s for the reason every other wait in this bundle now carries: this
+            // lane starves, and ten frames at 60 Hz needs 167 ms on a machine that
+            // is not being starved. A budget, not a measurement.
+            wait(for: [enough], timeout: 60)
 
             let running = clock.currentStatistics
             XCTAssertGreaterThanOrEqual(running.delivered, wanted)
