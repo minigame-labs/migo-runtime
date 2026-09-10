@@ -21,6 +21,17 @@ import XCTest
 /// test that constructs a `SyncRequest` directly; they are caught here, by
 /// calling the exported symbols with the structs a host actually fills in.
 ///
+/// WHERE IT RUNS, because the entry points are external-frames-only and that is
+/// not obvious from this file. `migo_session_post_sync_request` and the three
+/// beside it are compiled into the external-frame product and nothing else --
+/// a session with a JavaScript runtime in this process has no producer to be
+/// blocked. Both places this bundle runs link that product: on iOS the shipping
+/// archive is external-frames, and on macOS these tests run only inside the
+/// generated diagnostic package, because `platforms/apple`'s own xcframework
+/// carries no macOS slice at all. So the symbols are always there; a lane that
+/// changed either of those would find out at link time, which is the loud
+/// failure and the right one.
+///
 /// WHAT THIS DOES NOT DO, deliberately: it does not read pixels. Answering
 /// `readPixels` needs a renderer with a canvas, and the canvas comes from
 /// content the producer has drawn -- which needs the A3 transport that is not
