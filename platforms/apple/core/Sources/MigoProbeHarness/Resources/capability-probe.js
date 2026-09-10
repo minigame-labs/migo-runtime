@@ -46,10 +46,27 @@ function unsupported(evidence) {
 // so it is measured: a hot integer loop run in batches speeds up by a large
 // factor once the tiers engage and by essentially nothing when they cannot.
 //
-// The ratio is recorded rather than only the verdict. The threshold below is a
-// judgement -- the ratio is the observation, and a reader who disagrees with
-// the cut can apply their own to the number in the record.
-const JIT_WARMUP_RATIO_THRESHOLD = 3.0;
+// The cut is on WARM THROUGHPUT, and the number below was measured rather than
+// chosen. On one iPhone 12 / iOS 17.0.3, same probe, same day:
+//
+//   Lockdown off : 708, 711, 750, 750 M iterations/s   WebAssembly compiles
+//   Lockdown on  :  17,  17       M iterations/s        WebAssembly undefined
+//
+// A factor of 44, with no readings between. 100 sits 5.9x above the jitless
+// population and 7.1x below the JIT one -- near the geometric mean, which is
+// where a cut between two populations has equal room on both sides.
+//
+// It replaces a warm-up ratio -- cold batch over warm batch, cut at 3.0 -- and
+// that is not a refinement. Eleven readings of that ratio on the SAME phone with
+// JIT on gave 1.32, 1.50, 1.58, 1.74, 1.75, 2.00, 2.75, 4.25, 4.28, 4.95, 5.00:
+// the cut ran through the middle of them, and the gate's verdict flipped between
+// `rejected` with nothing admitted and `provisional` with 495 candidates
+// admitted, on one device, purely on where that noise landed. A ratio of
+// durations is also a ratio of whatever the CPU's governor was doing.
+//
+// The ratio is still recorded, as evidence and not as the verdict, because a
+// reader with both numbers can see which one moved.
+const JIT_WARM_THROUGHPUT_FLOOR_MIPS = 100;
 
 // The smallest step this origin's clock can report, measured rather than
 // assumed.
@@ -215,18 +232,19 @@ function probeJit() {
     step.toFixed(3) +
     " ms; " +
     webAssemblyState();
-  return ratio >= JIT_WARMUP_RATIO_THRESHOLD
-    ? available(evidence, ratio.toFixed(2))
+  const throughput = batchSize / warm / 1000;
+  return throughput >= JIT_WARM_THROUGHPUT_FLOOR_MIPS
+    ? available(evidence, throughput.toFixed(0))
     : answer(
         "unavailable",
         evidence +
-          ", a first-series ratio of " +
-          ratio.toFixed(2) +
-          " below the " +
-          JIT_WARMUP_RATIO_THRESHOLD +
-          " cut; the tiers did not engage, unless the process was already warm " +
-          "-- which the control ratio above is there to say",
-        ratio.toFixed(2)
+          ", which is " +
+          throughput.toFixed(0) +
+          "M iterations/s against a floor of " +
+          JIT_WARM_THROUGHPUT_FLOOR_MIPS +
+          "M; compiled code on this class of device runs this loop at 700M and " +
+          "up, and a jitless JavaScriptCore runs it at 17M",
+        throughput.toFixed(0)
       );
 }
 

@@ -252,15 +252,29 @@ def build_admission(
             ["the contract declares no admission rules, so every candidate would be admitted "
              "without anything having been checked"])
 
-    # One condition per (device, os_build, origin). Two OS builds under one
-    # marketing version are two conditions, and a capability admitted from one
-    # is a capability admitted for one.
+    # One condition per (device, os_build, lockdown_mode, origin).
+    #
+    # Two OS builds under one marketing version are two conditions, and a
+    # capability admitted from one is a capability admitted for one. Lockdown
+    # Mode is in the key for the same reason and for one the contract states
+    # outright: "'WebContent has JIT' is a device state and not an admission
+    # invariant." Two device states are two conditions.
+    #
+    # Left out of the key, the two runs of one phone -- Lockdown off and Lockdown
+    # on -- collided as "two records describe (iPhone13,2, 17.0.3, 21A360,
+    # loopback); a disagreement this tool cannot resolve". They are not a
+    # disagreement. They are the measurement A24 asks for, and the record carries
+    # `lockdown_mode` precisely because it changes the answer: measured
+    # 2026-09-10 on one iPhone 12, warm throughput went 750M iterations/s to 17M
+    # and WebAssembly went from compiling to undefined, with every other
+    # capability unchanged.
     conditions: dict[tuple, dict[str, Any]] = {}
     for record in kept:
         key = (
             record["hardware_identifier"],
             record["os_version"],
             record["os_build"],
+            record["lockdown_mode"],
             record["origin"],
         )
         if key in conditions:
@@ -276,14 +290,34 @@ def build_admission(
     for candidate in candidate_space(performance_schema, capability_schema):
         runs_on: list[str] = []
         blocked_on: list[dict[str, Any]] = []
+        blocked_by_device_state: list[dict[str, Any]] = []
         unmeasured_on: list[dict[str, Any]] = []
         for key, answers in sorted(conditions.items()):
-            if key[3] != candidate["origin"]:
+            if key[4] != candidate["origin"]:
                 continue
             blocked, unmeasured = blockers(candidate, answers, rules)
             label = f"{key[0]} {key[1]} ({key[2]})"
+            if key[3] != "off":
+                label += f" lockdown={key[3]}"
             if blocked:
-                blocked_on.append({"condition": label, "reasons": blocked})
+                # A device state the user chose is not a condition every
+                # candidate has to satisfy. The contract says so in as many
+                # words -- "'WebContent has JIT' is a device state and not an
+                # admission invariant" -- and the admission rule that does the
+                # eliminating says what happens instead: on a device without
+                # JIT "every candidate here is slower than the WebKit lane it
+                # would replace", which is a runtime fallback and not a verdict
+                # on the architecture.
+                #
+                # So a Lockdown-on blocker is recorded and does not eliminate.
+                # Without this, one measurement of a state that ships turned 495
+                # candidates from admitted into conditional and the whole run
+                # into `rejected` -- reading as "nothing works on this phone"
+                # when what was measured is "nothing works on this phone WHILE
+                # ITS OWNER HAS LOCKDOWN MODE ON", which is the answer A24 asked
+                # for and the reason the record carries `lockdown_mode` at all.
+                where = blocked_on if key[3] == "off" else blocked_by_device_state
+                where.append({"condition": label, "reasons": blocked})
             elif unmeasured:
                 unmeasured_on.append({"condition": label, "reasons": unmeasured})
             else:
@@ -295,7 +329,9 @@ def build_admission(
             "blocked_on": blocked_on,
             "unmeasured_on": unmeasured_on,
         }
-        if not runs_on and not blocked_on and not unmeasured_on:
+        if blocked_by_device_state:
+            entry["blocked_by_device_state"] = blocked_by_device_state
+        if not runs_on and not blocked_on and not unmeasured_on and not blocked_by_device_state:
             # No record for this origin at all. Not eliminated -- unmeasured,
             # and calling it eliminated would let a missing record read as a
             # finding.
