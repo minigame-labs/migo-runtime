@@ -211,10 +211,13 @@ typedef struct MigoSyncOutcome {
  *
  * out_outcome IS CALLER-OWNED AND ITS HEADER IS AN INPUT. Set struct_size and
  * abi_version before every call: struct_size is what bounds the write into your
- * storage, so a record that arrives holding zeros is refused rather than filled
- * in, and the call returns MIGO_ERROR_INVALID_ARGUMENT. A producer is blocked
- * while this is decided, so a record left zeroed is a producer that waits out
- * its whole deadline for a refusal that never reached it.
+ * storage, so a record that arrives with a size this library does not recognise
+ * is refused rather than filled in, and the call returns
+ * MIGO_ERROR_INVALID_ARGUMENT. A record left holding zeros is refused too, with
+ * MIGO_ERROR_UNSUPPORTED_ABI, because it claims abi_version 0 and that is
+ * checked first. A producer is blocked while this is decided, so a record left
+ * zeroed is a producer that waits out its whole deadline for a refusal that
+ * never reached it.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_post_sync_request(
     MigoSession *session, const MigoSyncRequestDescriptor *request,
@@ -229,10 +232,13 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_sync_request(
  *
  * out_outcome IS CALLER-OWNED AND ITS HEADER IS AN INPUT. Set struct_size and
  * abi_version before every call: struct_size is what bounds the write into your
- * storage, so a record that arrives holding zeros is refused rather than filled
- * in, and the call returns MIGO_ERROR_INVALID_ARGUMENT. A producer is blocked
- * while this is decided, so a record left zeroed is a producer that waits out
- * its whole deadline for a refusal that never reached it.
+ * storage, so a record that arrives with a size this library does not recognise
+ * is refused rather than filled in, and the call returns
+ * MIGO_ERROR_INVALID_ARGUMENT. A record left holding zeros is refused too, with
+ * MIGO_ERROR_UNSUPPORTED_ABI, because it claims abi_version 0 and that is
+ * checked first. A producer is blocked while this is decided, so a record left
+ * zeroed is a producer that waits out its whole deadline for a refusal that
+ * never reached it.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_poll_sync(
     MigoSession *session, uint64_t now_nanos, MigoSyncOutcome *out_outcome);
@@ -262,10 +268,13 @@ MIGO_API MigoResult MIGO_CALL migo_session_take_sync_reply(
  *
  * out_outcome IS CALLER-OWNED AND ITS HEADER IS AN INPUT. Set struct_size and
  * abi_version before every call: struct_size is what bounds the write into your
- * storage, so a record that arrives holding zeros is refused rather than filled
- * in, and the call returns MIGO_ERROR_INVALID_ARGUMENT. A producer is blocked
- * while this is decided, so a record left zeroed is a producer that waits out
- * its whole deadline for a refusal that never reached it.
+ * storage, so a record that arrives with a size this library does not recognise
+ * is refused rather than filled in, and the call returns
+ * MIGO_ERROR_INVALID_ARGUMENT. A record left holding zeros is refused too, with
+ * MIGO_ERROR_UNSUPPORTED_ABI, because it claims abi_version 0 and that is
+ * checked first. A producer is blocked while this is decided, so a record left
+ * zeroed is a producer that waits out its whole deadline for a refusal that
+ * never reached it.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_cancel_sync(
     MigoSession *session, uint64_t now_nanos, MigoSyncOutcome *out_outcome);
