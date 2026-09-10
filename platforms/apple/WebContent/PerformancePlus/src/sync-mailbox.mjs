@@ -260,9 +260,16 @@ export class SyncMailbox {
    * settle.
    */
   #waitWhilePending(budgetMillis) {
-    const deadline = Date.now() + budgetMillis;
+    // `performance.now()`, not `Date.now()`. The budget is a duration, so it is
+    // clock-independent -- but the elapsed time inside the wait is not, and wall
+    // time can be stepped. That is the same hazard the record's `deadline_nanos`
+    // is monotonic for: a producer blocked across a clock adjustment would
+    // otherwise wake early or never, and getting that right in the field the
+    // document calls out while getting it wrong in the loop that consumes it
+    // would be a strange place to stop.
+    const deadline = performance.now() + budgetMillis;
     for (;;) {
-      const remaining = deadline - Date.now();
+      const remaining = deadline - performance.now();
       if (remaining <= 0) {
         return;
       }
