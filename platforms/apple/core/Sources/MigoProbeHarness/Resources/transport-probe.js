@@ -26,9 +26,12 @@
 
 "use strict";
 
-// The contract's four classes: an input event, a small command batch, a frame's
-// worth of draw commands, a texture upload.
-const TRANSPORT_PAYLOAD_CLASSES = [64, 4096, 65536, 1048576];
+// The contract's classes. Four of them span what the lane carries -- an input
+// event, a small command batch, a frame's worth of draw commands, a texture
+// upload -- and the three between 64 KiB and 1 MiB are there to locate the
+// crossover, which the first run could only place inside a factor of sixteen.
+// A hybrid has to switch at a size, and a range is not a size.
+const TRANSPORT_PAYLOAD_CLASSES = [64, 4096, 65536, 131072, 262144, 524288, 1048576];
 const TRANSPORT_SAMPLES = 200;
 // Per batch, not per sample. A batch that cannot finish in this is reported as
 // an error with however many samples it took, rather than hanging the visit.
