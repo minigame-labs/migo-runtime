@@ -315,6 +315,20 @@ function measureSyncXhrBatches(loopbackOrigin, classes, samples, timeoutMs) {
   })();
   const request = new XMLHttpRequest();
 
+  // Read across the same listener the batches talk to, and synchronously: this
+  // thread is about to block anyway, and an async fetch would land its callback
+  // after the batch it is supposed to bracket.
+  function usage() {
+    const probe = new XMLHttpRequest();
+    try {
+      probe.open("GET", loopbackOrigin + "/usage", false);
+      probe.send(null);
+      return JSON.parse(probe.responseText);
+    } catch (error) {
+      return null;
+    }
+  }
+
   for (let index = 0; index < classes.length; index += 1) {
     const bytes = classes[index];
     const payload = new Uint8Array(bytes);
@@ -323,6 +337,7 @@ function measureSyncXhrBatches(loopbackOrigin, classes, samples, timeoutMs) {
     }
     const timings = [];
     let errors = 0;
+    const before = usage();
     const deadline = Date.now() + timeoutMs;
     for (let sample = 0; sample < samples; sample += 1) {
       if (Date.now() > deadline) {
@@ -354,12 +369,21 @@ function measureSyncXhrBatches(loopbackOrigin, classes, samples, timeoutMs) {
       }
       timings.push(elapsed);
     }
+    const after = usage();
+    const cpuReadable =
+      before && after && before.cpu_ms !== null && after.cpu_ms !== null;
+    const wakeupsReadable =
+      before && after && before.wakeups !== null && after.wakeups !== null;
     batches.push({
       transport: "sync_xhr_rpc",
       payload_bytes: bytes,
       timings: timings,
       clock_step_ms: step,
-      errors: errors
+      errors: errors,
+      // Null rather than zero where the counters could not be read: a batch
+      // that spent nothing and a read that failed are different answers.
+      host_cpu_ms: cpuReadable ? Number((after.cpu_ms - before.cpu_ms).toFixed(3)) : null,
+      host_wakeups: wakeupsReadable ? after.wakeups - before.wakeups : null
     });
   }
   return batches;

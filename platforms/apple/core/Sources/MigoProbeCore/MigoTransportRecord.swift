@@ -60,6 +60,21 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
     public var p95RoundTripMs: Double?
     public var p99RoundTripMs: Double?
 
+    /// What the HOST spent serving this batch, from its own Mach counters.
+    ///
+    /// A32's threshold has two halves and latency is one; this is the other. The
+    /// two channels differ in the shape of their cost -- one connection with
+    /// per-message framing, against a task built and torn down per call -- and
+    /// at frame rates the second shape can lose on CPU while looking level on
+    /// latency.
+    ///
+    /// 🔴 The host's half only. The page's work happens in WebContent and iOS
+    /// gives an app no public way to read another process's CPU. Null is not
+    /// zero: a batch that spent nothing and a counter that could not be read are
+    /// different answers.
+    public var hostCpuMs: Double?
+    public var hostWakeups: Int?
+
     /// Samples that did not complete. Non-zero with a low `samples` count is a
     /// batch that gave up, and the two together say which.
     public var errors: Int
@@ -88,6 +103,8 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
         p95RoundTripMs: Double?,
         p99RoundTripMs: Double?,
         errors: Int,
+        hostCpuMs: Double? = nil,
+        hostWakeups: Int? = nil,
         note: String? = nil
     ) {
         self.schemaVersion = schemaVersion
@@ -112,6 +129,8 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
         self.p95RoundTripMs = p95RoundTripMs
         self.p99RoundTripMs = p99RoundTripMs
         self.errors = errors
+        self.hostCpuMs = hostCpuMs
+        self.hostWakeups = hostWakeups
         self.note = note
     }
 
@@ -138,6 +157,8 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
         case p95RoundTripMs = "p95_round_trip_ms"
         case p99RoundTripMs = "p99_round_trip_ms"
         case errors
+        case hostCpuMs = "host_cpu_ms"
+        case hostWakeups = "host_wakeups"
         case note
     }
 
@@ -173,6 +194,8 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
         try container.encode(p95RoundTripMs, forKey: .p95RoundTripMs)
         try container.encode(p99RoundTripMs, forKey: .p99RoundTripMs)
         try container.encode(errors, forKey: .errors)
+        try container.encode(hostCpuMs, forKey: .hostCpuMs)
+        try container.encode(hostWakeups, forKey: .hostWakeups)
         try container.encodeIfPresent(note, forKey: .note)
     }
 }

@@ -165,6 +165,56 @@ function schemeRoundTrip(url, payload) {
 
 // --- the batch --------------------------------------------------------------
 
+/// The host's CPU and wakeups, read across the loopback listener.
+///
+/// Null when it cannot be read -- a page with no listener, a kernel that
+/// declined -- and null travels into the record as null. A zero would be
+/// indistinguishable from a batch that cost nothing.
+async function hostUsage(loopbackOrigin) {
+  if (!loopbackOrigin) {
+    return null;
+  }
+  try {
+    const response = await fetch(loopbackOrigin + "/usage", { cache: "no-store" });
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    return null;
+  }
+}
+
+function usageDelta(before, after) {
+  if (!before || !after) {
+    return { cpu_ms: null, wakeups: null };
+  }
+  const cpu = before.cpu_ms === null || after.cpu_ms === null
+    ? null
+    : Number((after.cpu_ms - before.cpu_ms).toFixed(3));
+  const wakeups = before.wakeups === null || after.wakeups === null
+    ? null
+    : after.wakeups - before.wakeups;
+  return { cpu_ms: cpu, wakeups: wakeups };
+}
+
+/// A batch, bracketed by two host-usage reads.
+///
+/// The reads sit outside the timed samples and inside the CPU window, so the
+/// window carries two extra round trips of the host's own work. Against two
+/// hundred samples that is under a percent, and stating it beats the
+/// alternative: sampling the counter inside the loop would charge every sample
+/// for the sampling.
+async function measureBatchWithUsage(transport, payloadBytes, roundTrip, step, loopbackOrigin) {
+  const before = await hostUsage(loopbackOrigin);
+  const measurement = await measureBatch(transport, payloadBytes, roundTrip, step);
+  const after = await hostUsage(loopbackOrigin);
+  const delta = usageDelta(before, after);
+  measurement.host_cpu_ms = delta.cpu_ms;
+  measurement.host_wakeups = delta.wakeups;
+  return measurement;
+}
+
 async function measureBatch(transport, payloadBytes, roundTrip, step) {
   const payload = filledBuffer(payloadBytes);
   const timings = [];
@@ -223,9 +273,12 @@ function measureSyncXhrInWorker(config) {
       // made in one place.
       const batches = (event.data && event.data.batches) || [];
       resolve(batches.map(function (batch) {
-        return summarise(
+        const measurement = summarise(
           batch.transport, batch.payload_bytes, batch.timings,
           batch.clock_step_ms, batch.errors);
+        measurement.host_cpu_ms = batch.host_cpu_ms;
+        measurement.host_wakeups = batch.host_wakeups;
+        return measurement;
       }));
     };
     worker.postMessage({
@@ -254,9 +307,9 @@ self.migoMeasureTransports = async function (config) {
       socket = await openEchoSocket(config.loopbackOrigin);
       for (const bytes of TRANSPORT_PAYLOAD_CLASSES) {
         measurements.push(
-          await measureBatch("loopback_websocket", bytes, function (payload) {
+          await measureBatchWithUsage("loopback_websocket", bytes, function (payload) {
             return socketRoundTrip(socket, payload);
-          }, step));
+          }, step, config.loopbackOrigin));
       }
     } catch (error) {
       measurements.push({
@@ -307,9 +360,9 @@ self.migoMeasureTransports = async function (config) {
     const url = config.schemeOrigin + "/echo-body";
     for (const bytes of TRANSPORT_PAYLOAD_CLASSES) {
       measurements.push(
-        await measureBatch("scheme_request", bytes, function (payload) {
+        await measureBatchWithUsage("scheme_request", bytes, function (payload) {
           return schemeRoundTrip(url, payload);
-        }, step));
+        }, step, config.loopbackOrigin));
     }
   }
 

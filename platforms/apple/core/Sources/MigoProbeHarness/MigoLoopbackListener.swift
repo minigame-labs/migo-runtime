@@ -256,6 +256,29 @@ public final class MigoLoopbackListener {
     ) {
         let route = path.split(separator: "?").first.map(String.init) ?? path
 
+        // A32's other half, served rather than pushed. The page brackets each
+        // batch with two of these, which costs one round trip at each boundary
+        // -- under a percent of a two-hundred-sample batch -- and needs no
+        // second message channel. It is a GET so a page at either origin can
+        // reach it the same way.
+        if method == "GET", route == "/usage" {
+            let usage = MigoHostUsage.sample()
+            var json = "{"
+            if let usage {
+                json += "\"cpu_ms\":\(usage.cpuMilliseconds),\"wakeups\":\(usage.wakeups)"
+            } else {
+                // Explicit nulls, not omitted keys and not zeros. A failed read
+                // and a batch that spent nothing are different answers, and a
+                // zero would make them the same one.
+                json += "\"cpu_ms\":null,\"wakeups\":null"
+            }
+            json += "}"
+            respond(
+                on: connection, status: "200 OK", mime: "application/json",
+                body: Data(json.utf8), leftover: leftover)
+            return
+        }
+
         if method == "POST", route == "/echo-body" {
             // The probe compares what comes back with what it sent, so this
             // echoes the bytes exactly and never a summary of them.
