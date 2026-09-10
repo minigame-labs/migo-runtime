@@ -100,7 +100,15 @@ let package = Package(
         .testTarget(
             name: "MigoAppleRendererTests",
             dependencies: ["MigoAppleRenderer", "MigoEngine"],
-            path: "Tests/MigoAppleRendererTests"
+            path: "Tests/MigoAppleRendererTests",
+            // One real frame, so a test that needs a valid packet does not build
+            // one: a third implementation of the wire format, in a language
+            // neither the document nor the golden corpus checks, is the failure
+            // mode contracts/frame-wire/wire-v1.md exists to prevent. It is
+            // produced by the JavaScript encoder the corpus does check, and two
+            // gates keep it honest -- the emitter still reproduces it byte for
+            // byte, and frame-wire's clear_frame_fixture asserts what is in it.
+            resources: [.copy("Fixtures")]
         ),
 
         // Lane 1: the compatibility and safety baseline. WKWebView runs the

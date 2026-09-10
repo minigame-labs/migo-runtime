@@ -141,7 +141,7 @@ fi
 
 # --- the committed clear-to-blue frame still comes out of the emitter --------
 #
-# `scripts/fixtures/external-frames/clear-blue-frame.bin` is committed so that a
+# The committed clear-to-blue frame is committed so that a
 # consumer needing a valid packet does not build one itself -- building one in a
 # third language is the failure mode the wire document exists to prevent. A
 # committed artifact then needs a reason to still be trustworthy, and this is it:
@@ -152,7 +152,7 @@ fi
 # makes" and "is it still a valid frame saying what it claims" -- and a committed
 # fixture needs both.
 
-FIXTURE="scripts/fixtures/external-frames/clear-blue-frame.bin"
+FIXTURE="platforms/apple/Tests/MigoAppleRendererTests/Fixtures/clear-blue-frame.bin"
 if [[ ! -f "$FIXTURE" ]]; then
     echo "FAIL: $FIXTURE is missing; regenerate it with the emitter below." >&2
     exit 1

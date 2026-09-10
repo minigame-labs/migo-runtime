@@ -1,6 +1,7 @@
 //! The committed clear-to-blue frame, read the way the engine reads it.
 //!
-//! `scripts/fixtures/external-frames/clear-blue-frame.bin` exists so that a
+//! `platforms/apple/Tests/MigoAppleRendererTests/Fixtures/clear-blue-frame.bin`
+//! exists so that a
 //! consumer needing a valid packet -- a Swift test handing one to
 //! `migo_session_submit_external_frame` -- does not have to build one. Building
 //! one there would be a THIRD implementation of the wire format, in a language
@@ -21,7 +22,7 @@ use frame_wire::{stream, validate};
 
 fn fixture() -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../scripts/fixtures/external-frames/clear-blue-frame.bin");
+        .join("../../../platforms/apple/Tests/MigoAppleRendererTests/Fixtures/clear-blue-frame.bin");
     std::fs::read(&path).unwrap_or_else(|error| {
         panic!(
             "read {}: {error}. Regenerate with `node \

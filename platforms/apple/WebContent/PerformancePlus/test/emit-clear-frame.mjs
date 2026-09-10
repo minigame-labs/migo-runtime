@@ -87,9 +87,21 @@ export function clearFrameBytes() {
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
+// It lives under the Swift test target, which is a strange home for a wire
+// fixture and is the only one that works. SwiftPM resources must sit inside the
+// target that declares them, and the macOS diagnostic package is a generated
+// COPY of `platforms/apple` that carries `Tests/` and nothing else -- so a
+// fixture anywhere neutral would be reachable from the repository and not from
+// the package the tests actually run in. One file, three readers: this emitter
+// writes it, `frame-wire`'s clear_frame_fixture test asserts what is in it, and
+// MigoSyncBarrierABITests submits it to a live session.
 const output =
   process.argv[2] ??
-  join(here, "..", "..", "..", "..", "..", "scripts", "fixtures", "external-frames", "clear-blue-frame.bin");
+  join(
+    here,
+    "..", "..", "..",
+    "Tests", "MigoAppleRendererTests", "Fixtures", "clear-blue-frame.bin",
+  );
 mkdirSync(dirname(output), { recursive: true });
 const bytes = clearFrameBytes();
 writeFileSync(output, bytes);
