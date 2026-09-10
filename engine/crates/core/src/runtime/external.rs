@@ -261,6 +261,26 @@ impl SyncPath {
     /// timeout -- the producer said how long it would wait, and that is the
     /// number that matters.
     fn post(&self, request: SyncRequest, params: &[u8], now_nanos: u64) -> Result<u32, SyncError> {
+        // NOT CHECKED HERE, and the reason is worth the paragraph: the request
+        // carries `surface_generation` and `resource_epoch`, and
+        // contracts/frame-wire/wire-v1.md lists "a generation or epoch moves
+        // under the request" among the ways a waiter is woken. Enforcing it was
+        // written and then taken out again, because it made the barrier
+        // unusable rather than safe.
+        //
+        // The session's surface generation starts at 0 and becomes the attached
+        // one only when the renderer reports the surface created; nothing tells
+        // a host when that happened, and no entry point exposes the value. So a
+        // producer cannot construct a request that would pass the check, and a
+        // check nothing can satisfy refuses every request rather than the stale
+        // ones. Measured: with it in place, every case in
+        // `MigoSyncBarrierABITests` came back STALE_GENERATION.
+        //
+        // The frame path has the same shape -- a packet naming the wrong
+        // generation is answered GENERATION_LOST, and the producer has no way to
+        // learn the right one either -- so this is one gap, not two, and it
+        // closes when A3's control channel tells the producer what the current
+        // generation and epoch are. The check belongs with that mechanism.
         let deadline_nanos = request.deadline_nanos;
         let max_reply_bytes = request.max_reply_bytes;
         let operation = request.operation;
@@ -1655,6 +1675,15 @@ mod sync_tests {
         SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::new(OnceLock::new()))
     }
 
+    fn post(
+        path: &SyncPath,
+        request: SyncRequest,
+        params: &[u8],
+        now: u64,
+    ) -> Result<u32, SyncError> {
+        path.post(request, params, now)
+    }
+
     fn request(operation: u32, max_reply_bytes: u32) -> SyncRequest {
         SyncRequest {
             request_id: 0,
@@ -1691,7 +1720,7 @@ mod sync_tests {
         // Operation 0 is not an operation. The producer must be woken with a
         // reason, because the alternative to an answer here is an agent that
         // sits in `Atomics.wait` until its process is reclaimed.
-        path.post(request(0, 1024), &read_pixels_params(2, 2), NOW)
+        post(&path, request(0, 1024), &read_pixels_params(2, 2), NOW)
             .expect("the request is posted even when it cannot be answered");
         let snapshot = path.snapshot(NOW);
         assert_eq!(snapshot.state, SyncState::Failed);
@@ -1706,7 +1735,8 @@ mod sync_tests {
         // rather than after the readback saves a full readback nobody may have
         // -- and refusing at all rather than truncating is the point: a short
         // `readPixels` is a wrong answer that looks like a right one.
-        path.post(
+        post(
+            &path,
             request(SYNC_OP_READ_PIXELS, 1024),
             &read_pixels_params(64, 64),
             NOW,
@@ -1723,7 +1753,8 @@ mod sync_tests {
         // The distinction matters to the producer: "this host does not do
         // readPixels" is permanent and "not yet" is not, and a producer told
         // the first will stop asking.
-        path.post(
+        post(
+            &path,
             request(SYNC_OP_READ_PIXELS, 4 * 1024 * 1024),
             &read_pixels_params(16, 16),
             NOW,
@@ -1748,8 +1779,7 @@ mod sync_tests {
             read_pixels_params(4, 4)[..31].to_vec(),
         ] {
             let path = path();
-            path.post(request(SYNC_OP_READ_PIXELS, 4096), &params, NOW)
-                .expect("posted");
+            post(&path, request(SYNC_OP_READ_PIXELS, 4096), &params, NOW).expect("posted");
             let snapshot = path.snapshot(NOW);
             assert_eq!(snapshot.state, SyncState::Failed);
             assert_eq!(snapshot.error, Some(SyncError::UnsupportedOperation));
@@ -1764,7 +1794,7 @@ mod sync_tests {
         // Refused rather than posted: a request nobody will wait for should not
         // occupy the one slot a session has.
         assert_eq!(
-            path.post(stale, &read_pixels_params(4, 4), NOW),
+            post(&path, stale, &read_pixels_params(4, 4), NOW),
             Err(SyncError::BadDeadline)
         );
         assert_eq!(path.snapshot(NOW).state, SyncState::Free);
@@ -1776,7 +1806,7 @@ mod sync_tests {
         let mut stale = request(SYNC_OP_READ_PIXELS, 4096);
         stale.runtime_generation = INITIAL_RUNTIME_GENERATION + 1;
         assert_eq!(
-            path.post(stale, &read_pixels_params(4, 4), NOW),
+            post(&path, stale, &read_pixels_params(4, 4), NOW),
             Err(SyncError::StaleGeneration)
         );
     }
@@ -1788,8 +1818,7 @@ mod sync_tests {
         assert!(path.take_reply(&mut buffer).is_err());
         assert_eq!(path.snapshot(NOW).state, SyncState::Free);
 
-        path.post(request(0, 1024), &read_pixels_params(2, 2), NOW)
-            .expect("posted");
+        post(&path, request(0, 1024), &read_pixels_params(2, 2), NOW).expect("posted");
         // FAILED, so there is nothing to take -- and taking must not clear the
         // verdict out from under a producer that has not read it.
         assert!(path.take_reply(&mut buffer).is_err());
@@ -1799,15 +1828,14 @@ mod sync_tests {
     #[test]
     fn a_settled_request_frees_the_slot_for_the_next_one() {
         let path = path();
-        path.post(request(0, 1024), &read_pixels_params(2, 2), NOW)
-            .expect("posted");
+        post(&path, request(0, 1024), &read_pixels_params(2, 2), NOW).expect("posted");
         assert_eq!(path.snapshot(NOW).state, SyncState::Failed);
 
         // A second request is accepted, because the first is settled. If it
         // were not, a producer whose first call failed could never make another
         // -- one failure would end synchronous calls for the session.
         path.mailbox.lock().acknowledge();
-        path.post(request(0, 1024), &read_pixels_params(2, 2), NOW)
+        post(&path, request(0, 1024), &read_pixels_params(2, 2), NOW)
             .expect("the slot is reusable once the first is acknowledged");
     }
 
@@ -1819,7 +1847,8 @@ mod sync_tests {
             "nothing was outstanding"
         );
         assert_eq!(
-            path.post(
+            post(
+                &path,
                 request(SYNC_OP_READ_PIXELS, 4096),
                 &read_pixels_params(4, 4),
                 NOW
