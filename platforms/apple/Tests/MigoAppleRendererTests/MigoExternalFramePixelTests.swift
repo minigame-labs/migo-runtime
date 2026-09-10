@@ -188,27 +188,51 @@ final class MigoExternalFramePixelTests: XCTestCase {
         return bytes
     }
 
-    /// Submit one frame and read the pixels it drew.
-    private func submitAndRead(_ name: String, sequence: UInt64) throws -> [UInt8] {
+    /// Submit one frame, waiting for a credit if the window is full.
+    ///
+    /// `MIGO_FRAME_INGRESS_WOULD_BLOCK` is not a failure, it is the backpressure
+    /// working: a credit is held from acceptance until the renderer has executed
+    /// the frame, and a producer that ignored the answer would run the queue
+    /// unbounded. Retrying is what a producer does, so it is what this does --
+    /// and a test that submitted three frames without it reported "the frame was
+    /// refused" for a session behaving exactly as designed.
+    @discardableResult
+    private func submit(_ name: String, sequence: UInt64) throws -> MigoFrameIngressOutcome {
         let session = try XCTUnwrap(self.session)
         let packet = try fixture(name)
-
         var ingress = MigoFrameIngressOutcome()
         ingress.struct_size = UInt32(MemoryLayout<MigoFrameIngressOutcome>.size)
         ingress.abi_version = MIGO_ABI_VERSION_CURRENT
-        let submitted = packet.withUnsafeBytes { raw -> MigoResult in
-            migo_session_submit_external_frame(
-                session, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &ingress)
+
+        let waitUntil = Date().addingTimeInterval(30)
+        while true {
+            let sent = packet.withUnsafeBytes { raw -> MigoResult in
+                migo_session_submit_external_frame(
+                    session, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &ingress)
+            }
+            XCTAssertEqual(sent, MIGO_OK, "\(name): the call itself must succeed")
+            if ingress.decision != MIGO_FRAME_INGRESS_WOULD_BLOCK { break }
+            XCTAssertLessThan(
+                Date(), waitUntil,
+                "\(name): no credit came back in 30 s, so frames are not being executed")
+            RunLoop.current.run(until: Date().addingTimeInterval(0.002))
         }
-        XCTAssertEqual(submitted, MIGO_OK, "\(name): the call itself must succeed")
+
         XCTAssertEqual(
             ingress.decision, MIGO_FRAME_INGRESS_ACCEPTED,
             """
-            \(name) was not accepted (wire_error_code \(ingress.wire_error_code)). That code \
-            names which field the ingress refused, and frame-wire's clear_frame_fixture test \
-            asserts what each of them holds.
+            \(name) was not accepted (decision \(ingress.decision), wire_error_code \
+            \(ingress.wire_error_code)). That code names which field the ingress refused, and \
+            frame-wire's clear_frame_fixture test asserts what each of them holds.
             """)
         XCTAssertEqual(ingress.accepted_sequence, sequence, "\(name): sequence")
+        return ingress
+    }
+
+    /// Submit one frame and read the pixels it drew.
+    private func submitAndRead(_ name: String, sequence: UInt64) throws -> [UInt8] {
+        let session = try XCTUnwrap(self.session)
+        try submit(name, sequence: sequence)
 
         var request = MigoSyncRequestDescriptor()
         request.struct_size = UInt32(MemoryLayout<MigoSyncRequestDescriptor>.size)
@@ -301,34 +325,13 @@ final class MigoExternalFramePixelTests: XCTestCase {
     /// GL's origin is bottom-left, so the scissor's (0,0) and readPixels' (0,0)
     /// are the same corner.
     func testTheReadbackHonoursItsRectangleAndTheRecordsRunInOrder() throws {
-        let session = try XCTUnwrap(self.session)
-        let packet = try fixture("clear-scissor-frame")
-
-        var ingress = MigoFrameIngressOutcome()
-        ingress.struct_size = UInt32(MemoryLayout<MigoFrameIngressOutcome>.size)
-        ingress.abi_version = MIGO_ABI_VERSION_CURRENT
-        // Sequences must strictly increase, and this fixture is 3 -- so the two
-        // flat frames go first, which is also what the other test submits.
+        // Sequences must be strictly contiguous, and this fixture is 3 -- so the
+        // two flat frames go first. Each waits for a credit if the window is
+        // full, which is what a producer does.
         for (index, frame) in frames.enumerated() {
-            let earlier = try fixture(frame.name)
-            let sent = earlier.withUnsafeBytes { raw -> MigoResult in
-                migo_session_submit_external_frame(
-                    session, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &ingress)
-            }
-            XCTAssertEqual(sent, MIGO_OK)
-            XCTAssertEqual(
-                ingress.decision, MIGO_FRAME_INGRESS_ACCEPTED,
-                "\(frame.name) (sequence \(index + 1)) was refused")
+            try submit(frame.name, sequence: UInt64(index + 1))
         }
-
-        let submitted = packet.withUnsafeBytes { raw -> MigoResult in
-            migo_session_submit_external_frame(
-                session, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &ingress)
-        }
-        XCTAssertEqual(submitted, MIGO_OK)
-        XCTAssertEqual(
-            ingress.decision, MIGO_FRAME_INGRESS_ACCEPTED,
-            "the scissored frame was refused (wire_error_code \(ingress.wire_error_code))")
+        try submit("clear-scissor-frame", sequence: 3)
 
         let inside = try readPixel(x: 4, y: 4, label: "inside the scissor")
         let outside = try readPixel(x: 48, y: 48, label: "outside the scissor")
