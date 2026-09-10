@@ -313,17 +313,24 @@ jobs:
       - name: The ABI tests run on iOS with package-embedded ANGLE
         if: matrix.platform == 'ios-simulator'
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
-        # 🔴 THE ENGINE'S OWN LOG IS NOT VISIBLE ON THIS LANE. Measured, on one
-        # run, from identical test code: 28 lines matching `INFO graphics::` etc.
-        # in the macOS leg's log and ZERO in this one -- while
-        # MigoSurfaceAttachTests' setUp had turned the subscriber on in both, with
-        # its own `setenv`. A process running inside the simulator writes its
-        # stderr somewhere `xcodebuild` does not collect.
+        # The engine's own log IS visible on this lane, and this comment used to
+        # say the opposite.
         #
-        # So do not set MIGO_CAPI_LOG (or TEST_RUNNER_MIGO_CAPI_LOG) here expecting
-        # engine output: this step had both for a while and neither produced a
-        # line. An engine-side question asked on this lane has to be answered
-        # through an assertion the test can make, or on the macOS leg.
+        # It said so on a real measurement -- 28 `INFO graphics::` lines in the
+        # macOS leg and zero here, from identical test code -- but that was taken
+        # before `install_dev_logging` was changed to write to stderr rather than
+        # stdout, which is the stream `xcodebuild` folds into its log. The fix
+        # landed and this comment did not, and what it advised was to stop asking
+        # engine-side questions on the one lane where this defect reproduces.
+        #
+        # Re-measured 2026-09-10: `gh run view --job <this job> --log` returns
+        # lines prefixed with THIS job's name carrying
+        # `shared::surface::attachment: ... has_anchor=true outstanding=1
+        # native_owners=Some(1)`, which is how the surface-retirement
+        # investigation read the engine's account of a red run. Check the job
+        # prefix when reading, because a run-level log carries every job's lines
+        # and it is easy to read the macOS leg's answer and believe it came from
+        # here.
         run: |
           udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
           xcodebuild test \
