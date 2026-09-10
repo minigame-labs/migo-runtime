@@ -49,6 +49,7 @@ export class SyncRelay {
     this.view = new DataView(record, 0, SYNC_RECORD_BYTES);
     this.reply = new Uint8Array(reply);
     this.transport = transport;
+    this.serves = 0;
   }
 
   /**
@@ -64,6 +65,16 @@ export class SyncRelay {
    * to learn anything.
    */
   async serve(params) {
+    // The request this call is answering, so a reply that comes back after the
+    // producer moved on cannot be published onto whatever moved in.
+    //
+    // That is not hypothetical. A producer whose deadline passes withdraws its
+    // request and frees the slot; the host may still answer afterwards, and
+    // without this token that answer would be written into a record the NEXT
+    // request is using -- handing the producer another call's pixels, which is
+    // the one outcome this whole protocol is arranged to prevent.
+    const token = ++this.serves;
+
     // Read what the producer reserved BEFORE going to the host, because it is
     // what decides whether an answer may be delivered at all, and the record is
     // the producer's statement of it.
@@ -74,9 +85,10 @@ export class SyncRelay {
     } catch (error) {
       // The transport failed. From the producer's side the session is what has
       // become unreachable, which is the code the document gives for it.
-      this.#fail(SYNC_ERROR_SESSION_ENDED);
+      if (this.#stillOurs(token)) this.#fail(SYNC_ERROR_SESSION_ENDED);
       return;
     }
+    if (!this.#stillOurs(token)) return;
 
     if (!answer || answer.ok !== true) {
       this.#fail(
@@ -105,8 +117,32 @@ export class SyncRelay {
     // The bytes are in place before the state is published, so a producer that
     // observes READY observes a complete answer. The state store is the release
     // and the producer's atomic load is the acquire.
-    Atomics.store(this.words, OFF_STATE / 4, SYNC_STATE_READY);
+    //
+    // Compare-and-exchange rather than a plain store, so the publish and the
+    // "is it still outstanding" check cannot be separated by a withdrawal. A
+    // failed exchange means the producer stopped waiting between the check
+    // above and here; the bytes already written are then unread, because
+    // nothing reads them without READY.
+    if (
+      Atomics.compareExchange(
+        this.words,
+        OFF_STATE / 4,
+        SYNC_STATE_PENDING,
+        SYNC_STATE_READY,
+      ) !== SYNC_STATE_PENDING
+    ) {
+      return;
+    }
     Atomics.notify(this.words, OFF_STATE / 4);
+  }
+
+  /// Whether the request this call set out to answer is still the outstanding
+  /// one. A newer request supersedes it, and a withdrawal ends it.
+  #stillOurs(token) {
+    return (
+      token === this.serves &&
+      Atomics.load(this.words, OFF_STATE / 4) === SYNC_STATE_PENDING
+    );
   }
 
   /** Whether a request is outstanding, for a caller deciding whether to serve. */
@@ -120,7 +156,19 @@ export class SyncRelay {
     }
     this.view.setUint32(OFF_REPLY_BYTES, 0, true);
     this.view.setUint32(OFF_ERROR, code, true);
-    Atomics.store(this.words, OFF_STATE / 4, SYNC_STATE_FAILED);
+    // Same exchange as the success path and for the same reason: a failure
+    // published onto a slot the producer already left is a verdict the next
+    // request would read as its own.
+    if (
+      Atomics.compareExchange(
+        this.words,
+        OFF_STATE / 4,
+        SYNC_STATE_PENDING,
+        SYNC_STATE_FAILED,
+      ) !== SYNC_STATE_PENDING
+    ) {
+      return;
+    }
     Atomics.notify(this.words, OFF_STATE / 4);
   }
 }

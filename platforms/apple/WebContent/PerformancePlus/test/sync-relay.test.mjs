@@ -107,7 +107,7 @@ async function exchange({ transport, maxReplyBytes = 4096, replyCapacity = 4096,
     worker.on("error", reject);
   });
   await worker.terminate();
-  return { outcome, events, record };
+  return { outcome, events, record, relay, reply };
 }
 
 async function check(name, fn) {
@@ -191,6 +191,36 @@ await check("a host that never answers lets the producer's own deadline end the 
     true,
     "the producer must withdraw a request it stopped waiting for",
   );
+});
+
+await check("an answer that arrives after the producer gave up is dropped", async () => {
+  // The producer's deadline passes, it withdraws, and the slot goes back to
+  // FREE. The host answers a moment later. That answer must go nowhere: written
+  // into the record it would be read by whatever request comes next, and the
+  // producer would return another call's pixels -- the one outcome the whole
+  // protocol is arranged to prevent.
+  let answerLate = () => {};
+  const late = new Promise((resolve) => {
+    answerLate = () => resolve({ ok: true, bytes: new Uint8Array(16), requestId: 1 });
+  });
+  const { outcome, record } = await exchange({
+    budgetMillis: 200,
+    transport: { request: () => late },
+  });
+  assertEqual(outcome.ok, false, "the producer must have given up");
+  assertEqual(outcome.code, SYNC_ERROR_TIMED_OUT, "code");
+
+  answerLate();
+  // Let the relay's continuation run.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const words = new Int32Array(record, 0, SYNC_RECORD_BYTES / 4);
+  assertEqual(
+    Atomics.load(words, OFF_STATE / 4),
+    SYNC_STATE_FREE,
+    "a late answer must not publish onto a slot the producer already left",
+  );
+  assertEqual(Atomics.load(words, OFF_ERROR / 4), 0, "nor leave an error behind");
 });
 
 console.log(failures === 0 ? "PASS" : `FAIL: ${failures} check(s) failed`);
