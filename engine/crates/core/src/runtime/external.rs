@@ -233,8 +233,10 @@ pub struct SyncSnapshot {
 /// answer that looks like a right one.
 struct SyncPath {
     mailbox: Mutex<SyncMailbox>,
-    /// Sized by what the producer reserved, and reused across requests: one
-    /// buffer per session rather than an allocation per readback.
+    /// Holds the vector the renderer answered with, moved rather than copied
+    /// into. Its capacity is whatever the last reply needed and is released
+    /// when the next one replaces it, so a session that reads a full screen
+    /// once does not carry that buffer for the rest of its life.
     reply: Mutex<Vec<u8>>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
 }
@@ -398,9 +400,13 @@ impl SyncPath {
             return Err(SyncError::OperationFailed);
         }
 
-        let mut reply = self.reply.lock();
-        reply.clear();
-        reply.extend_from_slice(&pixels);
+        // Moved, not copied into a reused buffer. The renderer allocated this
+        // vector to answer with and hands it over owned, so taking it costs
+        // nothing and copying it costs a memcpy of the whole readback -- up to
+        // 14 MiB for a full-screen phone at 4x, on the path a producer is
+        // blocked on. Reusing a buffer here would save no allocation either,
+        // because the renderer's one is made whether or not we keep it.
+        *self.reply.lock() = pixels;
         Ok(produced)
     }
 
