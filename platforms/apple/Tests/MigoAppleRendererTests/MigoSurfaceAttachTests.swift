@@ -304,7 +304,15 @@ final class MigoSurfaceAttachTests: XCTestCase {
                     // blocks precisely so a host can ask from its UI thread or an
                     // idle handler. A host's obligation is to keep asking while
                     // its event loop runs, so that is what this imitates.
-                    let deadline = Date().addingTimeInterval(5)
+                    // 60 s, and it is a budget rather than a measurement. This
+                    // lane is where WebContent has been measured taking 37-59
+                    // seconds to launch under runner starvation, and retirement
+                    // has now been seen to complete AFTER a 5 s wait expired: the
+                    // engine's `surface resource dropping` line appears in that
+                    // run's log, during teardown, with the same clean owner counts
+                    // it reports on every passing run. A budget too small turns a
+                    // slow machine into a red that reads as a lifetime defect.
+                    let deadline = Date().addingTimeInterval(60)
                     while Date() < deadline {
                         let queried = migo_surface_release_query(release, &status)
                         XCTAssertEqual(queried, MIGO_OK, "release_query returned \(queried)")
@@ -550,7 +558,10 @@ final class MigoSurfaceAttachTests: XCTestCase {
                 var status = MigoSurfaceReleaseStatus()
                 status.struct_size = UInt32(MemoryLayout<MigoSurfaceReleaseStatus>.size)
                 status.abi_version = MIGO_ABI_VERSION_CURRENT
-                let deadline = Date().addingTimeInterval(5)
+                // 60 s, for the reason the other wait in this file gives: this
+                // lane starves, and retirement has been observed completing after
+                // a 5 s wait expired.
+                let deadline = Date().addingTimeInterval(60)
                 while Date() < deadline {
                     XCTAssertEqual(migo_surface_release_query(observer!, &status), MIGO_OK)
                     if status.state == MIGO_SURFACE_RELEASE_RELEASED {
