@@ -142,6 +142,16 @@ def assemble(args):
         if staged_resources.exists():
             shutil.rmtree(staged_resources)
         shutil.copytree(args.webcontent_source, staged_resources)
+        # The destination's own `.gitignore` is carried across, because publishing
+        # replaces that directory wholesale and the source it is copied from has
+        # no such file. Without this, every non-diagnostic Apple build deleted a
+        # TRACKED file from the working tree and left the generated bundle
+        # untracked -- which is the exact inverse of what that .gitignore says it
+        # is for ("Nothing here is authored"), and it showed up as a push to a
+        # checkout being refused for "unstaged changes" nobody had made.
+        authored_ignore = args.webcontent_destination / ".gitignore"
+        if authored_ignore.is_file():
+            shutil.copy2(authored_ignore, staged_resources / ".gitignore")
         helpers = staged_frameworks / "Scripts"
         helpers.mkdir()
         for name in ("embed-apple-angle.sh", "apple-sdk-package.py"):
