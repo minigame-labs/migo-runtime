@@ -272,8 +272,116 @@ function probeWebsocketInWorker(loopbackOrigin) {
   });
 }
 
+/// A21's arm, timed: how long one blocking round trip costs.
+///
+/// `Atomics.wait` is not the only public blocking primitive -- a synchronous
+/// XMLHttpRequest in a Worker is the other -- and which of them content uses
+/// decides whether SharedArrayBuffer is required at all. That matters because
+/// the custom-scheme origin has no SharedArrayBuffer: if a blocking request is
+/// cheap enough, the topologies eliminated for wanting SAB are eliminated for
+/// nothing.
+///
+/// Measured here rather than in `transport-probe.js` because a synchronous
+/// request may block a Worker and may not block a Window.
+///
+/// RETURNS RAW TIMINGS, not a summary. The page has one implementation of the
+/// mean-and-percentiles rule -- including when the percentiles must be withheld
+/// because the origin's clock cannot resolve a single round trip -- and two
+/// implementations of a statistic are two things to keep in agreement. The
+/// clock step travels with the timings because it is a property of where they
+/// were taken.
+///
+/// MEMORY. One payload buffer per class, reused across the batch, and one
+/// XMLHttpRequest reused across every sample -- `open` resets it, which is what
+/// an RPC that ran per frame would do. A fresh object per sample would have
+/// measured object churn alongside the request. The response buffer is the one
+/// allocation that cannot be avoided: `responseType = "arraybuffer"` is the
+/// only binary reply a synchronous request has, and the other two arms
+/// materialise a response buffer per sample too, so the comparison stays even.
+function measureSyncXhrBatches(loopbackOrigin, classes, samples, timeoutMs) {
+  const batches = [];
+  if (typeof XMLHttpRequest !== "function" || !loopbackOrigin) {
+    return batches;
+  }
+  const url = loopbackOrigin + "/echo-body";
+  const step = (function () {
+    const started = Date.now();
+    const t0 = performance.now();
+    let t1 = t0;
+    while (t1 === t0 && Date.now() - started < 50) {
+      t1 = performance.now();
+    }
+    return t1 - t0;
+  })();
+  const request = new XMLHttpRequest();
+
+  for (let index = 0; index < classes.length; index += 1) {
+    const bytes = classes[index];
+    const payload = new Uint8Array(bytes);
+    for (let i = 0; i < bytes; i += 1) {
+      payload[i] = (i * 31 + 7) & 0xff;
+    }
+    const timings = [];
+    let errors = 0;
+    const deadline = Date.now() + timeoutMs;
+    for (let sample = 0; sample < samples; sample += 1) {
+      if (Date.now() > deadline) {
+        errors += 1;
+        break;
+      }
+      request.open("POST", url, false);
+      try {
+        request.responseType = "arraybuffer";
+      } catch (error) {
+        // A Worker is supposed to allow this. One that does not cannot be
+        // measured here, and saying so once beats two hundred identical
+        // failures.
+        errors += 1;
+        break;
+      }
+      const started = performance.now();
+      try {
+        request.send(payload);
+      } catch (error) {
+        errors += 1;
+        break;
+      }
+      const elapsed = performance.now() - started;
+      const echoed = request.response;
+      if (!echoed || echoed.byteLength !== bytes) {
+        errors += 1;
+        break;
+      }
+      timings.push(elapsed);
+    }
+    batches.push({
+      transport: "sync_xhr_rpc",
+      payload_bytes: bytes,
+      timings: timings,
+      clock_step_ms: step,
+      errors: errors
+    });
+  }
+  return batches;
+}
+
 self.onmessage = function (event) {
   const loopbackOrigin = (event.data && event.data.loopbackOrigin) || null;
+
+  // Two jobs, one worker script, told apart by the message. The default is the
+  // capability set, so a caller that does not know about the second one gets
+  // exactly what it always got.
+  if (event.data && event.data.kind === "transport") {
+    self.postMessage({
+      kind: "transport",
+      batches: measureSyncXhrBatches(
+        loopbackOrigin,
+        event.data.classes || [],
+        event.data.samples || 0,
+        event.data.timeoutMs || 20000)
+    });
+    return;
+  }
 
   // The blocking probes run first and in this order on purpose. Atomics.wait
   // and the synchronous request both stop this thread, and a pending socket
