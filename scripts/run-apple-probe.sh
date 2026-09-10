@@ -72,6 +72,9 @@ usage: run-apple-probe.sh (--device <id> | --simulator [<id>]) [options]
   --run-id <id>                 Names the run, and therefore the records file.
   --timeout <seconds>           How long to wait for the records (default 420;
                                 the gate allows 120 per origin and there are two).
+  --unlock-wait <seconds>       How long the launch step waits for the phone to
+                                be unlocked (default 0, meaning launch at once).
+                                Only the launch needs an unlocked device.
   --keep-derived                Leave the derived-data directory in place.
   --dry-run                     Print the resolved plan and stop. Validates
                                 first, so the refusals apply.
@@ -89,6 +92,7 @@ PROMPT=""
 OUT_DIR=""
 RUN_ID=""
 TIMEOUT=420
+UNLOCK_WAIT=0
 DRY_RUN=0
 KEEP_DERIVED=0
 
@@ -135,6 +139,11 @@ while [[ $# -gt 0 ]]; do
     --timeout)
       [[ $# -ge 2 ]] || fail "--timeout needs seconds"
       TIMEOUT="$2"
+      shift 2
+      ;;
+    --unlock-wait)
+      [[ $# -ge 2 ]] || fail "--unlock-wait needs seconds"
+      UNLOCK_WAIT="$2"
       shift 2
       ;;
     --keep-derived)
@@ -373,11 +382,34 @@ else
     --json-output "$WORK_DIR/install-$RUN_ID.json" \
     || fail "devicectl install failed; see $WORK_DIR/install-$RUN_ID.json"
 
+  # Only this step needs the phone unlocked -- iOS refuses `process launch` on a
+  # locked device (FBSOpenApplicationErrorDomain 7, "Locked") while `install`
+  # goes through fine. So the wait belongs here rather than around the whole
+  # script: a lab-day wrapper that polled the lock state and then rebuilt spent
+  # 31 seconds between the reading and the launch, which is longer than iOS's
+  # shortest auto-lock, and the launch was refused on a phone that had genuinely
+  # been unlocked. Waiting after the build makes the gap a second.
+  if ((UNLOCK_WAIT > 0)); then
+    echo "[3/5] waiting up to ${UNLOCK_WAIT}s for $TARGET to be unlocked"
+    UNLOCK_DEADLINE=$((SECONDS + UNLOCK_WAIT))
+    until xcrun devicectl device info lockState --device "$TARGET" 2>/dev/null \
+      | tr -d ' ' | grep -q "passcodeRequired:false"; do
+      ((SECONDS < UNLOCK_DEADLINE)) || fail "the phone was still locked after ${UNLOCK_WAIT}s. Unlock it and leave it unlocked -- Settings > Display & Brightness > Auto-Lock > Never removes the race entirely, and nothing on the Mac can enter a passcode"
+      sleep 5
+    done
+  fi
+
   echo "[3/5] launching with ${APP_ARGS[*]}"
   # Not --console: it waits for the app to exit and the probe app does not.
   if ! xcrun devicectl device process launch --device "$TARGET" --terminate-existing \
     --json-output "$WORK_DIR/launch-$RUN_ID.json" \
     "$BUNDLE_ID" "${APP_ARGS[@]}"; then
+    # A phone that relocked between the reading above and this call. Say which
+    # of the two lock failures it is, because the remedy differs: this one is
+    # "unlock it again", the trust one below is a settings change.
+    if grep -q "could not be, unlocked" "$WORK_DIR/launch-$RUN_ID.json" 2>/dev/null; then
+      fail "the phone locked itself between the lock-state reading and the launch. Set Settings > Display & Brightness > Auto-Lock to Never, unlock it, and run this again"
+    fi
     # The install succeeding and the launch being refused is one specific thing
     # on a free team, and the message iOS returns for it names three causes at
     # once ("invalid code signature, inadequate entitlements or its profile has
