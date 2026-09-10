@@ -173,8 +173,8 @@ for regenerated in "$REGENERATED"/*.bin; do
     fi
     committed=$((committed + 1))
 done
-if (( committed < 2 )); then
-    echo "FAIL: the emitter wrote $committed frames; it writes one per colour and there are two." >&2
+if (( committed < 3 )); then
+    echo "FAIL: the emitter wrote $committed frames; it writes two flat ones and one scissored." >&2
     exit 1
 fi
 echo "the $committed committed frames still come out of the emitter byte for byte"

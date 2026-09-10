@@ -248,6 +248,98 @@ final class MigoExternalFramePixelTests: XCTestCase {
         return pixels
     }
 
+    /// Read one pixel at a named point, through the barrier.
+    private func readPixel(x: Int32, y: Int32, label: String) throws -> [UInt8] {
+        let session = try XCTUnwrap(self.session)
+        var request = MigoSyncRequestDescriptor()
+        request.struct_size = UInt32(MemoryLayout<MigoSyncRequestDescriptor>.size)
+        request.abi_version = MIGO_ABI_VERSION_CURRENT
+        request.runtime_generation = 1
+        request.surface_generation = 1
+        request.resource_epoch = 0
+        request.triggering_sequence = 3
+        request.deadline_nanos = deadline
+        request.operation = MIGO_SYNC_OP_READ_PIXELS
+        request.max_reply_bytes = 4
+
+        var outcome = MigoSyncOutcome()
+        outcome.struct_size = UInt32(MemoryLayout<MigoSyncOutcome>.size)
+        outcome.abi_version = MIGO_ABI_VERSION_CURRENT
+
+        let params = readPixelsParams(x: x, y: y, width: 1, height: 1)
+        let posted = params.withUnsafeBufferPointer { buffer in
+            migo_session_post_sync_request(
+                session, &request, buffer.baseAddress, buffer.count, now, &outcome)
+        }
+        XCTAssertEqual(posted, MIGO_OK, "\(label): post")
+        XCTAssertEqual(
+            outcome.state, MIGO_SYNC_STATE_READY,
+            "\(label): the readback failed with error \(outcome.error)")
+
+        var pixel = [UInt8](repeating: 0, count: 4)
+        var written = 0
+        let taken = pixel.withUnsafeMutableBufferPointer { out in
+            migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
+        }
+        XCTAssertEqual(taken, MIGO_OK, "\(label): take")
+        XCTAssertEqual(written, 4, "\(label): one RGBA8 pixel")
+        return pixel
+    }
+
+    /// The readback's rectangle is honoured, not just its size.
+    ///
+    /// The two flat frames cannot establish this: every rectangle of a flat
+    /// surface has the same bytes, so a readback that ignored x and y would
+    /// return the right answer for the wrong reason. This frame clears the
+    /// lower-left quadrant to red behind a scissor and leaves the rest blue, so
+    /// two points give two answers -- which an ignored origin cannot produce.
+    ///
+    /// It also establishes that the records execute in the order they were
+    /// written. A scissor applied after the second clear would paint the whole
+    /// surface red, and the two points would then agree.
+    ///
+    /// GL's origin is bottom-left, so the scissor's (0,0) and readPixels' (0,0)
+    /// are the same corner.
+    func testTheReadbackHonoursItsRectangleAndTheRecordsRunInOrder() throws {
+        let session = try XCTUnwrap(self.session)
+        let packet = try fixture("clear-scissor-frame")
+
+        var ingress = MigoFrameIngressOutcome()
+        ingress.struct_size = UInt32(MemoryLayout<MigoFrameIngressOutcome>.size)
+        ingress.abi_version = MIGO_ABI_VERSION_CURRENT
+        // Sequences must strictly increase, and this fixture is 3 -- so the two
+        // flat frames go first, which is also what the other test submits.
+        for (index, frame) in frames.enumerated() {
+            let earlier = try fixture(frame.name)
+            let sent = earlier.withUnsafeBytes { raw -> MigoResult in
+                migo_session_submit_external_frame(
+                    session, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &ingress)
+            }
+            XCTAssertEqual(sent, MIGO_OK)
+            XCTAssertEqual(
+                ingress.decision, MIGO_FRAME_INGRESS_ACCEPTED,
+                "\(frame.name) (sequence \(index + 1)) was refused")
+        }
+
+        let submitted = packet.withUnsafeBytes { raw -> MigoResult in
+            migo_session_submit_external_frame(
+                session, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &ingress)
+        }
+        XCTAssertEqual(submitted, MIGO_OK)
+        XCTAssertEqual(
+            ingress.decision, MIGO_FRAME_INGRESS_ACCEPTED,
+            "the scissored frame was refused (wire_error_code \(ingress.wire_error_code))")
+
+        let inside = try readPixel(x: 4, y: 4, label: "inside the scissor")
+        let outside = try readPixel(x: 48, y: 48, label: "outside the scissor")
+
+        XCTAssertEqual(inside, [255, 0, 0, 255], "the scissored quadrant is red")
+        XCTAssertEqual(outside, [0, 0, 255, 255], "the rest of the surface is blue")
+        XCTAssertNotEqual(
+            inside, outside,
+            "both points returned the same bytes, so the readback ignored its origin")
+    }
+
     func testAFrameProducedElsewhereDrawsPixelsThisSessionCanReadBack() throws {
         var readings: [[UInt8]] = []
         for (index, frame) in frames.enumerated() {

@@ -35,7 +35,15 @@ import {
   encodeFrame,
   SECTION_KIND_COMMAND_STREAM,
 } from "../src/wire-frame-packet.mjs";
-import { MAGIC, STREAM_VERSION, OP_CLEAR, OP_CLEAR_COLOR } from "../src/render-opcodes.mjs";
+import {
+  MAGIC,
+  STREAM_VERSION,
+  OP_CLEAR,
+  OP_CLEAR_COLOR,
+  OP_DISABLE,
+  OP_ENABLE,
+  OP_SCISSOR,
+} from "../src/render-opcodes.mjs";
 
 /** Low twelve bits opcode, high twenty word count -- including the header. */
 function packHeader(opcode, wordCount) {
@@ -65,6 +73,33 @@ export const FRAMES = [
   { name: "clear-blue-frame", sequence: 1n, rgba: [0, 0, 1, 1], readback: [0, 0, 255, 255] },
   { name: "clear-red-frame", sequence: 2n, rgba: [1, 0, 0, 1], readback: [255, 0, 0, 255] },
 ];
+
+export const GL_SCISSOR_TEST = 0x0c11;
+
+/**
+ * A frame with two colours in it, and why one is not enough.
+ *
+ * The two frames above prove the pixels track the FRAME. They cannot prove the
+ * readback's rectangle is honoured, because the whole surface is one flat
+ * colour -- a readback that ignored x and y would return the same bytes for
+ * every rectangle and pass.
+ *
+ * So this one clears to blue, then clears the lower-left quadrant to red behind
+ * a scissor. Reading a pixel inside that quadrant and one outside it gives
+ * different answers, which is what an ignored origin cannot produce. It also
+ * establishes that the records execute in the order they were written, which
+ * nothing before this did.
+ *
+ * GL's origin is bottom-left, so the scissor's (0,0) and `readPixels`' (0,0) are
+ * the same corner.
+ */
+export const SCISSOR_FRAME = {
+  name: "clear-scissor-frame",
+  sequence: 3n,
+  background: [0, 0, 255, 255],
+  inside: [255, 0, 0, 255],
+  quadrant: 32,
+};
 
 export function clearFrameBytes({ sequence, rgba }) {
   const words = [
@@ -98,6 +133,59 @@ export function clearFrameBytes({ sequence, rgba }) {
   });
 }
 
+export function scissorFrameBytes() {
+  const words = [
+    MAGIC,
+    STREAM_VERSION,
+    // The whole surface, blue.
+    packHeader(OP_CLEAR_COLOR, 6),
+    CANVAS_ID,
+    floatBits(0),
+    floatBits(0),
+    floatBits(1),
+    floatBits(1),
+    packHeader(OP_CLEAR, 3),
+    CANVAS_ID,
+    GL_COLOR_BUFFER_BIT,
+    // Then the lower-left quadrant, red, behind a scissor.
+    packHeader(OP_ENABLE, 3),
+    CANVAS_ID,
+    GL_SCISSOR_TEST,
+    // SCISSOR: H C I I I I
+    packHeader(OP_SCISSOR, 6),
+    CANVAS_ID,
+    0,
+    0,
+    SCISSOR_FRAME.quadrant,
+    SCISSOR_FRAME.quadrant,
+    packHeader(OP_CLEAR_COLOR, 6),
+    CANVAS_ID,
+    floatBits(1),
+    floatBits(0),
+    floatBits(0),
+    floatBits(1),
+    packHeader(OP_CLEAR, 3),
+    CANVAS_ID,
+    GL_COLOR_BUFFER_BIT,
+    // Left off, so the state this frame changed does not leak into the next.
+    packHeader(OP_DISABLE, 3),
+    CANVAS_ID,
+    GL_SCISSOR_TEST,
+  ];
+  const stream = new Uint8Array(words.length * 4);
+  const view = new DataView(stream.buffer);
+  words.forEach((word, index) => view.setUint32(index * 4, word, true));
+
+  return encodeFrame({
+    launchNonce: 0xa3n,
+    sequence: SCISSOR_FRAME.sequence,
+    runtimeGeneration: 1n,
+    surfaceGeneration: 1n,
+    resourceEpoch: 0n,
+    sections: [{ kind: SECTION_KIND_COMMAND_STREAM, payload: stream }],
+  });
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 // It lives under the Swift test target, which is a strange home for a wire
 // fixture and is the only one that works. SwiftPM resources must sit inside the
@@ -115,4 +203,9 @@ for (const frame of FRAMES) {
   const bytes = clearFrameBytes(frame);
   writeFileSync(join(directory, `${frame.name}.bin`), bytes);
   console.log(`emitted a ${bytes.length}-byte ${frame.name} into ${directory}`);
+}
+{
+  const bytes = scissorFrameBytes();
+  writeFileSync(join(directory, `${SCISSOR_FRAME.name}.bin`), bytes);
+  console.log(`emitted a ${bytes.length}-byte ${SCISSOR_FRAME.name} into ${directory}`);
 }

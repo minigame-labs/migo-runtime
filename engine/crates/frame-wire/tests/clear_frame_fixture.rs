@@ -30,6 +30,14 @@ const FRAMES: &[(&str, u64, [f32; 4])] = &[
     ("clear-red-frame", 2, [1.0, 0.0, 0.0, 1.0]),
 ];
 
+/// The third frame, which has two colours in it.
+///
+/// The flat ones cannot establish that `readPixels` honours its rectangle,
+/// because every rectangle of a flat surface has the same bytes. This one
+/// clears the lower-left quadrant behind a scissor, so an ignored origin gives
+/// an answer the consumer can tell apart.
+const SCISSOR_FRAME: (&str, u64) = ("clear-scissor-frame", 3);
+
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
         "../../../platforms/apple/Tests/MigoAppleRendererTests/Fixtures/{name}.bin"
@@ -106,4 +114,60 @@ fn the_committed_frames_clear_to_the_colours_their_consumer_asserts_on() {
         assert_eq!(words[9], 1, "{name}: canvas id");
         assert_eq!(words[10], 0x4000, "{name}: GL_COLOR_BUFFER_BIT");
     }
+}
+
+#[test]
+fn the_committed_scissor_frame_is_the_two_colour_frame_its_consumer_reads() {
+    let (name, sequence) = SCISSOR_FRAME;
+    let bytes = fixture(name);
+    let frame = validate(&bytes).expect("the scissored fixture is a valid packet");
+    assert_eq!(frame.launch_nonce(), 0xa3, "{name}: nonce");
+    assert_eq!(frame.sequence(), sequence, "{name}: sequence");
+    assert_eq!(frame.surface_generation(), 1, "{name}: surface generation");
+
+    let section = frame.command_stream().expect("a COMMAND_STREAM section");
+    let words: Vec<u32> = section
+        .bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect();
+    let used = u32::try_from(words.len()).expect("small");
+    let validated = stream::validate_stream(&words, used)
+        .unwrap_or_else(|error| panic!("{name}: the command stream is invalid: {error:?}"));
+    let words = validated.words();
+
+    // Header, CLEAR_COLOR, CLEAR, ENABLE, SCISSOR, CLEAR_COLOR, CLEAR, DISABLE.
+    assert_eq!(words.len(), 2 + 6 + 3 + 3 + 6 + 6 + 3 + 3, "{name}: record count");
+
+    // The order is the point: a scissor that arrived after the second clear
+    // would paint the whole surface red and the consumer would still see two
+    // different colours -- at the wrong places.
+    let opcodes: Vec<u32> = [2usize, 8, 11, 14, 20, 26, 29]
+        .iter()
+        .map(|at| stream::opcode_of(words[*at]))
+        .collect();
+    assert_eq!(
+        opcodes,
+        vec![
+            frame_wire::gl::OP_CLEAR_COLOR,
+            frame_wire::gl::OP_CLEAR,
+            frame_wire::gl::OP_ENABLE,
+            frame_wire::gl::OP_SCISSOR,
+            frame_wire::gl::OP_CLEAR_COLOR,
+            frame_wire::gl::OP_CLEAR,
+            frame_wire::gl::OP_DISABLE,
+        ],
+        "{name}: the records are not in the order the consumer's assertions assume"
+    );
+
+    // Blue first, then the quadrant, then red.
+    assert_eq!(f32::from_bits(words[6]), 1.0, "{name}: the background is blue");
+    // SCISSOR is H C I I I I: the header is at 14 and the canvas id at 15, so
+    // the rectangle starts at 16. Writing 15 here was an off-by-one, and the
+    // assertion caught it with "scissor x: left 1" -- which is the canvas id.
+    assert_eq!(words[16], 0, "{name}: scissor x");
+    assert_eq!(words[17], 0, "{name}: scissor y");
+    assert_eq!(words[18], 32, "{name}: scissor width");
+    assert_eq!(words[19], 32, "{name}: scissor height");
+    assert_eq!(f32::from_bits(words[22]), 1.0, "{name}: the quadrant is red");
 }
