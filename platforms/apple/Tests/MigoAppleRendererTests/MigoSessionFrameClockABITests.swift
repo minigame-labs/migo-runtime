@@ -258,7 +258,17 @@ final class MigoSessionFrameClockABITests: XCTestCase {
             // Retire the surface, and only then ask again. The engine's reply has
             // to change, which is the point: the same call that was accepted a
             // moment ago is now INVALID_STATE, and nothing about the clock changed.
+            // Stop asking for frames BEFORE retiring the surface, which is what a
+            // host does: a display link still firing into a session whose surface
+            // is being retired is work the retirement then has to drain. The first
+            // version of this test only stopped the pump -- the clock kept
+            // running -- and the retirement below timed out on a loaded CI runner
+            // while the same retirement in MigoSurfaceAttachTests, which renders
+            // nothing at all, completes in milliseconds.
             pump.invalidate()
+            clock.stop()
+            XCTAssertFalse(clock.isRunning)
+
             var release: OpaquePointer?
             XCTAssertEqual(migo_surface_begin_detach(live, &release), MIGO_OK)
             let observer = try XCTUnwrap(release)
@@ -275,7 +285,12 @@ final class MigoSessionFrameClockABITests: XCTestCase {
                 }
             }
             defer { poll.invalidate() }
-            wait(for: [released], timeout: 10)
+            // Budgeted against what this retirement has to do rather than against
+            // the other test's: this one retires a surface that rendered frames,
+            // so the render thread has work to finish first. 60 s is far above any
+            // plausible teardown and is a budget, not a measurement -- the same
+            // reasoning that set the WebKit page-report timeout.
+            wait(for: [released], timeout: 60)
             XCTAssertEqual(migo_surface_release_destroy(observer), MIGO_OK)
 
             let before = clock.currentStatistics.refused
@@ -287,8 +302,6 @@ final class MigoSessionFrameClockABITests: XCTestCase {
                 "with the surface retired the engine has to refuse, and the clock has to record it")
             XCTAssertEqual(after.lastRefusal, MIGO_ERROR_INVALID_STATE)
 
-            clock.stop()
-            XCTAssertFalse(clock.isRunning)
         #else
             throw XCTSkip("this test needs a CAMetalLayer, which is macOS and iOS only")
         #endif
