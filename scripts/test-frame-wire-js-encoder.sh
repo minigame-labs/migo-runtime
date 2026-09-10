@@ -139,6 +139,38 @@ if ! printf '%s\n' "$output" | grep -qE 'validated 128 JavaScript-encoded packet
     exit 1
 fi
 
+# --- the committed clear-to-blue frame still comes out of the emitter --------
+#
+# `scripts/fixtures/external-frames/clear-blue-frame.bin` is committed so that a
+# consumer needing a valid packet does not build one itself -- building one in a
+# third language is the failure mode the wire document exists to prevent. A
+# committed artifact then needs a reason to still be trustworthy, and this is it:
+# the emitter is run and its bytes compared to the committed ones.
+#
+# `frame-wire`'s `clear_frame_fixture` test reads the same file and asserts what
+# is IN it. The two answer different questions -- "is it still what the emitter
+# makes" and "is it still a valid frame saying what it claims" -- and a committed
+# fixture needs both.
+
+FIXTURE="scripts/fixtures/external-frames/clear-blue-frame.bin"
+if [[ ! -f "$FIXTURE" ]]; then
+    echo "FAIL: $FIXTURE is missing; regenerate it with the emitter below." >&2
+    exit 1
+fi
+
+REGENERATED="$(mktemp)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED"' EXIT
+node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs "$REGENERATED" >/dev/null
+
+if ! cmp -s "$FIXTURE" "$REGENERATED"; then
+    echo "FAIL: the emitter no longer reproduces $FIXTURE byte for byte." >&2
+    echo "      Either the encoder changed and the fixture needs regenerating, or the" >&2
+    echo "      fixture was edited by hand. Regenerate with:" >&2
+    echo "        node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs" >&2
+    exit 1
+fi
+echo "the committed clear-to-blue frame still comes out of the emitter byte for byte"
+
 # --- the synchronous barrier's argument record, across the two languages -----
 #
 # Same shape, same reason. The producer encodes `readPixels`' arguments and
