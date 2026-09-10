@@ -20,6 +20,7 @@ ARCHIVE=""
 BUILD_ROOT="${MIGO_APPLE_BUILD_ROOT:-$ROOT/build/apple}"
 PRODUCT="macos-v8"
 CONFIGURATION="Debug"
+ANGLE_DIR=""
 KEEP=0
 
 fail() {
@@ -35,6 +36,9 @@ usage: test-macos-archive-runs-js.sh [--archive <libmigo.a>] [options]
                          product under the Apple build root.
   --product <name>       Which product's archive to default to (macos-v8).
   --configuration <cfg>  Debug or Release. Default Debug.
+  --angle <dir>          Where libEGL.dylib and libGLESv2.dylib live. Defaults
+                         to the pinned runtime dependency that
+                         scripts/fetch-apple-angle.sh macos installs.
   --keep                 Leave the staged game and the built host in place.
 
 The archive is a required input rather than something this script builds: the
@@ -49,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --archive) [[ $# -ge 2 ]] || fail "--archive needs a path"; ARCHIVE="$2"; shift 2 ;;
     --product) [[ $# -ge 2 ]] || fail "--product needs a name"; PRODUCT="$2"; shift 2 ;;
     --configuration) [[ $# -ge 2 ]] || fail "--configuration needs a value"; CONFIGURATION="$2"; shift 2 ;;
+    --angle) [[ $# -ge 2 ]] || fail "--angle needs a directory"; ANGLE_DIR="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) fail "unknown argument: $1" ;;
@@ -69,6 +74,20 @@ case "$ARCHIVE" in
   *external-frames*|*performance-plus*)
     fail "$ARCHIVE is an external-frames product: it carries no engine by design, so it cannot run JavaScript and this test is not about it" ;;
 esac
+
+# The archive is static and the renderer is not: macos-v8 links Migo's engine in
+# and loads ANGLE's Metal backend at runtime, exactly as an app consumer does
+# through the shipped `Frameworks/Scripts/embed-apple-angle.sh`. A CLI host has
+# no embedding phase, so its loader directory is explicit -- the same shape the
+# diagnostic package's own test step uses. Without it the run gets as far as
+# attach and then fails with `CanvasManager init failed`, which reads like an
+# engine defect and is a missing dylib.
+if [[ -z "$ANGLE_DIR" ]]; then
+  ANGLE_DIR="$ROOT/engine/third_party/angle-apple-macos"
+fi
+for lib in libEGL.dylib libGLESv2.dylib; do
+  [[ -f "$ANGLE_DIR/$lib" ]] || fail "no $lib in $ANGLE_DIR. Install the pinned runtime with scripts/fetch-apple-angle.sh macos, or point --angle at a directory holding both"
+done
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/migo-macos-js.XXXXXX")"
 cleanup() {
@@ -104,10 +123,12 @@ clang -fobjc-arc -fmodules -O0 -g \
   -framework CoreText -framework CoreServices -framework AudioToolbox \
   -framework AVFoundation -framework CoreMedia -framework CoreAudio \
   -framework SystemConfiguration -framework GameController \
-  -lc++ -lobjc -lz \
+  -lc++ -lz \
   || fail "the host did not link against $ARCHIVE"
 
-echo "[2/2] running a game through it"
-"$HOST" "$WORK/files" "$CONTENT_ID" || fail "the shipping archive did not run the content to completion"
+echo "[2/2] running a game through it, with ANGLE from $ANGLE_DIR"
+DYLD_LIBRARY_PATH="$ANGLE_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+  "$HOST" "$WORK/files" "$CONTENT_ID" \
+  || fail "the shipping archive did not run the content to completion"
 
 echo "PASS: the shipping macOS archive evaluated JavaScript and installed the migo surface"
