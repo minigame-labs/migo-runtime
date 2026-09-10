@@ -424,33 +424,38 @@ else
   fi
 
   echo "[4/5] waiting up to ${TIMEOUT}s for Documents/capability-$RUN_ID.json"
-  # Copied into a directory, then located inside it. `devicectl device copy from`
-  # documents --destination only as "the location to which the item should be
-  # copied", which leaves open whether a non-existent path is created as the file or
-  # treated as a directory to place it in. Both are handled rather than guessed,
-  # because the guess would be found wrong on a bench with the device in hand and a
-  # gate half measured. This path is the one thing in this script no test exercises:
-  # it needs a device.
-  COPY_DIR="$WORK_DIR/pull-$RUN_ID"
-  rm -rf "$COPY_DIR"
-  mkdir -p "$COPY_DIR"
+  # Two questions, asked separately, because asking them together is what this
+  # step got wrong: `devicectl device info files` says whether the app has
+  # written the records, and only then does `copy from` move them. The first
+  # version polled the copy alone and read every failure as "not written yet".
+  # It was measured on a phone: the copy failed 60 times in a row for a reason
+  # that had nothing to do with the app, the app had in fact finished in 15
+  # seconds, and the script reported "no records after 300s" -- a wrong answer
+  # about the device, produced by a broken transfer.
+  #
+  # The transfer was broken because `--destination` must name a path that does
+  # not exist. Given a directory, devicectl refuses with "Cannot open
+  # destination file ...: Is a directory" rather than placing the file inside
+  # it, so the earlier "both readings are handled" was only ever the reading
+  # that cannot work.
+  echo "  (asking the container whether the records are there, then pulling them)"
   DEADLINE=$((SECONDS + TIMEOUT))
-  until xcrun devicectl device copy from --device "$TARGET" \
+  until xcrun devicectl device info files --device "$TARGET" \
     --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
-    --source "Documents/capability-$RUN_ID.json" --destination "$COPY_DIR" \
-    --json-output "$WORK_DIR/copy-$RUN_ID.json" >/dev/null 2>&1; do
-    ((SECONDS < DEADLINE)) || fail "no records after ${TIMEOUT}s. The app writes them when the run finishes and the screen says what it is doing; the last copy attempt is in $WORK_DIR/copy-$RUN_ID.json"
+    2>/dev/null | grep -q "Documents/capability-$RUN_ID.json"; do
+    ((SECONDS < DEADLINE)) || fail "the app wrote no Documents/capability-$RUN_ID.json in ${TIMEOUT}s. It writes them when the run finishes, and its screen says what it is doing. This is now an answer about the app: the container listing is a separate call from the transfer, and it is the listing that came back without the file"
     sleep 5
   done
 
-  PULLED="$(find "$COPY_DIR" -type f -name "capability-$RUN_ID.json" -print -quit)"
-  if [[ -z "$PULLED" ]]; then
-    # The other reading: the destination itself became the file.
-    PULLED="$(find "$COPY_DIR" -type f -print -quit)"
-  fi
-  [[ -n "$PULLED" ]] || fail "devicectl reported success and left nothing under $COPY_DIR; see $WORK_DIR/copy-$RUN_ID.json"
-  mv "$PULLED" "$RECORD_FILE"
-  rmdir "$COPY_DIR" 2>/dev/null || true
+  COPY_DEST="$WORK_DIR/pull-$RUN_ID.json"
+  rm -rf "$COPY_DEST"
+  xcrun devicectl device copy from --device "$TARGET" \
+    --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
+    --source "Documents/capability-$RUN_ID.json" --destination "$COPY_DEST" \
+    --json-output "$WORK_DIR/copy-$RUN_ID.json" >/dev/null 2>&1 \
+    || fail "the records are on the device but could not be transferred; see $WORK_DIR/copy-$RUN_ID.json"
+  [[ -f "$COPY_DEST" ]] || fail "devicectl reported success and left no $COPY_DEST; see $WORK_DIR/copy-$RUN_ID.json"
+  mv "$COPY_DEST" "$RECORD_FILE"
 fi
 
 [[ -s "$RECORD_FILE" ]] || fail "$RECORD_FILE is empty"
