@@ -22,8 +22,10 @@ cd "$ROOT"
 
 TEST="platforms/apple/WebContent/PerformancePlus/test/golden-corpus.test.mjs"
 ENCODER="platforms/apple/WebContent/PerformancePlus/src/wire-frame-packet.mjs"
+SYNC_TEST="platforms/apple/WebContent/PerformancePlus/test/sync-mailbox.test.mjs"
+SYNC_SRC="platforms/apple/WebContent/PerformancePlus/src/sync-mailbox.mjs"
 
-for required in "$TEST" "$ENCODER"; do
+for required in "$TEST" "$ENCODER" "$SYNC_TEST" "$SYNC_SRC"; do
     if [[ ! -f "$required" ]]; then
         echo "FAIL: $required is missing; the cross-language corpus check cannot run." >&2
         exit 1
@@ -70,6 +72,16 @@ if [[ -f "$SDK_SCRIPT" ]]; then
 fi
 
 node "$TEST"
+
+# --- the synchronous barrier's producer half --------------------------------
+#
+# Same rule as the corpus above and for the same reason: this side is checked
+# against contracts/frame-wire/wire-v1.md, not against the Rust mailbox, because
+# two implementations that agree with each other and not with the document is
+# the failure the document exists to catch. It also runs a real `Atomics.wait`
+# woken by a real worker -- "it blocks" is the entire claim, and a test whose
+# host answered before the wait began would exercise every line except that one.
+node "$SYNC_TEST"
 
 # --- and the other direction ------------------------------------------------
 #
