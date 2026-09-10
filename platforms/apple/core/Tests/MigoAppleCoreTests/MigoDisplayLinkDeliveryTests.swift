@@ -8,18 +8,18 @@ import XCTest
 /// what the policy decides and how the link handles its own lifetime, and its one
 /// start test says so in its own comment: it is "honest about being one: on a
 /// machine with no active display no link is created, so this exercises the paths
-/// that lead to the attempt rather than the link itself." Every CI machine this
-/// package runs on is such a machine, so the delivery path -- the callback, the
-/// timestamp arithmetic, the hop to the main queue -- had shipped unobserved.
+/// that lead to the attempt rather than the link itself." Nothing then observed
+/// the delivery path -- the callback, the timestamp arithmetic, the hop to the
+/// main queue -- and it shipped that way.
 ///
-/// It is observable: measured 2026-09-10 on the Intel Mac this project uses,
-/// reached over ssh, a `CVDisplayLink` created with `CreateWithActiveCGDisplays`
-/// delivered 120 callbacks in 1.983 s -- 60.0 Hz. The note that a link "does not
-/// start on a machine with no display" is about machines with no display, not
-/// about ssh.
+/// It is observable, and on more machines than the note implies. Measured
+/// 2026-09-10: on the Intel Mac this project uses, reached over ssh, a
+/// `CVDisplayLink` created with `CreateWithActiveCGDisplays` delivered 120
+/// callbacks in 1.983 s -- 60.0 Hz. This test then ran, rather than skipped, on a
+/// GitHub `macos-15` runner in 0.635 s. So the assumption that CI is headless was
+/// itself wrong, and the delivery path is now covered on every pull request.
 ///
-/// So this runs where a link starts and skips where one does not, rather than
-/// asserting a cadence a headless runner cannot produce. A skip states which
+/// The skip stays, for the machine that genuinely has no display. It states which
 /// machine could not answer; a passing assertion that never ran states nothing.
 final class MigoDisplayLinkDeliveryTests: XCTestCase {
 
