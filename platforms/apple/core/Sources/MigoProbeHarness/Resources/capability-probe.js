@@ -75,6 +75,41 @@ function clockStepMs() {
   return t1 - t0;
 }
 
+// Whether this origin has WebAssembly, asked without a clock.
+//
+// The warm-up ratio measures a duration and a duration is what the CPU's
+// governor also moves, which is how the same JIT-enabled phone produced ratios
+// from 1.32 to 4.28 across eight readings. This asks a question with a yes and a
+// no and no middle: Lockdown Mode disables WebAssembly in WebKit outright, so
+// its absence on a device whose owner did not disable it another way is the same
+// device state A24 is about. Compiled here rather than only type-checked, because
+// a namespace that exists and refuses to compile the eight bytes every module
+// starts with is the shape a disabled implementation takes.
+//
+// It is recorded as evidence beside the ratio rather than as the verdict. The
+// two can disagree, and a reader who has both can see which; a reader given only
+// a verdict cannot.
+function webAssemblyState() {
+  if (typeof WebAssembly === "undefined") {
+    return "WebAssembly is undefined";
+  }
+  if (typeof WebAssembly.Module !== "function") {
+    return "WebAssembly exists without a Module constructor";
+  }
+  try {
+    // The 8-byte preamble: magic then version. Every valid module starts here and
+    // this one is the whole of it.
+    var module = new WebAssembly.Module(
+      new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+    );
+    return module instanceof WebAssembly.Module
+      ? "WebAssembly compiled an empty module"
+      : "WebAssembly.Module returned something else";
+  } catch (error) {
+    return "WebAssembly refused an empty module: " + error;
+  }
+}
+
 function probeJit() {
   // Two structurally identical functions, measured one after the other. The
   // second one is the control, and it exists because the first reading on a
@@ -178,7 +213,8 @@ function probeJit() {
     controlRatio.toFixed(2) +
     "; the clock these were read with steps by " +
     step.toFixed(3) +
-    " ms";
+    " ms; " +
+    webAssemblyState();
   return ratio >= JIT_WARMUP_RATIO_THRESHOLD
     ? available(evidence, ratio.toFixed(2))
     : answer(
