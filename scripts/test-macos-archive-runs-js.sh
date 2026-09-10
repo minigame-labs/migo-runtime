@@ -131,4 +131,4 @@ DYLD_LIBRARY_PATH="$ANGLE_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
   "$HOST" "$WORK/files" "$CONTENT_ID" \
   || fail "the shipping archive did not run the content to completion"
 
-echo "PASS: the shipping macOS archive evaluated JavaScript and installed the migo surface"
+echo "PASS: the shipping macOS archive evaluated JavaScript, turned frames on ANGLE/Metal against a windowless CAMetalLayer, and installed the migo surface"
