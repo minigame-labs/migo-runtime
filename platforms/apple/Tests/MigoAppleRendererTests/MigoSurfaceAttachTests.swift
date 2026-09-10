@@ -716,14 +716,29 @@ final class MigoSurfaceAttachTests: XCTestCase {
             // or textures made from it, until eglTerminate. Establishing which
             // needs an instrumented ANGLE rather than another experiment from
             // out here.
-            XCTExpectFailure(
-                """
-                the host's CAMetalLayer is not reclaimed until migo_engine_destroy \
-                terminates the EGL display. Characterised, bounded and tracked; see the \
-                comment above this expectation for what has been eliminated and what \
-                has not. If this expectation itself fails, ANGLE has started letting go \
-                and the assertions below should become real again.
-                """)
+            //
+            // macOS ONLY, and that is measured rather than assumed. The first
+            // run of this expectation on the iOS simulator FAILED -- the
+            // expectation itself, because no failure occurred: on that platform
+            // the layer is released when RELEASED is published, exactly as the
+            // assertions below require. So the defect is not "ANGLE retains the
+            // layer"; it is "ANGLE's macOS backend retains the layer", and iOS
+            // -- the platform this product is for -- holds the contract today.
+            //
+            // Writing it as a platform condition rather than relaxing the
+            // expectation everywhere keeps both halves honest: iOS asserts, and
+            // macOS still finds out the moment its half starts passing.
+            #if os(macOS)
+                XCTExpectFailure(
+                    """
+                    on macOS the host's CAMetalLayer is not reclaimed until \
+                    migo_engine_destroy terminates the EGL display. Characterised, bounded \
+                    and tracked; see the comment above this expectation for what has been \
+                    eliminated and what has not. iOS does not have this defect, which is \
+                    why this expectation is macOS-only. If it fails, macOS has started \
+                    letting go and the expectation should come out.
+                    """)
+            #endif
             XCTAssertNil(observedLayer, "RELEASED must follow the engine's final layer release")
 
             // If it is still alive, say WHICH failure this is. The assertion above

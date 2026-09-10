@@ -37,6 +37,9 @@ use shared::{
 
 #[cfg(test)]
 use frame_wire::IngressDecision;
+use frame_wire::sync::{
+    ReadPixelsParams, SYNC_OP_READ_PIXELS, SyncError, SyncMailbox, SyncRequest, SyncState,
+};
 use frame_wire::{FrameIngress, IngressOutcome, PooledFrame, stream};
 
 use crate::runtime::session_thread::{
@@ -57,6 +60,7 @@ use crate::services::PlatformServices;
 pub struct ExternalFrameSession {
     host: HostThread,
     submit: SubmitPath,
+    sync: SyncPath,
     clock: Arc<ExternalFrameClock>,
 }
 
@@ -201,6 +205,216 @@ impl frame_decode::RenderSink for ExternalDecodeContext<'_> {
 
 /// What the submit path needs from the session thread, published once the
 /// renderer is up.
+/// What a poll of the mailbox reports, in one read.
+///
+/// A struct rather than four getters because the four values are only
+/// meaningful together: a `reply_bytes` read a moment after a `state` can
+/// describe a different request, and the producer this is forwarded to is
+/// blocked on the pair agreeing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyncSnapshot {
+    pub request_id: u32,
+    pub state: SyncState,
+    pub reply_bytes: u32,
+    pub error: Option<SyncError>,
+}
+
+/// The host's half of the synchronous barrier.
+///
+/// `readPixels` cannot be answered where the producer runs, because its return
+/// value *is* the answer and the pixels are here. So the producer blocks, the
+/// transport carries the request across, this executes it against the renderer,
+/// and the reply travels back.
+///
+/// The reply buffer is owned here rather than written into the caller's memory
+/// during execution. The host copies it out afterwards with an explicit call,
+/// which is what lets the mailbox refuse an oversized or mismatched answer
+/// BEFORE any of it reaches a producer -- a truncated `readPixels` is a wrong
+/// answer that looks like a right one.
+struct SyncPath {
+    mailbox: Mutex<SyncMailbox>,
+    /// Sized by what the producer reserved, and reused across requests: one
+    /// buffer per session rather than an allocation per readback.
+    reply: Mutex<Vec<u8>>,
+    dispatch: Arc<OnceLock<RenderDispatch>>,
+}
+
+impl SyncPath {
+    fn new(runtime_generation: u64, dispatch: Arc<OnceLock<RenderDispatch>>) -> Self {
+        Self {
+            mailbox: Mutex::new(SyncMailbox::new(runtime_generation)),
+            reply: Mutex::new(Vec::new()),
+            dispatch,
+        }
+    }
+
+    /// Post a request and answer it.
+    ///
+    /// The answer is produced inline, on the caller's thread, and that is a
+    /// decision rather than a shortcut. The caller is the transport thread, and
+    /// the only thing it has to do until this returns is carry a reply back to
+    /// an agent that is already blocked inside `Atomics.wait`; handing the work
+    /// to another thread would add a scheduling hop to a latency path whose
+    /// whole cost is already the readback. What it must NOT do is wait longer
+    /// than the producer agreed to, which is why the wait is bounded by the
+    /// request's own deadline rather than by the renderer's default readback
+    /// timeout -- the producer said how long it would wait, and that is the
+    /// number that matters.
+    fn post(&self, request: SyncRequest, params: &[u8], now_nanos: u64) -> Result<u32, SyncError> {
+        let deadline_nanos = request.deadline_nanos;
+        let max_reply_bytes = request.max_reply_bytes;
+        let operation = request.operation;
+
+        let id = {
+            let mut mailbox = self.mailbox.lock();
+            // A request whose deadline has already passed is settled before a
+            // new one is judged, so "already pending" cannot be reported for a
+            // request nobody is waiting on any more.
+            mailbox.expire_if_due(now_nanos);
+            mailbox.post(request, now_nanos)?
+        };
+
+        let answered = self.execute(
+            operation,
+            params,
+            max_reply_bytes,
+            deadline_nanos,
+            now_nanos,
+        );
+        let mut mailbox = self.mailbox.lock();
+        match answered {
+            Ok(reply_bytes) => match mailbox.complete(id, reply_bytes) {
+                Ok(()) => Ok(id),
+                // The mailbox refused the answer -- it is settled and carries
+                // the reason. The post itself still succeeded: the producer has
+                // a request id and will read a verdict from it.
+                Err(_) => Ok(id),
+            },
+            Err(error) => {
+                let _ = mailbox.fail_request(id, error);
+                Ok(id)
+            }
+        }
+    }
+
+    /// Run one operation and leave its bytes in [`Self::reply`].
+    fn execute(
+        &self,
+        operation: u32,
+        params: &[u8],
+        max_reply_bytes: u32,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<u32, SyncError> {
+        if operation != SYNC_OP_READ_PIXELS {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let params = ReadPixelsParams::decode(params)?;
+        let wanted = params.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
+        // Checked here as well as by the mailbox, because refusing before the
+        // renderer is asked saves a full-screen readback nobody may have.
+        if wanted > max_reply_bytes {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let Some(dispatch) = self.dispatch.get() else {
+            // The session thread has not finished bringing the renderer up.
+            // Not "unsupported": this host does implement the operation, it
+            // just cannot answer yet, and a producer told otherwise would stop
+            // asking.
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+
+        let (resp_tx, resp_rx) = crossbeam_channel::bounded(1);
+        let command = shared::protocol::render_cmd::RenderCommand::GL(
+            shared::protocol::render_cmd::GLCmd::ReadPixels {
+                canvas_id: params.canvas_id.into(),
+                x: params.x,
+                y: params.y,
+                width: params.width,
+                height: params.height,
+                format: params.format,
+                type_: params.type_,
+                resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(resp_tx),
+            },
+        );
+        // Blocking-bounded rather than best-effort: this command carries a
+        // reply channel a producer is waiting on, and a dropped one is a
+        // producer that waits out its whole deadline for nothing.
+        if sender.send_blocking_bounded(command).is_err() {
+            return Err(SyncError::SessionEnded);
+        }
+
+        let pixels = match resp_rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(pixels)) => pixels,
+            Ok(Err(_)) => return Err(SyncError::UnsupportedOperation),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => return Err(SyncError::TimedOut),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                return Err(SyncError::SessionEnded);
+            }
+        };
+
+        // The renderer answering with a different number of bytes than the
+        // rectangle implies is not something to paper over by copying what
+        // arrived: the producer sized its buffer from the same rectangle.
+        let produced = u32::try_from(pixels.len()).map_err(|_| SyncError::ReplyTooLarge)?;
+        if produced != wanted {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let mut reply = self.reply.lock();
+        reply.clear();
+        reply.extend_from_slice(&pixels);
+        Ok(produced)
+    }
+
+    fn snapshot(&self, now_nanos: u64) -> SyncSnapshot {
+        let mut mailbox = self.mailbox.lock();
+        // A poll is the only thing that runs while a request is outstanding, so
+        // it is where a passed deadline becomes visible.
+        mailbox.expire_if_due(now_nanos);
+        SyncSnapshot {
+            request_id: mailbox.request().map(|r| r.request_id).unwrap_or(0),
+            state: mailbox.state(),
+            reply_bytes: mailbox.reply_bytes(),
+            error: mailbox.error(),
+        }
+    }
+
+    /// Copy the answer out and free the slot.
+    ///
+    /// Taking and acknowledging are one step because they are one event: the
+    /// producer has the bytes, so the request is over. Two steps would admit a
+    /// state where the answer has been read and the slot still refuses the next
+    /// request.
+    fn take_reply(&self, out: &mut [u8]) -> Result<usize, SyncError> {
+        let mut mailbox = self.mailbox.lock();
+        if mailbox.state() != SyncState::Ready {
+            return Err(mailbox.error().unwrap_or(SyncError::LateReply));
+        }
+        let reply = self.reply.lock();
+        let bytes = mailbox.reply_bytes() as usize;
+        if out.len() < bytes || reply.len() < bytes {
+            // Refused, and the request stays READY: a caller that arrived with
+            // too small a buffer may come back with a large enough one, and
+            // clearing the slot here would lose an answer that is still valid.
+            return Err(SyncError::ReplyTooLarge);
+        }
+        out[..bytes].copy_from_slice(&reply[..bytes]);
+        drop(reply);
+        mailbox.acknowledge();
+        Ok(bytes)
+    }
+}
+
 struct RenderDispatch {
     // The running session thread owns the strong sender. A public session
     // handle may outlive that thread; retaining a sender here would also keep
@@ -409,6 +623,51 @@ impl ExternalFrameSession {
         self.submit.errors.take(canvas_id)
     }
 
+    /// Post one synchronous request and answer it.
+    ///
+    /// Called on the transport's thread, for the same reason `submit_frame` is:
+    /// the producer is blocked, and a channel hop to reach the session thread
+    /// would put a scheduling delay on the one path where a delay is a stall
+    /// the producer can see.
+    ///
+    /// Returns the request id the answer will be labelled with. A request the
+    /// host could not answer still gets an id -- the mailbox carries the reason
+    /// and the producer reads a verdict rather than a hang. Only a request that
+    /// could not be POSTED at all comes back as an error.
+    pub fn post_sync_request(
+        &self,
+        request: SyncRequest,
+        params: &[u8],
+        now_nanos: u64,
+    ) -> Result<u32, SyncError> {
+        self.sync.post(request, params, now_nanos)
+    }
+
+    /// Where the outstanding request is, and any deadline that has passed.
+    pub fn poll_sync(&self, now_nanos: u64) -> SyncSnapshot {
+        self.sync.snapshot(now_nanos)
+    }
+
+    /// Copy a ready answer out and free the slot.
+    pub fn take_sync_reply(&self, out: &mut [u8]) -> Result<usize, SyncError> {
+        self.sync.take_reply(out)
+    }
+
+    /// The producer withdrew its request. Whether this call settled it.
+    pub fn cancel_sync(&self) -> bool {
+        self.sync.mailbox.lock().cancel()
+    }
+
+    /// The session is going away: wake any blocked producer with a reason.
+    ///
+    /// Public because the C boundary tears down in a defined order and this is
+    /// part of it. A producer inside `Atomics.wait` on a session that has gone
+    /// stays blocked until WebKit reclaims its process, which is a game that
+    /// stopped drawing and never said why.
+    pub fn end_sync(&self) -> bool {
+        self.sync.mailbox.lock().end_session()
+    }
+
     /// Offer one packet produced by the external agent.
     ///
     /// Called on whichever thread the transport runs on -- on Apple that is the
@@ -523,6 +782,7 @@ pub fn spawn_external_frame_session(
     Ok(SpawnedExternalSession {
         session: ExternalFrameSession {
             host: started.host,
+            sync: SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::clone(&dispatch)),
             submit: SubmitPath {
                 ingress,
                 errors,
@@ -1357,6 +1617,198 @@ mod tests {
         assert_eq!(
             ingress.remaining_credits(),
             frame_wire::ingress::MAX_CREDITS
+        );
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    const NOW: u64 = 1_000_000_000;
+    const DEADLINE: u64 = NOW + 50_000_000;
+
+    /// A `SyncPath` with no renderer behind it.
+    ///
+    /// Every case below is one the boundary must answer without a GPU, and
+    /// answering them here rather than in a device test is deliberate: these
+    /// are the paths a producer hits when something has gone wrong, and a
+    /// blocked producer's fate should not depend on a lane that needs hardware
+    /// to run at all.
+    fn path() -> SyncPath {
+        SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::new(OnceLock::new()))
+    }
+
+    fn request(operation: u32, max_reply_bytes: u32) -> SyncRequest {
+        SyncRequest {
+            request_id: 0,
+            runtime_generation: INITIAL_RUNTIME_GENERATION,
+            surface_generation: 1,
+            resource_epoch: 1,
+            triggering_sequence: 1,
+            operation,
+            max_reply_bytes,
+            deadline_nanos: DEADLINE,
+        }
+    }
+
+    fn read_pixels_params(width: i32, height: i32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for word in [
+            1u32,
+            0,
+            0,
+            width as u32,
+            height as u32,
+            frame_wire::sync::GL_RGBA,
+            frame_wire::sync::GL_UNSIGNED_BYTE,
+            0,
+        ] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn an_operation_this_host_does_not_implement_is_refused_rather_than_answered() {
+        let path = path();
+        // Operation 0 is not an operation. The producer must be woken with a
+        // reason, because the alternative to an answer here is an agent that
+        // sits in `Atomics.wait` until its process is reclaimed.
+        path.post(request(0, 1024), &read_pixels_params(2, 2), NOW)
+            .expect("the request is posted even when it cannot be answered");
+        let snapshot = path.snapshot(NOW);
+        assert_eq!(snapshot.state, SyncState::Failed);
+        assert_eq!(snapshot.error, Some(SyncError::UnsupportedOperation));
+        assert_eq!(snapshot.reply_bytes, 0);
+    }
+
+    #[test]
+    fn a_rectangle_larger_than_the_producer_reserved_is_refused_before_the_renderer_is_asked() {
+        let path = path();
+        // 64x64 RGBA8 is 16 KiB; the producer reserved 1 KiB. Refusing here
+        // rather than after the readback saves a full readback nobody may have
+        // -- and refusing at all rather than truncating is the point: a short
+        // `readPixels` is a wrong answer that looks like a right one.
+        path.post(
+            request(SYNC_OP_READ_PIXELS, 1024),
+            &read_pixels_params(64, 64),
+            NOW,
+        )
+        .expect("posted");
+        let snapshot = path.snapshot(NOW);
+        assert_eq!(snapshot.state, SyncState::Failed);
+        assert_eq!(snapshot.error, Some(SyncError::ReplyTooLarge));
+    }
+
+    #[test]
+    fn a_request_that_arrives_before_the_renderer_is_up_says_so_rather_than_unsupported() {
+        let path = path();
+        // The distinction matters to the producer: "this host does not do
+        // readPixels" is permanent and "not yet" is not, and a producer told
+        // the first will stop asking.
+        path.post(
+            request(SYNC_OP_READ_PIXELS, 4 * 1024 * 1024),
+            &read_pixels_params(16, 16),
+            NOW,
+        )
+        .expect("posted");
+        let snapshot = path.snapshot(NOW);
+        assert_eq!(snapshot.state, SyncState::Failed);
+        assert_eq!(snapshot.error, Some(SyncError::SessionEnded));
+    }
+
+    #[test]
+    fn malformed_arguments_are_refused_and_never_reach_the_renderer() {
+        // A fresh path per case, because a mailbox that has already settled one
+        // request would report that verdict for the next.
+        for params in [
+            // No arguments at all.
+            Vec::new(),
+            // A rectangle with no pixels in it.
+            read_pixels_params(0, 4),
+            // One byte short: the remaining fields would be read out of
+            // whatever followed the record.
+            read_pixels_params(4, 4)[..31].to_vec(),
+        ] {
+            let path = path();
+            path.post(request(SYNC_OP_READ_PIXELS, 4096), &params, NOW)
+                .expect("posted");
+            let snapshot = path.snapshot(NOW);
+            assert_eq!(snapshot.state, SyncState::Failed);
+            assert_eq!(snapshot.error, Some(SyncError::UnsupportedOperation));
+        }
+    }
+
+    #[test]
+    fn a_deadline_that_has_already_passed_is_refused_at_post() {
+        let path = path();
+        let mut stale = request(SYNC_OP_READ_PIXELS, 4096);
+        stale.deadline_nanos = NOW;
+        // Refused rather than posted: a request nobody will wait for should not
+        // occupy the one slot a session has.
+        assert_eq!(
+            path.post(stale, &read_pixels_params(4, 4), NOW),
+            Err(SyncError::BadDeadline)
+        );
+        assert_eq!(path.snapshot(NOW).state, SyncState::Free);
+    }
+
+    #[test]
+    fn a_request_from_another_runtime_generation_is_refused() {
+        let path = path();
+        let mut stale = request(SYNC_OP_READ_PIXELS, 4096);
+        stale.runtime_generation = INITIAL_RUNTIME_GENERATION + 1;
+        assert_eq!(
+            path.post(stale, &read_pixels_params(4, 4), NOW),
+            Err(SyncError::StaleGeneration)
+        );
+    }
+
+    #[test]
+    fn taking_a_reply_there_is_no_answer_for_reports_the_reason_and_changes_nothing() {
+        let path = path();
+        let mut buffer = [0u8; 64];
+        assert!(path.take_reply(&mut buffer).is_err());
+        assert_eq!(path.snapshot(NOW).state, SyncState::Free);
+
+        path.post(request(0, 1024), &read_pixels_params(2, 2), NOW)
+            .expect("posted");
+        // FAILED, so there is nothing to take -- and taking must not clear the
+        // verdict out from under a producer that has not read it.
+        assert!(path.take_reply(&mut buffer).is_err());
+        assert_eq!(path.snapshot(NOW).state, SyncState::Failed);
+    }
+
+    #[test]
+    fn a_settled_request_frees_the_slot_for_the_next_one() {
+        let path = path();
+        path.post(request(0, 1024), &read_pixels_params(2, 2), NOW)
+            .expect("posted");
+        assert_eq!(path.snapshot(NOW).state, SyncState::Failed);
+
+        // A second request is accepted, because the first is settled. If it
+        // were not, a producer whose first call failed could never make another
+        // -- one failure would end synchronous calls for the session.
+        path.mailbox.lock().acknowledge();
+        path.post(request(0, 1024), &read_pixels_params(2, 2), NOW)
+            .expect("the slot is reusable once the first is acknowledged");
+    }
+
+    #[test]
+    fn ending_the_session_refuses_every_later_request() {
+        let path = path();
+        assert!(
+            !path.mailbox.lock().end_session(),
+            "nothing was outstanding"
+        );
+        assert_eq!(
+            path.post(
+                request(SYNC_OP_READ_PIXELS, 4096),
+                &read_pixels_params(4, 4),
+                NOW
+            ),
+            Err(SyncError::SessionEnded)
         );
     }
 }

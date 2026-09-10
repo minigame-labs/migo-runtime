@@ -133,6 +133,92 @@ pub const SYNC_LAYOUT: &[crate::HeaderField] = &[
     },
 ];
 
+/// Which call the producer blocked in.
+///
+/// Numbered, not named, and stable: the producer writes one of these into a
+/// shared cell and the host dispatches on it. A host that does not implement an
+/// operation fails the request with [`SyncError::UnsupportedOperation`] rather
+/// than answering it with zeros -- the whole point of this barrier is that the
+/// return value IS the answer, so there is no safe default to return.
+pub const SYNC_OP_READ_PIXELS: u32 = 1;
+
+/// `readPixels`' arguments, as the producer sends them.
+///
+/// They are not in the mailbox record. That record is the rendezvous -- a small
+/// cell the producer polls with atomics -- and putting per-operation arguments
+/// in it would size it by the largest operation anyone ever adds. The arguments
+/// travel over the transport beside the request and are decoded here.
+///
+/// Every field is four bytes, so the record is 32 bytes with no interior
+/// padding on LP64 and ILP32 alike: one layout, rather than two that happen to
+/// agree today.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadPixelsParams {
+    pub canvas_id: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub format: u32,
+    pub type_: u32,
+}
+
+/// Serialised size of [`ReadPixelsParams`]. Validated, never trusted.
+pub const READ_PIXELS_PARAMS_BYTES: usize = 32;
+
+/// `GL_RGBA`, the only format this host reads back today.
+pub const GL_RGBA: u32 = 0x1908;
+/// `GL_UNSIGNED_BYTE`, the only type this host reads back today.
+pub const GL_UNSIGNED_BYTE: u32 = 0x1401;
+
+impl ReadPixelsParams {
+    /// Decode and validate. Refuses rather than clamps, for the reason
+    /// [`SyncMailbox::complete`] refuses an oversized reply: a `readPixels`
+    /// answered over a rectangle the producer did not ask for is a wrong answer
+    /// that looks like a right one.
+    pub fn decode(bytes: &[u8]) -> Result<Self, SyncError> {
+        if bytes.len() != READ_PIXELS_PARAMS_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |offset: usize| -> u32 {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        let params = Self {
+            canvas_id: word(0),
+            x: word(4) as i32,
+            y: word(8) as i32,
+            width: word(12) as i32,
+            height: word(16) as i32,
+            format: word(20),
+            type_: word(24),
+        };
+        // A zero or negative rectangle has no pixels to return, and a producer
+        // that asked for one is not going to read an empty buffer usefully.
+        if params.width <= 0 || params.height <= 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        if params.format != GL_RGBA || params.type_ != GL_UNSIGNED_BYTE {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(params)
+    }
+
+    /// How many bytes the answer will be, or `None` if that does not fit in a
+    /// `u32` -- which is itself a refusal, not a number to truncate.
+    pub fn reply_bytes(&self) -> Option<u32> {
+        let width = u32::try_from(self.width).ok()?;
+        let height = u32::try_from(self.height).ok()?;
+        // RGBA8: four bytes per pixel. Checked, because width*height*4 for a
+        // rectangle a producer named can overflow before it is ever refused.
+        width.checked_mul(height)?.checked_mul(4)
+    }
+}
+
 /// Where a request is.
 ///
 /// The numbers are what the producer reads out of a shared cell with an atomic
@@ -447,6 +533,29 @@ impl SyncMailbox {
         }
         self.fail(SyncError::SessionEnded);
         true
+    }
+
+    /// The host cannot answer this request, and says which request and why.
+    ///
+    /// Separate from [`Self::complete`] rather than a `Result` variant of it,
+    /// because the two carry different obligations: `complete` is the caller
+    /// asserting it HAS an answer and the mailbox deciding whether the producer
+    /// may have it, while this is the caller stating there will not be one. The
+    /// id is matched the same way either way -- a failure recorded against a
+    /// request that is no longer outstanding would wake a producer with another
+    /// call's verdict.
+    pub fn fail_request(&mut self, request_id: u32, error: SyncError) -> Result<(), SyncError> {
+        let Some(request) = self.request else {
+            return Err(SyncError::LateReply);
+        };
+        if self.state != SyncState::Pending {
+            return Err(SyncError::LateReply);
+        }
+        if request_id != request.request_id {
+            return Err(SyncError::RequestIdMismatch);
+        }
+        self.fail(error);
+        Ok(())
     }
 
     /// The producer has read the answer; the slot is reusable.
