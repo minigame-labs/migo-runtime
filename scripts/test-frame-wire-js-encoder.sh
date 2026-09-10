@@ -138,3 +138,38 @@ if ! printf '%s\n' "$output" | grep -qE 'validated 128 JavaScript-encoded packet
     echo "FAIL: the interop test did not report validating 128 packets; it may not have run." >&2
     exit 1
 fi
+
+# --- the synchronous barrier's argument record, across the two languages -----
+#
+# Same shape, same reason. The producer encodes `readPixels`' arguments and
+# `frame_wire::sync::ReadPixelsParams::decode` reads them; both were written
+# from the same table in contracts/frame-wire/wire-v1.md, which is the right way
+# to write them and no evidence at all that they agree. A table can be read two
+# ways, and the way that disagreement reaches a user is a `readPixels` answered
+# over the wrong rectangle -- a picture that is subtly not the one the game
+# asked for, which nothing but a screenshot would catch.
+
+SYNC_PARAMS="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS"' EXIT
+
+node platforms/apple/WebContent/PerformancePlus/test/emit-sync-params.mjs "$SYNC_PARAMS" 64
+
+emitted_params="$(find "$SYNC_PARAMS" -name 'params-*.bin' | wc -l)"
+if (( emitted_params < 64 )); then
+    echo "FAIL: the emitter wrote $emitted_params argument records, expected 64." >&2
+    exit 1
+fi
+
+output="$(cd engine && MIGO_JS_SYNC_PARAM_DIR="$SYNC_PARAMS" \
+    cargo test -p migo-frame-wire --test sync_js_interop -- --ignored --nocapture 2>&1)"
+status=$?
+printf '%s\n' "$output" | grep -E 'decoded [0-9]+ JavaScript-encoded readPixels|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust decoder rejected argument records built by the JavaScript producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'decoded 64 JavaScript-encoded readPixels'; then
+    echo "FAIL: the interop test did not report decoding 64 records; it may not have run." >&2
+    exit 1
+fi
