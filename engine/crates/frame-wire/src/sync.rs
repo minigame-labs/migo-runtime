@@ -303,6 +303,15 @@ pub enum SyncError {
     BadDeadline = 9,
     /// The request reserved more reply room than the protocol allows.
     BadReplyReservation = 10,
+    /// The host implements the operation, tried it, and it failed.
+    ///
+    /// Distinct from [`Self::UnsupportedOperation`] because the two say
+    /// opposite things about whether to ask again. "This host does not do
+    /// readPixels" is permanent, and a producer told that will stop asking;
+    /// "the readback failed this time" is not. Mapping a driver error onto the
+    /// permanent one would turn one transient GL failure into a session that
+    /// never reads a pixel again.
+    OperationFailed = 11,
 }
 
 impl SyncError {
@@ -323,6 +332,7 @@ impl SyncError {
         Self::LateReply,
         Self::BadDeadline,
         Self::BadReplyReservation,
+        Self::OperationFailed,
     ];
 
     #[inline]
@@ -344,6 +354,7 @@ impl fmt::Display for SyncError {
             Self::LateReply => "the reply arrived after the request was settled",
             Self::BadDeadline => "the deadline is not in the future",
             Self::BadReplyReservation => "the reserved reply size is outside the protocol's bounds",
+            Self::OperationFailed => "the host tried the operation and it failed",
         })
     }
 }

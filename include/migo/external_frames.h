@@ -119,6 +119,17 @@ typedef uint32_t MigoSyncError;
 #define MIGO_SYNC_ERROR_LATE_REPLY             8U
 #define MIGO_SYNC_ERROR_BAD_DEADLINE           9U
 #define MIGO_SYNC_ERROR_BAD_REPLY_RESERVATION  10U
+/*
+ * The host implements the operation, tried it, and it failed.
+ *
+ * Distinct from MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION because the two say
+ * opposite things about whether to ask again: "this host does not do
+ * readPixels" is permanent and a producer told that will stop asking, while
+ * "the readback failed this time" is not. Mapping a driver error onto the
+ * permanent one would turn one transient GL failure into a session that never
+ * reads a pixel again.
+ */
+#define MIGO_SYNC_ERROR_OPERATION_FAILED       11U
 
 /*
  * Caller-written. The 64-bit members precede the 32-bit ones so the record is

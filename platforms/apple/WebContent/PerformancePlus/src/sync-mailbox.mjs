@@ -40,6 +40,7 @@ export const SYNC_ERROR_UNSUPPORTED_OPERATION = 7;
 export const SYNC_ERROR_LATE_REPLY = 8;
 export const SYNC_ERROR_BAD_DEADLINE = 9;
 export const SYNC_ERROR_BAD_REPLY_RESERVATION = 10;
+export const SYNC_ERROR_OPERATION_FAILED = 11;
 
 export const SYNC_OP_READ_PIXELS = 1;
 
@@ -75,6 +76,7 @@ export const SYNC_ERROR_TEXT = {
   [SYNC_ERROR_LATE_REPLY]: "the reply arrived after the request was settled",
   [SYNC_ERROR_BAD_DEADLINE]: "the deadline is not in the future",
   [SYNC_ERROR_BAD_REPLY_RESERVATION]: "the reserved reply size is outside the protocol's bounds",
+  [SYNC_ERROR_OPERATION_FAILED]: "the host tried the operation and it failed",
 };
 
 /**

@@ -375,7 +375,11 @@ impl SyncPath {
 
         let pixels = match resp_rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
             Ok(Ok(pixels)) => pixels,
-            Ok(Err(_)) => return Err(SyncError::UnsupportedOperation),
+            // The renderer answered and the answer was an error: a canvas that
+            // does not exist, a GL failure, a surface that went away mid-read.
+            // Not "unsupported" -- that is permanent and would stop the
+            // producer asking again for the rest of the session.
+            Ok(Err(_)) => return Err(SyncError::OperationFailed),
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => return Err(SyncError::TimedOut),
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                 return Err(SyncError::SessionEnded);
@@ -385,9 +389,13 @@ impl SyncPath {
         // The renderer answering with a different number of bytes than the
         // rectangle implies is not something to paper over by copying what
         // arrived: the producer sized its buffer from the same rectangle.
-        let produced = u32::try_from(pixels.len()).map_err(|_| SyncError::ReplyTooLarge)?;
+        let produced = u32::try_from(pixels.len()).map_err(|_| SyncError::OperationFailed)?;
         if produced != wanted {
-            return Err(SyncError::ReplyTooLarge);
+            // The rectangle said one size and the readback produced another.
+            // Copying what arrived would answer over a rectangle the producer
+            // did not ask for, and calling it ReplyTooLarge would blame the
+            // producer's reservation for the renderer's disagreement.
+            return Err(SyncError::OperationFailed);
         }
 
         let mut reply = self.reply.lock();

@@ -339,6 +339,11 @@ with the waiter settled and told what happened:
 - **the deadline passes** — `FAILED` with a timeout;
 - **a generation or epoch moves under the request** — `FAILED`;
 - **the producer withdraws it** — `CANCELLED`, with no error: nothing went wrong;
+- **the host tried the operation and it failed** — `FAILED`, and with its own
+  code rather than "unsupported". The two say opposite things about whether to
+  ask again: a producer told the operation is unsupported stops asking, so
+  mapping a driver error onto it turns one transient failure into a session that
+  never reads a pixel again;
 - **the session ends** — `FAILED`. A producer inside `Atomics.wait` on a session
   that has gone stays blocked until its agent is destroyed, which on iOS means
   until WebKit reclaims the process.

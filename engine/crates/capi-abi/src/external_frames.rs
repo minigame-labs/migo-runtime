@@ -136,6 +136,10 @@ pub const MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION: u32 = 7;
 pub const MIGO_SYNC_ERROR_LATE_REPLY: u32 = 8;
 pub const MIGO_SYNC_ERROR_BAD_DEADLINE: u32 = 9;
 pub const MIGO_SYNC_ERROR_BAD_REPLY_RESERVATION: u32 = 10;
+/// The host implements the operation, tried it, and it failed. Distinct from
+/// UNSUPPORTED_OPERATION because the two say opposite things about whether to
+/// ask again.
+pub const MIGO_SYNC_ERROR_OPERATION_FAILED: u32 = 11;
 
 /// Which call the producer blocked in.
 pub const MIGO_SYNC_OP_READ_PIXELS: u32 = 1;
