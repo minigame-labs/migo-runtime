@@ -345,6 +345,27 @@ with the waiter settled and told what happened:
 
 Returning zeros, stale bytes or a partial buffer is not on that list.
 
+### What v1 does not carry, and what it costs
+
+**There is no producer-owned sequence in the record.** `request_id` is assigned
+by the host, so before an answer arrives there is nothing in the record that
+says *which* request is outstanding. A relay standing between the two -- which
+is the shape on Apple, where the producer's agent cannot service its own
+transport -- therefore cannot tell, from shared state alone, whether the answer
+it is holding still belongs to the request in the slot.
+
+The window is narrow and real: a producer that gives up on one request and
+issues the next publishes the new one before the relay has been told about it,
+so a slow answer to the old one arrives while the record already says PENDING.
+Publishing it there hands the producer another call's pixels.
+
+Implementations close it by treating `deadline_nanos` as the request's identity:
+it is producer-written, written before the state is published, and each request
+derives it from its own reading of a monotonic clock, so consecutive requests do
+not share one. That is an identity in practice rather than by construction, and
+it is the reason a producer-owned sequence belongs in the next version of this
+record rather than in a field borrowed from something else.
+
 ## The resource lane
 
 A frame packet is small and bounded; a texture atlas is neither. Large assets
