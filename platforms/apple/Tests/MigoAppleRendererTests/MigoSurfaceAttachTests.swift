@@ -621,6 +621,20 @@ final class MigoSurfaceAttachTests: XCTestCase {
                     // difference negative and the arithmetic meaningless. A
                     // control that does not mirror the measurement is worse than
                     // no control: it produces a number that looks like evidence.
+                    // The control is still built and still reported, and it is
+                    // reported as a NUMBER TO DISTRUST rather than as a
+                    // denominator. Two conclusions have now been drawn from
+                    // arithmetic on these counts and both were wrong: first "two
+                    // unknown owners" against an unmeasured baseline, then "one"
+                    // against a control that did not mirror the measurement. With
+                    // the control corrected, the iOS simulator reports 3 for the
+                    // observed layer and 5 for a layer with exactly one owner --
+                    // fewer references than a single owner, which is not a thing.
+                    //
+                    // So CFGetRetainCount is kept as a clue and never as the
+                    // discriminator. The two readings that have held are the
+                    // engine's own `has_anchor/outstanding/native_owners` line and
+                    // WHEN the layer clears.
                     var controlOwner: CAMetalLayer?
                     weak var controlWeak: CAMetalLayer?
                     autoreleasepool {
@@ -635,7 +649,9 @@ final class MigoSurfaceAttachTests: XCTestCase {
                     XCTFail(
                         "at the moment RELEASED was observed the layer had \(counted) reference(s), "
                             + "against \(control) for a layer with exactly one owner read the same "
-                            + "way -- so \(counted - control) owner(s) beyond a single one. "
+                            + "way. Neither number is a verdict: this comparison has produced a "
+                            + "negative difference, so treat it as a clue and read the engine's "
+                            + "own surface-resource line instead. "
                             + "Everything in Migo's own graph is accounted for: SurfaceResource::drop "
                             + "releases the anchor before publishing, and the canvas manager holds "
                             + "exactly one PreparedEglSurfaceRef and clears it before "
