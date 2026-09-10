@@ -399,7 +399,32 @@ impl Drop for SurfaceResource {
                 );
             }
         }
-        drop(self.native_anchor.take());
+        // The anchor is released inside an autorelease scope, and RELEASED is
+        // published after that scope ends.
+        //
+        // On Apple the anchor owns a CAMetalLayer through a CFRetain, and
+        // releasing it runs Objective-C on whichever thread performed the last
+        // drop. Anything that release autoreleases -- by Core Animation, by
+        // ANGLE, by anything either of them calls -- lands in that thread's
+        // innermost pool, and if the innermost pool is a thread-lifetime one it
+        // is held until the thread exits. RELEASED means the host may free the
+        // layer, so publishing it while a pool on our side still holds a
+        // reference is publishing a promise we have not kept.
+        //
+        // Measured 2026-09-10 on the iOS simulator: the layer outlived RELEASED
+        // by ~6 ms on one run and until `migo_session_destroy` -- where the
+        // render thread's own outer pool goes -- on another, while this drop
+        // reported `has_anchor=true outstanding=1 native_owners=Some(1)`, the
+        // same reading it gives on the runs that pass. The engine's accounting
+        // was clean and something outside it still held the layer. Draining a
+        // pool on the *test's* thread changed nothing, which is what says the
+        // holder is on another thread: this one.
+        //
+        // Zero-sized off Apple, so this carries no `cfg`.
+        {
+            let _pool = crate::objc_autorelease::autorelease_scope();
+            drop(self.native_anchor.take());
+        }
         self.release.complete();
     }
 }
