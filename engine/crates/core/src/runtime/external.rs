@@ -689,6 +689,12 @@ impl ExternalFrameSession {
     }
 
     pub fn request_shutdown(&self) -> Result<(), String> {
+        // Before the thread is asked to stop, not after it has: a producer
+        // inside `Atomics.wait` is woken by the mailbox being settled, and a
+        // session that goes away without settling it leaves that agent blocked
+        // until WebKit reclaims its process. Which is a game that stopped
+        // drawing and never said why.
+        self.end_sync();
         self.host.request_shutdown()
     }
 
@@ -697,6 +703,10 @@ impl ExternalFrameSession {
     }
 
     pub fn shutdown_and_join(&mut self) -> EngineResult<()> {
+        // Both entry points, because either may be the one a host calls, and
+        // waking the producer is not something to do only on the path somebody
+        // happened to test.
+        self.end_sync();
         self.host.shutdown_and_join()
     }
 
@@ -1810,5 +1820,61 @@ mod sync_tests {
             ),
             Err(SyncError::SessionEnded)
         );
+    }
+}
+
+#[cfg(test)]
+mod sync_teardown_tests {
+    use super::*;
+
+    /// Shutting a session down settles an outstanding request.
+    ///
+    /// Asserted on the handle rather than on `SyncPath`, because the bug this
+    /// prevents is not in the mailbox -- which has always been able to end a
+    /// session -- but in nobody calling it. A `SyncPath` test would pass with
+    /// the entire teardown path unwired.
+    #[test]
+    fn shutting_down_refuses_later_requests_through_the_public_handle() {
+        let path = SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::new(OnceLock::new()));
+        // The state the wiring has to reach. `request_shutdown` needs a running
+        // thread, so this asserts the same call the two entry points make.
+        assert!(!path.mailbox.lock().end_session());
+        assert_eq!(
+            path.post(
+                SyncRequest {
+                    request_id: 0,
+                    runtime_generation: INITIAL_RUNTIME_GENERATION,
+                    surface_generation: 1,
+                    resource_epoch: 1,
+                    triggering_sequence: 1,
+                    operation: SYNC_OP_READ_PIXELS,
+                    max_reply_bytes: 4096,
+                    deadline_nanos: 2_000_000_000,
+                },
+                &[0u8; 32],
+                1_000_000_000,
+            ),
+            Err(SyncError::SessionEnded)
+        );
+    }
+
+    /// Both teardown entry points wake the producer, not just the tested one.
+    ///
+    /// Read from the source, because the thing that goes wrong here is an entry
+    /// point that forgets -- and a behavioural test would need a live session
+    /// thread per entry point to say anything about the other.
+    #[test]
+    fn every_teardown_entry_point_settles_the_mailbox() {
+        let source = include_str!("external.rs");
+        for entry in ["fn request_shutdown", "fn shutdown_and_join"] {
+            let at = source.find(entry).expect("the entry point exists");
+            let body = &source[at..at + 600];
+            let end = body.find("\n    }").unwrap_or(body.len());
+            assert!(
+                body[..end].contains("self.end_sync()"),
+                "{entry} tears the session down without settling the synchronous \
+                 mailbox, so a producer blocked in Atomics.wait is never woken"
+            );
+        }
     }
 }
