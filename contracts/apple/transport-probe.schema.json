@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "_comment": [
+    "G0's P3: which channel carries a frame's worth of bytes from the host to",
+    "the content, and at what cost. It is a separate record from both the",
+    "capability probe and the performance probe, and the reason is the shape of",
+    "the answer rather than tidiness.",
+    "",
+    "The capability record answers with a state and a sentence: SharedArrayBuffer",
+    "constructs or it does not. This is a distribution. Putting a distribution in",
+    "an `answer` object would make `state` mean 'a measurement happened', which",
+    "is the shape that lets a number nobody looked at read as a finding.",
+    "",
+    "The performance record cannot hold it either: its required fields are",
+    "input_to_present_p50/p95/p99, missed_vsync_ratio, gpu_bytes -- a renderer's",
+    "numbers. P3 runs before any renderer exists; it is what narrows the",
+    "transport the renderer will be built on. A record that had to fill those",
+    "fields would fill them with zeros, and a zero in a latency field is a lie",
+    "with a schema's endorsement.",
+    "",
+    "WHAT A SAMPLE IS. One round trip: the page hands N bytes to the transport",
+    "and the same N bytes come back. The echo is the whole of it -- no parsing,",
+    "no rendering, no acknowledgement protocol -- so what is measured is the",
+    "channel and not what either end does with it.",
+    "",
+    "WHY MEAN AND PERCENTILES ARE REPORTED SEPARATELY, AND WHY ONE CAN BE NULL.",
+    "Measured 2026-09-10 on iPhone 12 / iOS 17.0.3: `performance.now()` steps by",
+    "0.020 ms on the loopback origin, which is cross-origin isolated, and by",
+    "1.000 ms on the custom scheme, which is not. A round trip that takes a few",
+    "hundred microseconds is therefore unmeasurable per-sample on the custom",
+    "scheme -- every sample reads 0 ms or 1 ms. The mean survives, because a",
+    "batch of a thousand round trips takes hundreds of milliseconds and the",
+    "quantisation is a rounding error on the total. The percentiles do not, and",
+    "the honest record says so with null rather than reporting the shape of the",
+    "clock as the shape of the transport.",
+    "",
+    "That asymmetry is itself an input to the architecture: a page that needs to",
+    "see its own frame pacing needs a fine clock, and a fine clock needs",
+    "cross-origin isolation, which the custom scheme does not have."
+  ],
+
+  "probe_rules": {
+    "simulator_counts_as_evidence": false,
+    "_simulator_comment": [
+      "The simulator runs the host's networking stack on the host's CPU over a",
+      "loopback that never leaves it. Its numbers are a Mac's numbers.",
+      "",
+      "The clock asymmetry above, though, reproduces on the simulator -- measured",
+      "0.020 ms against 1.000 ms there too -- which is what says it is a property",
+      "of cross-origin isolation and not of the phone."
+    ],
+    "min_samples_per_batch": 200,
+    "_min_samples_comment": [
+      "Enough that a 1 ms clock's quantisation is below a percent of the batch",
+      "total for any transport that could plausibly be chosen. Below this the",
+      "mean stops being trustworthy on the coarse-clock origin, and a mean that",
+      "is trustworthy on one arm and not on the other cannot be compared."
+    ],
+    "payload_classes_required": [64, 4096, 65536, 1048576],
+    "_payload_comment": [
+      "Four classes, spanning what the lane has to carry: an input event, a small",
+      "command batch, a frame's worth of draw commands, and a texture upload.",
+      "A transport that wins at 64 bytes and loses at 1 MiB has not won."
+    ]
+  },
+
+  "record": {
+    "required": [
+      "schema_version", "run_id", "captured_at",
+      "device_class", "hardware_identifier", "ram_bytes",
+      "os_version", "os_build", "webkit_build", "app_build",
+      "lockdown_mode", "origin", "transport", "payload_bytes",
+      "samples", "mean_round_trip_ms", "clock_step_ms",
+      "p50_round_trip_ms", "p95_round_trip_ms", "p99_round_trip_ms",
+      "errors"
+    ],
+    "enums": {
+      "device_class": ["device", "simulator"],
+      "lockdown_mode": ["off", "on", "unknown"],
+      "origin": ["loopback", "custom_scheme"],
+      "transport": ["loopback_websocket", "scheme_request", "sync_xhr_rpc"]
+    },
+    "nullable": ["p50_round_trip_ms", "p95_round_trip_ms", "p99_round_trip_ms"],
+    "_nullable_comment": [
+      "Null where the origin's clock cannot resolve a single round trip. Null is",
+      "not zero and it is not a failure: it is the measurement declining to",
+      "report a number it did not take."
+    ]
+  }
+}

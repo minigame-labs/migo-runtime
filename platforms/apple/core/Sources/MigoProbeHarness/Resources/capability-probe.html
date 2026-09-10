@@ -21,6 +21,12 @@
 <p id="status">running the capability gate...</p>
 <pre id="report"></pre>
 <script src="capability-probe.js"></script>
+<!--
+  P3's measurement, in the same visit and the same page. A second app mode
+  would measure the two questions on two device states and then compare them;
+  a phone that warmed up between them is a variable nobody controlled.
+-->
+<script src="transport-probe.js"></script>
 <script>
   (function () {
     var config = {
@@ -31,8 +37,27 @@
       schemeOrigin: window.__migoProbeConfig.schemeOrigin
     };
     self.migoRunCapabilityProbe(config).then(function (report) {
+      // The transport batches run after the capability answers and their
+      // failure is contained: `catch` here rather than a rejected chain,
+      // because a channel that could not be measured must not cost the visit
+      // its capability record. That record is what gate 1 exists for; this is
+      // what the gate after it draws on.
+      return self.migoMeasureTransports(config).then(function (transports) {
+        report.transport = transports;
+        return report;
+      }).catch(function (error) {
+        report.transport = [];
+        report.transport_error = String(error);
+        return report;
+      });
+    }).then(function (report) {
+      // One message per origin, sent once the visit is finished -- which is
+      // what the native side waits for, and what it can only be given here
+      // because the transport batches land after the capability answers.
+      window.webkit.messageHandlers.migoProbe.postMessage(JSON.stringify(report));
       document.getElementById("status").textContent =
-        "done at " + report.origin + " (" + Object.keys(report.capabilities).length + " answered)";
+        "done at " + report.origin + " (" + Object.keys(report.capabilities).length
+        + " answered, " + (report.transport || []).length + " transport batches)";
       document.getElementById("report").textContent = JSON.stringify(report, null, 2);
     }).catch(function (error) {
       document.getElementById("status").textContent = "the gate itself failed: " + error;
