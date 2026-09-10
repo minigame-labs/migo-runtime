@@ -46,7 +46,11 @@ if (!isMainThread) {
       // postMessage of a plain copy: the params are small and the Worker keeps
       // its own. Nothing here may block -- the block happens in Atomics.wait.
     },
-    takeReply(bytes) {
+    takeReply(bytes, into) {
+      if (into) {
+        into.set(replyBytes.subarray(0, bytes), 0);
+        return bytes;
+      }
       return replyBytes.slice(0, bytes);
     },
     withdraw() {

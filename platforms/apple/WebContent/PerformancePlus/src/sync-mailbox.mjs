@@ -176,6 +176,7 @@ export class SyncMailbox {
     triggeringSequence,
     deadlineNanos,
     nowNanos,
+    into,
   }) {
     if (this.state !== SYNC_STATE_FREE) {
       throw new SyncRequestError(SYNC_ERROR_ALREADY_PENDING);
@@ -240,7 +241,13 @@ export class SyncMailbox {
     }
     if (state === SYNC_STATE_READY) {
       const bytes = this.replyBytes;
-      const reply = this.channel.takeReply(bytes);
+      // `into` is the caller's destination, and passing it down matters on the
+      // path this is for. `readPixels` writes into a view its caller already
+      // allocated, so without it the answer is copied twice more than it needs
+      // to be: once out of the shared buffer into a fresh array, and once out
+      // of that into the caller's view. A full-screen readback on a phone at 4x
+      // is about 14 MiB, and the producer is blocked for every byte of it.
+      const reply = this.channel.takeReply(bytes, into);
       this.#clear();
       return reply;
     }

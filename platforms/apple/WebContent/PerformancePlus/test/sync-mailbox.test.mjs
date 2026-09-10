@@ -138,8 +138,15 @@ function answeringChannel(record, settle) {
       this.posted = params;
       settle(words, view, this);
     },
-    takeReply(bytes) {
+    takeReply(bytes, into) {
       this.reply = bytes;
+      this.into = into;
+      if (into) {
+        // What a real channel does: one copy, straight out of the shared
+        // buffer into the view the caller already had.
+        into.set(new Uint8Array(bytes), 0);
+        return bytes;
+      }
       return new Uint8Array(bytes);
     },
     withdraw() {
@@ -340,6 +347,28 @@ check("a deadline that passes withdraws the request rather than abandoning it", 
   }
   assertEqual(thrown && thrown.code, SYNC_ERROR_TIMED_OUT, "code");
   assert(channel.withdrawn, "the relay must be told, or a late reply lands on the next request");
+  assertEqual(box.state, SYNC_STATE_FREE, "the slot is reusable");
+});
+
+check("an answer is written straight into the caller's destination when it has one", () => {
+  // `readPixels` writes into a view its caller already allocated. Without a
+  // destination the answer is copied twice more than it needs to be -- out of
+  // the shared buffer into a fresh array, and out of that into the view -- and
+  // a full-screen readback on a phone at 4x is about 14 MiB with the producer
+  // blocked for every byte.
+  const record = new SharedArrayBuffer(SYNC_RECORD_BYTES);
+  const channel = answeringChannel(record, (words, view) => {
+    view.setUint32(OFF_REQUEST_ID, 1, true);
+    view.setUint32(OFF_REPLY_BYTES, 16, true);
+    Atomics.store(words, OFF_STATE / 4, SYNC_STATE_READY);
+  });
+  const box = new SyncMailbox(record, channel);
+  const destination = new Uint8Array(64).fill(0xee);
+  const written = box.request(baseRequest({ into: destination }));
+  assertEqual(written, 16, "the byte count is what a destination-taking channel returns");
+  assertEqual(channel.into, destination, "the destination reached the channel");
+  assertEqual(destination[0], 0, "and the answer was written into it");
+  assertEqual(destination[16], 0xee, "without touching a byte past the answer");
   assertEqual(box.state, SYNC_STATE_FREE, "the slot is reusable");
 });
 
