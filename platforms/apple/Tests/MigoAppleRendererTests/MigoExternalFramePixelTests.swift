@@ -36,8 +36,21 @@ final class MigoExternalFramePixelTests: XCTestCase {
     private var attachment: OpaquePointer?
     private var retainedLayer: CAMetalLayer?
 
+    /// The clock reading a host would pass in, and the deadline derived from it.
+    ///
+    /// A literal rather than a real reading, because only the difference between
+    /// the two is used: the library reads no clock of its own for this, so
+    /// `deadline - now` is the whole budget.
+    ///
+    /// 60 s, which is absurd for a readback and right for this lane. The first
+    /// test to run in a process pays ANGLE's load and EGL bring-up before its
+    /// readback can execute, and this bundle already waits 60 s elsewhere for
+    /// the same reason -- measured on the iOS simulator, where a 5 s budget
+    /// timed out on the first test and the second passed in a warm process. A
+    /// production producer would name a far smaller one; a test that named a
+    /// small one would be asserting how fast a starved runner is.
     private let now: UInt64 = 1_000_000_000
-    private var deadline: UInt64 { now + 5_000_000_000 }
+    private var deadline: UInt64 { now + 60_000_000_000 }
 
     /// The two committed frames and the colour each clears to, in the order
     /// `readPixels` returns it. `emit-clear-frame.mjs` exports the same table.
@@ -262,7 +275,13 @@ final class MigoExternalFramePixelTests: XCTestCase {
             "\(name): the readback failed with error \(outcome.error)")
         XCTAssertEqual(outcome.reply_bytes, 2 * 2 * 4, "\(name): four RGBA8 pixels")
 
-        var pixels = [UInt8](repeating: 0, count: Int(outcome.reply_bytes))
+        // Sized from the request, not from the outcome. A readback that failed
+        // reports zero bytes, and an array sized from that is one the caller
+        // then indexes past -- which is how the first simulator failure ended:
+        // three legible assertion messages followed by "Array index is out of
+        // range", where the crash is the least informative line and the only one
+        // that stops the run.
+        var pixels = [UInt8](repeating: 0, count: 2 * 2 * 4)
         var written = 0
         let taken = pixels.withUnsafeMutableBufferPointer { out in
             migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
