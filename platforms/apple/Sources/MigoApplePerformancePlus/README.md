@@ -8,6 +8,39 @@ recorded by the SDK packager; the dependency and symbol gates still need to be
 applied to release bytes before making a release-level no-V8 claim. macOS
 external-frame builds are isolated renderer diagnostics, not this product.
 
+## 🏁 The gate has run (2026-09-10). What the challenge reopened is closed again, on measurement.
+
+The adversarial review of 2026-09-07 reopened two axes on one observation: synchronous
+XHR is a second public blocking primitive, so a synchronous readback might be expressible
+without `SharedArrayBuffer`, which would turn a capability fact into a performance
+trade-off. It said a probe is entitled to decide a trade-off. The probe has run.
+
+**iPhone 12 / iOS 17.0.3, release host, 200 samples per class, no errors** — records in
+`docs/performance/apple/g0/{capability,transport}/`:
+
+| the question this file left open | what the device answered |
+|---|---|
+| can a Worker set `responseType` on a synchronous XHR, so a readback needs no SAB? | **Yes** — every payload class from 64 B to 1 MiB completed. The capability claim is withdrawn as the challenge predicted. |
+| what does that cost? | **~1.15 ms per call**, against 0.216 ms for a loopback WebSocket round trip: **5.4× the latency and 6.1× the host CPU**. A blocking readback is expressible and expensive. |
+| is the custom scheme a secure context, without private API? | **Yes** — `secure_context` is available. This file's claim that promoting one "needs private API" was wrong. |
+| does `crossOriginIsolated` work there? | **No.** COOP/COEP are served and not honoured, so the custom scheme has **no SharedArrayBuffer** — the conclusion survives its broken premise. |
+| the third topology (content Worker blocks, I/O Worker owns the socket) | Included in the candidate space, and it is **exactly what the gate eliminated**: 25 of 520 candidates, all of them needing SAB the custom scheme has not. |
+| which transport? | **Hybrid, switching at 64 KiB.** Loopback socket below (1.9–2.2× faster, 4× less host CPU), custom-scheme request above (4.4× faster, 4.6× less CPU at 1 MiB). Latency and CPU put the crossover in the same place, so it is not a compromise between disagreeing metrics. |
+
+**So: content JavaScript in a Dedicated Worker, host-driven frame clock, hybrid transport
+switching at 64 KiB.** Worker was already leading for a reason the challenge never touched —
+a Worker has no `document`/`window`, which is what makes the environment match the other five
+platforms instead of requiring DOM removal — and the challenge's own conclusion, that Window
+is merely *worse* rather than impossible, is now quantified: 5.4× on every synchronous
+readback.
+
+The verdict is `provisional`, which is the coverage rule's answer to one device and one OS
+and not a doubt about these numbers. `contracts/apple/capability-probe.schema.json` wants a
+device on 15.0, 15.1 and 15.2 as well.
+
+The section below is kept as written, because what it reopened and why is worth reading
+next to what settled it.
+
 ## What is decided, what is leading, and what an adversarial review has reopened
 
 Two of the three axes below were recorded here as *settled on capability grounds, not
