@@ -251,7 +251,10 @@ assert_v8_has_jit() {
     # exists: the first run of this gate reported "the content never reported"
     # against a fixture that had reported perfectly well into a log channel
     # nobody had opened.
-    if ! grep -qE '(INFO|WARN|ERROR) +[a-z_]+(::[a-z_]+)+' "$HOST_LOG"; then
+    # Digits included, because targets have them: `migo_runtime_v8::console` is
+    # the one this very report travels under, and a class of [a-z_] would decide
+    # the channel was closed while reading a line that came through it.
+    if ! grep -qE '(INFO|WARN|ERROR) +[a-z_0-9]+(::[a-z_0-9]+)+' "$HOST_LOG"; then
       fail "the engine log channel is closed: not one tracing line reached the host's output, so the content's report could not have arrived whatever it said. MIGO_CAPI_LOG is set on the run above; if the engine still logs nothing, that is the thing to fix, not the fixture"
     fi
     fail "the engine log channel is open and the content still reported nothing about which V8 it was running on. The fixture prints that line through console.error, so this run measured nothing -- fix the reporting before reading anything else here"
