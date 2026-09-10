@@ -26,6 +26,7 @@ import {
   SYNC_ERROR_REPLY_TOO_LARGE,
   SYNC_ERROR_SESSION_ENDED,
   SYNC_ERROR_UNSUPPORTED_OPERATION,
+  OFF_DEADLINE_NANOS,
   OFF_STATE,
   OFF_REQUEST_ID,
   OFF_MAX_REPLY_BYTES,
@@ -75,6 +76,25 @@ export class SyncRelay {
     // the one outcome this whole protocol is arranged to prevent.
     const token = ++this.serves;
 
+    // And which request that is, read out of the record itself.
+    //
+    // The counter alone is not enough, and the gap is worth naming. It is
+    // bumped when this relay STARTS serving; a producer that gave up on request
+    // A and immediately issued request B publishes B before the page has
+    // delivered B's message, so A's slow answer can arrive while the counter
+    // still says A and the record already says PENDING -- and publishing then
+    // hands the producer A's pixels as B's answer, which is the one outcome
+    // this protocol is arranged to prevent.
+    //
+    // `deadline_nanos` closes it: it is producer-written, written before the
+    // state is published, and each request derives it from its own reading of a
+    // monotonic clock, so consecutive requests do not share one. It is an
+    // identity in practice rather than by construction, and the exact fix is a
+    // producer-owned sequence number in the record -- which the record has no
+    // room for, so it wants the wire's next version rather than a field
+    // borrowed from something else.
+    const deadline = this.view.getBigUint64(OFF_DEADLINE_NANOS, true);
+
     // Read what the producer reserved BEFORE going to the host, because it is
     // what decides whether an answer may be delivered at all, and the record is
     // the producer's statement of it.
@@ -85,10 +105,10 @@ export class SyncRelay {
     } catch (error) {
       // The transport failed. From the producer's side the session is what has
       // become unreachable, which is the code the document gives for it.
-      if (this.#stillOurs(token)) this.#fail(SYNC_ERROR_SESSION_ENDED);
+      if (this.#stillOurs(token, deadline)) this.#fail(SYNC_ERROR_SESSION_ENDED);
       return;
     }
-    if (!this.#stillOurs(token)) return;
+    if (!this.#stillOurs(token, deadline)) return;
 
     if (!answer || answer.ok !== true) {
       this.#fail(
@@ -138,10 +158,11 @@ export class SyncRelay {
 
   /// Whether the request this call set out to answer is still the outstanding
   /// one. A newer request supersedes it, and a withdrawal ends it.
-  #stillOurs(token) {
+  #stillOurs(token, deadline) {
     return (
       token === this.serves &&
-      Atomics.load(this.words, OFF_STATE / 4) === SYNC_STATE_PENDING
+      Atomics.load(this.words, OFF_STATE / 4) === SYNC_STATE_PENDING &&
+      this.view.getBigUint64(OFF_DEADLINE_NANOS, true) === deadline
     );
   }
 

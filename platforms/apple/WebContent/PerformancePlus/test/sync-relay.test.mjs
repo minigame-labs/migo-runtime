@@ -23,6 +23,10 @@ import {
   SYNC_OP_READ_PIXELS,
   OFF_STATE,
   OFF_ERROR,
+  OFF_DEADLINE_NANOS,
+  OFF_REPLY_BYTES,
+  SYNC_STATE_PENDING,
+  OFF_MAX_REPLY_BYTES,
   encodeReadPixelsParams,
 } from "../src/sync-mailbox.mjs";
 import { SyncRelay } from "../src/sync-relay.mjs";
@@ -220,6 +224,47 @@ await check("an answer that arrives after the producer gave up is dropped", asyn
     "a late answer must not publish onto a slot the producer already left",
   );
   assertEqual(Atomics.load(words, OFF_ERROR / 4), 0, "nor leave an error behind");
+});
+
+await check("an answer for the request before this one is not published onto this one", async () => {
+  // The window the serve counter alone does not close: the producer gave up on
+  // A and issued B, and B is PENDING in the record before the page has even
+  // delivered B's message -- so when A's slow answer arrives, the counter still
+  // says A and the record already says PENDING. Publishing then hands the
+  // producer A's pixels as B's answer.
+  //
+  // Driven directly rather than through a Worker, because what has to be
+  // arranged is an ordering the scheduler will not reproduce on demand.
+  const record = new SharedArrayBuffer(SYNC_RECORD_BYTES);
+  const reply = new SharedArrayBuffer(4096);
+  const words = new Int32Array(record, 0, SYNC_RECORD_BYTES / 4);
+  const view = new DataView(record, 0, SYNC_RECORD_BYTES);
+
+  let answerA = () => {};
+  const pendingA = new Promise((resolve) => {
+    answerA = () => resolve({ ok: true, bytes: new Uint8Array(32), requestId: 1 });
+  });
+  const relay = new SyncRelay(record, reply, { request: () => pendingA });
+
+  // Request A is outstanding.
+  view.setUint32(OFF_MAX_REPLY_BYTES, 4096, true);
+  view.setBigUint64(OFF_DEADLINE_NANOS, 111n, true);
+  Atomics.store(words, OFF_STATE / 4, SYNC_STATE_PENDING);
+  const serving = relay.serve(new Uint8Array(32));
+
+  // A times out and B takes the slot, with its own deadline.
+  view.setBigUint64(OFF_DEADLINE_NANOS, 222n, true);
+  Atomics.store(words, OFF_STATE / 4, SYNC_STATE_PENDING);
+
+  answerA();
+  await serving;
+
+  assertEqual(
+    Atomics.load(words, OFF_STATE / 4),
+    SYNC_STATE_PENDING,
+    "B must still be waiting; A's answer is not B's",
+  );
+  assertEqual(Atomics.load(words, OFF_REPLY_BYTES / 4), 0, "and no reply length was published");
 });
 
 console.log(failures === 0 ? "PASS" : `FAIL: ${failures} check(s) failed`);
