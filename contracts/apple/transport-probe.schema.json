@@ -56,11 +56,23 @@
       "mean stops being trustworthy on the coarse-clock origin, and a mean that",
       "is trustworthy on one arm and not on the other cannot be compared."
     ],
-    "payload_classes_required": [64, 4096, 65536, 1048576],
+    "payload_classes_required": [64, 4096, 65536, 131072, 262144, 524288, 1048576],
     "_payload_comment": [
-      "Four classes, spanning what the lane has to carry: an input event, a small",
-      "command batch, a frame's worth of draw commands, and a texture upload.",
-      "A transport that wins at 64 bytes and loses at 1 MiB has not won."
+      "Four of these span what the lane has to carry: an input event (64 B), a",
+      "small command batch (4 KiB), a frame's worth of draw commands (64 KiB),",
+      "and a texture upload (1 MiB). A transport that wins at 64 bytes and loses",
+      "at 1 MiB has not won.",
+      "",
+      "The other three exist to locate a number the implementation needs. The",
+      "first run with four classes measured a crossover -- the loopback socket",
+      "cheaper below, the custom-scheme request cheaper above, on BOTH latency",
+      "and host CPU -- but it could only say the crossover lay somewhere between",
+      "64 KiB and 1 MiB, which is a factor of sixteen. A hybrid transport has to",
+      "switch at a size, and 'somewhere in a 16x range' is not a size.",
+      "",
+      "Doubling from 64 KiB to 1 MiB brackets it to a factor of two. It costs",
+      "about a second and a half per arm per origin, which is nothing against a",
+      "run that already exists."
     ]
   },
 
