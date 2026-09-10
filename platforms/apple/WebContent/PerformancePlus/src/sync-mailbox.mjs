@@ -213,11 +213,28 @@ export class SyncMailbox {
       // land on a slot the next request is using, and the producer would read
       // another call's pixels. CANCELLED is the state the document gives for a
       // producer withdrawing, and it is what the host's own mailbox settles to.
-      Atomics.store(this.words, OFF_STATE / 4, SYNC_STATE_CANCELLED);
-      Atomics.notify(this.words, OFF_STATE / 4);
-      this.channel.withdraw?.();
-      this.#clear();
-      throw new SyncRequestError(SYNC_ERROR_TIMED_OUT);
+      //
+      // Compare-and-exchange rather than a store, and for the mirror of the
+      // reason the relay uses one: between the wait returning and this line,
+      // the relay may have published an answer. A plain store would overwrite
+      // it -- the producer would report a timeout for a call that WAS answered,
+      // and the answer would be lost at the boundary rather than anywhere it
+      // could be noticed. If the exchange fails, the state it returns is the
+      // verdict that landed, and it is taken below exactly as if the wait had
+      // seen it.
+      const previous = Atomics.compareExchange(
+        this.words,
+        OFF_STATE / 4,
+        SYNC_STATE_PENDING,
+        SYNC_STATE_CANCELLED,
+      );
+      if (previous === SYNC_STATE_PENDING) {
+        Atomics.notify(this.words, OFF_STATE / 4);
+        this.channel.withdraw?.();
+        this.#clear();
+        throw new SyncRequestError(SYNC_ERROR_TIMED_OUT);
+      }
+      state = previous;
     }
     if (state === SYNC_STATE_READY) {
       const bytes = this.replyBytes;
