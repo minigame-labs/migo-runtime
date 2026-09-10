@@ -39,10 +39,18 @@ final class MigoExternalFramePixelTests: XCTestCase {
     private let now: UInt64 = 1_000_000_000
     private var deadline: UInt64 { now + 5_000_000_000 }
 
-    /// The colour the committed fixture clears to, in the order `readPixels`
-    /// returns it. Named once so the assertion and the emitter cannot drift
-    /// apart silently: `emit-clear-frame.mjs` exports the same four numbers.
-    private let expected: [UInt8] = [0, 0, 255, 255]
+    /// The two committed frames and the colour each clears to, in the order
+    /// `readPixels` returns it. `emit-clear-frame.mjs` exports the same table.
+    ///
+    /// Two, because one frame read back as the colour it cleared to is also
+    /// satisfied by a readback that returns a constant -- and "the pixels
+    /// happened to be what we expected" is the shape of green this repository
+    /// keeps finding. Submitting both in one session and asserting the pixels
+    /// CHANGED is what a constant cannot pass.
+    private let frames: [(name: String, rgba: [UInt8])] = [
+        ("clear-blue-frame", [0, 0, 255, 255]),
+        ("clear-red-frame", [255, 0, 0, 255]),
+    ]
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -153,10 +161,9 @@ final class MigoExternalFramePixelTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func fixture() throws -> Data {
+    private func fixture(_ name: String) throws -> Data {
         let url = try XCTUnwrap(
-            Bundle.module.url(forResource: "clear-blue-frame", withExtension: "bin",
-                              subdirectory: "Fixtures"),
+            Bundle.module.url(forResource: name, withExtension: "bin", subdirectory: "Fixtures"),
             """
             the committed frame is not in the test bundle. It is declared as a resource of \
             this target in Package.swift; regenerate it with \
@@ -181,11 +188,11 @@ final class MigoExternalFramePixelTests: XCTestCase {
         return bytes
     }
 
-    func testAFrameProducedElsewhereDrawsPixelsThisSessionCanReadBack() throws {
+    /// Submit one frame and read the pixels it drew.
+    private func submitAndRead(_ name: String, sequence: UInt64) throws -> [UInt8] {
         let session = try XCTUnwrap(self.session)
-        let packet = try fixture()
+        let packet = try fixture(name)
 
-        // 1. The frame crosses.
         var ingress = MigoFrameIngressOutcome()
         ingress.struct_size = UInt32(MemoryLayout<MigoFrameIngressOutcome>.size)
         ingress.abi_version = MIGO_ABI_VERSION_CURRENT
@@ -193,28 +200,27 @@ final class MigoExternalFramePixelTests: XCTestCase {
             migo_session_submit_external_frame(
                 session, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &ingress)
         }
-        XCTAssertEqual(submitted, MIGO_OK, "the call itself must succeed")
+        XCTAssertEqual(submitted, MIGO_OK, "\(name): the call itself must succeed")
         XCTAssertEqual(
             ingress.decision, MIGO_FRAME_INGRESS_ACCEPTED,
             """
-            the committed frame was not accepted (wire_error_code \
-            \(ingress.wire_error_code)). That code names which field the ingress refused, \
-            and frame-wire's clear_frame_fixture test asserts what each of them holds.
+            \(name) was not accepted (wire_error_code \(ingress.wire_error_code)). That code \
+            names which field the ingress refused, and frame-wire's clear_frame_fixture test \
+            asserts what each of them holds.
             """)
-        XCTAssertEqual(ingress.accepted_sequence, 1, "the fixture is sequence 1")
+        XCTAssertEqual(ingress.accepted_sequence, sequence, "\(name): sequence")
 
-        // 2. The pixels come back, through the barrier a blocked readPixels uses.
         var request = MigoSyncRequestDescriptor()
         request.struct_size = UInt32(MemoryLayout<MigoSyncRequestDescriptor>.size)
         request.abi_version = MIGO_ABI_VERSION_CURRENT
         request.runtime_generation = 1
         request.surface_generation = 1
         request.resource_epoch = 0
-        request.triggering_sequence = 1
+        request.triggering_sequence = sequence
         request.deadline_nanos = deadline
         request.operation = MIGO_SYNC_OP_READ_PIXELS
-        // Two pixels wide by two high: enough that a wrong row stride shows up,
-        // small enough that a mismatch prints legibly.
+        // Two by two: enough that a wrong row stride shows up, small enough that
+        // a mismatch prints legibly.
         request.max_reply_bytes = 2 * 2 * 4
 
         var outcome = MigoSyncOutcome()
@@ -226,29 +232,43 @@ final class MigoExternalFramePixelTests: XCTestCase {
             migo_session_post_sync_request(
                 session, &request, buffer.baseAddress, buffer.count, now, &outcome)
         }
-        XCTAssertEqual(posted, MIGO_OK)
+        XCTAssertEqual(posted, MIGO_OK, "\(name): post")
         XCTAssertEqual(
             outcome.state, MIGO_SYNC_STATE_READY,
-            "the readback failed with error \(outcome.error)")
-        XCTAssertEqual(outcome.reply_bytes, 2 * 2 * 4, "four RGBA8 pixels")
+            "\(name): the readback failed with error \(outcome.error)")
+        XCTAssertEqual(outcome.reply_bytes, 2 * 2 * 4, "\(name): four RGBA8 pixels")
 
         var pixels = [UInt8](repeating: 0, count: Int(outcome.reply_bytes))
         var written = 0
         let taken = pixels.withUnsafeMutableBufferPointer { out in
             migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
         }
-        XCTAssertEqual(taken, MIGO_OK)
-        XCTAssertEqual(written, pixels.count)
+        XCTAssertEqual(taken, MIGO_OK, "\(name): take")
+        XCTAssertEqual(written, pixels.count, "\(name): written")
+        return pixels
+    }
 
-        // 3. And they are the colour the frame asked for. Exactly: no tolerance,
-        // because a tolerance is a number somebody picks and every
-        // wrong-colour-space and wrong-premultiply bug this project has had
-        // would fit inside a generous one.
-        for pixel in 0..<4 {
-            let rgba = Array(pixels[(pixel * 4)..<(pixel * 4 + 4)])
-            XCTAssertEqual(
-                rgba, expected,
-                "pixel \(pixel) is \(rgba), and the frame cleared to \(expected)")
+    func testAFrameProducedElsewhereDrawsPixelsThisSessionCanReadBack() throws {
+        var readings: [[UInt8]] = []
+        for (index, frame) in frames.enumerated() {
+            let pixels = try submitAndRead(frame.name, sequence: UInt64(index + 1))
+            // Exactly, with no tolerance: a tolerance is a number somebody picks,
+            // and every wrong-colour-space and wrong-premultiply bug this project
+            // has had would fit inside a generous one.
+            for pixel in 0..<4 {
+                let rgba = Array(pixels[(pixel * 4)..<(pixel * 4 + 4)])
+                XCTAssertEqual(
+                    rgba, frame.rgba,
+                    "\(frame.name) pixel \(pixel) is \(rgba), and the frame cleared to \(frame.rgba)")
+            }
+            readings.append(pixels)
         }
+
+        // The control. A readback that ignored the frame and returned a constant
+        // would have satisfied every assertion above for whichever colour it
+        // happened to return; it cannot satisfy this one.
+        XCTAssertNotEqual(
+            readings[0], readings[1],
+            "the two frames cleared to different colours and the readback returned the same bytes")
     }
 }

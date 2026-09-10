@@ -152,24 +152,32 @@ fi
 # makes" and "is it still a valid frame saying what it claims" -- and a committed
 # fixture needs both.
 
-FIXTURE="platforms/apple/Tests/MigoAppleRendererTests/Fixtures/clear-blue-frame.bin"
-if [[ ! -f "$FIXTURE" ]]; then
-    echo "FAIL: $FIXTURE is missing; regenerate it with the emitter below." >&2
-    exit 1
-fi
-
-REGENERATED="$(mktemp)"
+FIXTURES="platforms/apple/Tests/MigoAppleRendererTests/Fixtures"
+REGENERATED="$(mktemp -d)"
 trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED"' EXIT
 node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs "$REGENERATED" >/dev/null
 
-if ! cmp -s "$FIXTURE" "$REGENERATED"; then
-    echo "FAIL: the emitter no longer reproduces $FIXTURE byte for byte." >&2
-    echo "      Either the encoder changed and the fixture needs regenerating, or the" >&2
-    echo "      fixture was edited by hand. Regenerate with:" >&2
-    echo "        node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs" >&2
+committed=0
+for regenerated in "$REGENERATED"/*.bin; do
+    name="$(basename "$regenerated")"
+    if [[ ! -f "$FIXTURES/$name" ]]; then
+        echo "FAIL: the emitter writes $name and $FIXTURES does not have it." >&2
+        exit 1
+    fi
+    if ! cmp -s "$FIXTURES/$name" "$regenerated"; then
+        echo "FAIL: the emitter no longer reproduces $FIXTURES/$name byte for byte." >&2
+        echo "      Either the encoder changed and the fixtures need regenerating, or one" >&2
+        echo "      was edited by hand. Regenerate with:" >&2
+        echo "        node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs" >&2
+        exit 1
+    fi
+    committed=$((committed + 1))
+done
+if (( committed < 2 )); then
+    echo "FAIL: the emitter wrote $committed frames; it writes one per colour and there are two." >&2
     exit 1
 fi
-echo "the committed clear-to-blue frame still comes out of the emitter byte for byte"
+echo "the $committed committed frames still come out of the emitter byte for byte"
 
 # --- the synchronous barrier's argument record, across the two languages -----
 #

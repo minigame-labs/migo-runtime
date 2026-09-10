@@ -51,20 +51,32 @@ function floatBits(value) {
 
 export const CANVAS_ID = 1;
 export const GL_COLOR_BUFFER_BIT = 0x4000;
-/** The colour this frame clears to, as the consumer will read it back. */
-export const CLEAR_RGBA = [0, 0, 255, 255];
 
-export function clearFrameBytes() {
+/**
+ * The two frames, and why there are two.
+ *
+ * One frame that clears to blue, read back as blue, is satisfied by a readback
+ * that returns a constant -- and "the pixels happened to be the colour we
+ * expected" is exactly the shape of green this repository keeps finding. So the
+ * consumer submits both in one session and asserts the pixels CHANGED. A
+ * readback that ignores the frame cannot pass that.
+ */
+export const FRAMES = [
+  { name: "clear-blue-frame", sequence: 1n, rgba: [0, 0, 1, 1], readback: [0, 0, 255, 255] },
+  { name: "clear-red-frame", sequence: 2n, rgba: [1, 0, 0, 1], readback: [255, 0, 0, 255] },
+];
+
+export function clearFrameBytes({ sequence, rgba }) {
   const words = [
     MAGIC,
     STREAM_VERSION,
     // CLEAR_COLOR: H C F F F F
     packHeader(OP_CLEAR_COLOR, 6),
     CANVAS_ID,
-    floatBits(0),
-    floatBits(0),
-    floatBits(1),
-    floatBits(1),
+    floatBits(rgba[0]),
+    floatBits(rgba[1]),
+    floatBits(rgba[2]),
+    floatBits(rgba[3]),
     // CLEAR: H C U
     packHeader(OP_CLEAR, 3),
     CANVAS_ID,
@@ -76,7 +88,7 @@ export function clearFrameBytes() {
 
   return encodeFrame({
     launchNonce: 0xa3n,
-    sequence: 1n,
+    sequence,
     runtimeGeneration: 1n,
     surfaceGeneration: 1n,
     resourceEpoch: 0n,
@@ -95,14 +107,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 // the package the tests actually run in. One file, three readers: this emitter
 // writes it, `frame-wire`'s clear_frame_fixture test asserts what is in it, and
 // MigoSyncBarrierABITests submits it to a live session.
-const output =
+const directory =
   process.argv[2] ??
-  join(
-    here,
-    "..", "..", "..",
-    "Tests", "MigoAppleRendererTests", "Fixtures", "clear-blue-frame.bin",
-  );
-mkdirSync(dirname(output), { recursive: true });
-const bytes = clearFrameBytes();
-writeFileSync(output, bytes);
-console.log(`emitted a ${bytes.length}-byte clear-to-blue frame into ${output}`);
+  join(here, "..", "..", "..", "Tests", "MigoAppleRendererTests", "Fixtures");
+mkdirSync(directory, { recursive: true });
+for (const frame of FRAMES) {
+  const bytes = clearFrameBytes(frame);
+  writeFileSync(join(directory, `${frame.name}.bin`), bytes);
+  console.log(`emitted a ${bytes.length}-byte ${frame.name} into ${directory}`);
+}
