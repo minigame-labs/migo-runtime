@@ -70,7 +70,7 @@ plan_value() {
   printf '%s\n' "$LAST_OUTPUT" | sed -n "s/^$key=//p"
 }
 
-echo "[1/6] a device run refuses to proceed unattested"
+echo "[1/7] a device run refuses to proceed unattested"
 expect_refusal "a device run with no attestation" --device dummy-udid --dry-run
 expect_refusal "a device run attesting only Lockdown Mode" \
   --device dummy-udid --lockdown off --dry-run
@@ -85,7 +85,7 @@ case "$LAST_OUTPUT" in
 $LAST_OUTPUT" ;;
 esac
 
-echo "[2/6] an attestation this script does not understand is refused, not defaulted"
+echo "[2/7] an attestation this script does not understand is refused, not defaulted"
 expect_refusal "--lockdown=maybe" \
   --device dummy-udid --lockdown maybe --local-network-prompt none --dry-run
 expect_refusal "--local-network-prompt=yes" \
@@ -94,12 +94,12 @@ expect_refusal "a run id that could name another file" \
   --simulator --run-id "../evil" --dry-run
 expect_refusal "a run id with a separator" --simulator --run-id "a/b" --dry-run
 
-echo "[3/6] one run is one target"
+echo "[3/7] one run is one target"
 expect_refusal "no target at all" --dry-run
 expect_refusal "both targets" --simulator --device dummy-udid --dry-run
 expect_refusal "an option nobody defined" --simulator --pretend --dry-run
 
-echo "[4/6] simulator output cannot become evidence"
+echo "[4/7] simulator output cannot become evidence"
 EVIDENCE_REL="docs/performance/apple/g0/capability"
 expect_refusal "a simulator run aimed at the evidence directory" \
   --simulator --out "$EVIDENCE_REL" --dry-run
@@ -120,7 +120,7 @@ case "$SIM_DIR" in
   *) ;;
 esac
 
-echo "[5/6] a device run admits from the directory it collected into"
+echo "[5/7] a device run admits from the directory it collected into"
 # With an explicit --out, deliberately. On a default run the collection directory
 # and the evidence directory are the same path, so a plan that admits from a
 # hardcoded evidence directory agrees with itself and the check passes -- which is
@@ -151,7 +151,7 @@ done
   "the plan expects the records at $DEV_FILE, which is not the run id's file under
 the collection directory"
 
-echo "[6/6] the flags the runner passes are the flags the app reads"
+echo "[6/7] the flags the runner passes are the flags the app reads"
 python3 - "$RUNNER" "$PARSER" "$VIEW" <<'PYTHON' || fail "the runner and the parser disagree about the flags"
 import re
 import sys
@@ -253,6 +253,65 @@ if awaited not in runner_code:
         f"something else; expected to find {awaited!r}",
         file=sys.stderr)
     raise SystemExit(1)
+PYTHON
+
+echo "[7/7] a record left by an earlier run cannot pass as this run's"
+# Extracted from the runner and executed, rather than grepped for. The rule it
+# encodes is the one whose failure is invisible: a repeated --run-id leaves the
+# previous run's records in the container, the poll matches them on the first
+# try, and the transfer wins the race against an app that has not finished
+# writing. The second evidence run on the first real phone did exactly that and
+# reported success, with timings byte-identical to a build made eight minutes
+# earlier. A greps-for-the-string check would have passed against a predicate
+# that always exits 0.
+python3 - "$RUNNER" <<'PYTHON'
+import datetime, json, pathlib, re, subprocess, sys, tempfile
+
+runner = pathlib.Path(sys.argv[1]).read_text()
+# The one `python3 -c '...'` in the runner, with its single-quoted program.
+match = re.search(r"python3 -c '\n(.*?)\n' \"\$COPY_DEST\" \"\$LAUNCH_EPOCH\"", runner, re.S)
+if not match:
+    print(
+        "the runner no longer carries a freshness predicate this gate can execute, so "
+        "nothing checks that a stale record is refused",
+        file=sys.stderr)
+    raise SystemExit(1)
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp = pathlib.Path(tmp)
+    predicate = tmp / "freshness.py"
+    predicate.write_text(match.group(1) + "\n")
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+
+    def stamp(offset):
+        return datetime.datetime.fromtimestamp(
+            now + offset, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def verdict(records):
+        path = tmp / "records.json"
+        path.write_text(json.dumps(records))
+        return subprocess.run(
+            [sys.executable, str(predicate), str(path), str(now)]).returncode
+
+    cases = [
+        ("records written after the launch", [{"captured_at": stamp(5)},
+                                              {"captured_at": stamp(9)}], 0),
+        ("a single record, not a list", {"captured_at": stamp(5)}, 0),
+        ("a record from eight minutes ago", [{"captured_at": stamp(-480)}], 1),
+        # The one that matters most: one origin re-ran and the other did not, so
+        # half the evidence is this run's and half is not. Taking the newest
+        # stamp -- or the first -- accepts it.
+        ("one fresh record and one stale", [{"captured_at": stamp(-480)},
+                                            {"captured_at": stamp(9)}], 1),
+    ]
+    for what, records, expected in cases:
+        got = verdict(records)
+        if got != expected:
+            print(
+                f"the freshness predicate {'accepted' if got == 0 else 'refused'} "
+                f"{what}, and it should have {'accepted' if expected == 0 else 'refused'} it",
+                file=sys.stderr)
+            raise SystemExit(1)
 PYTHON
 
 echo "PASS: the runner refuses what it has to refuse, and passes what the app reads"
