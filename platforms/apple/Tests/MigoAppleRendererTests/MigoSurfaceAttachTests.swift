@@ -508,24 +508,59 @@ final class MigoSurfaceAttachTests: XCTestCase {
 
             let live = try XCTUnwrap(attachment)
             var release: OpaquePointer?
-            let began = migo_surface_begin_detach(live, &release)
-            XCTAssertEqual(began, MIGO_OK)
-            if began == MIGO_OK { attachment = nil }
-            let observer = try XCTUnwrap(release)
-
-            var status = MigoSurfaceReleaseStatus()
-            status.struct_size = UInt32(MemoryLayout<MigoSurfaceReleaseStatus>.size)
-            status.abi_version = MIGO_ABI_VERSION_CURRENT
+            var observer: OpaquePointer?
             var released = false
-            let deadline = Date().addingTimeInterval(5)
-            while Date() < deadline {
-                XCTAssertEqual(migo_surface_release_query(observer, &status), MIGO_OK)
-                if status.state == MIGO_SURFACE_RELEASE_RELEASED {
-                    released = true
-                    break
+
+            // Retirement runs inside a pool of its own, and the weak reference is
+            // read after that pool has drained.
+            //
+            // XCTest does not drain an autorelease pool between statements, so
+            // anything autoreleased while retiring -- by Core Animation, by ANGLE,
+            // by any framework this crosses -- sits in the test method's pool until
+            // the method returns. A weak reference to an object in an undrained
+            // pool does not clear. Read before the drain, `observedLayer` is partly
+            // a question about pool timing and only partly about ownership.
+            //
+            // That is not a hypothesis. Measured 2026-09-10: on a run where this
+            // test FAILED, the engine reported `has_anchor=true outstanding=1
+            // native_owners=Some(1)` at every retirement -- identical to the runs
+            // where it passes -- so at the moment RELEASED was published, Migo's
+            // anchor was the only owner the engine knows of. And a CAMetalLayer
+            // with exactly one owner, read through the weak-then-strong path used
+            // below, measures CFGetRetainCount == 3 on macOS 26.6, which is
+            // exactly what the failing run reported. One owner, uncounted by the
+            // engine, cleared at times that match a pool draining: "7 ms after
+            // RELEASED" on one run, "at migo_session_destroy" -- where the render
+            // thread's own outer pool goes -- on another.
+            //
+            // The two earlier explanations, ANGLE's window surface and then two
+            // unknown owners, were each refuted by their own evidence: this path
+            // logs no create_onscreen and reports current_generation=None, so no
+            // window surface was ever created, and the "two owners" arithmetic
+            // subtracted a baseline nobody had measured.
+            //
+            // The assertion below still means what it meant. If a real owner
+            // outlives RELEASED, a drained pool does not save it.
+            try autoreleasepool {
+                let began = migo_surface_begin_detach(live, &release)
+                XCTAssertEqual(began, MIGO_OK)
+                if began == MIGO_OK { attachment = nil }
+                observer = try XCTUnwrap(release)
+
+                var status = MigoSurfaceReleaseStatus()
+                status.struct_size = UInt32(MemoryLayout<MigoSurfaceReleaseStatus>.size)
+                status.abi_version = MIGO_ABI_VERSION_CURRENT
+                let deadline = Date().addingTimeInterval(5)
+                while Date() < deadline {
+                    XCTAssertEqual(migo_surface_release_query(observer!, &status), MIGO_OK)
+                    if status.state == MIGO_SURFACE_RELEASE_RELEASED {
+                        released = true
+                        break
+                    }
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.001))
                 }
-                RunLoop.current.run(until: Date().addingTimeInterval(0.001))
             }
+            let observerHandle = try XCTUnwrap(observer)
             XCTAssertTrue(released, "native retirement must complete before releasing the layer")
             XCTAssertNil(observedLayer, "RELEASED must follow the engine's final layer release")
 
@@ -573,16 +608,27 @@ final class MigoSurfaceAttachTests: XCTestCase {
                     // therefore two unknown owners -- assumed a baseline nobody
                     // had measured.
                     //
-                    // Same shape on both sides, which means the same weak-then-
-                    // strong read: a layer with exactly ONE owner, read that way,
-                    // measured 3 on macOS 26.6. The failing reading was also 3.
-                    // So there is one owner beyond this test's read path, not two,
-                    // and the earlier arithmetic -- "3 references, one of which is
-                    // this test's binding, therefore two unknown owners" -- was
-                    // subtracting a baseline nobody had measured.
-                    var controlOwner: CAMetalLayer? = CAMetalLayer()
-                    controlOwner?.drawableSize = CGSize(width: 256, height: 256)
-                    weak var controlWeak: CAMetalLayer? = controlOwner
+                    // Same shape on both sides, and "same shape" has to include
+                    // the pool. The observed layer was created inside an
+                    // autoreleasepool that has since drained and is kept alive by
+                    // one owner; so the control is created inside a pool of its
+                    // own, kept alive by exactly one owner outside it, and read
+                    // through the same weak-then-strong path.
+                    //
+                    // The first version of this control skipped the pool -- it
+                    // created the layer in the test method's own, undrained one --
+                    // and measured 5 against an observed 3, which made the
+                    // difference negative and the arithmetic meaningless. A
+                    // control that does not mirror the measurement is worse than
+                    // no control: it produces a number that looks like evidence.
+                    var controlOwner: CAMetalLayer?
+                    weak var controlWeak: CAMetalLayer?
+                    autoreleasepool {
+                        let created = CAMetalLayer()
+                        created.drawableSize = CGSize(width: 256, height: 256)
+                        controlOwner = created
+                        controlWeak = created
+                    }
                     let control = controlWeak.map { CFGetRetainCount($0) } ?? -1
                     controlOwner = nil
 
@@ -621,7 +667,7 @@ final class MigoSurfaceAttachTests: XCTestCase {
                             + "released, and RELEASED reported a retirement that did not happen")
                 }
             }
-            XCTAssertEqual(migo_surface_release_destroy(observer), MIGO_OK)
+            XCTAssertEqual(migo_surface_release_destroy(observerHandle), MIGO_OK)
         #else
             throw XCTSkip("this package is built for macOS and iOS only")
         #endif
