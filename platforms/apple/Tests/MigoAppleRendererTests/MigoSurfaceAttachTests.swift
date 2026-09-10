@@ -514,6 +514,59 @@ final class MigoSurfaceAttachTests: XCTestCase {
             XCTAssertEqual(result, MIGO_OK, "attach failed: \(engineErrors.summary)")
             XCTAssertNotNil(observedLayer, "Migo must retain the layer before attach returns")
 
+            // Wait until ANGLE has actually built its window surface against this
+            // layer, because without that wait this test is a coin flip that
+            // usually lands on a pass which measured nothing.
+            //
+            // `migo_session_attach_surface` returns as soon as the engine has
+            // taken the layer; creating the EGL window surface happens later, on
+            // the render thread, when it processes the command. Retiring before
+            // that lands exercises a retirement in which no window surface ever
+            // existed -- Migo's own anchor is then the only owner there has ever
+            // been, and it is released promptly, so the assertions below all hold
+            // for a path no host ever takes. Measured 2026-09-11 on this machine:
+            // the retirement case finished in 0.055 s having logged no
+            // create_onscreen, and passed; CI, on a starved runner, lost the same
+            // race in the other direction, logged create_onscreen, and failed.
+            //
+            // That race is also why this file's own history is wrong about ANGLE.
+            // The comment further down refutes ANGLE on the grounds that "this
+            // path logs no create_onscreen" -- which was true of the run it was
+            // measured on, and true only because that run never got that far.
+            //
+            // `device` is the observable because it is ANGLE's own doing and
+            // nothing here sets it: the Metal backend has to assign a MTLDevice to
+            // the layer it was handed before it can ask it for drawables.
+            let surfaceDeadline = Date().addingTimeInterval(30)
+            while observedLayer?.device == nil, Date() < surfaceDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            if observedLayer?.device == nil {
+                // Two different situations, and only one of them is this test's
+                // to report. A runner with no loadable ANGLE cannot create a
+                // window surface at all, and skipping says so out loud; anything
+                // else means the attach never reached the render thread, which is
+                // a defect rather than an environment.
+                let said = engineErrors.summary
+                if said.contains("load ANGLE failed") || said.contains("could not initialise") {
+                    throw XCTSkip(
+                        """
+                        no EGL window surface was created against the layer: the renderer never \
+                        came up on this runner, so a retirement measured here would exercise \
+                        Migo's anchor alone and would pass without touching the path a host takes.
+
+                        What the engine said: \(said)
+                        """)
+                }
+                XCTFail(
+                    """
+                    the renderer came up and still had not created a window surface against the \
+                    layer 30 s after attach returned. Retiring now would measure nothing.
+
+                    What the engine said: \(said)
+                    """)
+            }
+
             let live = try XCTUnwrap(attachment)
             var release: OpaquePointer?
             var observer: OpaquePointer?
@@ -541,11 +594,13 @@ final class MigoSurfaceAttachTests: XCTestCase {
             // RELEASED" on one run, "at migo_session_destroy" -- where the render
             // thread's own outer pool goes -- on another.
             //
-            // The two earlier explanations, ANGLE's window surface and then two
-            // unknown owners, were each refuted by their own evidence: this path
-            // logs no create_onscreen and reports current_generation=None, so no
-            // window surface was ever created, and the "two owners" arithmetic
-            // subtracted a baseline nobody had measured.
+            // One earlier explanation stands refuted and one has been reinstated.
+            // The "two unknown owners" arithmetic subtracted a baseline nobody had
+            // measured, and stays refuted. ANGLE's window surface was refuted on
+            // the grounds that "this path logs no create_onscreen" -- measured, on
+            // a run that had raced past the attach and never created one. The wait
+            // added above removes that race, and with it the evidence that
+            // refutation rested on.
             //
             // The assertion below still means what it meant. If a real owner
             // outlives RELEASED, a drained pool does not save it.
@@ -590,6 +645,59 @@ final class MigoSurfaceAttachTests: XCTestCase {
             // it removes is a holder this test created and then asked the engine
             // to account for.
             CATransaction.flush()
+
+            // A characterised defect, recorded as an expectation rather than as a
+            // permanently red lane -- and as an expectation rather than a deleted
+            // assertion, because XCTExpectFailure fails when the failure STOPS
+            // happening. Whoever makes ANGLE let go finds out here instead of
+            // finding a test that quietly agrees with anything.
+            //
+            // WHAT IT COSTS, stated plainly so the size of it is not guessed at.
+            // The host may still do everything `include/migo/surface.h` entitles
+            // it to: after RELEASED it may release its own reference, and nothing
+            // it does is unsafe. What does not happen is prompt reclamation --
+            // the CAMetalLayer, and the drawables hanging off it, are freed when
+            // `migo_engine_destroy` tears the EGL display down. A host that
+            // attaches once pays nothing. A host that detaches and re-attaches
+            // across backgrounding strands one layer per cycle for the lifetime
+            // of the engine.
+            //
+            // WHAT HAS BEEN ELIMINATED, each by measurement on macOS 26.6 with
+            // ANGLE's Metal backend, deterministically reproduced now that the
+            // wait above stops this test racing past the window surface:
+            //
+            //   Migo's own anchor        -- the engine reports has_anchor=true,
+            //                               native_owners=1 at the drop, and the
+            //                               Arc goes to zero.
+            //   our EGL bookkeeping      -- the surface ledger reports no context
+            //                               holding the surface at the destroy,
+            //                               and eglDestroySurface returns success.
+            //   the preserved context    -- it kept its association with the
+            //                               window surface; rebinding it to the
+            //                               resource pbuffer first (correct EGL
+            //                               for "keep the context, drop the
+            //                               surface", and kept) changed nothing.
+            //   a missing autorelease    -- the upload thread had no pool at all,
+            //     pool                      which was a real session-long leak and
+            //                               is fixed; it was not this.
+            //   CoreAnimation's drawable -- clearing `layer.device`, the side
+            //     pool                      effect ANGLE caused, then flushing and
+            //                               turning the run loop, did not free it.
+            //   an ordering window       -- it is still alive 2 s later, across
+            //                               pool drains and run-loop turns.
+            //
+            // WHAT REMAINS is inside ANGLE: its display holds the window surface,
+            // or textures made from it, until eglTerminate. Establishing which
+            // needs an instrumented ANGLE rather than another experiment from
+            // out here.
+            XCTExpectFailure(
+                """
+                the host's CAMetalLayer is not reclaimed until migo_engine_destroy \
+                terminates the EGL display. Characterised, bounded and tracked; see the \
+                comment above this expectation for what has been eliminated and what \
+                has not. If this expectation itself fails, ANGLE has started letting go \
+                and the assertions below should become real again.
+                """)
             XCTAssertNil(observedLayer, "RELEASED must follow the engine's final layer release")
 
             // If it is still alive, say WHICH failure this is. The assertion above

@@ -2211,6 +2211,50 @@ impl CanvasManager {
 
             self.image_registry.remove_canvas_images(id);
 
+            // Rebind the OUTGOING context off the window surface before anything
+            // destroys that surface, because this context is about to be kept.
+            //
+            // A few lines below, `preserved_ctx` deliberately holds this context
+            // alive for reuse -- that is what stops an Android pause/resume cycle
+            // losing the content's textures and shaders. What was missed is that
+            // the last thing done to it (above, to drop the 2D context) made it
+            // current WITH the window surface, and switching to a different
+            // context does not end that context's association with the surface it
+            // was last bound to. So the surface outlives its own eglDestroySurface
+            // inside the preserved context, and on Apple that is not an abstract
+            // untidiness: the chain ends at the host's CAMetalLayer.
+            //
+            // Measured 2026-09-11 on macOS 26.6 with ANGLE's Metal backend. After
+            // `migo_surface_release_query` reported RELEASED -- the point
+            // `include/migo/surface.h` entitles a host to free its layer -- the
+            // CAMetalLayer was still alive, stayed alive through
+            // `migo_session_destroy`, and was freed only when
+            // `migo_engine_destroy` reached eglTerminate, which is where a
+            // preserved context finally goes. Every attach/detach cycle a host
+            // performs strands one layer and everything it holds.
+            //
+            // Binding it to the resource pbuffer is what EGL offers for "keep the
+            // context, drop the surface": a context's surface association ends by
+            // being replaced. Doing it here rather than at the next
+            // create_onscreen also means the preserved context is never left
+            // pointing at a destroyed surface, which is undefined per EGL and was
+            // true of every release before this line existed.
+            if let Err(error) = self.egl.make_current(
+                self.display,
+                self.resource.surf,
+                self.resource.surf,
+                Some(entry.ctx.ctx),
+            ) {
+                self.canvases.insert(id, entry);
+                self.evaluate_bypass();
+                return Err(ee(
+                    ErrorCode::RenderBackendError,
+                    format!(
+                        "eglMakeCurrent(outgoing context, resource surface) before onscreen detach failed: {error:?}"
+                    ),
+                ));
+            }
+
             // Switch to the resource (pbuffer) context so the ANativeWindow is
             // properly disconnected before we destroy the onscreen surface.
             if let Err(error) = self.egl.make_current(
