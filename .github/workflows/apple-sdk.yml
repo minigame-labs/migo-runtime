@@ -194,6 +194,23 @@ jobs:
           cd engine
           cargo test -p migo-runtime-v8 --locked --target "$host"
 
+      # The step above proves the *V8* archive evaluates script -- it is
+      # rusty_v8's own integration tests, run against the bytes we ship. It says
+      # nothing about ours. Everything else that looks at an assembled Migo
+      # archive is a link check or a symbol audit, and an archive that links,
+      # exports every symbol and cannot run a game passes all of them; the first
+      # person to find out would be whoever integrated it.
+      #
+      # So this links a host against that archive and runs a game through it.
+      # The content sums 1..1000, which has to be executed to exist, and then
+      # calls migo.exitMiniProgram() -- so a pass means V8 ran AND the migo
+      # capability surface was installed.
+      - name: The shipping macOS archive runs a game, not just links
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+
       # Not for macos-v8, and the exclusion is the product's definition rather
       # than an exemption: that archive links in-process V8 on purpose, so an
       # assertion that it carries no engine symbols would be asserting the
