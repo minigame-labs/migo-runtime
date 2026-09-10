@@ -356,6 +356,21 @@ impl Drop for SurfaceResource {
         // greater than one here names that owner's existence at the moment it
         // matters, in every platform's logs, instead of leaving it to a flaky
         // assertion in one platform's test suite.
+        // Says something either way, because its silence had two readings and
+        // they lead opposite places. When the iOS arm of
+        // `testMetalLayerIsRetainedUntilNativeRetirementCompletes` failed with a
+        // layer alive after RELEASED, this site printed nothing -- and "the
+        // anchor was the sole owner" and "there was no anchor to check" are the
+        // same silence. The first says the extra owner is outside this graph;
+        // the second says the surface was never installed and the check never
+        // applied. A whole CI round trip was spent not knowing which.
+        // INFO rather than DEBUG so it appears at the level the Apple tests
+        // already ask for; it runs once per retirement, not per frame.
+        tracing::info!(
+            has_anchor = self.native_anchor.is_some(),
+            generation = self.public_generation.get(),
+            "surface resource dropping; the owner check below applies only with an anchor"
+        );
         if let Some(anchor) = self.native_anchor.as_ref() {
             let outstanding = Arc::strong_count(anchor);
             // TWO counts, because they answer two different questions and the

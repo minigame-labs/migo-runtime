@@ -265,7 +265,7 @@ echo "[7/7] a record left by an earlier run cannot pass as this run's"
 # earlier. A greps-for-the-string check would have passed against a predicate
 # that always exits 0.
 python3 - "$RUNNER" <<'PYTHON'
-import datetime, json, pathlib, re, subprocess, sys, tempfile
+import datetime, json, os, pathlib, re, subprocess, sys, tempfile
 
 runner = pathlib.Path(sys.argv[1]).read_text()
 # The one `python3 -c '...'` in the runner, with its single-quoted program.
@@ -281,7 +281,12 @@ with tempfile.TemporaryDirectory() as tmp:
     tmp = pathlib.Path(tmp)
     predicate = tmp / "freshness.py"
     predicate.write_text(match.group(1) + "\n")
-    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    # Any instant will do -- the cases below are all relative to it -- so this
+    # takes SOURCE_DATE_EPOCH when the build names one. A test that needs a
+    # reference point rather than the current time has no business reading a
+    # clock that makes two runs of one commit differ.
+    now = int(os.environ.get("SOURCE_DATE_EPOCH")
+              or datetime.datetime.now(datetime.timezone.utc).timestamp())
 
     def stamp(offset):
         return datetime.datetime.fromtimestamp(
