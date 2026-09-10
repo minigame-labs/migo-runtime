@@ -219,8 +219,14 @@ fi
 
 echo "[2/2] running a game through it, with ANGLE beside it (harden=$HARDEN)"
 HOST_LOG="$WORK/host.log"
+# The content reports which V8 it ran on through `console.error`, which the
+# engine routes to `tracing::error!` -- and a host that installs no subscriber
+# prints none of it. This host installed none, so the first run of the measured
+# gate reported "the content never reported which V8 it was running on" against
+# a fixture that had reported it perfectly well. The channel has to be opened by
+# whoever wants to read it.
 set +e
-"$HOST" "$WORK/files" "$CONTENT_ID" ${DRAWABLES:+"$DRAWABLES"} > "$HOST_LOG" 2>&1
+MIGO_CAPI_LOG=info "$HOST" "$WORK/files" "$CONTENT_ID" ${DRAWABLES:+"$DRAWABLES"} > "$HOST_LOG" 2>&1
 HOST_STATUS=$?
 set -e
 cat "$HOST_LOG"
@@ -239,7 +245,17 @@ assert_v8_has_jit() {
   # An absent report is a failure, not a pass. A measurement that quietly stops
   # being taken is the failure mode this repository has already been bitten by:
   # a suite that reported "0 assertions" instead of going red.
-  [[ -n "$report" ]] || fail "the content never reported which V8 it was running on. The fixture prints that line through console.error and it is missing from the host's output, so this run measured nothing -- fix the reporting before reading anything else here"
+  if [[ -z "$report" ]]; then
+    # Two different failures, and they have opposite fixes. Telling them apart
+    # here rather than in the next CI round trip is the whole reason this branch
+    # exists: the first run of this gate reported "the content never reported"
+    # against a fixture that had reported perfectly well into a log channel
+    # nobody had opened.
+    if ! grep -qE '(INFO|WARN|ERROR) +[a-z_]+(::[a-z_]+)+' "$HOST_LOG"; then
+      fail "the engine log channel is closed: not one tracing line reached the host's output, so the content's report could not have arrived whatever it said. MIGO_CAPI_LOG is set on the run above; if the engine still logs nothing, that is the thing to fix, not the fixture"
+    fi
+    fail "the engine log channel is open and the content still reported nothing about which V8 it was running on. The fixture prints that line through console.error, so this run measured nothing -- fix the reporting before reading anything else here"
+  fi
   wasm="${report#*wasm=}"; wasm="${wasm%% *}"
   mips="${report#*mips=}"; mips="${mips%% *}"
   echo "  V8 reports: WebAssembly=$wasm, warm loop $mips M it/s (floor $JIT_FLOOR_MIPS)"
