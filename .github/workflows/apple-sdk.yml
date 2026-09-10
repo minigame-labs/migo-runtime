@@ -219,6 +219,36 @@ jobs:
           bash scripts/test-macos-archive-runs-js.sh
           --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
 
+      # The configuration macos-v8 actually ships in, which until now nothing ran.
+      #
+      # `Sources/MigoMacV8/README.md` states the requirement: "Hardened runtime
+      # with `com.apple.security.cs.allow-jit`". Every check on this archive so
+      # far -- including the one above that runs a game through it -- ran an
+      # UNSIGNED binary, which is not that. Distribution stays the integrator's
+      # (they notarize their app with their own identity); whether the engine
+      # works in the shape they ship it in is ours, and it needs no paid account:
+      # an ad-hoc signature carries entitlements the kernel reads.
+      - name: The shipping archive runs under a hardened runtime with allow-jit
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+          --harden with-jit
+
+      # The negative control for it, and it asserts a promise rather than a
+      # mechanism. The same README: without the entitlement "the profile
+      # resolver selects a WebKit lane. It does not silently fall back to a
+      # jitless V8: that configuration deletes WebAssembly outright." A run that
+      # COMPLETES with the entitlement withheld is that silent fallback, whatever
+      # produced it -- and on iOS the measured cost of jitless is 750M
+      # iterations/s falling to 17M, with WebAssembly going undefined.
+      - name: Withholding allow-jit does not silently produce a jitless V8
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+          --harden without-jit
+
       # The drawable pool, measured rather than argued about -- and measured as a
       # PAIR, in one job, minutes apart on one machine. A shared runner is no
       # place for an absolute frame rate, but the question here is relative: does
