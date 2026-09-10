@@ -23,6 +23,8 @@ CONFIGURATION="Debug"
 ANGLE_DIR=""
 DRAWABLES=""
 HARDEN="off"
+PROBE_STATUS=0
+PROBE_REPORT="the JIT entitlement probe did not run"
 CONTENT="headless-js-probe"
 KEEP=0
 
@@ -198,40 +200,122 @@ if [[ "$HARDEN" != "off" ]]; then
     || fail "could not ad-hoc sign the host with a hardened runtime"
   echo "  signed: hardened runtime, allow-jit=$([[ "$HARDEN" == "with-jit" ]] && echo yes || echo no)"
   codesign -d --entitlements - "$HOST" 2>&1 | sed 's/^/    /'
+
+  # Does withholding the entitlement actually deny executable memory on this
+  # machine? Asked with no V8 in the way, and signed the same way the host was,
+  # so the control mirrors the measurement rather than approximating it. The
+  # answer decides how the run below may be read: see the without-jit branch.
+  JIT_PROBE="$WORK/jit-entitlement-probe"
+  clang -O0 -o "$JIT_PROBE" "$ROOT/tests/c_host/jit-entitlement-probe/main.c" \
+    || fail "could not build the JIT entitlement probe"
+  codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign - "$JIT_PROBE" \
+    || fail "could not ad-hoc sign the JIT entitlement probe"
+  set +e
+  PROBE_REPORT="$("$JIT_PROBE" 2>&1)"
+  PROBE_STATUS=$?
+  set -e
+  echo "  $PROBE_REPORT"
 fi
 
 echo "[2/2] running a game through it, with ANGLE beside it (harden=$HARDEN)"
+HOST_LOG="$WORK/host.log"
+# The content reports which V8 it ran on through `console.error`, which the
+# engine routes to `tracing::error!` -- and a host that installs no subscriber
+# prints none of it. This host installed none, so the first run of the measured
+# gate reported "the content never reported which V8 it was running on" against
+# a fixture that had reported it perfectly well. The channel has to be opened by
+# whoever wants to read it.
 set +e
-"$HOST" "$WORK/files" "$CONTENT_ID" ${DRAWABLES:+"$DRAWABLES"}
+MIGO_CAPI_LOG=info "$HOST" "$WORK/files" "$CONTENT_ID" ${DRAWABLES:+"$DRAWABLES"} > "$HOST_LOG" 2>&1
 HOST_STATUS=$?
 set -e
+cat "$HOST_LOG"
+
+# What the content reported about the V8 it was actually running on. The gate
+# used to infer this from the exit status; see the fixture for why that was
+# wrong in both directions.
+JIT_FLOOR_MIPS=100
+report_line() {
+  grep -o 'migo-headless-probe: v8 wasm=[a-z]* mips=[0-9.]* acc=[0-9-]*' "$HOST_LOG" | tail -1
+}
+
+assert_v8_has_jit() {
+  local report wasm mips
+  report="$(report_line || true)"
+  # An absent report is a failure, not a pass. A measurement that quietly stops
+  # being taken is the failure mode this repository has already been bitten by:
+  # a suite that reported "0 assertions" instead of going red.
+  if [[ -z "$report" ]]; then
+    # Two different failures, and they have opposite fixes. Telling them apart
+    # here rather than in the next CI round trip is the whole reason this branch
+    # exists: the first run of this gate reported "the content never reported"
+    # against a fixture that had reported perfectly well into a log channel
+    # nobody had opened.
+    # Digits included, because targets have them: `migo_runtime_v8::console` is
+    # the one this very report travels under, and a class of [a-z_] would decide
+    # the channel was closed while reading a line that came through it.
+    if ! grep -qE '(INFO|WARN|ERROR) +[a-z_0-9]+(::[a-z_0-9]+)+' "$HOST_LOG"; then
+      fail "the engine log channel is closed: not one tracing line reached the host's output, so the content's report could not have arrived whatever it said. MIGO_CAPI_LOG is set on the run above; if the engine still logs nothing, that is the thing to fix, not the fixture"
+    fi
+    fail "the engine log channel is open and the content still reported nothing about which V8 it was running on. The fixture prints that line through console.error, so this run measured nothing -- fix the reporting before reading anything else here"
+  fi
+  wasm="${report#*wasm=}"; wasm="${wasm%% *}"
+  mips="${report#*mips=}"; mips="${mips%% *}"
+  echo "  V8 reports: WebAssembly=$wasm, warm loop $mips M it/s (floor $JIT_FLOOR_MIPS)"
+  # WebAssembly is the uncalibrated half of the answer: a jitless V8 does not
+  # slow it down, it deletes it. CLAUDE.md records the same finding from the
+  # HarmonyOS NEXT measurement, where `typeof WebAssembly` came back undefined.
+  [[ "$wasm" == "object" ]] || fail "V8 ran without WebAssembly (typeof WebAssembly = $wasm). That is the jitless signature: the .wasm.br bundles every Cocos and Unity export ships would not load at all"
+  awk -v m="$mips" -v f="$JIT_FLOOR_MIPS" 'BEGIN { exit !(m >= f) }' \
+    || fail "V8 turned the warm loop at $mips M it/s, under the $JIT_FLOOR_MIPS floor that separates a JIT from an interpreter. The archive links and runs, and runs interpreted"
+}
 
 if [[ "$HARDEN" == "without-jit" ]]; then
-  # The negative control, and it asserts the promise rather than the mechanism.
-  # `Sources/MigoMacV8/README.md`: if the entitlement is missing "the profile
-  # resolver selects a WebKit lane. It does not silently fall back to a jitless
-  # V8: that configuration deletes WebAssembly outright." A run that completes
-  # here is that silent fallback, whatever produced it.
-  if ((HOST_STATUS == 0)); then
-    fail "the content ran to completion with a hardened runtime and NO allow-jit entitlement. That is the silent jitless fallback Sources/MigoMacV8/README.md says must not happen -- a configuration that deletes WebAssembly is a diagnostic profile and never a default"
-  fi
-  # How it declined matters, and the two answers are not the same finding. A
-  # process killed by a signal did not decline; it died. The README's promise is
-  # that "the profile resolver selects a WebKit lane", and that resolver does not
-  # exist yet -- `Sources/MigoMacV8/Placeholder.swift` says so. So this check
-  # pins the half that is true today (nothing silently succeeds) and names the
-  # half that is not, rather than letting a crash read as a design working.
-  if ((HOST_STATUS > 128)); then
-    echo "PASS (partial): nothing silently degraded -- but the host died on signal $((HOST_STATUS - 128)) rather than declining."
-    echo "  A crash is not the behaviour Sources/MigoMacV8/README.md promises: a missing entitlement is"
-    echo "  supposed to make the profile resolver select a WebKit lane, and that resolver is still"
-    echo "  Placeholder.swift. What this run establishes is the negative half: no silent jitless V8."
+  # Read the instrument before reading the measurement.
+  #
+  # This step withholds `com.apple.security.cs.allow-jit` and used to assert
+  # that no working V8 came out the other side. That assertion has a load-
+  # bearing premise -- that withholding the entitlement denies executable
+  # memory -- and the premise is false for the strongest signature this project
+  # can produce. Measured 2026-09-11 on macOS 26.6: an ad-hoc signature with
+  # `--options runtime` really does carry the runtime flag (`flags=0x10002
+  # (adhoc,runtime)`) and MAP_JIT and mprotect(PROT_EXEC) are both GRANTED
+  # anyway, with the entitlement and without it. Enforcement wants a real
+  # signing identity, which wants a paid account, which is not ours to hold:
+  # the integrator notarises their app.
+  #
+  # So a completed run here never meant what the old failure text said it did.
+  # It read a run that completed as "V8 silently fell back to jitless", and that
+  # fallback does not exist -- jitless is a build-time V8 flag, and a V8 denied
+  # executable memory dies rather than degrading.
+  if ((PROBE_STATUS == 0)); then
+    echo "CONTROL NOT ESTABLISHED: withholding allow-jit did not deny executable memory on this machine."
+    echo "  $PROBE_REPORT"
+    echo "  The hardened runtime flag is set and the entitlement is absent, and the kernel granted JIT"
+    echo "  memory regardless, so this run cannot say anything about what V8 does without it. The check"
+    echo "  below is the one that still holds and is the one worth having: it measures whether the V8"
+    echo "  that ran had a JIT, which catches a jitless engine shipping no matter what caused it."
+    echo "  This turns into a real negative control the moment the probe above reports 'denied' -- on a"
+    echo "  stricter OS, on arm64, or under a Developer ID signature."
   else
-    echo "PASS: without the entitlement the host declined with exit $HOST_STATUS rather than running a jitless V8"
+    echo "  the entitlement is enforced here: $PROBE_REPORT"
+    if ((HOST_STATUS == 0)); then
+      assert_v8_has_jit
+      fail "executable memory was denied and V8 ran a full-speed JIT anyway, which cannot both be true. Read the probe line above before the V8 line: one of the two is measuring something other than what it names"
+    fi
+    if ((HOST_STATUS > 128)); then
+      echo "PASS (partial): nothing silently degraded -- but the host died on signal $((HOST_STATUS - 128)) rather than declining."
+      echo "  A crash is not the behaviour Sources/MigoMacV8/README.md promises: a missing entitlement is"
+      echo "  supposed to make the profile resolver select a WebKit lane, and that resolver is still"
+      echo "  Placeholder.swift. What this run establishes is the negative half: no silent jitless V8."
+    else
+      echo "PASS: without the entitlement the host declined with exit $HOST_STATUS rather than running a jitless V8"
+    fi
+    exit 0
   fi
-  exit 0
 fi
 
 ((HOST_STATUS == 0)) || fail "the shipping archive did not run the content to completion (exit $HOST_STATUS)"
+assert_v8_has_jit
 
-echo "PASS: the shipping macOS archive evaluated JavaScript, turned frames on ANGLE/Metal against a windowless CAMetalLayer, and installed the migo surface"
+echo "PASS: the shipping macOS archive evaluated JavaScript on a V8 with a working JIT, turned frames on ANGLE/Metal against a windowless CAMetalLayer, and installed the migo surface"

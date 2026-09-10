@@ -22,8 +22,12 @@ cd "$ROOT"
 
 TEST="platforms/apple/WebContent/PerformancePlus/test/golden-corpus.test.mjs"
 ENCODER="platforms/apple/WebContent/PerformancePlus/src/wire-frame-packet.mjs"
+SYNC_TEST="platforms/apple/WebContent/PerformancePlus/test/sync-mailbox.test.mjs"
+SYNC_SRC="platforms/apple/WebContent/PerformancePlus/src/sync-mailbox.mjs"
+RELAY_TEST="platforms/apple/WebContent/PerformancePlus/test/sync-relay.test.mjs"
+RELAY_SRC="platforms/apple/WebContent/PerformancePlus/src/sync-relay.mjs"
 
-for required in "$TEST" "$ENCODER"; do
+for required in "$TEST" "$ENCODER" "$SYNC_TEST" "$SYNC_SRC" "$RELAY_TEST" "$RELAY_SRC"; do
     if [[ ! -f "$required" ]]; then
         echo "FAIL: $required is missing; the cross-language corpus check cannot run." >&2
         exit 1
@@ -71,6 +75,24 @@ fi
 
 node "$TEST"
 
+# --- the synchronous barrier's producer half --------------------------------
+#
+# Same rule as the corpus above and for the same reason: this side is checked
+# against contracts/frame-wire/wire-v1.md, not against the Rust mailbox, because
+# two implementations that agree with each other and not with the document is
+# the failure the document exists to catch. It also runs a real `Atomics.wait`
+# woken by a real worker -- "it blocks" is the entire claim, and a test whose
+# host answered before the wait began would exercise every line except that one.
+node "$SYNC_TEST"
+
+# --- and the two halves against each other ----------------------------------
+#
+# Each half being correct alone is not the property that matters. This runs a
+# real Worker blocked in `Atomics.wait` and a real relay answering it, because
+# what has to hold is that a blocked agent is always woken and never with the
+# wrong bytes -- and neither half can establish that by itself.
+node "$RELAY_TEST"
+
 # --- and the other direction ------------------------------------------------
 #
 # The corpus above pins three shapes byte for byte. It cannot answer "does this
@@ -114,5 +136,40 @@ if (( status != 0 )); then
 fi
 if ! printf '%s\n' "$output" | grep -qE 'validated 128 JavaScript-encoded packets'; then
     echo "FAIL: the interop test did not report validating 128 packets; it may not have run." >&2
+    exit 1
+fi
+
+# --- the synchronous barrier's argument record, across the two languages -----
+#
+# Same shape, same reason. The producer encodes `readPixels`' arguments and
+# `frame_wire::sync::ReadPixelsParams::decode` reads them; both were written
+# from the same table in contracts/frame-wire/wire-v1.md, which is the right way
+# to write them and no evidence at all that they agree. A table can be read two
+# ways, and the way that disagreement reaches a user is a `readPixels` answered
+# over the wrong rectangle -- a picture that is subtly not the one the game
+# asked for, which nothing but a screenshot would catch.
+
+SYNC_PARAMS="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS"' EXIT
+
+node platforms/apple/WebContent/PerformancePlus/test/emit-sync-params.mjs "$SYNC_PARAMS" 64
+
+emitted_params="$(find "$SYNC_PARAMS" -name 'params-*.bin' | wc -l)"
+if (( emitted_params < 64 )); then
+    echo "FAIL: the emitter wrote $emitted_params argument records, expected 64." >&2
+    exit 1
+fi
+
+output="$(cd engine && MIGO_JS_SYNC_PARAM_DIR="$SYNC_PARAMS" \
+    cargo test -p migo-frame-wire --test sync_js_interop -- --ignored --nocapture 2>&1)"
+status=$?
+printf '%s\n' "$output" | grep -E 'decoded [0-9]+ JavaScript-encoded readPixels|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust decoder rejected argument records built by the JavaScript producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'decoded 64 JavaScript-encoded readPixels'; then
+    echo "FAIL: the interop test did not report decoding 64 records; it may not have run." >&2
     exit 1
 fi

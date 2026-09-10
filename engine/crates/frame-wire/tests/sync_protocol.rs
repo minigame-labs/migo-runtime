@@ -285,3 +285,135 @@ fn every_settled_state_is_reachable() {
     assert!(!SyncState::Pending.is_settled());
     assert_eq!(SyncState::from_code(99), None);
 }
+
+// ---------------------------------------------------------------------------
+// The operation's arguments, which do not live in the record
+// ---------------------------------------------------------------------------
+
+use frame_wire::sync::{
+    GL_RGBA, GL_UNSIGNED_BYTE, READ_PIXELS_PARAMS_BYTES, ReadPixelsParams, SYNC_OP_READ_PIXELS,
+};
+
+fn read_pixels_bytes(width: i32, height: i32, format: u32, type_: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(READ_PIXELS_PARAMS_BYTES);
+    for word in [1u32, 0, 0, width as u32, height as u32, format, type_, 0] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn read_pixels_params_decode_round_trips_a_well_formed_record() {
+    let params = ReadPixelsParams::decode(&read_pixels_bytes(4, 3, GL_RGBA, GL_UNSIGNED_BYTE))
+        .expect("a well-formed record decodes");
+    assert_eq!(params.canvas_id, 1);
+    assert_eq!((params.width, params.height), (4, 3));
+    assert_eq!(params.reply_bytes(), Some(4 * 3 * 4));
+    assert_eq!(SYNC_OP_READ_PIXELS, OP_READ_PIXELS);
+}
+
+#[test]
+fn read_pixels_params_refuse_a_record_of_the_wrong_length() {
+    // Not a clamp and not a best effort: a short record is a record whose
+    // remaining fields would be read out of whatever followed it.
+    let mut short = read_pixels_bytes(4, 3, GL_RGBA, GL_UNSIGNED_BYTE);
+    short.pop();
+    assert_eq!(
+        ReadPixelsParams::decode(&short),
+        Err(SyncError::UnsupportedOperation)
+    );
+
+    let mut long = read_pixels_bytes(4, 3, GL_RGBA, GL_UNSIGNED_BYTE);
+    long.push(0);
+    assert_eq!(
+        ReadPixelsParams::decode(&long),
+        Err(SyncError::UnsupportedOperation)
+    );
+}
+
+#[test]
+fn read_pixels_params_refuse_an_empty_rectangle() {
+    for (width, height) in [(0, 3), (4, 0), (-1, 3), (4, -1)] {
+        assert_eq!(
+            ReadPixelsParams::decode(&read_pixels_bytes(width, height, GL_RGBA, GL_UNSIGNED_BYTE)),
+            Err(SyncError::UnsupportedOperation),
+            "a {width}x{height} rectangle has no pixels to answer with"
+        );
+    }
+}
+
+#[test]
+fn read_pixels_params_refuse_a_format_this_host_does_not_read_back() {
+    // GL_RGB / GL_UNSIGNED_SHORT_5_6_5. Answering these by pretending they were
+    // RGBA8 would hand the producer a buffer whose bytes mean something else.
+    assert_eq!(
+        ReadPixelsParams::decode(&read_pixels_bytes(4, 3, 0x1907, GL_UNSIGNED_BYTE)),
+        Err(SyncError::UnsupportedOperation)
+    );
+    assert_eq!(
+        ReadPixelsParams::decode(&read_pixels_bytes(4, 3, GL_RGBA, 0x8363)),
+        Err(SyncError::UnsupportedOperation)
+    );
+}
+
+#[test]
+fn read_pixels_reply_size_refuses_to_overflow_rather_than_wrapping() {
+    // 40000 x 40000 x 4 is 6.4e9, past u32. A wrapped product would be a small
+    // number that passes every later bound and sizes a buffer nothing fills.
+    let params = ReadPixelsParams::decode(&read_pixels_bytes(
+        40_000,
+        40_000,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+    ))
+    .expect("the rectangle itself is well formed");
+    assert_eq!(params.reply_bytes(), None);
+}
+
+// ---------------------------------------------------------------------------
+// Failing a request the host cannot answer
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fail_request_wakes_the_producer_with_the_stated_reason() {
+    let mut mailbox = SyncMailbox::new(GENERATION);
+    let id = mailbox.post(request(), NOW).expect("posts");
+    assert_eq!(mailbox.state(), SyncState::Pending);
+
+    mailbox
+        .fail_request(id, SyncError::UnsupportedOperation)
+        .expect("the outstanding request may be failed");
+    assert_eq!(mailbox.state(), SyncState::Failed);
+    assert_eq!(mailbox.error(), Some(SyncError::UnsupportedOperation));
+    assert_eq!(mailbox.reply_bytes(), 0);
+}
+
+#[test]
+fn fail_request_refuses_an_id_that_is_not_outstanding() {
+    let mut mailbox = SyncMailbox::new(GENERATION);
+    let id = mailbox.post(request(), NOW).expect("posts");
+
+    assert_eq!(
+        mailbox.fail_request(id.wrapping_add(1), SyncError::TimedOut),
+        Err(SyncError::RequestIdMismatch)
+    );
+    // And the outstanding request is untouched: a failure aimed at another
+    // request must not settle this one.
+    assert_eq!(mailbox.state(), SyncState::Pending);
+    assert_eq!(mailbox.error(), None);
+}
+
+#[test]
+fn fail_request_refuses_once_the_request_is_settled() {
+    let mut mailbox = SyncMailbox::new(GENERATION);
+    let id = mailbox.post(request(), NOW).expect("posts");
+    mailbox.complete(id, 16).expect("completes");
+
+    assert_eq!(
+        mailbox.fail_request(id, SyncError::TimedOut),
+        Err(SyncError::LateReply)
+    );
+    // The answer the producer is about to read stays the answer.
+    assert_eq!(mailbox.state(), SyncState::Ready);
+    assert_eq!(mailbox.reply_bytes(), 16);
+}

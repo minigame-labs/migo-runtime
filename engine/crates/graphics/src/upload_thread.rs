@@ -286,6 +286,24 @@ fn upload_thread_main(
     failures: Arc<AtomicU32>,
     dropped_tx: Sender<DroppedUpload>,
 ) {
+    // This thread owes the Objective-C runtime a pool for the same reason the
+    // render thread does, and until now only the render thread had one.
+    //
+    // It makes an EGL context current and drives ANGLE's Metal backend, which is
+    // Objective-C++ and returns autoreleased objects. On a thread with no pool
+    // the runtime installs a hidden one and drains it at thread destruction --
+    // and this thread lives for the whole session, so every Metal object it has
+    // ever been handed accumulates in it. `shared::objc_autorelease` has the full
+    // account; what it did not say, until this call site existed, is that the
+    // render thread is not the only thread this applies to.
+    //
+    // Two pools, bounding different things, exactly as on the render thread: this
+    // one covers EGL bring-up and teardown, which happen outside the job loop and
+    // autorelease too; the per-job one below is what stops a long-lived thread
+    // accumulating a session's worth of uploads. Zero-sized off Apple, so neither
+    // carries a `cfg`.
+    let _autorelease_thread = shared::objc_autorelease::autorelease_scope();
+
     // Load through the exact provider selected and validated for the render
     // thread before reconstructing any raw EGL handles.
     let egl = match load_upload_egl(egl_provider.as_ref(), expected_backend) {
@@ -357,6 +375,9 @@ fn upload_thread_main(
 
     // Process jobs until channel closes.
     while let Ok(job) = job_rx.recv() {
+        // One pool per job, so a texture upload's autoreleased Metal objects are
+        // released when that upload finishes rather than when the session ends.
+        let _autorelease_job = shared::objc_autorelease::autorelease_scope();
         match do_upload(&gl, &job, &mut pbo_pool) {
             Ok(completed) => {
                 failures.store(0, Ordering::Relaxed);

@@ -91,8 +91,10 @@ typedef struct MigoFrameIngressOutcome {
  * mailbox and a second waiter, and the producer is a single agent that is
  * blocked while it waits.
  *
- * DECLARATIONS ONLY, like the ingress record above. The entry points land with
- * the session that implements them.
+ * The entry points are below the records, and they arrived with the session
+ * that implements them rather than ahead of it -- an exported symbol that
+ * always fails is the shape that shipped a Windows SDK which loaded, resolved
+ * every entry point, and could attach nothing.
  * ------------------------------------------------------------------------- */
 
 typedef uint32_t MigoSyncState;
@@ -123,6 +125,17 @@ typedef uint32_t MigoSyncError;
 #define MIGO_SYNC_ERROR_LATE_REPLY             8U
 #define MIGO_SYNC_ERROR_BAD_DEADLINE           9U
 #define MIGO_SYNC_ERROR_BAD_REPLY_RESERVATION  10U
+/*
+ * The host implements the operation, tried it, and it failed.
+ *
+ * Distinct from MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION because the two say
+ * opposite things about whether to ask again: "this host does not do
+ * readPixels" is permanent and a producer told that will stop asking, while
+ * "the readback failed this time" is not. Mapping a driver error onto the
+ * permanent one would turn one transient GL failure into a session that never
+ * reads a pixel again.
+ */
+#define MIGO_SYNC_ERROR_OPERATION_FAILED       11U
 
 /*
  * Caller-written. The 64-bit members precede the 32-bit ones so the record is
@@ -158,6 +171,131 @@ typedef struct MigoSyncOutcome {
     /* Non-zero only for FAILED. */
     MigoSyncError error;
 } MigoSyncOutcome;
+
+/*
+ * Which call the producer blocked in.
+ *
+ * Numbered rather than named, and stable: the producer writes one of these into
+ * the record and the library dispatches on it.
+ */
+#define MIGO_SYNC_OP_READ_PIXELS 1U
+
+/*
+ * `readPixels`' arguments, which are NOT in the descriptor.
+ *
+ * The descriptor is a fixed rendezvous record the producer polls with atomics;
+ * carrying per-operation arguments in it would size it by the largest operation
+ * anyone ever adds. They travel beside the request instead, as eight
+ * little-endian 32-bit words -- MIGO_SYNC_READ_PIXELS_PARAM_BYTES below is the
+ * byte count, not the word count -- in this order:
+ *
+ *     canvas_id, x, y, width, height, format, type, reserved
+ *
+ * `format` must be GL_RGBA (0x1908) and `type` GL_UNSIGNED_BYTE (0x1401).
+ * Anything else is refused with MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION rather
+ * than answered as if it were RGBA8 -- a buffer whose bytes mean something else
+ * is a wrong answer that looks like a right one. The reply is
+ * width * height * 4 bytes.
+ */
+#define MIGO_SYNC_READ_PIXELS_PARAM_BYTES 32U
+
+/*
+ * Post one synchronous request and answer it.
+ *
+ * The producer blocks, the transport carries the request here, this answers it,
+ * and migo_session_take_sync_reply carries the bytes back.
+ *
+ * now_nanos is the CALLER'S monotonic clock reading, on the same clock
+ * deadline_nanos is expressed on. The library reads no clock of its own for
+ * this, deliberately: two clocks that agree today are a defect waiting for the
+ * platform where they do not, and only the host can read the clock its producer
+ * blocked against.
+ *
+ * params points at the operation's arguments; see the operation's own
+ * definition above for the layout. It may be NULL only when param_bytes is 0.
+ *
+ * A request the library could not answer still returns MIGO_OK and reports
+ * MIGO_SYNC_STATE_FAILED with a reason, the same way
+ * migo_session_submit_external_frame reports a rejection rather than failing:
+ * the call did its job and the verdict belongs where the producer reads it. A
+ * request refused before it was given an id reports request_id 0.
+ *
+ * request IS CALLER-WRITTEN. Set its struct_size and abi_version too: the same
+ * rule applies to it as to out_outcome, and a descriptor whose header is not
+ * initialised is refused before the request is judged.
+ *
+ * One request may be outstanding per session. A second while one is pending is
+ * refused with MIGO_SYNC_ERROR_ALREADY_PENDING.
+ *
+ * out_outcome IS CALLER-OWNED AND ITS HEADER IS AN INPUT. Set struct_size and
+ * abi_version before every call: struct_size is what bounds the write into your
+ * storage, so a record that arrives with a size this library does not recognise
+ * is refused rather than filled in, and the call returns
+ * MIGO_ERROR_INVALID_ARGUMENT. A record left holding zeros is refused too, with
+ * MIGO_ERROR_UNSUPPORTED_ABI, because it claims abi_version 0 and that is
+ * checked first. A producer is blocked while this is decided, so a record left
+ * zeroed is a producer that waits out its whole deadline for a refusal that
+ * never reached it.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_post_sync_request(
+    MigoSession *session, const MigoSyncRequestDescriptor *request,
+    const uint8_t *params, size_t param_bytes, uint64_t now_nanos,
+    MigoSyncOutcome *out_outcome);
+
+/*
+ * Where the outstanding request is.
+ *
+ * Also what makes a passed deadline visible: nothing else runs while a request
+ * is outstanding, so a request whose deadline elapsed is settled here.
+ *
+ * out_outcome IS CALLER-OWNED AND ITS HEADER IS AN INPUT. Set struct_size and
+ * abi_version before every call: struct_size is what bounds the write into your
+ * storage, so a record that arrives with a size this library does not recognise
+ * is refused rather than filled in, and the call returns
+ * MIGO_ERROR_INVALID_ARGUMENT. A record left holding zeros is refused too, with
+ * MIGO_ERROR_UNSUPPORTED_ABI, because it claims abi_version 0 and that is
+ * checked first. A producer is blocked while this is decided, so a record left
+ * zeroed is a producer that waits out its whole deadline for a refusal that
+ * never reached it.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_poll_sync(
+    MigoSession *session, uint64_t now_nanos, MigoSyncOutcome *out_outcome);
+
+/*
+ * Copy a ready answer out, and free the slot.
+ *
+ * Refused, never truncated, when capacity is smaller than the answer -- and the
+ * answer stays MIGO_SYNC_STATE_READY, so a caller may return with a large
+ * enough buffer. `*out_written` receives the byte count on success and zero on
+ * failure, so a caller that ignores the result cannot read a stale count as a
+ * length.
+ *
+ * Returns MIGO_ERROR_INVALID_STATE when there is no ready answer to take.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_take_sync_reply(
+    MigoSession *session, uint8_t *buffer, size_t capacity,
+    size_t *out_written);
+
+/*
+ * The producer withdrew its request.
+ *
+ * Settles an outstanding request as MIGO_SYNC_STATE_CANCELLED and frees the
+ * slot for the next one. A request that has already been answered stays
+ * answered: cancelling is not a way to discard a reply the producer has not
+ * read yet.
+ *
+ * out_outcome IS CALLER-OWNED AND ITS HEADER IS AN INPUT. Set struct_size and
+ * abi_version before every call: struct_size is what bounds the write into your
+ * storage, so a record that arrives with a size this library does not recognise
+ * is refused rather than filled in, and the call returns
+ * MIGO_ERROR_INVALID_ARGUMENT. A record left holding zeros is refused too, with
+ * MIGO_ERROR_UNSUPPORTED_ABI, because it claims abi_version 0 and that is
+ * checked first. A producer is blocked while this is decided, so a record left
+ * zeroed is a producer that waits out its whole deadline for a refusal that
+ * never reached it.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_cancel_sync(
+    MigoSession *session, uint64_t now_nanos, MigoSyncOutcome *out_outcome);
 
 /* ---------------------------------------------------------------------------
  * The resource lane
