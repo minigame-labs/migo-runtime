@@ -2239,21 +2239,23 @@ impl CanvasManager {
             // create_onscreen also means the preserved context is never left
             // pointing at a destroyed surface, which is undefined per EGL and was
             // true of every release before this line existed.
-            if let Err(error) = self.egl.make_current(
+            //
+            // Best-effort, and deliberately: this exact call -- an onscreen
+            // context bound to the resource pbuffer -- is one the release and
+            // teardown paths below already make and already ignore the result
+            // of, because the two surfaces come from different EGLConfigs and a
+            // strict driver is entitled to answer EGL_BAD_MATCH. Turning that
+            // into a hard failure would take a release that works everywhere
+            // today and break it wherever the configs are not compatible, to
+            // buy hygiene the next line already provides most of: making the
+            // RESOURCE context current unbinds the window surface from this
+            // thread regardless.
+            let _ = self.egl.make_current(
                 self.display,
                 self.resource.surf,
                 self.resource.surf,
                 Some(entry.ctx.ctx),
-            ) {
-                self.canvases.insert(id, entry);
-                self.evaluate_bypass();
-                return Err(ee(
-                    ErrorCode::RenderBackendError,
-                    format!(
-                        "eglMakeCurrent(outgoing context, resource surface) before onscreen detach failed: {error:?}"
-                    ),
-                ));
-            }
+            );
 
             // Switch to the resource (pbuffer) context so the ANativeWindow is
             // properly disconnected before we destroy the onscreen surface.

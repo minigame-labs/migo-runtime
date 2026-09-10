@@ -724,15 +724,21 @@ impl ExternalFrameSession {
         join: std::thread::JoinHandle<()>,
         launch_nonce: u128,
     ) -> Self {
+        // One `OnceLock`, shared, exactly as the real spawn shares it: a sync
+        // path with a dispatch of its own would report "the renderer is not up"
+        // on a session whose renderer is, and the difference would only show on
+        // whichever test reached for a synchronous call first.
+        let dispatch: Arc<OnceLock<RenderDispatch>> = Arc::new(OnceLock::new());
         Self {
             host: HostThread::from_join_handle_for_test(host_id, join),
+            sync: SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::clone(&dispatch)),
             submit: SubmitPath {
                 ingress: Arc::new(Mutex::new(FrameIngress::new(
                     launch_nonce,
                     INITIAL_RUNTIME_GENERATION,
                 ))),
                 errors: Arc::new(ExternalGlErrors::default()),
-                dispatch: Arc::new(OnceLock::new()),
+                dispatch,
             },
             clock: Arc::new(ExternalFrameClock::default()),
         }

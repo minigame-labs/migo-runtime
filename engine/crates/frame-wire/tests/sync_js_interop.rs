@@ -76,14 +76,37 @@ fn read_pixels_arguments_from_the_javascript_producer_decode_unchanged() {
         // Every field, including the signed ones. GL allows a negative origin,
         // and a decoder that only ever saw a non-negative x would sign-extend
         // wrongly without anyone noticing until a game scrolled.
-        assert_eq!(i64::from(params.canvas_id), number(entry, "canvas_id"), "{name} canvas id");
+        assert_eq!(
+            i64::from(params.canvas_id),
+            number(entry, "canvas_id"),
+            "{name} canvas id"
+        );
         assert_eq!(i64::from(params.x), number(entry, "x"), "{name} x");
         assert_eq!(i64::from(params.y), number(entry, "y"), "{name} y");
-        assert_eq!(i64::from(params.width), number(entry, "width"), "{name} width");
-        assert_eq!(i64::from(params.height), number(entry, "height"), "{name} height");
-        assert_eq!(i64::from(params.format), number(entry, "format"), "{name} format");
-        assert_eq!(i64::from(params.type_), number(entry, "type"), "{name} type");
-        assert_eq!(params.format, GL_RGBA, "{name} format is the one this host reads back");
+        assert_eq!(
+            i64::from(params.width),
+            number(entry, "width"),
+            "{name} width"
+        );
+        assert_eq!(
+            i64::from(params.height),
+            number(entry, "height"),
+            "{name} height"
+        );
+        assert_eq!(
+            i64::from(params.format),
+            number(entry, "format"),
+            "{name} format"
+        );
+        assert_eq!(
+            i64::from(params.type_),
+            number(entry, "type"),
+            "{name} type"
+        );
+        assert_eq!(
+            params.format, GL_RGBA,
+            "{name} format is the one this host reads back"
+        );
         assert_eq!(params.type_, GL_UNSIGNED_BYTE, "{name} type");
 
         // And the size the two sides will independently compute for the answer.
