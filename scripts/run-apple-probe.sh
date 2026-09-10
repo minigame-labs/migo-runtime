@@ -439,10 +439,18 @@ else
   # it, so the earlier "both readings are handled" was only ever the reading
   # that cannot work.
   echo "  (asking the container whether the records are there, then pulling them)"
+  #
+  # `grep -c`, never `grep -q`: this script runs under `set -o pipefail`, and
+  # `grep -q` exits the moment it matches, which SIGPIPEs devicectl and makes
+  # the pipeline status 141. The loop then never sees a success and polls until
+  # the deadline against a container that already holds the file -- which is
+  # what happened on the first evidence run, with the records sitting on the
+  # phone since three minutes earlier. This project has now debugged the same
+  # mistake in two different scripts.
   DEADLINE=$((SECONDS + TIMEOUT))
-  until xcrun devicectl device info files --device "$TARGET" \
+  until [[ "$(xcrun devicectl device info files --device "$TARGET" \
     --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
-    2>/dev/null | grep -q "Documents/capability-$RUN_ID.json"; do
+    2>/dev/null | grep -c "Documents/capability-$RUN_ID.json")" != "0" ]]; do
     ((SECONDS < DEADLINE)) || fail "the app wrote no Documents/capability-$RUN_ID.json in ${TIMEOUT}s. It writes them when the run finishes, and its screen says what it is doing. This is now an answer about the app: the container listing is a separate call from the transfer, and it is the listing that came back without the file"
     sleep 5
   done
