@@ -20,6 +20,56 @@ if (sum !== 500500) {
   throw new Error("migo-headless-probe: the loop summed to " + sum + ", not 500500");
 }
 
+// Whether V8 got JIT is not a question an exit status can answer, and the gate
+// used to try: it ran the host with `com.apple.security.cs.allow-jit` withheld
+// and read "the process completed" as "V8 silently degraded to jitless". Both
+// halves of that inference were wrong. A hardened runtime with an ad-hoc
+// signature does not deny JIT memory at all (tests/c_host/jit-entitlement-probe
+// asks the kernel directly and gets it granted either way), and V8 has no
+// runtime fallback to fall back TO -- jitless is a build-time flag, so a V8
+// denied executable memory dies rather than degrading.
+//
+// So measure the thing instead of inferring it. Two signals, reported together:
+//
+//   wasm  -- jitless V8 does not slow WebAssembly down, it deletes it outright,
+//            so `typeof WebAssembly` is a yes/no answer with no calibration.
+//   mips  -- millions of loop iterations per second once the function is warm.
+//            The two populations are far apart (708 M it/s against 17 on the
+//            same content, measured through the capability probe), which is why
+//            a floor anywhere in the middle separates them.
+//
+// The loop is warmed before it is timed: a first pass measures the interpreter
+// in BOTH worlds and would report them as the same. It accumulates into a value
+// that is reported, because a loop whose result is never read is a loop V8 is
+// entitled to delete -- and a deleted loop measures infinitely fast.
+function warmThroughput() {
+  let acc = 0;
+  for (let warm = 0; warm < 3; warm += 1) {
+    for (let i = 0; i < 200000; i += 1) acc = (acc + i * 3) | 0;
+  }
+  let iterations = 1 << 20;
+  for (;;) {
+    const started = Date.now();
+    for (let i = 0; i < iterations; i += 1) acc = (acc + i * 3) | 0;
+    const elapsed = Date.now() - started;
+    // Long enough that a millisecond clock is not the thing being measured.
+    if (elapsed >= 120) return { mips: iterations / elapsed / 1000, acc: acc };
+    if (iterations >= (1 << 28)) {
+      return { mips: iterations / Math.max(elapsed, 1) / 1000, acc: acc };
+    }
+    iterations *= 4;
+  }
+}
+
+const measured = warmThroughput();
+// console.error, because console.log is filtered; this lands in the host's
+// output through tracing::error! and the gate reads it from there.
+console.error(
+  "migo-headless-probe: v8 wasm=" + typeof WebAssembly +
+    " mips=" + measured.mips.toFixed(1) +
+    " acc=" + measured.acc,
+);
+
 // Then the render loop, which is the second question and a strictly harder one.
 // Evaluating a module needs V8 and a thread; turning frames needs the surface to
 // have been installed, the EGL context to be current and the presenter to be
