@@ -400,6 +400,15 @@ else
   fi
 
   echo "[3/5] launching with ${APP_ARGS[*]}"
+  # Stamped before the launch, and compared against the record's own
+  # `captured_at` below. Without it a run that names the same --run-id as an
+  # earlier one silently pulls the earlier one's records: the container still
+  # holds that file, so the poll matches it on the first try, and the copy wins
+  # the race against an app that has not finished writing. That is not a
+  # hypothetical -- it happened on the second evidence run, which reported
+  # success and byte-identical timings from a build made eight minutes earlier.
+  # Stale evidence that reads as fresh is the worst failure this script has.
+  LAUNCH_EPOCH="$(date -u +%s)"
   # Not --console: it waits for the app to exit and the probe app does not.
   if ! xcrun devicectl device process launch --device "$TARGET" --terminate-existing \
     --json-output "$WORK_DIR/launch-$RUN_ID.json" \
@@ -447,23 +456,39 @@ else
   # what happened on the first evidence run, with the records sitting on the
   # phone since three minutes earlier. This project has now debugged the same
   # mistake in two different scripts.
+  COPY_DEST="$WORK_DIR/pull-$RUN_ID.json"
   DEADLINE=$((SECONDS + TIMEOUT))
-  until [[ "$(xcrun devicectl device info files --device "$TARGET" \
-    --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
-    2>/dev/null | grep -c "Documents/capability-$RUN_ID.json")" != "0" ]]; do
-    ((SECONDS < DEADLINE)) || fail "the app wrote no Documents/capability-$RUN_ID.json in ${TIMEOUT}s. It writes them when the run finishes, and its screen says what it is doing. This is now an answer about the app: the container listing is a separate call from the transfer, and it is the listing that came back without the file"
+  while true; do
+    if [[ "$(xcrun devicectl device info files --device "$TARGET" \
+      --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
+      2>/dev/null | grep -c "Documents/capability-$RUN_ID.json")" != "0" ]]; then
+      rm -rf "$COPY_DEST"
+      if xcrun devicectl device copy from --device "$TARGET" \
+        --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
+        --source "Documents/capability-$RUN_ID.json" --destination "$COPY_DEST" \
+        --json-output "$WORK_DIR/copy-$RUN_ID.json" >/dev/null 2>&1 \
+        && [[ -f "$COPY_DEST" ]] \
+        && python3 -c '
+import datetime, json, sys
+
+records = json.load(open(sys.argv[1]))
+launched = int(sys.argv[2])
+stamps = [r["captured_at"] for r in (records if isinstance(records, list) else [records])]
+oldest = min(
+    datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=datetime.timezone.utc).timestamp()
+    for s in stamps
+)
+# One second of slack, for the second boundary between two clocks.
+sys.exit(0 if oldest >= launched - 1 else 1)
+' "$COPY_DEST" "$LAUNCH_EPOCH"; then
+        mv "$COPY_DEST" "$RECORD_FILE"
+        break
+      fi
+    fi
+    ((SECONDS < DEADLINE)) || fail "no records from THIS run after ${TIMEOUT}s. Either the app wrote none -- its screen says what it is doing -- or everything it wrote was stamped before this launch, which means a file from an earlier run with the same --run-id is what the container is offering. The last transfer attempt is in $WORK_DIR/copy-$RUN_ID.json"
     sleep 5
   done
-
-  COPY_DEST="$WORK_DIR/pull-$RUN_ID.json"
-  rm -rf "$COPY_DEST"
-  xcrun devicectl device copy from --device "$TARGET" \
-    --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
-    --source "Documents/capability-$RUN_ID.json" --destination "$COPY_DEST" \
-    --json-output "$WORK_DIR/copy-$RUN_ID.json" >/dev/null 2>&1 \
-    || fail "the records are on the device but could not be transferred; see $WORK_DIR/copy-$RUN_ID.json"
-  [[ -f "$COPY_DEST" ]] || fail "devicectl reported success and left no $COPY_DEST; see $WORK_DIR/copy-$RUN_ID.json"
-  mv "$COPY_DEST" "$RECORD_FILE"
 fi
 
 [[ -s "$RECORD_FILE" ]] || fail "$RECORD_FILE is empty"
