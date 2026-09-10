@@ -72,6 +72,19 @@ usage: run-apple-probe.sh (--device <id> | --simulator [<id>]) [options]
   --run-id <id>                 Names the run, and therefore the records file.
   --timeout <seconds>           How long to wait for the records (default 420;
                                 the gate allows 120 per origin and there are two).
+  --configuration <Debug|Release>
+                                How the probe app is built. Release by default,
+                                because half of a transport measurement is the
+                                host's own code: the loopback arm's server parses
+                                frames and unmasks every byte the page sends, in
+                                this repository. Measured with a debug host, a
+                                mebibyte round-tripped in 252 ms over the socket
+                                against 6.4 ms over the custom scheme -- four
+                                megabytes a second is an unoptimised loop's speed
+                                and not a socket's, and that number would have
+                                eliminated an arm. The capability answers do not
+                                care: they are WebKit's, and WebKit is release
+                                either way.
   --unlock-wait <seconds>       How long the launch step waits for the phone to
                                 be unlocked (default 0, meaning launch at once).
                                 Only the launch needs an unlocked device.
@@ -92,6 +105,7 @@ PROMPT=""
 OUT_DIR=""
 RUN_ID=""
 TIMEOUT=420
+CONFIGURATION=Release
 UNLOCK_WAIT=0
 DRY_RUN=0
 KEEP_DERIVED=0
@@ -139,6 +153,13 @@ while [[ $# -gt 0 ]]; do
     --timeout)
       [[ $# -ge 2 ]] || fail "--timeout needs seconds"
       TIMEOUT="$2"
+      shift 2
+      ;;
+    --configuration)
+      [[ $# -ge 2 ]] || fail "--configuration needs Debug or Release"
+      CONFIGURATION="$2"
+      [[ "$CONFIGURATION" == "Debug" || "$CONFIGURATION" == "Release" ]] \
+        || fail "--configuration takes Debug or Release; got '$CONFIGURATION'"
       shift 2
       ;;
     --unlock-wait)
@@ -325,8 +346,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[1/5] building $SCHEME for $MODE"
-BUILD_ARGS=(-project "$PROJECT" -scheme "$SCHEME" -derivedDataPath "$DERIVED")
+echo "[1/5] building $SCHEME for $MODE ($CONFIGURATION)"
+BUILD_ARGS=(
+  -project "$PROJECT" -scheme "$SCHEME" -derivedDataPath "$DERIVED"
+  -configuration "$CONFIGURATION"
+)
 SIGNING_HINT=""
 if [[ "$MODE" == "simulator" ]]; then
   BUILD_ARGS+=(-sdk iphonesimulator -destination "generic/platform=iOS Simulator")
