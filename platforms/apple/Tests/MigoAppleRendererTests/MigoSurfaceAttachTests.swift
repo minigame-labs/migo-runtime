@@ -608,16 +608,27 @@ final class MigoSurfaceAttachTests: XCTestCase {
                     // therefore two unknown owners -- assumed a baseline nobody
                     // had measured.
                     //
-                    // Same shape on both sides, which means the same weak-then-
-                    // strong read: a layer with exactly ONE owner, read that way,
-                    // measured 3 on macOS 26.6. The failing reading was also 3.
-                    // So there is one owner beyond this test's read path, not two,
-                    // and the earlier arithmetic -- "3 references, one of which is
-                    // this test's binding, therefore two unknown owners" -- was
-                    // subtracting a baseline nobody had measured.
-                    var controlOwner: CAMetalLayer? = CAMetalLayer()
-                    controlOwner?.drawableSize = CGSize(width: 256, height: 256)
-                    weak var controlWeak: CAMetalLayer? = controlOwner
+                    // Same shape on both sides, and "same shape" has to include
+                    // the pool. The observed layer was created inside an
+                    // autoreleasepool that has since drained and is kept alive by
+                    // one owner; so the control is created inside a pool of its
+                    // own, kept alive by exactly one owner outside it, and read
+                    // through the same weak-then-strong path.
+                    //
+                    // The first version of this control skipped the pool -- it
+                    // created the layer in the test method's own, undrained one --
+                    // and measured 5 against an observed 3, which made the
+                    // difference negative and the arithmetic meaningless. A
+                    // control that does not mirror the measurement is worse than
+                    // no control: it produces a number that looks like evidence.
+                    var controlOwner: CAMetalLayer?
+                    weak var controlWeak: CAMetalLayer?
+                    autoreleasepool {
+                        let created = CAMetalLayer()
+                        created.drawableSize = CGSize(width: 256, height: 256)
+                        controlOwner = created
+                        controlWeak = created
+                    }
                     let control = controlWeak.map { CFGetRetainCount($0) } ?? -1
                     controlOwner = nil
 
