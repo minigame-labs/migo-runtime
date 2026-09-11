@@ -31,6 +31,11 @@ DOWN_SRC="platforms/apple/WebContent/PerformancePlus/src/downlink.mjs"
 SESSION_TEST="platforms/apple/WebContent/PerformancePlus/test/frame-session.test.mjs"
 SESSION_SRC="platforms/apple/WebContent/PerformancePlus/src/frame-session.mjs"
 BOOTSTRAP_SRC="platforms/apple/WebContent/PerformancePlus/src/worker-bootstrap.mjs"
+SRC_DIR="platforms/apple/WebContent/PerformancePlus/src"
+TEST_DIR="platforms/apple/WebContent/PerformancePlus/test"
+# Every suite this gate runs, collected as it runs them, so the check at the
+# bottom can compare against what is on disk. See there for why.
+RAN_TESTS=()
 
 for required in "$TEST" "$ENCODER" "$SYNC_TEST" "$SYNC_SRC" "$RELAY_TEST" "$RELAY_SRC" \
                 "$DOWN_TEST" "$DOWN_SRC" "$SESSION_TEST" "$SESSION_SRC" "$BOOTSTRAP_SRC"; do
@@ -57,8 +62,31 @@ fi
 # directory, a URL, a Node builtin. The rule was once "no imports at all",
 # which was true of the one file it was applied to and would have refused the
 # split the producer has since grown.
-for shipped in "$ENCODER" "$SYNC_SRC" "$RELAY_SRC" "$DOWN_SRC" "$SESSION_SRC" \
-               "$BOOTSTRAP_SRC"; do
+# DERIVED, not listed. It was a list of six names, and the producer then grew
+# `uplink.mjs`, `page-entry.mjs` and `producer-worker.mjs` -- three modules that
+# ship into WebContent beside untrusted content and that this firewall did not
+# cover, because nobody remembered to add three lines. A firewall with a
+# hand-written membership list protects the files somebody remembered.
+#
+# `find -maxdepth 1`, so a subdirectory somebody adds later is a file this loop
+# does not see -- which would be the same failure again. There are none today,
+# and the check below says so rather than trusting it.
+if find "$SRC_DIR" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
+    echo "FAIL: $SRC_DIR has a subdirectory, and this gate only walks its top level." >&2
+    echo "      Either flatten it or teach this loop to recurse; a module the firewall" >&2
+    echo "      does not see is a module that can import anything." >&2
+    exit 1
+fi
+SHIPPED_SOURCES=()
+while IFS= read -r found; do
+    SHIPPED_SOURCES+=("$found")
+done < <(find "$SRC_DIR" -maxdepth 1 -name '*.mjs' | sort)
+if (( ${#SHIPPED_SOURCES[@]} == 0 )); then
+    echo "FAIL: no producer modules found under $SRC_DIR." >&2
+    exit 1
+fi
+
+for shipped in ${SHIPPED_SOURCES[@]+"${SHIPPED_SOURCES[@]}"}; do
     outside="$(grep -nE "^\s*(import|export)\b.*\bfrom\s+[\"']" "$shipped" \
         | grep -vE "from\s+[\"']\./[A-Za-z0-9_.-]+\.mjs[\"']" || true)"
     if [[ -n "$outside" ]]; then
@@ -92,6 +120,7 @@ if [[ -f "$SDK_SCRIPT" ]]; then
 fi
 
 node "$TEST"
+RAN_TESTS+=("$TEST")
 
 # --- the synchronous barrier's producer half --------------------------------
 #
@@ -102,6 +131,7 @@ node "$TEST"
 # woken by a real worker -- "it blocks" is the entire claim, and a test whose
 # host answered before the wait began would exercise every line except that one.
 node "$SYNC_TEST"
+RAN_TESTS+=("$SYNC_TEST")
 
 # --- and the two halves against each other ----------------------------------
 #
@@ -110,6 +140,7 @@ node "$SYNC_TEST"
 # what has to hold is that a blocked agent is always woken and never with the
 # wrong bytes -- and neither half can establish that by itself.
 node "$RELAY_TEST"
+RAN_TESTS+=("$RELAY_TEST")
 
 # --- and the other direction ------------------------------------------------
 #
@@ -170,7 +201,7 @@ fi
 # makes" and "is it still a valid frame saying what it claims" -- and a committed
 # fixture needs both.
 
-FIXTURES="platforms/apple/Tests/MigoAppleRendererTests/Fixtures"
+FIXTURES="platforms/apple/Sources/MigoAppleFrameHarness/Fixtures"
 REGENERATED="$(mktemp -d)"
 trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED"' EXIT
 node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs "$REGENERATED" >/dev/null
@@ -245,11 +276,29 @@ fi
 # grows on one side only therefore fails rather than quietly covering less.
 
 node "$DOWN_TEST"
+RAN_TESTS+=("$DOWN_TEST")
 
 # The credit accounting and the frame clock, on bytes this repository's own
 # encoder produced -- so a failure here is about what the producer DOES with a
 # message rather than about what a message is.
 node "$SESSION_TEST"
+RAN_TESTS+=("$SESSION_TEST")
+
+# --- which uplink a frame leaves on -----------------------------------------
+#
+# Above `MigoFrameChannelPolicy.socketCeilingBytes` the producer POSTs to the
+# content origin instead of sending on the socket, because G0's P3 measured the
+# scheme 4.4x faster and 4.6x cheaper at 1 MiB and the socket better below.
+#
+# What this suite pins is the boundary -- at the ceiling the socket, one byte
+# over the scheme -- and that the threshold is the HOST's. The producer carries
+# no copy of it: a constant in both languages would drift the first time the
+# measurement is redone on new hardware, silently, because each half would still
+# be self-consistent. The suite asserts a scheme URL without a ceiling is
+# refused rather than defaulted, which is what keeps that true.
+UPLINK_TEST="$TEST_DIR/uplink.test.mjs"
+node "$UPLINK_TEST"
+RAN_TESTS+=("$UPLINK_TEST")
 
 DOWN_FROM_JS="$(mktemp -d)"
 DOWN_FROM_RUST="$(mktemp -d)"
@@ -287,3 +336,34 @@ fi
 # wrote. A failure here is the one a device would show as a frame clock that
 # stops ticking, with nothing in either log saying why.
 node platforms/apple/WebContent/PerformancePlus/test/emit-downlink.mjs read "$DOWN_FROM_RUST"
+
+# --- the producer's own suites: run the named ones, then prove that was all ---
+#
+# Each `node "$..."` above has a paragraph saying what that suite establishes,
+# which is worth keeping and is exactly what a `for` loop over the directory
+# would throw away. What a hand-written list loses instead is the file somebody
+# adds later: `uplink.test.mjs` was written, committed, and run by nobody,
+# because adding it here is a step with no failure attached to forgetting it.
+#
+# So: narrative by hand, coverage derived. A suite on disk that this gate never
+# ran fails here by name.
+UNRUN=()
+while IFS= read -r suite; do
+    found=0
+    for ran in ${RAN_TESTS[@]+"${RAN_TESTS[@]}"}; do
+        [[ "$ran" == "$suite" ]] && found=1 && break
+    done
+    if (( found == 0 )); then
+        node "$suite"
+        UNRUN+=("$suite")
+    fi
+done < <(find "$TEST_DIR" -maxdepth 1 -name '*.test.mjs' | sort)
+
+if (( ${#UNRUN[@]} > 0 )); then
+    echo
+    echo "NOTE: these suites are not named in this gate and were run generically:" >&2
+    printf '        %s\n' ${UNRUN[@]+"${UNRUN[@]}"} >&2
+    echo "      They passed. Give each one a paragraph above saying what it establishes," >&2
+    echo "      the way the others have -- a suite nobody can say the purpose of is one" >&2
+    echo "      nobody will notice going quiet." >&2
+fi

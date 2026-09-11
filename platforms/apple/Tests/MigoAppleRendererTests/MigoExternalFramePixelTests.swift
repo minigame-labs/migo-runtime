@@ -1,3 +1,4 @@
+import MigoAppleFrameHarness
 import MigoEngine
 import QuartzCore
 import XCTest
@@ -174,15 +175,11 @@ final class MigoExternalFramePixelTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    /// The committed frames now live with `MigoAppleFrameHarness`, so this test
+    /// and the Performance+ acceptance test read the same file rather than two
+    /// copies of it.
     private func fixture(_ name: String) throws -> Data {
-        let url = try XCTUnwrap(
-            Bundle.module.url(forResource: name, withExtension: "bin", subdirectory: "Fixtures"),
-            """
-            the committed frame is not in the test bundle. It is declared as a resource of \
-            this target in Package.swift; regenerate it with \
-            `node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs`.
-            """)
-        return try Data(contentsOf: url)
+        try MigoFrameHarness.fixture(named: name)
     }
 
     private func readPixelsParams(x: Int32, y: Int32, width: Int32, height: Int32) -> [UInt8] {
@@ -385,37 +382,26 @@ final class MigoExternalFramePixelTests: XCTestCase {
         try submit("clear-scissor-frame", sequence: 3)
         try submit("canvas2d-fill-frame", sequence: 4)
 
-        // A characterised defect, tracked rather than deleted, because
-        // XCTExpectFailure fails when the failure STOPS happening -- whoever
-        // makes Skia build a context here finds out at this line.
+        // The defect this test tracked is fixed, and the mechanism that says so
+        // is worth recording because it worked.
         //
-        // WHERE IT STOPS, measured rather than guessed. The records arrive and
-        // dispatch correctly: OP2D_CREATE_CONTEXT reaches the renderer and runs.
-        // What fails is Skia, and the log now says exactly where:
+        // WHAT IT WAS. Canvas2D records reached the renderer and Skia declined
+        // to build a `GrDirectContext` on the ANGLE context they arrived under,
+        // so `canvas2d-fill-frame` drew nothing. It was tracked with
+        // `XCTExpectFailure` rather than deleted or disabled, precisely because
+        // that construct fails when the failure STOPS happening.
         //
-        //     INFO  Skia is about to build a GL context
-        //           gl_version=OpenGL ES 3.0 (ANGLE 2.1.1 git hash: 52f5942878)
-        //     ERROR Skia GrDirectContext::make_gl returned none for the current
-        //           GL context
-        //     ERROR Canvas2DBatch cmd failed: 2d context not found: canvas_id=1 (x4)
+        // WHY IT HAPPENED. `skia_gl_standard = "gl"` on macOS -> `SK_ASSUME_GL=1`,
+        // which compiles the ES interface assembler out; the only GL on Apple is
+        // ANGLE, which is ES. `scripts/apple-skia-gl-env.sh` corrects it, and
+        // iOS was never affected -- its default is `"gles"`, which is what ANGLE
+        // actually is.
         //
-        // So a live, valid ANGLE ES 3.0 context IS current, the GL interface
-        // loads, and Skia looks at that context and declines it. Two candidates
-        // were eliminated on the way: the loader resolves every core GL name
-        // ANGLE is asked for (checked against the dylibs directly, outside this
-        // process), and the interface-load step is not the one that fails -- it
-        // has its own message now and it does not appear.
-        //
-        // WHAT IS NOT YET KNOWN is whether this is particular to this lane or
-        // true of Skia-on-ANGLE anywhere on macOS. `canvas2d_text` in the
-        // graphics crate does render pixels on this machine, so Skia builds a
-        // context somewhere; whether that path is this ANGLE is the next
-        // question, and it is a graphics investigation rather than a wire one.
-        XCTExpectFailure(
-            "Canvas2D records reach the renderer and Skia will not build a GrDirectContext on "
-                + "the ANGLE context they arrive under. See the comment above for what has been "
-                + "eliminated. If this expectation itself fails, Skia has started building one "
-                + "and the assertions below should become real again.")
+        // HOW IT ENDED. On 2026-09-12 this line reported `Expected failure ...
+        // but none recorded` on the iOS simulator, against an engine built from
+        // source. Nobody went looking; the expectation reported its own
+        // obsolescence, which is the whole reason to write one instead of a
+        // comment.
 
         // 2D (4,4) is near the TOP-left; readPixels counts from the bottom, so
         // it is at y = 64 - 4.

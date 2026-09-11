@@ -1,6 +1,6 @@
 //! The committed frames, read the way the engine reads them.
 //!
-//! `platforms/apple/Tests/MigoAppleRendererTests/Fixtures/*.bin` exist so that a
+//! `platforms/apple/Sources/MigoAppleFrameHarness/Fixtures/*.bin` exist so that a
 //! consumer needing a valid packet -- a Swift test handing one to
 //! `migo_session_submit_external_frame` -- does not have to build one. Building
 //! one there would be a THIRD implementation of the wire format, in a language
@@ -40,7 +40,7 @@ const SCISSOR_FRAME: (&str, u64) = ("clear-scissor-frame", 3);
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../../platforms/apple/Tests/MigoAppleRendererTests/Fixtures/{name}.bin"
+        "../../../platforms/apple/Sources/MigoAppleFrameHarness/Fixtures/{name}.bin"
     ));
     std::fs::read(&path).unwrap_or_else(|error| {
         panic!(

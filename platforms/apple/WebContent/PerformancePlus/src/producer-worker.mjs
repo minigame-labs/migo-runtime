@@ -31,6 +31,17 @@ self.onmessage = async (event) => {
   try {
     session = await connectFrameSession({
       url: config.frameChannelUrl,
+      // Both from the host or neither: `schemeUrl` names the endpoint and
+      // `socketCeilingBytes` is the measured threshold that decides when to use
+      // it. The producer carries no copy of either.
+      schemeUrl: config.frameSchemeUrl,
+      socketCeilingBytes: config.socketCeilingBytes,
+      onSchemeFailure: (error, byteCount) =>
+        report({
+          type: "failed",
+          stage: "uplink-scheme",
+          detail: `a ${byteCount}-byte frame did not reach the host: ${error}`,
+        }),
       // Off unless the host asks. A verdict arrives per submitted frame, and
       // relaying one is a structured clone to the page plus a hop onto the
       // host's main thread -- 60 of each per second, on the latency path this

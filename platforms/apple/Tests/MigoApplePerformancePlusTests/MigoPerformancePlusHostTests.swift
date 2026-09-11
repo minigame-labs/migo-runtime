@@ -1,6 +1,13 @@
 import WebKit
 import XCTest
 
+// One symbol, not the module. `MigoAppleCore` also declares a `MigoFrameChannel`
+// -- the policy's channel enum -- and this target already has one from
+// `MigoApplePerformancePlus`. Inside that module the local declaration wins; in
+// a test target that imports both, neither does, and every existing use of the
+// class would become ambiguous.
+import enum MigoAppleCore.MigoFrameChannelPolicy
+
 @testable import MigoApplePerformancePlus
 
 #if os(iOS)
@@ -201,6 +208,159 @@ import XCTest
                     "\(error)".contains("build-apple-sdk.sh"),
                     "the message has to say what produces them")
             }
+        }
+    }
+#endif
+
+#if os(iOS)
+    /// The other uplink.
+    ///
+    /// Above `MigoFrameChannelPolicy.socketCeilingBytes` a frame is POSTed to the
+    /// content origin instead of sent on the socket, because G0's P3 measured the
+    /// scheme 4.4x faster and 4.6x cheaper at 1 MiB. What needs a real web view is
+    /// the part no unit test reaches: whether `fetch` from a module Worker on a
+    /// custom scheme delivers a megabyte-scale body to a `WKURLSchemeHandler` at
+    /// all. WebKit 191362 -- "a POST body is lost on the way to the handler" -- is
+    /// RESOLVED FIXED, and a fixed bug carried forward as a design constraint is
+    /// how a transport gets eliminated without a measurement.
+    extension MigoPerformancePlusHostTests {
+
+        func testAFrameOverTheCeilingArrivesThroughTheSchemeHandler() throws {
+            // One byte over, so the test is about the threshold rather than about
+            // being large. The ceiling is read from the policy, not written here:
+            // two copies of a measured number drift the first time it is remeasured.
+            let ceiling = MigoFrameChannelPolicy.socketCeilingBytes
+            try writeContent(
+                """
+                export async function start({ session }) {
+                  const big = new Uint8Array(\(ceiling + 1));
+                  // A pattern rather than zeros: a body that arrived as the right
+                  // LENGTH of the wrong bytes is a different defect from a body
+                  // that did not arrive, and zeros cannot tell them apart.
+                  for (let i = 0; i < big.length; i += 1) big[i] = i & 0xff;
+                  session.submit(big);
+                }
+                """, to: "game/main.mjs")
+
+            let submitted = expectation(description: "the large frame reaches the engine")
+            var seen: Data?
+            let channel = MigoFrameChannel(
+                submit: { packet in
+                    seen = packet
+                    submitted.fulfill()
+                    return true
+                },
+                takeDownlink: { _ in 0 })
+
+            let ready = expectation(description: "the producer reports ready")
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: channel)
+            self.host = host
+            host.onReport = { report in
+                switch report["type"] as? String {
+                case "ready": ready.fulfill()
+                case "failed":
+                    failure =
+                        "\(report["stage"] as? String ?? "?"): \(report["detail"] as? String ?? "?")"
+                    ready.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+
+            wait(for: [ready], timeout: Self.reportTimeout)
+            XCTAssertNil(failure, "the producer reported a failure")
+            wait(for: [submitted], timeout: 30)
+
+            XCTAssertEqual(seen?.count, ceiling + 1, "the body arrived short")
+            XCTAssertEqual(
+                Array(seen ?? Data()), (0...(ceiling)).map { UInt8($0 & 0xff) },
+                "the bytes that arrived are not the bytes content submitted")
+            XCTAssertEqual(
+                host.originActivity.framesDelivered, 1,
+                "it must have come through the scheme handler, not the socket")
+            XCTAssertEqual(host.originActivity.framesRefused, 0)
+            XCTAssertEqual(
+                channel.currentStatistics.framesAccepted, 1,
+                "one frame, counted once, whichever uplink carried it")
+        }
+
+        func testAFrameAtTheCeilingStillGoesOverTheSocket() throws {
+            // The other side of the same threshold, in the same place, because a
+            // hybrid that sent everything over one channel would pass the test
+            // above and be wrong.
+            let ceiling = MigoFrameChannelPolicy.socketCeilingBytes
+            try writeContent(
+                """
+                export async function start({ session }) {
+                  session.submit(new Uint8Array(\(ceiling)));
+                }
+                """, to: "game/main.mjs")
+
+            let submitted = expectation(description: "the frame reaches the engine")
+            var seen: Data?
+            let channel = MigoFrameChannel(
+                submit: { packet in
+                    seen = packet
+                    submitted.fulfill()
+                    return true
+                },
+                takeDownlink: { _ in 0 })
+
+            let ready = expectation(description: "the producer reports ready")
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: channel)
+            self.host = host
+            host.onReport = { report in
+                if report["type"] as? String == "ready" || report["type"] as? String == "failed" {
+                    ready.fulfill()
+                }
+            }
+            mount(host)
+            try host.start()
+
+            wait(for: [ready], timeout: Self.reportTimeout)
+            wait(for: [submitted], timeout: 30)
+            XCTAssertEqual(seen?.count, ceiling)
+            XCTAssertEqual(
+                host.originActivity.framesDelivered, 0,
+                "at exactly the ceiling the socket carries it; the scheme must not have seen it")
+        }
+
+        func testTheFrameEndpointRefusesAGet() throws {
+            // Not a 404. A GET on the frame endpoint is a caller using it wrong,
+            // and answering "no such file" sends whoever reads it looking for a
+            // packaging fault.
+            try writeContent(
+                """
+                export async function start() {
+                  const response = await fetch("\(MigoPerformancePlusOrigin.framePath)");
+                  self.postMessage({ type: "probe", status: response.status });
+                }
+                """, to: "game/main.mjs")
+
+            let answered = expectation(description: "the endpoint answered")
+            var status: Int?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: MigoFrameChannel(submit: { _ in true }, takeDownlink: { _ in 0 }))
+            self.host = host
+            host.onReport = { report in
+                if report["type"] as? String == "probe" {
+                    status = report["status"] as? Int
+                    answered.fulfill()
+                }
+            }
+            mount(host)
+            try host.start()
+
+            wait(for: [answered], timeout: Self.reportTimeout)
+            XCTAssertEqual(status, 405)
+            XCTAssertEqual(host.originActivity.framesRefused, 1)
         }
     }
 #endif

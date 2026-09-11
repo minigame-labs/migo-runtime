@@ -276,7 +276,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // MigoSyncBarrierABITests submits it to a live session.
 const directory =
   process.argv[2] ??
-  join(here, "..", "..", "..", "Tests", "MigoAppleRendererTests", "Fixtures");
+  join(here, "..", "..", "..", "Sources", "MigoAppleFrameHarness", "Fixtures");
 mkdirSync(directory, { recursive: true });
 for (const frame of FRAMES) {
   const bytes = clearFrameBytes(frame);
