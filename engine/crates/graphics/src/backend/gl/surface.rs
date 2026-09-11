@@ -503,7 +503,55 @@ impl Canvas2DContext {
         kind: FboKind,
         load_gl: &dyn Fn(&str) -> *const std::ffi::c_void,
     ) -> Option<Self> {
-        let interface = sk_gl::Interface::new_load_with(|symbol| load_gl(symbol))?;
+        // Named steps, because the caller's error could only say the whole
+        // thing failed. Three things can go wrong here and they have nothing to
+        // do with each other -- a loader that cannot resolve GL, a driver Skia
+        // will not build a context on, and a framebuffer it will not wrap --
+        // and telling them apart from the outside was not possible. Measured
+        // 2026-09-11: an external-frame Canvas2D batch reported "Skia
+        // Canvas2DContext::new failed for canvas_id=1 (64x64 fbo=1)" and the
+        // next question, which of the three, had no answer in the log.
+        // What the driver says it is, read through the loader Skia is about to
+        // use. Logged before the interface is built, so a failure below has the
+        // answer sitting above it: a null version means no context was current
+        // and the interface was assembled from nothing, while a real one means
+        // Skia looked at a live context and declined it. Those want opposite
+        // fixes, and the message alone could not tell them apart.
+        //
+        // Through `load_gl` and not a linked `glGetString`, which is the
+        // mistake this replaces: declaring the symbol resolves it against
+        // whatever GL the process happens to link -- on macOS the system
+        // OpenGL, not the ANGLE this manager drives -- and calling that with no
+        // CGL context current took the test process down with no output at all.
+        {
+            type GetString = unsafe extern "C" fn(u32) -> *const std::ffi::c_char;
+            const GL_VERSION: u32 = 0x1F02;
+            let raw = load_gl("glGetString");
+            let version = if raw.is_null() {
+                "<glGetString unresolved>".to_string()
+            } else {
+                // SAFETY: the loader returned a non-null entry point for a name
+                // whose signature is fixed by the GL ES specification.
+                let get_string: GetString = unsafe { std::mem::transmute(raw) };
+                let text = unsafe { get_string(GL_VERSION) };
+                if text.is_null() {
+                    "<null: no context was current>".to_string()
+                } else {
+                    unsafe { std::ffi::CStr::from_ptr(text) }
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            };
+            tracing::info!(gl_version = %version, "Skia is about to build a GL context");
+        }
+
+        let Some(interface) = sk_gl::Interface::new_load_with(|symbol| load_gl(symbol)) else {
+            tracing::error!(
+                "Skia GL interface load failed: the loader resolved no usable GL entry \
+                 points, or no context was current when it was asked"
+            );
+            return None;
+        };
         Self::with_interface(interface, fbo_id, width, height, kind)
     }
 
@@ -520,7 +568,12 @@ impl Canvas2DContext {
         height: u32,
         kind: FboKind,
     ) -> Option<Self> {
-        let mut gr_ctx = direct_contexts::make_gl(interface.clone(), None)?;
+        let Some(mut gr_ctx) = direct_contexts::make_gl(interface.clone(), None) else {
+            tracing::error!(
+                "Skia GrDirectContext::make_gl returned none for the current GL context"
+            );
+            return None;
+        };
 
         let fb_info = sk_gl::FramebufferInfo {
             fboid: fbo_id,
@@ -546,7 +599,16 @@ impl Canvas2DContext {
             ColorType::RGBA8888,
             /* color_space */ None,
             /* surface_props */ None,
-        )?;
+        );
+        let Some(surface) = surface else {
+            tracing::error!(
+                fbo = fbo_id,
+                width,
+                height,
+                "Skia would not wrap the framebuffer as a render target"
+            );
+            return None;
+        };
 
         // Clamp Ganesh's resource cache so a long-running scene
         // can't silently grow the GPU memory footprint past the
