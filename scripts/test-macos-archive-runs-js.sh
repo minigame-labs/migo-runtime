@@ -265,6 +265,47 @@ measure_v8_if_this_content_reports() {
   assert_v8_has_jit
 }
 
+# Canvas2D on the shipping bytes, and the same list discipline as the V8 report
+# above: an absent line is a failure for the fixture that reports one, and
+# stated plainly for a fixture that does not.
+#
+# It exists because every macOS check in this repository was satisfiable by an
+# engine whose 2D backend could not build a single surface. Measured 2026-09-11:
+# `GrDirectContext` came up on nothing on macOS, because Skia's macOS build
+# defines SK_ASSUME_GL and Migo's only Apple GL implementation is ANGLE, which
+# is ES -- so `GrGLMakeAssembledInterface` assembled a desktop interface against
+# an ES driver and returned null. WebGL kept working throughout, because WebGL
+# never goes through Skia. Nothing went red. See scripts/apple-skia-gl-env.sh.
+CANVAS2D_REPORTING_CONTENT="headless-js-probe"
+CANVAS2D_EXPECTED_RGBA="0,128,255,255"
+
+canvas2d_report_line() {
+  grep -o 'migo-headless-probe: canvas2d .*' "$HOST_LOG" | tail -1
+}
+
+assert_canvas2d_draws_if_this_content_reports() {
+  if [[ "$CONTENT" != "$CANVAS2D_REPORTING_CONTENT" ]]; then
+    echo "  no Canvas2D check: '$CONTENT' does not report one. $CANVAS2D_REPORTING_CONTENT is the"
+    echo "  fixture that does."
+    return 0
+  fi
+  local report rgba
+  report="$(canvas2d_report_line || true)"
+  if [[ -z "$report" ]]; then
+    fail "the content reported nothing about Canvas2D. The fixture prints that line through console.error before the frame loop, so either it never got that far or the report stopped being taken -- fix the reporting before reading anything else here"
+  fi
+  echo "  content reports: ${report#migo-headless-probe: }"
+  case "$report" in
+    *ctx=null*)
+      fail "the shipping archive could not create a 2D context at all. That is the Skia-on-ANGLE configuration defect, not a drawing bug: see scripts/apple-skia-gl-env.sh, which the macOS build has to have sourced" ;;
+    *-threw=*)
+      fail "the shipping archive threw while drawing 2D: ${report#migo-headless-probe: }" ;;
+  esac
+  rgba="${report#*rgba=}"
+  [[ "$rgba" == "$CANVAS2D_EXPECTED_RGBA" ]] \
+    || fail "Canvas2D drew, and read back $rgba where the fixture filled $CANVAS2D_EXPECTED_RGBA. The context builds and the pixels are wrong, which is a different investigation from the context not building"
+}
+
 assert_v8_has_jit() {
   local report wasm mips
   report="$(report_line || true)"
@@ -343,5 +384,6 @@ fi
 
 ((HOST_STATUS == 0)) || fail "the shipping archive did not run the content to completion (exit $HOST_STATUS)"
 measure_v8_if_this_content_reports
+assert_canvas2d_draws_if_this_content_reports
 
-echo "PASS: the shipping macOS archive evaluated JavaScript on a V8 with a working JIT, turned frames on ANGLE/Metal against a windowless CAMetalLayer, and installed the migo surface"
+echo "PASS: the shipping macOS archive evaluated JavaScript on a V8 with a working JIT, turned frames on ANGLE/Metal against a windowless CAMetalLayer, drew and read back Canvas2D pixels through Skia, and installed the migo surface"

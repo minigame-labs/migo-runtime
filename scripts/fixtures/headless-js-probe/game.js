@@ -70,6 +70,46 @@ console.error(
     " acc=" + measured.acc,
 );
 
+// Canvas2D, which is a third question and the one nothing on macOS had ever
+// asked. Every other check on this archive -- link, symbol, "the script ran",
+// "the frames turned" -- is satisfied by an engine whose 2D backend cannot
+// build a single surface, because WebGL never goes through Skia and the frame
+// loop does not care what is drawn in it.
+//
+// It is asked here rather than in a unit test because this file runs the bytes
+// that ship: a static archive, ANGLE loaded from beside the binary, a real
+// CAMetalLayer with no window. A `GrDirectContext` either comes up against that
+// or it does not.
+//
+// Reported as one line with the colour in it, so the three ways this can go
+// wrong stay distinguishable from the outside: no context at all, a context
+// that draws the wrong thing, and a readback that never returned.
+function probeCanvas2D() {
+  let canvas;
+  try {
+    canvas = migo.createCanvas();
+  } catch (err) {
+    return "canvas2d create-canvas-threw=" + err;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return "canvas2d ctx=null";
+  }
+  try {
+    // Opaque and off every axis of the default state, so a readback that
+    // reports it cannot be reporting a cleared buffer, a black surface, or a
+    // premultiplied white.
+    ctx.fillStyle = "rgb(0, 128, 255)";
+    ctx.fillRect(0, 0, 16, 16);
+    const px = ctx.getImageData(2, 2, 1, 1).data;
+    return "canvas2d rgba=" + px[0] + "," + px[1] + "," + px[2] + "," + px[3];
+  } catch (err) {
+    return "canvas2d draw-threw=" + err;
+  }
+}
+
+console.error("migo-headless-probe: " + probeCanvas2D());
+
 // Then the render loop, which is the second question and a strictly harder one.
 // Evaluating a module needs V8 and a thread; turning frames needs the surface to
 // have been installed, the EGL context to be current and the presenter to be

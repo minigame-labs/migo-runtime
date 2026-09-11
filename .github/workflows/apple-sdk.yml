@@ -51,7 +51,24 @@ on:
       # land without the lane that tests it ever running. Found by pushing a new
       # presenter test and watching the Apple lanes not start.
       - 'engine/crates/platform/**'
+      # The crate that owns every Skia surface, and it was not here either. The
+      # cost of that: Skia's macOS build assumes desktop GL while Migo's only
+      # Apple GL implementation is ANGLE, which is ES, so no `GrDirectContext`
+      # could be built on macOS at all -- and no Apple lane ran on a change to
+      # the crate where that lives. WebGL never goes through Skia, so nothing
+      # else went red. See scripts/apple-skia-gl-env.sh.
+      #
+      # It is a wide path on a busy crate, and that is the trade being made
+      # deliberately: an Apple-only rendering defect has now been found here
+      # once, and the Android work that dominates this crate's traffic is
+      # exactly the traffic that would not notice.
+      - 'engine/crates/graphics/**'
+      - 'scripts/apple-skia-gl-env.sh'
       - 'scripts/build-apple-sdk.sh'
+      # The gate that runs a game through the shipping macOS archive, and the
+      # fixture it runs. Both are macOS-only and neither was here.
+      - 'scripts/test-macos-archive-runs-js.sh'
+      - 'scripts/fixtures/headless-js-probe/**'
       - 'scripts/apple-sdk-package.py'
       - 'scripts/embed-apple-angle.sh'
       - 'scripts/fetch-apple-angle.sh'
@@ -373,6 +390,11 @@ jobs:
         working-directory: engine
         run: |
           host="$(rustc -vV | sed -n 's/^host: //p')"
+          # Same Skia configuration the shipped macOS slice is built with. It has
+          # to be the same one: this step asks whether Skia builds a Canvas2D
+          # context on ANGLE, and a Skia compiled for desktop GL answers no for a
+          # reason that is about this command line rather than about the product.
+          . ../scripts/apple-skia-gl-env.sh
           DYLD_LIBRARY_PATH="$MIGO_DIAGNOSTIC_ANGLE" \
             cargo test -p migo-platform --locked --target "$host" \
             --no-default-features --features external-frames
