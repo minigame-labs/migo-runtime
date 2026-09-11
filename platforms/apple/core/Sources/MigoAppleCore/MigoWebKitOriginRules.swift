@@ -35,7 +35,36 @@ public enum MigoWebKitOriginRules {
         case outsidePackage
         /// A different authority on the same scheme.
         case wrongHost(String?)
+        /// The path is under the reserved engine prefix and this origin was given
+        /// no engine root to serve it from.
+        ///
+        /// Distinct from `outsidePackage` because it is a host configuration
+        /// mistake rather than content misbehaving, and because collapsing the two
+        /// would leave one reading -- "content tried to escape" -- for a request
+        /// the engine's own producer makes on every load.
+        case reservedPathWithoutEngineRoot
     }
+
+    /// The path prefix under which engine-supplied modules are served, separate
+    /// from the content package.
+    ///
+    /// Two roots behind one origin, because the two have different owners and the
+    /// same-origin requirement is real: the Performance+ producer runs as a module
+    /// worker, and a module worker's script and every module it imports must come
+    /// from the origin the page was loaded from. Serving the producer from a
+    /// second origin is therefore not available, and serving it out of the game's
+    /// own directory would mean a game package could replace the code that owns
+    /// the frame channel by shipping a file with the right name.
+    ///
+    /// Reserved rather than merely conventional: a request under this prefix is
+    /// NEVER resolved against the content root, even when no engine root is
+    /// configured. That is what makes it un-shadowable -- a game that creates a
+    /// `__migo` directory gets it ignored, not served.
+    ///
+    /// The leading and trailing slashes are part of the constant so a caller
+    /// cannot half-apply it: `/__migo` (no trailing slash) would also match
+    /// `/__migovault/...`, which is a different directory.
+    public static let engineAssetPrefix = "/__migo/"
 
     /// Resolve a request path against the package root.
     ///
@@ -47,12 +76,28 @@ public enum MigoWebKitOriginRules {
     /// misses.
     public static func resolve(
         requestPath: String, host requestHost: String?, root: URL,
-        indexPath: String = "index.html"
+        indexPath: String = "index.html",
+        engineRoot: URL? = nil
     ) -> Resolution {
         guard requestHost == host else { return .wrongHost(requestHost) }
         var path = requestPath
         if path.isEmpty || path == "/" { path = "/" + indexPath }
-        let resolvedRootURL = root.resolvingSymlinksInPath().standardizedFileURL
+
+        // The reserved prefix is decided before the root is chosen, so there is
+        // exactly one place that can answer a `/__migo/` request and the content
+        // root is never it.
+        var servingRoot = root
+        if path.hasPrefix(engineAssetPrefix) {
+            guard let engineRoot else { return .reservedPathWithoutEngineRoot }
+            servingRoot = engineRoot
+            path = String(path.dropFirst(engineAssetPrefix.count - 1))
+            // `/__migo/` itself, with nothing after it. There is no index inside
+            // the engine root -- it holds modules, not a page -- so this is an
+            // escape-shaped request rather than a directory listing.
+            if path == "/" { return .outsidePackage }
+        }
+
+        let resolvedRootURL = servingRoot.resolvingSymlinksInPath().standardizedFileURL
         let resolvedRoot = resolvedRootURL.path
         // `appendingPathComponent`, not `URL(fileURLWithPath:relativeTo:)`. The latter
         // treats a base without a trailing slash as a *file* and resolves the relative

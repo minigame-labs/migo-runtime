@@ -266,6 +266,67 @@ import XCTest
 
         // MARK: - the origin answers what WebKit asks
 
+        /// A page on this origin can start a MODULE worker, and that worker can
+        /// import a sibling module from the same origin.
+        ///
+        /// This is a capability question for the OTHER lane, asked here because
+        /// this is where a real `WKWebView` already runs. Performance+'s producer
+        /// is a Dedicated Worker whose entry point (`worker-bootstrap.mjs`) uses
+        /// ES `import`, which requires `{ type: "module" }`.
+        ///
+        /// WHY IT IS NOT ALREADY ANSWERED. The capability gate proved a Worker
+        /// starts from a custom scheme and can open a WebSocket -- on a device,
+        /// in `capability-probe-worker.js`, which is a CLASSIC script constructed
+        /// with no options. A module worker is a different path through WebKit's
+        /// loader: it fetches the script as a module, resolves its imports
+        /// against the same scheme, and fetches those too. None of that is
+        /// exercised by a classic worker, and if any of it failed the producer
+        /// would have to be bundled into one classic script before it could run
+        /// at all.
+        ///
+        /// Measured on macOS first with a standalone `WKWebView` probe, which
+        /// answered `module-worker-ok:hello|import-ok`. This is the same question
+        /// on the platform the product ships on, where WebKit's process
+        /// configuration is not the same one.
+        func testAPageCanStartAModuleWorkerThatImportsFromItsOwnOrigin() throws {
+            try write("export const greeting = \"hello\";\n", to: "dep.mjs")
+            try write(
+                """
+                import { greeting } from "./dep.mjs";
+                self.postMessage(greeting + "|import-ok");
+                """, to: "producer-worker.mjs")
+
+            // Resolved rather than thrown on either outcome, so a worker that
+            // fails to construct reports WHY instead of timing out -- the two
+            // look identical from a `wait(for:)` and want opposite next steps.
+            let diagnostic = try firstDiagnostic(
+                from: """
+                    return await new Promise((resolve) => {
+                      let worker;
+                      try {
+                        worker = new Worker("/producer-worker.mjs", { type: "module" });
+                      } catch (error) {
+                        resolve({ outcome: "construct-threw", detail: String(error) });
+                        return;
+                      }
+                      worker.onmessage = (event) => resolve({ outcome: String(event.data) });
+                      worker.onerror = (event) => resolve({
+                        outcome: "worker-error",
+                        detail: String(event.message || event.type),
+                      });
+                    });
+                    """)
+            XCTAssertEqual(
+                diagnostic["outcome"] as? String, "hello|import-ok",
+                """
+                a module worker on this origin did not run its imported sibling \
+                (detail: \(diagnostic["detail"] as? String ?? "none")). If this is \
+                a loader refusal rather than a mistake in the fixture, the \
+                Performance+ producer cannot ship as ES modules and has to be \
+                bundled into one classic script first.
+                """)
+        }
+
         func testContentCanFetchItsOwnPackage() throws {
             try write("{\"name\":\"probe\"}", to: "manifest.json")
             let diagnostic = try firstDiagnostic(
