@@ -17,12 +17,21 @@
 #
 # ## What it will not do
 #
-# It refuses to package a downloaded archive. A build that was downloaded leaves
-# `key.txt` in its output directory and no `args.gn`; packaging that would
-# republish upstream's bytes under our name, which is a supply chain lie even
-# when the bytes are fine. And it refuses one whose `args.gn` does not carry
-# `skia_gl_standard = ""`, because an archive without it is the defect this
-# whole exercise exists to stop shipping.
+# It refuses to package a downloaded archive: packaging that would republish
+# upstream's bytes under our name, which is a supply chain lie even when the
+# bytes are fine.
+#
+# The discriminator is ninja's object tree, `out/skia/obj`, which a download
+# never creates -- NOT the presence of `key.txt`, which was the obvious choice
+# and is wrong. Cargo reuses one OUT_DIR per fingerprint, so a directory that
+# was downloaded into and later built from source holds both, and a real one on
+# this machine did. The libraries are also required to be no older than
+# `build.ninja.stamp`, which catches the reverse order: a source build that a
+# later download overwrote the libraries of.
+#
+# And it refuses a build whose `args.gn` does not carry `skia_gl_standard = ""`,
+# because an archive without it is the defect this whole exercise exists to stop
+# shipping.
 #
 # ## The key
 #
@@ -109,7 +118,7 @@ BUILD_ROOT="$TARGET_DIR/$TARGET/$PROFILE/build"
 SOURCE_BUILT=""
 DOWNLOADED=""
 while IFS= read -r candidate; do
-    if [[ -f "$candidate/args.gn" ]]; then
+    if [[ -d "$candidate/obj" && -f "$candidate/args.gn" ]]; then
         SOURCE_BUILT="$candidate"
     elif [[ -f "$candidate/key.txt" ]]; then
         DOWNLOADED="$candidate"
@@ -118,7 +127,7 @@ done < <(find "$BUILD_ROOT" -maxdepth 3 -type d -name skia -path '*/skia-binding
 
 if [[ -z "$SOURCE_BUILT" ]]; then
     if [[ -n "$DOWNLOADED" ]]; then
-        fail "the only Skia under $BUILD_ROOT was DOWNLOADED ($DOWNLOADED holds key.txt and no args.gn).
+        fail "the only Skia under $BUILD_ROOT was DOWNLOADED ($DOWNLOADED has no ninja object tree).
       Packaging that would republish upstream's bytes under our name. Build from source first:
         source scripts/apple-skia-gl-env.sh && cargo build --target $TARGET ..."
     fi
@@ -155,8 +164,17 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/skia-binaries"
 
+STAMP="$SOURCE_BUILT/build.ninja.stamp"
 for name in "${FILES[@]}"; do
     [[ -f "$SOURCE_BUILT/$name" ]] || fail "$SOURCE_BUILT has no $name; the build did not finish, or this skia-bindings emits a different set"
+    # Older than the ninja stamp means something replaced it after the build --
+    # in practice a download into the same reused OUT_DIR. Packaging those bytes
+    # is the thing the object-tree check above is for, and this is the half of
+    # it that catches the opposite order.
+    if [[ -f "$STAMP" && "$SOURCE_BUILT/$name" -ot "$STAMP" ]]; then
+        fail "$SOURCE_BUILT/$name is older than build.ninja.stamp, so it is not what this ninja run produced.
+      Wipe $(dirname "$(dirname "$SOURCE_BUILT")") and build from source again."
+    fi
     cp "$SOURCE_BUILT/$name" "$STAGE/skia-binaries/$name"
 done
 
