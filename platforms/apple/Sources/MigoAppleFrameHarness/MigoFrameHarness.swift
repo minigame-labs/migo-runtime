@@ -50,7 +50,7 @@ public final class MigoFrameHarness {
     private var retainedLayer: CAMetalLayer?
 
     /// The generation and nonce the committed fixtures are addressed to.
-    public static let fixtureGeneration: UInt32 = 1
+    public static let fixtureGeneration: UInt64 = 1
     public static let fixtureLaunchNonce: UInt8 = 0xA3
 
     public init(sizePixels: Int = 64) throws {
