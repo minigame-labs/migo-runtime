@@ -66,5 +66,26 @@
 # per run is the caller's caching, not this file's business; `Swatinem/rust-cache`
 # keeps `target/*/build/skia-bindings-*/out` across runs of a job that uses it.
 
+# ## Two more things this file has to carry, because turning the source build on
+# ## is what makes them matter
+#
+# `engine/.cargo/config.toml` sets `CC = "clang-18"` in `[env]`, for a Linux
+# reason it documents there. macOS has no `clang-18`, and until now that never
+# showed: every Apple build downloaded a prebuilt Skia and compiled no C++ at
+# all. The first source build on a macOS runner got as far as GN and then
+# `/bin/sh: clang-18: command not found` on the first zlib object. A plain
+# environment variable beats a non-forcing `[env]` entry, which is the same
+# mechanism `build-apple-sdk.sh` already relies on -- and `${CC:-clang}` so a
+# caller who deliberately chose a compiler keeps it.
+export CC="${CC:-clang}"
+export CXX="${CXX:-clang++}"
+
+# The same `[env]` block also sets `SKIA_GN_ARGS`, for fontconfig and unwind
+# tables. Exporting here REPLACES that value for this build rather than adding
+# to it, and on macOS that is the intended outcome: those arguments have never
+# reached a macOS Skia, because a macOS Skia has never been built from source
+# here. Keeping them would be the change, not dropping them. The `:+` form
+# still appends to a value a *caller* exported, which is the composition that
+# should work.
 export FORCE_SKIA_BUILD=1
 export SKIA_GN_ARGS="${SKIA_GN_ARGS:+$SKIA_GN_ARGS }skia_gl_standard=\"\""
