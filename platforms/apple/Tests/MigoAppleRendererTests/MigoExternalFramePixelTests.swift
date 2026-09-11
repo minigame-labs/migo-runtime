@@ -362,6 +362,41 @@ final class MigoExternalFramePixelTests: XCTestCase {
             "both points returned the same bytes, so the readback ignored its origin")
     }
 
+    /// Canvas2D draws, and its records reach the same pixels WebGL's do.
+    ///
+    /// Half of what this engine draws is 2D and nothing had ever put a 2D
+    /// record through this lane. The first record the fixture sends is
+    /// `OP2D_CREATE_CONTEXT`, which did not exist until this test needed it:
+    /// the 2D block was a complete drawing vocabulary with no way to bring a
+    /// context into existence, and a canvas without one drops every record it
+    /// is sent -- accepted, decoded, batched, and silently not drawn, with no
+    /// error anywhere.
+    ///
+    /// Canvas2D's origin is top-left and `readPixels`' is bottom-left, so the
+    /// quadrant filled at 2D (0,0) is the one `readPixels` finds at the top of
+    /// its own space. Both points are asserted by name, so a flip reads as two
+    /// known colours in the wrong places rather than as a puzzle.
+    func testCanvas2DRecordsDrawPixelsThisSessionCanReadBack() throws {
+        // Sequences are contiguous and this fixture is 4, so the three before
+        // it go first.
+        for (index, frame) in frames.enumerated() {
+            try submit(frame.name, sequence: UInt64(index + 1))
+        }
+        try submit("clear-scissor-frame", sequence: 3)
+        try submit("canvas2d-fill-frame", sequence: 4)
+
+        // 2D (4,4) is near the TOP-left; readPixels counts from the bottom, so
+        // it is at y = 64 - 4.
+        let quadrant = try readPixel(x: 4, y: 60, label: "the 2D-filled quadrant")
+        let background = try readPixel(x: 4, y: 4, label: "outside it")
+
+        XCTAssertEqual(quadrant, [0, 255, 0, 255], "the quadrant Canvas2D filled green")
+        XCTAssertEqual(background, [0, 0, 255, 255], "the rest, which Canvas2D filled blue")
+        XCTAssertNotEqual(
+            quadrant, background,
+            "both points returned the same bytes, so the second fill did not land where it was told")
+    }
+
     func testAFrameProducedElsewhereDrawsPixelsThisSessionCanReadBack() throws {
         var readings: [[UInt8]] = []
         for (index, frame) in frames.enumerated() {

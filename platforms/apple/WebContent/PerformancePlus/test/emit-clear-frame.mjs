@@ -43,6 +43,10 @@ import {
   OP_DISABLE,
   OP_ENABLE,
   OP_SCISSOR,
+  OP2D_SELECT_CANVAS,
+  OP2D_CREATE_CONTEXT,
+  OP2D_SET_FILL_STYLE,
+  OP2D_FILL_RECT,
 } from "../src/render-opcodes.mjs";
 
 /** Low twelve bits opcode, high twenty word count -- including the header. */
@@ -186,6 +190,81 @@ export function scissorFrameBytes() {
   });
 }
 
+/**
+ * A frame drawn with Canvas2D rather than WebGL.
+ *
+ * Half of what this engine draws is 2D, and nothing had ever put a 2D record
+ * through this lane. The first record is `OP2D_CREATE_CONTEXT`, which did not
+ * exist until this fixture needed it: the block was a complete drawing
+ * vocabulary with no way to bring a context into existence, and a canvas
+ * without one drops every record it is sent -- accepted, decoded, batched, and
+ * silently not drawn.
+ *
+ * Two fills rather than one, for the reason the scissored frame has two
+ * colours: a single fill read back as its own colour cannot show that the
+ * records ran in order, and a whole-surface fill cannot show that the
+ * rectangle was honoured.
+ *
+ * ★ Canvas2D's origin is TOP-left and `readPixels`' is bottom-left, so the
+ * quadrant this fills at 2D (0,0) is the one `readPixels` finds at the TOP of
+ * its own coordinate space. The consumer asserts both points, so a flip shows
+ * up as two named colours in the wrong places rather than as a puzzle.
+ */
+export const CANVAS2D_FRAME = {
+  name: "canvas2d-fill-frame",
+  sequence: 4n,
+  background: [0, 0, 255, 255],
+  quadrant: [0, 255, 0, 255],
+  size: 64,
+  quadrantSize: 32,
+};
+
+export function canvas2dFrameBytes() {
+  const words = [
+    MAGIC,
+    STREAM_VERSION,
+    // Which canvas the records below apply to.
+    packHeader(OP2D_SELECT_CANVAS, 2),
+    CANVAS_ID,
+    // And the context they need in order to do anything at all.
+    packHeader(OP2D_CREATE_CONTEXT, 1),
+    // The whole surface, blue.
+    packHeader(OP2D_SET_FILL_STYLE, 5),
+    floatBits(0),
+    floatBits(0),
+    floatBits(1),
+    floatBits(1),
+    packHeader(OP2D_FILL_RECT, 5),
+    floatBits(0),
+    floatBits(0),
+    floatBits(CANVAS2D_FRAME.size),
+    floatBits(CANVAS2D_FRAME.size),
+    // Then one quadrant, green, at Canvas2D's origin.
+    packHeader(OP2D_SET_FILL_STYLE, 5),
+    floatBits(0),
+    floatBits(1),
+    floatBits(0),
+    floatBits(1),
+    packHeader(OP2D_FILL_RECT, 5),
+    floatBits(0),
+    floatBits(0),
+    floatBits(CANVAS2D_FRAME.quadrantSize),
+    floatBits(CANVAS2D_FRAME.quadrantSize),
+  ];
+  const stream = new Uint8Array(words.length * 4);
+  const view = new DataView(stream.buffer);
+  words.forEach((word, index) => view.setUint32(index * 4, word, true));
+
+  return encodeFrame({
+    launchNonce: 0xa3n,
+    sequence: CANVAS2D_FRAME.sequence,
+    runtimeGeneration: 1n,
+    surfaceGeneration: 1n,
+    resourceEpoch: 0n,
+    sections: [{ kind: SECTION_KIND_COMMAND_STREAM, payload: stream }],
+  });
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 // It lives under the Swift test target, which is a strange home for a wire
 // fixture and is the only one that works. SwiftPM resources must sit inside the
@@ -204,8 +283,11 @@ for (const frame of FRAMES) {
   writeFileSync(join(directory, `${frame.name}.bin`), bytes);
   console.log(`emitted a ${bytes.length}-byte ${frame.name} into ${directory}`);
 }
-{
-  const bytes = scissorFrameBytes();
-  writeFileSync(join(directory, `${SCISSOR_FRAME.name}.bin`), bytes);
-  console.log(`emitted a ${bytes.length}-byte ${SCISSOR_FRAME.name} into ${directory}`);
+for (const [frame, build] of [
+  [SCISSOR_FRAME, scissorFrameBytes],
+  [CANVAS2D_FRAME, canvas2dFrameBytes],
+]) {
+  const bytes = build();
+  writeFileSync(join(directory, `${frame.name}.bin`), bytes);
+  console.log(`emitted a ${bytes.length}-byte ${frame.name} into ${directory}`);
 }

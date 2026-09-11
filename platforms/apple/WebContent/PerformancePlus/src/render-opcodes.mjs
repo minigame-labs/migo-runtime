@@ -132,6 +132,14 @@ export const OP2D_SET_COMPOSITE_OPERATION = 545;
 export const OP2D_SET_FILL_STYLE = 546;
 export const OP2D_SET_STROKE_STYLE = 547;
 export const OP2D_SET_SHADOW_COLOR = 548;
+// Bring a 2D context into existence on the selected canvas.
+//
+// The FIRST record a producer sends to a canvas it means to draw on. Without
+// it the rest of this block is a complete drawing vocabulary that cannot be
+// used: a canvas with no 2D context answers NotFound, and the renderer treats
+// that as "no context yet -- no draws". An accepted frame that drew nothing,
+// with no error anywhere.
+export const OP2D_CREATE_CONTEXT = 549;
 
 /// Pack a record header: low twelve bits opcode, high twenty word count.
 ///
