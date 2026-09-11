@@ -30,6 +30,7 @@ use shared::{
     host_channel::CriticalHostCommandSender,
     js_escape::{HOOK_ARGS_NONE, hook_args_one},
     op_state::{ContextLostState, HostOpState, HostTx, RafRx},
+    protocol::camera_frame::take_camera_frame,
     protocol::host_cmd::HostCommand,
     protocol::render_cmd::{CanvasCmd, RenderCommand},
     render_event::{RenderEvent, RenderEventReceiver},
@@ -881,6 +882,7 @@ impl Host {
                 data,
                 is_last_frame,
                 runtime_generation: _,
+                ..
             } => {
                 self.js.dispatch_recorder_frame_data(&data, is_last_frame);
                 Ok(())
@@ -899,14 +901,18 @@ impl Host {
 
             HostCommand::CameraFrameData {
                 camera_id,
-                data,
-                runtime_generation: _,
-                width,
-                height,
                 credit: _credit,
+                runtime_generation: _,
+                ..
             } => {
-                self.js
-                    .dispatch_camera_frame_data(camera_id, data, width, height);
+                if let Some(entry) = take_camera_frame(self.id, camera_id) {
+                    self.js.dispatch_camera_frame_data(
+                        camera_id,
+                        entry.data,
+                        entry.width,
+                        entry.height,
+                    );
+                }
                 Ok(())
             }
 

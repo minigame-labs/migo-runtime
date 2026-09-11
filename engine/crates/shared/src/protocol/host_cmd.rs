@@ -532,11 +532,18 @@ pub enum HostCommand {
     },
 
     /// Recorder frame data pushed from platform (for onFrameRecorded).
+    ///
+    /// Non-termination frames carry a byte reservation acquired before their
+    /// JNI payload copy. The reservation is mandatory so an unaccounted frame
+    /// cannot be constructed; termination frames use a zero-byte credit and
+    /// travel on the reliable lane.
     RecorderFrameData {
         /// Raw PCM/encoded audio frame bytes.
         data: Vec<u8>,
         /// Whether this is the last frame before stop.
         is_last_frame: bool,
+        /// Byte budget reservation held for this command.
+        credit: crate::protocol::recorder_frame::RecorderFrameCredit,
         /// See [`HostCommand::callback_generation`].
         runtime_generation: Option<NonZeroI64>,
     },
@@ -1289,18 +1296,27 @@ mod generation_tests {
                 data: Vec::new(),
                 width: 1,
                 height: 1,
-                credit: crate::protocol::camera_frame::try_acquire_camera_frame_credit(1, 0)
-                    .expect("test frame credit"),
-                runtime_generation: generation(4),
-            },
-            HostCommand::RecorderEvent {
-                event_type: "stop".to_owned(),
-                json_payload: "{}".to_owned(),
+                credit: match crate::protocol::camera_frame::push_camera_frame(
+                    9301,
+                    0,
+                    crate::protocol::camera_frame::CameraFrameEntry {
+                        data: Vec::new(),
+                        width: 1,
+                        height: 1,
+                    },
+                ) {
+                    crate::protocol::camera_frame::CameraFramePush::Notify(credit) => credit,
+                    crate::protocol::camera_frame::CameraFramePush::Superseded => {
+                        panic!("test frame credit")
+                    }
+                },
                 runtime_generation: generation(4),
             },
             HostCommand::RecorderFrameData {
                 data: Vec::new(),
                 is_last_frame: true,
+                credit: crate::protocol::recorder_frame::try_reserve_recorder_frame_bytes(9300, 0)
+                    .expect("test recorder frame credit"),
                 runtime_generation: generation(4),
             },
             HostCommand::OnVideoStateChange {

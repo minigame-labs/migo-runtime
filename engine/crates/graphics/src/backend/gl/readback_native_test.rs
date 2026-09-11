@@ -602,19 +602,103 @@ fn webgl_readback_native_clips_to_the_framebuffer_and_zeroes_the_rest() {
     }
 }
 
-unsafe fn read_bound_pbo(gl: &glow::Context) -> [u8; 64] {
-    // This fixture creates exactly 64 bytes. GLES3 exposes CPU access through
-    // MapBufferRange; GetBufferSubData is a desktop GL API.
+/// Every requested rectangle is checked against the 3x2 framebuffer while the
+/// PBO starts with a non-zero sentinel. This distinguishes an untouched
+/// out-of-framebuffer byte from a driver-written zero.
+#[test]
+#[ignore = "requires Mesa surfaceless EGL and GLES3"]
+fn webgl_readback_native_clipping_matrix_preserves_outside_bytes() {
+    let (_scope, gl) = gles3_context();
     unsafe {
-        let mapped = gl.map_buffer_range(glow::PIXEL_PACK_BUFFER, 0, 64, glow::MAP_READ_BIT);
+        gl.clear_color(1.0, 0.0, 0.0, 1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT);
+        for (name, value) in Pack::NAMES.into_iter().zip([1, 0, 0, 0]) {
+            gl.pixel_store_i32(name, value);
+        }
+        let pbo = gl.create_buffer().unwrap();
+        gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+
+        let cases = [
+            // One partial overlap for each edge.
+            (-1, 0, 4, 2),
+            (2, 0, 4, 2),
+            (0, -1, 3, 3),
+            (0, 1, 3, 3),
+            // All four corners.
+            (-1, -1, 4, 3),
+            (2, -1, 4, 3),
+            (-1, 1, 4, 3),
+            (2, 1, 4, 3),
+            // Fully disjoint, followed by both zero-area forms.
+            (-4, 0, 2, 2),
+            (0, 0, 0, 3),
+            (0, 0, 3, 0),
+        ];
+        for (x, y, width, height) in cases {
+            let byte_len = (width * height * 4) as usize;
+            gl.buffer_data_u8_slice(
+                glow::PIXEL_PACK_BUFFER,
+                &vec![0xA5; byte_len],
+                glow::STREAM_READ,
+            );
+            assert_eq!(
+                gl.get_error(),
+                glow::NO_ERROR,
+                "case {x},{y} {width}x{height}"
+            );
+            read_webgl_pixels_to_buffer(
+                &gl,
+                x,
+                y,
+                width,
+                height,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                0,
+            )
+            .unwrap();
+            let bytes = read_bound_pbo_bytes(&gl, byte_len);
+            for row in 0..height {
+                for column in 0..width {
+                    let inside = (0..3).contains(&(x + column)) && (0..2).contains(&(y + row));
+                    let at = ((row * width + column) * 4) as usize;
+                    let expected = if inside { [255, 0, 0, 255] } else { [0xA5; 4] };
+                    assert_eq!(
+                        bytes[at..at + 4],
+                        expected,
+                        "case {x},{y} {width}x{height}, row {row}, column {column}"
+                    );
+                }
+            }
+            assert_eq!(gl.get_error(), glow::NO_ERROR);
+        }
+        gl.delete_buffer(pbo);
+    }
+}
+
+unsafe fn read_bound_pbo_bytes(gl: &glow::Context, len: usize) -> Vec<u8> {
+    if len == 0 {
+        return Vec::new();
+    }
+    // GLES3 exposes CPU access through MapBufferRange; GetBufferSubData is a
+    // desktop GL API.
+    unsafe {
+        let mapped =
+            gl.map_buffer_range(glow::PIXEL_PACK_BUFFER, 0, len as i32, glow::MAP_READ_BIT);
         assert_eq!(gl.get_error(), glow::NO_ERROR);
         assert!(!mapped.is_null());
-        let mut bytes = [0; 64];
-        bytes.copy_from_slice(std::slice::from_raw_parts(mapped, 64));
+        let bytes = std::slice::from_raw_parts(mapped, len).to_vec();
         gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
         assert_eq!(gl.get_error(), glow::NO_ERROR);
         bytes
     }
+}
+
+unsafe fn read_bound_pbo(gl: &glow::Context) -> [u8; 64] {
+    unsafe { read_bound_pbo_bytes(gl, 64) }
+        .try_into()
+        .expect("fixed-size PBO fixture")
 }
 
 #[test]

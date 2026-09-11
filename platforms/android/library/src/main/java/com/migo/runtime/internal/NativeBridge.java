@@ -303,10 +303,12 @@ final class NativeBridge {
      *
      * @param sessionId   The session ID
      * @param frameData   Raw audio frame bytes
+     * @param frameLength Number of valid bytes at the start of {@code frameData}
      * @param isLastFrame Whether this is the last frame before stop
      */
     static native void onRecorderFrameData(
-            int sessionId, long generation, byte[] frameData, boolean isLastFrame);
+            int sessionId, long generation, byte[] frameData, int frameLength,
+            boolean isLastFrame);
 
     // ==================== Camera Callbacks ====================
 

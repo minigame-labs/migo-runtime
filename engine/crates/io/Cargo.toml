@@ -10,7 +10,16 @@ name = "migo_io"
 [features]
 default = ["zip-extract", "rust-image-decode", "compress-brotli"]
 zip-extract = ["dep:zip"]
-rust-image-decode = ["dep:image", "dep:zune-image", "dep:zune-core"]
+# CPU-only resize of an already-decoded RGBA buffer.  Needs only the `image`
+# crate's imageops; requires no format decoder.  A build that has a platform
+# decoder (e.g. Android BitmapFactory via JNI) but still wants CPU-side resize
+# can enable this feature alone without pulling in zune-image / zune-core.
+cpu-image-resize = ["dep:image"]
+# Full Rust image decoders (zune-image fast path + image crate fallback).
+# Implies cpu-image-resize so that every build with the full decoder can also
+# resize; removing this implication would silently disable resize for any
+# caller that switches from rust-image-decode to a platform decoder later.
+rust-image-decode = ["cpu-image-resize", "dep:zune-image", "dep:zune-core"]
 compress-brotli = ["dep:brotli"]
 
 [dependencies]

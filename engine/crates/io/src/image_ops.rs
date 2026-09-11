@@ -1580,7 +1580,7 @@ fn decode_selected_variant(
         VariantDecision::DecodeRgba {
             data, path_hint, ..
         } => {
-            // Resize forces the RGBA path: `resize_image` operates on
+            // Resize forces the RGBA path: `try_resize_image` operates on
             // CPU pixels, so asking for an AHB here would just trigger
             // a download-then-resize-then-reupload shuffle.  Leave the
             // AHB fast path to the common (non-resize) case.

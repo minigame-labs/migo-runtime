@@ -206,7 +206,6 @@ struct Dispatched<T> {
     host: HostToken,
     pool: PoolKind,
     value: T,
-    byte_count: u64,
 }
 
 /// Whether the per-host dispatch cap applies to a given dispatch pass.
@@ -389,12 +388,7 @@ impl<T> QueueState<T> {
             self.active_by_class[class_idx] += 1;
             *self.active_by_host.entry(host).or_default() += 1;
             self.dispatch_count = self.dispatch_count.wrapping_add(1);
-            return Some(Dispatched {
-                host,
-                pool,
-                value,
-                byte_count,
-            });
+            return Some(Dispatched { host, pool, value });
         }
         None
     }
@@ -541,6 +535,14 @@ impl ExecutorShared {
             .reserved_bytes
             .checked_sub(byte_count)
             .expect("released reservation must be reserved");
+    }
+
+    fn release_active_bytes(&self, byte_count: u64) {
+        let mut state = self.state.lock();
+        state.active_bytes = state
+            .active_bytes
+            .checked_sub(byte_count)
+            .expect("completed job bytes must be active");
     }
 
     fn enqueue_reserved(
@@ -694,6 +696,7 @@ impl ProcessIoExecutor {
     {
         debug_assert!(std::ptr::eq(self, Arc::as_ptr(&registration.executor)));
         let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let release_shared = Arc::clone(&self.shared);
         self.shared.enqueue_with_bytes(
             registration.token,
             pool,
@@ -701,6 +704,7 @@ impl ProcessIoExecutor {
             byte_count,
             Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                release_shared.release_active_bytes(byte_count);
                 let _ = result_tx.send(result);
             }),
         )?;
@@ -722,6 +726,7 @@ impl ProcessIoExecutor {
     {
         debug_assert!(std::ptr::eq(self, Arc::as_ptr(&registration.executor)));
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let release_shared = Arc::clone(&self.shared);
         self.shared.enqueue_with_bytes(
             registration.token,
             pool,
@@ -729,6 +734,7 @@ impl ProcessIoExecutor {
             byte_count,
             Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                release_shared.release_active_bytes(byte_count);
                 let _ = result_tx.send(result);
             }),
         )?;
@@ -779,12 +785,13 @@ fn worker_main(shared: Arc<ExecutorShared>) {
     while let Some(job) = shared.next_job(completed.take()) {
         let host = job.host;
         let pool = job.pool;
-        let byte_count = job.byte_count;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job.value));
         if result.is_err() {
             tracing::error!("process IO executor job wrapper panicked");
         }
-        completed = Some((host, pool, byte_count));
+        // Byte credit is returned by the wrapper before it publishes the result;
+        // only the non-byte active-job bookkeeping remains for this pass.
+        completed = Some((host, pool, 0));
     }
 }
 impl Drop for ProcessIoExecutor {
@@ -1022,6 +1029,7 @@ impl IoPools {
         }
         let (shared, byte_count) = ticket.into_parts();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let release_shared = Arc::clone(&shared);
         let result = shared.enqueue_reserved(
             self.registration.token,
             pool,
@@ -1029,6 +1037,7 @@ impl IoPools {
             byte_count,
             Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                release_shared.release_active_bytes(byte_count);
                 let _ = result_tx.send(result);
             }),
         );
@@ -1089,16 +1098,6 @@ impl IoPools {
     #[cfg(test)]
     pub(crate) fn started_thread_count_for_test(&self) -> usize {
         self.registration.executor.started_thread_count()
-    }
-    #[cfg(test)]
-    pub(crate) fn byte_metrics_for_test(&self) -> (u64, u64, Option<std::time::Duration>, u64) {
-        let state = self.registration.executor.shared.state.lock();
-        (
-            state.queued_bytes,
-            state.active_bytes,
-            state.oldest_enqueue.map(|instant| instant.elapsed()),
-            state.refusals,
-        )
     }
 }
 
@@ -2288,5 +2287,80 @@ mod r5_byte_credit_tests {
             )
             .unwrap();
         accepted.join().unwrap();
+    }
+
+    /// Exercises the production consequence of the ordering defect: a caller that
+    /// observes a job's completion and immediately submits another job of equal size must
+    /// be admitted.  Before the fix, active_bytes is still charged when join() returns
+    /// (the worker has not yet called complete_with_bytes), so the re-submit is refused
+    /// with BytesExhausted.  After the fix the credit is returned before the result is
+    /// sent, so this loop passes deterministically.
+    #[test]
+    fn byte_credit_returned_before_completion_observable() {
+        let executor = ProcessIoExecutor::new(ExecutorConfig::for_workers(1).with_byte_limit(8));
+        let host = executor.register_host(70);
+        for i in 0..100 {
+            let first = executor
+                .submit_bytes(
+                    &host,
+                    PoolKind::Fs,
+                    PriorityClass::ForegroundAsync,
+                    8,
+                    || (),
+                )
+                .unwrap();
+            first.join().unwrap();
+            // Bytes must be available as soon as join() returns.
+            let second = executor.submit_bytes(
+                &host,
+                PoolKind::Fs,
+                PriorityClass::ForegroundAsync,
+                8,
+                || (),
+            );
+            assert!(
+                second.is_ok(),
+                "iteration {i}: byte credit must be returned before completion is observable"
+            );
+            second.unwrap().join().unwrap();
+        }
+    }
+
+    /// A panicking user job must not leak byte credit: after the job's panic is observed
+    /// by the caller, the full budget must be available for a new submission.
+    #[test]
+    fn panicking_job_does_not_leak_byte_credit() {
+        use std::panic;
+
+        let executor = ProcessIoExecutor::new(ExecutorConfig::for_workers(1).with_byte_limit(8));
+        let host = executor.register_host(71);
+
+        let panicky = executor
+            .submit_bytes(
+                &host,
+                PoolKind::Fs,
+                PriorityClass::ForegroundAsync,
+                8,
+                || panic!("intentional test panic"),
+            )
+            .unwrap();
+
+        // join() re-panics; catch that.
+        let caught = panic::catch_unwind(panic::AssertUnwindSafe(|| panicky.join()));
+        assert!(caught.is_err(), "expected join to propagate the panic");
+
+        // Budget must be fully restored — the panic must not have leaked the 8-byte credit.
+        let followup = executor.submit_bytes(
+            &host,
+            PoolKind::Fs,
+            PriorityClass::ForegroundAsync,
+            8,
+            || (),
+        );
+        assert!(
+            followup.is_ok(),
+            "byte credit must be returned after a panicking job"
+        );
+        followup.unwrap().join().unwrap();
     }
 }

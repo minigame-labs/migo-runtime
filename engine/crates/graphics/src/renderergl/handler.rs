@@ -704,6 +704,31 @@ impl RendererGL {
                 usage,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                let bound_buffer = cm.gl_state.get(&canvas_id).and_then(|state| {
+                    match target {
+                        glow::ARRAY_BUFFER => state.bound_array_buffer,
+                        glow::ELEMENT_ARRAY_BUFFER => state.bound_element_array_buffer,
+                        glow::UNIFORM_BUFFER => state.bound_uniform_buffer,
+                        glow::PIXEL_UNPACK_BUFFER => state.bound_pixel_unpack_buffer,
+                        glow::PIXEL_PACK_BUFFER => state.bound_pixel_pack_buffer,
+                        glow::COPY_READ_BUFFER => state.bound_copy_read_buffer,
+                        glow::COPY_WRITE_BUFFER => state.bound_copy_write_buffer,
+                        glow::TRANSFORM_FEEDBACK_BUFFER => state.bound_transform_feedback_buffer,
+                        _ => None,
+                    }
+                    .flatten()
+                });
+                let prepared = bound_buffer
+                    .filter(|_| size >= 0 || data.is_some())
+                    .map(|buffer| {
+                        let bytes = data
+                            .as_ref()
+                            .map_or_else(|| u64::try_from(size).unwrap_or(0), |v| v.len() as u64);
+                        cm.webgl_gpu_budget
+                            .prepare_buffer_data(canvas_id, buffer, bytes)
+                            .map_err(gpu_allocation_error)
+                    })
+                    .transpose()?;
                 unsafe {
                     if let Some(data) = data {
                         if data.is_empty() {
@@ -714,6 +739,9 @@ impl RendererGL {
                     } else {
                         gl.buffer_data_size(target, size, usage);
                     }
+                }
+                if let Some(prepared) = prepared {
+                    cm.webgl_gpu_budget.commit(prepared);
                 }
                 Ok(DamageEffect::NoDamage)
             }
@@ -1173,11 +1201,6 @@ impl RendererGL {
                     } else {
                         let _ = resp.send(Ok(None));
                     }
-                } else {
-                    let _ = resp.send(Err(ee(
-                        ErrorCode::NotFound,
-                        format!("shader not found: {shader_id:?}"),
-                    )));
                 }
                 Ok(DamageEffect::NoDamage)
             }
@@ -1203,11 +1226,22 @@ impl RendererGL {
                 unsafe {
                     match gl.create_buffer() {
                         Ok(buf) => {
+                            let owner = owner.ok_or_else(|| {
+                                ee(
+                                    ErrorCode::InvalidOperation,
+                                    "WebGL buffer has no owning context",
+                                )
+                            })?;
+                            if let Err(error) = cm.webgl_gpu_budget.create_buffer(owner, client_id)
+                            {
+                                gl.delete_buffer(buf);
+                                return Err(gpu_allocation_error(error));
+                            }
                             cm.buffers.insert(
                                 client_id,
                                 crate::canvas::BufferMeta {
                                     gl_handle: Some(buf),
-                                    owner_canvas: owner,
+                                    owner_canvas: Some(owner),
                                     deleted: false,
                                 },
                             );
@@ -1525,12 +1559,27 @@ impl RendererGL {
                 target,
                 level,
                 internalformat,
-                format: _,
-                type_: _,
+                format,
+                type_,
                 source_shared_id,
                 src_width,
                 src_height,
             } => {
+                cm.make_current_needed(canvas_id)?;
+                let prepared = cm
+                    .webgl_gpu_budget
+                    .prepare_tex_image_2d(
+                        canvas_id,
+                        target,
+                        level,
+                        internalformat,
+                        src_width,
+                        src_height,
+                        0,
+                        format,
+                        type_,
+                    )
+                    .map_err(gpu_allocation_error)?;
                 cm.tex_image_2d_from_shared(
                     canvas_id,
                     target,
@@ -1540,6 +1589,7 @@ impl RendererGL {
                     src_width,
                     src_height,
                 )?;
+                cm.webgl_gpu_budget.commit(prepared);
                 Ok(DamageEffect::NoDamage)
             }
 
@@ -1548,10 +1598,29 @@ impl RendererGL {
                 target,
                 level,
                 internalformat,
-                format: _,
-                type_: _,
+                format,
+                type_,
                 snapshot_id,
             } => {
+                cm.make_current_needed(canvas_id)?;
+                let prepared = cm
+                    .canvas2d_snapshot_dimensions(snapshot_id)
+                    .map(|(width, height)| {
+                        cm.webgl_gpu_budget
+                            .prepare_tex_image_2d(
+                                canvas_id,
+                                target,
+                                level,
+                                internalformat,
+                                width as i32,
+                                height as i32,
+                                0,
+                                format,
+                                type_,
+                            )
+                            .map_err(gpu_allocation_error)
+                    })
+                    .transpose()?;
                 cm.tex_image_2d_from_canvas2d_snapshot(
                     canvas_id,
                     target,
@@ -1559,6 +1628,9 @@ impl RendererGL {
                     internalformat,
                     snapshot_id,
                 )?;
+                if let Some(prepared) = prepared {
+                    cm.webgl_gpu_budget.commit(prepared);
+                }
                 crate::render_diagnostics::bump_canvas2d_snapshot_upload();
                 Ok(DamageEffect::NoDamage)
             }
@@ -1570,6 +1642,21 @@ impl RendererGL {
                 internalformat,
                 key,
             } => {
+                cm.make_current_needed(canvas_id)?;
+                let prepared = cm
+                    .webgl_gpu_budget
+                    .prepare_tex_image_2d(
+                        canvas_id,
+                        target,
+                        level,
+                        internalformat,
+                        key.canvas_w as i32,
+                        key.canvas_h as i32,
+                        0,
+                        internalformat as u32,
+                        glow::UNSIGNED_BYTE,
+                    )
+                    .map_err(gpu_allocation_error)?;
                 let used = cm.tex_image_2d_from_text_cache(
                     canvas_id,
                     target,
@@ -1578,15 +1665,10 @@ impl RendererGL {
                     &key,
                 )?;
                 if used {
+                    cm.webgl_gpu_budget.commit(prepared);
                     crate::render_diagnostics::hit_text_cache();
                     crate::render_diagnostics::bump_canvas2d_snapshot_upload();
                 } else {
-                    // JS thought it had a hit but the entry was evicted
-                    // between lookup and execution.  The pin should
-                    // have prevented this; if we get here, the
-                    // suppressed fillText leaves the destination
-                    // texture untouched (whatever it was before).
-                    // Bump miss so the gap is visible in stats.
                     crate::render_diagnostics::miss_text_cache();
                     tracing::warn!(
                         "TexImage2DFromTextCache: entry missing at execution time \
@@ -1595,7 +1677,6 @@ impl RendererGL {
                 }
                 Ok(DamageEffect::NoDamage)
             }
-
             GLCmd::TexImage2DFromCanvas2D {
                 canvas_id,
                 target,
@@ -1607,6 +1688,26 @@ impl RendererGL {
                 width,
                 height,
             } => {
+                cm.make_current_needed(canvas_id)?;
+                let prepared = if width == 0 || height == 0 {
+                    None
+                } else {
+                    Some(
+                        cm.webgl_gpu_budget
+                            .prepare_tex_image_2d(
+                                canvas_id,
+                                target,
+                                level,
+                                internalformat,
+                                width as i32,
+                                height as i32,
+                                0,
+                                internalformat as u32,
+                                glow::UNSIGNED_BYTE,
+                            )
+                            .map_err(gpu_allocation_error)?,
+                    )
+                };
                 cm.tex_image_2d_from_canvas2d_direct(
                     canvas_id,
                     target,
@@ -1618,6 +1719,9 @@ impl RendererGL {
                     width,
                     height,
                 )?;
+                if let Some(prepared) = prepared {
+                    cm.webgl_gpu_budget.commit(prepared);
+                }
                 crate::render_diagnostics::bump_canvas2d_snapshot_upload();
                 Ok(DamageEffect::NoDamage)
             }
@@ -2646,6 +2750,7 @@ impl RendererGL {
             }
 
             GLCmd::DeleteBuffer { buffer_id } => {
+                cm.webgl_gpu_budget.delete_buffer(buffer_id);
                 if let Some(meta) = cm.buffers.remove(&buffer_id) {
                     if let Some(h) = meta.gl_handle {
                         cm.delete_gl_object(GlObject::Buffer(h))?;
@@ -2728,7 +2833,11 @@ impl RendererGL {
                     return Ok(DamageEffect::NoDamage);
                 }
                 let Some(bytes_per_pixel) = webgl_readback_bytes_per_pixel(format, type_) else {
-                    resp.err_code(ErrorCode::InvalidArgument);
+                    resp.send(Err(
+                        crate::backend::gl::readback::invalid_readback_format_type_error(
+                            format, type_,
+                        ),
+                    ));
                     return Ok(DamageEffect::NoDamage);
                 };
                 let Some(_) = checked_readback_byte_len(width, height, bytes_per_pixel) else {

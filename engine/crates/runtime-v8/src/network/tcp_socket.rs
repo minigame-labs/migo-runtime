@@ -13,7 +13,9 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
+use crate::io_state::IoSchedulerState;
 use deno_core::AsyncRefCell;
 use deno_core::CancelFuture;
 use deno_core::CancelHandle;
@@ -26,6 +28,7 @@ use deno_core::ResourceId;
 use deno_core::ToJsBuffer;
 use deno_core::op2;
 use deno_error::JsErrorBox;
+use migo_io::pools::ByteTicket;
 use serde::Serialize;
 use shared::op_state::HostOpState;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,6 +45,11 @@ use super::common::{
 /// per-socket retained receive scratch; not reduced without a device A/B.
 const TCP_RECV_CAPACITY: usize = 65536;
 
+/// Deadline for one TCP write, including waiting for the exclusive writer
+/// guard and flushing bytes to the peer. A stalled reader must not retain the
+/// writer indefinitely; this is a liveness bound, not a performance claim.
+const TCP_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Read half + reusable 64 KiB receive scratch, kept together in one
 /// `AsyncRefCell` so concurrent `op_tcp_next_event` calls serialize on the same
 /// guard and a cancelled read drops it safely.
@@ -50,15 +58,11 @@ struct TcpReceiveState {
     scratch: ReceiveScratch,
 }
 
-/// Internal state for a connected TCP socket.
-///
-/// The read half + scratch live in one `AsyncRefCell` (`rx`); the write half is
-/// a separate `AsyncRefCell` so reads and writes don't block each other.
-/// Address metadata is formatted once at connect and cheaply cloned per event.
 pub struct TcpSocketResource {
     rx: AsyncRefCell<TcpReceiveState>,
     writer: AsyncRefCell<tokio::io::WriteHalf<TcpStream>>,
     cancel: CancelHandle,
+    write_timeout: Duration,
     local: AddrMeta,
     remote: AddrMeta,
 }
@@ -201,7 +205,6 @@ pub async fn op_tcp_connect(
     // clone the `Arc<str>` (refcount bump) instead of re-formatting per event.
     let local = AddrMeta::new(&local_addr);
     let remote = AddrMeta::new(&remote_addr);
-
     let resource = TcpSocketResource {
         rx: AsyncRefCell::new(TcpReceiveState {
             reader,
@@ -209,6 +212,7 @@ pub async fn op_tcp_connect(
         }),
         writer: AsyncRefCell::new(writer),
         cancel: CancelHandle::default(),
+        write_timeout: TCP_WRITE_TIMEOUT,
         local: local.clone(),
         remote: remote.clone(),
     };
@@ -310,29 +314,53 @@ pub async fn op_tcp_write(
     #[string] data_str: Option<String>,
     #[buffer] data_buf: Option<JsBuffer>,
 ) -> Result<(), JsErrorBox> {
-    let (resource, bytes) = {
+    let (resource, bytes, pools) = {
         let st = state.borrow();
         let resource = st
             .resource_table
             .get::<TcpSocketResource>(rid)
             .map_err(|_| JsErrorBox::generic("TCPSocket not found"))?;
-        let bytes: &[u8] = if let Some(ref text) = data_str {
+        let bytes: &[u8] = if let Some(text) = &data_str {
             text.as_bytes()
-        } else if let Some(ref buf) = data_buf {
+        } else if let Some(buf) = &data_buf {
             buf
         } else {
             return Err(JsErrorBox::type_error("write:fail no data provided"));
         };
-        (resource, bytes)
+        let pools = st.borrow::<IoSchedulerState>().0.pools().clone();
+        (resource, bytes, pools)
     };
+    let ticket = reserve_tcp_write_bytes(&pools, bytes.len())?;
 
+    write_tcp_payload(resource, bytes, ticket).await
+}
+
+fn reserve_tcp_write_bytes(
+    pools: &migo_io::pools::IoPools,
+    byte_count: usize,
+) -> Result<ByteTicket, JsErrorBox> {
+    pools
+        .reserve_bytes(byte_count as u64)
+        .map_err(|error| JsErrorBox::generic(format!("write:fail byte limit: {error}")))
+}
+
+async fn write_tcp_payload(
+    resource: Rc<TcpSocketResource>,
+    bytes: &[u8],
+    ticket: ByteTicket,
+) -> Result<(), JsErrorBox> {
     let cancel = RcRef::map(&resource, |r| &r.cancel);
     let write = async {
-        let mut writer = RcRef::map(&resource, |r| &r.writer).borrow_mut().await;
-        writer
-            .write_all(bytes)
-            .await
-            .map_err(|e| JsErrorBox::generic(format!("write:fail {}", e)))
+        let _ticket = ticket;
+        tokio::time::timeout(resource.write_timeout, async {
+            let mut writer = RcRef::map(&resource, |r| &r.writer).borrow_mut().await;
+            writer
+                .write_all(bytes)
+                .await
+                .map_err(|e| JsErrorBox::generic(format!("write:fail {e}")))
+        })
+        .await
+        .map_err(|_| JsErrorBox::generic("write:fail deadline exceeded"))?
     };
     write.try_or_cancel(cancel).await
 }
@@ -356,6 +384,7 @@ pub fn op_tcp_close(state: &mut OpState, #[smi] rid: ResourceId) -> Result<(), J
 mod tests {
     use super::*;
     use deno_core::{JsRuntime, RuntimeOptions, v8};
+    use migo_io::pools::IoPools;
 
     /// Real serde_v8/V8 regression (not just upstream serde_v8): a composite
     /// TCP message envelope must serialize its `data` as a `Uint8Array` backed
@@ -514,5 +543,137 @@ mod tests {
             weak_payload.upgrade().is_none(),
             "cancelled write must release its retained payload"
         );
+    }
+    #[test]
+    fn io04_tcp_write_refuses_before_native_payload_work() {
+        let pools = IoPools::new(9401);
+        let error = match reserve_tcp_write_bytes(&pools, 256 * 1024 * 1024 + 1) {
+            Ok(_) => panic!("request larger than the process byte limit must be refused"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("byte limit") && message.contains("requested"),
+            "structured byte admission error: {message}"
+        );
+    }
+
+    #[test]
+    fn io04_tcp_write_ticket_returns_after_cancellation() {
+        let pools = IoPools::new(9402);
+        let ticket = reserve_tcp_write_bytes(&pools, 4096).unwrap();
+        let cancel = CancelHandle::new_rc();
+        let cancel_for_future = cancel.clone();
+        let future = async move {
+            let _ticket = ticket;
+            std::future::pending::<()>().await;
+        }
+        .or_cancel(cancel_for_future);
+
+        cancel.cancel();
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test executor");
+        assert!(executor.block_on(future).is_err());
+        reserve_tcp_write_bytes(&pools, 4096)
+            .expect("cancellation must return the byte credit exactly once");
+    }
+
+    #[test]
+    fn net05_stalled_reader_deadline_reclaims_writer() {
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test executor");
+        executor.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("loopback listener");
+            let address = listener.local_addr().unwrap();
+            let client = TcpStream::connect(address).await.expect("loopback connect");
+            let (_server, _) = listener.accept().await.expect("accept client");
+            let local_addr = client.local_addr().unwrap();
+            let remote_addr = client.peer_addr().unwrap();
+            let (reader, writer) = tokio::io::split(client);
+            let resource = Rc::new(TcpSocketResource {
+                rx: AsyncRefCell::new(TcpReceiveState {
+                    reader,
+                    scratch: ReceiveScratch::new(TCP_RECV_CAPACITY),
+                }),
+                writer: AsyncRefCell::new(writer),
+                cancel: CancelHandle::default(),
+                write_timeout: Duration::from_millis(100),
+                local: AddrMeta::new(&local_addr),
+                remote: AddrMeta::new(&remote_addr),
+            });
+            let payload = vec![0u8; 64 * 1024 * 1024];
+            let pools = IoPools::new(9403);
+            let ticket = reserve_tcp_write_bytes(&pools, payload.len()).unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                write_tcp_payload(Rc::clone(&resource), &payload, ticket),
+            )
+            .await
+            .expect("deadline must reclaim a stalled write");
+            let error = result.expect_err("stalled reader must hit the write deadline");
+            assert!(
+                error.to_string().contains("deadline exceeded"),
+                "structured deadline error: {error}"
+            );
+            RcRef::map(&resource, |r| &r.writer).borrow_mut().await;
+        });
+    }
+
+    #[test]
+    fn net05_stalled_reader_close_reclaims_writer() {
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test executor");
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&executor, async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("loopback listener");
+            let address = listener.local_addr().unwrap();
+            let client = TcpStream::connect(address).await.expect("loopback connect");
+            let (_server, _) = listener.accept().await.expect("accept client");
+            let local_addr = client.local_addr().unwrap();
+            let remote_addr = client.peer_addr().unwrap();
+            let (reader, writer) = tokio::io::split(client);
+            let resource = Rc::new(TcpSocketResource {
+                rx: AsyncRefCell::new(TcpReceiveState {
+                    reader,
+                    scratch: ReceiveScratch::new(TCP_RECV_CAPACITY),
+                }),
+                writer: AsyncRefCell::new(writer),
+                cancel: CancelHandle::default(),
+                write_timeout: Duration::from_secs(30),
+                local: AddrMeta::new(&local_addr),
+                remote: AddrMeta::new(&remote_addr),
+            });
+            let payload = vec![0u8; 64 * 1024 * 1024];
+            let pools = IoPools::new(9404);
+            let ticket = reserve_tcp_write_bytes(&pools, payload.len()).unwrap();
+            let to_close = Rc::clone(&resource);
+            let cancel_task = tokio::task::spawn_local(async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                to_close.cancel.cancel();
+            });
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                write_tcp_payload(Rc::clone(&resource), &payload, ticket),
+            )
+            .await
+            .expect("close must reclaim a stalled write");
+            cancel_task.await.expect("cancel task");
+            let error = result.expect_err("closed socket write must fail");
+            assert!(
+                !error.to_string().is_empty(),
+                "close cancellation must report a structured error"
+            );
+            RcRef::map(&resource, |r| &r.writer).borrow_mut().await;
+        });
     }
 }

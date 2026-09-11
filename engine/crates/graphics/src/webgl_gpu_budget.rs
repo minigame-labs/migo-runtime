@@ -11,17 +11,18 @@
 //! and staging residency, and Skia's resource cache for engine-owned backing.
 //! Those files are intentionally not changed here because their ownership and
 //! device-residency semantics require their owning threads (and device data).
-//! Handler paths that still require conversion to this authority are
-//! `TexImage2DFromShared`, `TexImage2DFromSnapshot`,
-//! `TexImage2DFromTextCache`, and `TexImage2DFromCanvas2D` in
-//! `renderergl/handler.rs`, plus `BufferData` in that handler. Their manager
-//! implementations currently allocate/copy through engine-owned GL paths.
+//! The five handler upload paths (`TexImage2DFromShared`,
+//! `TexImage2DFromSnapshot`, `TexImage2DFromTextCache`,
+//! `TexImage2DFromCanvas2D`, and `BufferData`) now use this authority.
+//! Manager-side `TexSubImage2DFromSnapshot` and
+//! `TexSubImage2DFromCanvas2D` mutate existing storage and remain outside
+//! allocation admission; they do not create new resident storage.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use shared::protocol::render_cmd::{CanvasId, RenderbufferId, TextureId};
+use shared::protocol::render_cmd::{BufferId, CanvasId, RenderbufferId, TextureId};
 
 const GL_TEXTURE0: u32 = 0x84C0;
 const GL_TEXTURE_2D: u32 = 0x0DE1;
@@ -178,6 +179,12 @@ struct RenderbufferRecord {
     bytes: u64,
 }
 
+#[derive(Debug)]
+struct BufferRecord {
+    owner: CanvasId,
+    bytes: u64,
+}
+
 /// The four texture binding targets a WebGL 2 context can bind to, in slot
 /// order. Fixed by [`normalize_binding_target`], which rejects everything else
 /// before it can reach the ledger.
@@ -298,6 +305,10 @@ enum PreparedKind {
         renderbuffer: RenderbufferId,
         bytes: u64,
     },
+    Buffer {
+        buffer: BufferId,
+        bytes: u64,
+    },
 }
 
 /// Admission token held across the driver allocation call.
@@ -321,7 +332,6 @@ impl PreparedGpuAllocation {
         self.allocation_bytes
     }
 }
-
 #[derive(Debug)]
 pub(crate) struct WebGlGpuBudget {
     limits: GpuBudgetLimits,
@@ -332,6 +342,7 @@ pub(crate) struct WebGlGpuBudget {
     bindings: crate::canvas_keyed::CanvasKeyed<BindingState>,
     textures: HashMap<TextureId, TextureRecord>,
     renderbuffers: HashMap<RenderbufferId, RenderbufferRecord>,
+    buffers: HashMap<BufferId, BufferRecord>,
     subresource_info: HashMap<(TextureId, TextureSubresource), SubresourceInfo>,
 }
 
@@ -367,6 +378,7 @@ impl WebGlGpuBudget {
             bindings: crate::canvas_keyed::CanvasKeyed::default(),
             textures: HashMap::new(),
             renderbuffers: HashMap::new(),
+            buffers: HashMap::new(),
             subresource_info: HashMap::new(),
         }
     }
@@ -395,6 +407,31 @@ impl WebGlGpuBudget {
             TextureRecord {
                 owner: canvas_id,
                 storage: TextureStorage::Mutable(HashMap::new()),
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn create_buffer(
+        &mut self,
+        canvas_id: CanvasId,
+        buffer: BufferId,
+    ) -> Result<(), GpuAllocationError> {
+        if buffer == 0 || self.buffers.contains_key(&buffer) {
+            return Err(GpuAllocationError::InvalidOperation);
+        }
+        self.buffers
+            .try_reserve(1)
+            .map_err(|_| GpuAllocationError::OutOfMemory)?;
+        self.contexts
+            .try_reserve(1)
+            .map_err(|_| GpuAllocationError::OutOfMemory)?;
+        self.contexts.entry(canvas_id).or_insert(0);
+        self.buffers.insert(
+            buffer,
+            BufferRecord {
+                owner: canvas_id,
+                bytes: 0,
             },
         );
         Ok(())
@@ -440,6 +477,7 @@ impl WebGlGpuBudget {
         &mut self,
         canvas_id: CanvasId,
         target: u32,
+
         texture: Option<TextureId>,
     ) {
         let Some(binding_target) = normalize_binding_target(target) else {
@@ -448,6 +486,27 @@ impl WebGlGpuBudget {
         let state = self.bindings.entry(canvas_id).or_default();
         let unit = state.active_texture;
         state.textures.set(unit, binding_target, texture);
+    }
+    pub(crate) fn prepare_buffer_data(
+        &mut self,
+        canvas_id: CanvasId,
+        buffer: BufferId,
+        bytes: u64,
+    ) -> Result<PreparedGpuAllocation, GpuAllocationError> {
+        let record = self
+            .buffers
+            .get(&buffer)
+            .ok_or(GpuAllocationError::InvalidOperation)?;
+        if record.owner != canvas_id {
+            return Err(GpuAllocationError::InvalidOperation);
+        }
+        self.prepare_transition(
+            canvas_id,
+            record.bytes,
+            bytes,
+            bytes,
+            PreparedKind::Buffer { buffer, bytes },
+        )
     }
 
     pub(crate) fn bind_renderbuffer(
@@ -946,6 +1005,12 @@ impl WebGlGpuBudget {
                     .expect("prepared WebGL renderbuffer disappeared before commit")
                     .bytes = bytes;
             }
+            PreparedKind::Buffer { buffer, bytes } => {
+                self.buffers
+                    .get_mut(&buffer)
+                    .expect("prepared WebGL buffer disappeared before commit")
+                    .bytes = bytes;
+            }
         }
         if prepared.new_object_bytes < prepared.old_object_bytes {
             self.process
@@ -980,6 +1045,14 @@ impl WebGlGpuBudget {
         record.bytes
     }
 
+    pub(crate) fn delete_buffer(&mut self, buffer: BufferId) -> u64 {
+        let Some(record) = self.buffers.remove(&buffer) else {
+            return 0;
+        };
+        self.release_context_bytes(record.owner, record.bytes);
+        record.bytes
+    }
+
     fn release_context_bytes(&mut self, canvas_id: CanvasId, bytes: u64) {
         if bytes == 0 {
             return;
@@ -1004,6 +1077,7 @@ impl WebGlGpuBudget {
         for texture in textures {
             self.subresource_info.retain(|(id, _), _| *id != texture);
         }
+        self.buffers.retain(|_, record| record.owner != canvas_id);
         self.textures.retain(|_, record| record.owner != canvas_id);
         self.renderbuffers
             .retain(|_, record| record.owner != canvas_id);
@@ -1020,9 +1094,9 @@ impl WebGlGpuBudget {
             webgl_process_bytes: self.process.bytes.load(Ordering::Acquire),
         }
     }
-
     pub(crate) fn clear(&mut self) -> u64 {
         self.bindings.clear();
+        self.buffers.clear();
         self.textures.clear();
         self.renderbuffers.clear();
         self.subresource_info.clear();
@@ -1404,6 +1478,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingGl {
         storage: HashMap<(u32, u32), u64>,
+        buffers: HashMap<u32, u64>,
     }
 
     impl RecordingGl {
@@ -1411,8 +1486,13 @@ mod tests {
             self.storage.insert((texture, level), bytes);
         }
 
+        fn define_buffer(&mut self, buffer: u32, bytes: u64) {
+            self.buffers.insert(buffer, bytes);
+        }
+
         fn bytes(&self) -> u64 {
-            self.storage.values().copied().sum()
+            self.storage.values().copied().sum::<u64>()
+                + self.buffers.values().copied().sum::<u64>()
         }
     }
 
@@ -1952,7 +2032,67 @@ mod tests {
         assert_eq!(budget.context_usage(1), 8 + 36);
         assert_eq!(scope.process_usage(), 8 + 36);
 
-        // Delete clears both textures cleanly
+        // TexImage2DFromShared: recorded source dimensions are the storage size.
+        // TexImage2DFromSnapshot: manager supplies the retained dimensions.
+        // TexImage2DFromTextCache: the cache key carries its exact dimensions.
+        // TexImage2DFromCanvas2D: command dimensions are the copied region.
+        for (name, texture, level, width, height) in [
+            ("shared", 3_u32, 0_i32, 2_i32, 3_i32),
+            ("snapshot", 4, 0, 2, 3),
+            ("text-cache", 5, 0, 2, 3),
+            ("canvas2d", 6, 0, 2, 3),
+        ] {
+            budget.create_texture(1, texture).unwrap();
+            budget.bind_texture(1, TEXTURE_2D, Some(texture));
+            let copy = budget
+                .prepare_tex_image_2d(
+                    1,
+                    TEXTURE_2D,
+                    level,
+                    RGBA as i32,
+                    width,
+                    height,
+                    0,
+                    RGBA,
+                    UNSIGNED_BYTE,
+                )
+                .expect("GPU-copy upload must use real dimensions");
+            budget.commit(copy);
+            gl.define(texture, level as u32, (width * height * 4) as u64);
+            assert_eq!(budget.context_usage(1), gl.bytes(), "{name} context bytes");
+            assert_eq!(scope.process_usage(), gl.bytes(), "{name} process bytes");
+        }
+
+        // BufferData replaces the currently bound buffer storage.
+        budget.create_buffer(1, 31).unwrap();
+        let buffer = budget
+            .prepare_buffer_data(1, 31, 40)
+            .expect("BufferData must be admitted by the same ledger");
+        budget.commit(buffer);
+        gl.define_buffer(31, 40);
+        assert_eq!(budget.context_usage(1), gl.bytes());
+        assert_eq!(scope.process_usage(), gl.bytes());
+        let before_buffer_rollback = scope.process_usage();
+        let buffer_rollback = budget
+            .prepare_buffer_data(1, 31, 80)
+            .expect("buffer replacement must reserve growth before GL");
+        assert_eq!(scope.process_usage(), before_buffer_rollback + 40);
+        drop(buffer_rollback);
+        assert_eq!(
+            scope.process_usage(),
+            before_buffer_rollback,
+            "BufferData GL failure rollback must release reserved growth"
+        );
+
+        // Delete clears all newly-accounted storage cleanly.
+        budget.delete_buffer(31);
+        for texture in [3, 4, 5, 6] {
+            budget.delete_texture(texture);
+        }
+        assert_eq!(budget.context_usage(1), gl.bytes() - 40 - 4 * 24);
+        assert_eq!(scope.process_usage(), gl.bytes() - 40 - 4 * 24);
+
+        // Delete clears both original textures cleanly
         budget.delete_texture(1);
         budget.delete_texture(2);
         assert_eq!(scope.process_usage(), 0);

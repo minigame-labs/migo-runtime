@@ -104,7 +104,7 @@ const NATIVE_MEDIA: &[JniMethod] = methods![
         "onRecorderEvent",
         "(IJLjava/lang/String;Ljava/lang/String;)V"
     ),
-    ("onRecorderFrameData", "(IJ[BZ)V"),
+    ("onRecorderFrameData", "(IJ[BIZ)V"),
     (
         "onCameraEvent",
         "(IJILjava/lang/String;Ljava/lang/String;)V"

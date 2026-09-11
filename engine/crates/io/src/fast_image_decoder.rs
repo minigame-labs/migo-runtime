@@ -746,8 +746,8 @@ pub const MAX_SUBRECT_BYTES: usize = 128 * 1024 * 1024;
 /// * `OutOfMemory` when the required buffer exceeds
 ///   [`MAX_SUBRECT_BYTES`].
 ///
-/// Unlike [`resize_image`] this does not depend on the optional
-/// `rust-image-decode` feature — crop is a pure CPU operation on
+/// Unlike [`try_resize_image`] this does not depend on the optional
+/// `cpu-image-resize` feature — crop is a pure CPU operation on
 /// the RGBA buffer we always hold.
 pub fn crop_image(
     img: NormalizedImage,
@@ -822,7 +822,7 @@ pub fn crop_image(
     })
 }
 
-#[cfg(feature = "rust-image-decode")]
+#[cfg(feature = "cpu-image-resize")]
 fn resize_image_supported(img: NormalizedImage, target_w: u32, target_h: u32) -> NormalizedImage {
     if img.width <= target_w && img.height <= target_h {
         return img;
@@ -875,7 +875,7 @@ fn resize_image_supported(img: NormalizedImage, target_w: u32, target_h: u32) ->
 
 /// Resize capability is independent from the decoder entry points: callers
 /// that request a target size must receive either an exact result or an error.
-#[cfg(feature = "rust-image-decode")]
+#[cfg(feature = "cpu-image-resize")]
 pub fn try_resize_image(
     img: NormalizedImage,
     target_w: u32,
@@ -886,18 +886,18 @@ pub fn try_resize_image(
 
 /// Report whether exact CPU image resizing is available in this build.
 pub const fn resize_capable() -> bool {
-    cfg!(feature = "rust-image-decode")
+    cfg!(feature = "cpu-image-resize")
 }
 
-/// When the Rust image feature is absent, do not silently ignore a target size.
-#[cfg(not(feature = "rust-image-decode"))]
+/// When the CPU resize feature is absent, do not silently ignore a target size.
+#[cfg(not(feature = "cpu-image-resize"))]
 pub fn try_resize_image(
     _img: NormalizedImage,
     _target_w: u32,
     _target_h: u32,
 ) -> Result<NormalizedImage, EngineError> {
     Err(EngineError::new(ErrorCode::Unsupported)
-        .with_msg("CPU image resize requires the rust-image-decode feature"))
+        .with_msg("CPU image resize requires the cpu-image-resize feature"))
 }
 
 #[cfg(test)]
@@ -1143,28 +1143,38 @@ mod resize_capability_tests {
         }
     }
 
-    /// The new `try_resize_image` must FAIL (return Err) when the feature is off
-    /// rather than silently returning the full-size image.
-    /// RED: this test does not compile until `try_resize_image` is added below.
-    #[cfg(not(feature = "rust-image-decode"))]
+    /// The new `try_resize_image` must FAIL (return Err) when the CPU resize
+    /// feature is off rather than silently returning the full-size image.
+    #[cfg(not(feature = "cpu-image-resize"))]
     #[test]
     fn try_resize_without_feature_returns_unsupported() {
         let img = solid(100, 100);
         let result = try_resize_image(img, 50, 50);
         assert!(
             result.is_err(),
-            "resize without rust-image-decode must be Err, not silent full-size Ok"
+            "resize without cpu-image-resize must be Err, not silent full-size Ok"
         );
         let e = result.unwrap_err();
         assert_eq!(e.code, ErrorCode::Unsupported);
     }
 
-    /// With `rust-image-decode` the resize must produce the correct dimensions.
-    #[cfg(feature = "rust-image-decode")]
+    /// With `cpu-image-resize` the resize must produce the correct dimensions.
+    #[cfg(feature = "cpu-image-resize")]
     #[test]
     fn try_resize_with_feature_honours_target_size() {
         let img = solid(100, 100);
         let out = try_resize_image(img, 50, 50).expect("resize with feature must succeed");
+        assert_eq!(out.width, 50);
+        assert_eq!(out.height, 50);
+    }
+
+    /// CPU resize is independently available without the full Rust decoder.
+    #[cfg(all(feature = "cpu-image-resize", not(feature = "rust-image-decode")))]
+    #[test]
+    fn try_resize_with_cpu_feature_only_honours_target_size() {
+        let img = solid(100, 100);
+        let out = try_resize_image(img, 50, 50)
+            .expect("CPU resize feature must work without Rust decoders");
         assert_eq!(out.width, 50);
         assert_eq!(out.height, 50);
     }

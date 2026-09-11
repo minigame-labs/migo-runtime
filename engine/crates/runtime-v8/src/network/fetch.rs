@@ -51,8 +51,14 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::debug;
 
+use crate::io_state::IoSchedulerState;
 use crate::network::Options;
+use migo_io::pools::{ByteTicket, IoPools};
 
+/// Existing JS buffered-response ceiling (`04_request.js`). The native
+/// resource charges this same bound when Content-Length is absent; it is an
+/// admission ceiling, not a claim about device memory or throughput.
+const MAX_BUFFERED_BODY_BYTES: u64 = 32 * 1024 * 1024;
 // ---------------------------------------------------------------------------
 // SSRF-preventing DNS resolver
 // ---------------------------------------------------------------------------
@@ -480,20 +486,20 @@ pub struct FetchResponse {
     pub remote_addr_port: Option<u16>,
     pub error: Option<String>,
 }
-
-#[derive(Debug)]
 pub struct FetchResponseResource {
     pub response_reader: AsyncRefCell<FetchResponseReader>,
     pub cancel: CancelHandle,
     pub size: Option<u64>,
+    byte_ticket: Option<ByteTicket>,
 }
 
 impl FetchResponseResource {
-    pub fn new(response: Response, size: Option<u64>) -> Self {
+    pub fn new(response: Response, size: Option<u64>, byte_ticket: Option<ByteTicket>) -> Self {
         Self {
             response_reader: AsyncRefCell::new(FetchResponseReader::Start(response)),
             cancel: CancelHandle::default(),
             size,
+            byte_ticket,
         }
     }
 }
@@ -625,10 +631,25 @@ pub async fn op_fetch_send(
         (None, None)
     };
 
+    // Admit the declared response body before publishing its resource. The
+    // ticket stays with that resource until it is closed or dropped, so a
+    // rejected body does not allocate or expose a reader.
+    let pools = state
+        .borrow()
+        .borrow::<IoSchedulerState>()
+        .0
+        .pools()
+        .clone();
+    let byte_ticket = reserve_fetch_response_bytes(&pools, content_length)?;
+
     let response_rid = state
         .borrow_mut()
         .resource_table
-        .add(FetchResponseResource::new(res, content_length));
+        .add(FetchResponseResource::new(
+            res,
+            content_length,
+            Some(byte_ticket),
+        ));
 
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     if elapsed_ms >= 100 {
@@ -651,6 +672,16 @@ pub async fn op_fetch_send(
         remote_addr_port,
         error: None,
     })
+}
+
+fn reserve_fetch_response_bytes(
+    pools: &IoPools,
+    content_length: Option<u64>,
+) -> Result<ByteTicket, JsErrorBox> {
+    let body_bytes = content_length.unwrap_or(MAX_BUFFERED_BODY_BYTES);
+    pools
+        .reserve_bytes(body_bytes)
+        .map_err(|error| JsErrorBox::generic(format!("fetch:fail byte limit: {error}")))
 }
 
 pub fn create_http_client(
@@ -792,6 +823,42 @@ mod q10_client_tests {
             enforce_https: true,
         };
         create_audio_http_client(&policy).expect("client construction must not require a runtime");
+    }
+}
+
+#[cfg(test)]
+mod byte_admission_tests {
+    use super::*;
+
+    #[test]
+    fn io04_fetch_response_refuses_oversized_declared_body() {
+        let pools = IoPools::new(9501);
+        let result = reserve_fetch_response_bytes(&pools, Some(256 * 1024 * 1024 + 1));
+        let error = match result {
+            Ok(_) => panic!("oversized response must be refused before resource creation"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("byte limit") && message.contains("requested"),
+            "structured response admission error: {message}"
+        );
+    }
+
+    #[test]
+    fn io04_fetch_response_ticket_releases_on_resource_drop() {
+        let pools = IoPools::new(9502);
+        let ticket = reserve_fetch_response_bytes(&pools, Some(4096)).unwrap();
+        let response = Response::from(
+            http::Response::builder()
+                .status(http::StatusCode::OK)
+                .body(Body::from("body"))
+                .unwrap(),
+        );
+        let resource = FetchResponseResource::new(response, Some(4096), Some(ticket));
+        drop(resource);
+        reserve_fetch_response_bytes(&pools, Some(4096))
+            .expect("dropping the response must return its byte credit");
     }
 }
 

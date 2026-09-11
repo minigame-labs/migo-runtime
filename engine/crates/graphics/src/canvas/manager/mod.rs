@@ -5068,6 +5068,17 @@ impl CanvasManager {
         Some(entry)
     }
 
+    /// Return the exact dimensions retained by a live snapshot.
+    ///
+    /// The render handler uses these dimensions before GPU-copy admission;
+    /// keeping the lookup here preserves the snapshot map's ownership and
+    /// prevents a caller from depending on its private entry representation.
+    pub(crate) fn canvas2d_snapshot_dimensions(&self, snapshot_id: u32) -> Option<(u32, u32)> {
+        self.canvas2d_snapshots
+            .get(&snapshot_id)
+            .map(|entry| (entry.width, entry.height))
+    }
+
     /// Helper used by [`Self::snapshot_canvas2d_region`] to roll
     /// back the GL state we mutated for the blit.
     fn restore_state_after_snapshot(

@@ -227,6 +227,39 @@ unsafe fn first_gl_error(gl: &glow::Context) -> Option<u32> {
     Some(first)
 }
 
+pub(crate) fn invalid_readback_format_type_error(format: u32, type_: u32) -> EngineError {
+    let format_known = webgl_readback_bytes_per_pixel(format, glow::UNSIGNED_BYTE).is_some();
+    let type_known = webgl_readback_type_bytes(type_).is_some();
+    let message = match (format_known, type_known) {
+        (false, _) => "readPixels format is invalid",
+        (true, false) => "readPixels type is invalid",
+        (true, true) => "readPixels format/type combination is invalid",
+    };
+    EngineError::new(ErrorCode::InvalidArgument).with_msg(message)
+}
+
+fn readback_driver_error(error: u32) -> EngineError {
+    let (code, message) = match error {
+        glow::INVALID_ENUM => (
+            ErrorCode::InvalidArgument,
+            "readPixels driver rejected the format/type enum",
+        ),
+        glow::INVALID_FRAMEBUFFER_OPERATION => (
+            ErrorCode::RenderFramebufferIncomplete,
+            "readPixels driver rejected the framebuffer",
+        ),
+        glow::OUT_OF_MEMORY => (
+            ErrorCode::OutOfMemory,
+            "readPixels driver rejected the allocation",
+        ),
+        _ => (
+            ErrorCode::InvalidOperation,
+            "readPixels driver rejected the source framebuffer or format/type",
+        ),
+    };
+    EngineError::new(code).with_msg(message)
+}
+
 /// CPU-view readPixels path. Validate the actual destination footprint before
 /// allocation, then transfer only compact pixel rows across the render channel.
 /// PBO destinations require a distinct buffer-offset command and are refused.
@@ -252,7 +285,7 @@ pub(crate) fn read_webgl_pixels(
     select_source: impl FnOnce() -> EngineResult<()>,
 ) -> EngineResult<ReadPixelsData> {
     let bpp = webgl_readback_bytes_per_pixel(format, type_)
-        .ok_or_else(|| EngineError::new(ErrorCode::InvalidArgument))?;
+        .ok_or_else(|| invalid_readback_format_type_error(format, type_))?;
     let pack = PixelPackState::capture(gl);
     if pack.buffer.is_some() {
         return Err(EngineError::new(ErrorCode::InvalidOperation));
@@ -302,11 +335,7 @@ pub(crate) fn read_webgl_pixels(
                 glow::PixelPackData::Slice(Some(&mut pixels)),
             );
             if let Some(error) = first_gl_error(gl) {
-                return Err(EngineError::new(match error {
-                    glow::INVALID_ENUM => ErrorCode::InvalidArgument,
-                    glow::OUT_OF_MEMORY => ErrorCode::OutOfMemory,
-                    _ => ErrorCode::InvalidOperation,
-                }));
+                return Err(readback_driver_error(error));
             }
         }
     }
@@ -318,9 +347,10 @@ pub(crate) fn read_webgl_pixels(
 /// transferred and the content's PACK state is used exactly as it stands --
 /// this overload's whole contract is that the driver does the layout.
 ///
-/// Only the errors the content can observe through `getError` are checked
-/// here, before the call: no bound buffer, an offset the type cannot address,
-/// and a footprint the buffer cannot hold.
+/// Pre-call checks: no bound buffer, unaligned offset, footprint overrun, and
+/// framebuffer incompleteness. Post-call: the driver's own error is surfaced so
+/// a source mismatch (wrong format/type for the framebuffer attachment) returns
+/// an error rather than silently succeeding.
 pub(crate) fn read_webgl_pixels_to_buffer(
     gl: &glow::Context,
     x: i32,
@@ -332,7 +362,7 @@ pub(crate) fn read_webgl_pixels_to_buffer(
     offset: i64,
 ) -> EngineResult<()> {
     let bpp = webgl_readback_bytes_per_pixel(format, type_)
-        .ok_or_else(|| EngineError::new(ErrorCode::InvalidArgument))?;
+        .ok_or_else(|| invalid_readback_format_type_error(format, type_))?;
     let pack = PixelPackState::capture(gl);
     // A CPU-view read is the other overload; this one requires a destination.
     if pack.buffer.is_none() {
@@ -372,6 +402,12 @@ pub(crate) fn read_webgl_pixels_to_buffer(
     }
     if layout.compact_bytes != 0 {
         unsafe {
+            let status = gl.check_framebuffer_status(read_framebuffer_target(gl));
+            if status != glow::FRAMEBUFFER_COMPLETE {
+                return Err(EngineError::new(ErrorCode::RenderFramebufferIncomplete));
+            }
+            // Someone else's pending error must not become this read's verdict.
+            drain_gl_errors(gl);
             gl.read_pixels(
                 x,
                 y,
@@ -381,6 +417,9 @@ pub(crate) fn read_webgl_pixels_to_buffer(
                 type_,
                 glow::PixelPackData::BufferOffset(offset as u32),
             );
+            if let Some(error) = first_gl_error(gl) {
+                return Err(readback_driver_error(error));
+            }
         }
     }
     Ok(())
@@ -724,6 +763,63 @@ mod tests {
         );
         assert!(test_gl::reads().is_empty());
     }
+    #[test]
+    fn buffer_readback_refuses_an_incomplete_framebuffer_before_reading() {
+        let gl = test_gl::context();
+        test_gl::set_bindings(test_gl::Bindings {
+            pack_buffer: 17,
+            pack_buffer_size: 24,
+            ..Default::default()
+        });
+        test_gl::set_framebuffer_status(glow::FRAMEBUFFER_INCOMPLETE_ATTACHMENT);
+
+        let error = read_to_buffer(&gl, 0).unwrap_err();
+        assert_eq!(error.code, ErrorCode::RenderFramebufferIncomplete);
+        assert!(
+            test_gl::reads().is_empty(),
+            "an incomplete framebuffer must not mutate the PBO"
+        );
+    }
+
+    #[test]
+    fn buffer_readback_reports_driver_rejection_without_publishing_success() {
+        for (gl_error, expected, message) in [
+            (
+                glow::INVALID_ENUM,
+                ErrorCode::InvalidArgument,
+                "readPixels driver rejected the format/type enum",
+            ),
+            (
+                glow::INVALID_FRAMEBUFFER_OPERATION,
+                ErrorCode::RenderFramebufferIncomplete,
+                "readPixels driver rejected the framebuffer",
+            ),
+            (
+                glow::INVALID_OPERATION,
+                ErrorCode::InvalidOperation,
+                "readPixels driver rejected the source framebuffer or format/type",
+            ),
+            (
+                glow::OUT_OF_MEMORY,
+                ErrorCode::OutOfMemory,
+                "readPixels driver rejected the allocation",
+            ),
+        ] {
+            let gl = test_gl::context();
+            test_gl::set_bindings(test_gl::Bindings {
+                pack_buffer: 17,
+                pack_buffer_size: 24,
+                ..Default::default()
+            });
+            test_gl::set_read_error(gl_error);
+
+            let error = read_to_buffer(&gl, 0).unwrap_err();
+            assert_eq!(error.code, expected, "driver error {gl_error:#x}");
+            assert_eq!(error.msg, message);
+            assert_eq!(test_gl::reads().len(), 1);
+            assert_eq!(test_gl::pending_errors(), 0, "read error must be drained");
+        }
+    }
 
     #[test]
     fn buffer_readback_rejects_offsets_the_type_cannot_address() {
@@ -913,6 +1009,27 @@ mod tests {
         assert_eq!(err.code, ErrorCode::InvalidOperation);
         assert!(test_gl::reads().is_empty());
         assert_eq!(test_gl::mutations(), 0);
+    }
+
+    #[test]
+    fn webgl_readback_names_invalid_format_and_type_before_gl() {
+        for (format, type_, message) in [
+            (0xFFFF, glow::UNSIGNED_BYTE, "readPixels format is invalid"),
+            (glow::RGBA, 0xFFFF, "readPixels type is invalid"),
+        ] {
+            let gl = test_gl::context();
+            let original = test_gl::Bindings {
+                pack: [8, 9, 2, 3],
+                ..Default::default()
+            };
+            test_gl::set_bindings(original);
+            let error =
+                read_webgl_pixels(&gl, 0, 0, 1, 1, format, type_, 4, || Ok(())).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidArgument);
+            assert_eq!(error.msg, message);
+            assert!(test_gl::reads().is_empty());
+            assert_eq!(test_gl::bindings(), original);
+        }
     }
 
     /// A driver that refuses the read must not look like a black framebuffer.

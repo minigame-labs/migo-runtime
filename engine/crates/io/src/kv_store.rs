@@ -4,9 +4,9 @@
 //!
 //! * **Batched writes** are one transaction instead of N rename+fsync
 //!   pairs — measured >10× on the `setStorageBatch` fast path.
-//! * **Quota** is O(1): the running total is cached in `_meta` under
-//!   key `total_bytes` and updated inside every write transaction,
-//!   so `set` / `set_batch` / `info` never scan the `kv` table.
+//! * **Quota** is O(1): the running charged-footprint total is cached in
+//!   `_meta` under key `total_bytes` and updated inside every write
+//!   transaction, so `set` / `set_batch` / `info` never scan the `kv` table.
 //! * **Crash-safety** comes from WAL + `synchronous=NORMAL`, which
 //!   is the combination SQLite itself recommends for KV workloads.
 //!   We never lose a committed write on power loss; at worst the
@@ -58,11 +58,30 @@ use shared::error::{EngineError, ErrorCode};
 /// Current schema version. Bump on incompatible migrations; the
 /// constructor runs `migrate_to_current` and refuses to open a DB
 /// newer than `SCHEMA_VERSION`.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 /// Maximum UTF-8 bytes in one key. Keys participate in the WITHOUT ROWID
 /// primary b-tree and the `kv_updated` index, so the value quota alone cannot
 /// bound their storage cost.
 const MAX_KEY_BYTES: usize = 16 * 1024;
+
+/// Explicit per-entry reservation for SQLite record and B-tree structure.
+///
+/// This is a fixed, deterministic charge for the cell pointer, record-header
+/// varints, and the stored `size`/`updated_at` fields; it is deliberately a
+/// reservation rather than an `encoded * multiplier` estimate. The
+/// `kv_updated` index's duplicate key bytes are explicitly excluded because
+/// index layout is an SQLite/configuration detail; the key-length guard still
+/// bounds that uncharged index cost. WAL frames and SQLite's page cache are
+/// also excluded: WAL is transient and bounded by `wal_autocheckpoint`, while
+/// page-cache pages are memory-only and bounded by SQLite's configured cache.
+const PER_ENTRY_OVERHEAD_BYTES: u64 = 64;
+
+#[inline]
+fn charged_bytes(key: &str, value_bytes: u64) -> u64 {
+    (key.len() as u64)
+        .saturating_add(value_bytes)
+        .saturating_add(PER_ENTRY_OVERHEAD_BYTES)
+}
 
 /// Maximum number of rows in one store, independent of value bytes.
 const MAX_ENTRY_COUNT: u64 = 10_000;
@@ -104,10 +123,10 @@ struct Inner {
     conn: Connection,
     path: PathBuf,
     quota_bytes: u64,
-    /// Running total of `size` across all rows in `kv`. Loaded once at
-    /// open time from `_meta.total_bytes` (or reconciled with
-    /// `SUM(size)` on first use if the value is missing / corrupt) and
-    /// updated inside every write transaction. This is the only
+    /// Running charged footprint across all rows in `kv` (value bytes, key
+    /// bytes, and the fixed per-entry reservation). Loaded once at open time
+    /// from `_meta.total_bytes` (or reconciled on first use if missing /
+    /// corrupt) and updated inside every write transaction. This is the only
     /// source-of-truth for quota checks; no read path does `SUM`.
     total_bytes: u64,
     /// Running row count, maintained in the same transaction as
@@ -129,8 +148,8 @@ impl KvStore {
 
     /// Open (creating if missing) the KV DB at `path`.
     ///
-    /// * `path` — absolute file path, typically `<app_files>/kv_storage/storage.db`.
-    /// * `quota_bytes` — total size cap in bytes (sum of all `v`).
+    /// * `quota_bytes` — charged storage cap in bytes (values, keys, and the
+    ///   fixed per-entry reservation).
     ///
     /// Initialisation is idempotent; multiple processes on the same
     /// file is **not** supported (SQLite would permit it with
@@ -181,10 +200,10 @@ impl KvStore {
 
         migrate_to_current(&mut conn)?;
 
-        // Load (or reconcile) the cached total so every write/read
-        // path after this is O(1). If `_meta.total_bytes` is missing
-        // we do a single O(N) reconcile-SUM and persist the result;
-        // this is the only place in the KV store that scans `kv`.
+        // Load (or reconcile) the cached total so every write/read path after
+        // this is O(1). If `_meta.total_bytes` is missing, we do a single
+        // O(N) charged-footprint reconciliation and persist the result; this
+        // is the only place in the KV store that scans `kv`.
         let total_bytes = load_or_reconcile_total(&conn)?;
         let total_entries = load_or_reconcile_entries(&conn)?;
 
@@ -264,10 +283,14 @@ impl KvStore {
                 )));
         }
         // `total_bytes` is always non-negative; saturating_sub avoids
-        // panic on a hypothetical corrupt row with negative size.
+        // panic on a hypothetical corrupt row with negative size. The key
+        // and fixed per-entry reservation are part of each row's charge.
+        let old_charged = old_size
+            .map(|size| charged_bytes(key, size.max(0) as u64))
+            .unwrap_or(0);
         let projected = current_total
-            .saturating_sub(old_size.unwrap_or(0) as u64)
-            .saturating_add(new_size as u64);
+            .saturating_sub(old_charged)
+            .saturating_add(charged_bytes(key, new_size as u64));
         if projected > quota {
             return Err(EngineError::new(ErrorCode::OutOfMemory)
                 .with_msg("setStorage:fail storage limit exceeded")
@@ -325,7 +348,7 @@ impl KvStore {
 
         // Project the new total against the cached value. We must
         // look up each incoming key's old size to handle overwrites
-        // correctly, but we never run `SUM(size)`.
+        // correctly, but we never rescan the table for a running total.
         //
         // A key repeated inside one batch is projected against what the
         // previous item in this batch will leave behind.
@@ -335,9 +358,9 @@ impl KvStore {
             let mut q = tx
                 .prepare_cached("SELECT size FROM kv WHERE k = ?1")
                 .map_err(sql_err("kv: batch: prep size"))?;
-            let mut pending: HashMap<&str, i64> = HashMap::with_capacity(items.len());
+            let mut pending: HashMap<&str, u64> = HashMap::with_capacity(items.len());
             for (k, v) in items {
-                let old: i64 = match pending.get(k) {
+                let old = match pending.get(k) {
                     Some(&staged) => staged,
                     None => {
                         let stored: Option<i64> = q
@@ -347,10 +370,12 @@ impl KvStore {
                         if stored.is_none() {
                             projected_entries += 1;
                         }
-                        stored.unwrap_or(0)
+                        stored
+                            .map(|size| charged_bytes(k, size.max(0) as u64))
+                            .unwrap_or(0)
                     }
                 };
-                let new = v.len() as i64;
+                let new = charged_bytes(k, v.len() as u64);
                 projected = projected - old as i128 + new as i128;
                 pending.insert(k, new);
             }
@@ -417,7 +442,10 @@ impl KvStore {
             .map_err(sql_err("kv: remove: read old"))?;
         tx.execute("DELETE FROM kv WHERE k = ?1", [key])
             .map_err(sql_err("kv: remove"))?;
-        let new_total = current_total.saturating_sub(old_size.unwrap_or(0) as u64);
+        let old_charged = old_size
+            .map(|size| charged_bytes(key, size.max(0) as u64))
+            .unwrap_or(0);
+        let new_total = current_total.saturating_sub(old_charged);
         let new_entries = current_entries.saturating_sub(u64::from(old_size.is_some()));
         persist_total_in_tx(&tx, new_total)?;
         persist_entries_in_tx(&tx, new_entries)?;
@@ -505,7 +533,7 @@ impl KvStore {
 // ---------------------------------------------------------------------------
 
 fn migrate_to_current(conn: &mut Connection) -> Result<(), EngineError> {
-    let current: i64 = conn
+    let mut current: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(sql_err("kv: read user_version"))?;
     if current > SCHEMA_VERSION {
@@ -513,33 +541,47 @@ fn migrate_to_current(conn: &mut Connection) -> Result<(), EngineError> {
             .with_msg("kv: db schema is newer than this binary")
             .with_detail(format!("db={}, supported={}", current, SCHEMA_VERSION)));
     }
-    if current == SCHEMA_VERSION {
-        return Ok(());
-    }
 
     // v0 -> v1: initial schema.
-    let tx = conn.transaction().map_err(sql_err("kv: migrate begin"))?;
-    tx.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS kv (
-            k          TEXT PRIMARY KEY,
-            v          TEXT NOT NULL,
-            size       INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        ) WITHOUT ROWID;
+    if current < 1 {
+        let tx = conn.transaction().map_err(sql_err("kv: migrate begin"))?;
+        tx.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS kv (
+                k          TEXT PRIMARY KEY,
+                v          TEXT NOT NULL,
+                size       INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            ) WITHOUT ROWID;
 
-        CREATE INDEX IF NOT EXISTS kv_updated ON kv(updated_at);
+            CREATE INDEX IF NOT EXISTS kv_updated ON kv(updated_at);
 
-        CREATE TABLE IF NOT EXISTS _meta (
-            k TEXT PRIMARY KEY,
-            v TEXT NOT NULL
-        ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS _meta (
+                k TEXT PRIMARY KEY,
+                v TEXT NOT NULL
+            ) WITHOUT ROWID;
 
-        PRAGMA user_version = 1;
-        "#,
-    )
-    .map_err(sql_err("kv: migrate v1"))?;
-    tx.commit().map_err(sql_err("kv: migrate commit"))?;
+            PRAGMA user_version = 1;
+            "#,
+        )
+        .map_err(sql_err("kv: migrate v1"))?;
+        tx.commit().map_err(sql_err("kv: migrate commit"))?;
+        current = 1;
+    }
+
+    // v1 -> v2: `total_bytes` used to contain value bytes only. Delete it so
+    // the first open after this migration reconciles key bytes and the fixed
+    // per-entry reservation instead of trusting a stale value-only total.
+    if current < 2 {
+        let tx = conn
+            .transaction()
+            .map_err(sql_err("kv: migrate v2 begin"))?;
+        tx.execute("DELETE FROM _meta WHERE k = ?1", [META_TOTAL_BYTES])
+            .map_err(sql_err("kv: migrate v2 total"))?;
+        tx.execute_batch("PRAGMA user_version = 2;")
+            .map_err(sql_err("kv: migrate v2"))?;
+        tx.commit().map_err(sql_err("kv: migrate v2 commit"))?;
+    }
     Ok(())
 }
 
@@ -594,9 +636,8 @@ fn persist_entries_in_tx(
 
 /// On open, read the cached running total from `_meta.total_bytes`. If
 /// it's missing or corrupt (e.g. the DB was written by an older binary
-/// that never maintained the cache), fall back to a single
-/// reconciliation `SUM(size)` and persist the result so subsequent
-/// opens are O(1).
+/// that never maintained the cache), fall back to a single charged-footprint
+/// reconciliation and persist the result so subsequent opens are O(1).
 fn load_or_reconcile_total(conn: &Connection) -> Result<u64, EngineError> {
     let cached: Option<String> = conn
         .query_row(
@@ -613,10 +654,18 @@ fn load_or_reconcile_total(conn: &Connection) -> Result<u64, EngineError> {
         }
     }
 
-    // Missing or corrupt — reconcile once.
+    // Missing or corrupt — reconcile once. The key length is measured as
+    // UTF-8 bytes (`CAST(... AS BLOB)`), matching Rust's `str::len`.
     let reconciled: i64 = conn
-        .query_row("SELECT COALESCE(SUM(size), 0) FROM kv", [], |r| r.get(0))
-        .map_err(sql_err("kv: meta: reconcile sum"))?;
+        .query_row(
+            &format!(
+                "SELECT COALESCE(SUM(size + length(CAST(k AS BLOB)) + {}), 0) FROM kv",
+                PER_ENTRY_OVERHEAD_BYTES
+            ),
+            [],
+            |r| r.get(0),
+        )
+        .map_err(sql_err("kv: meta: reconcile charged total"))?;
     let reconciled = reconciled.max(0) as u64;
     conn.execute(
         "INSERT INTO _meta(k, v) VALUES (?1, ?2) \
@@ -698,7 +747,7 @@ mod tests {
         kv.set("k", "bbbbbbbb").unwrap(); // 8 bytes
         let info = kv.info().unwrap();
         assert_eq!(info.keys, vec!["k".to_string()]);
-        assert_eq!(info.current_bytes, 8);
+        assert_eq!(info.current_bytes, 73);
     }
 
     #[test]
@@ -730,7 +779,7 @@ mod tests {
         kv.set("k1", "aa").unwrap();
         kv.set("k2", "bbb").unwrap();
         let info = kv.info().unwrap();
-        assert_eq!(info.current_bytes, 5);
+        assert_eq!(info.current_bytes, 137);
         assert_eq!(info.limit_bytes, QUOTA);
         let mut sorted = info.keys.clone();
         sorted.sort();
@@ -742,7 +791,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let kv = open(dir.path());
         // Fill to the brim.
-        let big = "x".repeat(QUOTA as usize - 10);
+        let big = "x".repeat(QUOTA as usize - 4 - PER_ENTRY_OVERHEAD_BYTES as usize - 10);
         kv.set("fill", &big).unwrap();
         // One more byte should push us over.
         let err = kv.set("overflow", &"y".repeat(100)).unwrap_err();
@@ -761,11 +810,11 @@ mod tests {
         // replace-aware math.
         let dir = tempdir().unwrap();
         let kv = open(dir.path());
-        let big = "x".repeat(QUOTA as usize);
+        let big = "x".repeat(QUOTA as usize - 1 - PER_ENTRY_OVERHEAD_BYTES as usize);
         kv.set("k", &big).unwrap();
-        let big2 = "y".repeat(QUOTA as usize);
+        let big2 = "y".repeat(big.len());
         kv.set("k", &big2).unwrap(); // must succeed
-        assert_eq!(kv.get("k").unwrap().unwrap().len(), QUOTA as usize);
+        assert_eq!(kv.get("k").unwrap().unwrap().len(), big.len());
     }
 
     #[test]
@@ -792,7 +841,7 @@ mod tests {
         assert_eq!(kv.get("b").unwrap().as_deref(), Some("22"));
         assert_eq!(kv.get("c").unwrap().as_deref(), Some("333"));
         let info = kv.info().unwrap();
-        assert_eq!(info.current_bytes, 6);
+        assert_eq!(info.current_bytes, 201);
     }
 
     #[test]
@@ -800,7 +849,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let kv = open(dir.path());
         kv.set("k", "0123456789").unwrap();
-        assert_eq!(kv.info().unwrap().current_bytes, 10);
+        assert_eq!(kv.info().unwrap().current_bytes, 75);
 
         // Last write wins, so the row ends at 5 bytes. Projecting each
         // occurrence against the row still on disk would deduct the 10-byte
@@ -809,14 +858,15 @@ mod tests {
         kv.set_batch(&[("k", "abc"), ("k", "de456")]).unwrap();
 
         assert_eq!(kv.get("k").unwrap().as_deref(), Some("de456"));
-        assert_eq!(kv.info().unwrap().current_bytes, 5);
+        assert_eq!(kv.info().unwrap().current_bytes, 70);
     }
 
     #[test]
     fn repeated_key_total_survives_reopen() {
         // The drift is persisted to `_meta.total_bytes`, which is only ever
-        // reconciled against `SUM(size)` when it is missing -- so a wrong value
-        // here would outlive the process rather than self-heal.
+        // reconciled against the charged-footprint formula when it is
+        // missing -- so a wrong value here would outlive the process rather
+        // than self-heal.
         let dir = tempdir().unwrap();
         {
             let kv = open(dir.path());
@@ -827,7 +877,7 @@ mod tests {
 
         let kv = open(dir.path());
         assert_eq!(kv.get("dup").unwrap().as_deref(), Some("b"));
-        assert_eq!(kv.info().unwrap().current_bytes, 3);
+        assert_eq!(kv.info().unwrap().current_bytes, 139);
     }
 
     #[test]
@@ -892,13 +942,13 @@ mod tests {
         let kv = open(dir.path());
         kv.set("a", "aa").unwrap();
         kv.set("b", "bbb").unwrap();
-        assert_eq!(kv.info().unwrap().current_bytes, 5);
+        assert_eq!(kv.info().unwrap().current_bytes, 135);
         kv.set("a", "aaaaa").unwrap();
-        assert_eq!(kv.info().unwrap().current_bytes, 8);
+        assert_eq!(kv.info().unwrap().current_bytes, 138);
         kv.remove("b").unwrap();
-        assert_eq!(kv.info().unwrap().current_bytes, 5);
+        assert_eq!(kv.info().unwrap().current_bytes, 70);
         kv.set_batch(&[("c", "cc"), ("d", "d")]).unwrap();
-        assert_eq!(kv.info().unwrap().current_bytes, 8);
+        assert_eq!(kv.info().unwrap().current_bytes, 203);
         kv.clear().unwrap();
         assert_eq!(kv.info().unwrap().current_bytes, 0);
     }
@@ -912,7 +962,7 @@ mod tests {
         }
         // Reopen: the cached total must survive the process boundary.
         let kv = open(dir.path());
-        assert_eq!(kv.info().unwrap().current_bytes, 5);
+        assert_eq!(kv.info().unwrap().current_bytes, 70);
     }
 
     #[test]
@@ -931,7 +981,7 @@ mod tests {
                 .unwrap();
         }
         let kv = KvStore::open(&path, QUOTA).unwrap();
-        assert_eq!(kv.info().unwrap().current_bytes, 5);
+        assert_eq!(kv.info().unwrap().current_bytes, 70);
     }
 
     #[test]
@@ -996,5 +1046,62 @@ mod tests {
         assert_eq!(first.keys.len(), 2);
         assert_eq!(second.keys.len(), 1);
         assert!(first.keys.iter().all(|key| !second.keys.contains(key)));
+    }
+
+    /// FIO-04 regression: quota must refuse a write when key bytes push the
+    /// true footprint over the limit, even when value bytes are identical.
+    ///
+    /// Store (Q=100): a 1-byte key + 30-byte value charges 95 bytes and fits;
+    /// a 40-byte key with the same 30-byte value charges 134 bytes and fails.
+    /// Old code (value bytes only) admits both because each value is 30 bytes.
+    #[test]
+    fn quota_refuses_when_key_bytes_cross_limit() {
+        let dir = tempdir().unwrap();
+        let kv = KvStore::open(dir.path().join("storage.db"), 100).unwrap();
+        let value = "v".repeat(30);
+        kv.set("k", &value).unwrap();
+
+        let large_key = "K".repeat(40);
+        let err = kv.set(&large_key, &value).unwrap_err();
+        assert_eq!(
+            err.code,
+            ErrorCode::OutOfMemory,
+            "quota must refuse when key bytes contribute to the true footprint"
+        );
+        assert_eq!(
+            kv.get(&large_key).unwrap(),
+            None,
+            "rejected write must not have leaked into the store"
+        );
+    }
+
+    /// FIO-04 regression: per-entry overhead must prevent bypassing the quota
+    /// with a high entry count of tiny values.
+    ///
+    /// Store (Q=500): batch of 8 entries each with a 2-byte key and 1-byte value →
+    /// charged 8×(2+1+64)=536 > 500. Must be refused.
+    /// Old code (value bytes only): 8×1=8 ≤ 500 → admits → this test is RED.
+    #[test]
+    fn per_entry_overhead_limits_tiny_value_entries() {
+        let dir = tempdir().unwrap();
+        let kv = KvStore::open(dir.path().join("storage.db"), 500).unwrap();
+        let items: Vec<(&str, &str)> = vec![
+            ("k0", "v"),
+            ("k1", "v"),
+            ("k2", "v"),
+            ("k3", "v"),
+            ("k4", "v"),
+            ("k5", "v"),
+            ("k6", "v"),
+            ("k7", "v"),
+        ];
+        let err = kv.set_batch(&items).unwrap_err();
+        assert_eq!(
+            err.code,
+            ErrorCode::OutOfMemory,
+            "per-entry overhead must count toward the quota even when values are tiny"
+        );
+        // Batch is atomic — nothing should have landed.
+        assert!(kv.info().unwrap().keys.is_empty());
     }
 }

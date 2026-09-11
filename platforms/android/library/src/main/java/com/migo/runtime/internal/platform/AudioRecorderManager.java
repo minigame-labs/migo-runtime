@@ -537,20 +537,21 @@ public final class AudioRecorderManager implements RuntimeScoped {
             srcOffset += toCopy;
 
             if (accOffset >= chunkBytes) {
+                // The JNI call copies synchronously before returning, so the
+                // capture-owned accumulator can be reused without a Java clone.
                 NativeMethods.onRecorderFrameData(
-                        sessionId, token.generation(), accumulator.clone(), false);
+                        sessionId, token.generation(), accumulator, chunkBytes, false);
                 accOffset = 0;
             }
         }
         return accOffset;
     }
 
-    /** Flush any remaining bytes in the accumulator as the last frame. */
+    /** Flush any remaining bytes as the last frame without allocating a partial clone. */
     private void flushAccumulator(byte[] accumulator, int accOffset) {
         if (accOffset > 0) {
-            byte[] last = new byte[accOffset];
-            System.arraycopy(accumulator, 0, last, 0, accOffset);
-            NativeMethods.onRecorderFrameData(sessionId, token.generation(), last, true);
+            NativeMethods.onRecorderFrameData(
+                    sessionId, token.generation(), accumulator, accOffset, true);
         }
     }
 

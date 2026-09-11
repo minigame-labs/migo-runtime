@@ -11,11 +11,18 @@
 //! ## Limits
 //!
 //! - Single value: 1 MB
-//! - Total value bytes: 10 MB
+//! - Total charged storage: 10 MB (value bytes, key bytes, and the fixed
+//!   per-entry SQLite record/B-tree reservation)
 //! - Key bytes: 16 KiB
 //! - Entries: 10,000
 //!
-//! Value-byte quota and entry count are enforced inside each SQLite
+//! The charged-storage quota deliberately excludes transient WAL frames and
+//! SQLite page-cache pages, which are bounded by SQLite configuration rather
+//! than committed row content. The secondary index's duplicate key bytes are
+//! likewise explicitly excluded; the key-size and entry-count guards bound
+//! that configuration-dependent cost without inventing a multiplier.
+//!
+//! Charged-storage quota and entry count are enforced inside each SQLite
 //! transaction using cached running totals; enumeration is paged and the
 //! serialized response is capped before it reaches JS.
 

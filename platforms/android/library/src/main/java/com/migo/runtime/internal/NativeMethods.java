@@ -1179,12 +1179,16 @@ public final class NativeMethods {
      *
      * @param sessionId   The session ID
      * @param frameData   Raw audio frame bytes
+     * @param frameLength Number of valid bytes at the start of {@code frameData}
      * @param isLastFrame Whether this is the last frame before stop
      */
     public static void onRecorderFrameData(
-            int sessionId, long generation, byte[] frameData, boolean isLastFrame) {
-        if (sessionId >= 0 && frameData != null) {
-            NativeBridge.onRecorderFrameData(sessionId, generation, frameData, isLastFrame);
+            int sessionId, long generation, byte[] frameData, int frameLength,
+            boolean isLastFrame) {
+        if (sessionId >= 0 && frameData != null
+                && frameLength >= 0 && frameLength <= frameData.length) {
+            NativeBridge.onRecorderFrameData(
+                    sessionId, generation, frameData, frameLength, isLastFrame);
         }
     }
 

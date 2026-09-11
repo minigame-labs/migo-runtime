@@ -525,6 +525,12 @@ mod tests {
         scheduler::{IoScheduler, RouteDecision, classify_request},
         task::{BackendKind, IoRequest, PoolKind, PriorityClass, RequestKind},
     };
+
+    /// Lost its `#[test]` attribute at some point and silently stopped running;
+    /// only a dead-code warning gave it away. Delegation of large Pack reads is
+    /// the routing decision the inline fast path is allowed to skip, so an
+    /// unrun test here hides exactly the regression it exists to catch.
+    #[test]
     fn delegated_sync_pack_reads_use_pack_pool() {
         let scheduler = IoScheduler::new(7);
         // Foreground reads under the inline threshold short-circuit, so
