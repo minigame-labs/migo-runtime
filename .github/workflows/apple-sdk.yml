@@ -427,6 +427,38 @@ jobs:
             cargo test -p migo-platform --locked --target "$host" \
             --no-default-features --features external-frames
 
+      # The same question the macOS leg asks, asked on the platform the product
+      # ships on -- and the first time any engine Rust test has executed on iOS.
+      #
+      # Until this step, every Apple lane compiled the engine for iOS and then
+      # tested it on the host. Most of the time those are the same answer. The
+      # case where they are not is on the record and is the reason this exists:
+      # Skia's macOS build assumes desktop GL and its iOS build assumes ES, so
+      # `Canvas2DContext::new` failed on one and structurally could not fail the
+      # same way on the other. A macOS-only test could report nothing about iOS,
+      # and "iOS is configured differently, so it must be fine" is a reading of
+      # `gn/skia.gni` rather than a measurement.
+      #
+      # Deliberately WITHOUT `apple-skia-gl-env.sh`: iOS needs no correction, and
+      # sourcing it here would build a Skia that differs from the shipped one,
+      # which would make this step's answer about this step. The prebuilt the
+      # product links is what should be asked.
+      #
+      # `simctl bootstatus -b` rather than `boot`: booting is asynchronous and a
+      # spawn into a half-booted device fails in a way that reads like a missing
+      # binary.
+      - name: The engine's Rust tests run on the iOS Simulator
+        if: matrix.platform == 'ios-simulator'
+        working-directory: engine
+        run: |
+          udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
+          xcrun simctl bootstatus "$udid" -b
+          export MIGO_IOS_SIM_UDID="$udid"
+          export MIGO_IOS_SIM_ANGLE="$GITHUB_WORKSPACE/engine/third_party/angle-apple-ios-simulator"
+          cargo test -p migo-platform --locked --target aarch64-apple-ios-sim \
+            --no-default-features --features external-frames \
+            --config "target.aarch64-apple-ios-sim.runner=['$GITHUB_WORKSPACE/scripts/ios-sim-cargo-runner.sh']"
+
       # The runtime is supplied by Package.swift's framework dependencies.
       # No copy into DerivedData or test products repairs the package afterward.
       #
