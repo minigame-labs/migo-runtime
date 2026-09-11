@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use deno_core::{OpState, op2};
+use deno_core::{OpState, ToJsBuffer, op2, v8};
 use tracing::{error, warn};
 
 use crate::rendering::image::ImageCacheState;
@@ -45,6 +45,10 @@ impl GlResourceIdAllocator {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/read_pixels_responder.rs"]
+mod read_pixels_responder;
 
 #[cfg(test)]
 mod tests {
@@ -123,6 +127,410 @@ mod tests {
             state.borrow_mut::<WebGLErrorState>().drain_one(canvas_id),
             codes::NO_ERROR
         );
+    }
+
+    #[test]
+    fn read_pixels_rejects_unknown_layout_before_dispatch() {
+        let canvas_id = 9;
+        for (format, type_) in [(0xFFFF, 0x1401), (0x1908, 0xFFFF)] {
+            let mut state = new_webgl_op_state();
+            assert_eq!(
+                prepare_read_pixels(&mut state, canvas_id, 1, 1, format, type_),
+                None
+            );
+            assert_eq!(
+                state.borrow_mut::<WebGLErrorState>().drain_one(canvas_id),
+                codes::INVALID_ENUM
+            );
+            assert_eq!(
+                state
+                    .borrow::<UnifiedFrameCollector>()
+                    .approx_pending_bytes(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn read_pixels_integer_components_use_the_actual_transfer_budget() {
+        let canvas_id = 9;
+        let mut state = new_webgl_op_state();
+        assert_eq!(
+            prepare_read_pixels(&mut state, canvas_id, 2048, 2048, 0x8D99, 0x1405),
+            Some(64 * 1024 * 1024)
+        );
+        assert_eq!(
+            prepare_read_pixels(&mut state, canvas_id, 2049, 2048, 0x8D99, 0x1405),
+            None
+        );
+        assert_eq!(
+            state.borrow_mut::<WebGLErrorState>().drain_one(canvas_id),
+            codes::OUT_OF_MEMORY
+        );
+    }
+
+    #[test]
+    fn read_pixels_checks_native_view_brand_and_length() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime.exec_script("read_pixels_view_validation.js", r#"
+            const ctx = new WebGLRenderingContext({ _rid: 23, width: 2, height: 2 }, {});
+            for (const view of [new Uint8Array(3), new Float32Array(1),
+                new DataView(new ArrayBuffer(4)), {buffer: new ArrayBuffer(4), byteLength: 4}]) {
+                ctx.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, view);
+                if (ctx.getError() !== ctx.INVALID_OPERATION) throw new Error('expected invalid view');
+            }
+            ctx.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, null);
+            if (ctx.getError() !== ctx.INVALID_VALUE) throw new Error('expected null rejection');
+        "#).unwrap();
+        for cmd in render_rx.try_iter() {
+            assert!(!matches!(cmd, RenderCommand::GL(GLCmd::ReadPixels { .. })));
+        }
+    }
+
+    #[test]
+    fn read_pixels_dst_offset_is_in_view_elements_and_adds_to_pack_skips() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            loop {
+                match render_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    RenderCommand::GL(GLCmd::ReadPixels { resp, .. }) => {
+                        resp.ok(shared::protocol::render_cmd::ReadPixelsData {
+                            pixels: (1..=16).collect(),
+                            layout: shared::protocol::pixel_pack::PixelPackLayout::new(
+                                2, 2, 4, 8, 5, 1, 1,
+                            )
+                            .unwrap(),
+                        });
+                        break;
+                    }
+                    RenderCommand::FramePacket(_) => {}
+                    other => panic!("unexpected readback command: {other:?}"),
+                }
+            }
+        });
+        let result = runtime.exec_script(
+            "read_pixels_dst_offset.js",
+            r#"
+            const ctx = new WebGL2RenderingContext({ _rid: 23, width: 2, height: 2 });
+            const all = new Uint8Array(96).fill(165);
+            const view = new Uint16Array(all.buffer, 8, 40);
+            Object.defineProperties(view, {
+                buffer: {get() { throw new Error('own buffer'); }},
+                byteLength: {get() { throw new Error('own byteLength'); }},
+                byteOffset: {get() { throw new Error('own byteOffset'); }},
+                BYTES_PER_ELEMENT: {get() { throw new Error('own BPE'); }},
+                length: {get() { throw new Error('own length'); }},
+                constructor: {get() { throw new Error('own constructor'); }},
+            });
+            // RGBA/HALF_FLOAT is eight bytes per pixel; packed RGBA/UNSIGNED_INT
+            // would be four. Here RG/UNSIGNED_SHORT is four bytes per pixel,
+            // but the destination offset must still use two-byte elements.
+            ctx.readPixels(0, 0, 2, 2, 0x8227 /* RG */, ctx.UNSIGNED_SHORT, view, 3);
+            for (let i = 0; i < all.length; ++i) {
+                let expected = 165;
+                if (i >= 42 && i < 50) expected = i - 41;
+                if (i >= 66 && i < 74) expected = i - 57;
+                if (all[i] !== expected) throw new Error('dstOffset wrong byte ' + i);
+            }
+        "#,
+        );
+        let reply_result = responder.join();
+        result.unwrap();
+        reply_result.unwrap();
+    }
+
+    #[test]
+    fn read_pixels_dst_offset_public_source_scenarios() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = super::read_pixels_responder::spawn(render_rx);
+        let result = runtime.exec_script(
+            "read_pixels_offsets.js",
+            include_str!("../../../tests/fixtures/read_pixels_offset.js"),
+        );
+        drop(runtime);
+        let lengths = responder.join().unwrap();
+        result.unwrap();
+        super::read_pixels_responder::assert_lengths(lengths);
+    }
+
+    #[test]
+    fn read_pixels_dst_offset_webidl_conversion_preserves_all_64_bits() {
+        const MODULUS: f64 = 18_446_744_073_709_551_616.0;
+        for (value, expected) in [
+            (f64::NAN, 0),
+            (f64::INFINITY, 0),
+            (f64::NEG_INFINITY, 0),
+            (0.0, 0),
+            (-0.0, 0),
+            (-0.9, 0),
+            (3.9, 3),
+            (-1.9, u64::MAX),
+            (4_294_967_297.0, 4_294_967_297),
+            (9_007_199_254_740_991.0, 9_007_199_254_740_991),
+            (MODULUS - 2048.0, u64::MAX - 2047),
+            (-MODULUS + 2048.0, 2048),
+            (MODULUS, 0),
+            (-MODULUS, 0),
+            (MODULUS + 4096.0, 4096),
+            (-MODULUS - 4096.0, u64::MAX - 4095),
+            (f64::MAX, 0),
+            (-f64::MAX, 0),
+        ] {
+            assert_eq!(
+                super::read_pixels_element_offset(value),
+                expected,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_pixels_dst_offset_pack_rejection_keeps_the_whole_view_unchanged() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            loop {
+                match render_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    RenderCommand::GL(GLCmd::ReadPixels {
+                        destination_byte_length,
+                        resp,
+                        ..
+                    }) => {
+                        // The compact payload fits, but the renderer can reject a
+                        // larger PACK footprint. Only the remaining view is sent.
+                        assert_eq!(destination_byte_length, 27);
+                        let layout =
+                            shared::protocol::pixel_pack::PixelPackLayout::new(3, 2, 4, 8, 0, 0, 0)
+                                .unwrap();
+                        assert_eq!(layout.required_bytes, 28);
+                        resp.err_code(shared::error::ErrorCode::InvalidOperation);
+                        break;
+                    }
+                    RenderCommand::FramePacket(_) => {}
+                    other => panic!("unexpected readback command: {other:?}"),
+                }
+            }
+        });
+        let result = runtime.exec_script(
+            "read_pixels_offset_pack_rejection.js",
+            r#"
+            const ctx = new WebGL2RenderingContext({ _rid: 23, width: 3, height: 2 });
+            const bytes = new Uint8Array(31).fill(165);
+            ctx.readPixels(0, 0, 3, 2, ctx.RGBA, ctx.UNSIGNED_BYTE, bytes, 4);
+            if (ctx.getError() !== ctx.INVALID_OPERATION || bytes.some(x => x !== 165))
+                throw new Error('PACK rejection changed destination');
+        "#,
+        );
+        let reply_result = responder.join();
+        result.unwrap();
+        reply_result.unwrap();
+    }
+
+    #[test]
+    fn read_pixels_scatters_rows_without_overwriting_padding_or_subview_edges() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            for _ in 0..2 {
+                loop {
+                    match render_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                        RenderCommand::GL(GLCmd::ReadPixels {
+                            destination_byte_length,
+                            resp,
+                            ..
+                        }) => {
+                            assert_eq!(destination_byte_length, 64);
+                            resp.ok(shared::protocol::render_cmd::ReadPixelsData {
+                                pixels: (1..=16).collect(),
+                                layout: shared::protocol::pixel_pack::PixelPackLayout::new(
+                                    2, 2, 4, 8, 5, 1, 1,
+                                )
+                                .unwrap(),
+                            });
+                            break;
+                        }
+                        RenderCommand::FramePacket(_) => {}
+                        other => panic!("unexpected readback command: {other:?}"),
+                    }
+                }
+            }
+        });
+        runtime
+            .exec_script(
+                "read_pixels_scatter.js",
+                r#"
+            const ctx = new WebGLRenderingContext({ _rid: 23, width: 2, height: 2 }, {});
+            for (const backing of [new ArrayBuffer(80), new SharedArrayBuffer(80)]) {
+                const all = new Uint8Array(backing);
+                all.fill(165);
+                const view = new Uint8Array(backing, 8, 64);
+                Object.defineProperties(view, {
+                    buffer: {value: new ArrayBuffer(512)},
+                    byteLength: {value: 512}, byteOffset: {value: 0},
+                });
+                ctx.readPixels(0, 0, 2, 2, ctx.RGBA, ctx.UNSIGNED_BYTE, view);
+                for (let i = 0; i < all.length; ++i) {
+                    let expected = 165;
+                    if (i >= 36 && i < 44) expected = i - 35;
+                    if (i >= 60 && i < 68) expected = i - 51;
+                    if (all[i] !== expected) throw new Error('wrong byte ' + i);
+                }
+            }
+        "#,
+            )
+            .unwrap();
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn read_pixels_accepts_bgra_packed_short_views() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            for expected_type in [0x8365, 0x8366] {
+                loop {
+                    match render_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                        RenderCommand::GL(GLCmd::ReadPixels {
+                            type_,
+                            destination_byte_length,
+                            resp,
+                            ..
+                        }) => {
+                            assert_eq!(type_, expected_type);
+                            assert_eq!(destination_byte_length, 2);
+                            resp.ok(shared::protocol::render_cmd::ReadPixelsData {
+                                pixels: vec![11, 22],
+                                layout: shared::protocol::pixel_pack::PixelPackLayout::new(
+                                    1, 1, 2, 4, 0, 0, 0,
+                                )
+                                .unwrap(),
+                            });
+                            break;
+                        }
+                        RenderCommand::FramePacket(_) => {}
+                        other => panic!("unexpected readback command: {other:?}"),
+                    }
+                }
+            }
+        });
+        runtime
+            .exec_script(
+                "read_pixels_bgra.js",
+                r#"
+            const ctx = new WebGLRenderingContext({ _rid: 23, width: 1, height: 1 }, {});
+            for (const type of [0x8365, 0x8366]) {
+                const pixels = new Uint16Array(1);
+                ctx.readPixels(0, 0, 1, 1, 0x80E1, type, pixels);
+                if (ctx.getError() !== ctx.NO_ERROR) throw new Error('BGRA type rejected');
+                const bytes = new Uint8Array(pixels.buffer);
+                if (bytes[0] !== 11 || bytes[1] !== 22) throw new Error('wrong BGRA bytes');
+            }
+        "#,
+            )
+            .unwrap();
+        responder.join().unwrap();
+    }
+
+    fn assert_read_pixels_ignores_typed_array_hook(hook: &str) {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            loop {
+                match render_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    RenderCommand::GL(GLCmd::ReadPixels { resp, .. }) => {
+                        resp.ok(shared::protocol::render_cmd::ReadPixelsData {
+                            pixels: (1..=16).collect(),
+                            layout: shared::protocol::pixel_pack::PixelPackLayout::new(
+                                2, 2, 4, 8, 5, 1, 1,
+                            )
+                            .unwrap(),
+                        });
+                        break;
+                    }
+                    RenderCommand::FramePacket(_) => {}
+                    other => panic!("unexpected readback command: {other:?}"),
+                }
+            }
+        });
+        runtime.exec_script("read_pixels_primordial_setup.js", r#"
+            const ctx = new WebGLRenderingContext({ _rid: 23, width: 2, height: 2 }, {});
+            const pixels = new Uint8Array(64);
+            pixels.fill(165);
+            const savedConstructor = Object.getOwnPropertyDescriptor(Uint8Array.prototype, 'constructor');
+            const savedLength = Object.getOwnPropertyDescriptor(Uint8Array.prototype, 'length');
+        "#).unwrap();
+        runtime.exec_script("read_pixels_hook.js", hook).unwrap();
+        let outcome = runtime.exec_script(
+            "read_pixels_primordial_copy.js",
+            r#"
+            try {
+                ctx.readPixels(0, 0, 2, 2, ctx.RGBA, ctx.UNSIGNED_BYTE, pixels);
+            } finally {
+                Object.defineProperty(Uint8Array.prototype, 'constructor', savedConstructor);
+                if (savedLength) Object.defineProperty(Uint8Array.prototype, 'length', savedLength);
+                else delete Uint8Array.prototype.length;
+            }
+            for (let i = 0; i < 64; ++i) {
+                let expected = 165;
+                if (i >= 28 && i < 36) expected = i - 27;
+                if (i >= 52 && i < 60) expected = i - 43;
+                if (pixels[i] !== expected) throw new Error('wrong byte ' + i);
+            }
+        "#,
+        );
+        responder.join().unwrap();
+        outcome.unwrap();
+    }
+
+    #[test]
+    fn read_pixels_does_not_invoke_typed_array_species() {
+        assert_read_pixels_ignores_typed_array_hook(
+            r#"
+            Object.defineProperty(Uint8Array.prototype, 'constructor', {
+                configurable: true, value: {
+                    get [Symbol.species]() { throw new Error('readPixels invoked species'); }
+                }
+            });
+        "#,
+        );
+    }
+
+    #[test]
+    fn read_pixels_does_not_invoke_typed_array_length_getter() {
+        assert_read_pixels_ignores_typed_array_hook(
+            r#"
+            Object.defineProperty(Uint8Array.prototype, 'length', {
+                configurable: true,
+                get() { throw new Error('readPixels invoked length getter'); }
+            });
+        "#,
+        );
+    }
+
+    #[test]
+    fn read_pixels_renderer_rejection_preserves_destination_and_records_error() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            loop {
+                match render_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    RenderCommand::GL(GLCmd::ReadPixels { resp, .. }) => {
+                        resp.err_code(shared::error::ErrorCode::InvalidOperation);
+                        break;
+                    }
+                    RenderCommand::FramePacket(_) => {}
+                    other => panic!("unexpected readback command: {other:?}"),
+                }
+            }
+        });
+        runtime
+            .exec_script(
+                "read_pixels_renderer_rejection.js",
+                r#"
+            const ctx = new WebGLRenderingContext({ _rid: 23, width: 1, height: 1 }, {});
+            const pixels = new Uint8Array([11,22,33,44]);
+            ctx.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, pixels);
+            if (pixels.join(',') !== '11,22,33,44') throw new Error('error changed destination');
+            if (ctx.getError() !== ctx.INVALID_OPERATION) throw new Error('missing render error');
+        "#,
+            )
+            .unwrap();
+        responder.join().unwrap();
     }
 
     #[test]
@@ -6579,7 +6987,10 @@ fn prepare_read_pixels(
     format: u32,
     type_: u32,
 ) -> Option<usize> {
-    let bytes_per_pixel = webgl_readback_bytes_per_pixel(format, type_);
+    let Some(bytes_per_pixel) = webgl_readback_bytes_per_pixel(format, type_) else {
+        error_state::push_error(state, canvas_id, codes::INVALID_ENUM);
+        return None;
+    };
     match checked_readback_byte_len(width, height, bytes_per_pixel) {
         Some(byte_len) => Some(byte_len),
         None => {
@@ -6594,8 +7005,59 @@ fn prepare_read_pixels(
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadPixelsJsData {
+    data: ToJsBuffer,
+    first_byte: usize,
+    row_bytes: usize,
+    row_stride: usize,
+    height: usize,
+}
+
+/// Returns the view byte length and element size without invoking JS getters.
+/// A packed pixel's size is independent of the destination's element size.
+fn read_pixels_view_layout(pixels: v8::Local<v8::Value>, type_: u32) -> Option<(usize, usize)> {
+    let element_bytes = match type_ {
+        0x1400 if pixels.is_int8_array() => 1,
+        0x1401 if pixels.is_uint8_array() || pixels.is_uint8_clamped_array() => 1,
+        0x1402 if pixels.is_int16_array() => 2,
+        0x1403 | 0x140B | 0x8D61 | 0x8363 | 0x8033 | 0x8034 | 0x8365 | 0x8366
+            if pixels.is_uint16_array() =>
+        {
+            2
+        }
+        0x1404 if pixels.is_int32_array() => 4,
+        0x1405 | 0x8368 | 0x8C3B | 0x8C3E | 0x84FA | 0x8DAD if pixels.is_uint32_array() => 4,
+        0x1406 if pixels.is_float32_array() => 4,
+        _ => return None,
+    };
+    v8::Local::<v8::ArrayBufferView>::try_from(pixels)
+        .ok()
+        .map(|view| (view.byte_length(), element_bytes))
+}
+
+/// WebIDL unsigned long long conversion after JS ToNumber. Keep the usual
+/// nonnegative range free of floating-point remainder; negative values wrap
+/// in integer arithmetic so -1 cannot round to 2^64 and then to zero.
+fn read_pixels_element_offset(value: f64) -> u64 {
+    const MODULUS: f64 = 18_446_744_073_709_551_616.0;
+    if !value.is_finite() {
+        return 0;
+    }
+    if value >= 0.0 && value < MODULUS {
+        return value as u64;
+    }
+    let remainder = value.trunc() % MODULUS;
+    if remainder < 0.0 {
+        0u64.wrapping_sub((-remainder) as u64)
+    } else {
+        remainder as u64
+    }
+}
+
 #[op2]
-#[buffer]
+#[serde]
 pub fn op_read_pixels(
     state: &mut OpState,
     #[smi] canvas_id: u32,
@@ -6605,15 +7067,39 @@ pub fn op_read_pixels(
     #[smi] height: i32,
     #[smi] format: u32,
     #[smi] type_: u32,
-) -> Vec<u8> {
+    pixels: v8::Local<v8::Value>,
+    dst_offset: f64,
+) -> Option<ReadPixelsJsData> {
     let Some(byte_len) = prepare_read_pixels(state, canvas_id, width, height, format, type_) else {
-        return Vec::new();
+        return None;
     };
-    if byte_len == 0 {
-        return Vec::new();
+    let Some((view_byte_length, element_bytes)) = read_pixels_view_layout(pixels, type_) else {
+        error_state::push_error(
+            state,
+            canvas_id,
+            if pixels.is_null_or_undefined() {
+                codes::INVALID_VALUE
+            } else {
+                codes::INVALID_OPERATION
+            },
+        );
+        return None;
+    };
+    let Some(destination_byte_offset) = usize::try_from(read_pixels_element_offset(dst_offset))
+        .ok()
+        .and_then(|elements| elements.checked_mul(element_bytes))
+        .filter(|offset| *offset <= view_byte_length)
+    else {
+        error_state::push_error(state, canvas_id, codes::INVALID_OPERATION);
+        return None;
+    };
+    let destination_byte_length = view_byte_length - destination_byte_offset;
+    if byte_len > destination_byte_length {
+        error_state::push_error(state, canvas_id, codes::INVALID_OPERATION);
+        return None;
     }
 
-    send_gl_sync_with_flush(state, |resp| {
+    let result = send_gl_sync_with_flush(state, |resp| {
         RenderCommand::GL(GLCmd::ReadPixels {
             canvas_id,
             x,
@@ -6622,10 +7108,34 @@ pub fn op_read_pixels(
             height,
             format,
             type_,
+            destination_byte_length,
             resp,
         })
-    })
-    .unwrap_or_default()
+    });
+    match result {
+        Ok(result) => Some(ReadPixelsJsData {
+            data: result.pixels.into(),
+            // The renderer validated its full PACK footprint against the
+            // remaining view, so adding this prefix stays within the view.
+            first_byte: destination_byte_offset + result.layout.first_byte,
+            row_bytes: result.layout.row_bytes,
+            row_stride: result.layout.row_stride,
+            height: result.layout.height,
+        }),
+        Err(error) => {
+            use shared::error::ErrorCode;
+            error_state::push_error(
+                state,
+                canvas_id,
+                match error.code {
+                    ErrorCode::OutOfMemory => codes::OUT_OF_MEMORY,
+                    ErrorCode::InvalidArgument => codes::INVALID_VALUE,
+                    _ => codes::INVALID_OPERATION,
+                },
+            );
+            None
+        }
+    }
 }
 
 #[op2(fast)]

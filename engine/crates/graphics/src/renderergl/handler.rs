@@ -2623,53 +2623,39 @@ impl RendererGL {
                 height,
                 format,
                 type_,
+                destination_byte_length,
                 resp,
             } => {
-                let bytes_per_pixel = webgl_readback_bytes_per_pixel(format, type_);
                 if width < 0 || height < 0 {
                     resp.err_code(ErrorCode::InvalidArgument);
                     return Ok(DamageEffect::NoDamage);
                 }
-                let Some(byte_size) = checked_readback_byte_len(width, height, bytes_per_pixel)
-                else {
+                let Some(bytes_per_pixel) = webgl_readback_bytes_per_pixel(format, type_) else {
+                    resp.err_code(ErrorCode::InvalidArgument);
+                    return Ok(DamageEffect::NoDamage);
+                };
+                let Some(_) = checked_readback_byte_len(width, height, bytes_per_pixel) else {
                     resp.err_code(ErrorCode::OutOfMemory);
                     return Ok(DamageEffect::NoDamage);
                 };
-                if byte_size == 0 {
-                    resp.ok(Vec::new());
-                    return Ok(DamageEffect::NoDamage);
-                }
-
                 cm.make_current_needed(canvas_id)?;
 
-                // Detect readback from the onscreen default framebuffer.
-                // When bypass is active, the default FBO is the window surface
-                // whose contents become undefined after eglSwapBuffers.
-                // Signal the manager to disable bypass so the DrawingBuffer
-                // preserves content across swaps.
-                let onscreen_id = shared::protocol::render_cmd::CanvasId::from(1u32);
-                if canvas_id == onscreen_id {
-                    let is_default = cm
-                        .gl_state
-                        .get(&canvas_id)
-                        .map_or(true, |s| s.draws_to_default_fbo);
-                    if is_default {
-                        cm.signal_default_fbo_readback();
-                    }
-                }
-                let mut buf = vec![0u8; byte_size];
-                unsafe {
-                    gl.read_pixels(
-                        x,
-                        y,
-                        width,
-                        height,
-                        format,
-                        type_,
-                        glow::PixelPackData::Slice(Some(&mut buf)),
-                    );
-                }
-                resp.ok(buf);
+                resp.send(crate::backend::gl::readback::read_webgl_pixels(
+                    gl,
+                    x,
+                    y,
+                    width,
+                    height,
+                    format,
+                    type_,
+                    destination_byte_length,
+                    || {
+                        if canvas_id == CanvasId::from(1u32) {
+                            cm.signal_default_fbo_readback()?;
+                        }
+                        Ok(())
+                    },
+                ));
                 Ok(DamageEffect::NoDamage)
             }
 

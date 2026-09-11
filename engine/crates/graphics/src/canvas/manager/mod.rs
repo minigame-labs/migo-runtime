@@ -27,8 +27,8 @@ impl NativeTextureFromRawShim for glow::NativeTexture {
 }
 
 /// Mirror of [`NativeTextureFromRawShim`] for `glow::NativeFramebuffer`.
-/// Lets the GPU-side image copy path reconstruct a framebuffer handle
-/// from the raw GLuint stored alongside other state-tracker fields.
+/// Reconstructs a native framebuffer from an actual driver/resource GLuint.
+/// Client framebuffer IDs must never be converted through this helper.
 trait NativeFramebufferFromRawShim {
     fn try_from_raw(raw: u32) -> Option<glow::NativeFramebuffer>;
 }
@@ -1169,6 +1169,7 @@ impl CanvasManager {
                 ctx: EglContextHandle { ctx, surf },
                 drawing_buffer: None,
                 bypass_drawing_buffer: false,
+                applied_bypass_drawing_buffer: false,
             },
         );
         // Offscreen canvas created → bypass no longer valid.
@@ -1777,6 +1778,7 @@ impl CanvasManager {
                 // make-current. A fresh buffer is initialized below.
                 drawing_buffer: pending.drawing_buffer,
                 bypass_drawing_buffer: false, // evaluated after DrawingBuffer creation
+                applied_bypass_drawing_buffer: false,
             },
         );
         // A fresh native target carries no frame-rate request, so it is asserted
@@ -3290,64 +3292,47 @@ impl CanvasManager {
         }
     }
 
-    /// Re-evaluate whether the onscreen canvas can bypass the DrawingBuffer.
-    ///
-    /// Bypass is safe when there is exactly one canvas (the onscreen one)
-    /// and no offscreen canvases exist.  Called after canvas creation/destruction.
-    /// Signal that the game reads from the onscreen default framebuffer.
-    /// Permanently disables DrawingBuffer bypass so content is preserved across swaps.
-    ///
-    /// If bypass was active at the time of detection, we snapshot the current
-    /// window surface content into the DrawingBuffer (reverse blit) so the
-    /// readback that triggered this signal sees valid content immediately,
-    /// not just on subsequent frames.
-    pub(crate) fn signal_default_fbo_readback(&mut self) {
+    /// Preserve the first nonempty read of the onscreen default framebuffer.
+    /// The caller has made the onscreen context current and validated storage.
+    /// A failed snapshot leaves the mode and client binding shadow unchanged.
+    pub(crate) fn signal_default_fbo_readback(&mut self) -> EngineResult<()> {
         if !should_latch_default_fbo_readback(self.needs_default_fbo_readback) {
-            return;
+            return Ok(());
         }
-        // Take the snapshot while bypass is still on, so the surface is still
-        // the thing the game has been drawing into. Without it the mode change
-        // below binds a DrawingBuffer that has never been written, and the
-        // readback that asked for this returns an empty buffer for pixels the
-        // game just drew -- once, on the first read of a context, which is the
-        // hardest kind of bug to notice and the easiest to blame on content.
-        // The doc comment above has described this snapshot since the flag was
-        // introduced; only the code was missing.
         let onscreen_id = CanvasId::from(1u32);
-        // `glBlitFramebuffer` is GLES 3.0+. On GLES 2 there is no snapshot to
-        // take and the first read after the mode change is empty, as before.
-        let mut snapshot_attempted = false;
-        if self.gles_major >= 3 {
-            if let Some(entry) = self.canvases.get(&onscreen_id) {
-                if entry.bypass_drawing_buffer {
-                    if let Some(db) = entry.drawing_buffer.as_ref() {
-                        snapshot_attempted = true;
-                        if !drawing_buffer::blit_from_surface(
-                            &self.gl,
-                            db,
-                            entry.physical_width,
-                            entry.physical_height,
-                        ) {
-                            tracing::warn!(
-                                "default-FBO readback: could not snapshot the surface into \
-                                 the DrawingBuffer; this read sees an empty buffer"
-                            );
-                        }
+        debug_assert_eq!(self.bound, BoundContext::Canvas(onscreen_id));
+        if !reads_from_default_framebuffer(
+            &self.gl,
+            self.canvases
+                .get(&onscreen_id)
+                .is_some_and(|entry| entry.drawing_buffer.is_some()),
+            self.gl_state.get(&onscreen_id),
+            self.get_drawing_buffer_fbo(onscreen_id),
+        ) {
+            return Ok(());
+        }
+        if let Some(entry) = self.canvases.get(&onscreen_id) {
+            if entry.bypass_drawing_buffer {
+                if let Some(db) = entry.drawing_buffer.as_ref() {
+                    // A DrawingBuffer exists only after create() successfully
+                    // probes split bindings and glBlitFramebuffer on this driver.
+                    if !drawing_buffer::blit_from_surface(
+                        &self.gl,
+                        db,
+                        entry.physical_width,
+                        entry.physical_height,
+                    ) {
+                        return Err(ee(
+                            ErrorCode::RenderBackendError,
+                            "default framebuffer snapshot failed",
+                        ));
                     }
                 }
             }
         }
-        if snapshot_attempted {
-            // The blit leaves FBO 0 bound on every path, successful or not, so
-            // the shadow has to say so -- otherwise the next draw is issued
-            // against a binding the tracker believes is something else.
-            crate::backend::gl::state_tracker::record_default_framebuffer_bind(
-                self.gl_state.entry(onscreen_id).or_default(),
-            );
-        }
-
         self.needs_default_fbo_readback = true;
         self.evaluate_bypass();
+        Ok(())
     }
 
     pub(crate) fn evaluate_bypass(&mut self) {
@@ -3419,18 +3404,18 @@ impl CanvasManager {
                 .add(crate::damage_effect::DamageEffect::FullSurface);
         }
 
-        let rebind = plan_bypass_rebind(
-            mode_changed,
-            self.bound == BoundContext::Canvas(onscreen_id),
-            self.gl_state
-                .get(&onscreen_id)
-                .map_or(true, |s| s.draws_to_default_fbo),
-            self.get_drawing_buffer_fbo(onscreen_id),
-        );
-        if let BypassRebind::DefaultFramebuffer(fbo) = rebind {
-            unsafe {
-                self.gl.bind_framebuffer(glow::FRAMEBUFFER, fbo);
-            }
+        self.apply_default_framebuffer_mapping(onscreen_id);
+    }
+
+    fn apply_default_framebuffer_mapping(&mut self, id: CanvasId) {
+        if let Some(entry) = self.canvases.get_mut(&id) {
+            apply_bypass_rebind(
+                &self.gl,
+                self.bound == BoundContext::Canvas(id),
+                &mut entry.applied_bypass_drawing_buffer,
+                entry.bypass_drawing_buffer,
+                entry.drawing_buffer.as_ref().map(|db| db.fbo),
+            );
         }
     }
 
@@ -3496,19 +3481,10 @@ impl CanvasManager {
             })?;
         self.bound = BoundContext::Canvas(id);
 
-        // The framebuffer binding is deliberately NOT re-established here.
-        //
-        // It is per-GL-context state and each canvas owns its context, so EGL
-        // hands this canvas back exactly the binding it had — which is also what
-        // the dedup shadow already claims. Re-pointing it at the default
-        // framebuffer instead gave this one function *two* behaviours: the
-        // short-circuit above left the content's binding alone while a real switch
-        // clobbered it, and the shadow described only the first. Content that kept
-        // its own FBO across a canvas switch then had its next
-        // `bindFramebuffer(sameName)` deduped away and rendered to texture
-        // straight onto the screen — see `scripts/fixtures/rtt-probe`. A freshly
-        // created context needs no help either: `DrawingBuffer::new` leaves its FBO
-        // bound and `evaluate_bypass` re-points it when bypass latches.
+        // EGL preserves this context's client bindings. Only a pending change
+        // to the native meaning of its default framebuffer needs applying.
+        // Custom READ/DRAW bindings remain exactly as the context left them.
+        self.apply_default_framebuffer_mapping(id);
 
         Ok(())
     }
@@ -4510,84 +4486,24 @@ impl CanvasManager {
             .unwrap_or((0, 0));
 
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
-
-        // Save the current GL_READ_FRAMEBUFFER binding so the WebGL
-        // game's READ_FRAMEBUFFER expectations survive this op.
-        let prev_read_fbo = self
-            .gl_state
-            .get(&canvas_id)
-            .and_then(|s| s.bound_framebuffer.get(glow::READ_FRAMEBUFFER))
-            .flatten();
-
-        {
-            let entry = self.gl_state.entry(canvas_id).or_default();
-            if crate::backend::gl::state_tracker::update_bind_framebuffer(
-                entry,
-                glow::READ_FRAMEBUFFER,
-                Some(copy_fbo.0.get()),
-            ) {
-                unsafe {
-                    self.gl
-                        .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(copy_fbo));
-                }
-            }
+        let status = crate::backend::gl::texture_copy::copy_texture(
+            &self.gl,
+            copy_fbo,
+            src_tex,
+            crate::backend::gl::texture_copy::TextureCopy::Image {
+                target,
+                level,
+                internal_format: internalformat as u32,
+                source_x: sx,
+                source_y: sy,
+                width: src_width,
+                height: src_height,
+            },
+        );
+        if status != glow::FRAMEBUFFER_COMPLETE {
+            tracing::warn!("TexImage2DFromShared: read FBO incomplete: 0x{status:X}");
         }
 
-        unsafe {
-            self.gl.framebuffer_texture_2d(
-                glow::READ_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(src_tex),
-                0,
-            );
-            let status = self.gl.check_framebuffer_status(glow::READ_FRAMEBUFFER);
-            if status == glow::FRAMEBUFFER_COMPLETE {
-                self.gl.copy_tex_image_2d(
-                    target,
-                    level,
-                    internalformat as u32,
-                    sx,
-                    sy,
-                    src_width,
-                    src_height,
-                    0,
-                );
-            } else {
-                tracing::warn!("TexImage2DFromShared: read FBO incomplete: 0x{:X}", status);
-            }
-            // Detach so the source texture isn't kept implicitly
-            // alive by this FBO across calls.
-            self.gl.framebuffer_texture_2d(
-                glow::READ_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                None,
-                0,
-            );
-        }
-
-        // Restore the previous READ_FRAMEBUFFER.
-        {
-            let entry = self.gl_state.entry(canvas_id).or_default();
-            if crate::backend::gl::state_tracker::update_bind_framebuffer(
-                entry,
-                glow::READ_FRAMEBUFFER,
-                prev_read_fbo,
-            ) {
-                let prev = prev_read_fbo.and_then(
-                    <glow::NativeFramebuffer as NativeFramebufferFromRawShim>::try_from_raw,
-                );
-                unsafe {
-                    self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, prev);
-                }
-            }
-        }
-
-        // The destination texture binding under `target` is now the
-        // freshly populated copy.  Mark Skia's view of TEXTURE_BINDING
-        // stale on every live Canvas2D context — same accounting as
-        // load_shared_image, just for the WebGL re-upload flavour.
         self.mark_all_2d_contexts_stale_bits(
             crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
         );
@@ -5138,80 +5054,24 @@ impl CanvasManager {
         // — exactly the same primitive `tex_image_2d_from_shared`
         // uses, so the same driver paths are exercised.
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
-
-        let prev_read_fbo = self
-            .gl_state
-            .get(&canvas_id)
-            .and_then(|s| s.bound_framebuffer.get(glow::READ_FRAMEBUFFER))
-            .flatten();
-
-        {
-            let entry = self.gl_state.entry(canvas_id).or_default();
-            if crate::backend::gl::state_tracker::update_bind_framebuffer(
-                entry,
-                glow::READ_FRAMEBUFFER,
-                Some(copy_fbo.0.get()),
-            ) {
-                unsafe {
-                    self.gl
-                        .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(copy_fbo));
-                }
-            }
+        let status = crate::backend::gl::texture_copy::copy_texture(
+            &self.gl,
+            copy_fbo,
+            entry.tex,
+            crate::backend::gl::texture_copy::TextureCopy::Image {
+                target,
+                level,
+                internal_format: internalformat as u32,
+                source_x: 0,
+                source_y: 0,
+                width: entry.width as i32,
+                height: entry.height as i32,
+            },
+        );
+        if status != glow::FRAMEBUFFER_COMPLETE {
+            tracing::warn!("TexImage2DFromSnapshot: read FBO incomplete: 0x{status:X}");
         }
 
-        unsafe {
-            self.gl.framebuffer_texture_2d(
-                glow::READ_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(entry.tex),
-                0,
-            );
-            let status = self.gl.check_framebuffer_status(glow::READ_FRAMEBUFFER);
-            if status == glow::FRAMEBUFFER_COMPLETE {
-                self.gl.copy_tex_image_2d(
-                    target,
-                    level,
-                    internalformat as u32,
-                    0,
-                    0,
-                    entry.width as i32,
-                    entry.height as i32,
-                    0,
-                );
-            } else {
-                tracing::warn!(
-                    "TexImage2DFromSnapshot: read FBO incomplete: 0x{:X}",
-                    status
-                );
-            }
-            self.gl.framebuffer_texture_2d(
-                glow::READ_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                None,
-                0,
-            );
-        }
-
-        {
-            let s = self.gl_state.entry(canvas_id).or_default();
-            if crate::backend::gl::state_tracker::update_bind_framebuffer(
-                s,
-                glow::READ_FRAMEBUFFER,
-                prev_read_fbo,
-            ) {
-                let prev = prev_read_fbo.and_then(
-                    <glow::NativeFramebuffer as NativeFramebufferFromRawShim>::try_from_raw,
-                );
-                unsafe {
-                    self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, prev);
-                }
-            }
-        }
-
-        // Destination texture bound under `target` is now populated;
-        // mark Skia's per-context cached texture binding stale.
         self.mark_all_2d_contexts_stale_bits(
             crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
         );
@@ -5265,76 +5125,22 @@ impl CanvasManager {
 
         self.make_current_needed(canvas_id)?;
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
-
-        let prev_read_fbo = self
-            .gl_state
-            .get(&canvas_id)
-            .and_then(|s| s.bound_framebuffer.get(glow::READ_FRAMEBUFFER))
-            .flatten();
-
-        {
-            let entry = self.gl_state.entry(canvas_id).or_default();
-            if crate::backend::gl::state_tracker::update_bind_framebuffer(
-                entry,
-                glow::READ_FRAMEBUFFER,
-                Some(copy_fbo.0.get()),
-            ) {
-                unsafe {
-                    self.gl
-                        .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(copy_fbo));
-                }
-            }
-        }
-
-        unsafe {
-            self.gl.framebuffer_texture_2d(
-                glow::READ_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(src_tex),
-                0,
-            );
-            let status = self.gl.check_framebuffer_status(glow::READ_FRAMEBUFFER);
-            if status == glow::FRAMEBUFFER_COMPLETE {
-                self.gl.copy_tex_image_2d(
-                    target,
-                    level,
-                    internalformat as u32,
-                    0,
-                    0,
-                    width as i32,
-                    height as i32,
-                    0,
-                );
-            } else {
-                tracing::warn!(
-                    "TexImage2DFromTextCache: read FBO incomplete: 0x{:X}",
-                    status
-                );
-            }
-            self.gl.framebuffer_texture_2d(
-                glow::READ_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                None,
-                0,
-            );
-        }
-
-        {
-            let s = self.gl_state.entry(canvas_id).or_default();
-            if crate::backend::gl::state_tracker::update_bind_framebuffer(
-                s,
-                glow::READ_FRAMEBUFFER,
-                prev_read_fbo,
-            ) {
-                let prev = prev_read_fbo.and_then(
-                    <glow::NativeFramebuffer as NativeFramebufferFromRawShim>::try_from_raw,
-                );
-                unsafe {
-                    self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, prev);
-                }
-            }
+        let status = crate::backend::gl::texture_copy::copy_texture(
+            &self.gl,
+            copy_fbo,
+            src_tex,
+            crate::backend::gl::texture_copy::TextureCopy::Image {
+                target,
+                level,
+                internal_format: internalformat as u32,
+                source_x: 0,
+                source_y: 0,
+                width: width as i32,
+                height: height as i32,
+            },
+        );
+        if status != glow::FRAMEBUFFER_COMPLETE {
+            tracing::warn!("TexImage2DFromTextCache: read FBO incomplete: 0x{status:X}");
         }
 
         self.mark_all_2d_contexts_stale_bits(
@@ -5475,76 +5281,21 @@ impl CanvasManager {
         self.make_current_needed(canvas_id)?;
 
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
-
-        let prev_read_fbo = self
-            .gl_state
-            .get(&canvas_id)
-            .and_then(|s| s.bound_framebuffer.get(glow::READ_FRAMEBUFFER))
-            .flatten();
-
-        {
-            let entry = self.gl_state.entry(canvas_id).or_default();
-            if crate::backend::gl::state_tracker::update_bind_framebuffer(
-                entry,
-                glow::READ_FRAMEBUFFER,
-                Some(copy_fbo.0.get()),
-            ) {
-                unsafe {
-                    self.gl
-                        .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(copy_fbo));
-                }
-            }
-        }
-
-        unsafe {
-            self.gl.framebuffer_texture_2d(
-                glow::READ_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(entry.tex),
-                0,
-            );
-            let status = self.gl.check_framebuffer_status(glow::READ_FRAMEBUFFER);
-            if status == glow::FRAMEBUFFER_COMPLETE {
-                self.gl.copy_tex_sub_image_2d(
-                    target,
-                    level,
-                    xoffset,
-                    yoffset,
-                    0,
-                    0,
-                    entry.width as i32,
-                    entry.height as i32,
-                );
-            } else {
-                tracing::warn!(
-                    "TexSubImage2DFromSnapshot: read FBO incomplete: 0x{:X}",
-                    status
-                );
-            }
-            self.gl.framebuffer_texture_2d(
-                glow::READ_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                None,
-                0,
-            );
-        }
-
-        {
-            let s = self.gl_state.entry(canvas_id).or_default();
-            if crate::backend::gl::state_tracker::update_bind_framebuffer(
-                s,
-                glow::READ_FRAMEBUFFER,
-                prev_read_fbo,
-            ) {
-                let prev = prev_read_fbo.and_then(
-                    <glow::NativeFramebuffer as NativeFramebufferFromRawShim>::try_from_raw,
-                );
-                unsafe {
-                    self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, prev);
-                }
-            }
+        let status = crate::backend::gl::texture_copy::copy_texture(
+            &self.gl,
+            copy_fbo,
+            entry.tex,
+            crate::backend::gl::texture_copy::TextureCopy::SubImage {
+                target,
+                level,
+                xoffset,
+                yoffset,
+                width: entry.width as i32,
+                height: entry.height as i32,
+            },
+        );
+        if status != glow::FRAMEBUFFER_COMPLETE {
+            tracing::warn!("TexSubImage2DFromSnapshot: read FBO incomplete: 0x{status:X}");
         }
 
         self.mark_all_2d_contexts_stale_bits(
@@ -5556,7 +5307,8 @@ impl CanvasManager {
     /// Sync CPU readback of a snapshot texture, used by
     /// lazy `ImageData.data` getter. Layout matches the
     /// legacy CPU path: top-down RGBA8 rows, length `w * h * 4`.
-    /// Empty `Vec` on failure.
+    /// Empty `Vec` for a missing snapshot or incomplete FBO; allocation and
+    /// context errors are returned to the caller.
     pub(crate) fn read_canvas2d_snapshot_pixels(
         &mut self,
         snapshot_id: u32,
@@ -5565,6 +5317,7 @@ impl CanvasManager {
             Some(e) => e.clone(),
             None => return Ok(Vec::new()),
         };
+        let readback = crate::backend::gl::readback::Rgba8Readback::new(entry.width, entry.height)?;
         // Need any current GL context to issue commands.  Hop on
         // whichever canvas is convenient — the snapshot tex is
         // shared across the EGL share group.
@@ -5585,14 +5338,10 @@ impl CanvasManager {
             }
         };
 
-        let row_bytes = entry.width as usize * 4;
-        let mut out = vec![0u8; row_bytes * entry.height as usize];
-
         let prev_read_fbo =
             unsafe { self.gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32 };
-        let prev_pack_alignment = unsafe { self.gl.get_parameter_i32(glow::PACK_ALIGNMENT) };
 
-        unsafe {
+        let out = unsafe {
             self.gl
                 .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(read_fbo));
             self.gl.framebuffer_texture_2d(
@@ -5603,29 +5352,15 @@ impl CanvasManager {
                 0,
             );
             let status = self.gl.check_framebuffer_status(glow::READ_FRAMEBUFFER);
-            if status == glow::FRAMEBUFFER_COMPLETE {
-                // Tightly packed rows (RGBA8 = 4-byte aligned anyway,
-                // but be explicit so a host-side PACK_ALIGNMENT change
-                // doesn't corrupt the readback).
-                self.gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
-                self.gl.read_pixels(
-                    0,
-                    0,
-                    entry.width as i32,
-                    entry.height as i32,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelPackData::Slice(Some(&mut out)),
-                );
-                self.gl
-                    .pixel_store_i32(glow::PACK_ALIGNMENT, prev_pack_alignment);
+            let out = if status == glow::FRAMEBUFFER_COMPLETE {
+                readback.read(&self.gl)
             } else {
                 tracing::warn!(
                     "read_canvas2d_snapshot_pixels: FBO incomplete: 0x{:X}",
                     status
                 );
-                out.clear();
-            }
+                Vec::new()
+            };
             self.gl.framebuffer_texture_2d(
                 glow::READ_FRAMEBUFFER,
                 glow::COLOR_ATTACHMENT0,
@@ -5637,7 +5372,8 @@ impl CanvasManager {
                 prev_read_fbo,
             );
             self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, prev);
-        }
+            out
+        };
         Ok(out)
     }
 
@@ -6388,44 +6124,63 @@ fn commit_present_outcome(
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum BypassRebind {
-    /// Issue no bind.
-    Nothing,
-    /// Re-point the onscreen `FRAMEBUFFER` binding here; `None` is real FBO 0.
-    DefaultFramebuffer(Option<glow::NativeFramebuffer>),
+/// Apply a pending default-FBO mapping only in its owning context. Desired and
+/// applied modes are separate so events while away cannot lose the transition.
+/// Native bindings are authoritative here: a client ID is not a GL name, and
+/// an invalidated dedup shadow does not tell us which target is default.
+pub(crate) fn apply_bypass_rebind(
+    gl: &glow::Context,
+    context_is_current: bool,
+    applied_bypass: &mut bool,
+    bypass: bool,
+    drawing_buffer: Option<glow::NativeFramebuffer>,
+) {
+    if !context_is_current || *applied_bypass == bypass {
+        return;
+    }
+    let previous = default_framebuffer_of(*applied_bypass, drawing_buffer);
+    let next = default_framebuffer_of(bypass, drawing_buffer);
+    if previous != next {
+        // A nonzero DrawingBuffer has already passed the split-binding/blit
+        // capability probe in create(). No GLES3 query runs without one.
+        unsafe {
+            let read = gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
+            let draw = gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING);
+            let target = match (read == previous, draw == previous) {
+                (true, true) => Some(glow::FRAMEBUFFER),
+                (true, false) => Some(glow::READ_FRAMEBUFFER),
+                (false, true) => Some(glow::DRAW_FRAMEBUFFER),
+                (false, false) => None,
+            };
+            if let Some(target) = target {
+                gl.bind_framebuffer(target, next);
+                crate::render_diagnostics::bump_state_change();
+            }
+        }
+    }
+    *applied_bypass = bypass;
 }
 
-/// A bypass mode change moves *what the default framebuffer means* without any
-/// `bindFramebuffer` from the content, so the binding the driver holds stops
-/// matching it and has to be re-established. This was the missing site, and it
-/// is why a run that never left bypass presented nothing at all: the onscreen
-/// canvas is created, its DrawingBuffer is deliberately left bound, and only
-/// *then* does `evaluate_bypass` latch bypass on — after which the blit that
-/// would have carried those pixels to the window no longer runs.
-///
-/// `onscreen_context_is_current` is a precondition, not an optimisation: a bind
-/// issued while another canvas is current lands in that canvas's context. When
-/// it is false there is nothing to do, because the `make_current_needed` that
-/// brings the onscreen context back resolves the binding from the same
-/// [`default_framebuffer_of`] — between them the two sites cover every path.
-///
-/// `draws_to_default_fbo` is the shadow's answer to "is the content drawing to
-/// the default framebuffer?". When the content has its own FBO bound the driver
-/// already holds it and must keep it: the content's next `bindFramebuffer(null)`
-/// resolves the new meaning through the same function. Re-binding regardless
-/// would silently redirect a render-to-texture pass at the screen.
-fn plan_bypass_rebind(
-    mode_changed: bool,
-    onscreen_context_is_current: bool,
-    draws_to_default_fbo: bool,
-    default_framebuffer: Option<glow::NativeFramebuffer>,
-) -> BypassRebind {
-    if mode_changed && onscreen_context_is_current && draws_to_default_fbo {
-        BypassRebind::DefaultFramebuffer(default_framebuffer)
+/// readPixels consumes READ on GLES3, independently of the draw target. Known
+/// client bindings avoid a driver query; unknown state must use native truth.
+fn reads_from_default_framebuffer(
+    gl: &glow::Context,
+    split_bindings_probed: bool,
+    state: Option<&CanvasGLState>,
+    default: Option<glow::NativeFramebuffer>,
+) -> bool {
+    // The requested EGL version may be lower than the returned GL version.
+    // DrawingBuffer creation can also establish split support on an extension
+    // stack; use the same capability contract as the mapping and blit paths.
+    let (target, binding) = if gl.version().major >= 3 || split_bindings_probed {
+        (glow::READ_FRAMEBUFFER, glow::READ_FRAMEBUFFER_BINDING)
     } else {
-        BypassRebind::Nothing
+        (glow::FRAMEBUFFER, glow::FRAMEBUFFER_BINDING)
+    };
+    if let Some(bound) = state.and_then(|s| s.bound_framebuffer.get(target)) {
+        return bound.is_none();
     }
+    unsafe { gl.get_parameter_framebuffer(binding) == default }
 }
 
 /// One offscreen canvas that must be re-created after the EGL share group is
@@ -7284,61 +7039,123 @@ mod tests {
         assert_eq!(default_framebuffer_of(false, Some(fbo(7))), Some(fbo(7)));
     }
 
-    /// Entering bypass is the transition that was silently dropping frames: the
-    /// DrawingBuffer is still bound from its own creation, and the blit that
-    /// used to carry it to the window stops running on this very call.
     #[test]
-    fn entering_bypass_repoints_the_default_framebuffer_at_the_window() {
-        assert_eq!(
-            plan_bypass_rebind(true, true, true, None),
-            BypassRebind::DefaultFramebuffer(None)
-        );
+    fn bypass_remaps_only_default_bindings_in_both_directions() {
+        use crate::backend::gl::readback_test_gl as fixture;
+        for applied in [false, true] {
+            let old = if applied { 0 } else { 7 };
+            let new = if applied { 7 } else { 0 };
+            for (read, draw) in [(old, old), (old, 9), (8, old), (8, 9)] {
+                let gl = fixture::context();
+                fixture::set_bindings(fixture::Bindings {
+                    read_framebuffer: read,
+                    draw_framebuffer: draw,
+                    ..Default::default()
+                });
+                let mut mode = applied;
+                apply_bypass_rebind(&gl, true, &mut mode, !applied, Some(fbo(7)));
+                assert_eq!(
+                    fixture::bindings().read_framebuffer,
+                    if read == old { new } else { read }
+                );
+                assert_eq!(
+                    fixture::bindings().draw_framebuffer,
+                    if draw == old { new } else { draw }
+                );
+                assert_eq!(mode, !applied);
+                assert_eq!(
+                    fixture::mutations(),
+                    usize::from(read == old || draw == old)
+                );
+            }
+        }
     }
 
-    /// The reverse transition needs the bind just as much: the blit resumes and
-    /// reads the DrawingBuffer, so a frame drawn straight to the window would be
-    /// overwritten by whatever the DrawingBuffer last held.
     #[test]
-    fn leaving_bypass_repoints_the_default_framebuffer_at_the_drawing_buffer() {
-        assert_eq!(
-            plan_bypass_rebind(true, true, true, Some(fbo(7))),
-            BypassRebind::DefaultFramebuffer(Some(fbo(7)))
-        );
+    fn bypass_change_waits_for_its_context_and_then_applies_once() {
+        use crate::backend::gl::readback_test_gl as fixture;
+        let gl = fixture::context();
+        let mut applied = true;
+        apply_bypass_rebind(&gl, false, &mut applied, false, Some(fbo(7)));
+        assert!(applied);
+        assert_eq!(fixture::mutations(), 0);
+        // Return to the owning context, with READ default and DRAW custom.
+        fixture::set_bindings(fixture::Bindings {
+            draw_framebuffer: 0x8000_0009,
+            ..Default::default()
+        });
+        apply_bypass_rebind(&gl, true, &mut applied, false, Some(fbo(7)));
+        assert!(!applied);
+        assert_eq!(fixture::bindings().read_framebuffer, 7);
+        assert_eq!(fixture::bindings().draw_framebuffer, 0x8000_0009);
+        assert_eq!(fixture::mutations(), 1);
+        apply_bypass_rebind(&gl, true, &mut applied, false, Some(fbo(7)));
+        assert_eq!(fixture::mutations(), 1);
     }
 
-    /// `evaluate_bypass` runs on every canvas lifecycle event and almost never
-    /// changes the mode. A bind on each call would be a driver round trip per
-    /// event for a binding that already agrees.
     #[test]
-    fn an_unchanged_mode_issues_no_bind() {
-        assert_eq!(
-            plan_bypass_rebind(false, true, true, None),
-            BypassRebind::Nothing
-        );
+    fn bypass_changes_that_cancel_while_away_need_no_bind() {
+        use crate::backend::gl::readback_test_gl as fixture;
+        let gl = fixture::context();
+        let mut applied = true;
+        apply_bypass_rebind(&gl, false, &mut applied, false, Some(fbo(7)));
+        apply_bypass_rebind(&gl, false, &mut applied, true, Some(fbo(7)));
+        apply_bypass_rebind(&gl, true, &mut applied, true, Some(fbo(7)));
+        assert!(applied);
+        assert_eq!(fixture::mutations(), 0);
     }
 
-    /// A bind lands in whichever context is current, so off the onscreen context
-    /// it would corrupt an offscreen canvas's state instead. Nothing is lost by
-    /// skipping: the `make_current_needed` that brings the onscreen context back
-    /// resolves the binding from `default_framebuffer_of` too.
     #[test]
-    fn a_mode_change_off_the_onscreen_context_defers_to_the_next_make_current() {
-        assert_eq!(
-            plan_bypass_rebind(true, false, true, None),
-            BypassRebind::Nothing
-        );
+    fn default_read_source_uses_read_binding_and_native_unknown_state() {
+        use crate::backend::gl::{readback_test_gl as fixture, state_tracker as st};
+        for (gl, probed) in [
+            (fixture::context as fn() -> glow::Context, false),
+            (fixture::context_gles2_framebuffer_blit, true),
+        ] {
+            let gl = gl();
+            let mut state = CanvasGLState::default();
+            st::update_bind_framebuffer(&mut state, glow::READ_FRAMEBUFFER, None);
+            st::update_bind_framebuffer(&mut state, glow::DRAW_FRAMEBUFFER, Some(9001));
+            assert!(reads_from_default_framebuffer(
+                &gl,
+                probed,
+                Some(&state),
+                Some(fbo(7))
+            ));
+            st::update_bind_framebuffer(&mut state, glow::FRAMEBUFFER, None);
+            st::update_bind_framebuffer(&mut state, glow::READ_FRAMEBUFFER, Some(9002));
+            assert!(!reads_from_default_framebuffer(
+                &gl,
+                probed,
+                Some(&state),
+                None
+            ));
+            state.bound_framebuffer.forget_all();
+            fixture::set_bindings(fixture::Bindings {
+                read_framebuffer: 7,
+                draw_framebuffer: 9,
+                ..Default::default()
+            });
+            assert!(reads_from_default_framebuffer(
+                &gl,
+                probed,
+                Some(&state),
+                Some(fbo(7))
+            ));
+            assert!(!reads_from_default_framebuffer(&gl, probed, None, None));
+            assert_eq!(fixture::unsupported_calls(), 0);
+        }
     }
 
-    /// Content that has bound its own FBO is mid-render-to-texture. The driver
-    /// holds that FBO and must keep it; the content's next
-    /// `bindFramebuffer(null)` picks up the new meaning. Re-pointing here would
-    /// aim a render-to-texture pass at the screen.
     #[test]
-    fn a_mode_change_leaves_a_framebuffer_the_content_bound_alone() {
-        assert_eq!(
-            plan_bypass_rebind(true, true, false, None),
-            BypassRebind::Nothing
-        );
+    fn default_mapping_without_a_drawing_buffer_needs_no_split_bindings() {
+        use crate::backend::gl::readback_test_gl as fixture;
+        let gl = fixture::context_gles2(false, false);
+        let mut applied = false;
+        apply_bypass_rebind(&gl, true, &mut applied, true, None);
+        assert!(reads_from_default_framebuffer(&gl, false, None, None));
+        assert_eq!(fixture::mutations(), 0);
+        assert_eq!(fixture::unsupported_calls(), 0);
     }
 
     // ---- Present bookkeeping across swap and blit outcomes ----

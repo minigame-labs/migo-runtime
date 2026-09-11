@@ -96,29 +96,45 @@ pub fn checked_readback_byte_len(width: i32, height: i32, bytes_per_pixel: usize
     (byte_len <= MAX_SYNC_READBACK_BYTES).then_some(byte_len)
 }
 
-/// Returns the byte width used by the renderer's supported WebGL readback
-/// format/type combinations. WebGL enum validation happens in the JS facade;
-/// unknown values retain the renderer's historical RGBA/U8-compatible
-/// fallback so both ends of the protocol always calculate the same bound.
+/// Byte width of a recognized GL pixel representation, without row packing.
+/// Unknown enums have no inferred width and must be rejected before allocation.
+/// This is a storage-size calculation, not framebuffer/context/extension
+/// validation: a known representation need not be a legal readPixels pair.
 #[inline]
-pub fn webgl_readback_bytes_per_pixel(format: u32, type_: u32) -> usize {
+pub fn webgl_readback_bytes_per_pixel(format: u32, type_: u32) -> Option<usize> {
     let components = match format {
-        0x1908 => 4,          // RGBA
-        0x1907 => 3,          // RGB
-        0x190A => 2,          // LUMINANCE_ALPHA
-        0x1909 | 0x1906 => 1, // LUMINANCE | ALPHA
-        _ => 4,
+        0x1908 | 0x8D99 | 0x80E1 => 4, // RGBA | RGBA_INTEGER | BGRA_EXT
+        0x1907 | 0x8D98 => 3,          // RGB | RGB_INTEGER
+        // RG | RG_INTEGER | LUMINANCE_ALPHA | DEPTH_STENCIL
+        0x8227 | 0x8228 | 0x190A | 0x84F9 => 2,
+        // RED | RED_INTEGER | LUMINANCE | ALPHA | DEPTH_COMPONENT | STENCIL_INDEX
+        0x1903 | 0x8D94 | 0x1909 | 0x1906 | 0x1902 | 0x1901 => 1,
+        _ => return None,
     };
-    match type_ {
-        0x1401 => components,                   // UNSIGNED_BYTE
-        0x8363 | 0x8033 | 0x8034 => 2,          // packed UNSIGNED_SHORT formats
-        0x1406 => components.saturating_mul(4), // FLOAT
-        _ => components,
-    }
+    Some(match type_ {
+        0x1400 | 0x1401 => components, // BYTE | UNSIGNED_BYTE
+        // SHORT | UNSIGNED_SHORT | HALF_FLOAT | HALF_FLOAT_OES
+        0x1402 | 0x1403 | 0x140B | 0x8D61 => components * 2,
+        0x1404 | 0x1405 | 0x1406 => components * 4, // INT | UNSIGNED_INT | FLOAT
+        0x8363 | 0x8033 | 0x8034 => 2,              // UNSIGNED_SHORT_5_6_5 | 4_4_4_4 | 5_5_5_1
+        0x8365 | 0x8366 => 2, // EXT_read_format_bgra: 4_4_4_4_REV | 1_5_5_5_REV
+        // UNSIGNED_INT_2_10_10_10_REV | 10F_11F_11F_REV | 5_9_9_9_REV | 24_8
+        0x8368 | 0x8C3B | 0x8C3E | 0x84FA => 4,
+        0x8DAD => 8, // FLOAT_32_UNSIGNED_INT_24_8_REV: float + packed uint
+        _ => return None,
+    })
 }
 
 /// Protocol-wide Render result type.
 pub type RenderResult<T> = Result<T, EngineError>;
+
+/// Owned compact pixels plus their checked layout in the caller's destination.
+/// Only pixel rows are copied back; skipped bytes and padding remain untouched.
+#[derive(Debug)]
+pub struct ReadPixelsData {
+    pub pixels: Vec<u8>,
+    pub layout: crate::protocol::pixel_pack::PixelPackLayout,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DirtyRect {
@@ -1287,7 +1303,8 @@ pub enum GLCmd {
         height: i32,
         format: u32,
         type_: u32,
-        resp: RenderCmdResp<Vec<u8>>,
+        destination_byte_length: usize,
+        resp: RenderCmdResp<ReadPixelsData>,
     },
     Hint {
         canvas_id: CanvasId,
@@ -3099,9 +3116,73 @@ mod readback_limit_tests {
 
     #[test]
     fn readback_pixel_width_matches_supported_scalar_and_packed_types() {
-        assert_eq!(webgl_readback_bytes_per_pixel(0x1908, 0x1401), 4);
-        assert_eq!(webgl_readback_bytes_per_pixel(0x1907, 0x1406), 12);
-        assert_eq!(webgl_readback_bytes_per_pixel(0x1908, 0x8033), 2);
+        assert_eq!(webgl_readback_bytes_per_pixel(0x1908, 0x1401), Some(4));
+        assert_eq!(webgl_readback_bytes_per_pixel(0x1907, 0x1406), Some(12));
+        assert_eq!(webgl_readback_bytes_per_pixel(0x1908, 0x8033), Some(2));
+    }
+
+    #[test]
+    fn readback_pixel_width_accounts_for_webgl2_components() {
+        for (format, type_, expected) in [
+            (0x1908, 0x1405, 16), // RGBA / UNSIGNED_INT
+            (0x8D99, 0x1404, 16), // RGBA_INTEGER / INT
+            (0x8D99, 0x1403, 8),  // RGBA_INTEGER / UNSIGNED_SHORT
+            (0x8228, 0x1402, 4),  // RG_INTEGER / SHORT
+            (0x1908, 0x140B, 8),  // RGBA / HALF_FLOAT
+            (0x1907, 0x8D61, 6),  // RGB / HALF_FLOAT_OES
+            (0x84F9, 0x8DAD, 8),  // DEPTH_STENCIL / FLOAT_32_UNSIGNED_INT_24_8_REV
+        ] {
+            assert_eq!(
+                webgl_readback_bytes_per_pixel(format, type_),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn readback_packed_types_count_words_instead_of_components() {
+        for (format, type_, bytes) in [
+            (0x1907, 0x8363, 2), // RGB / UNSIGNED_SHORT_5_6_5
+            (0x1908, 0x8034, 2), // RGBA / UNSIGNED_SHORT_5_5_5_1
+            (0x1908, 0x8368, 4), // RGBA / UNSIGNED_INT_2_10_10_10_REV
+            (0x1907, 0x8C3B, 4), // RGB / UNSIGNED_INT_10F_11F_11F_REV
+            (0x1907, 0x8C3E, 4), // RGB / UNSIGNED_INT_5_9_9_9_REV
+            (0x84F9, 0x84FA, 4), // DEPTH_STENCIL / UNSIGNED_INT_24_8
+        ] {
+            assert_eq!(webgl_readback_bytes_per_pixel(format, type_), Some(bytes));
+        }
+    }
+
+    #[test]
+    fn readback_scalar_formats_preserve_their_component_count() {
+        for (format, type_, bytes) in [
+            (0x1903, 0x1403, 2), // RED / UNSIGNED_SHORT
+            (0x8D94, 0x1404, 4), // RED_INTEGER / INT
+            (0x8227, 0x1406, 8), // RG / FLOAT
+            (0x8D98, 0x1400, 3), // RGB_INTEGER / BYTE
+            (0x190A, 0x1401, 2), // LUMINANCE_ALPHA / UNSIGNED_BYTE
+            (0x1909, 0x1401, 1), // LUMINANCE / UNSIGNED_BYTE
+            (0x1906, 0x1401, 1), // ALPHA / UNSIGNED_BYTE
+            (0x80E1, 0x1401, 4), // BGRA_EXT / UNSIGNED_BYTE
+            (0x1902, 0x1406, 4), // DEPTH_COMPONENT / FLOAT
+            (0x1901, 0x1401, 1), // STENCIL_INDEX / UNSIGNED_BYTE
+        ] {
+            assert_eq!(webgl_readback_bytes_per_pixel(format, type_), Some(bytes));
+        }
+    }
+
+    #[test]
+    fn readback_bgra_implementation_types_are_packed_shorts() {
+        for type_ in [0x8365, 0x8366] {
+            assert_eq!(webgl_readback_bytes_per_pixel(0x80E1, type_), Some(2));
+        }
+    }
+
+    #[test]
+    fn readback_unknown_format_or_type_has_no_fallback_size() {
+        for (format, type_) in [(0, 0x1401), (0xFFFF, 0x1401), (0x1908, 0), (0x1908, 0xFFFF)] {
+            assert_eq!(webgl_readback_bytes_per_pixel(format, type_), None);
+        }
     }
 
     #[test]

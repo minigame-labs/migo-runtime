@@ -299,6 +299,8 @@ pub(crate) fn blit_from_surface(
     }
     let mut succeeded = false;
     unsafe {
+        let saved_read = gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
+        let saved_draw = gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING);
         clear_gl_errors(gl);
 
         // Same reason as the forward blit: `glBlitFramebuffer` writes through
@@ -362,9 +364,14 @@ pub(crate) fn blit_from_surface(
             succeeded = true;
         }
 
-        // Leave the binding where the bypass path expects it, and give the
-        // game back the scissor state it set.
-        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        // Restore native READ and DRAW independently, on success and failure.
+        // Logical client bindings have not changed and must not be reset.
+        if saved_read == saved_draw {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, saved_read);
+        } else {
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, saved_read);
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, saved_draw);
+        }
         if scissor_was_enabled {
             gl.enable(glow::SCISSOR_TEST);
         }

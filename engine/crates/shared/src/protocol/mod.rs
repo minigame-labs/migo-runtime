@@ -12,6 +12,7 @@ pub mod error;
 pub mod frame_packet;
 pub mod host_cmd;
 pub mod io_cmd;
+pub mod pixel_pack;
 pub mod render_cmd;
 // The producer-side send helpers. Behind `vfs` because they take a
 // `CanvasOpState`; see that module's own header for why naming a command must

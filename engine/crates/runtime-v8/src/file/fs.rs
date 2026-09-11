@@ -588,21 +588,22 @@ fn durability_from(durable: bool) -> WriteDurability {
     }
 }
 
-/// Bytes destined for a write, held in whichever form avoids copying them.
-///
-/// A `JsBuffer` is `Send`, owns a reference to V8's backing store, and derefs
-/// to `[u8]` — so it can move into a worker closure and be written straight
-/// out of the `ArrayBuffer`. That is the same handle `op_read_fd_into` moves
-/// across the thread boundary to fill a caller's buffer, used here in the
-/// other direction. Only the string form materialises a `Vec`, because
-/// encoding has to produce one regardless.
-///
-/// **Contract on the async ops (matches Node's `fs.write(fd, buffer, …)`):**
-/// the caller must not modify the `ArrayBuffer` until the promise settles, or
-/// the worker may write a torn mix of the old and new bytes. The sync ops have
-/// no such window — V8 is blocked for the whole call.
+/// Validate backing-store metadata before creating any Rust byte slice.
+/// `#[buffer]` uses deno_core's direct converter, which bypasses serde_v8's
+/// shared/resizable rejection. Even JsBuffer::len() dereferences the bytes.
+fn validate_file_buffer(buf: JsBuffer) -> Result<JsBuffer, IOError> {
+    let slice = buf.into_parts();
+    let (store, _) = slice.clone().into_parts();
+    if store.is_shared() || store.is_resizable_by_user_javascript() {
+        return Err(ioerr("file IO requires a fixed, nonshared buffer"));
+    }
+    Ok(JsBuffer::from_parts(slice))
+}
+
+/// Sync calls may borrow validated JS bytes while V8 is blocked. Async
+/// calls must turn this payload into owned bytes before returning a future.
 enum WritePayload {
-    /// V8's own bytes, written in place.
+    /// Validated V8 bytes, borrowed only while the isolate is blocked.
     Js(JsBuffer),
     /// Bytes produced by string encoding, which allocates either way.
     Encoded(Vec<u8>),
@@ -620,6 +621,22 @@ impl std::ops::Deref for WritePayload {
     }
 }
 
+impl WritePayload {
+    fn into_owned(self) -> Result<Vec<u8>, IOError> {
+        match self {
+            Self::Encoded(bytes) => Ok(bytes),
+            Self::Js(buf) => {
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(buf.len())
+                    .map_err(|err| ioerr(format!("write buffer allocation failed: {err}")))?;
+                bytes.extend_from_slice(&buf);
+                Ok(bytes)
+            }
+        }
+    }
+}
+
 /// Resolve the write payload from the buffer/string pair the op received.
 fn prepare_data(
     data_buf: Option<JsBuffer>,
@@ -627,7 +644,7 @@ fn prepare_data(
     encoding: Option<String>,
 ) -> Result<WritePayload, IOError> {
     if let Some(js_buf) = data_buf {
-        Ok(WritePayload::Js(js_buf))
+        validate_file_buffer(js_buf).map(WritePayload::Js)
     } else if let Some(s) = data_str {
         let enc = encoding.as_deref().unwrap_or("utf8");
         codec::encode_string(&s, enc)
@@ -702,7 +719,7 @@ pub fn op_access_sync(state: &mut OpState, #[string] path: String) -> Result<boo
 // Write / append (path) - uses VFS with Write/Create permission
 //
 #[op2(async(lazy))]
-pub async fn op_write_or_append_file(
+pub fn op_write_or_append_file(
     state: Rc<RefCell<OpState>>,
     #[string] path: String,
     #[buffer] data_buf: Option<JsBuffer>,
@@ -710,7 +727,7 @@ pub async fn op_write_or_append_file(
     #[string] encoding: Option<String>,
     append: bool,
     durable: bool,
-) -> Result<bool, IOError> {
+) -> Result<impl std::future::Future<Output = Result<bool, IOError>>, IOError> {
     let (vfs, mt) = get_vfs_async(&state);
     let scheduler = {
         let st = state.borrow();
@@ -724,12 +741,14 @@ pub async fn op_write_or_append_file(
     )?)?;
     let mode = mode_from_append(append);
     let durability = durability_from(durable);
-    let payload = prepare_data(data_buf, data_str, encoding)?;
+    let payload = prepare_data(data_buf, data_str, encoding)?.into_owned()?;
 
-    run_fs_async(scheduler, move || {
-        fs_ops::write_file(&full_path, &payload, mode, durability)
+    Ok(async move {
+        run_fs_async(scheduler, move || {
+            fs_ops::write_file(&full_path, &payload, mode, durability)
+        })
+        .await
     })
-    .await
 }
 
 #[op2]
@@ -1301,25 +1320,27 @@ pub fn op_stat_sync(
 //
 #[op2(async(lazy))]
 #[bigint]
-pub async fn op_write_file(
+pub fn op_write_file(
     state: Rc<RefCell<OpState>>,
     #[smi] rid: FileId,
     #[buffer] data_buf: Option<JsBuffer>,
     #[string] data_str: Option<String>,
     #[string] encoding: Option<String>,
     #[bigint] position: Option<u64>,
-) -> Result<usize, IOError> {
+) -> Result<impl std::future::Future<Output = Result<usize, IOError>>, IOError> {
     let scheduler = {
         let st = state.borrow();
         get_scheduler(&st)
     };
     let domain = scheduler.domain();
-    let payload = prepare_data(data_buf, data_str, encoding)?;
+    let payload = prepare_data(data_buf, data_str, encoding)?.into_owned()?;
 
-    run_domain_async(scheduler, move || {
-        domain.write_file(rid, &payload, position)
+    Ok(async move {
+        run_domain_async(scheduler, move || {
+            domain.write_file(rid, &payload, position)
+        })
+        .await
     })
-    .await
 }
 
 #[op2]
@@ -1590,60 +1611,78 @@ pub fn op_read_fd_sync(
     result
 }
 
-//
-// read(fd) into a caller-provided buffer — zero-alloc fast path
-//
-// Reads straight into the JS `ArrayBuffer` backing store (passed as the
-// buffer view). Eliminates the Rust `Vec` allocation, the V8 `ToJsBuffer`
-// copy, and the JS-side `dst.set` copy that `op_read_fd` + `read()` incur —
-// a single kernel copy into user memory. Returns the number of bytes read.
-//
-// **Contract (BYOB, matches Node's `fs.read(fd, buffer, …)`):** the async
-// variant fills the caller's `ArrayBuffer` from an IO worker thread while
-// the JS promise is pending. The caller MUST NOT read from or write to that
-// `ArrayBuffer` until the promise settles — doing so races the worker's
-// write. `JsBuffer`/`V8Slice` keeps the backing store alive across the hop,
-// and SharedArrayBuffer / resizable / detached buffers are rejected by the
-// op's deserialization, so the only unsound usage is the caller violating
-// this "don't touch while pending" rule. The sync variant has no such window
-// (V8 is blocked for the whole call).
-//
-// The byte count is returned via `#[number]` (JS `Number`), not `#[smi]`:
-// an SMI return truncates through `i32`, so a >2 GiB read (theoretically
-// possible for a huge buffer) would surface as a negative count.
-//
+/// Expose the filled prefix as a Uint8Array while its backing ArrayBuffer
+/// represents all initialized storage retained until V8 releases the result.
+pub struct FileReadBuffer(fs_ops::OwnedFileRead);
+
+impl<'a> deno_core::ToV8<'a> for FileReadBuffer {
+    type Error = IOError;
+
+    fn to_v8<'i>(
+        self,
+        scope: &mut deno_core::v8::PinScope<'a, 'i>,
+    ) -> Result<deno_core::v8::Local<'a, deno_core::v8::Value>, Self::Error> {
+        use deno_core::v8;
+        let (storage, filled) = self.0.into_parts();
+        let buffer = if storage.is_empty() {
+            v8::ArrayBuffer::new(scope, 0)
+        } else {
+            let backing =
+                v8::ArrayBuffer::new_backing_store_from_boxed_slice(storage).make_shared();
+            v8::ArrayBuffer::with_backing_store(scope, &backing)
+        };
+        v8::Uint8Array::new(scope, buffer, 0, filled)
+            .map(|view| view.into())
+            .ok_or_else(|| ioerr("failed to create file read view"))
+    }
+}
+
+// Async BYOB reads stage owned bytes on the worker. Only the JS completion
+// writes the original view; retaining a backing store never grants exclusivity.
 #[op2(async(lazy))]
-#[number]
-pub async fn op_read_fd_into(
+pub fn op_read_fd_into(
     state: Rc<RefCell<OpState>>,
     #[smi] rid: FileId,
-    #[buffer] mut buf: JsBuffer,
+    #[buffer] buf: JsBuffer,
     #[bigint] position: Option<u64>,
-) -> Result<usize, IOError> {
-    let scheduler = {
-        let st = state.borrow();
-        get_scheduler(&st)
-    };
+) -> Result<impl std::future::Future<Output = Result<FileReadBuffer, IOError>>, IOError> {
+    let buf = validate_file_buffer(buf)?;
+    let len = buf.len();
+    drop(buf);
+    let scheduler = get_scheduler(&state.borrow());
     let domain = scheduler.domain();
-    let len = buf.len() as u64;
-    let request = read_request(BackendKind::Filesystem, RequestKind::Async, Some(len), None);
-    scheduler
-        .run_async(request, move || {
-            domain.read_file_into(rid, buf.as_mut(), position)
-        })
-        .await
-        .map_err(pool_err)?
-        .map_err(domain_err)
+    let request = read_request(
+        BackendKind::Filesystem,
+        RequestKind::Async,
+        Some(len as u64),
+        None,
+    );
+    Ok(async move {
+        scheduler
+            .run_async(request, move || {
+                // Storage is already boxed on the worker without a shrink allocation.
+                domain
+                    .read_file_for_buffer(rid, len, position)
+                    .map(FileReadBuffer)
+            })
+            .await
+            .map_err(pool_err)?
+            .map_err(domain_err)
+    })
 }
+
+// The sync path blocks V8 until the worker joins, so validated fixed/nonshared
+// backing can be written directly. Number returns preserve counts above i32::MAX.
 
 #[op2]
 #[number]
 pub fn op_read_fd_into_sync(
     state: &mut OpState,
     #[smi] rid: FileId,
-    #[buffer] mut buf: JsBuffer,
+    #[buffer] buf: JsBuffer,
     #[bigint] position: Option<u64>,
 ) -> Result<usize, IOError> {
+    let mut buf = validate_file_buffer(buf)?;
     let scheduler = get_scheduler(state);
     let domain = scheduler.domain();
     let len = buf.len() as u64;
@@ -2234,7 +2273,7 @@ mod tests {
             .expect("zip entries shim");
     }
 
-    fn zip_test_host_state() -> shared::op_state::HostOpState {
+    pub(super) fn zip_test_host_state() -> shared::op_state::HostOpState {
         use shared::channel::ThreadWakeup;
         use shared::device::gpu_caps::GpuCaps;
         use shared::op_state::{AudioSender, HostOpState, NetworkPolicy};
@@ -2574,3 +2613,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "fs_byob_tests.rs"]
+mod byob_tests;

@@ -168,6 +168,7 @@ const {
     TypedArrayPrototypeGetByteLength,
     TypedArrayPrototypeGetByteOffset,
     TypedArrayPrototypeGetSymbolToStringTag,
+    TypedArrayPrototypeSet,
     Uint8Array,
     Uint32Array,
     Int32Array,
@@ -894,6 +895,30 @@ class WebglObject {
 
     get id() {
         return this._id;
+    }
+}
+
+// The native result already includes the validated destination byte offset.
+// Reuse the original view and compact payload; an offset needs no subarray or
+// additional pixel storage.
+function readPixelsIntoView(canvasId, x, y, width, height, format, type, pixels, dstOffset) {
+    const result = _rawReadPixels(canvasId, x, y, width, height, format, type, pixels, dstOffset);
+    if (!result || TypedArrayPrototypeGetByteLength(result.data) === 0) return;
+    const u8 = new Uint8Array(
+        TypedArrayPrototypeGetBuffer(pixels), TypedArrayPrototypeGetByteOffset(pixels),
+        TypedArrayPrototypeGetByteLength(pixels),
+    );
+    const { data, firstByte, rowBytes, rowStride, height: rows } = result;
+    if (rowStride === rowBytes) {
+        TypedArrayPrototypeSet(u8, data, firstByte);
+    } else {
+        const source = TypedArrayPrototypeGetBuffer(data);
+        const sourceOffset = TypedArrayPrototypeGetByteOffset(data);
+        for (let row = 0; row < rows; ++row) {
+            TypedArrayPrototypeSet(u8,
+                new Uint8Array(source, sourceOffset + row * rowBytes, rowBytes),
+                firstByte + row * rowStride);
+        }
     }
 }
 
@@ -2456,11 +2481,7 @@ class WebGLRenderingContext {
     // -- Phase 3B: Misc --
 
     readPixels(x, y, width, height, format, type, pixels) {
-        const data = _rawReadPixels(this._canvasId, x, y, width, height, format, type);
-        if (data && pixels) {
-            const u8 = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
-            u8.set(data.subarray(0, u8.length));
-        }
+        readPixelsIntoView(this._canvasId, x, y, width, height, format, type, pixels, 0);
     }
     hint(target, mode) {
         // opcode 44: H C U U.
@@ -2496,6 +2517,12 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         this._currentQueryByTarget = new Map();
         this._tfRegistry = new Map();
         this._currentTransformFeedback = null;
+    }
+
+    readPixels(x, y, width, height, format, type, pixels, dstOffset = 0) {
+        // ToNumber runs once, before native view metadata is inspected. Unary
+        // plus preserves WebIDL's TypeError for BigInt and Symbol inputs.
+        readPixelsIntoView(this._canvasId, x, y, width, height, format, type, pixels, +dstOffset);
     }
 
     // ---- Vertex Array Objects ----------------------------------

@@ -19,6 +19,7 @@ use shared::{
 use super::CanvasManager;
 use super::types::ee;
 use crate::BoundContext;
+use crate::backend::gl::readback::PixelPackState;
 use crate::backend::gl::surface::{Canvas2DContext, FboKind};
 
 /// Initialise a Skia-backed Canvas2D context for `canvas_id`.
@@ -120,13 +121,13 @@ pub(super) fn init_skia_for_canvas(
 /// Skia's glyph rasterisation and `glTexSubImage2D` uploads bind the
 /// 0th texture unit and `GL_PIXEL_UNPACK_BUFFER = 0`, and assume the
 /// default alignment of 4.  WebGL games mutate these freely, so we
-/// snapshot on scope entry and restore on drop.
+/// snapshot on scope entry and restore on drop. PACK row length and skips
+/// also belong to content and must not affect Skia's compact CPU reads.
 pub(crate) struct Canvas2DGlState {
     active_texture: i32,
     unpack_pbo: Option<<glow::Context as glow::HasContext>::Buffer>,
-    pack_pbo: Option<<glow::Context as glow::HasContext>::Buffer>,
     unpack_alignment: i32,
-    pack_alignment: i32,
+    pack: PixelPackState,
 }
 
 pub(crate) struct Canvas2DGlScopeGuard {
@@ -146,17 +147,16 @@ impl Drop for Canvas2DGlScopeGuard {
             unsafe {
                 gl.active_texture(state.active_texture as u32);
                 gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, state.unpack_pbo);
-                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, state.pack_pbo);
                 gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, state.unpack_alignment);
-                gl.pixel_store_i32(glow::PACK_ALIGNMENT, state.pack_alignment);
             }
-            // After Skia has drawn and we've restored the 5 saved
+            state.pack.restore(gl);
+            // After Skia has drawn and we've restored the saved
             // raw-GL bindings, the WebGL dedup shadow still holds
             // whatever it thought before Skia ran.  Skia may have
             // bound different programs, VAOs, FBOs, scissor,
             // stencil, blend equations, textures on other units,
             // etc., none of which went through our handler, so
-            // the shadow is stale for every slot except the 5 we
+            // the shadow is stale for every slot except those we
             // explicitly restored.  Wipe everything defensively;
             // the next WebGL draw pays one rebind per state it
             // actually uses, which is cheap compared to a silent
@@ -197,14 +197,12 @@ pub(super) fn begin_canvas2d_gl_scope(
     unsafe {
         let active_texture = gl.get_parameter_i32(glow::ACTIVE_TEXTURE);
         let unpack_pbo = gl.get_parameter_buffer(glow::PIXEL_UNPACK_BUFFER_BINDING);
-        let pack_pbo = gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING);
         let unpack_alignment = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
-        let pack_alignment = gl.get_parameter_i32(glow::PACK_ALIGNMENT);
+        let pack = PixelPackState::capture(gl);
 
         gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-        gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
         gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
-        gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
+        pack.set_tight(gl, 4);
         gl.active_texture(glow::TEXTURE0);
 
         Canvas2DGlScopeGuard {
@@ -212,9 +210,8 @@ pub(super) fn begin_canvas2d_gl_scope(
             state: Some(Canvas2DGlState {
                 active_texture,
                 unpack_pbo,
-                pack_pbo,
                 unpack_alignment,
-                pack_alignment,
+                pack,
             }),
             gl_shadow: gl_shadow
                 .map(|s| s as *mut _)
@@ -240,7 +237,7 @@ pub(super) fn flush_dirty_2d_contexts(cm: &mut CanvasManager) -> EngineResult<Ve
     // Everything the per-canvas loop below does is per-*context* work wearing a
     // per-canvas name: `flush_and_submit` submits the whole `GrDirectContext`,
     // `reset_gl_state` discards that context's entire cached GL state, and the
-    // scope guard reads back five raw GL bindings. Run once per canvas on a
+    // scope guard reads back the raw GL bindings. Run once per canvas on a
     // shared context, 80 canvases means 80 full submits and 80 state
     // invalidations per frame -- so every canvas after the first redraws from a
     // cache another canvas just threw away. Measured on a Mate 30 Pro, that is
@@ -338,4 +335,43 @@ pub(super) fn flush_dirty_2d_contexts(cm: &mut CanvasManager) -> EngineResult<Ve
         }
     }
     Ok(flushed_ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::gl::readback_test_gl as test_gl;
+
+    #[test]
+    fn internal_readback_canvas2d_scope_isolates_and_restores_pack_layout() {
+        let gl = test_gl::context();
+        for original in [
+            test_gl::Bindings {
+                pack: [8, 9, 2, 3],
+                pack_buffer: 17,
+                active_texture: glow::TEXTURE0 + 3,
+                unpack_buffer: 19,
+                unpack_alignment: 8,
+                ..Default::default()
+            },
+            test_gl::Bindings::default(),
+        ] {
+            test_gl::set_bindings(original);
+            {
+                let _scope = begin_canvas2d_gl_scope(&gl, None);
+                let actual = test_gl::bindings();
+                assert_eq!(actual.pack, [4, 0, 0, 0]);
+                assert_eq!(actual.pack_buffer, 0);
+                assert_eq!(actual.unpack_buffer, 0);
+                // Skia can mutate state directly; restoration must include
+                // slots which did not need resetting on entry (default case).
+                test_gl::set_bindings(test_gl::Bindings {
+                    pack: [2, 5, 7, 1],
+                    pack_buffer: 29,
+                    ..Default::default()
+                });
+            }
+            assert_eq!(test_gl::bindings(), original);
+        }
+    }
 }

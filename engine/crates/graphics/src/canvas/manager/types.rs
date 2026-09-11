@@ -583,13 +583,8 @@ impl IndexedUniformBufferShadow {
     }
 }
 
-/// Framebuffer binding per binding target.
-///
-/// Three targets, fixed by the spec: `FRAMEBUFFER`, `DRAW_FRAMEBUFFER`,
-/// `READ_FRAMEBUFFER`. Worth right-sizing even though content binds
-/// framebuffers only a handful of times a frame, because
-/// [`super::super::super::backend::gl::state_tracker::record_default_framebuffer_bind`]
-/// writes all three on every canvas switch and every post-swap restore.
+/// Client framebuffer bindings at GL's two binding points. `FRAMEBUFFER` binds
+/// both READ and DRAW; querying `FRAMEBUFFER_BINDING` aliases DRAW.
 ///
 /// The value is `Option<Option<u32>>` because there are three states and they
 /// are all reachable: no shadow yet, shadowed as the default framebuffer
@@ -597,50 +592,57 @@ impl IndexedUniformBufferShadow {
 /// shadowed as a named framebuffer.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct FramebufferShadow {
-    /// Indexed by [`Self::slot`].
-    slots: [Option<Option<u32>>; 3],
+    draw: Option<Option<u32>>,
+    read: Option<Option<u32>>,
 }
 
 impl FramebufferShadow {
-    #[inline]
-    fn slot(target: u32) -> Option<usize> {
-        match target {
-            glow::FRAMEBUFFER => Some(0),
-            glow::DRAW_FRAMEBUFFER => Some(1),
-            glow::READ_FRAMEBUFFER => Some(2),
-            _ => None,
-        }
-    }
-
     /// Record `glBindFramebuffer(target, fb)`; `true` when the driver call must
     /// be issued.
     #[inline]
     pub(crate) fn update(&mut self, target: u32, fb: Option<u32>) -> bool {
-        let Some(i) = Self::slot(target) else {
-            return true;
+        let slot = match target {
+            glow::FRAMEBUFFER => {
+                if self.get(glow::DRAW_FRAMEBUFFER) == Some(fb)
+                    && self.get(glow::READ_FRAMEBUFFER) == Some(fb)
+                {
+                    return false;
+                }
+                self.set_all(fb);
+                return true;
+            }
+            glow::DRAW_FRAMEBUFFER => &mut self.draw,
+            glow::READ_FRAMEBUFFER => &mut self.read,
+            _ => return true,
         };
-        if self.slots[i] == Some(fb) {
+        if *slot == Some(fb) {
             return false;
         }
-        self.slots[i] = Some(fb);
+        *slot = Some(fb);
         true
     }
 
-    /// Record a bind the engine itself performed, on all three targets.
+    /// Record a combined bind the engine itself performed.
     #[inline]
     pub(crate) fn set_all(&mut self, fb: Option<u32>) {
-        self.slots = [Some(fb); 3];
+        self.draw = Some(fb);
+        self.read = Some(fb);
     }
 
     /// The shadowed binding for `target`: `None` when unshadowed.
     #[inline]
     pub(crate) fn get(&self, target: u32) -> Option<Option<u32>> {
-        Self::slot(target).and_then(|i| self.slots[i])
+        match target {
+            glow::FRAMEBUFFER | glow::DRAW_FRAMEBUFFER => self.draw,
+            glow::READ_FRAMEBUFFER => self.read,
+            _ => None,
+        }
     }
 
     #[inline]
     pub(crate) fn forget_all(&mut self) {
-        self.slots = [None; 3];
+        self.draw = None;
+        self.read = None;
     }
 }
 
@@ -1731,9 +1733,11 @@ pub(super) struct CanvasEntry {
     /// permanently disables bypass when such a readback is detected. This
     /// re-routes rendering through the DrawingBuffer which preserves content.
     ///
-    /// Detection points: `ReadPixels` on the onscreen default FBO (GL handler)
-    /// and `GetImageData` on canvas_id=1 (Canvas2D handler).
+    /// Detected by a nonempty `ReadPixels` on the onscreen default READ FBO.
     ///
     /// Set by `CanvasManager::evaluate_bypass()` after canvas lifecycle events.
     pub bypass_drawing_buffer: bool,
+    /// Mode whose default-FBO mapping is installed in this EGL context.
+    /// May lag the requested mode while another context is current.
+    pub applied_bypass_drawing_buffer: bool,
 }

@@ -1556,9 +1556,5 @@ mod wiring_source_guards {
             "the snapshot must be taken while bypass is still on, i.e. before the latch \
              that turns it off"
         );
-        assert!(
-            body.contains("record_default_framebuffer_bind"),
-            "the blit leaves FBO 0 bound; the state shadow must be told"
-        );
     }
 }

@@ -101,6 +101,17 @@ impl IoDomain {
             .map_err(DomainError::from)
     }
 
+    /// Read owned bytes bounded by a previously validated destination view.
+    pub fn read_file_for_buffer(
+        &self,
+        id: FileId,
+        len: usize,
+        position: Option<u64>,
+    ) -> Result<crate::fs_ops::OwnedFileRead, DomainError> {
+        self.with_file_table(|table| table.read_for_buffer(id, len, position))?
+            .map_err(DomainError::from)
+    }
+
     pub fn write_file(
         &self,
         id: FileId,
@@ -111,8 +122,8 @@ impl IoDomain {
             .map_err(DomainError::from)
     }
 
-    /// Read into a caller-provided buffer (the JS `ArrayBuffer` backing
-    /// store). Zero-alloc fast path for `read(fd, buffer, …)`.
+    /// Read into an exclusively borrowed destination, without allocation.
+    /// The table lock protects the fd; the caller owns destination exclusivity.
     pub fn read_file_into(
         &self,
         id: FileId,

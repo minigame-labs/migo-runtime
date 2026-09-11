@@ -22,6 +22,87 @@ use shared::{
     vfs::MountTable,
 };
 
+/// Initialized owned storage and its filled prefix. Keeping these separate
+/// avoids a fallible shrink at EOF and lets V8 account for all retained storage.
+#[derive(Debug)]
+pub struct OwnedFileRead {
+    storage: Box<[u8]>,
+    bytes_read: usize,
+}
+
+impl OwnedFileRead {
+    pub fn as_slice(&self) -> &[u8] {
+        &self.storage[..self.bytes_read]
+    }
+
+    pub fn storage_len(&self) -> usize {
+        self.storage.len()
+    }
+
+    pub fn into_parts(self) -> (Box<[u8]>, usize) {
+        (self.storage, self.bytes_read)
+    }
+
+    fn into_vec(self) -> Vec<u8> {
+        let mut bytes = self.storage.into_vec();
+        bytes.truncate(self.bytes_read);
+        bytes
+    }
+}
+
+fn read_owned_buffer(reader: &mut impl Read, limit: usize) -> Result<OwnedFileRead, EngineError> {
+    let mut storage = Vec::new();
+    let mut filled = 0;
+    let initial = limit.min(64 * 1024);
+    storage
+        .try_reserve_exact(initial)
+        .map_err(|err| io_err(std::io::Error::new(std::io::ErrorKind::OutOfMemory, err)))?;
+    storage.resize(initial, 0);
+    while filled < limit {
+        if filled == storage.len() {
+            // Probe before growing, so an exact-fit EOF does not double storage.
+            // Reserve explicitly before appending: Read::read_to_end's probe
+            // appends infallibly in the pinned stdlib.
+            let mut probe = [0; 32];
+            let probe_len = probe.len().min(limit - filled);
+            let count = match reader.read(&mut probe[..probe_len]) {
+                Ok(0) => break,
+                Ok(count) => count,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(io_err(err)),
+            };
+            let next = limit.min(storage.len().saturating_mul(2));
+            storage
+                .try_reserve_exact(next - storage.len())
+                .map_err(|err| io_err(std::io::Error::new(std::io::ErrorKind::OutOfMemory, err)))?;
+            storage.resize(next, 0);
+            storage[filled..filled + count].copy_from_slice(&probe[..count]);
+            filled += count;
+        } else {
+            match reader.read(&mut storage[filled..]) {
+                Ok(0) => break,
+                Ok(count) => filled += count,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(io_err(err)),
+            }
+        }
+    }
+    if filled == 0 {
+        // Drop any unused initial allocation rather than retaining it until GC.
+        return Ok(OwnedFileRead {
+            storage: Box::default(),
+            bytes_read: 0,
+        });
+    }
+    // All capacity transferred to V8 must be initialized. resize within capacity
+    // cannot allocate; equal length/capacity makes into_boxed_slice a pure move.
+    storage.resize(storage.capacity(), 0);
+    Ok(OwnedFileRead {
+        storage: storage.into_boxed_slice(),
+        bytes_read: filled,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -450,6 +531,18 @@ impl FileTable {
             );
         }
 
+        self.read_for_buffer(id, len as usize, position)
+            .map(OwnedFileRead::into_vec)
+    }
+
+    /// Owned staging for BYOB. The caller validates `len` against its actual
+    /// destination view; the ordinary read API retains its separate size cap.
+    pub fn read_for_buffer(
+        &mut self,
+        id: FileId,
+        len: usize,
+        position: Option<u64>,
+    ) -> Result<OwnedFileRead, EngineError> {
         let file = self
             .files
             .get_mut(&id)
@@ -459,21 +552,15 @@ impl FileTable {
             file.seek(SeekFrom::Start(pos)).map_err(io_err)?;
         }
 
-        // Read at most `len` bytes, growing the buffer as data actually
-        // arrives instead of reserving the full `len` up front. A small
-        // file read with a large `len` (capped at `MAX_READ_LENGTH`
-        // above) no longer allocates the whole cap and then truncates.
-        let mut buf = Vec::with_capacity((len as usize).min(64 * 1024));
-        file.take(len).read_to_end(&mut buf).map_err(io_err)?;
-        Ok(buf)
+        read_owned_buffer(file, len)
     }
 
     /// Read into a caller-provided buffer, optionally seeking first.
     ///
     /// Fills `buf` from the file and returns the number of bytes read
     /// (`< buf.len()` at EOF). Unlike [`read`](Self::read) this performs
-    /// **no allocation** — the destination is the JS `ArrayBuffer`'s backing
-    /// store, so the read is a single kernel copy straight into user memory
+    /// **no allocation**. The caller must provide exclusive access to the
+    /// destination for the entire call. This allows a single kernel copy
     /// (no intermediate `Vec` + no V8 `ToJsBuffer` copy + no JS-side
     /// `dst.set`). The length is implicitly bounded by `buf.len()`, which is
     /// itself bounded by the JS-allocated buffer, so no `MAX_READ_LENGTH`
@@ -2404,6 +2491,115 @@ mod tests {
             read_file(path.to_str().unwrap(), Some(4), Some(8 * 1024 * 1024), true).unwrap();
         assert_eq!(&data2, b"456789");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn owned_byob_large_capacity_on_tiny_file_preserves_the_ordinary_read_limit() {
+        let dir = tmp_dir("owned_byob_capacity");
+        let path = dir.join("tiny");
+        std::fs::write(&path, b"abcdef").unwrap();
+        let mut table = FileTable::new();
+        let rid = table
+            .open(path.to_str().unwrap(), OpenFlag::Read, None, None)
+            .unwrap();
+        let data = table
+            .read_for_buffer(rid, (MAX_READ_LENGTH + 1) as usize, None)
+            .unwrap();
+        assert_eq!(data.as_slice(), b"abcdef");
+        assert!(
+            data.storage_len() <= 128 * 1024,
+            "tiny read reserved the destination's large size"
+        );
+        assert!(table.read(rid, MAX_READ_LENGTH + 1, None).is_err());
+        table.close(rid).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn owned_byob_zero_read_seeks_and_still_validates_the_descriptor() {
+        let dir = tmp_dir("owned_byob_zero_seek");
+        let path = dir.join("data");
+        std::fs::write(&path, b"abcdef").unwrap();
+        let mut table = FileTable::new();
+        let rid = table
+            .open(path.to_str().unwrap(), OpenFlag::Read, None, None)
+            .unwrap();
+        assert!(
+            table
+                .read_for_buffer(rid, 0, Some(3))
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        assert_eq!(
+            table.read_for_buffer(rid, 2, None).unwrap().as_slice(),
+            b"de"
+        );
+        assert_eq!(
+            table.read_for_buffer(rid, 8, None).unwrap().as_slice(),
+            b"f"
+        );
+        assert!(
+            table
+                .read_for_buffer(rid, 8, None)
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        table.close(rid).unwrap();
+        assert!(table.read_for_buffer(rid, 0, Some(0)).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn owned_byob_growth_eof_and_non_power_of_two_limits() {
+        for (file_len, limit) in [(65536, 200000), (65537, 200000), (200000, 100001)] {
+            let source: Vec<u8> = (0..file_len).map(|i| (i % 251) as u8).collect();
+            let mut reader = std::io::Cursor::new(&source);
+            let result = read_owned_buffer(&mut reader, limit).unwrap();
+            let expected = file_len.min(limit);
+            assert_eq!(result.as_slice(), &source[..expected]);
+            assert_eq!(reader.position(), expected as u64);
+            if file_len == 65536 {
+                assert_eq!(result.storage_len(), 65536, "exact EOF grew storage");
+            }
+            let (storage, filled) = result.into_parts();
+            assert!(storage[filled..].iter().all(|byte| *byte == 0));
+        }
+    }
+
+    #[test]
+    fn owned_byob_retries_interrupted_short_reads_and_returns_io_errors() {
+        struct Reader {
+            cursor: std::io::Cursor<Vec<u8>>,
+            interrupt: bool,
+            fail: bool,
+        }
+        impl Read for Reader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.interrupt = !self.interrupt;
+                if self.interrupt {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                if self.fail && self.cursor.position() >= 65536 {
+                    return Err(std::io::ErrorKind::PermissionDenied.into());
+                }
+                let count = buf.len().min(7);
+                self.cursor.read(&mut buf[..count])
+            }
+        }
+        let mut reader = Reader {
+            cursor: std::io::Cursor::new(vec![42; 70000]),
+            interrupt: false,
+            fail: false,
+        };
+        assert_eq!(
+            read_owned_buffer(&mut reader, 100000).unwrap().as_slice(),
+            vec![42; 70000]
+        );
+        reader.cursor.set_position(0);
+        reader.fail = true;
+        assert!(read_owned_buffer(&mut reader, 100000).is_err());
     }
 
     #[test]
