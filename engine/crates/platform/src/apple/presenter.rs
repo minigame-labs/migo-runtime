@@ -838,4 +838,107 @@ mod tests {
         );
         egl.terminate(display).expect("eglTerminate");
     }
+
+    /// Skia builds a GL context on this platform's ANGLE, or it does not.
+    ///
+    /// Nothing on any host answered this before. `graphics/tests/common/harness.rs`
+    /// has `with_gl_surface` behind `#[cfg(any())]` -- never compiled, its own
+    /// comment saying "deliberately unimplemented until Phase 6" -- so every 2D
+    /// golden in that crate runs on Skia's CPU raster backend and says nothing
+    /// about GL. Skia-on-GL plainly works in production on Android; whether it
+    /// works on ANGLE here was an open question with no test anywhere.
+    ///
+    /// It matters because the external-frame lane's Canvas2D cannot draw: its
+    /// records reach the renderer and `GrDirectContext::make_gl` returns none on
+    /// a live ANGLE ES 3.0 context. That failure has two possible shapes --
+    /// something about that lane's particular context, or Skia-on-ANGLE not
+    /// working here at all -- and they want opposite investigations. This test
+    /// is the one that tells them apart, on a pbuffer with nothing else
+    /// involved.
+    ///
+    /// Skipped rather than failed where ANGLE cannot load: a machine without it
+    /// cannot answer the question, and a test that failed there would be
+    /// reporting the machine.
+    #[test]
+    fn skia_builds_a_gl_context_on_this_platforms_angle() {
+        let provider = AppleEglProvider::new();
+        let Ok(egl) = provider.load() else {
+            eprintln!("SKIP: ANGLE did not load on this machine; nothing to ask");
+            return;
+        };
+        let display = provider.display(&egl).expect("eglGetDisplay");
+        egl.initialize(display).expect("eglInitialize");
+
+        // The same shape the canvas manager asks for, so the answer is about
+        // Skia and ANGLE rather than about an unusual config.
+        let attrs = [
+            egl::RED_SIZE,
+            8,
+            egl::GREEN_SIZE,
+            8,
+            egl::BLUE_SIZE,
+            8,
+            egl::ALPHA_SIZE,
+            8,
+            egl::DEPTH_SIZE,
+            24,
+            egl::STENCIL_SIZE,
+            8,
+            egl::SURFACE_TYPE,
+            egl::PBUFFER_BIT,
+            egl::RENDERABLE_TYPE,
+            egl::OPENGL_ES3_BIT,
+            egl::NONE,
+        ];
+        let config = egl
+            .choose_first_config(display, &attrs)
+            .expect("eglChooseConfig")
+            .expect("an ES3 pbuffer config");
+
+        let pbuffer = egl
+            .create_pbuffer_surface(
+                display,
+                config,
+                &[egl::WIDTH, 64, egl::HEIGHT, 64, egl::NONE],
+            )
+            .expect("eglCreatePbufferSurface");
+        let context = egl
+            .create_context(
+                display,
+                config,
+                None,
+                &[egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE],
+            )
+            .expect("eglCreateContext");
+        egl.make_current(display, Some(pbuffer), Some(pbuffer), Some(context))
+            .expect("eglMakeCurrent");
+
+        // And the question. `FboKind::DefaultFb` with fbo 0 is the pbuffer's own
+        // framebuffer -- the simplest thing Skia could be asked to wrap.
+        let built = graphics::backend::gl::surface::Canvas2DContext::new(
+            0,
+            64,
+            64,
+            graphics::backend::gl::surface::FboKind::DefaultFb,
+            &|symbol: &str| {
+                egl.get_proc_address(symbol)
+                    .map(|f| f as *const std::ffi::c_void)
+                    .unwrap_or(std::ptr::null())
+            },
+        );
+        let answered = built.is_some();
+
+        let _ = egl.make_current(display, None, None, None);
+        let _ = egl.destroy_context(display, context);
+        let _ = egl.destroy_surface(display, pbuffer);
+        let _ = egl.terminate(display);
+
+        assert!(
+            answered,
+            "Skia would not build a GrDirectContext on an ANGLE ES 3.0 pbuffer on this \
+             machine. That makes the external-frame lane's Canvas2D failure the general \
+             case rather than something about that lane's context, and the investigation \
+             belongs in graphics rather than in the wire."
+        );
+    }
 }
