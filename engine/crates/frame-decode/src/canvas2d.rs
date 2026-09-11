@@ -168,6 +168,10 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
         OP2D_SET_LINE_JOIN => Canvas2DCmd::SetLineJoin {
             join: record[1] as u8,
         },
+        // The first record a producer sends to a canvas it means to draw on.
+        // Everything else in this block needs the context this makes.
+        OP2D_CREATE_CONTEXT => Canvas2DCmd::CreateContext2D,
+
         OP2D_SET_COMPOSITE_OPERATION => Canvas2DCmd::SetCompositeOperation {
             op: record[1] as u8,
         },

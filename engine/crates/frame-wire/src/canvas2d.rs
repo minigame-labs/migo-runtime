@@ -96,8 +96,23 @@ pub const OP2D_SET_FILL_STYLE: u32 = 546;
 pub const OP2D_SET_STROKE_STYLE: u32 = 547;
 pub const OP2D_SET_SHADOW_COLOR: u32 = 548;
 
+/// Bring a 2D context into existence on the selected canvas.
+///
+/// Without it this block is a complete drawing vocabulary with no way to be
+/// used: `get_2d_context_mut` answers `NotFound` for a canvas that has none,
+/// and `execute_canvas_batch` treats that as "no context yet -- no draws". So a
+/// producer sending 2D records to a fresh canvas had them accepted, decoded,
+/// batched and silently dropped -- an accepted frame that drew nothing, with no
+/// error anywhere. The in-process runtime never hit it because `getContext`
+/// there is an op that creates the context directly; this block is the only
+/// path the external lane has, and it was missing its first step.
+///
+/// One word. The canvas is whichever `OP2D_SELECT_CANVAS` named, the same way
+/// every other record in this block takes its canvas.
+pub const OP2D_CREATE_CONTEXT: u32 = 549;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 549;
+pub const OP2D_END: u32 = 550;
 
 /// The shape of one 2D record, or `None` for an opcode this reader does not
 /// know.
@@ -112,7 +127,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
     let (word_count, bool_words): (u32, &'static [u8]) = match opcode {
         OP2D_SELECT_CANVAS => (2, &[]),
 
-        OP2D_BEGIN_PATH | OP2D_CLOSE_PATH => (1, &[]),
+        OP2D_CREATE_CONTEXT | OP2D_BEGIN_PATH | OP2D_CLOSE_PATH => (1, &[]),
         OP2D_MOVE_TO | OP2D_LINE_TO => (3, &[]),
         OP2D_QUADRATIC_CURVE_TO => (5, &[]),
         OP2D_BEZIER_CURVE_TO => (7, &[]),
