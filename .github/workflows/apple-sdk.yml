@@ -391,6 +391,28 @@ jobs:
           host="$(rustc -vV | sed -n 's/^host: //p')"
           cargo test -p migo-shared --locked --target "$host"
 
+      # The 2D goldens, on the Apple build of Skia. They had never run on an
+      # Apple target: this workflow tests `migo-shared` and `migo-platform`, and
+      # `migo-graphics` -- the crate that owns every Canvas2D surface -- ran only
+      # on Linux. Its goldens rasterise to memory and need no GPU, so what they
+      # check here is the part of 2D that is the Apple build rather than the
+      # driver: CoreText instead of FreeType, a different font manager, different
+      # SIMD.
+      #
+      # On the macos-v8 row rather than the diagnostic one, and that is about
+      # cost, not coverage: this row builds the full profile for the host triple
+      # already, so the tests reuse its Skia. The diagnostic row builds the
+      # engine-free profile, whose Skia feature set differs by `embed-icudtl`,
+      # and asking there would have meant a third from-source Skia in one job.
+      - name: The 2D goldens run on the Apple build of Skia
+        if: matrix.product == 'macos-v8'
+        working-directory: engine
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          # shellcheck source=scripts/apple-skia-gl-env.sh
+          . ../scripts/apple-skia-gl-env.sh
+          cargo test -p migo-graphics --locked --target "$host" --tests
+
       - name: The Apple presenter's ANGLE bring-up runs on Apple silicon
         if: matrix.host_slice
         working-directory: engine
