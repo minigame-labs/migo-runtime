@@ -145,12 +145,15 @@ pub(crate) fn transcode_image(
         None
     };
 
-    let vk_format = match &astc {
-        Some((_, footprint)) => footprint.vk_format(),
+    let (mut astc_base, astc_footprint) = match astc {
+        Some((blocks, footprint)) => (Some(blocks), Some(footprint)),
+        None => (None, None),
+    };
+    let vk_format = match astc_footprint {
+        Some(footprint) => footprint.vk_format(),
         None if has_alpha => VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
         None => VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK,
     };
-    let astc_footprint = astc.as_ref().map(|(_, footprint)| *footprint);
 
     // The whole chain, not just the base level. A texture that ships one level
     // is sampled with that level at every scale: a minified sprite reads pixels
@@ -170,11 +173,17 @@ pub(crate) fn transcode_image(
     let alignment = astc_footprint.map_or(4, Footprint::texels);
     let chain = crate::mipmap::rgba_mip_chain(&image.rgba, image.width, image.height, alignment);
     let mut encoded: Vec<Vec<u8>> = Vec::with_capacity(chain.len());
-    for (level_rgba, level_width, level_height) in &chain {
+    for (level_index, (level_rgba, level_width, level_height)) in chain.iter().enumerate() {
         let blocks = if let Some(footprint) = astc_footprint {
             // Every level takes the footprint the base level chose: a KTX2
-            // container declares one format for the whole chain.
-            encode_astc(level_rgba, *level_width, *level_height, footprint).ok()?
+            // container declares one format for the whole chain. The chooser
+            // already encoded the base while grading footprints; move those
+            // blocks into the output instead of encoding that level twice.
+            if level_index == 0 {
+                astc_base.take()?
+            } else {
+                encode_astc(level_rgba, *level_width, *level_height, footprint).ok()?
+            }
         } else if has_alpha {
             encode_etc2_rgba(level_rgba, *level_width, *level_height).ok()?
         } else {

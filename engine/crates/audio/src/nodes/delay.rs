@@ -99,16 +99,22 @@ impl AudioNodeProcessor for DelayNode {
         _channels: u32,
         current_time: f64,
     ) -> usize {
-        let len = inputs.len().min(output.len());
-        if len == 0 || self.buffer.is_empty() {
+        let channels = self.channels;
+        if self.buffer.is_empty() || channels == 0 {
             return 0;
         }
-
-        let channels = self.channels;
-        let frames = len / channels;
+        // An effect remains renderable after its source is pruned: zero input
+        // must advance the delay line so buffered samples can drain instead of
+        // being cut off at the source's end.
+        let frames = if inputs.is_empty() {
+            output.len() / channels
+        } else {
+            inputs.len().min(output.len()) / channels
+        };
         if frames == 0 {
             return 0;
         }
+        let len = frames * channels;
 
         // a-rate: one value per frame. The maximum is one frame short of the
         // buffer so the interpolator's older tap cannot wrap past the newest
@@ -128,7 +134,7 @@ impl AudioNodeProcessor for DelayNode {
             let base = frame * channels;
             let write_base = self.write_frame * channels;
             for ch in 0..channels {
-                self.buffer[write_base + ch] = inputs[base + ch];
+                self.buffer[write_base + ch] = inputs.get(base + ch).copied().unwrap_or(0.0);
             }
             for ch in 0..channels {
                 output[base + ch] = self.read_interpolated(delay_frames, ch);
@@ -137,7 +143,11 @@ impl AudioNodeProcessor for DelayNode {
             self.write_frame = (self.write_frame + 1) % self.frames;
         }
 
-        frames
+        len / channels
+    }
+
+    fn has_tail_audio(&self) -> bool {
+        self.buffer.iter().any(|sample| sample.abs() > 1e-10)
     }
 
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {

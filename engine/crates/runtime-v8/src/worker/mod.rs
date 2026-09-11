@@ -2237,6 +2237,19 @@ mod timer_lifecycle_tests {
         assert_eq!(parent.callback_ids.allocate(), Ok(3));
     }
 
+    #[test]
+    fn media_audio_player_uses_host_callback_ids_across_realms() {
+        let source = include_str!("../audio/04_media_audio_player.js");
+        assert!(
+            source.contains("allocateHostCallbackId"),
+            "MediaAudioPlayer ids must come from the host allocator"
+        );
+        assert!(
+            !source.contains("nextMediaPlayerId"),
+            "a per-realm counter can collide with a parent or Worker player"
+        );
+    }
+
     fn test_host_state(timer_backgrounded: Arc<AtomicBool>) -> HostOpState {
         let (render_tx, _render_rx) = CommandSender::new();
         let (host_tx, _critical_host_tx, _host_rx) = shared::host_channel::channel(1);

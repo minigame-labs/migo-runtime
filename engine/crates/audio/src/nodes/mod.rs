@@ -82,6 +82,14 @@ pub trait AudioNodeProcessor: Send + 'static {
     /// released effect node must be kept: exactly as long as something upstream
     /// can still feed it.
     fn is_producing(&self) -> bool {
+        self.has_tail_audio()
+    }
+
+    /// Whether a non-source node still has state that can affect a future
+    /// output block after its input becomes silent. Tail-time state is part of
+    /// liveness: dropping a released effect here would truncate delay/filter
+    /// output, while keeping a zero-state node would leak it forever.
+    fn has_tail_audio(&self) -> bool {
         false
     }
 

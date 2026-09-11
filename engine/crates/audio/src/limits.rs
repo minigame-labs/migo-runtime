@@ -17,8 +17,8 @@ use crate::decoder::DecodedAudio;
 
 /// Hard ceiling on a single decoded/allocated PCM buffer (interleaved f32).
 ///
-/// 64 MiB ≈ 5.8 min of 48 kHz stereo f32. Longer BGM must use the existing
-/// streaming path; this keeps decode and WebAudio allocation safe on mobile.
+/// 64 MiB is about 2.91 minutes of 48 kHz stereo f32. Longer BGM must use
+/// the bounded streaming window; this keeps decode and WebAudio allocation safe.
 pub const MAX_AUDIO_PCM_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The same ceiling expressed in interleaved f32 samples (all channels).

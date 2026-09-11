@@ -604,13 +604,38 @@ mod tests {
                 started.elapsed()
             };
 
-            // The opacity probe that decides between the two formats reads
-            // every pixel; worth knowing whether it is noise or not.
-            let scan_time = {
+            // Measure the opacity decision separately from encoding. The
+            // visited count makes early-exit cases impossible to mislabel as
+            // a full-image scan.
+            let scan = |label: &str, pixels: &[u8]| {
                 let started = std::time::Instant::now();
-                std::hint::black_box(with_alpha.chunks_exact(4).any(|px| px[3] != 0xFF));
-                started.elapsed()
+                let mut visited = 0usize;
+                let mut transparent = false;
+                for px in pixels.chunks_exact(4) {
+                    visited += 1;
+                    if px[3] != 0xFF {
+                        transparent = true;
+                        break;
+                    }
+                }
+                let elapsed = started.elapsed();
+                eprintln!(
+                    "{side}x{side} opacity={label} scan={elapsed:?} pixels_visited={visited} transparent={transparent} mip_levels=1"
+                );
+                (elapsed, visited)
             };
+            let all_opaque = rgba.clone();
+            let mut first_transparent = rgba.clone();
+            first_transparent[3] = 0;
+            let mut last_transparent = rgba.clone();
+            let last_alpha = last_transparent.len() - 1;
+            last_transparent[last_alpha] = 0;
+            let representative = with_alpha.clone();
+            let (opaque_scan, opaque_visited) = scan("all-opaque", &all_opaque);
+            let (first_scan, first_visited) = scan("first-transparent", &first_transparent);
+            let (last_scan, last_visited) = scan("last-transparent", &last_transparent);
+            let (representative_scan, representative_visited) =
+                scan("representative", &representative);
 
             // Speed without quality is half the measurement: any change to the
             // search has to be judged on what it costs the encoding, not just
@@ -630,14 +655,16 @@ mod tests {
             } else {
                 10.0 * (255.0f64 * 255.0 / mean).log10()
             };
-
+            assert_eq!(opaque_visited, all_opaque.len() / 4);
+            assert_eq!(first_visited, 1);
+            assert_eq!(last_visited, last_transparent.len() / 4);
+            assert!(representative_visited < representative.len() / 4);
             eprintln!(
-                "{side}x{side} ({megapixels:>4.1} MP)  rgb {:>10?} ({:>5.1} MP/s)   rgba {:>10?} ({:>4.2} MP/s)   alpha PSNR {psnr:>5.2} dB, worst delta {worst:>3}   scan {:>8?}",
+                "{side}x{side} ({megapixels:>4.1} MP)  rgb {:>10?} ({:>5.1} MP/s)   rgba {:>10?} ({:>4.2} MP/s)   alpha PSNR {psnr:>5.2} dB, worst delta {worst:>3}; scans opaque={opaque_scan:?}, first={first_scan:?}, last={last_scan:?}, representative={representative_scan:?}",
                 rgb_time,
                 megapixels / rgb_time.as_secs_f64(),
                 rgba_time,
                 megapixels / rgba_time.as_secs_f64(),
-                scan_time,
             );
         }
     }

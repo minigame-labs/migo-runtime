@@ -4,6 +4,18 @@
 //! allocation commands therefore cross this ledger in the same FIFO order as
 //! the driver calls, without a lock on the render hot path. Only the aggregate
 //! process counter is atomic because independent render owners share it.
+//!
+//! Follow-up owners still need to publish separate domains through the same
+//! diagnostics surface: `canvas/manager/drawing_buffer.rs` for presentation
+//! attachments, `canvas/manager/pbo_upload.rs` and `upload_thread.rs` for PBO
+//! and staging residency, and Skia's resource cache for engine-owned backing.
+//! Those files are intentionally not changed here because their ownership and
+//! device-residency semantics require their owning threads (and device data).
+//! Handler paths that still require conversion to this authority are
+//! `TexImage2DFromShared`, `TexImage2DFromSnapshot`,
+//! `TexImage2DFromTextCache`, and `TexImage2DFromCanvas2D` in
+//! `renderergl/handler.rs`, plus `BufferData` in that handler. Their manager
+//! implementations currently allocate/copy through engine-owned GL paths.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -147,6 +159,13 @@ impl TextureStorage {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SubresourceInfo {
+    width: u32,
+    height: u32,
+    bytes_per_texel: Option<u64>,
+}
+
 #[derive(Debug)]
 struct TextureRecord {
     owner: CanvasId,
@@ -265,10 +284,15 @@ enum PreparedKind {
         texture: TextureId,
         subresource: TextureSubresource,
         bytes: u64,
+        info: SubresourceInfo,
     },
     TextureImmutable {
         texture: TextureId,
         bytes: u64,
+    },
+    GenerateMipmap {
+        texture: TextureId,
+        generated: Vec<(TextureSubresource, u64, SubresourceInfo)>,
     },
     Renderbuffer {
         renderbuffer: RenderbufferId,
@@ -308,6 +332,16 @@ pub(crate) struct WebGlGpuBudget {
     bindings: crate::canvas_keyed::CanvasKeyed<BindingState>,
     textures: HashMap<TextureId, TextureRecord>,
     renderbuffers: HashMap<RenderbufferId, RenderbufferRecord>,
+    subresource_info: HashMap<(TextureId, TextureSubresource), SubresourceInfo>,
+}
+
+/// Host-visible accounting domains.  WebGL storage is authoritative here;
+/// DrawingBuffer, PBO/staging, Skia, and ImageStore have separate owners and
+/// must publish their own values before a process-wide total can be reported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GpuDomainStats {
+    pub(crate) webgl_context_bytes: u64,
+    pub(crate) webgl_process_bytes: u64,
 }
 
 impl Default for WebGlGpuBudget {
@@ -325,7 +359,6 @@ impl WebGlGpuBudget {
         );
         Self::with_parts(limits, process)
     }
-
     fn with_parts(limits: GpuBudgetLimits, process: Arc<ProcessUsage>) -> Self {
         Self {
             limits,
@@ -334,6 +367,7 @@ impl WebGlGpuBudget {
             bindings: crate::canvas_keyed::CanvasKeyed::default(),
             textures: HashMap::new(),
             renderbuffers: HashMap::new(),
+            subresource_info: HashMap::new(),
         }
     }
 
@@ -485,7 +519,162 @@ impl WebGlGpuBudget {
                 texture,
                 subresource,
                 bytes,
+                info: SubresourceInfo {
+                    width,
+                    height,
+                    bytes_per_texel: Some(bpp),
+                },
             },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_compressed_tex_image_2d(
+        &mut self,
+        canvas_id: CanvasId,
+        target: u32,
+        level: i32,
+        _internal_format: u32,
+        width: i32,
+        height: i32,
+        border: i32,
+        image_size: u32,
+    ) -> Result<PreparedGpuAllocation, GpuAllocationError> {
+        let (width, height, level) = validate_image_2d_dimensions(
+            target,
+            level,
+            width,
+            height,
+            border,
+            self.limits.max_2d_dimension,
+        )?;
+        let texture = self.bound_texture(canvas_id, target)?;
+        let subresource = TextureSubresource { target, level };
+        let record = self
+            .textures
+            .get_mut(&texture)
+            .ok_or(GpuAllocationError::InvalidOperation)?;
+        if record.owner != canvas_id {
+            return Err(GpuAllocationError::InvalidOperation);
+        }
+        let TextureStorage::Mutable(images) = &mut record.storage else {
+            return Err(GpuAllocationError::InvalidOperation);
+        };
+        let old_object_bytes = images
+            .values()
+            .try_fold(0u64, |sum, value| sum.checked_add(*value))
+            .ok_or(GpuAllocationError::OutOfMemory)?;
+        let old_subresource_bytes = images.get(&subresource).copied().unwrap_or(0);
+        let bytes = u64::from(image_size);
+        let new_object_bytes = old_object_bytes
+            .checked_sub(old_subresource_bytes)
+            .and_then(|base| base.checked_add(bytes))
+            .ok_or(GpuAllocationError::OutOfMemory)?;
+        self.prepare_transition(
+            canvas_id,
+            old_object_bytes,
+            new_object_bytes,
+            bytes,
+            PreparedKind::TextureImage {
+                texture,
+                subresource,
+                bytes,
+                info: SubresourceInfo {
+                    width,
+                    height,
+                    bytes_per_texel: None,
+                },
+            },
+        )
+    }
+
+    pub(crate) fn prepare_generate_mipmap(
+        &mut self,
+        canvas_id: CanvasId,
+        target: u32,
+    ) -> Result<PreparedGpuAllocation, GpuAllocationError> {
+        if target != GL_TEXTURE_2D && target != GL_TEXTURE_CUBE_MAP {
+            return Err(GpuAllocationError::InvalidEnum);
+        }
+        let texture = self.bound_texture(canvas_id, target)?;
+        let record = self
+            .textures
+            .get(&texture)
+            .ok_or(GpuAllocationError::InvalidOperation)?;
+        if record.owner != canvas_id {
+            return Err(GpuAllocationError::InvalidOperation);
+        }
+        let TextureStorage::Mutable(images) = &record.storage else {
+            return Err(GpuAllocationError::InvalidOperation);
+        };
+        let faces: Vec<u32> = if target == GL_TEXTURE_CUBE_MAP {
+            (GL_TEXTURE_CUBE_MAP_POSITIVE_X..=GL_TEXTURE_CUBE_MAP_NEGATIVE_Z).collect()
+        } else {
+            vec![GL_TEXTURE_2D]
+        };
+        let mut generated = Vec::new();
+        let old_object_bytes = images
+            .values()
+            .try_fold(0u64, |sum, value| sum.checked_add(*value))
+            .ok_or(GpuAllocationError::OutOfMemory)?;
+        let mut new_object_bytes = old_object_bytes;
+        for face in faces {
+            let base_key = TextureSubresource {
+                target: face,
+                level: 0,
+            };
+            let base_bytes = images
+                .get(&base_key)
+                .copied()
+                .ok_or(GpuAllocationError::InvalidOperation)?;
+            let info = self
+                .subresource_info
+                .get(&(texture, base_key))
+                .copied()
+                .ok_or(GpuAllocationError::InvalidOperation)?;
+            let bpp = info
+                .bytes_per_texel
+                .ok_or(GpuAllocationError::InvalidOperation)?;
+            if info.width == 0 || info.height == 0 {
+                return Err(GpuAllocationError::InvalidOperation);
+            }
+            let expected = checked_texel_bytes(&[info.width, info.height], bpp)?;
+            if expected != base_bytes {
+                return Err(GpuAllocationError::InvalidOperation);
+            }
+            let levels = 32 - info.width.max(info.height).leading_zeros();
+            let mut width = info.width;
+            let mut height = info.height;
+            for level in 1..levels {
+                width = (width / 2).max(1);
+                height = (height / 2).max(1);
+                let key = TextureSubresource {
+                    target: face,
+                    level,
+                };
+                let bytes = checked_texel_bytes(&[width, height], bpp)?;
+                let old = images.get(&key).copied().unwrap_or(0);
+                new_object_bytes = new_object_bytes
+                    .checked_sub(old)
+                    .and_then(|sum| sum.checked_add(bytes))
+                    .ok_or(GpuAllocationError::OutOfMemory)?;
+                generated.push((
+                    key,
+                    bytes,
+                    SubresourceInfo {
+                        width,
+                        height,
+                        bytes_per_texel: Some(bpp),
+                    },
+                ));
+            }
+        }
+        self.prepare_transition(
+            canvas_id,
+            old_object_bytes,
+            new_object_bytes,
+            new_object_bytes.saturating_sub(old_object_bytes),
+            PreparedKind::GenerateMipmap { texture, generated },
         )
     }
 
@@ -580,6 +769,11 @@ impl WebGlGpuBudget {
                 texture,
                 subresource,
                 bytes,
+                info: SubresourceInfo {
+                    width,
+                    height,
+                    bytes_per_texel: Some(bpp),
+                },
             },
         )
     }
@@ -677,7 +871,7 @@ impl WebGlGpuBudget {
         canvas_id: CanvasId,
         old_object_bytes: u64,
         new_object_bytes: u64,
-        _allocation_bytes: u64,
+        allocation_bytes: u64,
         kind: PreparedKind,
     ) -> Result<PreparedGpuAllocation, GpuAllocationError> {
         let context_bytes = self.contexts.get(&canvas_id).copied().unwrap_or(0);
@@ -694,7 +888,7 @@ impl WebGlGpuBudget {
             old_object_bytes,
             new_object_bytes,
             #[cfg(test)]
-            allocation_bytes: _allocation_bytes,
+            allocation_bytes,
             kind,
             process_growth,
         })
@@ -711,6 +905,7 @@ impl WebGlGpuBudget {
                 texture,
                 subresource,
                 bytes,
+                info,
             } => {
                 let record = self
                     .textures
@@ -720,6 +915,7 @@ impl WebGlGpuBudget {
                     panic!("prepared mutable WebGL texture became immutable before commit");
                 };
                 images.insert(subresource, bytes);
+                self.subresource_info.insert((texture, subresource), info);
             }
             PreparedKind::TextureImmutable { texture, bytes } => {
                 let record = self
@@ -727,6 +923,19 @@ impl WebGlGpuBudget {
                     .get_mut(&texture)
                     .expect("prepared WebGL texture disappeared before commit");
                 record.storage = TextureStorage::Immutable(bytes);
+            }
+            PreparedKind::GenerateMipmap { texture, generated } => {
+                let record = self
+                    .textures
+                    .get_mut(&texture)
+                    .expect("prepared WebGL texture disappeared before commit");
+                let TextureStorage::Mutable(images) = &mut record.storage else {
+                    panic!("prepared mutable WebGL texture became immutable before commit");
+                };
+                for (subresource, bytes, info) in generated {
+                    images.insert(subresource, bytes);
+                    self.subresource_info.insert((texture, subresource), info);
+                }
             }
             PreparedKind::Renderbuffer {
                 renderbuffer,
@@ -752,6 +961,7 @@ impl WebGlGpuBudget {
         for state in self.bindings.values_mut() {
             state.textures.forget_texture(texture);
         }
+        self.subresource_info.retain(|(id, _), _| *id != texture);
         let bytes = record.storage.byte_len();
         self.release_context_bytes(record.owner, bytes);
         bytes
@@ -786,6 +996,14 @@ impl WebGlGpuBudget {
 
     pub(crate) fn release_context(&mut self, canvas_id: CanvasId) -> u64 {
         self.bindings.remove(&canvas_id);
+        let textures: Vec<TextureId> = self
+            .textures
+            .iter()
+            .filter_map(|(id, record)| (record.owner == canvas_id).then_some(*id))
+            .collect();
+        for texture in textures {
+            self.subresource_info.retain(|(id, _), _| *id != texture);
+        }
         self.textures.retain(|_, record| record.owner != canvas_id);
         self.renderbuffers
             .retain(|_, record| record.owner != canvas_id);
@@ -794,10 +1012,20 @@ impl WebGlGpuBudget {
         bytes
     }
 
+    /// Snapshot WebGL's own domain counters.  Other GPU domains are
+    /// intentionally not folded in: their owners can publish independently.
+    pub(crate) fn domain_stats(&self) -> GpuDomainStats {
+        GpuDomainStats {
+            webgl_context_bytes: self.contexts.values().copied().sum(),
+            webgl_process_bytes: self.process.bytes.load(Ordering::Acquire),
+        }
+    }
+
     pub(crate) fn clear(&mut self) -> u64 {
         self.bindings.clear();
         self.textures.clear();
         self.renderbuffers.clear();
+        self.subresource_info.clear();
         let bytes = self.contexts.values().copied().sum();
         self.contexts.clear();
         self.process.release(bytes);
@@ -1160,6 +1388,7 @@ impl GpuBudgetTestScope {
 #[cfg(test)]
 mod tests {
     use super::{GpuAllocationError, GpuBudgetLimits, GpuBudgetTestScope};
+    use std::collections::HashMap;
 
     const TEXTURE_2D: u32 = 0x0DE1;
     const TEXTURE_CUBE_MAP: u32 = 0x8513;
@@ -1171,6 +1400,21 @@ mod tests {
     const RGBA: u32 = 0x1908;
     const UNSIGNED_BYTE: u32 = 0x1401;
     const RGBA8: u32 = 0x8058;
+
+    #[derive(Default)]
+    struct RecordingGl {
+        storage: HashMap<(u32, u32), u64>,
+    }
+
+    impl RecordingGl {
+        fn define(&mut self, texture: u32, level: u32, bytes: u64) {
+            self.storage.insert((texture, level), bytes);
+        }
+
+        fn bytes(&self) -> u64 {
+            self.storage.values().copied().sum()
+        }
+    }
 
     fn limits(context_bytes: u64, process_bytes: u64) -> GpuBudgetLimits {
         GpuBudgetLimits {
@@ -1628,5 +1872,89 @@ mod tests {
         }
         assert_eq!(budget.context_usage(1), 96);
         assert_eq!(scope.process_usage(), 96);
+    }
+
+    /// R6 – `CompressedTexImage2D` and `GenerateMipmap` must route through
+    /// the ledger so their bytes count against the per-context and process limits.
+    /// This test drove the addition of `prepare_compressed_tex_image_2d` and
+    /// `prepare_generate_mipmap`; it was RED (compile error: no such method)
+    /// before those methods were added.
+    #[test]
+    fn r6_compressed_and_mipmap_bytes_routed_through_ledger() {
+        let scope = GpuBudgetTestScope::new(limits(1_024, 2_048));
+        let mut budget = scope.registry();
+        let mut gl = RecordingGl::default();
+
+        // -- Compressed image: 4×4 block, 8 bytes compressed data ------------
+        budget.create_texture(1, 1).unwrap();
+        budget.bind_texture(1, TEXTURE_2D, Some(1));
+        let c = budget
+            .prepare_compressed_tex_image_2d(1, TEXTURE_2D, 0, 0x8C00_u32, 4, 4, 0, 8_u32)
+            .expect("compressed alloc must succeed");
+        assert_eq!(c.byte_len(), 8, "compressed bytes must equal image_size");
+        budget.commit(c);
+        gl.define(1, 0, 8);
+        assert_eq!(budget.context_usage(1), gl.bytes());
+        assert_eq!(scope.process_usage(), gl.bytes());
+
+        // -- GenerateMipmap: base 4×4 RGBA8 = 64 bytes, full chain = 84 ------
+        budget.create_texture(1, 2).unwrap();
+        budget.bind_texture(1, TEXTURE_2D, Some(2));
+        let base = budget
+            .prepare_tex_image_2d(1, TEXTURE_2D, 0, RGBA as i32, 4, 4, 0, RGBA, UNSIGNED_BYTE)
+            .unwrap();
+        budget.commit(base);
+        gl.define(2, 0, 64);
+        assert_eq!(budget.context_usage(1), gl.bytes());
+        assert_eq!(scope.process_usage(), gl.bytes());
+        assert_eq!(budget.context_usage(1), 8 + 64);
+
+        // Rollback: drop before commit must restore bytes exactly
+        let before_rollback = scope.process_usage();
+        let mip_rollback = budget
+            .prepare_generate_mipmap(1, TEXTURE_2D)
+            .expect("generate_mipmap must be accountable on a mutable texture");
+        drop(mip_rollback);
+        assert_eq!(
+            scope.process_usage(),
+            before_rollback,
+            "rollback must restore process bytes"
+        );
+        assert_eq!(
+            budget.context_usage(1),
+            8 + 64,
+            "context bytes unchanged after rollback"
+        );
+
+        // Commit: full mip chain for 4×4 RGBA8 is 64+16+4 = 84 bytes
+        let mip = budget
+            .prepare_generate_mipmap(1, TEXTURE_2D)
+            .expect("generate_mipmap after rollback");
+        budget.commit(mip);
+        gl.define(2, 1, 16);
+        gl.define(2, 2, 4);
+        assert_eq!(budget.context_usage(1), gl.bytes());
+        assert_eq!(scope.process_usage(), gl.bytes());
+        let chain: u64 = 64 + 16 + 4; // levels: 4×4, 2×2, 1×1
+        assert_eq!(budget.context_usage(1), 8 + chain);
+        assert_eq!(scope.process_usage(), 8 + chain);
+
+        // Redefine base level after generate_mipmap: texture is still mutable
+        let redef = budget
+            .prepare_tex_image_2d(1, TEXTURE_2D, 0, RGBA as i32, 2, 2, 0, RGBA, UNSIGNED_BYTE)
+            .expect("redefine level-0 after generate_mipmap must be allowed");
+        budget.commit(redef);
+        gl.define(2, 0, 16);
+        assert_eq!(budget.context_usage(1), gl.bytes());
+        assert_eq!(scope.process_usage(), gl.bytes());
+        // Old level-0 (64 B) is replaced by 2×2 (16 B); levels 1 and 2 stay.
+        // New total for tex 2: 16 + 16 + 4 = 36
+        assert_eq!(budget.context_usage(1), 8 + 36);
+        assert_eq!(scope.process_usage(), 8 + 36);
+
+        // Delete clears both textures cleanly
+        budget.delete_texture(1);
+        budget.delete_texture(2);
+        assert_eq!(scope.process_usage(), 0);
     }
 }

@@ -125,6 +125,19 @@ pub fn webgl_readback_bytes_per_pixel(format: u32, type_: u32) -> Option<usize> 
     })
 }
 
+/// Size of one datum of a GL pixel type: the whole pixel for a packed type,
+/// one component for a scalar one. This is the unit a `PIXEL_PACK_BUFFER`
+/// offset must be a multiple of (GLES 3.0 §4.3.2).
+///
+/// Defined as the single-component case of [`webgl_readback_bytes_per_pixel`]
+/// rather than a second table, so a newly recognized type cannot be added to
+/// one and forgotten in the other. `RED` is that case, and a packed type's
+/// size does not depend on the format at all.
+#[inline]
+pub fn webgl_readback_type_bytes(type_: u32) -> Option<usize> {
+    webgl_readback_bytes_per_pixel(0x1903 /* RED */, type_)
+}
+
 /// Protocol-wide Render result type.
 pub type RenderResult<T> = Result<T, EngineError>;
 
@@ -1306,6 +1319,26 @@ pub enum GLCmd {
         destination_byte_length: usize,
         resp: RenderCmdResp<ReadPixelsData>,
     },
+    /// `readPixels` into the bound `PIXEL_PACK_BUFFER`. The pixels land in
+    /// GPU-side storage the content reads back later with `getBufferSubData`,
+    /// so nothing is transferred and no GPU sync is forced -- that is the whole
+    /// point of this overload.
+    ///
+    /// The reply carries no data and exists only so the spec's validation
+    /// errors reach `getError`. It costs a render-thread round trip, not a GPU
+    /// stall, and a buffered command could not report anything: the error state
+    /// lives on the isolate side.
+    ReadPixelsToBuffer {
+        canvas_id: CanvasId,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        format: u32,
+        type_: u32,
+        offset: i64,
+        resp: RenderCmdResp<()>,
+    },
     Hint {
         canvas_id: CanvasId,
         target: u32,
@@ -2333,6 +2366,7 @@ impl GLCmd {
             | GLCmd::RenderbufferStorage { canvas_id, .. }
             | GLCmd::RenderbufferStorageMultisample { canvas_id, .. }
             | GLCmd::ReadPixels { canvas_id, .. }
+            | GLCmd::ReadPixelsToBuffer { canvas_id, .. }
             | GLCmd::GetParameter { canvas_id, .. }
             | GLCmd::BlitFramebuffer { canvas_id, .. }
             | GLCmd::InvalidateFramebuffer { canvas_id, .. }
@@ -2485,6 +2519,188 @@ impl GLCmd {
                 index: _,
                 resp: _,
             } => None,
+        }
+    }
+
+    /// Returns the Canvas2D canvas that this command reads **live** — its
+    /// current framebuffer content, not an immutable snapshot — or `None` if
+    /// the command reads no live Canvas2D.
+    ///
+    /// Only the two direct-canvas upload commands qualify.  `TexImage2DFromCanvas2D`
+    /// and `TexSubImage2DFromCanvas2D` copy the *current* pixels of a Canvas2D
+    /// framebuffer into a WebGL texture; the source pixels are whatever that
+    /// canvas has drawn at the moment the command executes.  Any Canvas2D draw
+    /// to the same source canvas that is reordered past one of these uploads
+    /// silently produces the wrong texture content (the audit proved this for the
+    /// pattern `draw-red → upload → draw-blue → upload`, which reordered into
+    /// `draw-red → draw-blue → upload → upload`, capturing `[blue, blue]` instead
+    /// of `[red, blue]`).
+    ///
+    /// The snapshot variants (`TexImage2DFromSnapshot`, `TexSubImage2DFromSnapshot`)
+    /// read an immutable handle whose pixel content is frozen at snapshot creation
+    /// time; they carry no live dependency and are safe to reorder.
+    ///
+    /// **This match has no catch-all for the same reason `touches_canvas` does
+    /// not.**  A new variant that reads a Canvas2D framebuffer without being
+    /// listed in the `Some` arm would compile silently as `None`, letting
+    /// `packet_safe_to_reorder` treat the dependency as absent and producing
+    /// wrong pixels.  The compiler enforces exhaustiveness instead.
+    pub fn live_canvas_source(&self) -> Option<CanvasId> {
+        match self {
+            // The only two variants that read a live Canvas2D framebuffer.
+            GLCmd::TexImage2DFromCanvas2D { canvas_2d_id, .. }
+            | GLCmd::TexSubImage2DFromCanvas2D { canvas_2d_id, .. } => Some(*canvas_2d_id),
+
+            // Every other variant either:
+            //  • writes/binds to the GL canvas it carries as `canvas_id`
+            //    (no live-read dependency on a Canvas2D framebuffer), or
+            //  • reads from an immutable snapshot or shared-memory handle, or
+            //  • is a resource-context command carrying no canvas at all.
+            // All are listed explicitly; `{ .. }` suppresses field names we do
+            // not need here while keeping the exhaustive-match guarantee.
+            GLCmd::Viewport { .. }
+            | GLCmd::Clear { .. }
+            | GLCmd::ClearColor { .. }
+            | GLCmd::ClearDepth { .. }
+            | GLCmd::ClearStencil { .. }
+            | GLCmd::CreateProgram { .. }
+            | GLCmd::CreateShader { .. }
+            | GLCmd::UseProgram { .. }
+            | GLCmd::DrawArrays { .. }
+            | GLCmd::DrawElements { .. }
+            | GLCmd::GetAttribLocation { .. }
+            | GLCmd::GetActiveAttrib { .. }
+            | GLCmd::GetActiveUniform { .. }
+            | GLCmd::EnableVertexAttribArray { .. }
+            | GLCmd::DisableVertexAttribArray { .. }
+            | GLCmd::VertexAttribPointer { .. }
+            | GLCmd::VertexAttribDivisor { .. }
+            | GLCmd::CreateBuffer { .. }
+            | GLCmd::BindBuffer { .. }
+            | GLCmd::BufferData { .. }
+            | GLCmd::BufferSubData { .. }
+            | GLCmd::GetUniformLocation { .. }
+            | GLCmd::Enable { .. }
+            | GLCmd::Disable { .. }
+            | GLCmd::ActiveTexture { .. }
+            | GLCmd::CreateTexture { .. }
+            | GLCmd::BindTexture { .. }
+            | GLCmd::TexParameteri { .. }
+            | GLCmd::TexParameterf { .. }
+            | GLCmd::GenerateMipmap { .. }
+            | GLCmd::PixelStorei { .. }
+            | GLCmd::BlendFunc { .. }
+            | GLCmd::BlendFuncSeparate { .. }
+            | GLCmd::BlendEquation { .. }
+            | GLCmd::BlendEquationSeparate { .. }
+            | GLCmd::BlendColor { .. }
+            | GLCmd::DepthFunc { .. }
+            | GLCmd::DepthMask { .. }
+            | GLCmd::DepthRange { .. }
+            | GLCmd::CullFace { .. }
+            | GLCmd::FrontFace { .. }
+            | GLCmd::LineWidth { .. }
+            | GLCmd::PolygonOffset { .. }
+            | GLCmd::StencilFunc { .. }
+            | GLCmd::StencilFuncSeparate { .. }
+            | GLCmd::StencilOp { .. }
+            | GLCmd::StencilOpSeparate { .. }
+            | GLCmd::StencilMask { .. }
+            | GLCmd::StencilMaskSeparate { .. }
+            | GLCmd::ColorMask { .. }
+            | GLCmd::Scissor { .. }
+            | GLCmd::Hint { .. }
+            | GLCmd::CreateFramebuffer { .. }
+            | GLCmd::BindFramebuffer { .. }
+            | GLCmd::CheckFramebufferStatus { .. }
+            | GLCmd::FramebufferRenderbuffer { .. }
+            | GLCmd::CreateRenderbuffer { .. }
+            | GLCmd::BindRenderbuffer { .. }
+            | GLCmd::RenderbufferStorage { .. }
+            | GLCmd::RenderbufferStorageMultisample { .. }
+            | GLCmd::ReadPixels { .. }
+            | GLCmd::ReadPixelsToBuffer { .. }
+            | GLCmd::GetParameter { .. }
+            | GLCmd::BlitFramebuffer { .. }
+            | GLCmd::InvalidateFramebuffer { .. }
+            | GLCmd::CreateSampler { .. }
+            | GLCmd::BindSampler { .. }
+            | GLCmd::CreateVertexArray { .. }
+            | GLCmd::BindVertexArray { .. }
+            | GLCmd::DrawArraysInstanced { .. }
+            | GLCmd::DrawElementsInstanced { .. }
+            | GLCmd::BindBufferBase { .. }
+            | GLCmd::BindBufferRange { .. }
+            | GLCmd::DrawBuffers { .. }
+            | GLCmd::ReadBuffer { .. }
+            | GLCmd::FenceSync { .. }
+            | GLCmd::CreateQuery { .. }
+            | GLCmd::BeginQuery { .. }
+            | GLCmd::EndQuery { .. }
+            | GLCmd::CreateTransformFeedback { .. }
+            | GLCmd::BindTransformFeedback { .. }
+            | GLCmd::BeginTransformFeedback { .. }
+            | GLCmd::EndTransformFeedback { .. }
+            | GLCmd::PauseTransformFeedback { .. }
+            | GLCmd::ResumeTransformFeedback { .. }
+            | GLCmd::TransformFeedbackVaryings { .. }
+            | GLCmd::TexImage3D { .. }
+            | GLCmd::TexSubImage3D { .. }
+            | GLCmd::TexStorage3D { .. }
+            | GLCmd::TexImage2D { .. }
+            | GLCmd::TexSubImage2D { .. }
+            | GLCmd::TexStorage2D { .. }
+            | GLCmd::CompressedTexImage2D { .. }
+            | GLCmd::CompressedTexSubImage2D { .. }
+            | GLCmd::TexImage2DFromShared { .. }
+            | GLCmd::TexImage2DFromSnapshot { .. }
+            | GLCmd::TexImage2DFromTextCache { .. }
+            | GLCmd::TexSubImage2DFromSnapshot { .. }
+            | GLCmd::FramebufferTexture2D { .. }
+            | GLCmd::DebugLoseContext { .. }
+            | GLCmd::Uniform1f { .. }
+            | GLCmd::Uniform1fv { .. }
+            | GLCmd::Uniform1i { .. }
+            | GLCmd::Uniform1iv { .. }
+            | GLCmd::Uniform2f { .. }
+            | GLCmd::Uniform2fv { .. }
+            | GLCmd::Uniform2iv { .. }
+            | GLCmd::Uniform3f { .. }
+            | GLCmd::Uniform3fv { .. }
+            | GLCmd::Uniform3iv { .. }
+            | GLCmd::Uniform4f { .. }
+            | GLCmd::Uniform4fv { .. }
+            | GLCmd::Uniform4iv { .. }
+            | GLCmd::UniformMatrix2fv { .. }
+            | GLCmd::UniformMatrix3fv { .. }
+            | GLCmd::UniformMatrix4fv { .. }
+            | GLCmd::LinkProgram { .. }
+            | GLCmd::DeleteProgram { .. }
+            | GLCmd::CompileShader { .. }
+            | GLCmd::DeleteShader { .. }
+            | GLCmd::DeleteTexture { .. }
+            | GLCmd::DeleteFramebuffer { .. }
+            | GLCmd::DeleteRenderbuffer { .. }
+            | GLCmd::DeleteBuffer { .. }
+            | GLCmd::DeleteVertexArray { .. }
+            | GLCmd::DeleteSampler { .. }
+            | GLCmd::DeleteSync { .. }
+            | GLCmd::DeleteQuery { .. }
+            | GLCmd::DeleteTransformFeedback { .. }
+            | GLCmd::GetProgramParameter { .. }
+            | GLCmd::GetShaderParameter { .. }
+            | GLCmd::GetQueryParameter { .. }
+            | GLCmd::GetProgramInfoLog { .. }
+            | GLCmd::GetShaderInfoLog { .. }
+            | GLCmd::ShaderSource { .. }
+            | GLCmd::AttachShader { .. }
+            | GLCmd::BindAttribLocation { .. }
+            | GLCmd::GetUniformBlockIndex { .. }
+            | GLCmd::UniformBlockBinding { .. }
+            | GLCmd::SamplerParameteri { .. }
+            | GLCmd::SamplerParameterf { .. }
+            | GLCmd::ClientWaitSync { .. }
+            | GLCmd::GetTransformFeedbackVarying { .. } => None,
         }
     }
 
@@ -2922,6 +3138,50 @@ mod approx_size_tests {
             Some(cid),
             "an upload sourced from another canvas still executes on this one"
         );
+    }
+
+    #[test]
+    fn live_canvas_source_distinguishes_direct_uploads_from_snapshots() {
+        let destination = CanvasId::from(42u32);
+        let source = CanvasId::from(43u32);
+
+        let live = GLCmd::TexImage2DFromCanvas2D {
+            canvas_id: destination,
+            target: 0x0DE1,
+            level: 0,
+            internalformat: 0x1908,
+            canvas_2d_id: source,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        };
+        assert_eq!(live.live_canvas_source(), Some(source));
+
+        let live_sub = GLCmd::TexSubImage2DFromCanvas2D {
+            canvas_id: destination,
+            target: 0x0DE1,
+            level: 0,
+            xoffset: 0,
+            yoffset: 0,
+            canvas_2d_id: source,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        };
+        assert_eq!(live_sub.live_canvas_source(), Some(source));
+
+        let snapshot = GLCmd::TexImage2DFromSnapshot {
+            canvas_id: destination,
+            target: 0x0DE1,
+            level: 0,
+            internalformat: 0x1908,
+            format: 0x1908,
+            type_: 0x1401,
+            snapshot_id: 1,
+        };
+        assert_eq!(snapshot.live_canvas_source(), None);
     }
 
     #[test]

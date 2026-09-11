@@ -158,6 +158,39 @@ impl ImageStore {
         self.in_flight.len()
     }
 
+    /// Estimated bytes retained by live image payloads.  ImageStore currently
+    /// accepts RGBA8 uploads, so the estimate is the logical dimensions times
+    /// four; wrapper metadata is reported separately.
+    #[inline]
+    pub fn live_byte_estimate(&self) -> u64 {
+        self.entries.values().map(Self::payload_bytes).sum()
+    }
+
+    /// Estimated payload bytes held in the deferred-delete tombstone map.
+    #[inline]
+    pub fn pending_delete_byte_estimate(&self) -> u64 {
+        self.pending_delete.values().map(Self::payload_bytes).sum()
+    }
+
+    /// Attributed payload bytes for cached SkImage wrappers.  A wrapper borrows
+    /// the underlying texture; this reports the referenced payload once per
+    /// cached `(image_id, context_tag)` wrapper to expose cache multiplication.
+    #[inline]
+    pub fn wrapper_byte_estimate(&self) -> u64 {
+        self.sk_image_cache
+            .keys()
+            .filter_map(|(id, _)| self.entries.get(id))
+            .map(Self::payload_bytes)
+            .sum()
+    }
+
+    #[inline]
+    fn payload_bytes(entry: &StoredImage) -> u64 {
+        u64::from(entry.info.width)
+            .saturating_mul(u64::from(entry.info.height))
+            .saturating_mul(4)
+    }
+
     /// F-1: drain every `pending_delete` entry whose in-flight
     /// refcount has already reached zero.  Returns the freed
     /// entries so the caller can issue `glDeleteTextures` under
@@ -494,5 +527,28 @@ mod tests {
         assert_eq!(info.height, 20);
         assert_eq!(info.color_type, ColorType::RGBA8888);
         assert_eq!(info.alpha_type, AlphaType::Unpremul);
+    }
+    /// P2-MEM: repeated create/delete must return both metadata and retained
+    /// payload accounting to baseline.  The second remove remains idempotent.
+    #[test]
+    fn repeated_create_delete_returns_retained_bytes_to_baseline() {
+        let mut store = ImageStore::new();
+        assert_eq!(store.live_byte_estimate(), 0);
+        assert_eq!(store.pending_delete_byte_estimate(), 0);
+        assert_eq!(store.wrapper_byte_estimate(), 0);
+        for _texture in 1..=32 {
+            let id = store.generate_id();
+            store.insert(
+                id,
+                StoredImage::dedicated(1, GpuImageInfo::rgba8_unpremul(8, 4)),
+            );
+            assert_eq!(store.live_byte_estimate(), 1 * 8 * 4 * 4);
+            assert!(store.remove(id).is_some());
+            assert!(store.remove(id).is_none());
+            assert_eq!(store.live_byte_estimate(), 0);
+            assert_eq!(store.pending_delete_byte_estimate(), 0);
+            assert_eq!(store.wrapper_byte_estimate(), 0);
+            assert_eq!(store.entries.len(), 0);
+        }
     }
 }

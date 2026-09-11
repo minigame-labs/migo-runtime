@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::protocol::audio_cmd::{InnerAudioEvent, InnerAudioEventType, InnerAudioId};
 use tokio::sync::mpsc::Receiver;
 
@@ -268,12 +269,56 @@ impl AudioSource {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// Reserve exactly the requested growth before copying decoder-owned PCM.
+    ///
+    /// `Vec`'s normal growth policy doubles capacity, so checking only length
+    /// after `extend_from_slice` allowed a stream just below the logical limit
+    /// to retain substantially more physical PCM. The reserve is performed
+    /// before the copy and callers reject a capacity that would exceed the
+    /// stream ceiling.
+    fn try_reserve_for(&mut self, additional: usize) -> EngineResult<()> {
+        let AudioSource::Owned(samples) = self else {
+            return Ok(());
+        };
+        let required = samples.len().checked_add(additional).ok_or_else(|| {
+            EngineError::from_detail(ErrorCode::InvalidArgument, "stream PCM length overflow")
+        })?;
+        if required as u64 > crate::limits::MAX_AUDIO_PCM_SAMPLES {
+            return Err(EngineError::from_detail(
+                ErrorCode::InputSaturated,
+                "stream PCM exceeds the decoded window",
+            ));
+        }
+        if required > samples.capacity() {
+            samples
+                .try_reserve_exact(required - samples.len())
+                .map_err(|_| {
+                    EngineError::from_detail(ErrorCode::OutOfMemory, "stream PCM allocation failed")
+                })?;
+        }
+        let capacity_bytes = samples
+            .capacity()
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| {
+                EngineError::from_detail(ErrorCode::InvalidArgument, "stream PCM capacity overflow")
+            })?;
+        if capacity_bytes as u64 > crate::limits::MAX_AUDIO_PCM_BYTES {
+            return Err(EngineError::from_detail(
+                ErrorCode::InputSaturated,
+                "stream PCM capacity exceeds the decoded window",
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    fn capacity_bytes(&self) -> usize {
+        match self {
+            AudioSource::Owned(samples) => samples.capacity() * std::mem::size_of::<f32>(),
+            AudioSource::Cached(audio) => audio.samples.capacity() * std::mem::size_of::<f32>(),
+        }
+    }
 
     /// Append to owned samples (only works for Owned variant).
-    ///
-    /// A slice rather than a `Vec`: the streaming path's samples arrive in a
-    /// buffer on loan from the decoder, and taking ownership of it here would be
-    /// taking it out of circulation.
     fn extend_from_slice(&mut self, samples: &[f32]) {
         if let AudioSource::Owned(v) = self {
             v.extend_from_slice(samples);
@@ -307,6 +352,14 @@ pub struct InnerAudioPlayer {
     source: AudioSource,
     /// Current position in samples (not frames)
     position: usize,
+    /// Sub-frame fractional position as 16-bit fixed-point (0xFFFF = just under 1 frame).
+    ///
+    /// Persisted across quanta so playbackRate != 1.0 does not drift: discarding
+    /// the fraction each quantum shifts every block's starting interpolation by
+    /// up to one source frame, compounding over the track duration.  Reset to 0
+    /// on seek, stop, load, and the streaming-stall snap (which pins to an
+    /// integer boundary).
+    position_frac: u16,
     /// Output channels from device
     output_channels: u32,
     /// Pending events to send back to JS
@@ -317,6 +370,13 @@ pub struct InnerAudioPlayer {
     stream_state: Option<Arc<StreamingState>>,
     /// Whether streaming download is complete
     stream_complete: bool,
+    /// Absolute media frames represented before `source[0]` in a bounded
+    /// streaming window. Once a prefix is consumed it is returned to the
+    /// decoder/window budget and this base keeps JS position absolute.
+    stream_base_frames: u64,
+    /// A prefix was discarded, so the partial source must not be inserted into
+    /// the completed-track cache.
+    stream_windowed: bool,
     /// Whether we've sent canplay event for streaming
     stream_canplay_sent: bool,
     /// Whether a `Waiting` (buffering-stall) event has already been emitted for
@@ -338,6 +398,7 @@ impl InnerAudioPlayer {
             shared: Arc::new(InnerAudioSharedState::new()),
             source: AudioSource::Owned(Vec::new()),
             position: 0,
+            position_frac: 0,
             output_channels,
             // Bought once at construction rather than on the first event, so the
             // audio thread's first tick is no different from its ten-thousandth.
@@ -346,6 +407,8 @@ impl InnerAudioPlayer {
             stream_rx: None,
             stream_state: None,
             stream_complete: false,
+            stream_base_frames: 0,
+            stream_windowed: false,
             stream_canplay_sent: false,
             waiting_notified: false,
             frames_since_time_update: 0,
@@ -405,8 +468,11 @@ impl InnerAudioPlayer {
         self.shared.set_position_frames(0);
         self.source = AudioSource::Owned(audio.samples);
         self.position = 0;
+        self.position_frac = 0;
         self.frames_since_time_update = 0;
         self.stream_complete = true;
+        self.stream_base_frames = 0;
+        self.stream_windowed = false;
         self.loading_url = None;
         self.shared.set_loaded(true);
         self.push_event(InnerAudioEventType::CanPlay);
@@ -440,8 +506,11 @@ impl InnerAudioPlayer {
         self.shared.set_position_frames(0);
         self.source = AudioSource::Cached(audio);
         self.position = 0;
+        self.position_frac = 0;
         self.frames_since_time_update = 0;
         self.stream_complete = true;
+        self.stream_base_frames = 0;
+        self.stream_windowed = false;
         self.loading_url = None;
         self.shared.set_loaded(true);
         self.push_event(InnerAudioEventType::CanPlay);
@@ -469,13 +538,15 @@ impl InnerAudioPlayer {
         const ESTIMATED_CAPACITY: usize = 44100 * 2 * 5;
         self.source = AudioSource::Owned(Vec::with_capacity(ESTIMATED_CAPACITY));
         self.position = 0;
+        self.position_frac = 0;
         self.frames_since_time_update = 0;
-        self.shared.set_position_frames(0);
         self.shared.set_duration_frames(0);
         self.shared.set_sample_rate(0);
         self.shared.set_channels(0);
         self.shared.set_loaded(false);
         self.stream_complete = false;
+        self.stream_base_frames = 0;
+        self.stream_windowed = false;
         self.stream_canplay_sent = false;
         self.loading_url = Some(url);
 
@@ -485,16 +556,45 @@ impl InnerAudioPlayer {
 
         tracing::debug!("InnerAudioPlayer {} started streaming", self.id);
     }
+    const STREAM_WINDOW_SAMPLES: usize = 44_100 * 2 * 5;
+
+    /// Reclaim consumed stream prefix without allocating.
+    ///
+    /// A streaming track is fed at roughly playback rate. Keeping a bounded
+    /// look-back window lets the receiver reuse its existing allocation instead
+    /// of retaining the complete decoded track. Completed streams are never
+    /// trimmed here: their full backing may still be handed to the cache.
+    fn trim_consumed_stream_prefix(&mut self) {
+        if self.stream_complete || self.position <= Self::STREAM_WINDOW_SAMPLES {
+            return;
+        }
+        let channels = self.shared.channels() as usize;
+        if channels == 0 {
+            return;
+        }
+        let trim = ((self.position - Self::STREAM_WINDOW_SAMPLES) / channels) * channels;
+        if trim == 0 {
+            return;
+        }
+        if let AudioSource::Owned(samples) = &mut self.source {
+            samples.drain(..trim);
+            self.position -= trim;
+            self.stream_base_frames = self
+                .stream_base_frames
+                .saturating_add((trim / channels) as u64);
+            self.stream_windowed = true;
+        }
+    }
 
     /// Get the URL currently being loaded (for cache key)
     pub fn loading_url(&self) -> Option<&str> {
         self.loading_url.as_deref()
     }
 
-    /// Take ownership of streamed samples for caching
-    /// Only call after stream is complete
+    /// Take ownership of streamed samples for caching.
+    /// Only call after stream is complete and no prefix was reclaimed.
     pub fn take_streamed_audio(&mut self) -> Option<DecodedAudio> {
-        if !self.stream_complete {
+        if !self.stream_complete || self.stream_windowed {
             return None;
         }
 
@@ -514,6 +614,20 @@ impl InnerAudioPlayer {
         })
     }
 
+    /// Replace a completed stream's owned backing with its cached Arc.
+    ///
+    /// This is an ownership handoff, not a new load lifecycle: the stream may
+    /// already be playing or paused at a non-zero fixed-point position. Resetting
+    /// that state here would replay the track and duplicate CanPlay/Play events.
+    pub fn attach_cached_backing(&mut self, audio: Arc<DecodedAudio>) {
+        self.source = AudioSource::Cached(audio.clone());
+        self.shared.set_duration_frames(audio.frame_count() as u64);
+        self.stream_complete = true;
+        self.stream_base_frames = 0;
+        self.stream_windowed = false;
+        self.loading_url = None;
+    }
+
     /// Cancel ongoing stream
     fn cancel_stream(&mut self) {
         if let Some(state) = self.stream_state.take() {
@@ -524,6 +638,10 @@ impl InnerAudioPlayer {
 
     /// Process incoming stream messages (call from audio thread loop)
     pub fn poll_stream(&mut self) {
+        // Reclaim consumed data before appending the next decoder loan. This
+        // keeps the retained window bounded while preserving a contiguous slice
+        // for interpolation.
+        self.trim_consumed_stream_prefix();
         // Take the receiver out to split the borrow on self,
         // allowing inline processing without a temporary Vec.
         let mut rx = match self.stream_rx.take() {
@@ -549,24 +667,14 @@ impl InnerAudioPlayer {
                     );
                 }
                 StreamMsg::Samples(new_samples) => {
-                    self.source.extend_from_slice(&new_samples);
-                    // Dropped at the end of this arm, which returns the buffer to
-                    // the decoder that lent it.
-                    drop(new_samples);
-                    // Fresh data arrived: re-arm the stall notification so a
-                    // subsequent underrun emits `Waiting` again.
-                    self.waiting_notified = false;
-
-                    // Cap accumulated PCM at the budget; abort a runaway stream
-                    // instead of growing memory without bound. Crucially, do NOT
-                    // mark the stream complete — a complete stream is treated as a
-                    // success by the audio thread (cached + load_cached -> CanPlay).
-                    // Discard the partial data and make the player inert instead.
-                    if !crate::limits::pcm_samples_within_budget(self.source.len()) {
+                    // Reserve against the target length before copying. The old
+                    // extend-then-check sequence let Vec's growth policy retain
+                    // a capacity well above the logical 64 MiB ceiling.
+                    if let Err(error) = self.source.try_reserve_for(new_samples.len()) {
                         tracing::error!(
-                            "InnerAudioPlayer {} streaming exceeded the PCM budget ({} samples), aborting",
+                            "InnerAudioPlayer {} cannot grow streaming PCM: {}",
                             self.id,
-                            self.source.len()
+                            error
                         );
                         self.cancel_stream();
                         self.source = AudioSource::Owned(Vec::new());
@@ -577,6 +685,13 @@ impl InnerAudioPlayer {
                         self.push_event(InnerAudioEventType::Error);
                         break;
                     }
+                    self.source.extend_from_slice(&new_samples);
+                    // Dropped at the end of this arm, which returns the buffer to
+                    // the decoder that lent it.
+                    drop(new_samples);
+                    // Fresh data arrived: re-arm the stall notification so a
+                    // subsequent underrun emits `Waiting` again.
+                    self.waiting_notified = false;
 
                     // Update duration as we receive more data
                     let channels = self.shared.channels() as usize;
@@ -711,9 +826,9 @@ impl InnerAudioPlayer {
         tracing::debug!("InnerAudioPlayer {} stop", self.id);
         self.shared.set_state(PlaybackState::Stopped);
         self.position = 0;
+        self.position_frac = 0;
         self.shared.set_position_frames(0);
         self.frames_since_time_update = 0;
-        self.push_event(InnerAudioEventType::Stop);
     }
 
     /// Drain pending events (call from audio thread loop).
@@ -755,13 +870,18 @@ impl InnerAudioPlayer {
             return false;
         }
 
-        // Handle pending seek
+        // Handle pending seek. Streaming windows are addressed in absolute
+        // media frames; seek targets before the reclaimed prefix land at the
+        // oldest retained frame rather than indexing before the Vec.
         if let Some(target_frame) = self.shared.take_seek_target() {
             self.push_event(InnerAudioEventType::Seeking);
-            self.position = (target_frame as usize) * channels;
-            self.position = self.position.min(self.source.len());
+            let relative_frame = target_frame.saturating_sub(self.stream_base_frames) as usize;
+            self.position = relative_frame
+                .saturating_mul(channels)
+                .min(self.source.len());
+            self.position_frac = 0;
             self.shared
-                .set_position_frames(self.position as u64 / channels as u64);
+                .set_position_frames(self.stream_base_frames + (self.position / channels) as u64);
             // A seek may land in buffered data and resume playback, so a later
             // underrun should notify again.
             self.waiting_notified = false;
@@ -778,10 +898,11 @@ impl InnerAudioPlayer {
         let samples = self.source.samples();
 
         // Position is tracked in FRAMES (not samples) as 16.16 fixed point; the
-        // fractional part drives the interpolation below.
+        // fractional part drives the interpolation below and is retained across
+        // process calls so chunk boundaries cannot change the rendered signal.
         let rate_fixed = (playback_rate * 65536.0) as u64;
         let current_frame = self.position / channels;
-        let mut frame_fixed = (current_frame as u64) << 16; // 16.16 fixed point for frame position
+        let mut frame_fixed = ((current_frame as u64) << 16) | (self.position_frac as u64);
 
         let total_frames = samples.len() / channels;
         let output_frames = output.len() / output_channels;
@@ -804,10 +925,13 @@ impl InnerAudioPlayer {
                     // shared mix bus that every context and every other player has
                     // already added into, so writing silence here would delete their
                     // audio for up to a whole block, not just mute this player.
-                    // Keep position at end of available data
+                    // Keep position at end of available data at an integer frame
+                    // boundary; no source samples were consumed beyond it.
                     let final_frame = total_frames.saturating_sub(1);
                     self.position = final_frame * channels;
-                    self.shared.set_position_frames(final_frame as u64);
+                    self.position_frac = 0;
+                    self.shared
+                        .set_position_frames(self.stream_base_frames + final_frame as u64);
                     if !self.waiting_notified {
                         self.waiting_notified = true;
                         self.push_event(InnerAudioEventType::Waiting);
@@ -839,6 +963,7 @@ impl InnerAudioPlayer {
                     // Stop contributing; do not clear. See the streaming-stall
                     // branch above: `output` is the shared additive mix bus.
                     self.position = 0;
+                    self.position_frac = 0;
                     self.shared.set_position_frames(0);
                     self.frames_since_time_update = 0;
                     return false;
@@ -899,7 +1024,9 @@ impl InnerAudioPlayer {
         }
         let final_frame = ((frame_fixed >> 16) as usize).min(total_frames);
         self.position = final_frame * channels;
-        self.shared.set_position_frames(final_frame as u64);
+        self.position_frac = (frame_fixed & 0xFFFF) as u16;
+        self.shared
+            .set_position_frames(self.stream_base_frames + final_frame as u64);
 
         // Throttled TimeUpdate (~4x/sec of playback) so JS currentTime advances
         // and onTimeUpdate fires between the discrete lifecycle events.
@@ -911,6 +1038,10 @@ impl InnerAudioPlayer {
     /// Check if stream download is complete (for caching)
     pub fn is_stream_complete(&self) -> bool {
         self.stream_complete
+    }
+    #[cfg(test)]
+    pub(crate) fn physical_pcm_bytes(&self) -> usize {
+        self.source.capacity_bytes()
     }
 }
 
@@ -1120,6 +1251,95 @@ mod tests {
         assert_eq!(
             second, 0,
             "a small next block must not over-fire from backlog"
+        );
+    }
+
+    #[test]
+    fn fractional_position_is_invariant_to_chunk_splitting() {
+        fn make_player() -> InnerAudioPlayer {
+            let mut player = InnerAudioPlayer::new(1, 1);
+            player.shared.set_sample_rate(48_000);
+            player.shared.set_channels(1);
+            player.shared.set_loaded(true);
+            player.shared.set_state(PlaybackState::Playing);
+            player.shared.set_playback_rate(1.1);
+            player
+                .source
+                .extend_from_slice(&(0..256).map(|frame| frame as f32).collect::<Vec<_>>());
+            player
+        }
+
+        let mut one_quantum = make_player();
+        let mut one_output = [0.0; 64];
+        assert!(one_quantum.process(&mut one_output));
+
+        let mut split = make_player();
+        let mut split_output = [0.0; 64];
+        for chunk in split_output.chunks_mut(8) {
+            assert!(split.process(chunk));
+        }
+
+        assert_eq!(split_output, one_output);
+        assert_eq!(split.position, one_quantum.position);
+        assert_eq!(split.position_frac, one_quantum.position_frac);
+    }
+
+    #[test]
+    fn attaching_cached_backing_preserves_stream_playback_state() {
+        let mut player = InnerAudioPlayer::new(1, 2);
+        player.shared.set_sample_rate(48_000);
+        player.shared.set_channels(2);
+        player.shared.set_loaded(true);
+        player.shared.set_state(PlaybackState::Playing);
+        player.shared.set_loop_enabled(true);
+        player.position = 20;
+        player.position_frac = 1234;
+        player.frames_since_time_update = 17;
+        player.loading_url = Some("https://example.test/audio.mp3".into());
+        player.source.extend_from_slice(&[0.0; 20]);
+
+        let cached = Arc::new(DecodedAudio {
+            samples: vec![0.25; 40],
+            sample_rate: 48_000,
+            channels: 2,
+        });
+        player.attach_cached_backing(cached);
+
+        assert_eq!(player.position, 20);
+        assert_eq!(player.position_frac, 1234);
+        assert_eq!(player.shared.state(), PlaybackState::Playing);
+        assert!(player.shared.loop_enabled());
+        assert_eq!(player.frames_since_time_update, 17);
+        assert!(player.loading_url.is_none());
+        assert_eq!(player.source.len(), 40);
+        assert_eq!(player.shared.duration_frames(), 20);
+    }
+    #[test]
+    fn streaming_rejects_before_capacity_can_cross_pcm_ceiling() {
+        let state = StreamingState::new();
+        let (tx, rx) = mpsc::channel(2);
+        let mut player = InnerAudioPlayer::new(1, 1);
+        player.start_streaming("https://example.test/long".into(), rx, state);
+        player.shared.set_sample_rate(48_000);
+        player.shared.set_channels(1);
+        player.source =
+            AudioSource::Owned(vec![0.0; crate::limits::MAX_AUDIO_PCM_SAMPLES as usize - 4]);
+
+        let mut pool = crate::streaming::PcmPool::new();
+        let mut pcm = pool.take();
+        pcm.buffer_mut().resize(8, 0.0);
+        tx.try_send(StreamMsg::Samples(pcm)).unwrap();
+        player.poll_stream();
+
+        assert!(
+            player.physical_pcm_bytes() <= crate::limits::MAX_AUDIO_PCM_BYTES as usize,
+            "rejected stream growth must not leave capacity above the PCM ceiling"
+        );
+        assert_eq!(player.shared.state(), PlaybackState::Stopped);
+        assert!(
+            player
+                .drain_events()
+                .any(|event| event.event_type == InnerAudioEventType::Error)
         );
     }
 }

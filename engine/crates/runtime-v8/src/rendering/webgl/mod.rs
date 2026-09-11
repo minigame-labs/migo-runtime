@@ -168,6 +168,7 @@ extension!(host_v8_webgl,
 
         // Misc
         op_read_pixels,
+        op_read_pixels_to_buffer,
         op_hint,
 
         // 2D Context (sync ops)

@@ -402,6 +402,10 @@ fn first_reusable(entries: &[(usize, bool)], size: usize) -> Option<usize> {
 pub struct PboPool {
     /// Available PBOs: (buffer, capacity, optional fence from last upload).
     available: Vec<(glow::NativeBuffer, usize, Option<glow::NativeFence>)>,
+    /// Total driver storage reserved by idle entries in `available`.
+    reserved_bytes: usize,
+    /// Storage currently owned by an acquired PBO until `release`.
+    in_flight_bytes: usize,
     /// Maximum pool size
     max_pool_size: usize,
     /// PBO support flag
@@ -420,10 +424,22 @@ impl PboPool {
         let fence_supported = pbo_supported;
         Self {
             available: Vec::with_capacity(max_pool_size),
+            reserved_bytes: 0,
+            in_flight_bytes: 0,
             max_pool_size: max_pool_size.max(1).min(Self::DEFAULT_POOL_SIZE * 2),
             pbo_supported,
             fence_supported,
         }
+    }
+
+    /// Bytes reserved by idle PBO entries (not just entry count).
+    pub fn reserved_bytes(&self) -> usize {
+        self.reserved_bytes
+    }
+
+    /// Bytes held by PBOs currently acquired by an upload.
+    pub fn in_flight_bytes(&self) -> usize {
+        self.in_flight_bytes
     }
 
     /// Check if PBOs are supported
@@ -481,18 +497,14 @@ impl PboPool {
             return None;
         }
 
-        // Probe, never wait. See `first_reusable`: taking a fresh buffer is
-        // safe whatever the driver does with an in-flight one, so there is
-        // nothing a wait can buy.
-        // Inline capacity covers `max_pool_size`, which `new` caps at
-        // `DEFAULT_POOL_SIZE * 2`, so this never reaches the heap.
+        // Probe, never wait.  A fresh name is safe when every warm candidate
+        // is still in flight, so the render thread never blocks on DMA.
         let view: smallvec::SmallVec<[(usize, bool); 8]> = self
             .available
             .iter()
             .map(|(_, entry_size, fence)| {
                 let ready = match fence {
                     None => true,
-                    // Zero timeout: this asks, it does not wait.
                     Some(f) => dma_complete(unsafe { gl.client_wait_sync(*f, 0, 0) }),
                 };
                 (*entry_size, ready)
@@ -500,21 +512,28 @@ impl PboPool {
             .collect();
 
         if let Some(idx) = first_reusable(&view, size) {
-            let (pbo, _, fence) = self.available.remove(idx);
+            let (pbo, entry_size, fence) = self.available.remove(idx);
+            self.reserved_bytes = self.reserved_bytes.saturating_sub(entry_size);
+            // Track requested transfer bytes so release(size) balances even
+            // when a larger historical PBO is reused.
+            self.in_flight_bytes = self.in_flight_bytes.saturating_add(size);
             if let Some(f) = fence {
                 unsafe { gl.delete_sync(f) };
             }
             return Some(pbo);
         }
 
-        // Nothing reusable without waiting — take a fresh name. Its storage is
-        // allocated by the `glBufferData` the caller is about to issue.
-        unsafe { gl.create_buffer().ok() }
+        let pbo = unsafe { gl.create_buffer().ok() };
+        if pbo.is_some() {
+            self.in_flight_bytes = self.in_flight_bytes.saturating_add(size);
+        }
+        pbo
     }
 
     /// Return a PBO to the pool, inserting a fence so the next `acquire`
-    /// can wait for the in-flight DMA to complete.
+    /// can probe the in-flight DMA without blocking.
     pub fn release(&mut self, gl: &glow::Context, pbo: glow::NativeBuffer, size: usize) {
+        self.in_flight_bytes = self.in_flight_bytes.saturating_sub(size);
         if self.available.len() < self.max_pool_size {
             let fence = if self.fence_supported {
                 unsafe { gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok() }
@@ -522,17 +541,14 @@ impl PboPool {
                 None
             };
             self.available.push((pbo, size, fence));
-            // Sort by size for better allocation.
+            self.reserved_bytes = self.reserved_bytes.saturating_add(size);
             self.available.sort_by_key(|(_, s, _)| *s);
         } else {
-            // Pool full, delete the PBO.
-            unsafe {
-                gl.delete_buffer(pbo);
-            }
+            unsafe { gl.delete_buffer(pbo) };
         }
     }
 
-    /// Clear the pool
+    /// Delete all idle names and reset the byte ledger.
     pub fn clear(&mut self, gl: &glow::Context) {
         for (pbo, _, fence) in self.available.drain(..) {
             unsafe {
@@ -542,15 +558,18 @@ impl PboPool {
                 gl.delete_buffer(pbo);
             }
         }
+        self.reserved_bytes = 0;
+        self.in_flight_bytes = 0;
     }
 }
-
 impl Drop for PboPool {
     fn drop(&mut self) {
-        if !self.available.is_empty() {
+        if !self.available.is_empty() || self.reserved_bytes != 0 || self.in_flight_bytes != 0 {
             warn!(
-                "PboPool dropped with {} unreleased PBOs - memory leak",
-                self.available.len()
+                "PboPool dropped with {} unreleased PBOs (reserved={}B, in_flight={}B)",
+                self.available.len(),
+                self.reserved_bytes,
+                self.in_flight_bytes,
             );
         }
     }

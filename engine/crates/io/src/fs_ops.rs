@@ -11,6 +11,9 @@ use std::{
     time::Instant,
 };
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
 #[cfg(feature = "zip-extract")]
 use shared::protocol::io_cmd::{ZipEntryData, ZipEntryResult};
 use shared::{
@@ -21,9 +24,24 @@ use shared::{
     },
     vfs::MountTable,
 };
+/// Per-call cap for `readZipEntry` result rows. This is separate from the
+/// extraction budget: it protects the result table built by `all` and by
+/// explicit requests, including rows that carry only an error.
+#[cfg(feature = "zip-extract")]
+const MAX_ZIP_CALL_ENTRIES: usize = 2_000;
+
+/// Per-call cap for uncompressed content returned by `readZipEntry`.
+///
+/// `MAX_READ_LENGTH` remains the single-entry guard; this aggregate guard
+/// prevents a valid archive with many valid entries from retaining an
+/// unbounded result table. The accounting happens after text decoding so
+/// encoded/text expansion is charged too.
+#[cfg(feature = "zip-extract")]
+const MAX_ZIP_CALL_BYTES: usize = 64 * 1024 * 1024;
 
 /// Initialized owned storage and its filled prefix. Keeping these separate
 /// avoids a fallible shrink at EOF and lets V8 account for all retained storage.
+/// A regular file's remaining length makes the two equal on the first try.
 #[derive(Debug)]
 pub struct OwnedFileRead {
     storage: Box<[u8]>,
@@ -50,10 +68,33 @@ impl OwnedFileRead {
     }
 }
 
-fn read_owned_buffer(reader: &mut impl Read, limit: usize) -> Result<OwnedFileRead, EngineError> {
+/// Bytes still readable from the cursor, when the kernel already knows.
+///
+/// `None` for anything without a meaningful length -- a pipe, a character
+/// device, an fd the platform will not stat -- which is what the doubling path
+/// in [`read_owned_buffer`] exists for. Everything else answers exactly, so the
+/// staging allocation is the payload's size instead of up to twice it, with no
+/// intermediate growth and no reallocation.
+fn readable_remaining(file: &mut std::fs::File) -> Option<usize> {
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let position = file.stream_position().ok()?;
+    usize::try_from(metadata.len().saturating_sub(position)).ok()
+}
+
+fn read_owned_buffer(
+    reader: &mut impl Read,
+    limit: usize,
+    remaining: Option<usize>,
+) -> Result<OwnedFileRead, EngineError> {
     let mut storage = Vec::new();
     let mut filled = 0;
-    let initial = limit.min(64 * 1024);
+    // A known length is not a promise: the file can be replaced or truncated
+    // between the stat and the read, so the loop below still decides when the
+    // read is over. It only stops being the allocator.
+    let initial = limit.min(remaining.unwrap_or(64 * 1024));
     storage
         .try_reserve_exact(initial)
         .map_err(|err| io_err(std::io::Error::new(std::io::ErrorKind::OutOfMemory, err)))?;
@@ -71,7 +112,12 @@ fn read_owned_buffer(reader: &mut impl Read, limit: usize) -> Result<OwnedFileRe
                 Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(err) => return Err(io_err(err)),
             };
-            let next = limit.min(storage.len().saturating_mul(2));
+            // Grow to at least what the probe already holds. A stat-derived
+            // `initial` can be small or zero -- a file that grew since the stat
+            // reaches here with a full probe and a one-byte doubling step -- so
+            // the destination size decides the floor, not the doubling.
+            let next = limit.min(storage.len().saturating_mul(2).max(filled + count));
+            debug_assert!(filled + count <= next && next <= limit);
             storage
                 .try_reserve_exact(next - storage.len())
                 .map_err(|err| io_err(std::io::Error::new(std::io::ErrorKind::OutOfMemory, err)))?;
@@ -353,20 +399,123 @@ fn compute_digest(data: &[u8], algorithm: &str) -> Result<String, EngineError> {
 // FileTable: manages open file descriptors
 // ---------------------------------------------------------------------------
 
+/// Per-fd file handle with its I/O operations. Stored behind an
+/// `Arc<parking_lot::Mutex<FdIo>>` so the global `IoDomain` state lock can be
+/// dropped before actual disk reads and writes — operations on independent fds
+/// run in parallel while same-fd operations serialize on this inner mutex.
+///
+/// The `sync_on_write` flag was previously a HashSet in `FileTable`; embedding
+/// it here keeps all per-fd mutable state together and removes the extra lookup
+/// on every write.
+pub struct FdIo {
+    file: std::fs::File,
+    /// True when this fd was opened with `'as'` / `'as+'`; every write must
+    /// call `sync_data` (fdatasync) before returning so the durability those
+    /// flags promise actually holds — matching Node-compatible synchronous
+    /// append semantics.
+    sync_on_write: bool,
+}
+
+impl FdIo {
+    fn new(file: std::fs::File, sync_on_write: bool) -> Self {
+        Self {
+            file,
+            sync_on_write,
+        }
+    }
+
+    /// Read up to `len` bytes, optionally seeking first.
+    pub fn read(&mut self, len: u64, position: Option<u64>) -> Result<Vec<u8>, EngineError> {
+        if len > MAX_READ_LENGTH {
+            return Err(
+                EngineError::new(ErrorCode::InvalidArgument).with_detail(format!(
+                    "read length {} exceeds limit {}",
+                    len, MAX_READ_LENGTH
+                )),
+            );
+        }
+        self.read_for_buffer(len as usize, position)
+            .map(OwnedFileRead::into_vec)
+    }
+
+    /// Owned staging for BYOB.  Storage is the file's own remaining length so
+    /// a large destination does not reserve more than the read can deliver.
+    pub fn read_for_buffer(
+        &mut self,
+        len: usize,
+        position: Option<u64>,
+    ) -> Result<OwnedFileRead, EngineError> {
+        if let Some(pos) = position {
+            self.file.seek(SeekFrom::Start(pos)).map_err(io_err)?;
+        }
+        let remaining = readable_remaining(&mut self.file);
+        read_owned_buffer(&mut self.file, len, remaining)
+    }
+
+    /// Read into a caller-provided buffer without allocation.  Fills `buf`
+    /// and returns the byte count (`< buf.len()` at EOF).
+    pub fn read_into(
+        &mut self,
+        buf: &mut [u8],
+        position: Option<u64>,
+    ) -> Result<usize, EngineError> {
+        if let Some(pos) = position {
+            self.file.seek(SeekFrom::Start(pos)).map_err(io_err)?;
+        }
+        let mut total = 0;
+        while total < buf.len() {
+            match self.file.read(&mut buf[total..]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(io_err(e)),
+            }
+        }
+        Ok(total)
+    }
+
+    /// Write `data` to this fd.  `sync_data` is called afterward for fds
+    /// opened with the `'as'` / `'as+'` durability flags.
+    pub fn write(&mut self, data: &[u8], position: Option<u64>) -> Result<usize, EngineError> {
+        if let Some(pos) = position {
+            self.file.seek(SeekFrom::Start(pos)).map_err(io_err)?;
+        }
+        self.file.write_all(data).map_err(io_err)?;
+        if self.sync_on_write {
+            // `sync_data` (fdatasync) rather than `sync_all`: we only need
+            // data + size durable, not atime/mtime — the cheaper guarantee
+            // callers of `'as'` actually want.
+            self.file.sync_data().map_err(io_err)?;
+        }
+        Ok(data.len())
+    }
+
+    /// Stat this fd.  Does not consult synthetic stats; the caller checks
+    /// those before calling here.
+    pub fn fstat(&self) -> Result<FileStat, EngineError> {
+        let meta = self.file.metadata().map_err(io_err)?;
+        Ok(build_stat(meta))
+    }
+
+    /// Truncate or extend this fd to `len` bytes.
+    pub fn ftruncate(&mut self, len: u64) -> Result<(), EngineError> {
+        self.file.set_len(len).map_err(io_err)?;
+        // Best-effort cursor move to end; ignore seek errors on non-seekable fds.
+        let _ = self.file.seek(SeekFrom::End(0));
+        Ok(())
+    }
+}
+
 /// Manages open file descriptors with ID allocation, temporary file cleanup,
-/// and optional synthetic stat data.
+/// and optional synthetic stat data.  Each fd's `File` and I/O state lives in
+/// a per-fd `Arc<parking_lot::Mutex<FdIo>>` so operations on different fds can
+/// proceed concurrently once the table lock is released.
 pub struct FileTable {
     next_id: FileId,
     free_ids: Vec<FileId>,
-    files: HashMap<FileId, std::fs::File>,
+    files: HashMap<FileId, std::sync::Arc<parking_lot::Mutex<FdIo>>>,
     temp_files: HashMap<FileId, PathBuf>,
     synthetic_stats: HashMap<FileId, FileStat>,
-    /// FDs opened with a synchronous-write flag (`'as'` / `'as+'`).
-    /// Each `write` to these must `fsync` before returning so the
-    /// durability the flag name promises actually holds — matching
-    /// Node-compatible synchronous append semantics. Kept as a set (not a `File` field)
-    /// so the common non-sync fd pays nothing.
-    sync_on_write: std::collections::HashSet<FileId>,
 }
 
 impl FileTable {
@@ -380,7 +529,6 @@ impl FileTable {
             files: HashMap::with_capacity(Self::INITIAL_FILE_CAPACITY),
             temp_files: HashMap::new(),
             synthetic_stats: HashMap::new(),
-            sync_on_write: std::collections::HashSet::new(),
         }
     }
 
@@ -452,10 +600,9 @@ impl FileTable {
             OpenFlag::AppendSyncCreate | OpenFlag::ReadAppendSyncCreate
         );
 
-        // For the sync-append flags, open in a created-aware, race-free way
-        // (see `open_append_created_aware`) so we fsync the parent dir *only*
-        // when we actually created the file, instead of on every `'as'` open.
-        // Other flags use the `opts` built above.
+        // For the sync-append flags, open in a created-aware, race-free way so
+        // we fsync the parent dir *only* when we actually created the file,
+        // instead of on every `'as'` open.  Other flags use `opts` directly.
         let (file, created) = if is_sync_append {
             open_append_created_aware(path, matches!(flag, OpenFlag::ReadAppendSyncCreate))?
         } else {
@@ -463,21 +610,18 @@ impl FileTable {
         };
 
         let id = self.alloc_id()?;
-        // `'as'` / `'as+'` request synchronous appends: remember the fd so
-        // every `write` fsyncs before returning (see `write`).
-        if is_sync_append {
-            self.sync_on_write.insert(id);
-            if created {
-                // Only a freshly-created file needs its directory entry
-                // (the name) made durable. Best-effort here: `'as'` is a
-                // durability *hint*, not the strict Durable `appendFile`
-                // contract, so a parent-dir fsync failure doesn't fail the
-                // open. Per-write `sync_data` (see `write`) keeps contents
-                // durable regardless.
-                let _ = fsync_parent_dir(Path::new(path));
-            }
+
+        // Best-effort parent-dir fsync so the directory entry is durable for
+        // freshly-created `'as'` files.  Failure is not fatal: per-write
+        // `sync_data` keeps content durable regardless.
+        if is_sync_append && created {
+            let _ = fsync_parent_dir(Path::new(path));
         }
-        self.files.insert(id, file);
+
+        self.files.insert(
+            id,
+            std::sync::Arc::new(parking_lot::Mutex::new(FdIo::new(file, is_sync_append))),
+        );
         if let Some(path) = cleanup_path {
             self.temp_files.insert(id, path);
         }
@@ -490,16 +634,19 @@ impl FileTable {
     fn close_with_cleanup_inner(&mut self, id: FileId) -> Result<Option<PathBuf>, EngineError> {
         self.files
             .remove(&id)
-            .map(|file| {
-                drop(file);
+            .map(|_arc| {
+                // Drop the Arc; the file closes when the last clone drops.
+                // Any in-flight I/O that already cloned the Arc via
+                // `get_fd_entry` will complete normally; subsequent lookups
+                // return `BadFileDescriptor`.
                 let cleanup_path = self.temp_files.remove(&id);
                 if let Some(path) = cleanup_path.as_ref() {
                     let _ = std::fs::remove_file(path);
                 }
                 self.synthetic_stats.remove(&id);
-                // Clear the sync flag so a later fd that reuses this id
-                // (via `free_ids`) doesn't inherit a stale sync intent.
-                self.sync_on_write.remove(&id);
+                // Return the ID to the pool so a later open may reuse it.
+                // The old Arc is already gone from `files`, so the reused ID
+                // will point to a fresh FdIo with no aliasing to in-flight ops.
                 self.free_ids.push(id);
                 cleanup_path
             })
@@ -515,150 +662,116 @@ impl FileTable {
         self.close_with_cleanup_inner(id)
     }
 
-    /// Read up to `len` bytes from a file descriptor, optionally seeking first.
+    /// Read up to `len` bytes.  Acquires the per-fd lock while holding the
+    /// table lock; callers that need fd-parallel I/O should use `get_fd_entry`
+    /// instead and release the table lock before locking the per-fd entry.
     pub fn read(
         &mut self,
         id: FileId,
         len: u64,
         position: Option<u64>,
     ) -> Result<Vec<u8>, EngineError> {
-        if len > MAX_READ_LENGTH {
-            return Err(
-                EngineError::new(ErrorCode::InvalidArgument).with_detail(format!(
-                    "read length {} exceeds limit {}",
-                    len, MAX_READ_LENGTH
-                )),
-            );
-        }
-
-        self.read_for_buffer(id, len as usize, position)
-            .map(OwnedFileRead::into_vec)
+        self.files
+            .get(&id)
+            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?
+            .lock()
+            .read(len, position)
     }
 
-    /// Owned staging for BYOB. The caller validates `len` against its actual
-    /// destination view; the ordinary read API retains its separate size cap.
+    /// Owned staging for BYOB.
     pub fn read_for_buffer(
         &mut self,
         id: FileId,
         len: usize,
         position: Option<u64>,
     ) -> Result<OwnedFileRead, EngineError> {
-        let file = self
-            .files
-            .get_mut(&id)
-            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?;
-
-        if let Some(pos) = position {
-            file.seek(SeekFrom::Start(pos)).map_err(io_err)?;
-        }
-
-        read_owned_buffer(file, len)
+        self.files
+            .get(&id)
+            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?
+            .lock()
+            .read_for_buffer(len, position)
     }
 
-    /// Read into a caller-provided buffer, optionally seeking first.
-    ///
-    /// Fills `buf` from the file and returns the number of bytes read
-    /// (`< buf.len()` at EOF). Unlike [`read`](Self::read) this performs
-    /// **no allocation**. The caller must provide exclusive access to the
-    /// destination for the entire call. This allows a single kernel copy
-    /// (no intermediate `Vec` + no V8 `ToJsBuffer` copy + no JS-side
-    /// `dst.set`). The length is implicitly bounded by `buf.len()`, which is
-    /// itself bounded by the JS-allocated buffer, so no `MAX_READ_LENGTH`
-    /// check is needed here.
+    /// Read into a caller-provided buffer without allocation.
     pub fn read_into(
         &mut self,
         id: FileId,
         buf: &mut [u8],
         position: Option<u64>,
     ) -> Result<usize, EngineError> {
-        let file = self
-            .files
-            .get_mut(&id)
-            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?;
-
-        if let Some(pos) = position {
-            file.seek(SeekFrom::Start(pos)).map_err(io_err)?;
-        }
-
-        let mut total = 0;
-        while total < buf.len() {
-            match file.read(&mut buf[total..]) {
-                Ok(0) => break, // EOF
-                Ok(n) => total += n,
-                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(io_err(e)),
-            }
-        }
-        Ok(total)
+        self.files
+            .get(&id)
+            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?
+            .lock()
+            .read_into(buf, position)
     }
 
-    /// Write data to a file descriptor, optionally seeking first.
-    ///
-    /// For fds opened with a synchronous flag (`'as'` / `'as+'`) the
-    /// written bytes are flushed to disk (`sync_data`) before returning,
-    /// so the durability those flags advertise actually holds.
+    /// Write data to a file descriptor.
     pub fn write(
         &mut self,
         id: FileId,
         data: &[u8],
         position: Option<u64>,
     ) -> Result<usize, EngineError> {
-        let sync = self.sync_on_write.contains(&id);
-        let file = self
-            .files
-            .get_mut(&id)
-            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?;
-
-        if let Some(pos) = position {
-            file.seek(SeekFrom::Start(pos)).map_err(io_err)?;
-        }
-
-        file.write_all(data).map_err(io_err)?;
-        if sync {
-            // `sync_data` (fdatasync) rather than `sync_all`: we only need
-            // the data + size durable, not the atime/mtime metadata, which
-            // is the cheaper guarantee callers of `'as'` actually want.
-            file.sync_data().map_err(io_err)?;
-        }
-        Ok(data.len())
+        self.files
+            .get(&id)
+            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?
+            .lock()
+            .write(data, position)
     }
 
     /// Get file stat for a file descriptor (synthetic stat if available).
     pub fn fstat(&self, id: FileId) -> Result<FileStat, EngineError> {
         match self.synthetic_stats.get(&id) {
             Some(stat) => Ok(stat.clone()),
-            None => match self.files.get(&id) {
-                Some(file) => {
-                    let meta = file.metadata().map_err(io_err)?;
-                    Ok(build_stat(meta))
-                }
-                None => Err(code_err(ErrorCode::BadFileDescriptor)),
-            },
+            None => self
+                .files
+                .get(&id)
+                .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?
+                .lock()
+                .fstat(),
         }
     }
 
     /// Truncate (or extend) a file descriptor to the given length.
     pub fn ftruncate(&mut self, id: FileId, len: u64) -> Result<(), EngineError> {
-        let file = self
-            .files
-            .get_mut(&id)
-            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?;
+        self.files
+            .get(&id)
+            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))?
+            .lock()
+            .ftruncate(len)
+    }
 
-        file.set_len(len).map_err(io_err)?;
-
-        // Best-effort move cursor to end.
-        let _ = file.seek(SeekFrom::End(0));
-        Ok(())
+    /// Clone the per-fd entry for concurrent I/O outside the table lock.
+    ///
+    /// The intended usage pattern that achieves fd-level parallelism:
+    /// 1. Hold the domain state lock briefly and call this method.
+    /// 2. Clone the returned `Arc`.
+    /// 3. Drop the domain state lock.
+    /// 4. Lock the `Arc<Mutex<FdIo>>` and perform I/O.
+    ///
+    /// Different fds hold different per-fd mutexes, so their I/O can proceed
+    /// in parallel.  Same-fd operations still serialize on the inner mutex,
+    /// preserving cursor and write ordering.
+    pub fn get_fd_entry(
+        &self,
+        id: FileId,
+    ) -> Result<std::sync::Arc<parking_lot::Mutex<FdIo>>, EngineError> {
+        self.files
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| code_err(ErrorCode::BadFileDescriptor))
     }
 
     /// Close all open file descriptors and clean up temp files.
     pub fn close_all(&mut self) {
+        // Drop all Arcs. In-flight I/O that holds a clone completes normally;
+        // no new lookups can succeed because the HashMap is empty.
         self.files.clear();
         for (_, path) in self.temp_files.drain() {
             let _ = std::fs::remove_file(path);
         }
         self.synthetic_stats.clear();
-        self.sync_on_write.clear();
         self.free_ids.clear();
     }
 }
@@ -1083,9 +1196,16 @@ fn next_temp_id() -> u64 {
 /// atlases and JSON bundles — was paying 1.4–2.2x for the branch.
 ///
 /// Re-run the bench before moving this. Absolute numbers are host-specific;
+
+/// Re-run the bench before moving this. Absolute numbers are host-specific;
 /// the shape (per-page fault overhead dominating until the file is large) is
 /// not, which is why the old value was wrong on any filesystem.
 const MMAP_READ_THRESHOLD: u64 = 8 * 1024 * 1024;
+
+#[cfg(test)]
+static MMAP_PATH_TAKEN: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static READ_PATH_TAKEN: AtomicU64 = AtomicU64::new(0);
 
 /// Read a file (or a range within it). Enforces MAX_READ_LENGTH.
 ///
@@ -1155,6 +1275,8 @@ pub fn read_file(
                         started_at,
                         &format!("size={}B mmap=1", data.len()),
                     );
+                    #[cfg(test)]
+                    MMAP_PATH_TAKEN.fetch_add(1, Ordering::Relaxed);
                     return Ok(data);
                 }
                 Err(e) => {
@@ -1168,6 +1290,8 @@ pub fn read_file(
         // Non-mmap whole-file read: presize to the exact length (bounded
         // by MAX_READ_LENGTH, checked above) so we skip the `Vec` realloc
         // growth loop.
+        #[cfg(test)]
+        READ_PATH_TAKEN.fetch_add(1, Ordering::Relaxed);
         let mut buf = Vec::with_capacity(file_len as usize);
         (&mut file)
             .take(file_len)
@@ -1324,6 +1448,7 @@ fn read_zip_entries_from_reader<R: Read + std::io::Seek>(
     entries_json: &str,
 ) -> Result<Vec<ZipEntryResult>, EngineError> {
     use serde_json;
+    use std::collections::HashSet;
 
     let mut archive = zip::ZipArchive::new(reader).map_err(|e| {
         EngineError::new(ErrorCode::IoError).with_detail(format!("invalid zip: {}", e))
@@ -1346,6 +1471,8 @@ fn read_zip_entries_from_reader<R: Read + std::io::Seek>(
         .unwrap_or(false);
 
     let mut results = Vec::new();
+    let mut returned_entries = 0usize;
+    let mut returned_bytes = 0usize;
 
     if read_all {
         for i in 0..archive.len() {
@@ -1356,11 +1483,13 @@ fn read_zip_entries_from_reader<R: Read + std::io::Seek>(
             if entry.is_dir() {
                 continue;
             }
+            reserve_zip_result_slot(&mut returned_entries)?;
             let name = entry.name().to_string();
             let entry_size = entry.size();
             match read_zip_entry_limited(&mut entry, entry_size, None, None) {
                 Ok(buf) => {
                     let data = encode_zip_data(buf, global_encoding.as_deref());
+                    charge_zip_result_bytes(&mut returned_bytes, &data)?;
                     results.push(ZipEntryResult {
                         path: name,
                         data: Some(data),
@@ -1377,6 +1506,12 @@ fn read_zip_entries_from_reader<R: Read + std::io::Seek>(
             }
         }
     } else if let Some(arr) = entries_val.and_then(|v| v.as_array()) {
+        // The JS wrapper turns this list into an object keyed by path, so
+        // repeating the exact request cannot produce another observable row.
+        // Requests for different ranges or encodings remain distinct and are
+        // charged independently.
+        let mut seen_requests: HashSet<(String, Option<String>, Option<u64>, Option<u64>)> =
+            HashSet::with_capacity(arr.len().min(MAX_ZIP_CALL_ENTRIES));
         for item in arr {
             let path = match item.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p.to_string(),
@@ -1392,13 +1527,19 @@ fn read_zip_entries_from_reader<R: Read + std::io::Seek>(
             let length = item
                 .get("length")
                 .and_then(|v: &serde_json::Value| v.as_u64());
+            if !seen_requests.insert((path.clone(), encoding.map(str::to_owned), position, length))
+            {
+                continue;
+            }
 
+            reserve_zip_result_slot(&mut returned_entries)?;
             match archive.by_name(&path) {
                 Ok(mut entry) => {
                     let entry_size = entry.size();
                     match read_zip_entry_limited(&mut entry, entry_size, position, length) {
                         Ok(buf) => {
                             let data = encode_zip_data(buf, encoding);
+                            charge_zip_result_bytes(&mut returned_bytes, &data)?;
                             results.push(ZipEntryResult {
                                 path,
                                 data: Some(data),
@@ -1426,6 +1567,44 @@ fn read_zip_entries_from_reader<R: Read + std::io::Seek>(
     }
 
     Ok(results)
+}
+
+#[cfg(feature = "zip-extract")]
+#[inline]
+fn reserve_zip_result_slot(returned_entries: &mut usize) -> Result<(), EngineError> {
+    if *returned_entries >= MAX_ZIP_CALL_ENTRIES {
+        return Err(
+            EngineError::new(ErrorCode::OutOfMemory).with_detail(format!(
+                "readZipEntry result count exceeds limit {}",
+                MAX_ZIP_CALL_ENTRIES
+            )),
+        );
+    }
+    *returned_entries += 1;
+    Ok(())
+}
+
+#[cfg(feature = "zip-extract")]
+#[inline]
+fn charge_zip_result_bytes(
+    returned_bytes: &mut usize,
+    data: &ZipEntryData,
+) -> Result<(), EngineError> {
+    let data_len = match data {
+        ZipEntryData::Binary(bytes) => bytes.len(),
+        ZipEntryData::Text(text) => text.len(),
+    };
+    let projected = returned_bytes.saturating_add(data_len);
+    if projected > MAX_ZIP_CALL_BYTES {
+        return Err(
+            EngineError::new(ErrorCode::OutOfMemory).with_detail(format!(
+                "readZipEntry returned content exceeds limit {} bytes",
+                MAX_ZIP_CALL_BYTES
+            )),
+        );
+    }
+    *returned_bytes = projected;
+    Ok(())
 }
 
 #[cfg(feature = "zip-extract")]
@@ -1662,21 +1841,14 @@ mod tests {
 
     /// Does the mmap branch in `read_file` earn its keep?
     ///
-    /// It maps the file and then immediately `to_vec()`s it, so it is not
-    /// saving a copy — the comment there says as much. The claim is that one
-    /// mapping triggers a single readahead where `read` issues many. This puts
-    /// a number on it, because the branch costs an `allow_mmap` flag threaded
-    /// through four call sites plus a soundness rule (never map a file a
-    /// writer could truncate) and should only exist if it pays.
-    ///
-    /// Page cache is warmed first, so this measures the warm path both games
-    /// and this test actually hit on a second load. A cold-cache comparison
-    /// needs `drop_caches` and root.
+    /// This compares explicit backend entry points only at and above the
+    /// production threshold; smaller files are covered by the policy test
+    /// below rather than mislabeled as mmap work.
     #[test]
     #[ignore]
     fn bench_mmap_vs_presized_read() {
         const ITERATIONS: u32 = 50;
-        for size_kib in [256usize, 512, 1024, 2048, 4096, 8192, 16384] {
+        for size_kib in [8192usize, 16384] {
             let dir = tmp_dir(&format!("bench_mmap_{size_kib}"));
             let path = dir.join("payload.bin");
             std::fs::write(&path, vec![0xA5u8; size_kib * 1024]).unwrap();
@@ -1684,8 +1856,14 @@ mod tests {
 
             for _ in 0..5 {
                 std::hint::black_box(read_file(p, None, None, false).unwrap());
+                MMAP_PATH_TAKEN.store(0, Ordering::Relaxed);
                 std::hint::black_box(read_file(p, None, None, true).unwrap());
             }
+            assert_eq!(
+                MMAP_PATH_TAKEN.load(Ordering::Relaxed),
+                1,
+                "the mmap-labeled path must actually take mmap for {size_kib} KiB"
+            );
 
             let via_read = {
                 let started = Instant::now();
@@ -1697,19 +1875,48 @@ mod tests {
             let via_mmap = {
                 let started = Instant::now();
                 for _ in 0..ITERATIONS {
+                    MMAP_PATH_TAKEN.store(0, Ordering::Relaxed);
                     std::hint::black_box(read_file(p, None, None, true).unwrap());
+                    assert_eq!(MMAP_PATH_TAKEN.load(Ordering::Relaxed), 1);
                 }
                 started.elapsed()
             };
 
             eprintln!(
-                "{size_kib:>5} KiB   read {:>10?}/call   mmap {:>10?}/call   mmap is {:.2}x read",
+                "{size_kib:>5} KiB   read {:>10?}/call   mmap {:>10?}/call   read/mmap {:.2}x",
                 via_read / ITERATIONS,
                 via_mmap / ITERATIONS,
                 via_read.as_secs_f64() / via_mmap.as_secs_f64().max(f64::MIN_POSITIVE)
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn mmap_path_is_selected_only_at_or_above_threshold() {
+        let below_dir = tmp_dir("mmap_threshold_below");
+        let above_dir = tmp_dir("mmap_threshold_above");
+        let below = below_dir.join("payload.bin");
+        let above = above_dir.join("payload.bin");
+        std::fs::write(&below, vec![0xA5u8; MMAP_READ_THRESHOLD as usize - 1]).unwrap();
+        std::fs::write(&above, vec![0xA5u8; MMAP_READ_THRESHOLD as usize]).unwrap();
+
+        MMAP_PATH_TAKEN.store(0, Ordering::Relaxed);
+        READ_PATH_TAKEN.store(0, Ordering::Relaxed);
+        let below_data = read_file(below.to_str().unwrap(), None, None, true).unwrap();
+        assert_eq!(below_data.len(), MMAP_READ_THRESHOLD as usize - 1);
+        assert_eq!(MMAP_PATH_TAKEN.load(Ordering::Relaxed), 0);
+        assert_eq!(READ_PATH_TAKEN.load(Ordering::Relaxed), 1);
+
+        MMAP_PATH_TAKEN.store(0, Ordering::Relaxed);
+        READ_PATH_TAKEN.store(0, Ordering::Relaxed);
+        let above_data = read_file(above.to_str().unwrap(), None, None, true).unwrap();
+        assert_eq!(above_data.len(), MMAP_READ_THRESHOLD as usize);
+        assert_eq!(MMAP_PATH_TAKEN.load(Ordering::Relaxed), 1);
+        assert_eq!(READ_PATH_TAKEN.load(Ordering::Relaxed), 0);
+
+        let _ = std::fs::remove_dir_all(below_dir);
+        let _ = std::fs::remove_dir_all(above_dir);
     }
 
     // ---------------------------------------------------------------------
@@ -1902,6 +2109,136 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // FIO-03 tests -----------------------------------------------------------
+    // These regression tests pin the call-level aggregate limits and ensure
+    // the ordinary binary transport stays unchanged.
+
+    /// A ZIP with MAX_ZIP_CALL_ENTRIES + 1 tiny files must be rejected when
+    /// "all" is used, even though every individual entry is well within
+    /// MAX_READ_LENGTH.  Proves the per-call entry-count budget exists.
+    #[cfg(feature = "zip-extract")]
+    #[test]
+    fn zip_all_exceeds_entry_count_budget() {
+        use std::io::Write;
+        let dir = tmp_dir("zip_agg_count");
+        let zip_path = dir.join("big.zip");
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for i in 0..=MAX_ZIP_CALL_ENTRIES {
+            zip.start_file(format!("f{i}.txt"), options).unwrap();
+            zip.write_all(b"x").unwrap();
+        }
+        zip.finish().unwrap();
+
+        let err =
+            read_zip_entry(zip_path.to_str().unwrap(), r#"{"entries":"all"}"#, None).unwrap_err();
+        assert_eq!(
+            err.code,
+            ErrorCode::OutOfMemory,
+            "expected OutOfMemory for entry-count overflow; got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A ZIP with 100 × 1 MiB entries totals 100 MiB > the 64 MiB call budget.
+    /// Every single entry passes MAX_READ_LENGTH (100 MiB); the aggregate does
+    /// not.  Proves the per-call byte budget exists.
+    #[cfg(feature = "zip-extract")]
+    #[test]
+    fn zip_all_exceeds_byte_budget() {
+        use std::io::Write;
+        let dir = tmp_dir("zip_agg_bytes");
+        let zip_path = dir.join("fat.zip");
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        // 100 entries × 1 MiB = 100 MiB, which exceeds MAX_ZIP_CALL_BYTES (64 MiB).
+        let payload = vec![0xAAu8; 1024 * 1024];
+        for i in 0..100u32 {
+            zip.start_file(format!("chunk{i}.bin"), options).unwrap();
+            zip.write_all(&payload).unwrap();
+        }
+        zip.finish().unwrap();
+
+        let err =
+            read_zip_entry(zip_path.to_str().unwrap(), r#"{"entries":"all"}"#, None).unwrap_err();
+        assert_eq!(
+            err.code,
+            ErrorCode::OutOfMemory,
+            "expected OutOfMemory for byte budget overflow; got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Requesting the same entry 100 times in an explicit array must not
+    /// decompress it 100 times.  After deduplication only one copy appears
+    /// in the result.  Without dedup, this is a cheap amplification attack.
+    #[cfg(feature = "zip-extract")]
+    #[test]
+    fn zip_explicit_repeated_entry_is_deduplicated() {
+        let dir = tmp_dir("zip_dedup");
+        let payload: Vec<u8> = vec![0xBBu8; 1024];
+        let zip_path = write_test_zip(&dir, &[("a.bin", &payload)]);
+
+        // 100 copies of the same path.
+        let entries_json = format!(
+            r#"{{"entries":[{}]}}"#,
+            (0..100)
+                .map(|_| r#"{"path":"a.bin"}"#)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let results = read_zip_entry(zip_path.to_str().unwrap(), &entries_json, None).unwrap();
+        // Deduplication reduces 100 references to one result.
+        assert_eq!(
+            results.len(),
+            1,
+            "deduplicated list must yield exactly one result"
+        );
+        assert_eq!(
+            entry_bytes(&results[0]),
+            Some(payload.as_slice()),
+            "deduplicated result must carry the correct bytes"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression guard: a single small binary entry must still arrive as
+    /// ZipEntryData::Binary (the ToJsBuffer path), not as a base64 string.
+    /// This is the ordinary-case proof the binary path survived the budget
+    /// changes.
+    #[cfg(feature = "zip-extract")]
+    #[test]
+    fn zip_single_binary_entry_stays_binary() {
+        let dir = tmp_dir("zip_binary_guard");
+        let payload: Vec<u8> = (0u8..=255u8).collect();
+        let zip_path = write_test_zip(&dir, &[("raw.bin", &payload)]);
+
+        let results = read_zip_entry(
+            zip_path.to_str().unwrap(),
+            r#"{"entries":[{"path":"raw.bin"}]}"#,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        match &results[0].data {
+            Some(ZipEntryData::Binary(b)) => {
+                assert_eq!(
+                    b.as_slice(),
+                    payload.as_slice(),
+                    "binary bytes must be exact"
+                );
+            }
+            other => panic!("expected Binary, got {:?}", other),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[derive(Debug)]
     struct WriterOnlyBackend {
         data: Vec<u8>,
@@ -2075,7 +2412,7 @@ mod tests {
             .unwrap();
         assert_eq!(reused_id, sync_id, "id should be reused from free_ids");
         assert!(
-            !ft.sync_on_write.contains(&reused_id),
+            !ft.get_fd_entry(reused_id).unwrap().lock().sync_on_write,
             "reused fd must not inherit stale sync intent"
         );
         ft.write(reused_id, b"data", None).unwrap();
@@ -2494,7 +2831,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_byob_large_capacity_on_tiny_file_preserves_the_ordinary_read_limit() {
+    fn owned_byob_tiny_file_reserves_its_own_length_not_the_destination() {
         let dir = tmp_dir("owned_byob_capacity");
         let path = dir.join("tiny");
         std::fs::write(&path, b"abcdef").unwrap();
@@ -2506,10 +2843,15 @@ mod tests {
             .read_for_buffer(rid, (MAX_READ_LENGTH + 1) as usize, None)
             .unwrap();
         assert_eq!(data.as_slice(), b"abcdef");
-        assert!(
-            data.storage_len() <= 128 * 1024,
-            "tiny read reserved the destination's large size"
+        assert_eq!(
+            data.storage_len(),
+            6,
+            "storage must be the file's remaining length, not the destination's"
         );
+        // Mid-file: the remaining length is what is left after the cursor.
+        let tail = table.read_for_buffer(rid, 1024, Some(4)).unwrap();
+        assert_eq!(tail.as_slice(), b"ef");
+        assert_eq!(tail.storage_len(), 2);
         assert!(table.read(rid, MAX_READ_LENGTH + 1, None).is_err());
         table.close(rid).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
@@ -2556,7 +2898,7 @@ mod tests {
         for (file_len, limit) in [(65536, 200000), (65537, 200000), (200000, 100001)] {
             let source: Vec<u8> = (0..file_len).map(|i| (i % 251) as u8).collect();
             let mut reader = std::io::Cursor::new(&source);
-            let result = read_owned_buffer(&mut reader, limit).unwrap();
+            let result = read_owned_buffer(&mut reader, limit, None).unwrap();
             let expected = file_len.min(limit);
             assert_eq!(result.as_slice(), &source[..expected]);
             assert_eq!(reader.position(), expected as u64);
@@ -2594,12 +2936,14 @@ mod tests {
             fail: false,
         };
         assert_eq!(
-            read_owned_buffer(&mut reader, 100000).unwrap().as_slice(),
+            read_owned_buffer(&mut reader, 100000, None)
+                .unwrap()
+                .as_slice(),
             vec![42; 70000]
         );
         reader.cursor.set_position(0);
         reader.fail = true;
-        assert!(read_owned_buffer(&mut reader, 100000).is_err());
+        assert!(read_owned_buffer(&mut reader, 100000, None).is_err());
     }
 
     #[test]

@@ -244,6 +244,30 @@ impl InitOptions {
         &self.code_cache_dir
     }
 
+    /// The root the on-disk V8 code cache actually lives under.
+    ///
+    /// [`Self::code_cache_dir`] is what the host configured; this is what the
+    /// runtime must use. The two were not connected: the C ABI and the Android
+    /// bridge both plumb `code_cache_dir` all the way into `InitOptions`, and
+    /// then `Host::new` handed `cache_dir()` to the runtime, so a host that
+    /// deliberately pointed the code cache somewhere else -- a volume with room,
+    /// a directory excluded from backup, the shared root the ABI documents as
+    /// shared on purpose -- silently got a subdirectory of the ordinary cache
+    /// instead, and nothing failed to say so.
+    ///
+    /// An unset (empty) value falls back to the cache directory, which is what
+    /// every host that never set the option has been getting; the fallback is
+    /// what keeps this from relocating their cache to a relative path under the
+    /// process working directory.
+    #[inline]
+    pub fn code_cache_root(&self) -> &Path {
+        if self.code_cache_dir.as_os_str().is_empty() {
+            &self.cache_dir
+        } else {
+            &self.code_cache_dir
+        }
+    }
+
     /// Returns the target frames per second.
     #[inline]
     pub fn target_fps(&self) -> i32 {
@@ -650,5 +674,37 @@ mod tests {
         assert_eq!(s[0].1, "line1\nline2");
         assert_eq!(s[1].0, "<b>");
         assert_eq!(s[1].1, "alert(\"hi\")");
+    }
+
+    /// A configured code-cache directory must be the one the runtime uses.
+    ///
+    /// The option was reachable from the C ABI and the Android bridge and had a
+    /// getter, and `Host::new` still passed `cache_dir()` to the runtime, so
+    /// nothing read it. See `docs/audits/2026-09-09/v8-core-shared.md:84-90`.
+    #[test]
+    fn a_configured_code_cache_dir_is_the_root_the_runtime_gets() {
+        let options = InitOptions::new()
+            .with_cache_dir(PathBuf::from("/tmp/ordinary-cache"))
+            .with_code_cache_dir(PathBuf::from("/tmp/shared-code-cache"));
+        assert_eq!(
+            options.code_cache_root(),
+            Path::new("/tmp/shared-code-cache")
+        );
+        assert_eq!(options.cache_dir(), Path::new("/tmp/ordinary-cache"));
+    }
+
+    /// An explicitly empty option falls back to the cache directory instead of
+    /// resolving `migo_code_cache` under the process working directory. The
+    /// default is not empty -- it is the same temp root as `cache_dir` -- so a
+    /// host that never touched the option sees no change at all.
+    #[test]
+    fn an_empty_code_cache_dir_falls_back_to_the_cache_directory() {
+        let options = InitOptions::new()
+            .with_cache_dir(PathBuf::from("/tmp/ordinary-cache"))
+            .with_code_cache_dir(PathBuf::new());
+        assert_eq!(options.code_cache_root(), Path::new("/tmp/ordinary-cache"));
+
+        let untouched = InitOptions::new().with_cache_dir(PathBuf::from("/tmp/ordinary-cache"));
+        assert_eq!(untouched.code_cache_root(), untouched.code_cache_dir());
     }
 }

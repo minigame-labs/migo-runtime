@@ -34,9 +34,16 @@ import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -52,46 +59,43 @@ public class ImageApiManager {
     private static final String TAG = "ImageApiManager";
 
     /**
-     * Where image work runs. Two threads, named, daemon.
-     *
-     * <p>It used to be a fresh {@code new Thread(...)} per call — correctly
-     * named, but unbounded and non-daemon. The bound is what bites: compression
-     * is CPU-bound, so content that compresses a batch — a screenshot sheet, an
-     * avatar pipeline — got one OS thread per image, each with a 1 MB stack
-     * reservation, all competing with the render thread on a phone that has
-     * eight cores at best. More threads than cores does not compress anything
-     * faster; it only takes the CPU away from the frame.
-     *
-     * <p>Two, not {@code availableProcessors()}: this is background work behind
-     * a callback, and the thing it must never do is starve the frame. The rest
-     * of this SDK spends its threads the same way — see
-     * {@code AudioRecorderManager}, one named daemon thread per recording
-     * session, not one per buffer.
-     *
-     * <p>Still named, for the reason the old code was right to name it: this SDK
-     * runs inside someone else's app, and when their monitoring flags a busy
-     * thread, the name is the only thing that says whose it is. Daemon is the
-     * part that is new — a pool thread outlives any single call, and a pool
-     * thread must never be the reason a host process stays alive.
-     *
-     * <p>A bound means work can now wait behind other work, so a result can
-     * arrive after its session is gone — which was already possible with a
-     * thread per call, just less often. It settles the same way it did: the
-     * reply is addressed by host id, and a host that no longer resolves cannot
-     * be delivered to, so the send fails and is dropped.
+     * Compression is deliberately bounded: the old fixed pool's implicit
+     * unbounded queue retained one task per request while a session was slow.
      */
-    private static final ExecutorService IMAGE_WORKERS =
-            Executors.newFixedThreadPool(2, new ThreadFactory() {
-                private final AtomicInteger counter = new AtomicInteger(1);
+    static final int COMPRESS_QUEUE_CAPACITY = 8;
+    static final int MAX_DECODED_PIXELS = 50_000_000;
+    static final Semaphore DECODED_PIXEL_PERMITS =
+            new Semaphore(MAX_DECODED_PIXELS, true);
 
-                @Override
-                public Thread newThread(Runnable runnable) {
-                    Thread thread = new Thread(runnable,
-                            "Migo-Image-" + counter.getAndIncrement());
-                    thread.setDaemon(true);
-                    return thread;
-                }
-            });
+    static boolean tryReserveDecodedPixels(int pixels) {
+        return pixels > 0 && DECODED_PIXEL_PERMITS.tryAcquire(pixels);
+    }
+
+    static void releaseDecodedPixels(int pixels) {
+        if (pixels > 0) {
+            DECODED_PIXEL_PERMITS.release(pixels);
+        }
+    }
+
+    static final ExecutorService IMAGE_WORKERS =
+            new ThreadPoolExecutor(
+                    2,
+                    2,
+                    0L,
+                    TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<Runnable>(COMPRESS_QUEUE_CAPACITY),
+                    new ThreadFactory() {
+                        private final AtomicInteger counter = new AtomicInteger(1);
+
+                        @Override
+                        public Thread newThread(Runnable runnable) {
+                            Thread thread = new Thread(runnable,
+                                    "Migo-Image-" + counter.getAndIncrement());
+                            thread.setDaemon(true);
+                            return thread;
+                        }
+                    },
+                    new ThreadPoolExecutor.AbortPolicy());
 
     private static final int REQUEST_CHOOSE_IMAGE = 9001;
     private static final int REQUEST_CAPTURE_IMAGE = 9002;
@@ -123,6 +127,18 @@ public class ImageApiManager {
             this.count = count;
         }
     }
+    private static final class PendingCompression {
+        final int requestId;
+        final AtomicBoolean settled = new AtomicBoolean(false);
+        volatile Future<?> future;
+
+        PendingCompression(int requestId) {
+            this.requestId = requestId;
+        }
+    }
+
+    private final CopyOnWriteArrayList<PendingCompression> pendingCompressions =
+            new CopyOnWriteArrayList<>();
 
     public ImageApiManager(int sessionId, Activity activity) {
         this.sessionId = sessionId;
@@ -305,25 +321,42 @@ public class ImageApiManager {
         try {
             opts = new JSONObject(optionsJson);
         } catch (JSONException malformed) {
-            // No id can be read out of options that do not parse, so this reply
-            // carries none and settles through the runtime's fallback.
             NativeMethods.onCompressImageResult(sessionId, CallbackCorrelation.failure(
                     CallbackCorrelation.ABSENT, "compressImage", malformed.getMessage()));
             return;
         }
         final int requestId = CallbackCorrelation.requestIdOf(opts);
-
-        IMAGE_WORKERS.execute(new Runnable() {
+        final PendingCompression pending = new PendingCompression(requestId);
+        pendingCompressions.add(pending);
+        final Runnable work = new Runnable() {
             @Override
             public void run() {
                 try {
-                    NativeMethods.onCompressImageResult(sessionId, compressSync(opts, requestId));
+                    if (!pending.settled.get()) {
+                        String result = compressSync(opts, requestId);
+                        if (pending.settled.compareAndSet(false, true)) {
+                            NativeMethods.onCompressImageResult(sessionId, result);
+                        }
+                    }
                 } catch (Exception e) {
-                    NativeMethods.onCompressImageResult(sessionId,
-                            CallbackCorrelation.failure(requestId, "compressImage", e.getMessage()));
+                    if (pending.settled.compareAndSet(false, true)) {
+                        NativeMethods.onCompressImageResult(sessionId,
+                                CallbackCorrelation.failure(
+                                        requestId, "compressImage", e.getMessage()));
+                    }
+                } finally {
+                    pendingCompressions.remove(pending);
                 }
             }
-        });
+        };
+        try {
+            pending.future = IMAGE_WORKERS.submit(work);
+        } catch (RejectedExecutionException rejected) {
+            pendingCompressions.remove(pending);
+            NativeMethods.onCompressImageResult(sessionId,
+                    CallbackCorrelation.failure(
+                            requestId, "compressImage", "queue full"));
+        }
     }
 
     private String compressSync(JSONObject opts, int requestId) throws Exception {
@@ -366,45 +399,63 @@ public class ImageApiManager {
             finalWidth = Math.round(origWidth * ratio);
         }
 
-        // Calculate inSampleSize for efficient decoding
+        // Reserve sampled source pixels, the exact target, and an encoding
+        // scratch allowance before decode.  Permits remain held through
+        // resize and output, then release even when any stage throws.
         bmOpts.inJustDecodeBounds = false;
-        bmOpts.inSampleSize = calculateInSampleSize(origWidth, origHeight, finalWidth, finalHeight);
-
-        Bitmap bitmap = BitmapFactory.decodeFile(src, bmOpts);
-        if (bitmap == null) {
-            throw new RuntimeException("decode failed");
+        bmOpts.inSampleSize = calculateInSampleSize(
+                origWidth, origHeight, finalWidth, finalHeight);
+        long sample = Math.max(1, bmOpts.inSampleSize);
+        long sampledWidth = (origWidth + sample - 1L) / sample;
+        long sampledHeight = (origHeight + sample - 1L) / sample;
+        long requiredPixels = sampledWidth * sampledHeight
+                + (long) finalWidth * finalHeight * 2L;
+        if (requiredPixels <= 0 || requiredPixels > MAX_DECODED_PIXELS) {
+            throw new RuntimeException("image too large");
+        }
+        int reservedPixels = (int) requiredPixels;
+        if (!tryReserveDecodedPixels(reservedPixels)) {
+            throw new RuntimeException("image pixel budget exhausted");
         }
 
-        // Scale to exact target if needed
-        if (bitmap.getWidth() != finalWidth || bitmap.getHeight() != finalHeight) {
-            Bitmap scaled = Bitmap.createScaledBitmap(bitmap, finalWidth, finalHeight, true);
-            if (scaled != bitmap) {
+        Bitmap bitmap = null;
+        try {
+            bitmap = BitmapFactory.decodeFile(src, bmOpts);
+            if (bitmap == null) {
+                throw new RuntimeException("decode failed");
+            }
+
+            // Scale to exact target if needed.
+            if (bitmap.getWidth() != finalWidth || bitmap.getHeight() != finalHeight) {
+                Bitmap scaled = Bitmap.createScaledBitmap(bitmap, finalWidth, finalHeight, true);
+                if (scaled != bitmap) {
+                    bitmap.recycle();
+                }
+                bitmap = scaled;
+            }
+
+            String mimeType = bmOpts.outMimeType;
+            Bitmap.CompressFormat format = Bitmap.CompressFormat.JPEG;
+            String ext = ".jpg";
+            if (mimeType != null && mimeType.contains("png")) {
+                format = Bitmap.CompressFormat.PNG;
+                ext = ".png";
+            }
+
+            File tempFile = createTempFile("compress", ext);
+            try (FileOutputStream fos = new FileOutputStream(tempFile)) {
+                boolean ok = bitmap.compress(format, quality, fos);
+                if (!ok) {
+                    throw new RuntimeException("compress failed");
+                }
+            }
+            return compressImageResultJson(requestId, tempFile.getAbsolutePath());
+        } finally {
+            if (bitmap != null && !bitmap.isRecycled()) {
                 bitmap.recycle();
             }
-            bitmap = scaled;
+            releaseDecodedPixels(reservedPixels);
         }
-
-        // Determine output format
-        String mimeType = bmOpts.outMimeType;
-        Bitmap.CompressFormat format = Bitmap.CompressFormat.JPEG;
-        String ext = ".jpg";
-        if (mimeType != null && mimeType.contains("png")) {
-            format = Bitmap.CompressFormat.PNG;
-            ext = ".png";
-        }
-
-        // Write compressed to temp file
-        File tempFile = createTempFile("compress", ext);
-        try (FileOutputStream fos = new FileOutputStream(tempFile)) {
-            boolean ok = bitmap.compress(format, quality, fos);
-            if (!ok) {
-                throw new RuntimeException("compress failed");
-            }
-        } finally {
-            bitmap.recycle();
-        }
-
-        return compressImageResultJson(requestId, tempFile.getAbsolutePath());
     }
 
     // ==================== chooseMessageFile (async) ====================
@@ -532,12 +583,27 @@ public class ImageApiManager {
     }
 
     /**
-     * Release resources when session is destroyed.
-     *
-     * <p>Nothing to release: a picker in flight owns its own state, and the
-     * proxy Activity answers it whether or not this manager still exists.
+     * Cancel queued and running compression work for this session.  A canceled
+     * task keeps its pixel permits until its runnable exits; this prevents
+     * cancellation from making a second task over-admit native bitmap memory.
      */
+    public void cancelPendingCompression() {
+        for (PendingCompression pending : pendingCompressions) {
+            if (pending.settled.compareAndSet(false, true)) {
+                Future<?> future = pending.future;
+                if (future != null) {
+                    future.cancel(false);
+                }
+                NativeMethods.onCompressImageResult(sessionId,
+                        CallbackCorrelation.failure(
+                                pending.requestId, "compressImage", "session closed"));
+            }
+        }
+        pendingCompressions.clear();
+    }
+
     public void destroy() {
+        cancelPendingCompression();
     }
 
     // ========================================================================

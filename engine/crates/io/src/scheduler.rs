@@ -228,15 +228,25 @@ impl IoScheduler {
                 let domain = Arc::clone(&self.domain);
                 #[cfg(test)]
                 let worker_start_hook = Arc::clone(&self.worker_start_hook);
-                let rx = self.pools.submit_async(pool, priority, move || {
-                    #[cfg(test)]
-                    run_worker_start_test_hook(&worker_start_hook);
+                // Inline requests intentionally bypass this admission branch:
+                // they never enter a FairLane, so they cannot accumulate the
+                // queued backing-store bytes this budget protects. Only the
+                // delegated path needs a pending-byte credit.
+                // Zero means the request has no trustworthy size hint; it
+                // remains admitted and is accounted as an operation without
+                // claiming a byte budget that the caller did not provide.
+                let byte_count = pending_bytes_hint(&req);
+                let rx = self
+                    .pools
+                    .submit_async_bytes(pool, priority, byte_count, move || {
+                        #[cfg(test)]
+                        run_worker_start_test_hook(&worker_start_hook);
 
-                    if domain.is_closed() {
-                        return Err(PoolError::Closed);
-                    }
-                    Ok(job())
-                })?;
+                        if domain.is_closed() {
+                            return Err(PoolError::Closed);
+                        }
+                        Ok(job())
+                    })?;
                 match rx.await {
                     Ok(Ok(Ok(value))) => Ok(value),
                     Ok(Ok(Err(err))) => {
@@ -323,6 +333,17 @@ impl IoScheduler {
         Self::with_pools(host_id, IoPools::local_for_test(host_id, worker_count))
     }
 
+    pub(crate) fn local_with_byte_limit_for_test(
+        host_id: i32,
+        worker_count: usize,
+        byte_limit: u64,
+    ) -> Self {
+        Self::with_pools(
+            host_id,
+            IoPools::local_with_byte_limit_for_test(host_id, worker_count, byte_limit),
+        )
+    }
+
     pub(crate) fn pending_work_for_test(&self) -> usize {
         self.pools.pending_work_for_test()
     }
@@ -384,6 +405,38 @@ pub fn classify_request(req: &IoRequest, policy: &CheapPolicy) -> RouteDecision 
                 RouteDecision::Delegated(PoolKind::Fs)
             }
         }
+    }
+}
+
+/// Return a producer-supplied upper bound for bytes retained by a delegated
+/// request. Requests without a trustworthy bound use zero: they still use the
+/// bounded worker/operation lanes, but do not pretend an unknown payload fits
+/// a byte budget.
+fn pending_bytes_hint(req: &IoRequest) -> u64 {
+    match req {
+        IoRequest::ReadFile {
+            estimated_bytes, ..
+        }
+        | IoRequest::DecodeImage {
+            encoded_bytes: estimated_bytes,
+            ..
+        }
+        | IoRequest::Unzip {
+            compressed_bytes: estimated_bytes,
+            ..
+        }
+        | IoRequest::PackageIngest {
+            compressed_bytes: estimated_bytes,
+            ..
+        }
+        | IoRequest::StorageGet {
+            estimated_bytes, ..
+        } => *estimated_bytes as u64,
+        IoRequest::GetFileInfo { .. }
+        | IoRequest::VerifyPackage { .. }
+        | IoRequest::StorageMutate { .. }
+        | IoRequest::StorageInfo { .. }
+        | IoRequest::FsOp { .. } => 0,
     }
 }
 
@@ -454,6 +507,7 @@ fn is_foreground(priority: PriorityClass) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use parking_lot::{Condvar, Mutex};
     use std::{
         future::Future,
         panic::{AssertUnwindSafe, catch_unwind},
@@ -466,11 +520,11 @@ mod tests {
 
     use crate::{
         cost::CheapPolicy,
+        fs_ops::read_file,
+        pools::PoolError,
         scheduler::{IoScheduler, RouteDecision, classify_request},
         task::{BackendKind, IoRequest, PoolKind, PriorityClass, RequestKind},
     };
-
-    #[test]
     fn delegated_sync_pack_reads_use_pack_pool() {
         let scheduler = IoScheduler::new(7);
         // Foreground reads under the inline threshold short-circuit, so
@@ -1101,24 +1155,32 @@ mod tests {
             RouteDecision::Delegated(PoolKind::Pack)
         );
 
-        // Spawn the worker threads before timing, or the first delegated call
-        // absorbs the pool's one-time startup and overstates the gap.
-        scheduler.run_sync(&unhinted, || 0_u8).unwrap();
-
-        // A trivial job, so what is being timed is dispatch overhead and
-        // nothing else -- which is the whole difference between the two paths
-        // for a read this small.
+        // Dispatch-only: consume a changing input and the returned value so
+        // the compiler cannot fold either closure to a constant.
+        scheduler
+            .run_sync(&unhinted, || std::hint::black_box(0_u8))
+            .unwrap();
         let inline = {
             let started = std::time::Instant::now();
-            for _ in 0..ITERATIONS {
-                scheduler.run_sync(&hinted, || 7_u8).unwrap();
+            for i in 0..ITERATIONS {
+                let input = std::hint::black_box(i as u8);
+                let output = scheduler
+                    .run_sync(&hinted, move || std::hint::black_box(input.wrapping_add(1)))
+                    .unwrap();
+                std::hint::black_box(output);
             }
             started.elapsed()
         };
         let delegated = {
             let started = std::time::Instant::now();
-            for _ in 0..ITERATIONS {
-                scheduler.run_sync(&unhinted, || 7_u8).unwrap();
+            for i in 0..ITERATIONS {
+                let input = std::hint::black_box(i as u8);
+                let output = scheduler
+                    .run_sync(&unhinted, move || {
+                        std::hint::black_box(input.wrapping_add(1))
+                    })
+                    .unwrap();
+                std::hint::black_box(output);
             }
             started.elapsed()
         };
@@ -1138,23 +1200,45 @@ mod tests {
             delegated.as_secs_f64() / inline.as_secs_f64().max(f64::MIN_POSITIVE)
         );
 
-        // The filesystem sync path buys its hint with one `stat`. Pack reads
-        // get theirs free from the mount table, so this is the only case that
-        // pays, and the number it pays against is `delegated` above.
-        let probe = std::env::temp_dir().join(format!("migo-stat-probe-{}", std::process::id()));
-        std::fs::write(&probe, b"x").unwrap();
-        let stat = {
+        // End-to-end small-file section: dispatch timings above are not a
+        // filesystem claim. Both routes now execute the same owned 200-byte
+        // operation, and the returned bytes are consumed.
+        let probe = std::env::temp_dir().join(format!("migo-small-read-{}", std::process::id()));
+        std::fs::write(&probe, vec![0xA5u8; 200]).unwrap();
+        let probe_path = probe.to_string_lossy().into_owned();
+        let real_inline = {
             let started = std::time::Instant::now();
-            for _ in 0..ITERATIONS {
-                std::hint::black_box(std::fs::metadata(&probe).map(|m| m.len()).unwrap_or(0));
+            for i in 0..ITERATIONS {
+                let path = probe_path.clone();
+                let output = scheduler
+                    .run_sync(&hinted, move || {
+                        let bytes = read_file(&path, None, None, false).unwrap();
+                        std::hint::black_box(bytes[(i as usize) % bytes.len()])
+                    })
+                    .unwrap();
+                std::hint::black_box(output);
+            }
+            started.elapsed()
+        };
+        let real_delegated = {
+            let started = std::time::Instant::now();
+            for i in 0..ITERATIONS {
+                let path = probe_path.clone();
+                let output = scheduler
+                    .run_sync(&unhinted, move || {
+                        let bytes = read_file(&path, None, None, false).unwrap();
+                        std::hint::black_box(bytes[(i as usize) % bytes.len()])
+                    })
+                    .unwrap();
+                std::hint::black_box(output);
             }
             started.elapsed()
         };
         let _ = std::fs::remove_file(&probe);
         eprintln!(
-            "size-hint stat {:>10?}/call  -- {:.1}% of the round-trip it avoids",
-            stat / ITERATIONS,
-            100.0 * stat.as_secs_f64() / delegated.as_secs_f64()
+            "real small-file read inline {:>10?}/call; delegated {:>10?}/call",
+            real_inline / ITERATIONS,
+            real_delegated / ITERATIONS
         );
 
         assert!(
@@ -1211,5 +1295,63 @@ mod tests {
             "run_async timed out — still using spawn_blocking?"
         );
         assert_eq!(result.unwrap().unwrap(), 42);
+    }
+    #[test]
+    fn run_async_hinted_request_refuses_when_process_bytes_are_saturated() {
+        let scheduler =
+            std::sync::Arc::new(IoScheduler::local_with_byte_limit_for_test(202, 1, 10));
+        let request = IoRequest::ReadFile {
+            backend: BackendKind::Archive,
+            request: RequestKind::Async,
+            priority: PriorityClass::ForegroundAsync,
+            estimated_bytes: 8,
+        };
+        let gate = std::sync::Arc::new((Mutex::new(false), Condvar::new()));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let first_gate = std::sync::Arc::clone(&gate);
+        let first_scheduler = std::sync::Arc::clone(&scheduler);
+        let first = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(first_scheduler.run_async(request, move || {
+                started_tx.send(()).unwrap();
+                let (lock, condvar) = &*first_gate;
+                let mut released = lock.lock();
+                while !*released {
+                    condvar.wait(&mut released);
+                }
+                1_u8
+            }))
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let refused = runtime.block_on(scheduler.run_async(
+            IoRequest::ReadFile {
+                backend: BackendKind::Archive,
+                request: RequestKind::Async,
+                priority: PriorityClass::ForegroundAsync,
+                estimated_bytes: 4,
+            },
+            || 2_u8,
+        ));
+        assert!(matches!(
+            refused,
+            Err(PoolError::ByteLimitExceeded {
+                requested: 4,
+                available: 2
+            })
+        ));
+
+        *gate.0.lock() = true;
+        gate.1.notify_all();
+        assert_eq!(first.join().unwrap().unwrap(), 1);
     }
 }

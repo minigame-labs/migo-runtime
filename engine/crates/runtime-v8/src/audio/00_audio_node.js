@@ -3,6 +3,13 @@ import {
   op_audio_disconnect,
   op_audio_release_node,
 } from "ext:core/ops";
+ 
+const WARNED_CAPABILITIES = new Set();
+function warnUnsupportedCapability(key, message) {
+  if (WARNED_CAPABILITIES.has(key)) return;
+  WARNED_CAPABILITIES.add(key);
+  console.warn(`[MigoAudio] ${message}`);
+}
 
 // A native release is fire-and-forget and idempotent, but the audio command
 // queue is bounded, and a *dropped* release is exactly the leak these finalizers
@@ -122,6 +129,10 @@ class AudioNode {
 
   set channelCount(value) {
     this.#channelCount = value;
+    warnUnsupportedCapability(
+      "channel-metadata",
+      "AudioNode channel metadata is stored in JS but not applied by the native graph",
+    );
   }
 
   get channelCountMode() {
@@ -130,6 +141,10 @@ class AudioNode {
 
   set channelCountMode(value) {
     this.#channelCountMode = value;
+    warnUnsupportedCapability(
+      "channel-metadata",
+      "AudioNode channel metadata is stored in JS but not applied by the native graph",
+    );
   }
 
   get channelInterpretation() {
@@ -138,6 +153,10 @@ class AudioNode {
 
   set channelInterpretation(value) {
     this.#channelInterpretation = value;
+    warnUnsupportedCapability(
+      "channel-metadata",
+      "AudioNode channel metadata is stored in JS but not applied by the native graph",
+    );
   }
 
   connect(destination, outputIndex = 0, inputIndex = 0) {
@@ -150,20 +169,22 @@ class AudioNode {
     if (inputIndex < 0 || inputIndex >= destination.numberOfInputs) {
       throw new DOMException("inputIndex is out of range", "IndexSizeError");
     }
-    // The indices used to be accepted and dropped, which is why a
-    // ChannelSplitter's outputs were all the same signal.
     op_audio_connect(this.#nodeId, destination._nodeId, outputIndex, inputIndex);
     this.#connections.push(destination);
     return destination;
   }
 
   disconnect(destination) {
+    if (destination !== undefined) {
+      warnUnsupportedCapability(
+        "targeted-disconnect",
+        "targeted disconnect currently falls back to disconnecting all outputs natively",
+      );
+    }
     op_audio_disconnect(this.#nodeId);
     if (destination) {
       const idx = this.#connections.indexOf(destination);
-      if (idx >= 0) {
-        this.#connections.splice(idx, 1);
-      }
+      if (idx >= 0) this.#connections.splice(idx, 1);
     } else {
       this.#connections.length = 0;
     }
@@ -208,4 +229,5 @@ export {
   createReleaseQueue,
   validateScheduledTime,
   validateFiniteDouble,
+  warnUnsupportedCapability,
 };

@@ -140,8 +140,8 @@ use migo_core::{
     spawn_host_thread,
 };
 use shared::protocol::camera_frame::{
-    PlaneWindow, pack_yuv_planes, validate_camera_frame_dimensions,
-    validate_camera_frame_payload_lengths,
+    PlaneWindow, pack_yuv_planes, try_acquire_camera_frame_credit,
+    validate_camera_frame_dimensions, validate_camera_frame_payload_lengths,
 };
 use shared::protocol::host_cmd::{HostCommand, TouchData, TouchPoint, TouchType};
 use shared::surface::{PixelRatio, SurfaceRef};
@@ -1305,6 +1305,12 @@ pub(crate) extern "system" fn onCameraFrameData<'local>(
             tracing::warn!("onCameraFrameData: invalid payload lengths: {:?}", error);
             return;
         }
+        // Admission happens before resolving direct buffers or copying any
+        // plane bytes. The guard rides with the command and releases on drop.
+        let Some(credit) = try_acquire_camera_frame_credit(host_id, camera_id as u32) else {
+            tracing::debug!("onCameraFrameData: camera {} frame slot full", camera_id);
+            return;
+        };
 
         // Resolve each direct plane buffer's base address + capacity. The jni
         // wrapper rejects null / non-direct buffers and a -1 capacity, so a
@@ -1375,6 +1381,7 @@ pub(crate) extern "system" fn onCameraFrameData<'local>(
                 data: packed,
                 width,
                 height,
+                credit,
                 runtime_generation: captured_generation(generation),
             },
         );

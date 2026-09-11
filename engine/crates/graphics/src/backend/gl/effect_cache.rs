@@ -24,8 +24,9 @@
 //! the hit rate on small caps is essentially 100% while steady-state
 //! memory stays in single-digit KB.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use lru::LruCache;
 use skia_safe::{ImageFilter, PathEffect, Point, Shader, TileMode, gradient_shader, image_filters};
@@ -35,6 +36,13 @@ use shared::protocol::render_cmd::GradientStop;
 const SHADOW_CACHE_CAP: usize = 32;
 const DASH_CACHE_CAP: usize = 32;
 const GRADIENT_CACHE_CAP: usize = 64;
+const SHADOW_CACHE_BYTES: usize = 8 * 1024;
+const DASH_CACHE_BYTES: usize = 8 * 1024;
+const GRADIENT_CACHE_BYTES: usize = 16 * 1024;
+const MAX_DASH_CACHED_INTERVALS: usize = 64;
+const MAX_GRADIENT_CACHED_STOPS: usize = 64;
+const EFFECT_CACHE_ENTRY_OVERHEAD: usize = 128;
+const SHADOW_ENTRY_BYTES: usize = EFFECT_CACHE_ENTRY_OVERHEAD;
 
 /// Shadow-filter cache key.  All four parameters are bit-casted to
 /// preserve exact equality: `f32::to_bits` is a lossless round-trip
@@ -100,10 +108,8 @@ struct DashEntry {
 /// inside `StyleKind`, so repeatedly assigning the same gradient
 /// object to `fillStyle` produces pointer-equal keys.  Distinct
 /// gradient objects with identical stops pay one build then hit.
-///
-/// Hash collisions on `stops_addr` (Arc drop + new alloc at same
-/// address) are defended against by re-verifying content + `kind` +
-/// `geom_bits` on cache hit -- same pattern as the dash cache.
+/// Retaining the Arc in [`GradientEntry`] prevents address reuse while a
+/// key is resident, so the hit path can trust identity and avoid a stop scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GradientKey {
     kind: u8, // 0 = linear, 1 = radial, 2 = conic
@@ -118,11 +124,25 @@ struct GradientKey {
 }
 
 struct GradientEntry {
-    /// Snapshot of the stops list the shader was built from.  Used
-    /// to re-verify on cache hit against the risk that two different
-    /// Arc allocations reuse the same heap address.
-    stops_snapshot: Vec<GradientStop>,
+    /// Retaining this immutable revision makes `stops_addr` collision-safe:
+    /// its allocation cannot be recycled while the cache entry is alive.
+    /// Hits can therefore use identity instead of re-comparing every stop.
+    stops_arc: Arc<Vec<GradientStop>>,
     shader: Shader,
+}
+
+#[inline]
+fn dash_entry_bytes(intervals_len: usize) -> usize {
+    intervals_len
+        .saturating_mul(std::mem::size_of::<f32>())
+        .saturating_add(EFFECT_CACHE_ENTRY_OVERHEAD)
+}
+
+#[inline]
+fn gradient_entry_bytes(stops_len: usize) -> usize {
+    stops_len
+        .saturating_mul(std::mem::size_of::<GradientStop>())
+        .saturating_add(EFFECT_CACHE_ENTRY_OVERHEAD)
 }
 
 thread_local! {
@@ -135,6 +155,9 @@ thread_local! {
     static GRADIENT_CACHE: RefCell<LruCache<GradientKey, GradientEntry>> = RefCell::new(
         LruCache::new(NonZeroUsize::new(GRADIENT_CACHE_CAP).expect("cap > 0"))
     );
+    static SHADOW_CACHE_BYTES_RETAINED: Cell<usize> = const { Cell::new(0) };
+    static DASH_CACHE_BYTES_RETAINED: Cell<usize> = const { Cell::new(0) };
+    static GRADIENT_CACHE_BYTES_RETAINED: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Fetch or build a drop-shadow `ImageFilter`.  Returns `None` when
@@ -170,7 +193,33 @@ pub fn get_or_build_drop_shadow(
             None,
             None,
         )?;
+        let bytes = SHADOW_ENTRY_BYTES;
+        if let Some(_) = cache.pop(&key) {
+            SHADOW_CACHE_BYTES_RETAINED.with(|counter| {
+                counter.set(counter.get().saturating_sub(bytes));
+            });
+        }
+        while SHADOW_CACHE_BYTES_RETAINED.with(|counter| counter.get().saturating_add(bytes))
+            > SHADOW_CACHE_BYTES
+        {
+            let Some((_old_key, _old)) = cache.pop_lru() else {
+                break;
+            };
+            SHADOW_CACHE_BYTES_RETAINED.with(|counter| {
+                counter.set(counter.get().saturating_sub(bytes));
+            });
+        }
+        if cache.len() >= SHADOW_CACHE_CAP {
+            if cache.pop_lru().is_some() {
+                SHADOW_CACHE_BYTES_RETAINED.with(|counter| {
+                    counter.set(counter.get().saturating_sub(bytes));
+                });
+            }
+        }
         cache.put(key, filter.clone());
+        SHADOW_CACHE_BYTES_RETAINED.with(|counter| {
+            counter.set(counter.get().saturating_add(bytes));
+        });
         Some(filter)
     })
 }
@@ -183,6 +232,9 @@ pub fn get_or_build_drop_shadow(
 pub fn get_or_build_dash(intervals: &[f32], phase: f32) -> Option<PathEffect> {
     if intervals.is_empty() {
         return None;
+    }
+    if intervals.len() > MAX_DASH_CACHED_INTERVALS {
+        return PathEffect::dash(intervals, phase);
     }
     let intervals_hash = hash_intervals(intervals);
     let key = DashKey {
@@ -199,12 +251,45 @@ pub fn get_or_build_dash(intervals: &[f32], phase: f32) -> Option<PathEffect> {
                 crate::render_diagnostics::hit_dash_effect_cache();
                 return Some(entry.effect.clone());
             }
-            // Hash collision with different payload — fall through
-            // to the miss path and overwrite.  Rare; counted as a
-            // miss for honest hit-rate accounting.
+            // Hash collision with different payload — fall through to miss.
         }
         crate::render_diagnostics::miss_dash_effect_cache();
         let effect = PathEffect::dash(intervals, phase)?;
+        let bytes = dash_entry_bytes(intervals.len());
+        if let Some(old) = cache.pop(&key) {
+            DASH_CACHE_BYTES_RETAINED.with(|counter| {
+                counter.set(
+                    counter
+                        .get()
+                        .saturating_sub(dash_entry_bytes(old.intervals.len())),
+                );
+            });
+        }
+        while DASH_CACHE_BYTES_RETAINED.with(|counter| counter.get().saturating_add(bytes))
+            > DASH_CACHE_BYTES
+        {
+            let Some((_old_key, old)) = cache.pop_lru() else {
+                break;
+            };
+            DASH_CACHE_BYTES_RETAINED.with(|counter| {
+                counter.set(
+                    counter
+                        .get()
+                        .saturating_sub(dash_entry_bytes(old.intervals.len())),
+                );
+            });
+        }
+        if cache.len() >= DASH_CACHE_CAP {
+            if let Some((_old_key, old)) = cache.pop_lru() {
+                DASH_CACHE_BYTES_RETAINED.with(|counter| {
+                    counter.set(
+                        counter
+                            .get()
+                            .saturating_sub(dash_entry_bytes(old.intervals.len())),
+                    );
+                });
+            }
+        }
         cache.put(
             key,
             DashEntry {
@@ -213,6 +298,9 @@ pub fn get_or_build_dash(intervals: &[f32], phase: f32) -> Option<PathEffect> {
                 effect: effect.clone(),
             },
         );
+        DASH_CACHE_BYTES_RETAINED.with(|counter| {
+            counter.set(counter.get().saturating_add(bytes));
+        });
         Some(effect)
     })
 }
@@ -342,30 +430,69 @@ pub fn get_or_build_conic_gradient(
 #[inline]
 fn lookup_or_build_gradient<F: FnOnce() -> Option<Shader>>(
     key: GradientKey,
-    stops: &std::sync::Arc<Vec<GradientStop>>,
+    stops: &Arc<Vec<GradientStop>>,
     build: F,
 ) -> Option<Shader> {
+    if stops.len() > MAX_GRADIENT_CACHED_STOPS {
+        return build();
+    }
     GRADIENT_CACHE.with(|cell| {
         let mut cache = cell.borrow_mut();
+        // The key includes the Arc allocation address and length.  Because
+        // the entry retains the Arc below, that address cannot be recycled
+        // while this key is resident; a hit is therefore O(1), with no stop
+        // slice comparison.
         if let Some(entry) = cache.get(&key) {
-            // Verify the snapshot against the current stops to guard
-            // against Arc address reuse.  Typical stop counts are
-            // 2-5, so slice compare is cheap.
-            if entry.stops_snapshot.as_slice() == stops.as_slice() {
-                crate::render_diagnostics::hit_gradient_cache();
-                return Some(entry.shader.clone());
-            }
-            // Fallthrough: collision.  We'll build + overwrite.
+            crate::render_diagnostics::hit_gradient_cache();
+            return Some(entry.shader.clone());
         }
         crate::render_diagnostics::miss_gradient_cache();
         let shader = build()?;
+        let bytes = gradient_entry_bytes(stops.len());
+        if let Some(old) = cache.pop(&key) {
+            GRADIENT_CACHE_BYTES_RETAINED.with(|counter| {
+                counter.set(
+                    counter
+                        .get()
+                        .saturating_sub(gradient_entry_bytes(old.stops_arc.len())),
+                );
+            });
+        }
+        while GRADIENT_CACHE_BYTES_RETAINED.with(|counter| counter.get().saturating_add(bytes))
+            > GRADIENT_CACHE_BYTES
+        {
+            let Some((_old_key, old)) = cache.pop_lru() else {
+                break;
+            };
+            GRADIENT_CACHE_BYTES_RETAINED.with(|counter| {
+                counter.set(
+                    counter
+                        .get()
+                        .saturating_sub(gradient_entry_bytes(old.stops_arc.len())),
+                );
+            });
+        }
+        if cache.len() >= GRADIENT_CACHE_CAP {
+            if let Some((_old_key, old)) = cache.pop_lru() {
+                GRADIENT_CACHE_BYTES_RETAINED.with(|counter| {
+                    counter.set(
+                        counter
+                            .get()
+                            .saturating_sub(gradient_entry_bytes(old.stops_arc.len())),
+                    );
+                });
+            }
+        }
         cache.put(
             key,
             GradientEntry {
-                stops_snapshot: stops.as_slice().to_vec(),
+                stops_arc: Arc::clone(stops),
                 shader: shader.clone(),
             },
         );
+        GRADIENT_CACHE_BYTES_RETAINED.with(|counter| {
+            counter.set(counter.get().saturating_add(bytes));
+        });
         Some(shader)
     })
 }
@@ -396,6 +523,9 @@ pub fn clear_all() {
     SHADOW_CACHE.with(|c| c.borrow_mut().clear());
     DASH_CACHE.with(|c| c.borrow_mut().clear());
     GRADIENT_CACHE.with(|c| c.borrow_mut().clear());
+    SHADOW_CACHE_BYTES_RETAINED.with(|counter| counter.set(0));
+    DASH_CACHE_BYTES_RETAINED.with(|counter| counter.set(0));
+    GRADIENT_CACHE_BYTES_RETAINED.with(|counter| counter.set(0));
 }
 
 fn hash_intervals(intervals: &[f32]) -> u64 {
@@ -410,6 +540,7 @@ fn hash_intervals(intervals: &[f32]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shared::protocol::color::Color as ProtocolColor;
 
     /// **Two distinct shadows must never share a key**, because the shadow cache
     /// is the one cache here with no content re-verification — a shared key
@@ -782,6 +913,108 @@ mod tests {
             crate::render_diagnostics::flush_frame();
             assert_eq!(stats.gradient_misses.load(Ordering::Relaxed), 1);
             assert_eq!(stats.gradient_hits.load(Ordering::Relaxed), 1);
+        });
+    }
+
+    // ── T-M1 / E-P2 byte-ceiling and revision-identity tests ───────
+    // These are intentionally written before the byte-bounded cache
+    // implementation.  They document the RED contract for oversized
+    // values, retained-byte accounting, and immutable gradient revisions.
+
+    #[test]
+    fn shadow_cache_byte_total_stays_under_budget() {
+        clear_all();
+        for i in 0..SHADOW_CACHE_CAP + 8 {
+            let _ = get_or_build_drop_shadow(0xFF00_0000, 1.0, 1.0, i as f32, 0.0);
+        }
+        assert!(
+            SHADOW_CACHE_BYTES_RETAINED.with(|c| c.get()) <= SHADOW_CACHE_BYTES,
+            "retained shadow-cache bytes exceeded the byte ceiling"
+        );
+        SHADOW_CACHE.with(|c| assert_eq!(c.borrow().len(), SHADOW_CACHE_CAP));
+    }
+
+    /// A dash payload above the single-item limit is still built, but is not
+    /// retained by the LRU.  The render result must not depend on caching.
+    #[test]
+    fn dash_cache_oversized_intervals_not_retained() {
+        clear_all();
+        // Use an even count so Skia accepts the dash; the cache gate is the
+        // behaviour under test, not interval-shape validation.
+        let intervals = vec![2.0_f32; MAX_DASH_CACHED_INTERVALS + 2];
+        assert!(get_or_build_dash(&intervals, 0.0).is_some());
+        DASH_CACHE.with(|c| assert_eq!(c.borrow().len(), 0));
+    }
+
+    /// A gradient with too many stops is rendered normally but not retained.
+    #[test]
+    fn gradient_cache_oversized_stops_not_retained() {
+        clear_all();
+        let stops = std::sync::Arc::new(
+            (0..=MAX_GRADIENT_CACHED_STOPS)
+                .map(|i| GradientStop {
+                    offset: i as f32 / MAX_GRADIENT_CACHED_STOPS as f32,
+                    color: ProtocolColor::rgb(255, 0, 0),
+                })
+                .collect::<Vec<_>>(),
+        );
+        assert!(get_or_build_linear_gradient(0.0, 0.0, 100.0, 0.0, &stops, 1.0).is_some());
+        GRADIENT_CACHE.with(|c| assert_eq!(c.borrow().len(), 0));
+    }
+
+    /// Many ordinary dash entries must stay under the retained-byte ceiling,
+    /// even though the entry count remains below the ordinary LRU capacity.
+    #[test]
+    fn dash_cache_byte_total_stays_under_budget() {
+        clear_all();
+        for phase in 0..50 {
+            let intervals = [2.0_f32; 32];
+            let _ = get_or_build_dash(&intervals, phase as f32);
+        }
+        assert!(
+            DASH_CACHE_BYTES_RETAINED.with(|c| c.get()) <= DASH_CACHE_BYTES,
+            "retained dash-cache bytes exceeded the byte ceiling"
+        );
+        DASH_CACHE.with(|c| {
+            assert_eq!(
+                c.borrow().len(),
+                DASH_CACHE_CAP,
+                "ordinary dash entries must retain the existing entry-count cap"
+            );
+        });
+    }
+
+    /// The cache entry retains the immutable Arc revision itself.  This is
+    /// what makes the address in `GradientKey` collision-safe and lets a hit
+    /// avoid re-comparing every stop.
+    #[test]
+    fn gradient_hit_retains_arc_revision_identity() {
+        clear_all();
+        let stops = simple_stops();
+        let _ = get_or_build_linear_gradient(0.0, 0.0, 100.0, 0.0, &stops, 1.0);
+        let key = GradientKey {
+            kind: 0,
+            geom_bits: [
+                0.0_f32.to_bits(),
+                0.0_f32.to_bits(),
+                100.0_f32.to_bits(),
+                0,
+                0,
+                0,
+                0,
+            ],
+            alpha_bits: 1.0_f32.to_bits(),
+            stops_addr: std::sync::Arc::as_ptr(&stops) as usize,
+            stops_len: stops.len() as u32,
+        };
+        GRADIENT_CACHE.with(|c| {
+            let cache = c.borrow();
+            let entry = cache.peek(&key).expect("gradient must be cached");
+            assert_eq!(
+                std::sync::Arc::as_ptr(&entry.stops_arc),
+                std::sync::Arc::as_ptr(&stops),
+                "cache must retain the Arc revision, not a copied stop Vec"
+            );
         });
     }
 }

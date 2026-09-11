@@ -40,7 +40,7 @@ pub(crate) fn sk_direction_for(direction: ProtocolDirection) -> TextDirection {
 
 use super::color::to_sk_color4f_modulated;
 use super::paint::{PatternResolver, build_fill_paint, build_stroke_paint};
-use super::state::{Canvas2DState, TextAttrs};
+use super::state::{Canvas2DState, StyleKind, TextAttrs};
 use super::text_attrs::{ResolvedTextAlign, y_baseline_offset};
 
 // F-2 Send/Sync safety argument.  `TextContext` holds
@@ -120,7 +120,11 @@ pub struct TextContext {
     /// keeps call sites ergonomic without forcing `&mut self`
     /// through the renderer.
     measure_cache: core::cell::RefCell<lru::LruCache<TextMeasureKey, Verified<TextMetrics>>>,
-    /// Per-(text, attrs) shaped-text cache.  Populated lazily by both
+    /// Immutable, paint-compatible paragraphs for the conservative solid-fill
+    /// path.  This is separate from metrics and blob shaping caches because
+    /// paragraph foreground paint is part of the retained value.
+    paragraph_cache: core::cell::RefCell<lru::LruCache<ParagraphCacheKey, CachedParagraph>>,
+    paragraph_cache_bytes: core::cell::Cell<usize>,
     /// `measure_text` and the fast-path `paint_text` branch.  When the
     /// text qualifies for the SkTextBlob fast path (pure ASCII, single
     /// typeface resolvable from the first family name, no BiDi),
@@ -141,6 +145,13 @@ pub struct TextContext {
     /// reads it back through a live code path yet.
     #[allow(dead_code)]
     shape_cache: core::cell::RefCell<lru::LruCache<TextMeasureKey, Verified<ShapedText>>>,
+    /// Retained heap estimate for [`shape_cache`].  The cache has both an
+    /// entry cap and a byte cap because a single blob can be much larger than
+    /// the small labels that motivated the original count-only limit.
+    shape_cache_bytes: core::cell::Cell<usize>,
+    /// Retained heap estimate for [`measure_cache`], kept separately so the
+    /// metrics cache cannot consume the shaping cache's budget.
+    measure_cache_bytes: core::cell::Cell<usize>,
     /// Warn once per unresolved family chain so misconfigured hosts
     /// get a clear signal instead of silent "paint nothing".
     unresolved_family_warnings: core::cell::RefCell<std::collections::HashSet<String>>,
@@ -258,6 +269,24 @@ impl TextMeasureKey {
     }
 }
 
+/// Paint-compatible paragraph key.  The cache is intentionally conservative:
+/// only solid fill paints with SrcOver/no shadow are retained, so a cached
+/// paragraph cannot accidentally carry a gradient, filter, or blend state
+/// into a later draw.  Positioning (`align`, `baseline`, x/y, maxWidth) stays
+/// outside because it is applied at paint time.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+struct ParagraphCacheKey {
+    text_key: TextMeasureKey,
+    color_bits: [u32; 4],
+    global_alpha_bits: u32,
+    antialias: bool,
+}
+
+struct CachedParagraph {
+    text: String,
+    paragraph: Paragraph,
+}
+
 /// A cache entry that carries the text its key only hashed.
 ///
 /// The one place the "a hash is not an identity" obligation of
@@ -291,11 +320,21 @@ impl<T> Verified<T> {
     }
 }
 
-/// Capacity of the `measureText` cache.  Each entry is ~40 bytes plus
-/// the text string.  256 entries at a typical label length of 32 UTF-8
-/// bytes ≈ 18 KB steady-state -- negligible, and absorbs a full screen
-/// of distinct labels plus history.
+/// Count limits alone do not bound retained text: `Verified` owns the full
+/// UTF-8 string and a shaped entry additionally owns Skia's blob.  Keep
+/// ordinary labels hot, but do not let one long paragraph monopolise either
+/// cache.  These are host memory ceilings; device raster cost is separate.
 const MEASURE_CACHE_CAP: usize = 256;
+const PARAGRAPH_CACHE_BYTES: usize = 256 * 1024;
+const MAX_MEASURE_CACHE_BYTES: usize = 64 * 1024;
+const SHAPE_CACHE_BYTES: usize = 128 * 1024;
+const MAX_MEASURE_ITEM_TEXT_BYTES: usize = 512;
+const TEXT_CACHE_ENTRY_OVERHEAD: usize = 128;
+
+#[inline]
+fn text_cache_entry_bytes(text_len: usize) -> usize {
+    text_len.saturating_add(TEXT_CACHE_ENTRY_OVERHEAD)
+}
 
 impl Default for TextContext {
     fn default() -> Self {
@@ -363,7 +402,11 @@ impl TextContext {
             system_fallback_family: Self::SYSTEM_FALLBACK_FAMILY.to_string(),
             bundled_fallback_family: Self::BUNDLED_FALLBACK_FAMILY.to_string(),
             measure_cache: core::cell::RefCell::new(lru::LruCache::new(cache_cap)),
+            measure_cache_bytes: core::cell::Cell::new(0),
+            paragraph_cache: core::cell::RefCell::new(lru::LruCache::new(cache_cap)),
+            paragraph_cache_bytes: core::cell::Cell::new(0),
             shape_cache: core::cell::RefCell::new(lru::LruCache::new(cache_cap)),
+            shape_cache_bytes: core::cell::Cell::new(0),
             unresolved_family_warnings: core::cell::RefCell::new(std::collections::HashSet::new()),
             resolved_family_logs: core::cell::RefCell::new(std::collections::HashSet::new()),
             font_epoch: core::cell::Cell::new(0),
@@ -425,6 +468,14 @@ impl TextContext {
     #[allow(dead_code)]
     pub(super) fn font_epoch(&self) -> u64 {
         self.font_epoch.get()
+    }
+
+    /// Retained-byte estimate for the metrics cache, exposed for bounded-cache
+    /// tests and host diagnostics.
+    #[inline]
+    #[allow(dead_code)]
+    fn measure_cache_bytes(&self) -> usize {
+        self.measure_cache_bytes.get()
     }
 
     /// Resolve the first typeface that can be produced for the given
@@ -748,21 +799,22 @@ impl TextContext {
             build_fill_paint(state, resolver)
         };
 
+        // Reuse a laid-out paragraph for the conservative solid-fill case.
+        // Paint state is part of the key; gradients, patterns, shadows and
+        // strokes continue through the complete per-call path.
+        if !stroke && self.try_cached_paragraph_paint(canvas, text, x, y, max_width, state, &paint)
+        {
+            return;
+        }
+
         // Fast path: pure-ASCII / single-typeface / LTR text with no
         // `maxWidth` scaling and no shadow can skip SkParagraph.  The
-        // win comes from bypassing HarfBuzz shaping + ICU line-break
-        // analysis for run-of-the-mill UI labels — the most common
-        // text in Canvas 2D small-game code by a wide margin.  Any
-        // `None` from `try_fast_path_paint` silently falls through to
-        // the SkParagraph path below.
+        // feature remains host-policy gated and defaults off.
         if let Some(()) = self.try_fast_path_paint(canvas, text, x, y, max_width, state, &paint) {
             return;
         }
 
         let mut paragraph = self.build_paragraph(text, &state.text, Some(&paint));
-        // Layout unconstrained so our measured widths are intrinsic; the
-        // Canvas2D `maxWidth` parameter is then honoured by a post-layout
-        // horizontal scale rather than by re-layout (matches browsers).
         paragraph.layout(f32::INFINITY);
         let run_width = paragraph.max_intrinsic_width();
         log_paragraph_diagnostics("paint", text, &state.text, &mut paragraph, run_width);
@@ -770,10 +822,6 @@ impl TextContext {
         let align = ResolvedTextAlign::resolve(state.text.align, sk_dir);
         let x_anchor = x - align.x_anchor_offset(run_width);
         let y_anchor = y - baseline_offset(&paragraph, &state.text);
-
-        // Honor maxWidth: Canvas2D spec says if measured width > maxWidth,
-        // scale the glyph run horizontally.  max_width==0 / NaN / inf → no
-        // scaling, so guard carefully.
         if max_width.is_finite() && max_width > 0.0 && run_width > max_width {
             let scale = max_width / run_width;
             canvas.save();
@@ -784,6 +832,71 @@ impl TextContext {
         } else {
             paragraph.paint(canvas, (x_anchor, y_anchor));
         }
+    }
+
+    fn try_cached_paragraph_paint(
+        &self,
+        canvas: &Canvas,
+        text: &str,
+        x: f32,
+        y: f32,
+        max_width: f32,
+        state: &Canvas2DState,
+        paint: &Paint,
+    ) -> bool {
+        let StyleKind::Color(color) = &state.fill else {
+            return false;
+        };
+        if state.shadow.is_visible() || state.blend_mode != skia_safe::BlendMode::SrcOver {
+            return false;
+        }
+        let key = ParagraphCacheKey {
+            text_key: TextMeasureKey::new(text, &state.text, self.font_epoch.get()),
+            color_bits: [
+                color.r.to_bits(),
+                color.g.to_bits(),
+                color.b.to_bits(),
+                color.a.to_bits(),
+            ],
+            global_alpha_bits: state.global_alpha.to_bits(),
+            antialias: state.antialias,
+        };
+        let cached_matches = {
+            let mut cache = self.paragraph_cache.borrow_mut();
+            let matches = cache.get(&key).is_some_and(|entry| entry.text == text);
+            if !matches && cache.get(&key).is_some() {
+                cache.pop(&key);
+            }
+            matches
+        };
+        if !cached_matches {
+            let mut paragraph = self.build_paragraph(text, &state.text, Some(paint));
+            paragraph.layout(f32::INFINITY);
+            self.insert_paragraph_cache(key, text, paragraph);
+        }
+
+        let mut cache = self.paragraph_cache.borrow_mut();
+        let Some(entry) = cache.get_mut(&key) else {
+            return false;
+        };
+        let paragraph = &mut entry.paragraph;
+        let run_width = paragraph.max_intrinsic_width();
+        log_paragraph_diagnostics("paint", text, &state.text, paragraph, run_width);
+        let sk_dir = sk_direction_for(state.text.direction);
+        let align = ResolvedTextAlign::resolve(state.text.align, sk_dir);
+        let x_anchor = x - align.x_anchor_offset(run_width);
+        let y_anchor = y - baseline_offset(paragraph, &state.text);
+        if max_width.is_finite() && max_width > 0.0 && run_width > max_width {
+            let scale = max_width / run_width;
+            canvas.save();
+            canvas.translate((x_anchor, y_anchor));
+            canvas.scale((scale, 1.0));
+            paragraph.paint(canvas, (0.0, 0.0));
+            canvas.restore();
+        } else {
+            paragraph.paint(canvas, (x_anchor, y_anchor));
+        }
+        true
     }
 
     /// Attempt to paint `text` via a cached `SkTextBlob`.  Returns
@@ -948,14 +1061,117 @@ impl TextContext {
             blob,
             baseline_from_top: ascent,
         };
-        self.shape_cache
-            .borrow_mut()
-            .put(*key, Verified::new(text, entry.clone()));
+        self.insert_shape_cache(*key, text, entry.clone());
         Some(entry)
     }
 
-    /// Canvas2D `measureText` — computes a [`TextMetrics`] for `text`
-    /// using the current `TextAttrs`.  No painting happens.
+    fn insert_paragraph_cache(&self, key: ParagraphCacheKey, text: &str, paragraph: Paragraph) {
+        let bytes = text_cache_entry_bytes(text.len()).saturating_add(1024);
+        if text.len() > MAX_MEASURE_ITEM_TEXT_BYTES || bytes > PARAGRAPH_CACHE_BYTES {
+            return;
+        }
+        let mut cache = self.paragraph_cache.borrow_mut();
+        if let Some(old) = cache.pop(&key) {
+            let old_bytes = text_cache_entry_bytes(old.text.len()).saturating_add(1024);
+            self.paragraph_cache_bytes
+                .set(self.paragraph_cache_bytes.get().saturating_sub(old_bytes));
+        }
+        while self.paragraph_cache_bytes.get().saturating_add(bytes) > PARAGRAPH_CACHE_BYTES {
+            let Some((_, old)) = cache.pop_lru() else {
+                break;
+            };
+            let old_bytes = text_cache_entry_bytes(old.text.len()).saturating_add(1024);
+            self.paragraph_cache_bytes
+                .set(self.paragraph_cache_bytes.get().saturating_sub(old_bytes));
+        }
+        if cache.len() >= MEASURE_CACHE_CAP {
+            if let Some((_, old)) = cache.pop_lru() {
+                let old_bytes = text_cache_entry_bytes(old.text.len()).saturating_add(1024);
+                self.paragraph_cache_bytes
+                    .set(self.paragraph_cache_bytes.get().saturating_sub(old_bytes));
+            }
+        }
+        cache.put(
+            key,
+            CachedParagraph {
+                text: text.to_string(),
+                paragraph,
+            },
+        );
+        self.paragraph_cache_bytes
+            .set(self.paragraph_cache_bytes.get().saturating_add(bytes));
+    }
+
+    /// Insert a shaped entry only while both entry and retained-byte limits
+    /// allow it; oversized text remains a normal uncached render.
+    fn insert_shape_cache(&self, key: TextMeasureKey, text: &str, value: ShapedText) {
+        let bytes = text_cache_entry_bytes(text.len()).saturating_add(512);
+        if text.len() > MAX_MEASURE_ITEM_TEXT_BYTES || bytes > SHAPE_CACHE_BYTES {
+            return;
+        }
+        let mut cache = self.shape_cache.borrow_mut();
+        if let Some(old) = cache.pop(&key) {
+            let old_bytes = text_cache_entry_bytes(old.text.len()).saturating_add(512);
+            self.shape_cache_bytes
+                .set(self.shape_cache_bytes.get().saturating_sub(old_bytes));
+        }
+        while self.shape_cache_bytes.get().saturating_add(bytes) > SHAPE_CACHE_BYTES {
+            let Some((_, old)) = cache.pop_lru() else {
+                break;
+            };
+            let old_bytes = text_cache_entry_bytes(old.text.len()).saturating_add(512);
+            self.shape_cache_bytes
+                .set(self.shape_cache_bytes.get().saturating_sub(old_bytes));
+        }
+        if cache.len() >= MEASURE_CACHE_CAP {
+            if let Some((_, old)) = cache.pop_lru() {
+                let old_bytes = text_cache_entry_bytes(old.text.len()).saturating_add(512);
+                self.shape_cache_bytes
+                    .set(self.shape_cache_bytes.get().saturating_sub(old_bytes));
+            }
+        }
+        cache.put(key, Verified::new(text, value));
+        self.shape_cache_bytes
+            .set(self.shape_cache_bytes.get().saturating_add(bytes));
+    }
+
+    fn insert_measure_cache(&self, key: TextMeasureKey, text: &str, value: TextMetrics) {
+        let bytes = text_cache_entry_bytes(text.len());
+        if text.len() > MAX_MEASURE_ITEM_TEXT_BYTES || bytes > MAX_MEASURE_CACHE_BYTES {
+            return;
+        }
+        let mut cache = self.measure_cache.borrow_mut();
+        if let Some(old) = cache.pop(&key) {
+            self.measure_cache_bytes.set(
+                self.measure_cache_bytes
+                    .get()
+                    .saturating_sub(text_cache_entry_bytes(old.text.len())),
+            );
+        }
+        while self.measure_cache_bytes.get().saturating_add(bytes) > MAX_MEASURE_CACHE_BYTES {
+            let Some((_, old)) = cache.pop_lru() else {
+                break;
+            };
+            self.measure_cache_bytes.set(
+                self.measure_cache_bytes
+                    .get()
+                    .saturating_sub(text_cache_entry_bytes(old.text.len())),
+            );
+        }
+        if cache.len() >= MEASURE_CACHE_CAP {
+            if let Some((_, old)) = cache.pop_lru() {
+                self.measure_cache_bytes.set(
+                    self.measure_cache_bytes
+                        .get()
+                        .saturating_sub(text_cache_entry_bytes(old.text.len())),
+                );
+            }
+        }
+        cache.put(key, Verified::new(text, value));
+        self.measure_cache_bytes
+            .set(self.measure_cache_bytes.get().saturating_add(bytes));
+    }
+
     ///
     /// Hot path: results are cached in an LRU keyed on the fingerprint
     /// returned by [`TextMeasureKey::new`].  Identical repeated
@@ -1010,9 +1226,7 @@ impl TextContext {
             alphabetic_baseline: 0.0,
             ideographic_baseline: ideo_baseline,
         };
-        self.measure_cache
-            .borrow_mut()
-            .put(key, Verified::new(text, metrics.clone()));
+        self.insert_measure_cache(key, text, metrics.clone());
         metrics
     }
 
@@ -1646,5 +1860,106 @@ mod tests {
         // Skia can return 0 when the writer hasn't landed yet
         // on the scheduling interleave we saw — the invariant is
         // "no crash, no TSAN abort".
+    }
+
+    // ── T-M1 byte-ceiling tests ─────────────────────────────────────
+    // These must be RED before the byte-bound constants and the
+    // `measure_cache_bytes` field are added.  They become GREEN once
+    // the production code enforces the limits.
+
+    /// An extremely long text string must not be retained in the cache.
+    ///
+    /// Without a per-item gate, a single label of several kilobytes would
+    /// occupy a disproportionate share of the cache budget and make every
+    /// subsequent LRU hit scan that string for equality.  Items above
+    /// `MAX_MEASURE_ITEM_TEXT_BYTES` are measured normally but never stored.
+    #[test]
+    fn measure_cache_oversized_text_not_retained() {
+        let mut ctx = TextContext::new();
+        assert!(ctx.register_family("test-noto", NOTO_SANS));
+        // One byte above the single-item threshold.
+        let long_text: String = "a".repeat(MAX_MEASURE_ITEM_TEXT_BYTES + 1);
+        let attrs = test_attrs(16.0);
+        let m = ctx.measure_text(&long_text, &attrs);
+        assert!(
+            m.width > 0.0,
+            "measurement must still succeed for a long string"
+        );
+        assert_eq!(
+            ctx.measure_cache.borrow().len(),
+            0,
+            "text longer than MAX_MEASURE_ITEM_TEXT_BYTES must not occupy a cache slot"
+        );
+    }
+
+    /// Inserting many moderate-size items must not push the retained byte
+    /// total above `MAX_MEASURE_CACHE_BYTES`.
+    ///
+    /// Without byte tracking, 200 distinct 300-byte strings produce
+    /// ≈ 200 × 452 bytes ≈ 90 KiB — well above the 64 KiB ceiling.
+    /// With byte-bounded trimming, the running total stays under the limit
+    /// while the entry-count cap enforces the per-item LRU invariant.
+    #[test]
+    fn measure_cache_byte_total_stays_under_budget() {
+        let mut ctx = TextContext::new();
+        assert!(ctx.register_family("test-noto", NOTO_SANS));
+        let attrs = test_attrs(16.0);
+        // 200 distinct texts, each 300 bytes — all individually under the
+        // single-item gate (512 bytes) but collectively well over the byte ceiling.
+        for i in 0u32..200 {
+            let text = format!("{:0>300}", i); // zero-padded to exactly 300 chars
+            let _ = ctx.measure_text(&text, &attrs);
+        }
+        assert!(
+            ctx.measure_cache_bytes() <= MAX_MEASURE_CACHE_BYTES,
+            "retained measure-cache bytes {} exceeded the ceiling of {}",
+            ctx.measure_cache_bytes(),
+            MAX_MEASURE_CACHE_BYTES,
+        );
+    }
+
+    #[test]
+    fn ordinary_measure_entries_still_reach_the_entry_cap() {
+        let mut ctx = TextContext::new();
+        assert!(ctx.register_family("test-noto", NOTO_SANS));
+        let attrs = test_attrs(16.0);
+        for i in 0..MEASURE_CACHE_CAP {
+            let _ = ctx.measure_text(&format!("label-{i}"), &attrs);
+        }
+        assert_eq!(
+            ctx.measure_cache.borrow().len(),
+            MEASURE_CACHE_CAP,
+            "byte accounting must not reduce the ordinary entry-count capacity"
+        );
+    }
+
+    // ── T-P1 key-completeness verification ──────────────────────────
+    // These verify that every glyph-affecting attribute is included in
+    // the cache key.  They should be GREEN from the first run (the key is
+    // correct), confirming there is no regression path that could silently
+    // alias two differently-shaped text runs.
+
+    /// Two `measure_text` calls that differ only in `direction` must occupy
+    /// distinct cache slots.  The Canvas 2D spec and HarfBuzz both care about
+    /// BiDi direction during shaping — Arabic text in LTR order is wrong.
+    ///
+    /// This test is expected to pass immediately (direction IS in the key).
+    /// Its purpose is to lock that property down as a regression gate.
+    #[test]
+    fn key_completeness_direction_produces_distinct_cache_entries() {
+        let mut ctx = TextContext::new();
+        assert!(ctx.register_family("test-noto", NOTO_SANS));
+        let attrs_inherit = test_attrs(16.0);
+        let mut attrs_rtl = test_attrs(16.0);
+        attrs_rtl.direction = ProtocolDirection::Rtl;
+
+        let _ = ctx.measure_text("hello", &attrs_inherit);
+        let _ = ctx.measure_text("hello", &attrs_rtl);
+        assert_eq!(
+            ctx.measure_cache.borrow().len(),
+            2,
+            "LTR and RTL draws of the same text must occupy distinct cache slots; \
+             sharing them would return wrong metrics for one direction"
+        );
     }
 }

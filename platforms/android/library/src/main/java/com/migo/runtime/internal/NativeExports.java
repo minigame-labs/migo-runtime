@@ -1683,15 +1683,17 @@ public final class NativeExports {
         MediaExports.cameraDestroy(sessionId, cameraId);
     }
 
+
     /**
-     * Take a photo with the camera.
+     * Start a photo capture without blocking the native caller.
      *
-     * @param sessionId   The session ID
+     * @param sessionId session identifier
+     * @param requestId host callback identifier
      * @param optionsJson JSON with keys: cameraId, quality
-     * @return JSON result or error JSON
      */
-    public static String cameraTakePhoto(int sessionId, String optionsJson) {
-        return MediaExports.cameraTakePhoto(sessionId, optionsJson);
+    public static void cameraTakePhotoAsync(
+            int sessionId, int requestId, String optionsJson) {
+        MediaExports.cameraTakePhotoAsync(sessionId, requestId, optionsJson);
     }
 
     /**

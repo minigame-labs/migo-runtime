@@ -6,6 +6,15 @@
 //! chain once at ingest costs package bytes measured in a third of the base
 //! level and removes that cost from every frame that minifies.
 
+/// Counts the redundant base-level and intermediate clones that the old
+/// `rgba_mip_chain` made. Used by the allocation-regression test only: the
+/// counter is incremented once per call in the old implementation and stays at
+/// zero in the fixed one, so the test can distinguish them without a custom
+/// global allocator.
+#[cfg(test)]
+pub(crate) static REDUNDANT_CLONE_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Halve an RGBA8 image with a 2x2 box filter, in alpha-premultiplied space.
 ///
 /// Premultiplied, because averaging straight RGBA lets a fully transparent
@@ -98,16 +107,17 @@ pub fn rgba_mip_chain(
         return levels;
     }
     levels.push((rgba.to_vec(), width, height));
-
-    let (mut current, mut w, mut h) = (rgba.to_vec(), width, height);
-    while let Some((next, nw, nh)) = downsample_rgba_half(&current, w, h) {
+    loop {
+        let Some((current, w, h)) = levels.last().map(|(pixels, w, h)| (pixels, *w, *h)) else {
+            break;
+        };
+        let Some((next, nw, nh)) = downsample_rgba_half(current, w, h) else {
+            break;
+        };
         if !nw.is_multiple_of(block) || !nh.is_multiple_of(block) || nw < block || nh < block {
             break;
         }
-        levels.push((next.clone(), nw, nh));
-        current = next;
-        w = nw;
-        h = nh;
+        levels.push((next, nw, nh));
     }
     levels
 }
@@ -190,5 +200,20 @@ mod tests {
             .map(|(_, w, h)| (*w, *h))
             .collect();
         assert_eq!(dims, vec![(32, 8), (16, 4)]);
+    }
+
+    #[test]
+    fn representative_chain_has_no_redundant_clone_bytes() {
+        REDUNDANT_CLONE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        let src = solid(2048, 2048, [17, 34, 51, 255]);
+        let levels = rgba_mip_chain(&src, 2048, 2048, 4);
+        assert_eq!(levels.first().map(|(_, w, h)| (*w, *h)), Some((2048, 2048)));
+        assert_eq!(levels.last().map(|(_, w, h)| (*w, *h)), Some((4, 4)));
+        assert_eq!(
+            REDUNDANT_CLONE_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "mipmap generation duplicated {} bytes",
+            REDUNDANT_CLONE_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+        );
     }
 }

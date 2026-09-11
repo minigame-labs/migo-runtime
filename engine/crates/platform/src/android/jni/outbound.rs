@@ -408,6 +408,28 @@ fn call_void_with_string(method_name: &str, host_id: i32, json: &str) -> Result<
     })
 }
 
+/// Call a NativeExports static method with signature `(int, int, String) -> void`.
+fn call_void_with_int_and_string(
+    method_name: &str,
+    host_id: i32,
+    value: i32,
+    json: &str,
+) -> Result<(), String> {
+    with_env(|env| {
+        let jstr = env
+            .new_string(json)
+            .map_err(|e| format!("Failed to create Java string: {e}"))?;
+        let args = [
+            jvalue { i: host_id },
+            jvalue { i: value },
+            jvalue {
+                l: jstr.as_raw() as *mut _,
+            },
+        ];
+        call_void_impl(env, method_name, &args)
+    })
+}
+
 /// Call a NativeExports static method with signature `(II)V`.
 /// Avoids the String allocation needed by `call_void_with_string` when
 /// the second argument is just an integer.
@@ -982,6 +1004,20 @@ fn call_json_method(method_name: &str, host_id: i32, options_json: &str) -> Resu
     })
 }
 
+/// Start a camera photo capture without waiting for the image callback.
+/// The result is delivered through `onCameraEvent("takePhotoResult", ...)`.
+pub fn camera_take_photo_async(
+    host_id: i32,
+    request_id: u32,
+    options_json: &str,
+) -> Result<(), String> {
+    call_void_with_int_and_string(
+        "cameraTakePhotoAsync",
+        host_id,
+        request_id as i32,
+        options_json,
+    )
+}
 // Create a camera instance.
 // Calls Java: NativeExports.cameraCreate(hostId, optionsJson) -> String
 jni_json!(camera_create, "cameraCreate");
@@ -1001,9 +1037,6 @@ pub fn camera_destroy(host_id: i32, camera_id: u32) -> Result<(), String> {
         ],
     )
 }
-
-// Take a photo. Calls Java: NativeExports.cameraTakePhoto(hostId, optionsJson) -> String
-jni_json!(camera_take_photo, "cameraTakePhoto");
 
 // Start video recording. Calls Java: NativeExports.cameraStartRecord(hostId, optionsJson) -> String
 jni_json!(camera_start_record, "cameraStartRecord");

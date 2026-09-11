@@ -174,17 +174,87 @@ mod tests {
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime.exec_script("read_pixels_view_validation.js", r#"
             const ctx = new WebGLRenderingContext({ _rid: 23, width: 2, height: 2 }, {});
+            const ctx2 = new WebGL2RenderingContext({ _rid: 24, width: 2, height: 2 });
+            // A real view of the wrong element type is a GL error, not a
+            // TypeError: the type table is WebGL's, the brand is WebIDL's.
             for (const view of [new Uint8Array(3), new Float32Array(1),
-                new DataView(new ArrayBuffer(4)), {buffer: new ArrayBuffer(4), byteLength: 4}]) {
+                new DataView(new ArrayBuffer(4))]) {
                 ctx.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, view);
                 if (ctx.getError() !== ctx.INVALID_OPERATION) throw new Error('expected invalid view');
             }
+            // Not an ArrayBufferView at all: WebIDL rejects it before any GL work.
+            for (const context of [ctx, ctx2]) {
+                for (const value of [{buffer: new ArrayBuffer(4), byteLength: 4}, 'x', true, {}]) {
+                    let threw = false;
+                    try { context.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, value); }
+                    catch (error) { threw = error instanceof TypeError; }
+                    if (!threw) throw new Error('expected TypeError for ' + typeof value);
+                    if (context.getError() !== context.NO_ERROR) throw new Error('brand set an error');
+                }
+            }
+            // `dstData` is nullable in WebGL 1 and not in WebGL 2.
             ctx.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, null);
             if (ctx.getError() !== ctx.INVALID_VALUE) throw new Error('expected null rejection');
+            for (const value of [null, undefined]) {
+                let threw = false;
+                try { ctx2.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, value); }
+                catch (error) { threw = error instanceof TypeError; }
+                if (!threw) throw new Error('WebGL2 accepted a null destination');
+            }
         "#).unwrap();
         for cmd in render_rx.try_iter() {
-            assert!(!matches!(cmd, RenderCommand::GL(GLCmd::ReadPixels { .. })));
+            assert!(!matches!(
+                cmd,
+                RenderCommand::GL(GLCmd::ReadPixels { .. })
+                    | RenderCommand::GL(GLCmd::ReadPixelsToBuffer { .. })
+            ));
         }
+    }
+
+    /// The WebGL 2 buffer form takes a byte offset where the view goes, returns
+    /// nothing, and must not touch any JS memory.
+    #[test]
+    fn read_pixels_buffer_overload_sends_the_offset_and_returns_no_pixels() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            let mut offsets = Vec::new();
+            for _ in 0..4 {
+                loop {
+                    match render_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                        RenderCommand::GL(GLCmd::ReadPixelsToBuffer { offset, resp, .. }) => {
+                            offsets.push(offset);
+                            if offset == 64 {
+                                resp.err_code(shared::error::ErrorCode::InvalidOperation);
+                            } else {
+                                resp.ok(());
+                            }
+                            break;
+                        }
+                        RenderCommand::FramePacket(_) => {}
+                        other => panic!("unexpected readback command: {other:?}"),
+                    }
+                }
+            }
+            offsets
+        });
+        runtime
+            .exec_script(
+                "read_pixels_to_buffer.js",
+                r#"
+            const ctx = new WebGL2RenderingContext({ _rid: 23, width: 2, height: 2 });
+            for (const offset of [0, 8, 12.9, 64]) {
+                const result = ctx.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, offset);
+                if (result !== undefined) throw new Error('buffer form returned a value');
+            }
+            if (ctx.getError() !== ctx.INVALID_OPERATION) throw new Error('missing render error');
+            if (ctx.getError() !== ctx.NO_ERROR) throw new Error('extra error');
+            // A negative offset never reaches the renderer.
+            ctx.readPixels(0, 0, 1, 1, ctx.RGBA, ctx.UNSIGNED_BYTE, -1);
+            if (ctx.getError() !== ctx.INVALID_VALUE) throw new Error('negative offset accepted');
+        "#,
+            )
+            .unwrap();
+        assert_eq!(responder.join().unwrap(), [0, 8, 12, 64]);
     }
 
     #[test]
@@ -7130,11 +7200,69 @@ pub fn op_read_pixels(
                 match error.code {
                     ErrorCode::OutOfMemory => codes::OUT_OF_MEMORY,
                     ErrorCode::InvalidArgument => codes::INVALID_VALUE,
+                    // WebGL has a dedicated code for this and content uses it to
+                    // tell "the framebuffer is not readable" from "the arguments
+                    // were wrong"; folding it into INVALID_OPERATION lost that.
+                    ErrorCode::RenderFramebufferIncomplete => codes::INVALID_FRAMEBUFFER_OPERATION,
                     _ => codes::INVALID_OPERATION,
                 },
             );
             None
         }
+    }
+}
+
+/// `readPixels` into the bound `PIXEL_PACK_BUFFER`.
+///
+/// The offset is a `GLintptr`, so it arrives as a double and converts by
+/// WebIDL's `long long` rules; a value outside that range is a `TypeError`
+/// there, not here. Nothing is transferred back: only the spec's own
+/// validation errors, which the renderer decides because they depend on the
+/// live PACK state and the buffer's size.
+#[op2(fast)]
+pub fn op_read_pixels_to_buffer(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] x: i32,
+    #[smi] y: i32,
+    #[smi] width: i32,
+    #[smi] height: i32,
+    #[smi] format: u32,
+    #[smi] type_: u32,
+    #[bigint] offset: i64,
+) {
+    if prepare_read_pixels(state, canvas_id, width, height, format, type_).is_none() {
+        return;
+    }
+    if offset < 0 {
+        error_state::push_error(state, canvas_id, codes::INVALID_VALUE);
+        return;
+    }
+    let result = send_gl_sync_with_flush(state, |resp| {
+        RenderCommand::GL(GLCmd::ReadPixelsToBuffer {
+            canvas_id,
+            x,
+            y,
+            width,
+            height,
+            format,
+            type_,
+            offset,
+            resp,
+        })
+    });
+    if let Err(error) = result {
+        use shared::error::ErrorCode;
+        error_state::push_error(
+            state,
+            canvas_id,
+            match error.code {
+                ErrorCode::OutOfMemory => codes::OUT_OF_MEMORY,
+                ErrorCode::InvalidArgument => codes::INVALID_VALUE,
+                ErrorCode::RenderFramebufferIncomplete => codes::INVALID_FRAMEBUFFER_OPERATION,
+                _ => codes::INVALID_OPERATION,
+            },
+        );
     }
 }
 

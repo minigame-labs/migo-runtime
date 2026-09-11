@@ -146,29 +146,42 @@ public final class AudioRecorderManager implements RuntimeScoped {
             return;
         }
 
-        parseOptions(optionsJson);
+        boolean ok = false;
+        try {
+            parseOptions(optionsJson);
 
-        if (frameSize > 0) {
-            String fmt = format.toLowerCase();
-            if ("pcm".equals(fmt) || "wav".equals(fmt)) {
-                frameMode = FRAME_PCM;
+            if (frameSize > 0) {
+                String fmt = format.toLowerCase();
+                if ("pcm".equals(fmt) || "wav".equals(fmt)) {
+                    frameMode = FRAME_PCM;
+                } else {
+                    frameMode = FRAME_ENCODED;
+                }
             } else {
-                frameMode = FRAME_ENCODED;
+                frameMode = FRAME_NONE;
             }
-        } else {
-            frameMode = FRAME_NONE;
-        }
 
-        switch (frameMode) {
-            case FRAME_PCM:
-                startPcmFrameMode();
-                break;
-            case FRAME_ENCODED:
-                startEncodedFrameMode();
-                break;
-            default:
-                startEncodedMode();
-                break;
+            // Hold the lease transactionally: release it on every path that does
+            // not reach a valid RECORDING state. Once recording is live the lease
+            // belongs to the manager and is released by stopInternal().
+            switch (frameMode) {
+                case FRAME_PCM:
+                    ok = startPcmFrameMode();
+                    break;
+                case FRAME_ENCODED:
+                    ok = startEncodedFrameMode();
+                    break;
+                default:
+                    ok = startEncodedMode();
+                    break;
+            }
+        } catch (Exception e) {
+            fireEvent("error",
+                    "{\"errMsg\":\"" + escapeJson("recorderManager.start:fail " + e.getMessage()) + "\"}");
+        } finally {
+            if (!ok) {
+                ExclusiveDeviceArbiter.release(ExclusiveDeviceArbiter.MICROPHONE, sessionId);
+            }
         }
     }
 
@@ -234,7 +247,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
     // Mode 1: Encoded mode (MediaRecorder, no frame callbacks)
     // ========================================================================
 
-    private void startEncodedMode() {
+    private boolean startEncodedMode() {
         try {
             int source = mapAudioSource(audioSource);
             Log.d(TAG, "startEncodedMode: audioSource=" + audioSource + " mapped=" + source
@@ -262,11 +275,15 @@ public final class AudioRecorderManager implements RuntimeScoped {
             mediaRecorder.start();
 
             onRecordingStarted();
+            return true;
         } catch (Exception e) {
+            state.set(STATE_IDLE);
+            cancelAutoStop();
             Log.e(TAG, "startEncodedMode failed", e);
             fireEvent("error",
                     "{\"errMsg\":\"" + escapeJson("recorderManager.start:fail " + e.getMessage()) + "\"}");
             resetMediaRecorder();
+            return false;
         }
     }
 
@@ -277,13 +294,13 @@ public final class AudioRecorderManager implements RuntimeScoped {
     // Slim intentionally omits RECORD_AUDIO from its manifest; this guard also
     // handles revocation between the public start() check and construction.
     @SuppressLint("MissingPermission")
-    private void startPcmFrameMode() {
+    private boolean startPcmFrameMode() {
         // Permission can be revoked after start() validates it.
         if (activity.checkSelfPermission(Permissions.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
             fireEvent("error",
                     "{\"errMsg\":\"recorderManager.start:fail auth deny, permission RECORD_AUDIO is required\"}");
-            return;
+            return false;
         }
 
         int channelConfig = (numberOfChannels == 1)
@@ -300,7 +317,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
 
         if (minBufSize == AudioRecord.ERROR_BAD_VALUE || minBufSize == AudioRecord.ERROR) {
             fireEvent("error", "{\"errMsg\":\"recorderManager.start:fail invalid audio parameters\"}");
-            return;
+            return false;
         }
 
         int frameBufBytes = frameSize * 1024;
@@ -317,20 +334,30 @@ public final class AudioRecorderManager implements RuntimeScoped {
             if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
                 fireEvent("error", "{\"errMsg\":\"recorderManager.start:fail AudioRecord init failed\"}");
                 releaseAudioRecord();
-                return;
+                return false;
             }
 
             outputFilePath = createOutputFilePath();
             outputFileStream = new FileOutputStream(outputFilePath);
 
             audioRecord.startRecording();
-            startCaptureThread(this::pcmCaptureLoop);
+            // CAP-01: publish STATE_RECORDING before the capture thread is created.
+            // Java's Thread.start() establishes a happens-before edge: every write in
+            // this thread before thread.start() is visible to the new thread before its
+            // first action. Calling onRecordingStarted() here instead of after
+            // startCaptureThread() guarantees the capture loop sees STATE_RECORDING on
+            // its first state check and never exits on the initial STATE_IDLE.
             onRecordingStarted();
+            startCaptureThread(this::pcmCaptureLoop);
+            return true;
         } catch (Exception e) {
+            state.set(STATE_IDLE);
+            cancelAutoStop();
             fireEvent("error",
                     "{\"errMsg\":\"" + escapeJson("recorderManager.start:fail " + e.getMessage()) + "\"}");
             releaseAudioRecord();
             closeOutputStream();
+            return false;
         }
     }
 
@@ -393,7 +420,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
     // Mode 3: Encoded frame mode (MediaRecorder + pipe, encoded frame callbacks)
     // ========================================================================
 
-    private void startEncodedFrameMode() {
+    private boolean startEncodedFrameMode() {
         try {
             ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
             pipeReadFd = pipe[0];
@@ -435,13 +462,17 @@ public final class AudioRecorderManager implements RuntimeScoped {
             // Start reading from the pipe
             startCaptureThread(this::encodedCaptureLoop);
             onRecordingStarted();
+            return true;
         } catch (Exception e) {
+            state.set(STATE_IDLE);
+            cancelAutoStop();
             Log.e(TAG, "startEncodedFrameMode failed", e);
             fireEvent("error",
                     "{\"errMsg\":\"" + escapeJson("recorderManager.start:fail " + e.getMessage()) + "\"}");
             resetMediaRecorder();
             closePipe();
             closeOutputStream();
+            return false;
         }
     }
 
@@ -561,9 +592,6 @@ public final class AudioRecorderManager implements RuntimeScoped {
     // ========================================================================
 
     private synchronized void stopInternal(boolean notifyStop) {
-        // Released here rather than only in destroy(), so a session that stops
-        // recording without being torn down does not hold the microphone.
-        ExclusiveDeviceArbiter.release(ExclusiveDeviceArbiter.MICROPHONE, sessionId);
         int prevState = state.get();
         if (prevState == STATE_IDLE
                 && mediaRecorder == null
@@ -579,30 +607,38 @@ public final class AudioRecorderManager implements RuntimeScoped {
             recordedDuration += System.currentTimeMillis() - recordStartTime;
         }
 
-        if (frameMode == FRAME_PCM) {
-            ResourceCleanup.runAll(
-                    this::stopCaptureThread,
-                    this::releaseAudioRecord,
-                    this::closeOutputStream,
-                    this::resetMediaRecorder,
-                    this::closePipe);
-        } else if (frameMode == FRAME_ENCODED) {
-            ResourceCleanup.runAll(
-                    this::stopMediaRecorderSafe,
-                    this::closePipeWriteFd,
-                    this::stopCaptureThread,
-                    this::closePipeReadFd,
-                    this::closeOutputStream,
-                    this::resetMediaRecorder,
-                    this::releaseAudioRecord);
-        } else {
-            ResourceCleanup.runAll(
-                    this::stopMediaRecorderSafe,
-                    this::resetMediaRecorder,
-                    this::releaseAudioRecord,
-                    this::stopCaptureThread,
-                    this::closeOutputStream,
-                    this::closePipe);
+        try {
+            if (frameMode == FRAME_PCM) {
+                ResourceCleanup.runAll(
+                        this::stopCaptureThread,
+                        this::releaseAudioRecord,
+                        this::closeOutputStream,
+                        this::resetMediaRecorder,
+                        this::closePipe);
+            } else if (frameMode == FRAME_ENCODED) {
+                ResourceCleanup.runAll(
+                        this::stopMediaRecorderSafe,
+                        this::closePipeWriteFd,
+                        this::stopCaptureThread,
+                        this::closePipeReadFd,
+                        this::closeOutputStream,
+                        this::resetMediaRecorder,
+                        this::releaseAudioRecord);
+            } else {
+                ResourceCleanup.runAll(
+                        this::stopMediaRecorderSafe,
+                        this::resetMediaRecorder,
+                        this::releaseAudioRecord,
+                        this::stopCaptureThread,
+                        this::closeOutputStream,
+                        this::closePipe);
+            }
+        } finally {
+            // Keep the logical lease until every hardware-facing cleanup action
+            // has been attempted. ResourceCleanup runs all independent actions
+            // before propagating failures, and this finally releases the lease
+            // even when one of those actions fails.
+            ExclusiveDeviceArbiter.release(ExclusiveDeviceArbiter.MICROPHONE, sessionId);
         }
         state.set(STATE_IDLE);
 

@@ -82,18 +82,33 @@ pub fn uniform_scale(entry: &DrawImageEntry) -> f32 {
 /// sprite through `drawAtlas` is the same GPU work as one `drawImageRect` plus
 /// the cost of building the arrays, so the merge has to actually merge
 /// something to be worth doing.
+///
+/// **Test helper only.** Production calls [`partition_into`] directly, passing
+/// the scratch `Vec` owned by the canvas context so the run table is not
+/// allocated on the render thread every frame. This wrapper exists for the
+/// tests that assert output structure and do not need that optimisation.
 pub fn partition(entries: &[DrawImageEntry], min_run: usize) -> Vec<BatchRun> {
-    let mut runs: Vec<BatchRun> = Vec::new();
+    let mut runs = Vec::new();
+    partition_into(entries, min_run, &mut runs);
+    runs
+}
+
+/// Fill caller-owned scratch with the longest consecutive sprite runs.
+///
+/// The renderer invokes this once per batch. Keeping the output allocation
+/// with its render owner avoids returning a temporary run table to the
+/// allocator every frame, including the overflow at 17 sprites.
+pub fn partition_into(entries: &[DrawImageEntry], min_run: usize, runs: &mut Vec<BatchRun>) {
+    runs.clear();
     let mut index = 0usize;
 
     while index < entries.len() {
         if !is_uniformly_scaled(&entries[index]) {
-            // Grow one individual run over every consecutive ineligible entry.
             let start = index;
             while index < entries.len() && !is_uniformly_scaled(&entries[index]) {
                 index += 1;
             }
-            push_individual(&mut runs, start, index);
+            push_individual(runs, start, index);
             continue;
         }
 
@@ -108,10 +123,9 @@ pub fn partition(entries: &[DrawImageEntry], min_run: usize) -> Vec<BatchRun> {
         if index - start >= min_run.max(2) {
             runs.push(BatchRun::Atlas { start, end: index });
         } else {
-            push_individual(&mut runs, start, index);
+            push_individual(runs, start, index);
         }
     }
-    runs
 }
 
 /// Append an individual run, merging with a preceding one so the caller never
@@ -313,5 +327,100 @@ mod tests {
             covered.extend(start..end);
         }
         assert_eq!(covered, (0..batch.len()).collect::<Vec<_>>());
+    }
+    #[test]
+    fn partition_into_warm_runs_have_no_steady_state_allocations() {
+        use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
+
+        for count in [1usize, 16, 17, 1024] {
+            let entries: Vec<_> = (0..count).map(|_| uniform(1)).collect();
+            let mut scratch = Vec::new();
+            partition_into(&entries, 2, &mut scratch);
+            assert_no_steady_state_allocation(
+                Burst {
+                    path: "draw_atlas::partition_into",
+                    warmup: 4,
+                    measured: 32,
+                },
+                |_| {
+                    partition_into(&entries, 2, &mut scratch);
+                },
+            );
+            assert!(!scratch.is_empty());
+        }
+    }
+
+    /// This is the closest host-test seam to the production fast path:
+    /// `Canvas2DContext::try_fast_path_draw_image` owns these three vectors,
+    /// clears them for each batch/run, and fills the geometry vectors before
+    /// submitting `drawAtlas`. A full context cannot be built here without
+    /// EGL, Ganesh, and an `ImageStore`, so this keeps the production scratch
+    /// sequence explicit while leaving GPU submission untested.
+    #[test]
+    fn production_sprite_scratch_has_no_warm_allocations() {
+        use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
+
+        fn frame(
+            entries: &[DrawImageEntry],
+            use_atlas: bool,
+            runs: &mut Vec<BatchRun>,
+            xforms: &mut Vec<skia_safe::RSXform>,
+            tex: &mut Vec<skia_safe::Rect>,
+        ) {
+            runs.clear();
+            if use_atlas {
+                partition_into(entries, 2, runs);
+            } else {
+                runs.push(BatchRun::Individual {
+                    start: 0,
+                    end: entries.len(),
+                });
+            }
+
+            for run in runs.iter().copied() {
+                if let BatchRun::Atlas { start, end } = run {
+                    xforms.clear();
+                    tex.clear();
+                    for entry in &entries[start..end] {
+                        xforms.push(skia_safe::RSXform::new(
+                            uniform_scale(entry),
+                            0.0,
+                            (entry.dx, entry.dy),
+                        ));
+                        tex.push(skia_safe::Rect::from_xywh(
+                            entry.sx, entry.sy, entry.sw, entry.sh,
+                        ));
+                    }
+                }
+            }
+        }
+
+        for use_atlas in [true, false] {
+            for count in [1usize, 16, 17, 1024] {
+                let entries: Vec<_> = (0..count).map(|_| uniform(1)).collect();
+                let mut runs = Vec::new();
+                let mut xforms = Vec::new();
+                let mut tex = Vec::new();
+                frame(&entries, use_atlas, &mut runs, &mut xforms, &mut tex);
+
+                assert_no_steady_state_allocation(
+                    Burst {
+                        path: if use_atlas {
+                            "draw_atlas::production_sprite_scratch::atlas"
+                        } else {
+                            "draw_atlas::production_sprite_scratch::individual"
+                        },
+                        warmup: 4,
+                        measured: 32,
+                    },
+                    |_| frame(&entries, use_atlas, &mut runs, &mut xforms, &mut tex),
+                );
+                assert!(!runs.is_empty());
+                if use_atlas && count >= 2 {
+                    assert_eq!(xforms.len(), count);
+                    assert_eq!(tex.len(), count);
+                }
+            }
+        }
     }
 }

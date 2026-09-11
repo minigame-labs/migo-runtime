@@ -2,10 +2,12 @@ use glow::{HasContext, NativeUniformLocation};
 use shared::{
     error::{EngineError, EngineResult, ErrorCode},
     protocol::render_cmd::{
-        CanvasId, GLCmd, ShaderType, checked_readback_byte_len, webgl_readback_bytes_per_pixel,
+        CanvasId, GLCmd, ProgramId, ShaderType, checked_readback_byte_len,
+        webgl_readback_bytes_per_pixel,
     },
 };
 use smallvec::SmallVec;
+use std::collections::HashMap;
 
 #[cfg(test)]
 use crate::CanvasGLState;
@@ -15,6 +17,7 @@ use crate::backend::gl::state_tracker as st;
 use crate::canvas::gl_object::GlObject;
 use crate::damage_effect::DamageEffect;
 use crate::renderergl::link_queue::{self, DrainCause};
+use crate::shader_cache::LinkDescriptor;
 use crate::webgl_gpu_budget::GpuAllocationError;
 
 #[inline]
@@ -46,25 +49,29 @@ fn logical_to_physical_i32(_cm: &CanvasManager, v: i32) -> i32 {
     v
 }
 
-pub(crate) struct RendererGL {}
+pub(crate) struct RendererGL {
+    /// Transform-feedback state is link input, not merely post-link metadata.
+    tf_descriptors: HashMap<ProgramId, (Vec<String>, u32)>,
+}
 
-/// Per-location uniform value-dedup.
+/// Per-location-range uniform value-dedup.
+///
+/// `location_count` is the number of consecutive GL uniform locations
+/// touched by this setter. Arrays can be addressed through their base or an
+/// element location, so the state tracker invalidates overlapping cached
+/// ranges before comparing bytes. Matrix arrays consume one location per
+/// matrix column, not merely one location per matrix value.
 ///
 /// Returns `true` when the driver call must actually be issued
 /// (first set, value changed, or we don't know the current program yet).
 /// Returns `false` when the byte-identical value is already live, in
 /// which case the caller should skip the `glUniform*` call.
-///
-/// Callers pass the *logical* bytes of the payload: integer uniforms
-/// pass `bytemuck::bytes_of(&x)`, slice uniforms pass
-/// `bytemuck::cast_slice::<f32, u8>(&values)`, and matrix uniforms
-/// concatenate the transpose flag byte with the matrix payload so
-/// `(true, data)` and `(false, data)` dedup independently.
 #[inline]
 fn should_issue_uniform(
     cm: &mut CanvasManager,
     canvas_id: CanvasId,
     location: Option<u32>,
+    location_count: u32,
     bytes: &[u8],
 ) -> bool {
     // `uniform(null, …)` is a GL no-op already; skip without even
@@ -79,7 +86,7 @@ fn should_issue_uniform(
     let Some(program) = state.current_program else {
         return true;
     };
-    st::update_uniform(state, program, loc, bytes)
+    st::update_uniform_range(state, program, loc, location_count, bytes)
 }
 
 /// Build a scratch buffer `[transpose_byte, matrix_bytes...]` for
@@ -99,7 +106,9 @@ fn mat_uniform_bytes<'a>(
 
 impl RendererGL {
     pub(crate) fn new() -> Self {
-        Self {}
+        Self {
+            tf_descriptors: HashMap::new(),
+        }
     }
 
     fn maybe_log_draw_state(
@@ -120,29 +129,40 @@ impl RendererGL {
         cm.current_canvas_id()
     }
 
-    /// Read `LINK_STATUS` for the programs whose link was deferred, and offer
-    /// each successfully linked binary to the shader cache.
-    ///
-    /// `cause` decides whether a still-compiling program may be left for a
-    /// later drain; see [`crate::renderergl::link_queue`].
+    /// Read `LINK_STATUS` for deferred programs.  `target` is `Some` for a
+    /// content query: unrelated links remain queued for a later batch.
     pub(crate) fn drain_pending_links(
         cm: &mut CanvasManager,
         gl: &glow::Context,
         cause: DrainCause,
     ) {
+        Self::drain_pending_links_for(cm, gl, cause, None);
+    }
+
+    fn drain_pending_link(cm: &mut CanvasManager, gl: &glow::Context, program_id: ProgramId) {
+        Self::drain_pending_links_for(cm, gl, DrainCause::ContentAsked, Some(program_id));
+    }
+
+    fn drain_pending_links_for(
+        cm: &mut CanvasManager,
+        gl: &glow::Context,
+        cause: DrainCause,
+        target: Option<ProgramId>,
+    ) {
         if cm.pending_links.is_empty() {
             return;
         }
         let parallel = cm.device_caps.has_parallel_shader_compile;
-
-        // Taken out so the per-program work can borrow `cm` mutably; anything
-        // left pending goes back at the end, in order.
         let queue = std::mem::take(&mut cm.pending_links);
-        let mut still_pending = Vec::new();
+        let mut still_pending = Vec::with_capacity(queue.len());
 
         for program_id in queue {
+            if target.is_some_and(|wanted| wanted != program_id) {
+                still_pending.push(program_id);
+                continue;
+            }
             let Some(meta) = cm.programs.get(&program_id) else {
-                continue; // deleted between link and drain
+                continue;
             };
             if meta.deleted || !meta.link_pending {
                 continue;
@@ -160,29 +180,61 @@ impl RendererGL {
             }
 
             let (vsrc, fsrc) = Self::get_program_shader_sources(cm, meta);
-            let attrib_key = {
-                let mut ab = meta.attrib_bindings.clone();
-                ab.sort();
-                ab.iter()
-                    .map(|(i, n)| format!("{i}={n};"))
-                    .collect::<String>()
-            };
-
-            // This is the stall the deferral existed to move: by now every link
-            // in the batch has been submitted, so the driver has had the whole
-            // batch to work on them in parallel.
+            let attrib_key = Self::attribute_key(&meta.attrib_bindings);
             let link_ok = unsafe { gl.get_program_link_status(ph) };
-            if let (true, Some(cache), Some(vs), Some(fs)) =
-                (link_ok, &cm.shader_cache, &vsrc, &fsrc)
-            {
-                cache.save(gl, ph, vs, fs, &attrib_key);
+            if link_ok {
+                let (tf_varyings, tf_buffer_mode) = Self::query_tf_descriptor(gl, ph);
+                if let (Some(cache), Some(vs), Some(fs)) =
+                    (&cm.shader_cache, vsrc.as_deref(), fsrc.as_deref())
+                {
+                    let descriptor = LinkDescriptor {
+                        vertex_src: vs,
+                        fragment_src: fs,
+                        attrib_key: &attrib_key,
+                        tf_varyings: &tf_varyings,
+                        tf_buffer_mode,
+                    };
+                    cache.save(gl, ph, &descriptor);
+                }
             }
             if let Some(meta) = cm.programs.get_mut(&program_id) {
                 meta.link_pending = false;
             }
         }
-
         cm.pending_links = still_pending;
+    }
+
+    fn attribute_key(bindings: &[(u32, String)]) -> String {
+        let mut normalized = bindings.to_vec();
+        normalized.sort_by(|(index_a, name_a), (index_b, name_b)| {
+            name_a.cmp(name_b).then(index_a.cmp(index_b))
+        });
+        normalized
+            .iter()
+            .map(|(index, name)| format!("{name}={index};"))
+            .collect()
+    }
+
+    fn query_tf_descriptor(
+        gl: &glow::Context,
+        program: glow::NativeProgram,
+    ) -> (Vec<String>, Option<u32>) {
+        let count =
+            unsafe { gl.get_program_parameter_i32(program, glow::TRANSFORM_FEEDBACK_VARYINGS) };
+        let varyings = if count > 0 {
+            (0..count as u32)
+                .filter_map(|index| unsafe {
+                    gl.get_transform_feedback_varying(program, index)
+                        .map(|v| v.name)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mode = unsafe {
+            gl.get_program_parameter_i32(program, glow::TRANSFORM_FEEDBACK_BUFFER_MODE) as u32
+        };
+        (varyings, Some(mode))
     }
 
     /// Look up the vertex and fragment shader sources for a program's
@@ -529,7 +581,7 @@ impl RendererGL {
             } => {
                 cm.make_current_needed(canvas_id)?;
                 let v = [x, y, z];
-                if should_issue_uniform(cm, canvas_id, location, bytemuck::bytes_of(&v)) {
+                if should_issue_uniform(cm, canvas_id, location, 1, bytemuck::bytes_of(&v)) {
                     unsafe {
                         gl.uniform_3_f32(to_native_uniform_location(location).as_ref(), x, y, z)
                     };
@@ -546,7 +598,13 @@ impl RendererGL {
                 cm.make_current_needed(canvas_id)?;
                 let mut scratch = SmallVec::<[u8; 65]>::new();
                 let bytes = mat_uniform_bytes(&mut scratch, transpose, &value);
-                if should_issue_uniform(cm, canvas_id, location, bytes) {
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 9 * 3) as u32,
+                    bytes,
+                ) {
                     unsafe {
                         gl.uniform_matrix_3_f32_slice(
                             to_native_uniform_location(location).as_ref(),
@@ -701,21 +759,23 @@ impl RendererGL {
                 if let Some(meta) = cm.programs.get(&program_id) {
                     if !meta.deleted {
                         if let Some(ph) = meta.gl_handle {
-                            // Try shader cache: load pre-compiled binary to skip link.
                             let (vsrc, fsrc) = Self::get_program_shader_sources(cm, meta);
-                            // Attribute bindings are part of what determines the
-                            // linked binary's attribute locations, so they must be
-                            // in the cache key (sorted for a stable key).
-                            let attrib_key = {
-                                let mut ab = meta.attrib_bindings.clone();
-                                ab.sort();
-                                ab.iter()
-                                    .map(|(i, n)| format!("{i}={n};"))
-                                    .collect::<String>()
-                            };
+                            let attrib_key = Self::attribute_key(&meta.attrib_bindings);
+                            let (tf_varyings, tf_buffer_mode) = self
+                                .tf_descriptors
+                                .get(&program_id)
+                                .map(|(varyings, mode)| (varyings.as_slice(), Some(*mode)))
+                                .unwrap_or((&[], Some(glow::INTERLEAVED_ATTRIBS)));
                             let cache_hit = match (&cm.shader_cache, &vsrc, &fsrc) {
                                 (Some(cache), Some(vs), Some(fs)) => {
-                                    match cache.load(vs, fs, &attrib_key) {
+                                    let descriptor = LinkDescriptor {
+                                        vertex_src: vs,
+                                        fragment_src: fs,
+                                        attrib_key: &attrib_key,
+                                        tf_varyings,
+                                        tf_buffer_mode,
+                                    };
+                                    match cache.load(&descriptor) {
                                         Some((format, buffer)) => {
                                             let prog_binary =
                                                 glow::ProgramBinary { format, buffer };
@@ -746,7 +806,7 @@ impl RendererGL {
                                     // restores the old one-link-at-a-time
                                     // behaviour exactly, for a driver where
                                     // deferring turns out to misbehave.
-                                    Self::drain_pending_links(cm, gl, DrainCause::ContentAsked);
+                                    Self::drain_pending_link(cm, gl, program_id);
                                 }
                             }
                         }
@@ -781,10 +841,10 @@ impl RendererGL {
                         if let Some(ph) = meta.gl_handle {
                             unsafe { gl.bind_attrib_location(ph, index, &name) };
                         }
-                        // Record the binding so it participates in the shader
-                        // binary cache key at (re-)link time.  Replace any prior
-                        // binding for the same index to mirror GL's last-wins.
-                        meta.attrib_bindings.retain(|(i, _)| *i != index);
+                        // Keep one binding per attribute name.  Different names
+                        // sharing an index are distinct link inputs.
+                        meta.attrib_bindings
+                            .retain(|(_, existing)| existing != &name);
                         meta.attrib_bindings.push((index, name));
                     }
                 }
@@ -819,7 +879,7 @@ impl RendererGL {
                     // The answer is only available by stalling, so this is the
                     // moment the deferred read has to happen -- and the cache
                     // save that rides along with it.
-                    Self::drain_pending_links(cm, gl, DrainCause::ContentAsked);
+                    Self::drain_pending_link(cm, gl, program_id);
                 }
 
                 let v: i32 = unsafe {
@@ -843,7 +903,7 @@ impl RendererGL {
             GLCmd::GetProgramInfoLog { program_id, resp } => {
                 let _ = self.bind_for_contextless_gl(cm)?;
                 // An info log is only meaningful once the link has finished.
-                Self::drain_pending_links(cm, gl, DrainCause::ContentAsked);
+                Self::drain_pending_link(cm, gl, program_id);
                 if let Some(meta) = cm.programs.get(&program_id) {
                     if meta.deleted {
                         let _ = resp.send(Ok(None));
@@ -867,9 +927,7 @@ impl RendererGL {
             }
 
             GLCmd::DeleteProgram { program_id } => {
-                // The handle is about to go: there is nothing left to query and
-                // nothing worth caching, so drop the queue entry rather than
-                // letting a later drain look up a dead program.
+                self.tf_descriptors.remove(&program_id);
                 cm.forget_pending_link(program_id);
                 if let Some(mut meta) = cm.programs.remove(&program_id) {
                     // Drop the binding shadow and this program's cached uniform
@@ -1679,7 +1737,12 @@ impl RendererGL {
 
             GLCmd::GenerateMipmap { canvas_id, target } => {
                 cm.make_current_needed(canvas_id)?;
+                let prepared = cm
+                    .webgl_gpu_budget
+                    .prepare_generate_mipmap(canvas_id, target)
+                    .map_err(gpu_allocation_error)?;
                 unsafe { gl.generate_mipmap(target) };
+                cm.webgl_gpu_budget.commit(prepared);
                 Ok(DamageEffect::NoDamage)
             }
 
@@ -1707,6 +1770,19 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                let prepared = cm
+                    .webgl_gpu_budget
+                    .prepare_compressed_tex_image_2d(
+                        canvas_id,
+                        target,
+                        level,
+                        internalformat,
+                        width,
+                        height,
+                        border,
+                        data.len() as u32,
+                    )
+                    .map_err(gpu_allocation_error)?;
                 unsafe {
                     gl.compressed_tex_image_2d(
                         target,
@@ -1719,6 +1795,7 @@ impl RendererGL {
                         &data,
                     );
                 }
+                cm.webgl_gpu_budget.commit(prepared);
                 Ok(DamageEffect::NoDamage)
             }
 
@@ -2055,7 +2132,7 @@ impl RendererGL {
                 x,
             } => {
                 cm.make_current_needed(canvas_id)?;
-                if should_issue_uniform(cm, canvas_id, location, bytemuck::bytes_of(&x)) {
+                if should_issue_uniform(cm, canvas_id, location, 1, bytemuck::bytes_of(&x)) {
                     unsafe { gl.uniform_1_i32(to_native_uniform_location(location).as_ref(), x) };
                 }
                 Ok(DamageEffect::NoDamage)
@@ -2067,7 +2144,7 @@ impl RendererGL {
                 x,
             } => {
                 cm.make_current_needed(canvas_id)?;
-                if should_issue_uniform(cm, canvas_id, location, bytemuck::bytes_of(&x)) {
+                if should_issue_uniform(cm, canvas_id, location, 1, bytemuck::bytes_of(&x)) {
                     unsafe { gl.uniform_1_f32(to_native_uniform_location(location).as_ref(), x) };
                 }
                 Ok(DamageEffect::NoDamage)
@@ -2081,7 +2158,7 @@ impl RendererGL {
             } => {
                 cm.make_current_needed(canvas_id)?;
                 let v = [x, y];
-                if should_issue_uniform(cm, canvas_id, location, bytemuck::bytes_of(&v)) {
+                if should_issue_uniform(cm, canvas_id, location, 1, bytemuck::bytes_of(&v)) {
                     unsafe {
                         gl.uniform_2_f32(to_native_uniform_location(location).as_ref(), x, y)
                     };
@@ -2099,7 +2176,7 @@ impl RendererGL {
             } => {
                 cm.make_current_needed(canvas_id)?;
                 let v = [x, y, z, w];
-                if should_issue_uniform(cm, canvas_id, location, bytemuck::bytes_of(&v)) {
+                if should_issue_uniform(cm, canvas_id, location, 1, bytemuck::bytes_of(&v)) {
                     unsafe {
                         gl.uniform_4_f32(to_native_uniform_location(location).as_ref(), x, y, z, w)
                     };
@@ -2117,6 +2194,7 @@ impl RendererGL {
                     cm,
                     canvas_id,
                     location,
+                    value.len() as u32,
                     bytemuck::cast_slice::<i32, u8>(&value),
                 ) {
                     unsafe {
@@ -2139,6 +2217,7 @@ impl RendererGL {
                     cm,
                     canvas_id,
                     location,
+                    value.len() as u32,
                     bytemuck::cast_slice::<f32, u8>(&value),
                 ) {
                     unsafe {
@@ -2161,6 +2240,7 @@ impl RendererGL {
                     cm,
                     canvas_id,
                     location,
+                    (value.len() / 2) as u32,
                     bytemuck::cast_slice::<i32, u8>(&value),
                 ) {
                     unsafe {
@@ -2183,6 +2263,7 @@ impl RendererGL {
                     cm,
                     canvas_id,
                     location,
+                    (value.len() / 2) as u32,
                     bytemuck::cast_slice::<f32, u8>(&value),
                 ) {
                     unsafe {
@@ -2205,6 +2286,7 @@ impl RendererGL {
                     cm,
                     canvas_id,
                     location,
+                    (value.len() / 3) as u32,
                     bytemuck::cast_slice::<i32, u8>(&value),
                 ) {
                     unsafe {
@@ -2227,6 +2309,7 @@ impl RendererGL {
                     cm,
                     canvas_id,
                     location,
+                    (value.len() / 3) as u32,
                     bytemuck::cast_slice::<f32, u8>(&value),
                 ) {
                     unsafe {
@@ -2249,6 +2332,7 @@ impl RendererGL {
                     cm,
                     canvas_id,
                     location,
+                    (value.len() / 4) as u32,
                     bytemuck::cast_slice::<i32, u8>(&value),
                 ) {
                     unsafe {
@@ -2271,6 +2355,7 @@ impl RendererGL {
                     cm,
                     canvas_id,
                     location,
+                    (value.len() / 4) as u32,
                     bytemuck::cast_slice::<f32, u8>(&value),
                 ) {
                     unsafe {
@@ -2292,7 +2377,13 @@ impl RendererGL {
                 cm.make_current_needed(canvas_id)?;
                 let mut scratch = SmallVec::<[u8; 65]>::new();
                 let bytes = mat_uniform_bytes(&mut scratch, transpose, &value);
-                if should_issue_uniform(cm, canvas_id, location, bytes) {
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 4 * 2) as u32,
+                    bytes,
+                ) {
                     unsafe {
                         gl.uniform_matrix_2_f32_slice(
                             to_native_uniform_location(location).as_ref(),
@@ -2313,7 +2404,13 @@ impl RendererGL {
                 cm.make_current_needed(canvas_id)?;
                 let mut scratch = SmallVec::<[u8; 65]>::new();
                 let bytes = mat_uniform_bytes(&mut scratch, transpose, &value);
-                if should_issue_uniform(cm, canvas_id, location, bytes) {
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 16 * 4) as u32,
+                    bytes,
+                ) {
                     unsafe {
                         gl.uniform_matrix_4_f32_slice(
                             to_native_uniform_location(location).as_ref(),
@@ -2659,6 +2756,28 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            GLCmd::ReadPixelsToBuffer {
+                canvas_id,
+                x,
+                y,
+                width,
+                height,
+                format,
+                type_,
+                offset,
+                resp,
+            } => {
+                if width < 0 || height < 0 || offset < 0 {
+                    resp.err_code(ErrorCode::InvalidArgument);
+                    return Ok(DamageEffect::NoDamage);
+                }
+                cm.make_current_needed(canvas_id)?;
+                resp.send(crate::backend::gl::readback::read_webgl_pixels_to_buffer(
+                    gl, x, y, width, height, format, type_, offset,
+                ));
+                Ok(DamageEffect::NoDamage)
+            }
+
             GLCmd::Hint {
                 canvas_id,
                 target,
@@ -2693,20 +2812,17 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
             GLCmd::DeleteVertexArray { vao } => {
-                let object = cm
-                    .vaos
-                    .get_mut(&vao)
-                    .and_then(|meta| meta.take_for_delete());
+                let object = cm.vaos.remove(&vao).and_then(|meta| {
+                    meta.gl_handle.map(|handle| GlObject::VertexArray {
+                        handle,
+                        owner: meta.owner,
+                    })
+                });
                 // Drop this VAO's vertex-attribute shadow. VAO names come from
                 // the client, so a reused name would otherwise inherit the dead
                 // object's layout and dedup away the `vertexAttribPointer` the
                 // new one needs — a draw reading the wrong vertex stream, with
                 // no GL error.
-                //
-                // Every canvas: a VAO name is local to the context that created
-                // it, so only one canvas can hold state for it, but finding
-                // which would mean trusting `VaoMeta::owner` to agree with the
-                // shadow. Sweeping is O(canvases) on a cold command.
                 for state in cm.gl_state.values_mut() {
                     state.vertex_attribs.forget_vao(vao);
                 }
@@ -2943,10 +3059,7 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
             GLCmd::DeleteSampler { sampler } => {
-                let handle = cm.samplers.get_mut(&sampler).and_then(|meta| {
-                    meta.deleted = true;
-                    meta.gl_handle.take()
-                });
+                let handle = cm.samplers.remove(&sampler).and_then(|meta| meta.gl_handle);
                 if let Some(h) = handle {
                     cm.delete_gl_object(GlObject::Sampler(h))?;
                 }
@@ -3004,10 +3117,7 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
             GLCmd::DeleteSync { sync } => {
-                let handle = cm.syncs.get_mut(&sync).and_then(|meta| {
-                    meta.deleted = true;
-                    meta.gl_handle.take()
-                });
+                let handle = cm.syncs.remove(&sync).and_then(|meta| meta.gl_handle);
                 if let Some(h) = handle {
                     cm.delete_gl_object(GlObject::Sync(h))?;
                 }
@@ -3085,15 +3195,12 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
             GLCmd::DeleteQuery { query } => {
-                // Split the borrow: first rebind the owning context
-                // (mutable borrow of `cm`), then perform the actual
-                // delete with a fresh mutable borrow.  We can't hold
-                // a `get_mut` reference across the `make_current_needed`
-                // call because that also takes `&mut cm`.
-                let object = cm
-                    .queries
-                    .get_mut(&query)
-                    .and_then(|meta| meta.take_for_delete());
+                let object = cm.queries.remove(&query).and_then(|meta| {
+                    meta.gl_handle.map(|handle| GlObject::Query {
+                        handle,
+                        owner: meta.owner,
+                    })
+                });
                 if let Some(object) = object {
                     cm.delete_gl_object(object)?;
                 }
@@ -3149,10 +3256,12 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
             GLCmd::DeleteTransformFeedback { tf } => {
-                let object = cm
-                    .transform_feedbacks
-                    .get_mut(&tf)
-                    .and_then(|meta| meta.take_for_delete());
+                let object = cm.transform_feedbacks.remove(&tf).and_then(|meta| {
+                    meta.gl_handle.map(|handle| GlObject::TransformFeedback {
+                        handle,
+                        owner: meta.owner,
+                    })
+                });
                 if let Some(object) = object {
                     cm.delete_gl_object(object)?;
                 }
@@ -3225,6 +3334,10 @@ impl RendererGL {
                     let refs: Vec<&str> = varyings.iter().map(|s| s.as_str()).collect();
                     unsafe { gl.transform_feedback_varyings(h, &refs, buffer_mode) };
                 }
+                // Preserve the exact ordered names and mode for the pre-link
+                // cache descriptor.  Unlike the linked query, this is the
+                // caller's immutable link input.
+                self.tf_descriptors.insert(program, (varyings, buffer_mode));
                 Ok(DamageEffect::NoDamage)
             }
 
@@ -3965,5 +4078,36 @@ mod tests {
              succeed silently, where the first call errored — see this test's \
              doc for why the saved hash lookup is not worth that"
         );
+    }
+
+    #[test]
+    fn content_query_drains_only_requested_program() {
+        const SRC: &str = include_str!("handler.rs");
+        let start = SRC
+            .find("GLCmd::GetProgramParameter {")
+            .expect("GetProgramParameter arm exists");
+        let end = SRC[start..]
+            .find("GLCmd::GetProgramInfoLog")
+            .map(|offset| start + offset)
+            .expect("GetProgramInfoLog follows parameter arm");
+        let parameter_arm = &SRC[start..end];
+        assert!(
+            parameter_arm.contains("Self::drain_pending_link(cm, gl, program_id)"),
+            "content query must target its own pending program"
+        );
+        assert!(
+            !parameter_arm.contains("Self::drain_pending_links(cm, gl, DrainCause::ContentAsked)"),
+            "content query must not drain unrelated pending programs"
+        );
+
+        let info_start = SRC
+            .find("GLCmd::GetProgramInfoLog {")
+            .expect("GetProgramInfoLog arm exists");
+        let info_end = SRC[info_start..]
+            .find("GLCmd::DeleteProgram")
+            .map(|offset| info_start + offset)
+            .expect("DeleteProgram follows info-log arm");
+        let info_arm = &SRC[info_start..info_end];
+        assert!(info_arm.contains("Self::drain_pending_link(cm, gl, program_id)"));
     }
 }

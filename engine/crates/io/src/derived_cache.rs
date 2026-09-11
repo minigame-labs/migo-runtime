@@ -27,6 +27,12 @@ use shared::protocol::io_cmd::{CompressedImage, DecodedImage, NormalizedImage};
 use crate::scheduler::IoScheduler;
 use crate::task::{PoolKind, PriorityClass};
 
+#[cfg(test)]
+pub(crate) static TEST_SAVE_DERIVED_BLOCK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_SAVE_DERIVED_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 /// Derived cache key components.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedKey {
@@ -234,17 +240,41 @@ pub fn save_derived(game_cache_dir: &Path, key: &DerivedKey, image: &DecodedImag
     }
     let final_path = dir.join(format!("{}.bin", key.hash()));
 
-    let mut buf = Vec::with_capacity(256);
-    if serialize_derived_entry(&mut buf, key, image).is_err() {
+    // Keep serialization inside the atomic writer so the final name is
+    // published only after the complete header and payload have been written.
+    // The cache is best-effort; a failed fsync or rename never affects the
+    // already decoded image returned to the caller.
+    let _ = crate::atomic_write::atomic_write_with(&final_path, |file| {
+        let mut buf = Vec::with_capacity(256);
+        serialize_derived_entry(&mut buf, key, image)?;
+        file.write_all(&buf)
+    });
+}
+
+/// Persist a derived image without making the decode caller wait for fsync,
+/// rename, or directory sync. The image and key are moved into the bounded
+/// filesystem lane so cancellation of the caller cannot strand a half-write.
+pub fn schedule_save_derived(
+    scheduler: &IoScheduler,
+    game_cache_dir: PathBuf,
+    key: DerivedKey,
+    image: DecodedImage,
+) {
+    if scheduler.ensure_open().is_err() {
         return;
     }
-
-    // Crash-safe: tmp file → write_all → sync_all → rename → dir fsync.
-    // Readers never see a half-written file, and a power loss between
-    // the rename and the next game session still leaves a valid entry
-    // on disk.  Failures are swallowed — the derived cache is an
-    // optimisation, not a correctness dependency.
-    let _ = crate::atomic_write::atomic_write(&final_path, &buf);
+    let _ = scheduler
+        .pools()
+        .submit_async(PoolKind::Fs, PriorityClass::Background, move || {
+            #[cfg(test)]
+            {
+                TEST_SAVE_DERIVED_STARTED.store(true, std::sync::atomic::Ordering::Release);
+                while TEST_SAVE_DERIVED_BLOCK.load(std::sync::atomic::Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+            }
+            save_derived(&game_cache_dir, &key, &image);
+        });
 }
 
 fn parse_derived_entry(data: &[u8], expected_key: &DerivedKey) -> Option<DecodedImage> {

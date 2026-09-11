@@ -229,13 +229,23 @@ public final class MediaExports {
         });
     }
 
-    public static String cameraTakePhoto(int sessionId, String optionsJson) {
+
+    public static void cameraTakePhotoAsync(
+            int sessionId, int requestId, String optionsJson) {
         int cameraId = extractCameraId(optionsJson);
         CameraManager mgr = getCameraManager(sessionId, cameraId);
         if (mgr == null) {
-            return "{\"_error\":{\"errMsg\":\"camera.takePhoto:fail camera not found\"}}";
+            String payload = "{\"requestId\":" + requestId
+                    + ",\"_error\":{\"errMsg\":\"camera.takePhoto:fail camera not found\"}}";
+            NativeMethods.onCameraEvent(
+                    sessionId,
+                    RuntimeGenerationBoundary.UNFENCED,
+                    cameraId,
+                    "takePhotoResult",
+                    payload);
+            return;
         }
-        return mgr.takePhoto(optionsJson);
+        mgr.takePhotoAsync(requestId, optionsJson);
     }
 
     public static String cameraStartRecord(int sessionId, String optionsJson) {

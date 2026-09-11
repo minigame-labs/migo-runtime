@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use deno_core::AsyncRefCell;
+use deno_core::CancelFuture;
 use deno_core::CancelHandle;
 use deno_core::CancelTryFuture;
 use deno_core::JsBuffer;
@@ -309,27 +310,32 @@ pub async fn op_tcp_write(
     #[string] data_str: Option<String>,
     #[buffer] data_buf: Option<JsBuffer>,
 ) -> Result<(), JsErrorBox> {
-    let resource = state
-        .borrow()
-        .resource_table
-        .get::<TcpSocketResource>(rid)
-        .map_err(|_| JsErrorBox::generic("TCPSocket not found"))?;
-
-    let bytes: &[u8] = if let Some(ref text) = data_str {
-        text.as_bytes()
-    } else if let Some(ref buf) = data_buf {
-        buf
-    } else {
-        return Err(JsErrorBox::type_error("write:fail no data provided"));
+    let (resource, bytes) = {
+        let st = state.borrow();
+        let resource = st
+            .resource_table
+            .get::<TcpSocketResource>(rid)
+            .map_err(|_| JsErrorBox::generic("TCPSocket not found"))?;
+        let bytes: &[u8] = if let Some(ref text) = data_str {
+            text.as_bytes()
+        } else if let Some(ref buf) = data_buf {
+            buf
+        } else {
+            return Err(JsErrorBox::type_error("write:fail no data provided"));
+        };
+        (resource, bytes)
     };
 
-    let mut writer = RcRef::map(&resource, |r| &r.writer).borrow_mut().await;
-    writer
-        .write_all(bytes)
-        .await
-        .map_err(|e| JsErrorBox::generic(format!("write:fail {}", e)))
+    let cancel = RcRef::map(&resource, |r| &r.cancel);
+    let write = async {
+        let mut writer = RcRef::map(&resource, |r| &r.writer).borrow_mut().await;
+        writer
+            .write_all(bytes)
+            .await
+            .map_err(|e| JsErrorBox::generic(format!("write:fail {}", e)))
+    };
+    write.try_or_cancel(cancel).await
 }
-
 // ── op_tcp_close ──
 
 /// Close the TCP socket, releasing the resource.
@@ -402,5 +408,111 @@ mod tests {
             assert_eq!(ta.copy_contents(&mut out), n);
             assert_eq!(out, bytes, "exact contents preserved");
         }
+    }
+
+    /// Regression for FNET-01 (docs/audits/2026-09-09/full/io-network.md:57-61):
+    /// TCPSocket.connect() had no connection-generation guard, so two rapid calls
+    /// before either resolved would both proceed and the second would overwrite
+    /// `_rid`, orphaning the first fd.
+    ///
+    /// The fix adds `_connectGen` to the JS class.  Each call increments the
+    /// counter and remembers its own generation (myGen).  When the Rust op result
+    /// arrives, if `_connectGen !== myGen` the result is stale: the fd must be
+    /// closed immediately via `op_tcp_close`.
+    ///
+    /// The test executes the production module source with mocked ops, so it
+    /// exercises the actual class rather than a copied state-machine model.
+    #[test]
+    fn fnet01_connect_generation_discards_stale_result_and_closes_orphan() {
+        let source = include_str!("08_tcp_socket.js")
+            .split("// -- TCPSocket class --")
+            .nth(1)
+            .expect("TCP socket class source")
+            .split("// -- Factory function --")
+            .next()
+            .expect("TCP socket class body");
+        let mut rt = JsRuntime::new(RuntimeOptions::default());
+        let script = format!(
+            r#"
+            const core = {{}};
+            const pending = [];
+            const closedRids = [];
+            function op_tcp_connect() {{
+                return new Promise((resolve) => pending.push(resolve));
+            }}
+            function op_tcp_next_event() {{
+                return Promise.resolve({{ type: "close" }});
+            }}
+            function op_tcp_write() {{ return Promise.resolve(); }}
+            function op_tcp_close(rid) {{ closedRids.push(rid); }}
+            function createListenerGroup() {{
+                return {{ on() {{}}, off() {{}}, trigger() {{}} }};
+            }}
+            function toExactArrayBuffer(value) {{ return value; }}
+            {source}
+            const socket = new TCPSocket("ipv4");
+            socket.connect({{ address: "mock", port: 1 }});
+            socket.connect({{ address: "mock", port: 1 }});
+            pending[0]({{ rid: 101 }});
+            pending[1]({{ rid: 102 }});
+            (async () => {{
+                await Promise.resolve();
+                await Promise.resolve();
+                globalThis.fnetClosed = closedRids.slice();
+                globalThis.fnetRid = socket._rid;
+            }})();
+            "#,
+            source = source,
+        );
+        rt.execute_script("fnet01", script)
+            .expect("mocked TCP source must execute");
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test executor");
+        executor
+            .block_on(rt.run_event_loop(Default::default()))
+            .expect("mocked TCP promises must settle");
+        rt.execute_script(
+            "fnet01-check",
+            r#"
+            if (fnetClosed.length === 0 || fnetClosed[0] !== 101) {
+                throw new Error("stale rid was not closed first: " + JSON.stringify(fnetClosed));
+            }
+            if (fnetRid !== 102) throw new Error("winning rid was not published");
+            "#,
+        )
+        .expect("FNET-01 stale connection must be closed");
+    }
+    /// NET-05 mock regression: cancellation covers both a pending writer/guard
+    /// and the payload captured by that future.  This drives the same
+    /// `CancelFuture` layer used by `op_tcp_write` without requiring a real
+    /// loopback peer (the SSRF gate rejects loopback integration endpoints).
+    #[test]
+    fn net05_cancel_drops_blocked_writer_payload() {
+        let payload = Arc::new(vec![0u8; 16 * 1024 * 1024]);
+        let weak_payload = Arc::downgrade(&payload);
+        let cancel = CancelHandle::new_rc();
+        let cancel_for_future = cancel.clone();
+        let future = async move {
+            let _payload = payload;
+            std::future::pending::<()>().await;
+        }
+        .or_cancel(cancel_for_future);
+
+        cancel.cancel();
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test executor");
+        let result = executor.block_on(future);
+        assert!(
+            result.is_err(),
+            "close cancellation must terminate blocked write"
+        );
+        assert!(
+            weak_payload.upgrade().is_none(),
+            "cancelled write must release its retained payload"
+        );
     }
 }

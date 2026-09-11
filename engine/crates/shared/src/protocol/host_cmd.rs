@@ -565,6 +565,9 @@ pub enum HostCommand {
         width: u32,
         /// Frame height in pixels.
         height: u32,
+        /// Credit acquired before the JNI plane copy. Its Drop implementation
+        /// releases the per-camera slot on every command exit path.
+        credit: crate::protocol::camera_frame::CameraFrameCredit,
         /// See [`HostCommand::callback_generation`].
         runtime_generation: Option<NonZeroI64>,
     },
@@ -1286,6 +1289,8 @@ mod generation_tests {
                 data: Vec::new(),
                 width: 1,
                 height: 1,
+                credit: crate::protocol::camera_frame::try_acquire_camera_frame_credit(1, 0)
+                    .expect("test frame credit"),
                 runtime_generation: generation(4),
             },
             HostCommand::RecorderEvent {

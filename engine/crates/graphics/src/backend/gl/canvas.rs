@@ -657,8 +657,11 @@ impl Canvas2DRenderer {
     /// after onscreen surface recreation.
     pub fn reset(&mut self) {
         self.state = Canvas2DState::default();
+        // Context reset is a lifecycle boundary, unlike beginPath(): release
+        // path high-water storage instead of retaining a previous workload's
+        // pathological allocation for the next context.
         self.stack = StateStack::new();
-        self.path.reset();
+        self.path.shrink();
     }
 
     /// Apply a Canvas2D shadow to the given paint if the current shadow is

@@ -130,30 +130,34 @@ impl AudioNodeProcessor for IIRFilterNode {
         _channels: u32,
         _current_time: f64,
     ) -> usize {
-        let len = inputs.len().min(output.len());
-        if len == 0 {
+        let channels = self.channels.max(1) as usize;
+        let frames = if inputs.is_empty() {
+            output.len() / channels
+        } else {
+            inputs.len().min(output.len()) / channels
+        };
+        if frames == 0 {
             return 0;
         }
-
-        let channels = self.channels.max(1) as usize;
-        let frames = len / channels;
+        let len = frames * channels;
         let ff = &self.feedforward;
         let fb = &self.feedback;
         let ff_len = ff.len();
         let fb_len = fb.len();
 
         // Degenerate filter with no coefficients: pass input through unchanged.
-        // Guards the `% ff_len` / `% fb_len` below against a divide-by-zero panic
-        // (the op/JS layers also reject empty coefficient arrays).
+        // For zero input, its output is simply silence.
         if ff_len == 0 || fb_len == 0 {
-            output[..len].copy_from_slice(&inputs[..len]);
-            return len / channels;
+            for (idx, sample) in output[..len].iter_mut().enumerate() {
+                *sample = inputs.get(idx).copied().unwrap_or(0.0);
+            }
+            return frames;
         }
 
         for frame in 0..frames {
             for ch in 0..channels {
                 let idx = frame * channels + ch;
-                let x0 = inputs[idx] as f64;
+                let x0 = inputs.get(idx).copied().unwrap_or(0.0) as f64;
 
                 // Write input to circular buffer (O(1) instead of O(N) shift)
                 let xh = &mut self.x_history[ch];
@@ -165,13 +169,11 @@ impl AudioNodeProcessor for IIRFilterNode {
                 // Compute output: sum(b[i]*x[n-i]) - sum(a[i]*y[n-i]) for i>=1
                 let mut y0 = 0.0;
                 for i in 0..ff_len {
-                    // x[n-i] is at (write_pos - i) mod ff_len
                     let ri = (self.x_write_pos + ff_len - i) % ff_len;
                     y0 += ff[i] * xh[ri];
                 }
                 let yh = &self.y_history[ch];
                 for i in 1..fb_len {
-                    // y[n-i] is at (write_pos - i) mod fb_len
                     let ri = (self.y_write_pos + fb_len - i) % fb_len;
                     y0 -= fb[i] * yh[ri];
                 }
@@ -186,11 +188,18 @@ impl AudioNodeProcessor for IIRFilterNode {
                 output[idx] = y0 as f32;
             }
 
-            // Advance circular buffer positions (shared across channels)
             self.x_write_pos = self.x_write_pos.wrapping_add(1);
             self.y_write_pos = self.y_write_pos.wrapping_add(1);
         }
 
         frames
+    }
+
+    fn has_tail_audio(&self) -> bool {
+        self.x_history
+            .iter()
+            .chain(self.y_history.iter())
+            .flatten()
+            .any(|sample| sample.abs() > 1e-10)
     }
 }

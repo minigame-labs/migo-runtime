@@ -19,7 +19,7 @@ use shared::{
 use super::CanvasManager;
 use super::types::ee;
 use crate::BoundContext;
-use crate::backend::gl::readback::PixelPackState;
+use crate::backend::gl::readback::{PixelPackState, PixelUnpackState};
 use crate::backend::gl::surface::{Canvas2DContext, FboKind};
 
 /// Initialise a Skia-backed Canvas2D context for `canvas_id`.
@@ -121,13 +121,15 @@ pub(super) fn init_skia_for_canvas(
 /// Skia's glyph rasterisation and `glTexSubImage2D` uploads bind the
 /// 0th texture unit and `GL_PIXEL_UNPACK_BUFFER = 0`, and assume the
 /// default alignment of 4.  WebGL games mutate these freely, so we
-/// snapshot on scope entry and restore on drop. PACK row length and skips
-/// also belong to content and must not affect Skia's compact CPU reads.
+/// snapshot on scope entry and restore on drop. Row length and skips belong
+/// to content in both directions: PACK must not affect Skia's compact CPU
+/// reads, and UNPACK must not relocate the rows Skia uploads. Skia resets row
+/// length through its own cache but never touches the skip parameters, so a
+/// WebGL 2 `UNPACK_SKIP_PIXELS` would otherwise shift every glyph upload.
 pub(crate) struct Canvas2DGlState {
     active_texture: i32,
-    unpack_pbo: Option<<glow::Context as glow::HasContext>::Buffer>,
-    unpack_alignment: i32,
     pack: PixelPackState,
+    unpack: PixelUnpackState,
 }
 
 pub(crate) struct Canvas2DGlScopeGuard {
@@ -146,10 +148,9 @@ impl Drop for Canvas2DGlScopeGuard {
             let gl = unsafe { &*self.gl };
             unsafe {
                 gl.active_texture(state.active_texture as u32);
-                gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, state.unpack_pbo);
-                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, state.unpack_alignment);
             }
             state.pack.restore(gl);
+            state.unpack.restore(gl);
             // After Skia has drawn and we've restored the saved
             // raw-GL bindings, the WebGL dedup shadow still holds
             // whatever it thought before Skia ran.  Skia may have
@@ -196,22 +197,19 @@ pub(super) fn begin_canvas2d_gl_scope(
 ) -> Canvas2DGlScopeGuard {
     unsafe {
         let active_texture = gl.get_parameter_i32(glow::ACTIVE_TEXTURE);
-        let unpack_pbo = gl.get_parameter_buffer(glow::PIXEL_UNPACK_BUFFER_BINDING);
-        let unpack_alignment = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
         let pack = PixelPackState::capture(gl);
+        let unpack = PixelUnpackState::capture(gl);
 
-        gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
         pack.set_tight(gl, 4);
+        unpack.set_tight(gl, 4);
         gl.active_texture(glow::TEXTURE0);
 
         Canvas2DGlScopeGuard {
             gl: gl as *const glow::Context,
             state: Some(Canvas2DGlState {
                 active_texture,
-                unpack_pbo,
-                unpack_alignment,
                 pack,
+                unpack,
             }),
             gl_shadow: gl_shadow
                 .map(|s| s as *mut _)
@@ -343,15 +341,15 @@ mod tests {
     use crate::backend::gl::readback_test_gl as test_gl;
 
     #[test]
-    fn internal_readback_canvas2d_scope_isolates_and_restores_pack_layout() {
+    fn internal_readback_canvas2d_scope_isolates_and_restores_pixel_store() {
         let gl = test_gl::context();
         for original in [
             test_gl::Bindings {
                 pack: [8, 9, 2, 3],
+                unpack: [8, 11, 2, 3],
                 pack_buffer: 17,
                 active_texture: glow::TEXTURE0 + 3,
                 unpack_buffer: 19,
-                unpack_alignment: 8,
                 ..Default::default()
             },
             test_gl::Bindings::default(),
@@ -361,13 +359,16 @@ mod tests {
                 let _scope = begin_canvas2d_gl_scope(&gl, None);
                 let actual = test_gl::bindings();
                 assert_eq!(actual.pack, [4, 0, 0, 0]);
+                assert_eq!(actual.unpack, [4, 0, 0, 0]);
                 assert_eq!(actual.pack_buffer, 0);
                 assert_eq!(actual.unpack_buffer, 0);
                 // Skia can mutate state directly; restoration must include
                 // slots which did not need resetting on entry (default case).
                 test_gl::set_bindings(test_gl::Bindings {
                     pack: [2, 5, 7, 1],
+                    unpack: [2, 5, 7, 1],
                     pack_buffer: 29,
+                    unpack_buffer: 31,
                     ..Default::default()
                 });
             }

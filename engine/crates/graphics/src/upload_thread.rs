@@ -114,6 +114,26 @@ fn with_background_context<T>(provider: &dyn EglProvider, create: impl FnOnce() 
     Some(create())
 }
 
+/// Notify the render owner that an accepted job cannot produce a texture.
+/// This is the single failure/cancellation accounting lane: the owner uses
+/// the image id and byte count to release both the pending response and the
+/// in-flight upload budget.
+fn notify_dropped(job: &UploadJob, dropped_tx: &Sender<DroppedUpload>) {
+    let _ = dropped_tx.send(DroppedUpload {
+        image_id: job.image_id,
+        byte_len: job.byte_len(),
+    });
+}
+
+/// Settle jobs still queued when the worker cannot initialise or is exiting.
+/// `try_recv` is intentional: the worker owns the receiver and no producer
+/// can append a job after the sender is closed during normal teardown.
+fn settle_queued_jobs(job_rx: &Receiver<UploadJob>, dropped_tx: &Sender<DroppedUpload>) {
+    while let Ok(job) = job_rx.try_recv() {
+        notify_dropped(&job, dropped_tx);
+    }
+}
+
 impl UploadThreadHandle {
     /// Try to spawn the upload thread with a shared EGL context.
     ///
@@ -295,6 +315,7 @@ fn upload_thread_main(
                 provider = egl_provider.label(),
                 "Upload thread: failed to load EGL: {e}"
             );
+            settle_queued_jobs(&job_rx, &dropped_tx);
             return;
         }
     };
@@ -307,10 +328,10 @@ fn upload_thread_main(
     // make eglMakeCurrent fail instead of doing the surfaceless thing.
     let pbuf =
         (pbuf_raw != 0).then(|| unsafe { khronos_egl::Surface::from_ptr(pbuf_raw as *mut _) });
-
     // Make the shared context current on this thread.
     if egl.make_current(display, pbuf, pbuf, Some(ctx)).is_err() {
         warn!("Upload thread: eglMakeCurrent failed");
+        settle_queued_jobs(&job_rx, &dropped_tx);
         return;
     }
 
@@ -385,6 +406,7 @@ fn upload_thread_main(
             Err(e) => {
                 let count = failures.fetch_add(1, Ordering::Relaxed) + 1;
                 warn!("Upload thread: upload failed ({count}x): {e}");
+                notify_dropped(&job, &dropped_tx);
                 if count >= MAX_FAILURES_BEFORE_DEGRADE {
                     warn!("Upload thread: degraded after {count} consecutive failures");
                     break;
@@ -392,8 +414,13 @@ fn upload_thread_main(
             }
         }
     }
+    // Settle jobs accepted before the receiver closed or before degradation
+    // stopped processing.  No accepted job may leave its owner budget held.
+    settle_queued_jobs(&job_rx, &dropped_tx);
 
-    // Cleanup.
+    // Cleanup while the worker context is still current.  Shared objects may
+    // outlive this context, so every owned PBO name is explicitly retired.
+    unsafe { pbo_pool.clear(&gl) };
     egl.make_current(display, None, None, None).ok();
     egl.destroy_context(display, ctx).ok();
     if let Some(pbuf) = pbuf {
@@ -430,6 +457,8 @@ struct UploadPboPool {
     /// typical mobile games upload in bursts of 2-3 concurrent textures
     /// which is enough to saturate DMA even without a larger ring.
     entries: Vec<(glow::NativeBuffer, usize)>,
+    reserved_bytes: usize,
+    in_flight_bytes: usize,
 }
 
 impl UploadPboPool {
@@ -438,7 +467,21 @@ impl UploadPboPool {
     fn new() -> Self {
         Self {
             entries: Vec::with_capacity(Self::MAX_ENTRIES),
+            reserved_bytes: 0,
+            in_flight_bytes: 0,
         }
+    }
+
+    /// Bytes held by idle PBO names in this pool.
+    #[cfg(test)]
+    fn reserved_bytes(&self) -> usize {
+        self.reserved_bytes
+    }
+
+    /// Bytes associated with the PBO currently handed to GL upload code.
+    #[cfg(test)]
+    fn in_flight_bytes(&self) -> usize {
+        self.in_flight_bytes
     }
 
     /// Acquire a PBO with capacity ≥ `need`.  If none matches, a fresh
@@ -452,19 +495,42 @@ impl UploadPboPool {
         need: usize,
     ) -> Result<glow::NativeBuffer, String> {
         if let Some(idx) = self.entries.iter().position(|(_, cap)| *cap >= need) {
-            let (buf, _) = self.entries.remove(idx);
+            let (buf, capacity) = self.entries.remove(idx);
+            self.reserved_bytes = self.reserved_bytes.saturating_sub(capacity);
+            self.in_flight_bytes = self.in_flight_bytes.saturating_add(need);
             return Ok(buf);
         }
-        unsafe { gl.create_buffer() }.map_err(|e| format!("create_buffer(PBO): {e}"))
+        self.in_flight_bytes = self.in_flight_bytes.saturating_add(need);
+        match unsafe { gl.create_buffer() } {
+            Ok(buf) => Ok(buf),
+            Err(e) => {
+                self.in_flight_bytes = self.in_flight_bytes.saturating_sub(need);
+                Err(format!("create_buffer(PBO): {e}"))
+            }
+        }
     }
 
     /// Return a PBO to the pool.  Drops the buffer if the pool is full.
     unsafe fn release(&mut self, gl: &glow::Context, buf: glow::NativeBuffer, capacity: usize) {
+        self.in_flight_bytes = self.in_flight_bytes.saturating_sub(capacity);
         if self.entries.len() < Self::MAX_ENTRIES {
             self.entries.push((buf, capacity));
+            self.reserved_bytes = self.reserved_bytes.saturating_add(capacity);
         } else {
             unsafe { gl.delete_buffer(buf) };
         }
+    }
+
+    unsafe fn clear(&mut self, gl: &glow::Context) {
+        self.clear_with(|buf| unsafe { gl.delete_buffer(buf) });
+    }
+
+    fn clear_with(&mut self, mut delete: impl FnMut(glow::NativeBuffer)) {
+        for (buf, _) in self.entries.drain(..) {
+            delete(buf);
+        }
+        self.reserved_bytes = 0;
+        self.in_flight_bytes = 0;
     }
 }
 
@@ -695,6 +761,61 @@ mod tests {
     }
 
     /// drain_dropped returns nothing when the channel is empty.
+
+    #[test]
+    fn failed_job_settlement_emits_exactly_one_dropped_notification() {
+        let (job_tx, job_rx) = bounded::<UploadJob>(2);
+        let (dropped_tx, dropped_rx) = unbounded::<DroppedUpload>();
+        let job = UploadJob {
+            image_id: 7,
+            width: 2,
+            height: 2,
+            rgba: Arc::new(vec![0; 16]),
+        };
+        job_tx.send(job).unwrap();
+        let queued = job_rx.try_recv().unwrap();
+        notify_dropped(&queued, &dropped_tx);
+        drop(job_tx);
+
+        let item = dropped_rx.try_recv().expect("failed job was not settled");
+        assert_eq!((item.image_id, item.byte_len), (7, 16));
+        assert!(dropped_rx.try_recv().is_err(), "job settled more than once");
+    }
+
+    #[test]
+    fn worker_exit_settles_all_jobs_left_in_queue() {
+        let (job_tx, job_rx) = bounded::<UploadJob>(4);
+        let (dropped_tx, dropped_rx) = unbounded::<DroppedUpload>();
+        for id in 1..=3 {
+            job_tx
+                .send(UploadJob {
+                    image_id: id,
+                    width: 1,
+                    height: 1,
+                    rgba: Arc::new(vec![id as u8; 4]),
+                })
+                .unwrap();
+        }
+
+        settle_queued_jobs(&job_rx, &dropped_tx);
+        let mut settled = Vec::new();
+        while let Ok(item) = dropped_rx.try_recv() {
+            settled.push((item.image_id, item.byte_len));
+        }
+    }
+    #[test]
+    fn worker_pbo_ledger_returns_to_zero_on_clear() {
+        let mut pool = UploadPboPool::new();
+        pool.reserved_bytes = 4096;
+        pool.in_flight_bytes = 2048;
+        // The production caller invokes `clear` before unbinding its current
+        // worker context.  The accounting half is context-free, so exercise
+        // it without constructing a GL loader in this host-only test.
+        pool.clear_with(|_| {});
+        assert_eq!(pool.reserved_bytes(), 0);
+        assert_eq!(pool.in_flight_bytes(), 0);
+    }
+
     #[test]
     fn drain_dropped_returns_empty_when_no_drops() {
         let (_tx, rx) = unbounded::<DroppedUpload>();

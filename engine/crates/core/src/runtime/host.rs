@@ -190,6 +190,11 @@ pub(crate) struct Host {
     /// Survives JS runtime restarts (same GL context).
     gpu_caps: Arc<shared::device::gpu_caps::GpuCaps>,
 
+    /// Wake used to cancel startup evaluation independently of the command queue.
+    /// The registry installs this after construction and signals it from
+    /// `shutdown_host`, so a valid top-level async wait cannot delay teardown.
+    shutdown_notify: Arc<tokio::sync::Notify>,
+
     /// Coalescing render-feedback wake. The render thread's event channel calls
     /// `notify_one()` on every successfully enqueued event; the host loop selects
     /// on this to drain + reconcile promptly instead of polling. Replaces the
@@ -395,7 +400,7 @@ impl Host {
         let mut js = HostJsRuntime::new(
             id as i32,
             host_state,
-            init_options.cache_dir(),
+            init_options.code_cache_root(),
             #[cfg(feature = "v8-limits")]
             v8_limits,
             #[cfg(feature = "code-signing")]
@@ -481,6 +486,7 @@ impl Host {
             input_state: InputState::default(),
             gpu_caps,
             gpu_init_started,
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             render_notify,
             session_temp: None,
         };
@@ -497,6 +503,10 @@ impl Host {
         if let Err(e) = self.handle_command_inner(cmd).await {
             error!("[Host {}] handle_command failed: e={} ", self.id, e);
         }
+    }
+    /// Clone the independent startup-cancellation wake.
+    pub(crate) fn shutdown_notify(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.shutdown_notify)
     }
 
     /// Clone of the render-feedback wake `Notify` for the host loop to select on.
@@ -893,6 +903,7 @@ impl Host {
                 runtime_generation: _,
                 width,
                 height,
+                credit: _credit,
             } => {
                 self.js
                     .dispatch_camera_frame_data(camera_id, data, width, height);
@@ -1228,14 +1239,29 @@ impl Host {
     /// frame; this runs once per launch or restart, so there is no burst to coalesce
     /// and a suppressed first report would be the only report there was.
     async fn on_evaluate_module(&mut self, game_id: String, entry: String) -> EngineResult<()> {
-        let outcome = self.launch_content(game_id, entry).await;
+        let shutdown_notify = Arc::clone(&self.shutdown_notify);
+        let launch = async {
+            self.ensure_gpu_ready()?;
+            self.launch_content(game_id, entry).await
+        };
+        let outcome = tokio::select! {
+            biased;
+            _ = shutdown_notify.notified() => {
+                debug!("[Host {}] startup evaluation cancelled by shutdown", self.id);
+                Err(shared::error::EngineError::new(shared::error::ErrorCode::Cancelled)
+                    .with_msg("startup evaluation cancelled by shutdown"))
+            }
+            outcome = launch => outcome,
+        };
         if let Err(error) = &outcome {
-            self.platform.notify_error(
-                self.id,
-                error.code.as_u16(),
-                &error.msg,
-                error.detail.as_deref().unwrap_or(""),
-            );
+            if error.code != shared::error::ErrorCode::Cancelled {
+                self.platform.notify_error(
+                    self.id,
+                    error.code.as_u16(),
+                    &error.msg,
+                    error.detail.as_deref().unwrap_or(""),
+                );
+            }
         }
         outcome
     }
@@ -1257,12 +1283,6 @@ impl Host {
                 self.id,
             );
         }
-
-        // Before any prelude, and so before any JS the host or the game
-        // supplied. This is the point the all-false capability snapshot must
-        // not survive past.
-        self.ensure_gpu_ready()?;
-
         // Run boot prelude scripts (e.g. BOM/DOM adapter for browser-style
         // games) before the main module loads. Prelude failures abort the
         // launch with the same error path as the main module — a partially
@@ -1582,7 +1602,7 @@ impl Host {
         let mut new_js = HostJsRuntime::new(
             self.id as i32,
             host_state,
-            self.init_options.cache_dir(),
+            self.init_options.code_cache_root(),
             #[cfg(feature = "v8-limits")]
             v8_limits,
             #[cfg(feature = "code-signing")]

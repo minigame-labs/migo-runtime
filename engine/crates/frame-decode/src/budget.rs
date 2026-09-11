@@ -120,7 +120,33 @@ impl Counter {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static ESTIMATE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_estimate_calls() {
+    ESTIMATE_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn estimate_calls() -> usize {
+    ESTIMATE_CALLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+#[inline]
+fn note_estimate_call() {
+    ESTIMATE_CALLS.with(|calls| calls.set(calls.get() + 1));
+}
+
+#[cfg(not(test))]
+#[inline]
+fn note_estimate_call() {}
+
 pub(crate) fn estimate(stream: &ValidatedStream<'_>) -> FrameDecodeBudget {
+    note_estimate_call();
     let mut count = Counter::default();
     let mut canvas_selected = false;
     let mut cursor = 2;

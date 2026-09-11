@@ -148,7 +148,8 @@ mod tests {
         assert!(take().is_none());
         assert!(test_gl::reads().is_empty());
         assert_eq!(
-            test_gl::mutations(), 0,
+            test_gl::mutations(),
+            0,
             "reject before binding a framebuffer"
         );
         request();

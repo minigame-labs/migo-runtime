@@ -278,6 +278,50 @@ pub fn start_streaming_download(
     rx
 }
 
+/// Publish one decoded chunk under the stream protocol's format invariant.
+///
+/// Format describes the PCM that follows, not the compressed input.  Keeping
+/// this path shared by body decoding and EOF flush prevents a short stream from
+/// publishing Samples before Ready (or omitting Ready when flush finds the first
+/// frame).
+async fn publish_stream_chunk(
+    tx: &mpsc::Sender<StreamMsg>,
+    pcm: PcmChunk,
+    sample_rate: u32,
+    channels: u32,
+    ready_sent: &mut bool,
+    total_decoded_samples: &mut usize,
+) -> EngineResult<bool> {
+    let has_format = sample_rate > 0 && channels > 0;
+    if !*ready_sent && has_format {
+        if tx
+            .send(StreamMsg::Ready {
+                sample_rate,
+                channels,
+            })
+            .await
+            .is_err()
+        {
+            return Ok(false);
+        }
+        *ready_sent = true;
+    }
+
+    if !pcm.is_empty() {
+        if !*ready_sent {
+            return Err(EngineError::from_detail(
+                ErrorCode::Internal,
+                "decoded audio samples had no format",
+            ));
+        }
+        *total_decoded_samples += pcm.len();
+        if tx.send(StreamMsg::Samples(pcm)).await.is_err() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 async fn streaming_download_task(
     client: reqwest::Client,
     url: String,
@@ -407,56 +451,40 @@ async fn streaming_download_task(
             .await?;
         decoder = rest;
 
-        // Send ready message once we have format info
-        if !ready_sent && sample_rate > 0 && channels > 0 {
-            tracing::debug!(
-                "Stream format detected: {} Hz, {} channels",
-                sample_rate,
-                channels
-            );
-            if tx
-                .send(StreamMsg::Ready {
-                    sample_rate,
-                    channels,
-                })
-                .await
-                .is_err()
-            {
-                return Ok(());
-            }
-            ready_sent = true;
-        }
-
-        // Send decoded samples. A chunk that decoded to nothing is not sent; it
-        // falls out of scope here, which is what returns its buffer to the pool.
-        if !pcm.is_empty() {
-            total_decoded_samples += pcm.len();
-            tracing::trace!(
-                "Decoded {} samples (total: {})",
-                pcm.len(),
-                total_decoded_samples
-            );
-            if tx.send(StreamMsg::Samples(pcm)).await.is_err() {
-                return Ok(());
-            }
+        if !publish_stream_chunk(
+            &tx,
+            pcm,
+            sample_rate,
+            channels,
+            &mut ready_sent,
+            &mut total_decoded_samples,
+        )
+        .await?
+        {
+            return Ok(());
         }
     }
 
-    // Flush remaining data
+    // Flush remaining data through the same publication path as body chunks.
     let mut final_pcm = pcm_pool.take();
-    let (_decoder, (final_pcm, _, _)) = decoder
+    let (_decoder, (final_pcm, flush_rate, flush_channels)) = decoder
         .with(move |decoder| {
             let (sample_rate, channels) = decoder.flush_into(final_pcm.buffer_mut());
             (final_pcm, sample_rate, channels)
         })
         .await?;
 
-    if !final_pcm.is_empty() {
-        total_decoded_samples += final_pcm.len();
-        tracing::trace!("Flushed {} final samples", final_pcm.len());
-        if tx.send(StreamMsg::Samples(final_pcm)).await.is_err() {
-            return Ok(());
-        }
+    if !publish_stream_chunk(
+        &tx,
+        final_pcm,
+        flush_rate,
+        flush_channels,
+        &mut ready_sent,
+        &mut total_decoded_samples,
+    )
+    .await?
+    {
+        return Ok(());
     }
 
     state.download_complete.store(true, Ordering::Release);
@@ -540,8 +568,8 @@ impl Mp3StreamDecoder {
     ///
     /// The in-place pass is kept as a fallback for the one thing isolation cannot
     /// do: get past leading bytes that are not audio and are larger than a frame,
-    /// which an ID3v2 tag routinely is. It runs only when isolation could not
-    /// move at all, so a failed attempt cannot cost a frame that was recoverable.
+    /// which an ID3v2 tag routinely is. It runs only when isolation could not move
+    /// at all, so a failed attempt cannot cost a frame that was recoverable.
     fn flush_into(&mut self, out: &mut Vec<f32>) -> (u32, u32) {
         let before = self.buffer.len();
         self.isolate_remaining_frames(out);
@@ -559,7 +587,16 @@ impl Mp3StreamDecoder {
             resampler.flush_into(out);
         }
 
-        (self.sample_rate, self.channels)
+        (self.output_sample_rate(), self.channels)
+    }
+
+    #[inline]
+    fn output_sample_rate(&self) -> u32 {
+        if self.resampler.is_some() {
+            self.target_sample_rate
+        } else {
+            self.sample_rate
+        }
     }
 
     /// Decode what is left one isolated frame at a time.
@@ -617,7 +654,7 @@ impl Mp3StreamDecoder {
             self.buffer.drain(..pos);
         }
 
-        (self.sample_rate, self.channels)
+        (self.output_sample_rate(), self.channels)
     }
 
     /// One decode against `buffer[pos..pos + take]`, appending any frame it
@@ -1041,6 +1078,78 @@ mod tests {
                     .expect("cancellation must wake network wait"),
                 NetworkWait::Cancelled
             );
+        });
+    }
+
+    #[test]
+    fn flush_reports_output_rate_and_short_stream_format() {
+        let mut decoder = Mp3StreamDecoder::new(48_000);
+        let mut body = Vec::new();
+        decoder.push_data(&mp3_fixture::stream(6));
+        assert_eq!(decoder.decode_into(&mut body), (0, 0));
+
+        let mut flushed = Vec::new();
+        let (sample_rate, channels) = decoder.flush_into(&mut flushed);
+        assert_eq!((sample_rate, channels), (48_000, 2));
+        assert!(!flushed.is_empty(), "short stream must decode during flush");
+    }
+
+    #[test]
+    fn body_reports_output_rate_when_resampling() {
+        let mut decoder = Mp3StreamDecoder::new(48_000);
+        decoder.push_data(&mp3_fixture::stream(40));
+        let mut body = Vec::new();
+        let (sample_rate, channels) = decoder.decode_into(&mut body);
+        assert_eq!((sample_rate, channels), (48_000, 2));
+        assert!(!body.is_empty(), "body-sized stream must decode before EOF");
+    }
+
+    #[test]
+    fn stream_publication_sends_ready_once_before_samples_and_handles_empty_eof() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (tx, mut rx) = stream_channel();
+            let mut pool = PcmPool::new();
+            let mut ready_sent = false;
+            let mut total = 0;
+
+            let mut first = pool.take();
+            first.buffer_mut().extend_from_slice(&[0.1, 0.2]);
+            assert!(
+                publish_stream_chunk(&tx, first, 48_000, 1, &mut ready_sent, &mut total)
+                    .await
+                    .unwrap()
+            );
+            let mut second = pool.take();
+            second.buffer_mut().extend_from_slice(&[0.3]);
+            assert!(
+                publish_stream_chunk(&tx, second, 48_000, 1, &mut ready_sent, &mut total)
+                    .await
+                    .unwrap()
+            );
+
+            assert!(matches!(
+                rx.recv().await,
+                Some(StreamMsg::Ready {
+                    sample_rate: 48_000,
+                    channels: 1
+                })
+            ));
+            assert!(matches!(rx.recv().await, Some(StreamMsg::Samples(_))));
+            assert!(matches!(rx.recv().await, Some(StreamMsg::Samples(_))));
+            assert_eq!(total, 3);
+            assert!(ready_sent);
+
+            let empty = pool.take();
+            assert!(
+                publish_stream_chunk(&tx, empty, 0, 0, &mut ready_sent, &mut total)
+                    .await
+                    .unwrap()
+            );
+            assert!(rx.try_recv().is_err(), "empty EOF must publish no messages");
         });
     }
 

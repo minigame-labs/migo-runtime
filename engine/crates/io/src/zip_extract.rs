@@ -137,6 +137,12 @@ impl From<PoolError> for ZipError {
     fn from(err: PoolError) -> Self {
         match err {
             PoolError::Closed => ZipError::Io(io::Error::other("IO worker pool closed")),
+            PoolError::ByteLimitExceeded {
+                requested,
+                available,
+            } => ZipError::Io(io::Error::other(format!(
+                "IO pending-byte budget exhausted: requested {requested} bytes, {available} available"
+            ))),
         }
     }
 }
@@ -802,8 +808,9 @@ mod tests {
             .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
             .sum();
 
-        let extract_all = |label: &str| {
+        let extract_serial = |label: &str| {
             let out_root = root.join(label);
+            let started = std::time::Instant::now();
             for (i, zip_path) in archives.iter().enumerate() {
                 extract_zip_with_budget(
                     zip_path,
@@ -813,21 +820,12 @@ mod tests {
                 )
                 .unwrap();
             }
+            let elapsed = started.elapsed();
             let _ = std::fs::remove_dir_all(&out_root);
+            elapsed
         };
-
-        // Warm the page cache and any allocator arenas so the first timed run
-        // is not paying for both.
-        extract_all("warm");
-
-        let sequential = {
-            let started = std::time::Instant::now();
-            extract_all("seq");
-            started.elapsed()
-        };
-
-        let parallel = {
-            let out_root = root.join("par");
+        let extract_parallel = |label: &str| {
+            let out_root = root.join(label);
             let started = std::time::Instant::now();
             std::thread::scope(|scope| {
                 for (i, zip_path) in archives.iter().enumerate() {
@@ -843,6 +841,23 @@ mod tests {
             elapsed
         };
 
+        // Warm once, then alternate which identical extraction/cleanup scope
+        // runs first so filesystem and allocator order do not favor one side.
+        extract_serial("warm");
+        let mut sequential_samples = Vec::new();
+        let mut parallel_samples = Vec::new();
+        for round in 0..4 {
+            if round % 2 == 0 {
+                sequential_samples.push(extract_serial(&format!("seq_{round}")));
+                parallel_samples.push(extract_parallel(&format!("par_{round}")));
+            } else {
+                parallel_samples.push(extract_parallel(&format!("par_{round}")));
+                sequential_samples.push(extract_serial(&format!("seq_{round}")));
+            }
+        }
+        let sequential = sequential_samples.iter().sum::<std::time::Duration>() / 4;
+        let parallel = parallel_samples.iter().sum::<std::time::Duration>() / 4;
+
         eprintln!(
             "payload={profile}  {ARCHIVES} archives x {ENTRIES_PER_ARCHIVE} entries x {} KiB = {uncompressed:.0} MiB uncompressed ({:.1} MiB on disk, {:.1}:1)",
             ENTRY_BYTES / 1024,
@@ -855,10 +870,10 @@ mod tests {
                 .map(|n| n.get())
                 .unwrap_or(0)
         );
-        eprintln!("sequential (cap=1 equivalent)  {sequential:>12?}");
-        eprintln!("parallel   ({ARCHIVES} threads)          {parallel:>12?}");
+        eprintln!("sequential (same cleanup scope, alternating order)  {sequential:>12?}");
+        eprintln!("parallel   ({ARCHIVES} extraction threads, same cleanup scope) {parallel:>12?}");
         eprintln!(
-            "speedup {:.2}x  -- the Archive cap of 1 forfeits this",
+            "speedup {:.2}x  -- Archive cap is worker_count.saturating_sub(1).clamp(1,2)",
             sequential.as_secs_f64() / parallel.as_secs_f64().max(f64::MIN_POSITIVE)
         );
 

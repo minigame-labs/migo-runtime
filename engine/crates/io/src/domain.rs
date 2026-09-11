@@ -1,7 +1,10 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use parking_lot::Mutex;
@@ -10,7 +13,7 @@ use shared::{
     protocol::io_cmd::{FileId, FileStat, OpenFlag},
 };
 
-use crate::fs_ops::FileTable;
+use crate::fs_ops::{FdIo, FileTable};
 
 pub struct IoDomain {
     state: Mutex<DomainState>,
@@ -57,6 +60,33 @@ impl IoDomain {
         Ok(f(&mut state.file_table))
     }
 
+    /// Hand out one fd's owner, then release the table lock.
+    ///
+    /// The table lock used to span the lookup *and* the read/write/sync itself,
+    /// so two fds could not make progress at once and a worker waiting on an
+    /// unrelated file burned a pool slot for the duration of someone else's
+    /// disk IO. The lock now covers the map only; each fd carries its own lock,
+    /// which is what keeps same-fd cursor order and close/reuse intact.
+    fn fd_owner(&self, id: FileId) -> Result<Arc<parking_lot::Mutex<FdIo>>, DomainError> {
+        self.with_file_table(|table| table.get_fd_entry(id))?
+            .map_err(DomainError::from)
+    }
+
+    /// Run one fd's IO with only that fd's lock held.
+    ///
+    /// Ordering per fd is preserved because every caller goes through the same
+    /// per-fd mutex; a `close` that lands first makes the lookup fail, and one
+    /// that lands while this holds the owner completes when the Arc drops.
+    fn with_fd<T>(
+        &self,
+        id: FileId,
+        f: impl FnOnce(&mut FdIo) -> Result<T, EngineError>,
+    ) -> Result<T, DomainError> {
+        let owner = self.fd_owner(id)?;
+        let mut fd = owner.lock();
+        f(&mut fd).map_err(DomainError::from)
+    }
+
     pub fn open_file(
         &self,
         path: &Path,
@@ -97,8 +127,7 @@ impl IoDomain {
         len: u64,
         position: Option<u64>,
     ) -> Result<Vec<u8>, DomainError> {
-        self.with_file_table(|table| table.read(id, len, position))?
-            .map_err(DomainError::from)
+        self.with_fd(id, |fd| fd.read(len, position))
     }
 
     /// Read owned bytes bounded by a previously validated destination view.
@@ -108,8 +137,7 @@ impl IoDomain {
         len: usize,
         position: Option<u64>,
     ) -> Result<crate::fs_ops::OwnedFileRead, DomainError> {
-        self.with_file_table(|table| table.read_for_buffer(id, len, position))?
-            .map_err(DomainError::from)
+        self.with_fd(id, |fd| fd.read_for_buffer(len, position))
     }
 
     pub fn write_file(
@@ -118,20 +146,18 @@ impl IoDomain {
         data: &[u8],
         position: Option<u64>,
     ) -> Result<usize, DomainError> {
-        self.with_file_table(|table| table.write(id, data, position))?
-            .map_err(DomainError::from)
+        self.with_fd(id, |fd| fd.write(data, position))
     }
 
     /// Read into an exclusively borrowed destination, without allocation.
-    /// The table lock protects the fd; the caller owns destination exclusivity.
+    /// Only this fd's lock is held; the caller owns destination exclusivity.
     pub fn read_file_into(
         &self,
         id: FileId,
         buf: &mut [u8],
         position: Option<u64>,
     ) -> Result<usize, DomainError> {
-        self.with_file_table(|table| table.read_into(id, buf, position))?
-            .map_err(DomainError::from)
+        self.with_fd(id, |fd| fd.read_into(buf, position))
     }
 
     pub fn fstat(&self, id: FileId) -> Result<FileStat, DomainError> {
@@ -384,5 +410,47 @@ mod tests {
 
         assert_eq!(domain.temp_file_count(), 0);
         assert!(!path.exists());
+    }
+
+    /// The table lock must not span an fd's real IO.
+    ///
+    /// Audit `docs/audits/2026-09-09/io-network.md:87-91`: one mutex covered
+    /// lookup *and* read/write/sync_data, so two fds could not make progress at
+    /// once and a worker waiting on an unrelated file held a pool slot for the
+    /// duration of someone else's disk IO. `try_lock` from inside the operation
+    /// is the deterministic form of that claim -- a held table lock makes it
+    /// fail, and no timing is involved.
+    #[test]
+    fn real_io_runs_without_holding_the_table_lock() {
+        let path = temp_path("io-domain-lock-scope");
+        std::fs::write(&path, b"payload").unwrap();
+        let domain = IoDomain::new();
+        let fd = domain
+            .open_file(&path, OpenFlag::Read, None, None)
+            .expect("open");
+
+        let observed = domain
+            .with_fd(fd, |fd_io| {
+                let table_is_free = domain.state.try_lock().is_some();
+                // A second fd's owner must also be reachable while this one is
+                // mid-operation, which is the property the audit asked for.
+                let other = domain.fd_owner(fd).is_ok();
+                fd_io
+                    .read(4, Some(0))
+                    .map(|bytes| (bytes, table_is_free, other))
+            })
+            .expect("read");
+        assert_eq!(observed.0, b"payl");
+        assert!(observed.1, "the table lock was still held during the read");
+        assert!(
+            observed.2,
+            "another fd could not be looked up during a read"
+        );
+
+        domain.close_file(fd).expect("close");
+        // A closed fd has no owner, so the operation fails at lookup rather
+        // than reaching a file that is already gone.
+        assert!(domain.read_file(fd, 4, Some(0)).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 }

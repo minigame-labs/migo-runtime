@@ -350,7 +350,7 @@ impl SubmitPath {
             )
             .push(shared::FrameOp::BeginFrame),
         };
-        frame_decode::decode_render_stream_into(&mut sink, validated);
+        frame_decode::decode_render_stream_into_with_plan(&mut sink, validated, budget);
         drop(scratch);
         let packet = sink
             .builder
@@ -418,6 +418,18 @@ impl ExternalFrameSession {
     /// exists to shorten.
     pub fn submit_frame(&self, bytes: &[u8]) -> IngressOutcome {
         self.submit.submit_frame(bytes)
+    }
+    /// Release the transport-side frame storage once no more submissions can
+    /// reach this session. The C boundary calls this before handing ownership to
+    /// the retirement reaper; replacing the ingress also makes late producers
+    /// fail validation instead of retaining the old pool through an Arc clone.
+    pub fn release_submit_resources(&mut self) {
+        self.submit.ingress = Arc::new(Mutex::new(FrameIngress::new(0, 0)));
+        if let Some(dispatch) = self.submit.dispatch.get() {
+            let mut words = dispatch.words.lock();
+            words.clear();
+            words.shrink_to_fit();
+        }
     }
 
     /// Whether the caller is the session's own thread.

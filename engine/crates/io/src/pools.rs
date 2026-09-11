@@ -7,6 +7,7 @@ use std::{
         mpsc,
     },
     thread,
+    time::Instant,
 };
 
 use parking_lot::{Condvar as ParkingCondvar, Mutex};
@@ -18,7 +19,9 @@ use crate::task::{PoolKind, PriorityClass};
 struct HostToken(u64);
 
 struct HostQueue<T> {
-    jobs: VecDeque<T>,
+    // Each item carries its declared byte count so the accounting in
+    // QueueState can move bytes from queued to active at dispatch time.
+    jobs: VecDeque<(T, u64)>,
     in_rotation: bool,
 }
 
@@ -47,9 +50,13 @@ impl<T> Default for FairLane<T> {
 
 impl<T> FairLane<T> {
     fn push(&mut self, host: HostToken, value: T) {
+        self.push_with_bytes(host, value, 0);
+    }
+
+    fn push_with_bytes(&mut self, host: HostToken, value: T, byte_count: u64) {
         let queue = self.hosts.entry(host).or_default();
         let was_empty = queue.jobs.is_empty();
-        queue.jobs.push_back(value);
+        queue.jobs.push_back((value, byte_count));
         if was_empty {
             debug_assert!(!queue.in_rotation);
             queue.in_rotation = true;
@@ -57,7 +64,15 @@ impl<T> FairLane<T> {
         }
     }
 
-    fn pop_where(&mut self, mut eligible: impl FnMut(HostToken) -> bool) -> Option<(HostToken, T)> {
+    fn pop_where(&mut self, eligible: impl FnMut(HostToken) -> bool) -> Option<(HostToken, T)> {
+        self.pop_where_with_bytes(eligible)
+            .map(|(host, value, _)| (host, value))
+    }
+
+    fn pop_where_with_bytes(
+        &mut self,
+        mut eligible: impl FnMut(HostToken) -> bool,
+    ) -> Option<(HostToken, T, u64)> {
         let attempts = self.rotation.len();
         for _ in 0..attempts {
             let host = self
@@ -73,7 +88,7 @@ impl<T> FairLane<T> {
                 .hosts
                 .get_mut(&host)
                 .expect("rotation token must have a host queue");
-            let value = queue
+            let (value, byte_count) = queue
                 .jobs
                 .pop_front()
                 .expect("rotation token must have queued work");
@@ -82,7 +97,7 @@ impl<T> FairLane<T> {
             } else {
                 self.rotation.push_back(host);
             }
-            return Some((host, value));
+            return Some((host, value, byte_count));
         }
         None
     }
@@ -150,6 +165,7 @@ struct ExecutorConfig {
     class_caps: [usize; POOL_COUNT],
     host_cap_when_contended: usize,
     aging_interval: u64,
+    process_byte_limit: u64,
 }
 
 impl ExecutorConfig {
@@ -170,7 +186,14 @@ impl ExecutorConfig {
             class_caps: [worker_count, cpu_heavy_cap, cpu_heavy_cap, cpu_heavy_cap, 1],
             host_cap_when_contended: worker_count.div_ceil(2),
             aging_interval: 16,
+            process_byte_limit: 256 * 1024 * 1024,
         }
+    }
+
+    #[cfg(test)]
+    fn with_byte_limit(mut self, process_byte_limit: u64) -> Self {
+        self.process_byte_limit = process_byte_limit;
+        self
     }
 
     #[cfg(test)]
@@ -183,6 +206,7 @@ struct Dispatched<T> {
     host: HostToken,
     pool: PoolKind,
     value: T,
+    byte_count: u64,
 }
 
 /// Whether the per-host dispatch cap applies to a given dispatch pass.
@@ -204,6 +228,11 @@ struct QueueState<T> {
     retired_hosts: HashSet<HostToken>,
     active_total: usize,
     pending_total: usize,
+    queued_bytes: u64,
+    active_bytes: u64,
+    reserved_bytes: u64,
+    refusals: u64,
+    oldest_enqueue: Option<Instant>,
     dispatch_count: u64,
     closed: bool,
 }
@@ -219,18 +248,52 @@ impl<T> Default for QueueState<T> {
             retired_hosts: HashSet::new(),
             active_total: 0,
             pending_total: 0,
+            queued_bytes: 0,
+            active_bytes: 0,
+            reserved_bytes: 0,
+            refusals: 0,
+            oldest_enqueue: None,
             dispatch_count: 0,
             closed: false,
         }
     }
 }
-
 impl<T> QueueState<T> {
     fn push(&mut self, host: HostToken, pool: PoolKind, priority: PriorityClass, value: T) {
+        self.push_with_bytes(host, pool, priority, value, 0);
+    }
+
+    fn push_with_bytes(
+        &mut self,
+        host: HostToken,
+        pool: PoolKind,
+        priority: PriorityClass,
+        value: T,
+        byte_count: u64,
+    ) {
         debug_assert!(!self.retired_hosts.contains(&host));
-        self.lanes[lane_index(priority, pool)].push(host, value);
+        if self.pending_total == 0 {
+            self.oldest_enqueue = Some(Instant::now());
+        }
+        self.lanes[lane_index(priority, pool)].push_with_bytes(host, value, byte_count);
         self.pending_total += 1;
+        self.queued_bytes += byte_count;
         *self.pending_by_host.entry(host).or_default() += 1;
+    }
+
+    fn push_reserved(
+        &mut self,
+        host: HostToken,
+        pool: PoolKind,
+        priority: PriorityClass,
+        value: T,
+        byte_count: u64,
+    ) {
+        self.reserved_bytes = self
+            .reserved_bytes
+            .checked_sub(byte_count)
+            .expect("committed reservation must be reserved");
+        self.push_with_bytes(host, pool, priority, value, byte_count);
     }
 
     fn pop_next(&mut self, config: &ExecutorConfig) -> Option<Dispatched<T>> {
@@ -238,14 +301,6 @@ impl<T> QueueState<T> {
             return None;
         }
 
-        // The per-host cap keeps one host's backlog from deciding when another
-        // host's IO runs. When it blocks *every* queued job, though, no peer
-        // was waiting for the worker it just idled -- the cap would only slow
-        // down the one host that has work while a thread sits parked. So the
-        // fair pass runs first, and a relaxed pass picks up what it refused.
-        //
-        // Class caps apply to both passes: those bound how much of a resource
-        // is in flight, not how it is shared.
         if let Some(job) = self.pop_with_fairness(config, HostFairness::Enforced) {
             return Some(job);
         }
@@ -305,15 +360,19 @@ impl<T> QueueState<T> {
                 continue;
             }
             let pool = pool_from_index(class_idx);
-            let popped = self.lanes[lane_index(priority, pool)].pop_where(|host| {
+            let popped = self.lanes[lane_index(priority, pool)].pop_where_with_bytes(|host| {
                 !host_contended || active_by_host.get(&host).copied().unwrap_or(0) < host_cap
             });
-            let Some((host, value)) = popped else {
+            let Some((host, value, byte_count)) = popped else {
                 continue;
             };
 
             self.class_cursor[priority_idx] = (class_idx + 1) % POOL_COUNT;
             self.pending_total -= 1;
+            self.queued_bytes = self
+                .queued_bytes
+                .checked_sub(byte_count)
+                .expect("dispatched job bytes must be queued");
             let pending = self
                 .pending_by_host
                 .get_mut(&host)
@@ -322,21 +381,38 @@ impl<T> QueueState<T> {
             if *pending == 0 {
                 self.pending_by_host.remove(&host);
             }
+            if self.pending_total == 0 {
+                self.oldest_enqueue = None;
+            }
             self.active_total += 1;
+            self.active_bytes += byte_count;
             self.active_by_class[class_idx] += 1;
             *self.active_by_host.entry(host).or_default() += 1;
             self.dispatch_count = self.dispatch_count.wrapping_add(1);
-            return Some(Dispatched { host, pool, value });
+            return Some(Dispatched {
+                host,
+                pool,
+                value,
+                byte_count,
+            });
         }
         None
     }
 
     fn complete(&mut self, host: HostToken, pool: PoolKind) {
+        self.complete_with_bytes(host, pool, 0);
+    }
+
+    fn complete_with_bytes(&mut self, host: HostToken, pool: PoolKind, byte_count: u64) {
         let class_idx = pool_index(pool);
         self.active_total = self
             .active_total
             .checked_sub(1)
             .expect("completed job must be active");
+        self.active_bytes = self
+            .active_bytes
+            .checked_sub(byte_count)
+            .expect("completed job bytes must be active");
         self.active_by_class[class_idx] = self.active_by_class[class_idx]
             .checked_sub(1)
             .expect("completed class must be active");
@@ -380,6 +456,8 @@ impl<T> QueueState<T> {
     }
 }
 
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
 struct ExecutorShared {
     state: Mutex<QueueState<Job>>,
     condvar: ParkingCondvar,
@@ -407,10 +485,85 @@ impl ExecutorShared {
         Ok(())
     }
 
-    fn next_job(&self, completed: Option<(HostToken, PoolKind)>) -> Option<Dispatched<Job>> {
+    fn enqueue_with_bytes(
+        &self,
+        host: HostToken,
+        pool: PoolKind,
+        priority: PriorityClass,
+        byte_count: u64,
+        job: Job,
+    ) -> Result<(), ByteAdmitError> {
         let mut state = self.state.lock();
-        if let Some((host, pool)) = completed {
-            state.complete(host, pool);
+        if state.closed {
+            return Err(ByteAdmitError::Closed);
+        }
+        let used = state
+            .queued_bytes
+            .saturating_add(state.active_bytes)
+            .saturating_add(state.reserved_bytes);
+        let available = self.config.process_byte_limit.saturating_sub(used);
+        if byte_count > available {
+            state.refusals = state.refusals.saturating_add(1);
+            return Err(ByteAdmitError::BytesExhausted {
+                requested: byte_count,
+                available,
+            });
+        }
+        state.push_with_bytes(host, pool, priority, job, byte_count);
+        self.condvar.notify_one();
+        Ok(())
+    }
+    fn reserve_bytes(self: &Arc<Self>, byte_count: u64) -> Result<ByteTicket, ByteAdmitError> {
+        let mut state = self.state.lock();
+        let used = state
+            .queued_bytes
+            .saturating_add(state.active_bytes)
+            .saturating_add(state.reserved_bytes);
+        let available = self.config.process_byte_limit.saturating_sub(used);
+        if byte_count > available {
+            state.refusals = state.refusals.saturating_add(1);
+            return Err(ByteAdmitError::BytesExhausted {
+                requested: byte_count,
+                available,
+            });
+        }
+        state.reserved_bytes = state.reserved_bytes.saturating_add(byte_count);
+        Ok(ByteTicket {
+            shared: Arc::clone(self),
+            byte_count,
+            committed: false,
+        })
+    }
+
+    fn release_reserved(&self, byte_count: u64) {
+        let mut state = self.state.lock();
+        state.reserved_bytes = state
+            .reserved_bytes
+            .checked_sub(byte_count)
+            .expect("released reservation must be reserved");
+    }
+
+    fn enqueue_reserved(
+        &self,
+        host: HostToken,
+        pool: PoolKind,
+        priority: PriorityClass,
+        byte_count: u64,
+        job: Job,
+    ) -> Result<(), ByteAdmitError> {
+        let mut state = self.state.lock();
+        if state.closed {
+            return Err(ByteAdmitError::Closed);
+        }
+        state.push_reserved(host, pool, priority, job, byte_count);
+        self.condvar.notify_one();
+        Ok(())
+    }
+
+    fn next_job(&self, completed: Option<(HostToken, PoolKind, u64)>) -> Option<Dispatched<Job>> {
+        let mut state = self.state.lock();
+        if let Some((host, pool, byte_count)) = completed {
+            state.complete_with_bytes(host, pool, byte_count);
             if state.pending_total != 0 {
                 self.condvar.notify_one();
             }
@@ -527,6 +680,62 @@ impl ProcessIoExecutor {
         Ok(JobHandle { rx: result_rx })
     }
 
+    fn submit_bytes<T, F>(
+        &self,
+        registration: &HostRegistration,
+        pool: PoolKind,
+        priority: PriorityClass,
+        byte_count: u64,
+        job: F,
+    ) -> Result<JobHandle<T>, ByteAdmitError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        debug_assert!(std::ptr::eq(self, Arc::as_ptr(&registration.executor)));
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        self.shared.enqueue_with_bytes(
+            registration.token,
+            pool,
+            priority,
+            byte_count,
+            Box::new(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                let _ = result_tx.send(result);
+            }),
+        )?;
+        self.ensure_started();
+        Ok(JobHandle { rx: result_rx })
+    }
+
+    fn submit_async_bytes<T, F>(
+        &self,
+        registration: &HostRegistration,
+        pool: PoolKind,
+        priority: PriorityClass,
+        byte_count: u64,
+        job: F,
+    ) -> Result<tokio::sync::oneshot::Receiver<std::thread::Result<T>>, ByteAdmitError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        debug_assert!(std::ptr::eq(self, Arc::as_ptr(&registration.executor)));
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.shared.enqueue_with_bytes(
+            registration.token,
+            pool,
+            priority,
+            byte_count,
+            Box::new(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                let _ = result_tx.send(result);
+            }),
+        )?;
+        self.ensure_started();
+        Ok(result_rx)
+    }
+
     fn submit_async<T, F>(
         &self,
         registration: &HostRegistration,
@@ -570,14 +779,14 @@ fn worker_main(shared: Arc<ExecutorShared>) {
     while let Some(job) = shared.next_job(completed.take()) {
         let host = job.host;
         let pool = job.pool;
+        let byte_count = job.byte_count;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job.value));
         if result.is_err() {
             tracing::error!("process IO executor job wrapper panicked");
         }
-        completed = Some((host, pool));
+        completed = Some((host, pool, byte_count));
     }
 }
-
 impl Drop for ProcessIoExecutor {
     fn drop(&mut self) {
         self.shared.close();
@@ -599,17 +808,79 @@ impl Drop for ProcessIoExecutor {
     }
 }
 
-type Job = Box<dyn FnOnce() + Send + 'static>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteAdmitError {
+    Closed,
+    BytesExhausted { requested: u64, available: u64 },
+}
+
+impl fmt::Display for ByteAdmitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed => f.write_str("IO worker pool closed"),
+            Self::BytesExhausted {
+                requested,
+                available,
+            } => write!(
+                f,
+                "IO pending-byte budget exhausted: requested {requested} bytes, {available} available"
+            ),
+        }
+    }
+}
+pub struct ByteTicket {
+    shared: Arc<ExecutorShared>,
+    byte_count: u64,
+    committed: bool,
+}
+
+impl ByteTicket {
+    fn into_parts(mut self) -> (Arc<ExecutorShared>, u64) {
+        self.committed = true;
+        (Arc::clone(&self.shared), self.byte_count)
+    }
+}
+
+impl Drop for ByteTicket {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.shared.release_reserved(self.byte_count);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolError {
     Closed,
+    ByteLimitExceeded { requested: u64, available: u64 },
 }
 
 impl fmt::Display for PoolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PoolError::Closed => f.write_str("IO worker pool closed"),
+            PoolError::ByteLimitExceeded {
+                requested,
+                available,
+            } => write!(
+                f,
+                "IO pending-byte budget exhausted: requested {requested} bytes, {available} available"
+            ),
+        }
+    }
+}
+
+impl From<ByteAdmitError> for PoolError {
+    fn from(err: ByteAdmitError) -> Self {
+        match err {
+            ByteAdmitError::Closed => Self::Closed,
+            ByteAdmitError::BytesExhausted {
+                requested,
+                available,
+            } => Self::ByteLimitExceeded {
+                requested,
+                available,
+            },
         }
     }
 }
@@ -620,6 +891,12 @@ impl From<PoolError> for EngineError {
             PoolError::Closed => {
                 EngineError::new(ErrorCode::IoError).with_detail("IO worker pool closed")
             }
+            PoolError::ByteLimitExceeded {
+                requested,
+                available,
+            } => EngineError::new(ErrorCode::IoError).with_detail(format!(
+                "IO pending-byte budget exhausted: requested {requested} bytes, {available} available"
+            )),
         }
     }
 }
@@ -688,6 +965,80 @@ impl IoPools {
             .executor
             .submit_async(&self.registration, pool, priority, job)
     }
+    pub fn run_bytes<T, F>(
+        &self,
+        pool: PoolKind,
+        priority: PriorityClass,
+        byte_count: u64,
+        job: F,
+    ) -> Result<T, ByteAdmitError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        self.registration
+            .executor
+            .submit_bytes(&self.registration, pool, priority, byte_count, job)?
+            .join()
+            .map_err(|_| ByteAdmitError::Closed)
+    }
+
+    pub fn submit_async_bytes<T, F>(
+        &self,
+        pool: PoolKind,
+        priority: PriorityClass,
+        byte_count: u64,
+        job: F,
+    ) -> Result<tokio::sync::oneshot::Receiver<std::thread::Result<T>>, ByteAdmitError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        self.registration.executor.submit_async_bytes(
+            &self.registration,
+            pool,
+            priority,
+            byte_count,
+            job,
+        )
+    }
+    pub fn reserve_bytes(&self, byte_count: u64) -> Result<ByteTicket, ByteAdmitError> {
+        self.registration.executor.shared.reserve_bytes(byte_count)
+    }
+
+    pub fn submit_reserved<T, F>(
+        &self,
+        ticket: ByteTicket,
+        pool: PoolKind,
+        priority: PriorityClass,
+        job: F,
+    ) -> Result<JobHandle<T>, ByteAdmitError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        if !Arc::ptr_eq(&ticket.shared, &self.registration.executor.shared) {
+            return Err(ByteAdmitError::Closed);
+        }
+        let (shared, byte_count) = ticket.into_parts();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let result = shared.enqueue_reserved(
+            self.registration.token,
+            pool,
+            priority,
+            byte_count,
+            Box::new(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                let _ = result_tx.send(result);
+            }),
+        );
+        if let Err(error) = result {
+            shared.release_reserved(byte_count);
+            return Err(error);
+        }
+        self.registration.executor.ensure_started();
+        Ok(JobHandle { rx: result_rx })
+    }
 
     fn with_executor(host_id: i32, executor: Arc<ProcessIoExecutor>) -> Self {
         Self {
@@ -696,6 +1047,7 @@ impl IoPools {
     }
 
     #[cfg(test)]
+
     pub(crate) fn shared_pair_for_test(
         first_host_id: i32,
         second_host_id: i32,
@@ -715,6 +1067,19 @@ impl IoPools {
             ProcessIoExecutor::new(ExecutorConfig::for_workers(worker_count)),
         )
     }
+    #[cfg(test)]
+    pub(crate) fn local_with_byte_limit_for_test(
+        host_id: i32,
+        worker_count: usize,
+        byte_limit: u64,
+    ) -> Self {
+        Self::with_executor(
+            host_id,
+            ProcessIoExecutor::new(
+                ExecutorConfig::for_workers(worker_count).with_byte_limit(byte_limit),
+            ),
+        )
+    }
 
     #[cfg(test)]
     pub(crate) fn pending_work_for_test(&self) -> usize {
@@ -724,6 +1089,16 @@ impl IoPools {
     #[cfg(test)]
     pub(crate) fn started_thread_count_for_test(&self) -> usize {
         self.registration.executor.started_thread_count()
+    }
+    #[cfg(test)]
+    pub(crate) fn byte_metrics_for_test(&self) -> (u64, u64, Option<std::time::Duration>, u64) {
+        let state = self.registration.executor.shared.state.lock();
+        (
+            state.queued_bytes,
+            state.active_bytes,
+            state.oldest_enqueue.map(|instant| instant.elapsed()),
+            state.refusals,
+        )
     }
 }
 
@@ -1698,5 +2073,220 @@ mod r5_executor_tests {
     fn default_process_worker_count_is_mobile_bounded() {
         let worker_count = default_executor_config().worker_count;
         assert!((2..=6).contains(&worker_count));
+    }
+}
+
+#[cfg(test)]
+mod r5_byte_credit_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+
+    use parking_lot::{Condvar, Mutex};
+
+    use super::{ByteAdmitError, ExecutorConfig, IoPools, ProcessIoExecutor};
+    use crate::task::{PoolKind, PriorityClass};
+
+    fn release(gate: &Arc<(Mutex<bool>, Condvar)>) {
+        let (lock, condvar) = &**gate;
+        *lock.lock() = true;
+        condvar.notify_all();
+    }
+    struct DropProbe(Arc<AtomicUsize>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn byte_saturation_refuses_before_item_count() {
+        let executor = ProcessIoExecutor::new(ExecutorConfig::for_workers(1).with_byte_limit(10));
+        let host = executor.register_host(60);
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let first_gate = Arc::clone(&gate);
+        let first = executor
+            .submit_bytes(
+                &host,
+                PoolKind::Fs,
+                PriorityClass::ForegroundAsync,
+                8,
+                move || {
+                    started_tx.send(()).unwrap();
+                    let (lock, condvar) = &*first_gate;
+                    let mut released = lock.lock();
+                    while !*released {
+                        condvar.wait(&mut released);
+                    }
+                },
+            )
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let probe = DropProbe(Arc::clone(&dropped));
+        let refused = executor.submit_bytes(
+            &host,
+            PoolKind::Fs,
+            PriorityClass::ForegroundAsync,
+            4,
+            move || drop(probe),
+        );
+        assert!(matches!(
+            refused,
+            Err(ByteAdmitError::BytesExhausted {
+                requested: 4,
+                available: 2
+            })
+        ));
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(executor.shared.state.lock().active_total, 1);
+        assert_eq!(executor.shared.state.lock().pending_total, 0);
+
+        release(&gate);
+        first.join().unwrap();
+    }
+
+    #[test]
+    fn run_bytes_preserves_structured_saturation_at_public_caller() {
+        let pools = IoPools::local_with_byte_limit_for_test(63, 1, 4);
+        let refused = pools.run_bytes(PoolKind::Fs, PriorityClass::ForegroundAsync, 8, || ());
+        assert!(matches!(
+            refused,
+            Err(ByteAdmitError::BytesExhausted {
+                requested: 8,
+                available: 4
+            })
+        ));
+    }
+
+    #[test]
+    fn queued_active_age_and_refusal_counters_follow_credit_lifecycle() {
+        let executor = ProcessIoExecutor::new(ExecutorConfig::for_workers(1).with_byte_limit(10));
+        let host = executor.register_host(61);
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let first_gate = Arc::clone(&gate);
+        let first = executor
+            .submit_bytes(
+                &host,
+                PoolKind::Fs,
+                PriorityClass::ForegroundAsync,
+                7,
+                move || {
+                    started_tx.send(()).unwrap();
+                    let (lock, condvar) = &*first_gate;
+                    let mut released = lock.lock();
+                    while !*released {
+                        condvar.wait(&mut released);
+                    }
+                },
+            )
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let second = executor
+            .submit_bytes(
+                &host,
+                PoolKind::Fs,
+                PriorityClass::ForegroundAsync,
+                2,
+                || {},
+            )
+            .unwrap();
+        let refused = executor.submit_bytes(
+            &host,
+            PoolKind::Fs,
+            PriorityClass::ForegroundAsync,
+            2,
+            || {},
+        );
+        assert!(matches!(
+            refused,
+            Err(ByteAdmitError::BytesExhausted {
+                requested: 2,
+                available: 1
+            })
+        ));
+        {
+            let state = executor.shared.state.lock();
+            assert_eq!(state.queued_bytes, 2);
+            assert_eq!(state.active_bytes, 7);
+            assert!(state.oldest_enqueue.is_some());
+            assert_eq!(state.refusals, 1);
+        }
+
+        release(&gate);
+        first.join().unwrap();
+        second.join().unwrap();
+        let state = executor.shared.state.lock();
+        assert_eq!(state.queued_bytes, 0);
+        assert_eq!(state.active_bytes, 0);
+        assert!(state.oldest_enqueue.is_none());
+        assert_eq!(state.refusals, 1);
+    }
+
+    #[test]
+    fn dropping_uncommitted_ticket_returns_credit_once() {
+        let executor = ProcessIoExecutor::new(ExecutorConfig::for_workers(1).with_byte_limit(8));
+        let ticket = executor.shared.reserve_bytes(8).unwrap();
+        drop(ticket);
+        let ticket = executor.shared.reserve_bytes(8).unwrap();
+        drop(ticket);
+        let host = executor.register_host(62);
+        let completed = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&completed);
+        let job = executor
+            .submit_bytes(
+                &host,
+                PoolKind::Fs,
+                PriorityClass::ForegroundAsync,
+                8,
+                move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .unwrap();
+        job.join().unwrap();
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        let state = executor.shared.state.lock();
+        assert_eq!(state.queued_bytes, 0);
+        assert_eq!(state.active_bytes, 0);
+        assert_eq!(state.reserved_bytes, 0);
+    }
+
+    #[test]
+    fn reserved_and_direct_admission_share_one_process_bound() {
+        let executor = ProcessIoExecutor::new(ExecutorConfig::for_workers(1).with_byte_limit(8));
+        let ticket = executor.shared.reserve_bytes(6).unwrap();
+        let host = executor.register_host(64);
+        let refused = executor.submit_bytes(
+            &host,
+            PoolKind::Fs,
+            PriorityClass::ForegroundAsync,
+            4,
+            || (),
+        );
+        assert!(matches!(
+            refused,
+            Err(ByteAdmitError::BytesExhausted {
+                requested: 4,
+                available: 2
+            })
+        ));
+        drop(ticket);
+        let accepted = executor
+            .submit_bytes(
+                &host,
+                PoolKind::Fs,
+                PriorityClass::ForegroundAsync,
+                8,
+                || (),
+            )
+            .unwrap();
+        accepted.join().unwrap();
     }
 }

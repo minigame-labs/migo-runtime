@@ -35,7 +35,7 @@
 //!     chunk_count: u32
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::num::NonZeroUsize;
@@ -358,7 +358,7 @@ pub struct PackageWriter<W: Write + Seek> {
     writer: W,
     entries: Vec<EntryMeta>,
     chunks: Vec<ChunkEntry>,
-    seen_paths: std::collections::HashSet<String>,
+    seen_paths: BTreeSet<String>,
     data_pos: u64,
     chunk_size: u32,
     poisoned: bool,
@@ -381,11 +381,55 @@ impl<W: Write + Seek> PackageWriter<W> {
             writer,
             entries: Vec::new(),
             chunks: Vec::new(),
-            seen_paths: std::collections::HashSet::new(),
+            seen_paths: BTreeSet::new(),
             data_pos: HEADER_SIZE,
             chunk_size,
             poisoned: false,
         })
+    }
+
+    /// Reject duplicate paths and file/directory prefix conflicts without
+    /// scanning every prior entry.  The old full scan made each insertion
+    /// quadratic and allocated `existing + "/"` for every comparison.
+    fn check_path_conflict(&self, normalized: &str) -> Result<(), PackageError> {
+        if self.seen_paths.contains(normalized) {
+            return Err(PackageError::InvalidEntryPath(format!(
+                "duplicate entry: {normalized}"
+            )));
+        }
+
+        // A successor beginning with `normalized/` means this new file would
+        // shadow an already-added child.  Build that lower bound once per new
+        // path; unlike the old loop, it is never allocated per comparison.
+        let child_prefix = format!("{normalized}/");
+        if let Some(existing) = self
+            .seen_paths
+            .range::<str, _>((
+                std::ops::Bound::Included(child_prefix.as_str()),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+        {
+            if existing.starts_with(&child_prefix) {
+                return Err(PackageError::InvalidEntryPath(format!(
+                    "prefix conflict: '{normalized}' conflicts with '{existing}'"
+                )));
+            }
+        }
+
+        // Walk the new path's ancestors.  Each lookup is logarithmic in the
+        // ordered set and creates no owned path.
+        let mut ancestor = normalized;
+        while let Some((parent, _)) = ancestor.rsplit_once('/') {
+            if self.seen_paths.contains(parent) {
+                return Err(PackageError::InvalidEntryPath(format!(
+                    "prefix conflict: '{normalized}' conflicts with '{parent}'"
+                )));
+            }
+            ancestor = parent;
+        }
+
+        Ok(())
     }
 
     /// Streaming variant of [`Self::add_entry`].
@@ -424,25 +468,7 @@ impl<W: Write + Seek> PackageWriter<W> {
         }
 
         let normalized = validate_entry_path(path)?;
-        if self.seen_paths.contains(&normalized) {
-            return Err(PackageError::InvalidEntryPath(format!(
-                "duplicate entry: {normalized}"
-            )));
-        }
-        let new_prefix = format!("{normalized}/");
-        for existing in &self.seen_paths {
-            if existing.starts_with(&new_prefix) {
-                return Err(PackageError::InvalidEntryPath(format!(
-                    "prefix conflict: '{normalized}' conflicts with '{existing}'"
-                )));
-            }
-            let existing_prefix = format!("{existing}/");
-            if normalized.starts_with(&existing_prefix) {
-                return Err(PackageError::InvalidEntryPath(format!(
-                    "prefix conflict: '{normalized}' conflicts with '{existing}'"
-                )));
-            }
-        }
+        self.check_path_conflict(&normalized)?;
 
         let cs = self.chunk_size as usize;
         let first_chunk = self.chunks.len() as u32;
@@ -526,26 +552,7 @@ impl<W: Write + Seek> PackageWriter<W> {
         }
 
         let normalized = validate_entry_path(path)?;
-        if self.seen_paths.contains(&normalized) {
-            return Err(PackageError::InvalidEntryPath(format!(
-                "duplicate entry: {normalized}"
-            )));
-        }
-        // Prefix conflict check.
-        let new_prefix = format!("{normalized}/");
-        for existing in &self.seen_paths {
-            if existing.starts_with(&new_prefix) {
-                return Err(PackageError::InvalidEntryPath(format!(
-                    "prefix conflict: '{normalized}' conflicts with '{existing}'"
-                )));
-            }
-            let existing_prefix = format!("{existing}/");
-            if normalized.starts_with(&existing_prefix) {
-                return Err(PackageError::InvalidEntryPath(format!(
-                    "prefix conflict: '{normalized}' conflicts with '{existing}'"
-                )));
-            }
-        }
+        self.check_path_conflict(&normalized)?;
 
         let crc = crc32fast::hash(data);
         let first_chunk = self.chunks.len() as u32;
@@ -1438,6 +1445,73 @@ mod tests {
         let mut w = PackageWriter::new(&mut buf).unwrap();
         w.add_entry("a", b"file").unwrap();
         assert!(w.add_entry("a/b.txt", b"child").is_err());
+    }
+
+    #[test]
+    fn path_conflict_semantics_are_pinned() {
+        // Exact duplicate paths conflict.
+        let mut duplicate_buf = io::Cursor::new(Vec::new());
+        let mut duplicate = PackageWriter::new(&mut duplicate_buf).unwrap();
+        duplicate.add_entry("a", b"one").unwrap();
+        assert!(duplicate.add_entry("a", b"two").is_err());
+
+        // A file cannot also be a directory prefix, in either insertion order.
+        let mut parent_first_buf = io::Cursor::new(Vec::new());
+        let mut parent_first = PackageWriter::new(&mut parent_first_buf).unwrap();
+        parent_first.add_entry("a", b"file").unwrap();
+        assert!(parent_first.add_entry("a/b", b"child").is_err());
+
+        let mut child_first_buf = io::Cursor::new(Vec::new());
+        let mut child_first = PackageWriter::new(&mut child_first_buf).unwrap();
+        child_first.add_entry("a/b", b"child").unwrap();
+        assert!(child_first.add_entry("a", b"file").is_err());
+
+        // A path is not a prefix merely because it shares characters.
+        let mut adjacent_buf = io::Cursor::new(Vec::new());
+        let mut adjacent = PackageWriter::new(&mut adjacent_buf).unwrap();
+        adjacent.add_entry("a", b"one").unwrap();
+        adjacent.add_entry("ab", b"two").unwrap();
+
+        // A sibling may sort before the slash in `a/`; the ordered successor
+        // check must still find the descendant rather than stopping at `a!`.
+        let mut punctuation_buf = io::Cursor::new(Vec::new());
+        let mut punctuation = PackageWriter::new(&mut punctuation_buf).unwrap();
+        punctuation.add_entry("a!", b"sibling").unwrap();
+        punctuation.add_entry("a/b", b"child").unwrap();
+        assert!(punctuation.add_entry("a", b"file").is_err());
+    }
+
+    /// The old scan allocated and compared every prior path for every entry,
+    /// producing the quadratic allocation growth recorded by
+    /// docs/audits/2026-09-09/full/io-network.md:35-39.  The shared crate already
+    /// installs its counting allocator for tests, so use its per-thread event
+    /// count as the deterministic growth proxy.
+    #[test]
+    fn path_conflict_growth_is_subquadratic() {
+        fn insertion_events(count: usize) -> u64 {
+            let names: Vec<String> = (0..count).map(|i| format!("entry_{i:05}.bin")).collect();
+            let mut writer = PackageWriter::new(io::Cursor::new(Vec::new())).unwrap();
+            let before = migo_alloc_probe::thread_counts();
+            for name in &names {
+                writer.add_entry(name, &[]).unwrap();
+            }
+            let after = migo_alloc_probe::thread_counts();
+            after
+                .allocation_events()
+                .saturating_sub(before.allocation_events())
+        }
+
+        let events_1k = insertion_events(1_024);
+        let events_2k = insertion_events(2_048);
+        let events_4k = insertion_events(4_096);
+        assert!(
+            events_2k < events_1k * 3,
+            "1k → 2k allocation growth is quadratic: {events_1k} → {events_2k}"
+        );
+        assert!(
+            events_4k < events_2k * 3,
+            "2k → 4k allocation growth is quadratic: {events_2k} → {events_4k}"
+        );
     }
 
     // -- Crafted headers (what `PackageWriter` would never emit) --

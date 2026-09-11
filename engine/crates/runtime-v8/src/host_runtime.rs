@@ -92,13 +92,16 @@ impl HostJsRuntime {
     /// Create a fully initialized JS runtime + bindings cache.
     ///
     /// - `host_state` will be consumed by runtime-v8 extensions
-    /// - `cache_dir` is where the V8 code cache persists compiled bytecode;
-    ///   the module loader and code cache are assembled internally
+    /// - `code_cache_root` is the directory the V8 code cache persists compiled
+    ///   bytecode under; the module loader and code cache are assembled
+    ///   internally. It is `InitOptions::code_cache_root()`, not the ordinary
+    ///   cache directory -- those are separate options and a host can point them
+    ///   at different volumes.
     /// - `v8_limits` configures heap limits when `v8-limits` feature is enabled
     pub fn new(
         host_id: i32,
         host_state: HostOpState,
-        cache_dir: &std::path::Path,
+        code_cache_root: &std::path::Path,
         #[cfg(feature = "v8-limits")] v8_limits: V8LimitsConfig,
         #[cfg(feature = "code-signing")] code_signing_enabled: bool,
         #[cfg(feature = "code-signing")] code_signing_pubkey: Option<&str>,
@@ -108,7 +111,7 @@ impl HostJsRuntime {
         // disk code cache is shared between the module loader and the V8
         // extension code cache; the mount ref is populated later by
         // evaluate_module.
-        let shared_cache = crate::code_cache::create_code_cache(cache_dir);
+        let shared_cache = crate::code_cache::create_code_cache(code_cache_root);
         let loader_mount_ref: SharedMountTableRef = Rc::new(RefCell::new(None));
         let module_loader: Option<Rc<dyn ModuleLoader>> =
             Some(Rc::new(crate::loader::MyModuleLoader::new(

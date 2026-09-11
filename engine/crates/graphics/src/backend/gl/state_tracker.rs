@@ -128,17 +128,29 @@ pub(crate) fn forget_deleted_program(state: &mut CanvasGLState, program: Program
     invalidate_program_uniforms(state, program);
 }
 
-/// Hash-and-compare dedup for a uniform upload.
+/// Hash-and-compare dedup for a single-location uniform upload.
 ///
-/// `value_bytes` is the raw byte slice the caller would have handed to
-/// `glUniform*` (e.g. `bytemuck::bytes_of(&[f32; 4])`).  Returns `true`
-/// if the upload is not redundant and should be issued. On `true`, normal-size
-/// values update the cache so the *next* identical call dedups; oversized
-/// values deliberately bypass retention and therefore continue to return true.
+/// Existing scalar-only callers use this wrapper; ranged setters must call
+/// [`update_uniform_range`] with the number of consecutive locations they
+/// write. Keeping the scalar wrapper avoids making unrelated state-tracker
+/// tests and helpers repeat a constant while ensuring renderer array paths
+/// carry their actual range.
 pub(crate) fn update_uniform(
     state: &mut CanvasGLState,
     program: ProgramId,
     location: u32,
+    value_bytes: &[u8],
+) -> bool {
+    update_uniform_range(state, program, location, 1, value_bytes)
+}
+
+/// Hash-and-compare dedup for a uniform upload spanning `location_count`
+/// consecutive GL uniform locations.
+pub(crate) fn update_uniform_range(
+    state: &mut CanvasGLState,
+    program: ProgramId,
+    location: u32,
+    location_count: u32,
     value_bytes: &[u8],
 ) -> bool {
     issue_if(super::uniform_cache::update(
@@ -146,6 +158,7 @@ pub(crate) fn update_uniform(
         MAX_UNIFORM_CACHE,
         program,
         location,
+        location_count,
         value_bytes,
     ))
 }

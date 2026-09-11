@@ -11,12 +11,13 @@
 //! ## Limits
 //!
 //! - Single value: 1 MB
-//! - Total storage: 10 MB
+//! - Total value bytes: 10 MB
+//! - Key bytes: 16 KiB
+//! - Entries: 10,000
 //!
-//! The quota is enforced inside the SQLite transaction via
-//! `SELECT SUM(size)`, which is O(n) but n is bounded to a few
-//! thousand small-game keys in practice; the extra read is
-//! dominated by the single write fsync cost anyway.
+//! Value-byte quota and entry count are enforced inside each SQLite
+//! transaction using cached running totals; enumeration is paged and the
+//! serialized response is capped before it reaches JS.
 
 use std::cell::RefCell;
 use std::fs;
@@ -46,6 +47,9 @@ const BUFFER_URL_DIR: &str = "buffer_urls";
 /// Maximum size of a single stored value (1 MB).
 const MAX_VALUE_SIZE: usize = 1024 * 1024;
 
+/// Keep oversized keys off the scheduler queue as well as out of SQLite.
+const MAX_KEY_SIZE: usize = 16 * 1024;
+
 /// Maximum total storage size in KB (10 MB = 10240 KB).
 const LIMIT_SIZE_KB: u32 = 10240;
 
@@ -55,6 +59,11 @@ const LIMIT_SIZE_KB: u32 = 10240;
 /// rather than one of its own: a fixture with a small quota of its own would prove
 /// per-instance accounting without proving that this is the number each game gets.
 pub(crate) const MAX_TOTAL_BYTES: u64 = LIMIT_SIZE_KB as u64 * 1024;
+
+/// Cap the wire string built for `getStorageInfo`; the JS wrapper parses this
+/// whole string before exposing it, so truncating only after formatting would
+/// leave the peak allocation unchanged.
+const MAX_INFO_JSON_BYTES: usize = 512 * 1024;
 
 // ==================== Path Helpers ====================
 
@@ -135,39 +144,55 @@ fn js_err(e: EngineError) -> JsErrorBox {
         None => JsErrorBox::generic(e.msg.to_string()),
     }
 }
-
-/// Serialize [`StorageInfo`] into the JSON shape the JS wrapper
-/// expects: `{ keys: [...], currentSize: <KB>, limitSize: <KB> }`.
+/// Serialize [`StorageInfo`] into the JSON shape expected by the JS wrapper.
 /// Sizes are reported in KiB (ceil), mirroring the legacy format.
 fn info_to_json(info: &StorageInfo) -> String {
     // Ceil to KiB so a 1-byte value reports currentSize=1.
     let current_kib = (info.current_bytes + 1023) / 1024;
     let limit_kib = (info.limit_bytes + 1023) / 1024;
-    let mut keys = String::with_capacity(info.keys.len() * 16);
-    for (i, k) in info.keys.iter().enumerate() {
-        if i > 0 {
-            keys.push(',');
-        }
-        keys.push('"');
-        // Reuse the serde_json encoder via manual escape — we avoid
-        // pulling in serde_json for this tiny use, but still handle
-        // the JSON metacharacters that can appear in user keys.
+    let suffix = format!(r#"],"currentSize":{current_kib},"limitSize":{limit_kib}}}"#);
+    let mut out =
+        String::with_capacity(MAX_INFO_JSON_BYTES.min(info.keys.len().saturating_mul(16)));
+    let mut first = true;
+    for k in &info.keys {
+        // Escape one key at a time so an oversized key list never creates a
+        // second full-size staging string.
+        let mut escaped = String::with_capacity(k.len());
         for c in k.chars() {
             match c {
-                '"' => keys.push_str("\\\""),
-                '\\' => keys.push_str("\\\\"),
-                '\n' => keys.push_str("\\n"),
-                '\r' => keys.push_str("\\r"),
-                '\t' => keys.push_str("\\t"),
+                '"' => escaped.push_str("\\\""),
+                '\\' => escaped.push_str("\\\\"),
+                '\n' => escaped.push_str("\\n"),
+                '\r' => escaped.push_str("\\r"),
+                '\t' => escaped.push_str("\\t"),
                 c if (c as u32) < 0x20 => {
-                    keys.push_str(&format!("\\u{:04x}", c as u32));
+                    escaped.push_str(&format!("\\u{:04x}", c as u32));
                 }
-                c => keys.push(c),
+                c => escaped.push(c),
             }
         }
-        keys.push('"');
+        let separator_len = usize::from(!first);
+        if out
+            .len()
+            .saturating_add(separator_len)
+            .saturating_add(escaped.len())
+            .saturating_add(2)
+            .saturating_add(suffix.len())
+            > MAX_INFO_JSON_BYTES
+        {
+            break;
+        }
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push('"');
+        out.push_str(&escaped);
+        out.push('"');
     }
-    format!(r#"{{"keys":[{keys}],"currentSize":{current_kib},"limitSize":{limit_kib}}}"#)
+    out.push_str(&suffix);
+    debug_assert!(out.len() <= MAX_INFO_JSON_BYTES);
+    out
 }
 
 // ==================== Sync Storage Ops ====================
@@ -192,6 +217,9 @@ pub fn op_storage_set(
 ) -> Result<(), JsErrorBox> {
     if value.len() > MAX_VALUE_SIZE {
         return Err(JsErrorBox::generic("setStorage:fail data exceeds max size"));
+    }
+    if key.len() > MAX_KEY_SIZE {
+        return Err(JsErrorBox::generic("setStorage:fail key exceeds max size"));
     }
     let scheduler = get_scheduler(state);
     let dir = storage_dir(state).map_err(js_err)?;
@@ -310,6 +338,11 @@ pub async fn op_storage_set_async(
             "setStorage:fail data exceeds max size".into(),
         ));
     }
+    if key.len() > MAX_KEY_SIZE {
+        return Err(StorageError::Message(
+            "setStorage:fail key exceeds max size".into(),
+        ));
+    }
     run_mutate_async(state, move |dir| {
         storage_ops::storage_set(dir, &key, &value, MAX_TOTAL_BYTES)
     })
@@ -425,4 +458,26 @@ pub fn storage_extensions() -> Vec<Extension> {
 
 pub fn storage_lazy_extensions() -> Vec<Extension> {
     vec![host_v8_storage::lazy_init()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn info_json_is_bounded_for_large_key_lists() {
+        let info = StorageInfo {
+            keys: (0..100)
+                .map(|i| format!("key-{i}-{}", "x".repeat(8 * 1024)))
+                .collect(),
+            current_bytes: 1,
+            limit_bytes: 10 * 1024 * 1024,
+        };
+        let json = info_to_json(&info);
+        assert!(
+            json.len() <= 512 * 1024,
+            "getStorageInfo JSON must stay below the cap, got {} bytes",
+            json.len()
+        );
+    }
 }

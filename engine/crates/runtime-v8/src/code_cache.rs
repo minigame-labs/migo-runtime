@@ -42,7 +42,12 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, LazyLock, Weak},
+    sync::{
+        Arc, LazyLock, Weak,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, SyncSender, TrySendError},
+    },
+    thread,
 };
 
 use deno_core::{ModuleSourceCode, ModuleSpecifier, SourceCodeCacheInfo};
@@ -50,6 +55,8 @@ use parking_lot::{Mutex, RwLock};
 
 /// Maximum total cache size in bytes (32 MB).
 const MAX_CACHE_SIZE: u64 = 32 * 1024 * 1024;
+/// Admission bound for writes waiting behind the one cache worker.
+const WRITE_QUEUE_CAPACITY: usize = 64;
 
 /// The cache each directory has, if any Session still holds it.
 ///
@@ -59,183 +66,259 @@ const MAX_CACHE_SIZE: u64 = 32 * 1024 * 1024;
 static CACHES: LazyLock<Mutex<HashMap<PathBuf, Weak<DiskCodeCache>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+struct CacheState {
+    cache_dir: PathBuf,
+    v8_version: &'static str,
+    directory: RwLock<u64>,
+    hot: Mutex<HashMap<u64, Arc<Vec<u8>>>>,
+    pub(crate) write_version: AtomicU64,
+}
+
+enum WriteJob {
+    Write { hash: u64, data: Arc<Vec<u8>> },
+    Flush(mpsc::SyncSender<()>),
+}
+
 /// V8 code cache backed by the filesystem.
 ///
 /// Cache key = `hash(source_bytes, v8_version)`.
-/// File layout:
-/// ```text
-/// <cache_dir>/
-///   v8_version.txt     # V8 version marker for bulk invalidation
-///   <hex_hash>.bin     # compiled bytecode
-/// ```
+/// Filesystem publication happens on one bounded worker: the caller only
+/// publishes an owned hot entry and admits a bounded write job. A cache miss
+/// remains correct when admission or disk publication fails.
 pub(crate) struct DiskCodeCache {
-    cache_dir: PathBuf,
-    v8_version: &'static str,
-    /// The directory's lock, holding the total size of its `.bin` files.
-    ///
-    /// Two things at once, deliberately. The bytes are the budget's numerator, and
-    /// they are tracked incrementally because a scan per write is O(N) in a directory
-    /// a game start walks tens of times. The lock is what orders a Session reading an
-    /// entry against a Session replacing it -- `get` needs only that, so it takes the
-    /// guard shared and concurrent module loads do not queue behind each other.
-    directory: RwLock<u64>,
+    state: Arc<CacheState>,
+    write_tx: Option<SyncSender<WriteJob>>,
+    writer: Option<thread::JoinHandle<()>>,
 }
 
 impl DiskCodeCache {
-    /// Private, because a cache the registry does not know about is a second budget
-    /// over the same directory, which is the defect this module exists to prevent.
+    /// Build the cache and complete its opening scan before registry insertion.
     fn new(cache_dir: PathBuf) -> Self {
         let v8_version = deno_core::v8::V8::get_version();
-
-        let cache = Self {
+        let state = Arc::new(CacheState {
             cache_dir,
             v8_version,
             directory: RwLock::new(0),
-        };
-        cache.ensure_dir_and_check_version();
-        // Opening scan: what is already on disk counts against the ceiling.
-        let measured = cache.scan_total_size();
-        *cache.directory.write() = measured;
-        cache
+            hot: Mutex::new(HashMap::new()),
+            write_version: AtomicU64::new(0),
+        });
+        // Directory setup, version validation, and cold-cache scan run on the
+        // bounded worker below, never on the isolate-facing constructor.
+
+        let (write_tx, write_rx) = mpsc::sync_channel(WRITE_QUEUE_CAPACITY);
+        let worker_state = Arc::clone(&state);
+        let writer = thread::Builder::new()
+            .name("migo-code-cache".to_string())
+            .spawn(move || {
+                worker_state.ensure_dir_and_check_version();
+                *worker_state.directory.write() = scan_total_size(&worker_state.cache_dir);
+                // Cold cache reads are prefetched here, never from the
+                // isolate-facing `get` method.
+                prefetch_cache(&worker_state);
+                while let Ok(job) = write_rx.recv() {
+                    match job {
+                        WriteJob::Write { hash, data } => publish_job(&worker_state, hash, data),
+                        WriteJob::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            })
+            .expect("code-cache worker thread must start");
+        Self {
+            state,
+            write_tx: Some(write_tx),
+            writer: Some(writer),
+        }
     }
 
-    /// Ensure cache dir exists and invalidate if V8 version changed.
+    pub fn compute_hash(&self, source: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        source.hash(&mut hasher);
+        self.state.v8_version.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Return an owned cache entry without filesystem work on the isolate.
+    pub fn get(&self, hash: u64) -> Option<Vec<u8>> {
+        self.state
+            .hot
+            .lock()
+            .get(&hash)
+            .map(|data| (**data).clone())
+    }
+
+    /// Admit a cache write without performing filesystem work on the caller.
+    pub fn set(&self, hash: u64, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let data = Arc::new(data.to_vec());
+        self.state.hot.lock().insert(hash, Arc::clone(&data));
+        let Some(tx) = self.write_tx.as_ref() else {
+            self.state.hot.lock().remove(&hash);
+            return;
+        };
+        match tx.try_send(WriteJob::Write { hash, data }) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                // A full or closed queue is an intentional cache miss, not
+                // an isolate stall; the next compilation can retry.
+                self.state.hot.lock().remove(&hash);
+            }
+        }
+    }
+
+    fn clear_all(&self) {
+        let _ = fs::remove_dir_all(&self.state.cache_dir);
+        *self.state.directory.write() = 0;
+        self.state.hot.lock().clear();
+    }
+
+    fn scan_total_size(&self) -> u64 {
+        scan_total_size(&self.state.cache_dir)
+    }
+
+    #[cfg(test)]
+    fn flush_writes(&self) {
+        let Some(tx) = self.write_tx.as_ref() else {
+            return;
+        };
+        let (done_tx, done_rx) = mpsc::sync_channel(0);
+        tx.send(WriteJob::Flush(done_tx))
+            .expect("cache worker available");
+        done_rx.recv().expect("cache worker must acknowledge flush");
+    }
+}
+
+impl Drop for DiskCodeCache {
+    fn drop(&mut self) {
+        drop(self.write_tx.take());
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
+}
+
+impl CacheState {
     fn ensure_dir_and_check_version(&self) {
         let _ = fs::create_dir_all(&self.cache_dir);
-
         let version_file = self.cache_dir.join("v8_version.txt");
         let stored_version = fs::read_to_string(&version_file).unwrap_or_default();
-
         if stored_version.trim() != self.v8_version {
             tracing::info!(
                 "V8 version changed ({} -> {}), clearing code cache",
                 stored_version.trim(),
                 self.v8_version
             );
-            self.clear_all();
+            let _ = fs::remove_dir_all(&self.cache_dir);
             let _ = fs::create_dir_all(&self.cache_dir);
             let _ = fs::write(&version_file, self.v8_version);
         }
     }
+}
 
-    /// Compute a u64 hash from source bytes, incorporating V8 version.
-    pub fn compute_hash(&self, source: &[u8]) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        source.hash(&mut hasher);
-        self.v8_version.hash(&mut hasher);
-        hasher.finish()
-    }
+fn hash_path(cache_dir: &Path, hash: u64) -> PathBuf {
+    cache_dir.join(format!("{hash:016x}.bin"))
+}
 
-    /// Get cached bytecode for the given source hash.
-    pub fn get(&self, hash: u64) -> Option<Vec<u8>> {
-        let path = self.hash_path(hash);
-        // Shared, so two Sessions starting at once read their modules concurrently.
-        // A Session replacing this entry holds the guard exclusively, so what is read
-        // here is never half of a write.
-        let _directory = self.directory.read();
-        match fs::read(&path) {
-            Ok(data) if !data.is_empty() => Some(data),
-            _ => None,
-        }
-    }
+fn scan_total_size(cache_dir: &Path) -> u64 {
+    fs::read_dir(cache_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("bin"))
+        .map(|entry| entry.metadata().map(|m| m.len()).unwrap_or(0))
+        .sum()
+}
 
-    /// Save compiled bytecode for the given source hash.
-    pub fn set(&self, hash: u64, data: &[u8]) {
-        if data.is_empty() {
-            return;
-        }
-        let path = self.hash_path(hash);
-        let mut tracked = self.directory.write();
-        // Account for replacing an existing file.
-        let old_size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        if fs::write(&path, data).is_ok() {
-            let new_size = data.len() as u64;
-            *tracked = tracked.saturating_sub(old_size) + new_size;
-            self.evict_if_needed(&mut tracked);
-        }
-    }
-
-    /// Clear the entire cache directory.
-    fn clear_all(&self) {
-        let mut tracked = self.directory.write();
-        let _ = fs::remove_dir_all(&self.cache_dir);
-        *tracked = 0;
-    }
-
-    fn hash_path(&self, hash: u64) -> PathBuf {
-        self.cache_dir.join(format!("{:016x}.bin", hash))
-    }
-
-    /// Scan the cache directory and return the total size of .bin files.
-    fn scan_total_size(&self) -> u64 {
-        let entries = match fs::read_dir(&self.cache_dir) {
-            Ok(e) => e,
-            Err(_) => return 0,
-        };
-        let mut total: u64 = 0;
-        for entry in entries.flatten() {
+fn prefetch_cache(state: &CacheState) {
+    let entries = fs::read_dir(&state.cache_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("bin") {
-                continue;
-            }
-            total += entry.metadata().map(|m| m.len()).unwrap_or(0);
-        }
-        total
-    }
-
-    /// Evict oldest cache files if total size exceeds MAX_CACHE_SIZE.
-    ///
-    /// O(1) check in the common case (under limit). Only does a full
-    /// directory scan + sort when eviction is actually needed.
-    fn evict_if_needed(&self, tracked: &mut u64) {
-        if *tracked <= MAX_CACHE_SIZE {
-            return;
-        }
-
-        // Over limit — do a full scan to get accurate sizes + mtimes for LRU eviction.
-        let entries = match fs::read_dir(&self.cache_dir) {
-            Ok(e) => e,
-            Err(_) => return,
+            (path.extension().and_then(|ext| ext.to_str()) == Some("bin")).then_some(path)
+        })
+        .collect::<Vec<_>>();
+    for path in entries {
+        let Some(hash) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| u64::from_str_radix(stem, 16).ok())
+        else {
+            continue;
         };
-
-        let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
-        let mut total_size: u64 = 0;
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("bin") {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata() {
-                let size = meta.len();
-                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-                total_size += size;
-                files.push((path, size, mtime));
-            }
+        if let Ok(data) = fs::read(path) {
+            state.hot.lock().insert(hash, Arc::new(data));
         }
-
-        if total_size <= MAX_CACHE_SIZE {
-            // The tracked figure drifted above the measured one, which in one process
-            // means only that another process shares this directory. Measured wins.
-            *tracked = total_size;
-            return;
-        }
-
-        // Sort by mtime ascending (oldest first)
-        files.sort_by_key(|(_, _, mtime)| *mtime);
-
-        for (path, size, _) in &files {
-            if total_size <= MAX_CACHE_SIZE {
-                break;
-            }
-            if fs::remove_file(path).is_ok() {
-                total_size = total_size.saturating_sub(*size);
-            }
-        }
-
-        // Update tracker to post-eviction total.
-        *tracked = total_size;
     }
+}
+
+fn publish_job(state: &CacheState, hash: u64, data: Arc<Vec<u8>>) {
+    let path = hash_path(&state.cache_dir, hash);
+    let version = state.write_version.load(Ordering::Relaxed) + 1;
+    let tmp = state.cache_dir.join(format!("{hash:016x}.v{version}.tmp"));
+    let old_size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let result = fs::write(&tmp, data.as_slice()).and_then(|()| fs::rename(&tmp, &path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+        tracing::debug!(hash, "code-cache publication failed");
+        return;
+    }
+
+    let tracked_before = *state.directory.read();
+    let mut tracked = tracked_before.saturating_sub(old_size) + data.len() as u64;
+    // Eviction scans and removes files. Keep that disk work outside the
+    // accounting lock; the worker is serialized, so the local total remains
+    // ordered while the lock stays memory-only.
+    evict_if_needed(&state.cache_dir, &mut tracked);
+    *state.directory.write() = tracked;
+    state.write_version.fetch_add(1, Ordering::Release);
+}
+
+fn evict_if_needed(cache_dir: &Path, tracked: &mut u64) {
+    if *tracked <= MAX_CACHE_SIZE {
+        return;
+    }
+    let mut files = fs::read_dir(cache_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|e| e.to_str()) == Some("bin"))
+                .then(|| {
+                    entry.metadata().ok().map(|meta| {
+                        (
+                            path,
+                            meta.len(),
+                            meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+                        )
+                    })
+                })
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    let mut total = files.iter().map(|(_, size, _)| *size).sum::<u64>();
+    if total <= MAX_CACHE_SIZE {
+        *tracked = total;
+        return;
+    }
+    files.sort_by_key(|(_, _, mtime)| *mtime);
+    for (path, size, _) in files {
+        if total <= MAX_CACHE_SIZE {
+            break;
+        }
+        if fs::remove_file(path).is_ok() {
+            total = total.saturating_sub(size);
+        }
+    }
+    *tracked = total;
 }
 
 /// Shared handle to the directory's `DiskCodeCache`, usable from every Session's
@@ -245,18 +328,23 @@ pub(crate) type SharedCodeCache = Arc<DiskCodeCache>;
 /// The cache for `app_cache_dir`, built if this is the first Session to ask.
 pub(crate) fn create_code_cache(app_cache_dir: &Path) -> SharedCodeCache {
     let cache_dir = code_cache_dir(app_cache_dir);
+    {
+        let caches = CACHES.lock();
+        if let Some(live) = caches.get(&cache_dir).and_then(Weak::upgrade) {
+            return live;
+        }
+    }
 
+    // Disk setup and the opening scan stay outside the registry lock. The
+    // lock only publishes or acquires the in-memory shared instance.
+    let candidate = Arc::new(DiskCodeCache::new(cache_dir.clone()));
     let mut caches = CACHES.lock();
     if let Some(live) = caches.get(&cache_dir).and_then(Weak::upgrade) {
         return live;
     }
-
-    let cache = Arc::new(DiskCodeCache::new(cache_dir.clone()));
-    // A host that gives every Engine its own directory would otherwise leave one dead
-    // entry behind per Engine it destroys.
     caches.retain(|_, cache| cache.strong_count() > 0);
-    caches.insert(cache_dir, Arc::downgrade(&cache));
-    cache
+    caches.insert(cache_dir, Arc::downgrade(&candidate));
+    candidate
 }
 
 /// The directory a cache lives in, resolved to one name.
@@ -307,7 +395,6 @@ impl deno_core::ExtCodeCache for ExtCodeCacheAdapter {
         self.inner.set(hash, code_cache);
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::{CACHES, MAX_CACHE_SIZE, create_code_cache};
@@ -340,6 +427,7 @@ mod tests {
             let asking = if index % 2 == 0 { &first } else { &second };
             asking.set(index as u64, &payload);
         }
+        first.flush_writes();
 
         // Measured on disk rather than read from the counter: a counter that lied
         // would otherwise satisfy the assertion it is the subject of.
@@ -369,7 +457,7 @@ mod tests {
         let root = temp_root("shared_entries");
         let first = create_code_cache(&root);
         first.set(0xC0DE, b"bytecode compiled once");
-
+        first.flush_writes();
         let second = create_code_cache(&root);
         assert_eq!(
             second.get(0xC0DE).as_deref(),
@@ -421,11 +509,87 @@ mod tests {
         );
 
         let reopened = create_code_cache(&root);
+        reopened.flush_writes();
         assert_eq!(
-            *reopened.directory.read(),
+            *reopened.state.directory.read(),
             ENTRY,
             "a reopened cache must count the entries already on disk"
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// V01 regression: code-cache writes must not block the isolate thread.
+    ///
+    /// `set()` must enqueue and return immediately (no disk IO on caller).
+    /// The background writer commits atomically (temp → rename) and advances
+    /// `write_version` so callers can detect a fresh write.  A failed write
+    /// (queue full, disk error) must leave the cache in a recoverable state —
+    /// `get()` still returns the hot-map entry, and the next `set()` retries.
+    #[test]
+    fn code_cache_writes_are_non_blocking_and_publication_is_atomic() {
+        use std::sync::atomic::Ordering;
+        let root = temp_root("non_blocking");
+        let cache = create_code_cache(&root);
+
+        let v0 = cache.state.write_version.load(Ordering::Acquire);
+
+        // ── 2. set() enqueues without disk IO: no .bin file appears yet ──
+        cache.set(0xBEEF, b"compiled bytecode for module");
+        let bin = cache
+            .state
+            .cache_dir
+            .join(format!("{:016x}.bin", 0xBEEFu64));
+        // File may or may not exist yet — the point is `set()` returned.
+        // Hot-map read works immediately, before the background thread lands.
+        assert_eq!(
+            cache.get(0xBEEF).as_deref(),
+            Some(&b"compiled bytecode for module"[..]),
+            "get() must return the hot-map entry before the disk write completes"
+        );
+
+        // ── 3. After flush, publication is atomic (no .tmp left) and versioned ──
+        cache.flush_writes();
+        assert!(bin.exists(), "background writer must persist the entry");
+        let tmp = bin.with_extension("tmp");
+        assert!(
+            !tmp.exists(),
+            "atomic write must rename .tmp away before flush returns"
+        );
+        let v1 = cache.state.write_version.load(Ordering::Acquire);
+        assert!(
+            v1 > v0,
+            "write_version must advance on each committed write"
+        );
+
+        // ── 4. A failed publication is recoverable, not an isolate error ──
+        std::fs::remove_dir_all(&cache.state.cache_dir).unwrap();
+        cache.set(0xCAFE, b"retry after failed publication");
+        cache.flush_writes();
+        assert_eq!(
+            cache.get(0xCAFE).as_deref(),
+            Some(&b"retry after failed publication"[..]),
+            "a failed disk publication must remain a recoverable cache miss"
+        );
+        std::fs::create_dir_all(&cache.state.cache_dir).unwrap();
+        cache.set(0xCAFE, b"published on retry");
+        cache.flush_writes();
+        assert_eq!(
+            cache.get(0xCAFE).as_deref(),
+            Some(&b"published on retry"[..])
+        );
+        let v2 = cache.state.write_version.load(Ordering::Acquire);
+        assert!(v2 > v1, "a successful retry must advance write_version");
+
+        // ── 5. Overwrites publish a newer version ──
+        cache.set(0xBEEF, b"recompiled bytecode");
+        cache.flush_writes();
+        assert_eq!(
+            cache.get(0xBEEF).as_deref(),
+            Some(&b"recompiled bytecode"[..])
+        );
+        let v3 = cache.state.write_version.load(Ordering::Acquire);
+        assert!(v3 > v2, "each committed write must advance write_version");
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -3,10 +3,8 @@
 use super::*;
 use khronos_egl as egl;
 
-// Mesa returns the same surfaceless EGLDisplay to both fixtures. Its lifetime
-// must span one complete test; one test's eglTerminate cannot end the other's
-// display while that test is still creating a context or surface.
-static EGL_TEST_DISPLAY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// One shared lock for the one Mesa surfaceless display; see
+// `readback_test_gl::lock_egl_display` for what a second private mutex cost.
 
 struct EglScope {
     api: egl::DynamicInstance<egl::EGL1_5>,
@@ -30,9 +28,7 @@ impl Drop for EglScope {
 }
 
 fn gles3_context() -> (EglScope, glow::Context) {
-    let display_lifetime = EGL_TEST_DISPLAY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let display_lifetime = crate::backend::gl::readback_test_gl::lock_egl_display();
     let api =
         unsafe { egl::DynamicInstance::<egl::EGL1_5>::load_required_from_filename("libEGL.so.1") }
             .expect("load EGL 1.5");
@@ -105,6 +101,136 @@ fn gles3_context() -> (EglScope, glow::Context) {
 
 #[test]
 #[ignore = "requires Mesa surfaceless EGL and GLES3"]
+fn drawing_buffer_resize_native_preserves_bindings_and_ignores_unpack_pbo() {
+    use crate::canvas::drawing_buffer;
+    let (_scope, gl) = gles3_context();
+    let mut db = drawing_buffer::create(&gl, 3, 2).unwrap();
+    unsafe {
+        let custom_read = gl.create_framebuffer().unwrap();
+        let custom_draw = gl.create_framebuffer().unwrap();
+        let texture = gl.create_texture().unwrap();
+        let renderbuffer = gl.create_renderbuffer().unwrap();
+        let pbo = gl.create_buffer().unwrap();
+        gl.active_texture(glow::TEXTURE3);
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        gl.bind_renderbuffer(glow::RENDERBUFFER, Some(renderbuffer));
+        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(custom_read));
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(custom_draw));
+        gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo));
+        gl.buffer_data_u8_slice(glow::PIXEL_UNPACK_BUFFER, &[0xA5; 4], glow::STREAM_DRAW);
+        gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 11);
+        gl.pixel_store_i32(glow::UNPACK_SKIP_ROWS, 2);
+        gl.pixel_store_i32(glow::UNPACK_SKIP_PIXELS, 3);
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+        let names = (db.fbo, db.color_tex, db.depth_stencil_rb);
+        drawing_buffer::resize(&gl, &mut db, 5, 4).unwrap();
+        assert_eq!(
+            gl.get_error(),
+            glow::NO_ERROR,
+            "allocation must not read the user's short PBO"
+        );
+        assert_eq!((db.fbo, db.color_tex, db.depth_stencil_rb), names);
+        assert_eq!((db.width, db.height), (5, 4));
+        assert_eq!(
+            gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING),
+            Some(custom_read)
+        );
+        assert_eq!(
+            gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING),
+            Some(custom_draw)
+        );
+        assert_eq!(
+            gl.get_parameter_i32(glow::ACTIVE_TEXTURE),
+            glow::TEXTURE3 as i32
+        );
+        assert_eq!(
+            gl.get_parameter_texture(glow::TEXTURE_BINDING_2D),
+            Some(texture)
+        );
+        assert_eq!(
+            gl.get_parameter_renderbuffer(glow::RENDERBUFFER_BINDING),
+            Some(renderbuffer)
+        );
+        assert_eq!(
+            gl.get_parameter_buffer(glow::PIXEL_UNPACK_BUFFER_BINDING),
+            Some(pbo)
+        );
+        assert_eq!(gl.get_parameter_i32(glow::UNPACK_ROW_LENGTH), 11);
+        assert_eq!(gl.get_parameter_i32(glow::UNPACK_SKIP_ROWS), 2);
+        assert_eq!(gl.get_parameter_i32(glow::UNPACK_SKIP_PIXELS), 3);
+        let data = gl.map_buffer_range(glow::PIXEL_UNPACK_BUFFER, 0, 4, glow::MAP_READ_BIT);
+        assert!(!data.is_null());
+        assert_eq!(std::slice::from_raw_parts(data, 4), [0xA5; 4]);
+        gl.unmap_buffer(glow::PIXEL_UNPACK_BUFFER);
+
+        // Full new extent must be renderable without reattaching the objects.
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(db.fbo));
+        gl.clear_color(0.0, 1.0, 0.0, 1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT);
+        let pixels = Rgba8Readback::new(5, 4).unwrap().read(&gl);
+        assert!(pixels.chunks_exact(4).all(|p| p == [0, 255, 0, 255]));
+        gl.bind_renderbuffer(glow::RENDERBUFFER, Some(db.depth_stencil_rb));
+        assert_eq!(
+            gl.get_renderbuffer_parameter_i32(glow::RENDERBUFFER, glow::RENDERBUFFER_WIDTH),
+            5
+        );
+        assert_eq!(
+            gl.get_renderbuffer_parameter_i32(glow::RENDERBUFFER, glow::RENDERBUFFER_HEIGHT),
+            4
+        );
+        gl.delete_buffer(pbo);
+        gl.delete_texture(texture);
+        gl.delete_renderbuffer(renderbuffer);
+        gl.delete_framebuffer(custom_read);
+        gl.delete_framebuffer(custom_draw);
+        drawing_buffer::destroy(&gl, db);
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+    }
+}
+
+#[test]
+#[ignore = "requires Mesa surfaceless EGL and GLES3"]
+fn drawing_buffer_resize_native_failure_restores_bindings() {
+    use crate::canvas::drawing_buffer;
+    let (_scope, gl) = gles3_context();
+    let mut db = drawing_buffer::create(&gl, 3, 2).unwrap();
+    unsafe {
+        let custom = gl.create_framebuffer().unwrap();
+        let texture = gl.create_texture().unwrap();
+        let renderbuffer = gl.create_renderbuffer().unwrap();
+        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(custom));
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        gl.bind_renderbuffer(glow::RENDERBUFFER, Some(renderbuffer));
+        // Zero-width storage makes the destination incomplete without unsafe
+        // host writes or inducing a real driver OOM.
+        assert!(drawing_buffer::resize(&gl, &mut db, 0, 2).is_err());
+        assert_eq!(
+            gl.get_parameter_texture(glow::TEXTURE_BINDING_2D),
+            Some(texture)
+        );
+        assert_eq!(
+            gl.get_parameter_renderbuffer(glow::RENDERBUFFER_BINDING),
+            Some(renderbuffer)
+        );
+        assert_eq!(
+            gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING),
+            Some(custom)
+        );
+        assert_eq!(
+            gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING),
+            None
+        );
+        gl.delete_framebuffer(custom);
+        gl.delete_texture(texture);
+        gl.delete_renderbuffer(renderbuffer);
+        drawing_buffer::destroy(&gl, db);
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+    }
+}
+
+#[test]
+#[ignore = "requires Mesa surfaceless EGL and GLES3"]
 fn default_snapshot_native_preserves_split_bindings_and_scissor() {
     use crate::canvas::drawing_buffer;
     let (_scope, gl) = gles3_context();
@@ -170,7 +296,7 @@ fn default_snapshot_native_preserves_split_bindings_and_scissor() {
 #[test]
 #[ignore = "requires Mesa surfaceless EGL and GLES3"]
 fn default_framebuffer_native_remaps_after_context_return() {
-    use crate::canvas::{apply_bypass_rebind, drawing_buffer};
+    use crate::canvas::{apply_default_framebuffer, drawing_buffer};
     let (scope, gl) = gles3_context();
     let db = drawing_buffer::create(&gl, 3, 2).unwrap();
     unsafe {
@@ -185,18 +311,18 @@ fn default_framebuffer_native_remaps_after_context_return() {
             .api
             .make_current(scope.display, None, None, None)
             .unwrap();
-        let mut applied = true;
-        apply_bypass_rebind(&gl, false, &mut applied, false, Some(db.fbo));
-        assert!(
-            applied,
-            "a mode change cannot be applied to a noncurrent context"
+        let mut applied = None;
+        apply_default_framebuffer(&gl, false, &mut applied, Some(db.fbo));
+        assert_eq!(
+            applied, None,
+            "a pending mapping cannot be applied to a noncurrent context"
         );
         scope
             .api
             .make_current(scope.display, scope.surface, scope.surface, scope.context)
             .unwrap();
-        apply_bypass_rebind(&gl, true, &mut applied, false, Some(db.fbo));
-        assert!(!applied);
+        apply_default_framebuffer(&gl, true, &mut applied, Some(db.fbo));
+        assert_eq!(applied, Some(db.fbo));
         assert_eq!(
             gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING),
             Some(db.fbo)
@@ -211,8 +337,8 @@ fn default_framebuffer_native_remaps_after_context_return() {
         // Inverse split: READ custom must survive when DRAW moves to FBO 0.
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(custom));
         gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(db.fbo));
-        apply_bypass_rebind(&gl, true, &mut applied, true, Some(db.fbo));
-        assert!(applied);
+        apply_default_framebuffer(&gl, true, &mut applied, None);
+        assert_eq!(applied, None);
         assert_eq!(
             gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING),
             Some(custom)
@@ -242,7 +368,7 @@ fn internal_readback_native_pixels_and_pack_buffer_are_preserved() {
         gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
         gl.buffer_data_u8_slice(glow::PIXEL_PACK_BUFFER, &[0xA5; 64], glow::STREAM_READ);
         assert_eq!(read_bound_pbo(&gl), [0xA5; 64], "initialized PBO control");
-        for (name, value) in PACK_NAMES.into_iter().zip([8, 9, 2, 3]) {
+        for (name, value) in Pack::NAMES.into_iter().zip([8, 9, 2, 3]) {
             gl.pixel_store_i32(name, value);
         }
         assert_eq!(gl.get_error(), glow::NO_ERROR);
@@ -350,6 +476,129 @@ fn internal_readback_native_pixels_and_pack_buffer_are_preserved() {
         gl.delete_texture(texture);
         eprintln!("renderer: {}", gl.get_parameter_string(glow::RENDERER));
         gl.delete_buffer(pbo);
+    }
+}
+
+#[test]
+#[ignore = "requires Mesa surfaceless EGL and GLES3"]
+fn buffer_readback_native_packs_into_the_bound_buffer_at_its_offset() {
+    let (_scope, gl) = gles3_context();
+    unsafe {
+        gl.clear_color(1.0, 0.0, 0.0, 1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT);
+        let pbo = gl.create_buffer().unwrap();
+        gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
+        gl.buffer_data_u8_slice(glow::PIXEL_PACK_BUFFER, &[0xA5; 64], glow::STREAM_READ);
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+
+        // Tight rows, so the destination footprint is 24 bytes from the offset.
+        for (name, value) in Pack::NAMES.into_iter().zip([1, 0, 0, 0]) {
+            gl.pixel_store_i32(name, value);
+        }
+        // 64 - 24 = 40 is the last offset that fits; 44 is one pixel too far.
+        assert!(
+            read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 44)
+                .is_err()
+        );
+        assert_eq!(read_bound_pbo(&gl), [0xA5; 64], "a rejected read wrote");
+        read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 40).unwrap();
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+
+        let bytes = read_bound_pbo(&gl);
+        assert_eq!(bytes[..40], [0xA5; 40], "wrote outside the offset");
+        for pixel in bytes[40..].chunks_exact(4) {
+            assert_eq!(pixel, [255, 0, 0, 255]);
+        }
+        // The content's PACK state is the driver's to use here, not ours to
+        // replace: an alignment of 8 pads each row to 16 bytes, so the same
+        // three-pixel rows now need 16 + 12 bytes and no longer fit at 40.
+        // Refill first -- the read above owns 40..64 and its pixels would
+        // otherwise be mistaken for this one writing into the row padding.
+        gl.buffer_data_u8_slice(glow::PIXEL_PACK_BUFFER, &[0xA5; 64], glow::STREAM_READ);
+        gl.pixel_store_i32(glow::PACK_ALIGNMENT, 8);
+        assert!(
+            read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 40)
+                .is_err()
+        );
+        read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 32).unwrap();
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+        let padded = read_bound_pbo(&gl);
+        let red: [u8; 12] = [255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255];
+        assert_eq!(padded[..32], [0xA5; 32], "wrote before the offset");
+        assert_eq!(padded[32..44], red, "first row");
+        // The 8-aligned stride leaves the four bytes after the first row alone.
+        assert_eq!(padded[44..48], [0xA5; 4], "row padding was written");
+        assert_eq!(padded[48..60], red, "second row");
+        assert_eq!(padded[60..], [0xA5; 4], "wrote past the footprint");
+        assert_eq!(PixelPackState::capture(&gl).values, [8, 0, 0, 0]);
+
+        gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+        assert!(
+            read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 0)
+                .is_err(),
+            "a GPU destination requires a bound buffer"
+        );
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+        gl.delete_buffer(pbo);
+        eprintln!("renderer: {}", gl.get_parameter_string(glow::RENDERER));
+    }
+}
+
+/// A rect that hangs off the framebuffer must leave the outside bytes at zero.
+///
+/// WebGL requires the values outside the framebuffer to be defined rather than
+/// whatever the staging allocation happened to contain, and the compact staging
+/// buffer is zero-filled precisely so a driver that skips those pixels cannot
+/// publish uninitialized memory. This pins that against a real driver: the
+/// in-range window has to land at its own offsets inside the destination, not
+/// packed to the front.
+#[test]
+#[ignore = "requires Mesa surfaceless EGL and GLES3"]
+fn webgl_readback_native_clips_to_the_framebuffer_and_zeroes_the_rest() {
+    let (_scope, gl) = gles3_context();
+    unsafe {
+        // The fixture surface is 3x2.
+        gl.clear_color(1.0, 0.0, 0.0, 1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT);
+        for (name, value) in Pack::NAMES.into_iter().zip([1, 0, 0, 0]) {
+            gl.pixel_store_i32(name, value);
+        }
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+
+        // 5x4 starting one pixel outside the origin: rows 1..3 and columns 1..4
+        // of the destination are the framebuffer, everything else is outside.
+        let read = read_webgl_pixels(
+            &gl,
+            -1,
+            -1,
+            5,
+            4,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            5 * 4 * 4,
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(
+            gl.get_error(),
+            glow::NO_ERROR,
+            "a clipped read is not an error"
+        );
+        assert_eq!(read.pixels.len(), 80);
+        for row in 0..4 {
+            for column in 0..5 {
+                let inside = (1..3).contains(&row) && (1..4).contains(&column);
+                let at = (row * 5 + column) * 4;
+                let pixel = &read.pixels[at..at + 4];
+                let expected: [u8; 4] = if inside {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 0, 0]
+                };
+                assert_eq!(pixel, expected, "row {row} column {column}");
+            }
+        }
+        eprintln!("renderer: {}", gl.get_parameter_string(glow::RENDERER));
     }
 }
 

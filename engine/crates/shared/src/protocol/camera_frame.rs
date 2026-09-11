@@ -14,10 +14,79 @@
 //! padding / pixel-stride bytes inside a window are copied verbatim — this does
 //! not repack, convert, or reinterpret the layout.
 
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+};
+
 /// Largest width or height accepted from a camera callback. This matches the
 /// largest Canvas surface dimension and bounds every subsequent pixel-count
 /// calculation before host-side copies occur.
 pub const MAX_CAMERA_FRAME_DIMENSION: u32 = 8192;
+
+#[derive(Debug)]
+struct CameraFrameCreditState {
+    in_flight: AtomicBool,
+    dropped: AtomicU64,
+}
+
+/// RAII admission credit for one camera frame.
+///
+/// The credit is carried by the admitted host command. If the command is
+/// rejected, canceled, or dropped during shutdown, this guard releases the
+/// slot exactly once without relying on a host-side success path.
+#[derive(Debug)]
+pub struct CameraFrameCredit {
+    state: Arc<CameraFrameCreditState>,
+}
+
+impl Drop for CameraFrameCredit {
+    fn drop(&mut self) {
+        self.state.in_flight.store(false, Ordering::Release);
+    }
+}
+
+static CAMERA_FRAME_CREDITS: LazyLock<Mutex<HashMap<(i32, u32), Arc<CameraFrameCreditState>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn camera_frame_credit_state(host_id: i32, camera_id: u32) -> Arc<CameraFrameCreditState> {
+    CAMERA_FRAME_CREDITS
+        .lock()
+        .expect("camera frame credit registry poisoned")
+        .entry((host_id, camera_id))
+        .or_insert_with(|| {
+            Arc::new(CameraFrameCreditState {
+                in_flight: AtomicBool::new(false),
+                dropped: AtomicU64::new(0),
+            })
+        })
+        .clone()
+}
+
+/// Acquire the one-frame slot before copying any camera plane bytes.
+pub fn try_acquire_camera_frame_credit(host_id: i32, camera_id: u32) -> Option<CameraFrameCredit> {
+    let state = camera_frame_credit_state(host_id, camera_id);
+    if state
+        .in_flight
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+    {
+        Some(CameraFrameCredit { state })
+    } else {
+        state.dropped.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+}
+
+/// Number of frames dropped because this camera's one-frame slot was full.
+pub fn camera_frame_dropped_count(host_id: i32, camera_id: u32) -> u64 {
+    camera_frame_credit_state(host_id, camera_id)
+        .dropped
+        .load(Ordering::Relaxed)
+}
 
 /// Largest number of pixels accepted from a camera callback.
 pub const MAX_CAMERA_FRAME_PIXELS: u64 =
@@ -336,5 +405,16 @@ mod tests {
         assert_eq!(y, [1, 2, 3]);
         assert_eq!(u, [4, 5]);
         assert_eq!(v, [6]);
+    }
+    #[test]
+    fn camera_credit_admits_one_frame_and_counts_drops() {
+        let host_id = 701;
+        let camera_id = 13;
+        let credit = super::try_acquire_camera_frame_credit(host_id, camera_id)
+            .expect("first frame admitted before its copy");
+        assert!(super::try_acquire_camera_frame_credit(host_id, camera_id).is_none());
+        assert_eq!(super::camera_frame_dropped_count(host_id, camera_id), 1);
+        drop(credit);
+        assert!(super::try_acquire_camera_frame_credit(host_id, camera_id).is_some());
     }
 }

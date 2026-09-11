@@ -6,6 +6,7 @@ import { AudioParam } from "ext:host_v8_audio/00_audio_param.js";
 import {
   AudioNode,
   validateScheduledTime,
+  warnUnsupportedCapability,
 } from "ext:host_v8_audio/00_audio_node.js";
 
 class ConstantSourceNode extends AudioNode {
@@ -33,6 +34,12 @@ class ConstantSourceNode extends AudioNode {
 
   set onended(value) {
     this.#onended = typeof value === "function" ? value : null;
+    if (typeof value === "function") {
+      warnUnsupportedCapability(
+        "onended",
+        "ConstantSourceNode onended callbacks are not dispatched by the native graph",
+      );
+    }
   }
 
   start(when = 0) {

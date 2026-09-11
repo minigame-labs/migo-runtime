@@ -64,6 +64,40 @@ use shared::raf_signal::RafSender;
 /// 50 ms window at 60 Hz.
 const RAF_BACKPRESSURE_STREAK_THRESHOLD: u32 = 3;
 
+#[inline]
+fn should_yield_after_heavy_work(elapsed_us: u128, budget_us: u128) -> bool {
+    elapsed_us > budget_us
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DrainWorkCounters {
+    messages: u32,
+    subcommands: u64,
+    packet_cpu_us: u128,
+    budget_overshoot_us: u128,
+}
+
+#[inline]
+fn packet_subcommand_count(packet: &FramePacket) -> u64 {
+    packet
+        .ops()
+        .iter()
+        .map(|op| match op {
+            FrameOp::CanvasBatch(payload) => payload.commands.len() as u64,
+            FrameOp::GlBatch(payload) => payload.commands.len() as u64,
+            FrameOp::Materialize { .. } => 1,
+            FrameOp::BeginFrame | FrameOp::Present => 0,
+        })
+        .sum()
+}
+
+#[inline]
+fn record_drain_work(counters: &mut DrainWorkCounters, subcommands: u64, packet_cpu_us: u128) {
+    counters.messages = counters.messages.saturating_add(1);
+    counters.subcommands = counters.subcommands.saturating_add(subcommands);
+    counters.packet_cpu_us = counters.packet_cpu_us.saturating_add(packet_cpu_us);
+}
+
 /// Report a context-recovery failure at most once per loss episode.
 ///
 /// Recovery is retried every frame while the context is lost; emitting a
@@ -161,6 +195,134 @@ fn prepare_batch_scissor(
     })
 }
 
+/// Why the present path repaired a partial or full surface.
+///
+/// A partial rectangle is only useful when the compositor can trust the
+/// preserved attachment.  The latch reason is kept separate from geometry so
+/// a host can distinguish "the scene was small" from "a readback requirement
+/// forced the expensive full path".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PresentRepairReason {
+    PartialDamage,
+    FullSurface,
+    ReadbackLatch,
+}
+
+/// Host-side attribution for one render-thread present pass.
+///
+/// These are counts and byte/pixel work units, not timings or bandwidth
+/// claims.  The device half of P-P1 must measure driver residency, tile
+/// traffic and synchronization latency separately.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PresentPassCounters {
+    skia_record_passes: u32,
+    flush_submit_passes: u32,
+    snapshot_wait_passes: u32,
+    pbo_fence_passes: u32,
+    resolve_blit_passes: u32,
+    swap_wait_passes: u32,
+    gpu_execution_passes: u32,
+    copy_pixels: u64,
+    attachment_bytes: u64,
+    partial_repairs: u32,
+    full_repairs: u32,
+    partial_repair_reason: Option<PresentRepairReason>,
+    readback_latch: bool,
+}
+
+impl PresentPassCounters {
+    #[inline]
+    fn note_skia_record(&mut self) {
+        self.skia_record_passes = self.skia_record_passes.saturating_add(1);
+    }
+
+    #[inline]
+    fn note_flush_submit(&mut self) {
+        self.flush_submit_passes = self.flush_submit_passes.saturating_add(1);
+    }
+
+    #[inline]
+    fn note_snapshot_wait(&mut self) {
+        self.snapshot_wait_passes = self.snapshot_wait_passes.saturating_add(1);
+    }
+
+    #[inline]
+    fn note_pbo_fence(&mut self) {
+        self.pbo_fence_passes = self.pbo_fence_passes.saturating_add(1);
+    }
+
+    #[inline]
+    fn note_resolve_blit(&mut self) {
+        self.resolve_blit_passes = self.resolve_blit_passes.saturating_add(1);
+    }
+
+    #[inline]
+    fn note_swap_wait(&mut self) {
+        self.swap_wait_passes = self.swap_wait_passes.saturating_add(1);
+    }
+
+    #[inline]
+    fn note_gpu_execution(&mut self) {
+        self.gpu_execution_passes = self.gpu_execution_passes.saturating_add(1);
+    }
+
+    /// Attribute attachment and repair work to the present pass.
+    ///
+    /// `readback_latch` is supplied by the caller because the latch belongs to
+    /// CanvasManager's private lifecycle state.  When it is set, a nominal
+    /// partial result is recorded as a full repair with an explicit reason.
+    fn account_damage(
+        &mut self,
+        resolved: crate::dirty_region::damage_tracker::ResolvedDamage,
+        width: u32,
+        height: u32,
+        readback_latch: bool,
+    ) {
+        let attachment_bytes = u64::from(width)
+            .saturating_mul(u64::from(height))
+            .saturating_mul(4);
+        self.attachment_bytes = self.attachment_bytes.saturating_add(attachment_bytes);
+        self.readback_latch |= readback_latch;
+
+        match resolved {
+            crate::dirty_region::damage_tracker::ResolvedDamage::Partial {
+                width, height, ..
+            } if !readback_latch => {
+                self.partial_repairs = self.partial_repairs.saturating_add(1);
+                self.copy_pixels = self.copy_pixels.saturating_add(
+                    u64::try_from(width)
+                        .unwrap_or(0)
+                        .saturating_mul(u64::try_from(height).unwrap_or(0)),
+                );
+                self.partial_repair_reason = Some(PresentRepairReason::PartialDamage);
+            }
+            crate::dirty_region::damage_tracker::ResolvedDamage::Partial {
+                width, height, ..
+            } => {
+                self.full_repairs = self.full_repairs.saturating_add(1);
+                self.copy_pixels = self.copy_pixels.saturating_add(
+                    u64::try_from(width)
+                        .unwrap_or(0)
+                        .saturating_mul(u64::try_from(height).unwrap_or(0)),
+                );
+                self.partial_repair_reason = Some(PresentRepairReason::ReadbackLatch);
+            }
+            crate::dirty_region::damage_tracker::ResolvedDamage::FullSurface => {
+                self.full_repairs = self.full_repairs.saturating_add(1);
+                self.copy_pixels = self.copy_pixels.saturating_add(
+                    u64::try_from(width)
+                        .unwrap_or(0)
+                        .saturating_mul(u64::try_from(height).unwrap_or(0)),
+                );
+                self.partial_repair_reason = Some(if readback_latch {
+                    PresentRepairReason::ReadbackLatch
+                } else {
+                    PresentRepairReason::FullSurface
+                });
+            }
+        }
+    }
+}
 fn mark_surface_destroyed(surface: &mut SurfaceSystem) {
     surface.on_surface_destroyed();
 }
@@ -324,6 +486,7 @@ fn execute_canvas_batch(
     gl: &glow::Context,
     renderer_2d: &mut Renderer2d,
     payload: CanvasBatchPayload,
+    retained_image_ids: &mut smallvec::SmallVec<[u32; 16]>,
 ) -> bool {
     use crate::canvas2d_dispatcher::classify_draw_damage;
     use crate::damage_effect::DamageEffect;
@@ -391,7 +554,7 @@ fn execute_canvas_batch(
     // paths are safe to use independently because the refcount
     // is additive.  Released unconditionally at the bottom so
     // even an error mid-batch doesn't leak the retain.
-    let mut retained_image_ids: smallvec::SmallVec<[u32; 16]> = smallvec::SmallVec::new();
+    retained_image_ids.clear();
     for cmd in &commands {
         cmd.for_each_referenced_image(|id| {
             cm.retain_in_flight_image(id);
@@ -599,19 +762,19 @@ where
     execute_frame_packet_with_present_tracking(packet, state, on_canvas, on_gl)
 }
 
-/// Phase reorder: if the packet's CanvasBatches and GlBatches target
-/// disjoint sets of canvases (the cocos shop pattern — offscreen
-/// Canvas2D for text labels, onscreen WebGL for the UI), we can run
-/// all CanvasBatch + Materialize work as one phase and all GlBatch
-/// work as a second phase.  This collapses 100+ EGL context switches
-/// (alternating between offscreen canvases and the onscreen canvas)
+/// Phase reorder: if the packet's CanvasBatches and GlBatches have no
+/// intersecting canvas dependency (GL destinations or live Canvas2D upload
+/// sources), we can run all CanvasBatch + Materialize work as one phase and
+/// all GlBatch work as a second phase.  This collapses 100+ EGL context
+/// switches (alternating between offscreen canvases and the onscreen canvas)
 /// down to roughly `N_distinct_offscreen + 1`.
 ///
 /// Returns `false` whenever the packet might contain a Canvas2D↔WebGL
-/// cross-dependency (e.g. `ctx.drawImage(webglCanvasElement, ...)` —
-/// the WebGL canvas's pixels must be flushed before the Canvas2D
-/// draw reads them), in which case we preserve issue order.
-///
+/// cross-dependency (e.g. `ctx.drawImage(webglCanvasElement, ...)` — the
+/// WebGL canvas's pixels must be flushed before the Canvas2D draw reads them,
+/// or a live `texImage2D(..., canvas)` upload — the Canvas2D source's current
+/// pixels must be captured before a later draw changes them), in which case
+/// we preserve issue order.
 /// **It gathers nothing.** The question is whether one set intersects another,
 /// which is a boolean, and the ops that answer it are already in hand — so
 /// materialising either side buys nothing and costs a container. The version
@@ -625,8 +788,8 @@ where
 ///
 /// It is also strictly less work than gathering was. Gathering deduplicated on
 /// insert — a scan per Canvas2D op — and then scanned the gathered list once per
-/// WebGL command. This scans the ops once per *distinct* canvas a WebGL command
-/// binds, which is normally one.
+/// GL command. This scans the ops once per distinct GL destination or live
+/// Canvas2D source, which is normally one.
 fn packet_safe_to_reorder(ops: &[FrameOp]) -> bool {
     // Nothing to collide with, so the question is settled before the GL half is
     // walked at all — which is every WebGL-only frame, the common case.
@@ -634,7 +797,7 @@ fn packet_safe_to_reorder(ops: &[FrameOp]) -> bool {
         return true;
     }
 
-    // The canvas most recently *proven not to be* a Canvas2D target. Only a
+    // The canvas most recently *proven not to be* a Canvas2D dependency. Only a
     // proven-absent id is ever remembered, because a hit returns immediately —
     // so a stale or mismatched entry here can cost a repeated scan and can
     // never change the verdict. That is what makes the memo safe on the one
@@ -647,19 +810,25 @@ fn packet_safe_to_reorder(ops: &[FrameOp]) -> bool {
     for op in ops {
         if let FrameOp::GlBatch(payload) = op {
             for cmd in &payload.commands {
-                let Some(cid) = cmd.touches_canvas() else {
-                    continue;
-                };
-                if proven_absent == Some(cid) {
-                    continue;
-                }
-                if ops
-                    .iter()
-                    .any(|other| matches!(other, FrameOp::CanvasBatch(p) if p.canvas_id == cid))
+                // `touches_canvas` is the GL destination/context dependency;
+                // `live_canvas_source` is the Canvas2D source dependency of a
+                // direct upload.  Snapshot uploads return no live source and
+                // therefore remain eligible for the optimization.
+                for cid in [cmd.touches_canvas(), cmd.live_canvas_source()]
+                    .into_iter()
+                    .flatten()
                 {
-                    return false;
+                    if proven_absent == Some(cid) {
+                        continue;
+                    }
+                    if ops
+                        .iter()
+                        .any(|other| matches!(other, FrameOp::CanvasBatch(p) if p.canvas_id == cid))
+                    {
+                        return false;
+                    }
+                    proven_absent = Some(cid);
                 }
-                proven_absent = Some(cid);
             }
         }
     }
@@ -726,6 +895,7 @@ fn execute_frame_op(
     gl: &glow::Context,
     renderer_2d: &mut Renderer2d,
     renderer_gl: &mut RendererGL,
+    retained_image_ids: &mut smallvec::SmallVec<[u32; 16]>,
     op: FrameOp,
 ) -> bool {
     match op {
@@ -768,7 +938,9 @@ fn execute_frame_op(
             }
             false
         }
-        FrameOp::CanvasBatch(payload) => execute_canvas_batch(cm, gl, renderer_2d, payload),
+        FrameOp::CanvasBatch(payload) => {
+            execute_canvas_batch(cm, gl, renderer_2d, payload, retained_image_ids)
+        }
         FrameOp::GlBatch(payload) => execute_gl_batch(cm, gl, renderer_gl, payload),
     }
 }
@@ -791,14 +963,22 @@ fn execute_frame_packet(
     // work, intra-frame Materialize) would leak the retention
     // across the next frame and prevent destroy from ever
     // succeeding.
-    let mut retained_image_ids: smallvec::SmallVec<[u32; 16]> = smallvec::SmallVec::new();
+    let mut retained_image_ids = std::mem::take(&mut cm.retained_image_scratch);
+    retained_image_ids.clear();
     packet.for_each_referenced_image(|id| {
         cm.retain_in_flight_image(id);
         retained_image_ids.push(id);
     });
 
     should_present |= run_frame_phases(packet.into_ops(), |op| {
-        execute_frame_op(cm, gl, renderer_2d, renderer_gl, op)
+        execute_frame_op(
+            cm,
+            gl,
+            renderer_2d,
+            renderer_gl,
+            &mut retained_image_ids,
+            op,
+        )
     });
 
     // F-1 release-then-drain sequence.  Release every id the
@@ -819,6 +999,7 @@ fn execute_frame_packet(
         }
     }
     cm.drain_pending_image_deletions();
+    cm.retained_image_scratch = retained_image_ids;
 
     should_present
 }
@@ -871,7 +1052,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        canvas2d_batch_should_mark_present_dirty,
+        PresentPassCounters, PresentRepairReason, canvas2d_batch_should_mark_present_dirty,
         execute_frame_packet_with_present_tracking_for_test, finalize_vsync_frame_decision,
         mark_surface_destroyed, next_vsync_frame_decision, packet_safe_to_reorder,
         report_recovery_failure, retire_unexpected_surface,
@@ -911,6 +1092,90 @@ mod tests {
                 .collect::<Vec<_>>()
                 .into(),
         })
+    }
+    fn gl_batch_reading_live_canvas(source_canvas_id: u32) -> FrameOp {
+        FrameOp::GlBatch(GlBatchPayload {
+            commands: vec![GLCmd::TexImage2DFromCanvas2D {
+                canvas_id: CanvasId::from(99u32),
+                target: 0x0DE1,
+                level: 0,
+                internalformat: 0x1908,
+                canvas_2d_id: CanvasId::from(source_canvas_id),
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }]
+            .into(),
+        })
+    }
+
+    #[test]
+    fn a_live_canvas_upload_preserves_red_blue_capture_order() {
+        // The audit's production shape: Canvas A draws red, uploads A, draws
+        // blue, uploads A.  The callback is a one-pixel model of the source
+        // framebuffer and the GL destination texture: if the phase reorder is
+        // incorrectly admitted, both uploads observe blue.
+        let ops = vec![
+            canvas_batch(7),
+            gl_batch_reading_live_canvas(7),
+            canvas_batch(7),
+            gl_batch_reading_live_canvas(7),
+        ];
+        assert!(
+            !packet_safe_to_reorder(&ops),
+            "a live Canvas2D upload must preserve source-canvas issue order"
+        );
+        let mut draw_count = 0;
+        let mut current_pixel = "initial";
+        let mut uploads = Vec::new();
+        let packet = ops
+            .into_iter()
+            .fold(FramePacketBuilder::new(1, 16.6), |builder, op| {
+                builder.push(op)
+            })
+            .finish();
+        super::run_frame_phases(packet.into_ops(), |op| match op {
+            FrameOp::CanvasBatch(_) => {
+                draw_count += 1;
+                current_pixel = if draw_count == 1 { "red" } else { "blue" };
+                false
+            }
+            FrameOp::GlBatch(_) => {
+                uploads.push(current_pixel);
+                false
+            }
+            _ => false,
+        });
+
+        assert_eq!(uploads, vec!["red", "blue"]);
+    }
+
+    #[test]
+    fn immutable_snapshot_uploads_and_different_live_sources_still_reorder() {
+        let gl_canvas = CanvasId::from(99u32);
+        let snapshot_upload = FrameOp::GlBatch(GlBatchPayload {
+            commands: vec![GLCmd::TexImage2DFromSnapshot {
+                canvas_id: gl_canvas,
+                target: 0x0DE1,
+                level: 0,
+                internalformat: 0x1908,
+                format: 0x1908,
+                type_: 0x1401,
+                snapshot_id: 1,
+            }]
+            .into(),
+        });
+        let different_source_upload = gl_batch_reading_live_canvas(8);
+
+        for gl_upload in [snapshot_upload, different_source_upload] {
+            let ops = vec![canvas_batch(7), gl_upload];
+            assert!(
+                packet_safe_to_reorder(&ops),
+                "an immutable or different-source upload must not disable \
+                 independent phase reordering"
+            );
+        }
     }
 
     #[test]
@@ -1573,6 +1838,106 @@ mod tests {
     }
 
     #[test]
+    fn present_pass_accounting_attributes_each_stage_to_its_pass() {
+        let mut counters = PresentPassCounters::default();
+        counters.note_skia_record();
+        counters.note_flush_submit();
+        counters.note_snapshot_wait();
+        counters.note_pbo_fence();
+        counters.note_resolve_blit();
+        counters.note_swap_wait();
+        counters.note_gpu_execution();
+        counters.account_damage(
+            crate::dirty_region::damage_tracker::ResolvedDamage::Partial {
+                x: 4,
+                y: 8,
+                width: 16,
+                height: 12,
+            },
+            64,
+            32,
+            false,
+        );
+
+        assert_eq!(counters.skia_record_passes, 1);
+        assert_eq!(counters.flush_submit_passes, 1);
+        assert_eq!(counters.snapshot_wait_passes, 1);
+        assert_eq!(counters.pbo_fence_passes, 1);
+        assert_eq!(counters.resolve_blit_passes, 1);
+        assert_eq!(counters.swap_wait_passes, 1);
+        assert_eq!(counters.gpu_execution_passes, 1);
+        assert_eq!(counters.attachment_bytes, 64 * 32 * 4);
+        assert_eq!(counters.copy_pixels, 16 * 12);
+        assert_eq!(counters.partial_repairs, 1);
+        assert_eq!(counters.full_repairs, 0);
+        assert_eq!(
+            counters.partial_repair_reason,
+            Some(PresentRepairReason::PartialDamage)
+        );
+        assert!(!counters.readback_latch);
+    }
+
+    #[test]
+    fn partial_repair_records_reason_and_full_repair_records_attachment_bytes() {
+        let mut counters = PresentPassCounters::default();
+        counters.account_damage(
+            crate::dirty_region::damage_tracker::ResolvedDamage::Partial {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 4,
+            },
+            20,
+            10,
+            false,
+        );
+        assert_eq!(counters.partial_repairs, 1);
+        assert_eq!(
+            counters.partial_repair_reason,
+            Some(PresentRepairReason::PartialDamage)
+        );
+        assert_eq!(counters.attachment_bytes, 20 * 10 * 4);
+
+        let mut full = PresentPassCounters::default();
+        full.account_damage(
+            crate::dirty_region::damage_tracker::ResolvedDamage::FullSurface,
+            20,
+            10,
+            false,
+        );
+        assert_eq!(full.partial_repairs, 0);
+        assert_eq!(full.full_repairs, 1);
+        assert_eq!(full.copy_pixels, 20 * 10);
+        assert_eq!(full.attachment_bytes, 20 * 10 * 4);
+        assert_eq!(
+            full.partial_repair_reason,
+            Some(PresentRepairReason::FullSurface)
+        );
+    }
+
+    #[test]
+    fn readback_latch_records_full_reason_for_nominal_partial_repair() {
+        let mut counters = PresentPassCounters::default();
+        counters.account_damage(
+            crate::dirty_region::damage_tracker::ResolvedDamage::Partial {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 3,
+            },
+            10,
+            10,
+            true,
+        );
+        assert!(counters.readback_latch);
+        assert_eq!(counters.partial_repairs, 0);
+        assert_eq!(counters.full_repairs, 1);
+        assert_eq!(
+            counters.partial_repair_reason,
+            Some(PresentRepairReason::ReadbackLatch)
+        );
+    }
+    #[test]
     fn prepare_batch_scissor_flips_y_from_top_left_to_gl_bottom_left_origin() {
         use super::prepare_batch_scissor;
         // DirtyRect: top-left origin, y=20, height=50 → bottom edge at y=70
@@ -1693,6 +2058,26 @@ mod tests {
         assert!(should_present);
         assert_eq!(order, vec!["canvas", "gl", "canvas"]);
     }
+}
+#[test]
+fn heavy_render_work_checks_budget_immediately() {
+    assert!(should_yield_after_heavy_work(1_501, 1_500));
+    assert!(!should_yield_after_heavy_work(1_500, 1_500));
+}
+
+#[test]
+fn drain_work_counters_record_message_subcommands_and_packet_cpu() {
+    let mut counters = DrainWorkCounters::default();
+    record_drain_work(&mut counters, 17, 42);
+    assert_eq!(
+        counters,
+        DrainWorkCounters {
+            messages: 1,
+            subcommands: 17,
+            packet_cpu_us: 42,
+            budget_overshoot_us: 0,
+        }
+    );
 }
 
 impl RenderThread {
@@ -2055,6 +2440,11 @@ impl RenderThread {
                 let mut frame_count: u32 = 0;
                 let mut fps_timer = Instant::now();
                 let mut last_frame_time = Instant::now();
+                // Host-side present attribution.  The counters remain owned by
+                // the render thread, alongside the other frame-local state;
+                // device-only bandwidth/timing conclusions are deliberately
+                // not inferred from these work-unit counts.
+                let mut present_passes = PresentPassCounters::default();
                 let mut first_frame_recorded = false;
 
                 // Deferred EGL context recovery flag. Set to true when
@@ -2341,7 +2731,12 @@ impl RenderThread {
 
                         // V2: Batched commands - process all commands in a single frame
                         RenderCommand::Canvas2DBatch(payload) => {
-                            if execute_canvas_batch(cm, gl, renderer_2d, payload) {
+                            let mut retained =
+                                std::mem::take(&mut cm.retained_image_scratch);
+                            let rendered =
+                                execute_canvas_batch(cm, gl, renderer_2d, payload, &mut retained);
+                            cm.retained_image_scratch = retained;
+                            if rendered {
                                 *dirty = true;
                             }
                         }
@@ -2675,11 +3070,14 @@ impl RenderThread {
                     // bump a counter so the overlay can distinguish
                     // "engine busy" from "engine idle".
                     let mut budget_exit = false;
+                    let mut work = DrainWorkCounters::default();
                     for i in 0..MAX_CMDS {
-                        // Re-check the CPU budget every 32 commands
-                        // rather than on every iteration; the loop
-                        // body is ~100 ns for a cheap cmd so the
-                        // query cadence doesn't need to be tighter.
+                        // Cheap scalar commands still use the amortized
+                        // cadence, but packet/batch work is checked again
+                        // immediately after it returns. A FramePacket is one
+                        // queue message regardless of how many subcommands
+                        // it owns, so waiting for the next 32-message check
+                        // does not bound its tail latency.
                         if i > 0 && (i & 31) == 0
                             && drain_start.elapsed().as_micros() >= MAX_DRAIN_US
                         {
@@ -2688,15 +3086,51 @@ impl RenderThread {
                         }
                         match cmd_rx.try_recv() {
                             Ok(cmd) => {
+                                let command_started = Instant::now();
+                                let (is_heavy, is_packet, subcommands) = match &cmd {
+                                    RenderCommand::FramePacket(packet) => {
+                                        (true, true, packet_subcommand_count(packet))
+                                    }
+                                    RenderCommand::Canvas2DBatch(payload) => {
+                                        (true, false, payload.commands.len() as u64)
+                                    }
+                                    RenderCommand::GLBatch(payload) => {
+                                        (true, false, payload.commands.len() as u64)
+                                    }
+                                    _ => (false, false, 1),
+                                };
                                 match handle_one_cmd(cmd, cm, gl, canvas_handler, renderer_2d, renderer_gl, fps, frame_scheduler, frame_clock, dirty, paused, has_vsync, surface_system, render_binding, render_server) {
                                     LoopCtl::Continue => {}
                                     stop => return stop,
+                                }
+                                let packet_cpu_us = if is_packet {
+                                    command_started.elapsed().as_micros()
+                                } else {
+                                    0
+                                };
+                                record_drain_work(&mut work, subcommands, packet_cpu_us);
+                                if is_heavy {
+                                    let elapsed_us = drain_start.elapsed().as_micros();
+                                    if should_yield_after_heavy_work(elapsed_us, MAX_DRAIN_US) {
+                                        budget_exit = true;
+                                        work.budget_overshoot_us = work
+                                            .budget_overshoot_us
+                                            .saturating_add(elapsed_us.saturating_sub(MAX_DRAIN_US));
+                                        break;
+                                    }
                                 }
                             }
                             Err(_) => break,
                         }
                     }
                     if budget_exit {
+                        debug!(
+                            messages = work.messages,
+                            subcommands = work.subcommands,
+                            packet_cpu_us = work.packet_cpu_us,
+                            budget_overshoot_us = work.budget_overshoot_us,
+                            "render command drain budget exhausted"
+                        );
                         debug_stats
                             .drain_budget_exhausted
                             .fetch_add(1, Ordering::Relaxed);
@@ -2755,12 +3189,13 @@ impl RenderThread {
                                                          ts: f64,
                                                          debug_stats: &shared::stats::DebugStats,
                                                          frame_count: &mut u32,
-                                                        fps_timer: &mut Instant,
-                                                        last_frame_time: &mut Instant,
-                                                        first_frame_recorded: &mut bool,
-                                                        needs_recovery: &mut bool,
-                                                        render_binding: &RenderSurfaceBinding,
-                                                        surface_system: &mut SurfaceSystem| {
+                                                         fps_timer: &mut Instant,
+                                                         last_frame_time: &mut Instant,
+                                                         first_frame_recorded: &mut bool,
+                                                         present_passes: &mut PresentPassCounters,
+                                                         needs_recovery: &mut bool,
+                                                         render_binding: &RenderSurfaceBinding,
+                                                         surface_system: &mut SurfaceSystem| {
                     crate::atrace_scope!(c"migo.render.present_and_raf");
                     let _ = ts; // RAF is signalled before the drain now (see signal_raf)
                     // Drain Canvas2D snapshot textures captured during this
@@ -2770,11 +3205,12 @@ impl RenderThread {
                     // longer referenced by any pending command.  Deleting
                     // them now keeps the pool tiny under the cocos text-
                     // rendering pattern (hundreds of getImageData calls per
-                    // frame).
                     cm.drain_canvas2d_snapshots();
-                    // Drain completed texture uploads from the upload thread
-                    // and register them in the image registry for rendering.
+                    for _ in 0..cm.take_snapshot_fence_waits() {
+                        present_passes.note_snapshot_wait();
+                    }
                     let dropped_recoveries = cm.drain_upload_completed();
+                    present_passes.note_pbo_fence();
                     if dropped_recoveries > 0 {
                         debug_stats.dropped_upload_recoveries.fetch_add(dropped_recoveries, Ordering::Relaxed);
                     }
@@ -2846,6 +3282,7 @@ impl RenderThread {
                         // framebuffer so the driver can skip loading unchanged tiles.
                         cm.declare_frame_damage(onscreen_id);
 
+                        present_passes.note_skia_record();
                         crate::atrace_scope!(c"migo.render.flush_2d");
                         match cm.flush_dirty_2d_contexts() {
                             Ok(flushed_ids) => {
@@ -2857,6 +3294,7 @@ impl RenderThread {
                                 warn!("flush_dirty_2d_contexts failed: {}", e);
                             }
                         }
+                        present_passes.note_flush_submit();
                         unsafe {
                             gl.viewport(
                                 tracked_viewport.0,
@@ -2869,12 +3307,21 @@ impl RenderThread {
                         crate::atrace_scope!(c"migo.render.swap_buffers");
                         // Final generation re-check at the swap boundary. If
                         // destroy raced the flush/damage work, skip EGL swap;
+                        present_passes.note_swap_wait();
                         // presenting to the abandoned BufferQueue is forbidden.
                         let swap_ok = if !render_binding.is_live() {
                             false
                         } else {
                             match cm.swap_buffers_no_restore(shared::protocol::render_cmd::CanvasId::from(1u32), true) {
                             Ok(resolved_damage) => {
+                                present_passes.note_resolve_blit();
+                                present_passes.note_gpu_execution();
+                                present_passes.account_damage(
+                                    resolved_damage,
+                                    canvas_w,
+                                    canvas_h,
+                                    false,
+                                );
                                 use crate::dirty_region::damage_tracker::ResolvedDamage;
                                 match resolved_damage {
                                     ResolvedDamage::Partial { width, height, .. } => {
@@ -3127,8 +3574,6 @@ impl RenderThread {
 
                     // --- Deferred EGL context recovery ---
                     // Performed at the top of the frame loop where it is less
-                    // timing-critical than inside the swap path. This avoids
-                    // blocking the RAF signal with a full EGL teardown+recreate.
                     if needs_context_recovery
                         && render_binding.is_live()
                         && render_binding.pending_generation().is_none()
@@ -3218,8 +3663,6 @@ impl RenderThread {
                         }
 
                         Wake::FrameDeadline => {
-                            // Engine-paced frame (no external vsync source).
-                            // Frame timing: drain -> swap -> RAF signal.
                             let frame_started = Instant::now();
                             frame_clock.on_frame_ran(frame_started);
                             crate::render_diagnostics::set_render_queue_len(cmd_rx.len() as u32);
@@ -3260,7 +3703,7 @@ impl RenderThread {
                                 surface_system.on_surface_destroyed();
                             }
                             let should_present = surface_system.can_present();
-                            present_frame_and_signal_raf(&mut cm, &mut renderer_2d, &mut dirty, paused, should_present, ts, &debug_stats, &mut frame_count, &mut fps_timer, &mut last_frame_time, &mut first_frame_recorded, &mut needs_context_recovery, &render_binding, &mut surface_system);
+                            present_frame_and_signal_raf(&mut cm, &mut renderer_2d, &mut dirty, paused, should_present, ts, &debug_stats, &mut frame_count, &mut fps_timer, &mut last_frame_time, &mut first_frame_recorded, &mut present_passes, &mut needs_context_recovery, &render_binding, &mut surface_system);
                             // Keep the clock running while animating; otherwise arm
                             // only on residual demand (dirty / upload / recovery),
                             // else it stops until a demand source wakes the thread.
@@ -3351,7 +3794,7 @@ impl RenderThread {
                                 surface_system.on_surface_destroyed();
                             }
                             let should_present = decision.should_signal_raf && surface_system.can_present();
-                            present_frame_and_signal_raf(&mut cm, &mut renderer_2d, &mut dirty, paused, should_present, decision.raf_time_ms, &debug_stats, &mut frame_count, &mut fps_timer, &mut last_frame_time, &mut first_frame_recorded, &mut needs_context_recovery, &render_binding, &mut surface_system);
+                            present_frame_and_signal_raf(&mut cm, &mut renderer_2d, &mut dirty, paused, should_present, decision.raf_time_ms, &debug_stats, &mut frame_count, &mut fps_timer, &mut last_frame_time, &mut first_frame_recorded, &mut present_passes, &mut needs_context_recovery, &render_binding, &mut surface_system);
                             // Keep the vsync clock at display rate while animating;
                             // otherwise re-arm only on residual demand (dirty /
                             // upload), else the clock stops.

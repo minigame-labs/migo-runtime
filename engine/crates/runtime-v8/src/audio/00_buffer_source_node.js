@@ -10,6 +10,7 @@ import {
   AudioNode,
   validateFiniteDouble,
   validateScheduledTime,
+  warnUnsupportedCapability,
 } from "ext:host_v8_audio/00_audio_node.js";
 
 class AudioBufferSourceNode extends AudioNode {
@@ -113,6 +114,12 @@ class AudioBufferSourceNode extends AudioNode {
 
   set onended(value) {
     this.#onended = typeof value === "function" ? value : null;
+    if (typeof value === "function") {
+      warnUnsupportedCapability(
+        "onended",
+        "AudioBufferSourceNode onended callbacks are not dispatched by the native graph",
+      );
+    }
   }
 
   start(when = 0, offset = 0, duration) {

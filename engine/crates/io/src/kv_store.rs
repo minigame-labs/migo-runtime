@@ -59,6 +59,17 @@ use shared::error::{EngineError, ErrorCode};
 /// constructor runs `migrate_to_current` and refuses to open a DB
 /// newer than `SCHEMA_VERSION`.
 const SCHEMA_VERSION: i64 = 1;
+/// Maximum UTF-8 bytes in one key. Keys participate in the WITHOUT ROWID
+/// primary b-tree and the `kv_updated` index, so the value quota alone cannot
+/// bound their storage cost.
+const MAX_KEY_BYTES: usize = 16 * 1024;
+
+/// Maximum number of rows in one store, independent of value bytes.
+const MAX_ENTRY_COUNT: u64 = 10_000;
+
+/// Maximum rows returned by one unpaged `info` call. `info_page` can be used
+/// by internal callers to consume a larger key set in bounded slices.
+const MAX_INFO_KEYS: usize = 1_024;
 
 /// Summary returned by [`KvStore::info`].
 ///
@@ -99,9 +110,12 @@ struct Inner {
     /// updated inside every write transaction. This is the only
     /// source-of-truth for quota checks; no read path does `SUM`.
     total_bytes: u64,
+    /// Running row count, maintained in the same transaction as
+    /// `total_bytes` so entry admission remains O(1).
+    total_entries: u64,
 }
-
 const META_TOTAL_BYTES: &str = "total_bytes";
+const META_TOTAL_ENTRIES: &str = "total_entries";
 
 impl KvStore {
     /// Number of strong handles, including the cache's own handle.
@@ -172,6 +186,7 @@ impl KvStore {
         // we do a single O(N) reconcile-SUM and persist the result;
         // this is the only place in the KV store that scans `kv`.
         let total_bytes = load_or_reconcile_total(&conn)?;
+        let total_entries = load_or_reconcile_entries(&conn)?;
 
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
@@ -179,6 +194,7 @@ impl KvStore {
                 path,
                 quota_bytes,
                 total_bytes,
+                total_entries,
             })),
         })
     }
@@ -215,24 +231,42 @@ impl KvStore {
     }
 
     fn set_inner(&self, key: &str, value: &str) -> Result<(), EngineError> {
+        if key.len() > MAX_KEY_BYTES {
+            return Err(EngineError::new(ErrorCode::InvalidArgument)
+                .with_msg("setStorage:fail key exceeds max size")
+                .with_detail(format!(
+                    "key length {} bytes > limit {} bytes",
+                    key.len(),
+                    MAX_KEY_BYTES
+                )));
+        }
         let mut g = self.inner.lock();
         let quota = g.quota_bytes;
         let current_total = g.total_bytes;
+        let current_entries = g.total_entries;
         let tx = g
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_err("kv: begin"))?;
 
-        let old_size: i64 = tx
+        let old_size: Option<i64> = tx
             .query_row("SELECT size FROM kv WHERE k = ?1", [key], |r| r.get(0))
             .optional()
-            .map_err(sql_err("kv: set: read old"))?
-            .unwrap_or(0);
+            .map_err(sql_err("kv: set: read old"))?;
         let new_size = value.len() as i64;
+        let projected_entries = current_entries.saturating_add(u64::from(old_size.is_none()));
+        if projected_entries > MAX_ENTRY_COUNT {
+            return Err(EngineError::new(ErrorCode::OutOfMemory)
+                .with_msg("setStorage:fail storage entry limit exceeded")
+                .with_detail(format!(
+                    "projected {} entries > limit {}",
+                    projected_entries, MAX_ENTRY_COUNT
+                )));
+        }
         // `total_bytes` is always non-negative; saturating_sub avoids
         // panic on a hypothetical corrupt row with negative size.
         let projected = current_total
-            .saturating_sub(old_size as u64)
+            .saturating_sub(old_size.unwrap_or(0) as u64)
             .saturating_add(new_size as u64);
         if projected > quota {
             return Err(EngineError::new(ErrorCode::OutOfMemory)
@@ -251,10 +285,12 @@ impl KvStore {
         )
         .map_err(sql_err("kv: set: upsert"))?;
         persist_total_in_tx(&tx, projected)?;
+        persist_entries_in_tx(&tx, projected_entries)?;
         tx.commit().map_err(sql_err("kv: set: commit"))?;
-        // Update cache only after the commit succeeded; otherwise a
-        // failed commit would leave the cached total ahead of the DB.
+        // Update caches only after the commit succeeded; otherwise a
+        // failed commit would leave cached totals ahead of the DB.
         g.total_bytes = projected;
+        g.total_entries = projected_entries;
         Ok(())
     }
 
@@ -266,9 +302,22 @@ impl KvStore {
         if items.is_empty() {
             return Ok(());
         }
+        for (key, _) in items {
+            if key.len() > MAX_KEY_BYTES {
+                return Err(EngineError::new(ErrorCode::InvalidArgument)
+                    .with_msg("setStorageBatch:fail key exceeds max size")
+                    .with_detail(format!(
+                        "key length {} bytes > limit {} bytes",
+                        key.len(),
+                        MAX_KEY_BYTES
+                    )));
+            }
+        }
+
         let mut g = self.inner.lock();
         let quota = g.quota_bytes;
         let current_total = g.total_bytes;
+        let current_entries = g.total_entries;
         let tx = g
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -279,13 +328,9 @@ impl KvStore {
         // correctly, but we never run `SUM(size)`.
         //
         // A key repeated inside one batch is projected against what the
-        // *previous item in this batch* will leave behind, not against the
-        // row still on disk. Re-reading the DB size for the second occurrence
-        // would deduct the same old row twice and credit both new values, and
-        // since the result is persisted to `_meta.total_bytes` — which is only
-        // ever reconciled against `SUM(size)` when it is missing — the drift
-        // would be permanent.
+        // previous item in this batch will leave behind.
         let mut projected: i128 = current_total as i128;
+        let mut projected_entries: i128 = current_entries as i128;
         {
             let mut q = tx
                 .prepare_cached("SELECT size FROM kv WHERE k = ?1")
@@ -294,11 +339,16 @@ impl KvStore {
             for (k, v) in items {
                 let old: i64 = match pending.get(k) {
                     Some(&staged) => staged,
-                    None => q
-                        .query_row([k], |r| r.get(0))
-                        .optional()
-                        .map_err(sql_err("kv: batch: size"))?
-                        .unwrap_or(0),
+                    None => {
+                        let stored: Option<i64> = q
+                            .query_row([k], |r| r.get(0))
+                            .optional()
+                            .map_err(sql_err("kv: batch: size"))?;
+                        if stored.is_none() {
+                            projected_entries += 1;
+                        }
+                        stored.unwrap_or(0)
+                    }
                 };
                 let new = v.len() as i64;
                 projected = projected - old as i128 + new as i128;
@@ -306,15 +356,29 @@ impl KvStore {
             }
         }
 
-        if projected < 0 || projected as u128 > quota as u128 {
+        if projected_entries < 0
+            || projected_entries as u128 > MAX_ENTRY_COUNT as u128
+            || projected < 0
+            || projected as u128 > quota as u128
+        {
+            let detail = if projected_entries as u128 > MAX_ENTRY_COUNT as u128 {
+                format!(
+                    "projected {} entries > limit {}",
+                    projected_entries, MAX_ENTRY_COUNT
+                )
+            } else {
+                format!("projected {} bytes > quota {} bytes", projected, quota)
+            };
             return Err(EngineError::new(ErrorCode::OutOfMemory)
-                .with_msg("setStorageBatch:fail storage limit exceeded")
-                .with_detail(format!(
-                    "projected {} bytes > quota {} bytes",
-                    projected, quota
-                )));
+                .with_msg(if projected_entries as u128 > MAX_ENTRY_COUNT as u128 {
+                    "setStorageBatch:fail storage entry limit exceeded"
+                } else {
+                    "setStorageBatch:fail storage limit exceeded"
+                })
+                .with_detail(detail));
         }
         let projected = projected as u64;
+        let projected_entries = projected_entries as u64;
 
         {
             let mut up = tx
@@ -331,8 +395,10 @@ impl KvStore {
             }
         }
         persist_total_in_tx(&tx, projected)?;
+        persist_entries_in_tx(&tx, projected_entries)?;
         tx.commit().map_err(sql_err("kv: batch: commit"))?;
         g.total_bytes = projected;
+        g.total_entries = projected_entries;
         Ok(())
     }
 
@@ -340,21 +406,24 @@ impl KvStore {
     pub fn remove(&self, key: &str) -> Result<(), EngineError> {
         let mut g = self.inner.lock();
         let current_total = g.total_bytes;
+        let current_entries = g.total_entries;
         let tx = g
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql_err("kv: remove: begin"))?;
-        let old_size: i64 = tx
+        let old_size: Option<i64> = tx
             .query_row("SELECT size FROM kv WHERE k = ?1", [key], |r| r.get(0))
             .optional()
-            .map_err(sql_err("kv: remove: read old"))?
-            .unwrap_or(0);
+            .map_err(sql_err("kv: remove: read old"))?;
         tx.execute("DELETE FROM kv WHERE k = ?1", [key])
             .map_err(sql_err("kv: remove"))?;
-        let new_total = current_total.saturating_sub(old_size as u64);
+        let new_total = current_total.saturating_sub(old_size.unwrap_or(0) as u64);
+        let new_entries = current_entries.saturating_sub(u64::from(old_size.is_some()));
         persist_total_in_tx(&tx, new_total)?;
+        persist_entries_in_tx(&tx, new_entries)?;
         tx.commit().map_err(sql_err("kv: remove: commit"))?;
         g.total_bytes = new_total;
+        g.total_entries = new_entries;
         Ok(())
     }
 
@@ -370,37 +439,43 @@ impl KvStore {
         tx.execute("DELETE FROM kv", [])
             .map_err(sql_err("kv: clear"))?;
         persist_total_in_tx(&tx, 0)?;
+        persist_entries_in_tx(&tx, 0)?;
         tx.commit().map_err(sql_err("kv: clear: commit"))?;
         g.total_bytes = 0;
+        g.total_entries = 0;
         Ok(())
     }
 
-    /// List every key and the summary totals.
+    /// List a bounded first page of keys and the summary totals.
     ///
-    /// Ordering is deterministic (`updated_at DESC, k ASC`) so
-    /// callers that diff consecutive snapshots see stable output.
-    ///
-    /// `current_bytes` is read from the cached `_meta.total_bytes`
-    /// value maintained by every write path, so this call is O(N keys)
-    /// only in the key-listing pass, never in the totals pass.
+    /// Ordering is deterministic (`updated_at DESC, k ASC`) so callers that
+    /// diff consecutive snapshots see stable output. Use `info_page` to
+    /// consume additional pages without materializing the complete list.
     pub fn info(&self) -> Result<KvInfo, EngineError> {
         let started = std::time::Instant::now();
-        let result = self.info_inner();
+        let result = self.info_page(0, MAX_INFO_KEYS);
         shared::stats::io_metrics_global()
             .record_op(shared::stats::OpClass::StorageInfo, started.elapsed());
         result
     }
 
-    fn info_inner(&self) -> Result<KvInfo, EngineError> {
+    pub fn info_page(&self, offset: usize, limit: usize) -> Result<KvInfo, EngineError> {
         let g = self.inner.lock();
+        let limit = limit.min(MAX_INFO_KEYS);
         let mut stmt = g
             .conn
-            .prepare("SELECT k FROM kv ORDER BY updated_at DESC, k ASC")
+            .prepare(
+                "SELECT k FROM kv ORDER BY updated_at DESC, k ASC \
+                 LIMIT ?1 OFFSET ?2",
+            )
             .map_err(sql_err("kv: info: prepare"))?;
         let rows = stmt
-            .query_map([], |r| r.get::<_, String>(0))
+            .query_map(
+                params![limit as i64, offset.min(i64::MAX as usize) as i64],
+                |r| r.get::<_, String>(0),
+            )
             .map_err(sql_err("kv: info: query"))?;
-        let mut keys = Vec::new();
+        let mut keys = Vec::with_capacity(limit);
         for row in rows {
             keys.push(row.map_err(sql_err("kv: info: row"))?);
         }
@@ -504,6 +579,19 @@ fn persist_total_in_tx(
     Ok(())
 }
 
+fn persist_entries_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    total_entries: u64,
+) -> Result<(), EngineError> {
+    tx.execute(
+        "INSERT INTO _meta(k, v) VALUES (?1, ?2) \
+         ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+        params![META_TOTAL_ENTRIES, total_entries.to_string()],
+    )
+    .map_err(sql_err("kv: meta: set entries"))?;
+    Ok(())
+}
+
 /// On open, read the cached running total from `_meta.total_bytes`. If
 /// it's missing or corrupt (e.g. the DB was written by an older binary
 /// that never maintained the cache), fall back to a single
@@ -536,6 +624,37 @@ fn load_or_reconcile_total(conn: &Connection) -> Result<u64, EngineError> {
         params![META_TOTAL_BYTES, reconciled.to_string()],
     )
     .map_err(sql_err("kv: meta: persist reconciled total"))?;
+    Ok(reconciled)
+}
+
+/// On open, read the cached row count. Older databases have no metadata row,
+/// so reconcile once and persist it; writes thereafter update it transactionally.
+fn load_or_reconcile_entries(conn: &Connection) -> Result<u64, EngineError> {
+    let cached: Option<String> = conn
+        .query_row(
+            "SELECT v FROM _meta WHERE k = ?1",
+            [META_TOTAL_ENTRIES],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql_err("kv: meta: get entries"))?;
+
+    if let Some(s) = cached {
+        if let Ok(n) = s.parse::<u64>() {
+            return Ok(n);
+        }
+    }
+
+    let reconciled: i64 = conn
+        .query_row("SELECT COUNT(*) FROM kv", [], |r| r.get(0))
+        .map_err(sql_err("kv: meta: reconcile entries"))?;
+    let reconciled = reconciled.max(0) as u64;
+    conn.execute(
+        "INSERT INTO _meta(k, v) VALUES (?1, ?2) \
+         ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+        params![META_TOTAL_ENTRIES, reconciled.to_string()],
+    )
+    .map_err(sql_err("kv: meta: persist reconciled entries"))?;
     Ok(reconciled)
 }
 
@@ -837,5 +956,45 @@ mod tests {
         }
         let info = kv.info().unwrap();
         assert_eq!(info.keys.len(), 4);
+    }
+    #[test]
+    fn large_key_is_rejected_even_with_tiny_value() {
+        let dir = tempdir().unwrap();
+        let kv = open(dir.path());
+        let key = "k".repeat(16 * 1024 + 1);
+        let err = kv.set(&key, "x").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        assert_eq!(kv.info().unwrap().current_bytes, 0);
+    }
+
+    #[test]
+    fn entry_count_is_bounded_independently_of_value_quota() {
+        let dir = tempdir().unwrap();
+        let kv = KvStore::open(dir.path().join("storage.db"), u64::MAX).unwrap();
+        let items: Vec<(String, String)> = (0..=10_000)
+            .map(|i| (format!("key-{i}"), "v".to_string()))
+            .collect();
+        let refs: Vec<(&str, &str)> = items
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let err = kv.set_batch(&refs).unwrap_err();
+        assert_eq!(err.code, ErrorCode::OutOfMemory);
+        assert!(kv.info().unwrap().keys.is_empty());
+    }
+
+    #[test]
+    fn info_page_returns_disjoint_bounded_slices() {
+        let dir = tempdir().unwrap();
+        let kv = open(dir.path());
+        kv.set("a", "1").unwrap();
+        kv.set("b", "2").unwrap();
+        kv.set("c", "3").unwrap();
+
+        let first = kv.info_page(0, 2).unwrap();
+        let second = kv.info_page(2, 2).unwrap();
+        assert_eq!(first.keys.len(), 2);
+        assert_eq!(second.keys.len(), 1);
+        assert!(first.keys.iter().all(|key| !second.keys.contains(key)));
     }
 }

@@ -1128,26 +1128,20 @@ pub fn decode_render_stream<C: GlDecodeContext>(
     stream: ValidatedStream<'_>,
     out: &mut Vec<shared::protocol::FrameOp>,
 ) -> usize {
+    let plan = budget::estimate(&stream);
     let mut sink = FrameOpSink { context, out };
-    decode_render_stream_into(&mut sink, stream)
+    decode_render_stream_into_with_plan(&mut sink, stream, plan)
 }
 
-/// Decode a mixed 2D/GL stream into a [`RenderSink`].
+/// Decode a mixed 2D/GL stream using an already-admitted storage plan.
 ///
-/// # Order, and the barrier that preserves it
-///
-/// A frame draws its background with 2D, its sprites with GL, its HUD with 2D.
-/// The renderer must see those in the order they were issued, and it must see
-/// the 2D work *materialized* before the GL work that draws over it: Canvas2D
-/// content lives in a surface the GL path reads, and a GL batch that ran before
-/// the 2D batch behind it was flushed would sample whatever was there before.
-/// So a 2D→GL boundary materializes every canvas with pending work, exactly as
-/// the in-process collector does.
-///
-/// Returns the number of commands decoded, for the caller's own accounting.
-pub fn decode_render_stream_into<T: GlDecodeContext + RenderSink>(
+/// Callers that have already run [`validate_frame_budget`] should pass its
+/// returned plan here.  Admission and decode then share one scan of the
+/// validated words instead of independently deriving identical capacities.
+pub fn decode_render_stream_into_with_plan<T: GlDecodeContext + RenderSink>(
     target: &mut T,
     stream: ValidatedStream<'_>,
+    plan: FrameDecodeBudget,
 ) -> usize {
     use shared::command_vec_pool::PooledVec;
     use shared::protocol::render_cmd::Canvas2DCmd;
@@ -1169,7 +1163,6 @@ pub fn decode_render_stream_into<T: GlDecodeContext + RenderSink>(
     // and a 2D record before one is a producer that never said where to draw.
     let mut canvas_id: Option<u32> = None;
     // Canvases whose 2D work the renderer has not flushed yet.
-    let plan = budget::estimate(&stream);
     let mut pending_materialize = scratch::MaterializeScratch::take(plan.pending_canvas_capacity);
 
     // Flushing 2D before GL, never the other way round: the whole point of the
@@ -1179,9 +1172,7 @@ pub fn decode_render_stream_into<T: GlDecodeContext + RenderSink>(
             if let Some(commands) = canvas.take() {
                 let id = canvas_id.unwrap_or(0);
                 target.canvas_batch(id, commands);
-                if !pending_materialize.contains(&id) {
-                    pending_materialize.push(id);
-                }
+                pending_materialize.push_if_absent(id);
             }
         };
     }
@@ -1237,9 +1228,7 @@ pub fn decode_render_stream_into<T: GlDecodeContext + RenderSink>(
 
         // GL. Anything pending on the 2D side has to reach the surface first.
         flush_canvas!();
-        for id in pending_materialize.drain(..) {
-            target.materialize(id);
-        }
+        pending_materialize.drain_into(|id| target.materialize(id));
         if let Some(command) = decode_record(target, opcode, record) {
             gl_bytes = gl_bytes.saturating_add(cmd_approx_bytes(&command));
             gl.get_or_insert_with(|| {
@@ -1260,11 +1249,22 @@ pub fn decode_render_stream_into<T: GlDecodeContext + RenderSink>(
     // Trailing 2D work is materialized too: a sync readback or the next frame's
     // GL has to see it, and the renderer has no other signal that the batch
     // ended.
-    for id in pending_materialize.drain(..) {
-        target.materialize(id);
-    }
+    pending_materialize.drain_into(|id| target.materialize(id));
 
     decoded
+}
+
+/// Decode a mixed 2D/GL stream, deriving its plan locally.
+///
+/// This compatibility entry point is for callers that do not have admission
+/// state.  Callers that already validated the frame should use
+/// [`decode_render_stream_into_with_plan`] to avoid the second estimate scan.
+pub fn decode_render_stream_into<T: GlDecodeContext + RenderSink>(
+    target: &mut T,
+    stream: ValidatedStream<'_>,
+) -> usize {
+    let plan = budget::estimate(&stream);
+    decode_render_stream_into_with_plan(target, stream, plan)
 }
 
 #[cfg(test)]
@@ -1284,5 +1284,40 @@ mod tests {
             value,
         };
         assert_eq!(cmd_approx_bytes(&cmd), cmd.approx_deep_size_bytes());
+    }
+
+    #[test]
+    fn supplied_decode_plan_avoids_a_second_estimate_scan() {
+        struct Context;
+        impl GlDecodeContext for Context {
+            fn push_error(&mut self, _: u32, _: u32) {}
+            fn transform_feedback_captures(&self, _: u32) -> bool {
+                false
+            }
+        }
+
+        let words = [
+            frame_wire::stream::MAGIC,
+            frame_wire::stream::STREAM_VERSION,
+        ];
+        let stream = frame_wire::stream::validate_frame_stream(&words, words.len() as u32).unwrap();
+
+        budget::reset_estimate_calls();
+        let plan = budget::estimate(&stream);
+        assert_eq!(budget::estimate_calls(), 1);
+
+        let mut context = Context;
+        let mut out = Vec::new();
+        let mut sink = FrameOpSink {
+            context: &mut context,
+            out: &mut out,
+        };
+        decode_render_stream_into_with_plan(&mut sink, stream, plan);
+
+        assert_eq!(
+            budget::estimate_calls(),
+            1,
+            "the plan-aware decoder must not rescan the stream to derive a second plan"
+        );
     }
 }

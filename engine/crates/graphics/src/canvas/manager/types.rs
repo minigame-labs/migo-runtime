@@ -1737,7 +1737,10 @@ pub(super) struct CanvasEntry {
     ///
     /// Set by `CanvasManager::evaluate_bypass()` after canvas lifecycle events.
     pub bypass_drawing_buffer: bool,
-    /// Mode whose default-FBO mapping is installed in this EGL context.
-    /// May lag the requested mode while another context is current.
-    pub applied_bypass_drawing_buffer: bool,
+    /// The default framebuffer whose mapping is installed in this EGL context:
+    /// `None` is real FBO 0, `Some` is the DrawingBuffer standing in for it.
+    /// May lag the wanted value while another context is current. Recording the
+    /// framebuffer rather than the mode that chose it is what makes a rebuilt
+    /// DrawingBuffer under an unchanged mode a change this can see.
+    pub applied_default_framebuffer: Option<glow::NativeFramebuffer>,
 }

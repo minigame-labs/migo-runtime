@@ -154,6 +154,38 @@ pub(crate) struct DeferredUpload {
 /// worst-case residency.
 pub(crate) const MAX_DEFERRED_UPLOADS: usize = 256;
 
+/// RGBA bytes retained by deferred uploads.  The bound is intentionally
+/// observable and conservative; its final value needs device ready-latency
+/// and peak-residency data, so it is not a performance claim.
+pub(crate) const MAX_DEFERRED_BYTES: usize = 128 * 1024 * 1024;
+
+#[inline]
+fn deferred_upload_fits(entry_count: usize, retained_bytes: usize, new_bytes: usize) -> bool {
+    entry_count < MAX_DEFERRED_UPLOADS
+        && retained_bytes
+            .checked_add(new_bytes)
+            .is_some_and(|total| total <= MAX_DEFERRED_BYTES)
+}
+
+/// Construct the upload budget with the platform-aware API identity.  Keeping
+/// this in one helper prevents a context-recovery path from drifting from the
+/// initialisation path.  The profile values still need device measurements;
+/// this only removes the false Android API-0 classification on non-Android.
+fn upload_server_for_device(
+    caps: &crate::device_caps::DeviceCapabilities,
+) -> crate::upload_server::UploadServer {
+    let profile = caps.render_profile_for_platform(crate::device_caps::android_api_level());
+    let mut server = crate::upload_server::UploadServer::new(
+        profile.max_upload_jobs_per_frame,
+        profile.max_upload_bytes_per_frame,
+    );
+    server.set_frame_budget(
+        profile.max_upload_jobs_per_frame,
+        profile.max_upload_bytes_per_frame,
+    );
+    server
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AsyncUploadRejectAction {
     SyncFallback,
@@ -257,6 +289,29 @@ pub(super) fn fence_signalled(status: u32) -> bool {
     status == glow::ALREADY_SIGNALED || status == glow::CONDITION_SATISFIED
 }
 
+#[inline]
+fn fence_failed_permanently(status: u32) -> bool {
+    status == glow::WAIT_FAILED
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnapshotFenceStatus {
+    Signalled,
+    Timeout,
+    Failed,
+}
+
+#[inline]
+fn classify_snapshot_fence(status: u32) -> SnapshotFenceStatus {
+    if fence_signalled(status) {
+        SnapshotFenceStatus::Signalled
+    } else if status == glow::TIMEOUT_EXPIRED {
+        SnapshotFenceStatus::Timeout
+    } else {
+        SnapshotFenceStatus::Failed
+    }
+}
+
 /// A free function rather than a method so the allocation claim can be gated
 /// without a GL context: [`CanvasManager::drain_upload_completed`] calls
 /// `glClientWaitSync`, and reaching it needs a live context.
@@ -349,6 +404,11 @@ pub(crate) struct CanvasManager {
 
     // Image registry
     image_registry: ImageRegistry,
+
+    /// Render-owner scratch for image retention tables. It is cleared and
+    /// returned after each packet or standalone batch, so warm sprite runs do
+    /// not repeatedly allocate past the inline SmallVec capacity.
+    pub(crate) retained_image_scratch: smallvec::SmallVec<[u32; 16]>,
 
     /// Per-canvas FBO used as the read source for `glCopyTexImage2D`
     /// when handling `GLCmd::TexImage2DFromShared`.  Lazy-created on
@@ -679,6 +739,9 @@ pub(crate) struct CanvasManager {
     /// game fires a thousand concurrent loads.
     deferred_uploads: std::collections::VecDeque<DeferredUpload>,
 
+    /// Total RGBA payload retained by `deferred_uploads`.
+    deferred_upload_bytes: usize,
+
     /// `eglSetDamageRegionKHR` function pointer (None if EGL_KHR_partial_update
     /// is not supported). Called before `eglSwapBuffers` to inform the
     /// compositor which region changed — saves power on OLED screens.
@@ -732,6 +795,14 @@ pub(crate) struct CanvasManager {
     /// `eglSetDamageRegionKHR` declaration may keep a partial repair: EXT
     /// guarantees the aged back-buffer contents, KHR-only does not.
     has_ext_buffer_age: bool,
+
+    /// Count of `glClientWaitSync` calls issued by
+    /// [`Self::snapshot_canvas2d_region_with_id`] since the last
+    /// [`Self::take_snapshot_fence_waits`].  Read and reset at present time
+    /// so the render thread can attribute each actual GPU wait to
+    /// [`crate::render_thread::PresentPassCounters::note_snapshot_wait`] once
+    /// per fence rather than once per present.
+    snapshot_fence_waits: u32,
 }
 
 impl CanvasManager {
@@ -893,7 +964,6 @@ impl CanvasManager {
         });
 
         // Spawn upload thread on TierA devices (shared GL context for async texture upload).
-        let api_level = crate::device_caps::android_api_level();
         let upload_thread = if device_caps.tier() == crate::device_caps::DeviceTier::TierA {
             crate::upload_thread::UploadThreadHandle::try_spawn(
                 std::sync::Arc::clone(&egl_provider),
@@ -910,10 +980,7 @@ impl CanvasManager {
         };
         // Budget gating: only when upload thread is live.
         let upload_server = if upload_thread.is_some() {
-            Some(crate::upload_server::UploadServer::for_device(
-                &device_caps,
-                api_level,
-            ))
+            Some(upload_server_for_device(&device_caps))
         } else {
             None
         };
@@ -1031,6 +1098,7 @@ impl CanvasManager {
             contexts_2d: crate::canvas_keyed::CanvasKeyed::default(),
             dirty_2d: HashSet::with_capacity(4),
             image_registry: ImageRegistry::new(),
+            retained_image_scratch: smallvec::SmallVec::new(),
             image_copy_fbos: HashMap::with_capacity(4),
             canvas2d_snapshots: HashMap::with_capacity(8),
             canvas2d_snapshot_bytes: 0,
@@ -1068,6 +1136,7 @@ impl CanvasManager {
             transform_feedbacks: HashMap::with_capacity(2),
             atlas: None,
             device_caps,
+            deferred_upload_bytes: 0,
             gpu_caps,
             gles_major,
             has_robust_context,
@@ -1075,6 +1144,7 @@ impl CanvasManager {
             preserved_ctx: None,
             preserved_drawing_buffer: None,
             needs_default_fbo_readback: false,
+            snapshot_fence_waits: 0,
             upload_server,
             upload_thread,
             shader_cache,
@@ -1169,7 +1239,7 @@ impl CanvasManager {
                 ctx: EglContextHandle { ctx, surf },
                 drawing_buffer: None,
                 bypass_drawing_buffer: false,
-                applied_bypass_drawing_buffer: false,
+                applied_default_framebuffer: None,
             },
         );
         // Offscreen canvas created → bypass no longer valid.
@@ -1778,7 +1848,9 @@ impl CanvasManager {
                 // make-current. A fresh buffer is initialized below.
                 drawing_buffer: pending.drawing_buffer,
                 bypass_drawing_buffer: false, // evaluated after DrawingBuffer creation
-                applied_bypass_drawing_buffer: false,
+                // A fresh context's default framebuffer is real FBO 0 until an
+                // install or `create` points it somewhere; both record it there.
+                applied_default_framebuffer: None,
             },
         );
         // A fresh native target carries no frame-rate request, so it is asserted
@@ -2598,13 +2670,9 @@ impl CanvasManager {
                 self.surfaceless,
             );
             if self.upload_thread.is_some() {
-                self.upload_server = Some(crate::upload_server::UploadServer::for_device(
-                    &self.device_caps,
-                    crate::device_caps::android_api_level(),
-                ));
+                self.upload_server = Some(upload_server_for_device(&self.device_caps));
             }
         }
-
         // Recreate every canvas the teardown destroyed and probe, all inside one
         // fallible block. `context_lost` must NOT be cleared until the ENTIRE
         // sequence succeeds: `create_onscreen` clears it internally (line ~788)
@@ -3219,16 +3287,12 @@ impl CanvasManager {
             let status = unsafe { self.gl.client_wait_sync(c.fence, 0, 0) };
 
             if fence_signalled(status) {
-                // GPU upload complete — delete the fence.
                 unsafe { self.gl.delete_sync(c.fence) };
 
-                // Release upload budget (both normal and cancelled paths).
-                if let Some(ref mut server) = self.upload_server {
+                if let Some(server) = &mut self.upload_server {
                     server.finish_job_bytes(c.byte_len);
                 }
 
-                // If the image was destroyed while the upload was in flight,
-                // discard the texture instead of registering it.
                 if self.cancelled_uploads.remove(&c.image_id) {
                     unsafe { self.gl.delete_texture(c.texture) };
                     tracing::debug!(
@@ -3244,8 +3308,6 @@ impl CanvasManager {
                 self.image_registry
                     .register_shared_texture(c.image_id as u32, c.texture, info);
 
-                // Send the deferred LoadImage response now that the texture
-                // is actually available for rendering.
                 if let Some(resp) = self.pending_load_responses.remove(&c.image_id) {
                     resp.send(Ok((c.width, c.height)));
                 }
@@ -3256,10 +3318,27 @@ impl CanvasManager {
                     c.width,
                     c.height
                 );
+            } else if fence_failed_permanently(status) {
+                // WAIT_FAILED is a known-permanent driver refusal, not a
+                // slow GPU. Retrying it every frame retains the texture and
+                // upload budget forever.
+                unsafe {
+                    self.gl.delete_sync(c.fence);
+                    self.gl.delete_texture(c.texture);
+                }
+                if let Some(server) = &mut self.upload_server {
+                    server.finish_job_bytes(c.byte_len);
+                }
+                self.cancelled_uploads.remove(&c.image_id);
+                if let Some(resp) = self.pending_load_responses.remove(&c.image_id) {
+                    resp.send(Err(shared::error::EngineError::from_detail(
+                        shared::error::ErrorCode::RenderBackendError,
+                        format!("image {} upload fence failed", c.image_id),
+                    )));
+                }
             } else {
-                // Not ready yet — defer to next frame. `stage_upload_drain`
-                // left `pending_uploads` empty but with its capacity, so this
-                // does not go to the heap.
+                // TIMEOUT_EXPIRED is normal GPU lifetime: defer until a later
+                // frame rather than deleting a texture whose DMA may continue.
                 self.pending_uploads.push(c);
             }
         }
@@ -3290,6 +3369,14 @@ impl CanvasManager {
             }
             None => 0,
         }
+    }
+
+    /// Read and reset the number of snapshot fence waits since the last
+    /// present-pass accounting point.
+    pub(crate) fn take_snapshot_fence_waits(&mut self) -> u32 {
+        let waits = self.snapshot_fence_waits;
+        self.snapshot_fence_waits = 0;
+        waits
     }
 
     /// Preserve the first nonempty read of the onscreen default framebuffer.
@@ -3409,12 +3496,14 @@ impl CanvasManager {
 
     fn apply_default_framebuffer_mapping(&mut self, id: CanvasId) {
         if let Some(entry) = self.canvases.get_mut(&id) {
-            apply_bypass_rebind(
+            apply_default_framebuffer(
                 &self.gl,
                 self.bound == BoundContext::Canvas(id),
-                &mut entry.applied_bypass_drawing_buffer,
-                entry.bypass_drawing_buffer,
-                entry.drawing_buffer.as_ref().map(|db| db.fbo),
+                &mut entry.applied_default_framebuffer,
+                default_framebuffer_of(
+                    entry.bypass_drawing_buffer,
+                    entry.drawing_buffer.as_ref().map(|db| db.fbo),
+                ),
             );
         }
     }
@@ -4703,42 +4792,30 @@ impl CanvasManager {
         // pattern in `upload_thread.rs`.
         unsafe {
             if let Ok(fence) = self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) {
-                // glow narrows the spec's GLuint64 timeout to i32
-                // (nanoseconds).  i32::MAX ns ≈ 2.1 s — easily enough
-                // for one Skia paragraph paint; if a single fillText
-                // takes longer than that we have bigger problems than
-                // this fence.
-                //
-                // NOTE (2026-05): we briefly tried swapping this for
-                // `wait_sync` (GPU-side barrier) to avoid the CPU
-                // stall — that immediately regressed §14.1 on arm64
-                // Mali (cocos labels rendered blank again).  The
-                // CPU-side `client_wait_sync` is load-bearing; do
-                // not touch without a Mali device in hand.
-                //
-                // The result is inspected rather than discarded. It used to be
-                // `let _ =`, which threw away the one fact that matters here:
-                // on `TIMEOUT_EXPIRED` the fence did *not* signal, the blit
-                // below samples pre-draw tiles anyway, and the symptom is
-                // exactly the blank-label defect this fence exists to prevent —
-                // silently, with no GL error and nothing to attribute it to. We
-                // still proceed, because a stale snapshot beats abandoning the
-                // frame, but we say so.
                 let waited =
                     self.gl
                         .client_wait_sync(fence, glow::SYNC_FLUSH_COMMANDS_BIT, i32::MAX);
-                if !fence_signalled(waited) {
-                    let cause = if waited == glow::TIMEOUT_EXPIRED {
-                        "timed out"
-                    } else {
-                        "failed"
+                self.snapshot_fence_waits = self.snapshot_fence_waits.saturating_add(1);
+                let status = classify_snapshot_fence(waited);
+                if status != SnapshotFenceStatus::Signalled {
+                    let (message, cause) = match status {
+                        SnapshotFenceStatus::Timeout => (
+                            "snapshot_canvas2d_region: pre-blit fence timed out; stale copy suppressed",
+                            "timed out",
+                        ),
+                        SnapshotFenceStatus::Failed => (
+                            "snapshot_canvas2d_region: pre-blit fence failed; stale copy suppressed",
+                            "failed",
+                        ),
+                        SnapshotFenceStatus::Signalled => unreachable!(),
                     };
                     tracing::warn!(
                         canvas_id = ?canvas_id,
                         "snapshot_canvas2d_region: pre-blit fence {cause} \
-                         (0x{waited:04X}); the snapshot may sample pre-draw \
-                         tile contents (blank or stale text)"
+                         (0x{waited:04X}); no snapshot was published"
                     );
+                    self.gl.delete_sync(fence);
+                    return Err(ee(ErrorCode::RenderBackendError, message));
                 }
                 self.gl.delete_sync(fence);
             }
@@ -5670,9 +5747,15 @@ impl CanvasManager {
             shared::protocol::render_cmd::RenderCmdResp<(u32, u32)>,
         ),
     > {
-        if self.deferred_uploads.len() >= MAX_DEFERRED_UPLOADS {
+        let bytes = image.rgba.len();
+        if !deferred_upload_fits(
+            self.deferred_uploads.len(),
+            self.deferred_upload_bytes,
+            bytes,
+        ) {
             return Err((image, resp));
         }
+        self.deferred_upload_bytes += bytes;
         self.deferred_uploads.push_back(DeferredUpload {
             image_id,
             image,
@@ -5760,29 +5843,38 @@ impl CanvasManager {
             let Some(pending) = self.deferred_uploads.pop_front() else {
                 break;
             };
+            let bytes = pending.image.rgba.len();
             match self.submit_async_upload(pending.image_id, &pending.image, pending.resp) {
-                Ok(()) => continue,
-                Err(resp) => {
-                    match self.async_upload_reject_action(pending.image.rgba.len()) {
-                        AsyncUploadRejectAction::SyncFallback => {
-                            let res = self.load_shared_image(pending.image_id, pending.image);
-                            let _ = resp.send(res);
-                            continue;
-                        }
-                        AsyncUploadRejectAction::DeferRetry => {
-                            // Budget still exhausted; keep the request at the
-                            // head of the queue and retry next frame.
-                            self.deferred_uploads.push_front(DeferredUpload {
-                                image_id: pending.image_id,
-                                image: pending.image,
-                                resp,
-                            });
-                            break;
-                        }
-                    }
+                Ok(()) => {
+                    self.deferred_upload_bytes = self.deferred_upload_bytes.saturating_sub(bytes);
+                    continue;
                 }
+                Err(resp) => match self.async_upload_reject_action(bytes) {
+                    AsyncUploadRejectAction::SyncFallback => {
+                        self.deferred_upload_bytes =
+                            self.deferred_upload_bytes.saturating_sub(bytes);
+                        let res = self.load_shared_image(pending.image_id, pending.image);
+                        let _ = resp.send(res);
+                        continue;
+                    }
+                    AsyncUploadRejectAction::DeferRetry => {
+                        // Budget still exhausted; keep the request and its
+                        // bytes counted at the head for the next frame.
+                        self.deferred_uploads.push_front(DeferredUpload {
+                            image_id: pending.image_id,
+                            image: pending.image,
+                            resp,
+                        });
+                        break;
+                    }
+                },
             }
         }
+    }
+
+    /// Total RGBA bytes retained by deferred uploads.
+    pub(crate) fn deferred_upload_bytes(&self) -> usize {
+        self.deferred_upload_bytes
     }
 
     #[allow(dead_code)]
@@ -6124,41 +6216,39 @@ fn commit_present_outcome(
     }
 }
 
-/// Apply a pending default-FBO mapping only in its owning context. Desired and
-/// applied modes are separate so events while away cannot lose the transition.
+/// Apply a pending default-FBO mapping only in its owning context. What is
+/// installed and what is wanted are tracked separately so events while away
+/// cannot lose the transition, and the installed value is the framebuffer
+/// itself rather than the mode that chose it: a DrawingBuffer rebuilt under an
+/// unchanged mode is a new default framebuffer, and a mode flag cannot say so.
 /// Native bindings are authoritative here: a client ID is not a GL name, and
 /// an invalidated dedup shadow does not tell us which target is default.
-pub(crate) fn apply_bypass_rebind(
+pub(crate) fn apply_default_framebuffer(
     gl: &glow::Context,
     context_is_current: bool,
-    applied_bypass: &mut bool,
-    bypass: bool,
-    drawing_buffer: Option<glow::NativeFramebuffer>,
+    applied: &mut Option<glow::NativeFramebuffer>,
+    desired: Option<glow::NativeFramebuffer>,
 ) {
-    if !context_is_current || *applied_bypass == bypass {
+    if !context_is_current || *applied == desired {
         return;
     }
-    let previous = default_framebuffer_of(*applied_bypass, drawing_buffer);
-    let next = default_framebuffer_of(bypass, drawing_buffer);
-    if previous != next {
-        // A nonzero DrawingBuffer has already passed the split-binding/blit
-        // capability probe in create(). No GLES3 query runs without one.
-        unsafe {
-            let read = gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
-            let draw = gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING);
-            let target = match (read == previous, draw == previous) {
-                (true, true) => Some(glow::FRAMEBUFFER),
-                (true, false) => Some(glow::READ_FRAMEBUFFER),
-                (false, true) => Some(glow::DRAW_FRAMEBUFFER),
-                (false, false) => None,
-            };
-            if let Some(target) = target {
-                gl.bind_framebuffer(target, next);
-                crate::render_diagnostics::bump_state_change();
-            }
+    // A nonzero DrawingBuffer has already passed the split-binding/blit
+    // capability probe in create(). No GLES3 query runs without one.
+    unsafe {
+        let read = gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
+        let draw = gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING);
+        let target = match (read == *applied, draw == *applied) {
+            (true, true) => Some(glow::FRAMEBUFFER),
+            (true, false) => Some(glow::READ_FRAMEBUFFER),
+            (false, true) => Some(glow::DRAW_FRAMEBUFFER),
+            (false, false) => None,
+        };
+        if let Some(target) = target {
+            gl.bind_framebuffer(target, desired);
+            crate::render_diagnostics::bump_state_change();
         }
     }
-    *applied_bypass = bypass;
+    *applied = desired;
 }
 
 /// readPixels consumes READ on GLES3, independently of the draw target. Known
@@ -7040,11 +7130,13 @@ mod tests {
     }
 
     #[test]
-    fn bypass_remaps_only_default_bindings_in_both_directions() {
+    fn default_framebuffer_remaps_only_default_bindings_in_both_directions() {
         use crate::backend::gl::readback_test_gl as fixture;
-        for applied in [false, true] {
-            let old = if applied { 0 } else { 7 };
-            let new = if applied { 7 } else { 0 };
+        for installed_is_zero in [false, true] {
+            let old = if installed_is_zero { 0 } else { 7 };
+            let new = if installed_is_zero { 7 } else { 0 };
+            let applied_fbo = (!installed_is_zero).then(|| fbo(7));
+            let desired = installed_is_zero.then(|| fbo(7));
             for (read, draw) in [(old, old), (old, 9), (8, old), (8, 9)] {
                 let gl = fixture::context();
                 fixture::set_bindings(fixture::Bindings {
@@ -7052,8 +7144,8 @@ mod tests {
                     draw_framebuffer: draw,
                     ..Default::default()
                 });
-                let mut mode = applied;
-                apply_bypass_rebind(&gl, true, &mut mode, !applied, Some(fbo(7)));
+                let mut applied = applied_fbo;
+                apply_default_framebuffer(&gl, true, &mut applied, desired);
                 assert_eq!(
                     fixture::bindings().read_framebuffer,
                     if read == old { new } else { read }
@@ -7062,7 +7154,7 @@ mod tests {
                     fixture::bindings().draw_framebuffer,
                     if draw == old { new } else { draw }
                 );
-                assert_eq!(mode, !applied);
+                assert_eq!(applied, desired);
                 assert_eq!(
                     fixture::mutations(),
                     usize::from(read == old || draw == old)
@@ -7071,37 +7163,57 @@ mod tests {
         }
     }
 
+    /// A DrawingBuffer rebuilt while bypass never changed is a new default
+    /// framebuffer. The mode flag this replaced could not express that, so the
+    /// remap was skipped and the content kept drawing into the deleted name.
     #[test]
-    fn bypass_change_waits_for_its_context_and_then_applies_once() {
+    fn a_rebuilt_drawing_buffer_remaps_even_though_the_mode_is_unchanged() {
         use crate::backend::gl::readback_test_gl as fixture;
         let gl = fixture::context();
-        let mut applied = true;
-        apply_bypass_rebind(&gl, false, &mut applied, false, Some(fbo(7)));
-        assert!(applied);
+        fixture::set_bindings(fixture::Bindings {
+            read_framebuffer: 7,
+            draw_framebuffer: 7,
+            ..Default::default()
+        });
+        let mut applied = Some(fbo(7));
+        apply_default_framebuffer(&gl, true, &mut applied, Some(fbo(11)));
+        assert_eq!(applied, Some(fbo(11)));
+        assert_eq!(fixture::bindings().read_framebuffer, 11);
+        assert_eq!(fixture::bindings().draw_framebuffer, 11);
+        assert_eq!(fixture::mutations(), 1);
+    }
+
+    #[test]
+    fn default_framebuffer_change_waits_for_its_context_and_then_applies_once() {
+        use crate::backend::gl::readback_test_gl as fixture;
+        let gl = fixture::context();
+        let mut applied = None;
+        apply_default_framebuffer(&gl, false, &mut applied, Some(fbo(7)));
+        assert_eq!(applied, None);
         assert_eq!(fixture::mutations(), 0);
         // Return to the owning context, with READ default and DRAW custom.
         fixture::set_bindings(fixture::Bindings {
             draw_framebuffer: 0x8000_0009,
             ..Default::default()
         });
-        apply_bypass_rebind(&gl, true, &mut applied, false, Some(fbo(7)));
-        assert!(!applied);
+        apply_default_framebuffer(&gl, true, &mut applied, Some(fbo(7)));
+        assert_eq!(applied, Some(fbo(7)));
         assert_eq!(fixture::bindings().read_framebuffer, 7);
         assert_eq!(fixture::bindings().draw_framebuffer, 0x8000_0009);
         assert_eq!(fixture::mutations(), 1);
-        apply_bypass_rebind(&gl, true, &mut applied, false, Some(fbo(7)));
+        apply_default_framebuffer(&gl, true, &mut applied, Some(fbo(7)));
         assert_eq!(fixture::mutations(), 1);
     }
 
     #[test]
-    fn bypass_changes_that_cancel_while_away_need_no_bind() {
+    fn default_framebuffer_changes_that_cancel_while_away_need_no_bind() {
         use crate::backend::gl::readback_test_gl as fixture;
         let gl = fixture::context();
-        let mut applied = true;
-        apply_bypass_rebind(&gl, false, &mut applied, false, Some(fbo(7)));
-        apply_bypass_rebind(&gl, false, &mut applied, true, Some(fbo(7)));
-        apply_bypass_rebind(&gl, true, &mut applied, true, Some(fbo(7)));
-        assert!(applied);
+        let mut applied = None;
+        apply_default_framebuffer(&gl, false, &mut applied, Some(fbo(7)));
+        apply_default_framebuffer(&gl, false, &mut applied, None);
+        apply_default_framebuffer(&gl, true, &mut applied, None);
+        assert_eq!(applied, None);
         assert_eq!(fixture::mutations(), 0);
     }
 
@@ -7150,9 +7262,9 @@ mod tests {
     #[test]
     fn default_mapping_without_a_drawing_buffer_needs_no_split_bindings() {
         use crate::backend::gl::readback_test_gl as fixture;
-        let gl = fixture::context_gles2(false, false);
-        let mut applied = false;
-        apply_bypass_rebind(&gl, true, &mut applied, true, None);
+        let gl = fixture::context_gles2(fixture::Gles2Caps::default());
+        let mut applied = None;
+        apply_default_framebuffer(&gl, true, &mut applied, None);
         assert!(reads_from_default_framebuffer(&gl, false, None, None));
         assert_eq!(fixture::mutations(), 0);
         assert_eq!(fixture::unsupported_calls(), 0);
@@ -7605,5 +7717,43 @@ mod tests {
         // here the assert is an early warning.
         assert!(MAX_DEFERRED_UPLOADS >= 32);
         assert!(MAX_DEFERRED_UPLOADS <= 4096);
+    }
+
+    #[test]
+    fn wait_failed_is_permanent_but_timeout_is_deferred() {
+        assert!(fence_failed_permanently(glow::WAIT_FAILED));
+        assert!(!fence_failed_permanently(glow::TIMEOUT_EXPIRED));
+        assert!(!fence_failed_permanently(glow::ALREADY_SIGNALED));
+    }
+
+    #[test]
+    fn deferred_upload_byte_budget_rejects_before_entry_cap() {
+        assert!(deferred_upload_fits(
+            MAX_DEFERRED_UPLOADS - 1,
+            MAX_DEFERRED_BYTES - 4,
+            4
+        ));
+        assert!(!deferred_upload_fits(
+            MAX_DEFERRED_UPLOADS - 1,
+            MAX_DEFERRED_BYTES - 4,
+            5,
+        ));
+        assert!(!deferred_upload_fits(0, MAX_DEFERRED_BYTES, 1));
+    }
+
+    #[test]
+    fn snapshot_fence_status_has_explicit_timeout_and_failure_results() {
+        assert_eq!(
+            classify_snapshot_fence(glow::ALREADY_SIGNALED),
+            SnapshotFenceStatus::Signalled
+        );
+        assert_eq!(
+            classify_snapshot_fence(glow::TIMEOUT_EXPIRED),
+            SnapshotFenceStatus::Timeout
+        );
+        assert_eq!(
+            classify_snapshot_fence(glow::WAIT_FAILED),
+            SnapshotFenceStatus::Failed
+        );
     }
 }

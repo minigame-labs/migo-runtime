@@ -58,10 +58,40 @@ impl CanvasPath {
         }
     }
 
+    /// Clear the current path while retaining Skia's internal arrays.
+    ///
+    /// `beginPath()` is a hot operation for content that rebuilds the same
+    /// geometry every frame; Skia's reset preserves the builder's storage so
+    /// this avoids reallocating on the next path.  Call [`Self::shrink`] at
+    /// destroy, resize, or a real low-memory event when that high-water
+    /// storage is no longer useful.
     pub fn reset(&mut self) {
+        self.inner.reset();
+        self.has_current_point = false;
+        self.subpath_start = None;
+    }
+
+    /// Release retained Skia path storage and return to a fresh builder.
+    ///
+    /// This is intentionally separate from [`Self::reset`]: normal
+    /// `beginPath()` calls should reuse storage, while lifecycle and
+    /// low-memory paths must be able to drop a pathological high-water mark.
+    pub fn shrink(&mut self) {
         self.inner = PathBuilder::new();
         self.has_current_point = false;
         self.subpath_start = None;
+    }
+
+    /// Number of points currently retained by the mutable path.
+    #[inline]
+    pub fn point_count(&self) -> usize {
+        self.inner.count_points()
+    }
+
+    /// Number of verbs currently retained by the mutable path.
+    #[inline]
+    pub fn verb_count(&self) -> usize {
+        self.inner.verbs().len()
     }
 
     /// Snapshot the current state as an immutable `Path` ready for drawing.
@@ -429,5 +459,97 @@ mod tests {
         p.ellipse(20.0, 20.0, 0.0, 10.0, 0.0, 0.0, PI, false);
         let b = bounds(&p);
         assert!(b.right <= 20.0 + 1e-3);
+    }
+    // ---- T-M2 high-water and builder-reuse tests -------------------------
+
+    /// **HIGH-WATER**: After building a large path, calling `reset()` must
+    /// clear the accumulated complexity, and `shrink()` must bring it down
+    /// to zero even if `reset()` retained Skia's internal buffer for reuse.
+    ///
+    /// This is a host-half T-M2 guard: path complexity must not persist
+    /// across a canvas `beginPath` or an explicit reset event.
+    #[test]
+    fn high_water_path_shrink_releases_capacity() {
+        let mut p = CanvasPath::new();
+        // Build a large path (500 move+line pairs = 1000+ operations).
+        for i in 0..500_u32 {
+            p.move_to(i as f32, 0.0);
+            p.line_to(i as f32 + 0.5, 1.0);
+        }
+        assert!(
+            p.point_count() >= 500,
+            "expected >= 500 points before reset, got {}",
+            p.point_count()
+        );
+        assert!(p.verb_count() >= 500, "expected >= 500 verbs before reset");
+
+        // After reset(), all content must be cleared (high-water reachable
+        // via a fresh beginPath).
+        p.reset();
+        assert_eq!(p.point_count(), 0, "reset must clear all points");
+        assert_eq!(p.verb_count(), 0, "reset must clear all verbs");
+        assert!(!p.has_current_point(), "reset must clear has_current_point");
+        assert!(p.snapshot().is_empty(), "reset must produce an empty path");
+
+        // After shrink(), a fresh PathBuilder is installed, releasing the
+        // Skia-internal buffer.  The counts are still zero.
+        p.shrink();
+        assert_eq!(p.point_count(), 0, "shrink must leave point count zero");
+        assert_eq!(p.verb_count(), 0, "shrink must leave verb count zero");
+        assert!(!p.has_current_point());
+    }
+
+    /// **SEMANTICS**: After `reset()`, adding the same geometry must produce
+    /// identical bounds and point counts as a freshly constructed builder.
+    ///
+    /// This pins the invariant that the in-place Skia reset fully clears
+    /// internal state: reusing the buffer must not leak geometry from the
+    /// previous path into the new one.
+    #[test]
+    fn builder_reuse_semantics_match_fresh_builder() {
+        fn add_geometry(p: &mut CanvasPath) {
+            p.move_to(0.0, 0.0);
+            p.line_to(10.0, 0.0);
+            p.line_to(10.0, 10.0);
+            p.close_path();
+            p.arc(50.0, 50.0, 20.0, 0.0, TAU, false);
+            p.rect(100.0, 100.0, 30.0, 20.0);
+        }
+
+        // Fresh builder baseline.
+        let mut fresh = CanvasPath::new();
+        add_geometry(&mut fresh);
+        let bounds_fresh = bounds(&fresh);
+        let points_fresh = fresh.point_count();
+        let verbs_fresh = fresh.verb_count();
+        assert!(points_fresh > 0);
+
+        // Pollute a builder, then reset and rebuild.
+        let mut reused = CanvasPath::new();
+        reused.move_to(999.0, 999.0);
+        reused.line_to(-999.0, -999.0);
+        reused.reset();
+        add_geometry(&mut reused);
+
+        assert_eq!(
+            reused.point_count(),
+            points_fresh,
+            "reused builder must have same point count as fresh builder"
+        );
+        assert_eq!(
+            reused.verb_count(),
+            verbs_fresh,
+            "reused builder must have same verb count as fresh builder"
+        );
+        let bounds_reused = bounds(&reused);
+        assert!(
+            (bounds_reused.left - bounds_fresh.left).abs() < 1e-3,
+            "left mismatch: fresh={}, reused={}",
+            bounds_fresh.left,
+            bounds_reused.left
+        );
+        assert!((bounds_reused.right - bounds_fresh.right).abs() < 1e-3);
+        assert!((bounds_reused.top - bounds_fresh.top).abs() < 1e-3);
+        assert!((bounds_reused.bottom - bounds_fresh.bottom).abs() < 1e-3);
     }
 }

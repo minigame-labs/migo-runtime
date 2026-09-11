@@ -338,7 +338,7 @@ pub fn decode_inline_bytes(
                 "decode_inline_bytes resize {}x{} -> {}x{}",
                 decoded.width, decoded.height, tw, th
             );
-            Ok(migo_io::resize_image(decoded, tw, th))
+            migo_io::try_resize_image(decoded, tw, th)
         }
         _ => Ok(decoded),
     }
@@ -524,5 +524,42 @@ mod tests {
         let _ = base64::engine::general_purpose::STANDARD
             .decode(TINY_PNG_B64)
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+    const TINY_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    /// The defect this pins is a requested target size being *silently
+    /// dropped* -- the old path returned `Ok` holding the full-size input, so
+    /// a caller asking for 1x1 got the original pixels and no way to know.
+    ///
+    /// The error code is deliberately not pinned in the unsupported case.
+    /// `resize_capable()` and the inline PNG decoder are gated on the same
+    /// `rust-image-decode` feature, so in a build without it the decode
+    /// refuses before the resize is ever reached, and which of the two
+    /// refusals arrives first is an implementation detail. What must hold in
+    /// every configuration is the part a caller can observe: never `Ok` with
+    /// pixels that ignore the requested size.
+    #[test]
+    fn target_resize_is_honoured_or_refused_but_never_silently_ignored() {
+        use base64::Engine;
+
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(TINY_PNG_B64)
+            .expect("fixture base64");
+        match decode_inline_bytes(&bytes, None, Some(1), Some(1)) {
+            Ok(image) => assert_eq!(
+                (image.width, image.height),
+                (1, 1),
+                "a successful decode must honour the requested target size"
+            ),
+            Err(error) => assert!(
+                !migo_io::resize_capable() || error.code != ErrorCode::Unsupported,
+                "a resize-capable build must not report resize as unsupported"
+            ),
+        }
     }
 }

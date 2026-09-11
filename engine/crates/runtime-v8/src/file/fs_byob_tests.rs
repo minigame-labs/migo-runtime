@@ -136,8 +136,10 @@ fn async_raw_read_returns_owned_bytes_without_writing_the_js_view() {
         if (target.some(value => value !== 165)) throw new Error('worker changed JS destination');
         if (!(result instanceof Uint8Array) || result.join(',') !== '1,2,3')
             throw new Error('read did not return owned bytes');
-        if (result.byteLength !== 3 || result.buffer.byteLength !== 4 ||
-            new Uint8Array(result.buffer)[3] !== 0) throw new Error('invalid staging capacity');
+        // A regular file's remaining length is known, so staging is exact: the
+        // ArrayBuffer handed to V8 holds the payload and nothing else.
+        if (result.byteLength !== 3 || result.buffer.byteLength !== 3)
+            throw new Error('invalid staging capacity');
     "#,
     );
 }

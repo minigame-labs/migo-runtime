@@ -17,6 +17,9 @@ class TCPSocket {
         this._rid = -1;
         this._closed = false;
         this._connected = false;
+        // A connect result may arrive after a newer attempt. The generation
+        // keeps stale results from publishing a rid or terminating the winner.
+        this._connectGen = 0;
 
         // Per-instance event listeners
         this._connectListeners = createListenerGroup('TCPSocket onConnect');
@@ -42,13 +45,14 @@ class TCPSocket {
             return;
         }
 
+        const myGen = ++this._connectGen;
         (async () => {
             try {
                 const result = await op_tcp_connect(address, port, timeout);
-                if (this._closed) {
-                    // close() ran while the connect was in flight; tear down
-                    // the freshly-created socket instead of leaving a leaked
-                    // (ghost) connection the caller believes is closed.
+                if (this._closed || this._connectGen !== myGen) {
+                    // The socket was closed or superseded while connect ran.
+                    // The result owns a fresh native resource, so close it
+                    // before dropping the stale result.
                     try { op_tcp_close(result.rid); } catch (_) { /* ignore */ }
                     return;
                 }
@@ -70,12 +74,12 @@ class TCPSocket {
                 });
 
                 // Start the event polling loop
-                await this._pollEvents();
+                await this._pollEvents(myGen);
 
             } catch (err) {
-                // If close() already ran (e.g. connect failed after the
-                // caller closed), stay silent: no post-close onError/onClose.
-                if (this._closed) return;
+                // A stale failure must not report an error or close the
+                // currently winning connection.
+                if (this._closed || this._connectGen !== myGen) return;
                 this._fireError(err.message || 'connect:fail unknown error');
                 this._doClose();
             }
@@ -180,24 +184,29 @@ class TCPSocket {
         if (this._closed) return;
         this._closed = true;
         this._connected = false;
+        ++this._connectGen;
         if (this._rid >= 0) {
             try { op_tcp_close(this._rid); } catch (_) { /* ignore */ }
         }
         this._fireClose();
     }
 
-    async _pollEvents() {
-        while (!this._closed && this._rid >= 0) {
+    async _pollEvents(myGen) {
+        while (!this._closed && this._connectGen === myGen && this._rid >= 0) {
             let event;
             try {
                 event = await op_tcp_next_event(this._rid);
             } catch (err) {
-                if (!this._closed) {
+                if (!this._closed && this._connectGen === myGen) {
                     this._fireError(err.message || 'connection lost');
                     this._doClose();
                 }
                 return;
             }
+
+            // close()/a newer connect may have invalidated the result while
+            // the receive was pending. Never dispatch stale data.
+            if (this._closed || this._connectGen !== myGen) return;
 
             switch (event.type) {
                 case 'message': {

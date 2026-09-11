@@ -950,10 +950,8 @@ pub async fn op_fetch_upload(
             .map_err(|e| JsErrorBox::generic(e.to_string()))?
     };
 
-    // Resolve the JS-visible virtual path (e.g. `/user/foo.png`) into
-    // a real filesystem path via the same VFS the file API uses. We
-    // do the resolve inside a short `borrow` scope so the RefCell
-    // guard is dropped before `await` points below.
+    // Resolve the JS-visible virtual path before entering asynchronous file
+    // operations, using the same VFS boundary as the file API.
     let real_path = {
         let st = state.borrow();
         let host = st.borrow::<shared::op_state::HostOpState>();
@@ -961,11 +959,54 @@ pub async fn op_fetch_upload(
         let mount_table = host.mount_table.as_ref().map(|arc| arc.as_ref());
         resolve_upload_path(vfs, mount_table, &file_path)?
     };
+    // Capture the strong cancel owner before the first file-system await.
+    // JS abort() closes/removes this rid synchronously; a supplied rid that
+    // is already absent therefore means "cancelled", never "uncancellable".
+    let cancel_handle = if cancel_rid == 0 {
+        None
+    } else {
+        let st = state.borrow();
+        st.resource_table
+            .get::<FetchCancelHandle>(cancel_rid)
+            .ok()
+            .map(|h| h.0.clone())
+    };
+    if cancel_rid != 0 && cancel_handle.is_none() {
+        return Ok(FetchUploadResult {
+            error: Some("uploadFile:fail aborted".to_string()),
+            ..Default::default()
+        });
+    }
 
-    let file = tokio::fs::File::open(&real_path)
-        .await
-        .map_err(|e| JsErrorBox::generic(format!("uploadFile:fail open {}: {}", file_path, e)))?;
-    let file_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    let file_open = tokio::fs::File::open(&real_path);
+    let file = match cancel_handle.clone() {
+        Some(cancel) => match file_open.or_cancel(cancel).await {
+            Ok(result) => result.map_err(|e| {
+                JsErrorBox::generic(format!("uploadFile:fail open {}: {}", file_path, e))
+            })?,
+            Err(_) => {
+                return Ok(FetchUploadResult {
+                    error: Some("uploadFile:fail aborted".to_string()),
+                    ..Default::default()
+                });
+            }
+        },
+        None => file_open.await.map_err(|e| {
+            JsErrorBox::generic(format!("uploadFile:fail open {}: {}", file_path, e))
+        })?,
+    };
+    let file_size = match cancel_handle.clone() {
+        Some(cancel) => match file.metadata().or_cancel(cancel).await {
+            Ok(metadata) => metadata.map(|m| m.len()).unwrap_or(0),
+            Err(_) => {
+                return Ok(FetchUploadResult {
+                    error: Some("uploadFile:fail aborted".to_string()),
+                    ..Default::default()
+                });
+            }
+        },
+        None => file.metadata().await.map(|m| m.len()).unwrap_or(0),
+    };
 
     // Guess MIME type from filename extension
     let mime = match filename.rsplit('.').next().map(|e| e.to_lowercase()) {
@@ -1001,11 +1042,23 @@ pub async fn op_fetch_upload(
     let file_part = if file_size == 0 {
         // No length from metadata, so fall back to chunked encoding; reqwest
         // picks that for a part with no declared length.
-        reqwest::multipart::Part::stream(Body::wrap_stream(file_to_byte_stream(
-            tokio::fs::File::open(&real_path)
+        let reopened = tokio::fs::File::open(&real_path);
+        let reopened = match cancel_handle.clone() {
+            Some(cancel) => match reopened.or_cancel(cancel).await {
+                Ok(result) => result
+                    .map_err(|e| JsErrorBox::generic(format!("uploadFile:fail reopen: {e}")))?,
+                Err(_) => {
+                    return Ok(FetchUploadResult {
+                        error: Some("uploadFile:fail aborted".to_string()),
+                        ..Default::default()
+                    });
+                }
+            },
+            None => reopened
                 .await
                 .map_err(|e| JsErrorBox::generic(format!("uploadFile:fail reopen: {e}")))?,
-        )))
+        };
+        reqwest::multipart::Part::stream(Body::wrap_stream(file_to_byte_stream(reopened)))
     } else {
         reqwest::multipart::Part::stream_with_length(
             Body::wrap_stream(file_to_byte_stream(file)),
@@ -1059,29 +1112,37 @@ pub async fn op_fetch_upload(
     }
     request = request.headers(header_map);
 
-    // Look up the JS-provided cancel handle so `UploadTask.abort()`
-    // (which closes the handle's resource) interrupts the in-flight
-    // upload. A missing handle (already closed, or never created) simply
-    // means "not cancellable" and the exchange runs to completion.
-    let cancel_handle = {
-        let st = state.borrow();
-        st.resource_table
-            .get::<FetchCancelHandle>(cancel_rid)
-            .ok()
-            .map(|h| h.0.clone())
-    };
+    // Upload responses are buffered for UploadResponse.data, so bound the
+    // response independently of the streamed request body. Content-Length is
+    // not sufficient: chunked responses are checked while bytes arrive.
+    const MAX_BUFFERED_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
     // Drive send + response read as one cancellable unit.
     let exchange = async move {
-        let res = request.send().await?;
+        let res = request.send().await.map_err(|e| e.to_string())?;
         let status = res.status().as_u16();
         let mut res_headers = Vec::new();
         for (key, val) in res.headers().iter() {
             res_headers.push((key.as_str().into(), val.as_bytes().into()));
         }
-        let body = res.text().await?;
-        Ok::<FetchUploadResult, reqwest::Error>(FetchUploadResult {
-            data: body,
+        let mut stream = res.bytes_stream();
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| e.to_string())?;
+            let next_len = body.len().saturating_add(chunk.len());
+            if next_len > MAX_BUFFERED_RESPONSE_BYTES {
+                return Ok::<FetchUploadResult, String>(FetchUploadResult {
+                    status_code: status,
+                    headers: res_headers,
+                    total_bytes_sent: file_size,
+                    error: Some("uploadFile:fail response body exceeds limit".to_string()),
+                    ..Default::default()
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok::<FetchUploadResult, String>(FetchUploadResult {
+            data: String::from_utf8_lossy(&body).into_owned(),
             status_code: status,
             headers: res_headers,
             total_bytes_sent: file_size,

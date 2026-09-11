@@ -11,19 +11,19 @@ use std::sync::Arc;
 
 use tracing::{debug, error, info};
 
+use crate::runtime::host::Host;
+use crate::runtime::registry;
+use crate::runtime::session_thread::{
+    HostThread, SessionThreadContext, SpawnedSurfaceHost, create_basic_runtime,
+    create_runtime_before_ready, spawn_session_thread,
+};
+use crate::services::PlatformServices;
 use shared::{
     config::InitOptions,
     error::{EngineError, EngineResult, ErrorCode},
     protocol::host_cmd::HostCommand,
     surface::{PublicSurfaceGeneration, SurfaceRef},
 };
-
-use crate::runtime::host::Host;
-use crate::runtime::session_thread::{
-    HostThread, SessionThreadContext, SpawnedSurfaceHost, create_basic_runtime,
-    create_runtime_before_ready, spawn_session_thread,
-};
-use crate::services::PlatformServices;
 
 /// Start a Host, with or without the window Surface it will render into.
 ///
@@ -127,6 +127,10 @@ fn run_embedded_session(ctx: SessionThreadContext) {
             return;
         }
     };
+    if let Err(error) = registry::install_shutdown_notify(id, host.shutdown_notify()) {
+        error!("[Host {id}] failed to install startup cancellation wake: {error}");
+        return;
+    }
 
     let runtime = match create_runtime_before_ready(ready_tx, create_basic_runtime) {
         Ok(rt) => rt,

@@ -122,8 +122,13 @@ impl AtlasManager {
         let texture = self.textures[region.atlas_id as usize];
 
         unsafe {
+            // Content owns the unpack state and this texture unit's binding.
+            // Uploading a CPU slice while its PIXEL_UNPACK_BUFFER is bound feeds
+            // the pointer to GL as a buffer offset, and its row length or skips
+            // would relocate every glyph; both outlive this call otherwise.
+            let _unpack = crate::backend::gl::readback::CompactPixelUnpackGuard::new(gl, 4);
+            let previous = gl.get_parameter_texture(glow::TEXTURE_BINDING_2D);
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
             gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0, // level
@@ -135,7 +140,7 @@ impl AtlasManager {
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(rgba)),
             );
-            gl.bind_texture(glow::TEXTURE_2D, None);
+            gl.bind_texture(glow::TEXTURE_2D, previous);
         }
 
         debug!(

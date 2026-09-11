@@ -75,16 +75,25 @@ pub fn op_camera_destroy(state: &mut OpState, #[smi] camera_id: u32) -> Result<(
     })
 }
 
-/// Take a photo. Options as JSON, returns JSON with tempImagePath.
-#[op2]
-#[string]
+/// Start a photo capture without blocking the V8 isolate.
+///
+/// The returned request id is echoed by the platform's `takePhotoResult`
+/// camera event.  Keeping allocation here, before entering the platform
+/// service, means every accepted request has a unique completion identity.
+#[op2(fast)]
 pub fn op_camera_take_photo(
     state: &mut OpState,
     #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
+) -> Result<u32, JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
+    let request_id = state
+        .borrow::<HostOpState>()
+        .callback_ids
+        .allocate()
+        .map_err(|error| JsErrorBox::generic(error.to_string()))? as u32;
     with_camera_service(state, "camera.takePhoto:fail not supported", |c| {
-        c.take_photo(options_json)
+        c.take_photo_async(request_id, options_json)?;
+        Ok(request_id)
     })
 }
 

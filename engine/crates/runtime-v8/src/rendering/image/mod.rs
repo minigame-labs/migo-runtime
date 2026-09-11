@@ -1033,6 +1033,13 @@ async fn op_load_image_subrect_inner(
         );
     }
 
+    if resize_w > 0 && resize_h > 0 && !migo_io::resize_capable() {
+        shared::bail!(
+            ErrorCode::Unsupported,
+            "createImageBitmap resize requires the rust-image-decode feature"
+        );
+    }
+
     // Pull decoder / VFS / mount table handles in one borrow.
     let (scheduler, vfs, mount_table, game_cache_dir, gpu_caps, canvas_ctx, image_cache) = {
         let op = state.borrow();
@@ -1118,6 +1125,8 @@ async fn op_load_image_subrect_inner(
     }
 
     // Decode the full-resolution image (LRU-hit when warm).
+    let transform_scheduler = std::sync::Arc::clone(&scheduler);
+
     let decoded = migo_io::image_ops::read_image_rgba8(
         scheduler,
         real_src.clone(),
@@ -1131,37 +1140,28 @@ async fn op_load_image_subrect_inner(
         migo_io::image_ops::ImageDecodePolicy::RgbaOnly,
     )
     .await?;
-
-    // Crop + resize.  `crop_image` handles out-of-bounds sx/sy/sw/sh
-    // per the WHATWG spec (transparent-black fill); `resize_image`
-    // is aspect-preserving and returns the input when no down-scale
-    // is needed.  Non-RGBA variants (KTX2 compressed etc.) fall
-    // back to an InvalidOperation — crop isn't well-defined for
-    // block-compressed textures without decompressing first, and
-    // we don't want to silently do the expensive path.
+    // Convert opaque GPU-native variants to owned RGBA, then submit crop and
+    // resize together so the worker keeps the source/intermediate/output
+    // reservation until the transform actually ends.
     let rgba = match decoded.image {
         DecodedImage::Rgba(r) => r,
-        DecodedImage::HardwareBuffer(_) => {
-            // For sub-rect crop we need CPU-side pixels.  AHB-backed
-            // sources are downgraded via `into_rgba` (a single
-            // CPU-side memcpy through the AHB lock); the result is
-            // identical to the native RGBA path from there on.
-            decoded.image.into_rgba()?
-        }
+        DecodedImage::HardwareBuffer(ahb) => DecodedImage::HardwareBuffer(ahb).into_rgba()?,
         DecodedImage::Compressed(_) => shared::bail!(
             ErrorCode::InvalidOperation,
             "createImageBitmap sub-rect does not support GPU-compressed sources yet"
         ),
     };
-    let cropped = migo_io::crop_image(rgba, sx, sy, sw, sh)?;
-    let final_img = if resize_w > 0
-        && resize_h > 0
-        && (resize_w != cropped.width || resize_h != cropped.height)
-    {
-        migo_io::resize_image(cropped, resize_w, resize_h)
-    } else {
-        cropped
-    };
+    let final_img = migo_io::image_ops::run_subrect_transform(
+        transform_scheduler,
+        rgba,
+        sx,
+        sy,
+        sw,
+        sh,
+        resize_w,
+        resize_h,
+    )
+    .await?;
     let final_w = final_img.width as usize;
     let final_h = final_img.height as usize;
 
