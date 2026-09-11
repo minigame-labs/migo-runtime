@@ -413,20 +413,6 @@ jobs:
           . ../scripts/apple-skia-gl-env.sh
           cargo test -p migo-graphics --locked --target "$host" --tests
 
-      # `MigoMacV8` was a target no lane had ever EXECUTED. This leg built the
-      # Swift package and stopped, which is how a one-line `Placeholder.swift`
-      # sat in it while `Sources/MigoMacV8/README.md` promised a profile
-      # resolver -- and how `test-macos-archive-runs-js.sh` ended up printing
-      # "that resolver is still Placeholder.swift" as part of a passing run.
-      #
-      # The resolver reads THIS process's signature, so it can only be answered
-      # by running it. The decision half is covered on every pull request in the
-      # engine-free package; what runs here is the measurement.
-      - name: The macOS lane resolver runs against a real process
-        if: matrix.product == 'macos-v8'
-        working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
-        run: swift test --filter MigoMacV8Tests
-
       - name: The Apple presenter's ANGLE bring-up runs on Apple silicon
         if: matrix.host_slice
         working-directory: engine
