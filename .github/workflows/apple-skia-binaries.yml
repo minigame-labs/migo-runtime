@@ -96,10 +96,26 @@ jobs:
         run: |
           export CC=clang CXX=clang++
           cargo build -p migo-graphics --target ${{ matrix.target }} --lib
+          # Every key found, not the last one. A tree can hold more than one
+          # skia-bindings output directory -- this workspace's profiles differ by
+          # `embed-icudtl`, which changes the cargo fingerprint -- and taking
+          # whichever the glob ordered last would be a silent wrong answer on the
+          # day two of them stop agreeing. They agree today, because
+          # `embed-icudtl` is not part of the key; this fails loudly if that
+          # changes rather than publishing an archive under a key that only some
+          # consumers want.
           found=""
           for candidate in target/${{ matrix.target }}/debug/build/skia-bindings-*/out/skia/key.txt; do
             [[ -f "$candidate" ]] || continue
-            found="$(cat "$candidate")"
+            this="$(cat "$candidate")"
+            if [[ -n "$found" && "$found" != "$this" ]]; then
+              echo "::error::two skia-bindings builds in this tree want different keys:" >&2
+              echo "::error::  $found" >&2
+              echo "::error::  $this" >&2
+              echo "::error::One archive cannot answer to both. Build them separately." >&2
+              exit 1
+            fi
+            found="$this"
           done
           if [[ -z "$found" ]]; then
             echo "::error::no key.txt under the build tree, so upstream published nothing for this" >&2
