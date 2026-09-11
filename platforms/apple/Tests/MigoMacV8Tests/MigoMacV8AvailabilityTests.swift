@@ -33,19 +33,29 @@ import XCTest
         }
 
         func testTheTestRunnerIsNotOfferedTheV8Lane() {
-            // `swift test` produces an unsigned or ad-hoc binary with no
-            // entitlements, which is exactly the shape the resolver must refuse.
-            // If this ever passes the other way, something granted JIT to an
-            // xctest bundle and the assumption behind the whole lane is wrong.
+            // The process this reads is Apple's `xctest` runner, not this
+            // bundle: an XCTest bundle is loaded INTO that runner, and
+            // `SecCodeCopySelf` answers for the process. Measured rather than
+            // assumed -- ad-hoc signing the bundle, and then the Mach-O inside
+            // it, with `com.apple.security.cs.allow-jit` changes nothing that
+            // this test can see, while the same signature on a standalone
+            // executable reads back fine.
+            //
+            // So the positive branch is NOT reachable from here, and this test
+            // does not pretend otherwise. It asserts the branch that is: the
+            // runner carries no such entitlement, and the resolver refuses.
+            //
+            // The positive branch is covered where it can be: exhaustively in
+            // `MigoMacLaneSelectionTests` against the decision table, and on a
+            // real signed process by `scripts/test-macos-archive-runs-js.sh`,
+            // which ad-hoc signs a host with and without the entitlement and
+            // measures what V8 actually does under each.
             let signature = MigoMacV8Availability.observeSelf()
-            guard signature.jitEntitlement == .no else {
-                // Not a failure: a maintainer running this under a signed host
-                // with the entitlement gets the other branch, which is the one
-                // below and is also worth asserting.
-                XCTAssertEqual(signature.jitEntitlement, .yes)
-                XCTAssertEqual(MigoMacV8Availability.resolve().profile, .macosV8Native)
-                return
-            }
+            XCTAssertEqual(
+                signature.jitEntitlement, .no,
+                "the xctest runner carries com.apple.security.cs.allow-jit, which would mean "
+                    + "Apple started shipping it entitled and this test is reading a different "
+                    + "process than it thinks")
             let decision = MigoMacV8Availability.resolve()
             XCTAssertEqual(decision.profile, .macosWebKitFull)
             XCTAssertEqual(decision.reason, .capabilityProbeFailed)
