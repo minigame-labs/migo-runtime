@@ -26,8 +26,14 @@ SYNC_TEST="platforms/apple/WebContent/PerformancePlus/test/sync-mailbox.test.mjs
 SYNC_SRC="platforms/apple/WebContent/PerformancePlus/src/sync-mailbox.mjs"
 RELAY_TEST="platforms/apple/WebContent/PerformancePlus/test/sync-relay.test.mjs"
 RELAY_SRC="platforms/apple/WebContent/PerformancePlus/src/sync-relay.mjs"
+DOWN_TEST="platforms/apple/WebContent/PerformancePlus/test/downlink.test.mjs"
+DOWN_SRC="platforms/apple/WebContent/PerformancePlus/src/downlink.mjs"
+SESSION_TEST="platforms/apple/WebContent/PerformancePlus/test/frame-session.test.mjs"
+SESSION_SRC="platforms/apple/WebContent/PerformancePlus/src/frame-session.mjs"
+BOOTSTRAP_SRC="platforms/apple/WebContent/PerformancePlus/src/worker-bootstrap.mjs"
 
-for required in "$TEST" "$ENCODER" "$SYNC_TEST" "$SYNC_SRC" "$RELAY_TEST" "$RELAY_SRC"; do
+for required in "$TEST" "$ENCODER" "$SYNC_TEST" "$SYNC_SRC" "$RELAY_TEST" "$RELAY_SRC" \
+                "$DOWN_TEST" "$DOWN_SRC" "$SESSION_TEST" "$SESSION_SRC" "$BOOTSTRAP_SRC"; do
     if [[ ! -f "$required" ]]; then
         echo "FAIL: $required is missing; the cross-language corpus check cannot run." >&2
         exit 1
@@ -45,12 +51,24 @@ fi
 # The encoder must not have grown a dependency. It runs inside WebContent next
 # to untrusted game code; every import is one more thing inside that boundary,
 # and the test harness is the only place allowed to reach the filesystem.
-if grep -nE '^\s*import\b' "$ENCODER" >/dev/null 2>&1; then
-    echo "FAIL: $ENCODER imports something. It runs in WebContent beside untrusted" >&2
-    echo "      content and must stay dependency-free; the test harness does the I/O." >&2
-    grep -nE '^\s*import\b' "$ENCODER" >&2
-    exit 1
-fi
+# A sibling in this same directory is not a dependency -- `sync-relay.mjs`
+# imports `sync-mailbox.mjs` and both ship together -- so what is forbidden is
+# an import that reaches OUT of the producer: a package name, a parent
+# directory, a URL, a Node builtin. The rule was once "no imports at all",
+# which was true of the one file it was applied to and would have refused the
+# split the producer has since grown.
+for shipped in "$ENCODER" "$SYNC_SRC" "$RELAY_SRC" "$DOWN_SRC" "$SESSION_SRC" \
+               "$BOOTSTRAP_SRC"; do
+    outside="$(grep -nE "^\s*(import|export)\b.*\bfrom\s+[\"']" "$shipped" \
+        | grep -vE "from\s+[\"']\./[A-Za-z0-9_.-]+\.mjs[\"']" || true)"
+    if [[ -n "$outside" ]]; then
+        echo "FAIL: $shipped imports from outside the producer. It runs in WebContent" >&2
+        echo "      beside untrusted content; only ./sibling.mjs is allowed, and the test" >&2
+        echo "      harness does the I/O." >&2
+        printf '%s\n' "$outside" >&2
+        exit 1
+    fi
+done
 
 # The shipped bundle must carry the producer and not its test suite.
 #
@@ -213,3 +231,59 @@ if ! printf '%s\n' "$output" | grep -qE 'decoded 64 JavaScript-encoded readPixel
     echo "FAIL: the interop test did not report decoding 64 records; it may not have run." >&2
     exit 1
 fi
+
+# --- the host-to-producer direction, in both directions ----------------------
+#
+# `downlink.mjs` reads what `frame_wire::downlink` writes: per-frame verdicts
+# and frame-clock ticks, over the loopback socket. In production only one
+# direction runs -- the host writes, the producer reads -- and that is exactly
+# why both are checked here. A pair of implementations that agree only in the
+# direction somebody remembered to test is one implementation with extra steps.
+#
+# The corpus is one list, held twice (`downlink_js_interop.rs` and
+# `emit-downlink.mjs`), and each side asserts the other's length. A corpus that
+# grows on one side only therefore fails rather than quietly covering less.
+
+node "$DOWN_TEST"
+
+# The credit accounting and the frame clock, on bytes this repository's own
+# encoder produced -- so a failure here is about what the producer DOES with a
+# message rather than about what a message is.
+node "$SESSION_TEST"
+
+DOWN_FROM_JS="$(mktemp -d)"
+DOWN_FROM_RUST="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$DOWN_FROM_JS" "$DOWN_FROM_RUST"' EXIT
+
+node platforms/apple/WebContent/PerformancePlus/test/emit-downlink.mjs write "$DOWN_FROM_JS"
+
+output="$(cd engine && MIGO_DOWNLINK_IN_DIR="$DOWN_FROM_JS" \
+    cargo test -p migo-frame-wire --test downlink_js_interop -- \
+    --ignored --nocapture messages_from 2>&1)" || status=$?
+status=${status:-0}
+printf '%s\n' "$output" | grep -E 'read [0-9]+ JavaScript-encoded downlink messages|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust reader rejected downlink messages built by the JavaScript writer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'read [0-9]+ JavaScript-encoded downlink messages'; then
+    echo "FAIL: the downlink interop test did not report reading anything; it may not have run." >&2
+    exit 1
+fi
+
+status=0
+output="$(cd engine && MIGO_DOWNLINK_OUT_DIR="$DOWN_FROM_RUST" \
+    cargo test -p migo-frame-wire --test downlink_js_interop -- \
+    --ignored --nocapture the_rust_writer 2>&1)" || status=$?
+printf '%s\n' "$output" | grep -E 'wrote [0-9]+ downlink messages|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust writer could not produce the downlink corpus." >&2
+    exit 1
+fi
+
+# The direction production actually runs: the producer reading what the host
+# wrote. A failure here is the one a device would show as a frame clock that
+# stops ticking, with nothing in either log saying why.
+node platforms/apple/WebContent/PerformancePlus/test/emit-downlink.mjs read "$DOWN_FROM_RUST"

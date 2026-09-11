@@ -150,6 +150,17 @@ let package = Package(
             resources: [.copy("Resources")]
         ),
 
+        // The frame channel, against a real WebSocket client rather than a
+        // double. Its own target because `MigoAppleRendererTests` depends on
+        // the renderer and the engine and this depends on lane 2 -- one test
+        // target carrying both would make every renderer test build the lane
+        // as well.
+        .testTarget(
+            name: "MigoApplePerformancePlusTests",
+            dependencies: ["MigoApplePerformancePlus"],
+            path: "Tests/MigoApplePerformancePlusTests"
+        ),
+
         // Lane 3: macOS only. In-process V8 with JIT; no second process.
         .target(
             name: "MigoMacV8",

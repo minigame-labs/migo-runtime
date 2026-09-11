@@ -595,6 +595,73 @@ pub unsafe extern "C" fn migo_session_take_sync_reply(
     })
 }
 
+/// Take the next message the host owes the producer.
+///
+/// Writes at most `capacity` bytes into `buffer` and reports the length in
+/// `out_written`. A length of zero means there is nothing to send, which is the
+/// normal answer between frames -- not an error, and not something to retry in a
+/// loop.
+///
+/// The message is a downlink envelope: per-frame verdicts and frame-clock
+/// ticks, in the format `engine/crates/frame-wire/src/downlink.rs` specifies and
+/// the producer's `downlink.mjs` reads. The host does not build it. That is the
+/// point of this entry point rather than an accessor per field: a third
+/// implementation of a wire format is the drift this repository already keeps a
+/// gate for, and a transport that only copies bytes cannot drift.
+///
+/// Whole records only. A `capacity` too small for the envelope plus one record
+/// writes nothing and keeps everything queued, so a caller that grows its buffer
+/// and asks again loses nothing.
+///
+/// # Safety
+/// `session` must be a live session handle. `buffer` must be writable for
+/// `capacity` bytes when `capacity` is non-zero, and `out_written` must be a
+/// writable `usize`.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_take_downlink(
+    session: *mut MigoSession,
+    buffer: *mut u8,
+    capacity: usize,
+    out_written: *mut usize,
+) -> MigoResult {
+    guard("migo_session_take_downlink", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        if out_written.is_null() {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        if capacity > isize::MAX as usize {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        if buffer.is_null() && capacity != 0 {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+
+        let Ok(state) = session.state.lock() else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        let Some(engine) = state.host.as_ref() else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        // SAFETY: null and length were checked above; the contract requires the
+        // range to be writable for the call.
+        let out = if capacity == 0 {
+            &mut [][..]
+        } else {
+            unsafe { std::slice::from_raw_parts_mut(buffer, capacity) }
+        };
+        let written = engine.take_downlink(out);
+        drop(state);
+
+        // SAFETY: checked non-null above.
+        unsafe { out_written.write(written) };
+        MIGO_OK
+    })
+}
+
 /// The producer withdrew its request.
 ///
 /// # Safety

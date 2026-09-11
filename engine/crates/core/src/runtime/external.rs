@@ -37,6 +37,7 @@ use shared::{
 
 #[cfg(test)]
 use frame_wire::IngressDecision;
+use frame_wire::downlink::{DownlinkQueue, DownlinkRecord};
 use frame_wire::sync::{
     ReadPixelsParams, SYNC_OP_READ_PIXELS, SyncError, SyncMailbox, SyncRequest, SyncState,
 };
@@ -62,6 +63,15 @@ pub struct ExternalFrameSession {
     submit: SubmitPath,
     sync: SyncPath,
     clock: Arc<ExternalFrameClock>,
+    /// What the host owes the producer: a verdict for every frame it submitted,
+    /// and the frame clock's ticks. Shared with the clock and the submit path,
+    /// which are what fill it, and drained by the transport through
+    /// [`ExternalFrameSession::take_downlink`].
+    ///
+    /// The records are stamped with the runtime generation by whoever pushes
+    /// them, not here -- the clock and the submit path each carry their own
+    /// copy so neither has to reach for the ingress lock to answer.
+    downlink: Arc<Mutex<DownlinkQueue>>,
 }
 
 /// A started external session and, when it was given a Surface, the lease for
@@ -472,7 +482,6 @@ struct RenderDispatch {
 /// Deliberately not a channel. Arming a frame is a per-frame operation on the
 /// latency path this lane exists to shorten, and putting it through the bounded
 /// command queue would put it behind whatever else is queued.
-#[derive(Default)]
 pub struct ExternalFrameClock {
     /// Populated by the session thread once the renderer is up. A producer that
     /// asks before then is told no rather than silently ignored: a warm start
@@ -481,6 +490,15 @@ pub struct ExternalFrameClock {
     inner: OnceLock<FrameClockParts>,
     ticks: AtomicU64,
     last_timestamp_millis: AtomicU64,
+    /// The same queue the session drains. The clock holds it because the tick
+    /// is produced here, on the render signal, and routing it through the
+    /// session would mean the session waking up to forward something it did not
+    /// produce.
+    downlink: Arc<Mutex<DownlinkQueue>>,
+    /// Stamped into every tick. Copied rather than read from the ingress
+    /// because the clock runs on the render signal and must not take the
+    /// ingress lock to answer it.
+    runtime_generation: u64,
 }
 
 struct FrameClockParts {
@@ -489,6 +507,16 @@ struct FrameClockParts {
 }
 
 impl ExternalFrameClock {
+    fn new(downlink: Arc<Mutex<DownlinkQueue>>, runtime_generation: u64) -> Self {
+        Self {
+            inner: OnceLock::new(),
+            ticks: AtomicU64::new(0),
+            last_timestamp_millis: AtomicU64::new(0),
+            downlink,
+            runtime_generation,
+        }
+    }
+
     /// Ask for one frame. Returns `false` if the session is not yet rendering.
     pub fn request_frame(&self) -> bool {
         let Some(parts) = self.inner.get() else {
@@ -516,9 +544,20 @@ impl ExternalFrameClock {
     }
 
     fn record(&self, timestamp_millis: f64) {
-        self.ticks.fetch_add(1, Ordering::Relaxed);
+        let frame_id = self.ticks.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         self.last_timestamp_millis
             .store(timestamp_millis as u64, Ordering::Relaxed);
+        // Nanoseconds on the wire and milliseconds in the counter, deliberately:
+        // the counter crosses an atomic and is read by humans, the wire value is
+        // what the producer schedules against and a millisecond of rounding is a
+        // sixteenth of a frame. `f64` milliseconds hold nanosecond precision for
+        // the first 104 days of a session, which is longer than one runs.
+        let timestamp_ns = (timestamp_millis * 1_000_000.0).max(0.0) as u64;
+        self.downlink.lock().push_tick(DownlinkRecord::ClockTick {
+            generation: self.runtime_generation as u32,
+            frame_id: frame_id as u32,
+            timestamp_ns,
+        });
     }
 }
 
@@ -532,6 +571,10 @@ struct SubmitPath {
     ingress: Arc<Mutex<FrameIngress>>,
     errors: Arc<ExternalGlErrors>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
+    /// Where the verdict goes. Held here rather than on the session so it can
+    /// be queued while the ingress lock is still held -- see `submit_frame`.
+    downlink: Arc<Mutex<DownlinkQueue>>,
+    runtime_generation: u64,
 }
 
 impl SubmitPath {
@@ -549,9 +592,33 @@ impl SubmitPath {
         // Serialize through decode and queue submission too: releasing this
         // lock earlier lets concurrent callers dispatch N+1 before N, and
         // commits rejected frames before their decoder or queue can refuse them.
-        self.ingress
+        let mut ingress = self.ingress.lock();
+        let outcome = ingress.submit_with(bytes, |frame| self.render(frame));
+
+        // Queued while the ingress lock is STILL HELD, and that is the whole
+        // reason this lives here rather than on the session. The lock above
+        // exists because concurrent callers must not dispatch N+1 before N;
+        // queueing the verdict after releasing it would put the verdicts back
+        // in scheduler order while the frames stayed in sequence order, so a
+        // producer could read the older credit level second and send against a
+        // level it had already been told was lower.
+        //
+        // Queued for every decision, including the rejections: a producer told
+        // nothing about a frame it sent has to time out to find out, and a
+        // timeout is indistinguishable from a host that died.
+        //
+        // Lock order is ingress then downlink, and nothing takes them the other
+        // way round -- the frame clock takes only the downlink.
+        self.downlink
             .lock()
-            .submit_with(bytes, |frame| self.render(frame))
+            .push_verdict(DownlinkRecord::FrameVerdict {
+                generation: self.runtime_generation as u32,
+                decision: outcome.decision as u32,
+                wire_error_code: outcome.wire_error_code,
+                remaining_credits: outcome.remaining_credits,
+                accepted_sequence: outcome.accepted_sequence,
+            });
+        outcome
     }
 
     /// Decode one accepted frame and hand it to the renderer.
@@ -713,6 +780,30 @@ impl ExternalFrameSession {
         self.submit.submit_frame(bytes)
     }
 
+    /// Fill `out` with the next downlink message, and return its length.
+    ///
+    /// Zero means there is nothing to send, which is the normal answer between
+    /// frames. The transport calls this after every submit and every tick; a
+    /// message it did not ask for is a message it would have to buffer, and the
+    /// queue is a better place to buffer than a socket.
+    ///
+    /// Whole records only: a short buffer sends fewer of them rather than a
+    /// truncated one, and what does not fit stays queued in order.
+    pub fn take_downlink(&self, out: &mut [u8]) -> usize {
+        self.downlink.lock().drain_into(out)
+    }
+
+    /// How many downlink records were dropped for lack of room, and clear the
+    /// count.
+    ///
+    /// Exposed because a non-zero value means the transport is not draining,
+    /// which is a host-side fault the host can see and the producer cannot. It
+    /// is not sent to the producer: every record is absolute, so the next one
+    /// it receives is already correct.
+    pub fn take_downlink_drops(&self) -> u32 {
+        self.downlink.lock().take_dropped()
+    }
+
     /// Whether the caller is the session's own thread.
     ///
     /// Exposed for the same reason `HostThread` exposes it: joining from inside
@@ -763,6 +854,7 @@ impl ExternalFrameSession {
         // on a session whose renderer is, and the difference would only show on
         // whichever test reached for a synchronous call first.
         let dispatch: Arc<OnceLock<RenderDispatch>> = Arc::new(OnceLock::new());
+        let downlink = Arc::new(Mutex::new(DownlinkQueue::new()));
         Self {
             host: HostThread::from_join_handle_for_test(host_id, join),
             sync: SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::clone(&dispatch)),
@@ -773,8 +865,14 @@ impl ExternalFrameSession {
                 ))),
                 errors: Arc::new(ExternalGlErrors::default()),
                 dispatch,
+                downlink: Arc::clone(&downlink),
+                runtime_generation: INITIAL_RUNTIME_GENERATION,
             },
-            clock: Arc::new(ExternalFrameClock::default()),
+            clock: Arc::new(ExternalFrameClock::new(
+                Arc::clone(&downlink),
+                INITIAL_RUNTIME_GENERATION,
+            )),
+            downlink,
         }
     }
 }
@@ -814,7 +912,11 @@ pub fn spawn_external_frame_session(
         INITIAL_RUNTIME_GENERATION,
     )));
     let thread_ingress = Arc::clone(&ingress);
-    let clock = Arc::new(ExternalFrameClock::default());
+    let downlink = Arc::new(Mutex::new(DownlinkQueue::new()));
+    let clock = Arc::new(ExternalFrameClock::new(
+        Arc::clone(&downlink),
+        INITIAL_RUNTIME_GENERATION,
+    ));
     let thread_clock = Arc::clone(&clock);
     let errors = Arc::new(ExternalGlErrors::default());
     let dispatch: Arc<OnceLock<RenderDispatch>> = Arc::new(OnceLock::new());
@@ -837,8 +939,11 @@ pub fn spawn_external_frame_session(
                 ingress,
                 errors,
                 dispatch,
+                downlink: Arc::clone(&downlink),
+                runtime_generation: INITIAL_RUNTIME_GENERATION,
             },
             clock,
+            downlink,
         },
         resource: started.resource,
         ingress: started.ingress,
@@ -1360,7 +1465,10 @@ mod tests {
     /// far end is in another process with no way to tell them apart.
     #[test]
     fn the_clock_refuses_before_the_renderer_is_up() {
-        let clock = ExternalFrameClock::default();
+        let clock = ExternalFrameClock::new(
+            Arc::new(Mutex::new(DownlinkQueue::new())),
+            INITIAL_RUNTIME_GENERATION,
+        );
         assert!(!clock.request_frame());
         assert_eq!(clock.ticks(), 0);
         assert_eq!(clock.last_timestamp_millis(), 0);
@@ -1368,7 +1476,10 @@ mod tests {
 
     #[test]
     fn recorded_ticks_accumulate_and_keep_the_latest_timestamp() {
-        let clock = ExternalFrameClock::default();
+        let clock = ExternalFrameClock::new(
+            Arc::new(Mutex::new(DownlinkQueue::new())),
+            INITIAL_RUNTIME_GENERATION,
+        );
         clock.record(16.7);
         clock.record(33.4);
         clock.record(50.1);
@@ -1377,6 +1488,114 @@ mod tests {
             clock.last_timestamp_millis(),
             50,
             "the counter carries whole milliseconds; the exact value is what gets forwarded"
+        );
+    }
+
+    /// Every decision is answered, including the ones that are not "accepted".
+    ///
+    /// A producer told nothing about a frame it sent has to time out to find
+    /// out, and a timeout is indistinguishable from a host that died. This one
+    /// is refused -- the renderer is not up -- which is the case most likely to
+    /// be forgotten, because nothing rendered and it is tempting to treat that
+    /// as nothing to report.
+    #[test]
+    fn a_refused_frame_is_still_answered_on_the_downlink() {
+        let downlink = Arc::new(Mutex::new(DownlinkQueue::new()));
+        let submit = SubmitPath {
+            ingress: Arc::new(Mutex::new(FrameIngress::new(
+                NONCE,
+                INITIAL_RUNTIME_GENERATION,
+            ))),
+            errors: Arc::new(ExternalGlErrors::default()),
+            dispatch: Arc::new(OnceLock::new()),
+            downlink: Arc::clone(&downlink),
+            runtime_generation: INITIAL_RUNTIME_GENERATION,
+        };
+
+        let outcome = submit.submit_frame(&packet(1));
+        assert_ne!(
+            outcome.decision,
+            IngressDecision::Accepted,
+            "this fixture has no renderer, so the point of the test is the refusal"
+        );
+
+        let mut out = [0u8; 256];
+        let written = downlink.lock().drain_into(&mut out);
+        let records = frame_wire::downlink::decode_bytes(&out[..written])
+            .expect("the queue writes what the producer reads");
+        assert_eq!(records.len(), 1, "one verdict for one frame");
+        match records[0] {
+            DownlinkRecord::FrameVerdict {
+                decision,
+                remaining_credits,
+                ..
+            } => {
+                assert_eq!(
+                    decision, outcome.decision as u32,
+                    "the wire carries the decision"
+                );
+                assert_eq!(
+                    remaining_credits, outcome.remaining_credits,
+                    "and the level the producer schedules against"
+                );
+            }
+            other => panic!("expected a verdict, got {other:?}"),
+        }
+    }
+
+    /// The tick the producer actually reads, not the counter a human does.
+    ///
+    /// `ticks()` and `last_timestamp_millis()` are diagnostics; what schedules
+    /// the next frame in another process is the record queued here. They are
+    /// fed by the same call and could drift without either one noticing, which
+    /// is why this asserts the queued bytes rather than the counters.
+    #[test]
+    fn a_recorded_tick_is_queued_for_the_producer_in_nanoseconds() {
+        let queue = Arc::new(Mutex::new(DownlinkQueue::new()));
+        let clock = ExternalFrameClock::new(Arc::clone(&queue), INITIAL_RUNTIME_GENERATION);
+        clock.record(16.7);
+
+        let mut out = [0u8; 256];
+        let written = queue.lock().drain_into(&mut out);
+        let records = frame_wire::downlink::decode_bytes(&out[..written])
+            .expect("the queue writes what the producer reads");
+        assert_eq!(records.len(), 1, "one record for one tick");
+        match records[0] {
+            DownlinkRecord::ClockTick {
+                generation,
+                frame_id,
+                timestamp_ns,
+            } => {
+                assert_eq!(generation, INITIAL_RUNTIME_GENERATION as u32);
+                assert_eq!(frame_id, 1, "the first tick is frame 1, not frame 0");
+                assert_eq!(
+                    timestamp_ns, 16_700_000,
+                    "milliseconds go out as nanoseconds; the counter rounds and this must not"
+                );
+            }
+            other => panic!("expected a tick, got {other:?}"),
+        }
+    }
+
+    /// Ticks coalesce, and that has to hold through the clock rather than only
+    /// in the queue: a renderer that ticks faster than the transport drains
+    /// must not grow the queue.
+    #[test]
+    fn a_producer_that_never_reads_does_not_grow_the_queue() {
+        let queue = Arc::new(Mutex::new(DownlinkQueue::new()));
+        let clock = ExternalFrameClock::new(Arc::clone(&queue), INITIAL_RUNTIME_GENERATION);
+        for i in 0..1_000 {
+            clock.record(f64::from(i) * 16.7);
+        }
+        assert_eq!(
+            queue.lock().len(),
+            1,
+            "a thousand ticks are one queued tick"
+        );
+        assert_eq!(
+            queue.lock().dropped(),
+            0,
+            "coalescing is not dropping: nothing was lost that the newest tick does not carry"
         );
     }
 
@@ -1410,6 +1629,8 @@ mod tests {
             ))),
             errors: Arc::new(ExternalGlErrors::default()),
             dispatch: Arc::new(OnceLock::new()),
+            downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
+            runtime_generation: INITIAL_RUNTIME_GENERATION,
         };
 
         let bytes = packet(1);
@@ -1465,6 +1686,8 @@ mod tests {
                 ))),
                 errors: Arc::new(ExternalGlErrors::default()),
                 dispatch: Arc::new(dispatch),
+                downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
+                runtime_generation: INITIAL_RUNTIME_GENERATION,
             },
             receiver,
             lifecycle_sender,
