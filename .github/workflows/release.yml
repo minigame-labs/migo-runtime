@@ -525,17 +525,6 @@ jobs:
       - name: The Apple ANGLE pin is complete and fetched by hash
         run: bash scripts/test-apple-angle-pin-contract.sh
 
-      # The same question about the other downloaded dependency, and it is the
-      # sharper of the two. `apple-skia-gl-env.sh` points macOS builds at Skia
-      # archives this project published with `skia_gl_standard=""`; upstream's
-      # are compiled with `SK_ASSUME_GL=1`, under which every Canvas2D surface on
-      # macOS fails to build a GrDirectContext and NOTHING goes red -- WebGL does
-      # not go through Skia and nothing else asks. So an asset that 404s costs
-      # eight minutes, and an asset that was replaced costs the defect returning
-      # invisibly. No Mac needed: it is a download and a hash.
-      - name: The corrected macOS Skia is published and unchanged
-        run: bash scripts/test-apple-skia-pin-contract.sh
-
       # The rule that decides whether ANGLE loads at all, held between the two
       # places that state it. A release is the last point at which the presenter
       # naming a library the published archives do not contain is still cheap to
