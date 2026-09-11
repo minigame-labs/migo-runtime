@@ -81,9 +81,25 @@
 # own -- so the two platforms would have disagreed about whether this file does
 # anything.)
 #
-# `Swatinem/rust-cache` keeps `target/*/build/skia-bindings-*/out` across runs of
-# a job that uses it, so the diagnostic row pays this once; the `macos-v8` row
-# deliberately has no cache and pays it per run.
+# Paid EVERY run, on every lane, and that correction is measured: the cache does
+# not keep it. The diagnostic lane's job on 2026-09-11 reported
+#
+#     Cache hit for: v0-rust-apple-sdk-external-frames-diagnostic-...
+#     Cache Size: ~549 MB
+#     Cache restored successfully
+#
+# and then compiled skia-bindings four times anyway, with `Build` and
+# `ANGLE bring-up` taking 15m57s and 7m58s against 15m41s and 9m06s on the cold
+# run before it. `Swatinem/rust-cache` prunes large files out of each crate's
+# build-script OUT_DIR, which is exactly what `.github/workflows/apple-sdk.yml`
+# already says about `librusty_v8.a` and the `macos-v8` row's missing cache --
+# `libskia-bindings.a` is the same family, and that note was in the repository
+# before this file was written.
+#
+# So the number is roughly 8-9 minutes per (target x Skia feature set) per job
+# per run, which is what makes publishing our own corrected macOS archives and
+# pointing `SKIA_BINARIES_URL` at them the next thing worth doing rather than a
+# someday optimisation.
 #
 # The way to get the speed back without giving up the correction is to publish
 # our own corrected macOS archives and point `SKIA_BINARIES_URL` at them -- the
