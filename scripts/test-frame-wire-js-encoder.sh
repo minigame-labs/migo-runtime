@@ -28,9 +28,12 @@ RELAY_TEST="platforms/apple/WebContent/PerformancePlus/test/sync-relay.test.mjs"
 RELAY_SRC="platforms/apple/WebContent/PerformancePlus/src/sync-relay.mjs"
 DOWN_TEST="platforms/apple/WebContent/PerformancePlus/test/downlink.test.mjs"
 DOWN_SRC="platforms/apple/WebContent/PerformancePlus/src/downlink.mjs"
+SESSION_TEST="platforms/apple/WebContent/PerformancePlus/test/frame-session.test.mjs"
+SESSION_SRC="platforms/apple/WebContent/PerformancePlus/src/frame-session.mjs"
+BOOTSTRAP_SRC="platforms/apple/WebContent/PerformancePlus/src/worker-bootstrap.mjs"
 
 for required in "$TEST" "$ENCODER" "$SYNC_TEST" "$SYNC_SRC" "$RELAY_TEST" "$RELAY_SRC" \
-                "$DOWN_TEST" "$DOWN_SRC"; do
+                "$DOWN_TEST" "$DOWN_SRC" "$SESSION_TEST" "$SESSION_SRC" "$BOOTSTRAP_SRC"; do
     if [[ ! -f "$required" ]]; then
         echo "FAIL: $required is missing; the cross-language corpus check cannot run." >&2
         exit 1
@@ -54,7 +57,8 @@ fi
 # directory, a URL, a Node builtin. The rule was once "no imports at all",
 # which was true of the one file it was applied to and would have refused the
 # split the producer has since grown.
-for shipped in "$ENCODER" "$SYNC_SRC" "$RELAY_SRC" "$DOWN_SRC"; do
+for shipped in "$ENCODER" "$SYNC_SRC" "$RELAY_SRC" "$DOWN_SRC" "$SESSION_SRC" \
+               "$BOOTSTRAP_SRC"; do
     outside="$(grep -nE "^\s*(import|export)\b.*\bfrom\s+[\"']" "$shipped" \
         | grep -vE "from\s+[\"']\./[A-Za-z0-9_.-]+\.mjs[\"']" || true)"
     if [[ -n "$outside" ]]; then
@@ -241,6 +245,11 @@ fi
 # grows on one side only therefore fails rather than quietly covering less.
 
 node "$DOWN_TEST"
+
+# The credit accounting and the frame clock, on bytes this repository's own
+# encoder produced -- so a failure here is about what the producer DOES with a
+# message rather than about what a message is.
+node "$SESSION_TEST"
 
 DOWN_FROM_JS="$(mktemp -d)"
 DOWN_FROM_RUST="$(mktemp -d)"
