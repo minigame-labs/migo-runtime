@@ -136,8 +136,18 @@ import XCTest
         /// reserved prefix that the delivery layer forgot to pass through is a rule
         /// that holds everywhere except where it matters.
         func testAContentPackageCannotShadowTheProducer() throws {
-            // A decoy that reports being run, so shadowing fails this test by name
-            // and in a second rather than by spending the timeout in silence.
+            // A decoy PAGE as well as a decoy module. Both, because the prefix
+            // protects both and because with only the module the injected-defect
+            // run failed by timeout -- the shadowed page simply was not there in
+            // the content root, so nothing loaded and nothing reported. Measured:
+            // 243 seconds to say "unwaited expectation", against 1.6 seconds to
+            // say which file was served. A guard that is right for an
+            // uninformative reason is one someone later "fixes".
+            try writeContent(
+                """
+                <!doctype html><meta charset="utf-8">
+                <script type="module" src="./page-entry.mjs"></script>
+                """, to: "__migo/producer-page.html")
             try writeContent(
                 """
                 globalThis.webkit.messageHandlers.migoPerformancePlus.postMessage({

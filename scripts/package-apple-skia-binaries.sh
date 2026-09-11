@@ -159,11 +159,19 @@ info "args.gn               carries skia_gl_standard=\"\""
 # --- assemble ---------------------------------------------------------------
 #
 # The file list is what `BinariesConfiguration::export` writes and what
-# `binaries::unpack` flattens back out: the built libraries, the generated
-# bindings, and the licence. Named explicitly rather than copied wholesale so an
-# archive cannot quietly grow a build artifact nobody meant to publish.
+# `binaries::unpack` flattens back out: the built libraries and the generated
+# bindings. Named explicitly rather than copied wholesale so an archive cannot
+# quietly grow a build artifact nobody meant to publish.
+#
+# `LICENSE_SKIA` is NOT in this list, and was, and that was a defect this
+# workflow's first real run found. `export.rs` copies it from the crate's own
+# `skia/LICENSE` at PUBLISH time; an ordinary source build never writes one. It
+# was here because the machine this script was developed on had one -- left in a
+# reused `OUT_DIR` by an earlier DOWNLOAD -- so the check passed locally and
+# failed on the first clean machine. It is staged below, from the checkout,
+# which is both where upstream gets it and the only copy whose provenance is
+# knowable.
 FILES=(
-    LICENSE_SKIA
     bindings.rs
     libskia-bindings.a
     libskia.a
@@ -196,10 +204,11 @@ mkdir -p "$STAGE/skia-binaries"
 # The staleness check applies to the ninja-built libraries and nothing else.
 #
 # It was written against every file in the list and turned red immediately -- on
-# `LICENSE_SKIA`, which ninja does not produce: the build script copies it, so
-# its mtime legitimately predates the last ninja run, as does `bindings.rs`,
-# which bindgen writes. A guard that fires on the wrong file is not a strict
-# guard, it is a broken one, and it would have been "fixed" by deleting it.
+# a stale `LICENSE_SKIA` (no longer in the list at all; see above) and on
+# `bindings.rs`, which bindgen writes rather than ninja, so its mtime
+# legitimately predates the last ninja run. A guard that fires on the wrong file
+# is not a strict guard, it is a broken one, and it would have been "fixed" by
+# deleting it.
 STAMP="$SOURCE_BUILT/build.ninja.stamp"
 # `${FILES[@]+...}` rather than `"${FILES[@]}"`: under `set -u`, bash 3.2 --
 # which is what macOS ships, and macOS is the only OS that can build an Apple
@@ -225,6 +234,14 @@ for name in ${OPTIONAL_FILES[@]+"${OPTIONAL_FILES[@]}"}; do
         info "also packaged        $name"
     fi
 done
+
+# Skia's own licence, from the crate checkout rather than from the build
+# directory. Required, not optional: this archive is Skia's compiled bytes and
+# shipping them without their licence is not a packaging detail.
+SKIA_LICENSE="$(dirname "$VCS_INFO")/skia/LICENSE"
+[[ -f "$SKIA_LICENSE" ]] || fail "no Skia licence at $SKIA_LICENSE.
+      Upstream copies this file into the archive as LICENSE_SKIA and so must we."
+cp "$SKIA_LICENSE" "$STAGE/skia-binaries/LICENSE_SKIA"
 
 # `tag.txt` is the skia-bindings crate version and `key.txt` the key above --
 # both live inside the archive because that is where upstream puts them, and a
