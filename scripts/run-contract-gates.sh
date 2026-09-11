@@ -20,6 +20,17 @@
 #                                          builds inside a gate in a way that
 #                                          reads as the gate failing.
 #
+# AND ONE THING THIS CANNOT STRIP FOR YOU: stop any running Android emulator
+# first. Measured 2026-09-11 -- with one running, `test-linux-qt-host-kit.sh`
+# fails with
+#
+#     ninja: error: manifest 'build.ninja' still dirty after 100 tries,
+#            perhaps system time is not set
+#
+# and passes as soon as the emulator is stopped, reproducibly in both
+# directions. The clock is fine; that message names the wrong cause, which is
+# why it is written down here rather than left for the next person to chase.
+#
 # Exit status is about the TREE: a gate that needs a build artifact this machine
 # does not have is reported and does not fail the run. Anything else does.
 set -uo pipefail
