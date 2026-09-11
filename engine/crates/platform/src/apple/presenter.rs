@@ -793,6 +793,26 @@ mod tests {
         assert!(!onscreen.same_native_surface(offscreen.as_ref()));
     }
 
+    /// Serialises the tests that initialise ANGLE's EGL display.
+    ///
+    /// `eglGetDisplay(EGL_DEFAULT_DISPLAY)` returns the same display to every
+    /// caller in the process, and `eglTerminate` un-initialises it for all of
+    /// them -- it is not refcounted against `eglInitialize`. So two tests that
+    /// each initialise, work, and terminate are not independent: whichever
+    /// terminates first pulls the display out from under the other, and the
+    /// loser fails with `NotInitialized` on whatever EGL call it happened to be
+    /// making.
+    ///
+    /// Measured 2026-09-11, and it is a race rather than a rule: the whole
+    /// binary passed on the macOS lane and failed on the iOS Simulator lane in
+    /// the same run, at `eglChooseConfig: NotInitialized`. `cargo test` runs
+    /// these on separate threads by default, so which one wins is scheduling.
+    ///
+    /// `parking_lot::Mutex` because a panicking test must not poison the lock
+    /// and turn one real failure into a second, fictional one in the other test.
+    #[cfg(target_vendor = "apple")]
+    static EGL_DISPLAY: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     /// ANGLE is really present, really loads under the name this module chose,
     /// and really answers with a usable display.
     ///
@@ -815,9 +835,10 @@ mod tests {
     /// so the failure names the script that installs it instead. The macOS leg of
     /// `.github/workflows/apple-sdk.yml` runs `scripts/fetch-apple-angle.sh` and
     /// puts the unpacked directory on `DYLD_LIBRARY_PATH`.
-    #[cfg(target_vendor = "apple")]
     #[test]
+    #[cfg(target_vendor = "apple")]
     fn angle_loads_under_its_pinned_name_and_answers_with_a_display() {
+        let _serialised = EGL_DISPLAY.lock();
         let provider = AppleEglProvider::new();
         let egl = provider.load().unwrap_or_else(|error| {
             panic!(
@@ -860,7 +881,9 @@ mod tests {
     /// cannot answer the question, and a test that failed there would be
     /// reporting the machine.
     #[test]
+    #[cfg(target_vendor = "apple")]
     fn skia_builds_a_gl_context_on_this_platforms_angle() {
+        let _serialised = EGL_DISPLAY.lock();
         let provider = AppleEglProvider::new();
         let Ok(egl) = provider.load() else {
             eprintln!("SKIP: ANGLE did not load on this machine; nothing to ask");
