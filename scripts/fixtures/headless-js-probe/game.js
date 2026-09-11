@@ -96,13 +96,30 @@ function probeCanvas2D() {
     if (!ctx) {
       return "canvas2d ctx=null";
     }
+    // The size is reported, not assumed. The first version of this probe filled
+    // 16x16 and read at (2,2), and the readback failed with
+    // `Canvas2D getImageData read_pixels failed` -- which is what an
+    // out-of-bounds read looks like from here, and the host's log had said
+    // `CAMetalLayer ignoring invalid setDrawableSize width=0 height=0` twice on
+    // the way in. Whether the content gets the surface the host declared is
+    // therefore its own question, and it is asked by printing the answer rather
+    // than by a readback failing for two possible reasons at once.
+    const w = canvas.width;
+    const h = canvas.height;
+    // Clamped, so the draw and the read are in bounds whatever the size turns
+    // out to be: a probe that cannot run on a small canvas cannot report how
+    // small the canvas is.
+    const side = Math.min(16, w, h);
     // Opaque and off every axis of the default state, so a readback that
     // reports it cannot be reporting a cleared buffer, a black surface, or a
     // premultiplied white.
     ctx.fillStyle = "rgb(0, 128, 255)";
-    ctx.fillRect(0, 0, 16, 16);
-    const px = ctx.getImageData(2, 2, 1, 1).data;
-    return "canvas2d rgba=" + px[0] + "," + px[1] + "," + px[2] + "," + px[3];
+    ctx.fillRect(0, 0, side, side);
+    const px = ctx.getImageData(0, 0, 1, 1).data;
+    return (
+      "canvas2d size=" + w + "x" + h +
+      " rgba=" + px[0] + "," + px[1] + "," + px[2] + "," + px[3]
+    );
   } catch (err) {
     return "canvas2d threw=" + err;
   }

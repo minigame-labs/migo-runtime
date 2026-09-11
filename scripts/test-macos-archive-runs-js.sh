@@ -283,6 +283,11 @@ canvas2d_report_line() {
   grep -o 'migo-headless-probe: canvas2d .*' "$HOST_LOG" | tail -1
 }
 
+# What tests/c_host/macos-headless/main.m hands the engine. Named here so the
+# comparison below is against the host's own declaration rather than a number
+# someone liked.
+CANVAS2D_EXPECTED_SIZE="${CANVAS2D_EXPECTED_SIZE:-256x256}"
+
 assert_canvas2d_draws_if_this_content_reports() {
   if [[ "$CONTENT" != "$CANVAS2D_REPORTING_CONTENT" ]]; then
     echo "  no Canvas2D check: '$CONTENT' does not report one. $CANVAS2D_REPORTING_CONTENT is the"
@@ -304,6 +309,14 @@ assert_canvas2d_draws_if_this_content_reports() {
   rgba="${report#*rgba=}"
   [[ "$rgba" == "$CANVAS2D_EXPECTED_RGBA" ]] \
     || fail "Canvas2D drew, and read back $rgba where the fixture filled $CANVAS2D_EXPECTED_RGBA. The context builds and the pixels are wrong, which is a different investigation from the context not building"
+
+  # The size the content sees against the size this host declared. Separate from
+  # the pixel check because they fail for unrelated reasons and a run that got
+  # the colour right on a canvas of the wrong size has answered only half.
+  local size
+  size="${report#*size=}"; size="${size%% *}"
+  [[ "$size" == "$CANVAS2D_EXPECTED_SIZE" ]] \
+    || fail "the content sees a ${size} canvas where this host declared ${CANVAS2D_EXPECTED_SIZE} (tests/c_host/macos-headless/main.m sets both drawableSize and MigoSurfaceDescriptor). The pixels above may still be right; a surface of the wrong size is its own defect"
 }
 
 assert_v8_has_jit() {
