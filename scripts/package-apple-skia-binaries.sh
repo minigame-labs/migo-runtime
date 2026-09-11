@@ -51,6 +51,19 @@
 # script derives, which catches the mistakes that actually happen: the wrong
 # triple, and a skia-bindings version that has moved.
 #
+# ## Verified end to end, with no network and nothing published
+#
+# 2026-09-11 on an Intel Mac, x86_64-apple-darwin: this script packaged a
+# source build into a 17 MB archive; `SKIA_BINARIES_URL` was pointed at it with
+# `file://`, `FORCE_SKIA_BUILD` and `SKIA_GN_ARGS` unset, and every
+# skia-bindings output directory deleted. The rebuild took about three minutes
+# against 8m42s for a source build, and the resulting directory holds `key.txt`
+# with this script's key and NO `obj/` -- unpacked, not built. On that Skia,
+# `skia_builds_a_gl_context_on_this_platforms_angle` passes, which is what says
+# the GN correction survived into the archive.
+#
+# Publishing is then the same thing with an https URL.
+#
 # Host-only, macOS or Linux: reads a build tree and writes a tarball.
 set -euo pipefail
 
