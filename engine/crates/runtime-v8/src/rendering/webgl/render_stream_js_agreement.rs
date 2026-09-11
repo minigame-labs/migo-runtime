@@ -155,7 +155,7 @@ mod js_agreement {
 /// the encoders against the same function the validator uses rather than against
 /// a second reading of it.
 mod canvas2d_agreement {
-    use frame_wire::canvas2d::{OP2D_BASE, OP2D_END, OP2D_SELECT_CANVAS};
+    use frame_wire::canvas2d::{OP2D_BASE, OP2D_CREATE_CONTEXT, OP2D_END, OP2D_SELECT_CANVAS};
     use frame_wire::stream::RecordSpec;
     use std::collections::HashMap;
 
@@ -335,6 +335,39 @@ mod canvas2d_agreement {
                     JS.contains("packHeader(OP2D_SELECT_CANVAS, 2)"),
                     "nothing emits the canvas selection, so every 2D record is one \
                      the reader refuses for not knowing where to draw"
+                );
+                continue;
+            }
+            if opcode == OP2D_CREATE_CONTEXT {
+                // The one opcode in this table that exists for the OTHER lane.
+                //
+                // In-process content brings a 2D context into existence through
+                // `getContext('2d')`, which is an op crossing that happens once
+                // per canvas and never on the per-frame path -- so this encoder
+                // would emit a record nothing in this runtime needs. The
+                // external-frame producer has no op crossing at all: the command
+                // stream is its only path to the renderer, and without this
+                // opcode its 2D records were accepted, decoded, batched and
+                // silently dropped against a canvas that had no context.
+                //
+                // The rule this exception is carved out of was written when
+                // every 2D opcode served in-process content, which was true
+                // until it was not. What keeps the exception honest is that the
+                // producer's own table is checked elsewhere:
+                // `scripts/test-render-opcode-agreement.sh` requires the Rust
+                // table, this file's table and the producer's
+                // `render-opcodes.mjs` to agree, so "no encoder here" cannot
+                // become "nobody emits it".
+                // The DECLARATION, with the number this crate's own table
+                // gives it -- not the bare name. `contains("OP2D_CREATE_CONTEXT")`
+                // was the first version and it is satisfied by
+                // `OP2D_CREATE_CONTEXT_RENAMED`, which is how the injection that
+                // was supposed to turn this red came back green.
+                let declaration = format!("const OP2D_CREATE_CONTEXT = {OP2D_CREATE_CONTEXT};");
+                assert!(
+                    JS.contains(&declaration),
+                    "this runtime's table does not declare `{declaration}`, so the three tables \
+                     scripts/test-render-opcode-agreement.sh compares cannot agree"
                 );
                 continue;
             }
