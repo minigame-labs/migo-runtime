@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>migo performance+</title>
+<!--
+  The document exists to own a Worker, and that is the whole of its job.
+
+  A Dedicated Worker can only be constructed from a document or another worker,
+  so the lane needs one even though nothing is ever painted here: the frames go
+  to the host's renderer, not to this page. It is deliberately not the game's
+  own `index.html` -- the game is content, and content does not get to decide
+  what starts the frame channel.
+
+  No styling and no body. The web view is attached but off-screen (an
+  unattached one is killed since iOS 16, and an occluded one stops executing
+  JavaScript), so anything drawn here would be work nobody sees.
+-->
+<script type="module" src="./page-entry.mjs"></script>

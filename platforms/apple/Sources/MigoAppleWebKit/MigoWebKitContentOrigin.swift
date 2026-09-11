@@ -53,6 +53,14 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     private let root: URL
     private let indexPath: String
 
+    /// Where the engine's own modules are, served under
+    /// `MigoWebKitOriginRules.engineAssetPrefix` and nowhere else.
+    ///
+    /// `nil` for a lane that supplies none: the WebKit Full lane serves the
+    /// content package and nothing of its own, and a root it does not have is not
+    /// a root it can accidentally expose.
+    private let engineRoot: URL?
+
     /// Reads happen here, never on the main thread: a page load that stalls the main
     /// queue on a file read stalls the frame the content is trying to present.
     private let queue = DispatchQueue(label: "com.migo.webkit.content-origin", qos: .userInitiated)
@@ -117,9 +125,10 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     /// no gain, because WebKit consumes chunks as they arrive.
     public static let chunkSize = 256 * 1024
 
-    public init(root: URL, indexPath: String = "index.html") {
+    public init(root: URL, indexPath: String = "index.html", engineRoot: URL? = nil) {
         self.root = root.resolvingSymlinksInPath().standardizedFileURL
         self.indexPath = indexPath
+        self.engineRoot = engineRoot?.resolvingSymlinksInPath().standardizedFileURL
         super.init()
     }
 
@@ -138,9 +147,20 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
         }
 
         let resolution = MigoWebKitOriginRules.resolve(
-            requestPath: url.path, host: url.host, root: root, indexPath: indexPath)
+            requestPath: url.path, host: url.host, root: root, indexPath: indexPath,
+            engineRoot: engineRoot)
 
         switch resolution {
+        case .reservedPathWithoutEngineRoot:
+            // 404 rather than 403: nothing was refused, there is nothing there.
+            // A lane that serves no engine modules and a game that asks for one
+            // is a missing file, and saying "forbidden" would send whoever reads
+            // it looking for a permission that does not exist.
+            refuse(
+                task, status: 404,
+                reason:
+                    "\(MigoWebKitOriginRules.engineAssetPrefix) is reserved for engine modules and this origin serves none"
+            )
         case .wrongHost(let named):
             refuse(
                 task, status: 400,

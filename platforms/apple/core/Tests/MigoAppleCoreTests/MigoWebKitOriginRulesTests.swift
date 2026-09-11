@@ -13,6 +13,7 @@ final class MigoWebKitOriginRulesTests: XCTestCase {
 
     private var root: URL!
     private var outside: URL!
+    private var engine: URL!
 
     override func setUpWithError() throws {
         let base = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -27,6 +28,10 @@ final class MigoWebKitOriginRulesTests: XCTestCase {
         try Data("body{}".utf8).write(
             to: root.appendingPathComponent("assets/style.css"))
         try Data("secret".utf8).write(to: outside.appendingPathComponent("keys.txt"))
+        engine = base.appendingPathComponent("engine")
+        try FileManager.default.createDirectory(at: engine, withIntermediateDirectories: true)
+        try Data("export const x = 1;".utf8).write(
+            to: engine.appendingPathComponent("page-entry.mjs"))
     }
 
     override func tearDownWithError() throws {
@@ -92,6 +97,78 @@ final class MigoWebKitOriginRulesTests: XCTestCase {
             .wrongHost("elsewhere"))
         XCTAssertEqual(
             Rules.resolve(requestPath: "/index.html", host: nil, root: root), .wrongHost(nil))
+    }
+
+    // MARK: - the reserved engine prefix
+
+    func testAnEngineModuleIsServedFromTheEngineRootAndNotTheContentRoot() throws {
+        // The same request twice, differing only in which root exists, is the
+        // whole claim: the prefix selects the root rather than being a directory
+        // that happens to live somewhere.
+        XCTAssertEqual(
+            Rules.resolve(
+                requestPath: "\(Rules.engineAssetPrefix)page-entry.mjs", host: "content",
+                root: root, engineRoot: engine),
+            .file(path: engine.appendingPathComponent("page-entry.mjs").standardizedFileURL
+                .resolvingSymlinksInPath().path))
+    }
+
+    /// A game cannot replace the engine's own modules by shipping files with
+    /// their names, which is the reason the prefix is reserved rather than
+    /// conventional.
+    func testAContentPackageCannotShadowTheEnginePrefix() throws {
+        let decoy = root.appendingPathComponent("__migo")
+        try FileManager.default.createDirectory(at: decoy, withIntermediateDirectories: true)
+        try Data("globalThis.pwned = true;".utf8).write(
+            to: decoy.appendingPathComponent("page-entry.mjs"))
+
+        // With no engine root: refused by name, NOT served from the decoy.
+        XCTAssertEqual(
+            Rules.resolve(
+                requestPath: "\(Rules.engineAssetPrefix)page-entry.mjs", host: "content",
+                root: root),
+            .reservedPathWithoutEngineRoot)
+
+        // With one: the engine's file, while the decoy sits at the same path
+        // inside the content root.
+        guard
+            case .file(let path) = Rules.resolve(
+                requestPath: "\(Rules.engineAssetPrefix)page-entry.mjs", host: "content",
+                root: root, engineRoot: engine)
+        else { return XCTFail("the engine module did not resolve") }
+        XCTAssertEqual(try String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8),
+            "export const x = 1;")
+    }
+
+    func testAPrefixLookalikeIsOrdinaryContent() {
+        // `/__migo` without the trailing slash is a different directory, and
+        // treating it as the prefix would take a real content path away from the
+        // package that owns it. The engine root is supplied so a wrong answer
+        // would be a resolvable one rather than a refusal.
+        XCTAssertEqual(
+            Rules.resolve(
+                requestPath: "/__migovault/a.js", host: "content", root: root, engineRoot: engine),
+            .file(path: root.appendingPathComponent("__migovault/a.js").standardizedFileURL
+                .resolvingSymlinksInPath().path),
+            "it must have been looked for in the CONTENT package")
+    }
+
+    func testATraversalOutOfTheEngineRootIsRefused() {
+        XCTAssertEqual(
+            Rules.resolve(
+                requestPath: "\(Rules.engineAssetPrefix)../elsewhere/keys.txt", host: "content",
+                root: root, engineRoot: engine),
+            .outsidePackage)
+    }
+
+    func testThePrefixItselfHasNoIndex() {
+        // The engine root holds modules, not a page. Answering this with an index
+        // would be answering a question nobody asked with a file that is not there.
+        XCTAssertEqual(
+            Rules.resolve(
+                requestPath: Rules.engineAssetPrefix, host: "content", root: root,
+                engineRoot: engine),
+            .outsidePackage)
     }
 
     // MARK: - MIME types
