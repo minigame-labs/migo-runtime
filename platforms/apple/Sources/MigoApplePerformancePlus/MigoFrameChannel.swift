@@ -182,9 +182,27 @@ public final class MigoFrameChannel {
     /// Whether a producer is connected.
     public var isConnected: Bool { transport.isConnected }
 
+    /// One frame that arrived on the other uplink.
+    ///
+    /// Above `MigoFrameChannelPolicy.socketCeilingBytes` the producer POSTs to
+    /// the content origin instead of sending on the socket, because G0's P3
+    /// measured the scheme 4.4x faster and 4.6x cheaper at 1 MiB. The two
+    /// uplinks meet here: same submit, same statistics, same pump, so a frame is
+    /// counted and answered identically whichever way it arrived. A second
+    /// accounting path would make the statistics depend on a packet's size.
+    ///
+    /// The answer still goes back on the downlink socket. It is the only channel
+    /// that carries a verdict, and a second source for an absolute credit level
+    /// is how two sources disagree.
+    @discardableResult
+    public func submitFromOrigin(_ packet: Data) -> Bool {
+        receive(packet)
+    }
+
     // MARK: - Private
 
-    private func receive(_ packet: Data) {
+    @discardableResult
+    private func receive(_ packet: Data) -> Bool {
         let accepted = submit(packet)
         lock.lock()
         statistics.framesReceived += 1
@@ -199,5 +217,6 @@ public final class MigoFrameChannel {
         // a frame it sent has to time out to find out, and a timeout is
         // indistinguishable from a host that died.
         pump()
+        return accepted
     }
 }

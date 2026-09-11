@@ -13,6 +13,7 @@
 // to whatever else is listening.
 
 import { FrameSession } from "./frame-session.mjs";
+import { createHybridSender } from "./uplink.mjs";
 
 /**
  * Connect to the host's frame channel.
@@ -22,6 +23,16 @@ import { FrameSession } from "./frame-session.mjs";
  *        literal address matters: `localhost` does not resolve inside
  *        `WKWebView`, which is measured rather than stylistic.
  * @param {number} [options.timeoutMillis] how long to wait for the socket.
+ * @param {string} [options.schemeUrl] where a packet larger than the ceiling is
+ *        POSTed. Omitted, everything goes over the socket -- which is what a
+ *        test that stands up no scheme handler wants, and never what the
+ *        product does.
+ * @param {number} [options.socketCeilingBytes] the largest packet the socket
+ *        carries, from `MigoFrameChannelPolicy` via the host's injected
+ *        configuration. Required whenever `schemeUrl` is given; this file does
+ *        not carry a copy of a measured number.
+ * @param {(error: Error, byteCount: number) => void} [options.onSchemeFailure]
+ *        a large packet that did not arrive.
  * @returns {Promise<FrameSession>} resolved once the socket is open, because a
  *          session handed back before then would accept a submit it could only
  *          drop.
@@ -29,6 +40,9 @@ import { FrameSession } from "./frame-session.mjs";
 export function connectFrameSession({
   url,
   timeoutMillis = 10_000,
+  schemeUrl,
+  socketCeilingBytes,
+  onSchemeFailure,
   onFrame,
   onVerdict,
   onGenerationLost,
@@ -47,7 +61,18 @@ export function connectFrameSession({
     socket.binaryType = "arraybuffer";
 
     const session = new FrameSession({
-      send: (bytes) => socket.send(bytes),
+      // Hybrid only when the host supplied both halves. A `schemeUrl` with no
+      // ceiling is a configuration mistake and is refused by the sender rather
+      // than defaulted to a number this file would have had to invent.
+      send:
+        typeof schemeUrl === "string"
+          ? createHybridSender({
+              sendOverSocket: (bytes) => socket.send(bytes),
+              schemeUrl,
+              socketCeilingBytes,
+              onSchemeFailure,
+            })
+          : (bytes) => socket.send(bytes),
       onFrame,
       onVerdict,
       onGenerationLost,

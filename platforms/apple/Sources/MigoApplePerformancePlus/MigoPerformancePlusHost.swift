@@ -42,6 +42,9 @@ import WebKit
     /// `MigoWebKitSession`, which is iOS-only for the same reason and records it.
     public final class MigoPerformancePlusHost: NSObject {
 
+        /// What this host's origin did with the frames posted to it.
+        public var originActivity: MigoPerformancePlusOrigin.Activity { origin.activity }
+
         /// What the producer said. The dictionary is content-shaped JSON: `type` is
         /// always present and is one of `connected`, `ready`, `verdict`,
         /// `generation-lost`, `failed`.
@@ -157,7 +160,7 @@ import WebKit
         public var onReport: ((Report) -> Void)?
 
         private let configuration: Configuration
-        private let origin: MigoWebKitContentOrigin
+        private let origin: MigoPerformancePlusOrigin
         private let engineRoot: URL
 
         public init(
@@ -183,8 +186,13 @@ import WebKit
             self.configuration = configuration
             self.channel = channel
             self.engineRoot = engineRoot
-            self.origin = MigoWebKitContentOrigin(
-                root: configuration.contentRoot, engineRoot: engineRoot)
+            // The frame endpoint in front, content serving behind: one handler per
+            // scheme is all a `WKWebViewConfiguration` accepts, and the producer's
+            // large frames have to arrive on the origin the page was loaded from.
+            self.origin = MigoPerformancePlusOrigin(
+                content: MigoWebKitContentOrigin(
+                    root: configuration.contentRoot, engineRoot: engineRoot),
+                deliver: { [weak channel] packet in channel?.submitFromOrigin(packet) ?? false })
             self.onReport = onReport
             self.view = UIView(frame: .zero)
             super.init()
@@ -258,6 +266,12 @@ import WebKit
         private func configurationScript(endpoint: MigoFrameTransport.Endpoint) -> String {
             var fields: [String: Any] = [
                 "frameChannelUrl": endpoint.url.absoluteString,
+                "frameSchemeUrl": MigoPerformancePlusOrigin.frameURL.absoluteString,
+                // From `MigoFrameChannelPolicy`, so the producer has no copy of a
+                // measured number. A constant in both languages would drift the
+                // first time the measurement is redone on new hardware --
+                // silently, because each half would still be self-consistent.
+                "socketCeilingBytes": MigoFrameChannelPolicy.socketCeilingBytes,
                 "reportVerdicts": configuration.reportVerdicts,
             ]
             if let entry = configuration.contentEntry { fields["contentEntry"] = entry }
