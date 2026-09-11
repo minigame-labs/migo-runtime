@@ -67,12 +67,17 @@ import MigoAppleCore
                 let details = information as? [String: Any]
             else { return unknown }
 
-            // `kSecCodeSignatureRuntime` is the hardened runtime bit. Absent
-            // flags mean an unsigned or ad-hoc binary with no flags word, which
-            // is readable and therefore `no` rather than `unknown`.
+            // The hardened runtime bit. `CSCommon.h` declares it in a
+            // `CF_OPTIONS(uint32_t, SecCodeSignatureFlags)`, so Swift sees
+            // `SecCodeSignatureFlags.runtime` and NOT the C spelling
+            // `kSecCodeSignatureRuntime` -- which is what the first version
+            // wrote, and which compiles nowhere.
+            //
+            // Absent flags mean an unsigned or ad-hoc binary with no flags word.
+            // That is readable, and therefore `no` rather than `unknown`.
             let hardened: MigoMacLaneSelection.Observation
             if let codeFlags = details[kSecCodeInfoFlags as String] as? UInt32 {
-                hardened = (codeFlags & UInt32(kSecCodeSignatureRuntime)) != 0 ? .yes : .no
+                hardened = (codeFlags & SecCodeSignatureFlags.runtime.rawValue) != 0 ? .yes : .no
             } else {
                 hardened = .unknown
             }
