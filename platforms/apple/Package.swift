@@ -186,6 +186,16 @@ let package = Package(
             path: "Tests/MigoApplePerformancePlusTests"
         ),
 
+        // Runs on the macOS legs. It exists because `MigoMacV8` was a target no
+        // lane had ever EXECUTED -- the macos-v8 leg builds the Swift package
+        // and never runs it, which is how a one-line `Placeholder.swift` sat
+        // there while the README promised a resolver.
+        .testTarget(
+            name: "MigoMacV8Tests",
+            dependencies: ["MigoMacV8"],
+            path: "Tests/MigoMacV8Tests"
+        ),
+
         // Lane 3: macOS only. In-process V8 with JIT; no second process.
         .target(
             name: "MigoMacV8",
