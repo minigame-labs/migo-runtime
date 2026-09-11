@@ -87,6 +87,12 @@ public final class MigoFrameTransport {
         // Loopback only. A frame channel that listened on every interface would
         // accept a producer from another machine, which is not a threat model
         // this lane has -- it is a mistake it should be impossible to make.
+        //
+        // Checked rather than assumed, because `requiredLocalEndpoint` is a
+        // request and the consequence of it being ignored would be invisible
+        // from inside the process: `lsof -nP -iTCP -sTCP:LISTEN` against a
+        // listener started this way reports `TCP 127.0.0.1:<port> (LISTEN)`,
+        // IPv4 loopback and nothing else.
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
         parameters.allowLocalEndpointReuse = true
         let websocket = NWProtocolWebSocket.Options()
@@ -136,6 +142,14 @@ public final class MigoFrameTransport {
         guard let boundPort, boundPort != 0 else {
             stop()
             throw Failure.noPort
+        }
+        // Replaced, not left in place: the handler above closes over locals of
+        // this function, and a listener that failed later would write to them
+        // after this frame is gone. What is still wanted from it is the report.
+        listener.stateUpdateHandler = { [weak self] state in
+            if case .failed(let error) = state {
+                self?.onFailure?(.listenFailed(String(describing: error)))
+            }
         }
         return Endpoint(port: boundPort)
     }
