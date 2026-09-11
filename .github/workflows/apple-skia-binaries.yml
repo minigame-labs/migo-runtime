@@ -1,0 +1,194 @@
+name: Apple Skia binaries
+
+# Build the Skia that Apple targets need and publish it, so every other lane can
+# go back to downloading one.
+#
+# WHY THIS EXISTS. Skia's macOS build assumes desktop GL at compile time and the
+# only GL on Apple is ANGLE, which is ES, so `scripts/apple-skia-gl-env.sh` makes
+# every Apple build compile Skia from source with `skia_gl_standard=""`. That is
+# correct and it is not free: 8-9 minutes per (target x feature set) per job per
+# RUN, measured, and not amortised -- `Swatinem/rust-cache` prunes large files
+# out of build-script output directories, which is the same thing apple-sdk.yml
+# already says about `librusty_v8.a`.
+#
+# So this builds it once, here, and publishes archives that skia-bindings' own
+# downloader accepts. Same shape as the pinned ANGLE and V8 archives, same
+# reason: a dependency artifact this project builds is a dependency artifact
+# this project publishes, with a recipe anyone can re-run.
+#
+# WHAT IS ALREADY KNOWN, so a failure here is news rather than a first
+# measurement. Verified on an Intel Mac on 2026-09-11, over `file://`, with
+# nothing published:
+#
+#   packaging a source build            17 MB archive
+#   rebuilding against it                ~3 min, against 8m42s from source
+#   the resulting out/skia               key.txt present, obj/ absent -> unpacked
+#   skia_builds_a_gl_context...angle     passes on it
+#
+# WHY THE RECIPE IS IN A SCRIPT. `scripts/package-apple-skia-binaries.sh` is the
+# recipe and can be run from any Mac; this file is a machine that runs it. It
+# also refuses to package a downloaded build, which is the mistake a machine is
+# most likely to make.
+#
+# NEVER on a pull request and never on a schedule. It is somebody's shared quota.
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: >-
+          Space-separated darwin triples. Empty means both. Narrowing it is how
+          one target is rebuilt without paying for the other.
+        required: false
+        default: ''
+      publish:
+        description: >-
+          Create or update the release and upload the archives. Off by default:
+          a build that is only being checked should not change what every other
+          lane downloads.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Skip a target this run did not ask for
+        id: wanted
+        run: |
+          requested='${{ inputs.targets }}'
+          if [[ -z "$requested" ]] || [[ " $requested " == *" ${{ matrix.target }} "* ]]; then
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Rust toolchain
+        if: steps.wanted.outputs.run == 'yes'
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      # The key this archive has to answer to, asked of the tool rather than
+      # spelled out here.
+      #
+      # skia-bindings builds it from the rust-skia commit, the triple and its own
+      # replacement table for feature names (`jpeg-decode` becomes `jpegd`).
+      # Writing that table into a workflow would be a third copy of a naming
+      # rule -- so this does one ordinary build first, lets skia-bindings
+      # download whatever upstream has for this configuration, and reads the key
+      # out of what it unpacked. Fast: it is a download, not a build.
+      - name: Ask skia-bindings which key it wants
+        if: steps.wanted.outputs.run == 'yes'
+        id: key
+        working-directory: engine
+        run: |
+          export CC=clang CXX=clang++
+          cargo build -p migo-graphics --target ${{ matrix.target }} --lib
+          found=""
+          for candidate in target/${{ matrix.target }}/debug/build/skia-bindings-*/out/skia/key.txt; do
+            [[ -f "$candidate" ]] || continue
+            found="$(cat "$candidate")"
+          done
+          if [[ -z "$found" ]]; then
+            echo "::error::no key.txt under the build tree, so upstream published nothing for this" >&2
+            echo "::error::configuration and the key cannot be read from the tool. Supply it by hand." >&2
+            exit 1
+          fi
+          echo "Upstream key: $found"
+          suffix="${found#*-${{ matrix.target }}-}"
+          echo "features=$suffix" >> "$GITHUB_OUTPUT"
+          echo "key=$found" >> "$GITHUB_OUTPUT"
+
+      # And now the one that matters: the same configuration, built from source
+      # with the correction, into a tree with no downloaded bytes left in it.
+      - name: Build Skia from source with the ES correction
+        if: steps.wanted.outputs.run == 'yes'
+        working-directory: engine
+        run: |
+          rm -rf target/${{ matrix.target }}/debug/build/skia-bindings-*
+          rm -rf target/debug/build/skia-bindings-*
+          # shellcheck source=scripts/apple-skia-gl-env.sh
+          . ../scripts/apple-skia-gl-env.sh
+          cargo build -p migo-graphics --target ${{ matrix.target }} --lib
+
+      - name: Package
+        if: steps.wanted.outputs.run == 'yes'
+        run: >-
+          bash scripts/package-apple-skia-binaries.sh
+          --target ${{ matrix.target }}
+          --features ${{ steps.key.outputs.features }}
+
+      # Kept whether or not this run publishes, so a build that is only being
+      # checked still leaves something to inspect.
+      - name: Keep the archive
+        if: steps.wanted.outputs.run == 'yes'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: skia-binaries-${{ matrix.target }}
+          path: engine/target/skia-binaries/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download the archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: skia-binaries-*
+          path: archives
+          merge-multiple: true
+
+      # The tag names the two things that decide what is inside: the
+      # skia-bindings crate version, which fixes the archive layout, and the
+      # rust-skia commit, which is the first component of every key. Same shape
+      # as `angle-apple-<hash>`.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(archives/*.tar.gz)
+          if (( ${#archives[@]} == 0 )); then
+            echo "::error::nothing to publish" >&2
+            exit 1
+          fi
+          first="$(basename "${archives[0]}")"
+          key="${first#skia-binaries-}"
+          key="${key%.tar.gz}"
+          hash="${key%%-*}"
+          # From the archive, not from Cargo.toml: `tag.txt` is the resolved
+          # skia-bindings version the archive was built by, and the manifest
+          # carries a requirement ("0.93") rather than a version ("0.93.1").
+          # Naming a release after the requirement would make two different
+          # builds share a tag.
+          version="$(tar -xzOf "${archives[0]}" skia-binaries/tag.txt)"
+          tag="skia-apple-${version}-${hash:0:8}"
+          echo "tag $tag"
+          for archive in "${archives[@]}"; do
+            shasum -a 256 "$archive" || sha256sum "$archive"
+          done
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "Skia for Apple, built with skia_gl_standard=\"\"" \
+              --notes "Built by .github/workflows/apple-skia-binaries.yml from scripts/package-apple-skia-binaries.sh. These are skia-bindings archives for the darwin triples, built from source with the GN argument that lets Skia accept an ANGLE ES context; see scripts/apple-skia-gl-env.sh for why the stock ones cannot."
+          fi
+          gh release upload "$tag" "${archives[@]}" --clobber
