@@ -1740,6 +1740,32 @@ impl CanvasManager {
             }
             (exp_w.max(1), exp_h.max(1))
         } else {
+            // No declared size to reconcile against, so the EGL surface is the
+            // only source -- and a degenerate answer here is worth saying out
+            // loud rather than adopting in silence.
+            //
+            // Measured 2026-09-11 on the macOS headless host: a `CAMetalLayer`
+            // built with `[CAMetalLayer layer]` and never placed in a view
+            // hierarchy has CGRectZero bounds, ANGLE's Metal backend sizes its
+            // window surface from bounds x contentsScale, and the query above
+            // came back 0x0 and clamped to 1x1. Every check that host ran --
+            // frames turning, a WebGL readback, a drawable-pool throughput A/B
+            // -- then ran against one pixel, and nothing in any log said so.
+            //
+            // A warning rather than a failure because the engine is not the
+            // authority here: a host may legitimately install a tiny surface,
+            // and refusing one would be this layer overruling its embedder.
+            // What it can do is stop the condition being invisible.
+            if queried_w <= 1 || queried_h <= 1 {
+                tracing::warn!(
+                    queried_w,
+                    queried_h,
+                    "CanvasManager::create_onscreen adopted a degenerate EGL surface size and no \
+                     declared size was supplied; every frame will render into that. On Apple this \
+                     is what a CAMetalLayer with zero bounds produces -- ANGLE sizes from bounds, \
+                     not from drawableSize"
+                );
+            }
             (queried_w, queried_h)
         };
 

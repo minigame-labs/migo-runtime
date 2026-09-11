@@ -232,6 +232,28 @@ int main(int argc, char **argv) {
      * it across attach and releases its own reference during retirement; the
      * strong reference here is what keeps it alive until then. */
     CAMetalLayer *layer = [CAMetalLayer layer];
+    /* Bounds and contentsScale, not only drawableSize -- and this host set only
+     * the latter until 2026-09-11, which is how it spent months rendering into a
+     * 1x1 surface without anything noticing.
+     *
+     * ANGLE's Metal backend sizes its window surface from the layer's BOUNDS
+     * times contentsScale, and assigns that back to drawableSize. A layer built
+     * with `[CAMetalLayer layer]` and never placed in a view hierarchy has
+     * CGRectZero bounds, so ANGLE computed 0x0, called setDrawableSize(0, 0) --
+     * which CAMetalLayer logs as `ignoring invalid setDrawableSize
+     * width=0.000000 height=0.000000` and refuses, leaving the 256x256 below
+     * intact and irrelevant -- and then reported EGL_WIDTH/EGL_HEIGHT of 0,
+     * which the engine clamps to 1x1.
+     *
+     * Every check that ran against this host therefore ran on one pixel: the
+     * frames turned, the WebGL probe read back its clear colour, and the
+     * drawable-pool A/B measured throughput on a 1x1 drawable. Nothing was
+     * wrong with any of them except the surface they were asking about.
+     *
+     * A real host does not hit this, because a layer in a view hierarchy has
+     * bounds. A headless one has to say so. */
+    layer.contentsScale = SCALE_FACTOR;
+    layer.bounds = CGRectMake(0, 0, SURFACE_WIDTH / SCALE_FACTOR, SURFACE_HEIGHT / SCALE_FACTOR);
     layer.drawableSize = CGSizeMake(SURFACE_WIDTH, SURFACE_HEIGHT);
     layer.framebufferOnly = NO;
     // The host's property, and the reason Migo takes a layer rather than a view:

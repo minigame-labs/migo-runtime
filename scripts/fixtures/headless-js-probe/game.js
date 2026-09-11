@@ -70,6 +70,63 @@ console.error(
     " acc=" + measured.acc,
 );
 
+// Canvas2D, which is a third question and the one nothing on macOS had ever
+// asked. Every other check on this archive -- link, symbol, "the script ran",
+// "the frames turned" -- is satisfied by an engine whose 2D backend cannot
+// build a single surface, because WebGL never goes through Skia and the frame
+// loop does not care what is drawn in it.
+//
+// It is asked here rather than in a unit test because this file runs the bytes
+// that ship: a static archive, ANGLE loaded from beside the binary, a real
+// CAMetalLayer with no window. A `GrDirectContext` either comes up against that
+// or it does not.
+//
+// Reported as one line with the colour in it, so the three ways this can go
+// wrong stay distinguishable from the outside: no context at all, a context
+// that draws the wrong thing, and a readback that never returned.
+function probeCanvas2D() {
+  // One try around the whole thing, including `getContext`. A context that
+  // cannot be built may surface as a null return or as a throw depending on
+  // which layer declines, and an uncaught throw here would abort module
+  // evaluation -- taking the frame loop and the V8 report down with it and
+  // leaving the gate to report a timeout about something else entirely.
+  try {
+    const canvas = migo.createCanvas();
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return "canvas2d ctx=null";
+    }
+    // The size is reported, not assumed. The first version of this probe filled
+    // 16x16 and read at (2,2), and the readback failed with
+    // `Canvas2D getImageData read_pixels failed` -- which is what an
+    // out-of-bounds read looks like from here, and the host's log had said
+    // `CAMetalLayer ignoring invalid setDrawableSize width=0 height=0` twice on
+    // the way in. Whether the content gets the surface the host declared is
+    // therefore its own question, and it is asked by printing the answer rather
+    // than by a readback failing for two possible reasons at once.
+    const w = canvas.width;
+    const h = canvas.height;
+    // Clamped, so the draw and the read are in bounds whatever the size turns
+    // out to be: a probe that cannot run on a small canvas cannot report how
+    // small the canvas is.
+    const side = Math.min(16, w, h);
+    // Opaque and off every axis of the default state, so a readback that
+    // reports it cannot be reporting a cleared buffer, a black surface, or a
+    // premultiplied white.
+    ctx.fillStyle = "rgb(0, 128, 255)";
+    ctx.fillRect(0, 0, side, side);
+    const px = ctx.getImageData(0, 0, 1, 1).data;
+    return (
+      "canvas2d size=" + w + "x" + h +
+      " rgba=" + px[0] + "," + px[1] + "," + px[2] + "," + px[3]
+    );
+  } catch (err) {
+    return "canvas2d threw=" + err;
+  }
+}
+
+console.error("migo-headless-probe: " + probeCanvas2D());
+
 // Then the render loop, which is the second question and a strictly harder one.
 // Evaluating a module needs V8 and a thread; turning frames needs the surface to
 // have been installed, the EGL context to be current and the presenter to be

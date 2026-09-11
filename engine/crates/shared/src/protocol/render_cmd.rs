@@ -254,7 +254,11 @@ impl<T> Drop for RenderCmdResp<T> {
             EngineError::new(ErrorCode::Internal).with_detail(
                 "render op responder dropped without sending a reply (\
                  likely a handler forgot to call resp.ok/err — upgraded \
-                 from silent `channel disconnected`)"
+                 from silent `channel disconnected`). The reason is not in \
+                 this message and usually is not lost: a handler that returned \
+                 early with `?` propagated its error to the render loop, which \
+                 logs it and emits it as a render event — look there, in the \
+                 host's stream rather than the caller's"
                     .to_string(),
             )
         };
