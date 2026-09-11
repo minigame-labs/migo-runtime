@@ -62,9 +62,25 @@
 #
 # ## What it costs
 #
-# A source build of Skia instead of a download. Whether that is paid once or
-# per run is the caller's caching, not this file's business; `Swatinem/rust-cache`
-# keeps `target/*/build/skia-bindings-*/out` across runs of a job that uses it.
+# Possibly nothing, and that is measured rather than assumed. A download is only
+# attempted for a key the rust-skia project actually published, and this
+# workspace's feature string does not appear to be one: a cold Linux build here
+# reports
+#
+#     DOWNLOAD AND INSTALL FAILED: curl error code: "22"
+#     curl stderr: "curl: (22) The requested URL returned error: 404"
+#
+# and falls through to a source build on its own. The key is
+# (skia commit, cargo features, debug) with the target triple in the filename,
+# so a 404 on one triple for this feature set makes a hit on another unlikely.
+# `FORCE_SKIA_BUILD` therefore mostly guarantees what was already happening --
+# but it guarantees it, which is the point: the failure mode it removes is a
+# download that succeeds and silently discards the argument, and that is not
+# something to leave to whether an upstream release happens to exist.
+#
+# Where a source build IS paid, `Swatinem/rust-cache` keeps
+# `target/*/build/skia-bindings-*/out` across runs of a job that uses it. The
+# `macos-v8` matrix row deliberately does not use it, so that row pays per run.
 
 # ## Two more things this file has to carry, because turning the source build on
 # ## is what makes them matter
