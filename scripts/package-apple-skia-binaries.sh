@@ -164,14 +164,21 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/skia-binaries"
 
+# The staleness check applies to the ninja-built libraries and nothing else.
+#
+# It was written against every file in the list and turned red immediately -- on
+# `LICENSE_SKIA`, which ninja does not produce: the build script copies it, so
+# its mtime legitimately predates the last ninja run, as does `bindings.rs`,
+# which bindgen writes. A guard that fires on the wrong file is not a strict
+# guard, it is a broken one, and it would have been "fixed" by deleting it.
 STAMP="$SOURCE_BUILT/build.ninja.stamp"
 for name in "${FILES[@]}"; do
     [[ -f "$SOURCE_BUILT/$name" ]] || fail "$SOURCE_BUILT has no $name; the build did not finish, or this skia-bindings emits a different set"
     # Older than the ninja stamp means something replaced it after the build --
-    # in practice a download into the same reused OUT_DIR. Packaging those bytes
-    # is the thing the object-tree check above is for, and this is the half of
-    # it that catches the opposite order.
-    if [[ -f "$STAMP" && "$SOURCE_BUILT/$name" -ot "$STAMP" ]]; then
+    # in practice a download into the same reused OUT_DIR. The object-tree check
+    # above catches a directory that was only ever downloaded into; this catches
+    # the opposite order.
+    if [[ "$name" == lib*.a && -f "$STAMP" && "$SOURCE_BUILT/$name" -ot "$STAMP" ]]; then
         fail "$SOURCE_BUILT/$name is older than build.ninja.stamp, so it is not what this ninja run produced.
       Wipe $(dirname "$(dirname "$SOURCE_BUILT")") and build from source again."
     fi
