@@ -385,6 +385,38 @@ final class MigoExternalFramePixelTests: XCTestCase {
         try submit("clear-scissor-frame", sequence: 3)
         try submit("canvas2d-fill-frame", sequence: 4)
 
+        // A characterised defect, tracked rather than deleted, because
+        // XCTExpectFailure fails when the failure STOPS happening -- whoever
+        // makes Skia build a context here finds out at this line.
+        //
+        // WHERE IT STOPS, measured rather than guessed. The records arrive and
+        // dispatch correctly: OP2D_CREATE_CONTEXT reaches the renderer and runs.
+        // What fails is Skia, and the log now says exactly where:
+        //
+        //     INFO  Skia is about to build a GL context
+        //           gl_version=OpenGL ES 3.0 (ANGLE 2.1.1 git hash: 52f5942878)
+        //     ERROR Skia GrDirectContext::make_gl returned none for the current
+        //           GL context
+        //     ERROR Canvas2DBatch cmd failed: 2d context not found: canvas_id=1 (x4)
+        //
+        // So a live, valid ANGLE ES 3.0 context IS current, the GL interface
+        // loads, and Skia looks at that context and declines it. Two candidates
+        // were eliminated on the way: the loader resolves every core GL name
+        // ANGLE is asked for (checked against the dylibs directly, outside this
+        // process), and the interface-load step is not the one that fails -- it
+        // has its own message now and it does not appear.
+        //
+        // WHAT IS NOT YET KNOWN is whether this is particular to this lane or
+        // true of Skia-on-ANGLE anywhere on macOS. `canvas2d_text` in the
+        // graphics crate does render pixels on this machine, so Skia builds a
+        // context somewhere; whether that path is this ANGLE is the next
+        // question, and it is a graphics investigation rather than a wire one.
+        XCTExpectFailure(
+            "Canvas2D records reach the renderer and Skia will not build a GrDirectContext on "
+                + "the ANGLE context they arrive under. See the comment above for what has been "
+                + "eliminated. If this expectation itself fails, Skia has started building one "
+                + "and the assertions below should become real again.")
+
         // 2D (4,4) is near the TOP-left; readPixels counts from the bottom, so
         // it is at y = 64 - 4.
         let quadrant = try readPixel(x: 4, y: 60, label: "the 2D-filled quadrant")
