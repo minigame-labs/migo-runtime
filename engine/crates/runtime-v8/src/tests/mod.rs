@@ -19,6 +19,7 @@ mod audio_context_close;
 mod binary_helper;
 mod callback_isolation;
 mod canvas_follows_surface;
+mod code_cache_dir;
 mod global_surface;
 mod host_bridge_dispatch;
 mod install_receipt;

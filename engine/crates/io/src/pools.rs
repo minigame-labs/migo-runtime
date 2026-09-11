@@ -49,6 +49,11 @@ impl<T> Default for FairLane<T> {
 }
 
 impl<T> FairLane<T> {
+    /// Byte-free convenience for the rotation-fairness tests, which are about
+    /// host ordering and have no byte dimension. Production always goes through
+    /// the `_with_bytes` forms so admission cannot be bypassed by picking the
+    /// shorter name; `cfg(test)` is what keeps that true.
+    #[cfg(test)]
     fn push(&mut self, host: HostToken, value: T) {
         self.push_with_bytes(host, value, 0);
     }
@@ -64,6 +69,8 @@ impl<T> FairLane<T> {
         }
     }
 
+    /// Test-only counterpart to [`Self::push`]; see the note there.
+    #[cfg(test)]
     fn pop_where(&mut self, eligible: impl FnMut(HostToken) -> bool) -> Option<(HostToken, T)> {
         self.pop_where_with_bytes(eligible)
             .map(|(host, value, _)| (host, value))
@@ -177,12 +184,18 @@ impl ExecutorConfig {
             // Fs, Pack, Image, Archive, Ingest.
             //
             // Archive gets the CPU-heavy cap rather than 1: extraction is
-            // inflate-bound with a working set of tens of kilobytes, and
-            // measures 3.5-3.8x on four threads (`bench_parallel_extraction_speedup`,
-            // both a 78:1-compressible and an incompressible payload). It used
-            // to be pinned at 1 because it shared a class with ingest, whose
-            // per-job memory runs to tens or hundreds of MB; that constraint
-            // now lives on `Ingest`, where it belongs.
+            // inflate-bound with bounded streaming buffers, not a retained
+            // whole-payload working set. It used to be pinned at 1 because
+            // it shared a class with ingest, whose per-job memory runs to
+            // tens or hundreds of MB; that constraint now lives on `Ingest`,
+            // where it belongs. The existing `fs_ops.rs:31-40` 2,000-entry /
+            // 64 MiB bounds protect `readZipEntry` result tables, not this
+            // streaming path (`zip_extract.rs:439-440,587-596`), so they do
+            // not explain the hard ceiling of 2. `render_thread.rs:3049-3066`
+            // has a 1.5 ms drain budget, but no comment ties that budget or
+            // thread affinity to this pool cap. No separate reason for the
+            // ceiling is recorded; raising it therefore needs device
+            // frame-pacing evidence, not this host throughput benchmark.
             class_caps: [worker_count, cpu_heavy_cap, cpu_heavy_cap, cpu_heavy_cap, 1],
             host_cap_when_contended: worker_count.div_ceil(2),
             aging_interval: 16,
@@ -200,6 +213,10 @@ impl ExecutorConfig {
     fn class_cap(&self, pool: PoolKind) -> usize {
         self.class_caps[pool_index(pool)]
     }
+}
+#[cfg(test)]
+pub(crate) fn archive_cap_for_workers(worker_count: usize) -> usize {
+    ExecutorConfig::for_workers(worker_count).class_cap(PoolKind::Archive)
 }
 
 struct Dispatched<T> {
@@ -393,6 +410,11 @@ impl<T> QueueState<T> {
         None
     }
 
+    /// Byte-free completion for the dispatch/fairness tests. The worker now
+    /// passes an explicit zero because the byte release happens earlier, before
+    /// the job's result is published; keeping this shorter name out of
+    /// production stops a future caller from releasing bytes twice.
+    #[cfg(test)]
     fn complete(&mut self, host: HostToken, pool: PoolKind) {
         self.complete_with_bytes(host, pool, 0);
     }

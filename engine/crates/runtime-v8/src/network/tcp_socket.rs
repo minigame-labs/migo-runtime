@@ -352,15 +352,11 @@ async fn write_tcp_payload(
     let cancel = RcRef::map(&resource, |r| &r.cancel);
     let write = async {
         let _ticket = ticket;
-        tokio::time::timeout(resource.write_timeout, async {
-            let mut writer = RcRef::map(&resource, |r| &r.writer).borrow_mut().await;
-            writer
-                .write_all(bytes)
-                .await
-                .map_err(|e| JsErrorBox::generic(format!("write:fail {e}")))
-        })
-        .await
-        .map_err(|_| JsErrorBox::generic("write:fail deadline exceeded"))?
+        let mut writer = RcRef::map(&resource, |r| &r.writer).borrow_mut().await;
+        writer
+            .write_all(bytes)
+            .await
+            .map_err(|e| JsErrorBox::generic(format!("write:fail {e}")))
     };
     write.try_or_cancel(cancel).await
 }
