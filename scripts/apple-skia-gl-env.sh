@@ -60,27 +60,35 @@
 # `cargo:rerun-if-env-changed` for every name it reads, so adding them
 # invalidates a previously cached build rather than being masked by one.
 #
-# ## What it costs
+# ## What it costs, measured
 #
-# Possibly nothing, and that is measured rather than assumed. A download is only
-# attempted for a key the rust-skia project actually published, and this
-# workspace's feature string does not appear to be one: a cold Linux build here
-# reports
+# A real source build, roughly 8-9 minutes per target on a `macos-15` runner
+# and 8m42s measured on an Intel Mac, where an Apple build previously downloaded
+# a prebuilt and compiled no Skia at all. That is not a guess: the artifact
+# shapes say which happened. A downloaded `out/skia` holds `key.txt`,
+# `libskia-bindings.a` and `bindings.rs`; a built one holds `args.gn` and
+# `build.ninja`. Before this change every Apple target had the first shape, with
+# keys like
 #
-#     DOWNLOAD AND INSTALL FAILED: curl error code: "22"
-#     curl stderr: "curl: (22) The requested URL returned error: 404"
+#     319323662b1685a112f5-aarch64-apple-ios-gl-jpegd-jpege-pdf-textlayout
+#     319323662b1685a112f5-x86_64-apple-darwin-gl-jpegd-jpege-pdf-textlayout
 #
-# and falls through to a source build on its own. The key is
-# (skia commit, cargo features, debug) with the target triple in the filename,
-# so a 404 on one triple for this feature set makes a hit on another unlikely.
-# `FORCE_SKIA_BUILD` therefore mostly guarantees what was already happening --
-# but it guarantees it, which is the point: the failure mode it removes is a
-# download that succeeds and silently discards the argument, and that is not
-# something to leave to whether an upstream release happens to exist.
+# -- so rust-skia publishes binaries for exactly this feature set on exactly
+# these triples, and a download would have succeeded. Which is precisely why
+# `FORCE_SKIA_BUILD` is load-bearing rather than belt-and-braces: without it the
+# download wins, prints SUCCEEDED, and `skia_gl_standard` never reaches GN.
+# (Linux is the opposite case -- a cold build there 404s and source-builds on its
+# own -- so the two platforms would have disagreed about whether this file does
+# anything.)
 #
-# Where a source build IS paid, `Swatinem/rust-cache` keeps
-# `target/*/build/skia-bindings-*/out` across runs of a job that uses it. The
-# `macos-v8` matrix row deliberately does not use it, so that row pays per run.
+# `Swatinem/rust-cache` keeps `target/*/build/skia-bindings-*/out` across runs of
+# a job that uses it, so the diagnostic row pays this once; the `macos-v8` row
+# deliberately has no cache and pays it per run.
+#
+# The way to get the speed back without giving up the correction is to publish
+# our own corrected macOS archives and point `SKIA_BINARIES_URL` at them -- the
+# same shape already used for the pinned ANGLE and V8 archives, component
+# manifest included. That is an optimisation, and it is not this change.
 
 # ## Two more things this file has to carry, because turning the source build on
 # ## is what makes them matter

@@ -233,9 +233,15 @@ jobs:
       # person to find out would be whoever integrated it.
       #
       # So this links a host against that archive and runs a game through it.
-      # The content sums 1..1000, which has to be executed to exist, and then
-      # calls migo.exitMiniProgram() -- so a pass means V8 ran AND the migo
-      # capability surface was installed.
+      # The content sums 1..1000, which has to be executed to exist, draws and
+      # reads back a Canvas2D pixel, and then calls migo.exitMiniProgram() -- so
+      # a pass means V8 ran, Skia built a GL context on ANGLE and drew what it
+      # was told, AND the migo capability surface was installed.
+      #
+      # The Canvas2D half was added on 2026-09-11 because until then every macOS
+      # check here was satisfiable by an engine whose 2D backend could not build
+      # a single surface, which is exactly what it was: WebGL never goes through
+      # Skia, so nothing went red. See scripts/apple-skia-gl-env.sh.
       - name: The shipping macOS archive runs a game, not just links
         if: matrix.product == 'macos-v8'
         run: >-
