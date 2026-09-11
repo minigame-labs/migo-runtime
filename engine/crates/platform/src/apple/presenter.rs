@@ -869,13 +869,18 @@ mod tests {
     /// about GL. Skia-on-GL plainly works in production on Android; whether it
     /// works on ANGLE here was an open question with no test anywhere.
     ///
-    /// It matters because the external-frame lane's Canvas2D cannot draw: its
-    /// records reach the renderer and `Canvas2DContext::new` returns nothing on
-    /// a live ANGLE ES 3.0 context. That failure has two possible shapes --
-    /// something about that lane's particular context, or Skia-on-ANGLE not
-    /// working here at all -- and they want opposite investigations. This test
-    /// is the one that tells them apart, on a pbuffer with nothing else
-    /// involved.
+    /// It was written to tell two shapes of one failure apart -- was the
+    /// external-frame lane's Canvas2D broken by something about that lane's
+    /// context, or was Skia-on-ANGLE not working here at all -- and it answered:
+    /// anywhere on macOS, on a bare pbuffer with nothing else involved. The
+    /// cause was a GN argument rather than a driver, and it is fixed; see
+    /// `scripts/apple-skia-gl-env.sh` for the mechanism.
+    ///
+    /// So its job now is to keep that fixed. It is the only thing in this
+    /// repository that would notice the correction going away -- nothing else
+    /// asks Skia for a GL context on a host, and WebGL never goes through Skia,
+    /// so the symptom of losing it is every 2D surface silently failing to build
+    /// while every lane stays green.
     ///
     /// Skipped rather than failed where ANGLE cannot load: a machine without it
     /// cannot answer the question, and a test that failed there would be
@@ -965,9 +970,12 @@ mod tests {
         assert!(
             failed_at.is_none(),
             "Skia would not build a Canvas2D context on an ANGLE ES 3.0 pbuffer on this \
-             machine; it stopped at {}. That makes the external-frame lane's Canvas2D \
-             failure the general case rather than something about that lane's context, \
-             and the investigation belongs in graphics rather than in the wire.",
+             machine; it stopped at {}. On macOS this is what losing \
+             `skia_gl_standard=\"\"` looks like: Skia's macOS default assumes desktop GL \
+             at compile time and ANGLE is ES, so `make_gl` rejects a context that is \
+             perfectly good. Check that this command sourced scripts/apple-skia-gl-env.sh \
+             and that the Skia it linked was built rather than downloaded -- a downloaded \
+             one carries key.txt where a built one carries args.gn.",
             failed_at.expect("checked on the line above")
         );
     }
