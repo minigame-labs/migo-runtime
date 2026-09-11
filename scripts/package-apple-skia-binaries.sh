@@ -141,8 +141,8 @@ done < <(find "$BUILD_ROOT" -maxdepth 3 -type d -name skia -path '*/skia-binding
 if [[ -z "$SOURCE_BUILT" ]]; then
     if [[ -n "$DOWNLOADED" ]]; then
         fail "the only Skia under $BUILD_ROOT was DOWNLOADED ($DOWNLOADED has no ninja object tree).
-      Packaging that would republish upstream's bytes under our name. Build from source first:
-        source scripts/apple-skia-gl-env.sh && cargo build --target $TARGET ..."
+      Packaging that would republish upstream's bytes under our name. Build from source
+      first: dot-source scripts/apple-skia-gl-env.sh, then cargo build --target $TARGET."
     fi
     fail "no Skia build under $BUILD_ROOT"
 fi
@@ -201,7 +201,12 @@ mkdir -p "$STAGE/skia-binaries"
 # which bindgen writes. A guard that fires on the wrong file is not a strict
 # guard, it is a broken one, and it would have been "fixed" by deleting it.
 STAMP="$SOURCE_BUILT/build.ninja.stamp"
-for name in "${FILES[@]}"; do
+# `${FILES[@]+...}` rather than `"${FILES[@]}"`: under `set -u`, bash 3.2 --
+# which is what macOS ships, and macOS is the only OS that can build an Apple
+# product -- treats an empty array expansion as an unbound variable. These two
+# are never empty today, and the guard costs nothing; the rule is what keeps a
+# later edit from being a Mac-only failure.
+for name in ${FILES[@]+"${FILES[@]}"}; do
     [[ -f "$SOURCE_BUILT/$name" ]] || fail "$SOURCE_BUILT has no $name; the build did not finish, or this skia-bindings emits a different set"
     # Older than the ninja stamp means something replaced it after the build --
     # in practice a download into the same reused OUT_DIR. The object-tree check
@@ -214,7 +219,7 @@ for name in "${FILES[@]}"; do
     cp "$SOURCE_BUILT/$name" "$STAGE/skia-binaries/$name"
 done
 
-for name in "${OPTIONAL_FILES[@]}"; do
+for name in ${OPTIONAL_FILES[@]+"${OPTIONAL_FILES[@]}"}; do
     if [[ -f "$SOURCE_BUILT/$name" ]]; then
         cp "$SOURCE_BUILT/$name" "$STAGE/skia-binaries/$name"
         info "also packaged        $name"
