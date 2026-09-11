@@ -201,7 +201,7 @@ fi
 # makes" and "is it still a valid frame saying what it claims" -- and a committed
 # fixture needs both.
 
-FIXTURES="platforms/apple/Tests/MigoAppleRendererTests/Fixtures"
+FIXTURES="platforms/apple/Sources/MigoAppleFrameHarness/Fixtures"
 REGENERATED="$(mktemp -d)"
 trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED"' EXIT
 node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs "$REGENERATED" >/dev/null

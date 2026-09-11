@@ -99,15 +99,40 @@ let package = Package(
         // device build is compiled here; real-device evidence is separate.
         .testTarget(
             name: "MigoAppleRendererTests",
-            dependencies: ["MigoAppleRenderer", "MigoEngine"],
-            path: "Tests/MigoAppleRendererTests",
-            // One real frame, so a test that needs a valid packet does not build
-            // one: a third implementation of the wire format, in a language
-            // neither the document nor the golden corpus checks, is the failure
-            // mode contracts/frame-wire/wire-v1.md exists to prevent. It is
-            // produced by the JavaScript encoder the corpus does check, and two
-            // gates keep it honest -- the emitter still reproduces it byte for
-            // byte, and frame-wire's clear_frame_fixture asserts what is in it.
+            dependencies: ["MigoAppleRenderer", "MigoEngine", "MigoAppleFrameHarness"],
+            path: "Tests/MigoAppleRendererTests"
+        ),
+
+        // The engine/session/surface bring-up two test targets both need.
+        //
+        // A target rather than a copy in each test file: `MigoAppleRendererTests`
+        // owned it, and the Performance+ acceptance test needs the same eighty
+        // lines. The alternative was making `MigoAppleRendererTests` depend on
+        // the Performance+ lane, which the comment on that test target rejects
+        // for a reason that still holds -- it would make every renderer test
+        // build the lane as well.
+        //
+        // It carries no assertions, which is why it is a library and not a test
+        // target: a helper that called `XCTAssert` itself would report its own
+        // line numbers for somebody else's question.
+        .target(
+            name: "MigoAppleFrameHarness",
+            dependencies: ["MigoEngine"],
+            path: "Sources/MigoAppleFrameHarness",
+            // The committed frames live here, with the harness, because both
+            // test targets need the SAME bytes. The acceptance test's whole
+            // claim is that a packet which draws when submitted directly also
+            // draws when it has crossed the transport, and two copies of a
+            // fixture are two things that can differ.
+            //
+            // They are real frames so that a test needing a valid packet does
+            // not build one: a third implementation of the wire format, in a
+            // language neither the document nor the golden corpus checks, is
+            // the failure mode contracts/frame-wire/wire-v1.md exists to
+            // prevent. They are produced by the JavaScript encoder the corpus
+            // does check, and two gates keep them honest -- the emitter still
+            // reproduces them byte for byte, and frame-wire's
+            // clear_frame_fixture asserts what is in one.
             resources: [.copy("Fixtures")]
         ),
 
@@ -157,7 +182,7 @@ let package = Package(
         // as well.
         .testTarget(
             name: "MigoApplePerformancePlusTests",
-            dependencies: ["MigoApplePerformancePlus"],
+            dependencies: ["MigoApplePerformancePlus", "MigoAppleFrameHarness"],
             path: "Tests/MigoApplePerformancePlusTests"
         ),
 

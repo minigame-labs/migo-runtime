@@ -1,3 +1,4 @@
+import MigoAppleFrameHarness
 import MigoEngine
 import QuartzCore
 import XCTest
@@ -174,15 +175,11 @@ final class MigoExternalFramePixelTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    /// The committed frames now live with `MigoAppleFrameHarness`, so this test
+    /// and the Performance+ acceptance test read the same file rather than two
+    /// copies of it.
     private func fixture(_ name: String) throws -> Data {
-        let url = try XCTUnwrap(
-            Bundle.module.url(forResource: name, withExtension: "bin", subdirectory: "Fixtures"),
-            """
-            the committed frame is not in the test bundle. It is declared as a resource of \
-            this target in Package.swift; regenerate it with \
-            `node platforms/apple/WebContent/PerformancePlus/test/emit-clear-frame.mjs`.
-            """)
-        return try Data(contentsOf: url)
+        try MigoFrameHarness.fixture(named: name)
     }
 
     private func readPixelsParams(x: Int32, y: Int32, width: Int32, height: Int32) -> [UInt8] {
