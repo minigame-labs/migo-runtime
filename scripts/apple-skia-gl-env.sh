@@ -127,5 +127,57 @@ export CXX="${CXX:-clang++}"
 # here. Keeping them would be the change, not dropping them. The `:+` form
 # still appends to a value a *caller* exported, which is the composition that
 # should work.
-export FORCE_SKIA_BUILD=1
 export SKIA_GN_ARGS="${SKIA_GN_ARGS:+$SKIA_GN_ARGS }skia_gl_standard=\"\""
+
+# ## Downloading the correction instead of rebuilding it
+#
+# The paragraphs above measured what the source build costs -- 8-9 minutes per
+# (target x feature set) per job per RUN, not amortised, because `rust-cache`
+# prunes build-script output directories. That is what this section removes.
+#
+# `contracts/artifact-manifest/apple-skia.lock.json` names archives this project
+# built with `skia_gl_standard=""` and published, the same shape already used for
+# the pinned ANGLE and V8 archives: a recipe anybody can re-run
+# (`scripts/package-apple-skia-binaries.sh`), a machine that runs it
+# (`.github/workflows/apple-skia-binaries.yml`), and a lock with sizes and
+# sha256s that `scripts/test-apple-skia-pin-contract.sh` checks against what is
+# actually published.
+#
+# `SKIA_BINARIES_URL` is a TEMPLATE -- skia-bindings expands `{tag}` and `{key}`,
+# and the key is its own construction from (commit, triple, features). So one
+# line serves both darwin triples, and a key it cannot find simply misses and
+# source-builds: slower, never wrong.
+#
+# THE SCOPE IS THIS FILE'S CALLERS, AND THAT IS LOAD-BEARING. iOS must keep
+# downloading upstream's prebuilts -- its default `"gles"` is what ANGLE actually
+# is, so upstream's iOS archives are correct and this release has none. Pointing
+# every Apple target at this URL would 404 on iOS keys and quietly turn a
+# download into an 8-minute build. What keeps that from happening is that
+# `build-apple-sdk.sh` sources this file only under `--platform macos`, and the
+# iOS legs of `apple-sdk.yml` say in their own comments that they deliberately do
+# not.
+#
+# `FORCE_SKIA_BUILD` is no longer set by default, because it is exactly the
+# switch that takes the download out of the path. `MIGO_SKIA_FROM_SOURCE=1`
+# restores it, and two callers need that: the packaging workflow, which must
+# build what it is going to publish, and anybody bisecting Skia itself.
+if [ -n "${MIGO_SKIA_FROM_SOURCE:-}" ]; then
+    export FORCE_SKIA_BUILD=1
+else
+    # Read from the lock rather than repeated here: a URL in two places is a URL
+    # that gets updated in one of them.
+    _migo_skia_lock="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/contracts/artifact-manifest/apple-skia.lock.json"
+    if [ -f "$_migo_skia_lock" ]; then
+        SKIA_BINARIES_URL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url_template"])' "$_migo_skia_lock")"
+        export SKIA_BINARIES_URL
+    else
+        # Fail loud rather than fall back to upstream's archives: those are the
+        # ones with SK_ASSUME_GL compiled in, and taking them silently is the
+        # original defect returning with a green build.
+        echo "apple-skia-gl-env.sh: $_migo_skia_lock is missing, so the corrected" >&2
+        echo "  macOS Skia cannot be located. Building from source instead, which is" >&2
+        echo "  slow and correct. Set MIGO_SKIA_FROM_SOURCE=1 to silence this." >&2
+        export FORCE_SKIA_BUILD=1
+    fi
+    unset _migo_skia_lock
+fi

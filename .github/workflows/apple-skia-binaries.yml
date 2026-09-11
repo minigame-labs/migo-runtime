@@ -135,6 +135,12 @@ jobs:
         run: |
           rm -rf target/${{ matrix.target }}/debug/build/skia-bindings-*
           rm -rf target/debug/build/skia-bindings-*
+          # MIGO_SKIA_FROM_SOURCE, because this job publishes what it builds and
+          # the fragment now DOWNLOADS by default. Without it this workflow would
+          # fetch the archive it is about to replace and package that --
+          # `package-apple-skia-binaries.sh` refuses a downloaded build, so it
+          # would fail rather than lie, but it would fail for an obscure reason.
+          export MIGO_SKIA_FROM_SOURCE=1
           # shellcheck source=scripts/apple-skia-gl-env.sh
           . ../scripts/apple-skia-gl-env.sh
           cargo build -p migo-graphics --target ${{ matrix.target }} --lib
