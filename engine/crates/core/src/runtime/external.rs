@@ -64,14 +64,14 @@ pub struct ExternalFrameSession {
     sync: SyncPath,
     clock: Arc<ExternalFrameClock>,
     /// What the host owes the producer: a verdict for every frame it submitted,
-    /// and the frame clock's ticks. Shared with the clock, which is what fills
-    /// the tick half, and drained by the transport through
+    /// and the frame clock's ticks. Shared with the clock and the submit path,
+    /// which are what fill it, and drained by the transport through
     /// [`ExternalFrameSession::take_downlink`].
+    ///
+    /// The records are stamped with the runtime generation by whoever pushes
+    /// them, not here -- the clock and the submit path each carry their own
+    /// copy so neither has to reach for the ingress lock to answer.
     downlink: Arc<Mutex<DownlinkQueue>>,
-    /// The runtime generation every downlink record is stamped with, so a
-    /// producer rebuilt after a WebContent termination can tell a verdict meant
-    /// for the previous one from a verdict meant for it.
-    runtime_generation: u64,
 }
 
 /// A started external session and, when it was given a Surface, the lease for
@@ -873,7 +873,6 @@ impl ExternalFrameSession {
                 INITIAL_RUNTIME_GENERATION,
             )),
             downlink,
-            runtime_generation: INITIAL_RUNTIME_GENERATION,
         }
     }
 }
@@ -945,7 +944,6 @@ pub fn spawn_external_frame_session(
             },
             clock,
             downlink,
-            runtime_generation: INITIAL_RUNTIME_GENERATION,
         },
         resource: started.resource,
         ingress: started.ingress,
