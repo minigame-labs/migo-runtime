@@ -459,6 +459,31 @@ jobs:
             --no-default-features --features external-frames \
             --config "target.aarch64-apple-ios-sim.runner=['$GITHUB_WORKSPACE/scripts/ios-sim-cargo-runner.sh']"
 
+      # The 2D goldens on the iOS build of Skia, which is a different Skia.
+      #
+      # They run on macOS on the macos-v8 row, and that does not cover this: the
+      # two Apple platforms are built with different compile-time GL standards
+      # (`skia_gl_standard` is "gl" for mac and "gles" for ios), different font
+      # managers, and different SIMD. A defect that lives in one build and not
+      # the other is not hypothetical here -- one is the reason
+      # `scripts/apple-skia-gl-env.sh` exists.
+      #
+      # Cheap on this row: the Skia it needs is the prebuilt the product already
+      # links, so this is the graphics crate's own test binaries and nothing
+      # else. The one golden that is a rasteriser's rather than a renderer's is
+      # `#[cfg(not(target_vendor = "apple"))]` and skips here as it does on
+      # macOS; what runs is every font-free golden plus the portable text
+      # assertions.
+      - name: The 2D goldens run on the iOS build of Skia
+        if: matrix.platform == 'ios-simulator'
+        working-directory: engine
+        run: |
+          udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
+          xcrun simctl bootstatus "$udid" -b
+          export MIGO_IOS_SIM_UDID="$udid"
+          cargo test -p migo-graphics --locked --target aarch64-apple-ios-sim --tests \
+            --config "target.aarch64-apple-ios-sim.runner=['$GITHUB_WORKSPACE/scripts/ios-sim-cargo-runner.sh']"
+
       # The runtime is supplied by Package.swift's framework dependencies.
       # No copy into DerivedData or test products repairs the package afterward.
       #
