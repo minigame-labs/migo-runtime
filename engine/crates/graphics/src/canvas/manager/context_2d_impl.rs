@@ -89,10 +89,16 @@ pub(super) fn init_skia_for_canvas(
         let load_gl = |symbol: &str| cm.gl_proc_address(symbol);
         Canvas2DContext::new(fbo_id, width, height, kind, &load_gl)
     };
-    let ctx = created.ok_or_else(|| {
+    // The step is in the message because the three of them want opposite
+    // investigations -- a loader that resolved nothing, a driver Skia declined,
+    // a framebuffer it would not wrap -- and this message used to name none of
+    // them. See `Canvas2DInitFailure`.
+    let ctx = created.map_err(|step| {
         ee(
             ErrorCode::RenderBackendError,
-            format!("Skia Canvas2DContext::new failed for canvas_id={canvas_id} ({width}x{height} fbo={fbo_id})"),
+            format!(
+                "Skia Canvas2DContext::new failed at {step} for canvas_id={canvas_id} ({width}x{height} fbo={fbo_id})"
+            ),
         )
     })?;
     cm.contexts_2d.insert(canvas_id, ctx);

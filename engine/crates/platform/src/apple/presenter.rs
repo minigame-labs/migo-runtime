@@ -849,7 +849,7 @@ mod tests {
     /// works on ANGLE here was an open question with no test anywhere.
     ///
     /// It matters because the external-frame lane's Canvas2D cannot draw: its
-    /// records reach the renderer and `GrDirectContext::make_gl` returns none on
+    /// records reach the renderer and `Canvas2DContext::new` returns nothing on
     /// a live ANGLE ES 3.0 context. That failure has two possible shapes --
     /// something about that lane's particular context, or Skia-on-ANGLE not
     /// working here at all -- and they want opposite investigations. This test
@@ -926,7 +926,13 @@ mod tests {
                     .unwrap_or(std::ptr::null())
             },
         );
-        let answered = built.is_some();
+        // The step, not just the verdict. Skia's own messages travel by
+        // `tracing`, and a `#[test]` has no subscriber to receive them -- this
+        // workspace builds `tracing-subscriber` without its `fmt` feature -- so
+        // a bare `is_some()` would report the same "no" for a loader that
+        // resolved nothing and for a driver Skia declined. Those want opposite
+        // investigations; see `Canvas2DInitFailure`.
+        let failed_at = built.err();
 
         let _ = egl.make_current(display, None, None, None);
         let _ = egl.destroy_context(display, context);
@@ -934,11 +940,12 @@ mod tests {
         let _ = egl.terminate(display);
 
         assert!(
-            answered,
-            "Skia would not build a GrDirectContext on an ANGLE ES 3.0 pbuffer on this \
-             machine. That makes the external-frame lane's Canvas2D failure the general \
-             case rather than something about that lane's context, and the investigation \
-             belongs in graphics rather than in the wire."
+            failed_at.is_none(),
+            "Skia would not build a Canvas2D context on an ANGLE ES 3.0 pbuffer on this \
+             machine; it stopped at {}. That makes the external-frame lane's Canvas2D \
+             failure the general case rather than something about that lane's context, \
+             and the investigation belongs in graphics rather than in the wire.",
+            failed_at.expect("checked on the line above")
         );
     }
 }
