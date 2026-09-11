@@ -45,6 +45,12 @@ on:
       - 'engine/crates/capi/**'
       - 'engine/crates/frame-wire/**'
       - 'engine/crates/frame-decode/**'
+      # The crate this workflow runs `cargo test -p migo-platform` on, and it
+      # was not here. So a change to the Apple presenter -- the EGL provider,
+      # the layer ownership, the ANGLE bring-up tests that live in it -- could
+      # land without the lane that tests it ever running. Found by pushing a new
+      # presenter test and watching the Apple lanes not start.
+      - 'engine/crates/platform/**'
       - 'scripts/build-apple-sdk.sh'
       - 'scripts/apple-sdk-package.py'
       - 'scripts/embed-apple-angle.sh'
