@@ -15,7 +15,7 @@ final class MigoFrameChannelTests: XCTestCase {
     /// A downlink message the engine could have written: magic "MDL1",
     /// version 1, and one seven-word verdict. Not parsed here; it is the real
     /// shape so the test reads as what the channel carries.
-    private static let verdictMessage: [UInt8] = {
+    fileprivate static let verdictMessage: [UInt8] = {
         var words: [UInt32] = [0x4D44_4C31, 1]
         words.append((7 << 12) | 1)  // pack_header(DOWN_FRAME_VERDICT, 7)
         words.append(contentsOf: [1, 1, 0, 2, 0x1234_5678, 0])
@@ -32,24 +32,51 @@ final class MigoFrameChannelTests: XCTestCase {
         return task
     }
 
+    /// A queue that has nothing to say until a frame has been submitted.
+    ///
+    /// This is the engine's own shape, and getting it wrong made a test race.
+    /// `MigoFrameChannel` pumps when a producer CONNECTS -- deliberately, so a
+    /// producer that missed a verdict while it was away learns its credit level
+    /// before it sends anything -- so a fake that has a message ready from the
+    /// start hands it over at connect time, and the message the test then
+    /// receives is not the one it was about. `testARefusedFrameStillProducesAnAnswer`
+    /// failed exactly that way on the macOS lane while passing on the simulator:
+    /// the wait succeeded on the connect-time message and `framesRefused` was
+    /// still 0.
+    private final class VerdictAfterSubmit {
+        private let lock = NSLock()
+        private var armed = false
+        private var delivered = false
+
+        func armFromSubmit() {
+            lock.lock()
+            armed = true
+            lock.unlock()
+        }
+
+        func take(into buffer: UnsafeMutableBufferPointer<UInt8>) -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            guard armed, !delivered else { return 0 }
+            delivered = true
+            _ = buffer.update(fromContentsOf: MigoFrameChannelTests.verdictMessage)
+            return MigoFrameChannelTests.verdictMessage.count
+        }
+    }
+
     func testAFrameIsSubmittedAndTheAnswerGoesBack() throws {
         let submitted = expectation(description: "the engine is handed the packet")
         var seen: Data?
-        var pending = Self.verdictMessage
+        let queue = VerdictAfterSubmit()
 
         let channel = MigoFrameChannel(
             submit: { packet in
                 seen = packet
+                queue.armFromSubmit()
                 submitted.fulfill()
                 return true
             },
-            takeDownlink: { buffer in
-                guard !pending.isEmpty else { return 0 }
-                let count = pending.count
-                _ = buffer.update(fromContentsOf: pending)
-                pending = []
-                return count
-            })
+            takeDownlink: { queue.take(into: $0) })
         let endpoint = try channel.start()
         defer { channel.stop() }
 
@@ -87,21 +114,20 @@ final class MigoFrameChannelTests: XCTestCase {
         // The whole point: a producer told nothing about a frame it sent has to
         // time out to find out, and a timeout is indistinguishable from a host
         // that died.
-        var pending = Self.verdictMessage
+        let queue = VerdictAfterSubmit()
         let channel = MigoFrameChannel(
-            submit: { _ in false },
-            takeDownlink: { buffer in
-                guard !pending.isEmpty else { return 0 }
-                let count = pending.count
-                _ = buffer.update(fromContentsOf: pending)
-                pending = []
-                return count
-            })
+            submit: { _ in
+                queue.armFromSubmit()
+                return false
+            },
+            takeDownlink: { queue.take(into: $0) })
         let endpoint = try channel.start()
         defer { channel.stop() }
 
         let producer = client(for: endpoint)
         defer { producer.cancel(with: .goingAway, reason: nil) }
+        // Only the verdict can arrive: the queue above is empty until a frame
+        // has been submitted, so the connect-time pump sends nothing.
         let answered = expectation(description: "a refusal is still answered")
         producer.receive { result in
             if case .success(.data) = result { answered.fulfill() } else { XCTFail("\(result)") }
