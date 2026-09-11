@@ -55,8 +55,12 @@ public final class MigoFrameHarness {
 
     public init(sizePixels: Int = 64) throws {
         self.sizePixels = sizePixels
-        root = URL(fileURLWithPath: NSTemporaryDirectory())
+        // A local until every stored property is initialised: `withCString`
+        // takes a closure, and a closure that reads `self.root` before the
+        // initialiser has finished is one Swift refuses to compile.
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("migo-frame-harness-\(UUID().uuidString)")
+        self.root = root
         for name in ["files", "cache", "code-cache"] {
             try FileManager.default.createDirectory(
                 at: root.appendingPathComponent(name), withIntermediateDirectories: true)
