@@ -140,22 +140,26 @@ public final class MigoFrameChannel {
     /// produced a record. It is cheap when there is nothing: the engine reports
     /// an empty queue as zero bytes and this sends nothing.
     public func pump() {
+        // Taking and sending happen under one lock, and that is about ORDER
+        // rather than about the buffer. Two threads that each took a message and
+        // then raced to send would deliver them in whichever order the scheduler
+        // chose -- and downlink order is load-bearing: a verdict queued before a
+        // tick has to arrive before it, or the producer schedules against a
+        // credit level it has not been told about yet. `frame-wire`'s queue goes
+        // to some trouble to keep that order; losing it here would waste it.
+        //
+        // `NWConnection.send` does not block -- it hands the bytes to the
+        // connection's own queue -- so the lock is held for a copy and an
+        // enqueue.
         lock.lock()
+        defer { lock.unlock() }
         let written = downlink.withUnsafeMutableBufferPointer { takeDownlink($0) }
-        guard written > 0 else {
-            lock.unlock()
-            return
-        }
-        let message = Data(downlink[0..<written])
+        guard written > 0 else { return }
         statistics.messagesSent += 1
-        lock.unlock()
-
         do {
-            try transport.send(message)
+            try transport.send(Data(downlink[0..<written]))
         } catch {
-            lock.lock()
             statistics.sendsWithoutProducer += 1
-            lock.unlock()
         }
     }
 

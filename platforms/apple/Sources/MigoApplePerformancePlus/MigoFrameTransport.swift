@@ -65,9 +65,15 @@ public final class MigoFrameTransport {
     public var onFailure: ((Failure) -> Void)?
 
     private let queue = DispatchQueue(label: "dev.migo.frame-transport")
+    /// Guards `listener` and `connection`, and it is a lock rather than
+    /// `queue.sync` on purpose: every Network.framework callback already runs
+    /// ON that queue, so a host that called `stop()` or read `isConnected` from
+    /// inside `onFrame` -- which is the obvious thing to do -- would deadlock
+    /// against itself. A lock is re-entrant-safe here because nothing taken
+    /// under it calls back out.
+    private let state = NSLock()
     private var listener: NWListener?
     private var connection: NWConnection?
-    private var started = false
 
     public init() {}
 
@@ -115,8 +121,9 @@ public final class MigoFrameTransport {
             self?.accept(connection)
         }
         listener.start(queue: queue)
+        state.lock()
         self.listener = listener
-        started = true
+        state.unlock()
 
         if ready.wait(timeout: .now() + timeout) == .timedOut {
             stop()
@@ -141,6 +148,9 @@ public final class MigoFrameTransport {
     /// producer parse an envelope that says nothing.
     public func send(_ bytes: Data) throws {
         guard !bytes.isEmpty else { return }
+        state.lock()
+        let connection = self.connection
+        state.unlock()
         guard let connection, connection.state == .ready else {
             throw Failure.notConnected
         }
@@ -160,15 +170,16 @@ public final class MigoFrameTransport {
     /// Safe to call twice, and safe to call from `deinit`: a transport that
     /// threw on a second stop would make every error path a two-step dance.
     public func stop() {
-        queue.sync {
-            connection?.cancel()
-            connection = nil
-            listener?.newConnectionHandler = nil
-            listener?.stateUpdateHandler = nil
-            listener?.cancel()
-            listener = nil
-            started = false
-        }
+        state.lock()
+        let connection = self.connection
+        let listener = self.listener
+        self.connection = nil
+        self.listener = nil
+        state.unlock()
+        connection?.cancel()
+        listener?.newConnectionHandler = nil
+        listener?.stateUpdateHandler = nil
+        listener?.cancel()
     }
 
     deinit { stop() }
@@ -176,19 +187,24 @@ public final class MigoFrameTransport {
     /// Whether a producer is connected. For tests and for a host that wants to
     /// report why nothing is rendering.
     public var isConnected: Bool {
-        queue.sync { connection?.state == .ready }
+        state.lock()
+        defer { state.unlock() }
+        return connection?.state == .ready
     }
 
     // MARK: - Private
 
     private func accept(_ incoming: NWConnection) {
-        if connection != nil {
+        state.lock()
+        let alreadyHaveOne = connection != nil
+        if !alreadyHaveOne { connection = incoming }
+        state.unlock()
+        if alreadyHaveOne {
             // See the type's documentation: a second producer is refused rather
             // than multiplexed.
             incoming.cancel()
             return
         }
-        connection = incoming
         incoming.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -208,8 +224,11 @@ public final class MigoFrameTransport {
     }
 
     private func dropConnection() {
-        guard connection != nil else { return }
+        state.lock()
+        let had = connection != nil
         connection = nil
+        state.unlock()
+        guard had else { return }
         onConnectionChange?(false)
     }
 
@@ -242,7 +261,10 @@ public final class MigoFrameTransport {
             // Re-arm only while this connection is still the one we accepted:
             // a cancelled connection that kept re-arming would hold the queue
             // alive past `stop()`.
-            if self.connection === connection {
+            self.state.lock()
+            let stillCurrent = self.connection === connection
+            self.state.unlock()
+            if stillCurrent {
                 self.receive(on: connection)
             }
         }
