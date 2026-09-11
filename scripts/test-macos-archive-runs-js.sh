@@ -239,6 +239,32 @@ report_line() {
   grep -o 'migo-headless-probe: v8 wasm=[a-z]* mips=[0-9.]* acc=[0-9-]*' "$HOST_LOG" | tail -1
 }
 
+# Which fixtures report which V8 they ran on.
+#
+# A LIST, not "assert it when the line is there". `assert_v8_has_jit` treats an
+# absent report as a failure on purpose -- a measurement that quietly stops
+# being taken is the shape this repository keeps finding -- and that is right
+# for a fixture that reports and wrong for one that does not. Naming them here
+# keeps both: the fixture below is measured and every other one says out loud
+# that it is not.
+#
+# This existed because two green changes were not green together. One added a
+# WebGL probe fixture; the other added the measurement and asserted it
+# unconditionally. Each passed on its own branch, and the combination failed on
+# master with "the engine log channel is closed" against a run whose channel was
+# fine -- it simply had nothing to say.
+V8_REPORTING_CONTENT="headless-js-probe"
+
+measure_v8_if_this_content_reports() {
+  if [[ "$CONTENT" != "$V8_REPORTING_CONTENT" ]]; then
+    echo "  no V8 measurement: '$CONTENT' does not report one. $V8_REPORTING_CONTENT is the"
+    echo "  fixture that does, and it is this script's default, so the measurement runs unless"
+    echo "  a caller asked for other content."
+    return 0
+  fi
+  assert_v8_has_jit
+}
+
 assert_v8_has_jit() {
   local report wasm mips
   report="$(report_line || true)"
@@ -300,7 +326,7 @@ if [[ "$HARDEN" == "without-jit" ]]; then
   else
     echo "  the entitlement is enforced here: $PROBE_REPORT"
     if ((HOST_STATUS == 0)); then
-      assert_v8_has_jit
+      measure_v8_if_this_content_reports
       fail "executable memory was denied and V8 ran a full-speed JIT anyway, which cannot both be true. Read the probe line above before the V8 line: one of the two is measuring something other than what it names"
     fi
     if ((HOST_STATUS > 128)); then
@@ -316,6 +342,6 @@ if [[ "$HARDEN" == "without-jit" ]]; then
 fi
 
 ((HOST_STATUS == 0)) || fail "the shipping archive did not run the content to completion (exit $HOST_STATUS)"
-assert_v8_has_jit
+measure_v8_if_this_content_reports
 
 echo "PASS: the shipping macOS archive evaluated JavaScript on a V8 with a working JIT, turned frames on ANGLE/Metal against a windowless CAMetalLayer, and installed the migo surface"
