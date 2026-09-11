@@ -173,6 +173,22 @@ FILES=(
     libskunicode_icu.a
 )
 
+# Copied when the build produced it, required when it did not.
+#
+# `embed-icudtl` adds `icudtl.dat` to what skia-bindings exports, and it is NOT
+# part of the binary-cache key -- the profile-full and engine-free builds in this
+# workspace differ by that feature and ask for the same key, which is checkable:
+# every downloaded archive on this machine carries the same
+# `...-gl-jpegd-jpege-pdf-textlayout` suffix across both. So one archive serves
+# both profiles, and the ones upstream publishes contain no `icudtl.dat` at all.
+# A profile-full build links against them today and this repository ships that.
+#
+# Listed as optional rather than omitted because "the upstream archive does not
+# have it" is an observation about upstream, not a rule about us: if a build here
+# ever produces one, an archive that silently dropped it would fail at link time
+# somewhere else entirely.
+OPTIONAL_FILES=(icudtl.dat)
+
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/skia-binaries"
@@ -196,6 +212,13 @@ for name in "${FILES[@]}"; do
       Wipe $(dirname "$(dirname "$SOURCE_BUILT")") and build from source again."
     fi
     cp "$SOURCE_BUILT/$name" "$STAGE/skia-binaries/$name"
+done
+
+for name in "${OPTIONAL_FILES[@]}"; do
+    if [[ -f "$SOURCE_BUILT/$name" ]]; then
+        cp "$SOURCE_BUILT/$name" "$STAGE/skia-binaries/$name"
+        info "also packaged        $name"
+    fi
 done
 
 # `tag.txt` is the skia-bindings crate version and `key.txt` the key above --
