@@ -391,7 +391,7 @@ final class MigoExternalFramePixelTests: XCTestCase {
         // `XCTExpectFailure` rather than deleted or disabled, precisely because
         // that construct fails when the failure STOPS happening.
         //
-        // WHAT IT WAS. `skia_gl_standard = "gl"` on macOS -> `SK_ASSUME_GL=1`,
+        // WHY IT HAPPENED. `skia_gl_standard = "gl"` on macOS -> `SK_ASSUME_GL=1`,
         // which compiles the ES interface assembler out; the only GL on Apple is
         // ANGLE, which is ES. `scripts/apple-skia-gl-env.sh` corrects it, and
         // iOS was never affected -- its default is `"gles"`, which is what ANGLE
