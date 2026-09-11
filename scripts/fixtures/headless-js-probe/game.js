@@ -85,17 +85,17 @@ console.error(
 // wrong stay distinguishable from the outside: no context at all, a context
 // that draws the wrong thing, and a readback that never returned.
 function probeCanvas2D() {
-  let canvas;
+  // One try around the whole thing, including `getContext`. A context that
+  // cannot be built may surface as a null return or as a throw depending on
+  // which layer declines, and an uncaught throw here would abort module
+  // evaluation -- taking the frame loop and the V8 report down with it and
+  // leaving the gate to report a timeout about something else entirely.
   try {
-    canvas = migo.createCanvas();
-  } catch (err) {
-    return "canvas2d create-canvas-threw=" + err;
-  }
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    return "canvas2d ctx=null";
-  }
-  try {
+    const canvas = migo.createCanvas();
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return "canvas2d ctx=null";
+    }
     // Opaque and off every axis of the default state, so a readback that
     // reports it cannot be reporting a cleared buffer, a black surface, or a
     // premultiplied white.
@@ -104,7 +104,7 @@ function probeCanvas2D() {
     const px = ctx.getImageData(2, 2, 1, 1).data;
     return "canvas2d rgba=" + px[0] + "," + px[1] + "," + px[2] + "," + px[3];
   } catch (err) {
-    return "canvas2d draw-threw=" + err;
+    return "canvas2d threw=" + err;
   }
 }
 

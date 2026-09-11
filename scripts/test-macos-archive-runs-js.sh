@@ -298,8 +298,8 @@ assert_canvas2d_draws_if_this_content_reports() {
   case "$report" in
     *ctx=null*)
       fail "the shipping archive could not create a 2D context at all. That is the Skia-on-ANGLE configuration defect, not a drawing bug: see scripts/apple-skia-gl-env.sh, which the macOS build has to have sourced" ;;
-    *-threw=*)
-      fail "the shipping archive threw while drawing 2D: ${report#migo-headless-probe: }" ;;
+    *threw=*)
+      fail "the shipping archive threw while building or drawing 2D: ${report#migo-headless-probe: }" ;;
   esac
   rgba="${report#*rgba=}"
   [[ "$rgba" == "$CANVAS2D_EXPECTED_RGBA" ]] \
