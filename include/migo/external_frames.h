@@ -298,6 +298,40 @@ MIGO_API MigoResult MIGO_CALL migo_session_cancel_sync(
     MigoSession *session, uint64_t now_nanos, MigoSyncOutcome *out_outcome);
 
 /* ---------------------------------------------------------------------------
+ * The return path
+ * -------------------------------------------------------------------------*/
+
+/*
+ * Take the next message the host owes the producer.
+ *
+ * Writes at most `capacity` bytes into `buffer` and reports the length in
+ * `*out_written`. Zero means there is nothing to send. That is the normal
+ * answer between frames -- not an error, and not something to spin on.
+ *
+ * WHAT IS IN IT, AND WHY THE HOST DOES NOT BUILD IT. The bytes are a downlink
+ * envelope carrying two kinds of record: the verdict on each frame the producer
+ * submitted (its decision, the credits left, the accepted sequence) and the
+ * frame-clock ticks that drive the producer's requestAnimationFrame. A host
+ * that assembled those itself would be a third implementation of a wire format
+ * that already has two, which is the drift this project keeps a gate for. A
+ * transport that only copies bytes cannot drift.
+ *
+ * WHOLE RECORDS ONLY. A capacity too small for the envelope plus one record
+ * writes nothing and leaves everything queued, so a caller that comes back with
+ * a larger buffer loses nothing. 4096 bytes holds any message this queue
+ * produces.
+ *
+ * WHEN TO CALL IT. After every submit and after every frame the host delivers,
+ * and send whatever comes out. The queue is bounded and coalesces ticks, so a
+ * transport that falls behind costs the producer scheduling decisions rather
+ * than memory -- every record is absolute, so the next one it reads is already
+ * correct.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_take_downlink(
+    MigoSession *session, uint8_t *buffer, size_t capacity,
+    size_t *out_written);
+
+/* ---------------------------------------------------------------------------
  * The resource lane
  *
  * A frame packet is small and bounded; a texture atlas is neither. Large assets
