@@ -824,6 +824,14 @@ jobs:
           # shipping path takes it. Proving it here makes the exclusion a
           # checked fact instead of a comment.
           cargo build -p migo-frame-wire --no-default-features
+          # `migo-platform`, whose tests ran on no pull request at all until this
+          # line. The one workflow that ran them is apple-sdk, which is
+          # paths-filtered and did not list this crate -- so a change to a
+          # presenter could land with only `release.yml` ever running its tests,
+          # and that is after the fact. The Apple-only ones compile out here;
+          # what this covers is the Android, Linux and Windows presenters and
+          # the permission gate, which have real test bodies.
+          cargo test -p migo-platform --lib
           cargo test -p migo-alloc-probe
           cargo test -p migo-contention-probe
           cargo test -p migo-executor-probe
