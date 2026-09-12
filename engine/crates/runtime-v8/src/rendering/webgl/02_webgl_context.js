@@ -110,6 +110,7 @@ import {
     op_bind_renderbuffer,
     op_renderbuffer_storage,
     op_read_pixels,
+    op_read_pixels_to_buffer,
     op_hint,
 
     // WebGL 2.0 additions
@@ -163,11 +164,13 @@ import { core, primordials } from "ext:core/mod.js";
 const { isArrayBuffer, isTypedArray, isDataView, isSharedArrayBuffer } = core;
 
 const {
+    ArrayBufferIsView,
     ArrayIsArray,
     TypedArrayPrototypeGetBuffer,
     TypedArrayPrototypeGetByteLength,
     TypedArrayPrototypeGetByteOffset,
     TypedArrayPrototypeGetSymbolToStringTag,
+    TypedArrayPrototypeSet,
     Uint8Array,
     Uint32Array,
     Int32Array,
@@ -176,6 +179,7 @@ const {
     DataViewPrototypeGetByteLength,
     DataViewPrototypeGetByteOffset,
     ArrayBufferPrototypeGetByteLength,
+    MathTrunc,
     NumberIsFinite,
     NumberIsInteger,
     ReflectApply,
@@ -416,6 +420,7 @@ const _rawUniform4iv         = _makeOrderedRaw(op_uniform4iv);
 const _rawUniform4fv         = _makeOrderedRaw(op_uniform4fv);
 const _rawHint               = _makeOrderedRaw(op_hint);
 const _rawReadPixels         = _makeOrderedRaw(op_read_pixels);
+const _rawReadPixelsToBuffer = _makeOrderedRaw(op_read_pixels_to_buffer);
 const _rawCreateFramebuffer  = _makeOrderedRaw(op_create_framebuffer);
 const _rawDeleteFramebuffer  = _makeOrderedRaw(op_delete_framebuffer);
 const _rawBindFramebuffer    = _makeOrderedRaw(op_bind_framebuffer);
@@ -894,6 +899,41 @@ class WebglObject {
 
     get id() {
         return this._id;
+    }
+}
+
+// WebIDL brand check before any GL work. `dstData` is an ArrayBufferView; only
+// WebGL 1 accepts null, which the native side reports as INVALID_VALUE. A view
+// of the wrong element type is not a TypeError -- readPixels reports that as
+// INVALID_OPERATION -- so a DataView reaches the native check like any view.
+function checkReadPixelsDestination(pixels, nullable) {
+    if (pixels === null || pixels === undefined ? nullable : ArrayBufferIsView(pixels)) {
+        return;
+    }
+    throw new TypeError("readPixels: dstData must be an ArrayBufferView");
+}
+
+// The native result already includes the validated destination byte offset.
+// Reuse the original view and compact payload; an offset needs no subarray or
+// additional pixel storage.
+function readPixelsIntoView(canvasId, x, y, width, height, format, type, pixels, dstOffset) {
+    const result = _rawReadPixels(canvasId, x, y, width, height, format, type, pixels, dstOffset);
+    if (!result || TypedArrayPrototypeGetByteLength(result.data) === 0) return;
+    const u8 = new Uint8Array(
+        TypedArrayPrototypeGetBuffer(pixels), TypedArrayPrototypeGetByteOffset(pixels),
+        TypedArrayPrototypeGetByteLength(pixels),
+    );
+    const { data, firstByte, rowBytes, rowStride, height: rows } = result;
+    if (rowStride === rowBytes) {
+        TypedArrayPrototypeSet(u8, data, firstByte);
+    } else {
+        const source = TypedArrayPrototypeGetBuffer(data);
+        const sourceOffset = TypedArrayPrototypeGetByteOffset(data);
+        for (let row = 0; row < rows; ++row) {
+            TypedArrayPrototypeSet(u8,
+                new Uint8Array(source, sourceOffset + row * rowBytes, rowBytes),
+                firstByte + row * rowStride);
+        }
     }
 }
 
@@ -2456,11 +2496,8 @@ class WebGLRenderingContext {
     // -- Phase 3B: Misc --
 
     readPixels(x, y, width, height, format, type, pixels) {
-        const data = _rawReadPixels(this._canvasId, x, y, width, height, format, type);
-        if (data && pixels) {
-            const u8 = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
-            u8.set(data.subarray(0, u8.length));
-        }
+        checkReadPixelsDestination(pixels, true);
+        readPixelsIntoView(this._canvasId, x, y, width, height, format, type, pixels, 0);
     }
     hint(target, mode) {
         // opcode 44: H C U U.
@@ -2496,6 +2533,24 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         this._currentQueryByTarget = new Map();
         this._tfRegistry = new Map();
         this._currentTransformFeedback = null;
+    }
+
+    readPixels(x, y, width, height, format, type, pixels, dstOffset = 0) {
+        // Overload resolution by WebIDL: a number selects the PIXEL_PACK_BUFFER
+        // form, where the seventh argument is a GLintptr byte offset into the
+        // bound buffer and there is no eighth. Anything else must be a view,
+        // and `dstData` is not nullable in this version.
+        if (typeof pixels === "number") {
+            // GLintptr is a long long: truncate toward zero without wrapping,
+            // and let the native side reject a negative offset.
+            _rawReadPixelsToBuffer(this._canvasId, x, y, width, height, format, type,
+                MathTrunc(pixels));
+            return;
+        }
+        checkReadPixelsDestination(pixels, false);
+        // ToNumber runs once, before native view metadata is inspected. Unary
+        // plus preserves WebIDL's TypeError for BigInt and Symbol inputs.
+        readPixelsIntoView(this._canvasId, x, y, width, height, format, type, pixels, +dstOffset);
     }
 
     // ---- Vertex Array Objects ----------------------------------

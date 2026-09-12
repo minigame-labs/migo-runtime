@@ -8,7 +8,7 @@
 //! bounded.
 
 use std::sync::{
-    Arc, OnceLock,
+    Arc, LazyLock, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -80,9 +80,12 @@ const MAX_CONCURRENT_IMAGE_DECODES: usize = 3;
 /// Default budget: 48 MB.
 const DEFAULT_IO_BUDGET_BYTES: usize = 48 * 1024 * 1024;
 
-fn image_decode_semaphore() -> &'static Semaphore {
-    static SEM: OnceLock<Semaphore> = OnceLock::new();
-    SEM.get_or_init(|| Semaphore::new(MAX_CONCURRENT_IMAGE_DECODES))
+// Wrap in Arc so callers can take an OwnedSemaphorePermit that moves into
+// worker closures; a borrowed SemaphorePermit<'_> cannot outlive the caller.
+fn image_decode_semaphore() -> &'static Arc<Semaphore> {
+    static SEM: LazyLock<Arc<Semaphore>> =
+        LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_IMAGE_DECODES)));
+    &SEM
 }
 
 /// Tracks aggregate bytes consumed by in-flight heavy IO tasks.
@@ -246,6 +249,13 @@ static TEST_PRELOAD_CACHE_HOOK: std::sync::Mutex<
 static TEST_PRELOAD_DECODE_STARTED: std::sync::Mutex<Option<std::sync::Arc<tokio::sync::Notify>>> =
     std::sync::Mutex::new(None);
 
+#[cfg(test)]
+pub(crate) static TEST_CLEAR_CACHE_BLOCK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_CLEAR_CACHE_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub struct ReadImageResult {
     pub cache_path: String,
     pub image: DecodedImage,
@@ -299,6 +309,35 @@ where
     .await
 }
 
+/// Run an image operation with an explicit memory reservation.  The guard and
+/// semaphore are moved into the worker closure so dropping the V8 waiter cannot
+/// return credits while native image work still owns its buffers.
+async fn run_image_job_with_exact_budget<T, F>(
+    scheduler: Arc<IoScheduler>,
+    budget_bytes: usize,
+    encoded_bytes: usize,
+    source: ImageSource,
+    job: F,
+) -> Result<T, EngineError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, EngineError> + Send + 'static,
+{
+    let budget = io_budget().acquire(budget_bytes).await;
+    let permit = image_decode_semaphore()
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+
+    run_image_job_with_scheduler(scheduler, encoded_bytes, false, source, move || {
+        let _budget = budget;
+        let _permit = permit;
+        job()
+    })
+    .await?
+}
+
 /// Run an already-materialized inline image decode under the same process-wide
 /// memory budget, three-decode semaphore, and image worker pool as file-backed
 /// images. The closure returns an `EngineResult` so parser/decoder failures
@@ -312,20 +351,72 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, EngineError> + Send + 'static,
 {
-    let pre_estimate = encoded_bytes
-        .saturating_mul(16)
-        .clamp(16 * 1024, 256 * 1024 * 1024);
-    let _budget = io_budget().acquire(pre_estimate).await;
-    let _permit = image_decode_semaphore().acquire().await.unwrap();
-
-    run_image_job_with_scheduler(
+    let pre_estimate = estimate_decoded_budget(encoded_bytes, &[]);
+    run_image_job_with_exact_budget(
         scheduler,
+        pre_estimate,
         encoded_bytes,
-        false,
         ImageSource::Filesystem,
         job,
     )
-    .await?
+    .await
+}
+
+/// Crop and resize a decoded image as one bounded image job.
+///
+/// The identity crop with no meaningful resize is returned immediately: it
+/// already owns the desired pixels and submitting a worker job would add only
+/// queue latency. Every other path retains source, crop, output and scratch
+/// reservations until the worker finishes publishing the owned result.
+pub async fn run_subrect_transform(
+    scheduler: Arc<IoScheduler>,
+    image: NormalizedImage,
+    sx: i32,
+    sy: i32,
+    sw: u32,
+    sh: u32,
+    resize_w: u32,
+    resize_h: u32,
+) -> Result<NormalizedImage, EngineError> {
+    let resize_requested = resize_w > 0 && resize_h > 0;
+    let identity_crop = sx == 0 && sy == 0 && sw == image.width && sh == image.height;
+    let identity_resize =
+        !resize_requested || (resize_w == image.width && resize_h == image.height);
+    if identity_crop && identity_resize {
+        return Ok(image);
+    }
+
+    let source_bytes = image.rgba.len();
+    let crop_bytes = (sw as usize).saturating_mul(sh as usize).saturating_mul(4);
+    let resize_bytes = if resize_requested {
+        (resize_w as usize)
+            .saturating_mul(resize_h as usize)
+            .saturating_mul(4)
+    } else {
+        0
+    };
+    let scratch_bytes = crop_bytes.max(resize_bytes);
+    let budget = source_bytes
+        .saturating_add(crop_bytes)
+        .saturating_add(resize_bytes)
+        .saturating_add(scratch_bytes)
+        .clamp(16 * 1024, 256 * 1024 * 1024);
+
+    run_image_job_with_exact_budget(
+        scheduler,
+        budget,
+        source_bytes,
+        ImageSource::Filesystem,
+        move || {
+            let cropped = crate::fast_image_decoder::crop_image(image, sx, sy, sw, sh)?;
+            if resize_requested && (resize_w != cropped.width || resize_h != cropped.height) {
+                crate::fast_image_decoder::try_resize_image(cropped, resize_w, resize_h)
+            } else {
+                Ok(cropped)
+            }
+        },
+    )
+    .await
 }
 
 async fn cached_preload_result_with_scheduler(
@@ -483,10 +574,25 @@ fn read_image_source(
     mount_table: Option<&MountTable>,
 ) -> Result<Vec<u8>, EngineError> {
     match source {
-        ImageSource::Filesystem => std::fs::read(path).map_err(|e| {
-            EngineError::new(ErrorCode::ImageReadError)
-                .with_detail(format!("failed to read file: {}", e))
-        }),
+        ImageSource::Filesystem => {
+            // Reject files larger than the process-wide encoded-read cap before
+            // allocating: an oversized non-image file would otherwise be fully
+            // buffered before the format gate fires.  The HTTP inline 32 MiB
+            // cap is not a substitute — it only covers that entry path.
+            let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            if file_size > MAX_READ_LENGTH {
+                return Err(
+                    EngineError::new(ErrorCode::ImageReadError).with_detail(format!(
+                        "image file '{}' size {} exceeds encoded read limit {}",
+                        path, file_size, MAX_READ_LENGTH
+                    )),
+                );
+            }
+            std::fs::read(path).map_err(|e| {
+                EngineError::new(ErrorCode::ImageReadError)
+                    .with_detail(format!("failed to read file: {}", e))
+            })
+        }
         ImageSource::MountCode { virtual_path, .. } => Err(EngineError::new(
             ErrorCode::ImageReadError,
         )
@@ -505,6 +611,93 @@ fn read_image_source(
                         .with_detail(format!("failed to read pack image '{}': {}", path, e))
                 })
         }
+    }
+}
+
+/// Read the first 512 bytes of an image source without a full decode.
+///
+/// Used to probe image dimensions for accurate budget estimation before the
+/// large allocation.  Any failure returns an empty slice so callers fall back
+/// to the conservative unknown-format estimate — the read is purely advisory.
+fn read_image_header_bytes(
+    path: &str,
+    source: &ImageSource,
+    mount_table: Option<&MountTable>,
+) -> Vec<u8> {
+    const HEADER_LEN: u64 = 512;
+    match source {
+        ImageSource::Filesystem => {
+            let mut buf = [0u8; 512];
+            if let Ok(mut f) = std::fs::File::open(path) {
+                use std::io::Read;
+                let n = f.read(&mut buf).unwrap_or(0);
+                return buf[..n].to_vec();
+            }
+            Vec::new()
+        }
+        ImageSource::MountCode {
+            virtual_path,
+            relative_path,
+        } => mount_table
+            .and_then(|mt| mt.resolve_code_path(virtual_path))
+            .and_then(|resolved| {
+                if let Some(real_path) = resolved.real_path {
+                    let mut buf = [0u8; 512];
+                    let n = std::fs::File::open(real_path)
+                        .ok()
+                        .and_then(|mut f| {
+                            use std::io::Read;
+                            f.read(&mut buf).ok()
+                        })
+                        .unwrap_or(0);
+                    Some(buf[..n].to_vec())
+                } else {
+                    mount_table.and_then(|mt| {
+                        mt.read_range_limited(relative_path, 0, Some(HEADER_LEN), MAX_READ_LENGTH)
+                            .ok()
+                    })
+                }
+            })
+            .unwrap_or_default(),
+        ImageSource::Pack { relative_path } => mount_table
+            .and_then(|mt| {
+                mt.read_range_limited(relative_path, 0, Some(HEADER_LEN), MAX_READ_LENGTH)
+                    .ok()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// Estimate the memory that must be reserved *before* a decode starts.
+///
+/// When `header_bytes` contain a recognisable image signature the reservation
+/// covers: the encoded source already in memory, decoder-native output, the
+/// final RGBA/crop/resize output, and scratch/cache-serialization headroom.
+/// For formats whose header cannot be probed a conservative 64× encoded size
+/// is used so the budget still bounds the allocation for most real images while
+/// remaining finite — the existing single-image pixel cap is the hard stop.
+///
+/// The multiplier choice: common PNG compression ratios reach 1000× for large
+/// uniform canvases; 16× (the former value) leaves 64× headroom short on the
+/// audit's 65 KiB → 64 MiB sample.  64× covers palette PNG, 1-bit TIFF and
+/// other high-ratio formats as an unknown-format fallback without probing.
+fn estimate_decoded_budget(encoded_size: usize, header_bytes: &[u8]) -> usize {
+    const MIN_BUDGET: usize = 16 * 1024;
+    const MAX_BUDGET: usize = 256 * 1024 * 1024;
+
+    if let Some((w, h)) = crate::fast_image_decoder::probe_image_dimensions(header_bytes) {
+        // Reserve encoded bytes plus four RGBA-sized phases: decoder-native
+        // output, final output, transform scratch, and cache serialization.
+        let rgba = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+        encoded_size
+            .saturating_add(rgba.saturating_mul(4))
+            .clamp(MIN_BUDGET, MAX_BUDGET)
+    } else {
+        // Unknown format: conservative multiplier so the budget is at least
+        // plausible for palette PNG or other high-entropy-ratio images.
+        encoded_size
+            .saturating_mul(64)
+            .clamp(MIN_BUDGET, MAX_BUDGET)
     }
 }
 
@@ -640,19 +833,23 @@ pub async fn read_image_rgba8(
 
     let start = tokio::time::Instant::now();
 
-    // Budget estimation.
     let primary_size = estimate_image_source_size(&path, &source, mount_table.as_deref());
-    let pre_estimate = max_variant_source_size(&path, primary_size, mount_table.as_deref())
-        .saturating_mul(16)
-        .clamp(16 * 1024, 256 * 1024 * 1024);
-    let _budget = io_budget().acquire(pre_estimate).await;
+    let encoded_size = max_variant_source_size(&path, primary_size, mount_table.as_deref());
+    let header = read_image_header_bytes(&path, &source, mount_table.as_deref());
+    let pre_estimate = estimate_decoded_budget(encoded_size, &header);
+    let budget = io_budget().acquire(pre_estimate).await;
 
     // Limit concurrent decodes.
-    let _permit = image_decode_semaphore().acquire().await.unwrap();
+    let permit = image_decode_semaphore()
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
 
     let gcd = game_cache_dir.clone();
     let mt = mount_table.clone();
     let path_for_decode = path.clone();
+    let save_scheduler = Arc::clone(&scheduler);
     let task = run_image_job_with_live_caps(
         scheduler,
         primary_size,
@@ -660,17 +857,53 @@ pub async fn read_image_rgba8(
         source.clone(),
         gpu_caps,
         move |gpu_caps| -> Result<ReadImageResult, EngineError> {
+            let _budget = budget;
+            let _permit = permit;
             let force_rgba = decode_policy.requires_rgba();
             let worker_source =
                 worker_image_source(&path_for_decode, cache_generation, &source, mt.as_deref())?;
+
+            // A decoded RGBA entry has a key that can be formed from the
+            // resolved source identity before materializing the source bytes.
+            // This is the common fallback variant, and probing it first means
+            // a derived hit does not pay a full package decompression or file
+            // read just to discover that the decoder can be skipped.
+            let candidate_key = derived_cache::DerivedKey {
+                asset_path: worker_source.cache_path.clone(),
+                source_generation: worker_source.source_generation,
+                gpu_format: 0,
+                variant_kind: VARIANT_PRIMARY_RGBA,
+                target_width: target_width.unwrap_or(0),
+                target_height: target_height.unwrap_or(0),
+            };
+            let can_probe_rgba = force_rgba || has_resize || (!gpu_caps.etc2 && !gpu_caps.astc);
+            if can_probe_rgba {
+                if let Some(ref cache_dir) = gcd {
+                    if let Some(cached) =
+                        derived_cache::load_derived(std::path::Path::new(cache_dir), &candidate_key)
+                    {
+                        if matches!(cached, DecodedImage::Rgba(_)) {
+                            shared::stats::io_metrics_global()
+                                .derived_cache_hits
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return Ok(ReadImageResult {
+                                cache_path: worker_source.cache_path,
+                                image: cached,
+                                source_generation: worker_source.source_generation,
+                            });
+                        }
+                    }
+                }
+            }
+
             let data = read_image_source(
                 &worker_source.read_path,
                 &worker_source.source,
                 mt.as_deref(),
             )?;
-
             let tw = target_width.unwrap_or(0);
             let th = target_height.unwrap_or(0);
+
             let variant = if force_rgba {
                 VariantDecision::DecodeRgba {
                     data,
@@ -756,7 +989,12 @@ pub async fn read_image_rgba8(
             };
 
             if let Some(ref cache_dir) = gcd {
-                derived_cache::save_derived(std::path::Path::new(cache_dir), &cache_key, &result);
+                derived_cache::schedule_save_derived(
+                    &save_scheduler,
+                    std::path::Path::new(cache_dir).to_path_buf(),
+                    cache_key.clone(),
+                    result.clone(),
+                );
             }
 
             let _ = variant_kind;
@@ -827,14 +1065,20 @@ async fn decode_preload_result_with_scheduler(
     #[cfg(test)]
     notify_preload_decode_started();
     let primary_size = estimate_image_source_size(&path, &source, mount_table.as_deref());
-    let pre_estimate = max_variant_source_size(&path, primary_size, mount_table.as_deref())
-        .saturating_mul(16)
-        .clamp(16 * 1024, 256 * 1024 * 1024);
-    let _budget = io_budget().acquire(pre_estimate).await;
-    let _permit = image_decode_semaphore().acquire().await.unwrap();
-
+    let encoded_size = max_variant_source_size(&path, primary_size, mount_table.as_deref());
+    let header = read_image_header_bytes(&path, &source, mount_table.as_deref());
+    let pre_estimate = estimate_decoded_budget(encoded_size, &header);
+    let budget = io_budget().acquire(pre_estimate).await;
+    let permit = image_decode_semaphore()
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
     let session = scheduler.host_id();
+
     run_image_job_with_scheduler(scheduler, primary_size, false, source.clone(), move || {
+        let _budget = budget;
+        let _permit = permit;
         let worker_source =
             match worker_image_source(&path, cache_generation, &source, mount_table.as_deref()) {
                 Ok(source) => source,
@@ -989,8 +1233,8 @@ pub async fn preload_images(
     }
 
     for (idx, fallback_path, handle) in handles {
-        let result: PreloadResult = match handle.await {
-            Ok(r) => r,
+        let result = match handle.await {
+            Ok(result) => result,
             Err(task_err) => {
                 warn!("preload_images task panic/cancel: {}", task_err);
                 (fallback_path, Err(format!("task error: {}", task_err)))
@@ -1021,8 +1265,20 @@ pub fn clear_image_cache(game_cache_dir: Option<&str>, session: i32) {
     if let Some(dir) = game_cache_dir {
         let derived = derived_cache::derived_cache_dir(std::path::Path::new(dir));
         if derived.exists() {
-            let _ = std::fs::remove_dir_all(&derived);
-            debug!("Derived texture cache cleared: {}", derived.display());
+            // Logical invalidation above is synchronous; deletion is detached
+            // so a large disposable cache cannot block the V8 fast operation.
+            let display_path = derived.display().to_string();
+            let _ = tokio::task::spawn_blocking(move || {
+                #[cfg(test)]
+                {
+                    TEST_CLEAR_CACHE_STARTED.store(true, Ordering::Release);
+                    while TEST_CLEAR_CACHE_BLOCK.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&derived);
+            });
+            debug!("Derived texture cache removal scheduled: {}", display_path);
         }
     }
     debug!("Image cache cleared");
@@ -1304,7 +1560,7 @@ fn decode_rgba(
         let tw = target_width.unwrap();
         let th = target_height.unwrap();
         if img.width > tw || img.height > th {
-            img = crate::fast_image_decoder::resize_image(img, tw, th);
+            img = crate::fast_image_decoder::try_resize_image(img, tw, th)?;
         }
     }
     Ok(img)
@@ -1324,7 +1580,7 @@ fn decode_selected_variant(
         VariantDecision::DecodeRgba {
             data, path_hint, ..
         } => {
-            // Resize forces the RGBA path: `resize_image` operates on
+            // Resize forces the RGBA path: `try_resize_image` operates on
             // CPU pixels, so asking for an AHB here would just trigger
             // a download-then-resize-then-reupload shuffle.  Leave the
             // AHB fast path to the common (non-resize) case.
@@ -1378,19 +1634,21 @@ mod tests {
     use shared::vfs::package::PackageWriter;
     use shared::{
         device::gpu_caps::{GpuCaps, GpuCapsSnapshot},
-        error::EngineError,
-        protocol::io_cmd::NormalizedImage,
+        error::{EngineError, ErrorCode},
+        protocol::io_cmd::{DecodedImage, NormalizedImage},
         vfs::{DirSource, MountTable, PackSource},
     };
     use tokio::sync::Notify;
 
     use super::{
-        ImageDecodePolicy, ImageSource, TEST_PRELOAD_CACHE_HOOK, TEST_PRELOAD_DECODE_STARTED,
-        mounted_variant_source_version_token, preload_images, read_image_rgba8, read_image_source,
-        run_bounded_inline_image_job, run_image_job_with_live_caps, run_image_job_with_scheduler,
+        ImageDecodePolicy, ImageSource, TEST_CLEAR_CACHE_BLOCK, TEST_CLEAR_CACHE_STARTED,
+        TEST_PRELOAD_CACHE_HOOK, TEST_PRELOAD_DECODE_STARTED, VARIANT_PRIMARY_RGBA,
+        clear_image_cache, get_image_cache_stats, mounted_variant_source_version_token,
+        preload_images, read_image_rgba8, read_image_source, run_bounded_inline_image_job,
+        run_image_job_with_live_caps, run_image_job_with_scheduler, run_subrect_transform,
         worker_image_source,
     };
-    use crate::scheduler::IoScheduler;
+    use crate::{derived_cache, scheduler::IoScheduler};
 
     struct CachePin(crate::image_cache::ImageCacheKey);
 
@@ -1400,6 +1658,7 @@ mod tests {
             Self(key)
         }
     }
+    static BUDGET_LIFETIME_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     impl Drop for CachePin {
         fn drop(&mut self) {
@@ -1506,8 +1765,112 @@ mod tests {
             96, 130,
         ]
     }
+    #[test]
+    fn decoded_budget_covers_low_entropy_png_footprint() {
+        let mut header = [0u8; 24];
+        header[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        header[16..20].copy_from_slice(&4096u32.to_be_bytes());
+        header[20..24].copy_from_slice(&4096u32.to_be_bytes());
+        let encoded_size: usize = 65_299;
+        let decoded_rgba = 4096usize * 4096 * 4;
+
+        // RED against the audited implementation: encoded*16 leaves a
+        // 64 MiB RGBA output almost entirely outside the reservation.
+        let old_estimate = encoded_size.saturating_mul(16);
+        assert!(
+            old_estimate < decoded_rgba,
+            "the audited encoded*16 reservation should undercount this PNG"
+        );
+        let estimate = super::estimate_decoded_budget(encoded_size, &header);
+        assert!(
+            estimate >= decoded_rgba,
+            "decoded budget {estimate} must cover {decoded_rgba} RGBA bytes"
+        );
+    }
+    #[test]
+    fn subrect_transform_runs_crop_and_resize_in_worker_with_old_pixels() {
+        let scheduler = Arc::new(IoScheduler::local_for_test(101, 2));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        if !crate::resize_capable() {
+            let err = runtime
+                .block_on(run_subrect_transform(
+                    Arc::clone(&scheduler),
+                    NormalizedImage::new(4, 4, vec![0; 4 * 4 * 4]),
+                    1,
+                    1,
+                    2,
+                    2,
+                    1,
+                    1,
+                ))
+                .expect_err("unsupported resize must be reported");
+            assert_eq!(err.code, ErrorCode::Unsupported);
+            return;
+        }
+        let rgba: Vec<u8> = (0..16)
+            .flat_map(|index| {
+                let x = index % 4;
+                let y = index / 4;
+                [x as u8, y as u8, 17, 255]
+            })
+            .collect();
+        let image = NormalizedImage::new(4, 4, rgba);
+        let expected =
+            crate::try_resize_image(crate::crop_image(image.clone(), 1, 1, 2, 2).unwrap(), 1, 1)
+                .unwrap();
+
+        let actual = runtime
+            .block_on(run_subrect_transform(
+                Arc::clone(&scheduler),
+                image,
+                1,
+                1,
+                2,
+                2,
+                1,
+                1,
+            ))
+            .unwrap();
+
+        assert_eq!(scheduler_run_count(&scheduler), 1);
+        assert_eq!(
+            (actual.width, actual.height),
+            (expected.width, expected.height)
+        );
+        assert_eq!(actual.rgba.as_ref(), expected.rgba.as_ref());
+    }
 
     #[test]
+    fn identity_subrect_transform_is_zero_work_and_keeps_pixels_owned() {
+        let scheduler = Arc::new(IoScheduler::local_for_test(102, 2));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let image = NormalizedImage::new(2, 2, vec![1; 2 * 2 * 4]);
+        let rgba = Arc::clone(&image.rgba);
+        let actual = runtime
+            .block_on(run_subrect_transform(
+                Arc::clone(&scheduler),
+                image,
+                0,
+                0,
+                2,
+                2,
+                0,
+                0,
+            ))
+            .unwrap();
+
+        assert_eq!(scheduler_run_count(&scheduler), 0);
+        assert!(Arc::ptr_eq(&actual.rgba, &rgba));
+    }
+
+    #[test]
+
     fn uncached_image_decode_requests_use_image_pool() {
         let scheduler = Arc::new(IoScheduler::new(53));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1599,6 +1962,48 @@ mod tests {
     }
 
     #[test]
+    fn image_budget_survives_dropped_waiter_while_worker_runs() {
+        let _budget_lock = BUDGET_LIFETIME_TEST_LOCK.lock().unwrap();
+        let scheduler = Arc::new(IoScheduler::local_for_test(56, 2));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+
+        runtime.block_on(async {
+            tokio::task::yield_now().await;
+            let first = tokio::spawn(run_bounded_inline_image_job(
+                Arc::clone(&scheduler),
+                2 * 1024 * 1024,
+                move || -> Result<(), EngineError> {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                },
+            ));
+            started_rx.await.expect("first decode worker should start");
+            first.abort();
+            tokio::task::yield_now().await;
+            let second = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                run_bounded_inline_image_job(
+                    Arc::clone(&scheduler),
+                    2 * 1024 * 1024,
+                    || -> Result<(), EngineError> { Ok(()) },
+                ),
+            )
+            .await;
+            assert!(
+                second.is_err(),
+                "a dropped waiter must not release budget held by running decode"
+            );
+            release_tx.send(()).unwrap();
+        });
+    }
+
+    #[test]
     #[ignore = "pre-existing: needs an image fixture missing in CI; fix in cleanup PR"]
     fn cached_read_image_path_still_flows_through_scheduler_helper() {
         let scheduler = Arc::new(IoScheduler::local_for_test(59, 2));
@@ -1646,6 +2051,7 @@ mod tests {
         crate::image_cache::global_cache().clear();
     }
 
+    #[cfg(feature = "rust-image-decode")]
     #[test]
     fn mixed_preload_batches_keep_decode_work_running_while_cached_tasks_wait() {
         let _hook_guard = PreloadHookTestGuard::lock();
@@ -2148,6 +2554,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "rust-image-decode")]
     #[test]
     fn mount_backed_read_image_cache_hit_is_revalidated_after_directory_remount() {
         let scheduler = Arc::new(IoScheduler::new(71));
@@ -2209,6 +2616,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "rust-image-decode")]
     #[test]
     fn mount_backed_preload_cache_hit_is_revalidated_after_directory_remount() {
         let _hook_guard = PreloadHookTestGuard::lock();
@@ -2266,6 +2674,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "rust-image-decode")]
     #[test]
     fn mount_backed_preload_cached_task_revalidates_after_remount_before_consumption() {
         let _hook_guard = PreloadHookTestGuard::lock();
@@ -2333,5 +2742,162 @@ mod tests {
         drop(cache_pin);
         crate::image_cache::global_cache().clear();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[cfg(feature = "rust-image-decode")]
+    #[test]
+    fn derived_cache_hit_does_not_materialize_source_bytes() {
+        let dir = make_test_dir("derived_hit_without_source");
+        let source_path = dir.join("sprite.png");
+        let cache_dir = dir.join("cache");
+        std::fs::write(&source_path, b"source bytes are intentionally invalid").unwrap();
+        let key = derived_cache::DerivedKey {
+            asset_path: source_path.to_string_lossy().into_owned(),
+            source_generation: 17,
+            gpu_format: 0,
+            variant_kind: VARIANT_PRIMARY_RGBA,
+            target_width: 0,
+            target_height: 0,
+        };
+        derived_cache::save_derived(
+            &cache_dir,
+            &key,
+            &DecodedImage::Rgba(NormalizedImage::new(1, 1, vec![9, 8, 7, 255])),
+        );
+
+        crate::image_cache::global_cache().clear();
+        let scheduler = Arc::new(IoScheduler::new(801));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(read_image_rgba8(
+            scheduler,
+            source_path.to_string_lossy().into_owned(),
+            None,
+            None,
+            17,
+            ImageSource::Filesystem,
+            Some(cache_dir.to_string_lossy().into_owned()),
+            GpuCaps::new(),
+            None,
+            ImageDecodePolicy::RgbaOnly,
+        ));
+        let image = result.expect("derived hit must not decode the invalid source");
+        assert!(
+            matches!(image.image, DecodedImage::Rgba(ref rgba) if rgba.rgba.as_slice() == [9, 8, 7, 255])
+        );
+        crate::image_cache::global_cache().clear();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "rust-image-decode")]
+    #[test]
+    fn derived_cache_miss_returns_before_background_atomic_write_finishes() {
+        let dir = make_test_dir("derived_miss_background_write");
+        let source_path = dir.join("sprite.png");
+        let cache_dir = dir.join("cache");
+        std::fs::write(&source_path, tiny_png()).unwrap();
+        derived_cache::TEST_SAVE_DERIVED_STARTED.store(false, Ordering::Release);
+        derived_cache::TEST_SAVE_DERIVED_BLOCK.store(true, Ordering::Release);
+
+        crate::image_cache::global_cache().clear();
+        let scheduler = Arc::new(IoScheduler::new(802));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(read_image_rgba8(
+            Arc::clone(&scheduler),
+            source_path.to_string_lossy().into_owned(),
+            None,
+            None,
+            23,
+            ImageSource::Filesystem,
+            Some(cache_dir.to_string_lossy().into_owned()),
+            GpuCaps::new(),
+            None,
+            ImageDecodePolicy::RgbaOnly,
+        ));
+        let image = result.expect("decode result must not await cache persistence");
+        assert!(matches!(image.image, DecodedImage::Rgba(_)));
+
+        let key = derived_cache::DerivedKey {
+            asset_path: source_path.to_string_lossy().into_owned(),
+            source_generation: 23,
+            gpu_format: 0,
+            variant_kind: VARIANT_PRIMARY_RGBA,
+            target_width: 0,
+            target_height: 0,
+        };
+        let cache_path =
+            derived_cache::derived_cache_dir(&cache_dir).join(format!("{}.bin", key.hash()));
+        for _ in 0..1000 {
+            if derived_cache::TEST_SAVE_DERIVED_STARTED.load(Ordering::Acquire) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(derived_cache::TEST_SAVE_DERIVED_STARTED.load(Ordering::Acquire));
+        assert!(
+            !cache_path.exists(),
+            "blocked atomic write must not publish early"
+        );
+        derived_cache::TEST_SAVE_DERIVED_BLOCK.store(false, Ordering::Release);
+        for _ in 0..1000 {
+            if cache_path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            cache_path.exists(),
+            "background save eventually publishes atomically"
+        );
+        crate::image_cache::global_cache().clear();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn clear_image_cache_invalidates_before_background_removal_finishes() {
+        let dir = make_test_dir("clear_cache_background");
+        let derived = derived_cache::derived_cache_dir(&dir);
+        std::fs::create_dir_all(&derived).unwrap();
+        std::fs::write(derived.join("large.bin"), vec![0xAA; 1024]).unwrap();
+        let session = 991;
+        let key = crate::image_cache::full_res_key("clear-me".into(), 1);
+        crate::image_cache::global_cache().insert(
+            key,
+            NormalizedImage::new(1, 1, vec![1, 2, 3, 255]),
+            session,
+        );
+        TEST_CLEAR_CACHE_STARTED.store(false, Ordering::Release);
+        TEST_CLEAR_CACHE_BLOCK.store(true, Ordering::Release);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            clear_image_cache(Some(dir.to_string_lossy().as_ref()), session);
+            for _ in 0..1000 {
+                if TEST_CLEAR_CACHE_STARTED.load(Ordering::Acquire) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        assert_eq!(get_image_cache_stats(session).entries, 0);
+        assert!(
+            derived.exists(),
+            "blocked background removal must still be pending"
+        );
+        TEST_CLEAR_CACHE_BLOCK.store(false, Ordering::Release);
+        for _ in 0..1000 {
+            if !derived.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!derived.exists(), "background removal eventually completes");
+        crate::image_cache::global_cache().clear();
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

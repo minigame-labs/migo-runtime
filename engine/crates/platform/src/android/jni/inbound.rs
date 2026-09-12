@@ -140,10 +140,12 @@ use migo_core::{
     spawn_host_thread,
 };
 use shared::protocol::camera_frame::{
-    PlaneWindow, pack_yuv_planes, validate_camera_frame_dimensions,
-    validate_camera_frame_payload_lengths,
+    CameraFrameEntry, CameraFramePush, PlaneWindow, pack_yuv_planes, publish_camera_frame,
+    take_camera_frame, validate_camera_frame_dimensions, validate_camera_frame_payload_lengths,
+    with_camera_frame_admission,
 };
 use shared::protocol::host_cmd::{HostCommand, TouchData, TouchPoint, TouchType};
+use shared::protocol::recorder_frame::with_recorder_frame_credit;
 use shared::surface::{PixelRatio, SurfaceRef};
 
 use shared::config::InitOptions;
@@ -1198,7 +1200,9 @@ pub(crate) extern "system" fn onRecorderEvent<'local>(
             .get_string(&json_payload)
             .map(|s| s.into())
             .unwrap_or_else(|_| "{}".to_string());
-        let _ = send_command_to_host(
+        // Recorder lifecycle events are must-deliver: a full data queue may
+        // drop a PCM frame, but it must never swallow stop/error state.
+        let _ = send_reliable_command_to_host(
             host_id,
             HostCommand::RecorderEvent {
                 event_type: evt,
@@ -1210,32 +1214,76 @@ pub(crate) extern "system" fn onRecorderEvent<'local>(
 }
 
 pub(crate) extern "system" fn onRecorderFrameData(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     host_id: jint,
     generation: jlong,
     frame_data: jni::sys::jbyteArray,
+    frame_length: jint,
     is_last_frame: jni::sys::jboolean,
 ) {
     jni_safe!("onRecorderFrameData", {
-        let data = match env
-            .convert_byte_array(unsafe { jni::objects::JByteArray::from_raw(frame_data) })
-        {
-            Ok(v) => v,
-            Err(e) => {
-                error!("onRecorderFrameData: failed to read byte array: {:?}", e);
+        let frame_data = unsafe { jni::objects::JByteArray::from_raw(frame_data) };
+        let array_len = match env.get_array_length(&frame_data) {
+            Ok(length) => usize::try_from(length).unwrap_or(0),
+            Err(error) => {
+                error!(
+                    "onRecorderFrameData: failed to inspect byte array: {:?}",
+                    error
+                );
                 return;
             }
         };
-
-        let _ = send_command_to_host(
+        let frame_length = match usize::try_from(frame_length) {
+            Ok(length) if length <= array_len => length,
+            _ => {
+                error!("onRecorderFrameData: invalid frame length {}", frame_length);
+                return;
+            }
+        };
+        let is_last_frame = is_last_frame != 0;
+        let Some((credit, copy_result)) = with_recorder_frame_credit(
             host_id,
-            HostCommand::RecorderFrameData {
-                data,
-                is_last_frame: is_last_frame != 0,
-                runtime_generation: captured_generation(generation),
+            if is_last_frame { 0 } else { frame_length },
+            || {
+                let mut raw = vec![0i8; frame_length];
+                env.get_byte_array_region(&frame_data, 0, &mut raw)
+                    .map(|()| raw)
             },
-        );
+        ) else {
+            tracing::debug!(
+                "onRecorderFrameData: byte budget full, dropped {} bytes",
+                frame_length
+            );
+            return;
+        };
+        let mut raw = match copy_result {
+            Ok(raw) => raw,
+            Err(error) => {
+                error!(
+                    "onRecorderFrameData: failed to read byte array: {:?}",
+                    error
+                );
+                drop(credit);
+                return;
+            }
+        };
+        let ptr = raw.as_mut_ptr().cast::<u8>();
+        let len = raw.len();
+        let capacity = raw.capacity();
+        std::mem::forget(raw);
+        let data = unsafe { Vec::from_raw_parts(ptr, len, capacity) };
+        let command = HostCommand::RecorderFrameData {
+            data,
+            is_last_frame,
+            credit,
+            runtime_generation: captured_generation(generation),
+        };
+        if is_last_frame {
+            let _ = send_reliable_command_to_host(host_id, command);
+        } else {
+            let _ = send_command_to_host(host_id, command);
+        }
     });
 }
 
@@ -1305,79 +1353,102 @@ pub(crate) extern "system" fn onCameraFrameData<'local>(
             tracing::warn!("onCameraFrameData: invalid payload lengths: {:?}", error);
             return;
         }
+        let Some((admission, packed)) =
+            with_camera_frame_admission(host_id, camera_id as u32, || {
+                // Resolve each direct plane buffer's base address + capacity. The jni
+                // wrapper rejects null / non-direct buffers and a -1 capacity, so a
+                // malformed buffer is dropped rather than mis-read.
+                let resolve = |buf: &JByteBuffer, plane: &str| -> Option<(*mut u8, usize)> {
+                    match (
+                        env.get_direct_buffer_address(buf),
+                        env.get_direct_buffer_capacity(buf),
+                    ) {
+                        (Ok(addr), Ok(cap)) => Some((addr, cap)),
+                        _ => {
+                            tracing::warn!(
+                                "onCameraFrameData: {} plane buffer not direct/usable",
+                                plane
+                            );
+                            None
+                        }
+                    }
+                };
+                let (Some((y_addr, y_cap)), Some((u_addr, u_cap)), Some((v_addr, v_cap))) = (
+                    resolve(&y_buf, "Y"),
+                    resolve(&u_buf, "U"),
+                    resolve(&v_buf, "V"),
+                ) else {
+                    return None;
+                };
 
-        // Resolve each direct plane buffer's base address + capacity. The jni
-        // wrapper rejects null / non-direct buffers and a -1 capacity, so a
-        // malformed buffer is dropped rather than mis-read.
-        let resolve = |buf: &JByteBuffer, plane: &str| -> Option<(*mut u8, usize)> {
-            match (
-                env.get_direct_buffer_address(buf),
-                env.get_direct_buffer_capacity(buf),
-            ) {
-                (Ok(addr), Ok(cap)) => Some((addr, cap)),
-                _ => {
-                    tracing::warn!(
-                        "onCameraFrameData: {} plane buffer not direct/usable",
-                        plane
-                    );
-                    None
-                }
-            }
-        };
-        let (Some((y_addr, y_cap)), Some((u_addr, u_cap)), Some((v_addr, v_cap))) = (
-            resolve(&y_buf, "Y"),
-            resolve(&u_buf, "U"),
-            resolve(&v_buf, "V"),
-        ) else {
+                // SAFETY: each (addr, cap) comes from a live, direct ByteBuffer whose
+                // backing Image is held open by the synchronous Java caller for the
+                // duration of this call. `u8` has alignment 1 and `addr` is non-null
+                // (the jni wrapper rejects null). These capacity slices are used only
+                // to pack into an owned `Vec` below; no slice, raw address, or
+                // `JByteBuffer` escapes this call or crosses the host channel.
+                let y_slice = unsafe { std::slice::from_raw_parts(y_addr as *const u8, y_cap) };
+                let u_slice = unsafe { std::slice::from_raw_parts(u_addr as *const u8, u_cap) };
+                let v_slice = unsafe { std::slice::from_raw_parts(v_addr as *const u8, v_cap) };
+
+                // The single copy: validate each `[offset, offset+len)` window against
+                // its capacity and concatenate Y/U/V into one owned Vec.
+                Some(
+                    match pack_yuv_planes([
+                        PlaneWindow {
+                            buffer: y_slice,
+                            offset: y_off,
+                            len: y_len,
+                        },
+                        PlaneWindow {
+                            buffer: u_slice,
+                            offset: u_off,
+                            len: u_len,
+                        },
+                        PlaneWindow {
+                            buffer: v_slice,
+                            offset: v_off,
+                            len: v_len,
+                        },
+                    ]) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!("onCameraFrameData: invalid plane window: {:?}", e);
+                            return None;
+                        }
+                    },
+                )
+            })
+        else {
             return;
         };
 
-        // SAFETY: each (addr, cap) comes from a live, direct ByteBuffer whose
-        // backing Image is held open by the synchronous Java caller for the
-        // duration of this call. `u8` has alignment 1 and `addr` is non-null
-        // (the jni wrapper rejects null). These capacity slices are used only
-        // to pack into an owned `Vec` below; no slice, raw address, or
-        // `JByteBuffer` escapes this call or crosses the host channel.
-        let y_slice = unsafe { std::slice::from_raw_parts(y_addr as *const u8, y_cap) };
-        let u_slice = unsafe { std::slice::from_raw_parts(u_addr as *const u8, u_cap) };
-        let v_slice = unsafe { std::slice::from_raw_parts(v_addr as *const u8, v_cap) };
-
-        // The single copy: validate each `[offset, offset+len)` window against
-        // its capacity and concatenate Y/U/V into one owned Vec.
-        let packed = match pack_yuv_planes([
-            PlaneWindow {
-                buffer: y_slice,
-                offset: y_off,
-                len: y_len,
-            },
-            PlaneWindow {
-                buffer: u_slice,
-                offset: u_off,
-                len: u_len,
-            },
-            PlaneWindow {
-                buffer: v_slice,
-                offset: v_off,
-                len: v_len,
-            },
-        ]) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("onCameraFrameData: invalid plane window: {:?}", e);
-                return;
-            }
-        };
-
-        let _ = send_command_to_host(
-            host_id,
-            HostCommand::CameraFrameData {
-                camera_id: camera_id as u32,
+        match publish_camera_frame(
+            admission,
+            CameraFrameEntry {
                 data: packed,
                 width,
                 height,
-                runtime_generation: captured_generation(generation),
             },
-        );
+        ) {
+            CameraFramePush::Notify(credit) => {
+                let result = send_command_to_host(
+                    host_id,
+                    HostCommand::CameraFrameData {
+                        camera_id: camera_id as u32,
+                        data: Vec::new(),
+                        width: 0,
+                        height: 0,
+                        credit,
+                        runtime_generation: captured_generation(generation),
+                    },
+                );
+                if result.is_err() {
+                    let _ = take_camera_frame(host_id, camera_id as u32);
+                }
+            }
+            CameraFramePush::Superseded => {}
+        }
     });
 }
 

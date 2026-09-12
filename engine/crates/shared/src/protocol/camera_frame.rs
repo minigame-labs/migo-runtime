@@ -14,10 +14,192 @@
 //! padding / pixel-stride bytes inside a window are copied verbatim — this does
 //! not repack, convert, or reinterpret the layout.
 
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
 /// Largest width or height accepted from a camera callback. This matches the
 /// largest Canvas surface dimension and bounds every subsequent pixel-count
 /// calculation before host-side copies occur.
 pub const MAX_CAMERA_FRAME_DIMENSION: u32 = 8192;
+
+#[derive(Debug)]
+struct CameraFrameCreditState {
+    /// Token for the command currently notifying the Host, or zero when no
+    /// notification is in flight.  Tokens let a replacement command acquire
+    /// the slot before an older command's RAII credit is dropped.
+    active_token: AtomicU64,
+    next_token: AtomicU64,
+    superseded: AtomicU64,
+    mailbox: Mutex<Option<CameraFrameEntry>>,
+}
+
+/// The latest packed frame waiting for the Host's camera callback.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CameraFrameEntry {
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Result of publishing one packed camera frame.
+#[derive(Debug)]
+pub enum CameraFramePush {
+    /// No notification was in flight; the caller must enqueue the returned
+    /// credit-bearing command to wake the Host.
+    Notify(CameraFrameCredit),
+    /// A notification is already queued or being dispatched.  The mailbox now
+    /// contains this frame, replacing the older one.
+    Superseded,
+}
+
+/// Admission acquired before resolving direct buffers and packing plane bytes.
+#[derive(Debug)]
+pub enum CameraFrameAdmission {
+    /// This frame owns the notification token and will enqueue a command.
+    Notify(CameraFrameCredit),
+    /// A previous notification is still in flight; this frame may replace its
+    /// mailbox payload without enqueueing another command.
+    Replace(CameraFrameReplacement),
+}
+
+#[derive(Debug)]
+pub struct CameraFrameReplacement {
+    state: Arc<CameraFrameCreditState>,
+}
+
+/// RAII admission credit for one camera notification command.
+///
+/// The credit is carried by the admitted host command. If the command is
+/// rejected, canceled, or dropped during shutdown, this guard releases the
+/// notification token exactly once. A Host that has taken the mailbox clears
+/// the token first, so a replacement can publish another notification before
+/// the old command's destructor runs.
+#[derive(Debug)]
+pub struct CameraFrameCredit {
+    state: Arc<CameraFrameCreditState>,
+    token: u64,
+}
+
+impl Drop for CameraFrameCredit {
+    fn drop(&mut self) {
+        let _ = self.state.active_token.compare_exchange(
+            self.token,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+static CAMERA_FRAME_CREDITS: LazyLock<Mutex<HashMap<(i32, u32), Arc<CameraFrameCreditState>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn camera_frame_credit_state(host_id: i32, camera_id: u32) -> Arc<CameraFrameCreditState> {
+    CAMERA_FRAME_CREDITS
+        .lock()
+        .expect("camera frame credit registry poisoned")
+        .entry((host_id, camera_id))
+        .or_insert_with(|| {
+            Arc::new(CameraFrameCreditState {
+                active_token: AtomicU64::new(0),
+                next_token: AtomicU64::new(1),
+                superseded: AtomicU64::new(0),
+                mailbox: Mutex::new(None),
+            })
+        })
+        .clone()
+}
+
+/// Acquire camera admission before resolving direct buffers or copying planes.
+pub fn prepare_camera_frame(host_id: i32, camera_id: u32) -> CameraFrameAdmission {
+    let state = camera_frame_credit_state(host_id, camera_id);
+    let token = state.next_token.fetch_add(1, Ordering::Relaxed);
+    match state
+        .active_token
+        .compare_exchange(0, token, Ordering::AcqRel, Ordering::Acquire)
+    {
+        Ok(_) => CameraFrameAdmission::Notify(CameraFrameCredit { state, token }),
+        Err(_) => CameraFrameAdmission::Replace(CameraFrameReplacement { state }),
+    }
+}
+
+/// Acquire camera admission, then invoke the deferred packing operation.
+///
+/// Keeping the copy behind this seam makes the pre-copy ordering host-testable:
+/// a caller cannot invoke the potentially expensive operation before admission.
+pub fn with_camera_frame_admission<T>(
+    host_id: i32,
+    camera_id: u32,
+    copy: impl FnOnce() -> Option<T>,
+) -> Option<(CameraFrameAdmission, T)> {
+    let admission = prepare_camera_frame(host_id, camera_id);
+    copy().map(|value| (admission, value))
+}
+
+/// Publish a packed frame after the caller's pre-copy admission.
+pub fn publish_camera_frame(
+    admission: CameraFrameAdmission,
+    entry: CameraFrameEntry,
+) -> CameraFramePush {
+    let state = match &admission {
+        CameraFrameAdmission::Notify(credit) => Arc::clone(&credit.state),
+        CameraFrameAdmission::Replace(replacement) => Arc::clone(&replacement.state),
+    };
+    let replacement_token = {
+        let mut mailbox = state.mailbox.lock().expect("camera frame mailbox poisoned");
+        if mailbox.replace(entry).is_some() {
+            state.superseded.fetch_add(1, Ordering::Relaxed);
+        }
+        match &admission {
+            CameraFrameAdmission::Notify(_) => None,
+            CameraFrameAdmission::Replace(_) => {
+                let token = state.next_token.fetch_add(1, Ordering::Relaxed);
+                state
+                    .active_token
+                    .compare_exchange(0, token, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                    .then_some(token)
+            }
+        }
+    };
+    match (admission, replacement_token) {
+        (CameraFrameAdmission::Notify(credit), _) => CameraFramePush::Notify(credit),
+        (CameraFrameAdmission::Replace(_), Some(token)) => {
+            CameraFramePush::Notify(CameraFrameCredit { state, token })
+        }
+        (CameraFrameAdmission::Replace(_), None) => CameraFramePush::Superseded,
+    }
+}
+
+/// Convenience for tests and non-copying producers that already own a packed frame.
+pub fn push_camera_frame(host_id: i32, camera_id: u32, entry: CameraFrameEntry) -> CameraFramePush {
+    publish_camera_frame(prepare_camera_frame(host_id, camera_id), entry)
+}
+
+/// Take the newest frame for a camera and release its notification token.
+///
+/// Clearing the token while holding the mailbox mutex makes a concurrent
+/// producer either replace this entry before the take, or publish a fresh
+/// entry and receive a new notification credit after it.
+pub fn take_camera_frame(host_id: i32, camera_id: u32) -> Option<CameraFrameEntry> {
+    let state = camera_frame_credit_state(host_id, camera_id);
+    let mut mailbox = state.mailbox.lock().expect("camera frame mailbox poisoned");
+    let entry = mailbox.take();
+    state.active_token.store(0, Ordering::Release);
+    entry
+}
+
+/// Number of camera frames superseded by a newer frame before the Host took it.
+pub fn camera_frame_superseded_count(host_id: i32, camera_id: u32) -> u64 {
+    camera_frame_credit_state(host_id, camera_id)
+        .superseded
+        .load(Ordering::Relaxed)
+}
 
 /// Largest number of pixels accepted from a camera callback.
 pub const MAX_CAMERA_FRAME_PIXELS: u64 =
@@ -336,5 +518,127 @@ mod tests {
         assert_eq!(y, [1, 2, 3]);
         assert_eq!(u, [4, 5]);
         assert_eq!(v, [6]);
+    }
+    #[test]
+    fn slow_consumer_sees_latest_frame_and_counts_superseded() {
+        let host_id = 9701;
+        let camera_id = 13;
+        let first = CameraFrameEntry {
+            data: vec![1],
+            width: 1,
+            height: 1,
+        };
+        let second = CameraFrameEntry {
+            data: vec![2],
+            width: 2,
+            height: 1,
+        };
+        let credit = match super::push_camera_frame(host_id, camera_id, first) {
+            CameraFramePush::Notify(credit) => credit,
+            CameraFramePush::Superseded => panic!("first frame must notify"),
+        };
+        assert!(matches!(
+            super::push_camera_frame(host_id, camera_id, second),
+            CameraFramePush::Superseded
+        ));
+        assert_eq!(super::camera_frame_superseded_count(host_id, camera_id), 1);
+        assert_eq!(
+            super::take_camera_frame(host_id, camera_id),
+            Some(CameraFrameEntry {
+                data: vec![2],
+                width: 2,
+                height: 1,
+            })
+        );
+        drop(credit);
+    }
+
+    #[test]
+    fn mailbox_credit_releases_once_and_allows_next_notification() {
+        let host_id = 9702;
+        let camera_id = 14;
+        let credit = match super::push_camera_frame(
+            host_id,
+            camera_id,
+            CameraFrameEntry {
+                data: vec![3],
+                width: 1,
+                height: 1,
+            },
+        ) {
+            CameraFramePush::Notify(credit) => credit,
+            CameraFramePush::Superseded => panic!("first frame must notify"),
+        };
+        drop(credit);
+        let next = super::push_camera_frame(
+            host_id,
+            camera_id,
+            CameraFrameEntry {
+                data: vec![4],
+                width: 1,
+                height: 1,
+            },
+        );
+        assert!(matches!(next, CameraFramePush::Notify(_)));
+    }
+
+    #[test]
+    fn taking_mailbox_releases_old_credit_before_replacement() {
+        let host_id = 9703;
+        let camera_id = 15;
+        let old_credit = match super::push_camera_frame(
+            host_id,
+            camera_id,
+            CameraFrameEntry {
+                data: vec![5],
+                width: 1,
+                height: 1,
+            },
+        ) {
+            CameraFramePush::Notify(credit) => credit,
+            CameraFramePush::Superseded => panic!("first frame must notify"),
+        };
+        assert!(super::take_camera_frame(host_id, camera_id).is_some());
+        let new_result = super::push_camera_frame(
+            host_id,
+            camera_id,
+            CameraFrameEntry {
+                data: vec![6],
+                width: 1,
+                height: 1,
+            },
+        );
+        assert!(matches!(new_result, CameraFramePush::Notify(_)));
+        // The old credit must not clear the replacement notification token.
+        drop(old_credit);
+        assert!(matches!(
+            super::push_camera_frame(
+                host_id,
+                camera_id,
+                CameraFrameEntry {
+                    data: vec![7],
+                    width: 1,
+                    height: 1,
+                },
+            ),
+            CameraFramePush::Superseded
+        ));
+    }
+    #[test]
+    fn camera_admission_happens_before_deferred_copy() {
+        let host_id = 9704;
+        let camera_id = 16;
+        let nested = with_camera_frame_admission(host_id, camera_id, || {
+            Some(match prepare_camera_frame(host_id, camera_id) {
+                CameraFrameAdmission::Replace(replacement) => replacement,
+                CameraFrameAdmission::Notify(_) => {
+                    panic!("deferred copy ran before camera admission")
+                }
+            })
+        })
+        .expect("outer camera admission must succeed");
+        let (admission, replacement) = nested;
+        drop(replacement);
+        drop(admission);
     }
 }

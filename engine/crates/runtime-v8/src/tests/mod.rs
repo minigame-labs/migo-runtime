@@ -14,9 +14,12 @@
 
 #[cfg(feature = "api-system")]
 mod ad_reward_integrity;
+mod audio_aud11;
+mod audio_context_close;
 mod binary_helper;
 mod callback_isolation;
 mod canvas_follows_surface;
+mod code_cache_dir;
 mod global_surface;
 mod host_bridge_dispatch;
 mod install_receipt;
@@ -34,6 +37,7 @@ mod storage_isolation;
 mod timers;
 mod two_session_identity;
 // `getUpdateManager` ships with host_v8_update, which api-system gates.
+mod deferred_api;
 #[cfg(feature = "api-system")]
 mod update_manager_reports_no_update;
 mod v8_limits;

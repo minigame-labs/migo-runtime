@@ -289,13 +289,17 @@ impl AudioNodeProcessor for BiquadFilterNode {
         _channels: u32,
         current_time: f64,
     ) -> usize {
-        let len = inputs.len().min(output.len());
-        if len == 0 {
+        let channels = self.states.len().max(1);
+        // Once an upstream source ends, process zero input through the
+        // difference equation so the filter's stored state can decay naturally.
+        let frames = if inputs.is_empty() {
+            output.len() / channels
+        } else {
+            inputs.len().min(output.len()) / channels
+        };
+        if frames == 0 {
             return 0;
         }
-
-        let channels = self.states.len().max(1);
-        let frames = len / channels;
 
         // Recompute coefficients if params changed (k-rate: sampled once per block)
         self.compute_coefficients(sample_rate as f64, current_time);
@@ -305,7 +309,7 @@ impl AudioNodeProcessor for BiquadFilterNode {
         for frame in 0..frames {
             for ch in 0..channels {
                 let idx = frame * channels + ch;
-                let x0 = inputs[idx] as f64;
+                let x0 = inputs.get(idx).copied().unwrap_or(0.0) as f64;
                 let state = &mut self.states[ch];
 
                 // Direct Form I
@@ -321,6 +325,14 @@ impl AudioNodeProcessor for BiquadFilterNode {
         }
 
         frames
+    }
+
+    fn has_tail_audio(&self) -> bool {
+        self.states.iter().any(|state| {
+            [state.x1, state.x2, state.y1, state.y2]
+                .iter()
+                .any(|sample| sample.abs() > 1e-10)
+        })
     }
 
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {

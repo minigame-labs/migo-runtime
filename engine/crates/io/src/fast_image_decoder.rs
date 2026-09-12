@@ -746,8 +746,8 @@ pub const MAX_SUBRECT_BYTES: usize = 128 * 1024 * 1024;
 /// * `OutOfMemory` when the required buffer exceeds
 ///   [`MAX_SUBRECT_BYTES`].
 ///
-/// Unlike [`resize_image`] this does not depend on the optional
-/// `rust-image-decode` feature — crop is a pure CPU operation on
+/// Unlike [`try_resize_image`] this does not depend on the optional
+/// `cpu-image-resize` feature — crop is a pure CPU operation on
 /// the RGBA buffer we always hold.
 pub fn crop_image(
     img: NormalizedImage,
@@ -822,36 +822,20 @@ pub fn crop_image(
     })
 }
 
-#[cfg(feature = "rust-image-decode")]
-pub fn resize_image(img: NormalizedImage, target_w: u32, target_h: u32) -> NormalizedImage {
+#[cfg(feature = "cpu-image-resize")]
+fn resize_image_supported(img: NormalizedImage, target_w: u32, target_h: u32) -> NormalizedImage {
     if img.width <= target_w && img.height <= target_h {
         return img;
     }
-
-    // Compute aspect-preserving dimensions.
     let scale = f64::min(
         target_w as f64 / img.width as f64,
         target_h as f64 / img.height as f64,
     );
     let new_w = ((img.width as f64 * scale).round() as u32).max(1);
     let new_h = ((img.height as f64 * scale).round() as u32).max(1);
-
-    // Hand the RGBA bytes to `image` without copying when possible.
-    //
-    // `Arc::try_unwrap` succeeds when we are the sole owner — the
-    // common path: the image came straight from the decoder and
-    // hasn't been handed out of the pipeline yet.  When the Arc has
-    // outstanding refs (cache hit, shared source) we fall back to
-    // `.to_vec()` which is the minimum-necessary copy.
     let w = img.width;
     let h = img.height;
     let raw: Vec<u8> = Arc::try_unwrap(img.rgba).unwrap_or_else(|arc| (*arc).clone());
-
-    // Checked before `from_raw` rather than after, because `from_raw` consumes
-    // the buffer on rejection and leaves nothing to hand back. Returning the
-    // image unresized keeps `width`/`height` describing the bytes that are
-    // actually there; a sentinel with the original dimensions and an empty
-    // buffer would lie to every downstream `w * h * 4` index.
     let required = (w as usize)
         .checked_mul(h as usize)
         .and_then(|px| px.checked_mul(4));
@@ -869,16 +853,9 @@ pub fn resize_image(img: NormalizedImage, target_w: u32, target_h: u32) -> Norma
             rgba: Arc::new(raw),
         };
     }
-
     let src = match image::RgbaImage::from_raw(w, h, raw) {
         Some(s) => s,
         None => {
-            // Unreachable given the length check above — an undersized buffer
-            // is `from_raw`'s only rejection cause. Kept total rather than
-            // `unwrap`ing a decoder invariant on the image path, and reported
-            // as 0x0 because `from_raw` consumed the bytes: an empty buffer
-            // described as `w`x`h` is the inconsistency this branch exists to
-            // avoid.
             tracing::warn!("resize_image: from_raw rejected a checked {w}x{h} buffer");
             return NormalizedImage {
                 width: 0,
@@ -887,7 +864,6 @@ pub fn resize_image(img: NormalizedImage, target_w: u32, target_h: u32) -> Norma
             };
         }
     };
-
     let resized =
         image::imageops::resize(&src, new_w, new_h, image::imageops::FilterType::Triangle);
     NormalizedImage {
@@ -897,10 +873,31 @@ pub fn resize_image(img: NormalizedImage, target_w: u32, target_h: u32) -> Norma
     }
 }
 
-/// Fallback when `rust-image-decode` is disabled — returns the image unchanged.
-#[cfg(not(feature = "rust-image-decode"))]
-pub fn resize_image(img: NormalizedImage, _target_w: u32, _target_h: u32) -> NormalizedImage {
-    img
+/// Resize capability is independent from the decoder entry points: callers
+/// that request a target size must receive either an exact result or an error.
+#[cfg(feature = "cpu-image-resize")]
+pub fn try_resize_image(
+    img: NormalizedImage,
+    target_w: u32,
+    target_h: u32,
+) -> Result<NormalizedImage, EngineError> {
+    Ok(resize_image_supported(img, target_w, target_h))
+}
+
+/// Report whether exact CPU image resizing is available in this build.
+pub const fn resize_capable() -> bool {
+    cfg!(feature = "cpu-image-resize")
+}
+
+/// When the CPU resize feature is absent, do not silently ignore a target size.
+#[cfg(not(feature = "cpu-image-resize"))]
+pub fn try_resize_image(
+    _img: NormalizedImage,
+    _target_w: u32,
+    _target_h: u32,
+) -> Result<NormalizedImage, EngineError> {
+    Err(EngineError::new(ErrorCode::Unsupported)
+        .with_msg("CPU image resize requires the cpu-image-resize feature"))
 }
 
 #[cfg(test)]
@@ -1130,5 +1127,55 @@ mod pixel_cap_tests {
         // no overflow panic.
         let err = enforce_pixel_cap(u32::MAX, u32::MAX).expect_err("huge dims must reject");
         assert_eq!(err.code, ErrorCode::OutOfMemory);
+    }
+}
+
+#[cfg(test)]
+mod resize_capability_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn solid(w: u32, h: u32) -> NormalizedImage {
+        NormalizedImage {
+            width: w,
+            height: h,
+            rgba: Arc::new(vec![128u8; (w * h * 4) as usize]),
+        }
+    }
+
+    /// The new `try_resize_image` must FAIL (return Err) when the CPU resize
+    /// feature is off rather than silently returning the full-size image.
+    #[cfg(not(feature = "cpu-image-resize"))]
+    #[test]
+    fn try_resize_without_feature_returns_unsupported() {
+        let img = solid(100, 100);
+        let result = try_resize_image(img, 50, 50);
+        assert!(
+            result.is_err(),
+            "resize without cpu-image-resize must be Err, not silent full-size Ok"
+        );
+        let e = result.unwrap_err();
+        assert_eq!(e.code, ErrorCode::Unsupported);
+    }
+
+    /// With `cpu-image-resize` the resize must produce the correct dimensions.
+    #[cfg(feature = "cpu-image-resize")]
+    #[test]
+    fn try_resize_with_feature_honours_target_size() {
+        let img = solid(100, 100);
+        let out = try_resize_image(img, 50, 50).expect("resize with feature must succeed");
+        assert_eq!(out.width, 50);
+        assert_eq!(out.height, 50);
+    }
+
+    /// CPU resize is independently available without the full Rust decoder.
+    #[cfg(all(feature = "cpu-image-resize", not(feature = "rust-image-decode")))]
+    #[test]
+    fn try_resize_with_cpu_feature_only_honours_target_size() {
+        let img = solid(100, 100);
+        let out = try_resize_image(img, 50, 50)
+            .expect("CPU resize feature must work without Rust decoders");
+        assert_eq!(out.width, 50);
+        assert_eq!(out.height, 50);
     }
 }

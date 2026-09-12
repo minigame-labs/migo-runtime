@@ -1,25 +1,30 @@
 //! The Hosts an Engine has retired and must join before it may die.
 //!
-//! Its own module so the `Mutex` is unreachable from the destruction path.
-//! `take` is the only way out and it yields owned handles, which makes "join a
-//! Host while holding an Engine lock" not expressible rather than merely tested
-//! for. That deadlocks for real: a Host on its way out reaches
-//! `migo_session_destroy` and `migo_engine_destroy`, both of which take these
-//! locks, so a joiner holding one waits for a thread that is waiting for it.
-//!
-//! A probe test cannot stand in for this. Observing "no lock is held" during a
-//! blocking call is sampling, and a sample has no ordering against the call: the
-//! probe this replaced ran before the destroying thread had been scheduled and
-//! passed 50 runs out of 50 with a lock deliberately held across the join.
+//! A retired Host remains owned by this set until a completion monitor observes
+//! that its registry entry is gone. The monitor owns no Host, so a callback on a
+//! Host thread can call `migo_engine_destroy`: `take` still checks the original
+//! Host handle and refuses a self-join. All joins and drops happen after the
+//! mutex guard is released.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{
+    Arc, Mutex, MutexGuard, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::session_engine::SessionEngine;
+pub(crate) struct RetiredHost {
+    /// The Host remains owned here until its registry entry disappears.
+    host: SessionEngine,
+    completed: Arc<AtomicBool>,
+    monitor: Option<JoinHandle<()>>,
+}
 
-/// Retired Hosts, owned until someone joins them.
+/// Retired Hosts, owned until their completion monitor and Host are joined.
 #[derive(Default)]
 pub(crate) struct RetirementSet {
-    hosts: Mutex<Vec<SessionEngine>>,
+    hosts: Mutex<Vec<RetiredHost>>,
 }
 
 impl RetirementSet {
@@ -27,24 +32,80 @@ impl RetirementSet {
         Self::default()
     }
 
-    /// Ask `host` to stop, and keep it until it is joined.
+    /// Ask `host` to stop and retain it while a monitor waits for unregister.
     ///
-    /// A failed request is logged rather than propagated: the handle still has
-    /// to be retained, because dropping it here is what would leak the thread.
-    pub(crate) fn retire(&self, host: SessionEngine) {
+    /// External-frame transport storage is released before ownership enters the
+    /// set; late packets then fail against a fresh ingress while the Host finishes
+    /// its normal teardown. The Host itself is never moved to an untracked thread.
+    pub(crate) fn retire(&self, mut host: SessionEngine) {
+        #[cfg(feature = "external-frames")]
+        host.release_submit_resources();
+
         if let Err(error) = host.request_shutdown() {
             tracing::error!("failed to request shutdown for Host {}: {error}", host.id());
         }
-        self.locked().push(host);
+        let id = host.id();
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_for_monitor = Arc::clone(&completed);
+        let monitor = thread::Builder::new()
+            .name(format!("Migo-Retirement-{id}"))
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                loop {
+                    if migo_core::host_ingress(id).is_err() {
+                        completed_for_monitor.store(true, Ordering::Release);
+                        return;
+                    }
+                    if started.elapsed() >= Duration::from_secs(5) {
+                        tracing::warn!(
+                            "retired Host {id} has not exited after {:.1}s",
+                            started.elapsed().as_secs_f64()
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+            })
+            .ok();
+        self.locked().push(RetiredHost {
+            host,
+            completed,
+            monitor,
+        });
+    }
+
+    /// Remove and join Hosts whose registry entries have disappeared.
+    ///
+    /// Completion is only a readiness hint. The monitor and Host handles are
+    /// extracted first; both are joined outside the RetirementSet mutex.
+    pub(crate) fn reap_completed(&self) {
+        let completed = {
+            let mut hosts = self.locked();
+            let mut completed = Vec::new();
+            let mut pending = Vec::with_capacity(hosts.len());
+            for host in hosts.drain(..) {
+                if host.completed.load(Ordering::Acquire) {
+                    completed.push(host);
+                } else {
+                    pending.push(host);
+                }
+            }
+            *hosts = pending;
+            completed
+        };
+        for host in completed {
+            if host.join().is_err() {
+                tracing::error!("retired Host join failed during reap");
+            }
+        }
     }
 
     /// Every retired Host, owned, leaving the set empty.
     ///
-    /// `Err` when one of them is the calling thread: a Host cannot join itself,
-    /// and the caller has to be able to refuse instead of deadlocking.
-    pub(crate) fn take(&self) -> Result<Vec<SessionEngine>, ()> {
+    /// `Err` when one entry is the calling Host thread. The caller must join the
+    /// returned entries outside every Engine/Session lock.
+    pub(crate) fn take(&self) -> Result<Vec<RetiredHost>, ()> {
         let mut hosts = self.locked();
-        if hosts.iter().any(SessionEngine::is_current_thread) {
+        if hosts.iter().any(|host| host.host.is_current_thread()) {
             return Err(());
         }
         Ok(std::mem::take(&mut *hosts))
@@ -55,31 +116,29 @@ impl RetirementSet {
         self.locked().len()
     }
 
-    /// Private, and the reason this type is a module: a `MutexGuard` that
-    /// escaped could be alive across a join.
-    fn locked(&self) -> MutexGuard<'_, Vec<SessionEngine>> {
+    fn locked(&self) -> MutexGuard<'_, Vec<RetiredHost>> {
         self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl RetiredHost {
+    pub(crate) fn join(mut self) -> Result<(), ()> {
+        if let Some(monitor) = self.monitor.take() {
+            monitor.join().map_err(|_| ())?;
+        }
+        self.host.join().map_err(|_| ())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-            mpsc,
-        },
-        thread,
-    };
-
-    use crate::session_engine::SessionEngine;
+    use std::{sync::mpsc, thread, time::Duration};
 
     use super::RetirementSet;
 
-    /// A retired Host that parks until released, so a test can hold one across
-    /// an observation and still join it.
-    fn parked_host(id: i32) -> (SessionEngine, mpsc::Sender<()>) {
+    /// A retired Host that parks until released, so a test can verify the
+    /// monitor retains ownership while the RetirementSet remains usable.
+    fn parked_host(id: i32) -> (crate::session_engine::SessionEngine, mpsc::Sender<()>) {
         let (release_tx, release_rx) = mpsc::channel();
         let join = thread::Builder::new()
             .name(format!("Migo-Main-retirement-{id}"))
@@ -91,61 +150,56 @@ mod tests {
     }
 
     #[test]
-    fn take_hands_over_every_host_and_leaves_the_set_empty() {
+    fn completed_hosts_are_reaped_without_holding_the_set_lock() {
         let set = RetirementSet::new();
-        let (first, release_first) = parked_host(9_001);
-        let (second, release_second) = parked_host(9_002);
+        let (host, release) = parked_host(9_001);
+        set.retire(host);
+        assert_eq!(set.len(), 1);
+        release.send(()).expect("release retired Host");
+
+        for _ in 0..100 {
+            set.reap_completed();
+            if set.len() == 0 {
+                return;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        panic!("completed retired Host was not reaped");
+    }
+
+    #[test]
+    fn take_transfers_hosts_and_engine_destruction_can_join_outside_lock() {
+        let set = RetirementSet::new();
+        let (first, release_first) = parked_host(9_002);
+        let (second, release_second) = parked_host(9_003);
         set.retire(first);
         set.retire(second);
         assert_eq!(set.len(), 2);
 
-        let taken = set.take().expect("no retired Host is this thread");
-
-        assert_eq!(taken.len(), 2);
-        assert_eq!(
-            set.len(),
-            0,
-            "take must not leave a Host behind to be joined twice"
-        );
+        let retired = set.take().expect("take retired Hosts");
+        assert_eq!(set.len(), 0);
         release_first.send(()).expect("release first Host");
         release_second.send(()).expect("release second Host");
-        for mut host in taken {
-            host.join().expect("join released Host");
+        for host in retired {
+            host.join().expect("join retired Host");
         }
     }
 
     #[test]
-    fn take_refuses_from_a_retired_host_and_keeps_it_for_a_retry() {
-        let set = Arc::new(RetirementSet::new());
-        let (ready_tx, ready_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let refused = Arc::new(AtomicBool::new(false));
-
-        let set_on_host = Arc::clone(&set);
-        let refused_on_host = Arc::clone(&refused);
-        let join = thread::Builder::new()
-            .name("Migo-Main-retirement-self".to_owned())
-            .spawn(move || {
-                ready_rx.recv().expect("wait until retired");
-                refused_on_host.store(set_on_host.take().is_err(), Ordering::Release);
-                release_tx.send(()).expect("publish refusal");
-            })
-            .expect("spawn retired Host");
-        set.retire(crate::session_engine::engine_for_test(9_003, join));
-
-        ready_tx.send(()).expect("tell the Host it is retired");
-        release_rx.recv().expect("refusal published");
-
-        assert!(
-            refused.load(Ordering::Acquire),
-            "a Host must not be handed its own handle to join"
-        );
-        let mut taken = set.take().expect("another thread may take it");
-        assert_eq!(
-            taken.len(),
-            1,
-            "a refused take must keep the Host for a retry"
-        );
-        taken[0].join().expect("join the retired Host");
+    fn repeated_retirement_reaps_completed_hosts_without_growth() {
+        let set = RetirementSet::new();
+        for id in 10_000..10_100 {
+            let (host, release) = parked_host(id);
+            set.retire(host);
+            release.send(()).expect("release retired Host");
+            for _ in 0..100 {
+                set.reap_completed();
+                if set.len() == 0 {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(set.len(), 0, "retirement set grew at iteration {id}");
+        }
     }
 }

@@ -260,10 +260,18 @@ pub fn encode_etc2_rgba(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>,
 /// - bytes 2..8: sixteen 3-bit pixel indices, packed big-endian (pixel 0's
 ///   index in the most-significant position), in raster order.
 ///
-/// base, table and multiplier are chosen by exhaustive search over all 16
-/// tables and the 1..=15 multipliers -- the same "try them all, no heuristic
-/// cliff" approach the colour path takes. A block whose alpha is constant is
-/// encoded with multiplier 0, which the decoder treats as "every pixel = base".
+/// base, table and multiplier are chosen by searching four base candidates
+/// (mean, midpoint, min, max), all 16 modifier tables, and a narrow multiplier
+/// window around the block's alpha range. Candidates are tried best-centred
+/// first so that early exit prunes most of the remaining combinations without
+/// sacrificing quality: a combination is abandoned as soon as its partial
+/// squared error reaches the current best, because pixel costs are non-negative
+/// and can only grow. A globally-optimal combination is therefore never
+/// skipped — its per-pixel costs are each ≤ its total, which is less than
+/// `best_error`, so no partial sum ever reaches `best_error`.
+///
+/// A block whose alpha is constant is encoded with multiplier 0, which the
+/// decoder treats as "every pixel = base".
 fn encode_alpha_block(alpha: &[u8; 16]) -> [u8; 8] {
     // Constant alpha (the common case for a sprite's flat interior or a fully
     // transparent border) needs no modulation: multiplier 0, base = the value.
@@ -280,18 +288,28 @@ fn encode_alpha_block(alpha: &[u8; 16]) -> [u8; 8] {
     let mut best_indices = [0u8; 16];
     let mut best_error = u64::MAX;
 
-    // A small set of base candidates: the extremes and the mean bracket where
-    // the modifier table is centred. Searching every 0..=255 base as well would
-    // multiply the cost 256x for negligible gain at ingest quality.
     let min = *alpha.iter().min().unwrap() as i32;
     let max = *alpha.iter().max().unwrap() as i32;
     let mean = (alpha.iter().map(|&a| a as i32).sum::<i32>() + 8) / 16;
-    let base_candidates = [min, max, mean, (min + max) / 2];
+
+    // Mean and midpoint are the best-centred bases; trying them first gives
+    // early exit the tightest possible bound on `best_error` before reaching
+    // the extremes. Identical base values after clamp produce identical results
+    // — the first visit wins any tie via strict-less-than — so duplicates are
+    // skipped.
+    let mut bases = [0u8; 4];
+    let mut n_bases = 0usize;
+    for &b in &[mean, (min + max) / 2, min, max] {
+        let v = b.clamp(0, 255) as u8;
+        if !bases[..n_bases].contains(&v) {
+            bases[n_bases] = v;
+            n_bases += 1;
+        }
+    }
 
     let range = max - min;
 
-    for &base_i in &base_candidates {
-        let base = base_i.clamp(0, 255);
+    'outer: for &base in &bases[..n_bases] {
         for (table_idx, table) in ALPHA_MODIFIER_TABLE.iter().enumerate() {
             // The multiplier scales the table, so the values it can reach span
             // `multiplier * table_span`. One that cannot cover the block's own
@@ -312,12 +330,11 @@ fn encode_alpha_block(alpha: &[u8; 16]) -> [u8; 8] {
             for multiplier in first..=last {
                 // The eight reachable alpha values depend only on
                 // (base, table, multiplier) — not on the pixel. Computing them
-                // inside the pixel loop redid the same multiply-add-clamp
-                // sixteen times per combination, which is most of why the
-                // alpha path measured 33x the colour path.
+                // outside the pixel loop avoids repeating the same eight
+                // multiply-add-clamp operations for every one of the 16 pixels.
                 let mut reachable = [0i32; 8];
                 for (idx, &modifier) in table.iter().enumerate() {
-                    reachable[idx] = (base + multiplier * modifier).clamp(0, 255);
+                    reachable[idx] = (base as i32 + multiplier * modifier).clamp(0, 255);
                 }
 
                 let mut error = 0u64;
@@ -335,13 +352,24 @@ fn encode_alpha_block(alpha: &[u8; 16]) -> [u8; 8] {
                     }
                     error += pixel_best;
                     indices[pixel] = pixel_index;
+                    // This combination cannot beat the current best; pixel costs
+                    // are non-negative so the total can only grow. The indices
+                    // array is only written to best_indices when error < best_error,
+                    // which is now false, so partially-filled slots are safe.
+                    if error >= best_error {
+                        break;
+                    }
                 }
                 if error < best_error {
                     best_error = error;
-                    best_base = base as u8;
+                    best_base = base;
                     best_table = table_idx;
                     best_multiplier = multiplier;
                     best_indices = indices;
+                    // Zero is the global minimum; no further improvement is possible.
+                    if best_error == 0 {
+                        break 'outer;
+                    }
                 }
             }
         }
@@ -604,13 +632,38 @@ mod tests {
                 started.elapsed()
             };
 
-            // The opacity probe that decides between the two formats reads
-            // every pixel; worth knowing whether it is noise or not.
-            let scan_time = {
+            // Measure the opacity decision separately from encoding. The
+            // visited count makes early-exit cases impossible to mislabel as
+            // a full-image scan.
+            let scan = |label: &str, pixels: &[u8]| {
                 let started = std::time::Instant::now();
-                std::hint::black_box(with_alpha.chunks_exact(4).any(|px| px[3] != 0xFF));
-                started.elapsed()
+                let mut visited = 0usize;
+                let mut transparent = false;
+                for px in pixels.chunks_exact(4) {
+                    visited += 1;
+                    if px[3] != 0xFF {
+                        transparent = true;
+                        break;
+                    }
+                }
+                let elapsed = started.elapsed();
+                eprintln!(
+                    "{side}x{side} opacity={label} scan={elapsed:?} pixels_visited={visited} transparent={transparent} mip_levels=1"
+                );
+                (elapsed, visited)
             };
+            let all_opaque = rgba.clone();
+            let mut first_transparent = rgba.clone();
+            first_transparent[3] = 0;
+            let mut last_transparent = rgba.clone();
+            let last_alpha = last_transparent.len() - 1;
+            last_transparent[last_alpha] = 0;
+            let representative = with_alpha.clone();
+            let (opaque_scan, opaque_visited) = scan("all-opaque", &all_opaque);
+            let (first_scan, first_visited) = scan("first-transparent", &first_transparent);
+            let (last_scan, last_visited) = scan("last-transparent", &last_transparent);
+            let (representative_scan, representative_visited) =
+                scan("representative", &representative);
 
             // Speed without quality is half the measurement: any change to the
             // search has to be judged on what it costs the encoding, not just
@@ -630,14 +683,16 @@ mod tests {
             } else {
                 10.0 * (255.0f64 * 255.0 / mean).log10()
             };
-
+            assert_eq!(opaque_visited, all_opaque.len() / 4);
+            assert_eq!(first_visited, 1);
+            assert_eq!(last_visited, last_transparent.len() / 4);
+            assert!(representative_visited < representative.len() / 4);
             eprintln!(
-                "{side}x{side} ({megapixels:>4.1} MP)  rgb {:>10?} ({:>5.1} MP/s)   rgba {:>10?} ({:>4.2} MP/s)   alpha PSNR {psnr:>5.2} dB, worst delta {worst:>3}   scan {:>8?}",
+                "{side}x{side} ({megapixels:>4.1} MP)  rgb {:>10?} ({:>5.1} MP/s)   rgba {:>10?} ({:>4.2} MP/s)   alpha PSNR {psnr:>5.2} dB, worst delta {worst:>3}; scans opaque={opaque_scan:?}, first={first_scan:?}, last={last_scan:?}, representative={representative_scan:?}",
                 rgb_time,
                 megapixels / rgb_time.as_secs_f64(),
                 rgba_time,
                 megapixels / rgba_time.as_secs_f64(),
-                scan_time,
             );
         }
     }

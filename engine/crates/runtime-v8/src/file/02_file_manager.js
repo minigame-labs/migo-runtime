@@ -28,7 +28,14 @@ import { core, primordials } from "ext:core/mod.js";
 import { wrapAsync } from "ext:host_v8_base/02_async.js";
 import { FileStats, Stats } from "./02_file_stats.js";
 
-const { Error } = primordials;
+const {
+  Error,
+  ArrayBuffer,
+  ArrayBufferPrototypeGetByteLength,
+  Uint8Array,
+  TypedArrayPrototypeGetByteLength,
+  TypedArrayPrototypeSet,
+} = primordials;
 
 class IOError extends Error {
   constructor(msg) {
@@ -710,10 +717,10 @@ class BaseFileManager {
       let offset = Math.trunc(options.offset || 0);
       // Allow offset == byteLength (a valid 0-byte read at EOF of the
       // buffer, and the only valid offset for an empty ArrayBuffer).
-      if (offset < 0 || offset > arrayBuffer.byteLength) {
+      if (offset < 0 || offset > ArrayBufferPrototypeGetByteLength(arrayBuffer)) {
         throw new IOError("invalid offset");
       }
-      const maxLen = arrayBuffer.byteLength - offset;
+      const maxLen = ArrayBufferPrototypeGetByteLength(arrayBuffer) - offset;
       const hasLength = typeof options.length === "number" && Number.isFinite(options.length);
       let readLen = hasLength ? Math.min(Math.max(0, Math.trunc(options.length)), maxLen) : maxLen;
       if (readLen < 0) throw new IOError("invalid length");
@@ -723,14 +730,12 @@ class BaseFileManager {
         pos = BigInt(Math.trunc(options.position));
       }
 
-      // Zero-copy: read straight into the caller's ArrayBuffer window
-      // (no intermediate Rust Vec / V8 buffer / dst.set copy). BYOB
-      // contract (same as Node fs.read): the ArrayBuffer is written by an
-      // IO worker while this promise is pending -- the caller must not read
-      // or write it until the promise settles.
+      // Workers own staging bytes. Commit on the isolate before callbacks;
+      // intrinsic set also rejects a destination detached while IO was pending.
       const view = new Uint8Array(arrayBuffer, offset, readLen);
-      return op_read_fd_into(numFd, view, pos).then((bytesRead) => {
-        return { bytesRead: Number(bytesRead), arrayBuffer };
+      return op_read_fd_into(numFd, view, pos).then((bytes) => {
+        TypedArrayPrototypeSet(view, bytes, 0);
+        return { bytesRead: TypedArrayPrototypeGetByteLength(bytes), arrayBuffer };
       });
     }, options);
   }
@@ -743,10 +748,10 @@ class BaseFileManager {
     offset = Math.trunc(offset);
     // Allow offset == byteLength (valid 0-byte read; also the only valid
     // offset for an empty ArrayBuffer).
-    if (offset < 0 || offset > arrayBuffer.byteLength) {
+    if (offset < 0 || offset > ArrayBufferPrototypeGetByteLength(arrayBuffer)) {
       throw new IOError("invalid offset");
     }
-    const maxLen = arrayBuffer.byteLength - offset;
+    const maxLen = ArrayBufferPrototypeGetByteLength(arrayBuffer) - offset;
     const hasLength = typeof length === "number" && Number.isFinite(length);
     let readLen = hasLength ? Math.min(Math.max(0, Math.trunc(length)), maxLen) : maxLen;
     if (readLen < 0) throw new IOError("invalid length");

@@ -6,7 +6,10 @@ import {
   op_audio_analyser_float_frequency,
   op_audio_set_analyser_scalar,
 } from "ext:core/ops";
-import { AudioNode } from "ext:host_v8_audio/00_audio_node.js";
+import {
+  AudioNode,
+  warnUnsupportedCapability,
+} from "ext:host_v8_audio/00_audio_node.js";
 
 class AnalyserNode extends AudioNode {
   #fftSize = 2048;
@@ -62,8 +65,6 @@ class AnalyserNode extends AudioNode {
 
   set smoothingTimeConstant(value) {
     this.#smoothingTimeConstant = Math.max(0, Math.min(1, Number(value)));
-    // The value has to reach the node doing the analysis. Storing it here only,
-    // which is what this used to do, left the spec's smoothing unimplemented.
     op_audio_set_analyser_scalar(
       this._nodeId,
       "smoothingTimeConstant",
@@ -72,19 +73,30 @@ class AnalyserNode extends AudioNode {
   }
 
   async getByteTimeDomainData(array) {
+    warnUnsupportedCapability(
+      "analyser-read",
+      "AnalyserNode reads use asynchronous native snapshots",
+    );
     const data = await op_audio_analyser_byte_time_domain(this._nodeId);
     const len = Math.min(array.length, data.length);
     array.set(data.subarray(0, len));
   }
 
   async getFloatTimeDomainData(array) {
+    warnUnsupportedCapability(
+      "analyser-read",
+      "AnalyserNode reads use asynchronous native snapshots",
+    );
     const bytes = await op_audio_analyser_float_time_domain(this._nodeId);
     const floats = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
     const len = Math.min(array.length, floats.length);
     array.set(floats.subarray(0, len));
   }
-
   async getByteFrequencyData(array) {
+    warnUnsupportedCapability(
+      "analyser-read",
+      "AnalyserNode reads use asynchronous native snapshots",
+    );
     const data = await op_audio_analyser_byte_frequency(this._nodeId);
     const len = Math.min(array.length, data.length);
     for (let i = 0; i < len; i++) {
@@ -93,6 +105,10 @@ class AnalyserNode extends AudioNode {
   }
 
   async getFloatFrequencyData(array) {
+    warnUnsupportedCapability(
+      "analyser-read",
+      "AnalyserNode reads use asynchronous native snapshots",
+    );
     const data = await op_audio_analyser_float_frequency(this._nodeId);
     const len = Math.min(array.length, data.length);
     for (let i = 0; i < len; i++) {

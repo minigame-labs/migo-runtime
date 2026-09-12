@@ -466,6 +466,12 @@ pub struct Canvas2DContext {
     /// scoped to the affected context to avoid under-invalidation on
     /// the other contexts that share the EGL context.
     pub skia_state_stale: u32,
+    /// Reused atlas partition and geometry scratch for the draw-image fast
+    /// path. These buffers belong to the Canvas2D owner, so warm sprite
+    /// batches do not allocate on the render thread.
+    atlas_runs: Vec<crate::draw_atlas::BatchRun>,
+    atlas_xforms: Vec<skia_safe::RSXform>,
+    atlas_tex: Vec<SkRect>,
 }
 
 /// Why a `Canvas2DContext` could not be built.
@@ -688,6 +694,9 @@ impl Canvas2DContext {
             kind,
             skia_state_stale: 0,
             ctx_tag: alloc_ctx_tag(),
+            atlas_runs: Vec::new(),
+            atlas_xforms: Vec::new(),
+            atlas_tex: Vec::new(),
         })
     }
 
@@ -777,6 +786,9 @@ impl Canvas2DContext {
             kind: FboKind::DrawingBuffer,
             skia_state_stale: 0,
             ctx_tag,
+            atlas_runs: Vec::new(),
+            atlas_xforms: Vec::new(),
+            atlas_tex: Vec::new(),
         })
     }
 
@@ -976,6 +988,9 @@ impl Canvas2DContext {
             surface,
             renderer,
             ctx_tag,
+            atlas_runs,
+            atlas_xforms,
+            atlas_tex,
             ..
         } = self;
         let ctx_tag = *ctx_tag;
@@ -1028,18 +1043,20 @@ impl Canvas2DContext {
 
                 // One `drawAtlas` per consecutive same-image, uniformly scaled
                 // run; everything else keeps going through `drawImageRect`.
-                // `partition` never reorders, so the alpha-blend order the
-                // content issued is the order these are submitted in.
-                let runs = if use_atlas {
-                    crate::draw_atlas::partition(draws, 2)
+                // `partition_into` never reorders, so the alpha-blend order the
+                // content issued is the order these are submitted in. The
+                // output table belongs to this Canvas2D owner and is reused.
+                atlas_runs.clear();
+                if use_atlas {
+                    crate::draw_atlas::partition_into(draws, 2, atlas_runs);
                 } else {
-                    vec![crate::draw_atlas::BatchRun::Individual {
+                    atlas_runs.push(crate::draw_atlas::BatchRun::Individual {
                         start: 0,
                         end: draws.len(),
-                    }]
-                };
+                    });
+                }
 
-                for run in runs {
+                for run in atlas_runs.iter().copied() {
                     let (start, end) = run.range();
                     match run {
                         crate::draw_atlas::BatchRun::Atlas { .. } => {
@@ -1052,15 +1069,19 @@ impl Canvas2DContext {
                             ) else {
                                 continue;
                             };
-                            let mut xforms = Vec::with_capacity(end - start);
-                            let mut tex = Vec::with_capacity(end - start);
+                            atlas_xforms.clear();
+                            atlas_tex.clear();
                             for d in &draws[start..end] {
                                 let scale = crate::draw_atlas::uniform_scale(d);
                                 // RSXform places the source rect's origin at
                                 // (tx, ty) scaled by `scale` with no rotation,
                                 // which is exactly a uniform sprite blit.
-                                xforms.push(skia_safe::RSXform::new(scale, 0.0, (d.dx, d.dy)));
-                                tex.push(SkRect::from_xywh(d.sx, d.sy, d.sw, d.sh));
+                                atlas_xforms.push(skia_safe::RSXform::new(
+                                    scale,
+                                    0.0,
+                                    (d.dx, d.dy),
+                                ));
+                                atlas_tex.push(SkRect::from_xywh(d.sx, d.sy, d.sw, d.sh));
                             }
                             if !renderer.draw_atlas_reported.replace(true) {
                                 tracing::info!(
@@ -1070,11 +1091,11 @@ impl Canvas2DContext {
                             }
                             canvas.draw_atlas(
                                 &img,
-                                &xforms,
-                                &tex,
+                                &atlas_xforms,
+                                &atlas_tex,
                                 None,
                                 skia_safe::BlendMode::SrcOver,
-                                skia_safe::SamplingOptions::default(),
+                                state_snapshot.image_sampling_options(),
                                 None,
                                 &paint,
                             );
@@ -1087,10 +1108,11 @@ impl Canvas2DContext {
                                 {
                                     let src = SkRect::from_xywh(d.sx, d.sy, d.sw, d.sh);
                                     let dst = SkRect::from_xywh(d.dx, d.dy, d.dw, d.dh);
-                                    canvas.draw_image_rect(
+                                    canvas.draw_image_rect_with_sampling_options(
                                         &img,
                                         Some((&src, skia_safe::canvas::SrcRectConstraint::Fast)),
                                         dst,
+                                        state_snapshot.image_sampling_options(),
                                         &paint,
                                     );
                                     any = true;
@@ -1274,25 +1296,6 @@ fn build_image_paint(state: &Canvas2DState) -> Paint {
     // `set_alpha_f` does exactly that.
     paint.set_alpha_f(state.global_alpha.clamp(0.0, 1.0));
 
-    // image_smoothing=false → nearest-neighbour, else linear.  We use
-    // mipmap=nearest to match Chromium's default (mipmap filter isn't
-    // part of the Canvas2D spec until imageSmoothingQuality="high",
-    // which we don't expose yet).
-    let sampling = if state.image_smoothing {
-        SamplingOptions::new(
-            skia_safe::FilterMode::Linear,
-            skia_safe::MipmapMode::Nearest,
-        )
-    } else {
-        SamplingOptions::new(skia_safe::FilterMode::Nearest, skia_safe::MipmapMode::None)
-    };
-    // `SkPaint` itself doesn't hold sampling options — they're passed
-    // per-call to `draw_image_rect` via `SamplingOptionsCallback`.  We
-    // stash them on the paint for callers that want a uniform default.
-    // The helper is used only by `build_image_paint` tests today; real
-    // draws pass the sampling explicitly below.
-    let _ = sampling;
-
     super::paint::apply_shadow_to_paint(&mut paint, state);
     paint
 }
@@ -1334,14 +1337,7 @@ fn draw_one_image(
     let paint = renderer.acquire_image_paint(|| build_image_paint(&state_snapshot));
     let src = SkRect::from_xywh(sx, sy, sw, sh);
     let dst = SkRect::from_xywh(dx, dy, dw, dh);
-    let sampling = if state_snapshot.image_smoothing {
-        SamplingOptions::new(
-            skia_safe::FilterMode::Linear,
-            skia_safe::MipmapMode::Nearest,
-        )
-    } else {
-        SamplingOptions::new(skia_safe::FilterMode::Nearest, skia_safe::MipmapMode::None)
-    };
+    let sampling = state_snapshot.image_sampling_options();
     canvas.draw_image_rect_with_sampling_options(
         &sk_image,
         Some((&src, skia_safe::canvas::SrcRectConstraint::Fast)),
@@ -1694,5 +1690,132 @@ mod tests {
         drop(contexts);
 
         set_skia_resource_cache_budget(restore);
+    }
+    /// Adjacent drawImage calls must be pixel-identical whether the collector
+    /// leaves them as individual draws or merges them into an atlas batch.
+    /// This deliberately uses a two-colour source scaled up so Skia's default
+    /// nearest sampling differs visibly from Canvas2D's default linear sampling.
+    #[test]
+    fn draw_image_batch_paths_match_single_image_sampling() {
+        let source_info = ImageInfo::new(
+            ISize::new(2, 1),
+            ColorType::RGBA8888,
+            AlphaType::Unpremul,
+            None,
+        );
+        let mut source = surfaces::raster(&source_info, None, None).expect("source surface");
+        source.canvas().clear(Color::TRANSPARENT);
+        let mut red = Paint::default();
+        red.set_color(Color::from_argb(255, 255, 0, 0));
+        source
+            .canvas()
+            .draw_rect(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), &red);
+        let mut blue = Paint::default();
+        blue.set_color(Color::from_argb(255, 0, 0, 255));
+        source
+            .canvas()
+            .draw_rect(Rect::from_xywh(1.0, 0.0, 1.0, 1.0), &blue);
+        let image = source.image_snapshot();
+        let state = super::Canvas2DState::default();
+        let sampling = state.image_sampling_options();
+
+        fn render(draw: impl FnOnce(&skia_safe::Canvas, &skia_safe::Paint)) -> Vec<u8> {
+            let info = ImageInfo::new(
+                ISize::new(8, 4),
+                ColorType::RGBA8888,
+                AlphaType::Unpremul,
+                None,
+            );
+            let mut surface = surfaces::raster(&info, None, None).expect("destination surface");
+            surface.canvas().clear(Color::TRANSPARENT);
+            let paint = Paint::default();
+            draw(surface.canvas(), &paint);
+            let mut pixels = vec![0; 8 * 4 * 4];
+            assert!(surface.read_pixels(&info, &mut pixels, 8 * 4, (0, 0)));
+            pixels
+        }
+
+        let single = render(|canvas, paint| {
+            canvas.draw_image_rect_with_sampling_options(
+                &image,
+                None,
+                Rect::from_xywh(0.0, 0.0, 8.0, 4.0),
+                sampling,
+                paint,
+            );
+        });
+        let individual = render(|canvas, paint| {
+            canvas.draw_image_rect_with_sampling_options(
+                &image,
+                None,
+                Rect::from_xywh(0.0, 0.0, 8.0, 4.0),
+                sampling,
+                paint,
+            );
+        });
+        let xforms = [skia_safe::RSXform::new(4.0, 0.0, (0.0, 0.0))];
+        let tex = [Rect::from_xywh(0.0, 0.0, 2.0, 1.0)];
+        let atlas = render(|canvas, paint| {
+            canvas.draw_atlas(
+                &image,
+                &xforms,
+                &tex,
+                None,
+                skia_safe::BlendMode::SrcOver,
+                sampling,
+                None,
+                paint,
+            );
+        });
+
+        assert_eq!(
+            single, individual,
+            "batched individual fallback must match the unbatched linear reference"
+        );
+        assert_eq!(
+            single, atlas,
+            "batched atlas path must match the unbatched linear reference"
+        );
+        let mut nearest_state = super::Canvas2DState::default();
+        nearest_state.image_smoothing = false;
+        let nearest_sampling = nearest_state.image_sampling_options();
+        let single_nearest = render(|canvas, paint| {
+            canvas.draw_image_rect_with_sampling_options(
+                &image,
+                None,
+                Rect::from_xywh(0.0, 0.0, 8.0, 4.0),
+                nearest_sampling,
+                paint,
+            );
+        });
+        let individual_nearest = render(|canvas, paint| {
+            canvas.draw_image_rect_with_sampling_options(
+                &image,
+                None,
+                Rect::from_xywh(0.0, 0.0, 8.0, 4.0),
+                nearest_sampling,
+                paint,
+            );
+        });
+        let atlas_nearest = render(|canvas, paint| {
+            canvas.draw_atlas(
+                &image,
+                &xforms,
+                &tex,
+                None,
+                skia_safe::BlendMode::SrcOver,
+                nearest_sampling,
+                None,
+                paint,
+            );
+        });
+        assert_eq!(
+            single_nearest, individual_nearest,
+            "nearest batch fallback must match the unbatched reference"
+        );
+        assert_eq!(
+            single_nearest, atlas_nearest,
+            "nearest atlas path must match the unbatched reference"
+        );
     }
 }

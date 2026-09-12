@@ -96,29 +96,58 @@ pub fn checked_readback_byte_len(width: i32, height: i32, bytes_per_pixel: usize
     (byte_len <= MAX_SYNC_READBACK_BYTES).then_some(byte_len)
 }
 
-/// Returns the byte width used by the renderer's supported WebGL readback
-/// format/type combinations. WebGL enum validation happens in the JS facade;
-/// unknown values retain the renderer's historical RGBA/U8-compatible
-/// fallback so both ends of the protocol always calculate the same bound.
+/// Byte width of a recognized GL pixel representation, without row packing.
+/// Unknown enums have no inferred width and must be rejected before allocation.
+/// This is a storage-size calculation, not framebuffer/context/extension
+/// validation: a known representation need not be a legal readPixels pair.
 #[inline]
-pub fn webgl_readback_bytes_per_pixel(format: u32, type_: u32) -> usize {
+pub fn webgl_readback_bytes_per_pixel(format: u32, type_: u32) -> Option<usize> {
     let components = match format {
-        0x1908 => 4,          // RGBA
-        0x1907 => 3,          // RGB
-        0x190A => 2,          // LUMINANCE_ALPHA
-        0x1909 | 0x1906 => 1, // LUMINANCE | ALPHA
-        _ => 4,
+        0x1908 | 0x8D99 | 0x80E1 => 4, // RGBA | RGBA_INTEGER | BGRA_EXT
+        0x1907 | 0x8D98 => 3,          // RGB | RGB_INTEGER
+        // RG | RG_INTEGER | LUMINANCE_ALPHA | DEPTH_STENCIL
+        0x8227 | 0x8228 | 0x190A | 0x84F9 => 2,
+        // RED | RED_INTEGER | LUMINANCE | ALPHA | DEPTH_COMPONENT | STENCIL_INDEX
+        0x1903 | 0x8D94 | 0x1909 | 0x1906 | 0x1902 | 0x1901 => 1,
+        _ => return None,
     };
-    match type_ {
-        0x1401 => components,                   // UNSIGNED_BYTE
-        0x8363 | 0x8033 | 0x8034 => 2,          // packed UNSIGNED_SHORT formats
-        0x1406 => components.saturating_mul(4), // FLOAT
-        _ => components,
-    }
+    Some(match type_ {
+        0x1400 | 0x1401 => components, // BYTE | UNSIGNED_BYTE
+        // SHORT | UNSIGNED_SHORT | HALF_FLOAT | HALF_FLOAT_OES
+        0x1402 | 0x1403 | 0x140B | 0x8D61 => components * 2,
+        0x1404 | 0x1405 | 0x1406 => components * 4, // INT | UNSIGNED_INT | FLOAT
+        0x8363 | 0x8033 | 0x8034 => 2,              // UNSIGNED_SHORT_5_6_5 | 4_4_4_4 | 5_5_5_1
+        0x8365 | 0x8366 => 2, // EXT_read_format_bgra: 4_4_4_4_REV | 1_5_5_5_REV
+        // UNSIGNED_INT_2_10_10_10_REV | 10F_11F_11F_REV | 5_9_9_9_REV | 24_8
+        0x8368 | 0x8C3B | 0x8C3E | 0x84FA => 4,
+        0x8DAD => 8, // FLOAT_32_UNSIGNED_INT_24_8_REV: float + packed uint
+        _ => return None,
+    })
+}
+
+/// Size of one datum of a GL pixel type: the whole pixel for a packed type,
+/// one component for a scalar one. This is the unit a `PIXEL_PACK_BUFFER`
+/// offset must be a multiple of (GLES 3.0 §4.3.2).
+///
+/// Defined as the single-component case of [`webgl_readback_bytes_per_pixel`]
+/// rather than a second table, so a newly recognized type cannot be added to
+/// one and forgotten in the other. `RED` is that case, and a packed type's
+/// size does not depend on the format at all.
+#[inline]
+pub fn webgl_readback_type_bytes(type_: u32) -> Option<usize> {
+    webgl_readback_bytes_per_pixel(0x1903 /* RED */, type_)
 }
 
 /// Protocol-wide Render result type.
 pub type RenderResult<T> = Result<T, EngineError>;
+
+/// Owned compact pixels plus their checked layout in the caller's destination.
+/// Only pixel rows are copied back; skipped bytes and padding remain untouched.
+#[derive(Debug)]
+pub struct ReadPixelsData {
+    pub pixels: Vec<u8>,
+    pub layout: crate::protocol::pixel_pack::PixelPackLayout,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DirtyRect {
@@ -1291,7 +1320,28 @@ pub enum GLCmd {
         height: i32,
         format: u32,
         type_: u32,
-        resp: RenderCmdResp<Vec<u8>>,
+        destination_byte_length: usize,
+        resp: RenderCmdResp<ReadPixelsData>,
+    },
+    /// `readPixels` into the bound `PIXEL_PACK_BUFFER`. The pixels land in
+    /// GPU-side storage the content reads back later with `getBufferSubData`,
+    /// so nothing is transferred and no GPU sync is forced -- that is the whole
+    /// point of this overload.
+    ///
+    /// The reply carries no data and exists only so the spec's validation
+    /// errors reach `getError`. It costs a render-thread round trip, not a GPU
+    /// stall, and a buffered command could not report anything: the error state
+    /// lives on the isolate side.
+    ReadPixelsToBuffer {
+        canvas_id: CanvasId,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        format: u32,
+        type_: u32,
+        offset: i64,
+        resp: RenderCmdResp<()>,
     },
     Hint {
         canvas_id: CanvasId,
@@ -2320,6 +2370,7 @@ impl GLCmd {
             | GLCmd::RenderbufferStorage { canvas_id, .. }
             | GLCmd::RenderbufferStorageMultisample { canvas_id, .. }
             | GLCmd::ReadPixels { canvas_id, .. }
+            | GLCmd::ReadPixelsToBuffer { canvas_id, .. }
             | GLCmd::GetParameter { canvas_id, .. }
             | GLCmd::BlitFramebuffer { canvas_id, .. }
             | GLCmd::InvalidateFramebuffer { canvas_id, .. }
@@ -2472,6 +2523,188 @@ impl GLCmd {
                 index: _,
                 resp: _,
             } => None,
+        }
+    }
+
+    /// Returns the Canvas2D canvas that this command reads **live** — its
+    /// current framebuffer content, not an immutable snapshot — or `None` if
+    /// the command reads no live Canvas2D.
+    ///
+    /// Only the two direct-canvas upload commands qualify.  `TexImage2DFromCanvas2D`
+    /// and `TexSubImage2DFromCanvas2D` copy the *current* pixels of a Canvas2D
+    /// framebuffer into a WebGL texture; the source pixels are whatever that
+    /// canvas has drawn at the moment the command executes.  Any Canvas2D draw
+    /// to the same source canvas that is reordered past one of these uploads
+    /// silently produces the wrong texture content (the audit proved this for the
+    /// pattern `draw-red → upload → draw-blue → upload`, which reordered into
+    /// `draw-red → draw-blue → upload → upload`, capturing `[blue, blue]` instead
+    /// of `[red, blue]`).
+    ///
+    /// The snapshot variants (`TexImage2DFromSnapshot`, `TexSubImage2DFromSnapshot`)
+    /// read an immutable handle whose pixel content is frozen at snapshot creation
+    /// time; they carry no live dependency and are safe to reorder.
+    ///
+    /// **This match has no catch-all for the same reason `touches_canvas` does
+    /// not.**  A new variant that reads a Canvas2D framebuffer without being
+    /// listed in the `Some` arm would compile silently as `None`, letting
+    /// `packet_safe_to_reorder` treat the dependency as absent and producing
+    /// wrong pixels.  The compiler enforces exhaustiveness instead.
+    pub fn live_canvas_source(&self) -> Option<CanvasId> {
+        match self {
+            // The only two variants that read a live Canvas2D framebuffer.
+            GLCmd::TexImage2DFromCanvas2D { canvas_2d_id, .. }
+            | GLCmd::TexSubImage2DFromCanvas2D { canvas_2d_id, .. } => Some(*canvas_2d_id),
+
+            // Every other variant either:
+            //  • writes/binds to the GL canvas it carries as `canvas_id`
+            //    (no live-read dependency on a Canvas2D framebuffer), or
+            //  • reads from an immutable snapshot or shared-memory handle, or
+            //  • is a resource-context command carrying no canvas at all.
+            // All are listed explicitly; `{ .. }` suppresses field names we do
+            // not need here while keeping the exhaustive-match guarantee.
+            GLCmd::Viewport { .. }
+            | GLCmd::Clear { .. }
+            | GLCmd::ClearColor { .. }
+            | GLCmd::ClearDepth { .. }
+            | GLCmd::ClearStencil { .. }
+            | GLCmd::CreateProgram { .. }
+            | GLCmd::CreateShader { .. }
+            | GLCmd::UseProgram { .. }
+            | GLCmd::DrawArrays { .. }
+            | GLCmd::DrawElements { .. }
+            | GLCmd::GetAttribLocation { .. }
+            | GLCmd::GetActiveAttrib { .. }
+            | GLCmd::GetActiveUniform { .. }
+            | GLCmd::EnableVertexAttribArray { .. }
+            | GLCmd::DisableVertexAttribArray { .. }
+            | GLCmd::VertexAttribPointer { .. }
+            | GLCmd::VertexAttribDivisor { .. }
+            | GLCmd::CreateBuffer { .. }
+            | GLCmd::BindBuffer { .. }
+            | GLCmd::BufferData { .. }
+            | GLCmd::BufferSubData { .. }
+            | GLCmd::GetUniformLocation { .. }
+            | GLCmd::Enable { .. }
+            | GLCmd::Disable { .. }
+            | GLCmd::ActiveTexture { .. }
+            | GLCmd::CreateTexture { .. }
+            | GLCmd::BindTexture { .. }
+            | GLCmd::TexParameteri { .. }
+            | GLCmd::TexParameterf { .. }
+            | GLCmd::GenerateMipmap { .. }
+            | GLCmd::PixelStorei { .. }
+            | GLCmd::BlendFunc { .. }
+            | GLCmd::BlendFuncSeparate { .. }
+            | GLCmd::BlendEquation { .. }
+            | GLCmd::BlendEquationSeparate { .. }
+            | GLCmd::BlendColor { .. }
+            | GLCmd::DepthFunc { .. }
+            | GLCmd::DepthMask { .. }
+            | GLCmd::DepthRange { .. }
+            | GLCmd::CullFace { .. }
+            | GLCmd::FrontFace { .. }
+            | GLCmd::LineWidth { .. }
+            | GLCmd::PolygonOffset { .. }
+            | GLCmd::StencilFunc { .. }
+            | GLCmd::StencilFuncSeparate { .. }
+            | GLCmd::StencilOp { .. }
+            | GLCmd::StencilOpSeparate { .. }
+            | GLCmd::StencilMask { .. }
+            | GLCmd::StencilMaskSeparate { .. }
+            | GLCmd::ColorMask { .. }
+            | GLCmd::Scissor { .. }
+            | GLCmd::Hint { .. }
+            | GLCmd::CreateFramebuffer { .. }
+            | GLCmd::BindFramebuffer { .. }
+            | GLCmd::CheckFramebufferStatus { .. }
+            | GLCmd::FramebufferRenderbuffer { .. }
+            | GLCmd::CreateRenderbuffer { .. }
+            | GLCmd::BindRenderbuffer { .. }
+            | GLCmd::RenderbufferStorage { .. }
+            | GLCmd::RenderbufferStorageMultisample { .. }
+            | GLCmd::ReadPixels { .. }
+            | GLCmd::ReadPixelsToBuffer { .. }
+            | GLCmd::GetParameter { .. }
+            | GLCmd::BlitFramebuffer { .. }
+            | GLCmd::InvalidateFramebuffer { .. }
+            | GLCmd::CreateSampler { .. }
+            | GLCmd::BindSampler { .. }
+            | GLCmd::CreateVertexArray { .. }
+            | GLCmd::BindVertexArray { .. }
+            | GLCmd::DrawArraysInstanced { .. }
+            | GLCmd::DrawElementsInstanced { .. }
+            | GLCmd::BindBufferBase { .. }
+            | GLCmd::BindBufferRange { .. }
+            | GLCmd::DrawBuffers { .. }
+            | GLCmd::ReadBuffer { .. }
+            | GLCmd::FenceSync { .. }
+            | GLCmd::CreateQuery { .. }
+            | GLCmd::BeginQuery { .. }
+            | GLCmd::EndQuery { .. }
+            | GLCmd::CreateTransformFeedback { .. }
+            | GLCmd::BindTransformFeedback { .. }
+            | GLCmd::BeginTransformFeedback { .. }
+            | GLCmd::EndTransformFeedback { .. }
+            | GLCmd::PauseTransformFeedback { .. }
+            | GLCmd::ResumeTransformFeedback { .. }
+            | GLCmd::TransformFeedbackVaryings { .. }
+            | GLCmd::TexImage3D { .. }
+            | GLCmd::TexSubImage3D { .. }
+            | GLCmd::TexStorage3D { .. }
+            | GLCmd::TexImage2D { .. }
+            | GLCmd::TexSubImage2D { .. }
+            | GLCmd::TexStorage2D { .. }
+            | GLCmd::CompressedTexImage2D { .. }
+            | GLCmd::CompressedTexSubImage2D { .. }
+            | GLCmd::TexImage2DFromShared { .. }
+            | GLCmd::TexImage2DFromSnapshot { .. }
+            | GLCmd::TexImage2DFromTextCache { .. }
+            | GLCmd::TexSubImage2DFromSnapshot { .. }
+            | GLCmd::FramebufferTexture2D { .. }
+            | GLCmd::DebugLoseContext { .. }
+            | GLCmd::Uniform1f { .. }
+            | GLCmd::Uniform1fv { .. }
+            | GLCmd::Uniform1i { .. }
+            | GLCmd::Uniform1iv { .. }
+            | GLCmd::Uniform2f { .. }
+            | GLCmd::Uniform2fv { .. }
+            | GLCmd::Uniform2iv { .. }
+            | GLCmd::Uniform3f { .. }
+            | GLCmd::Uniform3fv { .. }
+            | GLCmd::Uniform3iv { .. }
+            | GLCmd::Uniform4f { .. }
+            | GLCmd::Uniform4fv { .. }
+            | GLCmd::Uniform4iv { .. }
+            | GLCmd::UniformMatrix2fv { .. }
+            | GLCmd::UniformMatrix3fv { .. }
+            | GLCmd::UniformMatrix4fv { .. }
+            | GLCmd::LinkProgram { .. }
+            | GLCmd::DeleteProgram { .. }
+            | GLCmd::CompileShader { .. }
+            | GLCmd::DeleteShader { .. }
+            | GLCmd::DeleteTexture { .. }
+            | GLCmd::DeleteFramebuffer { .. }
+            | GLCmd::DeleteRenderbuffer { .. }
+            | GLCmd::DeleteBuffer { .. }
+            | GLCmd::DeleteVertexArray { .. }
+            | GLCmd::DeleteSampler { .. }
+            | GLCmd::DeleteSync { .. }
+            | GLCmd::DeleteQuery { .. }
+            | GLCmd::DeleteTransformFeedback { .. }
+            | GLCmd::GetProgramParameter { .. }
+            | GLCmd::GetShaderParameter { .. }
+            | GLCmd::GetQueryParameter { .. }
+            | GLCmd::GetProgramInfoLog { .. }
+            | GLCmd::GetShaderInfoLog { .. }
+            | GLCmd::ShaderSource { .. }
+            | GLCmd::AttachShader { .. }
+            | GLCmd::BindAttribLocation { .. }
+            | GLCmd::GetUniformBlockIndex { .. }
+            | GLCmd::UniformBlockBinding { .. }
+            | GLCmd::SamplerParameteri { .. }
+            | GLCmd::SamplerParameterf { .. }
+            | GLCmd::ClientWaitSync { .. }
+            | GLCmd::GetTransformFeedbackVarying { .. } => None,
         }
     }
 
@@ -2912,6 +3145,50 @@ mod approx_size_tests {
     }
 
     #[test]
+    fn live_canvas_source_distinguishes_direct_uploads_from_snapshots() {
+        let destination = CanvasId::from(42u32);
+        let source = CanvasId::from(43u32);
+
+        let live = GLCmd::TexImage2DFromCanvas2D {
+            canvas_id: destination,
+            target: 0x0DE1,
+            level: 0,
+            internalformat: 0x1908,
+            canvas_2d_id: source,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        };
+        assert_eq!(live.live_canvas_source(), Some(source));
+
+        let live_sub = GLCmd::TexSubImage2DFromCanvas2D {
+            canvas_id: destination,
+            target: 0x0DE1,
+            level: 0,
+            xoffset: 0,
+            yoffset: 0,
+            canvas_2d_id: source,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        };
+        assert_eq!(live_sub.live_canvas_source(), Some(source));
+
+        let snapshot = GLCmd::TexImage2DFromSnapshot {
+            canvas_id: destination,
+            target: 0x0DE1,
+            level: 0,
+            internalformat: 0x1908,
+            format: 0x1908,
+            type_: 0x1401,
+            snapshot_id: 1,
+        };
+        assert_eq!(snapshot.live_canvas_source(), None);
+    }
+
+    #[test]
     fn batch_with_two_canvases_collects_both_for_scoped_stale() {
         // Simulates `execute_gl_batch`'s collection loop: a mixed
         // batch touching two canvases MUST report both so neither
@@ -3103,9 +3380,73 @@ mod readback_limit_tests {
 
     #[test]
     fn readback_pixel_width_matches_supported_scalar_and_packed_types() {
-        assert_eq!(webgl_readback_bytes_per_pixel(0x1908, 0x1401), 4);
-        assert_eq!(webgl_readback_bytes_per_pixel(0x1907, 0x1406), 12);
-        assert_eq!(webgl_readback_bytes_per_pixel(0x1908, 0x8033), 2);
+        assert_eq!(webgl_readback_bytes_per_pixel(0x1908, 0x1401), Some(4));
+        assert_eq!(webgl_readback_bytes_per_pixel(0x1907, 0x1406), Some(12));
+        assert_eq!(webgl_readback_bytes_per_pixel(0x1908, 0x8033), Some(2));
+    }
+
+    #[test]
+    fn readback_pixel_width_accounts_for_webgl2_components() {
+        for (format, type_, expected) in [
+            (0x1908, 0x1405, 16), // RGBA / UNSIGNED_INT
+            (0x8D99, 0x1404, 16), // RGBA_INTEGER / INT
+            (0x8D99, 0x1403, 8),  // RGBA_INTEGER / UNSIGNED_SHORT
+            (0x8228, 0x1402, 4),  // RG_INTEGER / SHORT
+            (0x1908, 0x140B, 8),  // RGBA / HALF_FLOAT
+            (0x1907, 0x8D61, 6),  // RGB / HALF_FLOAT_OES
+            (0x84F9, 0x8DAD, 8),  // DEPTH_STENCIL / FLOAT_32_UNSIGNED_INT_24_8_REV
+        ] {
+            assert_eq!(
+                webgl_readback_bytes_per_pixel(format, type_),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn readback_packed_types_count_words_instead_of_components() {
+        for (format, type_, bytes) in [
+            (0x1907, 0x8363, 2), // RGB / UNSIGNED_SHORT_5_6_5
+            (0x1908, 0x8034, 2), // RGBA / UNSIGNED_SHORT_5_5_5_1
+            (0x1908, 0x8368, 4), // RGBA / UNSIGNED_INT_2_10_10_10_REV
+            (0x1907, 0x8C3B, 4), // RGB / UNSIGNED_INT_10F_11F_11F_REV
+            (0x1907, 0x8C3E, 4), // RGB / UNSIGNED_INT_5_9_9_9_REV
+            (0x84F9, 0x84FA, 4), // DEPTH_STENCIL / UNSIGNED_INT_24_8
+        ] {
+            assert_eq!(webgl_readback_bytes_per_pixel(format, type_), Some(bytes));
+        }
+    }
+
+    #[test]
+    fn readback_scalar_formats_preserve_their_component_count() {
+        for (format, type_, bytes) in [
+            (0x1903, 0x1403, 2), // RED / UNSIGNED_SHORT
+            (0x8D94, 0x1404, 4), // RED_INTEGER / INT
+            (0x8227, 0x1406, 8), // RG / FLOAT
+            (0x8D98, 0x1400, 3), // RGB_INTEGER / BYTE
+            (0x190A, 0x1401, 2), // LUMINANCE_ALPHA / UNSIGNED_BYTE
+            (0x1909, 0x1401, 1), // LUMINANCE / UNSIGNED_BYTE
+            (0x1906, 0x1401, 1), // ALPHA / UNSIGNED_BYTE
+            (0x80E1, 0x1401, 4), // BGRA_EXT / UNSIGNED_BYTE
+            (0x1902, 0x1406, 4), // DEPTH_COMPONENT / FLOAT
+            (0x1901, 0x1401, 1), // STENCIL_INDEX / UNSIGNED_BYTE
+        ] {
+            assert_eq!(webgl_readback_bytes_per_pixel(format, type_), Some(bytes));
+        }
+    }
+
+    #[test]
+    fn readback_bgra_implementation_types_are_packed_shorts() {
+        for type_ in [0x8365, 0x8366] {
+            assert_eq!(webgl_readback_bytes_per_pixel(0x80E1, type_), Some(2));
+        }
+    }
+
+    #[test]
+    fn readback_unknown_format_or_type_has_no_fallback_size() {
+        for (format, type_) in [(0, 0x1401), (0xFFFF, 0x1401), (0x1908, 0), (0x1908, 0xFFFF)] {
+            assert_eq!(webgl_readback_bytes_per_pixel(format, type_), None);
+        }
     }
 
     #[test]

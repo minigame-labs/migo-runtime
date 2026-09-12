@@ -9,7 +9,7 @@
 
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
@@ -17,8 +17,8 @@ use crate::decoder::DecodedAudio;
 
 /// Hard ceiling on a single decoded/allocated PCM buffer (interleaved f32).
 ///
-/// 64 MiB ≈ 5.8 min of 48 kHz stereo f32. Longer BGM must use the existing
-/// streaming path; this keeps decode and WebAudio allocation safe on mobile.
+/// 64 MiB is about 2.91 minutes of 48 kHz stereo f32. Longer BGM must use
+/// the bounded streaming window; this keeps decode and WebAudio allocation safe.
 pub const MAX_AUDIO_PCM_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The same ceiling expressed in interleaved f32 samples (all channels).
@@ -31,6 +31,18 @@ pub const MAX_CONTEXT_RETAINED_PCM_BUFFERS: usize = 512;
 /// Aggregate retained PCM ceiling shared by every AudioContext in the process.
 pub const MAX_PROCESS_RETAINED_PCM_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_PROCESS_RETAINED_PCM_BUFFERS: usize = 2048;
+
+/// Default cache capacity, shared with the aggregate ledger.
+pub const MAX_AUDIO_CACHE_BYTES: usize = MAX_CONTEXT_RETAINED_PCM_BYTES;
+
+/// Default process-wide physical PCM ceiling.
+///
+/// This is derived only from existing per-domain ceilings. Hosts that have a
+/// tighter memory policy can pass an explicit ledger to the audio components;
+/// the native process default remains deterministic and reviewable.
+pub const MAX_AUDIO_AGGREGATE_PHYSICAL_BYTES: usize = MAX_PROCESS_RETAINED_PCM_BYTES
+    + MAX_CONTEXT_RETAINED_PCM_BYTES
+    + (MAX_AUDIO_PCM_BYTES as usize * 2);
 
 /// Maximum channel count accepted for a buffer (Web Audio permits up to 32).
 pub const MAX_AUDIO_CHANNELS: u32 = 32;
@@ -115,6 +127,106 @@ pub fn pcm_samples_within_budget(sample_count: usize) -> bool {
 pub(crate) struct PcmUsageSnapshot {
     pub bytes: usize,
     pub buffers: usize,
+}
+
+/// Process-wide physical PCM ledger shared by every audio allocation domain.
+#[derive(Debug)]
+pub(crate) struct AudioAggregateLedger {
+    max_bytes: usize,
+    bytes: AtomicUsize,
+}
+
+impl AudioAggregateLedger {
+    pub(crate) fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            bytes: AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn process_global() -> Arc<Self> {
+        static PROCESS_LEDGER: LazyLock<Arc<AudioAggregateLedger>> = LazyLock::new(|| {
+            Arc::new(AudioAggregateLedger::new(
+                MAX_AUDIO_AGGREGATE_PHYSICAL_BYTES,
+            ))
+        });
+        Arc::clone(&PROCESS_LEDGER)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn used_bytes(&self) -> usize {
+        self.bytes.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn try_reserve(
+        self: &Arc<Self>,
+        bytes: usize,
+        scope: &'static str,
+    ) -> EngineResult<AudioAggregatePermit> {
+        self.bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes)
+                    .filter(|next| *next <= self.max_bytes)
+            })
+            .map_err(|_| {
+                EngineError::from_detail(
+                    ErrorCode::InputSaturated,
+                    format!("{scope} aggregate physical PCM limit exceeded"),
+                )
+            })?;
+        Ok(AudioAggregatePermit {
+            ledger: Arc::clone(self),
+            bytes,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct AudioAggregatePermit {
+    ledger: Arc<AudioAggregateLedger>,
+    bytes: usize,
+}
+
+impl Drop for AudioAggregatePermit {
+    fn drop(&mut self) {
+        self.ledger.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
+
+impl AudioAggregatePermit {
+    pub(crate) fn try_grow_to(
+        &mut self,
+        new_bytes: usize,
+        scope: &'static str,
+    ) -> EngineResult<()> {
+        if new_bytes <= self.bytes {
+            return Ok(());
+        }
+        let additional = new_bytes - self.bytes;
+        self.ledger
+            .bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(additional)
+                    .filter(|next| *next <= self.ledger.max_bytes)
+            })
+            .map_err(|_| {
+                EngineError::from_detail(
+                    ErrorCode::InputSaturated,
+                    format!("{scope} aggregate physical PCM limit exceeded"),
+                )
+            })?;
+        self.bytes = new_bytes;
+        Ok(())
+    }
+
+    pub(crate) fn shrink_to(&mut self, new_bytes: usize) {
+        if new_bytes < self.bytes {
+            self.ledger
+                .bytes
+                .fetch_sub(self.bytes - new_bytes, Ordering::AcqRel);
+            self.bytes = new_bytes;
+        }
+    }
 }
 
 /// One atomic aggregate counter. Process usage is shared across audio threads;
@@ -233,12 +345,30 @@ impl PcmUsagePermit {
 pub(crate) struct PcmBudget {
     context: Arc<PcmUsage>,
     process: Arc<PcmUsage>,
+    aggregate: Option<Arc<AudioAggregateLedger>>,
 }
 
 impl PcmBudget {
     #[cfg(test)]
     pub(crate) fn new(context: Arc<PcmUsage>, process: Arc<PcmUsage>) -> Self {
-        Self { context, process }
+        Self {
+            context,
+            process,
+            aggregate: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_aggregate(
+        context: Arc<PcmUsage>,
+        process: Arc<PcmUsage>,
+        aggregate: Arc<AudioAggregateLedger>,
+    ) -> Self {
+        Self {
+            context,
+            process,
+            aggregate: Some(aggregate),
+        }
     }
 
     pub(crate) fn for_context() -> Self {
@@ -253,7 +383,11 @@ impl PcmBudget {
             MAX_CONTEXT_RETAINED_PCM_BYTES,
             MAX_CONTEXT_RETAINED_PCM_BUFFERS,
         ));
-        Self { context, process }
+        Self {
+            context,
+            process,
+            aggregate: Some(AudioAggregateLedger::process_global()),
+        }
     }
 
     pub(crate) fn reserve(&self, bytes: usize) -> EngineResult<RetainedPcmPermit> {
@@ -267,9 +401,14 @@ impl PcmBudget {
         }
         let context = self.context.try_reserve(bytes, "AudioContext")?;
         let process = self.process.try_reserve(bytes, "process")?;
+        let aggregate = match &self.aggregate {
+            Some(ledger) => Some(ledger.try_reserve(bytes, "audio")?),
+            None => None,
+        };
         Ok(RetainedPcmPermit {
             _context: context,
             _process: process,
+            _aggregate: aggregate,
         })
     }
 }
@@ -278,6 +417,7 @@ impl PcmBudget {
 pub(crate) struct RetainedPcmPermit {
     _context: PcmUsagePermit,
     _process: PcmUsagePermit,
+    _aggregate: Option<AudioAggregatePermit>,
 }
 
 impl RetainedPcmPermit {
@@ -296,6 +436,13 @@ impl RetainedPcmPermit {
             self._context.shrink_to(previous);
             return Err(error);
         }
+        if let Some(aggregate) = &mut self._aggregate {
+            if let Err(error) = aggregate.try_grow_to(new_bytes, "audio") {
+                self._context.shrink_to(previous);
+                self._process.shrink_to(previous);
+                return Err(error);
+            }
+        }
         Ok(())
     }
 
@@ -305,6 +452,9 @@ impl RetainedPcmPermit {
         }
         self._context.shrink_to(new_bytes);
         self._process.shrink_to(new_bytes);
+        if let Some(aggregate) = &mut self._aggregate {
+            aggregate.shrink_to(new_bytes);
+        }
         Ok(())
     }
 }

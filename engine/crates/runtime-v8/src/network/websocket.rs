@@ -398,27 +398,35 @@ pub async fn op_ws_send(
     #[string] data_str: Option<String>,
     #[buffer] data_buf: Option<JsBuffer>,
 ) -> Result<(), JsErrorBox> {
-    let resource = state
-        .borrow()
-        .resource_table
-        .get::<WebSocketResource>(rid)
-        .map_err(|_| JsErrorBox::generic("WebSocket not found"))?;
-
-    let message = if let Some(text) = data_str {
-        Message::Text(text.into())
-    } else if let Some(buf) = data_buf {
-        Message::Binary(buf.to_vec().into())
-    } else {
-        return Err(JsErrorBox::type_error("No data provided"));
+    let (resource, message) = {
+        let st = state.borrow();
+        let resource = st
+            .resource_table
+            .get::<WebSocketResource>(rid)
+            .map_err(|_| JsErrorBox::generic("WebSocket not found"))?;
+        let message = if let Some(text) = data_str {
+            Message::Text(text.into())
+        } else if let Some(buf) = data_buf {
+            Message::Binary(buf.to_vec().into())
+        } else {
+            return Err(JsErrorBox::type_error("No data provided"));
+        };
+        (resource, message)
     };
 
-    let mut tx = RcRef::map(&resource, |r| &r.tx).borrow_mut().await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), tx.send(message))
+    let cancel = RcRef::map(&resource, |r| &r.cancel);
+    let send = async {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut tx = RcRef::map(&resource, |r| &r.tx).borrow_mut().await;
+            tx.send(message)
+                .await
+                .map_err(|e| JsErrorBox::generic(format!("WebSocket send failed: {}", e)))
+        })
         .await
         .map_err(|_| JsErrorBox::generic("WebSocket send timeout"))?
-        .map_err(|e| JsErrorBox::generic(format!("WebSocket send failed: {}", e)))
+    };
+    send.try_or_cancel(cancel).await
 }
-
 // ── op_ws_close ──
 
 #[op2(async(lazy), fast)]
@@ -439,10 +447,18 @@ pub async fn op_ws_close(
         reason: reason.into(),
     };
 
-    let mut tx = RcRef::map(&resource, |r| &r.tx).borrow_mut().await;
-    tx.send(Message::Close(Some(close_frame)))
+    let cancel = RcRef::map(&resource, |r| &r.cancel);
+    let close = async {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut tx = RcRef::map(&resource, |r| &r.tx).borrow_mut().await;
+            tx.send(Message::Close(Some(close_frame)))
+                .await
+                .map_err(|e| JsErrorBox::generic(format!("WebSocket close failed: {}", e)))
+        })
         .await
-        .map_err(|e| JsErrorBox::generic(format!("WebSocket close failed: {}", e)))
+        .map_err(|_| JsErrorBox::generic("WebSocket close timeout"))?
+    };
+    close.try_or_cancel(cancel).await
 }
 
 #[cfg(test)]

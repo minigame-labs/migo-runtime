@@ -26,7 +26,7 @@ const _cameras = new Map();
 class Camera {
   #id;
   #destroyed = false;
-
+  #pendingPhotos = new Map();
   // Multi-listener arrays for event callbacks
   #listeners = {
     cameraFrame: createListenerGroup("Camera cameraFrame"),
@@ -107,7 +107,11 @@ class Camera {
       cameraId: this.#id,
       quality: options.quality ?? "normal",
     });
-    return wrapAsync('camera.takePhoto', () => JSON.parse(op_camera_take_photo(opts)), options);
+    const requestId = op_camera_take_photo(opts);
+    const photo = new Promise((resolve, reject) => {
+      this.#pendingPhotos.set(requestId, { resolve, reject });
+    });
+    return wrapAsync('camera.takePhoto', () => photo, options);
   }
 
   // ==================== Video Recording ====================
@@ -162,6 +166,10 @@ class Camera {
    */
   destroy() {
     if (this.#destroyed) return;
+    for (const pending of this.#pendingPhotos.values()) {
+      pending.reject({ errMsg: "camera.takePhoto:fail camera destroyed" });
+    }
+    this.#pendingPhotos.clear();
     this.#destroyed = true;
     _cameras.delete(this.#id);
 
@@ -192,6 +200,25 @@ class Camera {
    * @param {string} jsonPayload - JSON data
    */
   _handleEvent(eventType, jsonPayload) {
+    if (eventType === "takePhotoResult") {
+      let result;
+      try {
+        result = JSON.parse(jsonPayload);
+      } catch (_) {
+        return;
+      }
+      const requestId = result && result.requestId;
+      const pending = this.#pendingPhotos.get(requestId);
+      if (!pending) return;
+      this.#pendingPhotos.delete(requestId);
+      if (result._error) {
+        pending.reject(result._error);
+      } else {
+        pending.resolve(result);
+      }
+      return;
+    }
+
     switch (eventType) {
       case "stop":
         this.#fireListeners("stop");

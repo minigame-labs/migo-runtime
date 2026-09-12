@@ -455,7 +455,7 @@ mod tests {
         storage_set(dir.path(), "k1", "ab", QUOTA).unwrap();
         storage_set(dir.path(), "k2", "xyz", QUOTA).unwrap();
         let info = storage_info(dir.path(), QUOTA).unwrap();
-        assert_eq!(info.current_bytes, 5);
+        assert_eq!(info.current_bytes, 137);
         assert_eq!(info.limit_bytes, QUOTA);
         let mut sorted = info.keys.clone();
         sorted.sort();

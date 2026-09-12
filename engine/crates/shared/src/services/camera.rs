@@ -38,14 +38,22 @@ pub trait CameraService: Send + Sync {
         ))
     }
 
-    /// Take a photo.
+    /// Take a photo (fire-and-forget async variant).
     ///
-    /// JSON fields:
+    /// The platform submits the capture request and returns immediately.
+    /// The result arrives asynchronously via `CameraEvent("takePhotoResult", ...)`,
+    /// with the `request_id` echoed back inside the payload so JS can resolve the
+    /// waiting promise.
+    ///
+    /// JSON fields (same as the retired sync variant, plus `requestId`):
     /// - `cameraId`: u32
     /// - `quality`: "high" | "normal" | "low" (default "normal")
+    /// - `requestId`: u32 — echoed verbatim in the `takePhotoResult` payload
     ///
-    /// Returns JSON: `{"tempImagePath": "<path>", "width": <w>, "height": <h>}` on success.
-    fn take_photo(&self, _options_json: &str) -> Result<String, ServiceError> {
+    /// On platforms that have not yet implemented this method the default
+    /// returns "not supported" so existing callers keep failing gracefully
+    /// rather than silently doing nothing.
+    fn take_photo_async(&self, _request_id: u32, _options_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "camera.takePhoto:fail not supported",
         ))

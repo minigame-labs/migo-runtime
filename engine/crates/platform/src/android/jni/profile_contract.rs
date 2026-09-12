@@ -104,7 +104,7 @@ const NATIVE_MEDIA: &[JniMethod] = methods![
         "onRecorderEvent",
         "(IJLjava/lang/String;Ljava/lang/String;)V"
     ),
-    ("onRecorderFrameData", "(IJ[BZ)V"),
+    ("onRecorderFrameData", "(IJ[BIZ)V"),
     (
         "onCameraEvent",
         "(IJILjava/lang/String;Ljava/lang/String;)V"
@@ -223,7 +223,7 @@ const JAVA_MEDIA: &[JniMethod] = methods![
     ("recorderStop", "(I)V"),
     ("cameraCreate", "(ILjava/lang/String;)Ljava/lang/String;"),
     ("cameraDestroy", "(II)V"),
-    ("cameraTakePhoto", "(ILjava/lang/String;)Ljava/lang/String;"),
+    ("cameraTakePhotoAsync", "(IILjava/lang/String;)V"),
     (
         "cameraStartRecord",
         "(ILjava/lang/String;)Ljava/lang/String;"

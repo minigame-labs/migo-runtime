@@ -26,6 +26,7 @@ pub mod ktx2;
 pub mod kv_store;
 pub mod mipmap;
 pub mod mmap_reader;
+#[cfg(feature = "zip-extract")]
 pub mod package_ingest;
 pub mod pools;
 pub mod scheduler;
@@ -40,7 +41,7 @@ pub use derived_cache::{
 pub use fast_image_decoder::{
     CompressedImageInfo, crop_image, decode_image_fast, decode_image_to_any,
     detect_compressed_format, probe_image_dimensions, register_platform_ahb_decoder,
-    register_platform_decoder, resize_image,
+    register_platform_decoder, resize_capable, try_resize_image,
 };
 pub use image_cache::{CacheStats, ImageCache, global_cache};
 #[cfg(feature = "zip-extract")]

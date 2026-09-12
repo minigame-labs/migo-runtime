@@ -137,6 +137,12 @@ impl From<PoolError> for ZipError {
     fn from(err: PoolError) -> Self {
         match err {
             PoolError::Closed => ZipError::Io(io::Error::other("IO worker pool closed")),
+            PoolError::ByteLimitExceeded {
+                requested,
+                available,
+            } => ZipError::Io(io::Error::other(format!(
+                "IO pending-byte budget exhausted: requested {requested} bytes, {available} available"
+            ))),
         }
     }
 }
@@ -725,17 +731,17 @@ mod tests {
     use std::io::Write;
     use std::sync::Arc;
 
-    use crate::scheduler::IoScheduler;
+    use crate::{pools::archive_cap_for_workers, scheduler::IoScheduler};
 
-    /// Is the Archive class cap of 1 leaving anything on the table?
+    /// Does the production Archive cap leave throughput on the table?
     ///
-    /// `ExecutorConfig::for_workers` pins that class to a single worker, so
-    /// every unzip and package ingest in the process runs one at a time. That
-    /// is either correct (extraction is I/O bound, so concurrency buys nothing
-    /// and costs memory) or it is throughput being discarded. Which one is a
-    /// property of the workload, not of the pool — so this measures the
-    /// workload directly, extracting the same archives sequentially and then
-    /// one thread each.
+    /// The old version spawned one raw OS thread per archive, while the
+    /// production executor caps Archive at
+    /// `worker_count.saturating_sub(1).clamp(1, 2)`. That made its headline
+    /// speedup unreachable whenever four archives were measured on a machine
+    /// whose executor had only two Archive slots. This benchmark now derives
+    /// the production worker count and cap from the same scheduler policy, then
+    /// runs the four archives across that many workers.
     ///
     /// Entries are Deflated, not Stored: a Stored archive makes this a
     /// file-copy benchmark and would answer a different question.
@@ -745,6 +751,12 @@ mod tests {
         const ARCHIVES: usize = 4;
         const ENTRIES_PER_ARCHIVE: usize = 8;
         const ENTRY_BYTES: usize = 512 * 1024;
+
+        let worker_count = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(2)
+            .clamp(2, 6);
+        let archive_workers = archive_cap_for_workers(worker_count).min(ARCHIVES);
 
         let root = std::env::temp_dir().join(format!(
             "migo_zip_parallel_bench_{}_{}",
@@ -802,8 +814,9 @@ mod tests {
             .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
             .sum();
 
-        let extract_all = |label: &str| {
+        let extract_serial = |label: &str| {
             let out_root = root.join(label);
+            let started = std::time::Instant::now();
             for (i, zip_path) in archives.iter().enumerate() {
                 extract_zip_with_budget(
                     zip_path,
@@ -813,28 +826,29 @@ mod tests {
                 )
                 .unwrap();
             }
+            let elapsed = started.elapsed();
             let _ = std::fs::remove_dir_all(&out_root);
+            elapsed
         };
-
-        // Warm the page cache and any allocator arenas so the first timed run
-        // is not paying for both.
-        extract_all("warm");
-
-        let sequential = {
+        let extract_parallel = |label: &str| {
+            let out_root = root.join(label);
             let started = std::time::Instant::now();
-            extract_all("seq");
-            started.elapsed()
-        };
-
-        let parallel = {
-            let out_root = root.join("par");
-            let started = std::time::Instant::now();
+            let archives = &archives;
             std::thread::scope(|scope| {
-                for (i, zip_path) in archives.iter().enumerate() {
-                    let out = out_root.join(format!("a{i}"));
+                for worker in 0..archive_workers {
+                    let archives = archives;
+                    let out_root = &out_root;
                     scope.spawn(move || {
-                        extract_zip_with_budget(zip_path, &out, None, ExtractBudget::default())
+                        for i in (worker..archives.len()).step_by(archive_workers) {
+                            let out = out_root.join(format!("a{i}"));
+                            extract_zip_with_budget(
+                                &archives[i],
+                                &out,
+                                None,
+                                ExtractBudget::default(),
+                            )
                             .unwrap();
+                        }
                     });
                 }
             });
@@ -842,6 +856,22 @@ mod tests {
             let _ = std::fs::remove_dir_all(&out_root);
             elapsed
         };
+        // Warm once, then alternate which identical extraction/cleanup scope
+        // runs first so filesystem and allocator order do not favor one side.
+        extract_serial("warm");
+        let mut sequential_samples = Vec::new();
+        let mut parallel_samples = Vec::new();
+        for round in 0..4 {
+            if round % 2 == 0 {
+                sequential_samples.push(extract_serial(&format!("seq_{round}")));
+                parallel_samples.push(extract_parallel(&format!("par_{round}")));
+            } else {
+                parallel_samples.push(extract_parallel(&format!("par_{round}")));
+                sequential_samples.push(extract_serial(&format!("seq_{round}")));
+            }
+        }
+        let sequential = sequential_samples.iter().sum::<std::time::Duration>() / 4;
+        let parallel = parallel_samples.iter().sum::<std::time::Duration>() / 4;
 
         eprintln!(
             "payload={profile}  {ARCHIVES} archives x {ENTRIES_PER_ARCHIVE} entries x {} KiB = {uncompressed:.0} MiB uncompressed ({:.1} MiB on disk, {:.1}:1)",
@@ -849,16 +879,14 @@ mod tests {
             compressed as f64 / (1024.0 * 1024.0),
             uncompressed / (compressed as f64 / (1024.0 * 1024.0)).max(f64::MIN_POSITIVE)
         );
+        eprintln!("production worker count  {worker_count}");
+        eprintln!("production Archive cap  {archive_workers}");
+        eprintln!("sequential (same cleanup scope, alternating order)  {sequential:>12?}");
         eprintln!(
-            "cores available   {}",
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(0)
+            "parallel   ({archive_workers} production Archive workers, same cleanup scope) {parallel:>12?}"
         );
-        eprintln!("sequential (cap=1 equivalent)  {sequential:>12?}");
-        eprintln!("parallel   ({ARCHIVES} threads)          {parallel:>12?}");
         eprintln!(
-            "speedup {:.2}x  -- the Archive cap of 1 forfeits this",
+            "speedup {:.2}x  -- measured at the production Archive cap",
             sequential.as_secs_f64() / parallel.as_secs_f64().max(f64::MIN_POSITIVE)
         );
 

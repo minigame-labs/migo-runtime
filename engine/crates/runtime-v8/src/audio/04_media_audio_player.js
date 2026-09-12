@@ -6,8 +6,7 @@ import {
   op_media_audio_player_stop,
   op_media_audio_player_destroy,
 } from "ext:core/ops";
-
-let nextMediaPlayerId = 1;
+import { allocateHostCallbackId } from "ext:host_v8_base/02_async.js";
 
 class MediaAudioPlayer {
   #id;
@@ -16,7 +15,7 @@ class MediaAudioPlayer {
   #sources = new Set();
 
   constructor() {
-    this.#id = nextMediaPlayerId++;
+    this.#id = allocateHostCallbackId();
     op_media_audio_player_create(this.#id);
   }
 

@@ -384,6 +384,8 @@ class AudioContext extends BaseAudioContext {
   #baseLatency = 0.005;
   #outputLatency = 0.01;
   #ready;
+  // In-flight close(), so repeated calls share one command.
+  #closing = null;
 
   constructor(options = {}) {
     const sampleRate = options.sampleRate || 44100;
@@ -411,10 +413,29 @@ class AudioContext extends BaseAudioContext {
     if (this.state === "closed") {
       return;
     }
-    await op_audio_close_context(this._nativeId);
-    PENDING_CONTEXT_RELEASES.delete(this._nativeId);
-    this._setState("closed");
-    this._forgetNativeRegistration();
+    // One in-flight close per context. Two `close()` calls before the first
+    // settles both used to pass the state guard above, so the second sent a
+    // second CloseContext for a context the audio thread had already dropped.
+    if (this.#closing !== null) {
+      return this.#closing;
+    }
+    this.#closing = (async () => {
+      try {
+        await op_audio_close_context(this._nativeId);
+      } catch (error) {
+        // The native context may still exist -- a full command queue is
+        // transient -- so leave the state and the finalizer registration
+        // alone; the registration is what still guarantees its release.
+        this.#closing = null;
+        throw error;
+      }
+      this._setState("closed");
+      // Nothing to cancel in the release queue: only the finalizer enqueues a
+      // release, it cannot have run while this method held `this`, and the
+      // unregister below stops it from ever running for this id.
+      this._forgetNativeRegistration();
+    })();
+    return this.#closing;
   }
 
   async resume() {

@@ -14,6 +14,11 @@ fn has_extension(extensions: &str, expected: &str) -> bool {
         .any(|extension| extension == expected)
 }
 
+#[inline]
+fn ahb_api_supported(android_api: Option<u32>) -> bool {
+    android_api.is_some_and(|level| level >= 26)
+}
+
 /// Runtime-detected device capabilities.
 #[derive(Debug, Clone)]
 pub struct DeviceCapabilities {
@@ -91,7 +96,7 @@ impl DeviceCapabilities {
         // - GL_OES_EGL_image (GL side can consume EGLImage)
         // - EGL_ANDROID_image_native_buffer (EGL side can wrap AHB)
         let ahb_available = cfg!(target_os = "android")
-            && android_api_level() >= 26
+            && ahb_api_supported(android_api_level())
             && has_extension(&gl_extensions, "GL_OES_EGL_image")
             && has_extension(egl_extensions, "EGL_ANDROID_image_native_buffer");
 
@@ -138,6 +143,12 @@ impl DeviceCapabilities {
     pub fn render_profile(&self, api_level: u32) -> DeviceRenderProfile {
         DeviceRenderProfile::from_detected_device(self, api_level)
     }
+
+    /// Select a profile with platform identity preserved.  `None` is the
+    /// explicit non-Android case; it must not be interpreted as Android API 0.
+    pub fn render_profile_for_platform(&self, android_api: Option<u32>) -> DeviceRenderProfile {
+        DeviceRenderProfile::from_detected_device_platform(self, android_api)
+    }
 }
 
 /// Parse "OpenGL ES X.Y ..." into (X, Y).  Returns (2, 0) on failure.
@@ -157,16 +168,20 @@ fn parse_gles_version(version: &str) -> (u32, u32) {
     }
 }
 
-/// Returns the Android API level at runtime, or 0 on non-Android.
+/// Returns the Android API level at runtime, or `None` on non-Android.
+///
+/// `None` is intentionally distinct from `Some(0)`: the former means the
+/// Android-only API gate does not apply, while the latter means Android was
+/// detected but its SDK property could not be read.
 #[cfg(target_os = "android")]
-pub(crate) fn android_api_level() -> u32 {
+pub(crate) fn android_api_level() -> Option<u32> {
     // Read `ro.build.version.sdk` directly rather than calling
     // `android_get_device_api_level()`. That function is only an exported
     // library symbol from API 29 on; at API 21..=28 it is a `static inline` in
     // <android/api-level.h> that reads this very property. A bare `extern "C"`
-    // declaration bypasses the inline and pins the API-29 dynamic symbol, so the
-    // whole `libmigo.so` fails to `dlopen` on an API-26 device -- the floor Migo
-    // claims to support -- with "cannot locate symbol
+    // declaration bypasses the inline and pins the API-29 dynamic symbol, so
+    // the whole `libmigo.so` fails to `dlopen` on an API-26 device -- the floor
+    // Migo claims to support -- with "cannot locate symbol
     // android_get_device_api_level". `__system_property_get` has been stable
     // since API 1, so reading the property ourselves works on every level.
     unsafe extern "C" {
@@ -181,17 +196,19 @@ pub(crate) fn android_api_level() -> u32 {
         )
     };
     if len <= 0 {
-        return 0;
+        return Some(0);
     }
-    core::str::from_utf8(&buf[..len as usize])
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(0)
+    Some(
+        core::str::from_utf8(&buf[..len as usize])
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0),
+    )
 }
 
 #[cfg(not(target_os = "android"))]
-pub(crate) fn android_api_level() -> u32 {
-    0
+pub(crate) fn android_api_level() -> Option<u32> {
+    None
 }
 
 #[cfg(test)]
@@ -217,5 +234,13 @@ mod tests {
             "GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3",
             "GL_OES_EGL_image"
         ));
+    }
+
+    #[test]
+    fn ahb_api_gate_preserves_non_android_and_api_26_boundary() {
+        assert!(!ahb_api_supported(None));
+        assert!(!ahb_api_supported(Some(25)));
+        assert!(ahb_api_supported(Some(26)));
+        assert!(ahb_api_supported(Some(35)));
     }
 }

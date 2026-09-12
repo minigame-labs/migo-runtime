@@ -1,7 +1,9 @@
 use std::any::Any;
 
+use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::protocol::audio_cmd::AudioNodeId;
 
+use crate::limits::{AudioAggregateLedger, AudioAggregatePermit};
 use crate::param::AudioParamTimeline;
 
 use super::AudioNodeProcessor;
@@ -19,6 +21,8 @@ pub struct DelayNode {
     delay_time: AudioParamTimeline,
     /// Circular buffer, interleaved, `frames * channels` samples.
     buffer: Vec<f32>,
+    /// Aggregate permit held for the circular buffer's physical bytes.
+    _delay_permit: AudioAggregatePermit,
     /// Write position, in frames.
     write_frame: usize,
     /// Frames in the circular buffer.
@@ -32,6 +36,23 @@ pub struct DelayNode {
 
 impl DelayNode {
     pub fn new(id: AudioNodeId, max_delay_time: f32, sample_rate: u32, channels: u32) -> Self {
+        Self::new_with_aggregate(
+            id,
+            max_delay_time,
+            sample_rate,
+            channels,
+            &AudioAggregateLedger::process_global(),
+        )
+        .expect("process-wide audio aggregate ledger rejected delay buffer")
+    }
+
+    pub(crate) fn new_with_aggregate(
+        id: AudioNodeId,
+        max_delay_time: f32,
+        sample_rate: u32,
+        channels: u32,
+        aggregate: &std::sync::Arc<AudioAggregateLedger>,
+    ) -> EngineResult<Self> {
         // Per-node delay-buffer memory cap. Web Audio allows maxDelayTime up to
         // 180s, which at 48kHz stereo f32 is ~68MB for a single node; cap the
         // allocation and shrink max_delay to fit the budget.
@@ -54,16 +75,26 @@ impl DelayNode {
         // delay is still inside the buffer rather than wrapping onto the sample
         // just written.
         let frames = (max_delay as f64 * sample_rate as f64) as usize + 2;
-        Self {
+        let buffer_samples = frames.checked_mul(ch).ok_or_else(|| {
+            EngineError::from_detail(ErrorCode::InvalidArgument, "delay buffer size overflow")
+        })?;
+        let buffer_bytes = buffer_samples
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| {
+                EngineError::from_detail(ErrorCode::InvalidArgument, "delay buffer size overflow")
+            })?;
+        let delay_permit = aggregate.try_reserve(buffer_bytes, "delay")?;
+        Ok(Self {
             id,
             delay_time: AudioParamTimeline::new(0.0, 0.0, max_delay),
-            buffer: vec![0.0; frames * ch],
+            buffer: vec![0.0; buffer_samples],
+            _delay_permit: delay_permit,
             write_frame: 0,
             frames,
             max_delay,
             channels: ch,
             automation: Vec::new(),
-        }
+        })
     }
 
     /// Read channel `ch` a fractional number of frames behind the write cursor.
@@ -99,16 +130,22 @@ impl AudioNodeProcessor for DelayNode {
         _channels: u32,
         current_time: f64,
     ) -> usize {
-        let len = inputs.len().min(output.len());
-        if len == 0 || self.buffer.is_empty() {
+        let channels = self.channels;
+        if self.buffer.is_empty() || channels == 0 {
             return 0;
         }
-
-        let channels = self.channels;
-        let frames = len / channels;
+        // An effect remains renderable after its source is pruned: zero input
+        // must advance the delay line so buffered samples can drain instead of
+        // being cut off at the source's end.
+        let frames = if inputs.is_empty() {
+            output.len() / channels
+        } else {
+            inputs.len().min(output.len()) / channels
+        };
         if frames == 0 {
             return 0;
         }
+        let len = frames * channels;
 
         // a-rate: one value per frame. The maximum is one frame short of the
         // buffer so the interpolator's older tap cannot wrap past the newest
@@ -124,11 +161,10 @@ impl AudioNodeProcessor for DelayNode {
         for frame in 0..frames {
             let delay_frames = (self.automation[frame].clamp(0.0, self.max_delay) * sr)
                 .clamp(0.0, max_delay_frames);
-
             let base = frame * channels;
             let write_base = self.write_frame * channels;
             for ch in 0..channels {
-                self.buffer[write_base + ch] = inputs[base + ch];
+                self.buffer[write_base + ch] = inputs.get(base + ch).copied().unwrap_or(0.0);
             }
             for ch in 0..channels {
                 output[base + ch] = self.read_interpolated(delay_frames, ch);
@@ -137,7 +173,11 @@ impl AudioNodeProcessor for DelayNode {
             self.write_frame = (self.write_frame + 1) % self.frames;
         }
 
-        frames
+        len / channels
+    }
+
+    fn has_tail_audio(&self) -> bool {
+        self.buffer.iter().any(|sample| sample.abs() > 1e-10)
     }
 
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {
@@ -150,6 +190,8 @@ impl AudioNodeProcessor for DelayNode {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn run(node: &mut DelayNode, input: &[f32], sample_rate: u32) -> Vec<f32> {
@@ -234,5 +276,48 @@ mod tests {
                  cursor and keep reading the first sample. Got {out:?}"
             );
         }
+    }
+
+    /// The aggregate ledger must reject delay buffer creation when it is near
+    /// its ceiling. The refusal must happen before the allocation: if the ledger
+    /// is at 99 bytes of a 100-byte ceiling, a ~384-byte minimum delay buffer
+    /// cannot be granted and `new_with_aggregate` must return `Err` without
+    /// ever calling `vec!`.
+    #[test]
+    fn delay_buffer_refused_when_aggregate_is_at_ceiling() {
+        let ledger = Arc::new(crate::limits::AudioAggregateLedger::new(100));
+        // Fill 99 bytes so only 1 byte remains — too little for any delay buffer.
+        let _filler = ledger
+            .try_reserve(99, "test-filler")
+            .expect("filler fits within 100-byte test ledger");
+
+        let result = DelayNode::new_with_aggregate(1, 0.001, 48_000, 1, &ledger);
+        assert!(
+            result.is_err(),
+            "delay buffer creation must be refused when the aggregate ledger is full"
+        );
+    }
+
+    /// The aggregate permit must be released exactly once when the node is
+    /// dropped, leaving the ledger back at zero.
+    #[test]
+    fn delay_node_teardown_releases_aggregate_permit() {
+        let ledger = Arc::new(crate::limits::AudioAggregateLedger::new(1024 * 1024));
+
+        let node = DelayNode::new_with_aggregate(1, 0.001, 48_000, 1, &ledger)
+            .expect("0.001 s mono delay fits within 1 MiB test ledger");
+
+        let bytes_held = ledger.used_bytes();
+        assert!(
+            bytes_held > 0,
+            "aggregate must show the delay buffer as reserved while the node lives"
+        );
+
+        drop(node);
+        assert_eq!(
+            ledger.used_bytes(),
+            0,
+            "aggregate must return to zero when the delay node is dropped"
+        );
     }
 }

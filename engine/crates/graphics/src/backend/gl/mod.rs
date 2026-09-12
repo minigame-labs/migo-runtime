@@ -22,9 +22,13 @@ pub mod effect_cache;
 pub mod image_store;
 pub mod paint;
 pub mod path;
+pub(crate) mod readback;
+#[cfg(test)]
+pub(crate) mod readback_test_gl;
 pub mod state;
 pub(crate) mod state_tracker;
 pub mod surface;
 pub mod text;
 pub mod text_attrs;
+pub(crate) mod texture_copy;
 pub(crate) mod uniform_cache;

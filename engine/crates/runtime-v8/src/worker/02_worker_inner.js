@@ -53,8 +53,9 @@ async function _startMessagePump() {
 
 const worker = {
     postMessage(message) {
-        console.log("[Worker-JS] postMessage to main:", JSON.stringify(message));
-        op_worker_inner_post_message(JSON.stringify(message));
+        const serialized = JSON.stringify(message);
+        console.log("[Worker-JS] postMessage to main:", serialized);
+        op_worker_inner_post_message(serialized);
     },
 
     onMessage(listener) {

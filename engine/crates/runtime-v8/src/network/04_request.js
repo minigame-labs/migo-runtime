@@ -10,14 +10,17 @@ import {
 import { op_fetch, op_fetch_send } from "ext:core/ops";
 
 const {
-    TypeError, JSONParse, TypedArrayPrototypeGetBuffer
+    TypeError, JSONParse, TypedArrayPrototypeGetBuffer,
+    TypedArrayPrototypeGetByteLength,
 } = primordials;
 
 // -- Constants --
 
 const KNOWN_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE", "CONNECT"]);
 const NO_BODY_METHODS = new Set(["GET", "HEAD", "TRACE", "CONNECT"]);
-
+// Buffered responses are policy-bounded. Chunked mode below remains streaming
+// and does not accumulate body bytes.
+const MAX_BUFFERED_BODY_BYTES = 32 * 1024 * 1024;
 // -- RequestTask --
 
 class RequestTask extends NetworkTask {
@@ -244,8 +247,10 @@ function request(options = {}) {
     (async () => {
         try {
             const resp = await op_fetch_send(requestRid);
+            // Take ownership before the abort check; the send continuation
+            // can race an abort after the Rust response resource exists.
+            if (resp?.responseRid) cancellation.responseRid = resp.responseRid;
             if (cancellation.aborted) throw abortedNetworkError();
-
             if (resp?.error) {
                 const error = new ErrorResponse(resp.status, new Exception(resp.status, resp.error, 0));
                 fail(error);
@@ -253,9 +258,6 @@ function request(options = {}) {
                 return;
             }
 
-            // Track the body resource so cancellation.abort() can close
-            // it mid-download (see the cancellation object above).
-            cancellation.responseRid = resp.responseRid;
 
             const respHeader = new Header(resp.headers, resp.status);
             requestTask._triggerHeadersReceived(respHeader);
@@ -267,35 +269,52 @@ function request(options = {}) {
             } else if (methodNormalized === "HEAD" || methodNormalized === "CONNECT") {
                 core.close(resp.responseRid);
             } else {
+                let rds = null;
                 try {
-                    const rds = new ReadableStream(resp.responseRid);
+                    rds = new ReadableStream(resp.responseRid);
                     let bodyBytes;
 
                     if (enableChunked) {
-                        // Truly streaming: chunks are handed to the
-                        // user's onChunkReceived listener as they
-                        // arrive and then released. We do NOT
-                        // accumulate and concatenate; that behaviour
-                        // kept peak JS heap at O(body_size) instead of
-                        // O(chunk_size), defeating the point of the
-                        // chunked mode. `cbResp.data` stays empty in
-                        // this branch; chunk consumers own the data.
+                        // Truly streaming: chunks are handed to the user's
+                        // listener as they arrive and then released.
                         const buffer = new Uint8Array(64 * 1024);
                         await rds.pull(buffer, (chunk) => {
                             if (chunk === undefined) return;
-                            // Copy out of the shared read buffer; the
-                            // listener can retain the ArrayBuffer.
                             const chunkCopy = new Uint8Array(chunk);
                             requestTask._triggerChunkReceived({ data: chunkCopy.buffer });
                         });
                     } else {
-                        bodyBytes = await rds.readAll();
+                        // Pull bounded chunks so a chunked response cannot
+                        // make readAll allocate an unbounded body. A callback
+                        // error is followed by rds.cancel() in the catch.
+                        const chunks = [];
+                        let totalBytes = 0;
+                        const buffer = new Uint8Array(64 * 1024);
+                        await rds.pull(buffer, (chunk) => {
+                            if (chunk === undefined) return;
+                            const length = TypedArrayPrototypeGetByteLength(chunk);
+                            totalBytes += length;
+                            if (totalBytes > MAX_BUFFERED_BODY_BYTES) {
+                                throw new Error("response body exceeds buffered response limit");
+                            }
+                            chunks.push(new Uint8Array(chunk));
+                        });
+                        if (totalBytes > 0) {
+                            const merged = new Uint8Array(totalBytes);
+                            let offset = 0;
+                            for (const chunk of chunks) {
+                                merged.set(chunk, offset);
+                                offset += chunk.byteLength;
+                            }
+                            bodyBytes = merged.buffer;
+                        }
                     }
 
                     if (bodyBytes != null) {
                         cbResp.data = fromBodyBuffer(bodyBytes, dataType, responseType);
                     }
                 } catch (err) {
+                    if (rds !== null) rds.cancel();
                     // A read cancelled by abort() surfaces here; report it
                     // as an abort (via the outer catch), not a 500.
                     if (cancellation.aborted) throw "aborted";
@@ -317,6 +336,10 @@ function request(options = {}) {
             fail(error);
             complete(error);
         } finally {
+            if (cancellation.responseRid !== null) {
+                core.tryClose(cancellation.responseRid);
+                cancellation.responseRid = null;
+            }
             if (cancelHandleRid !== null) core.tryClose(cancelHandleRid);
         }
     })();

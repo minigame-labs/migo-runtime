@@ -66,6 +66,12 @@ pub enum ErrorCode {
     RenderSwapIntervalError = 412,
     RenderSwapBuffersError = 413,
     RenderInvalidStateError = 414,
+    /// The framebuffer bound for the operation is not framebuffer complete.
+    /// Distinct from [`Self::RenderInvalidStateError`] because WebGL has a
+    /// dedicated error for it, and a readback that folded it into the generic
+    /// invalid-operation code told content nothing about which of the two the
+    /// driver actually refused.
+    RenderFramebufferIncomplete = 415,
 
     // 2D / Canvas / Vector-graphics subsystem (generic) (420..429)
     Render2DInitError = 420,
@@ -123,6 +129,7 @@ impl ErrorCode {
             ErrorCode::RenderSwapIntervalError => "render swap interval error",
             ErrorCode::RenderSwapBuffersError => "render swap buffers error",
             ErrorCode::RenderInvalidStateError => "render invalid state error",
+            ErrorCode::RenderFramebufferIncomplete => "framebuffer incomplete",
 
             ErrorCode::Render2DInitError => "render 2d init error",
             ErrorCode::Render2DResourceError => "render 2d resource error",
@@ -195,6 +202,7 @@ impl TryFrom<u16> for ErrorCode {
             412 => ErrorCode::RenderSwapIntervalError,
             413 => ErrorCode::RenderSwapBuffersError,
             414 => ErrorCode::RenderInvalidStateError,
+            415 => ErrorCode::RenderFramebufferIncomplete,
 
             420 => ErrorCode::Render2DInitError,
             421 => ErrorCode::Render2DResourceError,

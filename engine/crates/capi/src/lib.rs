@@ -525,9 +525,11 @@ pub unsafe extern "C" fn migo_engine_destroy(engine: *mut MigoEngine) -> MigoRes
             }
         };
         let mut join_failed = false;
-        for mut host in retired_hosts {
-            if let Err(error) = host.join() {
-                tracing::error!("migo_engine_destroy: {error}");
+        // `take` releases the RetirementSet mutex before this loop. Host and
+        // reaper joins therefore cannot run while an Engine lock is held.
+        for host in retired_hosts {
+            if host.join().is_err() {
+                tracing::error!("migo_engine_destroy: retired Host join failed");
                 join_failed = true;
             }
         }
@@ -650,6 +652,10 @@ pub unsafe extern "C" fn migo_session_destroy(session: *mut MigoSession) -> Migo
         // Consume exactly the one strong reference exported as the C handle.
         // `pinned` (and any currently executing callback) keeps the allocation
         // alive until its own stack has unwound.
+        // Reap Hosts that completed while this Session was being destroyed.
+        // The set owns only reaper handles and the call occurs after all Engine
+        // and Session locks are released, so Host teardown may re-enter safely.
+        pinned.engine.retired_hosts.reap_completed();
         drop(unsafe { Arc::from_raw(session.cast_const()) });
         MIGO_OK
     })

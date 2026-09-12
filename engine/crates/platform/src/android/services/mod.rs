@@ -524,9 +524,9 @@ impl CameraService for AndroidCamera {
         })
     }
 
-    fn take_photo(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn take_photo_async(&self, request_id: u32, options_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_take_photo(self.session.host_id(), options_json)
+            jni::camera_take_photo_async(self.session.host_id(), request_id, options_json)
         })
     }
 

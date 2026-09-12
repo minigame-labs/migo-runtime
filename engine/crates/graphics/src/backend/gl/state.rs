@@ -36,7 +36,7 @@ use shared::protocol::color::Color;
 use shared::protocol::render_cmd::{
     GradientStop, GradientType, TextAlign, TextBaseline, TextDirection,
 };
-use skia_safe::{BlendMode, PaintCap, PaintJoin};
+use skia_safe::{BlendMode, FilterMode, MipmapMode, PaintCap, PaintJoin, SamplingOptions};
 
 /// Fill (or stroke) style referenced by a [`Canvas2DState`].
 ///
@@ -369,6 +369,30 @@ impl Canvas2DState {
     pub fn stroke_needs_shader(&self) -> bool {
         !matches!(&self.stroke, StyleKind::Color(_))
     }
+
+    /// Return the Skia [`SamplingOptions`] that Canvas 2D `drawImage` must use
+    /// for the current drawing state.
+    ///
+    /// `imageSmoothingEnabled = false` → nearest-neighbour, no mipmap.
+    /// `imageSmoothingEnabled = true`  → bilinear with nearest-mip, matching
+    /// Chromium's default (mipmap filter is not part of the Canvas 2D spec
+    /// until `imageSmoothingQuality = "high"`, which this engine does not
+    /// yet expose).
+    ///
+    /// This is the single source of truth for image sampling in the Canvas
+    /// 2D renderer. Every draw path — single `DrawImage`, `DrawImageBatch`
+    /// atlas run, and `DrawImageBatch` individual fallback — MUST call this
+    /// helper instead of hardcoding a `SamplingOptions`. Divergence between
+    /// paths causes observable pixel differences when adjacent draws are
+    /// merged into a batch (audit finding R3).
+    #[inline]
+    pub fn image_sampling_options(&self) -> SamplingOptions {
+        if self.image_smoothing {
+            SamplingOptions::new(FilterMode::Linear, MipmapMode::Nearest)
+        } else {
+            SamplingOptions::new(FilterMode::Nearest, MipmapMode::None)
+        }
+    }
 }
 
 /// Save/restore stack for [`Canvas2DState`].
@@ -441,6 +465,28 @@ impl StateStack {
             }
             None => false,
         }
+    }
+
+    /// Number of snapshot slots currently allocated in the backing `Vec`
+    /// (reflects the high-water capacity, not just live depth).
+    ///
+    /// Exposed so callers can observe and reason about the high-water mark
+    /// before deciding whether to call [`shrink_to_fit`](Self::shrink_to_fit).
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.saved.capacity()
+    }
+
+    /// Release `Vec` over-capacity accumulated from a previous deep-save
+    /// burst, bringing the retained allocation back toward the live depth.
+    ///
+    /// Call at context reset, canvas resize, canvas destroy, or a
+    /// low-memory event.  Does **not** affect the live saved-state
+    /// semantics — only excess heap capacity is released; any snapshots
+    /// still on the stack are retained unmodified.
+    #[inline]
+    pub fn shrink_to_fit(&mut self) {
+        self.saved.shrink_to_fit();
     }
 }
 
@@ -980,5 +1026,43 @@ mod tests {
         assert_eq!(state.line_width, 1.0);
 
         assert_eq!(stack.depth(), 0);
+    }
+    #[test]
+    fn save_stack_high_water_released_by_shrink() {
+        let mut stack = StateStack::new();
+        let mut state = Canvas2DState::default();
+        const DEEP: usize = 200;
+        for i in 0..DEEP {
+            state.line_width = i as f32 + 1.0;
+            stack.push(&state);
+        }
+        for _ in 0..DEEP {
+            assert!(stack.pop(&mut state));
+        }
+        assert_eq!(stack.depth(), 0);
+        let high = stack.capacity();
+        assert!(
+            high >= DEEP,
+            "Vec capacity should still be at least {DEEP}, got {high}"
+        );
+        stack.shrink_to_fit();
+        let low = stack.capacity();
+        assert!(
+            low < high / 4,
+            "shrink_to_fit must release high-water capacity: before={high}, after={low}"
+        );
+    }
+
+    #[test]
+    fn image_sampling_options_match_canvas_smoothing_defaults() {
+        let smooth = Canvas2DState::default().image_sampling_options();
+        assert_eq!(smooth.filter, FilterMode::Linear);
+        assert_eq!(smooth.mipmap, MipmapMode::Nearest);
+
+        let mut state = Canvas2DState::default();
+        state.image_smoothing = false;
+        let nearest = state.image_sampling_options();
+        assert_eq!(nearest.filter, FilterMode::Nearest);
+        assert_eq!(nearest.mipmap, MipmapMode::None);
     }
 }

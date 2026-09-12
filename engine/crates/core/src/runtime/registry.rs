@@ -404,6 +404,11 @@ pub(crate) struct HostHandle {
     /// Apple session leaked an entry. Beside the command senders it is unregistered
     /// by the same call that unregisters them, on every exit path there is.
     vsync_tx: Option<crossbeam_channel::Sender<f64>>,
+    /// Woken when `shutdown_host` is called so any in-progress `on_evaluate_module`
+    /// can abort cleanly without holding the outer select hostage. Installed by the
+    /// host thread after it constructs its `Host`; `None` until then and after the
+    /// host exits (both windows are harmless: no evaluation is running yet / anymore).
+    shutdown_notify: Option<Arc<tokio::sync::Notify>>,
 }
 
 static HOST_SENDERS: OnceLock<RwLock<HashMap<HostId, HostHandle>>> = OnceLock::new();
@@ -459,6 +464,7 @@ pub(crate) fn register_sender(
         input_saturation_notified: Arc::new(AtomicBool::new(false)),
         stats,
         vsync_tx,
+        shutdown_notify: None,
     };
     let ingress = handle.ingress(id);
     let mut map = host_senders().write();
@@ -466,8 +472,23 @@ pub(crate) fn register_sender(
         !map.contains_key(&id),
         "host ids are allocated once and never reused"
     );
+
     map.insert(id, handle);
     ingress
+}
+/// Install the wake used to cancel startup evaluation. Registration itself is
+/// intentionally unchanged because it runs before the Host exists; this setter
+/// closes that construction gap before the ready handshake is published.
+pub(crate) fn install_shutdown_notify(
+    id: HostId,
+    notify: Arc<tokio::sync::Notify>,
+) -> Result<(), String> {
+    let mut map = host_senders().write();
+    let Some(handle) = map.get_mut(&id) else {
+        return Err(format!("Cannot find host_id={id} sender"));
+    };
+    handle.shutdown_notify = Some(notify);
+    Ok(())
 }
 
 /// Unregister sender for a host.
@@ -640,18 +661,28 @@ pub fn shutdown_host(id: HostId) -> Result<(), String> {
     // does not preempt a runaway synchronous JS section that never yields (an
     // inherent bound of the cooperative loop; the v8-limits ANR watchdog covers
     // that case), so this is not an instantaneous hard kill.
-    let (sender, surface_control) = {
+    let (sender, surface_control, shutdown_notify) = {
         let map = host_senders().read();
         let Some(handle) = map.get(&id) else {
             // Already unregistered => the host is gone => shutdown goal achieved.
             debug!("shutdown_host: host_id={id} not found (already shut down)");
             return Ok(());
         };
-        (handle.tx.clone(), Arc::clone(&handle.surface_control))
+        (
+            handle.tx.clone(),
+            Arc::clone(&handle.surface_control),
+            handle.shutdown_notify.clone(),
+        )
     };
     // Queue-independent presentation barrier. This happens before the nudge
     // and before render join; late attach attempts observe shutdown and fail.
     surface_control.shutdown();
+    // Wake startup evaluation independently of the command queue. A Notify
+    // permit is latched when no evaluation is waiting yet, so shutdown racing
+    // command dispatch cannot be lost.
+    if let Some(notify) = shutdown_notify {
+        notify.notify_one();
+    }
     // Best-effort nudge so a host parked on `recv()` reacts immediately; if the
     // normal budget is full this send is dropped, but the flag above still stops
     // the loop when it next iterates.
@@ -719,6 +750,27 @@ mod tests {
         // that never has to look one up cannot lose a race for it.
         assert_eq!(ingress.host_id(), id);
         RegisteredHost(id)
+    }
+    #[test]
+    fn shutdown_host_wakes_startup_evaluation_cancellation() {
+        let id = alloc_host_id();
+        let _registration = register_test_host(id);
+        let notify = Arc::new(tokio::sync::Notify::new());
+        install_shutdown_notify(id, Arc::clone(&notify)).expect("install shutdown wake");
+
+        let shutdown = std::thread::spawn(move || {
+            shutdown_host(id).expect("shutdown request");
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("build test runtime");
+        runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(200), notify.notified())
+                .await
+                .expect("shutdown must wake startup cancellation");
+        });
+        shutdown.join().expect("shutdown caller");
     }
 
     struct RegisteredStats(HostId);

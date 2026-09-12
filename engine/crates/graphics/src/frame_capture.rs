@@ -89,8 +89,10 @@ pub(crate) fn capture_default_fbo(gl: &glow::Context, width: u32, height: u32) {
     if width == 0 || height == 0 {
         return;
     }
-    let mut buf = vec![0u8; width as usize * height as usize * 4];
-    unsafe {
+    let Ok(readback) = crate::backend::gl::readback::Rgba8Readback::new(width, height) else {
+        return;
+    };
+    let buf = unsafe {
         // Read from the presented surface (default framebuffer), not the
         // DrawingBuffer that the blit left bound as the read target -- and put
         // that binding back, because this is an engine write to state the content
@@ -103,18 +105,11 @@ pub(crate) fn capture_default_fbo(gl: &glow::Context, width: u32, height: u32) {
         // `drawing_buffer` do with the texture and renderbuffer bindings.
         let previous_read = gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32;
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
-        gl.read_pixels(
-            0,
-            0,
-            width as i32,
-            height as i32,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            glow::PixelPackData::Slice(Some(&mut buf)),
-        );
+        let buf = readback.read(gl);
         let restored = std::num::NonZeroU32::new(previous_read).map(glow::NativeFramebuffer);
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, restored);
-    }
+        buf
+    };
     let mut slot = RESULT.lock().expect("frame_capture result mutex");
     // A request that arrived while this frame was being read owns the slot now:
     // this frame predates it, and is exactly the stale capture `take` refuses.
@@ -131,4 +126,44 @@ pub(crate) fn capture_default_fbo(gl: &glow::Context, width: u32, height: u32) {
     ));
     // Intentionally do NOT clear the request here: keep the latest frame until
     // the consumer calls take(), so blank warmup frames are replaced by content.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::gl::readback_test_gl as test_gl;
+
+    #[test]
+    fn internal_readback_capture_uses_compact_pack_and_restores_content_state() {
+        let gl = test_gl::context();
+        let original = test_gl::Bindings {
+            pack: [8, 9, 2, 3],
+            pack_buffer: 17,
+            read_framebuffer: 23,
+            ..Default::default()
+        };
+        test_gl::set_bindings(original);
+        request();
+        capture_default_fbo(&gl, 8193, 1);
+        assert!(take().is_none());
+        assert!(test_gl::reads().is_empty());
+        assert_eq!(
+            test_gl::mutations(),
+            0,
+            "reject before binding a framebuffer"
+        );
+        request();
+        capture_default_fbo(&gl, 3, 2);
+        let frame = take().expect("requested frame");
+        let reads = test_gl::reads();
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].bindings.pack, [1, 0, 0, 0]);
+        assert_eq!(reads[0].bindings.pack_buffer, 0);
+        assert_eq!(reads[0].bindings.read_framebuffer, 0);
+        assert_eq!(test_gl::bindings(), original);
+        assert_eq!(
+            (frame.width, frame.height, frame.rgba_bottom_up.len()),
+            (3, 2, 24)
+        );
+    }
 }

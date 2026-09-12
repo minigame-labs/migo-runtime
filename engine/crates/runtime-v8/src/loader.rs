@@ -1,10 +1,16 @@
-use std::{borrow::Cow, cell::RefCell, future::Future, pin::Pin, rc::Rc, sync::Arc};
+use std::{borrow::Cow, cell::RefCell, fs, future::Future, pin::Pin, rc::Rc, sync::Arc};
 
 use deno_core::{
     FsModuleLoader, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse, ModuleLoader,
     ModuleSource, ModuleSourceCode, ModuleSpecifier, ResolutionKind, SourceCodeCacheInfo,
     error::ModuleLoaderError,
 };
+
+use migo_io::{
+    scheduler::IoScheduler,
+    task::{BackendKind, IoRequest, PriorityClass, RequestKind},
+};
+use shared::protocol::io_cmd::MAX_READ_LENGTH;
 
 use shared::vfs::MountTable;
 
@@ -50,6 +56,7 @@ pub(crate) struct MyModuleLoader {
     code_cache: Option<SharedCodeCache>,
     /// Set after evaluate_module creates the mount table.
     mount_table: SharedMountTableRef,
+    io_scheduler: Arc<IoScheduler>,
 }
 
 impl MyModuleLoader {
@@ -58,6 +65,7 @@ impl MyModuleLoader {
             inner: FsModuleLoader,
             code_cache,
             mount_table,
+            io_scheduler: Arc::new(IoScheduler::new(0)),
         }
     }
 }
@@ -217,6 +225,52 @@ impl MyModuleLoader {
 
         Some(Ok(source))
     }
+    fn load_from_filesystem(&self, module_specifier: &ModuleSpecifier) -> ModuleLoadResponse {
+        let Ok(path) = module_specifier.to_file_path() else {
+            return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
+                "filesystem module URL is not a file URL",
+            )));
+        };
+        let scheduler = Arc::clone(&self.io_scheduler);
+        let url = module_specifier.clone();
+        let request = IoRequest::ReadFile {
+            backend: BackendKind::Filesystem,
+            request: RequestKind::Async,
+            priority: PriorityClass::ForegroundAsync,
+            estimated_bytes: MAX_READ_LENGTH as usize,
+        };
+        let cache = self.code_cache.clone();
+        ModuleLoadResponse::Async(Box::pin(async move {
+            let bytes = scheduler
+                .run_async(request, move || fs::read(path))
+                .await
+                .map_err(|error| {
+                    ModuleLoaderError::generic(format!("failed to read module: {error:?}"))
+                })?
+                .map_err(|error| {
+                    ModuleLoaderError::generic(format!("failed to read module: {error}"))
+                })?;
+            let source = ModuleSource::new(
+                deno_core::ModuleType::JavaScript,
+                ModuleSourceCode::String(
+                    String::from_utf8(bytes)
+                        .map_err(|error| {
+                            ModuleLoaderError::generic(format!(
+                                "module source is not UTF-8: {error}"
+                            ))
+                        })?
+                        .into(),
+                ),
+                &url,
+                None,
+            );
+            let source = Self::patch_amd(source)?;
+            Ok(match &cache {
+                Some(cache) => Self::attach_code_cache(cache, source),
+                None => source,
+            })
+        }))
+    }
 }
 
 impl ModuleLoader for MyModuleLoader {
@@ -301,30 +355,11 @@ impl ModuleLoader for MyModuleLoader {
             }));
         }
 
-        // Filesystem fallback (directory-backed mounts).
-        let resp = self.inner.load(module_specifier, maybe_referrer, options);
-        let cache = self.code_cache.clone();
-
-        match resp {
-            ModuleLoadResponse::Sync(result) => ModuleLoadResponse::Sync(
-                result.and_then(Self::patch_amd).map(|source| match &cache {
-                    Some(c) => Self::attach_code_cache(c, source),
-                    None => source,
-                }),
-            ),
-
-            ModuleLoadResponse::Async(fut) => {
-                let fut = async move {
-                    let source = fut.await?;
-                    let source = Self::patch_amd(source)?;
-                    Ok(match &cache {
-                        Some(c) => Self::attach_code_cache(c, source),
-                        None => source,
-                    })
-                };
-                ModuleLoadResponse::Async(Box::pin(fut))
-            }
-        }
+        // Filesystem fallback (directory-backed mounts) is always admitted to
+        // the bounded IO executor. In particular, a small module must not
+        // silently reintroduce a synchronous read on the isolate path.
+        let _ = (maybe_referrer, options);
+        self.load_from_filesystem(module_specifier)
     }
 
     fn prepare_load(
@@ -397,5 +432,32 @@ mod tests {
             error.to_string().contains("mount table"),
             "unexpected rejection: {error}"
         );
+    }
+
+    #[test]
+    fn filesystem_module_reads_are_admitted_to_io_executor() {
+        let root = std::env::temp_dir().join(format!("migo-main-loader-io-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temporary module root");
+        let path = root.join("module.js");
+        std::fs::write(&path, "export const answer = 42;").expect("temporary module");
+        let mount_table = Arc::new(MountTable::new(root.clone()));
+        let loader = loader(Some(mount_table));
+        let url = ModuleSpecifier::from_file_path(&path).expect("module URL");
+        let response = loader.load_from_filesystem(&url);
+        let ModuleLoadResponse::Async(future) = response else {
+            panic!("filesystem module load must not execute inline");
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let source = runtime.block_on(future).expect("module load");
+        assert!(source.code.as_bytes().starts_with(b"export const answer"));
+        assert!(
+            loader.io_scheduler.metrics().delegated_runs > 0,
+            "module read must use the bounded IO executor"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

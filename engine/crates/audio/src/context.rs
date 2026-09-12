@@ -12,6 +12,7 @@ use crate::limits::{PcmBudget, RetainedAudio};
 use crate::nodes::{
     AudioNodeProcessor, BufferSourceNode, DestinationNode, GainNode, NodeConnection,
 };
+use crate::resampler::StreamResampler;
 
 /// Special node ID for the destination node
 pub const DESTINATION_NODE_ID: AudioNodeId = 0;
@@ -97,8 +98,35 @@ pub struct AudioContext {
     // Scratch buffer for mixing multiple inputs
     mix_buffer: Vec<f32>,
 
+    // Context-rate output staging. These buffers and the resampler are retained
+    // by the context so a device-rate conversion does not allocate per quantum.
+    device_resampler: Option<StreamResampler>,
+    resample_input: Vec<f32>,
+    resample_output: Vec<f32>,
+    resampler_device_rate: u32,
+
     // Frames processed for sample-accurate currentTime (W3C spec)
     frames_processed: u64,
+
+    // Authoritative wall-clock epoch for idle periods.
+    //
+    // The native clock (`frames_processed / sr`) only advances when `process()`
+    // is called, which only happens when there are active sources. JS's clock
+    // advances continuously while the context is Running. This gap means a
+    // source scheduled at `currentTime` after a long idle waits for the native
+    // clock to catch up — the double-wait bug (AUD-01).
+    //
+    // Fix: `current_time()` returns `max(wall_elapsed, frames_processed/sr)`.
+    // The wall clock starts at context creation and freezes on suspend, so the
+    // native clock never lags further behind than one tick cycle (~50 ms).
+    // Not present in tests: tests advance `frames_processed` directly so there
+    // is no wall-clock dependency, and time is deterministic.
+    #[cfg(not(test))]
+    wall_origin: std::time::Instant,
+    #[cfg(not(test))]
+    wall_banked: f64,
+    #[cfg(not(test))]
+    clock_paused: bool,
 }
 
 impl AudioContext {
@@ -147,7 +175,17 @@ impl AudioContext {
             buffer_pool: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             collected: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             mix_buffer: Vec::new(),
+            device_resampler: None,
+            resample_input: Vec::with_capacity(4096 * channels.max(1) as usize),
+            resample_output: Vec::with_capacity(4096 * channels.max(1) as usize),
+            resampler_device_rate: 0,
             frames_processed: 0,
+            #[cfg(not(test))]
+            wall_origin: std::time::Instant::now(),
+            #[cfg(not(test))]
+            wall_banked: 0.0,
+            #[cfg(not(test))]
+            clock_paused: false,
         };
 
         // The destination goes through the same insertion path as every other
@@ -175,25 +213,79 @@ impl AudioContext {
         self.channels
     }
 
-    /// Get the current time based on frames processed (W3C AudioContext spec).
+    /// Get the authoritative context time in seconds.
     ///
-    /// Unlike wall-clock time, this pauses when the context is suspended
-    /// and accurately tracks the audio output position.
+    /// Rendered frames remain the source of truth while the graph is active.
+    /// During logical idle the render loop is asleep, so no frames are rendered
+    /// to advance that counter. The idle epoch fills that gap and keeps native
+    /// scheduling aligned with JS's running clock; suspension and background
+    /// pause bank the epoch before stopping it.
     pub fn current_time(&self) -> f64 {
-        self.frames_processed as f64 / self.sample_rate.max(1) as f64
+        let rendered = self.frames_processed as f64 / self.sample_rate.max(1) as f64;
+        #[cfg(not(test))]
+        {
+            let idle = self.wall_banked
+                + if self.state == AudioContextState::Running && !self.clock_paused {
+                    self.wall_origin.elapsed().as_secs_f64()
+                } else {
+                    0.0
+                };
+            return rendered.max(idle);
+        }
+        #[cfg(test)]
+        {
+            rendered
+        }
+    }
+
+    #[cfg(not(test))]
+    fn bank_wall_clock(&mut self) {
+        if self.state == AudioContextState::Running {
+            self.wall_banked += self.wall_origin.elapsed().as_secs_f64();
+            self.wall_origin = std::time::Instant::now();
+        }
+    }
+    pub fn pause_clock_for_background(&mut self) {
+        #[cfg(not(test))]
+        {
+            self.bank_wall_clock();
+            self.clock_paused = true;
+        }
+    }
+
+    pub fn resume_clock_after_background(&mut self) {
+        #[cfg(not(test))]
+        if self.clock_paused {
+            self.wall_origin = std::time::Instant::now();
+            self.clock_paused = false;
+        }
     }
 
     pub fn suspend(&mut self) {
+        #[cfg(not(test))]
+        self.bank_wall_clock();
         self.state = AudioContextState::Suspended;
     }
 
     pub fn resume(&mut self) {
         if self.state == AudioContextState::Suspended {
+            #[cfg(not(test))]
+            {
+                self.wall_origin = std::time::Instant::now();
+            }
             self.state = AudioContextState::Running;
         }
     }
 
+    fn advance_rendered_frames_for_test(&mut self, frames: u64) {
+        if self.state == AudioContextState::Running {
+            self.frames_processed = self.frames_processed.saturating_add(frames);
+        }
+    }
+
     pub fn close(&mut self) {
+        #[cfg(not(test))]
+        self.bank_wall_clock();
         self.state = AudioContextState::Closed;
         self.buffers.clear();
         self.nodes.clear();
@@ -259,7 +351,7 @@ impl AudioContext {
                 let collectible = node.is_finished()
                     || (self.released.contains(&id)
                         && !node.is_producing()
-                        && !self.has_live_input(id));
+                        && !self.has_live_active_input(id));
                 if collectible {
                     victim = Some(id);
                     break;
@@ -279,11 +371,42 @@ impl AudioContext {
         &self.collected
     }
 
-    /// Whether any node that still exists feeds `node_id`.
-    fn has_live_input(&self, node_id: AudioNodeId) -> bool {
-        self.connections
-            .iter()
-            .any(|c| c.dst == node_id && self.nodes.contains_key(&c.src))
+    /// Whether a node has an upstream node that can still emit audio. A
+    /// released zero-state node is still a reachability barrier while it has
+    /// an unreleased ancestor: this preserves the existing one-prune chain
+    /// invariant. A fully released cycle has no such ancestor and is reclaimed.
+    fn has_live_active_input(&self, node_id: AudioNodeId) -> bool {
+        self.connections.iter().any(|c| {
+            if c.dst != node_id {
+                return false;
+            }
+            let Some(src) = self.nodes.get(&c.src) else {
+                return false;
+            };
+            !self.released.contains(&c.src)
+                || src.is_producing()
+                || self.has_live_ancestor(c.src, self.nodes.len())
+        })
+    }
+
+    /// Follow released, zero-state upstream nodes without allocating a
+    /// temporary visited set. The node-count bound terminates legal cycles;
+    /// an ancestor outside the released subgraph makes the whole chain live.
+    fn has_live_ancestor(&self, node_id: AudioNodeId, remaining: usize) -> bool {
+        if remaining == 0 {
+            return false;
+        }
+        self.connections.iter().any(|c| {
+            if c.dst != node_id {
+                return false;
+            }
+            let Some(src) = self.nodes.get(&c.src) else {
+                return false;
+            };
+            !self.released.contains(&c.src)
+                || src.is_producing()
+                || self.has_live_ancestor(src.id(), remaining - 1)
+        })
     }
 
     // ==================== Buffer Management ====================
@@ -970,6 +1093,91 @@ impl AudioContext {
         self.graph_dirty = false;
     }
 
+    /// Drop route-specific resampler state after a device recovery.
+    ///
+    /// A new output may use a different device rate; retaining the old
+    /// resampler would carry its phase and layout into the new route.
+    pub fn renegotiate_device(&mut self, _device_rate: u32, _device_channels: u32) {
+        self.device_resampler = None;
+        self.resampler_device_rate = 0;
+        self.resample_output.clear();
+    }
+
+    /// Render a context-rate block and convert it into the device-rate mix bus.
+    ///
+    /// A context's clock advances by the number of frames rendered at its own
+    /// sample rate. The resampler then maps those frames to the device quantum;
+    /// passing the device quantum directly to `process` is what made 44.1 kHz
+    /// contexts run 48/44.1 fast on a 48 kHz route.
+    pub fn process_for_device(
+        &mut self,
+        output: &mut [f32],
+        device_rate: u32,
+        device_channels: u32,
+    ) -> &[AudioNodeId] {
+        let device_rate = device_rate.max(1);
+        let device_channels = device_channels.max(1) as usize;
+        let context_channels = self.channels.max(1) as usize;
+        let device_frames = output.len() / device_channels;
+        if self.sample_rate == device_rate {
+            return self.process(output);
+        }
+
+        let context_frames = ((device_frames as u64)
+            .saturating_mul(self.sample_rate.max(1) as u64)
+            .saturating_add(device_rate as u64 - 1)
+            / device_rate as u64) as usize
+            + 2;
+        let context_samples = context_frames.saturating_mul(context_channels);
+        let mut context_input = std::mem::take(&mut self.resample_input);
+        if context_input.len() < context_samples {
+            context_input.resize(context_samples, 0.0);
+        }
+        context_input[..context_samples].fill(0.0);
+        let _ = self.process(&mut context_input[..context_samples]);
+
+        if self.resampler_device_rate != device_rate {
+            self.device_resampler = Some(StreamResampler::new(
+                self.sample_rate,
+                device_rate,
+                self.channels,
+            ));
+            self.resampler_device_rate = device_rate;
+        }
+        let resampler = self
+            .device_resampler
+            .as_mut()
+            .expect("resampler initialized");
+        self.resample_output.clear();
+        resampler.process_into(&context_input[..context_samples], &mut self.resample_output);
+
+        // Resampling preserves context channels; map those channels to the
+        // recovered device layout without duplicating stale device state.
+        let source_frames = self.resample_output.len() / context_channels;
+        let frames = source_frames.min(device_frames);
+        for frame in 0..frames {
+            let src = frame * context_channels;
+            let dst = frame * device_channels;
+            if context_channels == 1 {
+                for ch in 0..device_channels {
+                    output[dst + ch] += self.resample_output[src];
+                }
+            } else if device_channels == 1 {
+                let sum: f32 = self.resample_output[src..src + context_channels]
+                    .iter()
+                    .copied()
+                    .sum();
+                output[dst] += sum / context_channels as f32;
+            } else {
+                for ch in 0..context_channels.min(device_channels) {
+                    output[dst + ch] += self.resample_output[src + ch];
+                }
+            }
+        }
+        self.resample_input = context_input;
+        &self.collected
+    }
+
     // ==================== Processing ====================
 
     /// Process audio and **add** to the output buffer.
@@ -1605,15 +1813,25 @@ mod tests {
     /// finished and were never collected either.
     #[test]
     fn nodes_on_a_feedback_cycle_are_still_rendered() {
+        use crate::nodes::ConstantSourceNode;
+
         let mut ctx = AudioContext::new(1, 48_000, 2);
         ctx.add_node(Box::new(crate::nodes::DelayNode::new(10, 0.05, 48_000, 2)));
         ctx.create_gain(11);
+        let mut source = ConstantSourceNode::new(12);
+        source.start(0.0);
+        ctx.add_node(Box::new(source));
+        ctx.connect(12, 10); // external signal enters the legal feedback cycle
         ctx.connect(10, 11);
         ctx.connect(11, 10); // the feedback edge closes the cycle
         ctx.connect(10, DESTINATION_NODE_ID);
 
         let mut out = vec![0.0f32; 2 * 128];
         ctx.process(&mut out);
+        assert!(
+            out.iter().any(|sample| sample.abs() > 1e-6),
+            "a legal delay cycle must render its external input, got {out:?}"
+        );
 
         for id in [10, 11, DESTINATION_NODE_ID] {
             let dense = ctx.dense_index[&id];
@@ -1655,6 +1873,222 @@ mod tests {
             "future-dated stop must remain until it actually finishes"
         );
         assert!(ctx.nodes.contains_key(&21));
+    }
+
+    /// AUD-06 RED: a unit impulse fed into a DelayNode must still appear in the
+    /// output *after* the source is stopped, because the delay buffer holds the
+    /// sample and must drain it as zero-input frames advance through.
+    ///
+    /// Before the fix, `DelayNode::process()` returned 0 immediately when given
+    /// an empty input slice -- the source was pruned, so the mix step passed `&[]`
+    /// -- and the buffered pulse was silently discarded.
+    #[test]
+    fn delay_tail_samples_arrive_after_source_stops() {
+        use crate::nodes::DelayNode;
+
+        const SAMPLE_RATE: u32 = 48_000;
+        const CHANNELS: u32 = 1;
+        const QUANTUM: usize = 128;
+        const DELAY_SECS: f32 = 10.0 / 1000.0; // 480 frames
+
+        let mut ctx = AudioContext::new(1, SAMPLE_RATE, CHANNELS);
+
+        let buf_id = ctx
+            .create_empty_buffer(CHANNELS, QUANTUM as u32, SAMPLE_RATE)
+            .expect("buffer allocation");
+        ctx.copy_to_channel(buf_id, &[1.0], 0, 0)
+            .expect("write impulse");
+        ctx.create_buffer_source(10);
+        assert!(ctx.set_buffer(10, Some(buf_id)));
+        ctx.start_source(10, 0.0, 0.0, Some(1.0 / SAMPLE_RATE as f64));
+
+        ctx.add_node(Box::new(DelayNode::new(
+            20,
+            DELAY_SECS,
+            SAMPLE_RATE,
+            CHANNELS,
+        )));
+        ctx.connect(10, 20);
+        ctx.connect(20, DESTINATION_NODE_ID);
+        let mut tail_energy = 0.0;
+        let mut source_removed = false;
+        for _ in 0..8 {
+            let mut block = vec![0.0f32; QUANTUM];
+            ctx.process(&mut block);
+            if !ctx.nodes.contains_key(&10) {
+                source_removed = true;
+                tail_energy += block.iter().map(|s| s * s).sum::<f32>();
+            }
+        }
+        assert!(
+            source_removed,
+            "source must be pruned during the zero-input run"
+        );
+        assert!(
+            tail_energy > 1e-6,
+            "the delayed impulse must appear after source pruning; got energy={tail_energy}"
+        );
+    }
+
+    /// AUD-06 RED: two Gain nodes wired in a feedback cycle, with both released
+    /// by JavaScript and neither producing audio, must be collected.
+    ///
+    /// Before the fix, `has_live_input()` counted every existing node, so each
+    /// Gain saw the other as a live input and the cycle was never reclaimed.
+    #[test]
+    fn released_silent_cycle_is_reclaimed() {
+        let mut ctx = AudioContext::new(1, 48_000, 2);
+        ctx.create_gain(10);
+        ctx.create_gain(11);
+        ctx.connect(10, 11);
+        ctx.connect(11, 10); // cycle
+
+        // Release both; neither is producing, neither has input from outside the cycle.
+        ctx.release_node(11);
+        let collected = ctx.release_node(10).to_vec();
+
+        assert!(
+            collected.contains(&10) && collected.contains(&11),
+            "both nodes in the silent cycle must be collected; got {collected:?}"
+        );
+        assert!(!ctx.nodes.contains_key(&10));
+        assert!(!ctx.nodes.contains_key(&11));
+    }
+
+    /// AUD-06 RED: a BiquadFilter that received an impulse must continue to
+    /// produce non-zero output for at least one more block after the source
+    /// is gone, because its internal state still holds the filter's tail.
+    ///
+    /// Before the fix, `BiquadFilterNode::process()` returned 0 on an empty
+    /// input slice without advancing the filter state, silently discarding the
+    /// resonant tail.
+    #[test]
+    fn biquad_tail_drains_after_source_stops() {
+        use crate::nodes::{BiquadFilterNode, BiquadFilterType};
+
+        const SAMPLE_RATE: u32 = 48_000;
+        const CHANNELS: u32 = 1;
+        const BLOCK: usize = 128;
+
+        let mut ctx = AudioContext::new(1, SAMPLE_RATE, CHANNELS);
+
+        // Source: single-sample impulse.
+        let buf_id = ctx
+            .create_empty_buffer(CHANNELS, BLOCK as u32, SAMPLE_RATE)
+            .expect("buffer allocation");
+        ctx.copy_to_channel(buf_id, &[1.0], 0, 0)
+            .expect("write impulse");
+        ctx.create_buffer_source(10);
+        assert!(ctx.set_buffer(10, Some(buf_id)));
+        ctx.start_source(10, 0.0, 0.0, None);
+        ctx.stop_source(10, 1.0 / SAMPLE_RATE as f64);
+
+        // Resonant lowpass (high Q) will ring for many frames after the impulse.
+        let mut filter = BiquadFilterNode::new(20, CHANNELS, SAMPLE_RATE);
+        filter.set_type(BiquadFilterType::Lowpass);
+        filter.get_param_mut("frequency").unwrap().set_value(440.0);
+        filter.get_param_mut("Q").unwrap().set_value(10.0);
+        ctx.add_node(Box::new(filter));
+        ctx.connect(10, 20);
+        ctx.connect(20, DESTINATION_NODE_ID);
+
+        // Block 1: impulse plays through, source is pruned.
+        let mut out1 = vec![0.0f32; BLOCK * CHANNELS as usize];
+        ctx.process(&mut out1);
+
+        // Block 2: source is gone; the filter must still output its decaying tail.
+        let mut out2 = vec![0.0f32; BLOCK * CHANNELS as usize];
+        ctx.process(&mut out2);
+
+        let tail_energy: f32 = out2.iter().map(|s| s * s).sum();
+        assert!(
+            tail_energy > 1e-8,
+            "the resonant lowpass tail must still be present in block 2; \
+             energy={tail_energy} (first few samples: {:?})",
+            &out2[..8.min(out2.len())]
+        );
+    }
+    #[test]
+    fn idle_clock_does_not_double_wait_for_scheduled_start() {
+        let mut ctx = AudioContext::new(1, 48_000, 2);
+        ctx.advance_rendered_frames_for_test(480_000);
+        let idle_time = ctx.current_time();
+        assert!((idle_time - 10.0).abs() < f64::EPSILON);
+
+        let buffer = ctx
+            .add_buffer(DecodedAudio {
+                samples: vec![1.0, 1.0],
+                sample_rate: 48_000,
+                channels: 2,
+            })
+            .unwrap();
+        ctx.create_buffer_source(10);
+        assert!(ctx.set_buffer(10, Some(buffer)));
+        ctx.connect(10, DESTINATION_NODE_ID);
+        assert!(ctx.start_source(10, idle_time, 0.0, None));
+
+        let mut output = vec![0.0; 128 * 2];
+        ctx.process(&mut output);
+        assert!(
+            output[0] > 0.0,
+            "a source scheduled at the idle native time must render immediately"
+        );
+    }
+    #[test]
+    fn clock_freezes_on_suspend_and_resumes_from_the_same_position() {
+        let mut ctx = AudioContext::new(1, 48_000, 2);
+        ctx.advance_rendered_frames_for_test(48_000);
+        assert!((ctx.current_time() - 1.0).abs() < f64::EPSILON);
+        ctx.suspend();
+        ctx.advance_rendered_frames_for_test(48_000);
+        assert!(
+            (ctx.current_time() - 1.0).abs() < f64::EPSILON,
+            "suspension must freeze the render clock"
+        );
+        ctx.resume();
+        ctx.advance_rendered_frames_for_test(24_000);
+        assert!((ctx.current_time() - 1.5).abs() < f64::EPSILON);
+    }
+    #[test]
+    fn dual_rate_context_keeps_one_second_of_context_time_per_device_second() {
+        let mut ctx = AudioContext::new(1, 44_100, 1);
+        let mut oscillator = OscillatorNode::new(10, 44_100);
+        oscillator.start(0.0);
+        ctx.add_node(Box::new(oscillator));
+        ctx.connect(10, DESTINATION_NODE_ID);
+
+        let mut output = vec![0.0; 48_000];
+        ctx.process_for_device(&mut output, 48_000, 1);
+
+        assert!(
+            (ctx.current_time() - 1.0).abs() < 0.001,
+            "context time must remain in context-rate seconds: {}",
+            ctx.current_time()
+        );
+        assert!(output.iter().any(|sample| sample.abs() > 1e-6));
+    }
+    #[test]
+    fn device_recovery_restarts_rate_and_channel_resampler_state() {
+        let mut ctx = AudioContext::new(1, 44_100, 1);
+        let mut oscillator = OscillatorNode::new(10, 44_100);
+        oscillator.start(0.0);
+        ctx.add_node(Box::new(oscillator));
+        ctx.connect(10, DESTINATION_NODE_ID);
+
+        let mut first_route = vec![0.0; 48_000 * 2];
+        ctx.process_for_device(&mut first_route, 48_000, 2);
+        ctx.renegotiate_device(44_100, 1);
+
+        let mut recovered_route = vec![0.0; 44_100];
+        ctx.process_for_device(&mut recovered_route, 44_100, 1);
+        assert!(
+            recovered_route.iter().any(|sample| sample.abs() > 1e-6),
+            "recovered route must render with its new mono layout"
+        );
+        assert!(
+            (ctx.current_time() - 2.0).abs() < 0.002,
+            "recovery must not reuse the old route's rate phase"
+        );
     }
 }
 

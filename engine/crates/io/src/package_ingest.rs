@@ -57,6 +57,12 @@ impl From<PoolError> for PackageError {
     fn from(err: PoolError) -> Self {
         match err {
             PoolError::Closed => PackageError::Io(std::io::Error::other("IO worker pool closed")),
+            PoolError::ByteLimitExceeded {
+                requested,
+                available,
+            } => PackageError::Io(std::io::Error::other(format!(
+                "IO pending-byte budget exhausted: requested {requested} bytes, {available} available"
+            ))),
         }
     }
 }
@@ -222,11 +228,22 @@ pub fn ingest_zip_to_package_with_budget(
             // of a large asset are never materialised as one `Vec<u8>`.
             let before = ingested_total;
             let image_bytes: Option<Vec<u8>> = if is_transcodable_image(&name) {
-                // `cap` already bounds this read to the per-entry and remaining
-                // total budget, so an image cannot blow the archive limit here.
+                // Read one byte beyond the remaining budget.  `take(cap)` turns
+                // an over-budget ZIP entry into an apparently clean EOF, which
+                // used to publish a truncated original image after a sidecar had
+                // consumed part of the archive budget.
                 let mut buf = Vec::new();
-                let mut limited = (&mut entry).take(cap as u64);
+                let mut limited = (&mut entry).take(cap.saturating_add(1));
                 let read = limited.read_to_end(&mut buf)? as u64;
+                if read > cap {
+                    return Err(PackageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "image entry '{}' exceeds remaining budget {} bytes",
+                            name, cap
+                        ),
+                    )));
+                }
                 ingested_total = ingested_total.saturating_add(read);
                 writer.add_entry(&name, &buf)?;
                 Some(buf)
@@ -922,6 +939,177 @@ mod tests {
         assert_eq!(
             mt.read("subpackages/stage1/main.js").unwrap(),
             b"console.log('hello')"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FIO-01: When a sidecar has already consumed part of the archive budget,
+    /// the next image entry must not be silently truncated and published.  The
+    /// ingest must either include the original entry in full or fail cleanly.
+    ///
+    /// Three sub-cases from the audit (docs/audits/2026-09-09/full/io-network.md:31):
+    ///
+    /// * **cap+1 / sidecar boundary**: after img1 + its sidecar are ingested the
+    ///   remaining budget is exactly `png_size - 1`; the second image needs one
+    ///   more byte than the cap.  `take(cap)` silently truncates today — after fix
+    ///   this must return `Err`.
+    /// * **exact-cap**: remaining budget equals the second image's size exactly —
+    ///   the entry fits, ingest must return `Ok` with an intact original.
+    #[cfg(feature = "rust-image-decode")]
+    #[test]
+    fn sidecar_budget_exhaustion_rejects_truncated_original() {
+        use shared::vfs::package::PackageReader;
+
+        let dir = make_test_dir("sidecar_budget");
+        let first_png = real_png(8, 8);
+        let first_size = first_png.len() as u64;
+        // A 7x7 image is still a real PNG, but its dimensions are not
+        // 4-aligned, so transcode_image produces no second sidecar.  That
+        // isolates the budget boundary to the original entry under test.
+        let second_png = real_png(7, 7);
+        let second_size = second_png.len() as u64;
+        // ── Discovery run: ingest a single image to learn the sidecar size.
+        let zip_single = dir.join("single.zip");
+        {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_single).unwrap());
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("img.png", opts).unwrap();
+            zip.write_all(&first_png).unwrap();
+            zip.finish().unwrap();
+        }
+        let pkg_single = dir.join("single.mpkg");
+        ingest_zip_to_package(
+            &zip_single,
+            &pkg_single,
+            "disc",
+            "0",
+            GpuCapsSnapshot::default(),
+        )
+        .unwrap();
+        let reader_single = PackageReader::open(&pkg_single, "disc", "0").unwrap();
+        let sidecar_size = reader_single.entry_raw_size("img.ktx2").unwrap_or(0);
+        if sidecar_size == 0 {
+            // No sidecar produced (e.g. ETC2 not built in); vacuously true.
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        // ── Case 0 (sidecar itself cannot fit): the original fits exactly,
+        // but there is no budget left for its optional sidecar.  The sidecar
+        // must be skipped by failing the atomic ingest, never by publishing a
+        // partial package or replacing the prior target.
+        let pkg_sidecar_failure = dir.join("sidecar_too_large.mpkg");
+        let previous_sidecar_target = b"previous sidecar package";
+        std::fs::write(&pkg_sidecar_failure, previous_sidecar_target).unwrap();
+        let sidecar_failure_budget = ExtractBudget {
+            max_total_uncompressed: first_size,
+            max_entry_uncompressed: first_size,
+            max_compression_ratio: 0,
+            max_entries: 1000,
+        };
+        let sidecar_failure = ingest_zip_to_package_with_budget(
+            &zip_single,
+            &pkg_sidecar_failure,
+            "disc",
+            "0",
+            sidecar_failure_budget,
+            GpuCapsSnapshot::default(),
+        );
+        assert!(
+            sidecar_failure.is_err(),
+            "FIO-01 sidecar boundary: an over-budget sidecar must fail ingest"
+        );
+        assert_eq!(
+            std::fs::read(&pkg_sidecar_failure).unwrap(),
+            previous_sidecar_target,
+            "FIO-01 sidecar boundary: failed ingest must preserve the prior target"
+        );
+        assert!(
+            !pkg_sidecar_failure.with_extension("mpkg.tmp").exists(),
+            "FIO-01 sidecar boundary: failed ingest must clean its temporary output"
+        );
+
+        // ── Zip with two images: only the first is 4-aligned and gets a sidecar.
+        let zip_two = dir.join("two.zip");
+        {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_two).unwrap());
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("img1.png", opts).unwrap();
+            zip.write_all(&first_png).unwrap();
+            zip.start_file("img2.png", opts).unwrap();
+            zip.write_all(&second_png).unwrap();
+            zip.finish().unwrap();
+        }
+
+        // ── Case A (cap+1 / sidecar boundary):
+        // Budget = img1 + sidecar1 + (img2 - 1).  Pre-scan sees img1+img2 ≤ budget.
+        // At runtime: ingested_total after img1+sidecar = first_size + sidecar_size.
+        // Remaining = budget - (first_size + sidecar_size) = second_size - 1.
+        // cap = second_size - 1 < second_size → take(cap) truncates by 1 byte today.
+        let tight_budget = ExtractBudget {
+            max_total_uncompressed: first_size + second_size + sidecar_size - 1,
+            max_entry_uncompressed: first_size.max(second_size) * 4,
+            max_compression_ratio: 0,
+            max_entries: 1000,
+        };
+        let pkg_tight = dir.join("tight.mpkg");
+        let previous_target = b"previous package";
+        std::fs::write(&pkg_tight, previous_target).unwrap();
+        let result_tight = ingest_zip_to_package_with_budget(
+            &zip_two,
+            &pkg_tight,
+            "t",
+            "1",
+            tight_budget,
+            GpuCapsSnapshot::default(),
+        );
+        assert!(
+            result_tight.is_err(),
+            "FIO-01 cap+1: sidecar-exhausted budget silently published a truncated \
+             original — ingest must fail instead"
+        );
+        assert_eq!(
+            std::fs::read(&pkg_tight).unwrap(),
+            previous_target,
+            "FIO-01 cap+1: failed ingest must preserve the previous target"
+        );
+        assert!(
+            !pkg_tight.with_extension("mpkg.tmp").exists(),
+            "FIO-01 cap+1: failed ingest must clean its temporary output"
+        );
+
+        // ── Case B (exact-cap):
+        // Budget = img1 + sidecar1 + img2 exactly — second image fits in full.
+        let exact_budget = ExtractBudget {
+            max_total_uncompressed: first_size + second_size + sidecar_size,
+            max_entry_uncompressed: first_size.max(second_size) * 4,
+            max_compression_ratio: 0,
+            max_entries: 1000,
+        };
+        let pkg_exact = dir.join("exact.mpkg");
+        ingest_zip_to_package_with_budget(
+            &zip_two,
+            &pkg_exact,
+            "t",
+            "1",
+            exact_budget,
+            GpuCapsSnapshot::default(),
+        )
+        .expect("FIO-01 exact-cap: second image that fits exactly must succeed");
+
+        let reader = PackageReader::open(&pkg_exact, "t", "1").unwrap();
+        assert_eq!(
+            reader.read_entry("img1.png").unwrap().as_slice(),
+            first_png.as_slice(),
+            "FIO-01 exact-cap: img1 must be bit-exact after a tight-budget ingest"
+        );
+        assert_eq!(
+            reader.read_entry("img2.png").unwrap().as_slice(),
+            second_png.as_slice(),
+            "FIO-01 exact-cap: img2 must be bit-exact after a tight-budget ingest"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

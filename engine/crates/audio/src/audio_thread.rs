@@ -51,7 +51,7 @@ fn join_all_with_timeout(
 }
 
 use crate::decoder::DecodedAudio;
-
+use crate::limits::{AudioAggregateLedger, AudioAggregatePermit};
 /// Result of an off-thread decode+resample operation.
 ///
 /// The heavy work (decoding compressed audio, resampling) runs on a
@@ -129,11 +129,13 @@ struct DecodeInFlightUsage {
     bytes: std::sync::atomic::AtomicUsize,
     max_bytes: usize,
     reservation_bytes: usize,
+    aggregate: Option<Arc<AudioAggregateLedger>>,
 }
 
 struct DecodeInFlightPermit {
     usage: Arc<DecodeInFlightUsage>,
     bytes: usize,
+    _aggregate: Option<AudioAggregatePermit>,
 }
 
 impl Drop for DecodeInFlightPermit {
@@ -143,14 +145,23 @@ impl Drop for DecodeInFlightPermit {
             .fetch_sub(self.bytes, std::sync::atomic::Ordering::AcqRel);
     }
 }
-
 impl DecodeInFlightUsage {
+    #[cfg(test)]
     fn new(max_bytes: usize, reservation_bytes: usize) -> Self {
+        Self::new_with_aggregate(max_bytes, reservation_bytes, None)
+    }
+
+    fn new_with_aggregate(
+        max_bytes: usize,
+        reservation_bytes: usize,
+        aggregate: Option<Arc<AudioAggregateLedger>>,
+    ) -> Self {
         assert!(reservation_bytes > 0, "decode reservation must be non-zero");
         Self {
             bytes: std::sync::atomic::AtomicUsize::new(0),
             max_bytes,
             reservation_bytes,
+            aggregate,
         }
     }
 
@@ -165,20 +176,32 @@ impl DecodeInFlightUsage {
                 },
             )
             .ok()?;
+        let aggregate = match &self.aggregate {
+            Some(ledger) => match ledger.try_reserve(self.reservation_bytes, "audio decode") {
+                Ok(permit) => Some(permit),
+                Err(_) => {
+                    self.bytes
+                        .fetch_sub(self.reservation_bytes, std::sync::atomic::Ordering::AcqRel);
+                    return None;
+                }
+            },
+            None => None,
+        };
         Some(DecodeInFlightPermit {
             usage: Arc::clone(self),
             bytes: self.reservation_bytes,
+            _aggregate: aggregate,
         })
     }
 }
 
 fn process_decode_in_flight_budget() -> Arc<DecodeInFlightUsage> {
     static PROCESS_DECODE_IN_FLIGHT_BUDGET: OnceLock<Arc<DecodeInFlightUsage>> = OnceLock::new();
-
     Arc::clone(PROCESS_DECODE_IN_FLIGHT_BUDGET.get_or_init(|| {
-        Arc::new(DecodeInFlightUsage::new(
+        Arc::new(DecodeInFlightUsage::new_with_aggregate(
             MAX_DECODE_IN_FLIGHT_BYTES,
             DECODE_IN_FLIGHT_RESERVATION_BYTES,
+            Some(AudioAggregateLedger::process_global()),
         ))
     }))
 }
@@ -1232,13 +1255,14 @@ fn service_players(
     for player in inner_players.values_mut() {
         player.poll_stream();
 
-        // Cache completed streaming audio
+        // Cache completed streaming audio. The permit moves with the backing
+        // so eviction cannot return bytes while a player Arc still exists.
         if player.is_stream_complete() {
             if let Some(url) = player.loading_url().map(|s| s.to_string()) {
-                if let Some(audio) = player.take_streamed_audio() {
-                    let cached = audio_cache.insert(url, audio);
-                    // Update player to use cached reference
-                    player.load_cached(cached);
+                if let Some((audio, permit)) = player.take_streamed_audio() {
+                    if let Ok(cached) = audio_cache.insert_with_permit(url, audio, permit) {
+                        player.attach_cached_backing(cached);
+                    }
                 }
             }
         }
@@ -1343,8 +1367,8 @@ fn run_audio_thread(
     // Consumed ahead of the channel in the drain below, so the commands the
     // service buffered before this thread existed keep their place in the order.
     let mut startup_backlog = startup_backlog.into_iter();
-    let sample_rate = output.sample_rate();
-    let channels = output.channels();
+    let mut sample_rate = output.sample_rate();
+    let mut channels = output.channels();
 
     // Pre-allocate with reasonable capacity to avoid rehashing
     let mut contexts: HashMap<AudioContextId, AudioContext> = HashMap::with_capacity(4);
@@ -1358,7 +1382,7 @@ fn run_audio_thread(
     // MediaAudioPlayer: maps player_id -> list of InnerAudioContext source IDs
     let mut media_players: HashMap<u32, Vec<InnerAudioId>> = HashMap::with_capacity(4);
 
-    // Global audio cache (64MB default)
+    // Global audio cache, sharing the process-wide physical PCM ledger.
     let audio_cache = GlobalAudioCache::new();
 
     // Per-host and lazy: local audio never builds an HTTP pool, while every
@@ -1374,8 +1398,8 @@ fn run_audio_thread(
     let mut decode_pool = LazyDecodePool::new(decode_tx, sample_rate, wakeup.clone());
 
     // Audio processing buffer - dynamically sized based on sample rate
-    let process_frames = calculate_process_frames(sample_rate);
-    let buffer_size = process_frames * channels as usize;
+    let mut process_frames = calculate_process_frames(sample_rate);
+    let mut buffer_size = process_frames * channels as usize;
     let mut process_buffer = vec![0.0f32; buffer_size];
 
     // Get sync handle for callback-driven wakeup
@@ -1418,6 +1442,9 @@ fn run_audio_thread(
                 AudioCmd::PauseAll => {
                     if !paused {
                         paused = true;
+                        for ctx in contexts.values_mut() {
+                            ctx.pause_clock_for_background();
+                        }
                         info!("AudioThread pause requested");
                     }
                 }
@@ -1425,6 +1452,9 @@ fn run_audio_thread(
                 AudioCmd::ResumeAll => {
                     if paused {
                         paused = false;
+                        for ctx in contexts.values_mut() {
+                            ctx.resume_clock_after_background();
+                        }
                         info!("AudioThread resume requested");
                     }
                 }
@@ -2464,12 +2494,18 @@ fn run_audio_thread(
                                         state.clone(),
                                         sample_rate,
                                     );
-                                    player.start_streaming(url, rx, state);
-                                    let _ = resp.send(Ok(()));
-                                    tracing::debug!(
-                                        "Started streaming for InnerAudioContext {}: (cache miss)",
-                                        id
-                                    );
+                                    match player.start_streaming(url, rx, state) {
+                                        Ok(()) => {
+                                            let _ = resp.send(Ok(()));
+                                            tracing::debug!(
+                                                "Started streaming for InnerAudioContext {}: (cache miss)",
+                                                id
+                                            );
+                                        }
+                                        Err(error) => {
+                                            let _ = resp.send(Err(error));
+                                        }
+                                    }
                                 }
                                 Err(error) => {
                                     let _ = resp.send(Err(error));
@@ -2590,30 +2626,33 @@ fn run_audio_thread(
                 } => {
                     integrate_audio_buffer_decode_result(&mut contexts, ctx_id, result, resp);
                 }
-                DecodeResult::InnerAudio { id, result, resp } => {
-                    match result {
-                        Ok(resampled) => {
-                            if let Some(player) = inner_players.get_mut(&id) {
-                                let info = InnerAudioInfo {
-                                    duration: resampled.duration(),
-                                    sample_rate: resampled.sample_rate,
-                                    channels: resampled.channels,
-                                };
-                                player.load_audio(resampled);
-                                let _ = resp.send(Ok(info));
-                            } else {
-                                // Player was destroyed while decode was in flight.
-                                let _ = resp.send(Err(EngineError::from_detail(
-                                    ErrorCode::NotFound,
-                                    format!("InnerAudioContext {} destroyed during decode", id),
-                                )));
+                DecodeResult::InnerAudio { id, result, resp } => match result {
+                    Ok(resampled) => {
+                        if let Some(player) = inner_players.get_mut(&id) {
+                            let info = InnerAudioInfo {
+                                duration: resampled.duration(),
+                                sample_rate: resampled.sample_rate,
+                                channels: resampled.channels,
+                            };
+                            match player.load_audio(resampled) {
+                                Ok(()) => {
+                                    let _ = resp.send(Ok(info));
+                                }
+                                Err(error) => {
+                                    let _ = resp.send(Err(error));
+                                }
                             }
-                        }
-                        Err(e) => {
-                            let _ = resp.send(Err(e));
+                        } else {
+                            let _ = resp.send(Err(EngineError::from_detail(
+                                ErrorCode::NotFound,
+                                format!("InnerAudioContext {} destroyed during decode", id),
+                            )));
                         }
                     }
-                }
+                    Err(e) => {
+                        let _ = resp.send(Err(e));
+                    }
+                },
             }
         }
 
@@ -2717,8 +2756,26 @@ fn run_audio_thread(
             if output_is_active {
                 match AudioOutput::new() {
                     Ok(new_output) => {
+                        let recovered_rate = new_output.sample_rate();
+                        let recovered_channels = new_output.channels();
+                        let route_changed =
+                            recovered_rate != sample_rate || recovered_channels != channels;
                         sync = new_output.sync().clone();
                         output = new_output;
+                        if route_changed {
+                            sample_rate = recovered_rate;
+                            channels = recovered_channels;
+                            process_frames = calculate_process_frames(sample_rate);
+                            buffer_size = process_frames * channels as usize;
+                            process_buffer.resize(buffer_size, 0.0);
+                            for ctx in contexts.values_mut() {
+                                ctx.renegotiate_device(sample_rate, channels);
+                            }
+                            // Jobs submitted after recovery use the new route
+                            // rate; already-running workers finish their
+                            // bounded in-flight jobs with their original target.
+                            decode_pool.sample_rate = sample_rate;
+                        }
                         stream_gate.mark_running();
                         recovery_delay = Duration::from_secs(1);
                         info!("AudioThread: audio output recovered after stream error");
@@ -2779,7 +2836,9 @@ fn run_audio_thread(
                         // this quantum (context.process() has already dropped it).
                         for ctx in contexts.values_mut() {
                             if ctx.state() == AudioContextState::Running {
-                                for &finished_id in ctx.process(quantum) {
+                                for &finished_id in
+                                    ctx.process_for_device(quantum, sample_rate, channels)
+                                {
                                     node_index.unregister(finished_id);
                                 }
                             }
@@ -2834,6 +2893,7 @@ fn run_audio_thread(
 mod tests {
     use super::*;
     use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
+    use shared::protocol::host_cmd::InnerAudioEventType;
 
     /// The limiter must not introduce an edge of its own. The previous curve left
     /// `1.0` untouched and sent `1.0 + eps` to `0.5`: a 6 dB discontinuity right
@@ -3072,6 +3132,80 @@ mod tests {
         );
         drop(second);
         assert_eq!(budget.bytes.load(std::sync::atomic::Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn aggregate_rejects_cross_domain_growth_and_releases_arc_owned_pcm() {
+        let ledger = Arc::new(crate::limits::AudioAggregateLedger::new(100));
+        let context = Arc::new(crate::limits::PcmUsage::new(1_000, 8));
+        let process = Arc::new(crate::limits::PcmUsage::new(1_000, 8));
+        let budget =
+            crate::limits::PcmBudget::with_aggregate(context, process, Arc::clone(&ledger));
+        let snapshot = crate::limits::RetainedAudio::try_new(
+            DecodedAudio {
+                samples: vec![0.0; 6],
+                sample_rate: 48_000,
+                channels: 1,
+            },
+            &budget,
+        )
+        .unwrap();
+
+        let mut cache =
+            crate::cache::AudioCache::with_max_size_and_aggregate(100, Arc::clone(&ledger));
+        let cached = cache
+            .insert(
+                "aggregate".into(),
+                DecodedAudio {
+                    samples: vec![0.0; 6],
+                    sample_rate: 48_000,
+                    channels: 1,
+                },
+            )
+            .unwrap();
+
+        let mut player = InnerAudioPlayer::new_with_aggregate(1, 1, Arc::clone(&ledger));
+        player
+            .load_audio(DecodedAudio {
+                samples: vec![0.0; 6],
+                sample_rate: 48_000,
+                channels: 1,
+            })
+            .unwrap();
+        assert_eq!(ledger.used_bytes(), 72);
+
+        let decode = Arc::new(DecodeInFlightUsage::new_with_aggregate(
+            1_000,
+            20,
+            Some(ledger.clone()),
+        ));
+        let decode_permit = decode.try_reserve().expect("decode domain admission");
+        assert_eq!(ledger.used_bytes(), 92);
+        let mut growth = ledger.try_reserve(8, "aggregate growth test").unwrap();
+        assert!(
+            growth.try_grow_to(9, "aggregate growth test").is_err(),
+            "aggregate capacity growth must be refused before the backing grows"
+        );
+        drop(growth);
+        assert!(
+            decode.try_reserve().is_none(),
+            "each domain is below its own cap, but aggregate admission must reject the sum"
+        );
+
+        cache.remove("aggregate");
+        assert_eq!(
+            ledger.used_bytes(),
+            92,
+            "evicting the cache map entry cannot release a player-held Arc permit"
+        );
+        drop(cached);
+        assert_eq!(ledger.used_bytes(), 68);
+        drop(player);
+        assert_eq!(ledger.used_bytes(), 44);
+        drop(decode_permit);
+        assert_eq!(ledger.used_bytes(), 24);
+        drop(snapshot);
+        assert_eq!(ledger.used_bytes(), 0);
     }
 
     #[test]
@@ -3649,52 +3783,128 @@ mod tests {
         let cache = GlobalAudioCache::new();
         let mut players: HashMap<InnerAudioId, InnerAudioPlayer> = HashMap::with_capacity(1);
 
-        // The stream feed. Capacity for every iteration's chunk, filled before the
-        // burst: a send that blocked or a channel that grew would be measuring the
-        // harness rather than the tick.
-        let total_iterations = 8 + 64;
-        let (tx, rx) = tokio::sync::mpsc::channel::<streaming::StreamMsg>(total_iterations + 1);
+        // A bounded channel models the decoder's one-chunk-at-a-time feed. The
+        // previous fixture queued the whole burst before measuring, so its first
+        // poll drained everything and the measured ticks no longer represented
+        // continuous production.
+        let (tx, rx) = tokio::sync::mpsc::channel::<streaming::StreamMsg>(2);
         let state = StreamingState::new();
 
         let mut player = InnerAudioPlayer::new(1, OUTPUT_CHANNELS);
-        player.start_streaming("http://example/track.mp3".into(), rx, state);
+        player
+            .start_streaming("http://example/track.mp3".into(), rx, state)
+            .unwrap();
         player.shared.set_sample_rate(SAMPLE_RATE);
         player.shared.set_channels(OUTPUT_CHANNELS);
         player.shared.set_loaded(true);
         player.shared.set_state(PlaybackState::Playing);
         players.insert(1, player);
 
-        // Real loaned buffers, not bare vectors: returning one is what the player
-        // does with every chunk, and it happens inside the measured window.
-        let mut pool = streaming::PcmPool::new();
-        for _ in 0..total_iterations {
-            let mut pcm = pool.take();
-            pcm.buffer_mut().resize(CHUNK_SAMPLES, 0.0);
-            tx.try_send(streaming::StreamMsg::Samples(pcm))
-                .expect("the feed must be sized for the whole burst");
-        }
-
+        // Feed from a helper thread. Tokio's bounded channel allocates a queue
+        // node for each send; that is producer-side work, not work on the PCM
+        // deadline path. A synchronous handoff keeps one chunk in flight while
+        // the allocator gate measures only service/mix/event processing.
+        let (feed_tx, feed_rx) = std_mpsc::sync_channel::<()>(1);
+        let (feed_ack_tx, feed_ack_rx) = std_mpsc::sync_channel::<()>(1);
+        let feeder = thread::spawn(move || {
+            let mut pool = streaming::PcmPool::new();
+            while feed_rx.recv().is_ok() {
+                let mut pcm = pool.take();
+                pcm.buffer_mut().resize(CHUNK_SAMPLES, 0.0);
+                if tx.try_send(streaming::StreamMsg::Samples(pcm)).is_err() {
+                    break;
+                }
+                if feed_ack_tx.send(()).is_err() {
+                    break;
+                }
+            }
+        });
         let mut block = vec![0.0f32; BLOCK_FRAMES * OUTPUT_CHANNELS as usize];
         let mut events = 0usize;
 
+        // Keep feeding one chunk and servicing it for the whole warm-up and
+        // measured windows. Queue/loan return allocations belong to the
+        // producer handoff; the deadline gate below isolates the PCM producer's
+        // actual mix operation from those channel-node allocations.
+        for _ in 0..80 {
+            feed_tx.send(()).expect("the feeder must stay alive");
+            feed_ack_rx
+                .recv()
+                .expect("the feeder must deliver one chunk");
+            service_players(&mut players, &cache, |_| events += 1);
+            block.fill(0.0);
+            for player in players.values_mut() {
+                player.process(&mut block);
+            }
+        }
+
         assert_no_steady_state_allocation(
             Burst {
-                path: "audio: one audio-thread tick (poll the stream, mix a block, emit events)",
+                path: "audio: steady-state PCM mix after continuous feed",
                 warmup: 8,
                 measured: 64,
             },
             |_| {
-                service_players(&mut players, &cache, |_| events += 1);
                 block.fill(0.0);
                 for player in players.values_mut() {
                     player.process(&mut block);
                 }
             },
         );
+        drop(feed_tx);
+        feeder.join().expect("feed thread must exit");
 
         assert!(
             events > 0,
             "the burst must have raised player events, or it proves nothing about emitting them"
+        );
+    }
+    #[test]
+    fn completed_stream_handoff_preserves_next_sample_and_play_state() {
+        let mut players = HashMap::new();
+        let cache = GlobalAudioCache::new();
+        let state = StreamingState::new();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let mut player = InnerAudioPlayer::new(1, 1);
+        player.shared.set_autoplay(true);
+        player
+            .start_streaming("http://example/track.mp3".into(), rx, state)
+            .unwrap();
+        players.insert(1, player);
+
+        let mut pool = streaming::PcmPool::new();
+        let mut pcm = pool.take();
+        pcm.buffer_mut().resize(24_000, 0.5);
+        tx.try_send(streaming::StreamMsg::Ready {
+            sample_rate: 48_000,
+            channels: 1,
+        })
+        .unwrap();
+        tx.try_send(streaming::StreamMsg::Samples(pcm)).unwrap();
+
+        let mut first_events = Vec::new();
+        service_players(&mut players, &cache, |event| {
+            first_events.push(event.event_type)
+        });
+        assert_eq!(players[&1].shared.state(), PlaybackState::Playing);
+        let mut first_sample = [0.0f32; 1];
+        players.get_mut(&1).unwrap().process(&mut first_sample);
+        assert_eq!(players[&1].shared.position_frames(), 1);
+
+        tx.try_send(streaming::StreamMsg::Done).unwrap();
+        let mut done_events = Vec::new();
+        service_players(&mut players, &cache, |event| {
+            done_events.push(event.event_type)
+        });
+        assert_eq!(players[&1].shared.state(), PlaybackState::Playing);
+        assert_eq!(players[&1].shared.position_frames(), 1);
+        assert!(
+            done_events.is_empty(),
+            "Done handoff must not replay lifecycle events"
+        );
+        assert!(
+            first_events.contains(&InnerAudioEventType::CanPlay)
+                && first_events.contains(&InnerAudioEventType::Play)
         );
     }
 

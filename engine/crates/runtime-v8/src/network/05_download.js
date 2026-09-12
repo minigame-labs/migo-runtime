@@ -52,9 +52,12 @@ class DownloadTask extends NetworkTask {
 
 let _dlCounter = 0;
 
-function generateTempFilePath() {
-    const id = (++_dlCounter).toString(36) + '_' + Date.now().toString(36);
-    return `/tmp/dl_${id}`;
+function generateTempFilePath(targetPath) {
+    const slash = targetPath.lastIndexOf('/');
+    const parent = slash >= 0 ? targetPath.substring(0, slash + 1) : '';
+    const name = slash >= 0 ? targetPath.substring(slash + 1) : targetPath;
+    const id = (++_dlCounter).toString(36);
+    return parent + '.' + name + '.migo-download-' + id + '.part';
 }
 
 function makeError(errno, msg) {
@@ -82,14 +85,11 @@ function downloadFile(options = {}) {
         return new DownloadTask(null);
     }
 
-    const targetPath = filePath || generateTempFilePath();
-    // Write the body into `<targetPath>.part` first and only rename it
-    // onto the real `targetPath` when the whole response has been
-    // committed to disk. That way an abort / network error / process
-    // crash never leaves a half-written file pretending to be the
-    // real resource; callers that `stat(targetPath)` only see
-    // complete downloads.
-    const tmpPath = targetPath + ".part";
+    const targetPath = filePath || generateTempFilePath('/tmp/dl');
+    // Every task owns an exclusive temporary inode in the destination
+    // directory. A fixed `<target>.part` lets concurrent tasks truncate,
+    // interleave, and unlink one another's work.
+    const tmpPath = generateTempFilePath(targetPath);
     const headers = Object.entries(header).map(([key, value]) => [key, String(value)]);
 
     // Create fetch request (GET, no body)
@@ -106,9 +106,11 @@ function downloadFile(options = {}) {
 
     const cancellation = {
         aborted: false,
+        responseRid: null,
         abort() {
             this.aborted = true;
             if (cancelHandleRid !== null) core.tryClose(cancelHandleRid);
+            if (this.responseRid !== null) core.tryClose(this.responseRid);
         }
     };
 
@@ -117,8 +119,11 @@ function downloadFile(options = {}) {
     (async () => {
         let fd = null;
         try {
-            // Send request and wait for response headers
             const resp = await op_fetch_send(requestRid);
+            // Register the body resource before checking cancellation: abort
+            // may run in the handoff window after send resolves but before
+            // this continuation resumes.
+            cancellation.responseRid = resp?.responseRid || null;
             if (cancellation.aborted) throw "aborted";
 
             if (resp?.error) {
@@ -131,38 +136,26 @@ function downloadFile(options = {}) {
             const statusCode = resp.status;
             const respHeader = new Header(resp.headers, statusCode);
             downloadTask._triggerHeadersReceived(respHeader);
+            if (cancellation.aborted) throw "aborted";
 
             const totalBytes = resp.contentLength || 0;
+            fd = await op_open_file(tmpPath, "wx");
+            if (cancellation.aborted) throw "aborted";
 
-            // Open `tmpPath` for truncate-create. We never open the
-            // final `targetPath` ourselves; the rename at the bottom
-            // atomically swaps `.part` into place only on success.
-            fd = await op_open_file(tmpPath, "w");
-
-            // Stream response body to file chunk by chunk
             let bytesWritten = 0;
             let lastProgressTime = 0;
             const buffer = new Uint8Array(CHUNK_SIZE);
-
             while (true) {
-                if (cancellation.aborted) {
-                    core.tryClose(resp.responseRid);
-                    throw "aborted";
-                }
-
+                if (cancellation.aborted) throw "aborted";
                 const bytesRead = await core.read(resp.responseRid, buffer);
-                if (bytesRead === 0) {
-                    break;
-                }
+                if (cancellation.aborted) throw "aborted";
+                if (bytesRead === 0) break;
 
                 const chunk = buffer.subarray(0, bytesRead);
-
-                // Write chunk to file at current position
                 await op_write_file(fd, chunk, null, null, null);
+                if (cancellation.aborted) throw "aborted";
 
                 bytesWritten += bytesRead;
-
-                // Throttled progress reporting
                 const now = Date.now();
                 if (now - lastProgressTime >= PROGRESS_INTERVAL) {
                     const progress = totalBytes > 0
@@ -174,39 +167,27 @@ function downloadFile(options = {}) {
             }
 
             core.tryClose(resp.responseRid);
-
-            // Close file so the kernel commits pending buffers
-            // before the rename lands.
+            cancellation.responseRid = null;
             await op_close_file(fd);
+            if (cancellation.aborted) throw "aborted";
             fd = null;
 
-            // Atomic commit: rename `<targetPath>.part` -> `<targetPath>`.
-            // `op_rename` maps to the Rust-side `fs_ops::rename` which
-            // now includes an EXDEV fallback, so this works even when
-            // the download dir and final path are on different mounts.
             await op_rename(tmpPath, targetPath);
+            if (cancellation.aborted) throw "aborted";
 
-            // Final progress at 100%
             const finalTotal = totalBytes || bytesWritten;
             downloadTask._triggerProgress(100, bytesWritten, finalTotal);
-
             const result = new DownloadResponse(
-                filePath ? undefined : targetPath,  // tempFilePath only when no explicit filePath
+                filePath ? undefined : targetPath,
                 filePath || undefined,
                 statusCode
             );
             success(result);
             complete(result);
-
         } catch (err) {
-            // Clean up file descriptor on error
             if (fd !== null) {
                 try { await op_close_file(fd); } catch (_) {}
             }
-            // Remove the `.part` so it never appears alongside (or in
-            // place of) a valid download. Swallowing errors is
-            // deliberate: the file may not exist yet, or the cleanup
-            // itself may race against a follow-up call.
             try { await op_unlink(tmpPath); } catch (_) {}
 
             if (cancellation.aborted || err === "aborted") {
@@ -219,6 +200,10 @@ function downloadFile(options = {}) {
                 complete(error);
             }
         } finally {
+            if (cancellation.responseRid !== null) {
+                core.tryClose(cancellation.responseRid);
+                cancellation.responseRid = null;
+            }
             if (cancelHandleRid !== null) core.tryClose(cancelHandleRid);
         }
     })();

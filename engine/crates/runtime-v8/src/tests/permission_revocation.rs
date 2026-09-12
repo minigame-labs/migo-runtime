@@ -34,9 +34,9 @@ impl CameraService for FakeCamera {
         Ok("{}".to_string())
     }
 
-    fn take_photo(&self, _options_json: &str) -> Result<String, ServiceError> {
+    fn take_photo_async(&self, _request_id: u32, _options_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
+        Ok(())
     }
 
     fn start_record(&self, _options_json: &str) -> Result<String, ServiceError> {
@@ -300,7 +300,7 @@ fn denied_camera_can_release_but_cannot_acquire_or_use() {
 
     run(
         &mut runtime,
-        "__camera.takePhoto({ fail() {} }); \
+        "try { __camera.takePhoto({ fail() {} }); } catch (_) {} \
          __camera.startRecord({ fail() {} }); \
          __camera.setZoom({ zoom: 2, fail() {} }); \
          __camera.listenFrameChange(); \

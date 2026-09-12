@@ -177,12 +177,27 @@ function promisify(apiName, executor) {
 //   const res = await getLocation({ type: 'gcj02' }); // promise
 // defaultTimeoutMs: auto-reject after this many ms if platform never settles.
 // Pass 0 to disable timeout.  Individual calls can override via opts._timeout.
+var MAX_DEFERRED_PENDING = 256;
+var _deferredPendingCount = 0;
+// This is a runtime-wide item budget, shared by every deferred API instance
+// in this JavaScript runtime. A timer limit is not a request budget: timer
+// admission can fail, and APIs with timeout disabled would otherwise have no
+// bound.
+
 function createDeferredApi(apiName, defaultTimeoutMs) {
     var _pending = new Map();
     if (defaultTimeoutMs === undefined) defaultTimeoutMs = 30000;
 
+    function removePending(requestId) {
+        var entry = _pending.get(requestId);
+        if (!entry) return null;
+        _pending.delete(requestId);
+        _deferredPendingCount--;
+        return entry;
+    }
+
     function _settleEntry(entry, parsed) {
-        if (entry._timer) clearTimeout(entry._timer);
+        clearTimeout(entry._timer);
         if (entry._t0) {
             var elapsed = performance.now() - entry._t0;
             if (elapsed >= _perf.deferredMs) {
@@ -215,6 +230,16 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
         var complete = typeof opts.complete === 'function' ? opts.complete : null;
 
         return new Promise(function (resolve, reject) {
+            // Admission is runtime-wide and independent of timer capacity:
+            // timeout=0 requests still need a finite in-flight bound.
+            if (_deferredPendingCount >= MAX_DEFERRED_PENDING) {
+                var capFailure = { errMsg: apiName + ':fail pending limit' };
+                invokeCallback(apiName, 'fail', fail, capFailure);
+                invokeCallback(apiName, 'complete', complete, capFailure);
+                reject(capFailure);
+                return;
+            }
+
             // Before the pending entry and before the platform call: an
             // exhausted id space must leave nothing registered and dispatch
             // nothing, rather than register under an id it could not obtain.
@@ -222,7 +247,7 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
             try {
                 requestId = allocateHostCallbackId();
             } catch (e) {
-                var allocFailure = { errMsg: apiName + ':fail ' + e.message };
+                var allocFailure = { errMsg: apiName + ':fail ' + errorMessage(e) };
                 invokeCallback(apiName, 'fail', fail, allocFailure);
                 invokeCallback(apiName, 'complete', complete, allocFailure);
                 reject(allocFailure);
@@ -239,33 +264,32 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                 _t0: _perf.enabled ? performance.now() : 0,
             };
             _pending.set(requestId, pendingEntry);
+            _deferredPendingCount++;
 
-            // Schedule auto-reject if the platform never settles.
-            var ms = (opts && typeof opts._timeout === 'number') ? opts._timeout : defaultTimeoutMs;
-            if (ms > 0) {
-                pendingEntry._timer = setTimeout(function () {
-                    var e = _pending.get(requestId);
-                    if (!e) return;
-                    _pending.delete(requestId);
-                    var res = { errMsg: apiName + ':fail timeout' };
-                    invokeCallback(apiName, 'fail', e.fail, res);
-                    invokeCallback(apiName, 'complete', e.complete, res);
-                    e.reject(res);
-                }, ms);
-            }
-
+            // Timer admission and executor dispatch are one rollback scope:
+            // either both start, or the pending entry and timer are removed and
+            // the caller receives exactly one failure settlement.
             try {
+                var ms = (opts && typeof opts._timeout === 'number') ? opts._timeout : defaultTimeoutMs;
+                if (ms > 0) {
+                    pendingEntry._timer = setTimeout(function () {
+                        var e = removePending(requestId);
+                        if (!e) return;
+                        var res = { errMsg: apiName + ':fail timeout' };
+                        invokeCallback(apiName, 'fail', e.fail, res);
+                        invokeCallback(apiName, 'complete', e.complete, res);
+                        e.reject(res);
+                    }, ms);
+                }
                 executor(opts, requestId);
             } catch (e) {
-                var entry = _pending.get(requestId);
-                if (entry) {
-                    _pending.delete(requestId);
-                    if (entry._timer) clearTimeout(entry._timer);
-                    var res = { errMsg: apiName + ':fail ' + e.message };
-                    invokeCallback(apiName, 'fail', fail, res);
-                    invokeCallback(apiName, 'complete', complete, res);
-                    reject(res);
-                }
+                var entry = removePending(requestId);
+                if (!entry) return;
+                clearTimeout(entry._timer);
+                var res = { errMsg: apiName + ':fail ' + errorMessage(e) };
+                invokeCallback(apiName, 'fail', entry.fail, res);
+                invokeCallback(apiName, 'complete', entry.complete, res);
+                entry.reject(res);
             }
         });
     }
@@ -291,11 +315,8 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
         if (parsed !== null && typeof parsed === 'object' && 'requestId' in parsed) {
             var requestId = parseHostCallbackId(parsed.requestId);
             if (requestId === null) return;
-            var entry = _pending.get(requestId);
-            if (entry) {
-                _pending.delete(requestId);
-                _settleEntry(entry, parsed);
-            }
+            var entry = removePending(requestId);
+            if (entry) _settleEntry(entry, parsed);
             // Present but unknown: already settled, or timed out. Discarding is
             // the only safe answer -- there is no second candidate.
             return;
@@ -319,13 +340,37 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                 'using FIFO fallback. Platform Manager should include requestId ' +
                 'in the result JSON to support concurrent requests correctly.'
             );
-            var entry = _pending.get(first.value);
-            _pending.delete(first.value);
+            var entry = removePending(first.value);
             _settleEntry(entry, parsed);
         }
     }
 
-    return { invoke: invoke, settle: settle, settleParsed: settleParsed };
+    // Native cancellation, when a platform supports it, uses the same
+    // settlement gate as timeout and completion. It never returns a request
+    // slot twice, and it does not claim native work was cancelled.
+    function cancel(requestId, reason) {
+        var entry = removePending(requestId);
+        if (!entry) return false;
+        clearTimeout(entry._timer);
+        var res = { errMsg: apiName + ':fail ' + (reason || 'cancelled') };
+        invokeCallback(apiName, 'fail', entry.fail, res);
+        invokeCallback(apiName, 'complete', entry.complete, res);
+        entry.reject(res);
+        return true;
+    }
+
+    function pendingCount() {
+        return _pending.size;
+    }
+
+    return {
+        invoke: invoke,
+        settle: settle,
+        settleParsed: settleParsed,
+        cancel: cancel,
+        pendingCount: pendingCount,
+    };
+
 }
 
 // Factory for event listener groups (on/off/trigger pattern).

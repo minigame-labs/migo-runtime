@@ -128,17 +128,29 @@ pub(crate) fn forget_deleted_program(state: &mut CanvasGLState, program: Program
     invalidate_program_uniforms(state, program);
 }
 
-/// Hash-and-compare dedup for a uniform upload.
+/// Hash-and-compare dedup for a single-location uniform upload.
 ///
-/// `value_bytes` is the raw byte slice the caller would have handed to
-/// `glUniform*` (e.g. `bytemuck::bytes_of(&[f32; 4])`).  Returns `true`
-/// if the upload is not redundant and should be issued. On `true`, normal-size
-/// values update the cache so the *next* identical call dedups; oversized
-/// values deliberately bypass retention and therefore continue to return true.
+/// Existing scalar-only callers use this wrapper; ranged setters must call
+/// [`update_uniform_range`] with the number of consecutive locations they
+/// write. Keeping the scalar wrapper avoids making unrelated state-tracker
+/// tests and helpers repeat a constant while ensuring renderer array paths
+/// carry their actual range.
 pub(crate) fn update_uniform(
     state: &mut CanvasGLState,
     program: ProgramId,
     location: u32,
+    value_bytes: &[u8],
+) -> bool {
+    update_uniform_range(state, program, location, 1, value_bytes)
+}
+
+/// Hash-and-compare dedup for a uniform upload spanning `location_count`
+/// consecutive GL uniform locations.
+pub(crate) fn update_uniform_range(
+    state: &mut CanvasGLState,
+    program: ProgramId,
+    location: u32,
+    location_count: u32,
     value_bytes: &[u8],
 ) -> bool {
     issue_if(super::uniform_cache::update(
@@ -146,6 +158,7 @@ pub(crate) fn update_uniform(
         MAX_UNIFORM_CACHE,
         program,
         location,
+        location_count,
         value_bytes,
     ))
 }
@@ -570,9 +583,9 @@ pub(crate) fn update_disable(state: &mut CanvasGLState, cap: u32) -> bool {
 /// `glBindFramebuffer(target, fb)`.  `fb = 0` (driver) == `None` shadow
 /// (default FBO).  Returns `true` if the GL call must be issued.
 ///
-/// WebGL spec: the same `target` value covers DRAW / READ on WebGL 1
-/// (they're identical), but WebGL 2 separates them.  We shadow per
-/// target key to keep both cases correct.
+/// `FRAMEBUFFER` changes both binding points; READ and DRAW change one each.
+/// Only client IDs belong here. Temporary engine bindings must restore actual
+/// native handles without entering this client shadow.
 pub(crate) fn update_bind_framebuffer(
     state: &mut CanvasGLState,
     target: u32,
@@ -2209,13 +2222,80 @@ mod tests {
     // ---------------------------------------------------------------------
 
     #[test]
+    fn framebuffer_combined_bind_repairs_each_separate_binding() {
+        for target in [glow::READ_FRAMEBUFFER, glow::DRAW_FRAMEBUFFER] {
+            let mut s = fresh_state();
+            assert!(update_bind_framebuffer(&mut s, glow::FRAMEBUFFER, Some(7)));
+            assert!(update_bind_framebuffer(&mut s, target, Some(9)));
+            assert!(
+                update_bind_framebuffer(&mut s, glow::FRAMEBUFFER, Some(7)),
+                "FRAMEBUFFER must restore the separate target changed to 9"
+            );
+            assert_eq!(
+                s.bound_framebuffer.get(glow::READ_FRAMEBUFFER),
+                Some(Some(7))
+            );
+            assert_eq!(
+                s.bound_framebuffer.get(glow::DRAW_FRAMEBUFFER),
+                Some(Some(7))
+            );
+        }
+    }
+
+    #[test]
+    fn framebuffer_separate_bind_after_combined_change_is_not_deduped() {
+        for target in [glow::READ_FRAMEBUFFER, glow::DRAW_FRAMEBUFFER] {
+            let mut s = fresh_state();
+            assert!(update_bind_framebuffer(&mut s, target, Some(7)));
+            assert!(update_bind_framebuffer(&mut s, glow::FRAMEBUFFER, Some(9)));
+            assert!(
+                update_bind_framebuffer(&mut s, target, Some(7)),
+                "FRAMEBUFFER changed this target, so the bind is required"
+            );
+        }
+    }
+
+    #[test]
+    fn framebuffer_alias_queries_and_partial_knowledge_follow_binding_points() {
+        let mut s = fresh_state();
+        assert!(update_bind_framebuffer(
+            &mut s,
+            glow::READ_FRAMEBUFFER,
+            Some(7)
+        ));
+        assert_eq!(s.bound_framebuffer.get(glow::FRAMEBUFFER), None);
+        assert!(update_bind_framebuffer(&mut s, glow::FRAMEBUFFER, Some(7)));
+        assert!(update_bind_framebuffer(
+            &mut s,
+            glow::READ_FRAMEBUFFER,
+            Some(9)
+        ));
+        assert_eq!(s.bound_framebuffer.get(glow::FRAMEBUFFER), Some(Some(7)));
+        assert!(update_bind_framebuffer(
+            &mut s,
+            glow::DRAW_FRAMEBUFFER,
+            Some(9)
+        ));
+        assert_eq!(s.bound_framebuffer.get(glow::FRAMEBUFFER), Some(Some(9)));
+        assert!(!update_bind_framebuffer(&mut s, glow::FRAMEBUFFER, Some(9)));
+        s.bound_framebuffer.forget_all();
+        assert_eq!(s.bound_framebuffer.get(glow::FRAMEBUFFER), None);
+        assert_eq!(s.bound_framebuffer.get(glow::READ_FRAMEBUFFER), None);
+        assert!(update_bind_framebuffer(&mut s, glow::FRAMEBUFFER, None));
+        assert!(!update_bind_framebuffer(
+            &mut s,
+            glow::READ_FRAMEBUFFER,
+            None
+        ));
+    }
+
+    #[test]
     fn bind_framebuffer_first_call_issues_then_deduped() {
         let mut s = fresh_state();
         assert!(update_bind_framebuffer(&mut s, glow::FRAMEBUFFER, Some(7)));
         assert!(!update_bind_framebuffer(&mut s, glow::FRAMEBUFFER, Some(7)));
-        // Different target is tracked independently — WebGL 2
-        // separates DRAW / READ framebuffers, so this MUST reissue.
-        assert!(update_bind_framebuffer(
+        // The combined bind already established both binding points.
+        assert!(!update_bind_framebuffer(
             &mut s,
             glow::DRAW_FRAMEBUFFER,
             Some(7)

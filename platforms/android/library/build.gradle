@@ -214,6 +214,15 @@ android {
             jniLibs.srcDirs = ["../../../engine/jniLibs/slim${migoNativeProfileSuffix}${migoWorkerSnapshotSuffix}${migoJitlessSuffix}"]
         }
     }
+
+    testOptions {
+        unitTests {
+            // Required for Robolectric: loads manifest, resources and the
+            // android-all JAR so Activity, Handler and audio-API classes
+            // are available in host JVM tests.
+            includeAndroidResources = true
+        }
+    }
 }
 
 // A release AAR is a verified artifact only when build-aar.sh has generated
@@ -442,6 +451,7 @@ tasks.configureEach { task ->
 preBuild.dependsOn generateBuildInfo
 
 dependencies {
+
     // Zero *shipping* dependencies - no AndroidX required.
     // All annotations are replaced with JavaDoc comments.
     //
@@ -451,6 +461,9 @@ dependencies {
     // are deliberately free of android.* precisely so they can be tested here
     // rather than on a device.
     testImplementation 'junit:junit:4.13.2'
+    // Robolectric is test-only: its Android shadows and android-all runtime
+    // support host orchestration tests, and never enter the published AAR.
+    testImplementation 'org.robolectric:robolectric:4.17'
 
     // The real org.json, test-only. The android.jar the unit-test classpath uses
     // is a stub whose every method throws "not mocked", so any host test over
@@ -485,10 +498,10 @@ dependencies {
 //   Reports land in: library/build/reports/pitest/
 //
 // Read *test strength* (killed / covered), not the mutation score. Most of this
-// package touches android.* and cannot be loaded by a host JVM at all -- this
-// module deliberately has no Robolectric, so those classes report as no-coverage
-// and drag the score down by a constant that says nothing about the tests. The
-// number that moves when a guard stops guarding is test strength.
+// package touches Android APIs; Robolectric now loads the orchestration classes
+// in host tests, while genuinely device-bound microphone ownership and driver
+// blocking remain no-coverage. The number that moves when a guard stops guarding
+// is test strength.
 //
 
 // ---- pitest dependency configuration ----

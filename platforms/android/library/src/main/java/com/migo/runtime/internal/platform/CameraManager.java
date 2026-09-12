@@ -94,6 +94,7 @@ public final class CameraManager implements RuntimeScoped {
     private MediaRecorder mediaRecorder;
     private String videoFilePath;
     private long recordStartTime;
+    private final Semaphore recordStartCompleteLock = new Semaphore(0);
 
     // Semaphore to prevent concurrent open/close
     private final Semaphore cameraOpenCloseLock = new Semaphore(1);
@@ -364,115 +365,115 @@ public final class CameraManager implements RuntimeScoped {
     }
 
     /**
-     * Take a photo.
+     * Submit a photo capture and return immediately.
      *
-     * @param optionsJson JSON with keys: quality ("high", "normal", "low")
-     * @return JSON result: {"tempImagePath": "<path>", "width": <w>, "height": <h>} or error
+     * <p>The old implementation waited on a latch here, which put the Java
+     * callback's disk write on the V8 thread.  The request id is carried in
+     * the eventual {@code takePhotoResult} event so a restarted or destroyed
+     * camera cannot settle a different request.
      */
-    public String takePhoto(String optionsJson) {
-        Log.d(TAG, "takePhoto() called with optionsJson: " + optionsJson);
+    public void takePhotoAsync(final int requestId, String optionsJson) {
+        Log.d(TAG, "takePhotoAsync() called with optionsJson: " + optionsJson);
         if (!cameraActivityRequest.isActive()) {
-            return errorJson("camera.takePhoto:fail camera lifecycle suspended");
+            firePhotoResult(requestId, errorJson("camera.takePhoto:fail camera lifecycle suspended"));
+            return;
         }
         if (state.get() == STATE_CLOSED || captureSession == null || cameraDevice == null) {
-            Log.e(TAG, "takePhoto() camera not ready - state: " + state.get() + ", captureSession: " + (captureSession != null) + ", cameraDevice: " + (cameraDevice != null));
-            return errorJson("camera.takePhoto:fail camera not ready");
+            firePhotoResult(requestId, errorJson("camera.takePhoto:fail camera not ready"));
+            return;
         }
 
         String quality = "normal";
         try {
             JSONObject opts = new JSONObject(optionsJson);
             quality = opts.optString("quality", "normal");
-        } catch (JSONException ignored) {}
+        } catch (JSONException ignored) {
+            // Keep the public default for malformed optional quality.
+        }
 
-        int jpegQuality;
+        final int jpegQuality;
         switch (quality) {
-            case "high":  jpegQuality = 95; break;
-            case "low":   jpegQuality = 60; break;
-            default:      jpegQuality = 80; break;
+            case "high": jpegQuality = 95; break;
+            case "low": jpegQuality = 60; break;
+            default: jpegQuality = 80; break;
         }
 
         try {
             if (photoReader == null) {
-                Log.e(TAG, "takePhoto() photoReader is null");
-                return errorJson("camera.takePhoto:fail photoReader not initialized");
+                firePhotoResult(requestId,
+                        errorJson("camera.takePhoto:fail photoReader not initialized"));
+                return;
             }
 
             final String tempPath = createTempFilePath("photo", ".jpg");
-            Log.d(TAG, "takePhoto() tempPath: " + tempPath);
             final int finalJpegQuality = jpegQuality;
-            final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-            final AtomicBoolean saveSuccess = new AtomicBoolean(false);
-
             photoReader.setOnImageAvailableListener(reader -> {
-                Log.d(TAG, "takePhoto() onImageAvailable callback called");
                 Image image = null;
                 try {
                     image = reader.acquireLatestImage();
-                    if (image != null) {
-                        ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                        byte[] bytes = new byte[buffer.remaining()];
-                        buffer.get(bytes);
-                        Log.d(TAG, "takePhoto() writing " + bytes.length + " bytes to " + tempPath);
-
-                        FileOutputStream fos = new FileOutputStream(tempPath);
-                        fos.write(bytes);
-                        fos.close();
-                        saveSuccess.set(true);
-                        Log.d(TAG, "takePhoto() photo saved successfully");
-                    } else {
-                        Log.e(TAG, "takePhoto() acquireLatestImage returned null");
+                    if (image == null) {
+                        firePhotoResult(requestId,
+                                errorJson("camera.takePhoto:fail no image"));
+                        return;
                     }
-                } catch (IOException e) {
-                    Log.e(TAG, "takePhoto() failed to save photo: " + e.getMessage(), e);
+                    ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                    byte[] bytes = new byte[buffer.remaining()];
+                    buffer.get(bytes);
+                    try (FileOutputStream fos = new FileOutputStream(tempPath)) {
+                        fos.write(bytes);
+                    }
+
+                    JSONObject result = new JSONObject();
+                    result.put("requestId", requestId);
+                    result.put("tempImagePath", tempPath);
+                    result.put("width", photoSize.getWidth());
+                    result.put("height", photoSize.getHeight());
+                    fireEvent("takePhotoResult", result.toString());
+                } catch (Exception e) {
+                    new File(tempPath).delete();
+                    firePhotoResult(requestId,
+                            errorJson("camera.takePhoto:fail " + e.getMessage()));
                 } finally {
                     if (image != null) image.close();
-                    latch.countDown();
                 }
             }, backgroundHandler);
 
-            Log.d(TAG, "takePhoto() creating capture request");
             CaptureRequest.Builder captureBuilder =
                     cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             captureBuilder.addTarget(photoReader.getSurface());
             captureBuilder.set(CaptureRequest.JPEG_QUALITY, (byte) finalJpegQuality);
             applyFlashMode(captureBuilder);
             applyZoom(captureBuilder);
-
-            Log.d(TAG, "takePhoto() submitting capture request");
             captureSession.capture(captureBuilder.build(),
                     new CameraCaptureSession.CaptureCallback() {
                         @Override
                         public void onCaptureCompleted(CameraCaptureSession session,
                                                        CaptureRequest request,
                                                        TotalCaptureResult result) {
-                            Log.d(TAG, "takePhoto() onCaptureCompleted callback called");
+                            Log.d(TAG, "takePhotoAsync() capture completed");
                         }
                     }, backgroundHandler);
-
-            // Wait for photo to be saved
-            Log.d(TAG, "takePhoto() waiting for photo save...");
-            boolean completed = latch.await(5, TimeUnit.SECONDS);
-            if (!completed) {
-                Log.e(TAG, "takePhoto() timeout waiting for photo save");
-                return errorJson("camera.takePhoto:fail timeout");
-            }
-
-            if (!saveSuccess.get()) {
-                Log.e(TAG, "takePhoto() photo save failed");
-                return errorJson("camera.takePhoto:fail save failed");
-            }
-
-            JSONObject result = new JSONObject();
-            result.put("tempImagePath", tempPath);
-            result.put("width", photoSize.getWidth());
-            result.put("height", photoSize.getHeight());
-            Log.d(TAG, "takePhoto() returning result: " + result.toString());
-            return result.toString();
         } catch (Exception e) {
-            Log.e(TAG, "takePhoto() exception: " + e.getMessage(), e);
-            return errorJson("camera.takePhoto:fail " + e.getMessage());
+            firePhotoResult(requestId,
+                    errorJson("camera.takePhoto:fail " + e.getMessage()));
         }
+    }
+
+    private void firePhotoResult(int requestId, String payload) {
+        try {
+            JSONObject result = new JSONObject(payload);
+            result.put("requestId", requestId);
+            fireEvent("takePhotoResult", result.toString());
+        } catch (JSONException e) {
+            fireEvent("takePhotoResult",
+                    "{\"requestId\":" + requestId + ",\"_error\":{\"errMsg\":\"camera.takePhoto:fail result\"}}");
+        }
+    }
+
+    static String recordingResultForTests(int recordingState) {
+        return recordingState == STATE_RECORDING
+                ? "{}"
+                : "{\"_error\":{\"errMsg\":\"camera.startRecord:fail recording not started\"}}";
     }
 
     /**
@@ -493,6 +494,7 @@ public final class CameraManager implements RuntimeScoped {
         Log.d(TAG, "startRecord() camera ready, starting recording");
 
         try {
+            recordStartCompleteLock.drainPermits();
             closeSession();
 
             videoFilePath = createTempFilePath("video", ".mp4");
@@ -523,11 +525,12 @@ public final class CameraManager implements RuntimeScoped {
                         @Override
                         public void onConfigured(CameraCaptureSession session) {
                             captureSession = session;
-                            if (cameraActivityRequest.isDestroyed()) {
-                                session.close();
-                                return;
-                            }
                             try {
+                                if (cameraActivityRequest.isDestroyed()) {
+                                    session.close();
+                                    captureSession = null;
+                                    return;
+                                }
                                 boolean suspendAfterStart = !cameraActivityRequest.isActive();
                                 captureSession.setRepeatingRequest(
                                         previewRequestBuilder.build(), null, backgroundHandler);
@@ -542,6 +545,8 @@ public final class CameraManager implements RuntimeScoped {
                             } catch (Exception e) {
                                 fireEvent("error",
                                         "{\"errMsg\":\"" + escapeJson("camera.startRecord:fail " + e.getMessage()) + "\"}");
+                            } finally {
+                                recordStartCompleteLock.release();
                             }
                         }
 
@@ -549,10 +554,14 @@ public final class CameraManager implements RuntimeScoped {
                         public void onConfigureFailed(CameraCaptureSession session) {
                             fireEvent("error",
                                     "{\"errMsg\":\"camera.startRecord:fail session config failed\"}");
+                            recordStartCompleteLock.release();
                         }
                     }, backgroundHandler);
 
-            return "{}";
+            if (!recordStartCompleteLock.tryAcquire(5_000, TimeUnit.MILLISECONDS)) {
+                return errorJson("camera.startRecord:fail timeout waiting for recording");
+            }
+            return recordingResultForTests(state.get());
         } catch (Exception e) {
             return errorJson("camera.startRecord:fail " + e.getMessage());
         }
