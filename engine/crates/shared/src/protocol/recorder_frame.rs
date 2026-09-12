@@ -105,6 +105,19 @@ pub fn try_reserve_recorder_frame_bytes(host_id: i32, bytes: usize) -> Option<Re
     }
 }
 
+/// Reserve recorder bytes, then invoke the deferred JNI-copy operation.
+///
+/// The closure is evaluated only after admission succeeds, making the
+/// pre-copy ordering directly testable without a `JNIEnv`.
+pub fn with_recorder_frame_credit<T>(
+    host_id: i32,
+    bytes: usize,
+    copy: impl FnOnce() -> T,
+) -> Option<(RecorderFrameCredit, T)> {
+    let credit = try_reserve_recorder_frame_bytes(host_id, bytes)?;
+    Some((credit, copy()))
+}
+
 /// Number of recorder frames dropped for this Host because the byte budget was
 /// exhausted.  Observable via the debug stats surface and tests.
 pub fn recorder_frame_dropped_count(host_id: i32) -> u64 {
@@ -246,5 +259,24 @@ mod tests {
             crate::protocol::host_cmd::HostCommand::RecorderEvent { event_type, .. }
                 if event_type == "stop"
         ));
+    }
+    #[test]
+    fn recorder_admission_prevents_deferred_copy_when_budget_is_full() {
+        let host_id = BASE_HOST + 5;
+        let _held = try_reserve_recorder_frame_bytes(host_id, RECORDER_FRAME_BYTE_BUDGET)
+            .expect("exact-budget reservation must be admitted");
+        let mut copy_called = false;
+        let result = with_recorder_frame_credit(host_id, 1, || {
+            copy_called = true;
+            Vec::<u8>::new()
+        });
+        assert!(
+            result.is_none(),
+            "saturated byte lane must refuse the frame"
+        );
+        assert!(
+            !copy_called,
+            "refused frame must not invoke its deferred copy"
+        );
     }
 }

@@ -94,6 +94,7 @@ public final class CameraManager implements RuntimeScoped {
     private MediaRecorder mediaRecorder;
     private String videoFilePath;
     private long recordStartTime;
+    private final Semaphore recordStartCompleteLock = new Semaphore(0);
 
     // Semaphore to prevent concurrent open/close
     private final Semaphore cameraOpenCloseLock = new Semaphore(1);
@@ -469,6 +470,12 @@ public final class CameraManager implements RuntimeScoped {
         }
     }
 
+    static String recordingResultForTests(int recordingState) {
+        return recordingState == STATE_RECORDING
+                ? "{}"
+                : "{\"_error\":{\"errMsg\":\"camera.startRecord:fail recording not started\"}}";
+    }
+
     /**
      * Start video recording.
      *
@@ -487,6 +494,7 @@ public final class CameraManager implements RuntimeScoped {
         Log.d(TAG, "startRecord() camera ready, starting recording");
 
         try {
+            recordStartCompleteLock.drainPermits();
             closeSession();
 
             videoFilePath = createTempFilePath("video", ".mp4");
@@ -517,11 +525,12 @@ public final class CameraManager implements RuntimeScoped {
                         @Override
                         public void onConfigured(CameraCaptureSession session) {
                             captureSession = session;
-                            if (cameraActivityRequest.isDestroyed()) {
-                                session.close();
-                                return;
-                            }
                             try {
+                                if (cameraActivityRequest.isDestroyed()) {
+                                    session.close();
+                                    captureSession = null;
+                                    return;
+                                }
                                 boolean suspendAfterStart = !cameraActivityRequest.isActive();
                                 captureSession.setRepeatingRequest(
                                         previewRequestBuilder.build(), null, backgroundHandler);
@@ -536,6 +545,8 @@ public final class CameraManager implements RuntimeScoped {
                             } catch (Exception e) {
                                 fireEvent("error",
                                         "{\"errMsg\":\"" + escapeJson("camera.startRecord:fail " + e.getMessage()) + "\"}");
+                            } finally {
+                                recordStartCompleteLock.release();
                             }
                         }
 
@@ -543,10 +554,14 @@ public final class CameraManager implements RuntimeScoped {
                         public void onConfigureFailed(CameraCaptureSession session) {
                             fireEvent("error",
                                     "{\"errMsg\":\"camera.startRecord:fail session config failed\"}");
+                            recordStartCompleteLock.release();
                         }
                     }, backgroundHandler);
 
-            return "{}";
+            if (!recordStartCompleteLock.tryAcquire(5_000, TimeUnit.MILLISECONDS)) {
+                return errorJson("camera.startRecord:fail timeout waiting for recording");
+            }
+            return recordingResultForTests(state.get());
         } catch (Exception e) {
             return errorJson("camera.startRecord:fail " + e.getMessage());
         }

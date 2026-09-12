@@ -16,7 +16,7 @@ use shared::{
     error::{EngineResult, ErrorCode},
     protocol::io_cmd::NormalizedImage,
 };
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::types::ee;
 
@@ -44,6 +44,10 @@ pub struct PboUploadResult {
     pub texture: glow::NativeTexture,
     pub width: u32,
     pub height: u32,
+    /// Which upload path was actually taken.  Callers may accumulate
+    /// per-path counters following the `PresentPassCounters` pattern
+    /// to make path selection observable during a device run.
+    pub path_taken: TextureUploadPath,
 }
 
 #[inline]
@@ -146,6 +150,7 @@ pub fn upload_texture_with_pbo_ext(
     // table; this is a one-line wrapper to keep the business logic testable.
     let path = TextureUploadPath::select(use_pbo, has_tex_storage, !image.rgba.is_empty());
     match path {
+        TextureUploadPath::Ahb => unreachable!("AHB is selected by upload_texture_tiered"),
         TextureUploadPath::PboImmutable => {
             upload_immutable_with_pbo(gl, image, pool)?;
         }
@@ -178,15 +183,20 @@ pub fn upload_texture_with_pbo_ext(
         texture: tex,
         width: image.width,
         height: image.height,
+        path_taken: path,
     })
 }
 
-/// Classification of which texture-upload path `upload_texture_with_pbo_ext`
-/// will choose.  Factored out so the decision logic has unit tests
-/// independent of any GL driver.
+/// Classification of which texture-upload path the tiered uploader chooses.
+/// Factored out so the decision logic has unit tests independent of any GL
+/// driver; `select` covers only the PBO/synchronous subtable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextureUploadPath {
-    /// `glTexStorage2D` + `glTexSubImage2D` via a PBO.  Fastest.
+    /// AHardwareBuffer → EGLImage → GL texture (zero `glTexImage2D`).
+    /// Requires: `device_caps.ahb_available`, the session circuit-breaker
+    /// `gpu_caps.snapshot().ahb`, and a non-null EGL display pointer.
+    Ahb,
+    /// `glTexStorage2D` + `glTexSubImage2D` via a PBO.  Fastest PBO path.
     PboImmutable,
     /// `glTexImage2D` via a PBO.  Async DMA transfer, driver chooses layout.
     PboMutable,
@@ -213,6 +223,33 @@ impl TextureUploadPath {
             return Self::PboMutable;
         }
         Self::Synchronous
+    }
+
+    /// Select the complete tiered upload path without touching a GL context.
+    ///
+    /// AHB is selected before the PBO table because it imports the decoded
+    /// buffer directly and therefore does not use any `glTexImage2D` upload.
+    /// The three AHB booleans mirror `upload_texture_tiered`'s runtime gates;
+    /// keeping this table pure makes the API-26 boundary and fallback choice
+    /// host-testable without pretending to have an Android EGL driver.
+    pub fn select_tiered(
+        ahb_available: bool,
+        session_ahb_enabled: bool,
+        display_available: bool,
+        use_pbo: bool,
+        has_tex_storage: bool,
+        has_data: bool,
+    ) -> Self {
+        // AHB allocation also requires initialized pixel contents.  Keep the
+        // empty-data invariant shared with `select`: an uninitialised AHB
+        // would turn an allocation-only request into a black texture.
+        if !has_data {
+            return Self::Synchronous;
+        }
+        if should_try_ahb_upload(ahb_available, session_ahb_enabled, display_available) {
+            return Self::Ahb;
+        }
+        Self::select(use_pbo, has_tex_storage, has_data)
     }
 }
 
@@ -566,7 +603,7 @@ impl Drop for PboPool {
     fn drop(&mut self) {
         if !self.available.is_empty() || self.reserved_bytes != 0 || self.in_flight_bytes != 0 {
             warn!(
-                "PboPool dropped with {} unreleased PBOs (reserved={}B, in_flight={}B)",
+                "PboPool dropped with {} available PBOs, {} reserved bytes, {} in-flight bytes",
                 self.available.len(),
                 self.reserved_bytes,
                 self.in_flight_bytes,
@@ -596,15 +633,18 @@ pub fn upload_texture_tiered(
     gpu_caps: &shared::device::gpu_caps::GpuCaps,
     egl_display_ptr: *const std::ffi::c_void,
 ) -> EngineResult<PboUploadResult> {
-    let try_ahb = should_try_ahb_upload(
+    let selected_path = TextureUploadPath::select_tiered(
         device_caps.ahb_available,
         gpu_caps.snapshot().ahb,
         !egl_display_ptr.is_null(),
+        use_pbo,
+        device_caps.gles_version >= (3, 0),
+        !image.rgba.is_empty(),
     );
 
     // AHB path: decode RGBA → AHardwareBuffer → EGLImage → GL texture.
     #[cfg(target_os = "android")]
-    if try_ahb {
+    if selected_path == TextureUploadPath::Ahb {
         match try_ahb_upload(gl, image, egl_display_ptr) {
             Ok(result) => return Ok(result),
             Err(e) => {
@@ -622,11 +662,16 @@ pub fn upload_texture_tiered(
     }
 
     #[cfg(not(target_os = "android"))]
-    let _ = try_ahb; // selection is still unit-tested off-Android
+    let _ = selected_path; // selection is still unit-tested off-Android
 
     // Fallback: immutable PBO, mutable PBO, or synchronous upload.
     let has_tex_storage = device_caps.gles_version >= (3, 0);
-    upload_texture_with_pbo_ext(gl, image, use_pbo, pool, has_tex_storage)
+    let result = upload_texture_with_pbo_ext(gl, image, use_pbo, pool, has_tex_storage)?;
+    info!(
+        "Texture upload path taken: {:?} ({}x{})",
+        result.path_taken, result.width, result.height,
+    );
+    Ok(result)
 }
 
 #[cfg(target_os = "android")]
@@ -658,10 +703,15 @@ fn try_ahb_upload(
     }
     .map_err(|e| format!("{e}"))?;
 
+    info!(
+        "Texture upload path selected: Ahb ({}x{})",
+        result.width, result.height
+    );
     Ok(PboUploadResult {
         texture: result.texture,
         width: result.width,
         height: result.height,
+        path_taken: TextureUploadPath::Ahb,
     })
     // ahb dropped here → AHardwareBuffer_release (EGLImage holds its own ref)
 }
@@ -861,6 +911,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn select_tiered_uses_ahb_at_api_26_capability_boundary() {
+        // `ahb_available` is the detected capability from
+        // `DeviceCapabilities::detect`: API 26+ plus both EGL/GL image
+        // extensions.  Host tests represent API 26 and API 25 by the
+        // resulting capability bit, without fabricating an Android API query.
+        assert_eq!(
+            TextureUploadPath::select_tiered(true, true, true, true, true, true),
+            TextureUploadPath::Ahb,
+            "API 26+ AHB capability must win over the PBO table"
+        );
+        assert_eq!(
+            TextureUploadPath::select_tiered(false, true, true, true, true, true),
+            TextureUploadPath::PboImmutable,
+            "API 25 / unavailable AHB must use the PBO fallback"
+        );
+        assert_eq!(
+            TextureUploadPath::select_tiered(false, true, true, true, false, true),
+            TextureUploadPath::PboMutable,
+            "without immutable storage the fallback must use mutable PBO upload"
+        );
+    }
+
+    #[test]
+    fn select_tiered_uses_sync_for_empty_data_even_when_ahb_is_available() {
+        assert_eq!(
+            TextureUploadPath::select_tiered(true, true, true, true, true, false),
+            TextureUploadPath::Synchronous,
+            "an empty image must not take an uninitialised AHB upload path"
+        );
     }
 
     #[test]

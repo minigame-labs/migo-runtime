@@ -638,7 +638,7 @@ impl HostJsRuntime {
         });
     }
 
-    pub fn dispatch_recorder_frame_data(&mut self, data: &[u8], is_last_frame: bool) {
+    pub fn dispatch_recorder_frame_data(&mut self, data: Vec<u8>, is_last_frame: bool) {
         let host_id = self.host_id;
         self.with_v8(|rt, bindings| {
             bindings.dispatch_recorder_frame_data(rt, host_id, data, is_last_frame)

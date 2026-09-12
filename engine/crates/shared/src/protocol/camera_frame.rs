@@ -128,6 +128,19 @@ pub fn prepare_camera_frame(host_id: i32, camera_id: u32) -> CameraFrameAdmissio
     }
 }
 
+/// Acquire camera admission, then invoke the deferred packing operation.
+///
+/// Keeping the copy behind this seam makes the pre-copy ordering host-testable:
+/// a caller cannot invoke the potentially expensive operation before admission.
+pub fn with_camera_frame_admission<T>(
+    host_id: i32,
+    camera_id: u32,
+    copy: impl FnOnce() -> Option<T>,
+) -> Option<(CameraFrameAdmission, T)> {
+    let admission = prepare_camera_frame(host_id, camera_id);
+    copy().map(|value| (admission, value))
+}
+
 /// Publish a packed frame after the caller's pre-copy admission.
 pub fn publish_camera_frame(
     admission: CameraFrameAdmission,
@@ -610,5 +623,22 @@ mod tests {
             ),
             CameraFramePush::Superseded
         ));
+    }
+    #[test]
+    fn camera_admission_happens_before_deferred_copy() {
+        let host_id = 9704;
+        let camera_id = 16;
+        let nested = with_camera_frame_admission(host_id, camera_id, || {
+            Some(match prepare_camera_frame(host_id, camera_id) {
+                CameraFrameAdmission::Replace(replacement) => replacement,
+                CameraFrameAdmission::Notify(_) => {
+                    panic!("deferred copy ran before camera admission")
+                }
+            })
+        })
+        .expect("outer camera admission must succeed");
+        let (admission, replacement) = nested;
+        drop(replacement);
+        drop(admission);
     }
 }

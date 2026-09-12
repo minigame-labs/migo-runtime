@@ -36,6 +36,22 @@ public class AdpfManager {
     }
 
     /**
+     * Publish a listener before registration can synchronously race teardown.
+     * Registration failure clears the published reference so a failed start
+     * cannot leave an unowned listener behind.
+     */
+    static void publishThermalListenerBeforeRegister(
+            Runnable publish, Runnable register, Runnable clear) {
+        publish.run();
+        try {
+            register.run();
+        } catch (RuntimeException failure) {
+            clear.run();
+            throw failure;
+        }
+    }
+
+    /**
      * Start monitoring thermal status. Safe to call on any API level.
      */
     public void start() {
@@ -47,8 +63,10 @@ public class AdpfManager {
                     Log.d(TAG, "Thermal status changed: " + status);
                     NativeMethods.onThermalStatusChanged(sessionId, status);
                 };
-                powerManager.addThermalStatusListener(listener);
-                thermalListener = listener;
+                publishThermalListenerBeforeRegister(
+                        () -> thermalListener = listener,
+                        () -> powerManager.addThermalStatusListener(listener),
+                        () -> thermalListener = null);
                 // Report initial status
                 lastThermalStatus = powerManager.getCurrentThermalStatus();
                 Log.d(TAG, "ADPF initialized, current thermal status: " + lastThermalStatus);
@@ -85,10 +103,10 @@ public class AdpfManager {
             try {
                 powerManager.removeThermalStatusListener(
                     (PowerManager.OnThermalStatusChangedListener) thermalListener);
+                thermalListener = null;
             } catch (Exception e) {
                 Log.w(TAG, "Failed to remove thermal listener: " + e.getMessage());
             }
-            thermalListener = null;
         }
     }
 }
