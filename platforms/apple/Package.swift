@@ -186,6 +186,28 @@ let package = Package(
             path: "Tests/MigoApplePerformancePlusTests"
         ),
 
+        // Executed by the macOS diagnostic leg's `swift test`, which runs the
+        // whole suite.
+        //
+        // NOT by the macos-v8 leg, and that is measured rather than preferred:
+        // the macOS V8 product deliberately exports no external-frame entry
+        // points, so `MigoAppleRendererTests` and `MigoApplePerformancePlusTests`
+        // cannot link against it and `swift test` there fails before reaching
+        // any test. `Migo-Package` is the only scheme configured for testing, so
+        // there is no "just this target" on that leg either. The diagnostic leg
+        // links everything, and `MigoMacV8Availability` calls no engine symbol
+        // at all -- it reads this process's own signature -- so it runs there
+        // correctly and answers the same question.
+        //
+        // It exists because `MigoMacV8` was a target no lane had ever EXECUTED,
+        // which is how a one-line `Placeholder.swift` sat in it while
+        // `Sources/MigoMacV8/README.md` promised a profile resolver.
+        .testTarget(
+            name: "MigoMacV8Tests",
+            dependencies: ["MigoMacV8"],
+            path: "Tests/MigoMacV8Tests"
+        ),
+
         // Lane 3: macOS only. In-process V8 with JIT; no second process.
         .target(
             name: "MigoMacV8",
