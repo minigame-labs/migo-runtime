@@ -1009,6 +1009,9 @@ fn run_external_session(
         &opt,
         surface_control,
         vsync_rx,
+        // Every packet ends a frame, and the producer's read of it arrives through
+        // the synchronous barrier afterwards -- possibly after it presented.
+        graphics::DefaultFramebufferReads::AfterTheirPresent,
     ) {
         Ok(shell) => shell,
         Err(error) => {

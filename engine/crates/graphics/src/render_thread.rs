@@ -2080,6 +2080,32 @@ fn drain_work_counters_record_message_subcommands_and_packet_cpu() {
     );
 }
 
+/// When a read of the onscreen default framebuffer can arrive, relative to the
+/// present of the frame whose pixels it asks for.
+///
+/// DrawingBuffer bypass draws a lone WebGL canvas straight into the window
+/// surface and skips the copy at present, and after `eglSwapBuffers` that
+/// surface's contents are undefined. The first read of the default framebuffer
+/// snapshots the surface into the DrawingBuffer and turns bypass off for good,
+/// which is only a correct snapshot if the frame it reads has not presented yet.
+/// Whether that holds is a property of the execution, not of the content, so
+/// the session says which one it is when it starts the renderer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultFramebufferReads {
+    /// Issued in the same task as the draws it reads and flushed behind them, so
+    /// answered before that frame presents. The embedded execution, where bypass
+    /// stays available.
+    WithinTheirFrame,
+    /// Issued after the frame it reads was submitted. On the external-frame lane
+    /// every packet ends a frame, so the producer's `readPixels` reaches the host
+    /// after the frame it wants may already be on screen, and whether it arrives
+    /// first is a race: measured on the iOS simulator, one run read `[0,0,255,255]`
+    /// and the next `[0,0,0,0]` from an identical frame, the difference being a
+    /// present that landed 2 ms ahead of the read. So the DrawingBuffer is kept
+    /// from the start and bypass never engages.
+    AfterTheirPresent,
+}
+
 impl RenderThread {
     /// Spawn render thread.
     ///
@@ -2156,6 +2182,9 @@ impl RenderThread {
         // Where this thread says why it stopped, for the session that will observe
         // its frame clock closing and otherwise have nothing to tell the host.
         render_exit: Arc<shared::render_exit::RenderExit>,
+        // See `DefaultFramebufferReads`: whether DrawingBuffer bypass can ever be
+        // sound for this session.
+        default_framebuffer_reads: DefaultFramebufferReads,
     ) -> EngineResult<Self> {
         let (cmd_tx, cmd_rx) = CommandSender::new();
         let (surface_control_tx, surface_control_rx) = crossbeam_channel::bounded(1);
@@ -2241,6 +2270,7 @@ impl RenderThread {
                     // id, so both sides of the cache protocol agree while every
                     // other session's GL texture names stay unreachable.
                     text_cache,
+                    default_framebuffer_reads,
                 ) {
                     Ok(c) => c,
                     Err(e) => {
