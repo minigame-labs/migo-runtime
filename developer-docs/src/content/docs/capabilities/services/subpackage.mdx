@@ -1,0 +1,81 @@
+---
+title: 分包
+sidebar:
+  order: 5
+description: Android SubpackageHandler 合同:download 的 zip 输入输出、原子校验挂载、无 handler 时本地文件 fallback 与失败语义。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/SubpackageHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+::::caution[平台范围]
+`SubpackageHandler` 是 Android Java facade 的合同。C ABI 与跨平台层在 `0.9` 没有公开的分包下载出口。
+::::
+
+## 宿主要实现什么
+
+通过 `GameSession#setSubpackageHandler(SubpackageHandler)` 注册,对应 `GameSession.java` 第 **881** 行。
+
+实现唯一入口:
+
+```java
+void download(SubpackageRequest request, DownloadCallback callback);
+```
+
+当本地文件不可用、内容触发下载时,runtime 把分包信息交给宿主。`SubpackageRequest` 包含:
+
+| 字段 | 语义 |
+| --- | --- |
+| `name` | `RuntimeConfig` 提供的分包名 |
+| `root` | 相对 code dir 的规范化根路径,例如 `subpackages/stage1` |
+
+宿主负责把分包下载为 zip 到临时位置,然后调用 `callback.onSuccess(zipPath)`。**宿主不需要解压**:runtime 会把 zip 摄入 `.mpkg`,校验并原子挂载。下载失败调用 `callback.onFailure(reason)`。
+
+`callback.onProgress(progress, totalBytesWritten, totalBytesExpectedToWrite)` 可选但推荐;进度百分比范围是 0–100,回调可多次。终态回调(`onSuccess` 或 `onFailure`)必须恰好一次,所有 callback 方法都可从任意线程调用。
+
+成功回调的绝对路径只留在 runtime 内部,不会传给游戏。游戏 JS 只命名它所属的下载,不能借路径读取 app 进程可读的任意 zip。
+
+## 不实现会怎样
+
+`SubpackageHandler.java` 的降级原文为:
+
+> When no handler is set, download requests fail and `loadSubpackage()` falls
+> back to executing local files if present.
+
+也就是说,宿主未注册 handler 时,没有本地分包文件的下载请求失败;已有本地文件仍可由 `loadSubpackage()` 执行。这里不是把下载静默挂起,也不会伪造成功挂载。
+
+## 内容侧看到什么
+
+| migo API | 作用 |
+| --- | --- |
+| `migo.loadSubpackage(options)` | 需要时加载指定分包;本地不存在时触发 `download` |
+| `migo.preDownloadSubpackage(options)` | 预下载指定分包;缺本地文件时触发 `download` |
+
+内容侧只知道下载属于哪个分包,不接触宿主返回的 `zipPath`。分包名和根目录来自 runtime 配置以及调用参数;宿主应按 `request.name` / `request.root` 选择自己的下载源。
+下载 callback 的终态是 runtime 继续摄入 zip 或向内容报告失败,不是让内容自己读取临时文件。宿主因此应保留临时文件直到 `onSuccess(zipPath)` 返回,并让 runtime 完成后续校验与挂载。
+
+进度回调的三个数值分别是百分比、已写入字节数和预期总字节数。进度不是终态;即使已经报告过 100,仍必须调用 `onSuccess` 或 `onFailure`。
+
+当下载源、网络或本地临时文件失败时,使用 `onFailure(reason)` 结束这次请求。接口没有规定 reason 的固定字符串,宿主应传可诊断的原因。
+
+分包处理从 `RuntimeConfig` 得到名称和根路径;宿主不要让游戏提供的路径决定任意文件写入位置。成功后由 runtime 负责 `.mpkg` 的验证和原子挂载,避免半包暴露给内容。
+本地文件存在时,`loadSubpackage()` 可以直接执行本地文件,不需要调用宿主下载 handler。
+
+只有在需要外部下载且 handler 已注册时,宿主才会收到 `SubpackageRequest`。
+
+下载成功的 zip 仍由 runtime 负责解析、校验和挂载;宿主不应自行把它暴露成内容可选路径。
+
+`preDownloadSubpackage()` 是预下载入口,但它与 `loadSubpackage()` 共享同一个 `download` 回调合同。
+
+宿主若不需要进度,可以不调用 `onProgress`;终态回调仍不可省略。
+因此宿主只需实现下载与回调,不需要复制 runtime 的挂载逻辑。
+
+## 平台可用性
+
+| 层 | 状态 |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

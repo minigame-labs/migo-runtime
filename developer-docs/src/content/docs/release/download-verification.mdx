@@ -1,0 +1,65 @@
+---
+title: 下载与校验
+sidebar:
+  order: 1
+description: 下载 Migo 发布制品，使用发布标签和 SHA-256 校验和确认来源与完整性。
+audience: host-integrator
+platforms:
+  - android
+  - linux
+  - windows
+sourcePaths:
+  - release/VERSION
+---
+
+Migo 的正式制品发布在 [GitHub Releases](https://github.com/minigame-labs/migo-runtime/releases)。
+请从目标版本的 release 页面下载 Android AAR、Linux/Windows 运行时和对应的校验文件，
+不要从未经确认的镜像或评论附件获取二进制文件。
+
+## 选择发布版本
+
+仓库根目录的 [`release/VERSION`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/release/VERSION)
+是当前发布版本的单一来源。下载时确认：
+
+1. release tag 与目标版本一致。
+2. release 页面标记为正式发布，而不是未发布的开发版。
+3. 制品名称、目标平台、CPU 架构与宿主环境一致。
+4. Android AAR 使用发布页面提供的 `migo-<version>-android.aar` 文件。
+
+文档中的版本系列由配置从 `release/VERSION` 推导，不应在命令或脚本中写死版本号。
+
+## 校验 SHA-256
+
+下载制品及发布页提供的 checksum 文件后，在 Linux 或 macOS 上执行：
+
+```bash
+sha256sum --check SHA256SUMS
+```
+
+在 Windows PowerShell 上可使用：
+
+```powershell
+Get-FileHash .\migo-<version>-android.aar -Algorithm SHA256
+```
+
+将输出的摘要与发布页或 `SHA256SUMS` 中同名文件的摘要逐字比较。文件名、大小或下载
+时间相同都不能替代摘要校验；摘要不匹配时删除制品并重新从官方 release 下载。
+
+## 校验发布标签
+
+需要从源码构建时，先检出与 release 页面一致的 tag，再按照
+[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md) 构建：
+
+```bash
+git fetch --tags https://github.com/minigame-labs/migo-runtime.git
+git checkout <release-tag>
+```
+
+将本地 `release/VERSION` 与 tag 名称和发布元数据核对。若要审计构建来源，还应保存
+commit、平台、架构、构建工具链和校验结果。
+
+## 发现问题
+
+请保留下载 URL、release tag、制品文件名、SHA-256 输出及错误日志，再通过项目仓库的
+Issue 渠道报告。候选接口或开发版制品不代表稳定发布承诺；宿主升级前应重新阅读对应
+版本的 API 参考和发布说明。

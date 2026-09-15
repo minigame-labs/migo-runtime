@@ -1,0 +1,82 @@
+---
+title: Navigation
+sidebar:
+  order: 6
+description: Android NavigationHandler contract — the dual response model for mini-program navigation and customer-service entry, request fields, and the two "not supported" fallbacks when no handler is registered.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/NavigationHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/NavigationSink.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+::::caution[Platform scope]
+`NavigationHandler` is the Android Java facade contract. The C ABI and cross-platform layer have no public navigation entry point in `0.9`.
+::::
+
+## What the host must implement
+
+Register via `GameSession#setNavigationHandler(NavigationHandler)`, corresponding to line **826** of `GameSession.java`.
+
+The interface exposes two entry points:
+
+| Method | Content API | Result channel |
+| --- | --- | --- |
+| `navigateToMiniProgram(NavigateRequest, NavigationSink)` | `migo.navigateToMiniProgram()` | `sink.settleNavigated()` or `sink.fail(...)` |
+| `openCustomerServiceConversation(CustomerServiceRequest)` | `migo.openCustomerServiceConversation()` | returns `true` / `false` |
+
+`NavigateRequest` fields:
+
+- `appId` — target mini-program app id provided by content; never null. Whether to allow launch is the host's decision.
+- `path` — target internal path; empty string when not provided by content.
+- `extraData` — an immutable data tree of `String`, `Boolean`, `Number`, `List`, and `Map` values.
+- `envVersion` — `develop`, `trial`, or `release`; defaults to `release`.
+
+`CustomerServiceRequest` fields:
+
+- `sessionFrom` — where in the game the user entered customer service; empty string when not set.
+- `showMessageCard` — whether to pre-fill a card describing the game.
+- `sendMessageTitle` / `sendMessagePath` / `sendMessageImg` — card title, game path, and image; empty strings when not set.
+
+Calls arrive on the runtime host thread; do not block. `NavigationSink` may be called from any thread, but `navigateToMiniProgram` must be settled exactly once. The customer-service method has no sink: return `true` immediately once the customer-service UI has been started, not when the UI closes.
+
+## What happens without an implementation
+
+From the `NavigationHandler.java` header comment:
+
+> `migo.navigateToMiniProgram()` fails with
+> `navigateToMiniProgram:fail not supported` and code `-2`, and
+> `migo.openCustomerServiceConversation()` fails with
+> `openCustomerServiceConversation:fail not supported`.
+
+The default method verbatim:
+
+```java
+sink.fail(-2, "navigateToMiniProgram:fail not supported");
+```
+
+The customer-service entry defaults to `return false`; the runtime settles the corresponding `openCustomerServiceConversation:fail not supported` to content accordingly.
+
+## What content sees
+
+| migo API | Host-side behavior |
+| --- | --- |
+| `migo.navigateToMiniProgram(options)` | Call `settleNavigated` after launching the target; call `fail` on rejection or failure |
+| `migo.openCustomerServiceConversation(options)` | Succeeds as soon as the customer-service UI is started; return `false` maps to failure |
+
+Both take the user out of the game and into a host-owned destination. The runtime has no app registry and no customer-service system; the host must decide which `appId` values to allow and how to open the customer-service channel.
+`NavigateRequest.extraData` is an immutable data tree; read it as `Map` / `List` / primitive values and do not treat it as an executable or mutable object. `envVersion` is determined by the content request; its default value is `release` as listed in the interface comments.
+
+The `navigateToMiniProgram` sink and the boolean return of the customer-service method are not interchangeable: the former supports an asynchronous Activity result, while the latter only reports whether the customer-service UI has been started. There is no additional content-side result when the customer-service UI closes.
+For unmanaged `appId` values, the host should reject via `NavigationSink#fail` rather than launching a non-existent target.
+
+The success point for the customer-service method is when the conversation UI is started, not when the user closes the UI.
+
+## Platform availability
+
+| Layer | Status |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

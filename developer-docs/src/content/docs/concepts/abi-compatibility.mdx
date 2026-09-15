@@ -1,0 +1,73 @@
+---
+title: ABI 兼容性
+sidebar:
+  order: 6
+description: C ABI 的兼容纪律当前状态(CANDIDATE)、已有的向前/向后兼容机制、验证车道,以及摘帽为 v1 稳定版的剩余步骤。
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - include/migo/README.md
+  - include/migo/types.h
+---
+
+C ABI 目前是**候选（CANDIDATE）**：真源在 `include/migo/types.h` 的 `MIGO_C_ABI_CANDIDATE == 1`。但兼容机器已经全部存在并经受测试——本页描述的是已经落地的纪律，不是对未来的许愿。
+
+## 现在的状态
+
+- **候选 ≠ 不可用。** 四个平台（Android / Linux / Windows / OpenHarmony）已有可链接运行时（`MIGO_C_ABI_HAS_RUNTIME`），头文件可编译、产物可按契约消费；被冻结的是"我们承诺永远不变"这句话，而不是代码。
+- **候选 ≠ 会动。** 所有面向调用方的结构都工作在"旧头文件编译的程序继续对"的形状下；下节的每条规则都已经由测试固定，冻结时只是摘掉警告而不是改动行为。
+
+## 兼容机器（已实施）
+
+每条规则在它被写下的同一天就有了双向测试车道，方向别搞反：这是行为约束，不是编辑规范。
+
+**结构体协商。** 每个调用方持有的可扩展结构以 `struct_size` + `abi_version` 开头：
+
+```c
+MigoSurfaceDescriptor descriptor = {0};
+descriptor.struct_size = (uint32_t)sizeof(descriptor);
+descriptor.abi_version = MIGO_ABI_VERSION_1;
+```
+
+| 情形 | 结果 |
+| --- | --- |
+| 调用方记录比库知道的**短** | 按它的 `struct_size` 拷贝；库没见过的尾部按"不存在"读 |
+| 短于该结构定义的最小前缀 | `MIGO_ERROR_INVALID_ARGUMENT`(2026-07 起于所有入口统一) |
+| `struct_size` 声称比库认识的**更大** | `MIGO_ERROR_UNSUPPORTED_ABI`——那些字节是更新的契约，忽略它们等于假装实现了没有的能力 |
+| 库写出的结构（如 `MigoCapabilities`） | 镜像规则：**只写调用方前缀**，超出的字段保持原样 |
+
+**追加字段的规则。** 新语义只能加在结构尾部；调用方提供的 `reserved` 字段必须为零，库写出去也必须是零——保留字节被拿去做"未来在某一天有意义的向后兼容"。"在哪天才有意义"的例子：`MigoKeyEvent` 的修饰符尾部——旧宿主以前缀通过，缺字段读为 0，恰好就是它们的语义。
+
+**枚举与尺寸。** 公开枚举状值用定宽整型 typedef + 数值宏——头文件故意不用 C 原生 `enum` 和 packing pragma，切换编译器/指针宽度不改变布局；整数字面量用后缀写法（`5U`）而非 `UINT32_C`，因为 Swift 的 Clang importer 读的是宏的定义 token——函数式宏对白名单以外的一切都不可说。
+
+**版本查询入口。** `migo_query_capabilities` 是唯一"答而不拒"未知 `abi_version` 的入口，它返回所链库接受的版本区间与可附加的 `MIGO_PLATFORM_*` 种类——版本分歧由它消解，而不是由 attach 路径撞墙。它报告的种类与 attach 路径强制检查的种类是同一份事实，不是第二份拷贝。
+
+## 验证车道（防止"小改动悄悄坏了 ABI"）
+
+| 车道 | 证明什么 |
+| --- | --- |
+| `tests/c_abi/old_client_contract.c` | 旧头文件形状仍是当前结构的逐字节前缀——抓"字段互换但尺寸不动"这类针洞 |
+| `tests/c_abi/old_client_outbound_contract.c` | 镜像方向：库写出的结构对旧调用方只响前缀，多出来的毒素字段不被碰 |
+| 双指针宽度（ILP32/LP64）× 双编译器布局断言 | 每条布局断言在两种字长下各编一次——2026-07-21 前 LP64 单边盲已有过一次实际事故 |
+| `scripts/test-*-sdk-contract.sh` | 发布产物的导出符号面与 `find_package(migo)` 消费者链接检查 |
+
+## 摘帽（0 → 稳定 v1）还差什么
+
+`include/migo/README.md` 的 "ABI v1 freeze blockers" 是唯一权威清单。其余项均已关闭;剩三项都在 **Android 设备侧**:
+
+1. 多点触控真机投递（instrumentation APK 路径）;
+2. Android 兼容与性能 gate 无实质回退的设备运行;
+3. Android 发布产物的 verified V8 manifest 重生成与 minimum/latest device gates。
+
+三项清完后，摘帽 PR 同批做：翻 `MIGO_C_ABI_CANDIDATE` 为 0、撤掉 [API 参考总览](/docs/reference/overview/) 置顶的候选告示、本页状态段改写为"已冻结"。在那之前把 ABI 当稳定版押注是要自担风险的。
+
+## 相关
+
+- [API 参考总览](/docs/reference/overview/) — CANDIDATE 告示与八页映射
+- [线程与派发](/docs/concepts/threading-and-dispatch/) — 冻结要一并承召的并发契约

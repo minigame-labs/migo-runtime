@@ -1,0 +1,83 @@
+---
+title: Settings Page
+sidebar:
+  order: 3
+description: Android SettingHandler contract — the UI-delegation model of openSetting, the dual-write requirement of SettingSink, and the "openSetting:fail not supported" settle semantics when no handler is registered.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/SettingHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/SettingSink.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+::::caution[Platform scope]
+`SettingHandler` is the Android Java facade contract. The C ABI and cross-platform layer have no public settings entry point in `0.9`.
+::::
+
+## What the host must implement
+
+Register via `GameSession#setSettingHandler(SettingHandler)`, corresponding to line **790** of `GameSession.java`.
+
+`SettingHandler` has one method with a default implementation:
+
+```java
+default void openSetting(SettingSink sink) {
+    sink.fail(-2, "openSetting:fail not supported");
+}
+```
+
+Not overriding it is a declaration that "this host has no settings page." When overriding:
+
+- On receiving the call — display the permission-management UI and return immediately (do not block the host thread).
+- Once the user finishes — settle the `sink` exactly once.
+
+`SettingSink` exposes two channels:
+
+| Method | Semantics |
+| --- | --- |
+| `settleOpened(Map<String, Boolean> authSetting)` | The user has closed the UI; `authSetting` is a scope→granted mapping; null or empty is valid. |
+| `fail(int errCode, String errMsg)` | The UI could not be displayed. |
+
+**Dual-write requirement**: any scope changes reported in `settleOpened` must also be written to `PermissionSink#setScope` as persistent decisions. The `authSetting` in `settleOpened` only affects the response for the current `migo.openSetting()` call; `setScope` is the authoritative source read on every capability check. Writing to only one side causes content to receive authorization and then fail on the very next capability check.
+
+## What happens without an implementation
+
+From the `SettingHandler.java` header comment:
+
+> `migo.openSetting()` fails with `openSetting:fail not supported` and
+> code `-2`. It settles rather than staying silent, because content that
+> was denied a scope is meant to be sent here — a stalled `openSetting()`
+> is a game with no way back.
+
+The default implementation writes the settle message verbatim:
+
+```java
+sink.fail(-2, "openSetting:fail not supported");
+```
+
+## What content sees
+
+| migo API | Trigger condition |
+| --- | --- |
+| `migo.openSetting(options)` | Content requests that the permission-management screen be opened; triggers `openSetting(sink)` |
+
+Content typically calls `migo.openSetting()` after `migo.authorize()` has been denied, giving the user an opportunity to change their decision. After settling, content receives a `res.authSetting` object whose keys are scope names and whose values are booleans.
+All `SettingSink` methods may be called from any thread, and subsequent calls have no effect after the first settle. The host may wire an Activity result or dialog callback directly to the sink, but must not report both a close and a failure.
+
+The keys in `authSetting` use platform scope names, e.g. `scope.camera`; a null or empty map settles as an empty `authSetting` object — the field is never missing. It describes the result of the current settings-page session, not the persistent permission state.
+
+The settings page itself must be provided by the host. The runtime has no built-in settings screen; it is responsible only for routing the content-side `migo.openSetting()` request to the handler and forwarding the settle result.
+The result returned from the settings page is the current UI-reported outcome; the persistent scope decisions are still maintained by the permission handler via `PermissionSink#setScope`.
+
+The host may map the asynchronous lifecycle of the settings page to `SettingSink`, but must ensure every request produces exactly one result.
+
+Content can therefore distinguish a `fail` (settings page unavailable) from a `res.authSetting` (settings page closed successfully).
+
+## Platform availability
+
+| Layer | Status |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

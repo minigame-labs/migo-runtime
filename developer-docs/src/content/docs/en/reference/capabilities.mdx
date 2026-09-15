@@ -1,0 +1,147 @@
+---
+title: Runtime Capability Query
+sidebar:
+  order: 8
+description: Probe the linked library's ABI version range and supported surface platform kinds via migo_query_capabilities before creating any handle.
+audience: host-integrator
+platforms: [android, linux, windows, openharmony]
+sourcePaths:
+  - include/migo/capabilities.h
+---
+
+## migo_query_capabilities
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_query_capabilities(MigoCapabilities *out);
+```
+
+Queries the linked library's own capabilities. No existing handle is required to call this function — that is by design: the host can confirm the library's version range and supported platform kinds in a single call before creating an engine, session, or surface, rather than discovering an incompatibility only after `migo_session_attach_surface` fails. This function is the only entry point that does not reject an unknown `abi_version` (see [Why runtime query instead of compile-time detection](#why-runtime-query-instead-of-compile-time-detection)).
+
+Parameters:
+
+| Parameter | Direction | Description |
+| --- | --- | --- |
+| `out` | write | Pointer to a caller-allocated `MigoCapabilities`. The caller must set `struct_size` and `abi_version` before the call and zero all remaining fields. On success, the library fills in the remaining fields; on failure, the library writes nothing. |
+
+Returns:
+
+- `MIGO_OK` — Success; all fields in `out` have been filled by the library.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `out` is `NULL`, or `out->struct_size` is smaller than the minimum record length defined by the current ABI.
+
+> `MIGO_ERROR_UNSUPPORTED_ABI` is **intentionally absent** from this entry point. A caller asking "which versions are accepted" has not yet established that precondition by definition; rejecting the question would leave the caller with no way to obtain an answer.
+
+Threading:
+
+No handle dependency; may be called from any thread. The structure is used exclusively during the call; the caller may access it freely after the call returns.
+
+Example:
+
+```c
+/* 在创建 engine 之前探测库能力 */
+MigoCapabilities caps;
+memset(&caps, 0, sizeof caps);
+caps.struct_size = (uint32_t)sizeof caps;
+caps.abi_version = MIGO_ABI_VERSION_CURRENT;
+
+MigoResult result = migo_query_capabilities(&caps);
+if (result != MIGO_OK) {
+    fprintf(stderr, "migo_query_capabilities 失败: %d\n", (int)result);
+    return 1;
+}
+fprintf(stderr, "migo: abi %u..%u, platform kinds 0x%llx\n",
+        caps.abi_version_min, caps.abi_version_max,
+        (unsigned long long)caps.platform_kinds);
+
+/* 在尝试附接之前确认目标 surface 类型受支持 */
+if ((caps.platform_kinds & (UINT64_C(1) << MIGO_PLATFORM_WAYLAND_SURFACE)) == 0) {
+    fprintf(stderr, "此构建不支持 Wayland surface\n");
+    return 1;
+}
+```
+
+---
+
+## MigoCapabilities
+
+```c
+typedef struct MigoCapabilities {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t abi_version_min;
+    uint32_t abi_version_max;
+    uint64_t platform_kinds;
+} MigoCapabilities;
+```
+
+The caller is responsible for filling in the first two fields before the call; the library fills in the remaining three on success. The total struct size is fixed at 24 bytes, `struct_size` must reside at offset 0, and `platform_kinds` must reside at offset 16 — static assertions in the header ensure this layout cannot change silently.
+
+### struct_size
+
+**Caller fills.** Set to `sizeof(MigoCapabilities)`. The library uses this value to determine how much storage the caller has allocated and therefore how many bytes it can safely write. If this value is smaller than the minimum record length defined by the current ABI, the call returns `MIGO_ERROR_INVALID_ARGUMENT` immediately and writes nothing — this guarantees that a failed query cannot be misread as a successful query that "supports nothing".
+
+### abi_version
+
+**Caller fills.** Set to `MIGO_ABI_VERSION_CURRENT` (currently `1U`). Unlike all other entry points, passing an unknown version here does not produce `MIGO_ERROR_UNSUPPORTED_ABI`; the library still answers normally and fills in `abi_version_min`/`abi_version_max`, allowing the caller to judge compatibility itself.
+
+### abi_version_min
+
+**Library fills.** The minimum ABI version accepted by this build across all entry points. If the caller invokes other functions using an `abi_version` below this value, those calls will return `MIGO_ERROR_UNSUPPORTED_ABI`.
+
+### abi_version_max
+
+**Library fills.** The maximum ABI version accepted by this build across all entry points. Calling other functions with a version above this value likewise returns `MIGO_ERROR_UNSUPPORTED_ABI`. All versions from `abi_version_min` through `abi_version_max` inclusive are supported.
+
+### platform_kinds
+
+**Library fills.** A 64-bit mask where bit N set means the surface platform kind with value `MIGO_PLATFORM_*` = N can be attached via `migo_session_attach_surface`. This reflects the same fact checked internally by `migo_session_attach_surface` — it is not an independent copy.
+
+Defined platform values (from `include/migo/surface.h`):
+
+| Value | Constant | Description |
+| ---: | --- | --- |
+| 0 | `MIGO_PLATFORM_UNKNOWN` | Invalid placeholder; must not appear in the mask. |
+| 1 | `MIGO_PLATFORM_ANDROID_NATIVE_WINDOW` | Android `ANativeWindow`. |
+| 2 | `MIGO_PLATFORM_WIN32_HWND` | Windows Win32 `HWND`. |
+| 3 | `MIGO_PLATFORM_WINUI_SWAP_CHAIN_PANEL` | Windows WinUI `SwapChainPanel`. |
+| 4 | `MIGO_PLATFORM_MACOS_NS_VIEW` | macOS `NSView`. |
+| 5 | `MIGO_PLATFORM_MACOS_CA_METAL_LAYER` | macOS `CAMetalLayer`. |
+| 6 | `MIGO_PLATFORM_X11_WINDOW` | Linux X11 window ID. |
+| 7 | `MIGO_PLATFORM_WAYLAND_SURFACE` | Linux Wayland `wl_surface`. |
+| 8 | `MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW` | OpenHarmony `OHNativeWindow`. |
+| 9 | `MIGO_PLATFORM_IOS_UI_VIEW` | iOS `UIView`. |
+| 10 | `MIGO_PLATFORM_IOS_CA_METAL_LAYER` | iOS `CAMetalLayer`. |
+
+Idiomatic check for whether a given platform is supported:
+
+```c
+if ((caps.platform_kinds & (UINT64_C(1) << MIGO_PLATFORM_X11_WINDOW)) != 0) {
+    /* 此构建支持 X11 surface */
+}
+```
+
+---
+
+## Why runtime query instead of compile-time detection
+
+`MIGO_C_ABI_HAS_RUNTIME` is a preprocessor macro that describes **the platform the host was compiled against**, not **the library that was actually linked**. The macro expands at compile time and has no visibility into the link step; if the host code is linked against a Migo library built for a different target, the macro value and the library's actual capabilities will diverge.
+
+Similarly, `MIGO_PLATFORM_IS_ANDROID`, `MIGO_PLATFORM_IS_LINUX_GNU`, and similar macros describe the host's compilation target, while `platform_kinds` describes the surface types supported by the linked library — in certain CI or cross-compilation scenarios these can differ.
+
+Furthermore, before `migo_query_capabilities` was introduced, the only way for the host to discover which surfaces the library supports was to **attempt an attach**: first build an engine, then create a session, then create a window, and only then get an error code back from `migo_session_attach_surface`. The runtime query moves this discovery to before any resource allocation, allowing unsupported builds to emit a clear diagnostic early.
+
+---
+
+## Failure modes
+
+`migo_query_capabilities` has exactly one failure case:
+
+**`MIGO_ERROR_INVALID_ARGUMENT`**
+
+Triggered by any of the following:
+
+- `out` is `NULL`.
+- `out->struct_size` is smaller than the minimum record length defined by the current ABI (i.e., the library cannot safely write the minimum valid record).
+
+On failure, the library **writes zero bytes** to `out`. This ensures the caller cannot misread a failed query as a successful result where "all fields are zero".
+
+`MIGO_ERROR_UNSUPPORTED_ABI` **is never returned** from this entry point — this is an intentional design decision; see [Why runtime query instead of compile-time detection](#why-runtime-query-instead-of-compile-time-detection).

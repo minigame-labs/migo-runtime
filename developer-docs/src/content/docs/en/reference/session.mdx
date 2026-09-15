@@ -1,0 +1,563 @@
+---
+title: Session
+sidebar:
+  order: 4
+description: Complete C ABI reference for migo_session_* functions and their associated data types.
+audience: host-integrator
+platforms: [android, linux, windows, openharmony]
+sourcePaths:
+  - include/migo/session.h
+---
+
+> **Important: The C ABI remains CANDIDATE and is not a frozen stable ABI.** Headers mark this with
+> `MIGO_C_ABI_CANDIDATE == 1`. Production hosts must recheck headers, struct layouts, and
+> ownership rules when upgrading; the candidate interface makes no long-term binary-compatibility promise.
+
+A Session is a host-owned execution unit: one Session carries one piece of content, binds one Surface, and dispatches all callbacks through one dispatcher. An Engine may hold multiple Sessions concurrently; the host must serialize every call on an individual Session. See [engine.mdx](/docs/reference/engine/) for Engine creation and destruction, and [surface.mdx](/docs/reference/surface/) for Surface attach, detach, and release.
+
+## MigoSessionConfig
+
+```c
+typedef struct MigoSessionConfig {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoSessionFlags flags;
+    uint8_t  launch_nonce[16];
+} MigoSessionConfig;
+```
+
+Creation parameters passed to `migo_session_create`. `flags` has no defined bits in the current version and must be set to `MIGO_SESSION_FLAG_NONE`. `launch_nonce` is a 128-bit key supplied by the host to authenticate external-producer packets; fill it entirely with zeros when there is no external producer (the zero value means “not provided”). The host must generate the key from a cryptographically secure random source; the engine neither generates it nor validates the quality of its randomness. `launch_nonce` was added after v1; a host passing an older, shorter struct automatically gets an all-zero value—no external producer, with behavior matching the older version.
+
+Initialization example:
+
+```c
+MigoSessionConfig cfg;
+memset(&cfg, 0, sizeof cfg);
+cfg.struct_size = (uint32_t)sizeof cfg;
+cfg.abi_version = MIGO_ABI_VERSION_CURRENT;
+/* flags 置零；无外部生产者则 launch_nonce 已全零 */
+```
+
+## MigoContentDescriptor
+
+```c
+typedef struct MigoContentDescriptor {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoContentFlags flags;
+    uint32_t reserved0;
+    const char *content_id_utf8;
+    const char *entry_utf8;
+} MigoContentDescriptor;
+```
+
+Describes a content package installed by the host under the Engine's `files_dir`. `content_id_utf8` and `entry_utf8` are NUL-terminated UTF-8 strings borrowed only during the `migo_session_load_content` call; the engine copies them before returning. The engine resolves the entry file from `<files_dir>/migo/games/<content_id>/code/<entry>`; v1 does not support arbitrary host paths (planned as a flagged field in a later version).
+
+Fields:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `content_id_utf8` | `const char *` | Unique content identifier, combined with the storage root to locate the game directory |
+| `entry_utf8` | `const char *` | Entry filename relative to the code directory, for example `"game.js"` |
+| `flags` | `MigoContentFlags` | No bits are defined in the current version; set `MIGO_CONTENT_FLAG_NONE` |
+
+## MigoLifecycleState
+
+```c
+typedef uint32_t MigoLifecycleState;
+#define MIGO_LIFECYCLE_CREATED 0U
+#define MIGO_LIFECYCLE_RUNNING 1U
+#define MIGO_LIFECYCLE_PAUSED  2U
+```
+
+State values passed to `migo_session_set_lifecycle`. A newly created Session starts in `MIGO_LIFECYCLE_CREATED`; the host uses `RUNNING` / `PAUSED` to reflect whether the application is in the foreground or background. `MIGO_LIFECYCLE_CREATED` cannot be set as a target state—it is the initial state, not a state to which a running engine can roll back. The ABI does not define rollback semantics, and attempting it returns `MIGO_ERROR_INVALID_STATE`.
+
+| Constant | Value | Meaning |
+| --- | --- | --- |
+| `MIGO_LIFECYCLE_CREATED` | `0` | Initial state; cannot be set through the API |
+| `MIGO_LIFECYCLE_RUNNING` | `1` | Content running in the foreground; frame loop active |
+| `MIGO_LIFECYCLE_PAUSED` | `2` | Content paused in the background; frame loop sleeping |
+
+## MigoHostCallbacks
+
+```c
+typedef struct MigoHostCallbacks {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    void *user_data;
+    void *dispatcher_data;
+    MigoDispatchFn          dispatch;
+    MigoOnReadyFn           on_ready;
+    MigoOnErrorFn           on_error;
+    MigoOnExitRequestedFn   on_exit_requested;
+    MigoOnSurfaceLostFn     on_surface_lost;
+    MigoOnRequestFrameFn    on_request_frame;      /* 可选：宿主驱帧 */
+    MigoOnShowKeyboardFn    on_show_keyboard;       /* 三者全装或全不装 */
+    MigoOnHideKeyboardFn    on_hide_keyboard;
+    MigoOnUpdateKeyboardFn  on_update_keyboard;
+    MigoOnSurfaceReleasedFn on_surface_released;   /* 可选：surface 释放通知 */
+} MigoHostCallbacks;
+```
+
+The set of host callbacks installed on a Session once. The engine copies the known fields covered by `struct_size`; a smaller `struct_size` from an older host omits appended fields and restores the older default behavior. All user callbacks are dispatched through `dispatch` and run without engine, Session, or attachment locks, so they may re-enter detach or destroy. The callbacks can be installed successfully only once and must be installed before the first Surface attach or transition to `RUNNING`, preventing queued tasks from observing replaced function pointers or `user_data`.
+
+Fields:
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `user_data` | `void *` | — | Context pointer passed to every user callback |
+| `dispatcher_data` | `void *` | — | Context pointer passed to `dispatch` |
+| `dispatch` | `MigoDispatchFn` | Yes (when any callback is non-NULL) | Task dispatcher |
+| `on_ready` | `MigoOnReadyFn` | — | Content became ready for the first time |
+| `on_error` | `MigoOnErrorFn` | — | Runtime errors and backpressure notifications |
+| `on_exit_requested` | `MigoOnExitRequestedFn` | — | Content requested exit |
+| `on_surface_lost` | `MigoOnSurfaceLostFn` | — | Surface retirement notification |
+| `on_request_frame` | `MigoOnRequestFrameFn` | — | Request the host to schedule one frame; when set, the host controls frame pacing |
+| `on_show_keyboard` | `MigoOnShowKeyboardFn` | Install all three or none | Content requested the soft keyboard |
+| `on_hide_keyboard` | `MigoOnHideKeyboardFn` | Same | Content requested the soft keyboard be closed |
+| `on_update_keyboard` | `MigoOnUpdateKeyboardFn` | Same | Content corrected the input field's complete current value |
+| `on_surface_released` | `MigoOnSurfaceReleasedFn` | — | Edge notification that a retired Surface finished releasing |
+
+### MigoDispatchFn
+
+```c
+typedef MigoResult (MIGO_CALL *MigoDispatchFn)(
+    void      *dispatcher_context,
+    MigoTaskFn task,
+    void      *task_context);
+```
+
+The host-provided task dispatcher bridges the engine's and host's thread models. `MIGO_OK` means the host takes ownership of the task and **must invoke it exactly once** (inline or later); when any error is returned, ownership goes back to the engine, the task is discarded, and the event is logged. A rejected task should return `MIGO_ERROR_DISPATCH_REJECTED` so the log is unambiguous. Any non-NULL user callback requires a non-NULL `dispatch`.
+
+### MigoOnReadyFn
+
+```c
+typedef void (MIGO_CALL *MigoOnReadyFn)(void *user_data, MigoSession *session);
+```
+
+Dispatched once after content initialization completes and the first frame is ready. The host may begin sending input events or change the Session lifecycle at this point. Delivered through `dispatch`.
+
+### MigoOnErrorFn
+
+```c
+typedef void (MIGO_CALL *MigoOnErrorFn)(
+    void            *user_data,
+    MigoSession     *session,
+    const MigoError *error);
+```
+
+Reports runtime errors and recoverable backpressure. `MIGO_ERROR_WOULD_BLOCK` reports the start of input saturation; a later successful input resets the condition automatically. Delivered through `dispatch` and executed without engine locks.
+
+### MigoOnExitRequestedFn
+
+```c
+typedef void (MIGO_CALL *MigoOnExitRequestedFn)(
+    void        *user_data,
+    MigoSession *session);
+```
+
+Content requested exit (for example, it called `migo.exit()`). The host should respond with `migo_session_destroy`; if it does not handle the request yet, the content remains running.
+
+### MigoOnRequestFrameFn
+
+```c
+typedef void (MIGO_CALL *MigoOnRequestFrameFn)(
+    void        *user_data,
+    MigoSession *session);
+```
+
+The engine asks the host to schedule exactly one frame. The host should register a platform frame callback (for example, `AChoreographer` on Android or a compositor frame callback on Wayland) and call `migo_session_notify_vsync` when it fires. Each request corresponds to one frame; the engine requests another when it needs more. If this field is NULL, the engine controls frame pacing itself and does not align with the platform vsync signal—suitable for hosts without display synchronization, but it causes frame timing to drift on platforms that provide vsync. Delivered through `dispatch`.
+
+### MigoOnSurfaceLostFn
+
+```c
+typedef void (MIGO_CALL *MigoOnSurfaceLostFn)(
+    void                *user_data,
+    MigoSession         *session,
+    uint64_t             generation,
+    MigoSurfaceLossReason reason);
+```
+
+Notifies the host that the Surface for the specified `generation` has been retired, with the reason for the loss. The host must start the `migo_surface_begin_detach` flow after receiving this callback and must wait for the corresponding generation to reach RELEASED before destroying native window resources. See [surface.mdx](/docs/reference/surface/).
+
+### MigoOnSurfaceReleasedFn
+
+```c
+typedef void (MIGO_CALL *MigoOnSurfaceReleasedFn)(
+    void        *user_data,
+    MigoSession *session,
+    uint64_t     generation);
+```
+
+Edge notification that the retired Surface for the specified `generation` has reached RELEASED. This is an optional alternative to polling `migo_surface_release_query`. It is edge-triggered rather than level-triggered: rejecting, cancelling, or delaying dispatch does not change the release state itself. The host must use `migo_surface_release_query` as the authoritative level check before destroying native resources.
+
+### MigoOnShowKeyboardFn
+
+```c
+typedef void (MIGO_CALL *MigoOnShowKeyboardFn)(
+    void                       *user_data,
+    MigoSession                *session,
+    const MigoKeyboardShowOptions *options);
+```
+
+Content requested that the soft keyboard be shown. The `options` struct and its `default_value_utf8` are borrowed only during the callback; the host must copy them if it needs to access them later. This callback must be installed together with `on_hide_keyboard` and `on_update_keyboard`; otherwise `migo_session_set_host_callbacks` returns `MIGO_ERROR_INVALID_ARGUMENT`.
+
+### MigoOnHideKeyboardFn
+
+```c
+typedef void (MIGO_CALL *MigoOnHideKeyboardFn)(
+    void        *user_data,
+    MigoSession *session);
+```
+
+Content requested that the soft keyboard be hidden. Install it together with the other two keyboard callbacks.
+
+### MigoOnUpdateKeyboardFn
+
+```c
+typedef void (MIGO_CALL *MigoOnUpdateKeyboardFn)(
+    void        *user_data,
+    MigoSession *session,
+    const char  *value_utf8,
+    uint32_t     value_length);
+```
+
+Content corrected the input field's complete current text. `value_utf8` is bounded by `value_length` bytes and is not guaranteed to be NUL-terminated; it is borrowed only during the call. Install it together with the other two keyboard callbacks.
+
+## MigoKeyboardShowOptions
+
+```c
+typedef struct MigoKeyboardShowOptions {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoKeyboardFlags    flags;
+    uint32_t             max_length;
+    MigoKeyboardConfirmType confirm_type;
+    MigoKeyboardType     keyboard_type;
+    const char          *default_value_utf8;
+    uint32_t             default_value_length;
+    uint32_t             reserved0;
+} MigoKeyboardShowOptions;
+```
+
+Keyboard parameters carried by the `on_show_keyboard` callback, describing the content's soft-keyboard preferences. The entire struct and `default_value_utf8` are borrowed only during the callback; the host must copy all needed data before returning.
+
+Fields:
+
+| Field | Notes |
+| --- | --- |
+| `flags` | `MigoKeyboardFlags` bitmask (see below) |
+| `max_length` | Maximum number of input characters; `0` means unlimited |
+| `confirm_type` | Confirm-key label type (see below) |
+| `keyboard_type` | Keyboard layout type (see below) |
+| `default_value_utf8` | Prefilled input text, bounded by `default_value_length` bytes; may be NULL |
+| `default_value_length` | Byte length of the prefilled text |
+
+MigoKeyboardFlags:
+
+| Constant | Notes |
+| --- | --- |
+| `MIGO_KEYBOARD_FLAG_NONE` | No flags |
+| `MIGO_KEYBOARD_FLAG_MULTIPLE` | Accept multiline input |
+| `MIGO_KEYBOARD_FLAG_CONFIRM_HOLD` | Keep the keyboard open after confirmation instead of closing it automatically |
+
+MigoKeyboardType:
+
+| Constant | Notes |
+| --- | --- |
+| `MIGO_KEYBOARD_TYPE_TEXT` | General text keyboard |
+| `MIGO_KEYBOARD_TYPE_NUMBER` | Numeric keyboard |
+
+MigoKeyboardConfirmType:
+
+| Constant | Notes |
+| --- | --- |
+| `MIGO_KEYBOARD_CONFIRM_DONE` | Done |
+| `MIGO_KEYBOARD_CONFIRM_NEXT` | Next |
+| `MIGO_KEYBOARD_CONFIRM_SEARCH` | Search |
+| `MIGO_KEYBOARD_CONFIRM_GO` | Go |
+| `MIGO_KEYBOARD_CONFIRM_SEND` | Send |
+
+---
+
+## migo_session_create
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_create(
+    MigoEngine *engine,
+    const MigoSessionConfig *config,
+    MigoSession **out_session);
+```
+
+Creates a new Session under the specified Engine. The new Session starts in `MIGO_LIFECYCLE_CREATED`, with no content loaded and no Surface bound. `out_session` is written only when `MIGO_OK` is returned; initialize it to NULL so its failure state is explicit. Multiple Sessions under one Engine may be created concurrently from different host threads; `migo_engine_create` and `migo_session_create` may also run concurrently.
+
+Params:
+
+| Param | Notes |
+| --- | --- |
+| `engine` | Existing Engine handle |
+| `config` | Session configuration; `struct_size` and `abi_version` are required |
+| `out_session` | Receives the new Session handle on success |
+
+Returns:
+
+- `MIGO_OK` — Session created; `*out_session` is valid.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `engine`, `config`, or `out_session` is NULL; `config.struct_size` is smaller than the minimum versioned record; `config.flags` contains undefined bits.
+- `MIGO_ERROR_UNSUPPORTED_ABI` — `config.abi_version` does not match the Engine, or `struct_size` exceeds the range known by the Engine.
+- `MIGO_ERROR_INTERNAL` — The lock for the Engine's internal Session ledger was poisoned by an early panic.
+
+Thread model:
+
+Creation may run concurrently with creation of other Sessions. The host must serialize all subsequent calls on an individual Session.
+
+```c
+MigoSessionConfig cfg;
+memset(&cfg, 0, sizeof cfg);
+cfg.struct_size = (uint32_t)sizeof cfg;
+cfg.abi_version = MIGO_ABI_VERSION_CURRENT;
+cfg.flags = MIGO_SESSION_FLAG_NONE;
+
+MigoSession *session = NULL;
+MigoResult r = migo_session_create(engine, &cfg, &session);
+if (r != MIGO_OK) {
+    fprintf(stderr, "migo_session_create failed: %d\n", (int)r);
+    return 1;
+}
+```
+
+## migo_session_load_content
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_load_content(
+    MigoSession *session,
+    const MigoContentDescriptor *content);
+```
+
+Instructs the Session to load and begin evaluating content. Argument and state errors are returned synchronously; errors that occur while the content runs are dispatched asynchronously through `on_error`, after the call stack has returned. Each Session may load content only once; a repeated call returns `MIGO_ERROR_INVALID_STATE`. After loading succeeds and initialization completes, the engine notifies the host through `on_ready`.
+
+Params:
+
+| Param | Notes |
+| --- | --- |
+| `session` | Target Session |
+| `content` | Content descriptor; neither `content_id_utf8` nor `entry_utf8` may be NULL |
+
+Returns:
+
+- `MIGO_OK` — Content evaluation started.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` or `content` is NULL; `content.struct_size` is too small; `content_id_utf8` or `entry_utf8` is NULL.
+- `MIGO_ERROR_UNSUPPORTED_ABI` — `content.abi_version` does not match.
+- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed, or it has already loaded content.
+
+```c
+MigoContentDescriptor content;
+memset(&content, 0, sizeof content);
+content.struct_size = (uint32_t)sizeof content;
+content.abi_version = MIGO_ABI_VERSION_CURRENT;
+content.flags = MIGO_CONTENT_FLAG_NONE;
+content.content_id_utf8 = "bunnymark";
+content.entry_utf8 = "game.js";
+
+MigoResult r = migo_session_load_content(session, &content);
+if (r != MIGO_OK) {
+    fprintf(stderr, "migo_session_load_content failed: %d\n", (int)r);
+    return 1;
+}
+```
+
+## migo_session_set_host_callbacks
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_host_callbacks(
+    MigoSession *session,
+    const MigoHostCallbacks *callbacks);
+```
+
+Installs the host callback set for a Session. The engine copies the known fields covered by `struct_size`; an older host that passes a smaller `struct_size` merely omits appended fields, leaving existing behavior unchanged. Callbacks may be installed successfully only once and must be installed before the first Surface attach or transition to `RUNNING`; later calls return `MIGO_ERROR_INVALID_STATE`, preventing queued tasks from observing replaced function pointers. The three soft-keyboard callbacks must either all be installed or all omitted—a show callback without a hide callback would leave the keyboard unable to close.
+
+Params:
+
+| Param | Notes |
+| --- | --- |
+| `session` | Target Session |
+| `callbacks` | Callback set; `struct_size` and `abi_version` are required |
+
+Returns:
+
+- `MIGO_OK` — Callbacks installed.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` or `callbacks` is NULL; a non-NULL callback has no `dispatch`; only some of the three keyboard callbacks are installed.
+- `MIGO_ERROR_UNSUPPORTED_ABI` — `callbacks.abi_version` does not match.
+- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed; the first attach or `RUNNING` transition has completed; or callbacks were already installed.
+
+Thread model:
+
+Call before the first Surface attach or the `RUNNING` transition, preferably immediately after `migo_session_create`.
+
+```c
+MigoHostCallbacks cbs = {0};
+cbs.struct_size = (uint32_t)sizeof cbs;
+cbs.abi_version = MIGO_ABI_VERSION_CURRENT;
+cbs.user_data = my_host;
+cbs.dispatcher_data = my_host;
+cbs.dispatch = my_dispatch;
+cbs.on_ready = on_ready;
+cbs.on_error = on_error;
+cbs.on_exit_requested = on_exit_requested;
+cbs.on_request_frame = on_request_frame;
+cbs.on_show_keyboard = on_show_keyboard;
+cbs.on_hide_keyboard = on_hide_keyboard;
+cbs.on_update_keyboard = on_update_keyboard;
+MigoResult r = migo_session_set_host_callbacks(session, &cbs);
+if (r != MIGO_OK) return 1;
+```
+
+## migo_session_set_lifecycle
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MIGO_API MigoResult MIGO_CALL migo_session_set_lifecycle(
+    MigoSession *session,
+    MigoLifecycleState state);
+```
+
+Transitions a Session to `MIGO_LIFECYCLE_RUNNING` or `MIGO_LIFECYCLE_PAUSED`. The call is idempotent: when the target matches the current state, it returns `MIGO_OK` with no side effects. The host should set `RUNNING` when the application enters the foreground, and `PAUSED` when it enters the background or is covered by a system overlay. `MIGO_LIFECYCLE_CREATED` cannot be a target—it is a read-only initial state and cannot be reached by rolling back; attempting it returns `MIGO_ERROR_INVALID_STATE`, while any other unrecognized state returns `MIGO_ERROR_INVALID_ARGUMENT`.
+
+Params:
+
+| Param | Notes |
+| --- | --- |
+| `session` | Target Session |
+| `state` | `MIGO_LIFECYCLE_RUNNING` or `MIGO_LIFECYCLE_PAUSED` |
+
+Returns:
+
+- `MIGO_OK` — Lifecycle state updated (or already equal to the target, so no operation was needed).
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL, or `state` is unrecognized.
+- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed, or `state` is `MIGO_LIFECYCLE_CREATED`.
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Android NativeActivity on_cmd 生命周期映射示例 */
+switch (cmd) {
+case APP_CMD_RESUME:
+    migo_session_set_lifecycle(h->session, MIGO_LIFECYCLE_RUNNING);
+    break;
+case APP_CMD_PAUSE:
+    migo_session_set_lifecycle(h->session, MIGO_LIFECYCLE_PAUSED);
+    break;
+}
+```
+
+## migo_session_set_visibility
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_session_set_visibility(MigoSession *session, uint8_t visible);
+```
+
+Notifies the engine whether the Session's content is currently visible on screen, for example because another application or a system overlay completely covers it. Visibility is independent of lifecycle: a Session can be `RUNNING` but invisible, or visible while not running. The host should update this state promptly whenever window visibility changes so the engine can optimize rendering.
+
+Params:
+
+| Param | Notes |
+| --- | --- |
+| `session` | Target Session |
+| `visible` | `1` means visible; `0` means invisible |
+
+Returns:
+
+- `MIGO_OK` — Visibility updated.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL, or `visible` is not `0` or `1`.
+- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed.
+
+## migo_session_set_focus
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_session_set_focus(MigoSession *session, uint8_t focused);
+```
+
+Notifies the engine that the host window or view's input focus changed. The host must call this when the native window gains or loses input focus; it may report the state before a Surface is attached, and the Session preserves it for the subsequent attach. Before delivering `focused=0` to content, the engine automatically withdraws every accepted active touch point, pointer button, physical key, and IME composition in FIFO order, preventing stranded input state. Repeating focus loss (`focused=0`) does not trigger duplicate withdrawal.
+
+Params:
+
+| Param | Notes |
+| --- | --- |
+| `session` | Target Session |
+| `focused` | `1` means focused; `0` means unfocused |
+
+Returns:
+
+- `MIGO_OK` — Focus state updated.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL, or `focused` is not `0` or `1`.
+- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed.
+
+## migo_session_notify_vsync
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_session_notify_vsync(MigoSession *session, int64_t frame_time_nanos);
+```
+
+Responds to an `on_request_frame` request by notifying the engine that the frame boundary has arrived. `frame_time_nanos` is the platform frame timestamp—the `AChoreographer` callback argument on Android. Calling this without a pending request is harmless but pointless: the engine renders at most one frame per request and asks for another through `on_request_frame` when more frames are needed. The signed type matches platform callback signatures; values before the clock epoch have no useful meaning, and a negative value returns `MIGO_ERROR_INVALID_ARGUMENT`. If the host did not install `on_request_frame`, the engine controls frame pacing itself and this function need not be called.
+
+Params:
+
+| Param | Notes |
+| --- | --- |
+| `session` | Target Session |
+| `frame_time_nanos` | Platform frame timestamp in nanoseconds; signed to match platform callback signatures |
+
+Returns:
+
+- `MIGO_OK` — Frame notification accepted.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL, or `frame_time_nanos` is negative.
+- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed, or no Surface is attached.
+
+Thread model:
+
+Call from the host-selected frame-callback thread—the thread that receives the platform vsync signal—not from an engine worker thread.
+
+```c
+/* Android AChoreographer 64 位回调 */
+static void on_frame64(int64_t frame_time_nanos, void *data) {
+    struct host *h = (struct host *)data;
+    migo_session_notify_vsync(h->session, frame_time_nanos);
+}
+
+/* on_request_frame 中注册下一帧回调 */
+static void on_request_frame(void *user_data, MigoSession *session) {
+    struct host *h = (struct host *)user_data;
+    AChoreographer_postFrameCallback64(
+        h->choreographer, on_frame64, h);
+}
+```
+
+## migo_session_destroy
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_destroy(MigoSession *session);
+```
+
+Destroys a Session, cancels queued callbacks, and hands the exit worker to the Engine's final completion barrier. `MIGO_OK` consumes and releases the Session handle; the pointer is invalid afterward. Before destruction, the host must ensure that all Surface attachments have been retired and that no Surface is in a transition. Otherwise, the function returns `MIGO_ERROR_INVALID_STATE`, retains ownership, and can be retried when the conditions are satisfied. Reentrant destruction from a current callback invalidates the Session immediately, lets the callback stack unwind normally, and prevents new callbacks; it does not wait for the current callback frame to finish, so that stack may unwind before the Engine's final completion barrier. Call `migo_engine_destroy` only after all Sessions have been destroyed.
+
+Returns:
+
+- `MIGO_OK` — Session destroyed; callbacks cancelled; host thread work handed to the Engine.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL.
+- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed; a Surface transition is in progress; an active attachment remains; a retired Surface is still PENDING; or the call was re-entered from an engine worker thread.
+
+Thread model:
+
+Do not call from an engine worker thread (the engine thread on which the host dispatcher may schedule tasks). It returns `MIGO_ERROR_INVALID_STATE`, leaves the Session intact, and requires the host to retry from its own thread after the callback unwinds.
+
+```c
+/* 1. 退役所有 surface 并等待 RELEASED（见 surface.mdx） */
+if (detach_and_await_release(attachment) != 0) return 1;
+/* 2. Session 必须在 attachment 释放后销毁 */
+MigoResult r = migo_session_destroy(session);
+if (r != MIGO_OK) return 1;
+/* 3. 所有 Session 销毁后再销毁 Engine */
+r = migo_engine_destroy(engine);
+if (r != MIGO_OK) return 1;
+```

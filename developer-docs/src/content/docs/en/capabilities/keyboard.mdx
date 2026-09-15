@@ -1,0 +1,99 @@
+---
+title: Soft Keyboard and Key Events
+sidebar:
+  order: 2
+description: The three-part contract for content to open the soft keyboard; the four event types the host reports with migo_session_send_keyboard_event; and the boundary between physical keys, IME composition, and this channel.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - include/migo/session.h
+  - include/migo/input.h
+---
+
+The "soft keyboard" is the combination of three things: content's `migo.showKeyboard` / `hideKeyboard` / `updateKeyboard` APIs, the host's keyboard UI (IME), and the contract that connects them. This page is written from the host's perspective.
+
+## Installation: Three Parts, All or Nothing
+
+The soft keyboard is a host-provided capability. Use `migo_session_set_host_callbacks` to install **all three callbacks**. Leaving out any one causes `MIGO_ERROR_INVALID_ARGUMENT` — a host that can show but cannot hide the keyboard would leave it permanently on screen:
+
+```c
+MigoHostCallbacks callbacks;
+memset(&callbacks, 0, sizeof(callbacks));
+callbacks.struct_size = sizeof(callbacks);
+callbacks.abi_version = MIGO_ABI_VERSION_CURRENT;
+callbacks.on_show_keyboard = host_show_keyboard;
+callbacks.on_hide_keyboard = host_hide_keyboard;
+callbacks.on_update_keyboard = host_update_keyboard;
+/* dispatcher required — every callback goes through its task channel */
+callbacks.dispatch = host_dispatch;
+callbacks.dispatcher_data = ctx;
+migo_session_set_host_callbacks(session, &callbacks);
+```
+
+Only these two forms are legal:
+
+| Installation | Answer to `migo.showKeyboard` |
+| --- | --- |
+| All three plus a dispatcher | Content receives an asynchronous `success` reply, then `on_show_keyboard` fires with `MigoKeyboardShowOptions` |
+| Install none (**capability voluntarily surrendered**) | Content receives a `not supported` failure reply, with no screen side effects |
+
+There is no middle state.
+
+Callbacks may be configured once, and must be configured **before** the first surface attach or transition to RUNNING — this is a timing constraint in session.h, not a style preference. Once the task queue is running, replacing function pointers would let queued tasks observe two different hosts.
+
+## Show: What Content and Host Each Own
+
+When the host receives `on_show_keyboard(session, options)`:
+
+- `flags`: `MIGO_KEYBOARD_FLAG_MULTIPLE` (the text field allows multiple lines), `MIGO_KEYBOARD_FLAG_CONFIRM_HOLD` (the confirm key does not auto-dismiss);
+- `confirm_type`: `DONE / NEXT / SEARCH / GO / SEND` — content uses this to label the confirm key. `DONE` usually dismisses the keyboard in `MULTIPLE` mode; `NEXT` advances to the next field;
+- `keyboard_type`: `TEXT / NUMBER`;
+- `default_value_utf8`: the length-delimited default value, which may not be NUL-terminated — **borrowed**, so copy it before returning from the callback;
+- `max_length`: the limit requested by content. It may not be enforceable character by character (some IMEs accept additional composition input), so content must still perform final length validation.
+
+`on_update_keyboard` tells the host to replace the current text with `value_utf8` (also borrowed and length-delimited). This occurs for a programmatic update from content, not usually because the host has already changed the text.
+
+## Acknowledgements: Four `migo_session_send_keyboard_event` Types
+
+When the user acts, the host sends the event back with `migo_session_send_keyboard_event`:
+
+| Event | When to send | Value |
+| --- | --- | --- |
+| `MIGO_KEYBOARD_EVENT_INPUT` | Text changes (send each synchronized value, not each keystroke) | Complete current UTF-8 text + length |
+| `MIGO_KEYBOARD_EVENT_CONFIRM` | User presses the confirm key | — |
+| `MIGO_KEYBOARD_EVENT_COMPLETE` | Host considers the input stream finished (keyboard dismissed) | Final text |
+| `MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE` | Keyboard UI height changes (layout anchor) | `height_css_px` |
+
+### HEIGHT_CHANGE Pitfall: CSS px or Physical px?
+
+> `height_css_px` applies to `MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE` only and is CSS pixels. Sending physical pixels lays content out for a keyboard of the wrong size on every display whose scale factor is not 1.
+
+On a device with DPR=2.75, treating 1020 physical pixels as 1020 CSS px makes the KPI panel UI, which uses the content's CSS coordinates, treat the keyboard as roughly 36% of its actual height — scene elements in the panel end up underneath the keyboard. If your ViewTree gives you a View height, divide by `Resources.getDisplayMetrics().density` before sending px to `send`.
+
+## Physical Keyboard / IME: Not This Channel
+
+Two things are often conflated:
+
+- **Physical keys** (`KeyEvent`, gamepad buttons) and **soft-keyboard text** are **two capabilities**, even though both have "key" in their names. Physical keys use `migo_session_send_key_event` (`MigoKeyEventType` DOWN/UP + modifiers + scancode/keyCode). A host without a soft keyboard can still send physical keys — gravity sensing and Esc-to-exit desktop mini-games use this arrangement;
+- **IME composition** (Chinese/Japanese candidate text while it is being composed) uses `migo_session_send_composition_event` — a desktop host uses this whenever it supports IME. Android's `TextWatcher` receives the **text after composition is complete**, so sending it directly as an INPUT event is correct; do not fabricate a composition event.
+
+A host may legitimately use both `migo_session_send_key_event` and composition events (for example, a desktop host with physical keys and an IME). A container-style Android mini-game host only needs send_touch + send_keyboard_event; composition and key_event may remain entirely unused.
+
+## Fallback Sample
+
+```c
+/* A host with keyboard UI, at minimum */
+static void on_show_keyboard(void *user_data, MigoSession *session,
+                             const MigoKeyboardShowOptions *options) {
+    HostContext *ctx = user_data;
+    host_ui_show_soft_input(ctx->window,
+                            options->flags & MIGO_KEYBOARD_FLAG_MULTIPLE,
+                            options->confirm_type,
+                            options->default_value_utf8,
+                            options->default_value_length,
+                            options->max_length);
+}
+```
+
+After installation, the host's only responsibilities are: dismiss the keyboard when it receives `on_hide_keyboard`; send a `COMPLETE` event when the user dismisses it; and report height changes in CSS px. Before all three parts are installed, this behavior does not exist — there is no concept of a "partially supported soft keyboard."

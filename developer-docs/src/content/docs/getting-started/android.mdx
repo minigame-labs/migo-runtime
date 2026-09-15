@@ -1,0 +1,179 @@
+---
+title: Android 快速开始
+sidebar:
+  order: 1
+description: 在 Android 宿主 App 中集成 Migo、创建 GameSession 并管理 surface、生命周期和触摸输入。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - include/migo/platform/android.h
+  - platforms/android/library/src/main/java/com/migo/runtime/MigoRuntime.java
+  - platforms/android/library/src/main/java/com/migo/runtime/RuntimeConfig.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+Android 是 Migo 的主要快速集成路径。本文假设宿主 App 已有一个用于渲染的
+`SurfaceView` 或 `SurfaceHolder`，并将小游戏 bundle 作为应用资源或下载制品管理。
+
+## 1. 准备环境
+
+- Android API 26 或更高版本。
+- 与项目兼容的 Android Gradle Plugin（AGP）。
+- 按照项目构建配置安装的 Android NDK。
+- 一个待运行的 Canvas/WebGL 小游戏 bundle。
+
+Migo 是 Canvas/WebGL 小游戏运行容器，不是通用 WebView 替代品；内容不应依赖 DOM 或 CSS。
+
+## 2. 添加 AAR 依赖
+
+从项目发布页获取与宿主 ABI 匹配的 AAR，并加入应用的 `libs/` 目录或私有 Maven 仓库。
+文件名格式为：
+
+```text
+migo-<version>-android.aar
+```
+
+不要在构建脚本或文档示例中写死某个版本号。依赖声明示例：
+
+```kotlin
+dependencies {
+    implementation(files("libs/migo-<version>-android.aar"))
+}
+```
+
+## 3. 创建 RuntimeConfig
+
+在宿主的初始化代码中使用 `RuntimeConfig.Builder` 配置运行时：
+
+```java
+RuntimeConfig config = new RuntimeConfig.Builder(context)
+    .setDebugEnabled(BuildConfig.DEBUG)
+    .setTargetFps(60)
+    .setLogLevel(LogLevel.INFO)
+    .build();
+```
+
+通过 `MigoRuntime.getInstance()` 获取进程内的单例运行时，再创建会话：
+
+```java
+MigoRuntime runtime = MigoRuntime.getInstance();
+GameSession session = runtime.createSession(activity, surface, config, gameId);
+```
+
+## 4. 通过 SurfaceHolder.Callback 创建会话
+
+让 `SurfaceView` 的 `SurfaceHolder.Callback` 负责 surface 生命周期。`surfaceCreated`
+收到可用 surface 后创建 `GameSession`；尺寸变化时更新它：
+
+```java
+@Override
+public void surfaceCreated(SurfaceHolder holder) {
+    Surface surface = holder.getSurface();
+    session = MigoRuntime.getInstance().createSession(
+        activity, surface, config, gameId);
+    session.setListener(listener);
+}
+
+@Override
+public void surfaceChanged(
+        SurfaceHolder holder, int format, int width, int height) {
+    if (session != null) {
+        session.updateSurface(holder.getSurface(), width, height);
+    }
+}
+
+@Override
+public void surfaceDestroyed(SurfaceHolder holder) {
+    if (session != null) {
+        session.onSurfaceDestroyed();
+    }
+}
+```
+
+在 `surfaceCreated` 和 `surfaceChanged` 中遵循 Android 的主线程要求，并避免在 surface
+尚未可用时启动内容。
+
+## 5. 部署 bundle
+
+创建会话后，通过 `session.getPaths().getCodeDir()` 获取 Migo 的代码目录，将小游戏
+bundle 的入口文件及其依赖复制或解压到该目录。不要假定 APK 内部路径或设备上的固定
+绝对路径；`getCodeDir()` 是宿主应使用的目录来源。
+
+```java
+Path codeDir = session.getPaths().getCodeDir().toPath();
+// 将 bundle 文件安全地复制到 codeDir，再启动入口。
+```
+
+## 6. 启动入口
+
+确认入口文件位于 `getCodeDir()` 后，在 Android 主线程调用：
+
+```java
+session.startGame(entryPoint);
+```
+
+`entryPoint` 应是 bundle 中入口文件的相对路径或 API 所要求的入口标识。启动失败时，
+通过 `GameSessionListener` 记录并向宿主呈现错误，不要静默忽略返回状态或异常。
+
+可运行的宿主集成示例见
+[migo-examples](https://github.com/minigame-labs/migo-examples)。
+
+## 7. 连接生命周期
+
+将 Activity 或 Fragment 生命周期转发给会话：
+
+```java
+@Override
+protected void onPause() {
+    if (session != null) session.pause();
+    super.onPause();
+}
+
+@Override
+protected void onResume() {
+    super.onResume();
+    if (session != null) session.resume();
+}
+
+@Override
+protected void onDestroy() {
+    if (session != null) {
+        session.close();
+        session = null;
+    }
+    super.onDestroy();
+}
+```
+
+具体项目若有更严格的 Activity/Fragment 状态机，应保证每个 `pause()` 都有对应的
+`resume()`，并在最终拥有者销毁时调用 `close()`。
+
+## 8. 转发触摸事件
+
+将 `SurfaceView` 或宿主输入控件收到的 `MotionEvent` 转交给当前会话：
+
+```java
+@Override
+public boolean onTouchEvent(MotionEvent event) {
+    return session != null && session.dispatchTouchEvent(event);
+}
+```
+
+只在会话有效时转发事件，并保留 Android 事件分发所需的返回值语义。
+
+## 9. 拆卸顺序
+
+推荐的 teardown 顺序如下：
+
+1. 停止向会话发送新的输入事件。
+2. 在合适的生命周期回调中调用 `pause()`。
+3. surface 被销毁时调用 `onSurfaceDestroyed()`；surface 替换时调用
+   `updateSurface(surface, width, height)`。
+4. 在不再使用会话时调用 `close()`，释放会话资源并清空宿主引用。
+5. Activity 或 Fragment 完成自身销毁。
+
+## 从源码构建
+
+若需要构建自己的 Android 制品，请参阅仓库中的
+[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md)。
