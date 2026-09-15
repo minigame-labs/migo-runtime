@@ -92,7 +92,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 submit: { packet in
                     seen = packet
                     submitted.fulfill()
-                    return true
+                    return .accepted
                 },
                 takeDownlink: { _ in 0 })
 
@@ -170,7 +170,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
-                channel: MigoFrameChannel(submit: { _ in true }, takeDownlink: { _ in 0 }))
+                channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
             self.host = host
             host.onReport = { report in
                 switch report["type"] as? String {
@@ -199,7 +199,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                     configuration: .init(
                         contentRoot: contentRoot,
                         engineRoot: contentRoot.appendingPathComponent("nothing-here")),
-                    channel: MigoFrameChannel(submit: { _ in true }, takeDownlink: { _ in 0 }))
+                    channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
             ) { error in
                 guard case MigoPerformancePlusHost.StartFailure.engineModulesMissing = error else {
                     return XCTFail("expected engineModulesMissing, got \(error)")
@@ -248,7 +248,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 submit: { packet in
                     seen = packet
                     submitted.fulfill()
-                    return true
+                    return .accepted
                 },
                 takeDownlink: { _ in 0 })
 
@@ -306,7 +306,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 submit: { packet in
                     seen = packet
                     submitted.fulfill()
-                    return true
+                    return .accepted
                 },
                 takeDownlink: { _ in 0 })
 
@@ -347,7 +347,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             var status: Int?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
-                channel: MigoFrameChannel(submit: { _ in true }, takeDownlink: { _ in 0 }))
+                channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
             self.host = host
             host.onReport = { report in
                 if report["type"] as? String == "probe" {

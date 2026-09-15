@@ -58,13 +58,14 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
         return record
     }
 
-    /// Hand one packet to the channel. Returns whether the engine accepted it.
+    /// Hand one packet to the channel. The answer is not used here: the verdict
+    /// travels on the downlink, and this endpoint answers 204 either way.
     ///
     /// The same closure shape as `MigoFrameChannel.Submit`, and for the same
     /// reason: what is worth testing here is the routing and the body assembly,
     /// and a test that had to stand up an engine to reach them would be testing
     /// the engine.
-    public typealias Deliver = (Data) -> Bool
+    public typealias Deliver = (Data) -> Void
 
     private let content: MigoWebKitContentOrigin
     private let deliver: Deliver
@@ -103,7 +104,7 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
             guard let self else { return }
             switch Self.readBody(from: request, limit: Self.maximumFrameBytes) {
             case .complete(let body):
-                _ = self.deliver(body)
+                self.deliver(body)
                 self.note { $0.framesDelivered += 1 }
                 // 204: the verdict comes back on the downlink, which is the only
                 // channel that carries one. A body here would be a second place

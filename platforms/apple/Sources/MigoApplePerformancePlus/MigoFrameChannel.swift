@@ -42,6 +42,13 @@ public final class MigoFrameChannel {
         public var framesReceived: Int = 0
         /// Packets the engine accepted.
         public var framesAccepted: Int = 0
+        /// Packets that arrived ahead of their predecessor and were held until
+        /// it came. Not refused and not yet accepted: the uplink is two
+        /// independent streams, and ingress executes them in order. The verdict
+        /// for each reaches the producer on the downlink when it is admitted;
+        /// that admission happens inside a later submit and is not counted
+        /// again here.
+        public var framesDeferred: Int = 0
         /// Packets the engine refused, for any of its four reasons. Not an
         /// error here: `WOULD_BLOCK` is the credit window doing its job.
         public var framesRefused: Int = 0
@@ -66,8 +73,18 @@ public final class MigoFrameChannel {
     /// rest -- so this number is a latency choice, not a correctness one.
     private static let downlinkBufferBytes = 4096
 
-    /// Hand one packet to the engine and report whether it was accepted.
-    public typealias Submit = (Data) -> Bool
+    /// What the engine did with one packet, as far as this channel counts it.
+    public enum Disposition: Sendable, Equatable {
+        case accepted
+        /// Held for the packet before it; see `Statistics.framesDeferred`.
+        case deferred
+        /// Refused, for any of the engine's reasons -- including `WOULD_BLOCK`,
+        /// which is the credit window doing its job.
+        case refused
+    }
+
+    /// Hand one packet to the engine and report what became of it.
+    public typealias Submit = (Data) -> Disposition
     /// Fill the buffer with the next downlink message and return its length.
     public typealias TakeDownlink = (UnsafeMutableBufferPointer<UInt8>) -> Int
 
@@ -98,8 +115,12 @@ public final class MigoFrameChannel {
                         session, bytes.bindMemory(to: UInt8.self).baseAddress, packet.count,
                         &outcome)
                 }
-                return result == MIGO_OK
-                    && outcome.decision == MigoFrameIngressDecision(MIGO_FRAME_INGRESS_ACCEPTED)
+                guard result == MIGO_OK else { return .refused }
+                switch outcome.decision {
+                case MigoFrameIngressDecision(MIGO_FRAME_INGRESS_ACCEPTED): return .accepted
+                case MigoFrameIngressDecision(MIGO_FRAME_INGRESS_DEFERRED): return .deferred
+                default: return .refused
+                }
             },
             takeDownlink: { buffer in
                 var written = 0
@@ -195,21 +216,21 @@ public final class MigoFrameChannel {
     /// that carries a verdict, and a second source for an absolute credit level
     /// is how two sources disagree.
     @discardableResult
-    public func submitFromOrigin(_ packet: Data) -> Bool {
+    public func submitFromOrigin(_ packet: Data) -> Disposition {
         receive(packet)
     }
 
     // MARK: - Private
 
     @discardableResult
-    private func receive(_ packet: Data) -> Bool {
-        let accepted = submit(packet)
+    private func receive(_ packet: Data) -> Disposition {
+        let disposition = submit(packet)
         lock.lock()
         statistics.framesReceived += 1
-        if accepted {
-            statistics.framesAccepted += 1
-        } else {
-            statistics.framesRefused += 1
+        switch disposition {
+        case .accepted: statistics.framesAccepted += 1
+        case .deferred: statistics.framesDeferred += 1
+        case .refused: statistics.framesRefused += 1
         }
         lock.unlock()
 
@@ -217,6 +238,6 @@ public final class MigoFrameChannel {
         // a frame it sent has to time out to find out, and a timeout is
         // indistinguishable from a host that died.
         pump()
-        return accepted
+        return disposition
     }
 }

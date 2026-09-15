@@ -74,7 +74,7 @@ final class MigoFrameChannelTests: XCTestCase {
                 seen = packet
                 queue.armFromSubmit()
                 submitted.fulfill()
-                return true
+                return .accepted
             },
             takeDownlink: { queue.take(into: $0) })
         let endpoint = try channel.start()
@@ -118,7 +118,7 @@ final class MigoFrameChannelTests: XCTestCase {
         let channel = MigoFrameChannel(
             submit: { _ in
                 queue.armFromSubmit()
-                return false
+                return .refused
             },
             takeDownlink: { queue.take(into: $0) })
         let endpoint = try channel.start()
@@ -143,7 +143,7 @@ final class MigoFrameChannelTests: XCTestCase {
         // WebContent termination, that is every time.
         var pending = Self.verdictMessage
         let channel = MigoFrameChannel(
-            submit: { _ in true },
+            submit: { _ in .accepted },
             takeDownlink: { buffer in
                 guard !pending.isEmpty else { return 0 }
                 let count = pending.count
@@ -167,7 +167,7 @@ final class MigoFrameChannelTests: XCTestCase {
     }
 
     func testAnEmptyQueueSendsNothing() throws {
-        let channel = MigoFrameChannel(submit: { _ in true }, takeDownlink: { _ in 0 })
+        let channel = MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 })
         let endpoint = try channel.start()
         defer { channel.stop() }
 
@@ -186,7 +186,7 @@ final class MigoFrameChannelTests: XCTestCase {
         // handle the normal case as an error.
         var pending = Self.verdictMessage
         let channel = MigoFrameChannel(
-            submit: { _ in true },
+            submit: { _ in .accepted },
             takeDownlink: { buffer in
                 guard !pending.isEmpty else { return 0 }
                 let count = pending.count

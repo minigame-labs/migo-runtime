@@ -239,6 +239,20 @@ them, because they depend on state the host owns.
   `contracts/apple/profile-policy.json` answers `wire_validation_failed` by
   terminating the content and voiding the generation, so there is no "skip the
   bad one and continue" path for a gap to serve.
+  **What executes is contiguous; what arrives need not be.** The producer's
+  uplink is two independent streams (a packet above the socket ceiling is a
+  scheme request, anything smaller goes on the socket), so a packet can overtake
+  its predecessor in transit. A packet exactly one ahead of the next expected
+  sequence, arriving after the first packet of the generation was accepted and
+  while nothing else is held, passes every other rule, and is **held**: answered
+  `DEFERRED` (5), costing no credit and sending the producer no verdict. When
+  its predecessor is accepted the held packet is offered again through the
+  whole rule set -- a timeline may have moved -- and its verdict follows the
+  predecessor's. One slot is enough rather than a guess: a producer within its
+  `MAX_CREDITS` of two has at most one frame that can overtake another, so a
+  second packet out of order is a producer past its window and is rejected as a
+  gap. Nothing is held before sequence 1, which keeps a replayed later packet
+  from having somewhere to wait.
   The external submit path commits an accepted sequence only after structural
   command validation, decoded-storage admission and queue submission succeed.
   A renderer/queue refusal does not advance the sequence or consume a credit;
@@ -325,6 +339,16 @@ which is a change worth noticing rather than absorbing.
 | 48 | 4 | `reply_bytes` | how much of the reply buffer is the answer; `<= max_reply_bytes` |
 | 52 | 4 | `error` | stable code, `0` when none |
 | 56 | 8 | `deadline_nanos` | monotonic host clock, strictly in the future. Not wall time: a producer blocked across a clock adjustment would wake early or never |
+
+### When a request is answered
+
+After the frame it names. `triggering_sequence` is the frame the producer had
+submitted when it blocked, and the request and that frame can arrive on
+different streams in either order. The host does not execute the operation
+until ingress has accepted that sequence -- admission queues the frame for the
+renderer before it records the sequence, so the operation cannot overtake it --
+and waits no longer than `deadline_nanos` for it. `0` means nothing had been
+submitted, and nothing is waited for.
 
 ### Every way a waiter is woken
 

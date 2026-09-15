@@ -192,7 +192,7 @@ import WebKit
             self.origin = MigoPerformancePlusOrigin(
                 content: MigoWebKitContentOrigin(
                     root: configuration.contentRoot, engineRoot: engineRoot),
-                deliver: { [weak channel] packet in channel?.submitFromOrigin(packet) ?? false })
+                deliver: { [weak channel] packet in channel?.submitFromOrigin(packet) })
             self.onReport = onReport
             self.view = UIView(frame: .zero)
             super.init()

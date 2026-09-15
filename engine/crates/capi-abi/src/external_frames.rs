@@ -18,6 +18,7 @@ pub const MIGO_FRAME_INGRESS_ACCEPTED: u32 = 1;
 pub const MIGO_FRAME_INGRESS_WOULD_BLOCK: u32 = 2;
 pub const MIGO_FRAME_INGRESS_REJECTED: u32 = 3;
 pub const MIGO_FRAME_INGRESS_GENERATION_LOST: u32 = 4;
+pub const MIGO_FRAME_INGRESS_DEFERRED: u32 = 5;
 
 /// One ingress answer.
 ///
@@ -62,6 +63,7 @@ pub unsafe fn write_frame_ingress_outcome(
             | MIGO_FRAME_INGRESS_WOULD_BLOCK
             | MIGO_FRAME_INGRESS_REJECTED
             | MIGO_FRAME_INGRESS_GENERATION_LOST
+            | MIGO_FRAME_INGRESS_DEFERRED
     );
     if !recognised {
         return MIGO_ERROR_INVALID_ARGUMENT;

@@ -24,7 +24,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use tracing::{debug, error, info, warn};
 
 use shared::{
@@ -35,7 +35,6 @@ use shared::{
     surface::SurfaceRef,
 };
 
-#[cfg(test)]
 use frame_wire::IngressDecision;
 use frame_wire::downlink::{DownlinkQueue, DownlinkRecord};
 use frame_wire::sync::{
@@ -241,6 +240,29 @@ pub struct SyncSnapshot {
 /// which is what lets the mailbox refuse an oversized or mismatched answer
 /// BEFORE any of it reaches a producer -- a truncated `readPixels` is a wrong
 /// answer that looks like a right one.
+/// What the synchronous path needs from ingress: the admitted sequence, and a
+/// way to be woken when it moves.
+///
+/// A read answers for the frame the producer had submitted when it blocked
+/// (`triggering_sequence`), and on the Apple uplink that frame can still be in
+/// flight on the other stream when the read arrives -- a synchronous request
+/// and a frame are two independent streams too. Answering before the frame is
+/// admitted reads a surface it has not touched yet.
+#[derive(Clone)]
+struct Admission {
+    ingress: Arc<Mutex<FrameIngress>>,
+    admitted: Arc<Condvar>,
+}
+
+impl Admission {
+    fn new(ingress: Arc<Mutex<FrameIngress>>) -> Self {
+        Self {
+            ingress,
+            admitted: Arc::new(Condvar::new()),
+        }
+    }
+}
+
 struct SyncPath {
     mailbox: Mutex<SyncMailbox>,
     /// Holds the vector the renderer answered with, moved rather than copied
@@ -249,14 +271,20 @@ struct SyncPath {
     /// once does not carry that buffer for the rest of its life.
     reply: Mutex<Vec<u8>>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
+    admission: Admission,
 }
 
 impl SyncPath {
-    fn new(runtime_generation: u64, dispatch: Arc<OnceLock<RenderDispatch>>) -> Self {
+    fn new(
+        runtime_generation: u64,
+        dispatch: Arc<OnceLock<RenderDispatch>>,
+        admission: Admission,
+    ) -> Self {
         Self {
             mailbox: Mutex::new(SyncMailbox::new(runtime_generation)),
             reply: Mutex::new(Vec::new()),
             dispatch,
+            admission,
         }
     }
 
@@ -296,6 +324,7 @@ impl SyncPath {
         let deadline_nanos = request.deadline_nanos;
         let max_reply_bytes = request.max_reply_bytes;
         let operation = request.operation;
+        let triggering_sequence = request.triggering_sequence;
 
         let id = {
             let mut mailbox = self.mailbox.lock();
@@ -310,6 +339,7 @@ impl SyncPath {
             operation,
             params,
             max_reply_bytes,
+            triggering_sequence,
             deadline_nanos,
             now_nanos,
         );
@@ -335,6 +365,7 @@ impl SyncPath {
         operation: u32,
         params: &[u8],
         max_reply_bytes: u32,
+        triggering_sequence: u64,
         deadline_nanos: u64,
         now_nanos: u64,
     ) -> Result<u32, SyncError> {
@@ -363,6 +394,27 @@ impl SyncPath {
         let budget = deadline_nanos.saturating_sub(now_nanos);
         if budget == 0 {
             return Err(SyncError::TimedOut);
+        }
+
+        // Wait for the frame the read is about. Admission dispatches the frame to
+        // the renderer before it records the sequence, so once the sequence is
+        // here the frame is already ahead of this read in the render queue, and
+        // the command below cannot overtake it. Zero means the producer had
+        // submitted nothing, and there is nothing to wait for.
+        if triggering_sequence != 0 {
+            let until = std::time::Instant::now() + std::time::Duration::from_nanos(budget);
+            let mut ingress = self.admission.ingress.lock();
+            while ingress.last_accepted_sequence() < triggering_sequence {
+                if self
+                    .admission
+                    .admitted
+                    .wait_until(&mut ingress, until)
+                    .timed_out()
+                    && ingress.last_accepted_sequence() < triggering_sequence
+                {
+                    return Err(SyncError::TimedOut);
+                }
+            }
         }
 
         let (resp_tx, resp_rx) = crossbeam_channel::bounded(1);
@@ -583,6 +635,8 @@ impl ExternalFrameClock {
 /// three things and has no business reaching a `JoinHandle`.
 struct SubmitPath {
     ingress: Arc<Mutex<FrameIngress>>,
+    /// Notified whenever the admitted sequence moves; see [`Admission`].
+    admitted: Arc<Condvar>,
     errors: Arc<ExternalGlErrors>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
     /// Where the verdict goes. Held here rather than on the session so it can
@@ -608,6 +662,15 @@ impl SubmitPath {
         // commits rejected frames before their decoder or queue can refuse them.
         let mut ingress = self.ingress.lock();
         let outcome = ingress.submit_with(bytes, |frame| self.render(frame));
+        // A packet that arrived ahead of its predecessor was held by ingress,
+        // and this one may be the predecessor. Admitted here, under the same
+        // lock, so it executes directly behind the frame that closed the gap and
+        // its verdict follows that frame's.
+        let released = if outcome.decision == IngressDecision::Accepted {
+            ingress.admit_deferred_with(|frame| self.render(frame))
+        } else {
+            None
+        };
 
         // Queued while the ingress lock is STILL HELD, and that is the whole
         // reason this lives here rather than on the session. The lock above
@@ -617,21 +680,35 @@ impl SubmitPath {
         // producer could read the older credit level second and send against a
         // level it had already been told was lower.
         //
-        // Queued for every decision, including the rejections: a producer told
-        // nothing about a frame it sent has to time out to find out, and a
-        // timeout is indistinguishable from a host that died.
+        // Queued for every decision the producer acts on, including the
+        // rejections: a producer told nothing about a frame it sent has to time
+        // out to find out, and a timeout is indistinguishable from a host that
+        // died. Not for a held packet: the credit level now does not include the
+        // frame that will close the gap, and a producer told it would send
+        // against a window it does not have. Its verdict is the `released` one.
         //
         // Lock order is ingress then downlink, and nothing takes them the other
         // way round -- the frame clock takes only the downlink.
-        self.downlink
-            .lock()
-            .push_verdict(DownlinkRecord::FrameVerdict {
-                generation: self.runtime_generation as u32,
-                decision: outcome.decision as u32,
-                wire_error_code: outcome.wire_error_code,
-                remaining_credits: outcome.remaining_credits,
-                accepted_sequence: outcome.accepted_sequence,
-            });
+        {
+            let mut downlink = self.downlink.lock();
+            for verdict in [Some(outcome), released]
+                .into_iter()
+                .flatten()
+                .filter(|verdict| verdict.decision != IngressDecision::Deferred)
+            {
+                downlink.push_verdict(DownlinkRecord::FrameVerdict {
+                    generation: self.runtime_generation as u32,
+                    decision: verdict.decision as u32,
+                    wire_error_code: verdict.wire_error_code,
+                    remaining_credits: verdict.remaining_credits,
+                    accepted_sequence: verdict.accepted_sequence,
+                });
+            }
+        }
+        drop(ingress);
+        // After the lock is released, so a woken reader does not wake straight
+        // into the lock this thread still holds.
+        self.admitted.notify_all();
         outcome
     }
 
@@ -881,19 +958,21 @@ impl ExternalFrameSession {
         // whichever test reached for a synchronous call first.
         let dispatch: Arc<OnceLock<RenderDispatch>> = Arc::new(OnceLock::new());
         let downlink = Arc::new(Mutex::new(DownlinkQueue::new()));
+        let admission = Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+            launch_nonce,
+            INITIAL_RUNTIME_GENERATION,
+        ))));
         Self {
             host: HostThread::from_join_handle_for_test(host_id, join),
-            sync: SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::clone(&dispatch)),
             submit: SubmitPath {
-                ingress: Arc::new(Mutex::new(FrameIngress::new(
-                    launch_nonce,
-                    INITIAL_RUNTIME_GENERATION,
-                ))),
+                ingress: Arc::clone(&admission.ingress),
+                admitted: Arc::clone(&admission.admitted),
                 errors: Arc::new(ExternalGlErrors::default()),
-                dispatch,
+                dispatch: Arc::clone(&dispatch),
                 downlink: Arc::clone(&downlink),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
             },
+            sync: SyncPath::new(INITIAL_RUNTIME_GENERATION, dispatch, admission),
             clock: Arc::new(ExternalFrameClock::new(
                 Arc::clone(&downlink),
                 INITIAL_RUNTIME_GENERATION,
@@ -938,6 +1017,7 @@ pub fn spawn_external_frame_session(
         INITIAL_RUNTIME_GENERATION,
     )));
     let thread_ingress = Arc::clone(&ingress);
+    let admission = Admission::new(Arc::clone(&ingress));
     let downlink = Arc::new(Mutex::new(DownlinkQueue::new()));
     let clock = Arc::new(ExternalFrameClock::new(
         Arc::clone(&downlink),
@@ -960,9 +1040,14 @@ pub fn spawn_external_frame_session(
     Ok(SpawnedExternalSession {
         session: ExternalFrameSession {
             host: started.host,
-            sync: SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::clone(&dispatch)),
+            sync: SyncPath::new(
+                INITIAL_RUNTIME_GENERATION,
+                Arc::clone(&dispatch),
+                admission.clone(),
+            ),
             submit: SubmitPath {
                 ingress,
+                admitted: Arc::clone(&admission.admitted),
                 errors,
                 dispatch,
                 downlink: Arc::clone(&downlink),
@@ -1535,6 +1620,7 @@ mod tests {
                 NONCE,
                 INITIAL_RUNTIME_GENERATION,
             ))),
+            admitted: Arc::new(Condvar::new()),
             errors: Arc::new(ExternalGlErrors::default()),
             dispatch: Arc::new(OnceLock::new()),
             downlink: Arc::clone(&downlink),
@@ -1656,6 +1742,7 @@ mod tests {
                 NONCE,
                 INITIAL_RUNTIME_GENERATION,
             ))),
+            admitted: Arc::new(Condvar::new()),
             errors: Arc::new(ExternalGlErrors::default()),
             dispatch: Arc::new(OnceLock::new()),
             downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
@@ -1713,6 +1800,7 @@ mod tests {
                     NONCE,
                     INITIAL_RUNTIME_GENERATION,
                 ))),
+                admitted: Arc::new(Condvar::new()),
                 errors: Arc::new(ExternalGlErrors::default()),
                 dispatch: Arc::new(dispatch),
                 downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
@@ -1786,6 +1874,90 @@ mod tests {
             submit.submit_frame(&bytes).wire_error_code,
             EXTERNAL_ERROR_RENDERER_UNREACHABLE
         );
+        assert_eq!(submit.ingress.lock().last_accepted_sequence(), 3);
+    }
+
+    /// A packet that overtook its predecessor on the other uplink is executed
+    /// after it, and the producer hears about the two in that order.
+    ///
+    /// Both halves are asserted on what leaves the session: the renderer's queue
+    /// and the downlink. A held packet sends no verdict -- the credit level at
+    /// that moment does not yet include the frame that will close the gap, and a
+    /// producer told it would send against a window it does not have.
+    #[test]
+    fn a_frame_that_overtakes_its_predecessor_runs_after_it_and_is_answered_after_it() {
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        // The frame id is the sequence, so what the renderer received can be read
+        // back as an order.
+        let frame = |sequence: u64| {
+            let words: Vec<u8> = [stream::MAGIC, stream::STREAM_VERSION]
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect();
+            let mut frame = frame_wire::builder::WireFrameBuilder::new();
+            frame.launch_nonce = NONCE;
+            frame.sequence = sequence;
+            frame.frame_id = sequence as u32;
+            frame
+                .section(frame_wire::SECTION_KIND_COMMAND_STREAM, 2, &words)
+                .build()
+        };
+        let mut out = [0u8; 256];
+        let mut verdicts = |submit: &SubmitPath| {
+            let written = submit.downlink.lock().drain_into(&mut out);
+            if written == 0 {
+                return Vec::new();
+            }
+            frame_wire::downlink::decode_bytes(&out[..written])
+                .expect("the queue writes what the producer reads")
+                .into_iter()
+                .map(|record| match record {
+                    DownlinkRecord::FrameVerdict {
+                        decision,
+                        accepted_sequence,
+                        ..
+                    } => (decision, accepted_sequence),
+                    other => panic!("expected a verdict, got {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        let executed = |receiver: &crossbeam_channel::Receiver<
+            shared::protocol::render_cmd::RenderCommand,
+        >| {
+            let mut ids = Vec::new();
+            while let Ok(command) = receiver.try_recv() {
+                if let shared::protocol::render_cmd::RenderCommand::FramePacket(packet) = command {
+                    ids.push(packet.frame_id());
+                }
+            }
+            ids
+        };
+        let accepted = IngressDecision::Accepted as u32;
+
+        assert_eq!(
+            submit.submit_frame(&frame(1)).decision,
+            IngressDecision::Accepted
+        );
+        assert_eq!(verdicts(&submit), [(accepted, 1)]);
+        assert_eq!(executed(&receiver), [1]);
+
+        assert_eq!(
+            submit.submit_frame(&frame(3)).decision,
+            IngressDecision::Deferred
+        );
+        assert_eq!(verdicts(&submit), [], "a held packet was answered");
+        assert_eq!(
+            executed(&receiver),
+            Vec::<u64>::new(),
+            "a held packet executed early"
+        );
+
+        assert_eq!(
+            submit.submit_frame(&frame(2)).decision,
+            IngressDecision::Accepted
+        );
+        assert_eq!(verdicts(&submit), [(accepted, 2), (accepted, 3)]);
+        assert_eq!(executed(&receiver), [2, 3]);
         assert_eq!(submit.ingress.lock().last_accepted_sequence(), 3);
     }
 
@@ -1938,7 +2110,14 @@ mod sync_tests {
     /// blocked producer's fate should not depend on a lane that needs hardware
     /// to run at all.
     fn path() -> SyncPath {
-        SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::new(OnceLock::new()))
+        SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            Arc::new(OnceLock::new()),
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+        )
     }
 
     fn post(
@@ -2136,7 +2315,14 @@ mod sync_tests {
                 })
                 .is_ok()
         );
-        let path = SyncPath::new(INITIAL_RUNTIME_GENERATION, dispatch);
+        let path = SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            dispatch,
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+        );
 
         let renderer = std::thread::spawn(move || {
             let Ok(RenderCommand::GL(GLCmd::ReadPixels {
@@ -2165,6 +2351,9 @@ mod sync_tests {
         // scheduled, and this asserts what it answers, not how fast.
         let mut read = request(SYNC_OP_READ_PIXELS, 24);
         read.deadline_nanos = NOW + 30_000_000_000;
+        // No frame has been submitted to this path, so there is nothing for the
+        // read to wait for; the wait itself is covered by the tests below.
+        read.triggering_sequence = 0;
         post(&path, read, &read_pixels_params(3, 2), NOW).expect("posted");
         // Asserted apart from the reply, because both failures read back as
         // OPERATION_FAILED and they want opposite fixes.
@@ -2210,6 +2399,155 @@ mod sync_tests {
 }
 
 #[cfg(test)]
+mod sync_fence_tests {
+    use super::*;
+
+    const NONCE: u128 = 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210;
+    const NOW: u64 = 1_000_000_000;
+
+    fn packet(sequence: u64) -> Vec<u8> {
+        let stream: [u8; 0] = [];
+        let mut frame = frame_wire::builder::WireFrameBuilder::new();
+        frame.launch_nonce = NONCE;
+        frame.runtime_generation = INITIAL_RUNTIME_GENERATION;
+        frame.sequence = sequence;
+        frame
+            .section(frame_wire::SECTION_KIND_COMMAND_STREAM, 0, &stream)
+            .build()
+    }
+
+    fn read_pixels_params() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for word in [
+            1u32,
+            0,
+            0,
+            1,
+            1,
+            frame_wire::sync::GL_RGBA,
+            frame_wire::sync::GL_UNSIGNED_BYTE,
+            0,
+        ] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn request(triggering_sequence: u64, deadline_nanos: u64) -> SyncRequest {
+        SyncRequest {
+            request_id: 0,
+            runtime_generation: INITIAL_RUNTIME_GENERATION,
+            surface_generation: 1,
+            resource_epoch: 0,
+            triggering_sequence,
+            operation: SYNC_OP_READ_PIXELS,
+            max_reply_bytes: 4,
+            deadline_nanos,
+        }
+    }
+
+    /// A sync path whose renderer is a channel the test reads, and the ingress
+    /// it fences on.
+    fn path() -> (
+        Arc<SyncPath>,
+        Admission,
+        Arc<shared::render_command_sender::CommandSender>,
+        crossbeam_channel::Receiver<shared::protocol::render_cmd::RenderCommand>,
+    ) {
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        let sender = Arc::new(sender);
+        let dispatch = Arc::new(OnceLock::new());
+        assert!(
+            dispatch
+                .set(RenderDispatch {
+                    sender: Arc::downgrade(&sender),
+                    words: Mutex::new(Vec::new()),
+                })
+                .is_ok()
+        );
+        let admission = Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+            NONCE,
+            INITIAL_RUNTIME_GENERATION,
+        ))));
+        let path = Arc::new(SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            dispatch,
+            admission.clone(),
+        ));
+        (path, admission, sender, commands)
+    }
+
+    /// The read for frame N reaches the renderer only after frame N was admitted.
+    ///
+    /// On the Apple uplink the read and the frame are two independent streams,
+    /// and the read can arrive first. Answering then reads a surface the frame
+    /// has not touched, which is a wrong answer that looks like a right one.
+    #[test]
+    fn a_read_waits_for_the_frame_it_answers_for() {
+        let (path, admission, sender, commands) = path();
+        let reader = {
+            let path = Arc::clone(&path);
+            std::thread::spawn(move || {
+                path.post(request(1, NOW + 30_000_000_000), &read_pixels_params(), NOW)
+            })
+        };
+
+        // Long enough for a read that did not wait to have been sent.
+        assert!(
+            matches!(
+                commands.recv_timeout(std::time::Duration::from_millis(200)),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout)
+            ),
+            "the read reached the renderer before the frame it answers for was admitted"
+        );
+
+        {
+            let mut ingress = admission.ingress.lock();
+            let outcome = ingress.submit_with(&packet(1), |frame| {
+                drop(frame);
+                Ok(())
+            });
+            assert_eq!(outcome.decision, IngressDecision::Accepted);
+        }
+        admission.admitted.notify_all();
+
+        let Ok(shared::protocol::render_cmd::RenderCommand::GL(
+            shared::protocol::render_cmd::GLCmd::ReadPixels { resp, .. },
+        )) = commands.recv_timeout(std::time::Duration::from_secs(10))
+        else {
+            panic!("the read never reached the renderer after its frame was admitted");
+        };
+        let layout = shared::protocol::pixel_pack::PixelPackLayout::new(1, 1, 4, 4, 0, 0, 0)
+            .expect("valid PACK");
+        resp.ok(shared::protocol::render_cmd::ReadPixelsData {
+            pixels: vec![0, 0, 255, 255],
+            layout,
+        });
+        reader.join().expect("reader").expect("posted");
+        assert_eq!(path.snapshot(NOW).state, SyncState::Ready);
+        drop(sender);
+    }
+
+    /// A read whose frame never arrives times out; it is not answered early.
+    #[test]
+    fn a_read_whose_frame_never_arrives_times_out_instead_of_answering() {
+        let (path, _admission, sender, commands) = path();
+        path.post(request(1, NOW + 50_000_000), &read_pixels_params(), NOW)
+            .expect("posted");
+        let snapshot = path.snapshot(NOW);
+        assert_eq!(
+            (snapshot.state, snapshot.error),
+            (SyncState::Failed, Some(SyncError::TimedOut))
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "a read was sent to the renderer for a frame that was never admitted"
+        );
+        drop(sender);
+    }
+}
+
+#[cfg(test)]
 mod sync_teardown_tests {
     use super::*;
 
@@ -2221,7 +2559,14 @@ mod sync_teardown_tests {
     /// the entire teardown path unwired.
     #[test]
     fn shutting_down_refuses_later_requests_through_the_public_handle() {
-        let path = SyncPath::new(INITIAL_RUNTIME_GENERATION, Arc::new(OnceLock::new()));
+        let path = SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            Arc::new(OnceLock::new()),
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+        );
         // The state the wiring has to reach. `request_shutdown` needs a running
         // thread, so this asserts the same call the two entry points make.
         assert!(!path.mailbox.lock().end_session());

@@ -174,7 +174,9 @@ import XCTest
                 a frame was refused. Two frames that left in order on different uplinks \
                 reached ingress out of order, and ingress answers a gap by ending the content.
                 """)
-            XCTAssertEqual(statistics.framesAccepted, 2)
+            // Accepted on arrival or held for its predecessor and admitted behind
+            // it: which one depends on which uplink won, and both are correct.
+            XCTAssertEqual(statistics.framesAccepted + statistics.framesDeferred, 2)
 
             let pixel = try readPixel(session: harness.session, x: 0, y: 0)
             XCTAssertEqual(pixel, [255, 0, 0, 255], "the later, red frame is not the one on the surface")

@@ -4,9 +4,9 @@
 use migo_capi_abi::{
     MIGO_ABI_VERSION_CURRENT, MIGO_ERROR_INVALID_ARGUMENT, MIGO_OK,
     external_frames::{
-        MIGO_FRAME_INGRESS_ACCEPTED, MIGO_FRAME_INGRESS_GENERATION_LOST,
-        MIGO_FRAME_INGRESS_REJECTED, MIGO_FRAME_INGRESS_WOULD_BLOCK, MigoFrameIngressOutcome,
-        write_frame_ingress_outcome,
+        MIGO_FRAME_INGRESS_ACCEPTED, MIGO_FRAME_INGRESS_DEFERRED,
+        MIGO_FRAME_INGRESS_GENERATION_LOST, MIGO_FRAME_INGRESS_REJECTED,
+        MIGO_FRAME_INGRESS_WOULD_BLOCK, MigoFrameIngressOutcome, write_frame_ingress_outcome,
     },
 };
 
@@ -56,6 +56,7 @@ fn a_sequence_number_means_the_packet_was_taken() {
     for decision in [
         MIGO_FRAME_INGRESS_WOULD_BLOCK,
         MIGO_FRAME_INGRESS_GENERATION_LOST,
+        MIGO_FRAME_INGRESS_DEFERRED,
     ] {
         assert_eq!(
             write(decision, 0, 7, 0).0,
@@ -87,6 +88,11 @@ fn an_error_code_means_the_bytes_were_refused() {
         write(MIGO_FRAME_INGRESS_WOULD_BLOCK, 0, 0, 14).0,
         MIGO_ERROR_INVALID_ARGUMENT,
     );
+    // DEFERRED is a packet held for ordering: legal bytes, nothing wrong.
+    assert_eq!(
+        write(MIGO_FRAME_INGRESS_DEFERRED, 1, 0, 14).0,
+        MIGO_ERROR_INVALID_ARGUMENT,
+    );
 }
 
 #[test]
@@ -102,7 +108,7 @@ fn would_block_is_exactly_the_no_credit_answer() {
 
 #[test]
 fn an_unrecognised_decision_is_rejected_including_zero() {
-    for decision in [0u32, 5, u32::MAX] {
+    for decision in [0u32, 6, u32::MAX] {
         assert_eq!(
             write(decision, 0, 0, 0).0,
             MIGO_ERROR_INVALID_ARGUMENT,
@@ -133,6 +139,10 @@ fn the_abi_and_the_wire_reader_agree_on_every_decision() {
     assert_eq!(
         IngressDecision::GenerationLost as u32,
         MIGO_FRAME_INGRESS_GENERATION_LOST
+    );
+    assert_eq!(
+        IngressDecision::Deferred as u32,
+        MIGO_FRAME_INGRESS_DEFERRED
     );
 }
 

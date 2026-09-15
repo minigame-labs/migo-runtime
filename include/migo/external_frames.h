@@ -52,6 +52,15 @@ typedef uint32_t MigoFrameIngressDecision;
  * whoever reads the telemetry looking for a bug that is not there.
  */
 #define MIGO_FRAME_INGRESS_GENERATION_LOST 4U
+/*
+ * Legal and addressed to this session, but one ahead of the packet that must
+ * come before it. The uplink is two independent streams, so a packet can
+ * overtake its predecessor in transit. It is held, costing no credit, and
+ * executed in order as soon as the predecessor arrives; the producer's verdict
+ * for it is sent then. Not an error, and the host must not resend or count it
+ * as refused.
+ */
+#define MIGO_FRAME_INGRESS_DEFERRED 5U
 
 /*
  * Library-written, so it grows append-only: a caller compiled against an
