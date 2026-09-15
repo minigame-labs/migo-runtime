@@ -205,7 +205,10 @@ platforms/windows/SPIKE-REPORT.md
 # its docs, and it arrived bundled into an unrelated PR (#159). Kept on disk,
 # out of the published tree, until a brand direction is settled and introduced
 # deliberately.
-brand/
+# 同样锚定:裸 `brand/` 会把 developer-docs/public/brand/(文档 logo,
+# astro.config 引用)一并忽略,clone 后构建报 could not resolve brand/mark.svg
+# (2026-09-15)。仓根的 logo 探索目录由 /brand/ 继续钉死。
+/brand/
 scripts/test-logo-preview.mjs
 scripts/test-logo-preview-v2.mjs
 
