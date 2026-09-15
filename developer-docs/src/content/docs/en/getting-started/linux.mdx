@@ -1,0 +1,193 @@
+---
+title: Linux Quickstart
+sidebar:
+  order: 4
+description: Integrate Migo host-kit into a Linux Qt application, mount an X11 surface, and manage the surface lifecycle.
+audience: host-integrator
+platforms:
+  - linux
+sourcePaths:
+  - platforms/linux/host-kit/README.md
+  - platforms/linux/host-kit/src/surface_host.cpp
+  - include/migo/platform/x11.h
+  - include/migo/platform/wayland.h
+---
+
+In version 0.9, Linux is **not a standalone runtime target**; it is a development host toolchain.
+`platforms/linux/host-kit/` provides the source-level adapters needed to embed Migo in a Linux UI
+owned by the application; it does not create the application, top-level window, or event loop.
+
+This page drives the minimum C ABI pipeline created by the host and verifies surface attachment and
+lifecycle. It does not claim that Linux has releasable runtime hosting, or that Host Kit creates
+production windows and event loops for the application.
+
+The three currently declared CMake targets are:
+
+- `migo::linux-surface-host` — a toolkit-neutral C++17 lifecycle controller that accepts host-provided
+  X11 or Wayland handles.
+- `migo::qt6-x11-surface-view` — a Qt 6.4+ Widgets adapter based on the `xcb` platform plugin,
+  using a native child `QWidget` and handling surface lifecycle, input, focus, IME composition, and
+  frame requests.
+- `migo::qt6-managed-session` — the Managed ownership form: `MigoManagedSession` owns the Session,
+  callback table, and view.
+
+Qt Wayland, Qt Quick, and GTK 4 are **not yet supported**. The public C ABI is still marked
+`MIGO_C_ABI_CANDIDATE`; this Host Kit is an integration preview until the ABI is frozen.
+
+## 1. Prerequisites
+
+On Ubuntu 24.04, install all dependencies required by the Qt Widgets/X11 adapter and its contract
+tests:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  cmake ninja-build g++ ripgrep xvfb xauth \
+  qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
+  libx11-dev libxkbcommon-x11-dev libxcb-cursor0
+```
+
+If the host uses only the toolkit-neutral `migo::linux-surface-host` controller (Wayland), also
+install:
+
+```bash
+sudo apt-get install -y libwayland-dev
+```
+
+Do not install Qt private-header packages; Host Kit does not depend on any private Qt API.
+
+## 2. Obtain the Linux SDK
+
+Host Kit depends on the Linux SDK, which provides the CMake package required by `find_package(migo)`.
+See [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md), section
+"4. Linux x86\_64 SDK", for the complete build procedure:
+
+```bash
+bash scripts/fetch-linux-sysroot.sh
+bash scripts/fetch-v8-archives.sh x86_64-linux-gnu
+bash scripts/build-linux-sdk.sh
+bash scripts/test-linux-sdk-contract.sh
+```
+
+After the SDK is built, it is located at `dist/migo-linux-x86_64/`.
+
+## 3. Add host-kit to the application build
+
+Pass the SDK directory through `CMAKE_PREFIX_PATH`, then embed host-kit as a subdirectory:
+
+```cmake
+find_package(migo CONFIG REQUIRED)
+add_subdirectory(path/to/migo/platforms/linux/host-kit migo-host-kit)
+
+target_link_libraries(my_app PRIVATE migo::qt6-x11-surface-view)
+```
+
+When only `migo::linux-surface-host` is needed, without Qt, link that target instead:
+
+```cmake
+target_link_libraries(my_app PRIVATE migo::linux-surface-host)
+```
+
+Host Kit can also be built and installed independently:
+
+```bash
+cmake -S platforms/linux/host-kit -B build/host-kit \
+  -DCMAKE_PREFIX_PATH=/path/to/migo-sdk \
+  -DCMAKE_INSTALL_PREFIX=/path/to/prefix \
+  -DMIGO_LINUX_HOST_KIT_ENABLE_INSTALL=ON
+cmake --build build/host-kit
+cmake --install build/host-kit
+```
+
+After installation, consumers use:
+
+```cmake
+find_package(migo-linux-host-kit CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE migo::qt6-x11-surface-view)
+```
+
+## 4. Minimal integration
+
+After the application creates a Session, construct a `QWidget` containing `SurfaceHost` and
+`MigoQtX11SurfaceView`:
+
+```cpp
+class GamePane final : public QWidget {
+public:
+    GamePane(MigoSession *session, QWidget &parent)
+        : QWidget(&parent),
+          surface_host_(session),
+          game_view_(surface_host_, *this) {
+        layout_.addWidget(&game_view_);
+        setLayout(&layout_);
+    }
+
+private:
+    QVBoxLayout layout_;
+    migo::linux_host::SurfaceHost surface_host_;
+    migo::linux_host::qt6::MigoQtX11SurfaceView game_view_;
+};
+```
+
+The application, not the wrapper class, owns `MigoSession`, `SurfaceHost`, the parent widget, and
+the native window. Both dependency chains must remain valid simultaneously:
+
+```text
+QApplication > parent QWidget > MigoQtX11SurfaceView
+MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
+```
+
+`QApplication` must exist before the Qt view and must be destroyed only after the view's final surface release,
+because Qt owns the X11 connection and GUI event loop.
+
+## 5. Input and frames
+
+- **Coordinates are CSS pixels; no conversion is needed**: Qt's logical position equals physical
+  pixels ÷ device pixel ratio, matching the `scale_factor` reported by the view. Multiplying by it
+  again here shifts every click to the wrong location on a HiDPI display.
+- **The mouse drives both event streams by default**: `setPointerDelivery()` can narrow delivery.
+- **`code` comes from the hardware scancode, and `key` comes from the layout**: WASD movement works
+  with every keyboard layout.
+- **Frames follow Qt's clock**: the host calls `requestFrame()` in the `on_request_frame` callback;
+  the view triggers `QWindow::requestUpdate()`.
+
+## 6. Shutdown order
+
+Teardown consists of three C ABI steps and must not be shortened:
+
+1. Call `close()` to begin detach; it returns immediately.
+2. Wait for the view's release observer to report `MIGO_SURFACE_RELEASE_RELEASED`.
+3. Destroy the Session only after that.
+
+Before deleting the view or any ancestor that owns a native child window, call `close()` or
+`beginDetach()`, then keep the widget and GUI event loop alive until the `surfaceReleased` signal
+fires. Destroying the window before release completes is a use-after-free; the adapter fails fast in
+this case rather than hiding the error.
+
+## 7. Known limitations
+
+- **Qt Wayland**: Qt 6.4 does not expose the Wayland display/surface handles required by the adapter
+  through a supported public API; private Qt headers are explicitly forbidden.
+- **GTK 4**: GTK 4 removed `GtkSocket`/`GtkPlug` and provides no public way to place a native target
+  into a layout. `scripts/test-gtk4-surface-capability.sh` continuously probes this state, so the
+  limitation is established by evidence rather than a documentation claim.
+- **Qt Quick**: it uses a compositor-owned scene graph; child-window overlays break clipping,
+  transforms, and frame scheduling, so it is not supported yet.
+- **On-screen keyboard**: `MigoManagedSession` explicitly rejects keyboard capability; a desktop
+  host passes input through the physical keyboard, and `migo.showKeyboard` correctly reports failure
+  here.
+
+## Verify the contract tests
+
+The isolated contract tests can run without building V8:
+
+```bash
+bash scripts/test-linux-qt-host-kit.sh
+```
+
+They require `cmake`, `ninja`, `c++`, `rg`, and `xvfb-run`, plus Qt 6 with xcb support.
+
+## Building from source
+
+See the repository's [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md),
+sections "4. Linux x86\_64 SDK" and "Linux Qt 6 host kit", for the complete build procedure.

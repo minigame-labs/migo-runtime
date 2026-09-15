@@ -1,0 +1,78 @@
+---
+title: View Components
+sidebar:
+  order: 5
+description: The responsibilities and selection of MigoGameView (self-contained lifecycle), MigoGameActivity, ConsoleLogView, and DebugOverlayView.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/MigoGameView.java
+  - platforms/android/library/src/main/java/com/migo/runtime/MigoGameActivity.java
+  - platforms/android/library/src/main/java/com/migo/runtime/ConsoleLogView.java
+  - platforms/android/library/src/main/java/com/migo/runtime/DebugOverlayView.java
+---
+
+The SDK provides two integration paths: **self-contained views** and **manual orchestration**. The deciding factor is who owns the lifecycle.
+
+## Two integration paths
+
+### `MigoGameView` (recommended for embedding)
+
+`MigoGameView extends FrameLayout implements SurfaceHolder.Callback` handles all of the following itself:
+
+- the complete Surface creation / change / destruction callback set;
+- touch dispatch;
+- Activity lifecycle (`pause`/`resume`/`destroy`) through `ActivityLifecycleCallbacks`;
+- memory-warning forwarding;
+- the debug overlay (added when enabled).
+
+```java
+MigoGameView gameView = new MigoGameView(context);
+RuntimeConfig config = new RuntimeConfig.Builder(context)
+    .setImmersiveMode(false)   // 嵌入式场景通常 false
+    .build();
+gameView.setConfig(config);
+gameView.setGameListener(listener);
+layout.addView(gameView);
+gameView.loadGame("my-game", "game.js");
+```
+
+Once available in a callback, `getSession()` can be used by external feature surfaces (`setDebugEnabled`, and so on).
+
+### Manual orchestration: your own `SurfaceView` + `GameSession`
+
+When the game page is a full-screen, single-game container, the standard approach is fully listed on the [MigoRuntime](/docs/android-sdk/runtime/) and [GameSession](/docs/android-sdk/session/) pages — wire the three Surface callbacks, pause/resume/close, and touch forwarding yourself. You get the control plane, at the cost of rewriting the same lifecycle code in every project template.
+
+### `MigoGameActivity`
+
+An **out-of-the-box example Activity** whose implementation is manual orchestration, making it a ready-made template to copy — when starting a new project, modifying this is cheaper than rewriting the `SurfaceHolder` flow.
+
+Choose according to these principles:
+
+- Container scenario (aggregation container, switching between multiple games, or a lifecycle that must coexist with your other views) → embed `MigoGameView`;
+- Single full-screen game page → manual orchestration or the `MigoGameActivity` template.
+
+## Debug components: ConsoleLogView / DebugOverlayView
+
+### `ConsoleLogView`
+
+After `setDebugEnabled(true)` on a session, this is a floating log view attached to an anchor. It displays JS console output filtered by level, with a panel that can be expanded from the top.
+
+- Call `attachButton(anchor)` to show it from that anchor;
+- `startPolling()` starts service-side streaming;
+- call `detach()` when leaving to remove it and prevent leaks.
+
+**Never attach this in a production build** — the view retains every content console log, with both performance and privacy consequences.
+
+### `DebugOverlayView`
+
+A frame-rate / native-handle-status widget. When `config.isDebugEnabled()` is true, `GameSession` creates it automatically and attaches it to the host Activity's decor with `TYPE_APPLICATION_PANEL` via `attachToWindow` — it floats above the game SurfaceView and **does not enter** the `MigoGameView` view tree. The host can also call `attachToWindow(anchor)` to mount it early; keep `debugEnabled=false` in production builds.
+
+## Forbidden view combinations
+
+| Behavior | Why it is forbidden |
+| --- | --- |
+| Call `MigoGameView.loadGame` a second time on the same view | Path is undefined — call `removeView`, then create a new instance |
+| Pass the same Surface to another view after `createSession` | Surface lifecycle follows the view holder; two owners cause a leak |
+| Call `setDebugEnabled(true)` in a production build | Once ConsoleLogView is attached, it exposes content console output and creates privacy impact |

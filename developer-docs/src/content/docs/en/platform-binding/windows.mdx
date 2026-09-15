@@ -1,0 +1,128 @@
+---
+title: Windows
+sidebar:
+  order: 4
+description: Connecting a Win32 child HWND to the engine Surface on Windows; covers the ANGLE identity constraint and marks the WinUI shape as not yet implemented.
+audience: host-integrator
+platforms:
+  - windows
+sourcePaths:
+  - include/migo/platform/win32.h
+  - include/migo/platform/winui.h
+  - include/migo/surface.h
+  - include/migo/capabilities.h
+  - platforms/windows/README.md
+---
+
+This page covers only the platform-specific differences for Windows native surfaces. The general
+attach, resize, asynchronous detach, and release rules are described in
+[Surface Interface](/docs/reference/surface/); for the Session shutdown sequence see
+[Lifecycle Concepts](/docs/concepts/lifecycle/).
+
+**Availability:** The Win32 C ABI (`migo.dll` / `migo.lib`, x86\_64 and arm64) is released in 0.9;
+`migo_query_capabilities` will report `MIGO_PLATFORM_WIN32_HWND`. WinUI `SwapChainPanel` is a
+future implementation and must not be used as an available platform.
+
+## Check `platform_kinds` First
+
+Bit N of `MigoCapabilities.platform_kinds` indicates whether the `MIGO_PLATFORM_*` with value N
+can be attached. The value for Win32 is 2:
+
+```c
+#include <migo/capabilities.h>
+
+MigoCapabilities caps;
+caps.struct_size = (uint32_t)sizeof caps;
+caps.abi_version = MIGO_ABI_VERSION_CURRENT;
+if (migo_query_capabilities(&caps) != MIGO_OK ||
+    (caps.platform_kinds & (1ULL << MIGO_PLATFORM_WIN32_HWND)) == 0)
+    return; /* 当前 DLL 不支持 Win32 surface；不要继续 attach。 */
+```
+
+## Win32: Child `HWND`
+
+### Descriptor
+
+```c
+#include <migo/platform/win32.h>
+
+typedef struct MigoWin32HwndDescriptor {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_WIN32_HWND */
+    MigoPlatformDescriptorFlags flags; /* 须为 0 */
+    void                *hwnd;          /* host-owned child HWND */
+} MigoWin32HwndDescriptor;
+```
+
+`hwnd` must be a host-owned **child window**. The engine uses the Windows ANGLE / Direct3D path
+but does not own the HWND and does not take over the host message loop. The first successful attach
+fixes the Session's ANGLE device; any subsequent HWND replacement must belong to the same ANGLE
+device, otherwise `MIGO_ERROR_INVALID_STATE` is returned.
+
+### Attach
+
+```c
+MigoWin32HwndDescriptor plat;
+memset(&plat, 0, sizeof plat);
+plat.struct_size   = (uint32_t)sizeof plat;
+plat.abi_version   = MIGO_ABI_VERSION_CURRENT;
+plat.platform_kind = MIGO_PLATFORM_WIN32_HWND;
+plat.hwnd           = host_child_hwnd;
+
+MigoSurfaceDescriptor desc;
+memset(&desc, 0, sizeof desc);
+desc.struct_size              = (uint32_t)sizeof desc;
+desc.abi_version              = MIGO_ABI_VERSION_CURRENT;
+desc.generation               = next_generation;
+desc.platform_kind            = MIGO_PLATFORM_WIN32_HWND;
+desc.width_pixels             = width;
+desc.height_pixels            = height;
+desc.scale_factor             = scale;
+desc.color_space              = MIGO_COLOR_SPACE_SRGB;
+desc.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+desc.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;
+desc.platform_descriptor_size = (uint32_t)sizeof plat;
+desc.platform_descriptor      = &plat;
+
+MigoSurfaceAttachment *attachment = NULL;
+MigoResult result = migo_session_attach_surface(session, &desc, &attachment);
+```
+
+The host is responsible for creating, dispatching messages to, resizing, and destroying `hwnd`.
+After `migo_surface_begin_detach` returns `MIGO_OK`, keep the HWND and its message loop alive;
+only when `migo_surface_release_query` reports `MIGO_SURFACE_RELEASE_RELEASED` may you call
+`migo_surface_release_destroy` and destroy the child window.
+
+```c
+MigoSurfaceRelease *release = NULL;
+if (migo_surface_begin_detach(attachment, &release) == MIGO_OK) {
+    attachment = NULL; /* handle 已被消费 */
+    /* 在宿主消息循环中反复 query，非阻塞；确认 RELEASED 后再 DestroyWindow。 */
+}
+```
+
+Do not pass an `HWND` as the payload of `MigoWinuiSwapChainPanelDescriptor`, and do not call
+`DestroyWindow` immediately after detach returns — both bypass the corresponding lifecycle
+contract.
+
+## WinUI: Future Shape, Documentation Only
+
+```c
+#include <migo/platform/winui.h>
+
+typedef struct MigoWinuiSwapChainPanelDescriptor {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_WINUI_SWAP_CHAIN_PANEL */
+    MigoPlatformDescriptorFlags flags;
+    void                *swap_chain_panel_native; /* ISwapChainPanelNative* */
+} MigoWinuiSwapChainPanelDescriptor;
+```
+
+`swap_chain_panel_native` is a COM pointer compatible with `ISwapChainPanelNative`, not an HWND.
+`winui.h` explicitly marks "engine acquires a COM reference before attach and releases it before
+`RELEASED`" as a future implementation. The Windows README also states that WinUI integration is
+not part of the current phase. Do not submit this `platform_kind` in 0.9, even though the struct
+appears in the public headers.

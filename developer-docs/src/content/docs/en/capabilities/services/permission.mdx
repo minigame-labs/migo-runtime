@@ -1,0 +1,81 @@
+---
+title: Permissions
+sidebar:
+  order: 2
+description: Android PermissionHandler contract — the request-response model of requestScope, the three channels of PermissionSink (setScope/resolveRequest/failRequest), and the design rationale for deny-all behavior when no handler is registered.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/PermissionHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/PermissionSink.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+::::caution[Platform scope]
+`PermissionHandler` is the Android Java facade contract. The C ABI and cross-platform layer have no public permission entry point in `0.9`.
+::::
+
+## What the host must implement
+
+Register via `GameSession#setPermissionHandler(PermissionHandler)`, corresponding to line **752** of `GameSession.java`.
+
+`PermissionHandler` has a single method with no default implementation:
+
+```java
+void requestScope(int requestId, String scope, String desc, PermissionSink sink);
+```
+
+- `requestId` — handle for this request; must be passed back to `sink.resolveRequest` unchanged.
+- `scope` — platform scope name, e.g. `"scope.camera"`.
+- `desc` — the justification text declared by the game in `game.json`; may be an empty string. Without it, the host cannot explain to the user why the scope is being requested.
+- `sink` — the answer channel; must call exactly one settle method in the end.
+
+`PermissionSink` exposes three channels:
+
+| Method | Semantics | Notes |
+| --- | --- | --- |
+| `setScope(String scope, boolean granted)` | Write a persistent decision | Use at startup to pre-fill, or at runtime to update (including revocation). The runtime reads the latest value and does not cache a snapshot. |
+| `resolveRequest(int requestId, boolean granted)` | Settle a single `migo.authorize()` call | Does not automatically update the persistent decision — `setScope` must also be called. |
+| `failRequest(int requestId, String errMsg)` | Settle as an error | Use for technical failures such as "cannot show dialog", as distinct from a denial (`resolveRequest(id, false)`). |
+
+Contract: calls arrive on the host thread; all `PermissionSink` methods are safe to call from any thread. Sink calls made after the session ends are discarded — there is no need to race against teardown.
+
+## What happens without an implementation
+
+From the `PermissionHandler.java` header comment:
+
+> Every scope is denied. `migo.getSetting()` reports nothing granted and
+> capability calls fail with `auth deny`.
+
+Design intent: the runtime holds no user relationship and cannot make authorization decisions on behalf of the host. This mirrors the behavior of an ad handler that is not installed returning failure — authorizing a capability that nobody has approved is equivalent to granting a reward without completing an ad.
+
+## What content sees
+
+| migo API | Trigger condition |
+| --- | --- |
+| `migo.authorize({scope})` | Content requests a scope; triggers `requestScope` |
+| `migo.getSetting()` | Reads the current state of all scopes; reads directly from the persistent value written by `setScope`, does not trigger the handler |
+
+Scope names follow platform conventions: e.g. `scope.camera`, `scope.userLocation`, `scope.userInfo`. The game declares the required scope list in `game.json`; the host may use `setScope` to pre-fill its historical records before the game starts.
+Keep denials and errors distinct: call `resolveRequest(requestId, false)` when the user explicitly refuses a scope, and `failRequest(requestId, errMsg)` when the prompt UI cannot be created or displayed. The former directs content to the settings page; the latter is a retryable technical error.
+
+`setScope` is a standing decision, not a response field for a single request. If the user revokes a permission in the host system settings while the game is still running, write `setScope` again; the runtime will read the latest answer on the next capability check.
+
+Calling sink methods for an already-closed session is silently ignored, so the host can wire asynchronous dialog callbacks directly to the sink — but must still guarantee that every unsettled request reaches a terminal state.
+The `PermissionSink` standing decision and per-request result are stored separately, a distinction the interface makes explicit; do not call only one of the two channels when implementing.
+
+Content may still request a scope that has not been granted; a scope for which `setScope` has never been called reads as "not decided", which is different from denied.
+
+`desc` comes from `game.json` and may be empty; when displaying an authorization dialog, the host should use it as the input explaining why the game is requesting the scope.
+
+The permission handler is responsible only for passing the question and the answer between content and the host. It does not decide which system permission records belong to which game on the host's behalf.
+
+When a user changes their decision, update the standing decision first and then let subsequent capability calls read the new state — do not rely on a snapshot taken at startup.
+
+## Platform availability
+
+| Layer | Status |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

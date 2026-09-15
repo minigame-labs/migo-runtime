@@ -1,0 +1,430 @@
+---
+title: 基础类型与导出宏
+sidebar:
+  order: 2
+description: types.h 中定义的导出宏、ABI 候选状态说明、平台检测、错误码、公共类型与跨平台链接约定。
+audience: host-integrator
+platforms:
+  - android
+  - linux
+  - windows
+  - openharmony
+sourcePaths:
+  - include/migo/types.h
+slug: 0.9/reference/types
+---
+
+> **重要：C ABI 仍是候选（`MIGO_C_ABI_CANDIDATE == 1`），尚未冻结。**
+> 冻结前请将 ABI 版本化，每次升级后重新编译宿主；不要把候选接口当作长期二进制兼容承诺。
+> 当前冻结阻塞项见 `README.md`。
+
+## MIGO\_API
+
+```c
+/* Windows — 构建共享库时 */
+#define MIGO_API __declspec(dllexport)
+
+/* Windows — 使用共享库时 */
+#define MIGO_API __declspec(dllimport)
+
+/* Windows — 使用静态库时（无 MIGO_BUILD_SHARED / MIGO_USE_SHARED）*/
+#define MIGO_API
+
+/* GCC / Clang（含 Android NDK、OpenHarmony 工具链）*/
+#define MIGO_API __attribute__((visibility("default")))
+
+/* 其余编译器 */
+#define MIGO_API
+```
+
+`MIGO_API` 标注每个公开符号的导出或导入属性。在 Windows 上，构建共享库时必须定义 `MIGO_BUILD_SHARED`；链接方使用共享库时定义 `MIGO_USE_SHARED`；链接静态库时两者均不定义（宏展开为空）。在 GCC/Clang 平台上，符号可见性由 `__attribute__((visibility("default")))` 控制，宿主无需额外定义任何预处理器标志。
+
+### Linux / Android / OpenHarmony 下的差异
+
+| 平台 | 构建系统 | `MIGO_API` 展开 |
+| --- | --- | --- |
+| Desktop Linux (glibc) | CMake / pkg-config | `__attribute__((visibility("default")))` |
+| Android NDK | CMake（静态库） | `__attribute__((visibility("default")))` |
+| OpenHarmony | CMake | `__attribute__((visibility("default")))` |
+| Windows | CMake / MSVC | `__declspec(dllexport/dllimport)` 或空 |
+
+## MIGO\_CALL
+
+```c
+/* Windows */
+#define MIGO_CALL __cdecl
+
+/* 其他所有平台 */
+#define MIGO_CALL
+```
+
+`MIGO_CALL` 标注函数调用约定。Windows 上显式使用 `__cdecl` 以避免编译器默认约定差异；其他平台展开为空，使用平台默认 ABI。宿主实现回调函数时（如 `MigoTaskFn`、`on_error`）必须加上 `MIGO_CALL`，否则在 Windows 上会导致栈不一致。
+
+```c
+/* 宿主回调函数必须带 MIGO_CALL */
+static MigoResult MIGO_CALL my_dispatch(
+    void *ctx, MigoTaskFn task, void *task_ctx) {
+    task(task_ctx);
+    return MIGO_OK;
+}
+```
+
+## MIGO\_BEGIN\_DECLS / MIGO\_END\_DECLS
+
+```c
+/* C++ 编译器 */
+#define MIGO_BEGIN_DECLS extern "C" {
+#define MIGO_END_DECLS   }
+
+/* C 编译器 */
+#define MIGO_BEGIN_DECLS
+#define MIGO_END_DECLS
+```
+
+所有公开头文件的声明区域用这对宏包裹，保证 C++ 宿主以 C 链接名（无名称修饰）引用符号。在 C 编译器下两个宏展开为空，不产生额外语法。
+
+## MIGO\_C\_ABI\_CANDIDATE
+
+```c
+#define MIGO_C_ABI_CANDIDATE 1
+```
+
+此宏恒为 `1`，表示当前头文件描述的 C ABI 仍处于候选阶段，尚未冻结。即使 Android、Linux、Windows 均已存在可链接的运行时制品，也不意味着 ABI 已稳定；`MIGO_C_ABI_CANDIDATE` 会在 `README.md` 中列出的所有冻结阻塞项关闭后才被移除或置 0。
+
+## MIGO\_C\_ABI\_HAS\_RUNTIME
+
+```c
+/* 当前在 Android / Desktop Linux / Windows / OpenHarmony 上为 1 */
+#define MIGO_C_ABI_HAS_RUNTIME 1  /* 或 0 */
+```
+
+表示当前编译目标平台**存在可链接的 migo 运行时**。此宏描述的是头文件所在平台，而非已链接的库——它是预处理器宏，无法在编译时感知实际链接的制品。要查询已链接运行库的能力，请调用 `migo_query_capabilities`（见 [capabilities.mdx](/docs/0.9/reference/capabilities/)）。
+
+## 平台检测宏
+
+```c
+/* Android（NDK 注入 __ANDROID__）*/
+#define MIGO_PLATFORM_IS_ANDROID      0  /* 或 1 */
+
+/* OpenHarmony（工具链注入 __OHOS__ 或 __OHOS_FAMILY__）*/
+#define MIGO_PLATFORM_IS_OPENHARMONY  0  /* 或 1 */
+
+/* Desktop Linux with glibc（__linux__ && !Android && !OpenHarmony && __GLIBC__）*/
+#define MIGO_PLATFORM_IS_LINUX_GNU    0  /* 或 1 */
+
+/* Windows（_WIN32 && !Cygwin）*/
+#define MIGO_PLATFORM_IS_WINDOWS      0  /* 或 1 */
+```
+
+头文件中的平台宏按**从具体到通用**的顺序定义，原因如下：Android 和 OpenHarmony 的内核均为 Linux，因此它们都定义 `__linux__`；若仅测试 `__linux__`，三种平台会被误判为同一 ABI。`MIGO_PLATFORM_IS_LINUX_GNU` 特指带有 glibc 的桌面 Linux，明确排除了 Android（Bionic）、OpenHarmony（musl）和 Cygwin。
+
+**注意：** `MIGO_PLATFORM_IS_LINUX_GNU` 不覆盖 musl 或其他非 glibc 的 Linux 用户空间——它们的 ABI floor 不同，此宏声明了一个不适用于它们的承诺。
+
+## MIGO\_STATIC\_ASSERT
+
+```c
+/* C++ 编译器 */
+#define MIGO_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+
+/* C 编译器（C11+）*/
+#define MIGO_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+```
+
+用于头文件内部的编译期布局断言，在 C 和 C++ 编译器下均可使用，不依赖 `<assert.h>`。宿主代码不需要主动调用此宏；它出现在头文件实现的布局检查中。
+
+## MIGO\_LP64
+
+```c
+/* 指针宽度为 64 位时 */
+#define MIGO_LP64 1
+
+/* 指针宽度为 32 位时 */
+#define MIGO_LP64 0
+```
+
+**此宏仅用于布局辅助（layout helper），绝对不能用作支持目标的判断依据。** 当前运行时制品均为 64 位，但公开 ABI 同时在 LP64（Linux/Android）、Windows LLP64 和 ILP32 上以 C 和 C++ 编译器检查布局正确性。
+
+## ABI 版本常量
+
+```c
+#define MIGO_ABI_VERSION_1       1U
+#define MIGO_ABI_VERSION_CURRENT MIGO_ABI_VERSION_1
+```
+
+`MIGO_ABI_VERSION_CURRENT` 是宿主初始化所有版本化结构体时写入 `abi_version` 字段的值。当前唯一已定义版本为 `1U`。
+
+> **整型常量拼写约定：** 头文件中所有整型常量均使用后缀字面量（`1U`、`(1U << 0)`），而非 `UINT32_C()`。这是为了兼容 Swift 的 Clang 导入器——`UINT32_C` 是函数式宏，Swift 无法导入其结构；后缀字面量在 C/C++ 中语义等价，同时保持可在 `#if` 中使用。
+
+## MigoResult
+
+```c
+typedef int32_t MigoResult;
+```
+
+所有公开 API 函数的返回类型。零值 `MIGO_OK` 表示成功；负值表示错误。宿主应**始终**检查返回值，仅在 `result == MIGO_OK` 时认为调用成功。
+
+```c
+MigoResult result = migo_engine_create(&config, &engine);
+if (result != MIGO_OK) {
+    fprintf(stderr, "migo_engine_create failed: %d\n", result);
+    return result;
+}
+```
+
+## 错误码
+
+### MIGO\_OK
+
+```c
+#define MIGO_OK ((MigoResult)0)
+```
+
+调用成功，出参已按文档约定填充。
+
+### MIGO\_ERROR\_INVALID\_ARGUMENT
+
+```c
+#define MIGO_ERROR_INVALID_ARGUMENT ((MigoResult)-1)
+```
+
+传入了空指针、结构体 `struct_size` 过小、`abi_version` 非法，或某个字段的枚举值超出已知范围。检查所有入参指针和版本化结构体的初始化是否正确。
+
+### MIGO\_ERROR\_UNSUPPORTED\_ABI
+
+```c
+#define MIGO_ERROR_UNSUPPORTED_ABI ((MigoResult)-2)
+```
+
+传入的结构体 `abi_version` 或 `struct_size` 与运行时期望的范围不匹配。通常意味着宿主头文件与运行时库的 ABI 版本不一致；升级其中一方后重新编译。
+
+### MIGO\_ERROR\_UNSUPPORTED\_PLATFORM
+
+```c
+#define MIGO_ERROR_UNSUPPORTED_PLATFORM ((MigoResult)-3)
+```
+
+当前运行时构建不支持该操作所需的平台能力（例如在不支持该 surface 类型的平台上调用了对应的 attach 函数）。
+
+### MIGO\_ERROR\_UNSUPPORTED\_CAPABILITY
+
+```c
+#define MIGO_ERROR_UNSUPPORTED_CAPABILITY ((MigoResult)-4)
+```
+
+请求的能力在当前运行时构建中未实现。可先调用 `migo_query_capabilities` 查询可用能力再进行操作。
+
+### MIGO\_ERROR\_INVALID\_STATE
+
+```c
+#define MIGO_ERROR_INVALID_STATE ((MigoResult)-5)
+```
+
+句柄已被销毁、生命周期状态不允许该操作，或缺少满足操作前提的资源（如没有已附加的 surface）。
+
+### MIGO\_ERROR\_WRONG\_THREAD
+
+```c
+#define MIGO_ERROR_WRONG_THREAD ((MigoResult)-6)
+```
+
+调用者所在线程不符合该函数的线程模型要求。每个函数的线程约束见对应头文件的注释。
+
+### MIGO\_ERROR\_STALE\_SURFACE
+
+```c
+#define MIGO_ERROR_STALE_SURFACE ((MigoResult)-7)
+```
+
+Surface 句柄已失效（例如底层窗口已被销毁，或 detach 流程已完成），无法再对其执行操作。宿主应完成 detach/release 流程后再创建新的 attachment。
+
+### MIGO\_ERROR\_CANCELLED
+
+```c
+#define MIGO_ERROR_CANCELLED ((MigoResult)-8)
+```
+
+**已保留，当前实现中无函数返回此值。** 未来可能用于可取消的异步操作。
+
+### MIGO\_ERROR\_DISPATCH\_REJECTED
+
+```c
+#define MIGO_ERROR_DISPATCH_REJECTED ((MigoResult)-9)
+```
+
+宿主提供的任务调度器（dispatcher）拒绝了该任务。通常表示 dispatcher 已关闭或处于不接受新任务的状态。
+
+### MIGO\_ERROR\_OUT\_OF\_MEMORY
+
+```c
+#define MIGO_ERROR_OUT_OF_MEMORY ((MigoResult)-10)
+```
+
+**已保留，当前实现中无函数返回此值。** 未来可能在内存分配失败时返回。
+
+### MIGO\_ERROR\_INTERNAL
+
+```c
+#define MIGO_ERROR_INTERNAL ((MigoResult)-11)
+```
+
+运行时内部出现预期外的错误状态。此错误通常不可恢复；宿主应记录错误信息后安全关闭该 session。
+
+### MIGO\_ERROR\_WOULD\_BLOCK
+
+```c
+#define MIGO_ERROR_WOULD_BLOCK ((MigoResult)-12)
+```
+
+宿主命令队列已满，事件未能投递。与其他错误码不同，**这不是硬故障**，而是 backpressure 信号。宿主应按各接口文档说明的策略处理（例如丢弃低优先级输入、限速重试，或通知应用层降低发送频率）。
+
+### 完整错误码速查表
+
+| 错误码 | 值 | 含义摘要 |
+| --- | --- | --- |
+| `MIGO_OK` | 0 | 成功 |
+| `MIGO_ERROR_INVALID_ARGUMENT` | -1 | 空指针、结构体过小或字段值非法 |
+| `MIGO_ERROR_UNSUPPORTED_ABI` | -2 | abi\_version / struct\_size 与运行时不匹配 |
+| `MIGO_ERROR_UNSUPPORTED_PLATFORM` | -3 | 当前平台不支持该操作 |
+| `MIGO_ERROR_UNSUPPORTED_CAPABILITY` | -4 | 请求的能力未在当前构建中实现 |
+| `MIGO_ERROR_INVALID_STATE` | -5 | 句柄已销毁或生命周期状态不允许 |
+| `MIGO_ERROR_WRONG_THREAD` | -6 | 调用线程不符合该函数的线程约束 |
+| `MIGO_ERROR_STALE_SURFACE` | -7 | Surface 句柄已失效 |
+| `MIGO_ERROR_CANCELLED` | -8 | 已保留，当前未使用 |
+| `MIGO_ERROR_DISPATCH_REJECTED` | -9 | Dispatcher 拒绝了任务投递 |
+| `MIGO_ERROR_OUT_OF_MEMORY` | -10 | 已保留，当前未使用 |
+| `MIGO_ERROR_INTERNAL` | -11 | 运行时内部错误，通常不可恢复 |
+| `MIGO_ERROR_WOULD_BLOCK` | -12 | 队列满，backpressure 信号 |
+
+## MigoErrorFlags
+
+```c
+typedef uint32_t MigoErrorFlags;
+
+#define MIGO_ERROR_FLAG_NONE        0U
+#define MIGO_ERROR_FLAG_RECOVERABLE (1U << 0)
+```
+
+`MigoErrorFlags` 是位掩码类型，用于 `MigoError` 结构体的 `flags` 字段。`MIGO_ERROR_FLAG_RECOVERABLE` 置位时表示运行时认为此错误可恢复——宿主可以在处理完错误后继续使用该 session，而无需销毁重建。未置此标志时宿主应保守地将错误视为不可恢复。
+
+## 不透明句柄
+
+```c
+typedef struct MigoEngine            MigoEngine;
+typedef struct MigoSession           MigoSession;
+typedef struct MigoSurfaceAttachment MigoSurfaceAttachment;
+```
+
+三个核心句柄均为不透明类型（forward-declared struct）。宿主只持有指针，不感知内部布局：
+
+| 句柄 | 生命周期 | 销毁函数 |
+| --- | --- | --- |
+| `MigoEngine *` | 最长寿，包含全局运行时状态 | `migo_engine_destroy` |
+| `MigoSession *` | 归属于 engine，代表一个内容会话 | `migo_session_destroy` |
+| `MigoSurfaceAttachment *` | 归属于 session，代表一个已附加的渲染 surface | 通过 `migo_surface_begin_detach` 发起异步 detach |
+
+session 必须在 engine 之前销毁；surface attachment 必须完成 detach/release 流程后 session 才能销毁。详见 [engine.mdx](/docs/0.9/reference/engine/)、[session.mdx](/docs/0.9/reference/session/) 和 [surface.mdx](/docs/0.9/reference/surface/)。
+
+## MigoError
+
+```c
+typedef struct MigoError {
+    uint32_t     struct_size;
+    uint32_t     abi_version;
+    MigoResult   code;
+    MigoErrorFlags flags;
+    const char  *message_utf8;
+    uint32_t     message_length;
+    uint32_t     reserved0;
+} MigoError;
+```
+
+运行时通过 `on_error` 回调将 `MigoError` 传递给宿主。
+
+参数：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `struct_size` | `uint32_t` | 结构体大小，向前兼容校验用 |
+| `abi_version` | `uint32_t` | ABI 版本，运行时填写 |
+| `code` | `MigoResult` | 对应的错误码（见上方表格） |
+| `flags` | `MigoErrorFlags` | 位掩码，含 `MIGO_ERROR_FLAG_RECOVERABLE` |
+| `message_utf8` | `const char *` | UTF-8 错误描述，**不依赖 NUL 终止**；仅在回调期间有效，不可存储 |
+| `message_length` | `uint32_t` | `message_utf8` 的字节长度（不含 NUL） |
+| `reserved0` | `uint32_t` | 运行时保证为 0；宿主不应读取其含义 |
+
+> **重要：** `message_utf8` 是**借用指针**，仅在 `on_error` 回调的调用帧内有效。若需保留消息内容，必须在回调内复制 `message_length` 个字节。
+
+## 版本化结构体约定
+
+所有 config、descriptor 和 status 类型的前两个字段均为 `struct_size` 和 `abi_version`。正确的初始化步骤：
+
+1. 将整个结构体清零（`= {0}` 或 `memset`）。
+2. 写入 `struct_size = (uint32_t)sizeof(config)`。
+3. 写入 `abi_version = MIGO_ABI_VERSION_CURRENT`。
+4. 按需填写本版本所需的其余字段；未填写的字段保持为零。
+
+```c
+/* 典型初始化模式（来自 tests/c_host/linux/main.c）*/
+MigoEngineConfig engine_config = {0};
+engine_config.struct_size = (uint32_t)sizeof(engine_config);
+engine_config.abi_version = MIGO_ABI_VERSION_CURRENT;
+/* ... 填写其余字段 ... */
+
+MigoEngine *engine = NULL;
+MigoResult result = migo_engine_create(&engine_config, &engine);
+if (result != MIGO_OK) {
+    fprintf(stderr, "migo_engine_create: %d\n", result);
+    return result;
+}
+```
+
+**不能做的事：**
+
+* 不要用旧版本的结构体大小搭配新版本的 `abi_version`。
+* 不要向声明范围之外的字段写入值。
+* 不要在调用返回后继续持有运行时借走的指针（如 `message_utf8`）。
+
+## 跨平台链接
+
+### Desktop Linux（glibc）
+
+`scripts/build-linux-sdk.sh` 生成 `libmigo.so` 和 `libmigo.a`，附带 pkg-config 文件和 CMake 包。
+
+```cmake
+# CMake
+find_package(migo REQUIRED)
+target_link_libraries(my_host PRIVATE migo::migo)
+```
+
+```sh
+# pkg-config
+gcc my_host.c $(pkg-config --cflags --libs migo) -o my_host
+```
+
+### Android NDK
+
+`scripts/build-android-c-host.sh` 将运行时编译为**静态库**，附带 CMake 元数据。Android C host SDK 没有 pkg-config 文件，也没有版本化共享对象——NDK 消费者将静态存档链接进自己的 native 共享库。注意 Java/JNI SDK 的 `libmigo.so` 是不同制品，不导出任何 `migo_*` 符号。
+
+```cmake
+# Android CMakeLists.txt
+find_package(migo REQUIRED)
+target_link_libraries(my_jni_lib PRIVATE migo::migo)
+```
+
+使用 `MIGO_BUILD_SHARED` / `MIGO_USE_SHARED` 时注意：Android 上应链接静态库，无需定义这两个宏。
+
+### Windows
+
+`scripts/build-windows-sdk.sh` 生成 `migo.lib`，附带 CMake 包。Win32 surface backend 通过 HWND 附加窗口，ANGLE 路径负责渲染。
+
+```cmake
+# Windows CMakeLists.txt
+find_package(migo REQUIRED)
+target_link_libraries(my_host PRIVATE migo::migo)
+```
+
+使用共享库时在宿主编译单元中定义 `MIGO_USE_SHARED`；使用静态库时无需任何额外定义。
+
+### OpenHarmony
+
+`MIGO_PLATFORM_IS_OPENHARMONY` 为 1 时表示 OpenHarmony 工具链（`__OHOS__` 或 `__OHOS_FAMILY__`）。链接方式参考 Android 静态库路径；具体构建脚本见 `scripts/` 目录。
