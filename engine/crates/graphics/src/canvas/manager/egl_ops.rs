@@ -47,6 +47,11 @@ pub(super) struct EglRuntime {
     resource: Option<(egl::Context, Option<egl::Surface>)>,
     initialized: bool,
     termination_confirmed: bool,
+    /// See [`SurfaceLedger`]. `RefCell` and not a lock: an `EglRuntime` belongs
+    /// to the canvas manager, which is owned by one thread, and EGL would reject
+    /// a second thread making its contexts current anyway.
+    #[cfg(debug_assertions)]
+    ledger: std::cell::RefCell<SurfaceLedger>,
 }
 
 impl EglRuntime {
@@ -57,7 +62,97 @@ impl EglRuntime {
             resource: None,
             initialized: true,
             termination_confirmed: false,
+            #[cfg(debug_assertions)]
+            ledger: std::cell::RefCell::new(SurfaceLedger::default()),
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // The three EGL calls that move surface ownership.
+    //
+    // These shadow the `Deref` to the instance rather than being called
+    // through it, so every existing `self.egl.make_current(..)` is ledgered
+    // without a call site changing. That is deliberate: a bookkeeping scheme
+    // somebody has to remember to call is a scheme that is right until the
+    // next call site.
+    // ---------------------------------------------------------------------
+
+    pub(super) fn make_current(
+        &self,
+        display: egl::Display,
+        draw: Option<egl::Surface>,
+        read: Option<egl::Surface>,
+        context: Option<egl::Context>,
+    ) -> Result<(), egl::Error> {
+        let result = self.instance.make_current(display, draw, read, context);
+        // Recorded only on success. A rejected eglMakeCurrent changes nothing
+        // inside ANGLE, and recording the intent would make the ledger diverge
+        // in exactly the situation -- a surface the driver will not accept --
+        // where it is about to be read.
+        #[cfg(debug_assertions)]
+        if result.is_ok() {
+            self.ledger.borrow_mut().made_current(
+                draw.map(|s| s.as_ptr() as usize),
+                read.map(|s| s.as_ptr() as usize),
+                context.map(|c| c.as_ptr() as usize),
+            );
+        }
+        result
+    }
+
+    pub(super) fn destroy_surface(
+        &self,
+        display: egl::Display,
+        surface: egl::Surface,
+    ) -> Result<(), egl::Error> {
+        #[cfg(debug_assertions)]
+        {
+            let held = self.ledger.borrow().references(surface.as_ptr() as usize);
+            if held == 0 {
+                // The positive control, and the reason the error above can be
+                // read at all. Without it a run with no error line says two
+                // things at once -- "every surface was free when we destroyed
+                // it" and "no surface was destroyed" -- and this project has
+                // already spent a session telling those apart after the fact.
+                // Debug builds only, and once per surface teardown rather than
+                // per frame.
+                tracing::info!(
+                    surface = format_args!("{:p}", surface.as_ptr()),
+                    "eglDestroySurface with no context holding it"
+                );
+            } else {
+                tracing::error!(
+                    surface = format_args!("{:p}", surface.as_ptr()),
+                    references = held,
+                    "eglDestroySurface while the surface is still current: ANGLE defers the \
+                     destroy above a zero reference count, so this call returns success and \
+                     the native window stays owned until eglTerminate"
+                );
+            }
+        }
+        let result = self.instance.destroy_surface(display, surface);
+        #[cfg(debug_assertions)]
+        if result.is_ok() {
+            self.ledger
+                .borrow_mut()
+                .surface_destroyed(surface.as_ptr() as usize);
+        }
+        result
+    }
+
+    pub(super) fn destroy_context(
+        &self,
+        display: egl::Display,
+        context: egl::Context,
+    ) -> Result<(), egl::Error> {
+        let result = self.instance.destroy_context(display, context);
+        #[cfg(debug_assertions)]
+        if result.is_ok() {
+            self.ledger
+                .borrow_mut()
+                .context_destroyed(context.as_ptr() as usize);
+        }
+        result
     }
 
     pub(super) fn track_resource(&mut self, context: egl::Context, surface: Option<egl::Surface>) {
@@ -575,5 +670,409 @@ mod tests {
             .nth(1)
             .expect("create_pbuffer_context must exist");
         assert!(pbuffer.contains("ContextCleanupGuard::new"));
+    }
+}
+
+/// A mirror of ANGLE's surface-reference rule, kept on our side of the call.
+///
+/// WHY IT EXISTS. `eglDestroySurface` on a surface that is still current does
+/// not destroy it. ANGLE's `Surface::onDestroy` sets `mDestroyed` and returns
+/// success while `mRefCount > 0`, and the surface -- on Apple, together with the
+/// `CAMetalLayer` it retains -- then lives until `eglTerminate`. There is no
+/// error, no log and no return value that says so: a retirement announces the
+/// native window released while ANGLE is still holding it. That defect was found
+/// from the far end, as a layer outliving the retirement that announced it, and
+/// cost a session of bisection to get back to the surface.
+///
+/// WHAT IT MIRRORS. ANGLE's own rule, read at the revision this repository pins
+/// (`contracts/artifact-manifest/apple-angle.lock.json`, `52f59428`):
+///
+///   * `Context::setDefaultFramebuffer(draw, read)` calls `draw->makeCurrent`,
+///     and `read->makeCurrent` only when `read != draw`. Each is one `addRef`.
+///   * `Context::unsetDefaultFramebuffer` is the exact inverse, and
+///     `Context::makeCurrent` runs it *before* binding the new surfaces -- so
+///     re-binding a context balances itself.
+///   * `Display::makeCurrent` unsets the previous context's surfaces only when
+///     the context changes, which is what makes the previous rule necessary.
+///   * `Surface::onDestroy` destroys only at `mRefCount == 0`.
+///
+/// So a surface's count is the number of (context, slot) bindings naming it, and
+/// the question a retirement has to answer -- did we leave one behind? -- is
+/// answerable here, at the call, instead of inferred later from a live layer.
+///
+/// SCOPE, and what its silence does not cover. One ledger per `EglRuntime`, and
+/// an `EglRuntime` is used from the thread that owns the canvas manager. The
+/// upload thread loads its own EGL instance and binds only its own pbuffer, so
+/// it cannot name a surface this ledger tracks; nothing else calls
+/// `eglMakeCurrent` on this display.
+///
+/// `EglRuntime::shutdown` is deliberately outside it: that path calls the
+/// instance directly, under `catch_unwind`, because it runs while a render
+/// thread may already be unwinding and a panic there would be the second one.
+/// So a run with no line from this ledger says "no surface was destroyed
+/// through `destroy_surface`" and says nothing about the root pbuffer the final
+/// teardown takes down. Written here because the difference matters exactly
+/// once -- when somebody reads a quiet run and has to say what the quiet means.
+///
+/// COST. Debug builds only. `make_current` runs a few hundred times a frame on a
+/// busy scene -- a map lookup per call is not a price a shipping build should pay
+/// for a check whose job is to establish an invariant, not to guard one.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+#[derive(Default)]
+pub(super) struct SurfaceLedger {
+    /// The context current on this thread and what it has bound.
+    ///
+    /// One entry and not a map of contexts: EGL allows one current context per
+    /// thread, and ANGLE releases the outgoing context's surfaces on every
+    /// switch, so a context that is not current holds nothing. The first
+    /// version of this did keep a map, and the branch that would have used a
+    /// second entry turned out to be unreachable -- a model that cannot be
+    /// wrong because it cannot be exercised. This one can.
+    current: Option<Binding>,
+    /// How many bindings name each surface. Entries at zero are removed, so
+    /// `counts.get(s)` answering `None` and answering `Some(0)` are the same
+    /// statement and only one of them can be written.
+    counts: std::collections::HashMap<usize, u32>,
+}
+
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+struct Binding {
+    context: usize,
+    draw: Option<usize>,
+    read: Option<usize>,
+}
+
+impl SurfaceLedger {
+    /// Record an `eglMakeCurrent` that the driver accepted.
+    ///
+    /// Called after the call succeeds, never before: a rejected
+    /// `eglMakeCurrent` changes nothing in ANGLE, and recording the intent
+    /// would make this ledger diverge in exactly the situation -- a failing
+    /// surface -- where it is being read.
+    pub(super) fn made_current(
+        &mut self,
+        draw: Option<usize>,
+        read: Option<usize>,
+        context: Option<usize>,
+    ) {
+        // The outgoing context loses its surfaces either way: when the context
+        // changes `Display::makeCurrent` unsets it, and when it does not
+        // `Context::makeCurrent` unsets the same context before rebinding it.
+        // One release covers both.
+        self.release_current();
+        let Some(context) = context else {
+            return;
+        };
+        if let Some(draw) = draw {
+            self.retain(draw);
+        }
+        // ANGLE takes the read surface only when it differs from the draw
+        // surface, and an onscreen canvas passes the same surface for both.
+        if read != draw
+            && let Some(read) = read
+        {
+            self.retain(read);
+        }
+        self.current = Some(Binding {
+            context,
+            draw,
+            read,
+        });
+    }
+
+    /// Record an `eglDestroyContext`. A destroyed context releases what it held.
+    ///
+    /// Only the current one can be holding anything, and destroying some other
+    /// context has to leave the current binding alone -- a retirement destroys
+    /// the context it preserved from the *previous* cycle while the live one is
+    /// current, and releasing on that call would report the live surface as
+    /// free.
+    pub(super) fn context_destroyed(&mut self, context: usize) {
+        if self.current.as_ref().is_some_and(|b| b.context == context) {
+            self.release_current();
+        }
+    }
+
+    /// How many bindings still name `surface`.
+    ///
+    /// Non-zero at `eglDestroySurface` means ANGLE will defer the destroy, and
+    /// the native window behind it stays owned.
+    pub(super) fn references(&self, surface: usize) -> u32 {
+        self.counts.get(&surface).copied().unwrap_or(0)
+    }
+
+    /// Forget a surface after the driver has destroyed it, so a handle the
+    /// allocator reuses does not inherit the old surface's history.
+    pub(super) fn surface_destroyed(&mut self, surface: usize) {
+        self.counts.remove(&surface);
+    }
+
+    /// The exact inverse of what `made_current` retained, which is the exact
+    /// inverse ANGLE's `unsetDefaultFramebuffer` performs.
+    fn release_current(&mut self) {
+        let Some(binding) = self.current.take() else {
+            return;
+        };
+        if let Some(draw) = binding.draw {
+            self.release(draw);
+        }
+        if binding.read != binding.draw
+            && let Some(read) = binding.read
+        {
+            self.release(read);
+        }
+    }
+
+    fn retain(&mut self, surface: usize) {
+        *self.counts.entry(surface).or_insert(0) += 1;
+    }
+
+    fn release(&mut self, surface: usize) {
+        if let Some(count) = self.counts.get_mut(&surface) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.counts.remove(&surface);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod surface_ledger_tests {
+    use super::SurfaceLedger;
+
+    const CTX_A: usize = 0xA;
+    const CTX_B: usize = 0xB;
+    const WINDOW: usize = 0x100;
+    const PBUFFER: usize = 0x200;
+
+    #[test]
+    fn a_bound_surface_is_referenced_and_switching_away_releases_it() {
+        let mut ledger = SurfaceLedger::default();
+        ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_A));
+        assert_eq!(ledger.references(WINDOW), 1);
+
+        // This is the sequence a retirement runs: switch to the resource
+        // context, then destroy the window surface.
+        ledger.made_current(Some(PBUFFER), Some(PBUFFER), Some(CTX_B));
+        assert_eq!(
+            ledger.references(WINDOW),
+            0,
+            "switching the context away has to release the window surface, or a \
+             retirement that is correct would be reported as a leak"
+        );
+        assert_eq!(ledger.references(PBUFFER), 1);
+    }
+
+    #[test]
+    fn rebinding_the_same_context_does_not_accumulate() {
+        // The failure this pins: if a redundant eglMakeCurrent added a reference
+        // without releasing the old one, a frame loop would push the count up
+        // without bound and every destroy would look deferred.
+        let mut ledger = SurfaceLedger::default();
+        for _ in 0..64 {
+            ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_A));
+        }
+        assert_eq!(ledger.references(WINDOW), 1);
+    }
+
+    #[test]
+    fn separate_read_and_draw_surfaces_are_counted_separately() {
+        let mut ledger = SurfaceLedger::default();
+        ledger.made_current(Some(WINDOW), Some(PBUFFER), Some(CTX_A));
+        assert_eq!(ledger.references(WINDOW), 1);
+        assert_eq!(ledger.references(PBUFFER), 1);
+        ledger.made_current(None, None, None);
+        assert_eq!(ledger.references(WINDOW), 0);
+        assert_eq!(ledger.references(PBUFFER), 0);
+    }
+
+    #[test]
+    fn one_surface_in_both_slots_is_one_reference() {
+        // ANGLE's setDefaultFramebuffer takes the read surface only when it
+        // differs from the draw surface. Counting it twice would report a
+        // correct retirement as a leak on every onscreen canvas we have.
+        let mut ledger = SurfaceLedger::default();
+        ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_A));
+        assert_eq!(ledger.references(WINDOW), 1);
+    }
+
+    #[test]
+    fn a_second_context_taking_the_surface_does_not_double_count() {
+        let mut ledger = SurfaceLedger::default();
+        ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_A));
+        // A second context binding the same surface: legal, and the case where
+        // switching only the outgoing context away is not enough.
+        ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_B));
+        assert_eq!(
+            ledger.references(WINDOW),
+            1,
+            "CTX_A gave up the surface when the context changed"
+        );
+        ledger.made_current(Some(PBUFFER), Some(PBUFFER), Some(CTX_B));
+        assert_eq!(ledger.references(WINDOW), 0);
+    }
+
+    #[test]
+    fn a_preserved_context_keeps_holding_what_it_bound() {
+        // The shape the Apple defect is suspected to have: the retirement
+        // preserves the onscreen context instead of destroying it. If the
+        // preserved context were still current, the surface would not be
+        // released -- and this is the assertion that would catch it.
+        let mut ledger = SurfaceLedger::default();
+        ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_A));
+        // No switch away: destroy is attempted with CTX_A still current.
+        assert_eq!(ledger.references(WINDOW), 1);
+        // Destroying the context is the other way to let go.
+        ledger.context_destroyed(CTX_A);
+        assert_eq!(ledger.references(WINDOW), 0);
+    }
+
+    #[test]
+    fn destroying_a_context_that_is_not_current_leaves_the_live_binding_alone() {
+        // The retirement path destroys the context it preserved from the
+        // previous cycle while the live context is current. Releasing on that
+        // call would report the live surface as free and hide a real leak.
+        let mut ledger = SurfaceLedger::default();
+        ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_A));
+        ledger.context_destroyed(CTX_B);
+        assert_eq!(ledger.references(WINDOW), 1);
+    }
+
+    #[test]
+    fn a_reused_surface_handle_does_not_inherit_the_old_count() {
+        let mut ledger = SurfaceLedger::default();
+        ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_A));
+        ledger.surface_destroyed(WINDOW);
+        assert_eq!(ledger.references(WINDOW), 0);
+        // The allocator hands the same address back for a new surface.
+        ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_B));
+        assert_eq!(ledger.references(WINDOW), 1);
+    }
+
+    #[test]
+    fn releasing_the_current_context_releases_its_surfaces() {
+        let mut ledger = SurfaceLedger::default();
+        ledger.made_current(Some(WINDOW), Some(WINDOW), Some(CTX_A));
+        ledger.made_current(None, None, None);
+        assert_eq!(ledger.references(WINDOW), 0);
+    }
+}
+
+#[cfg(test)]
+mod surface_ledger_interposition {
+    /// The ledger only sees what goes through `EglRuntime`'s own methods.
+    ///
+    /// `EglRuntime` derefs to the EGL instance, so deleting one of those methods
+    /// leaves every call site compiling and calling the driver directly -- and
+    /// the ledger simply goes quiet. A ledger that reports nothing and a ledger
+    /// that is not being called are the same output, which is the failure this
+    /// project has already been bitten by often enough to name: a guard that
+    /// covers only the side it was designed for.
+    const SOURCE: &str = include_str!("egl_ops.rs");
+
+    fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is not in this file"));
+        let rest = &source[start..];
+        let open = rest.find('{').expect("a function has a body");
+        let mut depth = 0usize;
+        for (index, byte) in rest.as_bytes().iter().enumerate().skip(open) {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &rest[open..=index];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("{signature} has an unbalanced body");
+    }
+
+    #[test]
+    fn every_ownership_moving_egl_call_is_ledgered() {
+        // Named per method rather than as "mentions the ledger". The weaker
+        // version passed a mutation that removed the only thing this whole
+        // facility is for -- destroy_surface still wrote to the ledger while no
+        // longer reading it, so the surface it was about to leak went
+        // unreported. A guard that covers only the side it was designed for is
+        // this project's most repeated defect; this one names both sides.
+        for (signature, required) in [
+            (
+                "pub(super) fn make_current(",
+                &[
+                    "self.instance.make_current",
+                    "made_current(",
+                    "result.is_ok()",
+                ][..],
+            ),
+            (
+                "pub(super) fn destroy_surface(",
+                &[
+                    "self.instance.destroy_surface",
+                    "references(",
+                    "tracing::error!",
+                    "surface_destroyed(",
+                ][..],
+            ),
+            (
+                "pub(super) fn destroy_context(",
+                &["self.instance.destroy_context", "context_destroyed("][..],
+            ),
+        ] {
+            let body = function_body(SOURCE, signature);
+            for fragment in required {
+                assert!(
+                    body.contains(fragment),
+                    "{signature} no longer contains `{fragment}`, so it forwards to EGL \
+                     without the bookkeeping that makes a deferred destroy visible"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_surface_still_referenced_is_reported_before_it_is_destroyed() {
+        // Order matters: ANGLE's eglDestroySurface returns success either way,
+        // so asking afterwards would ask about a count the call has already
+        // changed and report nothing.
+        //
+        // What this cannot see is reachability: a check compiled out behind a
+        // constant false still reads as present and in order. Presence and
+        // order are what a source guard can hold, and they are what the drift
+        // it is aimed at -- someone tidying the bookkeeping into one block
+        // after the call -- actually violates.
+        let body = function_body(SOURCE, "pub(super) fn destroy_surface(");
+        let ask = body.find("references(").expect("asks the ledger");
+        let report = body.find("tracing::error!").expect("reports");
+        let destroy = body
+            .find("self.instance.destroy_surface")
+            .expect("forwards to the driver");
+        assert!(
+            ask < report && report < destroy,
+            "the count has to be read and reported before the driver call, not after"
+        );
+    }
+
+    #[test]
+    fn the_ledger_is_recorded_after_the_driver_agrees() {
+        // Recording the intent rather than the outcome is the version of this
+        // that is wrong exactly when it is being read: a surface the driver
+        // refuses is the interesting one.
+        let body = function_body(SOURCE, "pub(super) fn make_current(");
+        let call = body.find("self.instance.make_current").expect("forwards");
+        let record = body.find("self.ledger").expect("records");
+        assert!(
+            call < record,
+            "the ledger has to be written after the driver call, from its result"
+        );
+        assert!(
+            body.contains("result.is_ok()"),
+            "a rejected eglMakeCurrent must not be recorded as a binding"
+        );
     }
 }

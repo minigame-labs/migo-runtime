@@ -356,6 +356,23 @@ impl Drop for SurfaceResource {
         // greater than one here names that owner's existence at the moment it
         // matters, in every platform's logs, instead of leaving it to a flaky
         // assertion in one platform's test suite.
+        // Says something either way, because its silence had two readings and
+        // they lead opposite places. When the iOS arm of
+        // `testMetalLayerIsRetainedUntilNativeRetirementCompletes` failed with a
+        // layer alive after RELEASED, this site printed nothing -- and "the
+        // anchor was the sole owner" and "there was no anchor to check" are the
+        // same silence. The first says the extra owner is outside this graph;
+        // the second says the surface was never installed and the check never
+        // applied. A whole CI round trip was spent not knowing which.
+        // INFO rather than DEBUG so it appears at the level the Apple tests
+        // already ask for; it runs once per retirement, not per frame.
+        tracing::info!(
+            has_anchor = self.native_anchor.is_some(),
+            outstanding = self.native_anchor.as_ref().map(Arc::strong_count),
+            native_owners = ?self.native_anchor.as_ref().and_then(|a| a.native_owner_count()),
+            generation = self.public_generation.get(),
+            "surface resource dropping; the owner check below applies only with an anchor"
+        );
         if let Some(anchor) = self.native_anchor.as_ref() {
             let outstanding = Arc::strong_count(anchor);
             // TWO counts, because they answer two different questions and the
@@ -382,7 +399,32 @@ impl Drop for SurfaceResource {
                 );
             }
         }
-        drop(self.native_anchor.take());
+        // The anchor is released inside an autorelease scope, and RELEASED is
+        // published after that scope ends.
+        //
+        // On Apple the anchor owns a CAMetalLayer through a CFRetain, and
+        // releasing it runs Objective-C on whichever thread performed the last
+        // drop. Anything that release autoreleases -- by Core Animation, by
+        // ANGLE, by anything either of them calls -- lands in that thread's
+        // innermost pool, and if the innermost pool is a thread-lifetime one it
+        // is held until the thread exits. RELEASED means the host may free the
+        // layer, so publishing it while a pool on our side still holds a
+        // reference is publishing a promise we have not kept.
+        //
+        // Measured 2026-09-10 on the iOS simulator: the layer outlived RELEASED
+        // by ~6 ms on one run and until `migo_session_destroy` -- where the
+        // render thread's own outer pool goes -- on another, while this drop
+        // reported `has_anchor=true outstanding=1 native_owners=Some(1)`, the
+        // same reading it gives on the runs that pass. The engine's accounting
+        // was clean and something outside it still held the layer. Draining a
+        // pool on the *test's* thread changed nothing, which is what says the
+        // holder is on another thread: this one.
+        //
+        // Zero-sized off Apple, so this carries no `cfg`.
+        {
+            let _pool = crate::objc_autorelease::autorelease_scope();
+            drop(self.native_anchor.take());
+        }
         self.release.complete();
     }
 }

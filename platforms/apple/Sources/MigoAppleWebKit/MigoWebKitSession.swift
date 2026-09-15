@@ -101,6 +101,39 @@ import WebKit
         /// far it got, and nothing about whether the request ever reached the host
         /// code that serves it. See `MigoWebKitContentOrigin.Activity`.
         public var originActivity: MigoWebKitContentOrigin.Activity { origin.activity }
+
+        /// How far WebKit itself got with the load.
+        ///
+        /// `originActivity` answers "did the host serve the page"; this answers "did
+        /// WebKit do anything with what it was served", and the two together are the
+        /// whole of "which side is stuck". They had to be separated by a real stall:
+        /// a run that reported `started: 1, settled: 1, delivered: 431` had a host
+        /// that answered in full and a page that never committed, and nothing in the
+        /// session could say whether WebKit had failed the navigation, lost its
+        /// content process, or simply not got there yet.
+        ///
+        /// Read and written on the main queue only -- every `WKNavigationDelegate`
+        /// callback arrives there -- so it carries no lock. A host that reads it from
+        /// anywhere else reads a torn value.
+        public private(set) var navigation = Navigation()
+
+        /// A navigation's milestones, counted.
+        public struct Navigation: Sendable, Equatable {
+            /// `didStartProvisionalNavigation`: WebKit began fetching a main resource.
+            public var provisionalStarts: Int = 0
+            /// `didCommit`: WebKit accepted the response and began building a document.
+            public var commits: Int = 0
+            /// `didFinish`: the document and its subresources are loaded.
+            public var finishes: Int = 0
+            /// `didFailProvisionalNavigation`: it never got as far as a document.
+            public var provisionalFailures: Int = 0
+            /// `didFail`: a committed load stopped before it finished.
+            public var failures: Int = 0
+            /// The content process died this many times.
+            public var contentProcessTerminations: Int = 0
+            /// The most recent navigation error, if any.
+            public var lastError: String?
+        }
         private var recovery: MigoWebContentRecovery
         private var handlerMethods: [String: String] = [:]
         private var lifecycleSubscribed = false
@@ -369,9 +402,42 @@ import WebKit
         }
 
         public func webView(
+            _ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!
+        ) {
+            self.navigation.provisionalStarts += 1
+        }
+
+        public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            self.navigation.commits += 1
+        }
+
+        public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            self.navigation.finishes += 1
+        }
+
+        public func webView(
             _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
             withError error: Error
         ) {
+            self.navigation.provisionalFailures += 1
+            self.navigation.lastError = error.localizedDescription
+            reportNavigationFailure(error)
+        }
+
+        /// A load that committed and then stopped.
+        ///
+        /// Reported exactly as a provisional failure is, because the host's interest
+        /// in the two is the same -- content that is not going to appear -- and a
+        /// session that announced only one of them would go quiet on half of them.
+        public func webView(
+            _ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error
+        ) {
+            self.navigation.failures += 1
+            self.navigation.lastError = error.localizedDescription
+            reportNavigationFailure(error)
+        }
+
+        private func reportNavigationFailure(_ error: Error) {
             delegate?.session(
                 self,
                 didReceiveDiagnostic: [
@@ -381,6 +447,7 @@ import WebKit
         }
 
         public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            navigation.contentProcessTerminations += 1
             switch recovery.webContentTerminated() {
             case .rebuild:
                 delegate?.session(self, willRebuildAfterTermination: recovery.consecutiveTerminations)

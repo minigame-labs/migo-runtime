@@ -14,6 +14,11 @@ fn has_extension(extensions: &str, expected: &str) -> bool {
         .any(|extension| extension == expected)
 }
 
+#[inline]
+fn ahb_api_supported(android_api: Option<u32>) -> bool {
+    android_api.is_some_and(|level| level >= 26)
+}
+
 /// Runtime-detected device capabilities.
 #[derive(Debug, Clone)]
 pub struct DeviceCapabilities {
@@ -91,7 +96,7 @@ impl DeviceCapabilities {
         // - GL_OES_EGL_image (GL side can consume EGLImage)
         // - EGL_ANDROID_image_native_buffer (EGL side can wrap AHB)
         let ahb_available = cfg!(target_os = "android")
-            && android_api_level().is_some_and(|level| level >= 26)
+            && ahb_api_supported(android_api_level())
             && has_extension(&gl_extensions, "GL_OES_EGL_image")
             && has_extension(egl_extensions, "EGL_ANDROID_image_native_buffer");
 
@@ -229,5 +234,13 @@ mod tests {
             "GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3",
             "GL_OES_EGL_image"
         ));
+    }
+
+    #[test]
+    fn ahb_api_gate_preserves_non_android_and_api_26_boundary() {
+        assert!(!ahb_api_supported(None));
+        assert!(!ahb_api_supported(Some(25)));
+        assert!(ahb_api_supported(Some(26)));
+        assert!(ahb_api_supported(Some(35)));
     }
 }

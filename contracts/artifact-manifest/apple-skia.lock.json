@@ -1,0 +1,53 @@
+{
+  "schema": "migo-apple-skia-lock/v1",
+  "_comment": [
+    "Skia for macOS, built by this project because the one upstream publishes is",
+    "compiled for the wrong GL.",
+    "",
+    "Skia's gn/skia.gni sets skia_gl_standard = \"gl\" when is_mac, which defines",
+    "SK_ASSUME_GL=1 and compiles the ES interface assembler out. The only GL on",
+    "Apple is ANGLE, which is ES, so every Canvas2D surface on macOS fails to",
+    "build a GrDirectContext against a prebuilt carrying that define -- silently,",
+    "because WebGL never goes through Skia and nothing else asks. The archives",
+    "here are the same sources built with skia_gl_standard=\"\", which restores",
+    "the runtime dispatch every other platform already gets.",
+    "",
+    "iOS is NOT here and must not be: its default is \"gles\", which is what ANGLE",
+    "actually is, so upstream's iOS prebuilts are correct and cheaper than ours.",
+    "scripts/apple-skia-gl-env.sh is sourced only on the macOS platform, which is",
+    "what keeps that true.",
+    "",
+    "The recipe is scripts/package-apple-skia-binaries.sh and the machine that",
+    "runs it is .github/workflows/apple-skia-binaries.yml. Both refuse to package",
+    "a downloaded build, which is the mistake a rebuild is most likely to make."
+  ],
+  "source": {
+    "crate": "skia-bindings",
+    "crate_version": "0.93.1",
+    "rust_skia_commit": "319323662b1685a112f5",
+    "gn_args_override": "skia_gl_standard=\"\"",
+    "features": "gl-jpegd-jpege-pdf-textlayout",
+    "built_on": "2026-09-11"
+  },
+  "release": "https://github.com/minigame-labs/migo-runtime/releases/download/skia-apple-0.93.1-31932366",
+  "tag": "skia-apple-0.93.1-31932366",
+  "_url_template_comment": [
+    "skia-bindings expands {tag} and {key} in SKIA_BINARIES_URL. The key is its",
+    "own construction -- commit, target triple, feature set -- so one template",
+    "serves both darwin triples and a key it cannot find simply misses and",
+    "source-builds, which is slow and never wrong."
+  ],
+  "url_template": "https://github.com/minigame-labs/migo-runtime/releases/download/skia-apple-0.93.1-31932366/skia-binaries-{key}.tar.gz",
+  "targets": {
+    "aarch64-apple-darwin": {
+      "asset": "skia-binaries-319323662b1685a112f5-aarch64-apple-darwin-gl-jpegd-jpege-pdf-textlayout.tar.gz",
+      "size_bytes": 16787684,
+      "sha256": "a83ff282ab84bda335ec181343831fa61b32d21b5cd78286ee1fe9f95fae0c20"
+    },
+    "x86_64-apple-darwin": {
+      "asset": "skia-binaries-319323662b1685a112f5-x86_64-apple-darwin-gl-jpegd-jpege-pdf-textlayout.tar.gz",
+      "size_bytes": 17822314,
+      "sha256": "e70d9ab97518d5f166ec8a0c83292eb0031c362b92b5b928d00b9e0d793eb560"
+    }
+  }
+}

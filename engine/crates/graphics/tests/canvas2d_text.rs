@@ -15,6 +15,9 @@
 #[path = "common/mod.rs"]
 mod common;
 
+// Apple has no use for these: the one golden comparison in this file is
+// `#[cfg(not(target_vendor = "apple"))]`, for a reason stated at that call.
+#[cfg(not(target_vendor = "apple"))]
 use common::golden::{GoldenCfg, assert_matches_golden};
 use common::harness::{read_pixels_rgba8, with_raster_surface};
 
@@ -100,6 +103,26 @@ fn fill_text_draws_non_empty_pixels() {
         non_white > 20,
         "expected >=20 non-white pixels for rendered text, got {non_white}"
     );
+    // The golden is a rasteriser's, not a renderer's, and text is the one thing
+    // in this suite that differs between them. The outlines are identical
+    // everywhere -- the font is bundled, not the system's -- but hinting, gamma
+    // and edge coverage are the scaler's, and Skia's scaler is FreeType on Linux
+    // and Android and CoreText on Apple.
+    //
+    // Measured 2026-09-11, macOS 26.6 against the committed golden: 300 of 4096
+    // pixels outside a tolerance of 2, max delta 203, every one of them a glyph
+    // edge (a first mismatch of [214,214,214] where the golden has white).
+    // Comparing there would assert that CoreText is FreeType.
+    //
+    // What is NOT skipped is everything that is about this renderer rather than
+    // that scaler: the non-white count above, and the two positioning tests
+    // below, which assert where the ink lands relative to the anchor and pass on
+    // every platform. A per-platform golden was considered and rejected for now:
+    // it would have to be generated on the CI runner rather than on a developer's
+    // Mac -- this lane's runner is arm64 macOS 15 and the machine that would
+    // produce it is Intel macOS 26 -- so it would be a golden nobody could
+    // regenerate from the machine that failed it.
+    #[cfg(not(target_vendor = "apple"))]
     assert_matches_golden(
         "canvas2d_fill_text_hello",
         w as u32,

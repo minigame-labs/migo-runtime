@@ -120,6 +120,30 @@ pub const MIGO_SYNC_STATE_READY: u32 = 2;
 pub const MIGO_SYNC_STATE_FAILED: u32 = 3;
 pub const MIGO_SYNC_STATE_CANCELLED: u32 = 4;
 
+/// Why a synchronous request failed.
+///
+/// Stable across releases: the producer turns these into exceptions its own
+/// code catches, so a renumbering here is a renumbering of somebody's `catch`.
+/// Mirrors `include/migo/external_frames.h` field for field; the C-layout gate
+/// is what keeps the two from drifting.
+pub const MIGO_SYNC_ERROR_ALREADY_PENDING: u32 = 1;
+pub const MIGO_SYNC_ERROR_REQUEST_ID_MISMATCH: u32 = 2;
+pub const MIGO_SYNC_ERROR_STALE_GENERATION: u32 = 3;
+pub const MIGO_SYNC_ERROR_REPLY_TOO_LARGE: u32 = 4;
+pub const MIGO_SYNC_ERROR_TIMED_OUT: u32 = 5;
+pub const MIGO_SYNC_ERROR_SESSION_ENDED: u32 = 6;
+pub const MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION: u32 = 7;
+pub const MIGO_SYNC_ERROR_LATE_REPLY: u32 = 8;
+pub const MIGO_SYNC_ERROR_BAD_DEADLINE: u32 = 9;
+pub const MIGO_SYNC_ERROR_BAD_REPLY_RESERVATION: u32 = 10;
+/// The host implements the operation, tried it, and it failed. Distinct from
+/// UNSUPPORTED_OPERATION because the two say opposite things about whether to
+/// ask again.
+pub const MIGO_SYNC_ERROR_OPERATION_FAILED: u32 = 11;
+
+/// Which call the producer blocked in.
+pub const MIGO_SYNC_OP_READ_PIXELS: u32 = 1;
+
 /// Caller-written. The 64-bit members precede the 32-bit ones so the record is
 /// 56 bytes with no interior padding on both LP64 and ILP32.
 #[repr(C)]

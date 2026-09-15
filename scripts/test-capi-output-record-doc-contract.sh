@@ -191,12 +191,19 @@ for header, offset, function, struct, param in records:
         )
 
 print(findings)
+if not findings:
+    # Counted, not asserted. The success line used to name a number a human had
+    # typed, and the number went stale the first time an output record was
+    # added -- which is the exact failure mode every gate in this directory
+    # exists to prevent, reproduced in a gate's own report.
+    print(f"AUDITED {len(records)}")
 raise SystemExit(1 if findings else 0)
 PY
 }
 
 failures=0
 output="$(run_audit "$ROOT" 2>&1)" && status=0 || status=$?
+audited="$(printf '%s\n' "$output" | sed -n 's/^AUDITED //p')"
 if [ "$status" -eq 0 ]; then
     pass "every caller-owned output record documents its struct_size input and its refusal"
 else
@@ -315,9 +322,15 @@ edit "$dest" include/migo/surface.h '
 text = text.replace("    MigoSurfaceReleaseStatus *out_status);",
                     "    const MigoSurfaceReleaseStatus *out_status);")
 '
+# Every output record, by hand, and that is the point of the injection rather
+# than a shortcoming of it: adding one to a public header obliges whoever added
+# it to extend this list, and an author who does not gets told by this check
+# failing. The synchronous barrier's three arrived that way.
 edit "$dest" include/migo/external_frames.h '
 text = text.replace("MigoFrameIngressOutcome *out_outcome);",
                     "const MigoFrameIngressOutcome *out_outcome);")
+text = text.replace("MigoSyncOutcome *out_outcome);",
+                    "const MigoSyncOutcome *out_outcome);")
 '
 expect_violation "every output record turns const, so the audit can see none" \
     no-output-records-found "$dest"
@@ -344,4 +357,4 @@ if [ "$failures" -ne 0 ]; then
     bad "$failures check(s) failed"
     exit 1
 fi
-echo "PASS: 3 caller-owned output records each document their struct_size input, and 6 injections were each seen to break it"
+echo "PASS: $audited caller-owned output records each document their struct_size input, and 6 injections were each seen to break it"

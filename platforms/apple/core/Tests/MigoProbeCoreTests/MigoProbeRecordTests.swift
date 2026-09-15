@@ -211,6 +211,39 @@ final class MigoProbeRecordTests: XCTestCase {
         XCTAssertNotNil(skipped["evidence"], "an answer with no evidence is not an answer")
     }
 
+    func testEveryAnswerCarriesWhatTheContractRequiresOfAnAnswer() throws {
+        // The test above reaches into exactly one answer and names `state` and
+        // `evidence` as string literals. That leaves two drifts nobody would
+        // see until lab day, and admit.py refuses the WHOLE RUN for either:
+        //
+        //   * an answer the encoder writes without evidence. The contract's own
+        //     note says why that matters -- "'true' with no evidence is
+        //     indistinguishable from a probe that returned a default" -- and the
+        //     yes cases are precisely the ones a spot check does not visit.
+        //   * a third key added to `answer.required`. Nothing here would notice,
+        //     because the two it checks are written down twice instead of read
+        //     from the one place that defines them.
+        //
+        // So this asks the contract what an answer needs, and asks it of all
+        // eleven.
+        let schema = try loadContract("capability-probe.schema.json")
+        let required = Set((schema["answer"] as! [String: Any])["required"] as! [String])
+        XCTAssertFalse(required.isEmpty, "the contract declares no required answer fields")
+
+        let data = try MigoProbeRecord.makeEncoder().encode(sampleCapabilityRecord())
+        let encoded = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let answers = try XCTUnwrap(encoded["capabilities"] as? [String: Any])
+
+        for (name, answer) in answers {
+            let object = try XCTUnwrap(
+                answer as? [String: Any],
+                "the answer for \(name) is not an object, which is the shape admit.py refuses on")
+            XCTAssertEqual(
+                required.subtracting(Set(object.keys)), [],
+                "the answer for \(name) is missing what the contract requires of an answer")
+        }
+    }
+
     func testCapabilitiesEncodeAsAnObjectAndNotAnArray() throws {
         let data = try MigoProbeRecord.makeEncoder().encode(sampleCapabilityRecord())
         let encoded = try JSONSerialization.jsonObject(with: data) as! [String: Any]

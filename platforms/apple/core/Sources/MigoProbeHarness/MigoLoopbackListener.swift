@@ -135,6 +135,19 @@ public final class MigoLoopbackListener {
         receiveRequest(on: connection, accumulated: Data())
     }
 
+    /// A request's headers may not exceed this. Only the headers: a body is
+    /// bounded by `maximumRequestBytes`, and conflating the two is what made a
+    /// 64 KiB POST look like a transport that could not carry one.
+    static let maximumHeaderBytes = 64 * 1024
+
+    /// A whole request may not exceed this.
+    ///
+    /// Sized from what the measurement carries rather than from a round number:
+    /// `contracts/apple/transport-probe.schema.json` requires payload classes up
+    /// to 1 MiB, and the performance matrix runs to 4 MiB. Eight leaves room for
+    /// both plus headers, and still refuses a client that has lost its mind.
+    static let maximumRequestBytes = 8 * 1024 * 1024
+
     /// Read until the headers are complete, then read exactly `Content-Length`
     /// more. A server that assumed one read per request would answer the
     /// synchronous-XHR probe with a truncated body and report it as a transport
@@ -162,8 +175,30 @@ public final class MigoLoopbackListener {
             if self.handleBufferedRequest(on: connection, buffer: buffer) {
                 return
             }
-            if buffer.count > 64 * 1024 {
+            // The header cap applies to HEADERS, which is what it says and what
+            // it did not do.
+            //
+            // It used to bound the whole accumulated buffer at 64 KiB and answer
+            // `431 Request Header Fields Too Large` -- so a POST whose BODY was
+            // 64 KiB or more was refused, with a status naming a cause that was
+            // not the cause. P3's synchronous-XHR arm measured 200 clean round
+            // trips at 4 KiB, died partway through 64 KiB depending on how the
+            // chunks landed, and could not complete one at a mebibyte. That
+            // would have been recorded as "the blocking transport cannot carry a
+            // frame" -- an architectural verdict produced by this listener's own
+            // cap.
+            //
+            // So: before the headers are complete, a buffer this large really is
+            // a header problem. Once they are, the body has a bound of its own
+            // and a status of its own, because a client that sent too much needs
+            // to be told which too much it sent.
+            let headersComplete = buffer.range(of: Data("\r\n\r\n".utf8)) != nil
+            if !headersComplete, buffer.count > Self.maximumHeaderBytes {
                 self.respond(on: connection, status: "431 Request Header Fields Too Large")
+                return
+            }
+            if headersComplete, buffer.count > Self.maximumRequestBytes {
+                self.respond(on: connection, status: "413 Payload Too Large")
                 return
             }
             self.receiveRequest(on: connection, accumulated: buffer)
@@ -220,6 +255,29 @@ public final class MigoLoopbackListener {
         on connection: NWConnection, method: String, path: String, body: Data, leftover: Data
     ) {
         let route = path.split(separator: "?").first.map(String.init) ?? path
+
+        // A32's other half, served rather than pushed. The page brackets each
+        // batch with two of these, which costs one round trip at each boundary
+        // -- under a percent of a two-hundred-sample batch -- and needs no
+        // second message channel. It is a GET so a page at either origin can
+        // reach it the same way.
+        if method == "GET", route == "/usage" {
+            let usage = MigoHostUsage.sample()
+            var json = "{"
+            if let usage {
+                json += "\"cpu_ms\":\(usage.cpuMilliseconds),\"wakeups\":\(usage.wakeups)"
+            } else {
+                // Explicit nulls, not omitted keys and not zeros. A failed read
+                // and a batch that spent nothing are different answers, and a
+                // zero would make them the same one.
+                json += "\"cpu_ms\":null,\"wakeups\":null"
+            }
+            json += "}"
+            respond(
+                on: connection, status: "200 OK", mime: "application/json",
+                body: Data(json.utf8), leftover: leftover)
+            return
+        }
 
         if method == "POST", route == "/echo-body" {
             // The probe compares what comes back with what it sent, so this
@@ -548,9 +606,45 @@ public final class MigoLoopbackListener {
 
         var payload = Data(buffer[(base + cursor)..<(base + cursor + length)])
         if masked {
+            // Eight bytes per XOR, with the mask word loaded the same way the
+            // payload is.
+            //
+            // Every client-to-server frame is masked, so this runs over every
+            // byte the page ever sends, and P3 sends a mebibyte at a time two
+            // hundred times at four payload classes. The first version read
+            // `mask[index % 4]`: a division and a bounds-checked subscript per
+            // byte, in an app built Debug because that is what a probe is built
+            // as. This is one XOR per eight bytes.
+            //
+            // The mask word is built with `loadUnaligned` from the mask's own
+            // four bytes rather than by shifting them into place, so it is
+            // assembled in the same byte order the payload is read in and the
+            // XOR lines up on either endianness. Shifting would have been
+            // correct on every Apple CPU and correct for the wrong reason.
+            //
+            // The stride is a multiple of the mask's four-byte period, so the
+            // word stays in phase for the whole run and only the tail -- at
+            // most seven bytes -- needs a position within the period.
+            //
+            // `loadUnaligned` and unaligned `storeBytes` are SE-0349, emitted
+            // into the client, and compile and run at this package's macOS 11
+            // floor: checked rather than assumed, because the first version of
+            // this comment asserted the opposite and used it to justify a
+            // slower loop.
+            let maskWord = mask.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+            let maskPair = UInt64(maskWord) | (UInt64(maskWord) << 32)
             payload.withUnsafeMutableBytes { raw in
+                var index = 0
+                while index + 8 <= length {
+                    let word = raw.loadUnaligned(fromByteOffset: index, as: UInt64.self)
+                    raw.storeBytes(of: word ^ maskPair, toByteOffset: index, as: UInt64.self)
+                    index += 8
+                }
                 guard let bytes = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-                for index in 0..<length { bytes[index] ^= mask[index % 4] }
+                while index < length {
+                    bytes[index] ^= mask[index & 3]
+                    index += 1
+                }
             }
         }
         return .frame(

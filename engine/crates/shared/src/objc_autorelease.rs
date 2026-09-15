@@ -32,6 +32,26 @@
 //!
 //! Off Apple this is a zero-sized no-op, so call sites are unconditional and the
 //! one that matters -- the render loop -- carries no `cfg` of its own.
+//!
+//! # Which threads need one
+//!
+//! Two, and the list was arrived at by audit rather than by noticing: every
+//! thread this engine spawns was checked for whether it can reach ANGLE.
+//!
+//! - the **render thread**, which owns the EGL context and draws;
+//! - the **upload thread**, which makes the shared context current and uploads
+//!   textures. It had no pool at all until 2026-09-11, so a thread that lives
+//!   for the whole session accumulated every Metal object it was ever handed.
+//!
+//! Nothing else qualifies. `Migo-RenderJoin` exists only to join another
+//! thread. The session thread spawns those two and constructs the graphics
+//! provider, but the EGL calls happen on the render thread when it uses it. And
+//! `RetainedMetalLayer`'s retain and release are `objc_retain`/`objc_release`,
+//! which do not autorelease, on whichever thread called the C boundary -- a
+//! host thread, which has a pool of its own.
+//!
+//! A thread added later that calls into ANGLE needs one too, and the way that
+//! goes wrong is silent, which is what this paragraph is for.
 
 #[cfg(target_vendor = "apple")]
 mod imp {

@@ -5,6 +5,14 @@ name: Apple SDK
 # the shipping macOS V8 supply chain. No release is published by this workflow.
 on:
   workflow_dispatch:
+    inputs:
+      measure_drawables:
+        description: >-
+          Also measure throughput at maximumDrawableCount 2 and 3, back to back
+          on the macos-v8 archive. Off by default: it is a measurement, not a
+          gate, and it costs a minute of a runner nobody is waiting on.
+        type: boolean
+        default: false
   schedule:
     - cron: '0 3 * * 0'
   push:
@@ -37,7 +45,30 @@ on:
       - 'engine/crates/capi/**'
       - 'engine/crates/frame-wire/**'
       - 'engine/crates/frame-decode/**'
+      # The crate this workflow runs `cargo test -p migo-platform` on, and it
+      # was not here. So a change to the Apple presenter -- the EGL provider,
+      # the layer ownership, the ANGLE bring-up tests that live in it -- could
+      # land without the lane that tests it ever running. Found by pushing a new
+      # presenter test and watching the Apple lanes not start.
+      - 'engine/crates/platform/**'
+      # The crate that owns every Skia surface, and it was not here either. The
+      # cost of that: Skia's macOS build assumes desktop GL while Migo's only
+      # Apple GL implementation is ANGLE, which is ES, so no `GrDirectContext`
+      # could be built on macOS at all -- and no Apple lane ran on a change to
+      # the crate where that lives. WebGL never goes through Skia, so nothing
+      # else went red. See scripts/apple-skia-gl-env.sh.
+      #
+      # It is a wide path on a busy crate, and that is the trade being made
+      # deliberately: an Apple-only rendering defect has now been found here
+      # once, and the Android work that dominates this crate's traffic is
+      # exactly the traffic that would not notice.
+      - 'engine/crates/graphics/**'
+      - 'scripts/apple-skia-gl-env.sh'
       - 'scripts/build-apple-sdk.sh'
+      # The gate that runs a game through the shipping macOS archive, and the
+      # fixture it runs. Both are macOS-only and neither was here.
+      - 'scripts/test-macos-archive-runs-js.sh'
+      - 'scripts/fixtures/headless-js-probe/**'
       - 'scripts/apple-sdk-package.py'
       - 'scripts/embed-apple-angle.sh'
       - 'scripts/fetch-apple-angle.sh'
@@ -194,6 +225,100 @@ jobs:
           cd engine
           cargo test -p migo-runtime-v8 --locked --target "$host"
 
+      # The step above proves the *V8* archive evaluates script -- it is
+      # rusty_v8's own integration tests, run against the bytes we ship. It says
+      # nothing about ours. Everything else that looks at an assembled Migo
+      # archive is a link check or a symbol audit, and an archive that links,
+      # exports every symbol and cannot run a game passes all of them; the first
+      # person to find out would be whoever integrated it.
+      #
+      # So this links a host against that archive and runs a game through it.
+      # The content sums 1..1000, which has to be executed to exist, draws and
+      # reads back a Canvas2D pixel, and then calls migo.exitMiniProgram() -- so
+      # a pass means V8 ran, Skia built a GL context on ANGLE and drew what it
+      # was told, AND the migo capability surface was installed.
+      #
+      # The Canvas2D half was added on 2026-09-11 because until then every macOS
+      # check here was satisfiable by an engine whose 2D backend could not build
+      # a single surface, which is exactly what it was: WebGL never goes through
+      # Skia, so nothing went red. See scripts/apple-skia-gl-env.sh.
+      - name: The shipping macOS archive runs a game, not just links
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+
+      # Pixel evidence that ANGLE-Metal draws what it is told, rather than that it
+      # links and turns frames.
+      #
+      # G0's P2 asks for `glReadPixels` verification and not for somebody looking
+      # at a screen. The half of it that is reachable today runs here: macOS is
+      # the Apple platform whose shipping product carries an engine, so content
+      # JavaScript runs in process and can read its own framebuffer back. It
+      # exercises the SAME presenter iOS will use -- `platform/src/apple/
+      # presenter.rs` on ANGLE's Metal backend against a CAMetalLayer.
+      #
+      # The other half waits: on iOS content runs in WebKit's WebContent process,
+      # so there is no in-process readPixels, and `include/migo/external_frames.h`
+      # offers submit, request and take-error and no readback. P2 on a phone falls
+      # out of A3's bring-up rather than preceding it.
+      - name: ANGLE-Metal draws the pixels it was told to
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+          --content headless-webgl-probe
+
+      # The configuration macos-v8 actually ships in, which until now nothing ran.
+      #
+      # `Sources/MigoMacV8/README.md` states the requirement: "Hardened runtime
+      # with `com.apple.security.cs.allow-jit`". Every check on this archive so
+      # far -- including the one above that runs a game through it -- ran an
+      # UNSIGNED binary, which is not that. Distribution stays the integrator's
+      # (they notarize their app with their own identity); whether the engine
+      # works in the shape they ship it in is ours, and it needs no paid account:
+      # an ad-hoc signature carries entitlements the kernel reads.
+      - name: The shipping archive runs under a hardened runtime with allow-jit
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+          --harden with-jit
+
+      # The negative control for it, and it asserts a promise rather than a
+      # mechanism. The same README: without the entitlement "the profile
+      # resolver selects a WebKit lane. It does not silently fall back to a
+      # jitless V8: that configuration deletes WebAssembly outright." A run that
+      # COMPLETES with the entitlement withheld is that silent fallback, whatever
+      # produced it -- and on iOS the measured cost of jitless is 750M
+      # iterations/s falling to 17M, with WebAssembly going undefined.
+      - name: Withholding allow-jit does not silently produce a jitless V8
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+          --harden without-jit
+
+      # The drawable pool, measured rather than argued about -- and measured as a
+      # PAIR, in one job, minutes apart on one machine. A shared runner is no
+      # place for an absolute frame rate, but the question here is relative: does
+      # a pool of 2 cost throughput against a pool of 3? Both runs see the same
+      # cold caches, the same neighbours and the same thermal state, which is
+      # most of what a CI runner gets wrong about a measurement.
+      #
+      # Off unless asked for, because it answers a question nobody is blocked on
+      # per commit. The other half of what maximumDrawableCount buys -- latency
+      # to a display -- is not answerable here at all: there is no display.
+      - name: Throughput at drawable pool 2 against 3
+        if: matrix.product == 'macos-v8' && inputs.measure_drawables
+        run: |
+          archive="$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+          for pool in 3 2 3 2; do
+            bash scripts/test-macos-archive-runs-js.sh \
+              --archive "$archive" --content headless-perf-probe --drawables "$pool" \
+              | grep throughput
+          done
+
       # Not for macos-v8, and the exclusion is the product's definition rather
       # than an exemption: that archive links in-process V8 on purpose, so an
       # assertion that it carries no engine symbols would be asserting the
@@ -266,14 +391,98 @@ jobs:
           host="$(rustc -vV | sed -n 's/^host: //p')"
           cargo test -p migo-shared --locked --target "$host"
 
+      # The 2D goldens, on the Apple build of Skia. They had never run on an
+      # Apple target: this workflow tests `migo-shared` and `migo-platform`, and
+      # `migo-graphics` -- the crate that owns every Canvas2D surface -- ran only
+      # on Linux. Its goldens rasterise to memory and need no GPU, so what they
+      # check here is the part of 2D that is the Apple build rather than the
+      # driver: CoreText instead of FreeType, a different font manager, different
+      # SIMD.
+      #
+      # On the macos-v8 row rather than the diagnostic one, and that is about
+      # cost, not coverage: this row builds the full profile for the host triple
+      # already, so the tests reuse its Skia. The diagnostic row builds the
+      # engine-free profile, whose Skia feature set differs by `embed-icudtl`,
+      # and asking there would have meant a third from-source Skia in one job.
+      - name: The 2D goldens run on the Apple build of Skia
+        if: matrix.product == 'macos-v8'
+        working-directory: engine
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          # shellcheck source=scripts/apple-skia-gl-env.sh
+          . ../scripts/apple-skia-gl-env.sh
+          cargo test -p migo-graphics --locked --target "$host" --tests
+
       - name: The Apple presenter's ANGLE bring-up runs on Apple silicon
         if: matrix.host_slice
         working-directory: engine
         run: |
           host="$(rustc -vV | sed -n 's/^host: //p')"
+          # Same Skia configuration the shipped macOS slice is built with. It has
+          # to be the same one: this step asks whether Skia builds a Canvas2D
+          # context on ANGLE, and a Skia compiled for desktop GL answers no for a
+          # reason that is about this command line rather than about the product.
+          . ../scripts/apple-skia-gl-env.sh
           DYLD_LIBRARY_PATH="$MIGO_DIAGNOSTIC_ANGLE" \
             cargo test -p migo-platform --locked --target "$host" \
             --no-default-features --features external-frames
+
+      # The same question the macOS leg asks, asked on the platform the product
+      # ships on -- and the first time any engine Rust test has executed on iOS.
+      #
+      # Until this step, every Apple lane compiled the engine for iOS and then
+      # tested it on the host. Most of the time those are the same answer. The
+      # case where they are not is on the record and is the reason this exists:
+      # Skia's macOS build assumes desktop GL and its iOS build assumes ES, so
+      # `Canvas2DContext::new` failed on one and structurally could not fail the
+      # same way on the other. A macOS-only test could report nothing about iOS,
+      # and "iOS is configured differently, so it must be fine" is a reading of
+      # `gn/skia.gni` rather than a measurement.
+      #
+      # Deliberately WITHOUT `apple-skia-gl-env.sh`: iOS needs no correction, and
+      # sourcing it here would build a Skia that differs from the shipped one,
+      # which would make this step's answer about this step. The prebuilt the
+      # product links is what should be asked.
+      #
+      # `simctl bootstatus -b` rather than `boot`: booting is asynchronous and a
+      # spawn into a half-booted device fails in a way that reads like a missing
+      # binary.
+      - name: The engine's Rust tests run on the iOS Simulator
+        if: matrix.platform == 'ios-simulator'
+        working-directory: engine
+        run: |
+          udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
+          xcrun simctl bootstatus "$udid" -b
+          export MIGO_IOS_SIM_UDID="$udid"
+          export MIGO_IOS_SIM_ANGLE="$GITHUB_WORKSPACE/engine/third_party/angle-apple-ios-simulator"
+          cargo test -p migo-platform --locked --target aarch64-apple-ios-sim \
+            --no-default-features --features external-frames \
+            --config "target.aarch64-apple-ios-sim.runner=['$GITHUB_WORKSPACE/scripts/ios-sim-cargo-runner.sh']"
+
+      # The 2D goldens on the iOS build of Skia, which is a different Skia.
+      #
+      # They run on macOS on the macos-v8 row, and that does not cover this: the
+      # two Apple platforms are built with different compile-time GL standards
+      # (`skia_gl_standard` is "gl" for mac and "gles" for ios), different font
+      # managers, and different SIMD. A defect that lives in one build and not
+      # the other is not hypothetical here -- one is the reason
+      # `scripts/apple-skia-gl-env.sh` exists.
+      #
+      # Cheap on this row: the Skia it needs is the prebuilt the product already
+      # links, so this is the graphics crate's own test binaries and nothing
+      # else. The one golden that is a rasteriser's rather than a renderer's is
+      # `#[cfg(not(target_vendor = "apple"))]` and skips here as it does on
+      # macOS; what runs is every font-free golden plus the portable text
+      # assertions.
+      - name: The 2D goldens run on the iOS build of Skia
+        if: matrix.platform == 'ios-simulator'
+        working-directory: engine
+        run: |
+          udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
+          xcrun simctl bootstatus "$udid" -b
+          export MIGO_IOS_SIM_UDID="$udid"
+          cargo test -p migo-graphics --locked --target aarch64-apple-ios-sim --tests \
+            --config "target.aarch64-apple-ios-sim.runner=['$GITHUB_WORKSPACE/scripts/ios-sim-cargo-runner.sh']"
 
       # The runtime is supplied by Package.swift's framework dependencies.
       # No copy into DerivedData or test products repairs the package afterward.
@@ -296,17 +505,24 @@ jobs:
       - name: The ABI tests run on iOS with package-embedded ANGLE
         if: matrix.platform == 'ios-simulator'
         working-directory: ${{ env.MIGO_APPLE_PACKAGE_ROOT }}
-        # 🔴 THE ENGINE'S OWN LOG IS NOT VISIBLE ON THIS LANE. Measured, on one
-        # run, from identical test code: 28 lines matching `INFO graphics::` etc.
-        # in the macOS leg's log and ZERO in this one -- while
-        # MigoSurfaceAttachTests' setUp had turned the subscriber on in both, with
-        # its own `setenv`. A process running inside the simulator writes its
-        # stderr somewhere `xcodebuild` does not collect.
+        # The engine's own log IS visible on this lane, and this comment used to
+        # say the opposite.
         #
-        # So do not set MIGO_CAPI_LOG (or TEST_RUNNER_MIGO_CAPI_LOG) here expecting
-        # engine output: this step had both for a while and neither produced a
-        # line. An engine-side question asked on this lane has to be answered
-        # through an assertion the test can make, or on the macOS leg.
+        # It said so on a real measurement -- 28 `INFO graphics::` lines in the
+        # macOS leg and zero here, from identical test code -- but that was taken
+        # before `install_dev_logging` was changed to write to stderr rather than
+        # stdout, which is the stream `xcodebuild` folds into its log. The fix
+        # landed and this comment did not, and what it advised was to stop asking
+        # engine-side questions on the one lane where this defect reproduces.
+        #
+        # Re-measured 2026-09-10: `gh run view --job <this job> --log` returns
+        # lines prefixed with THIS job's name carrying
+        # `shared::surface::attachment: ... has_anchor=true outstanding=1
+        # native_owners=Some(1)`, which is how the surface-retirement
+        # investigation read the engine's account of a red run. Check the job
+        # prefix when reading, because a run-level log carries every job's lines
+        # and it is easy to read the macOS leg's answer and believe it came from
+        # here.
         run: |
           udid="$(bash "$GITHUB_WORKSPACE/scripts/pick-iphone-simulator.sh")"
           xcodebuild test \

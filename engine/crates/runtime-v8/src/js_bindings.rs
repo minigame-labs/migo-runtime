@@ -640,7 +640,7 @@ impl JsBindings {
         &self,
         rt: &mut deno_core::JsRuntime,
         host_id: i32,
-        data: &[u8],
+        data: Vec<u8>,
         is_last_frame: bool,
     ) {
         let Some(func_g) = self.recorder_frame_fn.as_ref() else {
@@ -648,20 +648,15 @@ impl JsBindings {
             return;
         };
 
-        self.with_main_context(rt, |scope, _ctx, global| {
-            let ab = v8::ArrayBuffer::new(scope, data.len());
-            if !data.is_empty() {
-                let backing = ab.get_backing_store();
-                if let Some(ptr) = backing.data() {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            data.as_ptr(),
-                            ptr.as_ptr() as *mut u8,
-                            data.len(),
-                        );
-                    }
-                }
-            }
+        self.with_main_context(rt, move |scope, _ctx, global| {
+            // Adopt the capture-owned allocation instead of allocating a fresh
+            // V8 backing store and copying the entire frame into it.
+            let ab = if data.is_empty() {
+                v8::ArrayBuffer::new(scope, 0)
+            } else {
+                let store = v8::ArrayBuffer::new_backing_store_from_vec(data).make_shared();
+                v8::ArrayBuffer::with_backing_store(scope, &store)
+            };
 
             let args = [ab.into(), v8::Boolean::new(scope, is_last_frame).into()];
             let func = v8::Local::new(scope, func_g);
@@ -1415,5 +1410,234 @@ mod tests {
             backing_ptr, orig_ptr,
             "ArrayBuffer backing must be the moved Vec's allocation (zero-copy transfer)"
         );
+    }
+
+    /// Real V8 regression for the recorder-frame path: the frame `Vec<u8>` must be
+    /// ADOPTED by V8 (its allocation becomes the ArrayBuffer backing) instead of
+    /// copied. Three sub-cases:
+    ///   1. Normal frame — `len == cap`; backs the core adoption assertion.
+    ///   2. Empty frame — must produce a zero-length ArrayBuffer without panic.
+    ///   3. Excess-capacity frame — `cap > len`; guards against a naive
+    ///      `into_boxed_slice()` approach that reallocates and changes the pointer.
+    ///
+    /// The pointer-equality assertion (backing address == original Vec address) is
+    /// the RED marker: it fails under the old `ArrayBuffer::new` + `copy_nonoverlapping`
+    /// path because V8 allocates a fresh buffer and copies into it, producing a
+    /// different address. It passes only when V8 has adopted the original allocation.
+    #[test]
+    fn recorder_frame_arraybuffer_adopts_vec_allocation_without_copy() {
+        // ── Case 1: normal frame (len == cap) ────────────────────────────────
+        {
+            let mut rt = JsRuntime::new(RuntimeOptions::default());
+            let mut bindings = JsBindings::new(&mut rt, 1);
+            let func = {
+                let ctx = rt.main_context();
+                let isolate = rt.v8_isolate();
+                v8::scope_with_context!(scope, isolate, &ctx);
+                let src = v8::String::new(
+                    scope,
+                    "(function(ab, last){ globalThis.__rec = { ab: ab, last: last }; })",
+                )
+                .unwrap();
+                let script = v8::Script::compile(scope, src, None).unwrap();
+                let val = script.run(scope).unwrap();
+                let f = v8::Local::<v8::Function>::try_from(val).unwrap();
+                v8::Global::new(scope, f)
+            };
+            bindings.recorder_frame_fn = Some(func);
+
+            let data: Vec<u8> = vec![1u8, 2, 3, 4, 5, 6, 7];
+            let expected = data.clone();
+            let orig_ptr = data.as_ptr();
+
+            // The capture-owned Vec is moved into V8 for backing-store adoption.
+            bindings.dispatch_recorder_frame_data(&mut rt, 1, data, false);
+
+            let ctx = rt.main_context();
+            let isolate = rt.v8_isolate();
+            v8::scope_with_context!(scope, isolate, &ctx);
+            let context = v8::Local::new(scope, &ctx);
+            let global = context.global(scope);
+
+            let rec_key: v8::Local<v8::Value> = v8::String::new(scope, "__rec").unwrap().into();
+            let rec = global.get(scope, rec_key).expect("__rec set by callback");
+            let rec_obj = v8::Local::<v8::Object>::try_from(rec).expect("__rec is an object");
+
+            let ab_key: v8::Local<v8::Value> = v8::String::new(scope, "ab").unwrap().into();
+            let ab_val = rec_obj.get(scope, ab_key).unwrap();
+            assert!(
+                ab_val.is_array_buffer(),
+                "case 1: frame delivered as ArrayBuffer"
+            );
+            let ab = v8::Local::<v8::ArrayBuffer>::try_from(ab_val).unwrap();
+            assert_eq!(
+                ab.byte_length(),
+                expected.len(),
+                "case 1: byte_length == frame length"
+            );
+
+            let backing = ab.get_backing_store();
+            let backing_ptr =
+                backing.data().expect("non-empty backing store").as_ptr() as *const u8;
+
+            let mut got = vec![0u8; expected.len()];
+            unsafe {
+                std::ptr::copy_nonoverlapping(backing_ptr, got.as_mut_ptr(), expected.len());
+            }
+            assert_eq!(got, expected, "case 1: exact frame bytes visible to JS");
+
+            // RED under copy path: V8 allocates fresh buffer → backing_ptr != orig_ptr.
+            // GREEN after adoption: V8 adopts moved Vec → backing_ptr == orig_ptr.
+            assert_eq!(
+                backing_ptr, orig_ptr,
+                "case 1: ArrayBuffer backing must be the moved Vec's allocation (zero-copy)"
+            );
+
+            let last_key: v8::Local<v8::Value> = v8::String::new(scope, "last").unwrap().into();
+            let last_val = rec_obj.get(scope, last_key).unwrap();
+            assert!(
+                !last_val.boolean_value(scope),
+                "case 1: is_last_frame == false propagated to JS"
+            );
+        }
+
+        // ── Case 2: empty frame ──────────────────────────────────────────────
+        {
+            let mut rt = JsRuntime::new(RuntimeOptions::default());
+            let mut bindings = JsBindings::new(&mut rt, 1);
+            let func = {
+                let ctx = rt.main_context();
+                let isolate = rt.v8_isolate();
+                v8::scope_with_context!(scope, isolate, &ctx);
+                let src = v8::String::new(
+                    scope,
+                    "(function(ab, last){ globalThis.__rec = { ab: ab, last: last }; })",
+                )
+                .unwrap();
+                let script = v8::Script::compile(scope, src, None).unwrap();
+                let val = script.run(scope).unwrap();
+                let f = v8::Local::<v8::Function>::try_from(val).unwrap();
+                v8::Global::new(scope, f)
+            };
+            bindings.recorder_frame_fn = Some(func);
+
+            let data: Vec<u8> = Vec::new();
+            // Termination frames are typically empty (is_last_frame == true).
+            bindings.dispatch_recorder_frame_data(&mut rt, 1, data, true);
+
+            let ctx = rt.main_context();
+            let isolate = rt.v8_isolate();
+            v8::scope_with_context!(scope, isolate, &ctx);
+            let context = v8::Local::new(scope, &ctx);
+            let global = context.global(scope);
+
+            let rec_key: v8::Local<v8::Value> = v8::String::new(scope, "__rec").unwrap().into();
+            let rec = global.get(scope, rec_key).expect("__rec set by callback");
+            let rec_obj = v8::Local::<v8::Object>::try_from(rec).expect("__rec is an object");
+
+            let ab_key: v8::Local<v8::Value> = v8::String::new(scope, "ab").unwrap().into();
+            let ab_val = rec_obj.get(scope, ab_key).unwrap();
+            assert!(
+                ab_val.is_array_buffer(),
+                "case 2: empty frame delivered as ArrayBuffer"
+            );
+            let ab = v8::Local::<v8::ArrayBuffer>::try_from(ab_val).unwrap();
+            assert_eq!(
+                ab.byte_length(),
+                0,
+                "case 2: empty frame => byte_length == 0"
+            );
+
+            let last_key: v8::Local<v8::Value> = v8::String::new(scope, "last").unwrap().into();
+            let last_val = rec_obj.get(scope, last_key).unwrap();
+            assert!(
+                last_val.boolean_value(scope),
+                "case 2: is_last_frame == true propagated to JS"
+            );
+        }
+
+        // ── Case 3: excess-capacity frame (cap > len) ───────────────────────
+        // Guards against a naive `into_boxed_slice()` path: Box<[u8]> reallocates
+        // when capacity > length, yielding a new pointer. `new_backing_store_from_vec`
+        // must preserve the original allocation even when cap exceeds len.
+        {
+            let mut rt = JsRuntime::new(RuntimeOptions::default());
+            let mut bindings = JsBindings::new(&mut rt, 1);
+            let func = {
+                let ctx = rt.main_context();
+                let isolate = rt.v8_isolate();
+                v8::scope_with_context!(scope, isolate, &ctx);
+                let src = v8::String::new(
+                    scope,
+                    "(function(ab, last){ globalThis.__rec = { ab: ab, last: last }; })",
+                )
+                .unwrap();
+                let script = v8::Script::compile(scope, src, None).unwrap();
+                let val = script.run(scope).unwrap();
+                let f = v8::Local::<v8::Function>::try_from(val).unwrap();
+                v8::Global::new(scope, f)
+            };
+            bindings.recorder_frame_fn = Some(func);
+
+            let mut data: Vec<u8> = Vec::with_capacity(64);
+            data.extend_from_slice(&[10u8, 20, 30, 40, 50]);
+            assert!(
+                data.capacity() >= 64,
+                "capacity deliberately exceeds length"
+            );
+            assert_eq!(data.len(), 5);
+            let expected = data.clone();
+            let orig_ptr = data.as_ptr();
+
+            // The capture-owned Vec is moved into V8 for backing-store adoption.
+            bindings.dispatch_recorder_frame_data(&mut rt, 1, data, false);
+
+            let ctx = rt.main_context();
+            let isolate = rt.v8_isolate();
+            v8::scope_with_context!(scope, isolate, &ctx);
+            let context = v8::Local::new(scope, &ctx);
+            let global = context.global(scope);
+
+            let rec_key: v8::Local<v8::Value> = v8::String::new(scope, "__rec").unwrap().into();
+            let rec = global.get(scope, rec_key).expect("__rec set by callback");
+            let rec_obj = v8::Local::<v8::Object>::try_from(rec).expect("__rec is an object");
+
+            let ab_key: v8::Local<v8::Value> = v8::String::new(scope, "ab").unwrap().into();
+            let ab_val = rec_obj.get(scope, ab_key).unwrap();
+            assert!(
+                ab_val.is_array_buffer(),
+                "case 3: frame delivered as ArrayBuffer"
+            );
+            let ab = v8::Local::<v8::ArrayBuffer>::try_from(ab_val).unwrap();
+            assert_eq!(
+                ab.byte_length(),
+                5,
+                "case 3: byte_length == frame len (5), not capacity (64)"
+            );
+
+            let backing = ab.get_backing_store();
+            let backing_ptr =
+                backing.data().expect("non-empty backing store").as_ptr() as *const u8;
+
+            let mut got = vec![0u8; 5];
+            unsafe {
+                std::ptr::copy_nonoverlapping(backing_ptr, got.as_mut_ptr(), 5);
+            }
+            assert_eq!(got, expected, "case 3: exact frame bytes visible to JS");
+
+            // A naive into_boxed_slice() reallocates when cap > len, changing the pointer.
+            // new_backing_store_from_vec must preserve the original allocation.
+            assert_eq!(
+                backing_ptr, orig_ptr,
+                "case 3: backing must be original Vec allocation (cap > len must not trigger realloc)"
+            );
+
+            let last_key: v8::Local<v8::Value> = v8::String::new(scope, "last").unwrap().into();
+            let last_val = rec_obj.get(scope, last_key).unwrap();
+            assert!(
+                !last_val.boolean_value(scope),
+                "case 3: is_last_frame == false propagated to JS"
+            );
+        }
     }
 }

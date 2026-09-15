@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Verify profile/OS-qualified V8 snapshots without a device (--os defaults to
 # android; pass --os linux|ohos|windows for the other embedded platforms).
+#
+# Run it bare and it answers for EVERY kind/profile combination. Name one and it
+# answers for that one. The reason that distinction exists is at the sweep.
 set -euo pipefail
 
 c_info() { echo -e "\033[0;36m[INFO] $*\033[0m"; }
@@ -17,6 +20,9 @@ source "$ROOT/scripts/lib/snapshot-fingerprint.sh"
 
 PRODUCT_PROFILE="full"
 SNAPSHOT_KIND="host"
+# Whether the caller named a combination, which decides whether this run answers
+# for ONE of them or for all of them. See the sweep below.
+KIND_OR_PROFILE_GIVEN=0
 # android is the default so every pre-existing call site (release.yml,
 # build-snapshot.yml) keeps checking what it always checked; new platform jobs
 # pass --os explicitly.
@@ -26,14 +32,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --product-profile)
       [[ $# -ge 2 ]] || die "--product-profile requires full|slim"
-      PRODUCT_PROFILE="$2"; shift 2
+      PRODUCT_PROFILE="$2"; KIND_OR_PROFILE_GIVEN=1; shift 2
       ;;
-    --product-profile=*) PRODUCT_PROFILE="${1#*=}"; shift ;;
+    --product-profile=*) PRODUCT_PROFILE="${1#*=}"; KIND_OR_PROFILE_GIVEN=1; shift ;;
     --snapshot-kind)
       [[ $# -ge 2 ]] || die "--snapshot-kind requires host|worker"
-      SNAPSHOT_KIND="$2"; shift 2
+      SNAPSHOT_KIND="$2"; KIND_OR_PROFILE_GIVEN=1; shift 2
       ;;
-    --snapshot-kind=*) SNAPSHOT_KIND="${1#*=}"; shift ;;
+    --snapshot-kind=*) SNAPSHOT_KIND="${1#*=}"; KIND_OR_PROFILE_GIVEN=1; shift ;;
     --os)
       [[ $# -ge 2 ]] || die "--os requires android|linux|ohos|windows"
       OS="$2"; shift 2
@@ -41,11 +47,45 @@ while [[ $# -gt 0 ]]; do
     --os=*) OS="${1#*=}"; shift ;;
     -h|--help)
       echo "usage: $0 [--product-profile full|slim] [--snapshot-kind host|worker] [--os android|linux|ohos|windows] [arch ...]"
+      echo "  With neither --product-profile nor --snapshot-kind, every valid"
+      echo "  combination is checked. Name one and only that one is."
       exit 0
       ;;
     *) ARCHES+=("$1"); shift ;;
   esac
 done
+# A bare invocation answers the WHOLE question, not a sixth of it.
+#
+# This script used to default to `host` x `full` and say so only in one INFO
+# line. CI runs three combinations; a human runs it with no arguments, sees
+# "fresh", and has been told about one of them. That is not hypothetical: #224
+# was investigated, written up and merged on exactly that reading -- its
+# blocker analysis ran this script bare, several times, and shipped with
+# `slim` x 2 and `worker-full` x 2 stale, which turned master red the moment it
+# landed. The gate was right every time it was asked. It was asked one third of
+# the question, and nothing in its output said so.
+#
+# So: named combination, one answer. No combination named, every valid one. The
+# existing call sites all name theirs, so none of them changes behaviour.
+if (( KIND_OR_PROFILE_GIVEN == 0 )); then
+  sweep_status=0
+  for sweep_kind in host worker; do
+    for sweep_profile in full slim; do
+      # Invalid pairs are skipped rather than failed: `worker` x `slim` is not a
+      # combination that exists, and a sweep that exited 2 on it would report a
+      # usage error for a run that asked for nothing in particular.
+      snapshot_validate_kind_profile "$sweep_kind" "$sweep_profile" 2>/dev/null || continue
+      bash "${BASH_SOURCE[0]}" --snapshot-kind "$sweep_kind" \
+        --product-profile "$sweep_profile" --os "$OS" \
+        ${ARCHES[@]+"${ARCHES[@]}"} || sweep_status=1
+    done
+  done
+  if (( sweep_status != 0 )); then
+    c_err "at least one combination above is stale"
+  fi
+  exit "$sweep_status"
+fi
+
 case "$PRODUCT_PROFILE" in
   full|slim) ;;
   *) die "invalid product profile '$PRODUCT_PROFILE' (expected full|slim)" ;;

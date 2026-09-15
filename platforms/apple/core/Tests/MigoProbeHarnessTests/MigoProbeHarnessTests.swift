@@ -190,7 +190,10 @@ final class MigoProbeHarnessTests: XCTestCase {
         let resources = try MigoCapabilityGate.loadResources()
         XCTAssertEqual(
             Set(resources.keys),
-            ["capability-probe.html", "capability-probe.js", "capability-probe-worker.js"],
+            [
+                "capability-probe.html", "capability-probe.js", "capability-probe-worker.js",
+                "transport-probe.js",
+            ],
             "a resource that is not in the bundle is a 404 at run time, and the page reports "
                 + "it as a capability that could not be probed")
         for (name, resource) in resources {

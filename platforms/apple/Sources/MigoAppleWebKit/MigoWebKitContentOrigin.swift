@@ -53,6 +53,14 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     private let root: URL
     private let indexPath: String
 
+    /// Where the engine's own modules are, served under
+    /// `MigoWebKitOriginRules.engineAssetPrefix` and nowhere else.
+    ///
+    /// `nil` for a lane that supplies none: the WebKit Full lane serves the
+    /// content package and nothing of its own, and a root it does not have is not
+    /// a root it can accidentally expose.
+    private let engineRoot: URL?
+
     /// Reads happen here, never on the main thread: a page load that stalls the main
     /// queue on a file read stalls the frame the content is trying to present.
     private let queue = DispatchQueue(label: "com.migo.webkit.content-origin", qos: .userInitiated)
@@ -72,12 +80,25 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     public struct Activity: Sendable, Equatable {
         /// How many times WebKit has called `webView(_:start:)`.
         public var started: Int = 0
-        /// How many tasks this origin answered -- finished, refused or failed.
-        public var settled: Int = 0
+        /// How many tasks this origin completed successfully (`didFinish`).
+        ///
+        /// Separate from `failed`, because the first version of this record
+        /// counted both as "settled" and a stalled load then reported
+        /// `started: 1, settled: 1` -- which reads as "we answered it" and is
+        /// equally consistent with "we told WebKit the response was broken".
+        public var finished: Int = 0
+        /// How many tasks this origin ended with `didFailWithError`.
+        public var failed: Int = 0
         /// How many tasks WebKit took back before they were answered.
         public var stopped: Int = 0
         /// Body bytes handed to WebKit.
         public var delivered: Int = 0
+        /// Body bytes promised to WebKit in `Content-Length`.
+        ///
+        /// Against `delivered` this is the whole "did we under-deliver" question
+        /// in two numbers: WebKit holds a load open while a body is short of the
+        /// length its response advertised.
+        public var promised: Int = 0
         /// Why the last refusal happened, if there was one.
         public var lastRefusal: String?
     }
@@ -104,9 +125,10 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     /// no gain, because WebKit consumes chunks as they arrive.
     public static let chunkSize = 256 * 1024
 
-    public init(root: URL, indexPath: String = "index.html") {
+    public init(root: URL, indexPath: String = "index.html", engineRoot: URL? = nil) {
         self.root = root.resolvingSymlinksInPath().standardizedFileURL
         self.indexPath = indexPath
+        self.engineRoot = engineRoot?.resolvingSymlinksInPath().standardizedFileURL
         super.init()
     }
 
@@ -125,9 +147,20 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
         }
 
         let resolution = MigoWebKitOriginRules.resolve(
-            requestPath: url.path, host: url.host, root: root, indexPath: indexPath)
+            requestPath: url.path, host: url.host, root: root, indexPath: indexPath,
+            engineRoot: engineRoot)
 
         switch resolution {
+        case .reservedPathWithoutEngineRoot:
+            // 404 rather than 403: nothing was refused, there is nothing there.
+            // A lane that serves no engine modules and a game that asks for one
+            // is a missing file, and saying "forbidden" would send whoever reads
+            // it looking for a permission that does not exist.
+            refuse(
+                task, status: 404,
+                reason:
+                    "\(MigoWebKitOriginRules.engineAssetPrefix) is reserved for engine modules and this origin serves none"
+            )
         case .wrongHost(let named):
             refuse(
                 task, status: 400,
@@ -142,7 +175,7 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     }
 
     public func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
-        retire(task, answered: false)
+        retire(task, .stopped)
     }
 
     // MARK: - liveness
@@ -153,21 +186,26 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
         return live.contains(ObjectIdentifier(task))
     }
 
+    /// How a task ended. Three outcomes, because they need three different
+    /// readings: a page served, a page we told WebKit was broken, and a page
+    /// WebKit stopped caring about.
+    enum Outcome {
+        case finished
+        case failed
+        case stopped
+    }
+
     /// Drop a task from the live set, recording which way it ended.
     ///
-    /// `answered: false` is WebKit taking the task back, and it has to be counted
-    /// apart from an answer: a single `settled` number that included stops would
-    /// report a page as served at the moment it was abandoned, which is the
-    /// opposite of what the count is read for. Only a removal counts -- a second
-    /// call for the same task records nothing, so a refusal followed by WebKit's
-    /// `stop` is one ending, not two.
-    private func retire(_ task: WKURLSchemeTask, answered: Bool) {
+    /// Only a removal counts -- a second call for the same task records nothing,
+    /// so a refusal followed by WebKit's `stop` is one ending, not two.
+    private func retire(_ task: WKURLSchemeTask, _ outcome: Outcome) {
         liveLock.lock()
         if live.remove(ObjectIdentifier(task)) != nil {
-            if answered {
-                record.settled += 1
-            } else {
-                record.stopped += 1
+            switch outcome {
+            case .finished: record.finished += 1
+            case .failed: record.failed += 1
+            case .stopped: record.stopped += 1
             }
         }
         liveLock.unlock()
@@ -201,13 +239,18 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
                 task.didReceive(response)
                 task.didReceive(body)
                 task.didFinish()
+                self?.note {
+                    $0.promised += body.count
+                    $0.delivered += body.count
+                }
+                self?.retire(task, .finished)
             } else {
                 task.didFailWithError(
                     NSError(
                         domain: "com.migo.webkit.content-origin", code: status,
                         userInfo: [NSLocalizedDescriptionKey: reason]))
+                self?.retire(task, .failed)
             }
-            self?.retire(task, answered: true)
         }
     }
 
@@ -232,13 +275,14 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
                 {
                     task.didReceive(response)
                     task.didFinish()
+                    self?.retire(task, .finished)
                 } else {
                     task.didFailWithError(
                         NSError(
                             domain: "com.migo.webkit.content-origin", code: 416,
                             userInfo: [NSLocalizedDescriptionKey: "range past the end of the file"]))
+                    self?.retire(task, .failed)
                 }
-                self?.retire(task, answered: true)
             }
         case .whole:
             send(file: file, url: url, start: 0, length: size, total: size, partial: false, task: task)
@@ -264,7 +308,7 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
                 try? handle.close()
                 onTask(task) { [weak self] task in
                     task.didFailWithError(error)
-                    self?.retire(task, answered: true)
+                    self?.retire(task, .failed)
                 }
                 return
             }
@@ -283,6 +327,7 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
             return
         }
 
+        note { $0.promised += length }
         onTask(task) { task in task.didReceive(response) }
         pump(handle: handle, remaining: length, task: task)
     }
@@ -294,7 +339,7 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
             try? handle.close()
             onTask(task) { [weak self] task in
                 task.didFinish()
-                self?.retire(task, answered: true)
+                self?.retire(task, .finished)
             }
             return
         }
@@ -318,7 +363,7 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
                             NSLocalizedDescriptionKey:
                                 "the file ended \(remaining) bytes before its length said it would"
                         ]))
-                self?.retire(task, answered: true)
+                self?.retire(task, .failed)
             }
             return
         }

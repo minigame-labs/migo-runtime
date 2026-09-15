@@ -72,6 +72,22 @@ usage: run-apple-probe.sh (--device <id> | --simulator [<id>]) [options]
   --run-id <id>                 Names the run, and therefore the records file.
   --timeout <seconds>           How long to wait for the records (default 420;
                                 the gate allows 120 per origin and there are two).
+  --configuration <Debug|Release>
+                                How the probe app is built. Release by default,
+                                because half of a transport measurement is the
+                                host's own code: the loopback arm's server parses
+                                frames and unmasks every byte the page sends, in
+                                this repository. Measured with a debug host, a
+                                mebibyte round-tripped in 252 ms over the socket
+                                against 6.4 ms over the custom scheme -- four
+                                megabytes a second is an unoptimised loop's speed
+                                and not a socket's, and that number would have
+                                eliminated an arm. The capability answers do not
+                                care: they are WebKit's, and WebKit is release
+                                either way.
+  --unlock-wait <seconds>       How long the launch step waits for the phone to
+                                be unlocked (default 0, meaning launch at once).
+                                Only the launch needs an unlocked device.
   --keep-derived                Leave the derived-data directory in place.
   --dry-run                     Print the resolved plan and stop. Validates
                                 first, so the refusals apply.
@@ -89,6 +105,8 @@ PROMPT=""
 OUT_DIR=""
 RUN_ID=""
 TIMEOUT=420
+CONFIGURATION=Release
+UNLOCK_WAIT=0
 DRY_RUN=0
 KEEP_DERIVED=0
 
@@ -135,6 +153,18 @@ while [[ $# -gt 0 ]]; do
     --timeout)
       [[ $# -ge 2 ]] || fail "--timeout needs seconds"
       TIMEOUT="$2"
+      shift 2
+      ;;
+    --configuration)
+      [[ $# -ge 2 ]] || fail "--configuration needs Debug or Release"
+      CONFIGURATION="$2"
+      [[ "$CONFIGURATION" == "Debug" || "$CONFIGURATION" == "Release" ]] \
+        || fail "--configuration takes Debug or Release; got '$CONFIGURATION'"
+      shift 2
+      ;;
+    --unlock-wait)
+      [[ $# -ge 2 ]] || fail "--unlock-wait needs seconds"
+      UNLOCK_WAIT="$2"
       shift 2
       ;;
     --keep-derived)
@@ -209,6 +239,17 @@ if [[ "$MODE" == "simulator" && ( "$OUT_DIR" == "$EVIDENCE_ABS" || "$OUT_DIR" ==
 fi
 
 RECORD_FILE="$OUT_DIR/capability-$RUN_ID.json"
+# Everything this script produces that is NOT the record goes here instead of
+# beside it: the build log, devicectl's three receipts, the derived-data
+# directory and the pull staging area. The evidence directory should hold
+# evidence.
+#
+# admit.py no longer reads anything but capability-*.json, so this is the second
+# half of the same fix rather than the whole of it -- and it is the half that
+# also helps the person who opens the directory expecting records and finds a
+# launch receipt. Keeping the run id in the path means two runs' logs do not
+# overwrite each other.
+WORK_DIR="$OUT_DIR/run-logs"
 APP_ARGS=(--migo-autorun "--migo-run-id=$RUN_ID")
 [[ -n "$LOCKDOWN" ]] && APP_ARGS+=("--migo-lockdown=$LOCKDOWN")
 [[ -n "$PROMPT" ]] && APP_ARGS+=("--migo-local-network-prompt=$PROMPT")
@@ -218,7 +259,7 @@ APP_ARGS=(--migo-autorun "--migo-run-id=$RUN_ID")
 ADMIT_INPUT=""
 [[ "$MODE" == "device" ]] && ADMIT_INPUT="$OUT_DIR"
 
-DERIVED="$OUT_DIR/derived-$RUN_ID"
+DERIVED="$WORK_DIR/derived-$RUN_ID"
 
 if ((DRY_RUN)); then
   cat <<PLAN
@@ -243,7 +284,57 @@ fi
 command -v xcrun >/dev/null || fail "xcrun is not on PATH"
 command -v xcodebuild >/dev/null || fail "xcodebuild is not on PATH"
 
-mkdir -p "$OUT_DIR"
+mkdir -p "$OUT_DIR" "$WORK_DIR"
+
+# ---------------------------------------------------------------------------
+# A device has two names and the tools disagree about which one they take.
+# `devicectl` speaks its own CoreDevice identifier (a UUID); `xcodebuild`
+# destinations speak the hardware UDID. They are different strings for the same
+# phone, and `--device` accepts either rather than making the operator know
+# which tool is downstream of the flag.
+# ---------------------------------------------------------------------------
+DEVICE_UDID=""
+if [[ "$MODE" == "device" ]]; then
+  DEVICE_LIST="$WORK_DIR/devices-$RUN_ID.json"
+  xcrun devicectl list devices --json-output "$DEVICE_LIST" >/dev/null 2>&1 \
+    || fail "xcrun devicectl list devices failed; is a device paired and unlocked?"
+  RESOLVED="$(python3 - "$DEVICE_LIST" "$TARGET" <<'RESOLVE'
+import json, sys
+
+wanted = sys.argv[2]
+devices = json.load(open(sys.argv[1]))["result"]["devices"]
+for d in devices:
+    ident = d.get("identifier", "")
+    hardware = d.get("hardwareProperties", {})
+    udid = hardware.get("udid", "")
+    name = d.get("deviceProperties", {}).get("name", "")
+    if wanted in (ident, udid, name):
+        print("%s\t%s" % (ident, udid))
+        break
+else:
+    sys.stderr.write(
+        "not found: %s. Paired devices: %s\n"
+        % (
+            wanted,
+            ", ".join(
+                "%s (%s, udid %s)"
+                % (
+                    d.get("deviceProperties", {}).get("name", "?"),
+                    d.get("identifier", "?"),
+                    d.get("hardwareProperties", {}).get("udid", "?"),
+                )
+                for d in devices
+            )
+            or "none",
+        )
+    )
+    sys.exit(1)
+RESOLVE
+  )" || fail "--device $TARGET names no paired device"
+  TARGET="${RESOLVED%%$'\t'*}"
+  DEVICE_UDID="${RESOLVED##*$'\t'}"
+  [[ -n "$DEVICE_UDID" ]] || fail "the device resolved to no hardware udid, which xcodebuild needs to name a destination"
+fi
 
 cleanup() {
   if ((KEEP_DERIVED == 0)) && [[ -d "$DERIVED" ]]; then
@@ -255,20 +346,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[1/5] building $SCHEME for $MODE"
-BUILD_ARGS=(-project "$PROJECT" -scheme "$SCHEME" -derivedDataPath "$DERIVED")
+echo "[1/5] building $SCHEME for $MODE ($CONFIGURATION)"
+BUILD_ARGS=(
+  -project "$PROJECT" -scheme "$SCHEME" -derivedDataPath "$DERIVED"
+  -configuration "$CONFIGURATION"
+)
 SIGNING_HINT=""
 if [[ "$MODE" == "simulator" ]]; then
   BUILD_ARGS+=(-sdk iphonesimulator -destination "generic/platform=iOS Simulator")
 else
-  BUILD_ARGS+=(-destination "generic/platform=iOS")
-  SIGNING_HINT=". A device build needs a signing identity: set MIGO_PROBE_TEAM to your team id (Xcode > Settings > Accounts creates a free personal team)"
+  # -allowProvisioningUpdates is not a convenience. A free personal team has no
+  # profile for dev.migo.probe until one is asked for, and the device has to be
+  # registered against the team the same way; without the flag xcodebuild
+  # refuses with "Automatic signing is disabled and unable to generate a
+  # profile", which is the first thing a lab day with a phone in hand hits and
+  # reads as a signing-identity problem rather than a missing flag.
+  #
+  # The destination names the phone rather than `generic/platform=iOS` for the
+  # other half of the same problem: a generic destination gives Xcode no device
+  # to add to the team, and the portal then answers "Your team has no devices
+  # from which to generate a provisioning profile" with the device sitting on
+  # the desk, connected.
+  BUILD_ARGS+=(-destination "id=$DEVICE_UDID" -allowProvisioningUpdates)
+  SIGNING_HINT=". A device build needs a signing identity: set MIGO_PROBE_TEAM to your team id (Xcode > Settings > Accounts creates a free personal team). The identity has to be in this user's keychain -- signing runs as whoever runs this script, so an Xcode signed in as another user does not lend it one"
 fi
 if [[ -n "${MIGO_PROBE_TEAM:-}" ]]; then
   BUILD_ARGS+=("DEVELOPMENT_TEAM=$MIGO_PROBE_TEAM")
 fi
-xcodebuild "${BUILD_ARGS[@]}" build >"$OUT_DIR/build-$RUN_ID.log" 2>&1 \
-  || fail "the build failed; see $OUT_DIR/build-$RUN_ID.log$SIGNING_HINT"
+xcodebuild "${BUILD_ARGS[@]}" build >"$WORK_DIR/build-$RUN_ID.log" 2>&1 \
+  || fail "the build failed; see $WORK_DIR/build-$RUN_ID.log$SIGNING_HINT"
 
 APP="$(find "$DERIVED/Build/Products" -maxdepth 2 -name "$SCHEME.app" -print -quit)"
 [[ -n "$APP" ]] || fail "the build produced no $SCHEME.app under $DERIVED/Build/Products"
@@ -297,44 +403,116 @@ if [[ "$MODE" == "simulator" ]]; then
 else
   echo "[2/5] installing on device $TARGET"
   xcrun devicectl device install app --device "$TARGET" "$APP" \
-    --json-output "$OUT_DIR/install-$RUN_ID.json" \
-    || fail "devicectl install failed; see $OUT_DIR/install-$RUN_ID.json"
+    --json-output "$WORK_DIR/install-$RUN_ID.json" \
+    || fail "devicectl install failed; see $WORK_DIR/install-$RUN_ID.json"
+
+  # Only this step needs the phone unlocked -- iOS refuses `process launch` on a
+  # locked device (FBSOpenApplicationErrorDomain 7, "Locked") while `install`
+  # goes through fine. So the wait belongs here rather than around the whole
+  # script: a lab-day wrapper that polled the lock state and then rebuilt spent
+  # 31 seconds between the reading and the launch, which is longer than iOS's
+  # shortest auto-lock, and the launch was refused on a phone that had genuinely
+  # been unlocked. Waiting after the build makes the gap a second.
+  if ((UNLOCK_WAIT > 0)); then
+    echo "[3/5] waiting up to ${UNLOCK_WAIT}s for $TARGET to be unlocked"
+    UNLOCK_DEADLINE=$((SECONDS + UNLOCK_WAIT))
+    until xcrun devicectl device info lockState --device "$TARGET" 2>/dev/null \
+      | tr -d ' ' | grep -q "passcodeRequired:false"; do
+      ((SECONDS < UNLOCK_DEADLINE)) || fail "the phone was still locked after ${UNLOCK_WAIT}s. Unlock it and leave it unlocked -- Settings > Display & Brightness > Auto-Lock > Never removes the race entirely, and nothing on the Mac can enter a passcode"
+      sleep 5
+    done
+  fi
 
   echo "[3/5] launching with ${APP_ARGS[*]}"
+  # Stamped before the launch, and compared against the record's own
+  # `captured_at` below. Without it a run that names the same --run-id as an
+  # earlier one silently pulls the earlier one's records: the container still
+  # holds that file, so the poll matches it on the first try, and the copy wins
+  # the race against an app that has not finished writing. That is not a
+  # hypothetical -- it happened on the second evidence run, which reported
+  # success and byte-identical timings from a build made eight minutes earlier.
+  # Stale evidence that reads as fresh is the worst failure this script has.
+  LAUNCH_EPOCH="$(date -u +%s)"
   # Not --console: it waits for the app to exit and the probe app does not.
-  xcrun devicectl device process launch --device "$TARGET" --terminate-existing \
-    --json-output "$OUT_DIR/launch-$RUN_ID.json" \
-    "$BUNDLE_ID" "${APP_ARGS[@]}" \
-    || fail "devicectl launch failed; see $OUT_DIR/launch-$RUN_ID.json"
+  if ! xcrun devicectl device process launch --device "$TARGET" --terminate-existing \
+    --json-output "$WORK_DIR/launch-$RUN_ID.json" \
+    "$BUNDLE_ID" "${APP_ARGS[@]}"; then
+    # A phone that relocked between the reading above and this call. Say which
+    # of the two lock failures it is, because the remedy differs: this one is
+    # "unlock it again", the trust one below is a settings change.
+    if grep -q "could not be, unlocked" "$WORK_DIR/launch-$RUN_ID.json" 2>/dev/null; then
+      fail "the phone locked itself between the lock-state reading and the launch. Set Settings > Display & Brightness > Auto-Lock to Never, unlock it, and run this again"
+    fi
+    # The install succeeding and the launch being refused is one specific thing
+    # on a free team, and the message iOS returns for it names three causes at
+    # once ("invalid code signature, inadequate entitlements or its profile has
+    # not been explicitly trusted"). On a build that just signed and installed,
+    # it is always the third, and the fix is on the phone rather than on the Mac
+    # -- which is worth saying, because everything else in this script is fixed
+    # on the Mac.
+    if grep -q "explicitly trusted" "$WORK_DIR/launch-$RUN_ID.json" 2>/dev/null; then
+      fail "the device refused to launch $BUNDLE_ID because this developer certificate is not trusted on it yet. On the phone: Settings > General > VPN & Device Management > Developer App > trust the certificate, then run this again. It is once per certificate, not once per build"
+    fi
+    fail "devicectl launch failed; see $WORK_DIR/launch-$RUN_ID.json"
+  fi
 
   echo "[4/5] waiting up to ${TIMEOUT}s for Documents/capability-$RUN_ID.json"
-  # Copied into a directory, then located inside it. `devicectl device copy from`
-  # documents --destination only as "the location to which the item should be
-  # copied", which leaves open whether a non-existent path is created as the file or
-  # treated as a directory to place it in. Both are handled rather than guessed,
-  # because the guess would be found wrong on a bench with the device in hand and a
-  # gate half measured. This path is the one thing in this script no test exercises:
-  # it needs a device.
-  COPY_DIR="$OUT_DIR/pull-$RUN_ID"
-  rm -rf "$COPY_DIR"
-  mkdir -p "$COPY_DIR"
+  # Two questions, asked separately, because asking them together is what this
+  # step got wrong: `devicectl device info files` says whether the app has
+  # written the records, and only then does `copy from` move them. The first
+  # version polled the copy alone and read every failure as "not written yet".
+  # It was measured on a phone: the copy failed 60 times in a row for a reason
+  # that had nothing to do with the app, the app had in fact finished in 15
+  # seconds, and the script reported "no records after 300s" -- a wrong answer
+  # about the device, produced by a broken transfer.
+  #
+  # The transfer was broken because `--destination` must name a path that does
+  # not exist. Given a directory, devicectl refuses with "Cannot open
+  # destination file ...: Is a directory" rather than placing the file inside
+  # it, so the earlier "both readings are handled" was only ever the reading
+  # that cannot work.
+  echo "  (asking the container whether the records are there, then pulling them)"
+  #
+  # `grep -c`, never `grep -q`: this script runs under `set -o pipefail`, and
+  # `grep -q` exits the moment it matches, which SIGPIPEs devicectl and makes
+  # the pipeline status 141. The loop then never sees a success and polls until
+  # the deadline against a container that already holds the file -- which is
+  # what happened on the first evidence run, with the records sitting on the
+  # phone since three minutes earlier. This project has now debugged the same
+  # mistake in two different scripts.
+  COPY_DEST="$WORK_DIR/pull-$RUN_ID.json"
   DEADLINE=$((SECONDS + TIMEOUT))
-  until xcrun devicectl device copy from --device "$TARGET" \
-    --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
-    --source "Documents/capability-$RUN_ID.json" --destination "$COPY_DIR" \
-    --json-output "$OUT_DIR/copy-$RUN_ID.json" >/dev/null 2>&1; do
-    ((SECONDS < DEADLINE)) || fail "no records after ${TIMEOUT}s. The app writes them when the run finishes and the screen says what it is doing; the last copy attempt is in $OUT_DIR/copy-$RUN_ID.json"
+  while true; do
+    if [[ "$(xcrun devicectl device info files --device "$TARGET" \
+      --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
+      2>/dev/null | grep -c "Documents/capability-$RUN_ID.json")" != "0" ]]; then
+      rm -rf "$COPY_DEST"
+      if xcrun devicectl device copy from --device "$TARGET" \
+        --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" \
+        --source "Documents/capability-$RUN_ID.json" --destination "$COPY_DEST" \
+        --json-output "$WORK_DIR/copy-$RUN_ID.json" >/dev/null 2>&1 \
+        && [[ -f "$COPY_DEST" ]] \
+        && python3 -c '
+import datetime, json, sys
+
+records = json.load(open(sys.argv[1]))
+launched = int(sys.argv[2])
+stamps = [r["captured_at"] for r in (records if isinstance(records, list) else [records])]
+oldest = min(
+    datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=datetime.timezone.utc).timestamp()
+    for s in stamps
+)
+# One second of slack, for the second boundary between two clocks.
+sys.exit(0 if oldest >= launched - 1 else 1)
+' "$COPY_DEST" "$LAUNCH_EPOCH"; then
+        mv "$COPY_DEST" "$RECORD_FILE"
+        break
+      fi
+    fi
+    ((SECONDS < DEADLINE)) || fail "no records from THIS run after ${TIMEOUT}s. Either the app wrote none -- its screen says what it is doing -- or everything it wrote was stamped before this launch, which means a file from an earlier run with the same --run-id is what the container is offering. The last transfer attempt is in $WORK_DIR/copy-$RUN_ID.json"
     sleep 5
   done
-
-  PULLED="$(find "$COPY_DIR" -type f -name "capability-$RUN_ID.json" -print -quit)"
-  if [[ -z "$PULLED" ]]; then
-    # The other reading: the destination itself became the file.
-    PULLED="$(find "$COPY_DIR" -type f -print -quit)"
-  fi
-  [[ -n "$PULLED" ]] || fail "devicectl reported success and left nothing under $COPY_DIR; see $OUT_DIR/copy-$RUN_ID.json"
-  mv "$PULLED" "$RECORD_FILE"
-  rmdir "$COPY_DIR" 2>/dev/null || true
 fi
 
 [[ -s "$RECORD_FILE" ]] || fail "$RECORD_FILE is empty"

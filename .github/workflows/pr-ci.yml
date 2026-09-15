@@ -314,6 +314,8 @@ jobs:
           bash scripts/test-r8-install-receipt.sh
           bash scripts/test-r9-worker-snapshot.sh
           bash scripts/test-v8-gn-pin-contract.sh
+          bash scripts/test-apple-frame-channel-contract.sh
+          bash scripts/test-v8-patch-application-contract.sh
 
       # And the rule itself, so the list above cannot grow again in silence.
       - name: Every contract gate is invoked by something
@@ -546,6 +548,17 @@ jobs:
       # the ARTIFACT half honest. Neither needs a Mac.
       - name: The Apple ANGLE pin is complete and fetched by hash
         run: bash scripts/test-apple-angle-pin-contract.sh
+
+      # The same question about the other downloaded dependency, and it is the
+      # sharper of the two. `apple-skia-gl-env.sh` points macOS builds at Skia
+      # archives this project published with `skia_gl_standard=""`; upstream's
+      # are compiled with `SK_ASSUME_GL=1`, under which every Canvas2D surface on
+      # macOS fails to build a GrDirectContext and NOTHING goes red -- WebGL does
+      # not go through Skia and nothing else asks. So an asset that 404s costs
+      # eight minutes, and an asset that was replaced costs the defect returning
+      # invisibly. No Mac needed: it is a download and a hash.
+      - name: The corrected macOS Skia is published and unchanged
+        run: bash scripts/test-apple-skia-pin-contract.sh
 
       # The third copy of the same rule, and the one with no build step behind
       # it. The recipe decides where ANGLE's own loader will look; the presenter
@@ -960,7 +973,7 @@ jobs:
         run: bash scripts/fetch-v8-archives.sh
 
       - name: Setup Java
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: "17"

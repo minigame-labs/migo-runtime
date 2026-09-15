@@ -445,7 +445,16 @@ for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
     info "cargo build $target"
     case "$FLOOR_PLATFORM" in
         ios)   export IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" ;;
-        macos) export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" ;;
+        macos)
+            export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
+            # Skia's macOS default is compile-time desktop GL, and every GL
+            # context Migo supplies on Apple is ANGLE, which is ES. Without this
+            # no Canvas2D surface can build a GrDirectContext on macOS at all --
+            # see the file for the mechanism. iOS needs nothing: its default is
+            # already "gles".
+            # shellcheck source=scripts/apple-skia-gl-env.sh
+            . "$SCRIPT_DIR/apple-skia-gl-env.sh"
+            ;;
     esac
 
     # macos-v8 is the only product here that links V8, and the only one that needs

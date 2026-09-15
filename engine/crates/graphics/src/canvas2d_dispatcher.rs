@@ -88,6 +88,24 @@ impl Renderer2d {
                 }
                 Ok(false)
             }
+            // Every failure here has to reach `resp`, and until 2026-09-11 none
+            // of them did: three `?` operators returned early with the responder
+            // still unanswered, so the caller -- a JavaScript `getImageData`
+            // blocked on this reply -- was told
+            // "internal error (render op responder dropped without sending a
+            // reply (likely a handler forgot to call ...))", a message about the
+            // plumbing, while the actual reason went to the host's render-event
+            // channel, which is not where the caller is looking.
+            //
+            // Measured on macOS: a read outside the canvas reported
+            // `Canvas2D getImageData read_pixels failed` to the host and the
+            // dropped-responder text to the content, and the two had to be
+            // matched up by hand across two log streams.
+            //
+            // Answering and returning `Ok(false)` is `MeasureText`'s shape three
+            // arms below, and for the same reason: a synchronous op's failure
+            // belongs to the caller that is waiting for it, not to the host as a
+            // render error. `MeasureText` had it right and this arm did not.
             Canvas2DCmd::GetImageData {
                 x,
                 y,
@@ -95,10 +113,14 @@ impl Renderer2d {
                 height,
                 resp,
             } => {
-                cm.make_current_needed(canvas_id)?;
-                let ctx = cm.get_2d_context_mut(canvas_id)?;
-                let pixels = ctx.read_image_data(x, y, width, height)?;
-                let _ = resp.send(Ok(pixels));
+                match cm
+                    .make_current_needed(canvas_id)
+                    .and_then(|()| cm.get_2d_context_mut(canvas_id))
+                    .and_then(|ctx| ctx.read_image_data(x, y, width, height))
+                {
+                    Ok(pixels) => resp.ok(pixels),
+                    Err(e) => resp.err(e),
+                }
                 Ok(false)
             }
             Canvas2DCmd::ReadSnapshotPixels { snapshot_id, resp } => {

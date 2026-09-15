@@ -59,6 +59,7 @@ import XCTest
             var diagnostics: [[String: Any]] = []
             var refusals: [URL] = []
             var terminalFailures: [Int] = []
+            var rebuilds: [Int] = []
             var extraFields: [String: String] = [:]
             var onDiagnostic: (([String: Any]) -> Void)?
 
@@ -73,6 +74,9 @@ import XCTest
             }
             func session(_ session: MigoWebKitSession, didFailTerminallyAfter count: Int) {
                 terminalFailures.append(count)
+            }
+            func session(_ session: MigoWebKitSession, willRebuildAfterTermination count: Int) {
+                rebuilds.append(count)
             }
             func sessionEnvironmentFields(_ session: MigoWebKitSession) -> [String: String] {
                 extraFields
@@ -105,7 +109,27 @@ import XCTest
         ///
         /// A warm-up in `setUp` would hide the cost rather than budget for it, and
         /// would need a timeout of its own.
-        static let reportTimeout: TimeInterval = 120
+        ///
+        /// 120 was still a guess about the slowest machine. It is now a measurement.
+        /// WebKit logs its own helper-process launch times, and across three reds and
+        /// one green on the same lane:
+        ///
+        ///     red   WebContent 48.9 s   59.0 s   37.5 s
+        ///           GPU        37.0 s   58.6 s   39.5 s
+        ///     green WebContent  1.3-2.2 s
+        ///
+        /// So the cold launch this number is supposed to cover is not the ~2 s a
+        /// healthy runner takes -- it is up to 59 s, on a machine starved enough that
+        /// everything after the launch is slow by the same factor. 120 left about a
+        /// minute for the load itself at 30x, which is why it kept landing just the
+        /// wrong side of the line.
+        ///
+        /// 240 is twice the measured worst launch plus room for the load behind it.
+        /// What it costs is two extra minutes on a genuinely hung run; what it buys
+        /// is that a starved runner stops being reported as a product defect. It does
+        /// not hide one either: the two records and the about:blank probe below still
+        /// say what happened, and a real stall still fails -- just later.
+        static let reportTimeout: TimeInterval = 240
 
         private func firstDiagnostic(
             from script: String, surface: MigoWebKitSurface = .default,
@@ -121,15 +145,45 @@ import XCTest
 
             // On timeout, say what state the session reached. A bare "the
             // expectation was not fulfilled" is the least informative red a lane
-            // can produce, and this one has now cost three CI iterations: the
-            // alphabetically first test in this bundle times out on the runner
-            // while the other nine pass in about twelve seconds together, which
-            // 120 seconds of cold start does not explain. What distinguishes
-            // "slow" from "stuck" is whether the load ever started, whether it
-            // finished, and whether the page said anything at all -- none of
-            // which the expectation reports.
+            // can produce, and this one has now cost four CI iterations. The third
+            // added the host's side and the fourth read it: a run reported
+            // `started: 1, delivered: 431` with the page still at ten percent, so
+            // the host had served the whole page and WebKit had done nothing with
+            // it. That is why the navigation counters are here too -- between them
+            // the two records say which side stopped, and neither says it alone.
             if XCTWaiter().wait(for: [arrived], timeout: timeout) != .completed {
                 let webView = session.webView
+                // One question the two records cannot answer between them, asked
+                // only here, on the failure path, where it costs a green run
+                // nothing.
+                //
+                // The first red to carry both records said: the host answered in
+                // full (delivered == promised == 431) and WebKit started a
+                // provisional navigation and then neither committed, nor failed,
+                // nor lost its content process. That eliminates under-delivery,
+                // refusal, navigation failure and a crash, and leaves one shape
+                // -- WebContent had a complete response and did nothing with it
+                // -- which is still two different faults: a content process that
+                // never came up, and one that is up and stalled on this load.
+                //
+                // `about:blank` separates them. It needs no host, no origin and
+                // no network; a live content process commits it, and the
+                // navigation record already counts commits. It is allowed
+                // through `decidePolicyFor` by name, so this asks the shipping
+                // policy rather than going around it.
+                let commitsBeforeBlank = session.navigation.commits
+                var blankCommitted = false
+                if let webView {
+                    webView.load(URLRequest(url: URL(string: "about:blank")!))
+                    let deadline = Date().addingTimeInterval(5)
+                    while Date() < deadline {
+                        if session.navigation.commits > commitsBeforeBlank {
+                            blankCommitted = true
+                            break
+                        }
+                        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                    }
+                }
                 XCTFail(
                     "no diagnostic within \(Int(timeout))s."
                         + " url=\(webView?.url?.absoluteString ?? "nil")"
@@ -138,12 +192,22 @@ import XCTest
                         + " inWindow=\(webView?.window != nil)"
                         + " diagnostics=\(recorder.diagnostics.count)"
                         + " refusals=\(recorder.refusals.map(\.absoluteString))"
+                        + " terminalFailures=\(recorder.terminalFailures)"
+                        + " rebuilds=\(recorder.rebuilds)"
                         + " origin=\(session.originActivity)"
-                        + ". A url of nil means the load never began; a url with"
-                        + " loading=false and no diagnostic means the page loaded and its"
-                        + " script never reported. origin.started=0 means WebKit never"
-                        + " asked the host for the page, which is a different failure from"
-                        + " started>0 with settled=0 -- that one is the host not answering.")
+                        + " navigation=\(session.navigation)"
+                        + " aboutBlankCommitted=\(blankCommitted)"
+                        + ". Read the two records together. origin.started=0 means WebKit"
+                        + " never asked the host for the page. origin.started>0 with"
+                        + " finished=0 means the host never answered. origin.finished=1"
+                        + " with navigation.commits=0 means the host answered in full and"
+                        + " WebKit did not take it -- look at"
+                        + " navigation.contentProcessTerminations and lastError, and at"
+                        + " promised against delivered, which is the same stall when a"
+                        + " body is short of its own Content-Length."
+                        + " aboutBlankCommitted=false says the content process never"
+                        + " came up at all, which is a different fault from one that"
+                        + " is up and stalled on this particular load.")
             }
             return try XCTUnwrap(recorder.diagnostics.first)
         }
@@ -201,6 +265,67 @@ import XCTest
         }
 
         // MARK: - the origin answers what WebKit asks
+
+        /// A page on this origin can start a MODULE worker, and that worker can
+        /// import a sibling module from the same origin.
+        ///
+        /// This is a capability question for the OTHER lane, asked here because
+        /// this is where a real `WKWebView` already runs. Performance+'s producer
+        /// is a Dedicated Worker whose entry point (`worker-bootstrap.mjs`) uses
+        /// ES `import`, which requires `{ type: "module" }`.
+        ///
+        /// WHY IT IS NOT ALREADY ANSWERED. The capability gate proved a Worker
+        /// starts from a custom scheme and can open a WebSocket -- on a device,
+        /// in `capability-probe-worker.js`, which is a CLASSIC script constructed
+        /// with no options. A module worker is a different path through WebKit's
+        /// loader: it fetches the script as a module, resolves its imports
+        /// against the same scheme, and fetches those too. None of that is
+        /// exercised by a classic worker, and if any of it failed the producer
+        /// would have to be bundled into one classic script before it could run
+        /// at all.
+        ///
+        /// Measured on macOS first with a standalone `WKWebView` probe, which
+        /// answered `module-worker-ok:hello|import-ok`. This is the same question
+        /// on the platform the product ships on, where WebKit's process
+        /// configuration is not the same one.
+        func testAPageCanStartAModuleWorkerThatImportsFromItsOwnOrigin() throws {
+            try write("export const greeting = \"hello\";\n", to: "dep.mjs")
+            try write(
+                """
+                import { greeting } from "./dep.mjs";
+                self.postMessage(greeting + "|import-ok");
+                """, to: "producer-worker.mjs")
+
+            // Resolved rather than thrown on either outcome, so a worker that
+            // fails to construct reports WHY instead of timing out -- the two
+            // look identical from a `wait(for:)` and want opposite next steps.
+            let diagnostic = try firstDiagnostic(
+                from: """
+                    return await new Promise((resolve) => {
+                      let worker;
+                      try {
+                        worker = new Worker("/producer-worker.mjs", { type: "module" });
+                      } catch (error) {
+                        resolve({ outcome: "construct-threw", detail: String(error) });
+                        return;
+                      }
+                      worker.onmessage = (event) => resolve({ outcome: String(event.data) });
+                      worker.onerror = (event) => resolve({
+                        outcome: "worker-error",
+                        detail: String(event.message || event.type),
+                      });
+                    });
+                    """)
+            XCTAssertEqual(
+                diagnostic["outcome"] as? String, "hello|import-ok",
+                """
+                a module worker on this origin did not run its imported sibling \
+                (detail: \(diagnostic["detail"] as? String ?? "none")). If this is \
+                a loader refusal rather than a mistake in the fixture, the \
+                Performance+ producer cannot ship as ES modules and has to be \
+                bundled into one classic script first.
+                """)
+        }
 
         func testContentCanFetchItsOwnPackage() throws {
             try write("{\"name\":\"probe\"}", to: "manifest.json")

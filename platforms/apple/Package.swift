@@ -99,8 +99,41 @@ let package = Package(
         // device build is compiled here; real-device evidence is separate.
         .testTarget(
             name: "MigoAppleRendererTests",
-            dependencies: ["MigoAppleRenderer", "MigoEngine"],
+            dependencies: ["MigoAppleRenderer", "MigoEngine", "MigoAppleFrameHarness"],
             path: "Tests/MigoAppleRendererTests"
+        ),
+
+        // The engine/session/surface bring-up two test targets both need.
+        //
+        // A target rather than a copy in each test file: `MigoAppleRendererTests`
+        // owned it, and the Performance+ acceptance test needs the same eighty
+        // lines. The alternative was making `MigoAppleRendererTests` depend on
+        // the Performance+ lane, which the comment on that test target rejects
+        // for a reason that still holds -- it would make every renderer test
+        // build the lane as well.
+        //
+        // It carries no assertions, which is why it is a library and not a test
+        // target: a helper that called `XCTAssert` itself would report its own
+        // line numbers for somebody else's question.
+        .target(
+            name: "MigoAppleFrameHarness",
+            dependencies: ["MigoEngine"],
+            path: "Sources/MigoAppleFrameHarness",
+            // The committed frames live here, with the harness, because both
+            // test targets need the SAME bytes. The acceptance test's whole
+            // claim is that a packet which draws when submitted directly also
+            // draws when it has crossed the transport, and two copies of a
+            // fixture are two things that can differ.
+            //
+            // They are real frames so that a test needing a valid packet does
+            // not build one: a third implementation of the wire format, in a
+            // language neither the document nor the golden corpus checks, is
+            // the failure mode contracts/frame-wire/wire-v1.md exists to
+            // prevent. They are produced by the JavaScript encoder the corpus
+            // does check, and two gates keep them honest -- the emitter still
+            // reproduces them byte for byte, and frame-wire's
+            // clear_frame_fixture asserts what is in one.
+            resources: [.copy("Fixtures")]
         ),
 
         // Lane 1: the compatibility and safety baseline. WKWebView runs the
@@ -140,6 +173,39 @@ let package = Package(
             // paths outside the target, and reaching outside is also what
             // would let the shipped bundle drift from the tested one.
             resources: [.copy("Resources")]
+        ),
+
+        // The frame channel, against a real WebSocket client rather than a
+        // double. Its own target because `MigoAppleRendererTests` depends on
+        // the renderer and the engine and this depends on lane 2 -- one test
+        // target carrying both would make every renderer test build the lane
+        // as well.
+        .testTarget(
+            name: "MigoApplePerformancePlusTests",
+            dependencies: ["MigoApplePerformancePlus", "MigoAppleFrameHarness"],
+            path: "Tests/MigoApplePerformancePlusTests"
+        ),
+
+        // Executed by the macOS diagnostic leg's `swift test`, which runs the
+        // whole suite.
+        //
+        // NOT by the macos-v8 leg, and that is measured rather than preferred:
+        // the macOS V8 product deliberately exports no external-frame entry
+        // points, so `MigoAppleRendererTests` and `MigoApplePerformancePlusTests`
+        // cannot link against it and `swift test` there fails before reaching
+        // any test. `Migo-Package` is the only scheme configured for testing, so
+        // there is no "just this target" on that leg either. The diagnostic leg
+        // links everything, and `MigoMacV8Availability` calls no engine symbol
+        // at all -- it reads this process's own signature -- so it runs there
+        // correctly and answers the same question.
+        //
+        // It exists because `MigoMacV8` was a target no lane had ever EXECUTED,
+        // which is how a one-line `Placeholder.swift` sat in it while
+        // `Sources/MigoMacV8/README.md` promised a profile resolver.
+        .testTarget(
+            name: "MigoMacV8Tests",
+            dependencies: ["MigoMacV8"],
+            path: "Tests/MigoMacV8Tests"
         ),
 
         // Lane 3: macOS only. In-process V8 with JIT; no second process.

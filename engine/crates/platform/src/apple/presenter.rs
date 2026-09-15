@@ -793,6 +793,26 @@ mod tests {
         assert!(!onscreen.same_native_surface(offscreen.as_ref()));
     }
 
+    /// Serialises the tests that initialise ANGLE's EGL display.
+    ///
+    /// `eglGetDisplay(EGL_DEFAULT_DISPLAY)` returns the same display to every
+    /// caller in the process, and `eglTerminate` un-initialises it for all of
+    /// them -- it is not refcounted against `eglInitialize`. So two tests that
+    /// each initialise, work, and terminate are not independent: whichever
+    /// terminates first pulls the display out from under the other, and the
+    /// loser fails with `NotInitialized` on whatever EGL call it happened to be
+    /// making.
+    ///
+    /// Measured 2026-09-11, and it is a race rather than a rule: the whole
+    /// binary passed on the macOS lane and failed on the iOS Simulator lane in
+    /// the same run, at `eglChooseConfig: NotInitialized`. `cargo test` runs
+    /// these on separate threads by default, so which one wins is scheduling.
+    ///
+    /// `parking_lot::Mutex` because a panicking test must not poison the lock
+    /// and turn one real failure into a second, fictional one in the other test.
+    #[cfg(target_vendor = "apple")]
+    static EGL_DISPLAY: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
     /// ANGLE is really present, really loads under the name this module chose,
     /// and really answers with a usable display.
     ///
@@ -815,9 +835,10 @@ mod tests {
     /// so the failure names the script that installs it instead. The macOS leg of
     /// `.github/workflows/apple-sdk.yml` runs `scripts/fetch-apple-angle.sh` and
     /// puts the unpacked directory on `DYLD_LIBRARY_PATH`.
-    #[cfg(target_vendor = "apple")]
     #[test]
+    #[cfg(target_vendor = "apple")]
     fn angle_loads_under_its_pinned_name_and_answers_with_a_display() {
+        let _serialised = EGL_DISPLAY.lock();
         let provider = AppleEglProvider::new();
         let egl = provider.load().unwrap_or_else(|error| {
             panic!(
@@ -837,5 +858,125 @@ mod tests {
             "the engine needs EGL 1.4 or better, ANGLE reported {major}.{minor}"
         );
         egl.terminate(display).expect("eglTerminate");
+    }
+
+    /// Skia builds a GL context on this platform's ANGLE, or it does not.
+    ///
+    /// Nothing on any host answered this before. `graphics/tests/common/harness.rs`
+    /// has `with_gl_surface` behind `#[cfg(any())]` -- never compiled, its own
+    /// comment saying "deliberately unimplemented until Phase 6" -- so every 2D
+    /// golden in that crate runs on Skia's CPU raster backend and says nothing
+    /// about GL. Skia-on-GL plainly works in production on Android; whether it
+    /// works on ANGLE here was an open question with no test anywhere.
+    ///
+    /// It was written to tell two shapes of one failure apart -- was the
+    /// external-frame lane's Canvas2D broken by something about that lane's
+    /// context, or was Skia-on-ANGLE not working here at all -- and it answered:
+    /// anywhere on macOS, on a bare pbuffer with nothing else involved. The
+    /// cause was a GN argument rather than a driver, and it is fixed; see
+    /// `scripts/apple-skia-gl-env.sh` for the mechanism.
+    ///
+    /// So its job now is to keep that fixed. It is the only thing in this
+    /// repository that would notice the correction going away -- nothing else
+    /// asks Skia for a GL context on a host, and WebGL never goes through Skia,
+    /// so the symptom of losing it is every 2D surface silently failing to build
+    /// while every lane stays green.
+    ///
+    /// Skipped rather than failed where ANGLE cannot load: a machine without it
+    /// cannot answer the question, and a test that failed there would be
+    /// reporting the machine.
+    #[test]
+    #[cfg(target_vendor = "apple")]
+    fn skia_builds_a_gl_context_on_this_platforms_angle() {
+        let _serialised = EGL_DISPLAY.lock();
+        let provider = AppleEglProvider::new();
+        let Ok(egl) = provider.load() else {
+            eprintln!("SKIP: ANGLE did not load on this machine; nothing to ask");
+            return;
+        };
+        let display = provider.display(&egl).expect("eglGetDisplay");
+        egl.initialize(display).expect("eglInitialize");
+
+        // The same shape the canvas manager asks for, so the answer is about
+        // Skia and ANGLE rather than about an unusual config.
+        let attrs = [
+            egl::RED_SIZE,
+            8,
+            egl::GREEN_SIZE,
+            8,
+            egl::BLUE_SIZE,
+            8,
+            egl::ALPHA_SIZE,
+            8,
+            egl::DEPTH_SIZE,
+            24,
+            egl::STENCIL_SIZE,
+            8,
+            egl::SURFACE_TYPE,
+            egl::PBUFFER_BIT,
+            egl::RENDERABLE_TYPE,
+            egl::OPENGL_ES3_BIT,
+            egl::NONE,
+        ];
+        let config = egl
+            .choose_first_config(display, &attrs)
+            .expect("eglChooseConfig")
+            .expect("an ES3 pbuffer config");
+
+        let pbuffer = egl
+            .create_pbuffer_surface(
+                display,
+                config,
+                &[egl::WIDTH, 64, egl::HEIGHT, 64, egl::NONE],
+            )
+            .expect("eglCreatePbufferSurface");
+        let context = egl
+            .create_context(
+                display,
+                config,
+                None,
+                &[egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE],
+            )
+            .expect("eglCreateContext");
+        egl.make_current(display, Some(pbuffer), Some(pbuffer), Some(context))
+            .expect("eglMakeCurrent");
+
+        // And the question. `FboKind::DefaultFb` with fbo 0 is the pbuffer's own
+        // framebuffer -- the simplest thing Skia could be asked to wrap.
+        let built = graphics::backend::gl::surface::Canvas2DContext::new(
+            0,
+            64,
+            64,
+            graphics::backend::gl::surface::FboKind::DefaultFb,
+            &|symbol: &str| {
+                egl.get_proc_address(symbol)
+                    .map(|f| f as *const std::ffi::c_void)
+                    .unwrap_or(std::ptr::null())
+            },
+        );
+        // The step, not just the verdict. Skia's own messages travel by
+        // `tracing`, and a `#[test]` has no subscriber to receive them -- this
+        // workspace builds `tracing-subscriber` without its `fmt` feature -- so
+        // a bare `is_some()` would report the same "no" for a loader that
+        // resolved nothing and for a driver Skia declined. Those want opposite
+        // investigations; see `Canvas2DInitFailure`.
+        let failed_at = built.err();
+
+        let _ = egl.make_current(display, None, None, None);
+        let _ = egl.destroy_context(display, context);
+        let _ = egl.destroy_surface(display, pbuffer);
+        let _ = egl.terminate(display);
+
+        assert!(
+            failed_at.is_none(),
+            "Skia would not build a Canvas2D context on an ANGLE ES 3.0 pbuffer on this \
+             machine; it stopped at {}. On macOS this is what losing \
+             `skia_gl_standard=\"\"` looks like: Skia's macOS default assumes desktop GL \
+             at compile time and ANGLE is ES, so `make_gl` rejects a context that is \
+             perfectly good. Check that this command sourced scripts/apple-skia-gl-env.sh \
+             and that the Skia it linked was built rather than downloaded -- a downloaded \
+             one carries key.txt where a built one carries args.gn.",
+            failed_at.expect("checked on the line above")
+        );
     }
 }

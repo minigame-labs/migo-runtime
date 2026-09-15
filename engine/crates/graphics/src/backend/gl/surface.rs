@@ -474,6 +474,58 @@ pub struct Canvas2DContext {
     atlas_tex: Vec<SkRect>,
 }
 
+/// Why a `Canvas2DContext` could not be built.
+///
+/// Returned rather than only logged, because *which* of the steps failed is the
+/// whole question and a log line is not readable from everywhere that asks.
+/// Measured 2026-09-11: an external-frame Canvas2D batch on macOS reported
+/// "Skia Canvas2DContext::new failed for canvas_id=1 (64x64 fbo=1)" and the
+/// next question -- which of the steps -- had no answer anywhere. Naming the
+/// steps in the log (which this file already does) fixed that for a host with a
+/// subscriber installed and not for a `#[test]`, because this workspace builds
+/// `tracing-subscriber` without its `fmt` feature, so a unit test has no
+/// subscriber to install and every one of those messages goes nowhere. A
+/// returned value is the one form both a host log line and a test assertion can
+/// read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Canvas2DInitFailure {
+    /// Skia could not assemble a GL interface from the injected loader: it
+    /// resolved no usable entry points, or no context was current when it
+    /// asked. About the loader or the caller's preconditions.
+    GlInterface,
+    /// Skia assembled an interface and then declined to build a
+    /// `GrDirectContext` on it. The entry points resolved and Skia rejected
+    /// what it found behind them -- about the driver, not the framebuffer.
+    DirectContext,
+    /// Skia built a context and would not wrap the caller's framebuffer as a
+    /// render target. About the FBO -- its attachments, size or format -- not
+    /// the driver.
+    WrapRenderTarget,
+    /// Skia would not allocate a render target on the shared offscreen
+    /// context. Only [`Canvas2DContext::new_shared_offscreen`] produces this,
+    /// and unlike the three above it is an allocation failure rather than a
+    /// capability one.
+    SharedRenderTarget,
+}
+
+impl Canvas2DInitFailure {
+    /// A short stable name for the step, for logs and assertion messages.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::GlInterface => "GL interface assembly",
+            Self::DirectContext => "GrDirectContext::make_gl",
+            Self::WrapRenderTarget => "wrap_backend_render_target",
+            Self::SharedRenderTarget => "shared-context render_target",
+        }
+    }
+}
+
+impl std::fmt::Display for Canvas2DInitFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl Canvas2DContext {
     /// Create a new Skia-backed Canvas2D bound to an existing FBO.
     ///
@@ -484,8 +536,8 @@ impl Canvas2DContext {
     ///   * `width`/`height` are the attachment dimensions in physical
     ///     pixels (no DPR scaling; Canvas 2D coords are 1:1 with pixels).
     ///
-    /// Returns `None` if Skia could not build a GL interface for the
-    /// current EGL context — usually indicates a driver issue on device.
+    /// Returns which step failed if it could not build one; see
+    /// [`Canvas2DInitFailure`], whose variants want different investigations.
     ///
     /// `load_gl` resolves a GL entry point. It must come from the *same* EGL
     /// implementation the caller injected for this manager, which is why it is
@@ -508,8 +560,56 @@ impl Canvas2DContext {
         height: u32,
         kind: FboKind,
         load_gl: &dyn Fn(&str) -> *const std::ffi::c_void,
-    ) -> Option<Self> {
-        let interface = sk_gl::Interface::new_load_with(|symbol| load_gl(symbol))?;
+    ) -> Result<Self, Canvas2DInitFailure> {
+        // Named steps, because the caller's error could only say the whole
+        // thing failed. Three things can go wrong here and they have nothing to
+        // do with each other -- a loader that cannot resolve GL, a driver Skia
+        // will not build a context on, and a framebuffer it will not wrap --
+        // and telling them apart from the outside was not possible. Measured
+        // 2026-09-11: an external-frame Canvas2D batch reported "Skia
+        // Canvas2DContext::new failed for canvas_id=1 (64x64 fbo=1)" and the
+        // next question, which of the three, had no answer in the log.
+        // What the driver says it is, read through the loader Skia is about to
+        // use. Logged before the interface is built, so a failure below has the
+        // answer sitting above it: a null version means no context was current
+        // and the interface was assembled from nothing, while a real one means
+        // Skia looked at a live context and declined it. Those want opposite
+        // fixes, and the message alone could not tell them apart.
+        //
+        // Through `load_gl` and not a linked `glGetString`, which is the
+        // mistake this replaces: declaring the symbol resolves it against
+        // whatever GL the process happens to link -- on macOS the system
+        // OpenGL, not the ANGLE this manager drives -- and calling that with no
+        // CGL context current took the test process down with no output at all.
+        {
+            type GetString = unsafe extern "C" fn(u32) -> *const std::ffi::c_char;
+            const GL_VERSION: u32 = 0x1F02;
+            let raw = load_gl("glGetString");
+            let version = if raw.is_null() {
+                "<glGetString unresolved>".to_string()
+            } else {
+                // SAFETY: the loader returned a non-null entry point for a name
+                // whose signature is fixed by the GL ES specification.
+                let get_string: GetString = unsafe { std::mem::transmute(raw) };
+                let text = unsafe { get_string(GL_VERSION) };
+                if text.is_null() {
+                    "<null: no context was current>".to_string()
+                } else {
+                    unsafe { std::ffi::CStr::from_ptr(text) }
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            };
+            tracing::info!(gl_version = %version, "Skia is about to build a GL context");
+        }
+
+        let Some(interface) = sk_gl::Interface::new_load_with(|symbol| load_gl(symbol)) else {
+            tracing::error!(
+                "Skia GL interface load failed: the loader resolved no usable GL entry \
+                 points, or no context was current when it was asked"
+            );
+            return Err(Canvas2DInitFailure::GlInterface);
+        };
         Self::with_interface(interface, fbo_id, width, height, kind)
     }
 
@@ -525,8 +625,13 @@ impl Canvas2DContext {
         width: u32,
         height: u32,
         kind: FboKind,
-    ) -> Option<Self> {
-        let mut gr_ctx = direct_contexts::make_gl(interface.clone(), None)?;
+    ) -> Result<Self, Canvas2DInitFailure> {
+        let Some(mut gr_ctx) = direct_contexts::make_gl(interface.clone(), None) else {
+            tracing::error!(
+                "Skia GrDirectContext::make_gl returned none for the current GL context"
+            );
+            return Err(Canvas2DInitFailure::DirectContext);
+        };
 
         let fb_info = sk_gl::FramebufferInfo {
             fboid: fbo_id,
@@ -552,7 +657,16 @@ impl Canvas2DContext {
             ColorType::RGBA8888,
             /* color_space */ None,
             /* surface_props */ None,
-        )?;
+        );
+        let Some(surface) = surface else {
+            tracing::error!(
+                fbo = fbo_id,
+                width,
+                height,
+                "Skia would not wrap the framebuffer as a render target"
+            );
+            return Err(Canvas2DInitFailure::WrapRenderTarget);
+        };
 
         // Clamp Ganesh's resource cache so a long-running scene
         // can't silently grow the GPU memory footprint past the
@@ -568,7 +682,7 @@ impl Canvas2DContext {
             max_resource_bytes: per_ctx_resource_cache_bytes(),
         });
 
-        Some(Self {
+        Ok(Self {
             _counted: counted,
             gr_ctx,
             surface,
@@ -620,7 +734,7 @@ impl Canvas2DContext {
         width: u32,
         height: u32,
         ctx_tag: u32,
-    ) -> Option<Self> {
+    ) -> Result<Self, Canvas2DInitFailure> {
         let mut gr_ctx = gr_ctx.clone();
         let image_info = skia_safe::ImageInfo::new(
             (width as i32, height as i32),
@@ -628,7 +742,7 @@ impl Canvas2DContext {
             skia_safe::AlphaType::Premul,
             None,
         );
-        let mut surface = gpu::surfaces::render_target(
+        let Some(mut surface) = gpu::surfaces::render_target(
             &mut gr_ctx,
             gpu::Budgeted::No,
             &image_info,
@@ -640,7 +754,14 @@ impl Canvas2DContext {
             /* surface_props */ None,
             /* should_create_with_mips */ false,
             /* is_protected */ false,
-        )?;
+        ) else {
+            tracing::error!(
+                width,
+                height,
+                "Skia would not allocate a render target on the shared offscreen context"
+            );
+            return Err(Canvas2DInitFailure::SharedRenderTarget);
+        };
 
         // The snapshot path blits from a raw FBO id. Ask Skia which one it
         // allocated rather than tracking a second copy of that fact.
@@ -651,7 +772,7 @@ impl Canvas2DContext {
         .and_then(|rt| rt.gl_framebuffer_info().map(|info| info.fboid))
         .unwrap_or(0);
 
-        Some(Self {
+        Ok(Self {
             _counted: LiveContextCount::shared(),
             gr_ctx,
             surface,
@@ -1068,11 +1189,20 @@ impl Canvas2DContext {
         height: u32,
         image_store: &mut ImageStore,
     ) -> bool {
-        let Some(new_self) =
-            Self::with_interface(self.interface.clone(), fbo_id, width, height, self.kind)
-        else {
-            return false;
-        };
+        let new_self =
+            match Self::with_interface(self.interface.clone(), fbo_id, width, height, self.kind) {
+                Ok(built) => built,
+                Err(step) => {
+                    tracing::error!(
+                        step = step.as_str(),
+                        fbo = fbo_id,
+                        width,
+                        height,
+                        "Canvas2D resize could not rebuild its Skia context"
+                    );
+                    return false;
+                }
+            };
         // Drop every SkImage wrapper this context produced: they hold
         // a `GrDirectContext` pointer that's about to be dropped, and
         // reusing them post-swap is undefined behaviour inside Skia.

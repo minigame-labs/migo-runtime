@@ -882,9 +882,9 @@ impl Host {
                 data,
                 is_last_frame,
                 runtime_generation: _,
-                ..
+                credit: _credit,
             } => {
-                self.js.dispatch_recorder_frame_data(&data, is_last_frame);
+                self.js.dispatch_recorder_frame_data(data, is_last_frame);
                 Ok(())
             }
 

@@ -57,6 +57,7 @@ public class BluetoothManager {
     private final BooleanSupplier gattConnectPermissionGranted;
     private final BooleanSupplier gattSessionTerminated;
     private final GattEventReporter gattEventReporter;
+    private final BeaconUpdateReporter beaconUpdateReporter;
 
     interface CleanupFailureReporter {
         void report(String operation, RuntimeException failure);
@@ -77,6 +78,19 @@ public class BluetoothManager {
                 String characteristicId,
                 byte[] value);
         void mtu(String deviceId, int mtu);
+    }
+
+    /**
+     * Receives the JSON-encoded full beacon list on each scan update.
+     *
+     * <p>Separated from {@link NativeMethods#onBeaconUpdate} for the same
+     * reason {@link GattEventReporter} is separated from the GATT notification
+     * path: native JNI is not available in host JVM tests, so production
+     * code that needs to be unit-tested routes its delivery through this
+     * interface instead of calling the bridge directly.
+     */
+    interface BeaconUpdateReporter {
+        void update(String beaconsJson);
     }
 
     interface GattConnection {
@@ -352,6 +366,15 @@ public class BluetoothManager {
     private static final int UUID_TEXT_CACHE_LIMIT = 256;
 
     /**
+     * Maximum number of distinct remote beacons retained in one scan session.
+     *
+     * <p>Beacon identifiers come from the remote environment. Without a bound,
+     * a long-running scan retains every identifier it has ever observed and
+     * rebuilds an ever-larger JSON array for each later advertisement.
+     */
+    static final int BEACON_CACHE_LIMIT = 256;
+
+    /**
      * Canonical text for the UUIDs this session has seen.
      *
      * <p>{@code UUID.toString} formats 36 characters every call, and a
@@ -409,6 +432,8 @@ public class BluetoothManager {
                 NativeMethods.onBLEMTUChange(sessionId, deviceId, mtu);
             }
         };
+        this.beaconUpdateReporter =
+                beaconsJson -> NativeMethods.onBeaconUpdate(sessionId, beaconsJson);
         this.discoveryRequest = new LifecycleRequestState<>(lifecycleSuspended);
         this.beaconRequest = new LifecycleRequestState<>(lifecycleSuspended);
     }
@@ -432,9 +457,9 @@ public class BluetoothManager {
                             byte[] value) {}
 
                     @Override public void mtu(String deviceId, int mtu) {}
-                });
+                },
+                beaconsJson -> {});
     }
-
     BluetoothManager(
             int sessionId,
             CleanupFailureReporter cleanupFailureReporter,
@@ -449,7 +474,8 @@ public class BluetoothManager {
                 callback -> callback.getAsBoolean(),
                 gattConnectPermissionGranted,
                 gattSessionTerminated,
-                gattEventReporter);
+                gattEventReporter,
+                beaconsJson -> {});
     }
 
     BluetoothManager(
@@ -459,7 +485,8 @@ public class BluetoothManager {
             GattCallbackAdmission gattCallbackAdmission,
             BooleanSupplier gattConnectPermissionGranted,
             BooleanSupplier gattSessionTerminated,
-            GattEventReporter gattEventReporter) {
+            GattEventReporter gattEventReporter,
+            BeaconUpdateReporter beaconUpdateReporter) {
         this.sessionId = sessionId;
         this.activityRef = new WeakReference<>(null);
         this.adapter = null;
@@ -469,9 +496,30 @@ public class BluetoothManager {
         this.gattConnectPermissionGranted = gattConnectPermissionGranted;
         this.gattSessionTerminated = gattSessionTerminated;
         this.gattEventReporter = gattEventReporter;
+        this.beaconUpdateReporter = beaconUpdateReporter;
         this.discoveryRequest = new LifecycleRequestState<>(false);
         this.beaconRequest = new LifecycleRequestState<>(false);
     }
+    BluetoothManager(
+            int sessionId,
+            CleanupFailureReporter cleanupFailureReporter,
+            ConnectionStateReporter connectionStateReporter,
+            GattCallbackAdmission gattCallbackAdmission,
+            BooleanSupplier gattConnectPermissionGranted,
+            BooleanSupplier gattSessionTerminated,
+            GattEventReporter gattEventReporter) {
+        this(
+                sessionId,
+                cleanupFailureReporter,
+                connectionStateReporter,
+                gattCallbackAdmission,
+                gattConnectPermissionGranted,
+                gattSessionTerminated,
+                gattEventReporter,
+                beaconsJson -> {});
+    }
+
+
 
     private Activity getActivity() {
         return activityRef.get();
@@ -1786,14 +1834,33 @@ public class BluetoothManager {
             } catch (JSONException e) {
                 return;
             }
-            discoveredBeacons.put(key, beacon);
-
-            JSONArray beaconsArr = new JSONArray();
-            for (JSONObject b : discoveredBeacons.values()) {
-                beaconsArr.put(b);
-            }
-            NativeMethods.onBeaconUpdate(sessionId, beaconsArr.toString());
+            recordBeacon(key, beacon);
         }
+    }
+
+    /**
+     * Retain and publish one beacon while keeping remote-controlled state bounded.
+     */
+    private synchronized void recordBeacon(String key, JSONObject beacon) {
+        if (!discoveredBeacons.containsKey(key)
+                && discoveredBeacons.size() >= BEACON_CACHE_LIMIT) {
+            return;
+        }
+        discoveredBeacons.put(key, beacon);
+
+        JSONArray beaconsArr = new JSONArray();
+        for (JSONObject cached : discoveredBeacons.values()) {
+            beaconsArr.put(cached);
+        }
+        beaconUpdateReporter.update(beaconsArr.toString());
+    }
+
+    void recordBeaconForTests(String key, JSONObject beacon) {
+        recordBeacon(key, beacon);
+    }
+
+    int discoveredBeaconCountForTests() {
+        return discoveredBeacons.size();
     }
 
     private JSONObject parseIBeacon(byte[] scanRecord, int rssi) {
@@ -1805,9 +1872,7 @@ public class BluetoothManager {
                     && (scanRecord[i + 3] & 0xFF) == 0x02
                     && (scanRecord[i + 4] & 0xFF) == 0x15) {
                 try {
-                    byte[] uuidBytes = new byte[16];
-                    System.arraycopy(scanRecord, i + 5, uuidBytes, 0, 16);
-                    String uuid = bytesToUuid(uuidBytes);
+                    String uuid = bytesToUuid(scanRecord, i + 5);
                     int major = ((scanRecord[i + 21] & 0xFF) << 8) | (scanRecord[i + 22] & 0xFF);
                     int minor = ((scanRecord[i + 23] & 0xFF) << 8) | (scanRecord[i + 24] & 0xFF);
                     int txPower = scanRecord[i + 25]; // signed byte
@@ -1888,22 +1953,46 @@ public class BluetoothManager {
         return arr;
     }
 
+    private static final char[] HEX_DIGITS = "0123456789abcdef".toCharArray();
+
     private static String bytesToHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) {
-            sb.append(String.format("%02x", b & 0xFF));
-        }
-        return sb.toString();
+        char[] output = new char[bytes.length * 2];
+        appendHex(bytes, 0, bytes.length, output, 0);
+        return new String(output);
     }
 
-    private static String bytesToUuid(byte[] bytes) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < 16; i++) {
-            sb.append(String.format("%02x", bytes[i] & 0xFF));
-            if (i == 3 || i == 5 || i == 7 || i == 9) {
-                sb.append('-');
-            }
+    /**
+     * Appends bytes without a formatter or temporary per-byte object.
+     *
+     * <p>BLE advertisements arrive on a callback hot path. {@code String.format}
+     * parsed a formatter and allocated intermediate strings for every byte,
+     * multiplying callback garbage by the advertisement length. The caller
+     * owns the output buffer so the steady-state conversion itself is allocation-free.
+     */
+    static void appendHex(
+            byte[] source, int sourceOffset, int byteCount, char[] destination, int destinationOffset) {
+        for (int i = 0; i < byteCount; i++) {
+            int value = source[sourceOffset + i] & 0xFF;
+            destination[destinationOffset + i * 2] = HEX_DIGITS[value >>> 4];
+            destination[destinationOffset + i * 2 + 1] = HEX_DIGITS[value & 0x0F];
         }
-        return sb.toString();
+    }
+
+    private static String bytesToUuid(byte[] bytes, int offset) {
+        char[] output = new char[36];
+        appendUuid(bytes, offset, output);
+        return new String(output);
+    }
+
+    static void appendUuid(byte[] source, int offset, char[] destination) {
+        int outputOffset = 0;
+        for (int i = 0; i < 16; i++) {
+            if (i == 4 || i == 6 || i == 8 || i == 10) {
+                destination[outputOffset++] = '-';
+            }
+            int value = source[offset + i] & 0xFF;
+            destination[outputOffset++] = HEX_DIGITS[value >>> 4];
+            destination[outputOffset++] = HEX_DIGITS[value & 0x0F];
+        }
     }
 }

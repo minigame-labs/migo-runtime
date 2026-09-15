@@ -2446,6 +2446,14 @@ mod tests {
         assert_eq!(first.generation, 1);
         let original_times = fs::metadata(dir.join("game.js")).unwrap();
 
+        // Writable before the rename, and this is a portability fix rather than
+        // tidiness: sealing strips the write bits from the directory ITSELF
+        // (`metadata.mode() & !0o222`), and macOS refuses to rename a directory it
+        // cannot write, while Linux only needs write on the parent. These three
+        // tests passed everywhere they had ever run until the Apple lane started
+        // running this crate's tests, where all three failed with EACCES on the
+        // line below.
+        make_tree_writable_for_test(&dir);
         fs::rename(&dir, &old_dir).unwrap();
         fs::create_dir(&dir).unwrap();
         setup_signed_package(&dir, "game.js", "build-two");
@@ -2497,6 +2505,14 @@ mod tests {
             .verify_and_promote_for_launch(&dir, &receipt, "game.js")
             .unwrap();
 
+        // Writable before the rename, and this is a portability fix rather than
+        // tidiness: sealing strips the write bits from the directory ITSELF
+        // (`metadata.mode() & !0o222`), and macOS refuses to rename a directory it
+        // cannot write, while Linux only needs write on the parent. These three
+        // tests passed everywhere they had ever run until the Apple lane started
+        // running this crate's tests, where all three failed with EACCES on the
+        // line below.
+        make_tree_writable_for_test(&dir);
         fs::rename(&dir, &old_dir).unwrap();
         fs::create_dir(&dir).unwrap();
         let (signing_key, _) = setup_signed_package(&dir, "game.js", "older");
@@ -2534,6 +2550,14 @@ mod tests {
             .unwrap();
         let old_receipt = fs::read(&receipt).unwrap();
 
+        // Writable before the rename, and this is a portability fix rather than
+        // tidiness: sealing strips the write bits from the directory ITSELF
+        // (`metadata.mode() & !0o222`), and macOS refuses to rename a directory it
+        // cannot write, while Linux only needs write on the parent. These three
+        // tests passed everywhere they had ever run until the Apple lane started
+        // running this crate's tests, where all three failed with EACCES on the
+        // line below.
+        make_tree_writable_for_test(&dir);
         fs::rename(&dir, &old_dir).unwrap();
         fs::create_dir(&dir).unwrap();
         setup_signed_package(&dir, "game.js", "trusted-v2");

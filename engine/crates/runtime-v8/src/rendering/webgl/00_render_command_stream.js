@@ -1138,6 +1138,16 @@ const OP2D_SET_COMPOSITE_OPERATION = 545;
 const OP2D_SET_FILL_STYLE = 546;
 const OP2D_SET_STROKE_STYLE = 547;
 const OP2D_SET_SHADOW_COLOR = 548;
+// Bring a 2D context into existence on the selected canvas.
+//
+// The in-process runtime does not send this: `getContext('2d')` here is an op
+// that creates the context directly. It is in this table because the table is
+// one of three that must agree, and because the lane that DOES need it -- the
+// external-frame producer, whose only path to the renderer is this stream --
+// had a complete 2D drawing vocabulary and no way to bring a context into
+// existence. Records sent to a canvas without one are accepted, decoded,
+// batched, and silently dropped.
+const OP2D_CREATE_CONTEXT = 549;
 
 // --- 2D canvas selection ---
 //

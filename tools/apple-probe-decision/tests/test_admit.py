@@ -76,7 +76,12 @@ def run(records: list[dict], *extra: str) -> dict:
     with tempfile.TemporaryDirectory() as directory:
         raw = Path(directory) / "raw"
         raw.mkdir()
-        (raw / "records.json").write_text(json.dumps(records), encoding="utf-8")
+        # Named the way the tool looks for records, which is the way
+        # run-apple-probe.sh and the probe app write them. The fixture used to be
+        # `records.json`; that stopped being a record the moment the tool learned
+        # to ignore everything that is not one, and a fixture the tool cannot see
+        # is a test that passes by testing nothing.
+        (raw / "capability-fixture.json").write_text(json.dumps(records), encoding="utf-8")
         output = Path(directory) / "admission.json"
         result = subprocess.run(
             [sys.executable, str(TOOL), "--input", str(raw), "--output", str(output), *extra],
@@ -234,6 +239,104 @@ check(
 check(
     run(both, "--require-admission") is not None,
     "the stricter flag does not crash the tool")
+
+# --- the evidence directory is not a directory of records --------------------
+#
+# run-apple-probe.sh writes devicectl's own `devices-*.json`, `install-*.json`,
+# `launch-*.json` and `copy-*.json` into the directory it then admits from, and
+# writes this tool's `admission.json` there too. Reading every *.json meant the
+# FIRST successful device run ended in `rejected`, naming a launch receipt for
+# fields it was never going to have: a correct run, a complete set of records,
+# and a verdict that reads as bad data. Nothing exercised it -- the runner's
+# contract test stops at --dry-run.
+# --- Lockdown Mode is a device state, not an admission invariant ---------------
+#
+# The contract says that in as many words, and until 2026-09-10 the tool did not
+# implement it. Two runs of one phone -- Lockdown off and Lockdown on -- collided
+# as "a disagreement this tool cannot resolve", because the condition key had no
+# room for the state the record carries `lockdown_mode` to describe. Given room,
+# they then turned every candidate from admitted into conditional and the run into
+# `rejected`, which reads as "nothing works on this phone" when what was measured
+# is "nothing works while its owner has Lockdown Mode on".
+
+both_states = [
+    record("loopback"),
+    with_answer(record("loopback", lockdown_mode="on", run_id="g0-2"), "jit_enabled",
+                "unavailable"),
+]
+two_states = run(both_states)
+check(
+    two_states["verdict"] != "rejected",
+    "two device states of one phone are two conditions, not a disagreement: the run "
+    f"came back {two_states['verdict']}",
+)
+check(
+    len(two_states["admitted"]) > 0,
+    "a candidate that runs with Lockdown off is admitted even though Lockdown on "
+    "blocks it; the fallback there is the WebKit lane, not a verdict on the "
+    "architecture",
+)
+check(
+    any(entry.get("blocked_by_device_state") for entry in two_states["admitted"]),
+    "the Lockdown answer is RECORDED on the candidates it blocks; admitting without "
+    "saying so would lose the answer A24 asked for",
+)
+check(
+    all(
+        "lockdown=on" in blocked["condition"]
+        for entry in two_states["admitted"]
+        for blocked in entry.get("blocked_by_device_state", [])
+    ),
+    "the recorded device-state blocker names the state",
+)
+
+# The exemption is for the state and not for the phone: a blocker with Lockdown
+# OFF still eliminates. Without this, "device state" would become a way to admit
+# anything.
+lockdown_off_blocked = run([with_answer(record("loopback"), "jit_enabled", "unavailable")])
+check(
+    len(lockdown_off_blocked["admitted"]) == 0,
+    "a capability missing with Lockdown OFF still blocks; the exemption is for the "
+    "state, not for the device",
+)
+
+# Two records for one state are still a disagreement. The key grew a field; it did
+# not stop being a key.
+same_state_twice = run([record("loopback"), record("loopback", run_id="g0-3")])
+check(
+    same_state_twice["verdict"] == "rejected",
+    "two records for one device state remain a disagreement the tool refuses",
+)
+
+
+def run_beside_operational_artifacts(records: list[dict]) -> dict:
+    with tempfile.TemporaryDirectory() as directory:
+        raw = Path(directory) / "raw"
+        raw.mkdir()
+        (raw / "capability-fixture.json").write_text(json.dumps(records), encoding="utf-8")
+        # Shaped like what devicectl --json-output actually writes.
+        (raw / "launch-probe-1.json").write_text(
+            json.dumps({"info": {"outcome": "success"}, "result": {"process": {"processIdentifier": 1}}}),
+            encoding="utf-8")
+        (raw / "devices-probe-1.json").write_text(
+            json.dumps({"info": {"outcome": "success"}, "result": {"devices": []}}), encoding="utf-8")
+        # And this tool's own output from the previous run of the same directory.
+        (raw / "admission.json").write_text(json.dumps({"verdict": "provisional"}), encoding="utf-8")
+        output = Path(directory) / "out.json"
+        subprocess.run(
+            [sys.executable, str(TOOL), "--input", str(raw), "--output", str(output)],
+            capture_output=True, text=True)
+        return json.loads(output.read_text(encoding="utf-8"))
+
+
+beside = run_beside_operational_artifacts(both)
+check(
+    beside["verdict"] == run(both)["verdict"],
+    f"a run's own devicectl output and a previous admission.json must not change the "
+    f"verdict: {beside['verdict']} beside them, {run(both)['verdict']} without")
+check(
+    len(beside["admitted"]) == len(run(both)["admitted"]),
+    "the same records admit the same candidates whether or not the run's logs sit beside them")
 
 # --- reproducibility ---------------------------------------------------------
 check(

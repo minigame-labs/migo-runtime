@@ -133,6 +133,33 @@ final class MigoLoopbackFramingTests: XCTestCase {
 
     // MARK: - parsing at an offset
 
+    /// Unmasking is correct at every length around the word stride.
+    ///
+    /// The unmask runs eight bytes per XOR, which is a multiple of the mask's
+    /// four-byte period, so the word stays in phase for the whole run and only
+    /// the tail is done a byte at a time. A stride that fell out of phase, or a
+    /// tail that restarted the period at zero, is wrong only at some lengths --
+    /// so this walks the boundary rather than testing one convenient size, and
+    /// checks against a payload whose every byte differs from its neighbours'
+    /// mask byte.
+    ///
+    /// The expected bytes come from the test's own `clientFrame`, which masks
+    /// with `index % 4` and knows nothing about how the listener unmasks.
+    func testUnmaskingIsCorrectAtEveryLengthAroundTheWordStride() throws {
+        for length in [0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 15, 16, 17, 31, 32, 33, 4096, 65537] {
+            let payload = (0..<length).map { UInt8(($0 &* 31 &+ 7) & 0xFF) }
+            let wire = clientFrame(opcode: 0x2, fin: true, payload: payload)
+            guard case .frame(let frame) = Listener.parse(wire, at: 0) else {
+                XCTFail("a \(length)-byte masked frame did not parse")
+                continue
+            }
+            XCTAssertEqual(
+                Array(frame.payload), payload,
+                "unmasking a \(length)-byte payload produced the wrong bytes; a stride out of "
+                    + "phase with the mask's period is wrong only at some lengths")
+        }
+    }
+
     func testFramesParseInPlaceWithoutRecopyingTheBuffer() throws {
         // The loop advances an offset and compacts once per receive; parsing has to
         // work from the middle of a buffer for that to be possible. The previous

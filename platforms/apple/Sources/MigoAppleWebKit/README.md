@@ -2,6 +2,13 @@
 
 Lane 1: `WKWebView` runs the content's JavaScript and WebKit renders it.
 
+**Status.** The host side named below has landed: `MigoWebKitSession` owns the
+WebView's lifecycle and counts what it observes (provisional starts, commits,
+finishes, both failure kinds, content-process terminations), and
+`MigoWebKitContentOrigin` serves the per-game origin and accounts for what it
+delivered against what it promised. What is not done is the half that needs a
+paid Apple developer account: getting 4.7.2 through review.
+
 Most of this lane already exists outside this directory. The content-facing
 surface is `migo-web-adapter`, which maps `migo.*` onto a DOM canvas and is
 already shipped for the web. What is left here is the host side: the
