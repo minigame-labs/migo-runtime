@@ -1,0 +1,145 @@
+---
+title: Engine Initialization
+sidebar:
+  order: 3
+description: Complete reference for creating and destroying Migo engine instances—MigoEngineConfig, MigoEngineFlags, and the migo_engine_create / migo_engine_destroy lifecycle semantics.
+audience: host-integrator
+platforms: [android, linux, windows, openharmony]
+sourcePaths:
+  - include/migo/session.h
+---
+
+## MigoEngineConfig
+
+```c
+typedef struct MigoEngineConfig {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoEngineFlags flags;
+    uint32_t reserved0;
+    const char *files_dir_utf8;
+    const char *cache_dir_utf8;
+    const char *code_cache_dir_utf8;
+} MigoEngineConfig;
+```
+
+Engine creation parameters. The caller zeros the entire struct with `memset` and then assigns fields individually; `reserved0` must remain zero. The three string fields are copied internally by the engine before `migo_engine_create` returns and may be freed or recycled after the call.
+
+Fields:
+
+| Field | Type | Description | Ownership |
+| --- | --- | --- | --- |
+| `struct_size` | `uint32_t` | Byte size of the struct; pass `(uint32_t)sizeof(MigoEngineConfig)`. Used by the engine for forward-compatible extension. | — |
+| `abi_version` | `uint32_t` | ABI version; pass `MIGO_ABI_VERSION_CURRENT`. A mismatch causes `migo_engine_create` to return `MIGO_ERROR_UNSUPPORTED_ABI`. | — |
+| `flags` | `MigoEngineFlags` | Engine behavior flags; see [MigoEngineFlags](#migoengineflags). Pass `MIGO_ENGINE_FLAG_NONE` unless a specific flag is needed. | — |
+| `files_dir_utf8` | `const char *` | Root directory for persistent files (NUL-terminated UTF-8); corresponds to the platform app documents directory (Android `getFilesDir()`, iOS `NSDocumentDirectory`). Created automatically if absent. | borrowed, copied before `create` returns |
+| `cache_dir_utf8` | `const char *` | Root directory for evictable caches (NUL-terminated UTF-8); the OS may reclaim this under low-storage conditions. Created automatically if absent. | borrowed, copied before `create` returns |
+| `code_cache_dir_utf8` | `const char *` | Root directory for compiled bytecode caches (NUL-terminated UTF-8); shared across all Sessions under this Engine with cross-Session LRU eviction. Created automatically if absent. | borrowed, copied before `create` returns |
+
+The three storage roots belong to the host: the engine only reads and writes within them and never chooses paths independently. Each Session's actual data lives under `<root>/migo/games/<content_id>/`, so Sessions with different `content_id` values are naturally isolated.
+
+## MigoEngineFlags
+
+```c
+typedef uint64_t MigoEngineFlags;
+#define MIGO_ENGINE_FLAG_NONE                   0ULL
+#define MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT (1ULL << 0)
+```
+
+`MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT` opts in to loading content packages that have no signature receipt. This is an explicit opt-in, not the default—signature checking exists to prevent silently accepting unsigned content, so the default is to reject it.
+
+Clearing this flag enables signature enforcement, but the current C ABI has no mechanism to pass an Ed25519 public key (that configuration is only reachable through the Android SDK's `RuntimeConfig.Builder.setCodeSigningPubkey`). With a missing public key, signature enforcement is fail-closed: every module load fails with `MIGO_ERROR_INTERNAL` and the following log message:
+
+```text
+code signing enabled but public key is missing
+(set InitOptions.code_signing_pubkey (hex Ed25519 public key))
+```
+
+Therefore, **hosts using this C ABI currently have only one configuration that successfully loads content: setting this flag**. This is a known gap, not a design decision. A production path that does not depend on this flag will be provided once the ABI gains a public key delivery mechanism.
+
+## migo_engine_create
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_engine_create(const MigoEngineConfig *config, MigoEngine **out_engine);
+```
+
+Creates an Engine instance from the host-provided configuration. On success, `*out_engine` is a valid handle that the caller must eventually pass to `migo_engine_destroy`. The engine sets `*out_engine` to `NULL` before any operation that may fail, so reading that pointer is safe regardless of the return value.
+
+Params:
+
+| Param | Notes |
+| --- | --- |
+| `config` | Initialized `MigoEngineConfig` pointer; must not be `NULL`; `struct_size` and `abi_version` must be valid. |
+| `out_engine` | Pointer to receive the new Engine handle; must not be `NULL`. |
+
+Returns:
+
+- `MIGO_OK`: Engine created successfully; `*out_engine` is valid.
+- `MIGO_ERROR_INVALID_ARGUMENT`: `out_engine` or `config` is `NULL`; `config->struct_size` is smaller than the minimum legal record size; a string field is `NULL`; `flags` contains unrecognized bits. On failure, `*out_engine` is `NULL`.
+- `MIGO_ERROR_UNSUPPORTED_ABI`: `config->abi_version` does not match the current library build, or `struct_size` declares a record larger than this build knows about. On failure, `*out_engine` is `NULL`.
+- `MIGO_ERROR_INTERNAL`: A storage root directory does not exist and the file system refused to create it (insufficient permissions, read-only mount point, path component is not a directory)—the path strings themselves are well-formed, so this is not an argument error. On failure, `*out_engine` is `NULL`.
+
+Thread model:
+
+`migo_engine_create` and `migo_session_create` may be called concurrently from different host threads.
+
+## migo_engine_destroy
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_engine_destroy(MigoEngine *engine);
+```
+
+Destroys the Engine and releases all its resources. After `MIGO_OK` returns, the `engine` pointer is invalid and must not be used again.
+
+The host must have destroyed all child Sessions owned by this Engine before calling; calling with live Sessions returns `MIGO_ERROR_INVALID_STATE` and the Engine is not consumed.
+
+**Thread completion barrier**: A successful `migo_engine_destroy` is a thread completion barrier—all engine worker threads handed off from Sessions to the Engine have exited and been joined before it returns. Only after this function returns may the host safely destroy native display/window resources or unload the Migo library.
+
+Calling this function from inside an engine worker thread (for example, while a callback has not yet unwound) returns `MIGO_ERROR_INVALID_STATE` and leaves the Engine unconsumed; retry from a host thread after the callback unwinds.
+
+**JS Worker known gap**: The barrier described above does **not** cover threads created by content via the JS `Worker` API. Destroying a Session's runtime interrupts each isolate and signals its message loop to stop, but does not wait for the threads to finish unwinding, so Worker threads may still be exiting when `migo_engine_destroy` returns. This is inconsequential for hosts that only call `exit` or keep the library loaded for the process lifetime; hosts that immediately unload the library (`dlclose` / `FreeLibrary`) after `migo_engine_destroy` returns should be aware that Worker threads may still be executing library code.
+
+Returns:
+
+- `MIGO_OK`: Engine destroyed; all engine workers have exited; the handle is released.
+- `MIGO_ERROR_INVALID_ARGUMENT`: `engine` is `NULL`.
+- `MIGO_ERROR_INVALID_STATE`: The Engine still owns live Sessions, or the call was made from inside an engine worker thread. The Engine is not consumed and may be retried after correcting the condition.
+
+## Example
+
+The following snippet is taken from `tests/c_host/linux/main.c` and demonstrates minimal Engine initialization and teardown:
+
+```c
+/* 宿主负责提供三个存储根目录。 */
+MigoEngineConfig config;
+memset(&config, 0, sizeof(config));
+config.struct_size         = (uint32_t)sizeof(config);
+config.abi_version         = MIGO_ABI_VERSION_CURRENT;
+config.flags               = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT; /* 仅开发用 */
+config.files_dir_utf8      = "/data/migo/files";
+config.cache_dir_utf8      = "/data/migo/cache";
+config.code_cache_dir_utf8 = "/data/migo/code-cache";
+
+MigoEngine *engine = NULL;
+MigoResult r = migo_engine_create(&config, &engine);
+if (r != MIGO_OK) { /* 处理错误 */ }
+
+/* … 创建 Session，运行内容 … */
+
+/* 析构顺序：先 Session，再 Engine */
+migo_session_destroy(session);
+migo_engine_destroy(engine);
+```
+
+> Full runnable examples: `tests/c_host/linux/main.c` and `tests/c_host/android/src/main/cpp/main.c`.
+
+## Multiple Engine Instances
+
+A process may hold any number of Engine instances; `migo_engine_create` and `migo_session_create` may be called concurrently from different host threads.
+
+**Storage roots and isolation**: Each Engine has its own set of three storage roots. All Sessions under an Engine start from the same roots, but actual paths are partitioned as `<root>/migo/games/<content_id>/`, so Sessions with different `content_id` values are naturally isolated. The host must ensure concurrently active Sessions use distinct `content_id` values; two Sessions sharing the same `content_id` also share the same game directory (storage, cache, and temp files alike). The engine does not reject this, but isolation semantics are the host's responsibility.
+
+**Typical reasons for a separate Engine**: Platforms typically allocate a single documents directory (Android's `getFilesDir()`, iOS's `NSDocumentDirectory`); creating a second Engine is correct when two games must be rooted at entirely separate paths.
+
+**`code_cache` sharing**: `code_cache_dir_utf8` being shared across all Sessions under one Engine is intentional. Compiled bytecode is keyed by source-file hash, independent of the Session that produced it; two Sessions loading the same module compile it only once. Eviction is LRU across the entire directory—one Session compiling heavily may evict cache entries belonging to another, at the cost of one recompilation, not an error result. To share bytecode caches across two Engine instances as well, point their `code_cache_dir_utf8` fields at the same directory.

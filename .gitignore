@@ -189,7 +189,11 @@ AGENTS.md
 GEMINI.md
 .codex/
 .superpowers/
-docs/
+# 只钉仓根的 docs/(维护者笔记)。不带前导斜杠的 `docs/` 会匹配任意层级的
+# docs 目录——曾把 developer-docs/src/content/docs/ 整个文档源码树静默
+# 吃掉:master 上文档为空,新 clone 缺树,构建在暂存阶段以裸 ENOENT
+# scandir 爆炸(2026-09-15)。锚定到仓根后,开发者文档源树恢复可跟踪。
+/docs/
 platforms/windows/SPIKE-REPORT.md
 
 # Local-only operational notes (`*.local.md`). Same policy as the working

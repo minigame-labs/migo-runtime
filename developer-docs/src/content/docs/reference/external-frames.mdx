@@ -1,0 +1,590 @@
+---
+title: 外部帧接口
+sidebar:
+  order: 7
+description: 通过二进制帧包将跨进程渲染结果注入 Migo session 的完整数据结构与入口点参考。
+audience: host-integrator
+platforms: [android, linux, windows, openharmony]
+sourcePaths:
+  - include/migo/external_frames.h
+---
+## 概述与应用场景
+
+Migo 通常在自己的脚本运行时内执行 JavaScript 并直接渲染；外部帧接口适用于另一种部署模式：**内容脚本在独立进程中运行**，例如 iOS 上的 WebKit WebContent 进程，该进程出于安全和 JIT 限制运行在宿主进程之外。这种模式下，内容侧将一帧的 GPU 绘制工作编码成一个有界二进制包，通过自定义传输层发送到宿主进程，再由宿主调用 `migo_session_submit_external_frame` 将其注入 Migo session；Migo 在此负责渲染和合成，而不运行任何 JavaScript 引擎。
+
+> **注意：此模式仅在 Performance+ 产品中可用。** 其他产品不导出本页所列的入口点；链接错误产品会在构建期得到未解析符号，这是故意设计的快速失败，而不是一个运行时返回失败的存根符号。
+
+本接口分为三条功能通道：
+
+| 通道 | 作用 |
+| --- | --- |
+| **帧注入通道**（Ingress） | 将跨进程帧包提交给 session，并获取接受/拒绝决策与背压信号 |
+| **同步屏障通道**（Sync barrier） | 为 `readPixels`、`getImageData`、`toDataURL` 等必须阻塞等待结果的调用提供请求/回复邮箱 |
+| **资源通道**（Resource lane） | 在帧包之外预留并分块上传纹理图集等大型资产；验证通过后帧才可引用 |
+
+---
+
+## launch_nonce 与 session 身份
+
+外部帧模式下，宿主在创建 session 时需向 `MigoSessionConfig.launch_nonce` 填入一个 128 位随机密钥；传输层在每个帧包的信封中携带相同的 nonce，Migo 以此验证包属于正确的 session。
+
+`launch_nonce` **必须由宿主生成**（例如 iOS 上用 `SecRandomCopyBytes`），不由 Migo 库生成，原因是宿主同时拥有传输层和 session 两端，是唯一可以安全保管这一共享密钥的一方。全零值被视为"无外部生产者"，不会验证任何帧包——这也是旧版本宿主零初始化结构体时的默认语义。nonce 不得出现在日志、URL 或查询字符串中。
+
+> 使用 `MigoExternalSessionDescriptor` 创建外部帧 session 时，`launch_nonce[16]` 字段同样存在于该 descriptor 中，语义与 `MigoSessionConfig.launch_nonce` 完全相同。
+
+---
+
+## 数据结构
+
+### 帧注入通道
+
+#### MigoFrameIngressDecision
+
+```c
+typedef uint32_t MigoFrameIngressDecision;
+
+#define MIGO_FRAME_INGRESS_ACCEPTED        1U
+#define MIGO_FRAME_INGRESS_WOULD_BLOCK     2U
+#define MIGO_FRAME_INGRESS_REJECTED        3U
+#define MIGO_FRAME_INGRESS_GENERATION_LOST 4U
+```
+
+`migo_session_submit_external_frame` 调用成功后，`MigoFrameIngressOutcome.decision` 字段持有此类型的值，表示本次帧包的处置结果。
+
+| 值 | 含义 |
+| --- | --- |
+| `MIGO_FRAME_INGRESS_ACCEPTED` | 帧包已被接受，消耗一个信用额度，直到渲染器报告完成后归还。 |
+| `MIGO_FRAME_INGRESS_WOULD_BLOCK` | 包格式合法但信用额度已耗尽，生产者必须等待；不可丢弃该包，因为包内可能含有后续帧依赖的状态变更。 |
+| `MIGO_FRAME_INGRESS_REJECTED` | 包格式错误或目标 session 不匹配；不消耗信用，生产者不得重发相同字节。 |
+| `MIGO_FRAME_INGRESS_GENERATION_LOST` | 字节合法，但对应的运行时代（runtime generation）已不存在（WebContent 进程已替换或 session 已重载）；不是错误，重试无效。 |
+
+#### MigoFrameIngressOutcome
+
+```c
+typedef struct MigoFrameIngressOutcome {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t accepted_sequence;
+    MigoFrameIngressDecision decision;
+    uint32_t remaining_credits;
+    uint32_t wire_error_code;
+    uint32_t reserved0;
+} MigoFrameIngressOutcome;
+```
+
+**库写入，append-only**：调用方必须在每次调用前将 `struct_size` 和 `abi_version` 填写完毕，否则调用返回 `MIGO_ERROR_INVALID_ARGUMENT`。建议初始化一次后复用该结构体，而非每帧重建。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `struct_size` | `uint32_t` | **调用方输入**。调用前设为 `sizeof(MigoFrameIngressOutcome)`，限定库的写入范围。 |
+| `abi_version` | `uint32_t` | **调用方输入**。设为 `MIGO_ABI_VERSION_CURRENT`。 |
+| `accepted_sequence` | `uint64_t` | 仅 `ACCEPTED` 时非零；为本次帧包分配的单调序列号。 |
+| `decision` | `MigoFrameIngressDecision` | 帧包处置结果，见上表。 |
+| `remaining_credits` | `uint32_t` | 当前剩余可用信用额度；生产者可据此决定是否继续发送。 |
+| `wire_error_code` | `uint32_t` | 仅 `REJECTED` 时非零；稳定的错误编号，供遥测区分"包太短"与"目标 session 不匹配"等情况（1–1000 为信封错误，1001+ 为身份/顺序错误）。 |
+| `reserved0` | `uint32_t` | 保留，忽略。 |
+
+---
+
+### 同步屏障通道
+
+#### MigoSyncState
+
+```c
+typedef uint32_t MigoSyncState;
+
+#define MIGO_SYNC_STATE_FREE      0U
+#define MIGO_SYNC_STATE_PENDING   1U
+#define MIGO_SYNC_STATE_READY     2U
+#define MIGO_SYNC_STATE_FAILED    3U
+#define MIGO_SYNC_STATE_CANCELLED 4U
+```
+
+每个 session 同一时刻只允许一条同步请求处于飞行中（生产者是单一代理，阻塞等待时无法再发起第二条）。
+
+| 值 | 含义 |
+| --- | --- |
+| `MIGO_SYNC_STATE_FREE` | 邮箱空闲，只有此状态下可以投递新请求。 |
+| `MIGO_SYNC_STATE_PENDING` | 已投递，生产者正在阻塞等待。 |
+| `MIGO_SYNC_STATE_READY` | 已回复，`reply_bytes` 指示回复长度。 |
+| `MIGO_SYNC_STATE_FAILED` | 不会回复，`error` 字段说明原因。 |
+| `MIGO_SYNC_STATE_CANCELLED` | 生产者在收到回复前主动撤回了请求。 |
+
+#### MigoSyncError
+
+```c
+typedef uint32_t MigoSyncError;
+
+#define MIGO_SYNC_ERROR_ALREADY_PENDING        1U
+#define MIGO_SYNC_ERROR_REQUEST_ID_MISMATCH    2U
+#define MIGO_SYNC_ERROR_STALE_GENERATION       3U
+#define MIGO_SYNC_ERROR_REPLY_TOO_LARGE        4U
+#define MIGO_SYNC_ERROR_TIMED_OUT              5U
+#define MIGO_SYNC_ERROR_SESSION_ENDED          6U
+#define MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION  7U
+#define MIGO_SYNC_ERROR_LATE_REPLY             8U
+#define MIGO_SYNC_ERROR_BAD_DEADLINE           9U
+#define MIGO_SYNC_ERROR_BAD_REPLY_RESERVATION  10U
+```
+
+这些错误码在版本间保持稳定，生产者可将其映射为对应的异常类型。
+
+| 值 | 含义 |
+| --- | --- |
+| `ALREADY_PENDING` | 已有请求在飞行中，不可重叠投递。 |
+| `REQUEST_ID_MISMATCH` | 回复携带的请求 ID 与飞行中的不匹配。 |
+| `STALE_GENERATION` | 运行时代已更换，此请求不再有效。 |
+| `REPLY_TOO_LARGE` | 回复超出了 `max_reply_bytes` 预留的空间。 |
+| `TIMED_OUT` | 请求在 `deadline_nanos` 之前未得到回复。 |
+| `SESSION_ENDED` | Session 在回复到来前已销毁。 |
+| `UNSUPPORTED_OPERATION` | 请求的 `operation` 字段在当前构建中不支持。 |
+| `LATE_REPLY` | 回复在截止时间之后到达。 |
+| `BAD_DEADLINE` | `deadline_nanos` 为零或不合理。 |
+| `BAD_REPLY_RESERVATION` | `max_reply_bytes` 为零或超出允许范围。 |
+
+#### MigoSyncRequestDescriptor
+
+```c
+typedef struct MigoSyncRequestDescriptor {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t runtime_generation;
+    uint64_t surface_generation;
+    uint64_t resource_epoch;
+    uint64_t triggering_sequence;
+    uint64_t deadline_nanos;
+    uint32_t operation;
+    uint32_t max_reply_bytes;
+} MigoSyncRequestDescriptor;
+```
+
+**调用方写入**。64 位字段统一排在 32 位字段前，保证 LP64 与 ILP32 下布局相同，无内部填充（56 字节）。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `struct_size` | `uint32_t` | 设为 `sizeof(MigoSyncRequestDescriptor)`。 |
+| `abi_version` | `uint32_t` | 设为 `MIGO_ABI_VERSION_CURRENT`。 |
+| `runtime_generation` | `uint64_t` | 生产者所在的运行时代标识。 |
+| `surface_generation` | `uint64_t` | 生产者引用的 surface 代标识。 |
+| `resource_epoch` | `uint64_t` | 生产者引用的资源 epoch。 |
+| `triggering_sequence` | `uint64_t` | 生产者阻塞时已提交的最后一帧序列号。 |
+| `deadline_nanos` | `uint64_t` | **单调时钟**读数（非墙上时钟），超时后库返回 `TIMED_OUT`。 |
+| `operation` | `uint32_t` | 要执行的同步操作类型（由协议层定义）。 |
+| `max_reply_bytes` | `uint32_t` | 生产者预留的回复缓冲区大小；回复超出此值将失败而非截断。 |
+
+#### MigoSyncOutcome
+
+```c
+typedef struct MigoSyncOutcome {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t request_id;
+    MigoSyncState state;
+    uint32_t reply_bytes;
+    MigoSyncError error;
+} MigoSyncOutcome;
+```
+
+**库写入，append-only**。`request_id` 单调递增且永不为零；清零的邮箱持有零值，因此可以通过检查此字段判断是否有新结果。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `struct_size` | `uint32_t` | 调用方输入，限定写入范围。 |
+| `abi_version` | `uint32_t` | 调用方输入。 |
+| `request_id` | `uint32_t` | 本次请求的单调 ID；非零。 |
+| `state` | `MigoSyncState` | 当前请求状态。 |
+| `reply_bytes` | `uint32_t` | 仅 `READY` 时非零；实际回复字节数。 |
+| `error` | `MigoSyncError` | 仅 `FAILED` 时非零；失败原因。 |
+
+---
+
+### 资源通道
+
+大型资产（纹理图集等）不通过帧包传输：帧包有大小上限，而纹理没有。资源通道允许生产者**预留槽位 → 分块上传 → 等待摘要验证通过 → 帧中引用**。验证在 GPU 对象创建之前完成，避免将摘要错误变成已绑定的脏纹理。
+
+#### MigoResourceState
+
+```c
+typedef uint32_t MigoResourceState;
+
+#define MIGO_RESOURCE_STATE_RESERVED  0U
+#define MIGO_RESOURCE_STATE_UPLOADING 1U
+#define MIGO_RESOURCE_STATE_VERIFYING 2U
+#define MIGO_RESOURCE_STATE_READY     3U
+#define MIGO_RESOURCE_STATE_FAILED    4U
+```
+
+| 值 | 含义 |
+| --- | --- |
+| `RESERVED` | 槽位已分配，尚未开始上传。 |
+| `UPLOADING` | 正在接收数据块。 |
+| `VERIFYING` | 所有块已接收，正在核验 SHA-256 摘要。 |
+| `READY` | 已验证通过；帧包方可引用此资源。 |
+| `FAILED` | 验证失败或超时，`error` 字段说明原因。 |
+
+#### MigoResourceError
+
+```c
+typedef uint32_t MigoResourceError;
+
+#define MIGO_RESOURCE_ERROR_TOO_MANY_RESERVATIONS 1U
+#define MIGO_RESOURCE_ERROR_BAD_SIZE              2U
+#define MIGO_RESOURCE_ERROR_BAD_CHUNK_COUNT       3U
+#define MIGO_RESOURCE_ERROR_UNKNOWN_RESERVATION   4U
+#define MIGO_RESOURCE_ERROR_NON_CONTIGUOUS_CHUNK  5U
+#define MIGO_RESOURCE_ERROR_CHUNK_OUT_OF_BOUNDS   6U
+#define MIGO_RESOURCE_ERROR_DIGEST_MISMATCH       7U
+#define MIGO_RESOURCE_ERROR_TIMED_OUT             8U
+#define MIGO_RESOURCE_ERROR_EPOCH_ADVANCED        9U
+#define MIGO_RESOURCE_ERROR_INCOMPLETE            10U
+#define MIGO_RESOURCE_ERROR_NOT_UPLOADING         11U
+```
+
+| 值 | 含义 |
+| --- | --- |
+| `TOO_MANY_RESERVATIONS` | 已达到同时存在的预留数量上限。 |
+| `BAD_SIZE` | `total_bytes` 为零或超出允许范围。 |
+| `BAD_CHUNK_COUNT` | `chunk_count` 为零或超出允许范围。 |
+| `UNKNOWN_RESERVATION` | `reservation_id` 在表中不存在。 |
+| `NON_CONTIGUOUS_CHUNK` | 上传的块编号不连续。 |
+| `CHUNK_OUT_OF_BOUNDS` | 块偏移 + 长度超出 `total_bytes`。 |
+| `DIGEST_MISMATCH` | 所有块已到达，但 SHA-256 与声明不符。 |
+| `TIMED_OUT` | 在 `deadline_nanos` 前未完成上传。 |
+| `EPOCH_ADVANCED` | 资源 epoch 已推进，此预留已失效。 |
+| `INCOMPLETE` | 验证时块尚未全部到达。 |
+| `NOT_UPLOADING` | 对不处于 `UPLOADING` 状态的预留发送了块。 |
+
+#### MigoResourceReservationDescriptor
+
+```c
+typedef struct MigoResourceReservationDescriptor {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t total_bytes;
+    uint64_t deadline_nanos;
+    uint32_t chunk_count;
+    uint32_t format;
+    uint8_t  sha256[32];
+} MigoResourceReservationDescriptor;
+```
+
+**调用方写入**。`reservation_id` 由库分配（写入 `MigoResourceOutcome`），不由调用方指定，以避免生产者选择的 ID 与已有预留碰撞。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `struct_size` | `uint32_t` | 设为 `sizeof(MigoResourceReservationDescriptor)`。 |
+| `abi_version` | `uint32_t` | 设为 `MIGO_ABI_VERSION_CURRENT`。 |
+| `total_bytes` | `uint64_t` | 资源总字节数；必须与实际上传数据匹配。 |
+| `deadline_nanos` | `uint64_t` | 单调时钟截止时间；超时后预留失效。 |
+| `chunk_count` | `uint32_t` | 预期块数；上传必须按顺序且连续。 |
+| `format` | `uint32_t` | 生产者声明的格式标签；对协议不透明，原样传递给渲染器。 |
+| `sha256[32]` | `uint8_t[32]` | 所有块合并后应有的 SHA-256 摘要；验证失败则整个预留失效。 |
+
+#### MigoResourceOutcome
+
+```c
+typedef struct MigoResourceOutcome {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t reservation_id;
+    uint64_t received_bytes;
+    MigoResourceState state;
+    MigoResourceError error;
+    uint32_t next_chunk;
+    uint32_t reserved0;
+} MigoResourceOutcome;
+```
+
+**库写入，append-only**。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `struct_size` | `uint32_t` | 调用方输入，限定写入范围。 |
+| `abi_version` | `uint32_t` | 调用方输入。 |
+| `reservation_id` | `uint64_t` | 库分配的预留标识；非零表示预留已建立。 |
+| `received_bytes` | `uint64_t` | 已成功接收的字节数。 |
+| `state` | `MigoResourceState` | 当前预留状态。 |
+| `error` | `MigoResourceError` | 仅 `FAILED` 时非零。 |
+| `next_chunk` | `uint32_t` | 下一次上传必须携带的块编号；块必须连续。 |
+| `reserved0` | `uint32_t` | 保留，忽略。 |
+
+---
+
+### MigoExternalSessionDescriptor
+
+```c
+typedef struct MigoExternalSessionDescriptor {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint8_t  launch_nonce[16];
+    uint32_t max_packet_bytes;
+    uint32_t max_credits;
+} MigoExternalSessionDescriptor;
+```
+
+创建外部帧 session 的配置描述符。与普通 `MigoSessionConfig` 路径不同——外部帧 session 没有脚本运行时，生命周期模型也不同；用此 descriptor 创建的 session 调用 `migo_session_load_content` 会返回 `MIGO_ERROR_INVALID_STATE`。
+
+参数：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `struct_size` | `uint32_t` | 设为 `sizeof(MigoExternalSessionDescriptor)`。 |
+| `abi_version` | `uint32_t` | 设为 `MIGO_ABI_VERSION_CURRENT`。 |
+| `launch_nonce[16]` | `uint8_t[16]` | 128 位小端序随机密钥，由宿主用加密随机源生成。全零值被拒绝——全零是未初始化结构体的自然值，接受它等于接受任何人发来的零字节。不得出现在日志或 URL 中。 |
+| `max_packet_bytes` | `uint32_t` | 单包最大字节数，0 表示使用库的默认上限。超出上限的值向下截断，不向上扩展——内存受限设备可以要求更小的包，但任何人都不能要求更大的包。 |
+| `max_credits` | `uint32_t` | 生产者可同时拥有的最大飞行帧数，0 表示使用库默认值。同样向下截断到编译期范围。 |
+
+---
+
+## migo_session_submit_external_frame
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_submit_external_frame(
+    MigoSession              *session,
+    const uint8_t            *bytes,
+    size_t                    byte_count,
+    MigoFrameIngressOutcome  *out_outcome);
+```
+
+将跨进程生产的帧包提交给 session。`bytes` 仅在调用期间借用：库在返回前将被接受的包复制到自有缓冲区，因此 Swift 传输层可以立即释放或重用其 `Data` 的内部指针。`out_outcome` 由调用方分配和拥有，调用前必须填写 `struct_size` 和 `abi_version`；建议初始化一次后跨帧复用，而非每帧重建。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 session 句柄，不可为空。 |
+| `bytes` | 帧包字节，调用期间借用。 |
+| `byte_count` | 帧包长度（字节）。 |
+| `out_outcome` | 调用方分配的结果结构体；`struct_size` 和 `abi_version` 必须预填。 |
+
+返回：
+
+- `MIGO_OK`：outcome 已写入——包括 outcome 内部显示被拒绝的情况；一个非 OK 的 MigoResult 意味着调用本身无法完成。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`session` 为空、`bytes` 为空、`out_outcome` 的头部字段未填写。
+- `MIGO_ERROR_INVALID_STATE`：session 已销毁，或尚未 attach surface。
+
+线程模型：
+可在传输线程调用；库保证被接受的包在返回前完成内部拷贝，调用方无需保持 `bytes` 的生命周期。
+
+---
+
+## migo_session_request_external_frame
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_request_external_frame(MigoSession *session);
+```
+
+向外部生产者请求渲染一帧。外部帧模式中，生产者仅在被驱动时渲染——Migo 的 `requestAnimationFrame` 在所有平台上都由宿主 vsync 驱动，此入口点是该信号跨进程边界的等价物。宿主收到 vsync 回调后调用此函数，生产者进程接收到信号后渲染并通过 `migo_session_submit_external_frame` 回传帧包。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 session 句柄，不可为空。 |
+
+返回：
+
+- `MIGO_OK`：请求已投递。
+- `MIGO_ERROR_INVALID_STATE`：渲染器尚未就绪（session 创建后、第一帧能力就绪前的合法中间状态）。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`session` 为空。
+
+线程模型：
+在 vsync 回调线程调用。与 `migo_session_notify_vsync` 类似，是驱动帧时钟的信号，不阻塞。
+
+---
+
+## migo_session_take_external_gl_error
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_take_external_gl_error(
+    MigoSession *session,
+    uint32_t     canvas_id,
+    uint32_t    *out_code);
+```
+
+从指定 canvas 的错误队列中取出一条待处理的 WebGL 错误码。`gl.getError()` 是一个同步调用，生产者在另一个进程中发起；解码器在宿主进程记录错误，此入口点让生产者按需取回。队列为空时写入 0（`GL_NO_ERROR`），与 WebGL 规范一致。每次调用只消耗一条错误，生产者需循环调用直到返回 `GL_NO_ERROR`。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 session 句柄，不可为空。 |
+| `canvas_id` | 目标 canvas 的标识符；由协议层分配，对 C ABI 不透明。 |
+| `out_code` | 调用方分配的 `uint32_t`；队列为空时写入 0。 |
+
+返回：
+
+- `MIGO_OK`：`out_code` 已写入（可能为 0）。
+- `MIGO_ERROR_INVALID_ARGUMENT`：任一指针为空，或 `canvas_id` 无效。
+- `MIGO_ERROR_INVALID_STATE`：session 已销毁。
+
+---
+
+## migo_session_post_sync_request
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_post_sync_request(
+    MigoSession                      *session,
+    const MigoSyncRequestDescriptor  *request,
+    const uint8_t                    *params,
+    size_t                            param_bytes,
+    uint64_t                          now_nanos,
+    MigoSyncOutcome                  *out_outcome);
+```
+
+投递一条同步屏障请求并就地应答：生产方正阻塞等待，传输层把请求带到这里，本函数完成应答，字节再由 `migo_session_take_sync_reply` 取回。每个 session 同时只允许一条未完成请求；第二条被以 `MIGO_SYNC_ERROR_ALREADY_PENDING` 拒绝。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 session 句柄，不可为空。 |
+| `request` | 请求描述结构体：**调用方所写**，`struct_size` 和 `abi_version` 同样必填，未初始化的头部在判请求之前就被拒。 |
+| `params` | 操作参数字节；仅当 `param_bytes` 为 0 时才可为空。布局按上方各操作定义（如 readPixels 的 32 字节记录）。 |
+| `param_bytes` | 参数字节数。 |
+| `now_nanos` | **调用方的单调时钟读数**，与 `deadline_nanos` 必须同源；库自身不读钟——两个今天一致的钟是平台的隐患，只有宿主才知道生产方正阻塞在哪个时钟上。 |
+| `out_outcome` | 调用方分配，头部（`struct_size`/`abi_version`）是**输入**：全零的头部会以 `MIGO_ERROR_UNSUPPORTED_ABI` 被拒，而此时生产方正在阻塞等待——等于让它把整段 deadline 耗在一条永远送不到的拒绝上。 |
+
+返回：
+
+- `MIGO_OK`：应答已就座——包括应答内部报 `MIGO_SYNC_STATE_FAILED` 的情况；产出方在被拒未得上进入请求 id 前看到 `request_id` 为 0。
+- `MIGO_ERROR_INVALID_ARGUMENT`：指针为空、头部字段未填。
+- `MIGO_ERROR_UNSUPPORTED_ABI`：`abi_version` 不识或 `struct_size` 声称了本构建不认识的更大的记录。
+
+线程模型：
+与 session 的其他入口串行；该调用在生产者被阻塞的时间内完成，不要让它在进入前排队。
+
+---
+
+## migo_session_poll_sync
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_poll_sync(
+    MigoSession      *session,
+    uint64_t          now_nanos,
+    MigoSyncOutcome  *out_outcome);
+```
+
+查询未完成请求所处状态。同时它也是**期限可见性**的唯一路径：一条请求未完成期间没有别的东西在跑，已过期的 deadline 在这里结算。`now_nanos` 与 `out_outcome` 的语义与 `migo_session_post_sync_request` 完全相同——含"全零头部先被拒，生产方白等整段 deadline"这一条。
+
+返回集合同上（`MIGO_OK` / `MIGO_ERROR_INVALID_ARGUMENT` / `MIGO_ERROR_UNSUPPORTED_ABI`）。
+
+线程模型：与 session 串行；可在传输层的 regular tick 上调用。
+
+---
+
+## migo_session_take_sync_reply
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_take_sync_reply(
+    MigoSession *session,
+    uint8_t     *buffer,
+    size_t       capacity,
+    size_t      *out_written);
+```
+
+把就绪的应答字节拷贝出来并释放槽位。**永不截断**：容量小于应答时整体拒绝且应答保持 `MIGO_SYNC_STATE_READY`，调用方换上更大的缓冲再来即可。`*out_written` 成功时为实际字节数，失败时写 0——因此调用方忽略返回值时不会把上一个陈旧的计数当长度用。
+
+返回：
+
+- `MIGO_OK`：字节已拷贝，槽位已空出（可以投递下一条请求）。
+- `MIGO_ERROR_INVALID_STATE`：当前没有 READY 的应答可取。
+- `MIGO_ERROR_INVALID_ARGUMENT`：指针为空。
+
+线程模型：与 session 串行；通常紧跟在 `poll_sync` 报告 `MIGO_SYNC_STATE_READY` 之后。
+
+---
+
+## migo_session_cancel_sync
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_cancel_sync(
+    MigoSession      *session,
+    uint64_t          now_nanos,
+    MigoSyncOutcome  *out_outcome);
+```
+
+生产方撤回了请求：把未完成请求结算为 `MIGO_SYNC_STATE_CANCELLED` 并释放槽位。**已完成的应答不受影响**——cancel 不是丢掉一个还没被读的应答的手段。`out_outcome` 的头部规则与其他 sync 入口一致。
+
+线程模型：与 session 串行。
+
+---
+
+## migo_session_take_downlink
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_take_downlink(
+    MigoSession *session,
+    uint8_t     *buffer,
+    size_t       capacity,
+    size_t      *out_written);
+```
+
+取宿主欠生产者的下一条消息。字节是一个下行信封，承载两类记录：对每个已提交帧的判决（decision、剩余 credit、已接受序列号）和驱动生产方 `requestAnimationFrame` 的帧钟 tick。**宿主不要自己拼装信封**——同一 wire 格式的第三份实现就是这个项目设置门要防的漂移；纯拷贝字节的传输层不会漂移。
+
+规则：
+
+- **整条整出**：容量不足以装信封加一条记录时，一个字节也不写、队列原样保留；换上更大缓冲再调不丢任何东西。**4096 字节足以装下该队列产出的任何消息**。
+- **`out_written` 为 0 是正常答案**，不是错误，也不要空转：帧与帧之间的空隙里就是"没有东西要发"。
+- **何时调用**：每次 submit 之后、每帧投递之后；队列有界且会合并 tick，传输层落后的代价是生产方调度延迟，不是内存——每条记录都是绝对的，下一条读到的就是当前正确值。
+
+返回：指针为空为 `MIGO_ERROR_INVALID_ARGUMENT`；其余合法调用均为 `MIGO_OK`（含"没东西要发"）。
+
+线程模型：与 session 串行；适合放在传输发送线程上。
+
+---
+
+## 结构体初始化约定
+
+所有描述符结构体在填写前必须清零，然后设置 `struct_size` 和 `abi_version`：
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* 帧注入结果结构体：初始化一次，跨帧复用 */
+MigoFrameIngressOutcome outcome = {0};
+outcome.struct_size  = sizeof(outcome);
+outcome.abi_version  = MIGO_ABI_VERSION_CURRENT;
+
+while (has_frame()) {
+    const uint8_t *pkt  = next_packet(&pkt_len);
+    MigoResult     r    = migo_session_submit_external_frame(
+                              session, pkt, pkt_len, &outcome);
+    if (r != MIGO_OK) { /* 调用失败，非帧级拒绝 */ break; }
+
+    switch (outcome.decision) {
+    case MIGO_FRAME_INGRESS_ACCEPTED:
+        /* outcome.accepted_sequence 可用于追踪完成通知 */
+        break;
+    case MIGO_FRAME_INGRESS_WOULD_BLOCK:
+        /* 背压：等待信用恢复后重试，不可丢弃此帧 */
+        wait_for_credit();
+        break;
+    case MIGO_FRAME_INGRESS_REJECTED:
+        /* 包格式错误，记录 outcome.wire_error_code */
+        break;
+    case MIGO_FRAME_INGRESS_GENERATION_LOST:
+        /* 运行时代已消失，无需重试 */
+        break;
+    }
+}
+```
+
+**所有权规则**：
+
+- `MigoFrameIngressOutcome`、`MigoSyncOutcome`、`MigoResourceOutcome` 由调用方分配，库只写入，不持有。
+- `MigoSyncRequestDescriptor`、`MigoResourceReservationDescriptor`、`MigoExternalSessionDescriptor` 由调用方填写并在调用期间借用，调用返回后可释放。
+- `migo_session_submit_external_frame` 的 `bytes` 指针仅在调用期间借用，返回前库已完成拷贝。
+
+## 参见
+
+- [session.mdx](/docs/reference/session/) — `MigoSessionConfig.launch_nonce` 及 session 生命周期
+- [surface.mdx](/docs/reference/surface/) — surface attach/detach 与 vsync 驱动
+- [engine.mdx](/docs/reference/engine/) — engine 创建与能力查询

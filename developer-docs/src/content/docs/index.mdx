@@ -1,0 +1,108 @@
+---
+title: Migo 开发者文档
+description: Migo 原生小游戏运行时 SDK 的集成、架构与 C ABI 参考。首页即厚索引:定位、架构图、API 一览与上手路径。
+---
+
+<div class="home-hero">
+  <p class="home-hero-tagline">
+    可嵌入的 Canvas/WebGL 小游戏运行时,同一份 C ABI 跨 Android、Linux、Windows、OpenHarmony
+  </p>
+  <div class="home-hero-actions">
+    <a class="hh-btn hh-btn-primary" href="/docs/getting-started/android/">快速开始 →</a>
+    <a class="hh-btn hh-btn-secondary" href="/docs/reference/overview/">C ABI 参考</a>
+  </div>
+</div>
+
+<style>
+{`
+  :global(h1#_top) {
+    font-size: clamp(2.5rem, 4.5vw, 4rem);
+    line-height: 1.2;
+    font-weight: 400;
+    color: var(--sl-color-white);
+  }
+  .home-hero-tagline {
+    font-size: 1.25rem;
+    line-height: 1.75;
+    color: var(--sl-color-gray-2);
+    max-width: 34rem;
+    margin-top: 1.25rem;
+  }
+  .home-hero {
+    margin-bottom: 1.25rem;
+  }
+  .home-hero-actions {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 1.5rem;
+  }
+  .hh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.4375rem 0.875rem;
+    border-radius: 999rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    text-decoration: none;
+    border: 1px solid transparent;
+  }
+  .hh-btn-primary {
+    background: var(--sl-color-text-accent);
+    color: var(--sl-color-black);
+  }
+  .hh-btn-secondary {
+    border-color: var(--sl-color-gray-1);
+    color: var(--sl-color-white);
+    background: transparent;
+  }
+`}
+</style>
+
+Migo 是可嵌入的 Canvas/WebGL 小游戏运行容器。宿主 App 提供 surface、输入与存储,Migo 提供
+V8 JavaScript 运行时与 Skia 渲染管线,跨 Android、Linux、Windows 及 OpenHarmony 四个平台。没
+有 DOM 或 CSS——不是通用 WebView 替代品。
+
+```mermaid
+flowchart TB
+  Bundle[小游戏 bundle] --> Adapter[独立适配器（可选）]
+  Adapter --> Boundary[migo.* capability boundary]
+  Boundary --> Core[Rust core]
+  Core --> V8[V8 JavaScript runtime]
+  Core --> Render[Skia / Canvas / WebGL]
+  Host[宿主 App] <--> SDK[C ABI（Android 之上有语言 facade）]
+  SDK <--> Core
+  Host --> Services[surface · input · storage · network · ads]
+```
+
+1. 小游戏 bundle 只通过 `migo.*` 能力边界访问运行时能力;可选的独立适配器位于引擎之外。
+2. Rust core 编排 V8 JavaScript runtime 与 Skia 渲染后端,输出 Canvas/WebGL 内容。
+3. 宿主 App 通过 C ABI 创建和管理会话 — 四个平台唯一共有的事实接口;Android 侧惯用的 Java facade(MigoRuntime/MigoGameView)只是这层 ABI 之上的语言包装。surface、input、storage、network、ads 等服务由宿主自行提供。
+4. Migo 不提供 DOM、CSS、页面布局或浏览器文档对象模型。
+
+## API 参考一览
+
+C ABI 由 8 个头文件组成,跨四个平台接口一致,`abi_version` 协商。按头文件逐页:
+
+| 页面 | 一句话 |
+| --- | --- |
+| [C ABI 总览](/docs/reference/overview/) | 头文件关系、调用顺序、句柄模型、错误码与编译期选型 |
+| [基础类型与导出宏](/docs/reference/types/) | 句柄/错误码/导出宏,`MIGO_ABI_*` 常量与 `struct_size` 演进规则 |
+| [Engine 初始化](/docs/reference/engine/) | `migo_engine_*` 生命周期:创建、ICU 数据、销毁线程完成屏障 |
+| [Session](/docs/reference/session/) | 会话句柄、`MigoHostCallbacks`、dispatch 派发器与销毁顺序 |
+| [Surface 接入](/docs/reference/surface/) | `migo_surface_attach`、平台 descriptor、`frame_info` 与背压 |
+| [输入事件](/docs/reference/input/) | `migo_session_send_*` 系列:校验、FIFO、坐标单位与各事件载荷 |
+| [外部帧注入](/docs/reference/external-frames/) | readPixels/getImageData 兼容路径、ingress/sync-barrier/resource 三 lane |
+| [运行库能力查询](/docs/reference/capabilities/) | `migo_query_capabilities`:ABI 版本区间与平台位掩码的运行时查询 |
+
+语义细节(架构、生命周期、线程模型)见[核心概念区](/docs/concepts/sdk-architecture/)。
+
+## 快速上手
+
+:::note[上手路径]
+
+1. **[Android 快速开始](/docs/getting-started/android/)** — 9 步从下载 AAR 到 bundle 点亮(其他平台指南将随平台产物成熟按一平台一页并入);
+2. [下载与校验](/docs/release/download-verification/) — 发布产物的获取、指纹校验与首次部署前的最小验证集。
+
+:::

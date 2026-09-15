@@ -1,0 +1,121 @@
+---
+title: Windows Quickstart
+sidebar:
+  order: 5
+description: Integrate Migo's C ABI from the released migo.dll, mount a Win32 child HWND, and manage the surface lifecycle.
+audience: host-integrator
+platforms:
+  - windows
+sourcePaths:
+  - platforms/windows/README.md
+  - include/migo/platform/win32.h
+  - include/migo/platform/winui.h
+  - include/migo/surface.h
+  - include/migo/capabilities.h
+---
+
+The Windows platform ships `migo.dll` (x86_64 and arm64), together with the `migo.lib` import
+library, public headers, a CMake package, and the `rusty_v8.dll` and ANGLE runtime DLLs that it loads
+by name (`libEGL.dll`, `libGLESv2.dll`, `d3dcompiler_47.dll`). Both architectures are built on
+native Windows runners of their respective architecture; no cross-compilation is used.
+
+The C ABI mounting type is a Win32 child `HWND` (`MIGO_PLATFORM_WIN32_HWND`);
+`migo_query_capabilities` reports this type as available.
+
+**WinUI integration (`ISwapChainPanelNative`) is not implemented**—the type comment for
+`MigoWinuiSwapChainPanelDescriptor` in `include/migo/platform/winui.h` marks it as "A future
+implementation"; it is currently unavailable.
+
+## 1. Runtime files
+
+Obtain the Windows archive matching the target architecture from the project release page. The
+extracted `bin/` directory contains:
+
+```text
+migo.dll
+rusty_v8.dll
+libEGL.dll
+libGLESv2.dll
+d3dcompiler_47.dll
+```
+
+Keep the runtime DLLs in the release package's `bin/` directory, or copy them beside the application
+executable; the generated CMake package also explicitly requires these DLLs to be available in
+`PATH` or beside the executable at runtime. `migo.dll` loads `rusty_v8.dll` and the ANGLE runtime
+DLLs by name.
+
+## 2. Link migo.lib
+
+Obtain `lib/migo.lib` (the MSVC import library) from the release package and the public headers
+under `include/`. In a CMake project:
+
+```cmake
+find_package(migo CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE migo::migo)
+```
+
+Or specify the paths directly:
+
+```cmake
+target_include_directories(my_app PRIVATE path/to/migo/include)
+target_link_libraries(my_app PRIVATE path/to/migo/lib/migo.lib)
+```
+
+## 3. Mount a Win32 HWND
+
+Create a host-owned child `HWND`, describe it with `MigoWin32HwndDescriptor`, then place that
+platform descriptor in a `MigoSurfaceDescriptor`. Set the structure's `abi_version` to the public
+header's `MIGO_ABI_VERSION_CURRENT`; the host owns `hwnd`:
+
+```c
+#include <migo/platform/win32.h>
+
+MigoWin32HwndDescriptor platform = {
+    .struct_size   = sizeof(MigoWin32HwndDescriptor),
+    .abi_version   = MIGO_ABI_VERSION_CURRENT,
+    .platform_kind = MIGO_PLATFORM_WIN32_HWND,
+    .flags         = MIGO_PLATFORM_DESCRIPTOR_FLAG_NONE,
+    .hwnd          = child_hwnd,
+};
+```
+
+`MigoSurfaceDescriptor` must also provide an increasing `generation`, dimensions, scale factor,
+`platform_descriptor_size = sizeof(platform)`, and `platform_descriptor = &platform`, then pass it
+to `migo_session_attach_surface(session, &descriptor, &attachment)`. See `include/migo/surface.h`
+for the exact field layout.
+
+`HWND` must remain valid until the release observer reports `MIGO_SURFACE_RELEASE_RELEASED`; the
+host manages the message loop and window, and Migo neither destroys nor schedules them.
+
+## 4. Query available mounting types
+
+Before mounting, use `migo_query_capabilities` to confirm that the current platform supports
+`MIGO_PLATFORM_WIN32_HWND`:
+
+```c
+MigoCapabilities caps = {0};
+caps.struct_size = sizeof(MigoCapabilities);
+caps.abi_version = MIGO_ABI_VERSION_CURRENT;
+migo_query_capabilities(&caps);
+/* caps.platform_kinds 的 MIGO_PLATFORM_WIN32_HWND 位已设置 */
+```
+
+## 5. Current scope and known limitations
+
+This phase does not include:
+
+- **WinUI integration**: `MigoWinuiSwapChainPanelDescriptor` is marked "A future implementation"
+  and is currently unavailable.
+- **Win32 host-kit wrapper**: only the C ABI layer currently exists; there is no ready-made host
+  wrapper like the Linux Qt host-kit (no application-window management or input adapter).
+- **`EglProvider` implementation**: not yet provided.
+
+## Building from source
+
+For Windows SDK source builds, see the "5. Windows SDK" section of
+[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md); the contract gate is
+`scripts/test-windows-sdk-contract.sh`.
+
+For the WSL2 development workflow (source in WSL, toolchain in Windows), see
+`platforms/windows/spike/sync-worktree.sh` and `platforms/windows/spike/probe-layer.sh`; the Windows
+SDK section of BUILD.md also references these scripts.

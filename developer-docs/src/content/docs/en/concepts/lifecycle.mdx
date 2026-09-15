@@ -1,0 +1,83 @@
+---
+title: Session Lifecycle
+sidebar:
+  order: 3
+description: The engine session's three-state machine (CREATED/RUNNING/PAUSED), orthogonal channels for visibility and focus, the vsync-driven frame model, and ownership semantics of destroy.
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - include/migo/session.h
+---
+
+The session state machine is the least self-documenting part of the C ABI: three states, orthogonalized, one-way. This page breaks it down into the faces the host actually needs to reason about.
+
+## Three States: Forward Only, Never Back
+
+```text
+CREATED ──load_content + set_lifecycle──> RUNNING ⇄ PAUSED ⇄ destroy
+```
+
+| State | What it is | When you enter it |
+| --- | --- | --- |
+| `MIGO_LIFECYCLE_CREATED` | Handle valid, JS not running | Immediately after `migo_session_create` returns |
+| `MIGO_LIFECYCLE_RUNNING` | JS running, input can be consumed | After `set_lifecycle(RUNNING)` |
+| `MIGO_LIFECYCLE_PAUSED` | Rendering and input suspended, state preserved | After `set_lifecycle(PAUSED)` |
+
+**Only these three; there is no fourth**: `CREATED` is entry-only, never a return target. Calling `set_lifecycle(CREATED)` on a RUNNING or PAUSED session returns `MIGO_ERROR_INVALID_STATE` — reverting to CREATED would mean unwinding a live engine, and the ABI defines no reverse path.
+
+**Two distinct error kinds**: a mechanically rejected transition such as returning to `CREATED` yields INVALID_STATE; an unrecognized enum value yields INVALID_ARGUMENT. The caller's fix is completely different in each case — do not conflate them.
+
+**No-ops return MIGO_OK**: calling `set_lifecycle(RUNNING)` on an already-RUNNING session changes nothing and fires no callbacks — it returns `MIGO_OK` directly, so the host can safely call RUNNING unconditionally in `onResume` without checking first.
+
+## Mapping to Android Lifecycle
+
+| Activity | What the session should not swallow | What to call |
+| --- | --- | --- |
+| `onResume` | — | `set_lifecycle(RUNNING)` + `set_visibility(1)` |
+| `onPause` | Still on screen, occluded | `set_visibility(0)` (not PAUSED — content may still be doing background accounting) |
+| `onStop` | Truly invisible | `set_lifecycle(PAUSED)` (or further) |
+| `onDestroy` | Leaving | `migo_session_destroy` |
+
+**This is not the only valid decomposition.** When the host shows an in-game loading overlay, using `set_visibility(0)` to express 'still running but nothing visible to the user' is equally valid — the two channels are orthogonal.
+
+## visibility vs lifecycle vs focus: Three Orthogonal Channels
+
+All three exist, but they express non-overlapping concerns:
+
+- **lifecycle** (`RUNNING/PAUSED`) — whether content should **be computing**; the script layer and the network stack operate here.
+- **visibility** (`set_visibility(0/1)`) — whether content should **render to screen**; in multi-windowed host scenarios a RUNNING session can be fully invisible — the engine can skip vsync.
+- **focus** (`set_focus(0/1)`) — host ownership of input events; when the host loses focus, the engine **rewinds all accepted touch sequences, physical-key down states, and IME composition in FIFO order** to prevent 'host missed the keyUp, content thinks the key is still held'. This rewind is an ABI contract and must not be skipped — the host **must** call `set_focus(0)` when the native window or view loses focus; that call is the engine's only signal to hand off input state correctly.
+
+**Repeated defocus**: calling `set_focus(0)` when already unfocused does not trigger a second rewind.
+
+## vsync: Who Drives Frames
+
+`migo_session_notify_vsync(session, frame_time_nanos)` is the engine's **frame clock**, not a heartbeat to call periodically:
+
+- Call it exactly once after each `on_request_frame` callback; the engine renders one frame per request.
+- Calling it with no surface attached returns `MIGO_ERROR_INVALID_STATE` (not a no-op).
+- The timestamp is **signed** to pass through platform callback values unchanged (e.g. AChoreographer's parameter) — negative values carry no intended meaning.
+- Installing `MigoOnRequestFrameFn` is optional — hosts that install it drive frames; those that do not get an engine-paced heartbeat that is neither as fast nor as accurate (this is the engine-paced default).
+
+Decision guide: if the host has a natural vsync correspondence (Android `Choreographer`, macOS `CVDisplayLink`, Wayland `frame_callback`), install the callback — frame alignment is the fork between smooth and janky content; if there is no natural correspondence, leave it uninstalled and let the engine dispatch frames.
+
+## Ownership Semantics of destroy
+
+`migo_session_destroy`:
+
+- **Not reference-counted** — it is a final, unconditional handle destruction; your `MigoSession *` pointer is invalid the moment `MIGO_OK` returns, and the engine takes ownership of the session exit.
+- **Rejection has no side effects**: if a surface transition is in progress, an attachment is live, or a retired Surface is still PENDING, it returns `MIGO_ERROR_INVALID_STATE` and the handle remains yours to retry later.
+- **Re-entrant from callbacks**: calling destroy inside a callback does not wait for the callback to return — it unwinds the current stack immediately and does not re-fire other callbacks. This is distinct from 'don't do heavy work in callbacks'; it is an **explicitly supported exit path**.
+- Queued, unexecuted callbacks are discarded before destroy returns — logging before and after destroy will not produce out-of-order entries.
+
+**Engineering implication**: the host should call only `session.close()` or the equivalent `migo_session_destroy` in `Activity.onDestroy`; do not speculatively destroy on other paths and then check the pointer.
+
+## Debug-time Observability
+
+The `on_ready` callback is where content side effects begin; `on_error` is the primary channel for new errors during the running phase. These two plus the three `set_lifecycle` state transition points form the minimum complete set of session observability — with fewer than three, do not expect to reconstruct state at a crash site.

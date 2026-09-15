@@ -1,0 +1,109 @@
+---
+title: OpenHarmony Quickstart
+sidebar:
+  order: 6
+description: Integrate the Migo C SDK into an OpenHarmony host app, mount an OHNativeWindow through an ArkUI XComponent, and verify touch input.
+audience: host-integrator
+platforms:
+  - openharmony
+sourcePaths:
+  - platforms/openharmony/README.md
+  - include/migo/platform/openharmony.h
+  - platforms/openharmony/entry/oh-package.json5
+  - platforms/openharmony/hvigorfile.ts
+---
+
+`platforms/openharmony/` is a complete DevEco project that consumes Migo's C SDK: it depends only
+on the public headers under `include/migo/` and links `libmigo_capi.a` into the host's own
+`libmigohost.so`. This is the same relationship as an Android NativeActivity host has to the
+Android C SDK, making this project an SDK test rather than an SDK extension.
+
+The surface is provided by ArkUI `XComponent`; its `OnSurfaceCreated` callback passes an
+`OHNativeWindow*` to `MigoOpenHarmonyNativeWindowDescriptor` without conversion. Only ownership
+discipline is required: the host retains its own reference, the engine acquires its own reference,
+and the host must not destroy the window before the release observer reports
+`MIGO_SURFACE_RELEASE_RELEASED`.
+
+## 1. Prerequisites
+
+- OpenHarmony SDK 5.1.0-Release or later (about 3.2 GB). Installation instructions are at the
+  beginning of `scripts/dev-setup-ohos.sh`; set `OHOS_NDK_HOME` to the directory containing
+  `native/`.
+- DevEco Studio, for building HAP and debugging, running on the Windows side.
+- `hdc`, the OpenHarmony device connection tool—`hdc` and `adb` use different protocols, so an empty
+  `adb devices` result is normal and the two tools are not interchangeable.
+
+Verify the SDK configuration and print the required exports:
+
+```bash
+bash scripts/dev-setup-ohos.sh --check
+```
+
+## 2. Build the Migo OpenHarmony SDK
+
+Build the static library package on Linux (`lib/libmigo_capi.a`, public headers, and the CMake
+package):
+
+```bash
+# x86_64（仿真器目标）：
+bash scripts/build-ohos-sdk.sh x86_64
+
+# aarch64（真机目标）：
+bash scripts/build-ohos-sdk.sh aarch64
+```
+
+The output directory is `dist/migo-ohos-<arch>/`.
+
+## 3. Build the OpenHarmony host app (HAP)
+
+Stage the SDK and build the HAP with one command:
+
+```bash
+bash scripts/build-ohos-host.sh --arch x86_64   # 仿真器
+```
+
+**Note**: hvigor rejects UNC project paths and reports `Invalid project path`, so
+`build-ohos-host.sh` copies the project to `C:\migo-ohos-host` (override with the
+`MIGO_OHOS_WIN_DIR` environment variable) before building on the Windows side. DevEco, hvigor,
+`hdc`, and the emulator all run on the Windows side; `cmd.exe` rejects UNC working directories, so
+each invocation runs from a local directory.
+
+## 4. Run on an emulator or physical device
+
+```bash
+bash scripts/run-ohos-host.sh --shot /tmp/s.jpeg
+```
+
+This command installs the HAP through `hdc`, starts the app, and saves a screenshot to the specified
+path.
+
+## 5. Built-in touch probe content
+
+On first launch, the HAP extracts the content under
+`entry/src/main/resources/rawfile/content/` into the app's file directory. The sandbox path is
+visible only to that process and cannot be pushed externally through `hdc`, which runs as the
+unprivileged `shell` user. The built-in content is a **touch probe**:
+
+- The entire screen is a single color: **red** before any touch, **green** while a finger is down,
+  and **blue** after all fingers are lifted.
+- Color changes confirm that input passed through the C ABI and engine and reached JS; no logs are
+  needed for verification.
+
+## 6. Verified content
+
+The following has been verified on an API 20 emulator (Mate 70 Pro configuration, 1316×2598):
+
+- surface attach (generation 1), content loading, and `content is ready`
+- rendering—the probe fills the screen with red
+- the complete touch lifecycle: red before the tap and blue after the finger is lifted, confirmed by
+  sampling rendered pixels
+
+**Not yet verified**: aarch64 physical HarmonyOS NEXT hardware and multi-touch input (`hdc` cannot
+synthesize a second pointer, with the same limitation as `adb`). OpenHarmony SDK packages have been
+published continuously since v0.9.2 (the `release-ohos` job), but device-side verification has been
+completed only on an emulator.
+
+## Building from source
+
+See the repository's [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md),
+section "6. OpenHarmony SDK", for SDK build details.

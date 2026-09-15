@@ -1,0 +1,253 @@
+---
+title: C ABI Overview
+sidebar:
+  order: 1
+description: Quick overview of the relationships among the eight Migo C ABI headers, typical call order, handle model, error codes, and compile-time selection.
+audience: host-integrator
+platforms: [android, linux, windows, openharmony]
+sourcePaths:
+  - include/migo/types.h
+  - include/migo/migo.h
+  - include/migo/session.h
+  - include/migo/surface.h
+  - include/migo/input.h
+  - include/migo/external_frames.h
+  - include/migo/capabilities.h
+  - include/migo/platform
+---
+
+> **The ABI is still a candidate and is not frozen.** All headers mark this with `MIGO_C_ABI_CANDIDATE == 1`.
+> A linkable runtime already exists (Android, Linux glibc, Windows, and OpenHarmony), but binary
+> layouts, function signatures, and error-code semantics may still change as freeze blockers are
+> resolved. Production hosts should pin a version and recheck the headers, struct layouts, and
+> ownership rules before every upgrade. See [Candidate status](#abi-candidate-status) for details.
+
+## Header overview
+
+| Header | Contents | Detailed reference |
+| --- | --- | --- |
+| `types.h` | `MigoResult` and all error codes; forward declarations for `MigoEngine`/`MigoSession`/`MigoSurfaceAttachment`/`MigoSurfaceRelease`; `MIGO_API`, `MIGO_CALL`, and platform-detection macros (such as `MIGO_PLATFORM_IS_ANDROID`); `MIGO_C_ABI_CANDIDATE`, `MIGO_C_ABI_HAS_RUNTIME` | [types.mdx](/docs/reference/types/) |
+| `session.h` | `MigoEngineConfig`, `MigoSessionConfig`, `MigoContentDescriptor`, `MigoHostCallbacks`, `MigoLifecycleState`; `migo_engine_create/destroy`, `migo_session_create/destroy`, `migo_session_set_host_callbacks`, `migo_session_load_content`, `migo_session_set_lifecycle`, `migo_session_notify_vsync` | [session.mdx](/docs/reference/session/) |
+| `surface.h` | `MigoSurfaceDescriptor`, `MigoSurfaceMetrics`, `MigoSurfaceRelease`, `MigoSurfaceReleaseStatus`; `migo_session_attach_surface`, `migo_surface_update`, `migo_surface_begin_detach`, `migo_surface_release_query`, `migo_surface_release_destroy` | [surface.mdx](/docs/reference/surface/) |
+| `input.h` | Touch (`MigoTouchEvent`), desktop pointer (`MigoPointerEvent`), wheel (`MigoWheelEvent`), soft keyboard (`MigoKeyboardEvent`), physical keys, IME composition, and gamepad input; the `migo_session_send_*` family; input backpressure conventions | [input.mdx](/docs/reference/input/) |
+| `external_frames.h` | Cross-process frame submission (`migo_session_submit_external_frame`), frame requests (`migo_session_request_external_frame`), synchronization barriers, and resource channels | [external-frames.mdx](/docs/reference/external-frames/) |
+| `capabilities.h` | `MigoCapabilities`; `migo_query_capabilities`, which queries the ABI version range and attachable platform types supported by the linked library; callable before any handle is created | [capabilities.mdx](/docs/reference/capabilities/) |
+| `platform/*.h` | Strongly typed surface descriptors for each platform: `android.h` (`ANativeWindow*`), `win32.h` (`HWND`), `winui.h` (SwapChainPanel), `x11.h` (`Display*` + `Window`), `wayland.h` (`wl_display*` + `wl_surface*`), `openharmony.h` (`OHNativeWindow*`), `macos.h`, and `ios.h` | [surface.mdx](/docs/reference/surface/) |
+| `migo.h` | Umbrella header: includes only types, capabilities, surface, session, and input, with no additional declarations; most hosts can include this file alone | [engine.mdx](/docs/reference/engine/) |
+
+## Typical call order
+
+The following is the complete host flow from initialization through shutdown. Every struct must be zeroed first, then `struct_size` and `abi_version` must be set, and only then should fields be filled in—unknown reserved fields must remain zero.
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* ── 0. 可选：在创建任何句柄之前查询库能力 ── */
+MigoCapabilities caps = {0};
+caps.struct_size = (uint32_t)sizeof(caps);
+caps.abi_version = MIGO_ABI_VERSION_CURRENT;
+migo_query_capabilities(&caps);
+/* caps.platform_kinds 告知哪些 MIGO_PLATFORM_* 可以 attach */
+
+/* ── 1. 创建 Engine ── */
+MigoEngineConfig eng_cfg = {0};
+eng_cfg.struct_size         = (uint32_t)sizeof(eng_cfg);
+eng_cfg.abi_version         = MIGO_ABI_VERSION_CURRENT;
+eng_cfg.flags               = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT;
+eng_cfg.files_dir_utf8      = "/data/user/0/com.example/files";
+eng_cfg.cache_dir_utf8      = "/data/user/0/com.example/cache";
+eng_cfg.code_cache_dir_utf8 = "/data/user/0/com.example/code_cache";
+
+MigoEngine *engine = NULL;
+MigoResult r = migo_engine_create(&eng_cfg, &engine);
+
+/* ── 2. 创建 Session ── */
+MigoSessionConfig ses_cfg = {0};
+ses_cfg.struct_size = (uint32_t)sizeof(ses_cfg);
+ses_cfg.abi_version = MIGO_ABI_VERSION_CURRENT;
+
+MigoSession *session = NULL;
+r = migo_session_create(engine, &ses_cfg, &session);
+
+/* ── 3. 注册宿主回调（必须在 attach 和首次 RUNNING 之前）── */
+MigoHostCallbacks cbs = {0};
+cbs.struct_size       = (uint32_t)sizeof(cbs);
+cbs.abi_version       = MIGO_ABI_VERSION_CURRENT;
+cbs.user_data         = my_ctx;
+cbs.dispatcher_data   = my_dispatch_ctx;
+cbs.dispatch          = my_dispatch_fn;       /* 接受任务，线程安全，快速返回 */
+cbs.on_ready          = my_on_ready;          /* 内容加载成功 */
+cbs.on_error          = my_on_error;          /* 运行时错误与 backpressure 通知 */
+cbs.on_request_frame  = my_on_request_frame;  /* 引擎请求下一帧；宿主驱动 vsync */
+cbs.on_surface_released = my_on_surface_released; /* 可选，用于避免轮询 */
+r = migo_session_set_host_callbacks(session, &cbs);
+
+/* ── 4. 附加 Surface ── */
+/* 填写平台描述符（此处以 Android 为例，详见 platform/android.h）*/
+MigoAndroidNativeWindowDescriptor plat = {0};
+plat.struct_size   = (uint32_t)sizeof(plat);
+plat.abi_version   = MIGO_ABI_VERSION_CURRENT;
+plat.platform_kind = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
+plat.native_window = window; /* ANativeWindow* */
+
+MigoSurfaceDescriptor sd = {0};
+sd.struct_size              = (uint32_t)sizeof(sd);
+sd.abi_version              = MIGO_ABI_VERSION_CURRENT;
+sd.generation               = ++surface_gen; /* 严格单调递增，从 1 开始 */
+sd.platform_kind            = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
+sd.width_pixels             = width;
+sd.height_pixels            = height;
+sd.scale_factor             = dpr;           /* 逻辑像素比，用于 CSS px 换算 */
+sd.platform_descriptor_size = (uint32_t)sizeof(plat);
+sd.platform_descriptor      = &plat;
+
+MigoSurfaceAttachment *attachment = NULL;
+r = migo_session_attach_surface(session, &sd, &attachment);
+
+/* ── 5. 加载内容（异步，结果通过 on_ready / on_error 回调通知）── */
+MigoContentDescriptor cd = {0};
+cd.struct_size     = (uint32_t)sizeof(cd);
+cd.abi_version     = MIGO_ABI_VERSION_CURRENT;
+cd.content_id_utf8 = "com.example.game";
+cd.entry_utf8      = "index.js";
+r = migo_session_load_content(session, &cd);
+
+/* ── 6. 切换到 RUNNING ── */
+r = migo_session_set_lifecycle(session, MIGO_LIFECYCLE_RUNNING);
+
+/* ── 7. 事件循环 ── */
+/* AChoreographer / 平台 vsync 回调触发时：*/
+r = migo_session_notify_vsync(session, frame_time_nanos);
+
+/* 触摸事件（x/y 为 CSS 像素，非物理像素）：*/
+r = migo_session_send_touch(session, &touch_event);
+
+/* 桌面鼠标事件：*/
+r = migo_session_send_pointer_event(session, &ptr_event);
+r = migo_session_send_wheel_event(session, &wheel_event);
+
+/* ── 8. 退出：暂停 → 分离 → 等待 GPU 释放 → 销毁 ── */
+r = migo_session_set_lifecycle(session, MIGO_LIFECYCLE_PAUSED);
+
+MigoSurfaceRelease *release = NULL;
+r = migo_surface_begin_detach(attachment, &release);
+/* attachment 指针在此失效；原生窗口此时不可销毁 */
+
+/* 轮询，或等待 on_surface_released 回调触发后再查询 */
+MigoSurfaceReleaseStatus status = {0};
+status.struct_size = (uint32_t)sizeof(status);
+status.abi_version = MIGO_ABI_VERSION_CURRENT;
+while (status.state != MIGO_SURFACE_RELEASE_RELEASED) {
+    migo_surface_release_query(release, &status);
+}
+/* GPU 已完全释放，现在可以安全销毁原生窗口资源 */
+migo_surface_release_destroy(release);
+
+r = migo_session_destroy(session);   /* 拒绝：attachment 存活 / 释放仍 PENDING */
+r = migo_engine_destroy(engine);     /* 必须在所有 Session 销毁后调用；joining 所有工作线程 */
+```
+
+## Handle model
+
+Four handle types cross this ABI; their ownership and destruction rules differ. Confusing them is the most common cause of memory-safety problems.
+
+| Handle | Uniqueness and ownership | Concurrency | Destruction |
+| --- | --- | --- | --- |
+| `MigoEngine*` | Unique; held by the host | All entry points are thread-safe; the host only needs to serialize its own calls | `migo_engine_destroy`, after all child Sessions are destroyed; a successful return is a completion barrier for all Migo worker threads |
+| `MigoSession*` | Unique; held by the host | The host serializes calls on one Session; different Sessions may be driven concurrently | `migo_session_destroy`; **rejected** while an attachment is live, a surface migration is in progress, or any release remains PENDING |
+| `MigoSurfaceAttachment*` | Unique; independent aliases prohibited | Serialized with its Session; at most one is active at a time | Consumed only by `migo_surface_begin_detach`; Session destruction does not consume it and will fail |
+| `MigoSurfaceRelease*` | Unique; held by the host | May be queried from any host-serialized thread; it holds no Surface resource lease | `migo_surface_release_destroy`, only after `MIGO_SURFACE_RELEASE_RELEASED`; a RELEASED observer may outlive its Session |
+
+**Important rules:**
+
+- `migo_surface_begin_detach` returning `MIGO_OK` means retirement has started, not that the GPU has finished. **The host must keep native window resources and the event loop alive until `migo_surface_release_query` reports `MIGO_SURFACE_RELEASE_RELEASED`.** Destroying them early is a driver-internal use-after-free that the engine cannot detect or prevent.
+- `migo_engine_destroy` is the final thread completion barrier. Until it returns, the host must not destroy native display/window resources or unload the Migo library, even if every surface release has reached `RELEASED`.
+- Session callbacks execute only inside dispatched tasks, hold no engine/Session/attachment locks, and may re-enter `detach` or `destroy`.
+
+## Error code quick reference
+
+All functions return `MigoResult` (`int32_t`). The following list is ordered by numeric value:
+
+| Error code | Value | Typical trigger |
+| --- | --- | --- |
+| `MIGO_OK` | `0` | Call succeeded. |
+| `MIGO_ERROR_INVALID_ARGUMENT` | `-1` | A NULL pointer; `struct_size` smaller than the minimum record; an out-of-range field (zero generation, zero dimensions, non-positive or non-finite `scale_factor`); or a nonzero `reserved` field. |
+| `MIGO_ERROR_UNSUPPORTED_ABI` | `-2` | `abi_version` does not match the current engine build, or the record declared by `struct_size` is larger than this build knows (the host is newer than the library). |
+| `MIGO_ERROR_UNSUPPORTED_PLATFORM` | `-3` | `platform_kind` is defined by the ABI but unsupported by this build (`platform_kinds` is not set in `migo_query_capabilities`). |
+| `MIGO_ERROR_UNSUPPORTED_CAPABILITY` | `-4` | A requested capability bit (such as wide color gamut, transparency, or mailbox presentation) is not implemented in this build; the engine rejects it rather than silently degrading. |
+| `MIGO_ERROR_INVALID_STATE` | `-5` | A handle was destroyed; the lifecycle state disallows the operation (such as destroying a Session while an attachment is live); or callbacks are being installed a second time. |
+| `MIGO_ERROR_WRONG_THREAD` | `-6` | Reserved; unused in the current version. |
+| `MIGO_ERROR_STALE_SURFACE` | `-7` | `generation` is not greater than the latest value accepted by the Session (at attach), or the handle is not the current active attachment (at update/detach). |
+| `MIGO_ERROR_CANCELLED` | `-8` | Reserved; unused in the current version. |
+| `MIGO_ERROR_DISPATCH_REJECTED` | `-9` | The host dispatcher rejected the task; the engine reclaims and drops the task without running or leaking it. The host should return this code when it rejects a task. |
+| `MIGO_ERROR_OUT_OF_MEMORY` | `-10` | Reserved; unused in the current version. |
+| `MIGO_ERROR_INTERNAL` | `-11` | An internal engine invariant failed (lock poisoning or an early panic); always logged and not something the caller can infer from or retry. |
+| `MIGO_ERROR_WOULD_BLOCK` | `-12` | An input event was not accepted because the host command queue was full (non-blocking); the host may retry while the event is still current. The first saturation is reported through `MigoOnErrorFn`; a later successful input resets the notification. |
+
+## Compile-time selection
+
+### MIGO_API and MIGO_CALL
+
+`MIGO_API` and `MIGO_CALL` are defined in `types.h` and control the visibility and calling convention of all `migo_*` symbols:
+
+| Scenario | Define macro | `MIGO_API` expansion | `MIGO_CALL` expansion |
+| --- | --- | --- | --- |
+| **Windows: building the migo DLL itself** | `MIGO_BUILD_SHARED` | `__declspec(dllexport)` | `__cdecl` |
+| **Windows: linking the migo DLL dynamically** | `MIGO_USE_SHARED` | `__declspec(dllimport)` | `__cdecl` |
+| **Windows: linking a static library** | Neither defined | (empty) | `__cdecl` |
+| **GCC / Clang (Linux, Android, and so on)** | No definition needed | `__attribute__((visibility("default")))` | (empty) |
+
+### Static library vs. shared library
+
+- **Android / OpenHarmony**: The SDK provides `libmigo_capi.a` (a static library), which the host links into its own `.so`. The platform NDK model is not suited to a third-party shared `.so`.
+- **Linux glibc**: The SDK provides both `libmigo.so` and `libmigo.a`, with pkg-config and CMake integration.
+- **Windows**: The SDK provides `migo.lib` (an import library), with a CMake package.
+
+### Struct initialization convention
+
+For every versioned struct, first zero it with `= {0}`, then explicitly set `struct_size` and `abi_version`, and then fill in fields. `reserved` fields must remain zero.
+
+```c
+MigoSurfaceDescriptor sd = {0};
+sd.struct_size = (uint32_t)sizeof(sd);
+sd.abi_version = MIGO_ABI_VERSION_CURRENT;
+/* 填写需要的字段 */
+```
+
+The library receives a copy; pointers are borrowed during the call and may be released after it returns. Structs written by the library (`MigoCapabilities`, `MigoSurfaceReleaseStatus`) follow the mirror rule: no more bytes are written than the caller's `struct_size` allows, so an older host calling a newer library cannot be overrun.
+
+## ABI Candidate Status
+
+```c
+#define MIGO_C_ABI_CANDIDATE 1   /* 所有目标：仍是候选 */
+#define MIGO_C_ABI_HAS_RUNTIME 1 /* Android / Linux glibc / Windows / OpenHarmony：可链接 runtime 存在 */
+#define MIGO_C_ABI_HAS_RUNTIME 0 /* 其他目标：仅可编译，无 runtime */
+```
+
+`MIGO_C_ABI_HAS_RUNTIME` reports the target platform at header compile time, **not** the actual capability of the linked library. Confirm runtime availability by calling `migo_query_capabilities`.
+
+**Runtime present does not mean the ABI is frozen.** Known freeze blockers as of the document generation date include:
+
+- Complete validation of struct layouts and calling conventions across compilers and architectures (LP64 / LLP64 / ILP32)
+- Android multi-pointer device testing (instrumentation APK still pending)
+- Android compatibility and performance gate tests (Linux complete, Android open)
+- Android third-party consumer NDK package artifacts (mechanism implemented, artifacts awaiting regeneration)
+
+See `include/migo/README.md` for the complete blocker list.
+
+**Recommendations for downstream integration:**
+
+1. Pin the Migo header version in the build system (a git submodule or package-manager lockfile).
+2. Before each upgrade, use the layout assertions in `tests/c_abi/` to verify that the new headers are compatible with the host target.
+3. Do not rely on the specific semantics of currently reserved codes such as `MIGO_ERROR_WRONG_THREAD`, `MIGO_ERROR_CANCELLED`, and `MIGO_ERROR_OUT_OF_MEMORY`; no v1 entry point returns them.
+
+## Reference documentation
+
+| Document | Covers |
+| --- | --- |
+| [Types and macros](/docs/reference/types/) | `types.h` |
+| [Engine and Session](/docs/reference/engine/) | `migo.h` (umbrella) |
+| [Session API](/docs/reference/session/) | `session.h` |
+| [Surface lifecycle](/docs/reference/surface/) | `surface.h`, `platform/*.h` |
+| [Input events](/docs/reference/input/) | `input.h` |
+| [External frames](/docs/reference/external-frames/) | `external_frames.h` |
+| [Runtime capability query](/docs/reference/capabilities/) | `capabilities.h` |

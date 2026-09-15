@@ -1,0 +1,84 @@
+---
+title: 错误码与诊断
+sidebar:
+  order: 4
+description: ErrorCode 全部负码(宿主侧)+ native 正码(引擎侧)区间、MigoException 的 recoverable 语义与诊断路径。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/ErrorCode.java
+  - platforms/android/library/src/main/java/com/migo/runtime/MigoException.java
+---
+
+Android SDK 的错误分两个世界:**宿主侧的负码**(facade 检查出的问题)与**引擎侧的正码**(native 报上来的故障)。`SUCCESS = 0` 是真正的成功返回,与「没设错误」不是一回事。
+
+## 宿主侧负码(facade 检出的问题)
+
+### 初始化期(-1xxx)
+
+| 码 | 含义 | 现场行动 |
+| --- | --- | --- |
+| `-1000 ERR_INIT_FAILED` | 通用初始化失败 | 先查 logcat 找更早的 native 原因 |
+| `-1001 ERR_INVALID_SURFACE` | Surface 为 null 或不合法 | Surface 一定要活着 — 常见是 `surfaceDestroyed` 之后再拿原 surface |
+| `-1002 ERR_INVALID_CONFIG` | RuntimeConfig null/不合法 | 确认 Builder.build() 之后没变体 |
+| `-1003 ERR_NATIVE_LOAD_FAILED` | Native 库加载失败 | 拿 `MigoRuntime.getNativeLoadError()`,查所有 ABI split / 安装包的 so 命名 |
+| `-1004 ERR_INVALID_GAME_ID` | gameId / entryPoint 缺失 | 游戏单号 / 入口脚本名由内容侧定义,不能为空 |
+| `-1005 ERR_NOT_SUPPORTED` | 设备不满足引擎要求 | `isDeviceSupported()` 曾 false;升级到 minimum |
+
+### 运行期(-2xxx)
+
+| 码 | 含义 |
+| --- | --- |
+| `-2000 ERR_SESSION_DESTROYED` | 会话没 close 后任何方法调用;先建新的 |
+| `-2002 ERR_CODE_DIR_NOT_FOUND` | 内容目录不存在 — 游戏资源部署问题 |
+| `-2003 ERR_ENTRY_NOT_FOUND` | 入口文件不在 contentDir 里 |
+| `-2004 ERR_JS_EXECUTION` | 内容 JS 主动抛错,从 logcat 里解 JS 栈 |
+| `-2005 ERR_CLEANUP_FAILED` | 终态资源清理未完全 — 日志必有更早的 native 原因,修它而不是吞这条 |
+
+### 平台层(-5xxx)
+
+`-5004 ERR_INVALID_ACTIVITY` — Activity null 或 finishing;出现在启动里不等于 crash。
+
+## 引擎侧正码(native 可能调你的 onError)
+
+Native 用`回调-onError`一路推送,带 structured code:
+
+| 码 | 是什么 |
+| --- | --- |
+| `203 NATIVE_OUT_OF_MEMORY` | V8 堆 OOM:near-heap-limit 回调发,隔离被终止防赔 |
+| `204 NATIVE_JS_EXECUTION_TIMEOUT` | 单个 JS 执行超过 watchdog 秒数被强制终止 |
+| `205 NATIVE_HOST_PANIC` | Host 线程不可恢复 panic — `isRecoverable` 返回 false,宿主按不可恢复处理(弹错页、收日志) |
+| `206 NATIVE_ANR` | ANR 检测到 native 层面,比系统的早 |
+| `207 NATIVE_CODE_SIGNATURE_INVALID` | 代码签名校验失败 — 记得 [RuntimeConfig](/docs/android-sdk/config/) 的 pubkey 链 |
+| `208 NATIVE_CODE_INTEGRITY_FAILED` | 代码完整性校验失败 — 同上 |
+| `11 NATIVE_INPUT_SATURATED` | 输入事件灌进 transport 的速率超过消费速率,被丢弃并进入 backoff |
+
+这些正码都是结构化事件:`onError` 拿到的不是「系统崩了」而是「引擎在这个调用帧里出了这个问题」,复现路径都可追溯。「能不能恢复」的判定在 `MigoException.isRecoverable()`。
+
+## MigoException:`recoverable` 的接地意思
+
+```java
+session.setListener(new GameSessionListener() {
+    @Override
+    public void onError(MigoException e) {
+        if (!e.isRecoverable()) {
+            showErrorDialog(e.getMessage());   // 全屏错页,留下日志与现场变量
+        } else {
+            Log.w(TAG, e.toString());          // 追迹但不拉警报
+        }
+    }
+});
+```
+
+`isRecoverable()` 的逐码判定写在 `ErrorCode.java` 的 isRecoverable 分支: `NATIVE_JS_EXECUTION_TIMEOUT` 与 `NATIVE_INPUT_SATURATED` 都是 recoverable(watchdog isolate 可以重起,input 进 backoff 后恢复) — 其他全部默认 **不可恢复**,部署侧对待:弹错页,不要吞。
+
+## 诊断三件套
+
+| 追迹 | 拿来干什么 |
+| --- | --- |
+| `MigoRuntime.getNativeLoadError()` | `-1003` 的唯一一手答案 |
+| `session.setDebugEnabled(true)` | ConsoleLogView / DebugOverlay 现场看 JS console 输出 |
+| DebugOverlay | 帧率 + 句柄状态(发布包关掉) |
+
+错误文案不是文档转抄 — `ErrorCode.java` 的 `getErrorMessage` 分支就是上表的原始出处;发现不一致时以源文件为最终事实。
