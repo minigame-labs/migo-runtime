@@ -49,6 +49,24 @@ PY
     expect_fail "a tracked prefixed legacy identifier is rejected" "$fixture"
     git -C "$fixture" rm -q --cached brand-prefix.md
 
+    # Two shapes carry the short brand's letters without being the brand: a
+    # Subresource Integrity digest in a lockfile, and the exclusive-create flag
+    # of the engine's file open op. Both must pass -- and the same two letters as
+    # a quoted global name must still fail, or neutralising them has widened the
+    # rule instead of sharpening it.
+    python3 - "$fixture/lock.json" "$fixture/open.js" "$fixture/global.js" <<'PY'
+import pathlib, sys
+w, x = chr(0x77), chr(0x78)
+digest = "sha512-" + w + x.upper() + "R/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g=="
+pathlib.Path(sys.argv[1]).write_text('{"integrity": "%s"}\n' % digest)
+pathlib.Path(sys.argv[2]).write_text('fd = await op_open_file(tmpPath, "%s%s");\n' % (w, x))
+pathlib.Path(sys.argv[3]).write_text('const api = globalThis["%s%s"];\n' % (w, x))
+PY
+    git -C "$fixture" add lock.json open.js
+    expect_pass "an integrity digest and the exclusive open flag are not the brand" "$fixture"
+    git -C "$fixture" add global.js
+    expect_fail "the brand as a quoted global name is still rejected" "$fixture"
+    git -C "$fixture" rm -q --cached lock.json open.js global.js
     python3 - "$fixture/path.md" <<'PY'
 import pathlib, sys
 pathlib.Path(sys.argv[1]).write_bytes(bytes.fromhex(

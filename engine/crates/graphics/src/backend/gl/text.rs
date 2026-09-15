@@ -799,18 +799,24 @@ impl TextContext {
             build_fill_paint(state, resolver)
         };
 
+        // Fast path first: pure-ASCII / single-typeface / LTR text with no
+        // `maxWidth` scaling and no shadow can skip SkParagraph altogether. The
+        // feature remains host-policy gated and defaults off.
+        //
+        // It has to come before the paragraph cache below, because the cache
+        // accepts exactly the solid-fill, shadowless labels the fast path exists
+        // for: with the cache first, a host that turned the fast path on got a
+        // cached paragraph for every eligible label and the blob path served
+        // nothing (`canvas2d_text_fastpath_parity`, `ascii_small`: 0 paints).
+        if let Some(()) = self.try_fast_path_paint(canvas, text, x, y, max_width, state, &paint) {
+            return;
+        }
+
         // Reuse a laid-out paragraph for the conservative solid-fill case.
         // Paint state is part of the key; gradients, patterns, shadows and
         // strokes continue through the complete per-call path.
         if !stroke && self.try_cached_paragraph_paint(canvas, text, x, y, max_width, state, &paint)
         {
-            return;
-        }
-
-        // Fast path: pure-ASCII / single-typeface / LTR text with no
-        // `maxWidth` scaling and no shadow can skip SkParagraph.  The
-        // feature remains host-policy gated and defaults off.
-        if let Some(()) = self.try_fast_path_paint(canvas, text, x, y, max_width, state, &paint) {
             return;
         }
 
