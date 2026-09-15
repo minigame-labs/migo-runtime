@@ -78,13 +78,18 @@ if (fileExists('concepts/sdk-architecture/index.html')) {
     'sdk-architecture: mermaid blocks present');
 }
 
-console.log('-- 英文占位页 --');
+console.log('-- 英文页形状(stub 或完整翻译均合法;部分翻译是坏状态) --');
 for (const rel of ['en/index.html', 'en/reference/overview/index.html']) {
   if (!fileExists(rel)) continue;
   const html = readFile(rel);
-  check(/name="robots"[^>]*content="noindex"/i.test(html), `${rel}: meta robots noindex`);
-  check(html.includes('Translation pending'), `${rel}: TranslationPending aside visible`);
-  check(html.includes('→ 中文版本'), `${rel}: links back to the zh page`);
+  const isStub = html.includes('Translation pending');
+  const hasNoindex = /name="robots"[^>]*content="noindex"/i.test(html);
+  const hasBacklink = html.includes('→ 中文版本');
+  if (isStub) {
+    check(hasNoindex && hasBacklink, `${rel}: stub 必须带 noindex 与回链`);
+  } else {
+    check(!hasNoindex && !hasBacklink, `${rel}: 已翻译页不得残留 noindex/回链`);
+  }
 }
 
 console.log('-- Sitemap --');
@@ -96,7 +101,8 @@ if (!fileExists('sitemap-index.xml')) {
   check(!!docsMap, 'sitemap-index references a /docs/ sitemap');
   for (const rel of readdirSync(buildDir).filter((f) => /^sitemap-\d+\.xml$/.test(f))) {
     const xml = readFile(rel);
-    check(!xml.includes('/docs/en/'), `${rel}: no English stub URLs`);
+    check(!xml.includes('/docs/en/0.9/'), `${rel}: no English archive (stub) URLs`);
+    check(xml.includes('https://minigame-labs.com/docs/en/getting-started/'), `${rel}: English latest pages published`);
     check(!xml.includes('/docs/next/'), `${rel}: no next URLs`);
     check(xml.includes('https://minigame-labs.com/docs/getting-started/android/') ||
           !xml.includes('getting-started'), `${rel}: zh routes URL-shaped correctly`);
