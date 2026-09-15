@@ -1,4 +1,5 @@
 import MigoAppleFrameHarness
+import enum MigoAppleCore.MigoFrameChannelPolicy
 import MigoEngine
 import XCTest
 
@@ -88,6 +89,95 @@ import XCTest
         /// the first test already covers.
         func testTheReadStillSeesTheFrameAfterItHasPresented() throws {
             try submitFromContentThenRead(afterRunLoop: 0.5)
+        }
+
+        /// Two frames back to back, one on each uplink, still execute in order.
+        ///
+        /// The hybrid uplink sends a packet above `socketCeilingBytes` as a
+        /// scheme request and anything smaller on the socket, and those are two
+        /// independent streams: nothing makes a request that left first arrive
+        /// first. Ingress admits only the next sequence, and a gap is a wire
+        /// failure the profile policy answers by ending the content. So a large
+        /// frame followed by a small one -- a scene load followed by its first
+        /// ordinary frame -- is the ordinary way to lose a session, unless the
+        /// host puts the two streams back in order before ingress sees them.
+        func testFramesKeepTheirOrderAcrossTheTwoUplinks() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                import { encodeFrame, SECTION_KIND_COMMAND_STREAM } from "/__migo/wire-frame-packet.mjs";
+                import { MAGIC, STREAM_VERSION, OP_CLEAR, OP_CLEAR_COLOR } from "/__migo/render-opcodes.mjs";
+
+                const scratch = new DataView(new ArrayBuffer(4));
+                const bits = (v) => { scratch.setFloat32(0, v, true); return scratch.getUint32(0, true); };
+                const header = (op, words) => ((words << 12) | op) >>> 0;
+
+                function frame(sequence, rgba, clears) {
+                  const words = [MAGIC, STREAM_VERSION,
+                    header(OP_CLEAR_COLOR, 6), 1, bits(rgba[0]), bits(rgba[1]), bits(rgba[2]), bits(rgba[3])];
+                  for (let i = 0; i < clears; i += 1) words.push(header(OP_CLEAR, 3), 1, 0x4000);
+                  const stream = new Uint8Array(words.length * 4);
+                  const view = new DataView(stream.buffer);
+                  words.forEach((w, i) => view.setUint32(i * 4, w, true));
+                  return encodeFrame({ launchNonce: 0xa3n, sequence, runtimeGeneration: 1n,
+                    surfaceGeneration: 1n, resourceEpoch: 0n,
+                    sections: [{ kind: SECTION_KIND_COMMAND_STREAM, payload: stream }] });
+                }
+
+                export function start({ session }) {
+                  // 6,000 clears is 72 KiB of stream: above the socket ceiling.
+                  const large = frame(1n, [0, 0, 1, 1], 6000);
+                  const small = frame(2n, [1, 0, 0, 1], 1);
+                  const first = session.submit(large);
+                  const second = session.submit(small);
+                  self.postMessage({ type: "submitted", outcome: `${first},${second}`, bytes: large.length });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            let submitted = expectation(description: "content submitted both frames")
+            var submittedBytes: Int?
+            var outcome: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { report in
+                switch report["type"] as? String {
+                case "submitted":
+                    submittedBytes = report["bytes"] as? Int
+                    outcome = report["outcome"] as? String
+                    submitted.fulfill()
+                case "failed":
+                    outcome = "failed at \(report["stage"] as? String ?? "?"): \(report["detail"] as? String ?? "?")"
+                    submitted.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [submitted], timeout: 240)
+            XCTAssertEqual(outcome, "true,true", "content's submits did not both go out")
+            XCTAssertGreaterThan(
+                submittedBytes ?? 0, MigoFrameChannelPolicy.socketCeilingBytes,
+                "the first frame has to be above the socket ceiling or this tests one uplink")
+
+            let pollDeadline = Date().addingTimeInterval(30)
+            while host.channel.currentStatistics.framesReceived < 2, Date() < pollDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            let statistics = host.channel.currentStatistics
+            XCTAssertEqual(
+                statistics.framesRefused, 0,
+                """
+                a frame was refused. Two frames that left in order on different uplinks \
+                reached ingress out of order, and ingress answers a gap by ending the content.
+                """)
+            XCTAssertEqual(statistics.framesAccepted, 2)
+
+            let pixel = try readPixel(session: harness.session, x: 0, y: 0)
+            XCTAssertEqual(pixel, [255, 0, 0, 255], "the later, red frame is not the one on the surface")
         }
 
         private func submitFromContentThenRead(afterRunLoop settle: TimeInterval) throws {
