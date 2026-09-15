@@ -1,0 +1,68 @@
+name: Developer Docs CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'developer-docs/**'
+      - 'include/migo/**'
+      - 'release/VERSION'
+      - 'scripts/test-developer-docs-phase1-contract.sh'
+      - 'scripts/check-developer-docs-ast.mjs'
+  pull_request:
+    paths:
+      - 'developer-docs/**'
+      - 'include/migo/**'
+      - 'release/VERSION'
+      - 'scripts/test-developer-docs-phase1-contract.sh'
+      - 'scripts/check-developer-docs-ast.mjs'
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: developer-docs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.19'
+          cache: 'npm'
+          cache-dependency-path: developer-docs/package-lock.json
+
+      - name: 安装锁定依赖
+        run: npm ci --ignore-scripts
+
+      - name: 内容契约与类型检查
+        run: npm run docs:check
+
+      - name: 构建并检查静态产物
+        run: npm run docs:build
+
+      - name: 起静态服务
+        run: |
+          npm run docs:serve &
+          for i in $(seq 1 40); do
+            curl -sf -o /dev/null http://127.0.0.1:8097/docs/ && break
+            sleep 0.5
+          done
+          curl -sf -o /dev/null http://127.0.0.1:8097/docs/
+
+      - name: 浏览器冒烟测试
+        env:
+          CI: 'true'
+          CHROME_PATH: /usr/bin/google-chrome
+        run: |
+          test -x "$CHROME_PATH" || CHROME_PATH=$(command -v chromium-browser || command -v chromium)
+          CHROME_PATH="$CHROME_PATH" npm run docs:smoke
+
+      - name: 上传失败截图
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: playwright-screenshots
+          path: developer-docs/playwright-report/
+          retention-days: 7

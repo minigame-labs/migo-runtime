@@ -1,0 +1,8 @@
+---
+// Portal parity: the www site is dark-only, so the docs are dark-only.
+// Hides the inherited auto/light switcher by fixing data-theme before paint.
+---
+
+<script is:inline>
+  document.documentElement.dataset.theme = 'dark';
+</script>
