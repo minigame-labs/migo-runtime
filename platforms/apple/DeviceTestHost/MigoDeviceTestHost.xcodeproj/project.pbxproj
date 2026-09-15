@@ -1,0 +1,448 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2B0000000000000000000031 /* MigoApplePerformancePlus in Frameworks */ = {isa = PBXBuildFile; productRef = 2B00000000000000000000A1 /* MigoApplePerformancePlus */; };
+		2B0000000000000000000032 /* MigoAppleRenderer in Frameworks */ = {isa = PBXBuildFile; productRef = 2B00000000000000000000A2 /* MigoAppleRenderer */; };
+		2B0000000000000000000033 /* MigoAppleFrameHarness in Frameworks */ = {isa = PBXBuildFile; productRef = 2B00000000000000000000A3 /* MigoAppleFrameHarness */; };
+		2B0000000000000000000034 /* MigoAppleCore in Frameworks */ = {isa = PBXBuildFile; productRef = 2B00000000000000000000A4 /* MigoAppleCore */; };
+		2B0000000000000000000035 /* ANGLELibEGL-ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2B0000000000000000000004 /* ANGLELibEGL-ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		2B0000000000000000000036 /* ANGLELibGLESv2-ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2B0000000000000000000005 /* ANGLELibGLESv2-ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		2B0000000000000000000040 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2B0000000000000000000080 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2B0000000000000000000060;
+			remoteInfo = MigoDeviceTestHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		2B0000000000000000000027 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				2B0000000000000000000035 /* ANGLELibEGL-ios.xcframework in Embed Frameworks */,
+				2B0000000000000000000036 /* ANGLELibGLESv2-ios.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		2B0000000000000000000001 /* MigoDeviceTestHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MigoDeviceTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2B0000000000000000000002 /* MigoDeviceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MigoDeviceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2B0000000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2B0000000000000000000004 /* ANGLELibEGL-ios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "ANGLELibEGL-ios.xcframework"; path = "../Frameworks/ANGLELibEGL-ios.xcframework"; sourceTree = "<group>"; };
+		2B0000000000000000000005 /* ANGLELibGLESv2-ios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "ANGLELibGLESv2-ios.xcframework"; path = "../Frameworks/ANGLELibGLESv2-ios.xcframework"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		2B0000000000000000000010 /* Host */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Host;
+			sourceTree = "<group>";
+		};
+		2B0000000000000000000011 /* MigoAppleRendererTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			name = MigoAppleRendererTests;
+			path = ../Tests/MigoAppleRendererTests;
+			sourceTree = "<group>";
+		};
+		2B0000000000000000000012 /* MigoApplePerformancePlusTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			name = MigoApplePerformancePlusTests;
+			path = ../Tests/MigoApplePerformancePlusTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		2B0000000000000000000022 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2B0000000000000000000025 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2B0000000000000000000031 /* MigoApplePerformancePlus in Frameworks */,
+				2B0000000000000000000032 /* MigoAppleRenderer in Frameworks */,
+				2B0000000000000000000033 /* MigoAppleFrameHarness in Frameworks */,
+				2B0000000000000000000034 /* MigoAppleCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		2B0000000000000000000050 = {
+			isa = PBXGroup;
+			children = (
+				2B0000000000000000000010 /* Host */,
+				2B0000000000000000000011 /* MigoAppleRendererTests */,
+				2B0000000000000000000012 /* MigoApplePerformancePlusTests */,
+				2B0000000000000000000003 /* Info.plist */,
+				2B0000000000000000000052 /* ANGLE */,
+				2B0000000000000000000051 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		2B0000000000000000000052 /* ANGLE */ = {
+			isa = PBXGroup;
+			children = (
+				2B0000000000000000000004 /* ANGLELibEGL-ios.xcframework */,
+				2B0000000000000000000005 /* ANGLELibGLESv2-ios.xcframework */,
+			);
+			name = ANGLE;
+			sourceTree = "<group>";
+		};
+		2B0000000000000000000051 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2B0000000000000000000001 /* MigoDeviceTestHost.app */,
+				2B0000000000000000000002 /* MigoDeviceTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2B0000000000000000000060 /* MigoDeviceTestHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2B0000000000000000000070 /* Build configuration list for PBXNativeTarget "MigoDeviceTestHost" */;
+			buildPhases = (
+				2B0000000000000000000021 /* Sources */,
+				2B0000000000000000000022 /* Frameworks */,
+				2B0000000000000000000023 /* Resources */,
+				2B0000000000000000000027 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				2B0000000000000000000010 /* Host */,
+			);
+			name = MigoDeviceTestHost;
+			productName = MigoDeviceTestHost;
+			productReference = 2B0000000000000000000001 /* MigoDeviceTestHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+		2B0000000000000000000061 /* MigoDeviceTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2B0000000000000000000073 /* Build configuration list for PBXNativeTarget "MigoDeviceTests" */;
+			buildPhases = (
+				2B0000000000000000000024 /* Sources */,
+				2B0000000000000000000025 /* Frameworks */,
+				2B0000000000000000000026 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				2B0000000000000000000041 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				2B0000000000000000000011 /* MigoAppleRendererTests */,
+				2B0000000000000000000012 /* MigoApplePerformancePlusTests */,
+			);
+			name = MigoDeviceTests;
+			packageProductDependencies = (
+				2B00000000000000000000A1 /* MigoApplePerformancePlus */,
+				2B00000000000000000000A2 /* MigoAppleRenderer */,
+				2B00000000000000000000A3 /* MigoAppleFrameHarness */,
+				2B00000000000000000000A4 /* MigoAppleCore */,
+			);
+			productName = MigoDeviceTests;
+			productReference = 2B0000000000000000000002 /* MigoDeviceTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		2B0000000000000000000080 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					2B0000000000000000000060 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					2B0000000000000000000061 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 2B0000000000000000000060;
+					};
+				};
+			};
+			buildConfigurationList = 2B0000000000000000000081 /* Build configuration list for PBXProject "MigoDeviceTestHost" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 2B0000000000000000000050;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				2B0000000000000000000090 /* XCLocalSwiftPackageReference ".." */,
+				2B0000000000000000000091 /* XCLocalSwiftPackageReference "../core" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 2B0000000000000000000051 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2B0000000000000000000060 /* MigoDeviceTestHost */,
+				2B0000000000000000000061 /* MigoDeviceTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		2B0000000000000000000023 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2B0000000000000000000026 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2B0000000000000000000021 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2B0000000000000000000024 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		2B0000000000000000000041 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2B0000000000000000000060 /* MigoDeviceTestHost */;
+			targetProxy = 2B0000000000000000000040 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		2B0000000000000000000082 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		2B0000000000000000000083 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		2B0000000000000000000071 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.migo.devicetests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		2B0000000000000000000072 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.migo.devicetests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		2B0000000000000000000074 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.migo.devicetests.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MigoDeviceTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MigoDeviceTestHost";
+			};
+			name = Debug;
+		};
+		2B0000000000000000000075 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.migo.devicetests.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MigoDeviceTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MigoDeviceTestHost";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2B0000000000000000000070 /* Build configuration list for PBXNativeTarget "MigoDeviceTestHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2B0000000000000000000071 /* Debug */,
+				2B0000000000000000000072 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2B0000000000000000000073 /* Build configuration list for PBXNativeTarget "MigoDeviceTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2B0000000000000000000074 /* Debug */,
+				2B0000000000000000000075 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2B0000000000000000000081 /* Build configuration list for PBXProject "MigoDeviceTestHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2B0000000000000000000082 /* Debug */,
+				2B0000000000000000000083 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		2B0000000000000000000090 /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+		2B0000000000000000000091 /* XCLocalSwiftPackageReference "../core" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../core;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		2B00000000000000000000A1 /* MigoApplePerformancePlus */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MigoApplePerformancePlus;
+		};
+		2B00000000000000000000A2 /* MigoAppleRenderer */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MigoAppleRenderer;
+		};
+		2B00000000000000000000A3 /* MigoAppleFrameHarness */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MigoAppleFrameHarness;
+		};
+		2B00000000000000000000A4 /* MigoAppleCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MigoAppleCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 2B0000000000000000000080 /* Project object */;
+}

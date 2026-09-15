@@ -80,7 +80,14 @@ PACKAGE_SWIFT="$REPO_ROOT/platforms/apple/Package.swift"
 CORE_PACKAGE_SWIFT="$REPO_ROOT/platforms/apple/core/Package.swift"
 FLOOR_SWIFT="$REPO_ROOT/platforms/apple/core/Sources/MigoAppleCore/MigoDeploymentFloor.swift"
 BUILD_SCRIPT="$REPO_ROOT/scripts/build-apple-sdk.sh"
-PROBE_PBXPROJ="$REPO_ROOT/platforms/apple/ProbeApp/MigoProbe.xcodeproj/project.pbxproj"
+# The Xcode projects, each of which carries the floor as a build setting because
+# an Xcode target has nowhere else to read it from. The device test host joined
+# the probe app on 2026-09-15; the check below runs over this list, so a third
+# project is one line here rather than a second copy of the check.
+XCODE_PBXPROJS=(
+    "$REPO_ROOT/platforms/apple/ProbeApp/MigoProbe.xcodeproj/project.pbxproj"
+    "$REPO_ROOT/platforms/apple/DeviceTestHost/MigoDeviceTestHost.xcodeproj/project.pbxproj"
+)
 
 ARTIFACT_DIR=""
 
@@ -250,16 +257,25 @@ check_literal "$FLOOR_SWIFT" "let performancePlusMinimumIOS = $(swift_tuple "$pe
 # Both configurations, because a Debug-only floor is the one an operator
 # actually installs on a phone and a Release-only floor is the one a lane
 # builds -- either alone would leave the other unchecked.
-if [ -f "$PROBE_PBXPROJ" ]; then
-    probe_hits="$(grep -cF "IPHONEOS_DEPLOYMENT_TARGET = $ios_floor;" "$PROBE_PBXPROJ" || true)"
-    if [ "$probe_hits" -lt 2 ]; then
-        fail "${PROBE_PBXPROJ#$REPO_ROOT/} carries $probe_hits of the 2 expected 'IPHONEOS_DEPLOYMENT_TARGET = $ios_floor;' settings (Debug and Release)"
-    else
-        info "ok: the probe app targets iOS $ios_floor in $probe_hits configuration(s)"
+for pbxproj in "${XCODE_PBXPROJS[@]}"; do
+    rel="${pbxproj#$REPO_ROOT/}"
+    if [ ! -f "$pbxproj" ]; then
+        # Listed and absent is a stale list, not a project that has not been
+        # written yet: both of these exist, and a check that skips a missing file
+        # reads exactly like one that passed.
+        fail "$rel is listed as an Xcode project that carries the floor, and it does not exist"
+        continue
     fi
-else
-    info "skip: the probe app's Xcode project does not exist yet"
-fi
+    hits="$(grep -cF "IPHONEOS_DEPLOYMENT_TARGET = $ios_floor;" "$pbxproj" || true)"
+    other="$(grep -E "IPHONEOS_DEPLOYMENT_TARGET = " "$pbxproj" | grep -vcF "IPHONEOS_DEPLOYMENT_TARGET = $ios_floor;" || true)"
+    if [ "$hits" -lt 2 ]; then
+        fail "$rel carries $hits of the 2 expected 'IPHONEOS_DEPLOYMENT_TARGET = $ios_floor;' settings (Debug and Release)"
+    elif [ "$other" -gt 0 ]; then
+        fail "$rel also sets IPHONEOS_DEPLOYMENT_TARGET to something other than $ios_floor in $other place(s)"
+    else
+        info "ok: $rel targets iOS $ios_floor in $hits configuration(s)"
+    fi
+done
 
 # The build script is asked, not read.
 #
@@ -339,6 +355,7 @@ allowed_to_declare() {
         scripts/build-apple-sdk.sh) return 0 ;;
         scripts/build-v8-apple.sh) return 0 ;;
         platforms/apple/ProbeApp/MigoProbe.xcodeproj/project.pbxproj) return 0 ;;
+        platforms/apple/DeviceTestHost/MigoDeviceTestHost.xcodeproj/project.pbxproj) return 0 ;;
         scripts/test-apple-deployment-floor-contract.sh) return 0 ;;
         docs/*) return 0 ;;
         *) return 1 ;;

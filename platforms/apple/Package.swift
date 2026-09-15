@@ -27,6 +27,14 @@ let package = Package(
         .library(name: "MigoAppleWebKit", targets: ["MigoAppleWebKit"]),
         .library(name: "MigoApplePerformancePlus", targets: ["MigoApplePerformancePlus"]),
         .library(name: "MigoMacV8", targets: ["MigoMacV8"]),
+        // The two below are for `DeviceTestHost`, not for integrators. SwiftPM
+        // test targets are tool-hosted and `xcodebuild test` refuses them on a
+        // device; the only way to run these tests on a phone is an Xcode unit-test
+        // bundle with a host application, and an Xcode project can depend on a
+        // package's products and on nothing else. The renderer and lane tests
+        // import both modules.
+        .library(name: "MigoAppleRenderer", targets: ["MigoAppleRenderer"]),
+        .library(name: "MigoAppleFrameHarness", targets: ["MigoAppleFrameHarness"]),
     ],
     // The engine-free half, split out so it can be compiled and tested without
     // the xcframework below. See core/Package.swift for why that mattered: with
