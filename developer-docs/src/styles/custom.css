@@ -1,0 +1,251 @@
+/* Migo developer docs — brand layer over Starlight defaults.
+   Palette and display font mirror migo-www/src/styles/tokens.css (portal).
+   Unlayered on purpose: wins over @layer starlight.* everywhere below. */
+
+@font-face {
+  font-family: 'Smiley Sans';
+  src: url('/docs/fonts/SmileySans-Oblique.otf.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* Migo red — used sparingly, matching the portal's ~2% rule.
+     text-accent 与 accent-high 分开:链接/选中文字用中亮度红(gray-6 上 ≈5.5:1,
+     偏离门户 token 有意为之——门户 --red-ink #eb4f47 在 docs 深底上只有 4.1:1)。 */
+  --sl-color-accent-low: #47100d;
+  --sl-color-accent: #e5352c;
+  --sl-color-accent-high: #f3c1bf;
+  --sl-color-text-accent: #ef7a72;
+  /* expressive-code 画框:圆角 + 实色边框,代码块从页面里「立」起来。 */
+  --ec-brdRad: 8px;
+  /* 代码块横向滚动条与下方表格滚动条同档(gray-4)。 */
+  --ec-sbThumbCol: var(--sl-color-gray-4);
+  --ec-sbThumbHoverCol: var(--sl-color-gray-3);
+  /* 标题旁的锚点链条缩小一档,避免在每个 H2 右侧常驻 accent 色碎屑。 */
+  --sl-anchor-icon-size: 0.65em;
+}
+
+/* Display font only for the page hero title and brand spots.
+   只发 400 字重 woff2;Starlight 标题默认 600 → 必须锁 font-weight:400,
+   否则斜体上是合成加粗。H2-H4 走系统字体,层级靠字号/字重。 */
+h1[id='_top'],
+.sl-site-title,
+.site-title,
+.sl-link-list-group-label {
+  font-family: 'Smiley Sans', var(--sl-font-system);
+  font-weight: 400;
+}
+
+/* EC 边框:直接改属性,不走 --ec-brdCol(Starlight UI 主题在这条属性上叠了
+   25% 透明度,:root 变量级覆盖拿不到实色)。 */
+.expressive-code .frame {
+  border-color: var(--sl-color-gray-5);
+  /* release/download-verification 的 terminal 窗口按钮点色,默认 #3a3a3a
+     级别,在 gray-6 底上不可辨(装饰失效)。 */
+  --ec-frm-trmTtbDotsFg: var(--sl-color-gray-3);
+  --ec-frm-trmTtbDotsOpa: 0.8;
+}
+/* 复制按钮:github-dark 主题化后变成常显图标,会压住首行尾字符;恢复
+   hover/focus 才实显。触摸设备给个淡显兜底,保持可点。 */
+.expressive-code .frame .copy {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.expressive-code .frame:hover .copy,
+.expressive-code .frame:focus-within .copy {
+  opacity: 1;
+}
+@media (hover: none) {
+  .expressive-code .frame .copy {
+    opacity: 0.45;
+  }
+}
+
+/* Anchor links: neutral gray instead of accent; desktop keeps hover-only,
+   mobile’s always-on icon stops competing with the heading color. */
+.sl-markdown-content .sl-anchor-link {
+  color: var(--sl-color-gray-3);
+  transition: opacity 0.15s;
+}
+
+/* Sidebar current page: 2px brand-red rail + text instead of a large accent-fill
+   block(全站最大彩色面),落回门户「红 ≈ 2%」纪律。
+   Starlight 同规则定义了 :hover/:focus 变体,必须一并覆盖。
+   必须限定 .sidebar-content:门户导航链接同样带 aria-current='page',
+   未 scope 时红轨会跑到 header 里当「赘竖条」。 */
+.sidebar-content [aria-current='page'],
+.sidebar-content [aria-current='page']:hover,
+.sidebar-content [aria-current='page']:focus {
+  background: transparent;
+  color: var(--sl-color-text-accent);
+  box-shadow: none;
+  font-weight: 600;
+  position: relative;
+}
+/* 直条而非弧度:box-shadow 会跟着链接盒的 4px radius 变弯(「括号」感),
+   ::before 独立绘 2px 直轨。 */
+.sidebar-content [aria-current='page']::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  background: var(--sl-color-accent);
+}
+
+/* TOC: active section gains a geometric rail, not just a color change. */
+.right-sidebar-panel a[aria-current='true'] {
+  position: relative;
+  color: var(--sl-color-text-accent);
+  font-weight: 500;
+}
+.right-sidebar-panel a[aria-current='true']::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: calc(-0.5 * var(--sl-sidebar-pad-x));
+  width: 2px;
+  height: 100%;
+  background: var(--sl-color-accent);
+  border-radius: 99px;
+}
+
+/* Tables: real header row, zebra striping, visible border + radius.
+   overflow 保持 auto(宽 C ABI 表必须留横向滚动;radius 在 overflow ≠ visible
+   时天然裁角)。aside 里的表格有底色,zebra/表头灰会压上去,排除。 */
+.sl-markdown-content th:not(:where(.starlight-aside th)) {
+  background: var(--sl-color-gray-6);
+  border-bottom: 2px solid var(--sl-color-gray-2);
+}
+.sl-markdown-content tbody tr:nth-child(even) td:not(:where(.starlight-aside td)) {
+  background: var(--sl-color-gray-6);
+}
+.sl-markdown-content :is(th, td) {
+  border-bottom: 1px solid var(--sl-color-gray-5);
+  padding: 0.625rem 1rem;
+  /* 390 下表格 auto-layout 会把短内容列压成一字一列(keyboard 页实锤排版事故);
+     5em 兜底,宽表由横滚消化,desktop 阈值天然远高于此不受影响。 */
+  min-width: 5em;
+}
+.sl-markdown-content tr:last-child td {
+  border-bottom: none;
+}
+.sl-markdown-content table {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 8px;
+}
+/* 长标识符的三种失败形态:折在 token 中间(丑)、nowrap 被右列盖住(硬剪)、
+   直接溢出(后列背景吞字)。正解:chip 自身 inline-block + max-width 100%,
+   超宽时单元内横滚(thin 视觉,同一滚动语言)。 */
+.sl-markdown-content td code {
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
+  vertical-align: bottom;
+  /* 有溢出的 chip 必须给出可滚提示:细横滚动条,和表格滚动条同档。 */
+  scrollbar-width: thin;
+  scrollbar-color: var(--sl-color-gray-4) transparent;
+}
+.sl-markdown-content td code::-webkit-scrollbar {
+  height: 5px;
+}
+.sl-markdown-content td code::-webkit-scrollbar-thumb {
+  background: var(--sl-color-gray-4);
+  border-radius: 3px;
+}
+
+/* Inline code: neutral, never tinted by shiki scopes.
+   aside 有自己的着色 chip(accent-tint),不抢。 */
+.sl-markdown-content :not(pre) > code:not(:where(.starlight-aside *)) {
+  background: var(--sl-color-gray-5);
+  color: var(--sl-color-gray-1);
+  font-size: var(--sl-text-sm);
+}
+
+/* Mermaid diagrams get a plate matching the code-block language.
+   astro-mermaid 在处理完后动态注入 <style>(background-color: rgba(255,255,255,.02)),
+   与我们的选择器权重相当但次序不稳定,故这里用 !important 锁形。 */
+.sl-markdown-content pre.mermaid,
+.sl-markdown-content pre.mermaid[data-processed] {
+  background: var(--sl-color-gray-6) !important;
+  border: 1px solid var(--sl-color-gray-4);
+  border-radius: 8px;
+  overflow: auto;
+  padding: 1.25rem 1.5rem;
+}
+
+/* Aside boxes: radius language + tighter inner rhythm.
+   左边竖条改 inset 阴影,方块圆角与框体圆角衔接处不再「切角」。 */
+.sl-markdown-content .starlight-aside {
+  border-radius: 6px;
+  border-inline-start: none;
+  box-shadow: inset 0.25rem 0 0 var(--sl-color-asides-border);
+  padding-inline-start: 1.5rem;
+}
+/* Hero 已迁回 MDX 内联(index.mdx home-hero),此处的 splash 遗留样式已清理。 */
+.sl-markdown-content .starlight-aside li + li {
+  margin-top: 0.375rem;
+}
+/* aside 内链接统一主红,与正文一致(默认走 asides text-accent 透出蓝紫)。 */
+.sl-markdown-content .starlight-aside a {
+  color: var(--sl-color-text-accent);
+}
+
+/* Badge pills must not inflate list line-height;
+   长 token(aarch64-apple-ios)在窄格内允许到 token 边界。 */
+.sl-markdown-content .sl-badge {
+  vertical-align: baseline;
+  margin-block: -0.15em;
+  overflow-wrap: anywhere;
+}
+
+/* 触屏无 hover,横滚唯一手是拇指滑动——头 3 秒里用户看不到任何可滚提示。
+   hover: none 设备给 EC 代码块/复制块加常驻 thin 滚动条。 */
+@media (hover: none) {
+  .expressive-code pre {
+    scrollbar-width: thin;
+    scrollbar-color: var(--sl-color-gray-3) transparent;
+  }
+  .expressive-code pre::-webkit-scrollbar {
+    height: 6px;
+  }
+  .expressive-code pre::-webkit-scrollbar-thumb {
+    background: var(--sl-color-gray-3);
+    border-radius: 3px;
+  }
+}
+
+/* Wide tables are horizontally scrollable but give no affordance on mobile:
+   a permanently visible thin scrollbar cues the extra column. */
+.sl-markdown-content table {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sl-color-gray-4, #888) transparent;
+}
+/* 轨道常年可见(透明轨道+细 thumb 不足以提示可横滚),thumb 提一档。 */
+.sl-markdown-content table::-webkit-scrollbar {
+  height: 8px;
+  background: var(--sl-color-gray-6);
+  border-radius: 4px;
+}
+.sl-markdown-content table::-webkit-scrollbar-thumb {
+  background: var(--sl-color-gray-3);
+  border-radius: 4px;
+}
+
+/* 键盘导航:UA 默认 1px #101010 outline 在 #17181c 背景上几乎不可见,
+   统一换 accent-high 焦环;:focus-visible 只在键盘聚焦时命中,触摸不干扰。 */
+:focus-visible {
+  outline: 2px solid var(--sl-color-accent-high);
+  outline-offset: 2px;
+}
+
+/* 嵌套子组(宿主能力下的 商业化/平台服务 等)与顶级组同大粗 = 层级断档。
+   降半档字号 + 灰阶:顶级 16px 白,子组 15px gray-2,肉眼即读出一层嵌套。 */
+.sidebar-content details details > summary .group-label .large {
+  font-size: 0.9375rem;
+  color: var(--sl-color-gray-2);
+  font-weight: 500;
+}

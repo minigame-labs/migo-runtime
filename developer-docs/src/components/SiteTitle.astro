@@ -1,0 +1,22 @@
+---
+// Portal parity: 同一个 lockup-on-dark.svg(与 portal /brand/ 同资产),
+// 整站点齐门户 header 样式 —— 品牌区只有 lockup;当前章节由导航红点标出,
+// 「开发者文档」不在品牌旁边重复(门户 header 也没有这段字)。
+---
+
+<a class="site-title" href="/" aria-label="Migo 首页">
+	<img src="/docs/brand/lockup-on-dark.svg" alt="Migo" width="122" height="34" />
+</a>
+
+<style>
+	.site-title {
+		display: inline-flex;
+		text-decoration: none;
+	}
+	.site-title img {
+		display: block;
+		/* 与门户页头同一档 34px;24px 下 brand 鼻子的红 ▶ 会糊成半个圆点 */
+		height: 34px;
+		width: auto;
+	}
+</style>
