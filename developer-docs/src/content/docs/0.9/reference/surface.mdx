@@ -1,0 +1,512 @@
+---
+title: Surface 接口
+sidebar:
+  order: 5
+description: 将原生窗口绑定到 Session、驱动 resize 与帧参数更新，以及通过 generation 机制和异步 detach 安全销毁原生窗口的完整流程。
+audience: host-integrator
+platforms:
+  - android
+  - linux
+  - windows
+  - openharmony
+sourcePaths:
+  - include/migo/surface.h
+slug: 0.9/reference/surface
+---
+
+Surface 接口负责将平台原生窗口与 Migo Session 关联，管理该窗口在整个应用生命周期中的演变，并在 Session 不再需要渲染目标时安全地释放它。所有操作围绕三个阶段展开：**attach**（绑定原生窗口并发布为呈现目标）、**update**（同步上报 resize 与呈现参数变更）、**detach**（异步退休，等待 GPU 引用计数归零后才销毁原生资源）。
+
+## 类型
+
+### MigoPlatformKind
+
+标识原生窗口所属的平台，取值范围由 `MIGO_PLATFORM_*` 常量定义。`MigoSurfaceDescriptor.platform_kind` 和平台专属描述符的 `platform_kind` 字段均使用此类型。Session 第一次成功 attach 后，图形后端身份即被固定，后续 attach 必须与之一致。
+
+| 常量 | 值 | 平台 |
+| --- | --- | --- |
+| `MIGO_PLATFORM_UNKNOWN` | 0 | 保留，不得作为有效值传入 |
+| `MIGO_PLATFORM_ANDROID_NATIVE_WINDOW` | 1 | Android `ANativeWindow` |
+| `MIGO_PLATFORM_WIN32_HWND` | 2 | Windows `HWND`（ANGLE / Direct3D 后端） |
+| `MIGO_PLATFORM_WINUI_SWAP_CHAIN_PANEL` | 3 | WinUI 3 `SwapChainPanel` |
+| `MIGO_PLATFORM_MACOS_NS_VIEW` | 4 | macOS `NSView` |
+| `MIGO_PLATFORM_MACOS_CA_METAL_LAYER` | 5 | macOS `CAMetalLayer` |
+| `MIGO_PLATFORM_X11_WINDOW` | 6 | X11 `Window` |
+| `MIGO_PLATFORM_WAYLAND_SURFACE` | 7 | Wayland `wl_surface` |
+| `MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW` | 8 | OpenHarmony `OHNativeWindow` |
+| `MIGO_PLATFORM_IOS_UI_VIEW` | 9 | iOS `UIView` |
+| `MIGO_PLATFORM_IOS_CA_METAL_LAYER` | 10 | iOS `CAMetalLayer` |
+
+当前构建实际支持的平台子集由 `migo_query_capabilities` 通过 `platform_kinds` 字段报告（见 [capabilities.mdx](/docs/0.9/reference/capabilities/)）。传入已定义但本构建不实现的 `platform_kind` 返回 `MIGO_ERROR_UNSUPPORTED_PLATFORM`；传入完全未定义的值返回 `MIGO_ERROR_INVALID_ARGUMENT`。
+
+### MigoColorSpace
+
+描述 surface 的色彩空间，用于 `MigoSurfaceDescriptor.color_space` 和 `MigoSurfaceMetrics.color_space`。
+
+| 常量 | 含义 |
+| --- | --- |
+| `MIGO_COLOR_SPACE_UNSPECIFIED` | 由引擎或平台决定（行为等效于 sRGB） |
+| `MIGO_COLOR_SPACE_SRGB` | 标准 sRGB |
+| `MIGO_COLOR_SPACE_DISPLAY_P3` | Display P3 宽色域（当前构建不支持，返回 `MIGO_ERROR_UNSUPPORTED_CAPABILITY`） |
+| `MIGO_COLOR_SPACE_EXTENDED_SRGB` | Extended Linear sRGB（当前构建不支持，同上） |
+
+### MigoAlphaMode
+
+描述 surface alpha 通道的语义，用于 `MigoSurfaceDescriptor.alpha_mode` 和 `MigoSurfaceMetrics.alpha_mode`。
+
+| 常量 | 含义 |
+| --- | --- |
+| `MIGO_ALPHA_MODE_UNSPECIFIED` | 由引擎决定 |
+| `MIGO_ALPHA_MODE_OPAQUE` | 完全不透明，忽略 alpha 通道 |
+| `MIGO_ALPHA_MODE_PREMULTIPLIED` | 预乘 alpha（当前构建不支持，返回 `MIGO_ERROR_UNSUPPORTED_CAPABILITY`） |
+| `MIGO_ALPHA_MODE_POSTMULTIPLIED` | 后乘 alpha（当前构建不支持，同上） |
+
+### MigoPresentationMode
+
+控制帧提交到 compositor 的排队策略，用于 `MigoSurfaceDescriptor.preferred_presentation_mode` 和 `MigoSurfaceMetrics.preferred_presentation_mode`。
+
+| 常量 | 含义 |
+| --- | --- |
+| `MIGO_PRESENTATION_MODE_DEFAULT` | 由引擎选择最优模式 |
+| `MIGO_PRESENTATION_MODE_FIFO` | 严格 VSync 队列，帧按到达顺序呈现 |
+| `MIGO_PRESENTATION_MODE_MAILBOX` | 邮箱模式，最新帧替换队列（当前构建不支持） |
+| `MIGO_PRESENTATION_MODE_IMMEDIATE` | 立即提交，可能产生画面撕裂（当前构建不支持） |
+
+### MigoSurfaceCapabilities
+
+`MigoSurfaceDescriptor.capability_flags` 的位标志集合，描述 host 对 surface 的额外能力需求。这些标志是**需求而非提示**——引擎不会静默降级，未满足的需求返回 `MIGO_ERROR_UNSUPPORTED_CAPABILITY`。
+
+| 常量 | 含义 |
+| --- | --- |
+| `MIGO_SURFACE_CAPABILITY_NONE` | 无额外需求 |
+| `MIGO_SURFACE_CAPABILITY_WIDE_COLOR` | 要求宽色域支持 |
+| `MIGO_SURFACE_CAPABILITY_TRANSPARENT` | 要求透明 surface 合成 |
+| `MIGO_SURFACE_CAPABILITY_MAILBOX_PRESENT` | 要求 mailbox 呈现模式支持 |
+
+### MigoSurfaceLossReason
+
+当 surface 因平台或设备事件丢失时，用于描述丢失原因。该类型目前由 surface loss 通知相关接口使用；本页列出其 ABI 值，便于 host 统一记录诊断信息。
+
+| 常量 | 值 | 含义 |
+| --- | ---: | --- |
+| `MIGO_SURFACE_LOSS_UNKNOWN` | 0 | 原因未知 |
+| `MIGO_SURFACE_LOSS_HOST_DESTROYED` | 1 | host 销毁了原生目标 |
+| `MIGO_SURFACE_LOSS_DEVICE_LOST` | 2 | 图形设备丢失 |
+| `MIGO_SURFACE_LOSS_PLATFORM_ERROR` | 3 | 平台错误 |
+
+### MigoPlatformSurfaceDescriptor
+
+所有平台专属描述符结构体的公共前缀。每个平台专属结构（如 `MigoAndroidNativeWindowDescriptor`）的头四个字段与此完全一致，因此可以安全地将任意平台描述符指针转型为此类型以读取通用字段。
+
+```c
+typedef struct MigoPlatformSurfaceDescriptor {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoPlatformKind platform_kind;
+    MigoPlatformDescriptorFlags flags;
+} MigoPlatformSurfaceDescriptor;
+```
+
+`MigoSurfaceDescriptor.platform_descriptor_size` 与平台描述符内部的 `struct_size` 构成故意设计的双重冗余——信封层与载荷层互相校验，防止调用方在两侧传入不一致的大小。
+
+### MigoSurfaceMetrics
+
+`migo_surface_update` 的输入参数，描述一次 resize 或呈现参数变更。
+
+```c
+typedef struct MigoSurfaceMetrics {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t generation;
+    uint32_t width_pixels;
+    uint32_t height_pixels;
+    float    scale_factor;
+    MigoColorSpace             color_space;
+    MigoAlphaMode              alpha_mode;
+    MigoPresentationMode       preferred_presentation_mode;
+    MigoSurfaceDescriptorFlags flags;
+    uint32_t reserved0;
+} MigoSurfaceMetrics;  /* sizeof == 48 */
+```
+
+`generation` 命名的是**本次更新所属 attachment 的 generation**（即 attach 时提交的 `MigoSurfaceDescriptor.generation`），不是另一个独立的 update 计数器，也不是下一个递增值。每次 update 都必须携带当前活跃 attachment 的同一个 generation；传入更大的值返回 `MIGO_ERROR_INVALID_ARGUMENT`，传入更小的值返回 `MIGO_ERROR_STALE_SURFACE`。所有保留字段必须为零。
+
+### MigoSurfaceDescriptor
+
+`migo_session_attach_surface` 的输入参数，完整描述一次 attach 操作。
+
+```c
+typedef struct MigoSurfaceDescriptor {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t generation;
+    MigoPlatformKind            platform_kind;
+    MigoSurfaceDescriptorFlags  flags;
+    uint32_t width_pixels;
+    uint32_t height_pixels;
+    float    scale_factor;
+    MigoColorSpace              color_space;
+    MigoAlphaMode               alpha_mode;
+    MigoPresentationMode        preferred_presentation_mode;
+    MigoSurfaceCapabilities     capability_flags;
+    uint32_t platform_descriptor_size;
+    uint32_t reserved0;
+    const void *platform_descriptor;
+} MigoSurfaceDescriptor;  /* LP64: sizeof == 72 */
+```
+
+`platform_descriptor` 是仅在本次调用期间借用的指针；引擎在 attach 成功返回前必须完成拷贝，并对任何带引用计数的原生目标持有自己的引用。`platform_descriptor_size` 必须等于对应平台结构体的 `struct_size`（双重冗余的完整性校验）。所有 `reserved` 与 `flags` 字段必须为零。
+
+### MigoSurfaceRelease
+
+`migo_surface_begin_detach` 成功时通过 `out_release` 返回的不透明 observer 句柄，代表一次异步原生 surface 释放过程。
+
+* 此句柄不持有任何 surface 资源的租约
+* 达到 `MIGO_SURFACE_RELEASE_RELEASED` 后，可在产生它的 Session 销毁后继续存活并被查询
+* 仍处于 PENDING 状态的 observer 会阻止 `migo_session_destroy` 成功
+
+通过 `migo_surface_release_query` 轮询状态，确认 RELEASED 后调用 `migo_surface_release_destroy` 销毁。
+
+### MigoSurfaceReleaseState
+
+release observer 的两个可能状态。
+
+```c
+typedef uint32_t MigoSurfaceReleaseState;
+#define MIGO_SURFACE_RELEASE_PENDING  0U
+#define MIGO_SURFACE_RELEASE_RELEASED 1U
+```
+
+observer 是**电平触发（level-triggered），而非边沿触发**：即使 release 在首次查询之前已经完成，查询仍然能观察到 RELEASED 状态。这消除了"调用 `begin_detach`"与"首次查询"之间的竞态窗口——边沿触发在这段窗口内恰好只能被错过一次，而错过它意味着销毁一个 GPU 仍在读取的窗口。
+
+### MigoSurfaceReleaseStatus
+
+`migo_surface_release_query` 的输出参数，由 host 分配并**在调用前初始化 header**。
+
+```c
+typedef struct MigoSurfaceReleaseStatus {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t generation;
+    MigoSurfaceReleaseState state;
+    uint32_t reserved0;
+} MigoSurfaceReleaseStatus;  /* sizeof == 24 */
+```
+
+**此结构体调用者所有，header 是输入字段**：调用前必须设置 `struct_size` 和 `abi_version`；传入全零结构体（C 的未初始化默认值，或 Swift 的 default init 值）会被拒绝而非被引擎用自身的 `sizeof` 覆盖写入。这一设计确保了旧版 host 调用更新版引擎库时的前向安全性。`out_status` 只在 `MIGO_OK` 时被写入，且已设置的 header 字段不被覆盖。
+
+***
+
+## Generation 机制
+
+Migo 用 `generation` 字段为 host 的每次 attach 和 update 请求编号，使引擎能在多线程环境中安全地识别和丢弃过期请求。
+
+**Attach generation** 由 host 自行维护的单调递增计数器提供：
+
+* 每次调用 `migo_session_attach_surface` 时，`descriptor.generation` 必须**严格大于**本 Session 迄今已接受的任何 generation；等于或更小的值返回 `MIGO_ERROR_STALE_SURFACE`
+* 被拒绝的 attach 不消耗任何引擎侧状态，重试可以复用同一 generation 值——这正是"声明不提交"策略的意义所在
+* generation 从 1 起步；传入 0 返回 `MIGO_ERROR_INVALID_ARGUMENT`
+
+**Update generation** 命名的是**本 attachment 所对应的 generation**，而不是下一个递增值。每次 `migo_surface_update` 都必须原样携带当前活跃 attachment 的 generation；它不能大于该 attachment 的 generation（返回 `MIGO_ERROR_INVALID_ARGUMENT`），也不能小于该值（返回 `MIGO_ERROR_STALE_SURFACE`）。因此，host 只为 attach 维护跨窗口生命周期的 counter，不为 update 另造会递增的 generation。
+
+**Host 端 counter 管理建议**（"声明-后提交"模式）：
+
+```c
+/* attach_window 节选 */
+uint64_t gen = h->surface_generation + 1;  /* 先声明，不递增本地计数器 */
+descriptor.generation = gen;
+MigoResult r = migo_session_attach_surface(session, &descriptor, &h->attachment);
+if (r == MIGO_OK) {
+    h->surface_generation = gen;  /* 已被接受，固化 */
+} /* 被拒绝时不修改 h->surface_generation，下次重试可复用 gen */
+```
+
+任何平台在正常操作中会销毁并重建窗口——Android 在每次经历后台时都会如此——因此 host 端需要维护持久 counter 而非使用常量。
+
+***
+
+## Android 后台-前台生命周期
+
+Android 系统在应用进入后台时会销毁 `ANativeWindow`，返回前台时重新创建。这意味着一次完整的应用生命周期包含多轮 `attach + begin_detach` 循环：
+
+```text
+前台
+  │  migo_session_attach_surface(gen=1, window_A)  →  attachment_A
+  │  ... 渲染帧，notify_vsync ...
+  │
+  │  APP_CMD_TERM_WINDOW（系统准备回收 window_A）
+  │  migo_surface_begin_detach(attachment_A)        →  release_A
+  │  轮询 migo_surface_release_query(release_A)        直至 RELEASED
+  │  migo_surface_release_destroy(release_A)
+  │  ← ANativeWindow_release(window_A) 现在安全；handler 返回
+  │
+后台（window_A 已被系统回收）
+  │
+  │  APP_CMD_INIT_WINDOW（系统提供全新窗口 window_B）
+  │  migo_session_attach_surface(gen=2, window_B)  →  attachment_B
+  │  ... 渲染帧 ...
+前台
+```
+
+关键约束：
+
+* `gen` 必须每轮严格递增（2 > 1）；Android 在同一进程内可能经历多次后台循环，counter 需跨轮次持久保存
+* `begin_detach` 返回 `MIGO_OK` 后，**不得立即销毁 `ANativeWindow`**；必须等待 `release_query` 报告 `MIGO_SURFACE_RELEASE_RELEASED`
+* android\_native\_app\_glue 在 `APP_CMD_TERM_WINDOW` handler 返回后立即释放自身对 window 的引用；因此 `detach_window` 中的轮询等待必须**在 handler 返回前完成**，否则 GL 驱动可能仍在读取一个已被系统回收的窗口——属于 use-after-free
+
+***
+
+## Detach 不可逆性
+
+`migo_surface_begin_detach` 是**不可逆的呈现边界**：
+
+* 调用返回 `MIGO_OK` 后，传入的 `attachment` 指针**立刻失效**，无论之后的 release 等待是否超时或失败——退休已经开始，没有撤销路径
+* 引擎侧 GPU 引用计数由驱动管理；退休开始不代表驱动已释放所有引用——driver-side 引用的生命周期超出本次调用范围
+* `*out_release` 是 host 监听退休完成的**唯一途径**；在通过 `migo_surface_release_query` 确认状态为 `MIGO_SURFACE_RELEASE_RELEASED` 之前，绝对不能销毁对应的原生资源
+* 在 PENDING 期间调用 `migo_surface_release_destroy` 返回 `MIGO_ERROR_INVALID_STATE`，所有权仍归 host，不泄漏——拒绝是故意的：提前销毁 observer 意味着 host 失去唯一的等待手段
+* Session 不能在任何 PENDING release 存在时被销毁；`migo_session_destroy` 会拒绝并返回错误
+
+任何在 RELEASED 确认前销毁原生窗口的行为，都是驱动侧的 use-after-free，引擎无法检测或阻止。
+
+***
+
+## migo\_session\_attach\_surface
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_attach_surface(
+    MigoSession *session,
+    const MigoSurfaceDescriptor *descriptor,
+    MigoSurfaceAttachment **out_attachment);
+```
+
+将一个原生 surface 绑定到 Session 并发布为呈现目标。首次成功 attach 会固定 Session 的图形平台身份（后端 + display 连接）；后续 attach 必须与之匹配，否则返回 `MIGO_ERROR_INVALID_STATE`（Session 保持可重试状态，不进入不可恢复错误）。`out_attachment` 在任何验证前先被置为 NULL，因此调用方可以直接以句柄是否为 NULL 判断结果，无需检查返回码。
+
+`descriptor.platform_descriptor` 仅在本次调用期间借用；引擎在返回前完成深拷贝，并对带引用计数的原生目标持有独立引用。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 Session 句柄，不得为 NULL |
+| `descriptor` | 完整描述 attach 的 `MigoSurfaceDescriptor`，不得为 NULL；所有保留与 flags 字段必须为零 |
+| `out_attachment` | 接收新 attachment 句柄的二级指针，不得为 NULL；失败时写入 NULL |
+
+返回：
+
+* `MIGO_OK` — attach 成功；`*out_attachment` 持有有效句柄
+* `MIGO_ERROR_INVALID_ARGUMENT` — session、descriptor 或 out\_attachment 为 NULL；`struct_size` 小于最小版本记录；generation 为零；width 或 height 为零或超过 `INT32_MAX`；scale\_factor 非正有限值；非零的 flags 或 reserved 字段；未定义的 color\_space / alpha\_mode / presentation\_mode / platform\_kind；platform payload 与 platform\_kind 不符，或 platform\_descriptor 中包含 NULL 原生窗口
+* `MIGO_ERROR_UNSUPPORTED_ABI` — `descriptor.abi_version` 与本构建不匹配，或 `struct_size` 超出本构建所知大小
+* `MIGO_ERROR_UNSUPPORTED_CAPABILITY` — 已定义但本构建未实现的请求：`MIGO_COLOR_SPACE_DISPLAY_P3`、`MIGO_COLOR_SPACE_EXTENDED_SRGB`、预乘/后乘 alpha、mailbox/immediate 呈现，或任何非零 `capability_flags`
+* `MIGO_ERROR_UNSUPPORTED_PLATFORM` — platform\_kind 已定义但本构建不支持（与 `migo_query_capabilities` 的 `platform_kinds` 报告一致）
+* `MIGO_ERROR_STALE_SURFACE` — `descriptor.generation` 不新于本 Session 已接受的最大 generation
+* `MIGO_ERROR_INVALID_STATE` — Session 已关闭；另一 surface 转换正在进行；已有活跃 attachment；或描述符所指定的后端/display 与首次 attach 固定的不一致
+* `MIGO_ERROR_INTERNAL` — Session 状态锁被污染，或 host 端 lease/dispatch 失败（罕见，发生时记录日志）
+
+线程模型：
+
+从拥有 Session 的线程调用；同一 Session 的并发调用由 host 负责序列化。
+
+***
+
+## migo\_surface\_update
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_surface_update(
+    MigoSurfaceAttachment *attachment,
+    const MigoSurfaceMetrics *metrics);
+```
+
+向已绑定的 surface 报告一次 resize 或呈现参数变更。此调用是同步的：返回时，新的 metrics 已提交并将 resize 命令入队，或什么都没有发生（不存在部分提交）。`metrics.generation` 应使用单调递增序号，以允许引擎检测并丢弃被更新版本超越的 resize 事件。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `attachment` | 当前 Session 的活跃 attachment，不得为 NULL |
+| `metrics` | 新的尺寸与呈现参数，不得为 NULL；`generation` 须与本 attachment 的 generation 匹配 |
+
+返回：
+
+* `MIGO_OK` — 更新已同步提交
+* `MIGO_ERROR_INVALID_ARGUMENT` — attachment 或 metrics 为 NULL；`struct_size` 过小；width 或 height 为零；scale\_factor 非有限值；generation 为零，或比该 attachment 历史见过的最大值更新
+* `MIGO_ERROR_UNSUPPORTED_ABI` — `metrics.abi_version` 不匹配，或 `struct_size` 超出本构建所知大小
+* `MIGO_ERROR_INVALID_STATE` — 同一 Session 上另一 surface 转换（attach / update / detach）正在进行，或 Session 没有活跃 host
+* `MIGO_ERROR_STALE_SURFACE` — attachment 不是 Session 当前活跃 attachment、已 lost，或 `metrics.generation` 旧于已应用的最新 update
+* `MIGO_ERROR_INTERNAL` — host 端 lease/dispatch 失败（罕见，发生时记录日志）
+
+线程模型：
+
+从拥有 Session 的线程调用；同一 Session 的并发调用由 host 负责序列化。
+
+***
+
+## migo\_surface\_begin\_detach
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_surface_begin_detach(
+    MigoSurfaceAttachment *attachment,
+    MigoSurfaceRelease **out_release);
+```
+
+开始退休一个 attachment，进入不可逆的异步 detach 流程。调用成功后，传入的 `attachment` 指针立刻失效（所有权被消费）；`*out_release` 持有一个新的 observer，host 必须通过它轮询驱动侧引用释放完成情况。`out_release` 在任何校验失败前先被置为 NULL，因此无论结果如何都可以安全读取。
+
+非 `MIGO_OK` 结果不消耗任何资源，`attachment` 所有权仍归 host。
+
+> **重要**：`MIGO_OK` 代表退休**已开始**，而非驱动已释放 surface。在 `migo_surface_release_query` 报告 `MIGO_SURFACE_RELEASE_RELEASED` 之前，**不得销毁原生窗口**，否则是驱动侧 use-after-free，引擎无法检测或阻止。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `attachment` | 活跃 attachment 的唯一句柄（不得复制为独立别名），不得为 NULL |
+| `out_release` | 接收 release observer 的二级指针，不得为 NULL；失败时写入 NULL |
+
+返回：
+
+* `MIGO_OK` — detach 已开始；attachment 已消费，`*out_release` 有效
+* `MIGO_ERROR_INVALID_ARGUMENT` — attachment 或 out\_release 为 NULL
+* `MIGO_ERROR_INVALID_STATE` — 另一 surface 转换正在进行，或 Session 没有活跃 host
+* `MIGO_ERROR_STALE_SURFACE` — attachment 不是 Session 当前活跃 attachment
+
+线程模型：
+
+从拥有 Session 的线程调用；此调用不得等待 host dispatcher 的下一轮（不阻塞事件循环）。同一 Session 的并发调用由 host 负责序列化。
+
+***
+
+## migo\_surface\_release\_query
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_surface_release_query(
+    const MigoSurfaceRelease *release,
+    MigoSurfaceReleaseStatus *out_status);
+```
+
+读取 release observer 的当前状态，永不阻塞，可安全地在 UI 线程或事件循环的 idle handler 中轮询。observer 是电平触发：即使 release 在首次查询之前已经完成，查询仍然能观察到 RELEASED——不存在可错过的时间窗口。达到 RELEASED 后，observer 在产生它的 Session 销毁后仍可被查询。
+
+`out_status` 是 **caller-owned，其 header 为输入字段**：调用前必须设置 `struct_size` 和 `abi_version`。传入全零结构体（C 未初始化结构或 Swift default init 的结果）会被拒绝，而非被引擎用本构建的 `sizeof` 直接写入——这是唯一一种在旧 host 调用新库时保持安全的行为。`out_status` 只在 `MIGO_OK` 时被完整写入，且调用方已设置的 header 字段不被覆盖。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `release` | 由 `migo_surface_begin_detach` 返回的 observer 句柄，不得为 NULL |
+| `out_status` | caller 分配的 `MigoSurfaceReleaseStatus`；调用前须设置 `struct_size` 和 `abi_version` |
+
+返回：
+
+* `MIGO_OK` — `out_status` 已完整填写
+* `MIGO_ERROR_INVALID_ARGUMENT` — release 或 out\_status 为 NULL；或 `out_status->struct_size` 小于本 ABI 定义的最小记录大小
+* `MIGO_ERROR_UNSUPPORTED_ABI` — `abi_version` 不是当前版本，或 `struct_size` 超出本构建能填写的大小
+
+***
+
+## migo\_surface\_release\_destroy
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_surface_release_destroy(MigoSurfaceRelease *release);
+```
+
+销毁一个已完成的 release observer，释放其持有的资源。`MIGO_OK` 消费句柄，指针随即失效。
+
+在 release 仍处于 `MIGO_SURFACE_RELEASE_PENDING` 时调用，返回 `MIGO_ERROR_INVALID_STATE`，所有权仍归 host——拒绝是故意的：提前销毁 observer 会使 host 失去监听驱动释放完成的唯一手段，从而无法确定何时可以安全销毁原生资源。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `release` | 状态为 `MIGO_SURFACE_RELEASE_RELEASED` 的 observer 句柄，不得为 NULL |
+
+返回：
+
+* `MIGO_OK` — 销毁成功，句柄失效
+* `MIGO_ERROR_INVALID_STATE` — release 仍为 PENDING，所有权仍归 host
+
+***
+
+## 完整示例：Android attach + vsync + detach cycle
+
+以下代码来自 `tests/c_host/android/src/main/cpp/main.c`，展示了一次完整的 Android NativeWindow 生命周期：surface attach、AChoreographer vsync 投递，以及退出后安全等待 GPU 释放再交还窗口。
+
+```c
+#include <migo/migo.h>
+#include <migo/platform/android.h>
+
+/* host 状态（简化） */
+struct host {
+    MigoSession          *session;
+    MigoSurfaceAttachment *attachment;
+    uint64_t              surface_generation; /* 跨轮次持久维护 */
+    float                 density;
+};
+
+/* ---- attach ------------------------------------------------------------ */
+static void attach_window(struct host *h, ANativeWindow *window) {
+    /* 平台专属描述符 */
+    MigoAndroidNativeWindowDescriptor native = {0};
+    native.struct_size   = sizeof native;
+    native.abi_version   = MIGO_ABI_VERSION_CURRENT;
+    native.platform_kind = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
+    native.native_window = window;  /* 引擎持有独立引用，此处不转移所有权 */
+
+    /* 声明但不提前提交：被拒绝时不递增本地计数器 */
+    uint64_t gen = h->surface_generation + 1;
+
+    MigoSurfaceDescriptor surface = {0};
+    surface.struct_size              = sizeof surface;
+    surface.abi_version              = MIGO_ABI_VERSION_CURRENT;
+    surface.generation               = gen;
+    surface.platform_kind            = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
+    surface.width_pixels             = (uint32_t)ANativeWindow_getWidth(window);
+    surface.height_pixels            = (uint32_t)ANativeWindow_getHeight(window);
+    surface.scale_factor             = h->density;
+    surface.color_space              = MIGO_COLOR_SPACE_SRGB;
+    surface.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+    surface.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+    surface.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;
+    surface.platform_descriptor_size = sizeof native;
+    surface.platform_descriptor      = &native;
+
+    MigoResult r = migo_session_attach_surface(h->session, &surface, &h->attachment);
+    if (r != MIGO_OK) return;
+    h->surface_generation = gen;  /* 已被接受，固化 */
+}
+
+/* ---- vsync ------------------------------------------------------------- */
+/* Choreographer 回调（API >= 29 使用 64-bit 时间戳版本）*/
+static void on_frame64(int64_t frame_time_nanos, void *data) {
+    struct host *h = (struct host *)data;
+    migo_session_notify_vsync(h->session, frame_time_nanos);
+}
+
+/* ---- detach ------------------------------------------------------------ */
+#define RELEASE_TIMEOUT_MS 2000
+#define RELEASE_POLL_US    2000
+
+/* 必须在 APP_CMD_TERM_WINDOW handler 返回前完成，
+ * 因为 glue 在 handler 返回后立即释放对 window 的引用。 */
+static void detach_window(struct host *h) {
+    MigoSurfaceRelease *release = NULL;
+    MigoResult r = migo_surface_begin_detach(h->attachment, &release);
+    if (r != MIGO_OK) return;
+    h->attachment = NULL;  /* 已消费，立刻清空防止悬空指针 */
+
+    /* 电平触发：即使 release 已完成也不会漏掉 */
+    for (long waited_us = 0; waited_us < RELEASE_TIMEOUT_MS * 1000L;
+         waited_us += RELEASE_POLL_US) {
+        MigoSurfaceReleaseStatus status = {0};
+        status.struct_size = sizeof status;
+        status.abi_version = MIGO_ABI_VERSION_CURRENT;
+        r = migo_surface_release_query(release, &status);
+        if (r != MIGO_OK) return;
+        if (status.state == MIGO_SURFACE_RELEASE_RELEASED) {
+            migo_surface_release_destroy(release);
+            return;  /* ANativeWindow 现在安全，可交还给系统 */
+        }
+        usleep(RELEASE_POLL_US);
+    }
+    /* 超时：泄漏 observer（刻意为之）；记录错误，window 即将被系统回收 */
+}
+```
+
+超时后故意泄漏 observer 是最后的安全策略：它是了解窗口何时安全的唯一剩余手段，而框架此时无论如何都将回收窗口。在正常路径下，2 秒内 GPU 引用均会释放完毕。

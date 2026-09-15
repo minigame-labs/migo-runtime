@@ -1,0 +1,73 @@
+---
+title: ABI Compatibility
+sidebar:
+  order: 6
+description: The current status (CANDIDATE) of C ABI compatibility discipline, existing forward and backward compatibility mechanisms, validation lanes, and the remaining steps to promote it to stable v1.
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - include/migo/README.md
+  - include/migo/types.h
+---
+
+The C ABI is currently **CANDIDATE**: the source of truth is `MIGO_C_ABI_CANDIDATE == 1` in `include/migo/types.h`. But the compatibility machinery already exists in full and has been tested. This page describes discipline that is already implemented, not a wish for the future.
+
+## Current Status
+
+- **Candidate does not mean unusable.** Four platforms (Android / Linux / Windows / OpenHarmony) already have linkable runtimes (`MIGO_C_ABI_HAS_RUNTIME`); the headers compile, and artifacts can be consumed according to the contract. What is frozen is not the code, but the statement "we promise this will never change."
+- **Candidate does not mean unstable.** Every caller-facing structure already works in the shape that lets programs compiled with old headers continue to work. Every rule in the next section is fixed by tests; freezing the ABI removes a warning rather than changing behavior.
+
+## Compatibility Machinery (Implemented)
+
+Every rule gained a bidirectional test lane on the day it was written. Do not reverse the direction: these are behavioral constraints, not editorial conventions.
+
+**Struct negotiation.** Every extensible structure held by a caller begins with `struct_size` + `abi_version`:
+
+```c
+MigoSurfaceDescriptor descriptor = {0};
+descriptor.struct_size = (uint32_t)sizeof(descriptor);
+descriptor.abi_version = MIGO_ABI_VERSION_1;
+```
+
+| Situation | Result |
+| --- | --- |
+| The caller's record is **shorter** than what the library knows | Copy according to its `struct_size`; read fields unknown to the library as if they **do not exist** |
+| Shorter than the minimum prefix defined for the structure | `MIGO_ERROR_INVALID_ARGUMENT` (unified at every entry point since 2026-07) |
+| `struct_size` claims to be **larger** than what the library recognizes | `MIGO_ERROR_UNSUPPORTED_ABI` — those bytes belong to a newer contract; ignoring them would pretend to implement capabilities that do not exist |
+| A structure written by the library (such as `MigoCapabilities`) | Mirror rule: **write only the caller's prefix**; leave fields beyond it unchanged |
+
+**The rule for appended fields.** New semantics may only be added at the end of a structure. A caller-provided `reserved` field must be zero, and the library must write it as zero as well — reserved bytes exist for "backward-compatible behavior that will become meaningful someday." One example of the day they become meaningful: the modifier tail of `MigoKeyEvent`; old hosts pass the prefix, missing fields read as 0, and that is exactly their intended semantics.
+
+**Enums and sizes.** Public enum-like values use fixed-width integer typedefs plus numeric macros. The header deliberately avoids native C `enum` and packing pragmas, so changing compilers or pointer widths does not change the layout. Integer literals use suffix notation (`5U`) rather than `UINT32_C`, because Swift's Clang importer reads the macro's definition token. Function-like macros cannot make claims outside the allowlist.
+
+**Version-query entry point.** `migo_query_capabilities` is the only entry point that answers rather than rejects an unknown `abi_version`. It returns the version range accepted by the linked library and the attachable `MIGO_PLATFORM_*` kinds. Version disagreements are resolved there, rather than by hitting a wall on the attach path. The kinds it reports and the kinds the attach path checks forcefully are one and the same fact, not a second copy.
+
+## Validation Lanes (Preventing "Small Changes Quietly Break the ABI")
+
+| Lane | What it proves |
+| --- | --- |
+| `tests/c_abi/old_client_contract.c` | The old-header shape remains a byte-for-byte prefix of the current structure — catches pinhole defects such as fields being swapped while the size stays unchanged |
+| `tests/c_abi/old_client_outbound_contract.c` | The mirror direction: structures written by the library affect only the prefix visible to old callers; extra poison fields are untouched |
+| Two pointer widths (ILP32/LP64) × two compiler layout assertions | Every layout assertion is compiled once for each word size — LP64-only blind coverage caused a real incident before 2026-07-21 |
+| `scripts/test-*-sdk-contract.sh` | Exported symbols in release artifacts and the link check performed by `find_package(migo)` consumers |
+
+## What Remains Before the v1 Freeze
+
+`include/migo/README.md`'s "ABI v1 freeze blockers" is the only authoritative checklist. All other items are closed; three remain, all on **Android devices**:
+
+1. Multi-touch delivery on a real device (the instrumentation APK path);
+2. Device execution of the Android compatibility and performance gates with no substantive regressions;
+3. Regeneration of the verified V8 manifest for Android release artifacts, plus minimum/latest device gates.
+
+Once all three are cleared, the promotion PR will do all of the following together: flip `MIGO_C_ABI_CANDIDATE` to 0, remove the candidate notice pinned at the top of the [API Reference Overview](/docs/reference/overview/), and rewrite this page's status section as "frozen." Until then, betting on the ABI as a stable release is at your own risk.
+
+## Related
+
+- [API Reference Overview](/docs/reference/overview/) — the CANDIDATE notice and eight-page mapping
+- [Threading and Dispatch](/docs/concepts/threading-and-dispatch/) — the concurrency contract that must be frozen alongside it

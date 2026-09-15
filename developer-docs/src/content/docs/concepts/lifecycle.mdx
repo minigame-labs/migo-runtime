@@ -1,0 +1,83 @@
+---
+title: 会话生命周期
+sidebar:
+  order: 3
+description: 引擎会话的三态机(CREATED/RUNNING/PAUSED)、visibility 与 focus 的正交通道、vsync 驱动模型、destroy 的所有权语义。
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - include/migo/session.h
+---
+
+会话状态机是 C ABI 里最不好从名字猜的一块:三态、正交化、不能回头。这页把它拆成宿主真正需要决策的几个面。
+
+## 三态:走直线不绕圈
+
+```text
+CREATED ──load_content + set_lifecycle──> RUNNING ⇄ PAUSED ⇄ destroy
+```
+
+| 状态 | 是什么 | 什么时候到 |
+| --- | --- | --- |
+| `MIGO_LIFECYCLE_CREATED` | 句柄有效、JS 未跑 | `migo_session_create` 返回后立刻是 |
+| `MIGO_LIFECYCLE_RUNNING` | JS 在跑、输入能被消费 | `set_lifecycle(RUNNING)` 之后 |
+| `MIGO_LIFECYCLE_PAUSED` | 暂停渲染与输入,现场保留 | `set_lifecycle(PAUSED)` |
+
+**只有这三个,没有第四种**:`CREATED` 只能进入,不能返回。试图 `set_lifecycle(CREATED)` 在 RUNNING/PAUSED 上得 `MIGO_ERROR_INVALID_STATE` — 因为回到 CREATED 意味着逆向收掉一个已经在跑的引擎,ABI 没有定义逆向路径。
+
+**错误分两种**:回到 `CREATED` 这种机械性被拒的迁移是 INVALID_STATE;未识别的枚举值是 INVALID_ARGUMENT。这对调用侧的修复完全不同,别抹掉区别。
+
+**no-op 由 MIGO_OK 实现**:在 RUNNING 上调 `set_lifecycle(RUNNING)` 不改状态、不发回调,直接 `MIGO_OK` 返回 — 宿主可以放心在 `onResume` 里不自查地重新调 RUNNING。
+
+## 与 Android 生命周期的映射
+
+| Activity | 会话不该捕的东西 | 调什么 |
+| --- | --- | --- |
+| `onResume` | — | `set_lifecycle(RUNNING)` + `set_visibility(1)` |
+| `onPause` | 还在屏上,被遮 | `set_visibility(0)`(不用 PAUSED,内容也许在做后台账) |
+| `onStop` | 真的不可见 | `set_lifecycle(PAUSED)`(或进一步) |
+| `onDestroy` | 离开 | `migo_session_destroy` |
+
+**这不是唯一分解**。宿主做游戏内 loading 时也完全可以用 `set_visibility(0)` 表达「还在跑但用户什么都看不到」— 两通道是正交的。
+
+## visibility vs lifecycle vs focus:三个正交通道
+
+这三个都在,但表达的东西不重叠:
+
+- **lifecycle**(`RUNNING/PAUSED`)= 内容该不该**在计算**;script、网络层在这里运转;
+- **visibility**(`set_visibility(0/1)`)= 内容该不该**画屏**;多个小窗宿主场景下,一个 RUNNING 会话可以完全不可见 — 引擎可以省下 vsync;
+- **focus**(`set_focus(0/1)`)= 输入事件的宿主权;宿主 focus 失去时引擎会把**已接受的触摸序列、物理键的 down 状态、IME composition 按 FIFO 全部回退**,防止「宿主没拿到 keyUp 事件,内容以为键一直按着」。这个回退动作是 ABI 合同,不能 bug out — 宿主**必须**在 native window/view 失焦时调 `set_focus(0)`,这一调是引擎能正确交出输入状态的惟一信号。
+
+**重复失焦**:已经失焦时再调 `set_focus(0)` 不会发第二轮回退。
+
+## vsync:谁驱动帧
+
+`migo_session_notify_vsync(session, frame_time_nanos)` 是引擎的**帧时钟**,不是经常去报的心跳:
+
+- 只在 `on_request_frame` 回调触发后调一次,引擎每请求才渲一帧;
+- 无 surface 附着时调它得 `MIGO_ERROR_INVALID_STATE`(不是 no-op);
+- 时间戳是**有符号**的,为了与平台回调原样过(AChoreographer 的参数) — 不是「负值有意义」；
+- 装 `MigoOnRequestFrameFn` 可选 — 装了的宿主驱帧;没装的引擎自己起心跳,慢不了也准不了(这是「engine-paced」的默认)。
+
+选择决策:宿主与系统 vsync 有自然对应(Android `Choreographer`、macOS `CVDisplayLink`、WAYLAND `frame_callback`)就装 — 帧对齐是内容卡帧与否分岔点;没有对应就诚实不装,交给引擎派帧。
+
+## destroy 的所有权语义
+
+`migo_session_destroy`:
+
+- **不是引用计数**,是毁句柄一锁到底;`MIGO_OK` 返回后你的 `MigoSession *` 指针立刻失效,引擎接管会话退出;
+- **拒绝不是副作用**:在 surface 转换中、attachment 活着、retired Surface 尚在 PENDING 状态时返回 `MIGO_ERROR_INVALID_STATE`,句柄仍归你,之后可以重试;
+- **回调内可重入**:当前回调里调 destroy 不会等到回调返回,直接把当前栈打回,不重发其他回调 — 这个与「不要在回调里做重活或收尾」不同,是**刻意支持的退出路径**;
+- 排队的未跑回调在 destroy 返回前被弃 — destroy 前后写日志不用担心乱序。
+
+**工程对应**:宿主应该在 `Activity.onDestroy` 里只做 `session.close()` 或对应的 `migo_session_destroy`;不要在其他路径试探性 destroy 再检查 pointer。
+
+## 调试期可观测位
+
+`on_ready` 回调后是内容 side effect 开始出现、`on_error` 是 running 期新增错误的主通道。这两个 + `set_lifecycle` 的三个状态转换点,是会话可观测性的最小完整集 — 少于三个,crash 现场就别指望能重建状态。

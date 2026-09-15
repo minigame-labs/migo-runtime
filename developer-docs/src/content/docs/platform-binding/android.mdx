@@ -1,0 +1,130 @@
+---
+title: Android
+sidebar:
+  order: 1
+description: 在 Android 上把 ANativeWindow 接到引擎 Surface：描述符构造、generation 计数器陷阱、纯 C 宿主的 JNI 初始化时机。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - include/migo/platform/android.h
+  - include/migo/surface.h
+  - include/migo/capabilities.h
+---
+
+本页只覆盖 Android 平台的接入增量。Attach / detach / release 的通用合同（generation 语义、错误码、`MigoSurfaceDescriptor` 字段规则）见 [Surface 接口](/docs/reference/surface/)；Session 生命周期见 [生命周期概念](/docs/concepts/lifecycle/)。
+
+**可用性：** 0.9 已发布，`arm64-v8a` + `x86_64`（模拟器）。Java / Kotlin 宿主通过 AAR（`com.migo.runtime`）操作；纯 C 宿主直接使用下文的 C ABI。
+
+## 描述符
+
+```c
+#include <migo/platform/android.h>
+#include <migo/capabilities.h>
+```
+
+```c
+typedef struct MigoAndroidNativeWindowDescriptor {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoPlatformKind     platform_kind;   /* MIGO_PLATFORM_ANDROID_NATIVE_WINDOW */
+    MigoPlatformDescriptorFlags flags;    /* 须为 0 */
+    void                *native_window;   /* ANativeWindow* */
+} MigoAndroidNativeWindowDescriptor;
+```
+
+`native_window` 是 `ANativeWindow*`。引擎在 attach 返回成功前取得自己的强引用，在 release observer 达到 `MIGO_SURFACE_RELEASE_RELEASED` 前释放该引用。宿主保留自己的引用即可，attach 成功后不需要额外持有计数。
+
+在传入 `MigoSurfaceDescriptor` 时，把 `platform_descriptor` 指向此结构体，`platform_descriptor_size` 填 `sizeof` 值，`platform_kind` 两处须一致（外层与内层各一个）。
+
+## 纯 C 宿主：`migo_android_init_context`
+
+```c
+MigoResult migo_android_init_context(void *vm, void *activity);
+```
+
+仅在同时满足以下两个条件时调用：
+
+1. 宿主是**纯 C / NDK 宿主**（无 Java 层，不通过 `com.migo.runtime` AAR）；
+2. Session 会**播放音频**。
+
+`vm` 和 `activity` 对应 `ANativeActivity` 的 `vm` 和 `clazz` 字段。首次之后重复调用是空操作，Activity 重建后可以再次调用，无需检查。`vm` 为 NULL 返回 `MIGO_ERROR_INVALID_ARGUMENT`。
+
+漏调不会 attach 失败，但首次音频播放会直接终止进程而不是返回错误——必须在**创建任何会播放音频的 Session 之前**调用。
+
+## generation 计数器（Android 特有陷阱）
+
+Android 在每次应用进入后台再回到前台时都会销毁并重建 `ANativeWindow`。每次 `surfaceCreated` / `surfaceChanged` 回调都是一个新窗口，`generation` 必须**严格递增**，不能写死为常量 `1`。
+
+```c
+/* 宿主维护的计数器，跨 surfaceCreated/surfaceChanged 递增 */
+static uint64_t g_surface_gen = 0;
+```
+
+重复的 `generation` 值会返回 `MIGO_ERROR_STALE_SURFACE`；第一次传 `0` 则是 `MIGO_ERROR_INVALID_ARGUMENT`（generation 必须 ≥ 1）。
+
+## Attach
+
+```c
+static MigoSurfaceAttachment *s_attachment = NULL;
+
+void on_surface_created(void *window, int32_t w, int32_t h, float density) {
+    /* 可用性检查（可选，但建议在首次 attach 前做一次） */
+    MigoCapabilities caps;
+    caps.struct_size = (uint32_t)sizeof caps;
+    caps.abi_version = MIGO_ABI_VERSION_CURRENT;
+    if (migo_query_capabilities(&caps) != MIGO_OK ||
+        (caps.platform_kinds & (1ULL << MIGO_PLATFORM_ANDROID_NATIVE_WINDOW)) == 0)
+        return; /* 当前构建不能 attach Android surface */
+
+    MigoAndroidNativeWindowDescriptor plat;
+    memset(&plat, 0, sizeof plat);
+    plat.struct_size   = (uint32_t)sizeof plat;
+    plat.abi_version   = MIGO_ABI_VERSION_CURRENT;
+    plat.platform_kind = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
+    plat.native_window = window;
+
+    MigoSurfaceDescriptor desc;
+    memset(&desc, 0, sizeof desc);
+    desc.struct_size              = (uint32_t)sizeof desc;
+    desc.abi_version              = MIGO_ABI_VERSION_CURRENT;
+    desc.generation               = ++g_surface_gen;   /* 递增，不得为常量 */
+    desc.platform_kind            = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
+    desc.width_pixels             = (uint32_t)w;
+    desc.height_pixels            = (uint32_t)h;
+    desc.scale_factor             = density;
+    desc.color_space              = MIGO_COLOR_SPACE_SRGB;
+    desc.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+    desc.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+    desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;  /* 0.9 须置 0 */
+    desc.platform_descriptor_size = (uint32_t)sizeof plat;
+    desc.platform_descriptor      = &plat;
+
+    migo_session_attach_surface(session, &desc, &s_attachment);
+}
+```
+
+## Detach 与释放
+
+`surfaceDestroyed` 触发时 **不能立刻销毁** `ANativeWindow`——GPU 可能仍在引用它。
+
+```c
+void on_surface_destroyed(void) {
+    MigoSurfaceRelease *rel = NULL;
+    migo_surface_begin_detach(s_attachment, &rel);
+    s_attachment = NULL;
+
+    /* 轮询，直到 RELEASED；实际项目可用 on_surface_released 回调替代 */
+    MigoSurfaceReleaseStatus status;
+    do {
+        status.struct_size = (uint32_t)sizeof status;
+        status.abi_version = MIGO_ABI_VERSION_CURRENT;
+        migo_surface_release_query(rel, &status);
+    } while (status.state != MIGO_SURFACE_RELEASE_RELEASED);
+
+    migo_surface_release_destroy(rel);
+    /* 现在才安全销毁 ANativeWindow */
+}
+```
+
+`migo_surface_begin_detach` 返回 `MIGO_OK` 后，`attachment` 指针即失效，不得再使用。

@@ -1,0 +1,41 @@
+---
+title: 游戏日志
+sidebar:
+  order: 7
+description: Android GameLogHandler 合同:接收 JS 游戏日志的 JSON 结构、转发去向的边界、无 handler 时的 logcat 降级。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/GameLogHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+:::caution[平台范围]
+`GameLogHandler` 是 Android Java facade 的合同。C ABI 与跨平台层在 `0.9` 没有公开的游戏日志出口。
+:::
+
+## 宿主要实现什么
+
+注册点:`GameSession#setGameLogHandler(GameLogHandler)`(`GameSession.java:862`),session 级一次性注册。接口只有一个入口:
+
+```java
+void onLog(String logJson);
+```
+
+`logJson` 是原始 JSON 字符串,解析责任在宿主:javadoc 列出的字段是 `level`(级别)、`key`(事件/指标名)、`value`(值)、`commonInfo`(公共上下文) — 对这 4 个之外的字段不要假定 schema。`onLog` 无返回值、无 sink:不向内容侧回执,不要在回调里做阻塞 I/O(转发到后端请异步)。
+
+## 不实现会怎样
+
+接口头注释逐字:未注册时 **log 条目写到 Android logcat**。这是默认落点,不是错误状态;接入宿主自己的分析系统才需要实现它。
+
+## 内容侧看到什么
+
+接口文件只说明日志是「JS 上报的 game log entries」,没有指明 `migo.*` 入口名 — 不要把具体 JS 函数名当成合同。脚本侧的行为不随 handler 有无而变化。
+
+## 平台可用性
+
+| 层 | 状态 |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

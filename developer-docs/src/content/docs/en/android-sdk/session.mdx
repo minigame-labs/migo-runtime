@@ -1,0 +1,90 @@
+---
+title: GameSession
+sidebar:
+  order: 3
+description: GameSession lifecycle — startGame/pause/resume/close, the three Surface callbacks, touch forwarding, 10 set*Handler setters plus setListener (11 registration points total), and state broadcasts.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+`GameSession` owns the native session (`sessionId`) and bridges it to the Activity and views. It implements `Closeable` and must be closed explicitly.
+
+## Minimal lifecycle
+
+```java
+// surfaceCreated 回调里
+session = runtime.createSession(activity, surface, config, gameId);
+session.startGame("game.js");        // game.js 在 session.getPaths().getCodeDir() 下
+
+// Activity
+@Override protected void onPause()  { if (session != null) session.pause();  }
+@Override protected void onResume() { if (session != null) session.resume(); }
+@Override protected void onDestroy(){
+    if (session != null) { session.close(); session = null; }
+}
+```
+
+After `close()`, methods guarded by `ensureNotDestroyed` throw `MigoException` (code `-2000 ERR_SESSION_DESTROYED`, extending `RuntimeException`); `pause()` and `resume()` are safe no-ops, and `dispatchTouchEvent` returns `false`. Until the session is closed, native memory, the JS context, and platform channels are not released.
+
+## The three Surface callbacks
+
+These correspond to the three `SurfaceHolder` callbacks:
+
+```java
+surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
+    public void surfaceCreated(SurfaceHolder h)  { /* createSession */ }
+    public void surfaceChanged(SurfaceHolder h, int fmt, int w, int h) {
+        session.updateSurface(h.getSurface(), w, h);
+    }
+    public void surfaceDestroyed(SurfaceHolder h) {
+        session.onSurfaceDestroyed();       // 引擎推进 surface 丢失路径;JS 的 onHide 在这里停
+    }
+});
+```
+
+Forgetting `onSurfaceDestroyed` is the most common source of deadlocks: the engine does not know the Surface is gone, and GPU resources remain attached to the destroyed object.
+
+## Touch and script channels
+
+```java
+surfaceView.setOnTouchListener((v, ev) -> session.dispatchTouchEvent(ev));
+
+// 宿主 → JS
+session.evaluateJavaScript("console.log('hello from host')");
+
+// JS → 宿主:migo.sendToHost(type, payload) 走这里
+session.setMessageHandler((type, payload) -> { /* JSON String,可能 null */ });
+```
+
+`evaluateJavaScript` returns immediately; the script is queued asynchronously on the host thread. To receive a reply, pair `migo.sendToHost` with `MessageHandler`.
+
+## State broadcasts: `OnStateChangeListener`
+
+`setOnStateChangeListener(listener)` receives the engine's loading / running / error state transitions — use it to drive the loading UI; **do not** estimate state with `SystemClock`. `GameSessionListener` (a separate interface) provides finer-grained loadingStart/loadingEnd hooks.
+
+## Four methods directly tied to native
+
+| Method | Semantics |
+| --- | --- |
+| `updateSurface(surface, w, h)` | Called from `surfaceChanged`; w/h are **physical pixels** (Surface buffer dimensions), so pass the original values from the system callback directly |
+| `onSurfaceDestroyed()` | Does not destroy the session; marks the Surface invalid and corresponds to the JS `onHide` path |
+| `setDebugEnabled(boolean)` | Toggles DebugOverlay at runtime |
+| `getPaths()` | Provides `GamePaths.getCodeDir()` and others; the location for `game.js` |
+
+## Handler setters (10 domains + Listener)
+
+Install these before opening the package; see the detailed contract in [Host capabilities overview](/docs/capabilities/overview/):
+
+```java
+session.setMessageHandler(...);      setAuthHandler(...);
+session.setPermissionHandler(...);   setAdHandler(...);
+session.setSettingHandler(...);      setShareHandler(...);
+session.setNavigationHandler(...);   setPaymentHandler(...);
+session.setSubpackageHandler(...);   setGameLogHandler(...);
+session.setListener(GameSessionListener);   // loading 级钩子
+```
+
+Not setting a handler means the fallback in the overview table applies. After installing one, do not swap it mid-session — in-flight requests already hold the sink for the old handler.

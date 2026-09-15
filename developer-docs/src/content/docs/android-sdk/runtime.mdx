@@ -1,0 +1,83 @@
+---
+title: MigoRuntime
+sidebar:
+  order: 1
+description: Android SDK 入口:单例、版本与状态查询、四种 createSession 变体、Safe 变体的错误返回语义。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/MigoRuntime.java
+---
+
+`MigoRuntime` 是 Migo Android SDK 的入口与单例。内容侧是 **进程级** 的:一个进程一个 runtime 实例,多个 `GameSession` 挂在上面。
+
+## 单例与保底常量
+
+```java
+MigoRuntime runtime = MigoRuntime.getInstance();
+String version = MigoRuntime.SDK_VERSION;   // BuildInfo.VERSION,编译期写入
+```
+
+| 方法 | 内容 |
+| --- | --- |
+| `getVersion()` | 恒等 `BuildInfo.VERSION`(= `SDK_VERSION`) |
+| `getNativeVersion()` | native 库报告版本 |
+| `isNativeLoaded()` | native 是否加载成功 |
+| `getNativeLoadError()` | 加载失败时的原始 Throwable(成功 null) |
+| `getMinSdkVersion()` | native 编译时的最低 API floor |
+| `isDeviceSupported()` | 当前设备在 native 侧的要求下 |
+| `getActiveSessionCount()` | 活跃 session 数 |
+
+`getNativeLoadError()` 是诊断时唯一可靠的一手证据 — 比在崩溃堆栈里翻找 `UnsatisfiedLinkError` 可靠得多。
+
+## 会话创建:四变体
+
+```java
+GameSession createSession(Activity, Surface, RuntimeConfig, String gameId);      // 立即建面
+GameSession createSession(Context, Surface, RuntimeConfig, String gameId);      // 不依赖 Activity
+GameSession createSessionWarm(Activity, RuntimeConfig, String gameId);           // 预热,surface 后补
+Result<GameSession> createSessionSafe(Activity, Surface, RuntimeConfig, String);  // 不抛错
+Result<GameSession> createSessionWarmSafe(Activity, RuntimeConfig, String);
+```
+
+### 决策点
+
+- **`Activity`-绑定** vs **只带 `Context`**:`Activity` 变体必须在主线程调(配 UI),报线程违规;`Context` 变体不带 UI 要求。能在主线程就用 Activity 变体,少一个线程分支;
+- **立即** vs **预热(warm)**:游戏资源解压前先有 Surface 就拿立即;先下载资源再补 surface 就拿 warm;
+- **抛异常** vs **`Result`**:`Safe` 变体把主线程违规、native 未加载这类启动期错误折回 `Result`,UI 控制路径默认 `Safe` — 启动不一定要成功,但失败必须有一个能展示的错误。
+
+### Result 形态
+
+```java
+Result<GameSession> r = runtime.createSessionSafe(activity, surface, config, gameId);
+if (r.isFailure()) {
+    showLaunchError(r.getErrorMessage());
+    return;
+}
+GameSession session = r.getValue();
+```
+
+## Device gate:设备不满足就拒绝创建
+
+`isDeviceSupported()` 是 native 侧的设备需求判断:满足不代表跑得轻松,不满足就是按 SDK 文档可以拒绝启动的依据。
+
+```java
+if (!runtime.isNativeLoaded() || !runtime.isDeviceSupported()) {
+    // 向用户显示最低系统要求,不要默默崩
+}
+```
+
+## ICU:可选
+
+`initIcuData(String path)` 在游戏要求 ICU 数字/日期格式化前先调。不调用时 native 可以自定位 datadir;出错返回 `false`,从 `getNativeLoadError` 上分不出来,日志里找。
+
+## 这么用
+
+**启动期**:`getInstance` → 查 `isNativeLoaded`(未加载 = 无法启动,给出提示)→ `isDeviceSupported`(不设备 = 提示)→ 创建 Activity `SurfaceView` → `addCallback` `surfaceCreated` 内调 `createSession*` → `session.startGame("game.js")`。
+
+**生命周期**:`onPause` → `session.pause()`;`onResume` → `session.resume()`;`onDestroy` → `session.close()`。
+
+**事件**:`surfaceView.setOnTouchListener` → `session.dispatchTouchEvent(event)`。
+
+以上为 `MigoRuntime.java` 头 Javadoc 的完整使用框架;与原文档一致。
