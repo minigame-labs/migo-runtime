@@ -1,0 +1,48 @@
+---
+title: Choose an Integration Surface by Host Scenario
+sidebar:
+  order: 2
+description: What each platform actually delivers in 0.9, how to integrate it, and the known gaps — a selection matrix that translates 'platform support' back into evidence.
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - platforms/
+  - include/migo/
+  - BUILD.md
+---
+
+'Platform support' is not uniform in 0.9. This page lays out **what each platform can deliver today**, backed by evidence. Consult the matrix first, then the corresponding quickstart.
+
+## Maturity Matrix
+
+| Platform | 0.9 Deliverable | Integration Surface | Gaps |
+| --- | --- | --- | --- |
+| **Android** | AAR + Java facade (`MigoRuntime` / `GameSession`) | gradle `implementation` + `SurfaceView` three-step | None — primary path |
+| **OpenHarmony** | Complete DevEco host project (`entry/` + hvigor) | Open the project, follow the project README | Multi-finger on real aarch64 hardware verified on API20 emulator only |
+| **Windows** | Published `migo.dll` (x64/arm64) + `rusty_v8.dll` + C ABI headers | CMake `migo::migo` target + `HWND` attach | WinUI integration and Win32 host-kit not included; EGLProvider implementation is the host's responsibility |
+| **Linux** | host-kit (toolchain) + wayland/x11 platform headers | Preview build for host integration | Not a shipping runtime; positioned as a development host |
+| **Apple (iOS/macOS)** | SwiftPM package + `MigoAppleCore` / `MigoAppleRenderer` (CI build) | SwiftPM dependency for core/renderer lanes | WebKit compatibility layer, performance lane, and MacV8 are all placeholders; not run on real hardware |
+
+The Gaps column reflects rejected-promotion facts, not promises for a future release.
+
+## Quick Decision
+
+- **Production today** → Android, no second choice; the [Android quickstart](/docs/getting-started/android/) is the primary path.
+- **HarmonyOS listing** → the OpenHarmony project genuinely runs: clone the repo, open DevEco, follow the [OpenHarmony quickstart](/docs/getting-started/openharmony/); but before buying hardware, verify multi-finger behavior on the API20 emulator — real-device multi-touch regression is your responsibility.
+- **Desktop channel (Windows)** → the published DLL integrates the C ABI directly; write your own Win32 window and input pump; the [Windows quickstart](/docs/getting-started/windows/) starts from the published package and the API surface pinned by `test-windows-sdk-contract.sh`.
+- **Apple ecosystem** → set expectations against the current integration surface, not a polished quickstart; the [Apple doc](/docs/getting-started/apple/) lists the **actually existing** SwiftPM lanes and their gaps, without fabricating an App Store-ready flow.
+- **Linux desktop host** → positioned as a **development host toolchain**, not a player-facing channel — it is the surface for cross-platform game logic verification, not a 0.9 shipping target.
+
+## Shared C ABI Layer
+
+The cross-platform shared layer (`MigoEngine` / `MigoSession` / surface attach / `migo_session_send_*` / `migo_query_capabilities`) is in the API reference under [C ABI](/docs/reference/overview/) — the Android Java facade is also a translation layer above the ABI. Regardless of platform, the sequence is always the same: capability query → surface attach → lifecycle channel → input pump. This sequence is platform-agnostic.
+
+## The Missing Row
+
+'If iOS has a full ABI and OpenHarmony desktop is working, why still need an Android facade?' — that is a product selection question, not a technical one: Android's handler system (`AdHandler / PaymentHandler / ...`) is the only stable contact point for the mini-game platform content ecosystem; the cross-platform C ABI layer in 0.9 provides no counterparts for these handlers. Choosing a non-Android surface means temporarily forgoing the payment, ads, and sharing contracts with content partners — that is a technical boundary, not a documentation gap.

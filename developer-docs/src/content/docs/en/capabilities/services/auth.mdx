@@ -1,0 +1,81 @@
+---
+title: Login and Authentication
+sidebar:
+  order: 1
+description: Android AuthHandler contract — the two required methods login/checkSession, default fallbacks for getUserInfo/getPhoneNumber, and the "no auth handler" semantics when no handler is registered.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/AuthHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+::::caution[Platform scope]
+`AuthHandler` is the Android Java facade contract. The C ABI and cross-platform layer have no public login entry point in `0.9`.
+::::
+
+## What the host must implement
+
+Register via `GameSession#setAuthHandler(AuthHandler)`, corresponding to line **732** of `GameSession.java`.
+
+`AuthHandler` has two **required** methods with no default implementation:
+
+| Method | Trigger | Must eventually call |
+| --- | --- | --- |
+| `login(int timeoutMs, LoginCallback)` | `migo.login()` | `callback.onSuccess(code)` or `callback.onFailure(reason)` |
+| `checkSession(CheckSessionCallback)` | `migo.checkSession()` | `callback.onSuccess()` or `callback.onFailure(reason)` |
+
+There are also two optional methods with default implementations:
+
+| Method | Trigger | Behavior when not overridden |
+| --- | --- | --- |
+| `getUserInfo(boolean withCredentials, String lang, UserInfoCallback)` | `migo.getUserInfo()` | `callback.onFailure("not supported")` |
+| `getPhoneNumber(boolean isRealtime, boolean phoneNumberNoQuotaToast, PhoneNumberCallback)` | `migo.getPhoneNumber()` | `callback.onFailure("not supported", null)` |
+
+Contract: callbacks may be invoked from any thread; each call must trigger the callback exactly once. The `code` passed to `login` is a one-time code to be forwarded to the game server in exchange for a session — it is not an access token.
+
+## What happens without an implementation
+
+From the `AuthHandler.java` header comment:
+
+> Every call fails rather than stalling or reporting a signed-in user:
+> `migo.login()`, `migo.checkSession()`, `migo.getUserInfo()`
+> and `migo.getPhoneNumber()` all settle with `no auth handler`.
+
+Design intent: the runtime holds no account system and cannot fabricate a signed-in user. Not installing a handler is equivalent to declaring "this host does not support login"; failure is the correct outcome, not an exceptional one.
+
+## What content sees
+
+| migo API | Corresponding handler method |
+| --- | --- |
+| `migo.login(options)` | `login(timeoutMs, callback)` |
+| `migo.checkSession(options)` | `checkSession(callback)` |
+| `migo.getUserInfo(options)` | `getUserInfo(withCredentials, lang, callback)` |
+| `migo.getPhoneNumber(options)` | `getPhoneNumber(isRealtime, noQuotaToast, callback)` |
+
+After `migo.login()` succeeds, content holds a `code`; it is typically sent to the content's own server, which then exchanges it for the user identity. The runtime does not validate the code format — its semantics are defined by the host and the platform.
+The failure reason passed to `LoginCallback` and `CheckSessionCallback` carries no API prefix; the host simply provides the platform failure reason, and the runtime wraps it into the content-side result.
+
+`withCredentials` only indicates whether content is requesting sensitive encrypted fields; `lang` accepts only the language preferences `en`, `zh_CN`, and `zh_TW` listed in the interface comments. When the host does not override the user-info or phone-number methods, the default failure should propagate to content as-is.
+
+`UserInfo` default fields include `nickName`, `avatarUrl`, `gender`, `country`, `province`, `city`, and `language`; `UserInfoResult` also carries `cloudID`. These fields are defined by the data classes in the interface.
+
+Do not treat a successful `checkSession` as a re-login: it only signals that the current session is valid. When the session is invalid, invoke the failure callback and let content decide whether to call `migo.login()` again.
+Both outcomes must reflect the host platform's real login state — do not fabricate success from local game state.
+
+`getUserInfo` `UserInfoResult` field reference:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `userInfo.nickName` | `String` | Display name |
+| `userInfo.avatarUrl` | `String` | Avatar URL |
+| `userInfo.gender` | `int` | 0 unknown / 1 male / 2 female |
+| `rawData` / `signature` / `encryptedData` / `iv` | `String` | Platform authentication fields, populated by the host |
+
+## Platform availability
+
+| Layer | Status |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

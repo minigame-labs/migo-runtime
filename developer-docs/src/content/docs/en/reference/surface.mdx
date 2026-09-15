@@ -1,0 +1,507 @@
+---
+title: Surface API
+sidebar:
+  order: 5
+description: Complete reference for binding native windows to a Session, driving resize and frame-parameter updates, and safely destroying native windows through generation tracking and asynchronous detach.
+audience: host-integrator
+platforms: [android, linux, windows, openharmony]
+sourcePaths:
+  - include/migo/surface.h
+---
+
+The Surface API associates a platform native window with a Migo Session, manages that window throughout the application lifecycle, and safely releases it when the Session no longer needs a render target. All operations follow three phases: **attach** (bind the native window and publish it as a presentation target), **update** (report resize and presentation-parameter changes), and **detach** (retire asynchronously, destroying native resources only after GPU reference counts reach zero).
+
+## Types
+
+### MigoPlatformKind
+
+Identifies the platform of a native window. Values are defined by the `MIGO_PLATFORM_*` constants. `MigoSurfaceDescriptor.platform_kind` and the `platform_kind` field in platform-specific descriptors both use this type. After the Session's first successful attach, its graphics backend identity is fixed; subsequent attaches must match it.
+
+| Constant | Value | Platform |
+| --- | --- | --- |
+| `MIGO_PLATFORM_UNKNOWN` | 0 | Reserved; must not be passed as a valid value |
+| `MIGO_PLATFORM_ANDROID_NATIVE_WINDOW` | 1 | Android `ANativeWindow` |
+| `MIGO_PLATFORM_WIN32_HWND` | 2 | Windows `HWND` (ANGLE / Direct3D backend) |
+| `MIGO_PLATFORM_WINUI_SWAP_CHAIN_PANEL` | 3 | WinUI 3 `SwapChainPanel` |
+| `MIGO_PLATFORM_MACOS_NS_VIEW` | 4 | macOS `NSView` |
+| `MIGO_PLATFORM_MACOS_CA_METAL_LAYER` | 5 | macOS `CAMetalLayer` |
+| `MIGO_PLATFORM_X11_WINDOW` | 6 | X11 `Window` |
+| `MIGO_PLATFORM_WAYLAND_SURFACE` | 7 | Wayland `wl_surface` |
+| `MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW` | 8 | OpenHarmony `OHNativeWindow` |
+| `MIGO_PLATFORM_IOS_UI_VIEW` | 9 | iOS `UIView` |
+| `MIGO_PLATFORM_IOS_CA_METAL_LAYER` | 10 | iOS `CAMetalLayer` |
+
+The subset actually supported by the current build is reported by `migo_query_capabilities` in `platform_kinds` (see [capabilities.mdx](/docs/reference/capabilities/)). Passing a defined `platform_kind` that this build does not implement returns `MIGO_ERROR_UNSUPPORTED_PLATFORM`; passing a completely undefined value returns `MIGO_ERROR_INVALID_ARGUMENT`.
+
+### MigoColorSpace
+
+Describes a surface's color space, used by `MigoSurfaceDescriptor.color_space` and `MigoSurfaceMetrics.color_space`.
+
+| Constant | Meaning |
+| --- | --- |
+| `MIGO_COLOR_SPACE_UNSPECIFIED` | Chosen by the engine or platform (behavior equivalent to sRGB) |
+| `MIGO_COLOR_SPACE_SRGB` | Standard sRGB |
+| `MIGO_COLOR_SPACE_DISPLAY_P3` | Display P3 wide gamut (not supported by the current build; returns `MIGO_ERROR_UNSUPPORTED_CAPABILITY`) |
+| `MIGO_COLOR_SPACE_EXTENDED_SRGB` | Extended Linear sRGB (not supported by the current build; same error) |
+
+### MigoAlphaMode
+
+Describes the semantics of a surface's alpha channel, used by `MigoSurfaceDescriptor.alpha_mode` and `MigoSurfaceMetrics.alpha_mode`.
+
+| Constant | Meaning |
+| --- | --- |
+| `MIGO_ALPHA_MODE_UNSPECIFIED` | Chosen by the engine |
+| `MIGO_ALPHA_MODE_OPAQUE` | Fully opaque; ignore the alpha channel |
+| `MIGO_ALPHA_MODE_PREMULTIPLIED` | Premultiplied alpha (not supported by the current build; returns `MIGO_ERROR_UNSUPPORTED_CAPABILITY`) |
+| `MIGO_ALPHA_MODE_POSTMULTIPLIED` | Postmultiplied alpha (not supported by the current build; same error) |
+
+### MigoPresentationMode
+
+Controls the queueing policy for submitting frames to the compositor, used by `MigoSurfaceDescriptor.preferred_presentation_mode` and `MigoSurfaceMetrics.preferred_presentation_mode`.
+
+| Constant | Meaning |
+| --- | --- |
+| `MIGO_PRESENTATION_MODE_DEFAULT` | The engine selects the best mode |
+| `MIGO_PRESENTATION_MODE_FIFO` | Strict VSync queue; frames are presented in arrival order |
+| `MIGO_PRESENTATION_MODE_MAILBOX` | Mailbox mode; the newest frame replaces the queued frame (not supported by the current build) |
+| `MIGO_PRESENTATION_MODE_IMMEDIATE` | Submit immediately; may produce tearing (not supported by the current build) |
+
+### MigoSurfaceCapabilities
+
+A bitmask in `MigoSurfaceDescriptor.capability_flags` describing additional surface capabilities required by the host. These flags are **requirements, not hints** — the engine does not silently downgrade; an unmet requirement returns `MIGO_ERROR_UNSUPPORTED_CAPABILITY`.
+
+| Constant | Meaning |
+| --- | --- |
+| `MIGO_SURFACE_CAPABILITY_NONE` | No additional requirements |
+| `MIGO_SURFACE_CAPABILITY_WIDE_COLOR` | Require wide-gamut support |
+| `MIGO_SURFACE_CAPABILITY_TRANSPARENT` | Require transparent-surface composition |
+| `MIGO_SURFACE_CAPABILITY_MAILBOX_PRESENT` | Require mailbox presentation support |
+
+### MigoSurfaceLossReason
+
+Describes why a surface was lost because of a platform or device event. This type is currently used by surface-loss notification interfaces; its ABI values are listed here so the host can record diagnostics consistently.
+
+| Constant | Value | Meaning |
+| --- | ---: | --- |
+| `MIGO_SURFACE_LOSS_UNKNOWN` | 0 | Unknown reason |
+| `MIGO_SURFACE_LOSS_HOST_DESTROYED` | 1 | The host destroyed the native target |
+| `MIGO_SURFACE_LOSS_DEVICE_LOST` | 2 | Graphics device lost |
+| `MIGO_SURFACE_LOSS_PLATFORM_ERROR` | 3 | Platform error |
+
+### MigoPlatformSurfaceDescriptor
+
+The common prefix of all platform-specific descriptor structs. The first four fields of every platform-specific struct (such as `MigoAndroidNativeWindowDescriptor`) are identical to this type, so any platform descriptor pointer may safely be cast to this type to read common fields.
+
+```c
+typedef struct MigoPlatformSurfaceDescriptor {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoPlatformKind platform_kind;
+    MigoPlatformDescriptorFlags flags;
+} MigoPlatformSurfaceDescriptor;
+```
+
+`MigoSurfaceDescriptor.platform_descriptor_size` and the inner `struct_size` of the platform descriptor form deliberate double redundancy: the envelope and payload validate each other, preventing callers from supplying inconsistent sizes on the two sides.
+
+### MigoSurfaceMetrics
+
+Input to `migo_surface_update`, describing one resize or presentation-parameter change.
+
+```c
+typedef struct MigoSurfaceMetrics {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t generation;
+    uint32_t width_pixels;
+    uint32_t height_pixels;
+    float    scale_factor;
+    MigoColorSpace             color_space;
+    MigoAlphaMode              alpha_mode;
+    MigoPresentationMode       preferred_presentation_mode;
+    MigoSurfaceDescriptorFlags flags;
+    uint32_t reserved0;
+} MigoSurfaceMetrics;  /* sizeof == 48 */
+```
+
+`generation` names the **generation of the attachment to which this update belongs** (the `MigoSurfaceDescriptor.generation` submitted at attach), not a separate update counter or the next incremented value. Every update must carry the same generation as the currently active attachment; a larger value returns `MIGO_ERROR_INVALID_ARGUMENT`, and a smaller value returns `MIGO_ERROR_STALE_SURFACE`. All reserved fields must be zero.
+
+### MigoSurfaceDescriptor
+
+Input to `migo_session_attach_surface`, fully describing one attach operation.
+
+```c
+typedef struct MigoSurfaceDescriptor {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t generation;
+    MigoPlatformKind            platform_kind;
+    MigoSurfaceDescriptorFlags  flags;
+    uint32_t width_pixels;
+    uint32_t height_pixels;
+    float    scale_factor;
+    MigoColorSpace              color_space;
+    MigoAlphaMode               alpha_mode;
+    MigoPresentationMode        preferred_presentation_mode;
+    MigoSurfaceCapabilities     capability_flags;
+    uint32_t platform_descriptor_size;
+    uint32_t reserved0;
+    const void *platform_descriptor;
+} MigoSurfaceDescriptor;  /* LP64: sizeof == 72 */
+```
+
+`platform_descriptor` is borrowed only for the duration of this call; before a successful attach returns, the engine must copy it and take its own reference to any reference-counted native target. `platform_descriptor_size` must equal the platform struct's `struct_size` (a complete double-redundancy integrity check). All `reserved` and `flags` fields must be zero.
+
+### MigoSurfaceRelease
+
+An opaque observer handle returned through `out_release` when `migo_surface_begin_detach` succeeds, representing one asynchronous native-surface release operation.
+
+- This handle holds no lease on any surface resource.
+- Once it reaches `MIGO_SURFACE_RELEASE_RELEASED`, it may remain alive and be queried after the Session that created it is destroyed.
+- An observer still in PENDING state prevents `migo_session_destroy` from succeeding.
+
+Poll the state with `migo_surface_release_query`; once it reports RELEASED, destroy the observer with `migo_surface_release_destroy`.
+
+### MigoSurfaceReleaseState
+
+The two possible states of a release observer.
+
+```c
+typedef uint32_t MigoSurfaceReleaseState;
+#define MIGO_SURFACE_RELEASE_PENDING  0U
+#define MIGO_SURFACE_RELEASE_RELEASED 1U
+```
+
+The observer is **level-triggered, not edge-triggered**: even if release completed before the first query, the query still observes RELEASED. This removes the race window between calling `begin_detach` and making the first query — an edge-triggered signal could be missed exactly once in that window, and missing it would mean destroying a window that the GPU is still reading.
+
+### MigoSurfaceReleaseStatus
+
+Output parameter for `migo_surface_release_query`, allocated by the host and with its **header initialized before the call**.
+
+```c
+typedef struct MigoSurfaceReleaseStatus {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t generation;
+    MigoSurfaceReleaseState state;
+    uint32_t reserved0;
+} MigoSurfaceReleaseStatus;  /* sizeof == 24 */
+```
+
+**The caller owns this struct; its header is input:** the caller must set `struct_size` and `abi_version` before the call. A zero-filled struct (C's uninitialized default or Swift's default-init value) is rejected rather than overwritten with the engine's own `sizeof`. This preserves forward safety when an older host calls a newer engine library. `out_status` is written only on `MIGO_OK`, and its initialized header fields are not overwritten.
+
+---
+
+## Generation mechanism
+
+Migo uses the `generation` field to number each attach and update request from the host, allowing the engine to identify and discard stale requests safely in a multithreaded environment.
+
+**Attach generation** comes from a monotonically increasing counter maintained by the host:
+
+- On every `migo_session_attach_surface` call, `descriptor.generation` must be **strictly greater than** every generation accepted by this Session so far; an equal or smaller value returns `MIGO_ERROR_STALE_SURFACE`.
+- A rejected attach consumes no engine-side state; a retry may reuse the same generation value — this is the meaning of the "declare, then commit" strategy.
+- Generations start at 1; passing 0 returns `MIGO_ERROR_INVALID_ARGUMENT`.
+
+**Update generation** names the generation belonging to **this attachment**, not the next incremented value. Every `migo_surface_update` must carry the active attachment's generation unchanged. It cannot be greater than that attachment's generation (`MIGO_ERROR_INVALID_ARGUMENT`) or smaller than it (`MIGO_ERROR_STALE_SURFACE`). Therefore the host maintains one counter across the attach window lifecycle and does not invent a separate incrementing generation for updates.
+
+**Host counter management recommendation** (the "declare, then commit" pattern):
+
+```c
+/* attach_window 节选 */
+uint64_t gen = h->surface_generation + 1;  /* 先声明，不递增本地计数器 */
+descriptor.generation = gen;
+MigoResult r = migo_session_attach_surface(session, &descriptor, &h->attachment);
+if (r == MIGO_OK) {
+    h->surface_generation = gen;  /* 已被接受，固化 */
+} /* 被拒绝时不修改 h->surface_generation，下次重试可复用 gen */
+```
+
+Every platform normally destroys and recreates windows — Android does so whenever it enters the background — so the host must maintain a persistent counter rather than use a constant.
+
+---
+
+## Android background–foreground lifecycle
+
+Android destroys the `ANativeWindow` when the application enters the background and creates a new one on return. A complete application lifecycle therefore contains multiple `attach + begin_detach` cycles:
+
+```text
+前台
+  │  migo_session_attach_surface(gen=1, window_A)  →  attachment_A
+  │  ... 渲染帧，notify_vsync ...
+  │
+  │  APP_CMD_TERM_WINDOW（系统准备回收 window_A）
+  │  migo_surface_begin_detach(attachment_A)        →  release_A
+  │  轮询 migo_surface_release_query(release_A)        直至 RELEASED
+  │  migo_surface_release_destroy(release_A)
+  │  ← ANativeWindow_release(window_A) 现在安全；handler 返回
+  │
+后台（window_A 已被系统回收）
+  │
+  │  APP_CMD_INIT_WINDOW（系统提供全新窗口 window_B）
+  │  migo_session_attach_surface(gen=2, window_B)  →  attachment_B
+  │  ... 渲染帧 ...
+前台
+```
+
+Key constraints:
+
+- `gen` must increase strictly on every cycle (2 > 1). Android may go through multiple background cycles in one process, so the counter must persist across cycles.
+- After `begin_detach` returns `MIGO_OK`, **do not destroy the `ANativeWindow` immediately**; wait until `release_query` reports `MIGO_SURFACE_RELEASE_RELEASED`.
+- android_native_app_glue immediately releases its reference to the window after the `APP_CMD_TERM_WINDOW` handler returns. Therefore the polling wait in `detach_window` must finish **before the handler returns**; otherwise the GL driver may still read a window already reclaimed by the system — a use-after-free.
+
+---
+
+## Detach irreversibility
+
+`migo_surface_begin_detach` is an **irreversible presentation boundary**:
+
+- Once the call returns `MIGO_OK`, the supplied `attachment` pointer **immediately becomes invalid**, regardless of whether waiting for release later times out or fails — retirement has begun and there is no undo path.
+- GPU reference counts on the engine side are managed by the driver; beginning retirement does not mean the driver has released every reference. The lifetime of driver-side references extends beyond this call.
+- `*out_release` is the **only way** for the host to observe completion of retirement. Never destroy the corresponding native resource before `migo_surface_release_query` confirms `MIGO_SURFACE_RELEASE_RELEASED`.
+- Calling `migo_surface_release_destroy` while PENDING returns `MIGO_ERROR_INVALID_STATE`; ownership remains with the host and nothing leaks. The rejection is deliberate: destroying the observer early would remove the host's only way to wait.
+- The Session cannot be destroyed while any PENDING release exists; `migo_session_destroy` rejects the operation and returns an error.
+
+Destroying a native window before RELEASED is confirmed is a driver-side use-after-free that the engine cannot detect or prevent.
+
+---
+
+## migo_session_attach_surface
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_attach_surface(
+    MigoSession *session,
+    const MigoSurfaceDescriptor *descriptor,
+    MigoSurfaceAttachment **out_attachment);
+```
+
+Binds a native surface to a Session and publishes it as a presentation target. The first successful attach fixes the Session's graphics platform identity (backend plus display connection); later attaches must match it or return `MIGO_ERROR_INVALID_STATE` (the Session remains retryable and does not enter an unrecoverable error). `out_attachment` is set to NULL before any validation, so the caller can determine the result directly from whether the handle is NULL without checking the return code.
+
+`descriptor.platform_descriptor` is borrowed only during this call; before returning, the engine deep-copies it and takes an independent reference to any reference-counted native target.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `session` | Target Session handle; must not be NULL |
+| `descriptor` | Complete `MigoSurfaceDescriptor` for the attach; must not be NULL; all reserved and flags fields must be zero |
+| `out_attachment` | Pointer receiving the new attachment handle; must not be NULL; set to NULL on failure |
+
+Returns:
+
+- `MIGO_OK` — Attach succeeded; `*out_attachment` holds a valid handle.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session`, `descriptor`, or `out_attachment` is NULL; `struct_size` is below the minimum record; generation is zero; width or height is zero or exceeds `INT32_MAX`; `scale_factor` is non-positive or non-finite; flags or reserved fields are non-zero; `color_space`, `alpha_mode`, `presentation_mode`, or `platform_kind` is undefined; the platform payload does not match `platform_kind`, or the platform descriptor contains a NULL native window.
+- `MIGO_ERROR_UNSUPPORTED_ABI` — `descriptor.abi_version` does not match this build, or `struct_size` exceeds the size known to this build.
+- `MIGO_ERROR_UNSUPPORTED_CAPABILITY` — A defined request is not implemented by this build: `MIGO_COLOR_SPACE_DISPLAY_P3`, `MIGO_COLOR_SPACE_EXTENDED_SRGB`, premultiplied/postmultiplied alpha, mailbox/immediate presentation, or any non-zero `capability_flags`.
+- `MIGO_ERROR_UNSUPPORTED_PLATFORM` — `platform_kind` is defined but unsupported by this build (consistent with the `platform_kinds` report from `migo_query_capabilities`).
+- `MIGO_ERROR_STALE_SURFACE` — `descriptor.generation` is not newer than the largest generation previously accepted by this Session.
+- `MIGO_ERROR_INVALID_STATE` — The Session is closed; another surface transition is in progress; an active attachment already exists; or the backend/display specified by the descriptor differs from the identity fixed by the first attach.
+- `MIGO_ERROR_INTERNAL` — The Session state lock is corrupted, or a host-side lease/dispatch failed (rare; log it when it occurs).
+
+Threading:
+
+Call from the thread that owns the Session; the host must serialize concurrent calls on the same Session.
+
+---
+
+## migo_surface_update
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_surface_update(
+    MigoSurfaceAttachment *attachment,
+    const MigoSurfaceMetrics *metrics);
+```
+
+Reports a resize or presentation-parameter change to an attached surface. This call is synchronous: on return, the new metrics have either been committed and the resize command queued, or nothing has happened (there is no partial commit). `metrics.generation` should use a monotonically increasing sequence so the engine can identify and discard resize events superseded by newer updates.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `attachment` | The current active attachment for the Session; must not be NULL |
+| `metrics` | New dimensions and presentation parameters; must not be NULL; `generation` must match this attachment's generation |
+
+Returns:
+
+- `MIGO_OK` — Update committed synchronously.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `attachment` or `metrics` is NULL; `struct_size` is too small; width or height is zero; `scale_factor` is non-finite; generation is zero or newer than the greatest value previously seen by this attachment.
+- `MIGO_ERROR_UNSUPPORTED_ABI` — `metrics.abi_version` does not match, or `struct_size` exceeds the size known to this build.
+- `MIGO_ERROR_INVALID_STATE` — Another surface transition (attach / update / detach) is in progress on the Session, or the Session has no active host.
+- `MIGO_ERROR_STALE_SURFACE` — The attachment is not the Session's active attachment, has been lost, or `metrics.generation` is older than the latest applied update.
+- `MIGO_ERROR_INTERNAL` — A host-side lease/dispatch failed (rare; log it when it occurs).
+
+Threading:
+
+Call from the thread that owns the Session; the host must serialize concurrent calls on the same Session.
+
+---
+
+## migo_surface_begin_detach
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_surface_begin_detach(
+    MigoSurfaceAttachment *attachment,
+    MigoSurfaceRelease **out_release);
+```
+
+Starts retiring an attachment and enters the irreversible asynchronous detach flow. After a successful call, the supplied `attachment` pointer immediately becomes invalid (ownership is consumed); `*out_release` holds a new observer that the host must poll to determine when driver-side references have been released. `out_release` is set to NULL before any validation, so it is safe to read regardless of the result.
+
+A non-`MIGO_OK` result consumes no resources; ownership of `attachment` remains with the host.
+
+> **Important:** `MIGO_OK` means retirement **has started**, not that the driver has released the surface. **Do not destroy the native window** until `migo_surface_release_query` reports `MIGO_SURFACE_RELEASE_RELEASED`; doing so is a driver-side use-after-free that the engine cannot detect or prevent.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `attachment` | The sole handle for the active attachment (do not copy it into an independent alias); must not be NULL |
+| `out_release` | Pointer receiving the release observer; must not be NULL; set to NULL on failure |
+
+Returns:
+
+- `MIGO_OK` — Detach started; the attachment was consumed and `*out_release` is valid.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `attachment` or `out_release` is NULL.
+- `MIGO_ERROR_INVALID_STATE` — Another surface transition is in progress, or the Session has no active host.
+- `MIGO_ERROR_STALE_SURFACE` — `attachment` is not the Session's current active attachment.
+
+Threading:
+
+Call from the thread that owns the Session. This call must not wait for the next host-dispatcher turn (it does not block the event loop). The host must serialize concurrent calls on the same Session.
+
+---
+
+## migo_surface_release_query
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_surface_release_query(
+    const MigoSurfaceRelease *release,
+    MigoSurfaceReleaseStatus *out_status);
+```
+
+Reads the current state of a release observer and never blocks, so it is safe to poll from a UI thread or an idle handler in an event loop. The observer is level-triggered: even if release completed before the first query, the query still observes RELEASED — there is no window in which completion can be missed. Once RELEASED, the observer can still be queried after the Session that created it is destroyed.
+
+`out_status` is **caller-owned, and its header is input**: set `struct_size` and `abi_version` before the call. A zero-filled struct (the result of an uninitialized C struct or Swift default init) is rejected rather than overwritten with this build's `sizeof` — the only behavior that remains safe when an old host calls a new library. `out_status` is fully written only on `MIGO_OK`, and the header fields set by the caller are not overwritten.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `release` | Observer handle returned by `migo_surface_begin_detach`; must not be NULL |
+| `out_status` | Caller-allocated `MigoSurfaceReleaseStatus`; `struct_size` and `abi_version` must be set before the call |
+
+Returns:
+
+- `MIGO_OK` — `out_status` is fully filled.
+- `MIGO_ERROR_INVALID_ARGUMENT` — `release` or `out_status` is NULL, or `out_status->struct_size` is smaller than the minimum record size defined by this ABI.
+- `MIGO_ERROR_UNSUPPORTED_ABI` — `abi_version` is not the current version, or `struct_size` exceeds the size this build can fill.
+
+---
+
+## migo_surface_release_destroy
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_surface_release_destroy(MigoSurfaceRelease *release);
+```
+
+Destroys a completed release observer and releases its resources. `MIGO_OK` consumes the handle and the pointer immediately becomes invalid.
+
+Calling this while the release is still `MIGO_SURFACE_RELEASE_PENDING` returns `MIGO_ERROR_INVALID_STATE`; ownership remains with the host. The rejection is deliberate: destroying the observer early would remove the host's only way to observe driver release completion and therefore determine when native resources can be safely destroyed.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `release` | Observer handle whose state is `MIGO_SURFACE_RELEASE_RELEASED`; must not be NULL |
+
+Returns:
+
+- `MIGO_OK` — Destroyed successfully; the handle is invalid.
+- `MIGO_ERROR_INVALID_STATE` — `release` is still PENDING; ownership remains with the host.
+
+---
+
+## Complete example: Android attach + vsync + detach cycle
+
+The following code comes from `tests/c_host/android/src/main/cpp/main.c`. It shows a complete Android NativeWindow lifecycle: surface attach, AChoreographer vsync delivery, and safely waiting for GPU release before returning the window after shutdown.
+
+```c
+#include <migo/migo.h>
+#include <migo/platform/android.h>
+
+/* host 状态（简化） */
+struct host {
+    MigoSession          *session;
+    MigoSurfaceAttachment *attachment;
+    uint64_t              surface_generation; /* 跨轮次持久维护 */
+    float                 density;
+};
+
+/* ---- attach ------------------------------------------------------------ */
+static void attach_window(struct host *h, ANativeWindow *window) {
+    /* 平台专属描述符 */
+    MigoAndroidNativeWindowDescriptor native = {0};
+    native.struct_size   = sizeof native;
+    native.abi_version   = MIGO_ABI_VERSION_CURRENT;
+    native.platform_kind = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
+    native.native_window = window;  /* 引擎持有独立引用，此处不转移所有权 */
+
+    /* 声明但不提前提交：被拒绝时不递增本地计数器 */
+    uint64_t gen = h->surface_generation + 1;
+
+    MigoSurfaceDescriptor surface = {0};
+    surface.struct_size              = sizeof surface;
+    surface.abi_version              = MIGO_ABI_VERSION_CURRENT;
+    surface.generation               = gen;
+    surface.platform_kind            = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
+    surface.width_pixels             = (uint32_t)ANativeWindow_getWidth(window);
+    surface.height_pixels            = (uint32_t)ANativeWindow_getHeight(window);
+    surface.scale_factor             = h->density;
+    surface.color_space              = MIGO_COLOR_SPACE_SRGB;
+    surface.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+    surface.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+    surface.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;
+    surface.platform_descriptor_size = sizeof native;
+    surface.platform_descriptor      = &native;
+
+    MigoResult r = migo_session_attach_surface(h->session, &surface, &h->attachment);
+    if (r != MIGO_OK) return;
+    h->surface_generation = gen;  /* 已被接受，固化 */
+}
+
+/* ---- vsync ------------------------------------------------------------- */
+/* Choreographer 回调（API >= 29 使用 64-bit 时间戳版本）*/
+static void on_frame64(int64_t frame_time_nanos, void *data) {
+    struct host *h = (struct host *)data;
+    migo_session_notify_vsync(h->session, frame_time_nanos);
+}
+
+/* ---- detach ------------------------------------------------------------ */
+#define RELEASE_TIMEOUT_MS 2000
+#define RELEASE_POLL_US    2000
+
+/* 必须在 APP_CMD_TERM_WINDOW handler 返回前完成，
+ * 因为 glue 在 handler 返回后立即释放对 window 的引用。 */
+static void detach_window(struct host *h) {
+    MigoSurfaceRelease *release = NULL;
+    MigoResult r = migo_surface_begin_detach(h->attachment, &release);
+    if (r != MIGO_OK) return;
+    h->attachment = NULL;  /* 已消费，立刻清空防止悬空指针 */
+
+    /* 电平触发：即使 release 已完成也不会漏掉 */
+    for (long waited_us = 0; waited_us < RELEASE_TIMEOUT_MS * 1000L;
+         waited_us += RELEASE_POLL_US) {
+        MigoSurfaceReleaseStatus status = {0};
+        status.struct_size = sizeof status;
+        status.abi_version = MIGO_ABI_VERSION_CURRENT;
+        r = migo_surface_release_query(release, &status);
+        if (r != MIGO_OK) return;
+        if (status.state == MIGO_SURFACE_RELEASE_RELEASED) {
+            migo_surface_release_destroy(release);
+            return;  /* ANativeWindow 现在安全，可交还给系统 */
+        }
+        usleep(RELEASE_POLL_US);
+    }
+    /* 超时：泄漏 observer（刻意为之）；记录错误，window 即将被系统回收 */
+}
+```
+
+Intentionally leaking the observer after a timeout is the final safety strategy: it is the only remaining way to know when the window becomes safe, while the framework will reclaim the window regardless. On the normal path, all GPU references are released within two seconds.

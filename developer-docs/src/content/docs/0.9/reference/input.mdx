@@ -1,0 +1,511 @@
+---
+title: 输入事件
+sidebar:
+  order: 6
+description: migo_session_send_* 系列函数：触摸、指针、滚轮、软键盘、物理按键、IME 合成与手柄输入的完整参考。
+audience: host-integrator
+platforms:
+  - android
+  - linux
+  - windows
+  - openharmony
+sourcePaths:
+  - include/migo/input.h
+slug: 0.9/reference/input
+---
+
+## 事件流概述
+
+### 通用校验与错误码
+
+所有 `migo_session_send_*` 调用在进入 backpressure 判断之前，先完成统一校验。以下三种错误对本页所有函数均适用，各函数节不再重复：
+
+| 错误码 | 触发条件 |
+| --- | --- |
+| `MIGO_ERROR_INVALID_ARGUMENT` | `session` 或事件指针为 NULL；`struct_size` 小于当前版本记录的最小值；字段值超出 ABI 定义范围。 |
+| `MIGO_ERROR_UNSUPPORTED_ABI` | `abi_version` 与引擎构建不匹配，或 `struct_size` 声明的记录比引擎所知的更大。 |
+| `MIGO_ERROR_INVALID_STATE` | session 已销毁，或当前没有已挂载的 surface 可以投递事件。 |
+
+校验失败时，事件从不被部分投递——校验完成后才会入队，失败的调用不会改动输入流。
+
+### FIFO 顺序与并发
+
+每次 `migo_session_send_*` 调用都是非阻塞的；即使调用发生在 dispatch 线程之外，已接受的事件也会排入输入流并按 FIFO 应用。单一生产者从任意线程发送时，事件按调用顺序投递；如果宿主从两个线程并发调用，顺序由宿主保证——每个窗口系统都已在自己的事件循环中串行化，因此**始终在单一线程上发送输入**是推荐实践。跨线程并发调用若未自行串行化，可能产生 start 在 end 之后到达等逻辑错误。
+
+### WOULD\_BLOCK 与重新 arm
+
+`MIGO_ERROR_WOULD_BLOCK` 表示事件此时未被接受，宿主可在事件仍然有效时重试。
+
+高频运动/状态样本（touch MOVE、pointer MOVE、gamepad state）会被合并：同一流中多次调用可能只保留最新状态。状态转换（DOWN、UP、touch START/END、key DOWN/UP 等）使用独立的可靠储备，即使普通输入已满也能投递，但该储备本身也有界限——持续忽视 backpressure 的宿主最终会耗尽它。
+
+**第一次拒绝**会通过 `MigoOnErrorFn` 上报；之后任意一次成功的输入调用会重新 arm 该通知，使下一次饱和事件再次触发回调。
+
+### Focus 丢失时的自动 retract
+
+调用 `migo_session_set_focus(session, 0)`（见 [`./session.mdx`](/docs/0.9/reference/session/)）时，在向内容报告失焦前，引擎会按 FIFO 顺序自动 retract 所有此前已接受但尚未结束的 touch、pointer button、物理按键和 IME composition。重复报告失焦不会产生重复 retract；宿主无需在失焦时手动补发这些事件。
+
+### 坐标单位
+
+`x`、`y` 以及键盘高度统一使用 **CSS 像素（逻辑像素）**，而非物理像素。宿主在 `attach_surface` 时提供 `scale_factor`，必须用同一比例系数将所有输入坐标从物理像素转换为逻辑像素。触摸与指针混用不同单位是最常见的集成错误：游戏画面渲染正确，但点击落点偏移。
+
+***
+
+## migo\_session\_send\_touch
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_touch(
+    MigoSession *session,
+    const MigoTouchEvent *event);
+```
+
+向 session 的内容投递一个触摸事件，适用于移动端多点触控以及以触摸模型驱动的桌面宿主。内容监听 `touchstart`/`touchmove`/`touchend`；只有触摸 API 的小游戏不监听指针事件，因此桌面宿主若要让此类内容可交互，可将鼠标映射为 `id = 0` 的单点触摸，而不必另发指针事件。`points` 数组仅在调用期间借用，引擎在返回前完成拷贝，调用方立即可以复用或释放该数组。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 session 句柄。 |
+| `event->type` | `MIGO_TOUCH_START` / `MIGO_TOUCH_MOVE` / `MIGO_TOUCH_END` / `MIGO_TOUCH_CANCEL`。 |
+| `event->point_count` | 1 到 `MIGO_TOUCH_MAX_POINTS`（10）之间；超出范围被拒绝。 |
+| `event->timestamp_ms` | 事件时间戳，毫秒，宿主自选起点（通常为系统 uptime）。 |
+| `event->points` | 指向 `MigoTouchPoint` 数组，长度至少为 `point_count`。 |
+
+`MigoTouchPoint` 字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 从 start 到对应 end 保持稳定的指针标识符。 |
+| `x`, `y` | CSS 像素逻辑坐标，使用 `scale_factor` 从物理像素转换。 |
+| `pressure` | `[0.0, 1.0]`，遵循 Web `Touch.force` 约定；设备不报告压力时填 `0.0`。Android 的 `AMotionEvent_getPressure` 可能超出 1.0，必须 clamp 后再传入。 |
+| `flags` | `MIGO_TOUCH_FLAG_CHANGED`：此点在本事件中发生变化；`MIGO_TOUCH_FLAG_REMOVED`：此点随本事件离开 surface，从 `touches` 中移除。对 pointer-specific 的 DOWN/UP 动作，只有对应指针的 `CHANGED` 应置位；对 MOVE 则所有指针均置位。 |
+
+返回：
+
+* `MIGO_OK`：事件已入队或已与同流待处理状态安全合并。
+* `MIGO_ERROR_INVALID_STATE`：无已挂载 surface。
+* `MIGO_ERROR_WOULD_BLOCK`：事件未被接受，宿主可在事件仍有效时重试。
+
+线程模型：
+
+可从任意线程调用，但并发调用的顺序由宿主保证。建议绑定在窗口系统事件循环所在的单一线程上发送。
+
+示例：Android MotionEvent → migo\_session\_send\_touch：
+
+```c
+/* 单指示例；多指时循环填充 MigoTouchPoint 数组并增大 point_count。 */
+static void forward_touch(MigoSession *session, AInputEvent *ev, float density) {
+    int32_t action = AMotionEvent_getAction(ev);
+    int32_t masked = action & AMOTION_EVENT_ACTION_MASK;
+    MigoTouchType type = (masked == AMOTION_EVENT_ACTION_DOWN ||
+        masked == AMOTION_EVENT_ACTION_POINTER_DOWN) ? MIGO_TOUCH_START : (masked == AMOTION_EVENT_ACTION_MOVE) ? MIGO_TOUCH_MOVE :
+        (masked == AMOTION_EVENT_ACTION_UP || masked == AMOTION_EVENT_ACTION_POINTER_UP) ? MIGO_TOUCH_END : MIGO_TOUCH_CANCEL;
+    size_t i = (size_t)((action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
+    MigoTouchPoint point = {(uint32_t)AMotionEvent_getPointerId(ev, i), AMotionEvent_getX(ev, i) / density,
+        AMotionEvent_getY(ev, i) / density, fminf(fmaxf(AMotionEvent_getPressure(ev, i), 0.0f), 1.0f),
+        MIGO_TOUCH_FLAG_CHANGED | ((type >= MIGO_TOUCH_END) ? MIGO_TOUCH_FLAG_REMOVED : 0)};
+    MigoTouchEvent touch = {sizeof touch, MIGO_ABI_VERSION_CURRENT, type, 1,
+        (int64_t)(AMotionEvent_getEventTime(ev) / 1000000), &point};
+    (void)migo_session_send_touch(session, &touch);
+}
+```
+
+***
+
+## migo\_session\_send\_pointer\_event
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_pointer_event(
+    MigoSession *session,
+    const MigoPointerEvent *event);
+```
+
+投递一个桌面指针事件（鼠标按键或移动）。指针流与触摸流相互独立，引擎不会从任何一方合成另一方；宿主根据内容类型和设备选择发送哪种流或两者兼发。监听 `mousedown`/`mouseup`/`mousemove` 的 PC 小游戏内容通过此接口接收事件；仅监听触摸的手机内容则忽略它。`MigoPointerEvent` 和 `MigoWheelEvent` 均不含指针字段，因此在所有目标平台（LP64、LLP64、ILP32）上布局一致。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `event->event_type` | `MIGO_POINTER_EVENT_DOWN` / `MIGO_POINTER_EVENT_MOVE` / `MIGO_POINTER_EVENT_UP`。 |
+| `event->button` | 遵循 DOM `MouseEvent.button`：0 主键，1 中键，2 副键；MOVE 时填当前按住的键；范围 0–`MIGO_POINTER_BUTTON_MAX`（31）。 |
+| `event->x`, `event->y` | CSS 像素逻辑坐标；与触摸坐标必须使用相同的 `scale_factor` 转换，否则同一位置的触摸和指针会报告不同坐标。 |
+| `event->timestamp_ms` | `double`，毫秒。 |
+
+返回：
+
+* `MIGO_OK`：事件已入队或已安全合并。
+* `MIGO_ERROR_INVALID_STATE`：无已挂载 surface。
+* `MIGO_ERROR_WOULD_BLOCK`：事件未被接受。DOWN 和 UP 使用可靠储备；MOVE 可合并。
+
+线程模型：
+
+可从任意线程调用；并发调用的顺序由宿主保证。
+
+***
+
+## migo\_session\_send\_wheel\_event
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_wheel_event(
+    MigoSession *session,
+    const MigoWheelEvent *event);
+```
+
+投递一个滚轮事件。delta 遵循 DOM `WheelEvent` 约定，`delta_mode` 随 delta 一起传入而非由宿主归一化为像素，因为将行/页单位换算为像素需要内容自身的行高。引擎拒绝无法识别的 `delta_mode`，而非将其当作像素处理——行级数值被误读为像素只会滚动用户期望量的一小部分，且没有机制在之后纠正。Qt 的 `angleDelta` 是八分之一度，宿主必须先将其转换为三种单位之一再传入。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `event->delta_mode` | `MIGO_WHEEL_DELTA_MODE_PIXEL` / `MIGO_WHEEL_DELTA_MODE_LINE` / `MIGO_WHEEL_DELTA_MODE_PAGE`。 |
+| `event->delta_x` | 水平滚动量，正值向右。 |
+| `event->delta_y` | 垂直滚动量，正值向下。 |
+| `event->delta_z` | 深度滚动量；不报告时填 `0.0`。 |
+| `event->timestamp_ms` | `double`，毫秒。 |
+| `event->reserved0` | 必须为 0。 |
+
+返回：
+
+* `MIGO_OK`：事件已入队。
+* `MIGO_ERROR_INVALID_STATE`：无已挂载 surface。
+* `MIGO_ERROR_WOULD_BLOCK`：事件未被接受。
+
+线程模型：
+
+可从任意线程调用；并发调用的顺序由宿主保证。
+
+***
+
+## migo\_session\_send\_keyboard\_event
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_keyboard_event(
+    MigoSession *session,
+    const MigoKeyboardEvent *event);
+```
+
+投递一个软键盘事件。**`value_utf8` 携带的是输入框的完整当前文本，而非刚输入的单个字符**；宿主若只发新增的字符，内容将永远只能看到最后一个字符。反方向，`MigoOnUpdateKeyboardFn` 是内容对该字段的回写，语义对称。`MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE` 用于通知键盘占据的高度变化（CSS 像素），从而让内容调整布局；键盘消失时高度为 `0.0`。
+
+> **常见错误**：只发最后一个字符而非全文，导致内容的文本框永远停在单字符。请始终传入完整的字段内容。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `event->event_type` | `MIGO_KEYBOARD_EVENT_INPUT`：文本更新；`MIGO_KEYBOARD_EVENT_CONFIRM`：用户确认（回车）；`MIGO_KEYBOARD_EVENT_COMPLETE`：键盘被收起；`MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE`：高度变化。 |
+| `event->value_utf8` | 指向字段完整 UTF-8 文本；长度限定，无需 NUL 结尾；仅在调用期间借用。长度为 0 且指针非 NULL 表示字段被清空。 |
+| `event->value_length` | `value_utf8` 的字节数。 |
+| `event->height_css_px` | 仅 `HEIGHT_CHANGE` 有效；其余类型填 `0.0`；单位为 CSS 像素。 |
+
+返回：
+
+* `MIGO_OK`：事件已入队。
+* `MIGO_ERROR_INVALID_STATE`：无已挂载 surface。
+* `MIGO_ERROR_WOULD_BLOCK`：事件未被接受。`COMPLETE` 使用可靠储备，不会因 backpressure 丢失。
+
+线程模型：
+
+可从任意线程调用；并发调用的顺序由宿主保证。
+
+示例：软键盘完整流程脚本：
+
+```c
+/* 宿主实现 on_show_keyboard 回调后，按此顺序发送事件 */
+send_keyboard(session, MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, NULL, 260.0f);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT,         "m",    0.0);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT,         "mi",   0.0);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT,         "migo", 0.0);
+/* 用户确认，然后键盘收起 */
+send_keyboard(session, MIGO_KEYBOARD_EVENT_CONFIRM,       "migo", 0.0);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_COMPLETE,      "migo", 0.0);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, NULL,   0.0);
+```
+
+***
+
+## migo\_session\_send\_key\_event
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_key_event(
+    MigoSession *session,
+    const MigoKeyEvent *event);
+```
+
+投递一个物理按键的按下或抬起事件。这与软键盘是**两套完全独立的能力**：软键盘报告 IME 处理后的完整字段文本，物理按键报告具体键位的离散按下动作，内容通过不同监听器读取两者。按键不像触摸那样批处理——用户打字速度下每次一个按键，批量接口没有实际需求。
+
+`key` 和 `code` 遵循 DOM 规范，**含义不可互换**：
+
+* `code`：标识物理键位，与布局和修饰键无关，例如 `"KeyA"`、`"ArrowLeft"`。
+* `key`：在当前修饰键和布局下该键产生的值，例如 `"a"`、`"A"`、`"ArrowLeft"`。
+
+宿主需要将平台键码（`AKEYCODE_A`、X11 keysym 等）翻译为 DOM 值，这个翻译表属于宿主的工作；引擎接受 DOM 格式而非平台码，以避免为每个平台内置映射表。**在两个字段都填 `code` 是最常见的错误**，会导致内容将 `"KeyA"` 当作输入文本。
+
+`modifiers` 和 `flags` 是后来追加的可选尾部字段：老版本宿主声明较小的 `struct_size`，缺省字段读为 0，恰好表示无修饰键、非重复键。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `event->event_type` | `MIGO_KEY_EVENT_DOWN` / `MIGO_KEY_EVENT_UP`。 |
+| `event->key_utf8` / `event->key_length` | DOM `key` 值，UTF-8 长度限定，仅在调用期间借用；dead key 产生空字符串时合法。 |
+| `event->code_utf8` / `event->code_length` | DOM `code` 值；空 code 被拒绝，因为 code 总是标识某个键位。 |
+| `event->timestamp_ms` | `double`，毫秒（位于可选尾部，旧 struct\_size 时缺省为 0）。 |
+| `event->modifiers` | 修饰键位掩码：`MIGO_KEY_MODIFIER_CONTROL`、`MIGO_KEY_MODIFIER_SHIFT`、`MIGO_KEY_MODIFIER_ALT`、`MIGO_KEY_MODIFIER_META`（可选尾部）。 |
+| `event->flags` | `MIGO_KEY_EVENT_FLAG_REPEAT`：平台自动重复产生的按键，对应 DOM `KeyboardEvent.repeat`（可选尾部）。 |
+
+返回：
+
+* `MIGO_OK`：事件已入队。
+* `MIGO_ERROR_INVALID_STATE`：无已挂载 surface。
+* `MIGO_ERROR_WOULD_BLOCK`：事件未被接受。KEY UP 使用可靠储备，不会在普通输入满载时丢失。
+
+线程模型：
+
+可从任意线程调用；并发调用的顺序由宿主保证。
+
+***
+
+## migo\_session\_send\_composition\_event
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_composition_event(
+    MigoSession *session,
+    const MigoCompositionEvent *event);
+```
+
+投递一个 IME 合成事件，对应 DOM `CompositionEvent`。合成表示 IME 输入的**进行中状态**（preedit）：输入拼音时显示候选词，尚未上屏。这与软键盘不同——软键盘报告已上屏的已提交文本。实现了自绘文本框的游戏需要同时接收两者：合成事件用于显示正在输入的候选词，键盘事件用于存储已提交值；宿主应在发 `MIGO_KEYBOARD_EVENT_INPUT` 的同时搭配发合成事件，而非选其一。
+
+**`data_utf8` 携带的始终是完整的当前 preedit 文本，从不是增量**；`MIGO_COMPOSITION_EVENT_END` 时 `data_utf8` 是最终提交文本，空字符串表示用户取消（内容仍需收到此事件以清除 preedit 显示）。长度中间截断多字节字符会被拒绝，不会投递残缺数据。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `event->event_type` | `MIGO_COMPOSITION_EVENT_START`：合成开始；`MIGO_COMPOSITION_EVENT_UPDATE`：preedit 更新；`MIGO_COMPOSITION_EVENT_END`：提交或取消。 |
+| `event->data_utf8` / `event->data_length` | 完整 preedit 或提交文本，UTF-8 长度限定，仅在调用期间借用。 |
+
+返回：
+
+* `MIGO_OK`：事件已入队。
+* `MIGO_ERROR_INVALID_STATE`：无已挂载 surface。
+* `MIGO_ERROR_WOULD_BLOCK`：事件未被接受。`UPDATE` 可合并；`START` 和 `END` 使用可靠储备。
+
+线程模型：
+
+可从任意线程调用；并发调用的顺序由宿主保证。
+
+示例：IME 拼音输入流程：
+
+```c
+/* 合成与软键盘配合：preedit 增长后提交，提交文本同步通过软键盘送出 */
+send_composition(session, MIGO_COMPOSITION_EVENT_START,  "");
+send_composition(session, MIGO_COMPOSITION_EVENT_UPDATE, "ni");
+send_composition(session, MIGO_COMPOSITION_EVENT_UPDATE, "nihao");
+/* END 的 data 是上屏文本；空则表示用户取消 */
+send_composition(session, MIGO_COMPOSITION_EVENT_END,    "\u4f60\u597d");
+/* 软键盘同步更新完整字段文本 */
+send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT, "migo\u4f60\u597d", 0.0);
+```
+
+***
+
+## migo\_session\_set\_gamepad\_connected
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_gamepad_connected(
+    MigoSession *session,
+    const MigoGamepadInfo *info,
+    uint32_t connected);
+```
+
+声明一个手柄上线（`connected = 1`），或将其下线（`connected = 0`）。引擎对应 Web `gamepadconnected`/`gamepaddisconnected` 事件。下线时引擎只读取 `info->index`，宿主可直接传入连接时使用的同一个结构体。槽位下线后保持空槽，不会将后续手柄前移——内容会持有 `index`，移位会导致错误的手柄被读取。
+
+`axis_count` 和 `button_count` 在连接时声明而非从第一帧样本推断，因为 `getGamepads()` 从 `gamepadconnected` 监听器触发的瞬间就必须返回正确大小的数组——内容常在那里读取 `buttons.length` 来判断布局。`mapping_utf8` 填 `"standard"` 表示宿主已将手柄映射到标准布局，填 `""` 表示未映射；内容据此决定是否信任按键顺序。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `info->index` | 手柄槽位，连接期间保持不变。 |
+| `info->axis_count` | 轴数量，最大 `MIGO_GAMEPAD_MAX_AXES`（8）。 |
+| `info->button_count` | 按键数量，最大 `MIGO_GAMEPAD_MAX_BUTTONS`（20）；超出被拒绝，不会截断（丢失按键比超限更危险）。 |
+| `info->id_utf8` | 设备名称，展示给玩家；NUL 结尾，仅在调用期间借用。 |
+| `info->mapping_utf8` | `"standard"` 或 `""`；NUL 结尾，仅在调用期间借用。 |
+| `connected` | `1` 上线，`0` 下线。 |
+
+返回：
+
+* `MIGO_OK`：声明已入队。
+* `MIGO_ERROR_INVALID_STATE`：无已挂载 surface。
+* `MIGO_ERROR_WOULD_BLOCK`：事件未被接受。
+
+线程模型：
+
+可从任意线程调用；并发调用的顺序由宿主保证。
+
+示例：
+
+```c
+MigoGamepadInfo info;
+memset(&info, 0, sizeof info);
+info.struct_size   = (uint32_t)sizeof info;
+info.abi_version   = MIGO_ABI_VERSION_CURRENT;
+info.index         = 0;
+info.axis_count    = 4;
+info.button_count  = 17;
+info.id_utf8       = "Xbox Wireless Controller (Vendor: 045e Product: 02fd)";
+info.mapping_utf8  = "standard";
+
+/* 上线 */
+migo_session_set_gamepad_connected(session, &info, 1);
+/* ... 游戏循环中持续发送样本 ... */
+/* 下线：只需 index，可复用同一结构体 */
+migo_session_set_gamepad_connected(session, &info, 0);
+```
+
+***
+
+## migo\_session\_send\_gamepad\_state
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_gamepad_state(
+    MigoSession *session,
+    const MigoGamepadStateEvent *event);
+```
+
+推送一帧手柄状态样本。Web 手柄 API 是**轮询模型**：内容每帧调用 `navigator.getGamepads()` 读取当前状态，而非监听事件。因此宿主以自己的采样频率持续推送，样本按 `index` 独立合并——漏送一帧无害，下一帧的完整状态会覆盖它。`axes` 和 `buttons` 数组仅在调用期间借用，引擎在返回前完成拷贝。
+
+`MIGO_GAMEPAD_BUTTON_FLAG_PRESSED` 与 `value` 是独立字段，并非从 `value` 推导：设备自行决定触发阈值，一个停在 0.25 的扳机可能是也可能不是 pressed，取决于手柄本身的配置。由引擎在此处推导会覆盖设备决策。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `event->index` | 手柄槽位，必须与 `migo_session_set_gamepad_connected` 中声明的 `index` 一致。 |
+| `event->axis_count` | 轴数量，必须与连接时声明的 `axis_count` 一致。 |
+| `event->button_count` | 按键数量，必须与连接时声明的 `button_count` 一致。 |
+| `event->axes` | 指向 `float` 数组，每个值 `[-1.0, 1.0]`，标准映射顺序；仅在调用期间借用。 |
+| `event->buttons` | 指向 `MigoGamepadButton` 数组；每个元素含 `flags`（`PRESSED`/`TOUCHED` 位掩码）和 `value`（`[0.0, 1.0]`）；仅在调用期间借用。 |
+| `event->timestamp_ms` | `double`，毫秒。 |
+
+返回：
+
+* `MIGO_OK`：样本已接受（含安全合并）。
+* `MIGO_ERROR_INVALID_STATE`：无已挂载 surface。
+* `MIGO_ERROR_WOULD_BLOCK`：样本未被接受，下一帧重试即可。
+
+线程模型：
+
+可从任意线程调用；按 `index` 独立合并，同一槽位并发推送的顺序由宿主保证。
+
+示例：
+
+```c
+float axes[4] = { phase, -phase, 0.0f, 0.0f };
+MigoGamepadButton buttons[17] = {0};
+buttons[0].flags = MIGO_GAMEPAD_BUTTON_FLAG_PRESSED | MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED;
+buttons[0].value = 1.0f;
+buttons[6].flags = MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED; /* 25% 未必算 pressed */
+buttons[6].value = 0.25f;
+MigoGamepadStateEvent ev = {sizeof ev, MIGO_ABI_VERSION_CURRENT, 0, 4, 17, 0,
+    axes, buttons, (double)elapsed_ms};
+MigoResult r = migo_session_send_gamepad_state(session, &ev);
+if (r == MIGO_ERROR_WOULD_BLOCK) { /* 下一帧重试 */ }
+```
+
+***
+
+## 类型参考
+
+### MigoTouchType
+
+```c
+typedef uint32_t MigoTouchType;
+#define MIGO_TOUCH_START  0U  /* touchstart：指针接触 surface */
+#define MIGO_TOUCH_MOVE   1U  /* touchmove：位置变化 */
+#define MIGO_TOUCH_END    2U  /* touchend：指针离开 surface */
+#define MIGO_TOUCH_CANCEL 3U  /* touchcancel：系统中断（来电、弹窗等） */
+```
+
+### MigoTouchPointFlags
+
+```c
+typedef uint32_t MigoTouchPointFlags;
+#define MIGO_TOUCH_FLAG_NONE    0U
+#define MIGO_TOUCH_FLAG_CHANGED (1U << 0)  /* 本事件中此点发生变化 */
+#define MIGO_TOUCH_FLAG_REMOVED (1U << 1)  /* 此点随本事件离开，从 touches 移除 */
+```
+
+### MigoPointerEventType
+
+```c
+typedef uint32_t MigoPointerEventType;
+#define MIGO_POINTER_EVENT_DOWN 0U  /* 按键按下 */
+#define MIGO_POINTER_EVENT_MOVE 1U  /* 指针移动 */
+#define MIGO_POINTER_EVENT_UP   2U  /* 按键抬起 */
+```
+
+`button` 字段为 `uint32_t`，遵循 DOM `MouseEvent.button`：0 主键（左键），1 中键，2 副键（右键）；最大允许值为 `MIGO_POINTER_BUTTON_MAX`（31）。
+
+### MigoWheelDeltaMode
+
+```c
+typedef uint32_t MigoWheelDeltaMode;
+#define MIGO_WHEEL_DELTA_MODE_PIXEL 0U  /* delta 单位为像素 */
+#define MIGO_WHEEL_DELTA_MODE_LINE  1U  /* delta 单位为行 */
+#define MIGO_WHEEL_DELTA_MODE_PAGE  2U  /* delta 单位为页 */
+```
+
+### MigoKeyboardEventType
+
+```c
+typedef uint32_t MigoKeyboardEventType;
+#define MIGO_KEYBOARD_EVENT_INPUT         0U  /* 字段文本更新（完整当前值） */
+#define MIGO_KEYBOARD_EVENT_CONFIRM       1U  /* 用户按下确认键（回车） */
+#define MIGO_KEYBOARD_EVENT_COMPLETE      2U  /* 键盘收起完成 */
+#define MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE 3U  /* 键盘高度变化（CSS 像素） */
+```
+
+### MigoKeyEventType
+
+```c
+typedef uint32_t MigoKeyEventType;
+#define MIGO_KEY_EVENT_DOWN 0U  /* 按键按下 */
+#define MIGO_KEY_EVENT_UP   1U  /* 按键抬起 */
+```
+
+### MigoKeyModifiers（修饰键位掩码）
+
+```c
+typedef uint32_t MigoKeyModifiers;
+#define MIGO_KEY_MODIFIER_NONE    0U
+#define MIGO_KEY_MODIFIER_CONTROL (1U << 0)  /* Ctrl */
+#define MIGO_KEY_MODIFIER_SHIFT   (1U << 1)  /* Shift */
+#define MIGO_KEY_MODIFIER_ALT     (1U << 2)  /* Alt / Option */
+#define MIGO_KEY_MODIFIER_META    (1U << 3)  /* Meta / Cmd / Win */
+```
+
+### MigoKeyEventFlags
+
+```c
+typedef uint32_t MigoKeyEventFlags;
+#define MIGO_KEY_EVENT_FLAG_NONE   0U
+#define MIGO_KEY_EVENT_FLAG_REPEAT (1U << 0)  /* 平台自动重复，对应 DOM KeyboardEvent.repeat */
+```
+
+### MigoCompositionEventType
+
+```c
+typedef uint32_t MigoCompositionEventType;
+#define MIGO_COMPOSITION_EVENT_START  0U  /* 合成开始，data 为初始 preedit（可为空） */
+#define MIGO_COMPOSITION_EVENT_UPDATE 1U  /* preedit 更新，data 为完整当前候选文本 */
+#define MIGO_COMPOSITION_EVENT_END    2U  /* 提交或取消，data 为上屏文本（取消时为空） */
+```
+
+### MigoGamepadButtonFlags
+
+```c
+typedef uint32_t MigoGamepadButtonFlags;
+#define MIGO_GAMEPAD_BUTTON_FLAG_NONE    0U
+#define MIGO_GAMEPAD_BUTTON_FLAG_PRESSED (1U << 0)  /* 设备判定为已按下 */
+#define MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED (1U << 1)  /* 手指触及但未必按下（如扳机） */
+```

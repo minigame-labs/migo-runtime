@@ -1,0 +1,83 @@
+---
+title: 设置页
+sidebar:
+  order: 3
+description: Android SettingHandler 合同:openSetting 的 UI 委托模型、SettingSink 的双写要求、无 handler 时 "openSetting:fail not supported" 的 settle 语义。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/SettingHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/SettingSink.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+::::caution[平台范围]
+`SettingHandler` 是 Android Java facade 的合同。C ABI 与跨平台层在 `0.9` 没有公开的设置出口。
+::::
+
+## 宿主要实现什么
+
+通过 `GameSession#setSettingHandler(SettingHandler)` 注册,对应 `GameSession.java` 第 **790** 行。
+
+`SettingHandler` 有一个带默认实现的方法:
+
+```java
+default void openSetting(SettingSink sink) {
+    sink.fail(-2, "openSetting:fail not supported");
+}
+```
+
+不覆盖等于宣告「本宿主无设置页」。覆盖时:
+
+- 收到调用 → 展示权限管理 UI,立即返回(不要阻塞宿主线程)
+- 用户操作完毕 → 通过 `sink` 恰好 settle 一次
+
+`SettingSink` 有两条通道:
+
+| 方法 | 语义 |
+| --- | --- |
+| `settleOpened(Map<String, Boolean> authSetting)` | 用户结束 UI;`authSetting` 是 scope→granted 映射,null/空均有效 |
+| `fail(int errCode, String errMsg)` | UI 无法展示 |
+
+**双写要求**:在 `settleOpened` 里报告的 scope 变化,也必须同步调 `PermissionSink#setScope` 写入持久决策。`settleOpened` 的 `authSetting` 只影响本次 `migo.openSetting()` 的回包,`setScope` 才是每次能力校验读取的来源。只写一处会让游戏刚得到授权、下一次能力检查就失败。
+
+## 不实现会怎样
+
+引自 `SettingHandler.java` 头注释:
+
+> `migo.openSetting()` fails with `openSetting:fail not supported` and
+> code `-2`. It settles rather than staying silent, because content that
+> was denied a scope is meant to be sent here — a stalled `openSetting()`
+> is a game with no way back.
+
+默认实现逐字写明了 settle 消息:
+
+```java
+sink.fail(-2, "openSetting:fail not supported");
+```
+
+## 内容侧看到什么
+
+| migo API | 触发条件 |
+| --- | --- |
+| `migo.openSetting(options)` | 内容请求打开权限管理界面;触发 `openSetting(sink)` |
+
+内容通常在 `migo.authorize()` 被拒绝后调用 `migo.openSetting()`,让用户有机会改变决策。settle 后,内容收到 `res.authSetting` 对象,key 是 scope 名,value 是布尔值。
+`SettingSink` 的方法都可从任意线程调用,且首个 settle 后后续调用不再生效。宿主可以把 Activity result 或对话框回调直接连接到 sink,但不要同时报告关闭和失败。
+
+`authSetting` 的 key 使用平台 scope 名,例如 `scope.camera`;null 或空 map 都会结算为一个空的 `authSetting` 对象,不会让字段缺失。它描述本次设置页回包,不是持久权限状态。
+
+设置页本身必须由宿主提供。runtime 没有自己的 settings screen;它只负责把内容侧的 `migo.openSetting()` 请求交给 handler 并转发 settle 结果。
+设置页返回的是当前 UI 展示结果;持久的 scope 决策仍由权限 handler 通过 `PermissionSink#setScope` 维护。
+
+宿主可把设置页的异步生命周期映射到 `SettingSink`,但必须保证请求最终有且只有一个结果。
+
+内容因此能区分设置页不可用的 `fail` 与设置页成功后的 `res.authSetting`。
+
+## 平台可用性
+
+| 层 | 状态 |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

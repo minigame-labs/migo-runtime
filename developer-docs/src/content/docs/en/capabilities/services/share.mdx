@@ -1,0 +1,81 @@
+---
+title: Share
+sidebar:
+  order: 4
+description: Android ShareHandler contract — ShareRequest fields, ShareSink settle semantics, and the "shareAppMessage:fail not supported" fallback when no handler is registered.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/ShareHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/ShareSink.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+---
+
+::::caution[Platform scope]
+`ShareHandler` is the Android Java facade contract. The C ABI and cross-platform layer have no public share entry point in `0.9`.
+::::
+
+## What the host must implement
+
+Register via `GameSession#setShareHandler(ShareHandler)`, corresponding to line **808** of `GameSession.java`.
+
+The `ShareHandler` entry point is:
+
+```java
+default void shareAppMessage(ShareRequest request, ShareSink sink)
+```
+
+Override this method to bridge the request to the host's own share panel: a system chooser, an in-app friend picker, or a social SDK. The runtime does not link a share SDK and holds no social graph.
+
+`ShareRequest` fields are populated by the runtime:
+
+| Field | Semantics |
+| --- | --- |
+| `title` | Share title; empty string when not set by content |
+| `imageUrl` | Share image URL; empty string when not set by content |
+| `query` | Query string received by the target game, e.g. `a=1&b=2`, without a leading `?` |
+| `imageUrlId` | Platform image id; ignore when the host cannot resolve it for that platform |
+
+After the share panel completes, settle the `ShareSink` exactly once:
+
+| Method | Semantics |
+| --- | --- |
+| `settleShared()` | The share panel flow has ended; does not imply the user actually sent a message |
+| `fail(int errCode, String errMsg)` | Failure; `errMsg` is passed to content as-is |
+
+Calls arrive on the runtime host thread; do not block. `ShareSink` may be called from any thread. The content-side `migo.onShareAppMessage` listener runs before the handler is invoked; the request is the final merged content and default values must not be re-derived.
+
+## What happens without an implementation
+
+From the `ShareHandler.java` header comment:
+
+> `migo.shareAppMessage()` fails with
+> `shareAppMessage:fail not supported` and code `-2`. It settles
+> rather than staying silent: content commonly awaits the share before resuming,
+> so a dropped request is a paused game.
+
+The default implementation verbatim:
+
+```java
+sink.fail(-2, "shareAppMessage:fail not supported");
+```
+
+## What content sees
+
+| migo API | Corresponding handler method |
+| --- | --- |
+| `migo.shareAppMessage(options)` | `shareAppMessage(request, sink)` |
+| `migo.onShareAppMessage(listener)` | Modifies the final share request before the handler is called |
+
+A successful `migo.shareAppMessage()` only means the share panel flow has ended. In line with the common mini-game contract, `ShareSink` does not tell content whether the user actually sent a message; using it to directly issue rewards has no factual basis.
+`ShareRequest.query` does not include a leading `?`, so if the host appends it to a target URL, it should be treated as the query-parameter body. `imageUrlId` is meaningful only when the host has the ability to resolve platform image ids for the corresponding platform.
+
+`ShareSink` is also a one-shot channel: the first `settleShared()` or `fail(...)` takes effect; subsequent calls are ignored. The host may settle from the result-callback thread of a system share Activity.
+
+## Platform availability
+
+| Layer | Status |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

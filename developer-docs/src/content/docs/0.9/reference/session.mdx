@@ -1,0 +1,635 @@
+---
+title: Session
+sidebar:
+  order: 4
+description: migo_session_* 函数及其配套数据类型的完整 C ABI 参考。
+audience: host-integrator
+platforms:
+  - android
+  - linux
+  - windows
+  - openharmony
+sourcePaths:
+  - include/migo/session.h
+slug: 0.9/reference/session
+---
+
+> **重要：C ABI 仍是 CANDIDATE（候选），非冻结稳定 ABI。** 头文件以
+> `MIGO_C_ABI_CANDIDATE == 1` 标注。生产宿主升级时须重新核对头文件、结构体布局
+> 和所有权规则；候选接口不提供长期二进制兼容承诺。
+
+Session 是宿主持有的执行单元：一个 Session 承载一块内容、绑定一个 surface、由一个
+dispatcher 驱动所有回调。Engine 可并发持有多个 Session；单个 Session 的所有调用
+须由宿主自行串行化。Engine 的创建与销毁见 [engine.mdx](/docs/0.9/reference/engine/)；surface 的
+attach、detach 与释放见 [surface.mdx](/docs/0.9/reference/surface/)。
+
+## MigoSessionConfig
+
+```c
+typedef struct MigoSessionConfig {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoSessionFlags flags;
+    uint8_t  launch_nonce[16];
+} MigoSessionConfig;
+```
+
+传给 `migo_session_create` 的创建参数。`flags` 当前版本无已定义位，须置
+`MIGO_SESSION_FLAG_NONE`。`launch_nonce` 是宿主提供的 128 位密钥，用于验证外部
+生产者数据包的身份；无外部生产者时全填零（零值即"未提供"的语义）。密钥须由宿主以
+密码学安全的随机源生成，引擎不生成也不验证它的随机质量。`launch_nonce` 是 v1 之后
+追加的字段；传入旧版（较短）结构体的宿主自动获得全零值——即无外部生产者，行为与
+旧版一致。
+
+初始化示例：
+
+```c
+MigoSessionConfig cfg;
+memset(&cfg, 0, sizeof cfg);
+cfg.struct_size = (uint32_t)sizeof cfg;
+cfg.abi_version = MIGO_ABI_VERSION_CURRENT;
+/* flags 置零；无外部生产者则 launch_nonce 已全零 */
+```
+
+## MigoContentDescriptor
+
+```c
+typedef struct MigoContentDescriptor {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoContentFlags flags;
+    uint32_t reserved0;
+    const char *content_id_utf8;
+    const char *entry_utf8;
+} MigoContentDescriptor;
+```
+
+描述宿主已安装于 Engine `files_dir` 下的内容包。`content_id_utf8` 和 `entry_utf8`
+均为 NUL 结尾 UTF-8，仅在 `migo_session_load_content` 调用期间借用，引擎返回前完成
+复制。引擎从 `<files_dir>/migo/games/<content_id>/code/<entry>` 解析入口文件；v1
+不支持任意宿主路径（计划作为带标志的新字段在后续版本追加）。
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `content_id_utf8` | `const char *` | 内容唯一标识，与存储根路径拼合定位游戏目录 |
+| `entry_utf8` | `const char *` | 相对于代码目录的入口文件名，例如 `"game.js"` |
+| `flags` | `MigoContentFlags` | 当前版本无已定义位，置 `MIGO_CONTENT_FLAG_NONE` |
+
+## MigoLifecycleState
+
+```c
+typedef uint32_t MigoLifecycleState;
+#define MIGO_LIFECYCLE_CREATED 0U
+#define MIGO_LIFECYCLE_RUNNING 1U
+#define MIGO_LIFECYCLE_PAUSED  2U
+```
+
+传给 `migo_session_set_lifecycle` 的状态值。Session 创建后初始处于
+`MIGO_LIFECYCLE_CREATED`；宿主通过 `RUNNING`／`PAUSED` 反映应用的前台与后台状态。
+`MIGO_LIFECYCLE_CREATED` 不可作为目标状态设置——它是初始状态而非可回退的状态，回退
+意味着撤销已运行的引擎，ABI 未定义此语义，尝试设置会返回 `MIGO_ERROR_INVALID_STATE`。
+
+| 常量 | 值 | 含义 |
+| --- | --- | --- |
+| `MIGO_LIFECYCLE_CREATED` | `0` | 初始状态，不可通过 API 主动设置 |
+| `MIGO_LIFECYCLE_RUNNING` | `1` | 内容在前台运行，帧循环激活 |
+| `MIGO_LIFECYCLE_PAUSED` | `2` | 内容后台暂停，帧循环休眠 |
+
+## MigoHostCallbacks
+
+```c
+typedef struct MigoHostCallbacks {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    void *user_data;
+    void *dispatcher_data;
+    MigoDispatchFn          dispatch;
+    MigoOnReadyFn           on_ready;
+    MigoOnErrorFn           on_error;
+    MigoOnExitRequestedFn   on_exit_requested;
+    MigoOnSurfaceLostFn     on_surface_lost;
+    MigoOnRequestFrameFn    on_request_frame;      /* 可选：宿主驱帧 */
+    MigoOnShowKeyboardFn    on_show_keyboard;       /* 三者全装或全不装 */
+    MigoOnHideKeyboardFn    on_hide_keyboard;
+    MigoOnUpdateKeyboardFn  on_update_keyboard;
+    MigoOnSurfaceReleasedFn on_surface_released;   /* 可选：surface 释放通知 */
+} MigoHostCallbacks;
+```
+
+一次性安装到 Session 的宿主回调集合。引擎复制 `struct_size` 所覆盖的已知字段；较小
+的 `struct_size`（来自旧版宿主）省略尾部追加字段，恢复旧版默认行为。所有用户回调
+均通过 `dispatch` 投递，在无引擎锁、无 session/attachment 锁的环境下执行，可重入
+detach 或 destroy 调用。回调只能成功安装一次，且须在首次 surface attach 或进入
+`RUNNING` 状态之前安装，防止排队任务观察到替换的函数指针或 `user_data`。
+
+字段：
+
+| 字段 | 类型 | 必须 | 说明 |
+| --- | --- | --- | --- |
+| `user_data` | `void *` | — | 传给每个用户回调的上下文指针 |
+| `dispatcher_data` | `void *` | — | 传给 `dispatch` 的上下文指针 |
+| `dispatch` | `MigoDispatchFn` | 是（当任意回调非 NULL） | 任务分发器 |
+| `on_ready` | `MigoOnReadyFn` | — | 内容首次就绪 |
+| `on_error` | `MigoOnErrorFn` | — | 运行时错误与背压通知 |
+| `on_exit_requested` | `MigoOnExitRequestedFn` | — | 内容请求退出 |
+| `on_surface_lost` | `MigoOnSurfaceLostFn` | — | surface 退役通知 |
+| `on_request_frame` | `MigoOnRequestFrameFn` | — | 请求宿主调度一帧；设置后宿主负责帧节奏 |
+| `on_show_keyboard` | `MigoOnShowKeyboardFn` | 三者全装或全不装 | 内容请求弹出软键盘 |
+| `on_hide_keyboard` | `MigoOnHideKeyboardFn` | 同上 | 内容请求关闭软键盘 |
+| `on_update_keyboard` | `MigoOnUpdateKeyboardFn` | 同上 | 内容更正输入框当前完整值 |
+| `on_surface_released` | `MigoOnSurfaceReleasedFn` | — | 退役 surface 完成释放的边沿通知 |
+
+### MigoDispatchFn
+
+```c
+typedef MigoResult (MIGO_CALL *MigoDispatchFn)(
+    void      *dispatcher_context,
+    MigoTaskFn task,
+    void      *task_context);
+```
+
+宿主提供的任务分发器，是引擎与宿主线程模型之间的桥梁。`MIGO_OK` 表示宿主接管任务
+所有权，**必须恰好调用一次**（内联或延迟均可）；返回任何错误时所有权归还引擎，任务
+被丢弃并记录日志。拒绝任务应返回 `MIGO_ERROR_DISPATCH_REJECTED`，使日志含义明确。
+非 NULL 回调的存在要求非 NULL 的 `dispatch`。
+
+### MigoOnReadyFn
+
+```c
+typedef void (MIGO_CALL *MigoOnReadyFn)(void *user_data, MigoSession *session);
+```
+
+内容完成初始化、首帧就绪后投递一次。宿主可在此开始向 Session 发送输入事件或调整
+生命周期。通过 dispatch 投递。
+
+### MigoOnErrorFn
+
+```c
+typedef void (MIGO_CALL *MigoOnErrorFn)(
+    void            *user_data,
+    MigoSession     *session,
+    const MigoError *error);
+```
+
+运行时错误与可恢复的背压通知。`MIGO_ERROR_WOULD_BLOCK` 报告一次输入饱和开始；后续
+成功的输入自动复位。通过 dispatch 投递，在无引擎锁状态下执行。
+
+### MigoOnExitRequestedFn
+
+```c
+typedef void (MIGO_CALL *MigoOnExitRequestedFn)(
+    void        *user_data,
+    MigoSession *session);
+```
+
+内容请求退出（例如调用了 `migo.exit()`）。宿主应回应以 `migo_session_destroy`；若
+暂不处理，内容保持运行状态。
+
+### MigoOnRequestFrameFn
+
+```c
+typedef void (MIGO_CALL *MigoOnRequestFrameFn)(
+    void        *user_data,
+    MigoSession *session);
+```
+
+引擎请求宿主调度恰好一帧。宿主应注册平台帧回调（Android 上的 `AChoreographer`、
+Wayland 上的合成器帧回调），在回调触发时调用 `migo_session_notify_vsync`。每次请求
+对应一帧；引擎需要更多帧时会再次发起请求。若此字段为 NULL，引擎自行控制帧节奏，
+不与平台 vsync 信号对齐——适用于无显示同步能力的宿主，但在有 vsync 信号的平台上
+会导致帧节奏不对齐。通过 dispatch 投递。
+
+### MigoOnSurfaceLostFn
+
+```c
+typedef void (MIGO_CALL *MigoOnSurfaceLostFn)(
+    void                *user_data,
+    MigoSession         *session,
+    uint64_t             generation,
+    MigoSurfaceLossReason reason);
+```
+
+指定 generation 的 surface 退役通知，携带丢失原因。宿主收到后须执行
+`migo_surface_begin_detach` 流程，等待对应 generation 达到 RELEASED 状态后再销毁
+原生窗口资源。详见 [surface.mdx](/docs/0.9/reference/surface/)。
+
+### MigoOnSurfaceReleasedFn
+
+```c
+typedef void (MIGO_CALL *MigoOnSurfaceReleasedFn)(
+    void        *user_data,
+    MigoSession *session,
+    uint64_t     generation);
+```
+
+指定 generation 的退役 surface 已达到 RELEASED 状态的边沿通知，是
+`migo_surface_release_query` 轮询的可选替代。此回调是边沿触发而非电平触发：拒绝、
+取消或延迟分发不改变释放状态本身；宿主在销毁原生资源前须以
+`migo_surface_release_query` 作权威性电平确认。
+
+### MigoOnShowKeyboardFn
+
+```c
+typedef void (MIGO_CALL *MigoOnShowKeyboardFn)(
+    void                       *user_data,
+    MigoSession                *session,
+    const MigoKeyboardShowOptions *options);
+```
+
+内容请求显示软键盘。`options` 结构体及其 `default_value_utf8` 仅在回调期间借用；
+宿主如需之后访问须自行复制。须与 `on_hide_keyboard` 和 `on_update_keyboard`
+同时安装，否则 `migo_session_set_host_callbacks` 返回 `MIGO_ERROR_INVALID_ARGUMENT`。
+
+### MigoOnHideKeyboardFn
+
+```c
+typedef void (MIGO_CALL *MigoOnHideKeyboardFn)(
+    void        *user_data,
+    MigoSession *session);
+```
+
+内容请求关闭软键盘。须与另外两个键盘回调同时安装。
+
+### MigoOnUpdateKeyboardFn
+
+```c
+typedef void (MIGO_CALL *MigoOnUpdateKeyboardFn)(
+    void        *user_data,
+    MigoSession *session,
+    const char  *value_utf8,
+    uint32_t     value_length);
+```
+
+内容更正输入框的当前完整文本，`value_utf8` 以 `value_length` 字节界定，不保证
+NUL 结尾，仅在调用期间借用。须与另外两个键盘回调同时安装。
+
+## MigoKeyboardShowOptions
+
+```c
+typedef struct MigoKeyboardShowOptions {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoKeyboardFlags    flags;
+    uint32_t             max_length;
+    MigoKeyboardConfirmType confirm_type;
+    MigoKeyboardType     keyboard_type;
+    const char          *default_value_utf8;
+    uint32_t             default_value_length;
+    uint32_t             reserved0;
+} MigoKeyboardShowOptions;
+```
+
+`on_show_keyboard` 回调携带的键盘参数，描述内容对软键盘的偏好。整个结构体及
+`default_value_utf8` 仅在回调期间借用；宿主如需之后使用须全部复制。
+
+字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `flags` | `MigoKeyboardFlags` 位掩码（见下表） |
+| `max_length` | 最大输入字符数；`0` 表示无限制 |
+| `confirm_type` | 确认键标签类型（见下表） |
+| `keyboard_type` | 键盘布局类型（见下表） |
+| `default_value_utf8` | 输入框预填文本，以 `default_value_length` 字节界定，可为 NULL |
+| `default_value_length` | 预填文本字节数 |
+
+MigoKeyboardFlags：
+
+| 常量 | 说明 |
+| --- | --- |
+| `MIGO_KEYBOARD_FLAG_NONE` | 无标志 |
+| `MIGO_KEYBOARD_FLAG_MULTIPLE` | 接受多行输入 |
+| `MIGO_KEYBOARD_FLAG_CONFIRM_HOLD` | 确认后保留键盘不自动关闭 |
+
+MigoKeyboardType：
+
+| 常量 | 说明 |
+| --- | --- |
+| `MIGO_KEYBOARD_TYPE_TEXT` | 通用文本键盘 |
+| `MIGO_KEYBOARD_TYPE_NUMBER` | 数字键盘 |
+
+MigoKeyboardConfirmType：
+
+| 常量 | 说明 |
+| --- | --- |
+| `MIGO_KEYBOARD_CONFIRM_DONE` | 完成 |
+| `MIGO_KEYBOARD_CONFIRM_NEXT` | 下一项 |
+| `MIGO_KEYBOARD_CONFIRM_SEARCH` | 搜索 |
+| `MIGO_KEYBOARD_CONFIRM_GO` | 前往 |
+| `MIGO_KEYBOARD_CONFIRM_SEND` | 发送 |
+
+***
+
+## migo\_session\_create
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_create(
+    MigoEngine *engine,
+    const MigoSessionConfig *config,
+    MigoSession **out_session);
+```
+
+在指定 Engine 下创建一个新 Session。新 Session 处于 `MIGO_LIFECYCLE_CREATED`
+状态，尚未加载内容也未绑定 surface。`out_session` 仅在返回 `MIGO_OK` 时写入，调用方
+应将其初始化为 NULL 以便在失败时状态明确。同一 Engine 下的多个 Session 可从不同宿主
+线程并发创建；`migo_engine_create` 与 `migo_session_create` 亦可并发执行。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `engine` | 已创建的 Engine 句柄 |
+| `config` | Session 配置，`struct_size` 和 `abi_version` 必填 |
+| `out_session` | 成功时写入新 Session 句柄 |
+
+返回：
+
+* `MIGO_OK` — Session 创建成功，`*out_session` 有效
+* `MIGO_ERROR_INVALID_ARGUMENT` — `engine`、`config` 或 `out_session` 为 NULL；`config.struct_size` 小于最小版本记录；`config.flags` 含未定义位
+* `MIGO_ERROR_UNSUPPORTED_ABI` — `config.abi_version` 与引擎不匹配，或 `struct_size` 超出引擎已知范围
+* `MIGO_ERROR_INTERNAL` — Engine 内部 Session 账本的锁被早期 panic 污染
+
+线程模型：
+
+可与其他 Session 的创建并发执行。单个 Session 的所有后续调用须由宿主串行化。
+
+```c
+MigoSessionConfig cfg;
+memset(&cfg, 0, sizeof cfg);
+cfg.struct_size = (uint32_t)sizeof cfg;
+cfg.abi_version = MIGO_ABI_VERSION_CURRENT;
+cfg.flags = MIGO_SESSION_FLAG_NONE;
+
+MigoSession *session = NULL;
+MigoResult r = migo_session_create(engine, &cfg, &session);
+if (r != MIGO_OK) {
+    fprintf(stderr, "migo_session_create failed: %d\n", (int)r);
+    return 1;
+}
+```
+
+## migo\_session\_load\_content
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_load_content(
+    MigoSession *session,
+    const MigoContentDescriptor *content);
+```
+
+指定 Session 加载并开始求值内容。参数与状态问题同步返回；内容运行期间发生的错误通过
+`on_error` 回调异步投递，此时调用栈已返回。每个 Session 只能加载一次内容，重复调用
+返回 `MIGO_ERROR_INVALID_STATE`。内容加载成功并完成初始化后，引擎通过 `on_ready`
+回调通知宿主。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 Session |
+| `content` | 内容描述符，`content_id_utf8` 和 `entry_utf8` 均不可为 NULL |
+
+返回：
+
+* `MIGO_OK` — 内容求值已启动
+* `MIGO_ERROR_INVALID_ARGUMENT` — `session` 或 `content` 为 NULL；`content.struct_size` 过小；`content_id_utf8` 或 `entry_utf8` 为 NULL
+* `MIGO_ERROR_UNSUPPORTED_ABI` — `content.abi_version` 不匹配
+* `MIGO_ERROR_INVALID_STATE` — Session 已销毁；或 Session 已加载过内容
+
+```c
+MigoContentDescriptor content;
+memset(&content, 0, sizeof content);
+content.struct_size = (uint32_t)sizeof content;
+content.abi_version = MIGO_ABI_VERSION_CURRENT;
+content.flags = MIGO_CONTENT_FLAG_NONE;
+content.content_id_utf8 = "bunnymark";
+content.entry_utf8 = "game.js";
+
+MigoResult r = migo_session_load_content(session, &content);
+if (r != MIGO_OK) {
+    fprintf(stderr, "migo_session_load_content failed: %d\n", (int)r);
+    return 1;
+}
+```
+
+## migo\_session\_set\_host\_callbacks
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_host_callbacks(
+    MigoSession *session,
+    const MigoHostCallbacks *callbacks);
+```
+
+为 Session 安装宿主回调集合。引擎复制 `struct_size` 所覆盖的已知字段；传入较小
+`struct_size` 的旧版宿主仅省略尾部追加字段，既有行为不变。回调只能成功安装一次，且
+必须在首次 surface attach 或进入 `RUNNING` 状态之前安装；之后调用返回
+`MIGO_ERROR_INVALID_STATE`，防止排队任务观察到替换的函数指针。软键盘三个回调须全部
+安装或全部不安装（安装了能显示却没有隐藏的能力会使键盘无法关闭）。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 Session |
+| `callbacks` | 回调集合，`struct_size` 和 `abi_version` 必填 |
+
+返回：
+
+* `MIGO_OK` — 回调安装成功
+* `MIGO_ERROR_INVALID_ARGUMENT` — `session` 或 `callbacks` 为 NULL；非 NULL 回调未配 `dispatch`；键盘三个回调仅部分安装
+* `MIGO_ERROR_UNSUPPORTED_ABI` — `callbacks.abi_version` 不匹配
+* `MIGO_ERROR_INVALID_STATE` — Session 已销毁；已完成首次 attach 或 RUNNING 转换；或已安装过回调
+
+线程模型：
+
+须在首次 surface attach 或 `RUNNING` 转换之前调用，建议紧接 `migo_session_create` 之后。
+
+```c
+MigoHostCallbacks cbs = {0};
+cbs.struct_size = (uint32_t)sizeof cbs;
+cbs.abi_version = MIGO_ABI_VERSION_CURRENT;
+cbs.user_data = my_host;
+cbs.dispatcher_data = my_host;
+cbs.dispatch = my_dispatch;
+cbs.on_ready = on_ready;
+cbs.on_error = on_error;
+cbs.on_exit_requested = on_exit_requested;
+cbs.on_request_frame = on_request_frame;
+cbs.on_show_keyboard = on_show_keyboard;
+cbs.on_hide_keyboard = on_hide_keyboard;
+cbs.on_update_keyboard = on_update_keyboard;
+MigoResult r = migo_session_set_host_callbacks(session, &cbs);
+if (r != MIGO_OK) return 1;
+```
+
+## migo\_session\_set\_lifecycle
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_lifecycle(
+    MigoSession *session,
+    MigoLifecycleState state);
+```
+
+将 Session 切换到 `MIGO_LIFECYCLE_RUNNING` 或 `MIGO_LIFECYCLE_PAUSED`。调用为幂等：
+目标状态与当前一致时返回 `MIGO_OK` 无副作用。宿主应在应用进入前台时设置 `RUNNING`，
+进入后台或被系统 overlay 遮挡时设置 `PAUSED`。`MIGO_LIFECYCLE_CREATED` 不可作为
+目标状态设置——它是初始只读状态，不可通过 API 回退；尝试会返回
+`MIGO_ERROR_INVALID_STATE`，其他未识别状态值返回 `MIGO_ERROR_INVALID_ARGUMENT`。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 Session |
+| `state` | `MIGO_LIFECYCLE_RUNNING` 或 `MIGO_LIFECYCLE_PAUSED` |
+
+返回：
+
+* `MIGO_OK` — 生命周期状态已更新（或与目标一致，无操作）
+* `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL；`state` 为未识别值
+* `MIGO_ERROR_INVALID_STATE` — Session 已销毁；或 `state` 为 `MIGO_LIFECYCLE_CREATED`
+
+```c
+/* Android NativeActivity on_cmd 生命周期映射示例 */
+switch (cmd) {
+case APP_CMD_RESUME:
+    migo_session_set_lifecycle(h->session, MIGO_LIFECYCLE_RUNNING);
+    break;
+case APP_CMD_PAUSE:
+    migo_session_set_lifecycle(h->session, MIGO_LIFECYCLE_PAUSED);
+    break;
+}
+```
+
+## migo\_session\_set\_visibility
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_session_set_visibility(MigoSession *session, uint8_t visible);
+```
+
+通知引擎 Session 内容当前是否在屏幕上可见，例如被另一个应用或系统 overlay 完全遮挡。
+可见性与生命周期相互独立——Session 可以处于 `RUNNING` 状态但不可见（反之亦然）。
+宿主应在窗口可见性变化时及时更新此状态，引擎可据此优化渲染策略。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 Session |
+| `visible` | `1` 表示可见，`0` 表示不可见 |
+
+返回：
+
+* `MIGO_OK` — 可见性已更新
+* `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL；`visible` 不为 `0` 或 `1`
+* `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo\_session\_set\_focus
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_session_set_focus(MigoSession *session, uint8_t focused);
+```
+
+通知引擎宿主窗口或 view 的输入焦点变化。宿主在原生窗口获得或失去输入焦点时须调用
+此函数；即使还没有 surface 也可以报告，Session 会为之后的 attach 保留该状态。在向内容
+投递 `focused=0` 之前，引擎按 FIFO 顺序自动撤回所有已接受的激活触控点、指针按钮、
+物理按键和 IME 输入法组合，防止输入状态悬空。重复投递焦点丢失（`focused=0`）不产生
+重复撤回。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 Session |
+| `focused` | `1` 表示获得焦点，`0` 表示失去焦点 |
+
+返回：
+
+* `MIGO_OK` — 焦点状态已更新
+* `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL；`focused` 不为 `0` 或 `1`
+* `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo\_session\_notify\_vsync
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_session_notify_vsync(MigoSession *session, int64_t frame_time_nanos);
+```
+
+响应 `on_request_frame` 的请求，通知引擎帧边界到达。`frame_time_nanos` 为平台帧时间
+戳——Android 上即 `AChoreographer` 回调参数。在未收到请求时调用此函数无害但无意义：
+引擎每次请求最多渲染一帧，渲染完毕后若需要更多帧会再次发起 `on_request_frame`。
+`frame_time_nanos` 使用有符号类型以与平台回调签名保持一致；时钟零点之前的值无实际
+意义，为负数时返回 `MIGO_ERROR_INVALID_ARGUMENT`；若宿主未安装 `on_request_frame`，
+引擎自行控制帧节奏，此函数无需调用。
+
+参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `session` | 目标 Session |
+| `frame_time_nanos` | 平台帧时间戳，纳秒，有符号以匹配平台回调签名 |
+
+返回：
+
+* `MIGO_OK` — 帧通知已接受
+* `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL；`frame_time_nanos` 为负数
+* `MIGO_ERROR_INVALID_STATE` — Session 已销毁；或当前无 surface attach
+
+线程模型：
+
+须从宿主选择的帧回调线程（即触发平台 vsync 信号的线程）调用，不可从引擎 worker
+线程调用。
+
+```c
+/* Android AChoreographer 64 位回调 */
+static void on_frame64(int64_t frame_time_nanos, void *data) {
+    struct host *h = (struct host *)data;
+    migo_session_notify_vsync(h->session, frame_time_nanos);
+}
+
+/* on_request_frame 中注册下一帧回调 */
+static void on_request_frame(void *user_data, MigoSession *session) {
+    struct host *h = (struct host *)user_data;
+    AChoreographer_postFrameCallback64(
+        h->choreographer, on_frame64, h);
+}
+```
+
+## migo\_session\_destroy
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_destroy(MigoSession *session);
+```
+
+销毁 Session，取消排队中的回调并将退出 worker 移交 Engine 的最终完成屏障。
+`MIGO_OK` 消耗并释放 Session 句柄，此后指针无效；销毁前须确保所有 surface attachment
+均已退役且无 surface 处于过渡状态，否则返回 `MIGO_ERROR_INVALID_STATE`，所有权保留给
+调用方，可在条件满足后重试。当前回调中重入销毁会立即使 Session 失效，让调用栈正常展开
+而不再触发新回调；重入销毁不等待当前回调帧结束，该栈可能在 Engine 的最终完成屏障之前
+展开。`migo_engine_destroy` 须在所有 Session 销毁后调用。
+
+返回：
+
+* `MIGO_OK` — Session 已销毁；回调已取消；宿主线程已移交 Engine
+* `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL
+* `MIGO_ERROR_INVALID_STATE` — Session 已销毁；surface 过渡仍在进行；仍有活跃 attachment；退役 surface 仍处于 PENDING 状态；或从引擎 worker 线程重入调用
+
+线程模型：
+
+不可从引擎 worker 线程调用（即宿主 dispatcher 可能分配任务的引擎线程）；否则返回
+`MIGO_ERROR_INVALID_STATE`，Session 保持完整，宿主须在回调展开后从自身线程重试。
+
+```c
+/* 1. 退役所有 surface 并等待 RELEASED（见 surface.mdx） */
+if (detach_and_await_release(attachment) != 0) return 1;
+/* 2. Session 必须在 attachment 释放后销毁 */
+MigoResult r = migo_session_destroy(session);
+if (r != MIGO_OK) return 1;
+/* 3. 所有 Session 销毁后再销毁 Engine */
+r = migo_engine_destroy(engine);
+if (r != MIGO_OK) return 1;
+```

@@ -1,0 +1,144 @@
+---
+title: Linux
+sidebar:
+  order: 3
+description: 在 Linux 上选择 X11 或 Wayland 原生 surface 描述符，把宿主窗口接到引擎并安全完成异步释放。
+audience: host-integrator
+platforms:
+  - linux
+sourcePaths:
+  - include/migo/platform/x11.h
+  - include/migo/platform/wayland.h
+  - include/migo/surface.h
+  - include/migo/capabilities.h
+  - platforms/linux/host-kit/README.md
+---
+
+本页只覆盖 Linux 的两个原生 surface 形状。通用 ABI 字段、generation 和异步释放合同见 [Surface 接口](/docs/reference/surface/)；这里的目标是说明 X11 / Wayland 宿主各自要交给引擎什么，以及哪些对象必须继续存活。
+
+**可用性：** 0.9 的 X11 C ABI 与 Qt Widgets Host Kit 已验证；Wayland 的 toolkit-neutral `linux-surface-host` 可供宿主使用，但 Qt Wayland、Qt Quick 和 GTK 4 不在当前支持声明内。具体构建仍须以 `migo_query_capabilities` 的 `platform_kinds` 为准。
+
+## 先查构建能力
+
+`platform_kinds` 是按平台编号索引的位图：`MIGO_PLATFORM_X11_WINDOW` 的值为 6，`MIGO_PLATFORM_WAYLAND_SURFACE` 的值为 7。只有对应位为 1，才把该形状传给 attach；已定义但构建未实现时，attach 会返回 `MIGO_ERROR_UNSUPPORTED_PLATFORM`。
+
+```c
+#include <migo/capabilities.h>
+
+MigoCapabilities caps;
+caps.struct_size = (uint32_t)sizeof caps;
+caps.abi_version = MIGO_ABI_VERSION_CURRENT;
+if (migo_query_capabilities(&caps) != MIGO_OK)
+    return; /* 查询失败时不要猜测平台能力。 */
+
+int can_x11 = (caps.platform_kinds & (1ULL << MIGO_PLATFORM_X11_WINDOW)) != 0;
+int can_wayland = (caps.platform_kinds & (1ULL << MIGO_PLATFORM_WAYLAND_SURFACE)) != 0;
+/* 按宿主实际窗口类型选择 can_x11 或 can_wayland。 */
+```
+
+## Wayland：`wl_display` + `wl_surface`
+
+### 描述符
+
+```c
+#include <migo/platform/wayland.h>
+
+typedef struct MigoWaylandSurfaceDescriptor {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_WAYLAND_SURFACE */
+    MigoPlatformDescriptorFlags flags; /* 须为 0 */
+    void                *display;       /* wl_display* */
+    void                *surface;       /* wl_surface* */
+} MigoWaylandSurfaceDescriptor;
+```
+
+`display` 和 `surface` 都是宿主拥有的对象。宿主继续负责 dispatch 和 surface role；引擎不接管事件循环。首次成功 attach 后，Session 的图形身份固定在同一个 `wl_display`，替换 surface 时不得换 display。
+
+### Attach 与释放
+
+```c
+MigoWaylandSurfaceDescriptor plat;
+memset(&plat, 0, sizeof plat);
+plat.struct_size   = (uint32_t)sizeof plat;
+plat.abi_version   = MIGO_ABI_VERSION_CURRENT;
+plat.platform_kind = MIGO_PLATFORM_WAYLAND_SURFACE;
+plat.display       = host_wl_display;
+plat.surface       = host_wl_surface;
+
+MigoSurfaceDescriptor desc;
+memset(&desc, 0, sizeof desc);
+desc.struct_size              = (uint32_t)sizeof desc;
+desc.abi_version              = MIGO_ABI_VERSION_CURRENT;
+desc.generation               = next_generation;
+desc.platform_kind            = MIGO_PLATFORM_WAYLAND_SURFACE;
+desc.width_pixels             = width;
+desc.height_pixels            = height;
+desc.scale_factor             = scale;
+desc.color_space              = MIGO_COLOR_SPACE_SRGB;
+desc.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+desc.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;
+desc.platform_descriptor_size = (uint32_t)sizeof plat;
+desc.platform_descriptor      = &plat;
+
+MigoSurfaceAttachment *attachment = NULL;
+MigoResult result = migo_session_attach_surface(session, &desc, &attachment);
+```
+
+detach 后，`wl_display`、`wl_surface`、宿主 dispatch 和事件循环都必须保持有效，直到 `migo_surface_release_query` 报告 `MIGO_SURFACE_RELEASE_RELEASED`，再调用 `migo_surface_release_destroy` 并销毁宿主对象。
+
+## X11：`Display*` + `Window`
+
+### 描述符
+
+```c
+#include <migo/platform/x11.h>
+
+typedef struct MigoX11WindowDescriptor {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_X11_WINDOW */
+    MigoPlatformDescriptorFlags flags; /* 须为 0 */
+    void                *display;      /* Display*，仅用于 attach 识别 server */
+    uintptr_t             window;      /* X11 Window / XID */
+    int32_t               screen;
+    uint32_t              reserved0;   /* 须为 0 */
+} MigoX11WindowDescriptor;
+```
+
+`display` 只借用到 attach 返回：引擎通过它识别 X11 server，然后打开自己的 render connection；引擎不会关闭宿主连接，也不会 dispatch 事件。`window` 由宿主创建和销毁。
+
+首次 attach 固定的是 X11 server，不是某一个宿主 `Display*` 指针。替换窗口时使用同一 server；换到另一个 server 会返回 `MIGO_ERROR_INVALID_STATE`。窗口要等 release 达到 `RELEASED` 后才能销毁；宿主连接按宿主自己的事件循环生命周期管理。
+
+```c
+MigoX11WindowDescriptor plat;
+memset(&plat, 0, sizeof plat);
+plat.struct_size   = (uint32_t)sizeof plat;
+plat.abi_version   = MIGO_ABI_VERSION_CURRENT;
+plat.platform_kind = MIGO_PLATFORM_X11_WINDOW;
+plat.display       = host_display;
+plat.window        = host_window;
+plat.screen        = host_screen;
+
+MigoSurfaceDescriptor desc;
+memset(&desc, 0, sizeof desc);
+desc.struct_size              = (uint32_t)sizeof desc;
+desc.abi_version              = MIGO_ABI_VERSION_CURRENT;
+desc.generation               = next_generation;
+desc.platform_kind            = MIGO_PLATFORM_X11_WINDOW;
+desc.width_pixels             = width;
+desc.height_pixels            = height;
+desc.scale_factor             = scale;
+desc.color_space              = MIGO_COLOR_SPACE_SRGB;
+desc.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+desc.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;
+desc.platform_descriptor_size = (uint32_t)sizeof plat;
+desc.platform_descriptor      = &plat;
+
+MigoSurfaceAttachment *attachment = NULL;
+migo_session_attach_surface(session, &desc, &attachment);
+```
+
+X11 Host Kit 的 `qt6-x11-surface-view` 使用 native child `QWidget`，但这不改变 C ABI 的所有权规则：宿主仍拥有 Session、view、X11 `Display` 和 XID，必须等待 surface release 后再销毁它们。Qt Wayland、Qt Quick、GTK 4 不要当作本页的已实现替代。

@@ -1,0 +1,144 @@
+---
+title: Engine 初始化
+sidebar:
+  order: 3
+description: 创建与销毁 Migo 引擎实例的完整参考——MigoEngineConfig、MigoEngineFlags 及 migo_engine_create / migo_engine_destroy 生命周期语义。
+audience: host-integrator
+platforms: [android, linux, windows, openharmony]
+sourcePaths:
+  - include/migo/session.h
+---
+## MigoEngineConfig
+
+```c
+typedef struct MigoEngineConfig {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoEngineFlags flags;
+    uint32_t reserved0;
+    const char *files_dir_utf8;
+    const char *cache_dir_utf8;
+    const char *code_cache_dir_utf8;
+} MigoEngineConfig;
+```
+
+引擎创建参数。调用方用 `memset` 将整个结构体清零，再逐字段赋值；`reserved0` 保持零即可。三个字符串字段在 `migo_engine_create` 返回前已被引擎内部复制，调用结束后可以释放或回收。
+
+字段：
+
+| 字段 | 类型 | 语义 | 所有权 |
+| --- | --- | --- | --- |
+| `struct_size` | `uint32_t` | 结构体字节大小，传 `(uint32_t)sizeof(MigoEngineConfig)`；引擎据此做向前兼容扩展 | — |
+| `abi_version` | `uint32_t` | ABI 版本，传 `MIGO_ABI_VERSION_CURRENT`；与库版本不一致时 `migo_engine_create` 返回 `MIGO_ERROR_UNSUPPORTED_ABI` | — |
+| `flags` | `MigoEngineFlags` | 引擎行为标志，见 [MigoEngineFlags](#migoengineflags)；无特殊需求传 `MIGO_ENGINE_FLAG_NONE` | — |
+| `files_dir_utf8` | `const char *` | 持久文件根目录（NUL 结尾 UTF-8）；对应平台的应用文档目录（Android `getFilesDir()`、iOS `NSDocumentDirectory`）；目录不存在时由引擎自动创建 | borrowed，create 返回前复制 |
+| `cache_dir_utf8` | `const char *` | 可清除缓存根目录（NUL 结尾 UTF-8）；操作系统低存储时可能被回收；目录不存在时自动创建 | borrowed，create 返回前复制 |
+| `code_cache_dir_utf8` | `const char *` | 编译字节码缓存根目录（NUL 结尾 UTF-8）；同一 Engine 下的所有 Session 共享此目录，跨 Session LRU 淘汰；目录不存在时自动创建 | borrowed，create 返回前复制 |
+
+三个存储根均属于宿主：引擎只在这些目录内读写，从不自行选择路径。每个 Session 的实际数据位于 `<root>/migo/games/<content_id>/`，因此只要 `content_id` 不同，多个 Session 的数据天然隔离。
+
+## MigoEngineFlags
+
+```c
+typedef uint64_t MigoEngineFlags;
+#define MIGO_ENGINE_FLAG_NONE                   0ULL
+#define MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT (1ULL << 0)
+```
+
+`MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT` 允许加载没有签名收据的内容包。这是**显式 opt-in**，而非默认行为——签名检查存在的目的正是防止静默接受未签名内容，因此默认应为拒绝。
+
+清除此标志会启用签名强制，但当前 C ABI 没有传递 Ed25519 公钥的途径（该配置仅在 Android SDK 的 `RuntimeConfig.Builder.setCodeSigningPubkey` 可达）。在公钥缺失的情况下，强制签名为失败关闭（fail-closed）：每次模块加载都会以 `MIGO_ERROR_INTERNAL` 终止，并在日志中打印：
+
+```text
+code signing enabled but public key is missing
+(set InitOptions.code_signing_pubkey (hex Ed25519 public key))
+```
+
+因此，**使用本 C ABI 的宿主目前唯一可以正常加载内容的配置是设置此标志**。这是已知缺口而非设计决策，待 ABI 具备公钥传递能力后将提供不依赖此标志的生产路径。
+
+## migo_engine_create
+
+```c
+MIGO_API MigoResult MIGO_CALL
+migo_engine_create(const MigoEngineConfig *config, MigoEngine **out_engine);
+```
+
+从宿主提供的配置创建一个 Engine 实例。成功时 `*out_engine` 是一个有效句柄，调用方最终必须将其传给 `migo_engine_destroy`。引擎在任何可能失败的操作之前先将 `*out_engine` 置为 `NULL`，因此无论返回何种结果，读取该指针都是安全的。
+
+参数：
+
+| 名字 | 说明 |
+| --- | --- |
+| `config` | 初始化好的 `MigoEngineConfig` 指针；不得为 `NULL`，`struct_size` 和 `abi_version` 必须有效 |
+| `out_engine` | 接收新建 Engine 句柄的指针；不得为 `NULL` |
+
+返回：
+
+- `MIGO_OK`：Engine 创建成功，`*out_engine` 有效。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`out_engine` 或 `config` 为 `NULL`；`config->struct_size` 小于最小合法记录大小；字符串字段为 `NULL`；`flags` 包含未识别的位。失败时 `*out_engine` 为 `NULL`。
+- `MIGO_ERROR_UNSUPPORTED_ABI`：`config->abi_version` 与当前库构建版本不匹配，或 `struct_size` 声明的记录大于本构建所了解的大小。失败时 `*out_engine` 为 `NULL`。
+- `MIGO_ERROR_INTERNAL`：某个存储根目录不存在且文件系统拒绝创建（权限不足、只读挂载点、路径组件非目录）——路径字符串本身格式正确，因此这不属于参数错误。失败时 `*out_engine` 为 `NULL`。
+
+线程模型：
+
+`migo_engine_create` 与 `migo_session_create` 可以从不同宿主线程并发调用。
+
+## migo_engine_destroy
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_engine_destroy(MigoEngine *engine);
+```
+
+销毁 Engine 并释放其所有资源。返回 `MIGO_OK` 后，`engine` 指针失效，不得再使用。
+
+调用前，宿主必须已销毁该 Engine 拥有的**所有子 Session**；存在活跃 Session 时调用返回 `MIGO_ERROR_INVALID_STATE`，Engine 不被消耗。
+
+**线程完成屏障**：成功的 `migo_engine_destroy` 是一个线程完成屏障——在其返回之前，所有由 Session 移交给 Engine 的工作线程（engine worker）都已退出并被 join。只有在此函数返回后，宿主才可以安全地销毁原生显示/窗口资源，或卸载 Migo 库。
+
+若从某个 engine worker 线程内部调用此函数（例如在回调尚未展开时），则返回 `MIGO_ERROR_INVALID_STATE` 且 Engine 不被消耗；应在回调展开后从宿主线程重试。
+
+**JS Worker 已知缺口**：上述屏障**不**覆盖内容通过 JS `Worker` API 创建的线程。销毁 Session 的 runtime 会中断各 isolate 并通知其消息循环停止，但不等待线程完成 unwind，因此 `migo_engine_destroy` 返回时可能仍有 Worker 线程正在退出。对于仅调用 `exit` 或在进程生命期内保持库加载的宿主，此行为无影响；对于在 `migo_engine_destroy` 返回后立即卸载库（`dlclose` / `FreeLibrary`）的宿主，需注意可能有 Worker 线程仍在执行库内代码。
+
+返回：
+
+- `MIGO_OK`：Engine 销毁完成，所有 engine worker 已退出，句柄已释放。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`engine` 为 `NULL`。
+- `MIGO_ERROR_INVALID_STATE`：Engine 仍拥有活跃 Session，或调用发生在 engine worker 线程内部；Engine 未被消耗，可在修正条件后重试。
+
+## 示例
+
+以下片段取自 `tests/c_host/linux/main.c`，演示最小化的 Engine 初始化与析构：
+
+```c
+/* 宿主负责提供三个存储根目录。 */
+MigoEngineConfig config;
+memset(&config, 0, sizeof(config));
+config.struct_size         = (uint32_t)sizeof(config);
+config.abi_version         = MIGO_ABI_VERSION_CURRENT;
+config.flags               = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT; /* 仅开发用 */
+config.files_dir_utf8      = "/data/migo/files";
+config.cache_dir_utf8      = "/data/migo/cache";
+config.code_cache_dir_utf8 = "/data/migo/code-cache";
+
+MigoEngine *engine = NULL;
+MigoResult r = migo_engine_create(&config, &engine);
+if (r != MIGO_OK) { /* 处理错误 */ }
+
+/* … 创建 Session，运行内容 … */
+
+/* 析构顺序：先 Session，再 Engine */
+migo_session_destroy(session);
+migo_engine_destroy(engine);
+```
+
+> 完整可运行示例：`tests/c_host/linux/main.c` 和 `tests/c_host/android/src/main/cpp/main.c`。
+
+## 多 Engine 实例
+
+一个进程可以持有任意数量的 Engine 实例，`migo_engine_create` 与 `migo_session_create` 均可从不同宿主线程并发调用。
+
+**存储根与隔离**：每个 Engine 拥有独立的三个存储根。Engine 下的每个 Session 都从同一组根目录出发，但实际路径按 `content_id` 划分为 `<root>/migo/games/<content_id>/`，因此不同 `content_id` 的 Session 天然隔离。宿主须保证并发活跃的 Session 使用不同的 `content_id`；共享相同 `content_id` 的两个 Session 也共享同一游戏目录（存储、缓存、临时文件均如此），引擎不拒绝这种用法，但隔离语义由宿主保证。
+
+**独立 Engine 的典型理由**：平台通常只分配一个文档目录（Android 的 `getFilesDir()`、iOS 的 `NSDocumentDirectory`）；若需要将两款游戏置于完全不同的根路径下，创建第二个 Engine 是正确的做法。
+
+**code cache 共享**：`code_cache_dir_utf8` 在同一 Engine 的所有 Session 间共享是**有意为之**。编译后的字节码以源文件哈希为键，与产生它的 Session 无关；两个 Session 加载相同模块时只编译一次。淘汰策略为跨整个目录的 LRU——某个 Session 大量编译时可能挤出其他 Session 的缓存条目，代价仅为一次重新编译，而非错误结果。若希望两个 Engine 实例也共享字节码缓存，只需令它们的 `code_cache_dir_utf8` 指向同一目录即可。

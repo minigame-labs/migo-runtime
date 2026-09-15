@@ -1,0 +1,425 @@
+---
+title: Base Types and Export Macros
+sidebar:
+  order: 2
+description: Export macros defined in types.h, ABI candidate status, platform detection, error codes, public types, and cross-platform linking conventions.
+audience: host-integrator
+platforms: [android, linux, windows, openharmony]
+sourcePaths:
+  - include/migo/types.h
+---
+
+> **Important: The C ABI remains a candidate (`MIGO_C_ABI_CANDIDATE == 1`) and is not frozen.**
+> Version the ABI before it freezes, recompile the host after every upgrade, and do not treat the candidate interface as a long-term binary-compatibility promise.
+> See `README.md` for the current freeze blockers.
+
+## MIGO_API
+
+```c
+/* Windows — 构建共享库时 */
+#define MIGO_API __declspec(dllexport)
+
+/* Windows — 使用共享库时 */
+#define MIGO_API __declspec(dllimport)
+
+/* Windows — 使用静态库时（无 MIGO_BUILD_SHARED / MIGO_USE_SHARED）*/
+#define MIGO_API
+
+/* GCC / Clang（含 Android NDK、OpenHarmony 工具链）*/
+#define MIGO_API __attribute__((visibility("default")))
+
+/* 其余编译器 */
+#define MIGO_API
+```
+
+`MIGO_API` marks every public symbol with its export or import attribute. On Windows, define `MIGO_BUILD_SHARED` when building a shared library; consumers of a shared library define `MIGO_USE_SHARED`; when linking a static library, define neither (the macro expands to nothing). On GCC/Clang platforms, symbol visibility is controlled by `__attribute__((visibility("default")))`, and the host needs no additional preprocessor definitions.
+
+### Differences on Linux / Android / OpenHarmony
+
+| Platform | Build system | `MIGO_API` expansion |
+| --- | --- | --- |
+| Desktop Linux (glibc) | CMake / pkg-config | `__attribute__((visibility("default")))` |
+| Android NDK | CMake (static library) | `__attribute__((visibility("default")))` |
+| OpenHarmony | CMake | `__attribute__((visibility("default")))` |
+| Windows | CMake / MSVC | `__declspec(dllexport/dllimport)` or empty |
+
+## MIGO_CALL
+
+```c
+/* Windows */
+#define MIGO_CALL __cdecl
+
+/* 其他所有平台 */
+#define MIGO_CALL
+```
+
+`MIGO_CALL` marks the function calling convention. Windows explicitly uses `__cdecl` to avoid differences in compiler defaults; on other platforms it expands to nothing and uses the platform-default ABI. Host callback implementations (such as `MigoTaskFn` and `on_error`) **must** include `MIGO_CALL`; otherwise Windows can end up with a mismatched stack.
+
+```c
+/* 宿主回调函数必须带 MIGO_CALL */
+static MigoResult MIGO_CALL my_dispatch(
+    void *ctx, MigoTaskFn task, void *task_ctx) {
+    task(task_ctx);
+    return MIGO_OK;
+}
+```
+
+## MIGO_BEGIN_DECLS / MIGO_END_DECLS
+
+```c
+/* C++ 编译器 */
+#define MIGO_BEGIN_DECLS extern "C" {
+#define MIGO_END_DECLS   }
+
+/* C 编译器 */
+#define MIGO_BEGIN_DECLS
+#define MIGO_END_DECLS
+```
+
+All public header declarations are wrapped by this macro pair so that C++ hosts refer to symbols with C linkage names (without name mangling). In a C compiler, both macros expand to nothing and add no syntax.
+
+## MIGO_C_ABI_CANDIDATE
+
+```c
+#define MIGO_C_ABI_CANDIDATE 1
+```
+
+This macro is always `1`, indicating that the C ABI described by the current headers is still a candidate and has not been frozen. Even though linkable runtime artifacts already exist for Android, Linux, and Windows, this does not mean the ABI is stable; `MIGO_C_ABI_CANDIDATE` will only be removed or set to 0 after all freeze blockers listed in `README.md` have been closed.
+
+## MIGO_C_ABI_HAS_RUNTIME
+
+```c
+/* 当前在 Android / Desktop Linux / Windows / OpenHarmony 上为 1 */
+#define MIGO_C_ABI_HAS_RUNTIME 1  /* 或 0 */
+```
+
+Indicates that a linkable migo runtime exists for the current compilation target. This macro describes the platform of the headers, not the library that was actually linked—it is a preprocessor macro and cannot observe the linked artifact at compile time. To query the capabilities of the linked runtime, call `migo_query_capabilities` (see [capabilities.mdx](/docs/reference/capabilities/)).
+
+## Platform-detection macros
+
+```c
+/* Android（NDK 注入 __ANDROID__）*/
+#define MIGO_PLATFORM_IS_ANDROID      0  /* 或 1 */
+
+/* OpenHarmony（工具链注入 __OHOS__ 或 __OHOS_FAMILY__）*/
+#define MIGO_PLATFORM_IS_OPENHARMONY  0  /* 或 1 */
+
+/* Desktop Linux with glibc（__linux__ && !Android && !OpenHarmony && __GLIBC__）*/
+#define MIGO_PLATFORM_IS_LINUX_GNU    0  /* 或 1 */
+
+/* Windows（_WIN32 && !Cygwin）*/
+#define MIGO_PLATFORM_IS_WINDOWS      0  /* 或 1 */
+```
+
+The platform macros in the headers are defined from **specific to general** for a reason: Android and OpenHarmony both use a Linux kernel and therefore both define `__linux__`; testing only `__linux__` would misclassify all three platforms as one ABI. `MIGO_PLATFORM_IS_LINUX_GNU` specifically means desktop Linux with glibc, explicitly excluding Android (Bionic), OpenHarmony (musl), and Cygwin.
+
+**Note:** `MIGO_PLATFORM_IS_LINUX_GNU` does not cover musl or other non-glibc Linux user spaces—their ABI floors differ, and this macro declares a promise that does not apply to them.
+
+## MIGO_STATIC_ASSERT
+
+```c
+/* C++ 编译器 */
+#define MIGO_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+
+/* C 编译器（C11+）*/
+#define MIGO_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+```
+
+Used for compile-time layout assertions inside the headers, this macro works with both C and C++ compilers and does not depend on `<assert.h>`. Host code does not need to call it; it appears in layout checks implemented by the headers.
+
+## MIGO_LP64
+
+```c
+/* 指针宽度为 64 位时 */
+#define MIGO_LP64 1
+
+/* 指针宽度为 32 位时 */
+#define MIGO_LP64 0
+```
+
+**This macro is for layout helpers only and must never be used as the basis for deciding whether a target is supported.** Current runtime artifacts are all 64-bit, but the public ABI validates layout with C and C++ compilers on LP64 (Linux/Android), Windows LLP64, and ILP32 alike.
+
+## ABI version constants
+
+```c
+#define MIGO_ABI_VERSION_1       1U
+#define MIGO_ABI_VERSION_CURRENT MIGO_ABI_VERSION_1
+```
+
+`MIGO_ABI_VERSION_CURRENT` is the value the host writes to the `abi_version` field when initializing every versioned struct. The only currently defined version is `1U`.
+
+> **Integer constant spelling convention:** Every integer constant in the headers uses a suffix literal (`1U`, `(1U << 0)`) rather than `UINT32_C()`. This keeps the constants compatible with Swift's Clang importer—`UINT32_C` is a function-like macro whose structure Swift cannot import; suffix literals are semantically equivalent in C/C++ while remaining usable in `#if` expressions.
+
+## MigoResult
+
+```c
+typedef int32_t MigoResult;
+```
+
+The return type of every public API function. Zero, `MIGO_OK`, means success; negative values mean errors. The host should **always** check the return value and consider a call successful only when `result == MIGO_OK`.
+
+```c
+MigoResult result = migo_engine_create(&config, &engine);
+if (result != MIGO_OK) {
+    fprintf(stderr, "migo_engine_create failed: %d\n", result);
+    return result;
+}
+```
+
+## Error codes
+
+### MIGO_OK
+
+```c
+#define MIGO_OK ((MigoResult)0)
+```
+
+The call succeeded, and output parameters have been filled according to the documentation.
+
+### MIGO_ERROR_INVALID_ARGUMENT
+
+```c
+#define MIGO_ERROR_INVALID_ARGUMENT ((MigoResult)-1)
+```
+
+A null pointer was passed, the struct `struct_size` is too small, `abi_version` is invalid, or an enum field is outside the known range. Check every input pointer and the initialization of versioned structs.
+
+### MIGO_ERROR_UNSUPPORTED_ABI
+
+```c
+#define MIGO_ERROR_UNSUPPORTED_ABI ((MigoResult)-2)
+```
+
+The supplied `abi_version` or `struct_size` does not match the range expected by the runtime. This usually means the host headers and runtime library use different ABI versions; upgrade the mismatched side and recompile.
+
+### MIGO_ERROR_UNSUPPORTED_PLATFORM
+
+```c
+#define MIGO_ERROR_UNSUPPORTED_PLATFORM ((MigoResult)-3)
+```
+
+The current runtime build lacks the platform capability required by the operation (for example, calling the corresponding attach function on a platform that does not support that surface type).
+
+### MIGO_ERROR_UNSUPPORTED_CAPABILITY
+
+```c
+#define MIGO_ERROR_UNSUPPORTED_CAPABILITY ((MigoResult)-4)
+```
+
+The requested capability is not implemented in the current runtime build. Call `migo_query_capabilities` first to query the available capabilities.
+
+### MIGO_ERROR_INVALID_STATE
+
+```c
+#define MIGO_ERROR_INVALID_STATE ((MigoResult)-5)
+```
+
+A handle was destroyed, the lifecycle state does not allow the operation, or a prerequisite resource is missing (for example, no surface is attached).
+
+### MIGO_ERROR_WRONG_THREAD
+
+```c
+#define MIGO_ERROR_WRONG_THREAD ((MigoResult)-6)
+```
+
+The caller's thread does not satisfy the function's thread-model requirement. See the comments in the corresponding header for each function's thread constraints.
+
+### MIGO_ERROR_STALE_SURFACE
+
+```c
+#define MIGO_ERROR_STALE_SURFACE ((MigoResult)-7)
+```
+
+The Surface handle is invalid (for example, the underlying window was destroyed or the detach flow completed), so it can no longer be operated on. The host must complete the detach/release flow before creating a new attachment.
+
+### MIGO_ERROR_CANCELLED
+
+```c
+#define MIGO_ERROR_CANCELLED ((MigoResult)-8)
+```
+
+**Reserved; no function returns this value in the current implementation.** It may be used for cancellable asynchronous operations in the future.
+
+### MIGO_ERROR_DISPATCH_REJECTED
+
+```c
+#define MIGO_ERROR_DISPATCH_REJECTED ((MigoResult)-9)
+```
+
+The task dispatcher provided by the host rejected the task. This usually means the dispatcher is shut down or is not accepting new tasks.
+
+### MIGO_ERROR_OUT_OF_MEMORY
+
+```c
+#define MIGO_ERROR_OUT_OF_MEMORY ((MigoResult)-10)
+```
+
+**Reserved; no function returns this value in the current implementation.** It may be returned on allocation failure in the future.
+
+### MIGO_ERROR_INTERNAL
+
+```c
+#define MIGO_ERROR_INTERNAL ((MigoResult)-11)
+```
+
+An unexpected internal runtime error occurred. This error is generally unrecoverable; the host should record diagnostic information and shut down the Session safely.
+
+### MIGO_ERROR_WOULD_BLOCK
+
+```c
+#define MIGO_ERROR_WOULD_BLOCK ((MigoResult)-12)
+```
+
+The host command queue is full and the event could not be delivered. Unlike the other error codes, **this is not a hard failure** but a backpressure signal. The host should follow the strategy specified by the relevant interface documentation—for example, drop low-priority input, retry with rate limiting, or notify the application layer to reduce its send rate.
+
+### Complete error-code quick reference
+
+| Error code | Value | Summary |
+| --- | --- | --- |
+| `MIGO_OK` | 0 | Success |
+| `MIGO_ERROR_INVALID_ARGUMENT` | -1 | Null pointer, undersized struct, or invalid field value |
+| `MIGO_ERROR_UNSUPPORTED_ABI` | -2 | abi_version / struct_size does not match the runtime |
+| `MIGO_ERROR_UNSUPPORTED_PLATFORM` | -3 | The current platform does not support the operation |
+| `MIGO_ERROR_UNSUPPORTED_CAPABILITY` | -4 | The requested capability is not implemented in this build |
+| `MIGO_ERROR_INVALID_STATE` | -5 | The handle was destroyed or the lifecycle state disallows the operation |
+| `MIGO_ERROR_WRONG_THREAD` | -6 | The calling thread violates the function's thread constraint |
+| `MIGO_ERROR_STALE_SURFACE` | -7 | The Surface handle is invalid |
+| `MIGO_ERROR_CANCELLED` | -8 | Reserved; currently unused |
+| `MIGO_ERROR_DISPATCH_REJECTED` | -9 | The dispatcher rejected task delivery |
+| `MIGO_ERROR_OUT_OF_MEMORY` | -10 | Reserved; currently unused |
+| `MIGO_ERROR_INTERNAL` | -11 | Internal runtime error, generally unrecoverable |
+| `MIGO_ERROR_WOULD_BLOCK` | -12 | Queue full; backpressure signal |
+
+## MigoErrorFlags
+
+```c
+typedef uint32_t MigoErrorFlags;
+
+#define MIGO_ERROR_FLAG_NONE        0U
+#define MIGO_ERROR_FLAG_RECOVERABLE (1U << 0)
+```
+
+`MigoErrorFlags` is a bitmask type used by the `flags` field of `MigoError`. When `MIGO_ERROR_FLAG_RECOVERABLE` is set, the runtime considers the error recoverable—the host may continue using the Session after handling it without destroying and recreating it. When the flag is clear, the host should conservatively treat the error as unrecoverable.
+
+## Opaque handles
+
+```c
+typedef struct MigoEngine            MigoEngine;
+typedef struct MigoSession           MigoSession;
+typedef struct MigoSurfaceAttachment MigoSurfaceAttachment;
+```
+
+The three core handles are opaque types (forward-declared structs). The host holds only pointers and does not know their internal layouts:
+
+| Handle | Lifetime | Destruction |
+| --- | --- | --- |
+| `MigoEngine *` | Longest-lived; contains global runtime state | `migo_engine_destroy` |
+| `MigoSession *` | Belongs to the Engine and represents one content session | `migo_session_destroy` |
+| `MigoSurfaceAttachment *` | Belongs to a Session and represents an attached rendering Surface | Begin asynchronous detach with `migo_surface_begin_detach` |
+
+Sessions must be destroyed before their Engine; a Surface attachment must complete the detach/release flow before its Session can be destroyed. See [engine.mdx](/docs/reference/engine/), [session.mdx](/docs/reference/session/), and [surface.mdx](/docs/reference/surface/).
+
+## MigoError
+
+```c
+typedef struct MigoError {
+    uint32_t     struct_size;
+    uint32_t     abi_version;
+    MigoResult   code;
+    MigoErrorFlags flags;
+    const char  *message_utf8;
+    uint32_t     message_length;
+    uint32_t     reserved0;
+} MigoError;
+```
+
+The runtime passes `MigoError` to the host through the `on_error` callback.
+
+Fields:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `struct_size` | `uint32_t` | Struct size, used for forward-compatibility validation |
+| `abi_version` | `uint32_t` | ABI version, filled by the runtime |
+| `code` | `MigoResult` | Corresponding error code (see the table above) |
+| `flags` | `MigoErrorFlags` | Bitmask, including `MIGO_ERROR_FLAG_RECOVERABLE` |
+| `message_utf8` | `const char *` | UTF-8 error description, **not guaranteed to be NUL-terminated**; valid only during the callback and must not be stored |
+| `message_length` | `uint32_t` | Byte length of `message_utf8`, excluding a NUL terminator |
+| `reserved0` | `uint32_t` | Guaranteed to be 0 by the runtime; the host must not infer meaning from it |
+
+> **Important:** `message_utf8` is a **borrowed pointer** valid only within the call frame of the `on_error` callback. To retain the message, copy `message_length` bytes inside the callback.
+
+## Versioned struct convention
+
+The first two fields of every config, descriptor, and status type are `struct_size` and `abi_version`. Initialize them in this order:
+
+1. Zero the entire struct (`= {0}` or `memset`).
+2. Set `struct_size = (uint32_t)sizeof(config)`.
+3. Set `abi_version = MIGO_ABI_VERSION_CURRENT`.
+4. Fill in the remaining fields required by this version; leave every other field zero.
+
+```c
+/* 典型初始化模式（来自 tests/c_host/linux/main.c）*/
+MigoEngineConfig engine_config = {0};
+engine_config.struct_size = (uint32_t)sizeof(engine_config);
+engine_config.abi_version = MIGO_ABI_VERSION_CURRENT;
+/* ... 填写其余字段 ... */
+
+MigoEngine *engine = NULL;
+MigoResult result = migo_engine_create(&engine_config, &engine);
+if (result != MIGO_OK) {
+    fprintf(stderr, "migo_engine_create: %d\n", result);
+    return result;
+}
+```
+
+**Do not:**
+
+- Pair an old struct size with a new `abi_version`.
+- Write values beyond the fields declared by the struct size.
+- Keep a pointer borrowed by the runtime (such as `message_utf8`) after the call returns.
+
+## Cross-platform linking
+
+### Desktop Linux (glibc)
+
+`scripts/build-linux-sdk.sh` generates `libmigo.so` and `libmigo.a`, together with a pkg-config file and CMake package.
+
+```cmake
+# CMake
+find_package(migo REQUIRED)
+target_link_libraries(my_host PRIVATE migo::migo)
+```
+
+```sh
+# pkg-config
+gcc my_host.c $(pkg-config --cflags --libs migo) -o my_host
+```
+
+### Android NDK
+
+`scripts/build-android-c-host.sh` compiles the runtime as a **static library**, with CMake metadata. The Android C host SDK has no pkg-config file and no versioned shared object—the NDK consumer links the static archive into its own native shared library. The Java/JNI SDK's `libmigo.so` is a different artifact and exports no `migo_*` symbols.
+
+```cmake
+# Android CMakeLists.txt
+find_package(migo REQUIRED)
+target_link_libraries(my_jni_lib PRIVATE migo::migo)
+```
+
+When using `MIGO_BUILD_SHARED` / `MIGO_USE_SHARED`, note that Android should link the static library and does not need either macro defined.
+
+### Windows
+
+`scripts/build-windows-sdk.sh` generates `migo.lib` with a CMake package. The Win32 surface backend attaches windows through HWND, and the ANGLE path handles rendering.
+
+```cmake
+# Windows CMakeLists.txt
+find_package(migo REQUIRED)
+target_link_libraries(my_host PRIVATE migo::migo)
+```
+
+Define `MIGO_USE_SHARED` in host compilation units when using the shared library; no additional definitions are needed for a static library.
+
+### OpenHarmony
+
+When `MIGO_PLATFORM_IS_OPENHARMONY` is 1, the OpenHarmony toolchain (`__OHOS__` or `__OHOS_FAMILY__`) is active. Follow the Android static-library linking path; see the `scripts/` directory for the specific build scripts.

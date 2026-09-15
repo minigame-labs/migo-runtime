@@ -1,0 +1,74 @@
+---
+title: Download and Verify
+sidebar:
+  order: 1
+description: Downloading Migo release artifacts and confirming origin and integrity using the release tag and SHA-256 checksums.
+audience: host-integrator
+platforms:
+  - android
+  - linux
+  - windows
+sourcePaths:
+  - release/VERSION
+---
+
+Migo's official artifacts are published on
+[GitHub Releases](https://github.com/minigame-labs/migo-runtime/releases).
+Download the Android AAR, Linux/Windows runtime, and the corresponding checksum files from the
+release page for the target version. Do not obtain binaries from unverified mirrors or
+comment attachments.
+
+## Choose a Release Version
+
+[`release/VERSION`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/release/VERSION) at
+the repository root is the single source of truth for the current release version. Before
+downloading, confirm that:
+
+1. The release tag matches the target version.
+2. The release page is marked as an official release, not an unpublished development build.
+3. The artifact name, target platform, and CPU architecture match the host environment.
+4. For Android, use the `migo-<version>-android.aar` file provided on the release page.
+
+Version series used in the documentation are derived from `release/VERSION`; do not hard-code
+version numbers in commands or scripts.
+
+## Verify SHA-256
+
+After downloading the artifact and the checksum file provided on the release page, run on Linux
+or macOS:
+
+```bash
+sha256sum --check SHA256SUMS
+```
+
+On Windows PowerShell:
+
+```powershell
+Get-FileHash .\migo-<version>-android.aar -Algorithm SHA256
+```
+
+Compare the digest in the output character-for-character against the digest for the same filename
+in `SHA256SUMS` or on the release page. Matching file name, size, or download timestamp does not
+substitute for a digest check. If the digests do not match, delete the artifact and re-download
+from the official release.
+
+## Verify the Release Tag
+
+When building from source, check out the tag that matches the release page before building
+according to
+[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md):
+
+```bash
+git fetch --tags https://github.com/minigame-labs/migo-runtime.git
+git checkout <release-tag>
+```
+
+Cross-check the local `release/VERSION` against the tag name and release metadata. To audit the
+build provenance, also record the commit, platform, architecture, toolchain, and checksum results.
+
+## Reporting Issues
+
+Retain the download URL, release tag, artifact filename, SHA-256 output, and error logs before
+reporting through the project repository's issue tracker. Candidate interfaces or development
+artifacts do not represent a stable release commitment; review the API reference and release notes
+for the corresponding version before upgrading a host.
