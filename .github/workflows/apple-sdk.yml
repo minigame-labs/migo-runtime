@@ -45,6 +45,14 @@ on:
       - 'engine/crates/capi/**'
       - 'engine/crates/frame-wire/**'
       - 'engine/crates/frame-decode/**'
+      # The crate the synchronous barrier and the frame ingress live in, and it
+      # was not here. `GLCmd::ReadPixels` grew a field and changed its reply type
+      # in a pull request that touched no Apple path, and the barrier's
+      # construction of that command stopped compiling -- in every Apple product
+      # and no Linux one, because only the Apple products enable
+      # `external-frames`. The Linux step that also builds it sits behind two
+      # unrelated failures in its job and never ran.
+      - 'engine/crates/core/**'
       # The crate this workflow runs `cargo test -p migo-platform` on, and it
       # was not here. So a change to the Apple presenter -- the EGL provider,
       # the layer ownership, the ANGLE bring-up tests that live in it -- could
