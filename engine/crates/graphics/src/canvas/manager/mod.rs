@@ -2002,6 +2002,24 @@ impl CanvasManager {
                     if let Some(entry) = self.canvases.get_mut(&id) {
                         entry.info.width = target_w;
                         entry.info.height = target_h;
+                        // `create` leaves its FBO bound on both targets -- a fresh
+                        // buffer is the default framebuffer's new meaning -- and
+                        // this is the only place that can record it. The
+                        // make-current above ran while this entry had no buffer, so
+                        // it installed nothing, and `evaluate_bypass` below moves
+                        // the mapping only when what is wanted differs from what
+                        // is recorded. Left at "real FBO 0" while the buffer is
+                        // bound, latching bypass changes nothing: frames land in
+                        // the buffer, the present skips the blit because bypass is
+                        // on, and the window shows nothing --
+                        // `scripts/verify-bypass-present.sh`'s bypass-probe
+                        // presented 0,0,0,0 for 180 painted frames that way.
+                        //
+                        // A preserved buffer needs no record here: it moves into
+                        // the entry before the first make-current, which applies
+                        // and records its mapping, and the bind above repeats that
+                        // same framebuffer.
+                        entry.applied_default_framebuffer = Some(db.fbo);
                         entry.drawing_buffer = Some(db);
                     }
                     (target_w, target_h)
