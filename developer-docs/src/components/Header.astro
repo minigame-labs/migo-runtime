@@ -1,0 +1,199 @@
+---
+// Fork of @astrojs/starlight Header.astro (0.42.0, MIT). Delta: portal nav
+// links between SiteTitle and Search — 上游 header 没有 middle slot,
+// 此前把链接叠在 header 外层的一行会和 sidebar 的固定 top 偏移冲突。
+import config from 'virtual:starlight/user-config';
+
+import LanguageSelect from 'virtual:starlight/components/LanguageSelect';
+import Search from 'virtual:starlight/components/Search';
+import SiteTitle from 'virtual:starlight/components/SiteTitle';
+import SocialIcons from 'virtual:starlight/components/SocialIcons';
+import ThemeSelect from 'virtual:starlight/components/ThemeSelect';
+
+// 与 migo-www 站点头部同源(route 名见 www/src/data/site.ts)。
+const portalLinks = [
+	{ label: '首页', href: '/' },
+	{ label: '开发者文档', href: '/docs/', current: true },
+	{ label: '性能数据', href: '/performance.html' },
+	{ label: '常见问题', href: '/faq.html' },
+	{ label: 'SDK 下载', href: '/download.html' },
+];
+
+/**
+ * Render the `Search` component if Pagefind is enabled or the default search component has been overridden.
+ */
+const shouldRenderSearch =
+	config.pagefind || config.components.Search !== '@astrojs/starlight/components/Search.astro';
+---
+
+<div class="header">
+	<div class="title-wrapper sl-flex">
+		<SiteTitle />
+		<nav class="portal-links" aria-label="站点导航">
+			{
+				portalLinks.map(({ label, href, current }) => (
+					<a href={href} aria-current={current ? 'page' : undefined} class:list={[{ current }]}>
+						{label}
+					</a>
+				))
+			}
+		</nav>
+	</div>
+	<div class="sl-flex print:hidden search-cell">
+		<span class="search-slot">{shouldRenderSearch && <Search />}</span>
+	</div>
+	<div class="sl-hidden md:sl-flex print:hidden right-group">
+		<div class="sl-flex social-icons">
+			<SocialIcons />
+		</div>
+		<ThemeSelect />
+		<LanguageSelect />
+	</div>
+</div>
+
+<style>
+	@layer starlight.core {
+		.header {
+			display: flex;
+			gap: var(--sl-nav-gap);
+			justify-content: space-between;
+			align-items: center;
+			height: 100%;
+		}
+
+		.title-wrapper {
+			/* Prevent long titles overflowing and covering the search and menu buttons on narrow viewports. */
+			overflow: clip;
+			/* Avoid clipping focus ring around link inside title wrapper. */
+			padding: 0.25rem;
+			margin: -0.25rem;
+			min-width: 0;
+			display: flex;
+			align-items: center;
+			gap: clamp(16px, 2.2vw, 34px);
+		}
+
+		.right-group,
+		.social-icons {
+			gap: 1rem;
+			align-items: center;
+		}
+		.social-icons::after {
+			content: '';
+			height: 2rem;
+			border-inline-end: 1px solid var(--sl-color-gray-5);
+		}
+
+		@media (min-width: 50rem) {
+			:global(:root[data-has-sidebar]) {
+				--__sidebar-pad: calc(2 * var(--sl-nav-pad-x));
+			}
+			:global(:root:not([data-has-toc])) {
+				--__toc-width: 0rem;
+			}
+			.header {
+				--__sidebar-width: max(0rem, var(--sl-content-inline-start, 0rem) - var(--sl-nav-pad-x));
+				--__main-column-fr: calc(
+					(
+							100% + var(--__sidebar-pad, 0rem) - var(--__toc-width, var(--sl-sidebar-width)) -
+								(2 * var(--__toc-width, var(--sl-nav-pad-x))) - var(--sl-content-inline-start, 0rem) -
+								var(--sl-content-width)
+						) / 2
+				);
+				display: grid;
+				grid-template-columns:
+					minmax(
+						calc(var(--__sidebar-width) + max(0rem, var(--__main-column-fr) - var(--sl-nav-gap))),
+						auto
+					)
+					1fr
+					auto;
+				align-content: center;
+			}
+		}
+	}
+
+	.search-cell {
+		align-items: center;
+		/* 搜索贴右(与 GitHub/语言切换组成右侧工具组),不再横在中格 */
+		justify-content: flex-end;
+		flex: 1 1 0%;
+		min-width: 0;
+	}
+	/* 搜索按钮与门户 /docs/ 顶一档输入框同宽:default slot 无宽度会 shrink-to-content 只塞下半行字 */
+	.search-slot {
+		display: block;
+	}
+	@media (min-width: 50rem) {
+		.search-slot {
+			width: 15rem;
+		}
+	}
+
+	/* 与门户 .nav-l 同档位:gap 用同一个 clamp,文字色 fg2/fg、hover 变白 */
+	.portal-links {
+		display: flex;
+		gap: clamp(16px, 2.2vw, 34px);
+		align-items: center;
+		white-space: nowrap;
+		font-size: var(--sl-text-sm);
+		flex-shrink: 1;
+		min-width: 0;
+	}
+	.portal-links a {
+		color: var(--sl-color-gray-2);
+		text-decoration: none;
+	}
+	.portal-links a:hover {
+		color: var(--sl-color-white);
+	}
+	/* 当前章节 = 红点标记,与门户 .nav-l a[aria-current] 同款;下划线在门户是链接语义 */
+	.portal-links a.current {
+		position: relative;
+		color: var(--sl-color-white);
+	}
+	.portal-links a.current::after {
+		content: '';
+		position: absolute;
+		left: 50%;
+		bottom: -6px;
+		width: 4px;
+		height: 4px;
+		margin-left: -2px;
+		border-radius: 99px;
+		/* --sl-color-text-accent 是可读性淡pink(text 用途),在暗底上几乎不可见 —— 标记用品牌红 #e5352c */
+		background: var(--sl-color-accent);
+	}
+	@media (max-width: 50rem) {
+		/* 390 顶栏满负荷:5 项文字链放不下、截断会与搜索图标粘连。
+		   移动只留「首页/开发者文档」两项(其余页面可在门户侧栏或桌面访问),
+		   与 Starlight 原生响应式收缩同一时机。 */
+		.portal-links a:nth-child(n+3) {
+			display: none;
+		}
+	}
+	@media (max-width: 72rem) {
+		/* 窄屏横向滚动条:链接保持可见可滑,不折叠(原 docusaurus 也有顶部导航) */
+		.portal-links {
+			overflow-x: auto;
+			max-width: 100%;
+			flex-shrink: 1;
+			min-width: 0;
+			scrollbar-width: thin;
+			/* overflow-x:auto 会把 overflow-y 降为 auto,负 bottom 的红点被裁掉。
+			   把导航底部 padding-moving 12px,红点照旧 -9px 画在链路下面,
+			   落在 scrollport 内的 padding 区不被裁;视觉定位用负 margin 抵消 */
+			padding-block-end: 12px;
+			margin-block-end: -12px;
+		}
+	}
+</style>
+
+<script>
+	// Wide tables get display:block + overflow-x:auto from starlight CSS; a
+	// scrollable region without focus is an axe violation
+	// (scrollable-region-focusable). Make them keyboard-reachable.
+	for (const t of document.querySelectorAll<HTMLElement>('.sl-markdown-content table')) {
+		t.tabIndex = 0;
+	}
+</script>

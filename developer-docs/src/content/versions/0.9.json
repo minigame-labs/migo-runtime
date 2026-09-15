@@ -1,0 +1,73 @@
+{
+  "sidebar": [
+    {
+      "label": "首页",
+      "translations": {
+        "en": "Home"
+      },
+      "link": "/"
+    },
+    {
+      "label": "快速开始",
+      "translations": {
+        "en": "Getting started"
+      },
+      "items": [
+        {
+          "autogenerate": {
+            "directory": "getting-started"
+          }
+        }
+      ]
+    },
+    {
+      "label": "核心概念",
+      "translations": {
+        "en": "Concepts"
+      },
+      "items": [
+        {
+          "autogenerate": {
+            "directory": "concepts"
+          }
+        }
+      ]
+    },
+    {
+      "label": "API 参考",
+      "translations": {
+        "en": "API reference"
+      },
+      "items": [
+        {
+          "label": "C ABI",
+          "translations": {
+            "en": "C ABI"
+          },
+          "collapsed": false,
+          "items": [
+            {
+              "autogenerate": {
+                "directory": "reference"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "发布与运维",
+      "translations": {
+        "en": "Release & operations"
+      },
+      "items": [
+        {
+          "autogenerate": {
+            "directory": "release"
+          }
+        }
+      ]
+    }
+  ],
+  "excluded": []
+}

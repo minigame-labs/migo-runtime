@@ -1,0 +1,9 @@
+---
+// Theme switcher intentionally hidden — the portal is dark-only (see ThemeProvider).
+// Manual merge of starlight-versions' ThemeSelect override (plugin logs a warn:
+// it can't override while we do). = plugin 的 <VersionSelect/> + Default,但没有
+// Default —— 因为本站没有 light/auto 主题可切。
+import VersionSelect from 'starlight-versions/components/VersionSelect.astro';
+---
+
+<VersionSelect />
