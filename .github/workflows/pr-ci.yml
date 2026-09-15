@@ -1133,6 +1133,67 @@ jobs:
   # target/, which the cache stores and restores with everything else. Observed
   # rather than assumed -- warm runs report `full match: true` and go green in
   # ~2.5 min against ~45 cold, with all 827 tests running and no link failure.
+  # What content drew has to reach the window. `scripts/verify-bypass-present.sh`
+  # runs the host player headless over seven fixtures and reads the presented
+  # frame back, and it had never run on CI -- so #225 merged with bypass-probe
+  # presenting 0,0,0,0 for 180 painted frames: the onscreen install left its
+  # DrawingBuffer bound while recording "real FBO 0", latching bypass re-pointed
+  # nothing, and every frame of single-canvas WebGL content that never binds a
+  # framebuffer went into a buffer the present no longer blits. Readbacks read
+  # that same buffer, so every readPixels-based test stayed green.
+  #
+  # Its own job, not a step: this repository has twice had a check that would
+  # have caught a defect sit after an unrelated failure in the same job and never
+  # run, and a presentation regression is the worst kind to hide that way.
+  presentation-paths:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: engine -> target
+          cache-on-failure: true
+
+      - name: Install the host player's build and EGL dependencies
+        run: |
+          timeout 180 sudo apt-get update -qq \
+            || echo "apt-get update incomplete; continuing on the image's indexes" >&2
+          install_pkgs() {
+            timeout 300 sudo apt-get install -y -qq \
+              clang ninja-build \
+              libgl-dev libegl-dev libgles-dev \
+              libgl1-mesa-dri libegl-mesa0 \
+              libfontconfig1-dev libfreetype-dev \
+              libasound2-dev || return 1
+          }
+          install_pkgs || {
+            echo "host build dependency install failed; retrying once" >&2
+            install_pkgs
+          }
+
+      # The gate builds offline through scripts/dev-test-host.sh, which takes V8
+      # from the verified in-repo fetch rather than letting a build script
+      # download an unverified one.
+      - name: Fetch and verify the host V8 archive
+        run: bash scripts/fetch-v8-archives.sh x86_64-linux-gnu
+
+      - name: Fetch crates
+        working-directory: engine
+        run: cargo fetch --locked
+
+      - name: Presented frames reach the window on every presentation path
+        run: bash scripts/verify-bypass-present.sh 3
+
   host-engine-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 90
