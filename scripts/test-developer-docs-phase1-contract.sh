@@ -180,13 +180,8 @@ if arch is not None:
         if term not in arch:
             error(f"sdk-architecture.mdx is missing required boundary term: {term}")
 
-# -- 5. en TranslationPending stubs -------------------------------------------
+# -- 5. en 页形状对称(占位 stub 或完整翻译均合法;半翻译是非法状态) ---------
 
-stub_required = [
-    ":::note[Translation pending]",
-    "(link below) is the current source of truth",
-    "content: noindex",
-]
 for rel in ZH_ROUTES:
     en_rel = "en/" + rel
     path = docs_root / en_rel
@@ -194,15 +189,20 @@ for rel in ZH_ROUTES:
     if text is None:
         continue
     body = text.split("---", 2)[-1]
-    for needle in stub_required:
-        if needle not in text:
-            error(f"src/content/docs/{en_rel} is missing stub marker {needle!r}")
-    zh_slug = rel[:-4] if rel.endswith(".mdx") else rel
-    zh_href = "/docs/" if zh_slug == "index" else f"/docs/{zh_slug}/"
-    if f"[→ 中文版本]({zh_href})" not in text:
-        error(f"src/content/docs/{en_rel} must link back to {zh_href}")
-    if mermaid_blocks(body):
-        error(f"src/content/docs/{en_rel} contains translated Mermaid content")
+    is_pending = ":::note[Translation pending]" in text
+    has_noindex = "content: noindex" in text
+    if is_pending != has_noindex:
+        error(f"src/content/docs/{en_rel} noindex/pending-note 不对称")
+        continue
+    if is_pending:
+        if "(link below) is the current source of truth" not in text:
+            error(f"src/content/docs/{en_rel} is missing stub marker 'current source of truth'")
+        zh_slug = rel[:-4] if rel.endswith(".mdx") else rel
+        zh_href = "/docs/" if zh_slug == "index" else f"/docs/{zh_slug}/"
+        if f"[→ 中文版本]({zh_href})" not in text:
+            error(f"src/content/docs/{en_rel} must link back to {zh_href}")
+        if mermaid_blocks(body):
+            error(f"src/content/docs/{en_rel} contains translated Mermaid content")
 
 # -- 6. Docusaurus remains -----------------------------------------------------
 
