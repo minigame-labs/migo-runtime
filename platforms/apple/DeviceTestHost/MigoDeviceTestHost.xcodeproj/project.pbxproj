@@ -11,6 +11,8 @@
 		2B0000000000000000000032 /* MigoAppleRenderer in Frameworks */ = {isa = PBXBuildFile; productRef = 2B00000000000000000000A2 /* MigoAppleRenderer */; };
 		2B0000000000000000000033 /* MigoAppleFrameHarness in Frameworks */ = {isa = PBXBuildFile; productRef = 2B00000000000000000000A3 /* MigoAppleFrameHarness */; };
 		2B0000000000000000000034 /* MigoAppleCore in Frameworks */ = {isa = PBXBuildFile; productRef = 2B00000000000000000000A4 /* MigoAppleCore */; };
+		2B0000000000000000000035 /* ANGLELibEGL-ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2B0000000000000000000004 /* ANGLELibEGL-ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		2B0000000000000000000036 /* ANGLELibGLESv2-ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 2B0000000000000000000005 /* ANGLELibGLESv2-ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -23,10 +25,27 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		2B0000000000000000000027 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				2B0000000000000000000035 /* ANGLELibEGL-ios.xcframework in Embed Frameworks */,
+				2B0000000000000000000036 /* ANGLELibGLESv2-ios.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		2B0000000000000000000001 /* MigoDeviceTestHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MigoDeviceTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2B0000000000000000000002 /* MigoDeviceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MigoDeviceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2B0000000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2B0000000000000000000004 /* ANGLELibEGL-ios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "ANGLELibEGL-ios.xcframework"; path = "../Frameworks/ANGLELibEGL-ios.xcframework"; sourceTree = "<group>"; };
+		2B0000000000000000000005 /* ANGLELibGLESv2-ios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "ANGLELibGLESv2-ios.xcframework"; path = "../Frameworks/ANGLELibGLESv2-ios.xcframework"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -78,8 +97,18 @@
 				2B0000000000000000000011 /* MigoAppleRendererTests */,
 				2B0000000000000000000012 /* MigoApplePerformancePlusTests */,
 				2B0000000000000000000003 /* Info.plist */,
+				2B0000000000000000000052 /* ANGLE */,
 				2B0000000000000000000051 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		2B0000000000000000000052 /* ANGLE */ = {
+			isa = PBXGroup;
+			children = (
+				2B0000000000000000000004 /* ANGLELibEGL-ios.xcframework */,
+				2B0000000000000000000005 /* ANGLELibGLESv2-ios.xcframework */,
+			);
+			name = ANGLE;
 			sourceTree = "<group>";
 		};
 		2B0000000000000000000051 /* Products */ = {
@@ -101,6 +130,7 @@
 				2B0000000000000000000021 /* Sources */,
 				2B0000000000000000000022 /* Frameworks */,
 				2B0000000000000000000023 /* Resources */,
+				2B0000000000000000000027 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);

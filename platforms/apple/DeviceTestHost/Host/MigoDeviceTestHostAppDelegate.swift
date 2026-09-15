@@ -10,6 +10,14 @@ import UIKit
 /// host, and `MigoDeviceTests` compiles the package's own test directories --
 /// the same files the simulator runs, not copies of them.
 ///
+/// It embeds ANGLE itself, and that is measured rather than tidy. Xcode puts a
+/// test bundle's dynamic frameworks inside the test bundle, and the first run on
+/// an iPhone 12 failed every renderer test with `Error loading EGL entry points:
+/// dlopen(.../MigoDeviceTestHost.app/Frameworks/libGLESv2.framework/libGLESv2)
+/// ... (no such file)`: libEGL, loaded from the test bundle through `@rpath`,
+/// looks for libGLESv2 beside the MAIN bundle. A shipping app embeds both there,
+/// so the host has to look like one.
+///
 /// It does nothing else, on purpose. The tests build their own windows, engines
 /// and sessions; a host that set up state of its own would be state every test
 /// on the phone inherited and no test on the simulator did.
