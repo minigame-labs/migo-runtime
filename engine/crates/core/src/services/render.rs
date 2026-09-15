@@ -123,6 +123,7 @@ impl RenderService {
         report_surface_installed: std::sync::Arc<
             dyn Fn(shared::surface::SurfaceCandidateRevision) + Send + Sync,
         >,
+        default_framebuffer_reads: graphics::DefaultFramebufferReads,
     ) -> EngineResult<Self> {
         // Published for the render thread to read rather than handed to it, so a
         // host that detaches while the GPU is still coming up is answered at once
@@ -155,6 +156,7 @@ impl RenderService {
             report_surface_loss,
             report_surface_installed,
             render_exit,
+            default_framebuffer_reads,
         )?;
         // Apply the host's configured target FPS to the render thread immediately
         // so the first vsync tick already runs at the right cadence.
