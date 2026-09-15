@@ -386,6 +386,32 @@ impl JsBindings {
     }
 
     #[inline]
+    /// Hand a capture-owned buffer to V8 as an ArrayBuffer without copying it.
+    ///
+    /// `new_backing_store_from_vec` is only that when the `Vec` has no spare
+    /// capacity. It goes through `into_boxed_slice`, which shrinks the allocation
+    /// to its length -- a `realloc` -- and an allocator may satisfy a shrink by
+    /// moving the block to a smaller size class and copying the frame into it.
+    /// glibc shrinks in place, which is why the pointer assertion this replaced
+    /// held on Linux; macOS's allocator moves it, and `macos-v8` was the only lane
+    /// that saw the copy. A `Vec` with spare capacity is therefore boxed whole:
+    /// one allocation the size of a `Vec` header, and the frame's own buffer
+    /// adopted at its original capacity, freed as the `Vec` it was.
+    fn adopt_as_array_buffer<'s>(
+        scope: &v8::PinScope<'s, '_>,
+        data: Vec<u8>,
+    ) -> v8::Local<'s, v8::ArrayBuffer> {
+        if data.is_empty() {
+            return v8::ArrayBuffer::new(scope, 0);
+        }
+        let store = if data.len() == data.capacity() {
+            v8::ArrayBuffer::new_backing_store_from_vec(data)
+        } else {
+            v8::ArrayBuffer::new_backing_store_from_bytes(Box::new(data))
+        };
+        v8::ArrayBuffer::with_backing_store(scope, &store.make_shared())
+    }
+
     fn with_main_context<R>(
         &self,
         rt: &mut deno_core::JsRuntime,
@@ -651,12 +677,7 @@ impl JsBindings {
         self.with_main_context(rt, move |scope, _ctx, global| {
             // Adopt the capture-owned allocation instead of allocating a fresh
             // V8 backing store and copying the entire frame into it.
-            let ab = if data.is_empty() {
-                v8::ArrayBuffer::new(scope, 0)
-            } else {
-                let store = v8::ArrayBuffer::new_backing_store_from_vec(data).make_shared();
-                v8::ArrayBuffer::with_backing_store(scope, &store)
-            };
+            let ab = Self::adopt_as_array_buffer(scope, data);
 
             let args = [ab.into(), v8::Boolean::new(scope, is_last_frame).into()];
             let func = v8::Local::new(scope, func_g);
@@ -1252,17 +1273,10 @@ impl JsBindings {
         };
 
         self.with_main_context(rt, move |scope, _ctx, global| {
-            // Hand the packed frame's allocation to V8 instead of copying it:
-            // `new_backing_store_from_vec` adopts the `Vec`'s heap buffer as the
-            // ArrayBuffer backing store, so there is no Rust->V8 copy. Valid
-            // camera frames are non-empty; an empty frame degrades to a plain
-            // empty ArrayBuffer.
-            let ab = if data.is_empty() {
-                v8::ArrayBuffer::new(scope, 0)
-            } else {
-                let store = v8::ArrayBuffer::new_backing_store_from_vec(data).make_shared();
-                v8::ArrayBuffer::with_backing_store(scope, &store)
-            };
+            // Hand the packed frame's allocation to V8 instead of copying it.
+            // Valid camera frames are non-empty; an empty frame degrades to a
+            // plain empty ArrayBuffer.
+            let ab = Self::adopt_as_array_buffer(scope, data);
 
             let args = [
                 v8::Integer::new_from_unsigned(scope, camera_id).into(),
@@ -1590,7 +1604,35 @@ mod tests {
             let orig_ptr = data.as_ptr();
 
             // The capture-owned Vec is moved into V8 for backing-store adoption.
+            //
+            // Reallocations are counted, not only the pointer compared, because the
+            // pointer is the allocator's answer and not the code's: glibc shrinks a
+            // block in place, so a `realloc` that would copy the frame on macOS kept
+            // the address here and this case passed on Linux while failing on the
+            // `macos-v8` lane. The count is the same on every allocator.
+            //
+            // A zero is also what a binary without the counting allocator reports,
+            // so the counter first has to be seen to move on a resize it is shown.
+            let control = migo_alloc_probe::thread_counts();
+            let mut resized: Vec<u8> = Vec::with_capacity(8);
+            resized.push(1);
+            resized.reserve_exact(4096);
+            std::hint::black_box(&resized);
+            assert!(
+                migo_alloc_probe::thread_counts().reallocations > control.reallocations,
+                "case 3: the counting allocator did not see a known resize, so a zero below \
+                 would prove nothing"
+            );
+            drop(resized);
+            let before = migo_alloc_probe::thread_counts();
             bindings.dispatch_recorder_frame_data(&mut rt, 1, data, false);
+            let during = migo_alloc_probe::thread_counts();
+            assert_eq!(
+                during.reallocations - before.reallocations,
+                0,
+                "case 3: handing a frame with spare capacity to V8 resized its allocation, \
+                 which is a copy of the frame on any allocator that moves a shrinking block"
+            );
 
             let ctx = rt.main_context();
             let isolate = rt.v8_isolate();
@@ -1625,8 +1667,9 @@ mod tests {
             }
             assert_eq!(got, expected, "case 3: exact frame bytes visible to JS");
 
-            // A naive into_boxed_slice() reallocates when cap > len, changing the pointer.
-            // new_backing_store_from_vec must preserve the original allocation.
+            // `new_backing_store_from_vec` goes through `into_boxed_slice()`, which
+            // reallocates when cap > len; the adoption must keep the original
+            // allocation.
             assert_eq!(
                 backing_ptr, orig_ptr,
                 "case 3: backing must be original Vec allocation (cap > len must not trigger realloc)"

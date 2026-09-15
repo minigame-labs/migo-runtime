@@ -375,6 +375,18 @@ impl SyncPath {
                 height: params.height,
                 format: params.format,
                 type_: params.type_,
+                // Unbounded, because the view this bound protects is not on this
+                // side of the boundary. In-process, the renderer refuses a PACK
+                // footprint (skips and row padding included) that overruns the
+                // content's ArrayBufferView, since it is about to be copied into
+                // that view. Here the view is in WebContent and the reply is only
+                // the compact rows, which `wanted` and `max_reply_bytes` already
+                // bound. Passing the reservation instead would refuse a read the
+                // producer's view has room for whenever PACK_ALIGNMENT pads a row
+                // or PACK_SKIP_* is set -- a false INVALID_OPERATION for a
+                // footprint only the producer can check, against a view only it
+                // holds.
+                destination_byte_length: usize::MAX,
                 resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(resp_tx),
             },
         );
@@ -385,8 +397,10 @@ impl SyncPath {
             return Err(SyncError::SessionEnded);
         }
 
+        // The layout is dropped on purpose: it places rows in a destination view,
+        // and the producer derives the same placement from the PACK state it set.
         let pixels = match resp_rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
-            Ok(Ok(pixels)) => pixels,
+            Ok(Ok(readback)) => readback.pixels,
             // The renderer answered and the answer was an error: a canvas that
             // does not exist, a GL failure, a surface that went away mid-read.
             // Not "unsupported" -- that is permanent and would stop the
@@ -995,6 +1009,9 @@ fn run_external_session(
         &opt,
         surface_control,
         vsync_rx,
+        // Every packet ends a frame, and the producer's read of it arrives through
+        // the synchronous barrier afterwards -- possibly after it presented.
+        graphics::DefaultFramebufferReads::AfterTheirPresent,
     ) {
         Ok(shell) => shell,
         Err(error) => {
@@ -2086,6 +2103,91 @@ mod sync_tests {
         path.mailbox.lock().acknowledge();
         post(&path, request(0, 1024), &read_pixels_params(2, 2), NOW)
             .expect("the slot is reusable once the first is acknowledged");
+    }
+
+    /// A readback the renderer answers reaches the reply slot, byte for byte,
+    /// under PACK state that makes the destination footprint larger than the
+    /// reply.
+    ///
+    /// The renderer here is a stand-in that decides the way the real one does
+    /// (`read_webgl_pixels`): it refuses a PACK footprint that overruns the
+    /// destination it was told about, and otherwise answers with the compact
+    /// rows. 3x2 RGBA8 under `PACK_ALIGNMENT` 8 with one skipped row is 24 bytes
+    /// of pixels and a 44-byte footprint, and the producer reserved exactly the
+    /// 24 -- so a barrier that handed the renderer its reservation as the
+    /// destination would turn a read the producer can place into a refusal.
+    ///
+    /// Until this existed nothing in the crate exercised the answered path at
+    /// all: every case above fails before the renderer is asked, so a change to
+    /// what the renderer replies with broke the Apple builds and no test here.
+    #[test]
+    fn a_readback_the_renderer_answers_reaches_the_reply_slot_under_padded_pack_state() {
+        use shared::protocol::pixel_pack::PixelPackLayout;
+        use shared::protocol::render_cmd::{GLCmd, ReadPixelsData, RenderCommand};
+
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        let sender = Arc::new(sender);
+        let dispatch = Arc::new(OnceLock::new());
+        assert!(
+            dispatch
+                .set(RenderDispatch {
+                    sender: Arc::downgrade(&sender),
+                    words: Mutex::new(Vec::new()),
+                })
+                .is_ok()
+        );
+        let path = SyncPath::new(INITIAL_RUNTIME_GENERATION, dispatch);
+
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::GL(GLCmd::ReadPixels {
+                width,
+                height,
+                destination_byte_length,
+                resp,
+                ..
+            })) = commands.recv()
+            else {
+                panic!("the barrier sent something other than a readPixels");
+            };
+            let layout = PixelPackLayout::new(width, height, 4, 8, 0, 1, 0).expect("valid PACK");
+            if layout.required_bytes > destination_byte_length {
+                resp.err_code(shared::error::ErrorCode::InvalidOperation);
+                return Some((layout.required_bytes, destination_byte_length));
+            }
+            let pixels = (0..layout.compact_bytes)
+                .map(|byte| byte as u8 + 1)
+                .collect();
+            resp.ok(ReadPixelsData { pixels, layout });
+            None
+        });
+
+        // A generous deadline: the stand-in is a thread that has to be
+        // scheduled, and this asserts what it answers, not how fast.
+        let mut read = request(SYNC_OP_READ_PIXELS, 24);
+        read.deadline_nanos = NOW + 30_000_000_000;
+        post(&path, read, &read_pixels_params(3, 2), NOW).expect("posted");
+        // Asserted apart from the reply, because both failures read back as
+        // OPERATION_FAILED and they want opposite fixes.
+        let refusal = renderer.join().expect("the stand-in renderer answered");
+        assert_eq!(
+            refusal, None,
+            "the renderer refused a {:?} (footprint, destination) PACK read: the barrier bounded \
+             it by a destination view that is not on this side",
+            refusal
+        );
+
+        let snapshot = path.snapshot(NOW);
+        assert_eq!(
+            (snapshot.state, snapshot.error),
+            (SyncState::Ready, None),
+            "the renderer answered and the barrier did not accept its reply"
+        );
+        assert_eq!(snapshot.reply_bytes, 24);
+        let mut out = [0u8; 24];
+        assert_eq!(path.take_reply(&mut out), Ok(24));
+        let expected: Vec<u8> = (1..=24).collect();
+        assert_eq!(out.as_slice(), expected.as_slice());
+        drop(sender);
     }
 
     #[test]

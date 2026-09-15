@@ -691,6 +691,8 @@ pub(crate) struct CanvasManager {
     /// (readPixels on canvas_id=1 with default FBO bound). Once set, DrawingBuffer
     /// bypass is permanently disabled so the DrawingBuffer preserves content across
     /// swaps and readback returns valid data. One-way latch — never cleared.
+    /// Starts set for a session whose reads can follow their frame's present
+    /// (`DefaultFramebufferReads::AfterTheirPresent`).
     needs_default_fbo_readback: bool,
 
     /// Per-frame upload budget gating (device-tier aware).
@@ -842,6 +844,7 @@ impl CanvasManager {
         // protocol agree; distinct from every other session's, so the GL
         // texture names this manager mints stay inside its own context.
         text_cache: shared::text_texture_cache::SharedTextCache,
+        default_framebuffer_reads: crate::DefaultFramebufferReads,
     ) -> EngineResult<Self> {
         let dpi = PixelRatio::new(dpi).ok_or_else(|| {
             ee(
@@ -1143,7 +1146,11 @@ impl CanvasManager {
             gl_get_graphics_reset_status_fn,
             preserved_ctx: None,
             preserved_drawing_buffer: None,
-            needs_default_fbo_readback: false,
+            // Latched before the first frame when a read can follow its frame's
+            // present: the snapshot that latching normally takes would copy a
+            // surface the swap has already made undefined.
+            needs_default_fbo_readback: default_framebuffer_reads
+                == crate::DefaultFramebufferReads::AfterTheirPresent,
             snapshot_fence_waits: 0,
             upload_server,
             upload_thread,
@@ -2002,6 +2009,24 @@ impl CanvasManager {
                     if let Some(entry) = self.canvases.get_mut(&id) {
                         entry.info.width = target_w;
                         entry.info.height = target_h;
+                        // `create` leaves its FBO bound on both targets -- a fresh
+                        // buffer is the default framebuffer's new meaning -- and
+                        // this is the only place that can record it. The
+                        // make-current above ran while this entry had no buffer, so
+                        // it installed nothing, and `evaluate_bypass` below moves
+                        // the mapping only when what is wanted differs from what
+                        // is recorded. Left at "real FBO 0" while the buffer is
+                        // bound, latching bypass changes nothing: frames land in
+                        // the buffer, the present skips the blit because bypass is
+                        // on, and the window shows nothing --
+                        // `scripts/verify-bypass-present.sh`'s bypass-probe
+                        // presented 0,0,0,0 for 180 painted frames that way.
+                        //
+                        // A preserved buffer needs no record here: it moves into
+                        // the entry before the first make-current, which applies
+                        // and records its mapping, and the bind above repeats that
+                        // same framebuffer.
+                        entry.applied_default_framebuffer = Some(db.fbo);
                         entry.drawing_buffer = Some(db);
                     }
                     (target_w, target_h)
