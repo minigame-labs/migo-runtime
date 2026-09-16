@@ -91,16 +91,23 @@ import XCTest
             try submitFromContentThenRead(afterRunLoop: 0.5)
         }
 
-        /// Two frames back to back, one on each uplink, still execute in order.
+        /// A generation's first two frames, one on each uplink, execute in order.
         ///
         /// The hybrid uplink sends a packet above `socketCeilingBytes` as a
         /// scheme request and anything smaller on the socket, and those are two
         /// independent streams: nothing makes a request that left first arrive
-        /// first. Ingress admits only the next sequence, and a gap is a wire
-        /// failure the profile policy answers by ending the content. So a large
-        /// frame followed by a small one -- a scene load followed by its first
-        /// ordinary frame -- is the ordinary way to lose a session, unless the
-        /// host puts the two streams back in order before ingress sees them.
+        /// first. Ingress holds a packet that overtakes its predecessor -- but not
+        /// before a generation's first packet has been accepted, because sequence
+        /// 1 first is what leaves a replayed later packet nothing to wait on. So
+        /// a scene load followed by its first ordinary frame, sent back to back,
+        /// was the ordinary way to lose a session: measured on the simulator, the
+        /// small frame won the race, was refused as a gap, and the surface stayed
+        /// on the first frame.
+        ///
+        /// What keeps them in order is the producer, not the host: before the
+        /// first verdict it has one credit, so the second frame waits for the
+        /// first to be decided. The second submit is refused locally, and nothing
+        /// is refused by the host.
         func testFramesKeepTheirOrderAcrossTheTwoUplinks() throws {
             let harness = try MigoFrameHarness()
             self.harness = harness
@@ -125,13 +132,22 @@ import XCTest
                     sections: [{ kind: SECTION_KIND_COMMAND_STREAM, payload: stream }] });
                 }
 
-                export function start({ session }) {
+                export async function start({ session }) {
                   // 6,000 clears is 72 KiB of stream: above the socket ceiling.
                   const large = frame(1n, [0, 0, 1, 1], 6000);
                   const small = frame(2n, [1, 0, 0, 1], 1);
                   const first = session.submit(large);
-                  const second = session.submit(small);
-                  self.postMessage({ type: "submitted", outcome: `${first},${second}`, bytes: large.length });
+                  // Back to back, as a scene load and its first frame would be.
+                  const early = session.submit(small);
+                  // And again until the window opens, which is what content does
+                  // on its next tick; bounded, so a verdict that never comes is a
+                  // failure this test reports rather than a hang.
+                  let second = early;
+                  for (let i = 0; second !== true && i < 30000; i += 1) {
+                    await new Promise((resolve) => setTimeout(resolve, 1));
+                    second = session.submit(small);
+                  }
+                  self.postMessage({ type: "submitted", outcome: `${first},${early},${second}`, bytes: large.length });
                 }
                 """.utf8
             ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
@@ -158,7 +174,9 @@ import XCTest
             mount(host)
             try host.start()
             wait(for: [submitted], timeout: 240)
-            XCTAssertEqual(outcome, "true,true", "content's submits did not both go out")
+            XCTAssertEqual(
+                outcome, "true,no-credit,true",
+                "the first frame goes, the second waits for its verdict, then goes")
             XCTAssertGreaterThan(
                 submittedBytes ?? 0, MigoFrameChannelPolicy.socketCeilingBytes,
                 "the first frame has to be above the socket ceiling or this tests one uplink")
@@ -174,9 +192,10 @@ import XCTest
                 a frame was refused. Two frames that left in order on different uplinks \
                 reached ingress out of order, and ingress answers a gap by ending the content.
                 """)
-            // Accepted on arrival or held for its predecessor and admitted behind
-            // it: which one depends on which uplink won, and both are correct.
-            XCTAssertEqual(statistics.framesAccepted + statistics.framesDeferred, 2)
+            // Both accepted on arrival. Nothing was held: the second frame left
+            // after the first was decided, so it could not overtake it.
+            XCTAssertEqual(statistics.framesAccepted, 2)
+            XCTAssertEqual(statistics.framesDeferred, 0)
 
             let pixel = try readPixel(session: harness.session, x: 0, y: 0)
             XCTAssertEqual(pixel, [255, 0, 0, 255], "the later, red frame is not the one on the surface")

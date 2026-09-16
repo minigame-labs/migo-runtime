@@ -56,17 +56,24 @@ export class FrameSession {
   #onFrame;
   #onVerdict;
   #onGenerationLost;
-  // Null until the first verdict: the producer has to be allowed to send the
-  // first frame, and the first frame is what produces the first verdict. A zero
-  // here would deadlock the session against a level nobody has published yet.
-  #credits = null;
+  // One until the first verdict. The producer has to be allowed to send the
+  // first frame, because that frame's verdict is what publishes the window --
+  // so not zero, which would deadlock against a level nobody has published yet.
+  // And not unbounded: before the host has said anything, a second frame sent
+  // back to back with the first can arrive ahead of it on the other uplink, and
+  // ingress holds nothing before a generation's first packet, because sequence
+  // 1 first is what gives a replayed later packet nothing to wait on. A
+  // producer that waits for one verdict costs one round trip, once per
+  // generation; one that did not had its second frame refused as a gap, and a
+  // refusal ends the content.
+  #credits = 1;
   #closed = false;
   #lastFrameId = 0;
   #lastTimestampMillis = 0;
   #generation = 0;
 
   /// The credit level as of the last verdict, less whatever has been sent
-  /// since. Null before the first verdict.
+  /// since. One before the first verdict.
   get credits() {
     return this.#credits;
   }
@@ -95,9 +102,7 @@ export class FrameSession {
     // real level has not arrived yet and a producer that waited for it would
     // never have more than one frame in flight. The verdict is absolute, so
     // this estimate is corrected rather than accumulated.
-    if (this.#credits !== null && this.#credits > 0) {
-      this.#credits -= 1;
-    }
+    this.#credits -= 1;
     return true;
   }
 
