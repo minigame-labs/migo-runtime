@@ -344,10 +344,6 @@ impl FrameIngress {
         (outcome, frame)
     }
 
-    /// Commit sequence admission only after the consumer has validated and
-    /// queued the frame. A refused frame can be retried with the same sequence.
-    /// The consumer must drop its frame/credit on failure and return a nonzero
-    /// error code. `&mut self` keeps admission and dispatch in the same order.
     /// The sequence of the packet being held for its predecessor, if any.
     #[inline]
     pub fn deferred_sequence(&self) -> Option<u64> {
@@ -380,6 +376,10 @@ impl FrameIngress {
         Some(outcome)
     }
 
+    /// Commit sequence admission only after the consumer has validated and
+    /// queued the frame. A refused frame can be retried with the same sequence.
+    /// The consumer must drop its frame/credit on failure and return a nonzero
+    /// error code. `&mut self` keeps admission and dispatch in the same order.
     pub fn submit_with(
         &mut self,
         bytes: &[u8],
