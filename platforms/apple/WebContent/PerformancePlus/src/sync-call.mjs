@@ -33,19 +33,6 @@ export const SYNC_CALL_MAX_BYTES = 4096;
 export const SYNC_CALL_MAX_TIMEOUT_MILLIS = 60_000;
 export const SYNC_ANSWER_HEADER_BYTES = 16;
 
-/**
- * How much longer the request itself may take than the wait the call names.
- *
- * The host turns `timeoutMillis` into a deadline when the body arrives, which is
- * after this side started counting, so a request timed out at exactly
- * `timeoutMillis` would sometimes give up a moment before the host's own
- * TIMED_OUT verdict arrived -- and a producer that gives up early and asks
- * again finds the first request still outstanding. The request's timeout is for
- * a host that will never answer; the margin is what keeps it from also being a
- * second opinion on one that will.
- */
-export const SYNC_CALL_TRANSPORT_GRACE_MILLIS = 2_000;
-
 // Call body offsets, in the order the document lists them.
 const CALL_OFF_RUNTIME_GENERATION = 0;
 const CALL_OFF_SURFACE_GENERATION = 8;
@@ -175,19 +162,26 @@ export function decodeSyncAnswer(buffer) {
  *
  * `responseType` is set before `send`, and a Worker is the one place a
  * synchronous request may have one: G0's `sync_xhr_binary` probe measured that
- * on the device, at both origins. The request's own timeout is allowed in a
- * Worker for the same reason, and is what releases a producer whose host died.
+ * on the device, at both origins.
+ *
+ * NO TIMEOUT OF ITS OWN, because WebKit applies none. Measured on the iOS
+ * simulator (2026-09-16): a synchronous request to the content origin with
+ * `timeout` set to two seconds waited thirty for a host that was holding the
+ * answer, and returned it. A timeout here would be a line that reads like a
+ * safeguard and is not one. What releases the producer is the host's deadline:
+ * the engine answers every call within the `timeoutMillis` it names, with
+ * TIMED_OUT if nothing else, and the host process outlives the WebContent
+ * process it spawned.
  */
-export function blockingPost(url, body, timeoutMillis) {
+export function blockingPost(url, body) {
   const request = new XMLHttpRequest();
   request.open("POST", url, false);
   request.responseType = "arraybuffer";
-  request.timeout = timeoutMillis;
   try {
     request.send(body);
   } catch (error) {
-    // A synchronous request reports a timeout and a network failure by
-    // throwing from `send`, not through a status.
+    // A synchronous request reports a network failure by throwing from `send`,
+    // not through a status.
     throw new SyncTransportError(`the synchronous request to ${url} failed: ${error}`);
   }
   return { status: request.status, response: request.response };
@@ -197,7 +191,7 @@ export class SyncCaller {
   /**
    * @param {object} options
    * @param {string} options.url  the host's sync endpoint, from its configuration.
-   * @param {(url: string, body: Uint8Array, timeoutMillis: number) => {status: number, response: ArrayBuffer}} [options.post]
+   * @param {(url: string, body: Uint8Array) => {status: number, response: ArrayBuffer}} [options.post]
    *        the blocking transport; injected by the test.
    */
   constructor({ url, post = blockingPost } = {}) {
@@ -225,11 +219,7 @@ export class SyncCaller {
    */
   call(call, into) {
     const body = encodeSyncCall(call);
-    const { status, response } = this.post(
-      this.url,
-      body,
-      call.timeoutMillis + SYNC_CALL_TRANSPORT_GRACE_MILLIS,
-    );
+    const { status, response } = this.post(this.url, body);
     if (status !== 200) {
       throw new SyncTransportError(`the host answered ${status} for a synchronous call`);
     }

@@ -311,9 +311,10 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
         // call cannot be separated by a `stop`.
         DispatchQueue.main.async { [weak self] in
             // A task WebKit has stopped traps on `didReceive` rather than
-            // throwing. That is the ordinary end of a synchronous call its
-            // producer gave up on -- the request's own timeout cancels it while
-            // the engine is still answering -- so it is checked, not assumed.
+            // throwing. A synchronous call is outstanding for as long as the
+            // engine takes to answer, and a page torn down in that time -- the
+            // app backgrounded, the session replaced -- leaves its task stopped
+            // when the answer arrives, so it is checked, not assumed.
             guard let self, self.liveTasks.remove(ObjectIdentifier(task)) != nil else { return }
             guard
                 let response = HTTPURLResponse(

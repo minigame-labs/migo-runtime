@@ -423,9 +423,11 @@ read it rather than after.
 **No deadline, a timeout.** The record's `deadline_nanos` is on the host's
 clock, which a producer in another process cannot read. The body carries a
 duration instead, and the host turns it into a deadline on its own clock when
-the body arrives. The producer's own wait is longer than `timeout_millis` by a
-margin, so the host's verdict is what it normally reads; its timeout is for a
-host that will never answer, not a second opinion on one that will.
+the body arrives. **That deadline is the only thing that releases the
+producer**: WebKit applies no timeout to a synchronous request on the content
+origin -- measured, a two-second `timeout` waited thirty seconds and returned
+the answer -- so the host answers every call within `timeout_millis`, with
+`TIMED_OUT` when there is nothing else to say.
 
 A body that is too short, carries a reserved word that is not zero, or names a
 timeout outside the bound is answered `FAILED`, never dropped: the producer is
@@ -447,9 +449,9 @@ transport failure, not an answer.
 **The identity problem above does not exist here, by construction.** The answer
 is written by the host under the same lock that settled the request, from the
 bytes that request's own readback produced, and it travels back as the response
-to the request that asked. There is no slot for a slow answer to land in: a
-producer that gave up on a request is not reading that response any more, and
-the next request is answered on its own. The host frees the mailbox as it writes
+to the request that asked. There is no slot for a slow answer to land in: the
+response belongs to its request by construction, and a request whose page went
+away has nothing to deliver to. The host frees the mailbox as it writes
 the answer, because a producer holding the response has the bytes, which is the
 event the record's producer signals by clearing the slot.
 

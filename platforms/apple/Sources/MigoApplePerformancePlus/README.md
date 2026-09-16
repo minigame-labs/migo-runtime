@@ -143,10 +143,11 @@ serial queue of its own -- not the frame queue, because a read waits for the
 frame it names and that frame may be arriving on the frame queue -- and
 `migo_session_call_sync` answers it. The answer's header and the renderer's own
 readback buffer go back as two pieces of one response: the reply is handed to
-`Data` by ownership and never copied on the host. An answer that arrives after
-the producer's request timed out finds its task stopped and is dropped; WebKit
-traps on `didReceive` to a stopped task, so the origin tracks which of its tasks
-are live.
+`Data` by ownership and never copied on the host. WebKit applies no timeout to a
+synchronous request on this origin (measured), so the engine's deadline is what
+releases the Worker. An answer that arrives after its page was torn down finds
+its task stopped and is dropped; WebKit traps on `didReceive` to a stopped task,
+so the origin tracks which of its tasks are live.
 
 `SharedArrayBuffer` is allowed only as a small same-WebContent-process
 synchronization mailbox for bounded control and reply state. It must never carry

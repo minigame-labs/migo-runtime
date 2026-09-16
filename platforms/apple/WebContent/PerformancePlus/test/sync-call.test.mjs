@@ -25,7 +25,6 @@ import {
   SYNC_CALL_HEADER_BYTES,
   SYNC_CALL_MAX_BYTES,
   SYNC_CALL_MAX_TIMEOUT_MILLIS,
-  SYNC_CALL_TRANSPORT_GRACE_MILLIS,
   SyncCaller,
   SyncTransportError,
   decodeSyncAnswer,
@@ -187,8 +186,8 @@ function answerBody(state, error, requestId, reply = []) {
 function callerAnswering(status, response, seen = []) {
   return new SyncCaller({
     url: "migo://x/__migo/sync",
-    post: (url, body, timeoutMillis) => {
-      seen.push({ url, body, timeoutMillis });
+    post: (url, body) => {
+      seen.push({ url, body });
       return { status, response };
     },
   });
@@ -206,11 +205,6 @@ test("a ready answer is the reply, written into the caller's view when given one
   assert.equal(seen.length, 1);
   assert.equal(seen[0].url, "migo://x/__migo/sync");
   assert.deepEqual(seen[0].body, encodeSyncCall({ ...CALL, maxReplyBytes: 4 }));
-  assert.equal(
-    seen[0].timeoutMillis,
-    CALL.timeoutMillis + SYNC_CALL_TRANSPORT_GRACE_MILLIS,
-    "the request outlives the host's own deadline, so the host's verdict is what arrives",
-  );
 
   const view = callerAnswering(200, answerBody(SYNC_STATE_READY, 0, 7, [5, 6])).call({
     ...CALL,

@@ -268,41 +268,41 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             XCTAssertEqual(host.originActivity.syncCallsRefused, 0)
         }
 
-        /// A producer that gives up on a call is released, and the answer that
-        /// arrives after it gave up goes nowhere -- rather than to a task WebKit
-        /// has already stopped, which traps and takes the app with it.
-        func testAnAnswerForACallTheProducerAbandonedIsDropped() throws {
+        /// An answer that arrives after its page went away goes nowhere -- rather
+        /// than to a task WebKit has already stopped, which traps and takes the
+        /// app with it.
+        ///
+        /// The page going away is the case that exists. A producer cannot give up
+        /// on a call from its side: WebKit applies no timeout to a synchronous
+        /// request on this origin (the first version of this test assumed one,
+        /// and the Worker waited out the thirty seconds the answerer held it for).
+        /// What can happen is the host tearing the web view down while the engine
+        /// is still answering -- a backgrounded app, a session being replaced --
+        /// and then the answer arrives for a task that no longer exists.
+        func testAnAnswerForACallWhosePageWentAwayIsDropped() throws {
             try writeContent(
                 """
                 import { encodeReadPixelsParams, SYNC_OP_READ_PIXELS } from "/__migo/sync-mailbox.mjs";
                 export function start({ sync }) {
-                  const started = performance.now();
-                  let detail;
-                  try {
-                    // One millisecond: the request itself then waits that plus the
-                    // transport grace, and the answerer below takes longer.
-                    sync.call({
-                      runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
-                      triggeringSequence: 0n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 4,
-                      timeoutMillis: 1,
-                      params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
-                    });
-                    detail = "answered";
-                  } catch (error) {
-                    detail = error.name;
-                  }
-                  self.postMessage({ type: "gave-up", detail, waited: performance.now() - started });
+                  sync.call({
+                    runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
+                    triggeringSequence: 0n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 4,
+                    timeoutMillis: 60000,
+                    params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
+                  });
                 }
                 """, to: "game/main.mjs")
 
+            let arrived = expectation(description: "the call reached the answerer")
             let released = DispatchSemaphore(value: 0)
             let answerReturned = expectation(description: "the late answer was produced")
             let channel = MigoFrameChannel(
                 submit: { _ in .accepted }, takeDownlink: { _ in 0 },
                 answerSync: { _ in
-                    // Held until the producer has given up, so the answer is
-                    // late by construction rather than by timing.
-                    _ = released.wait(timeout: .now() + 30)
+                    arrived.fulfill()
+                    // Held until the page is gone, so the answer is late by
+                    // construction rather than by timing.
+                    _ = released.wait(timeout: .now() + 60)
                     defer { answerReturned.fulfill() }
                     var header = Data()
                     for word: UInt32 in [2, 0, 1, 4] {
@@ -311,30 +311,20 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                     return .init(header: header, reply: Data([1, 2, 3, 4]))
                 })
 
-            let gaveUp = expectation(description: "the producer gave up")
-            var detail: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
                 channel: channel)
             self.host = host
-            host.onReport = { report in
-                switch report["type"] as? String {
-                case "gave-up":
-                    detail = report["detail"] as? String
-                    gaveUp.fulfill()
-                case "failed":
-                    detail = "failed at \(report["stage"] as? String ?? "?"): \(report["detail"] as? String ?? "?")"
-                    gaveUp.fulfill()
-                default: break
-                }
-            }
             mount(host)
             try host.start()
-            wait(for: [gaveUp], timeout: Self.reportTimeout)
-            XCTAssertEqual(detail, "SyncTransportError", "the producer was not released by its own timeout")
+            wait(for: [arrived], timeout: Self.reportTimeout)
 
-            // Now let the answer go to the task WebKit stopped, and give the main
-            // queue time to try to deliver it.
+            // The page goes away with the call outstanding: WebKit stops the task.
+            host.stop()
+            self.host = nil
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+
+            // Now let the answer go, and give the main queue time to try to deliver it.
             released.signal()
             wait(for: [answerReturned], timeout: 10)
             RunLoop.current.run(until: Date().addingTimeInterval(0.5))
