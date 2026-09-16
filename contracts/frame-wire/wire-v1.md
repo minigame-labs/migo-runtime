@@ -298,6 +298,80 @@ When the renderer and worker exit, abandoned queue contents release their
 credits even if the public session handle remains alive. RAII also returns the
 credit on decode refusal, queue failure and unwinding.
 
+## The window
+
+The credit is taken at admission and returned when the renderer is done, and
+the producer can see neither event. What it sees is an **advertisement**: a
+pair `(remaining_credits, accepted_sequence)` meaning "having accepted every
+packet through `accepted_sequence`, this many credits were free". Two downlink
+records carry one -- the verdict on an accepted packet, and every frame-clock
+tick -- and from the latest it read, with `sent` the highest sequence it has
+sent, the producer may send
+
+```text
+remaining_credits - (sent - accepted_sequence)     floored at zero
+```
+
+more packets. Everything it sent after `accepted_sequence` is counted against
+the window, because each of those will take a credit when it is admitted.
+
+**Why the tick carries it.** A verdict is only ever sent for a packet, so a
+producer whose last verdict said zero would never hear that a credit came back:
+it would stop after two frames and wait for a verdict nothing is going to send.
+The tick is the record a waiting producer is guaranteed to receive -- it asks
+for one -- and the credit it is waiting for is returned by exactly the frame the
+tick follows.
+
+**Why the formula is safe to apply in any order.** The host reads
+`accepted_sequence` first and the free count second. A packet is committed to
+`accepted_sequence` only after it took its credit, so a packet that took one
+between the two reads is counted twice -- once as in flight, once as sent after
+the advertised sequence -- and never zero times. An advertisement is therefore
+never more generous than the truth, whichever order the producer applies it in,
+and a producer that follows it is never told `WOULD_BLOCK`. Credits returned
+after the read only make the truth more generous.
+
+**Before any advertisement** the producer may send one packet: the window is
+`(1, 0)`. Not zero, which would wait for an advertisement that only a packet
+produces; and not the host's configured depth, which the producer has no copy
+of. A generation's second packet therefore always leaves after its first was
+admitted, which is also what makes "nothing is held before sequence 1" cost
+nothing.
+
+A packet sent in a window of two can overtake the one before it on the other
+uplink; that is the packet ingress holds (see *Identity, ordering and resource
+admission*). A producer with no advertisement cannot produce one.
+
+## Uplink control messages
+
+The socket carries one more thing than frames: a request for the next frame.
+Migo's `requestAnimationFrame` is fed by host vsync on every platform, and that
+demand has to cross the process boundary for the tick to exist -- a host that
+ticked whether or not anyone asked would wake a producer sixty times a second to
+tell it nothing.
+
+A control message is its own envelope, so it can never be read as a frame:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | `magic` | exactly `0x4D554331` ("MUC1"), and never the frame magic |
+| 4 | 4 | `version` | exactly `1` |
+| 8 | - | records | one or more, each `header` then its words |
+
+A record's header is the command-stream header -- kind in the low twelve bits,
+word count (header included) in the high twenty -- and every field is a
+little-endian 32-bit word. The whole message is at most 64 words.
+
+| Kind | Name | Words | Fields after the header |
+|---:|---|---:|---|
+| 1 | `REQUEST_FRAME` | 2 | `generation`: the low 32 bits of the runtime generation it was made in |
+
+A request from another generation is ignored, not refused: the producer that
+sent it is gone, and nothing it asked for is owed to the one that replaced it.
+An unknown kind, a wrong word count, a wrong magic or version, or trailing bytes
+are refused, and the transport reports them as it reports a refused frame.
+Requests coalesce: one tick answers every request made before it.
+
 ## Checksum
 
 CRC32 (IEEE) over the entire packet, with `payload_checksum`'s own four bytes
