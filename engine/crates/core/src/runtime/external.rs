@@ -38,7 +38,8 @@ use shared::{
 use frame_wire::IngressDecision;
 use frame_wire::downlink::{DownlinkQueue, DownlinkRecord};
 use frame_wire::sync::{
-    ReadPixelsParams, SYNC_OP_READ_PIXELS, SyncError, SyncMailbox, SyncRequest, SyncState,
+    ReadPixelsParams, SYNC_OP_READ_PIXELS, SyncAnswer, SyncError, SyncMailbox, SyncRequest,
+    SyncState,
 };
 use frame_wire::{FrameIngress, IngressOutcome, PooledFrame, stream};
 
@@ -60,7 +61,7 @@ use crate::services::PlatformServices;
 pub struct ExternalFrameSession {
     host: HostThread,
     submit: SubmitPath,
-    sync: SyncPath,
+    sync: Arc<SyncPath>,
     clock: Arc<ExternalFrameClock>,
     /// What the host owes the producer: a verdict for every frame it submitted,
     /// and the frame clock's ticks. Shared with the clock and the submit path,
@@ -228,6 +229,41 @@ pub struct SyncSnapshot {
     pub error: Option<SyncError>,
 }
 
+/// The synchronous barrier, usable without holding the session's own lock.
+///
+/// See [`ExternalFrameSession::sync_handle`] for why it exists.
+#[derive(Clone)]
+pub struct SyncHandle(Arc<SyncPath>);
+
+impl SyncHandle {
+    /// Post a request and answer it; blocks until it is settled, and reports
+    /// where THIS request ended rather than whatever the mailbox holds by the
+    /// time a separate poll would run.
+    pub fn post(
+        &self,
+        request: SyncRequest,
+        params: &[u8],
+        now_nanos: u64,
+    ) -> Result<SyncSnapshot, SyncError> {
+        self.0.post(request, params, now_nanos)
+    }
+
+    /// Answer a call carried as one body; blocks until it is settled.
+    pub fn answer(&self, body: &[u8], now_nanos: u64) -> AnsweredCall {
+        self.0.answer(body, now_nanos)
+    }
+
+    /// Where the outstanding request is.
+    pub fn poll(&self, now_nanos: u64) -> SyncSnapshot {
+        self.0.snapshot(now_nanos)
+    }
+
+    /// Copy a ready answer out and free the slot.
+    pub fn take_reply(&self, out: &mut [u8]) -> Result<usize, SyncError> {
+        self.0.take_reply(out)
+    }
+}
+
 /// The host's half of the synchronous barrier.
 ///
 /// `readPixels` cannot be answered where the producer runs, because its return
@@ -300,7 +336,12 @@ impl SyncPath {
     /// request's own deadline rather than by the renderer's default readback
     /// timeout -- the producer said how long it would wait, and that is the
     /// number that matters.
-    fn post(&self, request: SyncRequest, params: &[u8], now_nanos: u64) -> Result<u32, SyncError> {
+    fn post(
+        &self,
+        request: SyncRequest,
+        params: &[u8],
+        now_nanos: u64,
+    ) -> Result<SyncSnapshot, SyncError> {
         // NOT CHECKED HERE, and the reason is worth the paragraph: the request
         // carries `surface_generation` and `resource_epoch`, and
         // contracts/frame-wire/wire-v1.md lists "a generation or epoch moves
@@ -344,22 +385,113 @@ impl SyncPath {
             now_nanos,
         );
         let mut mailbox = self.mailbox.lock();
-        match answered {
-            Ok(reply_bytes) => match mailbox.complete(id, reply_bytes) {
-                Ok(()) => Ok(id),
-                // The mailbox refused the answer -- it is settled and carries
-                // the reason. The post itself still succeeded: the producer has
-                // a request id and will read a verdict from it.
-                Err(_) => Ok(id),
-            },
-            Err(error) => {
-                let _ = mailbox.fail_request(id, error);
-                Ok(id)
-            }
+        // Stored only once the mailbox has taken the answer, and under its lock.
+        // A readback that finished after its request timed out and a newer
+        // request was posted would otherwise overwrite the newer request's
+        // bytes, and that request would hand its producer this one's pixels
+        // under its own id. If the mailbox refuses, it is settled and carries
+        // the reason; the post itself still succeeded.
+        if let Some(pixels) = settle(&mut mailbox, id, answered) {
+            *self.reply.lock() = pixels;
         }
+        Ok(settled_snapshot(&mailbox, id))
     }
 
-    /// Run one operation and leave its bytes in [`Self::reply`].
+    /// Answer a call that arrived as one body.
+    ///
+    /// The verdict is read under the mailbox lock that settles it, the reply is
+    /// the vector this call's own readback produced -- moved, never copied --
+    /// and the slot is freed in the same critical section: a producer holding
+    /// the response has the bytes, which is the event the record's producer
+    /// signals by clearing the slot. So there is no window in which another
+    /// request's answer can be taken for this one, and no second step for a
+    /// transport to forget.
+    ///
+    /// Every outcome is an answer: the producer is blocked on the response
+    /// whatever happened, and the verdict belongs in it.
+    fn answer(&self, body: &[u8], now_nanos: u64) -> AnsweredCall {
+        let call = match frame_wire::sync::SyncCall::decode(body) {
+            Ok(call) => call,
+            Err(error) => return AnsweredCall::failed(0, error),
+        };
+        let request = call.request(now_nanos);
+
+        let id = {
+            let mut mailbox = self.mailbox.lock();
+            mailbox.expire_if_due(now_nanos);
+            match mailbox.post(request, now_nanos) {
+                Ok(id) => id,
+                Err(error) => return AnsweredCall::failed(0, error),
+            }
+        };
+
+        let answered = self.execute(
+            request.operation,
+            call.params,
+            request.max_reply_bytes,
+            request.triggering_sequence,
+            request.deadline_nanos,
+            now_nanos,
+        );
+        let mut mailbox = self.mailbox.lock();
+        let pixels = settle(&mut mailbox, id, answered);
+        let snapshot = settled_snapshot(&mailbox, id);
+        let answered = match (snapshot.state, pixels) {
+            // `settle` returns the pixels only when the mailbox took exactly
+            // their length as this request's answer.
+            (SyncState::Ready, Some(pixels)) => AnsweredCall {
+                answer: SyncAnswer {
+                    state: SyncState::Ready,
+                    error: None,
+                    request_id: id,
+                    reply_bytes: snapshot.reply_bytes,
+                },
+                reply: pixels,
+            },
+            (SyncState::Cancelled, _) => AnsweredCall {
+                answer: SyncAnswer {
+                    state: SyncState::Cancelled,
+                    error: None,
+                    request_id: id,
+                    reply_bytes: 0,
+                },
+                reply: Vec::new(),
+            },
+            // Failed, or settled under another verdict than the one this call
+            // produced: the snapshot says which.
+            _ => AnsweredCall::failed(id, snapshot.error.unwrap_or(SyncError::LateReply)),
+        };
+        // Only this request's slot: a newer request that was posted after this
+        // one timed out is still somebody's, and freeing it would lose its
+        // answer.
+        if mailbox
+            .request()
+            .is_some_and(|request| request.request_id == id)
+        {
+            mailbox.acknowledge();
+        }
+        answered
+    }
+
+    /// Settle the mailbox for good and wake a request waiting for its frame.
+    ///
+    /// The flag is set under the ingress lock the fence waits on, and the wake
+    /// follows it, so a request that checked the flag a moment before cannot
+    /// miss both.
+    fn end_session(&self) -> bool {
+        let ingress = self.admission.ingress.lock();
+        let settled = self.mailbox.lock().end_session();
+        drop(ingress);
+        self.admission.admitted.notify_all();
+        settled
+    }
+
+    /// Run one operation and return its bytes.
+    ///
+    /// Returned rather than stored, so the caller decides under the mailbox lock
+    /// whether they still answer anything: this runs without that lock, for as
+    /// long as the readback takes, and the request it was for can be settled
+    /// and replaced in the meantime.
     fn execute(
         &self,
         operation: u32,
@@ -368,7 +500,7 @@ impl SyncPath {
         triggering_sequence: u64,
         deadline_nanos: u64,
         now_nanos: u64,
-    ) -> Result<u32, SyncError> {
+    ) -> Result<Vec<u8>, SyncError> {
         if operation != SYNC_OP_READ_PIXELS {
             return Err(SyncError::UnsupportedOperation);
         }
@@ -405,6 +537,12 @@ impl SyncPath {
             let until = std::time::Instant::now() + std::time::Duration::from_nanos(budget);
             let mut ingress = self.admission.ingress.lock();
             while ingress.last_accepted_sequence() < triggering_sequence {
+                // Checked under the ingress lock, which is the lock
+                // `end_session` takes to set it: a session ending between this check and the
+                // wait below would otherwise be a wake-up nobody receives.
+                if self.mailbox.lock().is_ended() {
+                    return Err(SyncError::SessionEnded);
+                }
                 if self
                     .admission
                     .admitted
@@ -482,8 +620,7 @@ impl SyncPath {
         // 14 MiB for a full-screen phone at 4x, on the path a producer is
         // blocked on. Reusing a buffer here would save no allocation either,
         // because the renderer's one is made whether or not we keep it.
-        *self.reply.lock() = pixels;
-        Ok(produced)
+        Ok(pixels)
     }
 
     fn snapshot(&self, now_nanos: u64) -> SyncSnapshot {
@@ -522,6 +659,84 @@ impl SyncPath {
         drop(reply);
         mailbox.acknowledge();
         Ok(bytes)
+    }
+}
+
+/// A one-body call's answer: the header, and the reply that follows it.
+///
+/// Two parts rather than one buffer, because the reply is the vector the
+/// renderer allocated to answer with and prefixing it would mean copying it --
+/// up to 16 MiB on the path a producer is blocked on. A transport sends the
+/// header and then the reply; the producer receives one body.
+#[derive(Debug, Eq, PartialEq)]
+pub struct AnsweredCall {
+    pub answer: SyncAnswer,
+    /// Exactly `answer.reply_bytes` long. Empty, and unallocated, unless READY.
+    pub reply: Vec<u8>,
+}
+
+impl AnsweredCall {
+    fn failed(request_id: u32, error: SyncError) -> Self {
+        Self {
+            answer: SyncAnswer::failed(request_id, error),
+            reply: Vec::new(),
+        }
+    }
+}
+
+/// Record `id`'s verdict, if the mailbox still holds that request, and return
+/// the pixels when the mailbox took them as the answer.
+///
+/// A readback can outlive its request: the deadline passes, the slot is settled,
+/// and a newer request is posted while this one's pixels are still on their
+/// way. The mailbox answers a reply naming a request other than the outstanding
+/// one by failing the outstanding one, which is right for a reply that came
+/// from outside and wrong for one that is merely late -- the newer request did
+/// nothing, and this host is the one that knows why the ids differ.
+fn settle(
+    mailbox: &mut SyncMailbox,
+    id: u32,
+    answered: Result<Vec<u8>, SyncError>,
+) -> Option<Vec<u8>> {
+    if mailbox
+        .request()
+        .is_none_or(|request| request.request_id != id)
+    {
+        return None;
+    }
+    match answered {
+        // A length past u32 cannot be a reservation, so the mailbox refuses it
+        // as too large rather than this truncating it into one.
+        Ok(pixels) => mailbox
+            .complete(id, u32::try_from(pixels.len()).unwrap_or(u32::MAX))
+            .is_ok()
+            .then_some(pixels),
+        Err(error) => {
+            let _ = mailbox.fail_request(id, error);
+            None
+        }
+    }
+}
+
+/// Where request `id` ended, read under the lock that settled it.
+///
+/// A request that is no longer the mailbox's was settled and replaced before its
+/// readback returned; nothing it produced answers anything, and it is reported
+/// as the late reply it is.
+fn settled_snapshot(mailbox: &SyncMailbox, id: u32) -> SyncSnapshot {
+    match mailbox.request() {
+        Some(request) if request.request_id == id => SyncSnapshot {
+            request_id: id,
+            state: mailbox.state(),
+            reply_bytes: mailbox.reply_bytes(),
+            error: mailbox.error(),
+        },
+        _ => SyncSnapshot {
+            request_id: id,
+            state: SyncState::Failed,
+            reply_bytes: 0,
+            error: Some(SyncError::LateReply),
+        },
     }
 }
 
@@ -831,7 +1046,7 @@ impl ExternalFrameSession {
         request: SyncRequest,
         params: &[u8],
         now_nanos: u64,
-    ) -> Result<u32, SyncError> {
+    ) -> Result<SyncSnapshot, SyncError> {
         self.sync.post(request, params, now_nanos)
     }
 
@@ -857,7 +1072,19 @@ impl ExternalFrameSession {
     /// stays blocked until WebKit reclaims its process, which is a game that
     /// stopped drawing and never said why.
     pub fn end_sync(&self) -> bool {
-        self.sync.mailbox.lock().end_session()
+        self.sync.end_session()
+    }
+
+    /// The synchronous half, detached from this handle's lifetime lock.
+    ///
+    /// A synchronous request blocks -- for the frame it names, then for the
+    /// readback -- and the frame it waits for arrives through
+    /// [`Self::submit_frame`]. A caller that held whatever lock guards this
+    /// session while it waited would be holding the door that frame has to come
+    /// through. The C boundary takes this handle under its lock and releases the
+    /// lock before it calls.
+    pub fn sync_handle(&self) -> SyncHandle {
+        SyncHandle(Arc::clone(&self.sync))
     }
 
     /// Offer one packet produced by the external agent.
@@ -972,7 +1199,11 @@ impl ExternalFrameSession {
                 downlink: Arc::clone(&downlink),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
             },
-            sync: SyncPath::new(INITIAL_RUNTIME_GENERATION, dispatch, admission),
+            sync: Arc::new(SyncPath::new(
+                INITIAL_RUNTIME_GENERATION,
+                dispatch,
+                admission,
+            )),
             clock: Arc::new(ExternalFrameClock::new(
                 Arc::clone(&downlink),
                 INITIAL_RUNTIME_GENERATION,
@@ -1040,11 +1271,11 @@ pub fn spawn_external_frame_session(
     Ok(SpawnedExternalSession {
         session: ExternalFrameSession {
             host: started.host,
-            sync: SyncPath::new(
+            sync: Arc::new(SyncPath::new(
                 INITIAL_RUNTIME_GENERATION,
                 Arc::clone(&dispatch),
                 admission.clone(),
-            ),
+            )),
             submit: SubmitPath {
                 ingress,
                 admitted: Arc::clone(&admission.admitted),
@@ -2125,8 +2356,14 @@ mod sync_tests {
         request: SyncRequest,
         params: &[u8],
         now: u64,
-    ) -> Result<u32, SyncError> {
-        path.post(request, params, now)
+    ) -> Result<SyncSnapshot, SyncError> {
+        let posted = path.post(request, params, now);
+        if let Ok(own) = posted {
+            // What a post reports is where its own request ended, which with
+            // nothing racing it is also what the mailbox holds.
+            assert_eq!(own, path.snapshot(now), "post reported another verdict");
+        }
+        posted
     }
 
     fn request(operation: u32, max_reply_bytes: u32) -> SyncRequest {
@@ -2399,6 +2636,245 @@ mod sync_tests {
 }
 
 #[cfg(test)]
+mod sync_answer_tests {
+    use super::*;
+    use frame_wire::sync::{GL_RGBA, GL_UNSIGNED_BYTE, MAX_REPLY_BYTES, SYNC_CALL_HEADER_BYTES};
+
+    const NOW: u64 = 1_000_000_000;
+
+    fn path_with(dispatch: Arc<OnceLock<RenderDispatch>>) -> SyncPath {
+        SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            dispatch,
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+        )
+    }
+
+    /// A call body as the producer writes one: the layout in
+    /// contracts/frame-wire/wire-v1.md, "A request as one body".
+    fn call(width: i32, height: i32, max_reply_bytes: u32, timeout_millis: u32) -> Vec<u8> {
+        let mut body = Vec::with_capacity(SYNC_CALL_HEADER_BYTES + 32);
+        for word in [INITIAL_RUNTIME_GENERATION, 1, 1, 0] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        for word in [SYNC_OP_READ_PIXELS, max_reply_bytes, timeout_millis, 0] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        for word in [
+            1u32,
+            0,
+            0,
+            width as u32,
+            height as u32,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            0,
+        ] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        body
+    }
+
+    /// Answer `body`, and check the two parts agree with each other.
+    fn answer_of(path: &SyncPath, body: &[u8]) -> AnsweredCall {
+        let answered = path.answer(body, NOW);
+        assert_eq!(
+            answered.reply.len(),
+            answered.answer.reply_bytes as usize,
+            "the header names a different reply length than the reply has"
+        );
+        if answered.answer.state != SyncState::Ready {
+            assert_eq!(
+                answered.reply.capacity(),
+                0,
+                "an answer with no reply allocated one"
+            );
+        }
+        answered
+    }
+
+    /// A stand-in renderer that answers one readPixels with bytes 1..=n.
+    fn renderer() -> (
+        Arc<shared::render_command_sender::CommandSender>,
+        Arc<OnceLock<RenderDispatch>>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use shared::protocol::pixel_pack::PixelPackLayout;
+        use shared::protocol::render_cmd::{GLCmd, ReadPixelsData, RenderCommand};
+
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        let sender = Arc::new(sender);
+        let dispatch = Arc::new(OnceLock::new());
+        assert!(
+            dispatch
+                .set(RenderDispatch {
+                    sender: Arc::downgrade(&sender),
+                    words: Mutex::new(Vec::new()),
+                })
+                .is_ok()
+        );
+        let thread = std::thread::spawn(move || {
+            let Ok(RenderCommand::GL(GLCmd::ReadPixels {
+                width,
+                height,
+                resp,
+                ..
+            })) = commands.recv()
+            else {
+                panic!("the barrier sent something other than a readPixels");
+            };
+            let layout = PixelPackLayout::new(width, height, 4, 1, 0, 0, 0).expect("valid PACK");
+            let pixels = (0..layout.compact_bytes)
+                .map(|byte| byte as u8 + 1)
+                .collect();
+            resp.ok(ReadPixelsData { pixels, layout });
+        });
+        (sender, dispatch, thread)
+    }
+
+    #[test]
+    fn an_answered_call_carries_its_own_id_and_bytes_and_frees_the_slot() {
+        let (sender, dispatch, renderer) = renderer();
+        let path = path_with(dispatch);
+        let body = call(3, 2, 24, 30_000);
+        let answered = answer_of(&path, &body);
+        renderer.join().expect("renderer");
+
+        let answer = answered.answer;
+        assert_eq!(
+            (answer.state, answer.error, answer.reply_bytes),
+            (SyncState::Ready, None, 24)
+        );
+        assert_ne!(answer.request_id, 0, "an answered call was given an id");
+        let expected: Vec<u8> = (1..=24).collect();
+        assert_eq!(answered.reply, expected);
+        // Freed as it was written: the producer holding the response has the
+        // bytes, and a slot left READY would refuse nothing but would let a
+        // later take hand these pixels to someone else.
+        assert_eq!(path.snapshot(NOW).state, SyncState::Free);
+        drop(sender);
+    }
+
+    #[test]
+    fn a_call_that_cannot_be_answered_is_answered_failed_and_the_next_one_is_not_blocked() {
+        // No renderer: the session thread has not brought one up.
+        let path = path_with(Arc::new(OnceLock::new()));
+        let body = call(2, 2, 16, 250);
+
+        let first = answer_of(&path, &body).answer;
+        assert_eq!(
+            (first.state, first.error, first.reply_bytes),
+            (SyncState::Failed, Some(SyncError::SessionEnded), 0)
+        );
+        assert_ne!(first.request_id, 0, "it was posted, so it has an id");
+
+        // A failure that left the slot occupied would turn one failed read into
+        // a session whose every later read is ALREADY_PENDING.
+        let second = answer_of(&path, &body).answer;
+        assert_eq!(second.error, Some(SyncError::SessionEnded));
+        assert!(
+            second.request_id > first.request_id,
+            "the second call was posted, not refused as pending"
+        );
+    }
+
+    #[test]
+    fn a_malformed_body_is_answered_failed_without_an_id_and_posts_nothing() {
+        let path = path_with(Arc::new(OnceLock::new()));
+        for (body, error) in [
+            (
+                vec![0u8; SYNC_CALL_HEADER_BYTES - 1],
+                SyncError::UnsupportedOperation,
+            ),
+            (call(2, 2, 16, 0), SyncError::BadDeadline),
+            (call(2, 2, 0, 250), SyncError::BadReplyReservation),
+            (
+                call(2, 2, MAX_REPLY_BYTES + 1, 250),
+                SyncError::BadReplyReservation,
+            ),
+        ] {
+            let answer = answer_of(&path, &body).answer;
+            assert_eq!(
+                (answer.state, answer.error, answer.request_id),
+                (SyncState::Failed, Some(error), 0)
+            );
+            assert_eq!(path.snapshot(NOW).state, SyncState::Free);
+        }
+    }
+
+    #[test]
+    fn a_call_while_another_is_outstanding_is_refused_and_leaves_that_one_alone() {
+        let path = path_with(Arc::new(OnceLock::new()));
+        let outstanding = call(2, 2, 16, 250);
+        let decoded = frame_wire::sync::SyncCall::decode(&outstanding).expect("valid");
+        let pending_id = path
+            .mailbox
+            .lock()
+            .post(decoded.request(NOW), NOW)
+            .expect("posted");
+
+        // The same call again, as a producer that gave up on the first would send.
+        let answer = answer_of(&path, &outstanding).answer;
+        assert_eq!(
+            (answer.state, answer.error, answer.request_id),
+            (SyncState::Failed, Some(SyncError::AlreadyPending), 0)
+        );
+        let snapshot = path.snapshot(NOW);
+        assert_eq!(
+            (snapshot.state, snapshot.request_id),
+            (SyncState::Pending, pending_id),
+            "the refused call disturbed the request that was outstanding"
+        );
+    }
+
+    /// A readback that returns after its request was settled and replaced must
+    /// neither fail the newer request nor become its answer.
+    #[test]
+    fn a_late_readback_settles_nothing_that_is_not_its_own() {
+        let path = path_with(Arc::new(OnceLock::new()));
+        let body = call(2, 2, 16, 250);
+        let decoded = frame_wire::sync::SyncCall::decode(&body).expect("valid");
+        let mut mailbox = path.mailbox.lock();
+        let late = mailbox.post(decoded.request(NOW), NOW).expect("posted");
+        assert!(
+            mailbox.expire_if_due(NOW + 250_000_000),
+            "the first timed out"
+        );
+        let newer = mailbox
+            .post(decoded.request(NOW + 1), NOW + 1)
+            .expect("posted");
+
+        assert_eq!(settle(&mut mailbox, late, Ok(vec![7; 16])), None);
+        assert_eq!(
+            settle(&mut mailbox, late, Err(SyncError::OperationFailed)),
+            None
+        );
+        assert_eq!(
+            (mailbox.state(), mailbox.request().map(|r| r.request_id)),
+            (SyncState::Pending, Some(newer)),
+            "the newer request was settled by a readback that was not its own"
+        );
+        assert_eq!(
+            settled_snapshot(&mailbox, late),
+            SyncSnapshot {
+                request_id: late,
+                state: SyncState::Failed,
+                reply_bytes: 0,
+                error: Some(SyncError::LateReply),
+            }
+        );
+        assert_eq!(
+            settle(&mut mailbox, newer, Ok(vec![9; 16])),
+            Some(vec![9; 16])
+        );
+        assert_eq!(mailbox.state(), SyncState::Ready);
+    }
+}
+
+#[cfg(test)]
 mod sync_fence_tests {
     use super::*;
 
@@ -2525,6 +3001,39 @@ mod sync_fence_tests {
         });
         reader.join().expect("reader").expect("posted");
         assert_eq!(path.snapshot(NOW).state, SyncState::Ready);
+        drop(sender);
+    }
+
+    /// A read waiting for its frame is released the moment the session ends,
+    /// with that reason, rather than holding the producer to its deadline.
+    #[test]
+    fn ending_the_session_releases_a_read_waiting_for_its_frame() {
+        let (path, _admission, sender, _commands) = path();
+        let reader = {
+            let path = Arc::clone(&path);
+            std::thread::spawn(move || {
+                let started = std::time::Instant::now();
+                let posted =
+                    path.post(request(1, NOW + 30_000_000_000), &read_pixels_params(), NOW);
+                (posted, started.elapsed())
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(path.end_session(), "a request was outstanding");
+        let (posted, waited) = reader.join().expect("reader");
+        assert!(
+            posted.is_ok(),
+            "the request was posted before the session ended"
+        );
+        assert_eq!(
+            path.snapshot(NOW).error,
+            Some(SyncError::SessionEnded),
+            "released for the reason it was released"
+        );
+        assert!(
+            waited < std::time::Duration::from_secs(5),
+            "the read waited {waited:?}; ending the session did not wake it"
+        );
         drop(sender);
     }
 

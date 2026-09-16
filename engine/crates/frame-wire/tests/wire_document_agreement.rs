@@ -15,7 +15,11 @@ use frame_wire::{
     HEADER_BYTES, HEADER_LAYOUT, HeaderField, MAX_SECTIONS, MAX_TOTAL_BYTES, WireError,
     ingress::{INGRESS_ERROR_BASE, INGRESS_ERROR_CODES},
     resource::{ResourceError, ResourceState},
-    sync::{SYNC_LAYOUT, SYNC_RECORD_BYTES, SyncError, SyncState},
+    sync::{
+        MAX_REPLY_BYTES, SYNC_ANSWER_HEADER_BYTES, SYNC_ANSWER_LAYOUT, SYNC_CALL_HEADER_BYTES,
+        SYNC_CALL_LAYOUT, SYNC_CALL_MAX_BYTES, SYNC_CALL_MAX_TIMEOUT_MILLIS, SYNC_LAYOUT,
+        SYNC_RECORD_BYTES, SyncError, SyncState,
+    },
 };
 
 fn document() -> String {
@@ -355,6 +359,86 @@ fn the_document_sync_record_table_matches_the_exported_layout() {
         document.contains(&format!("### Record — {SYNC_RECORD_BYTES} bytes, fixed")),
         "the sync record heading does not state {SYNC_RECORD_BYTES} bytes"
     );
+}
+
+/// A layout table under `heading`, as fields.
+fn layout_table(document: &str, heading: &str) -> Vec<HeaderField> {
+    table_after(document, heading)
+        .iter()
+        .map(|cells| {
+            assert!(
+                cells.len() >= 3,
+                "a row under {heading:?} needs offset, size and field: {cells:?}"
+            );
+            HeaderField {
+                offset: cells[0].parse().expect("offset column is a number"),
+                size: cells[1].parse().expect("size column is a number"),
+                name: Box::leak(strip_code_ticks(&cells[2]).into_boxed_str()),
+            }
+        })
+        .collect()
+}
+
+/// The two bodies a synchronous call travels as when there is no shared record.
+/// A transport and a producer are written from these tables; a table that
+/// named a field the decoder does not read at that offset would be a
+/// `readPixels` answered with another field's value.
+#[test]
+fn the_document_call_and_answer_tables_match_the_exported_layouts() {
+    let document = document();
+    for (heading, exported, fixed_bytes) in [
+        (
+            "### A request as one body",
+            SYNC_CALL_LAYOUT,
+            SYNC_CALL_HEADER_BYTES,
+        ),
+        (
+            "### An answer as one body",
+            SYNC_ANSWER_LAYOUT,
+            SYNC_ANSWER_HEADER_BYTES,
+        ),
+    ] {
+        let declared = layout_table(&document, heading);
+        assert_eq!(
+            declared.as_slice(),
+            exported,
+            "{heading}: the document and the crate disagree"
+        );
+        let last = exported.last().expect("a layout has fields");
+        assert_eq!(
+            (last.offset + last.size) as usize,
+            fixed_bytes,
+            "{heading}: the fixed part does not end where the crate says it does"
+        );
+        let section = &document[document.find(heading).expect("heading")..];
+        assert!(
+            section.contains(&format!("from offset {fixed_bytes}")),
+            "{heading}: the document does not say what follows starts at {fixed_bytes}"
+        );
+    }
+
+    // The bounds the prose states, against the constants the decoder enforces.
+    // Whitespace collapsed, so reflowing a paragraph is not a contract change.
+    let prose = document.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (stated, what) in [
+        (
+            format!("at most {SYNC_CALL_MAX_BYTES} bytes"),
+            "the body bound",
+        ),
+        (
+            format!("`1..={SYNC_CALL_MAX_TIMEOUT_MILLIS}`"),
+            "the timeout bound",
+        ),
+        (
+            format!("`1..={MAX_REPLY_BYTES}`"),
+            "the reply reservation bound",
+        ),
+    ] {
+        assert!(
+            prose.contains(&stated),
+            "the document does not state {what} as {stated:?}"
+        );
+    }
 }
 
 /// `Name = 12,` lines inside a named enum in `file`.

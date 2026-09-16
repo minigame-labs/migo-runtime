@@ -38,6 +38,12 @@ _Static_assert(MIGO_FRAME_INGRESS_ACCEPTED != MIGO_FRAME_INGRESS_GENERATION_LOST
 _Static_assert(MIGO_FRAME_INGRESS_WOULD_BLOCK != MIGO_FRAME_INGRESS_REJECTED, "2 != 3");
 _Static_assert(MIGO_FRAME_INGRESS_WOULD_BLOCK != MIGO_FRAME_INGRESS_GENERATION_LOST, "2 != 4");
 _Static_assert(MIGO_FRAME_INGRESS_REJECTED != MIGO_FRAME_INGRESS_GENERATION_LOST, "3 != 4");
+/* DEFERRED, appended: a held packet must not read as any answer a host acts on. */
+_Static_assert(MIGO_FRAME_INGRESS_DEFERRED == UINT32_C(5), "DEFERRED is appended, not renumbered");
+_Static_assert(MIGO_FRAME_INGRESS_DEFERRED != MIGO_FRAME_INGRESS_ACCEPTED, "5 != 1");
+_Static_assert(MIGO_FRAME_INGRESS_DEFERRED != MIGO_FRAME_INGRESS_WOULD_BLOCK, "5 != 2");
+_Static_assert(MIGO_FRAME_INGRESS_DEFERRED != MIGO_FRAME_INGRESS_REJECTED, "5 != 3");
+_Static_assert(MIGO_FRAME_INGRESS_DEFERRED != MIGO_FRAME_INGRESS_GENERATION_LOST, "5 != 4");
 
 /* Zero is not a decision: a zeroed record must not read as a valid answer. */
 _Static_assert(MIGO_FRAME_INGRESS_ACCEPTED != UINT32_C(0), "zero is not ACCEPTED");
@@ -81,6 +87,15 @@ _Static_assert(MIGO_SYNC_STATE_PENDING != UINT32_C(0), "zero is not PENDING");
 _Static_assert(MIGO_SYNC_STATE_READY != UINT32_C(0), "zero is not READY");
 _Static_assert(MIGO_SYNC_STATE_FAILED != UINT32_C(0), "zero is not FAILED");
 _Static_assert(MIGO_SYNC_STATE_CANCELLED != UINT32_C(0), "zero is not CANCELLED");
+
+/*
+ * The one-body call. The answer header is the wire format's four 32-bit words,
+ * and a call body carries at least the 48-byte envelope, so a bound below that
+ * would refuse every call.
+ */
+_Static_assert(MIGO_SYNC_ANSWER_HEADER_BYTES == 16U, "four little-endian words");
+_Static_assert(MIGO_SYNC_CALL_MAX_BYTES >= 48U + MIGO_SYNC_READ_PIXELS_PARAM_BYTES,
+               "the body bound admits readPixels");
 
 /* Zero is not a failure reason: a FAILED record must say why. */
 _Static_assert(MIGO_SYNC_ERROR_ALREADY_PENDING != UINT32_C(0), "");

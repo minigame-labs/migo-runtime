@@ -287,6 +287,36 @@ fn the_header_and_the_protocol_enums_agree_on_every_sync_constant() {
     }
 }
 
+/// The body bound a transport enforces before reading, against the one the
+/// decoder enforces after. A transport with a larger bound assembles bodies the
+/// decoder refuses; one with a smaller bound refuses calls the format allows.
+#[test]
+fn the_header_states_the_call_body_bound_the_format_enforces() {
+    let defines = header_defines("MIGO_SYNC_CALL_");
+    assert_eq!(
+        defines,
+        vec![(
+            "MIGO_SYNC_CALL_MAX_BYTES".to_string(),
+            u32::try_from(frame_wire::sync::SYNC_CALL_MAX_BYTES).expect("small")
+        )]
+    );
+}
+
+/// The header room a transport gives `migo_session_call_sync`, against what the
+/// format writes. Smaller is refused at runtime; this keeps the constant a
+/// transport sizes with from being the thing that is wrong.
+#[test]
+fn the_header_states_the_answer_header_size_the_format_writes() {
+    let defines = header_defines("MIGO_SYNC_ANSWER_");
+    assert_eq!(
+        defines,
+        vec![(
+            "MIGO_SYNC_ANSWER_HEADER_BYTES".to_string(),
+            u32::try_from(frame_wire::sync::SYNC_ANSWER_HEADER_BYTES).expect("small")
+        )]
+    );
+}
+
 #[test]
 fn the_header_and_the_protocol_enums_agree_on_every_resource_constant() {
     use frame_wire::resource::{ResourceError, ResourceState};

@@ -190,6 +190,159 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             XCTAssertNil(failure, "a report arrived that the real producer would never make")
         }
 
+        /// A synchronous call from content's Worker reaches the answerer, and the
+        /// header and reply come back to the Worker as one body.
+        ///
+        /// The answerer is a closure, so what is asserted is the endpoint: the
+        /// route, the body passed through unchanged, the two pieces joined in
+        /// order by WebKit rather than by a copy here, and the Worker's decoder
+        /// reading them. The engine's half is `MigoFrameAcceptanceTests`.
+        func testASynchronousCallFromContentIsAnsweredInOneBody() throws {
+            try writeContent(
+                """
+                import { encodeReadPixelsParams, SYNC_OP_READ_PIXELS } from "/__migo/sync-mailbox.mjs";
+                export function start({ sync }) {
+                  let detail;
+                  try {
+                    const reply = sync.call({
+                      runtimeGeneration: 1n, surfaceGeneration: 2n, resourceEpoch: 3n,
+                      triggeringSequence: 4n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 4,
+                      timeoutMillis: 5000,
+                      params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
+                    });
+                    detail = Array.from(reply).join(",");
+                  } catch (error) {
+                    detail = `${error.name}: ${error.message}`;
+                  }
+                  self.postMessage({ type: "answered", detail });
+                }
+                """, to: "game/main.mjs")
+
+            var calls: [Data] = []
+            let callsLock = NSLock()
+            let channel = MigoFrameChannel(
+                submit: { _ in .accepted }, takeDownlink: { _ in 0 },
+                answerSync: { call in
+                    callsLock.lock()
+                    calls.append(call)
+                    callsLock.unlock()
+                    // READY, request 9, four reply bytes -- written the way the
+                    // document lays it out, which is the one place this test
+                    // builds an answer.
+                    var header = Data()
+                    for word: UInt32 in [2, 0, 9, 4] {
+                        withUnsafeBytes(of: word.littleEndian) { header.append(contentsOf: $0) }
+                    }
+                    return .init(header: header, reply: Data([10, 20, 30, 40]))
+                })
+
+            let answered = expectation(description: "content's call was answered")
+            var detail: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: channel)
+            self.host = host
+            host.onReport = { report in
+                switch report["type"] as? String {
+                case "answered":
+                    detail = report["detail"] as? String
+                    answered.fulfill()
+                case "failed":
+                    detail = "failed at \(report["stage"] as? String ?? "?"): \(report["detail"] as? String ?? "?")"
+                    answered.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [answered], timeout: Self.reportTimeout)
+
+            XCTAssertEqual(detail, "10,20,30,40", "the Worker did not read the answer's reply")
+            callsLock.lock()
+            let seen = calls
+            callsLock.unlock()
+            XCTAssertEqual(seen.count, 1)
+            // The envelope (48 bytes) and readPixels' arguments (32), unchanged.
+            XCTAssertEqual(seen.first?.count, 80)
+            XCTAssertEqual(host.originActivity.syncCallsAnswered, 1)
+            XCTAssertEqual(host.originActivity.syncCallsRefused, 0)
+        }
+
+        /// A producer that gives up on a call is released, and the answer that
+        /// arrives after it gave up goes nowhere -- rather than to a task WebKit
+        /// has already stopped, which traps and takes the app with it.
+        func testAnAnswerForACallTheProducerAbandonedIsDropped() throws {
+            try writeContent(
+                """
+                import { encodeReadPixelsParams, SYNC_OP_READ_PIXELS } from "/__migo/sync-mailbox.mjs";
+                export function start({ sync }) {
+                  const started = performance.now();
+                  let detail;
+                  try {
+                    // One millisecond: the request itself then waits that plus the
+                    // transport grace, and the answerer below takes longer.
+                    sync.call({
+                      runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
+                      triggeringSequence: 0n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 4,
+                      timeoutMillis: 1,
+                      params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
+                    });
+                    detail = "answered";
+                  } catch (error) {
+                    detail = error.name;
+                  }
+                  self.postMessage({ type: "gave-up", detail, waited: performance.now() - started });
+                }
+                """, to: "game/main.mjs")
+
+            let released = DispatchSemaphore(value: 0)
+            let answerReturned = expectation(description: "the late answer was produced")
+            let channel = MigoFrameChannel(
+                submit: { _ in .accepted }, takeDownlink: { _ in 0 },
+                answerSync: { _ in
+                    // Held until the producer has given up, so the answer is
+                    // late by construction rather than by timing.
+                    _ = released.wait(timeout: .now() + 30)
+                    defer { answerReturned.fulfill() }
+                    var header = Data()
+                    for word: UInt32 in [2, 0, 1, 4] {
+                        withUnsafeBytes(of: word.littleEndian) { header.append(contentsOf: $0) }
+                    }
+                    return .init(header: header, reply: Data([1, 2, 3, 4]))
+                })
+
+            let gaveUp = expectation(description: "the producer gave up")
+            var detail: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: channel)
+            self.host = host
+            host.onReport = { report in
+                switch report["type"] as? String {
+                case "gave-up":
+                    detail = report["detail"] as? String
+                    gaveUp.fulfill()
+                case "failed":
+                    detail = "failed at \(report["stage"] as? String ?? "?"): \(report["detail"] as? String ?? "?")"
+                    gaveUp.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [gaveUp], timeout: Self.reportTimeout)
+            XCTAssertEqual(detail, "SyncTransportError", "the producer was not released by its own timeout")
+
+            // Now let the answer go to the task WebKit stopped, and give the main
+            // queue time to try to deliver it.
+            released.signal()
+            wait(for: [answerReturned], timeout: 10)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            XCTAssertEqual(
+                host.originActivity.syncCallsAnswered, 1,
+                "the answer was produced; reaching here without a trap is the assertion")
+        }
+
         func testAMissingProducerBundleIsNamedRatherThanSilent() {
             // The packaging step is what puts the producer in the resource bundle,
             // and a build that skipped it otherwise presents as a worker that never

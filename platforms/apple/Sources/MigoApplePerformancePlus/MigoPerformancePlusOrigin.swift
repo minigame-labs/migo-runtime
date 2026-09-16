@@ -1,6 +1,7 @@
 import Foundation
 import MigoAppleCore
 import MigoAppleWebKit
+import MigoEngine
 import WebKit
 
 /// The lane's origin: the content origin, plus the one path that carries frames.
@@ -33,6 +34,24 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
         MigoWebKitContentOrigin.baseURL.appendingPathComponent(String(framePath.dropFirst()))
     }
 
+    /// Where the producer's Worker sends a synchronous call.
+    ///
+    /// Under the reserved prefix for the reason `framePath` is. A Worker blocks
+    /// in a synchronous request here because this origin is a custom scheme,
+    /// which WebKit does not isolate, so there is no SharedArrayBuffer to block
+    /// on instead.
+    public static var syncPath: String { MigoWebKitOriginRules.engineAssetPrefix + "sync" }
+
+    /// Where the producer sends it, as an absolute URL on this origin.
+    public static var syncURL: URL {
+        MigoWebKitContentOrigin.baseURL.appendingPathComponent(String(syncPath.dropFirst()))
+    }
+
+    /// The largest call body this origin will read: the wire format's own
+    /// bound, from the engine's header, so the transport and the decoder refuse
+    /// the same bodies.
+    public static let maximumSyncCallBytes = Int(MIGO_SYNC_CALL_MAX_BYTES)
+
     /// The largest frame this origin will assemble from a request body.
     ///
     /// The wire format's own ceiling (`MAX_TOTAL_BYTES`, 4 MiB) plus nothing: a
@@ -50,6 +69,11 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
         public var framesRefused: Int = 0
         /// Why the last refusal happened.
         public var lastRefusal: String?
+        /// Synchronous calls answered with the engine's answer body.
+        public var syncCallsAnswered: Int = 0
+        /// Synchronous calls refused before the engine answered: wrong method,
+        /// oversize, a body that did not read, or no answer produced.
+        public var syncCallsRefused: Int = 0
     }
 
     public var activity: Activity {
@@ -67,10 +91,20 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
     /// the engine.
     public typealias Deliver = (Data) -> Void
 
+    /// Answer one synchronous call body, or `nil` when no answer exists. Blocks.
+    public typealias Answer = (Data) -> MigoFrameChannel.SyncAnswer?
+
     private let content: MigoWebKitContentOrigin
     private let deliver: Deliver
+    private let answer: Answer
     private let lock = NSLock()
     private var record = Activity()
+
+    /// The engine-endpoint tasks WebKit has started and not stopped, by
+    /// identity. Main-thread only: WebKit calls `start` and `stop` there, and
+    /// every answer is delivered there. Tasks for content files are the content
+    /// origin's and are tracked by it.
+    private var liveTasks = Set<ObjectIdentifier>()
 
     /// Body assembly happens here, never on WebKit's calling thread.
     ///
@@ -81,18 +115,39 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
     private let queue = DispatchQueue(
         label: "dev.migo.performance-plus.origin", qos: .userInteractive)
 
-    public init(content: MigoWebKitContentOrigin, deliver: @escaping Deliver) {
+    /// Synchronous calls, and NOT on `queue`.
+    ///
+    /// A call blocks until the frame it names has been admitted, and a large
+    /// frame is admitted from `queue`. Sharing one serial queue would put that
+    /// frame behind the read waiting for it, and the read would wait out its
+    /// whole timeout. Serial itself, because a producer has one agent and that
+    /// agent is blocked for the duration of its call: a second concurrent call
+    /// can only be one it gave up on, which the engine refuses as pending.
+    private let syncQueue = DispatchQueue(
+        label: "dev.migo.performance-plus.sync", qos: .userInteractive)
+
+    public init(
+        content: MigoWebKitContentOrigin, deliver: @escaping Deliver,
+        answer: @escaping Answer = { _ in nil }
+    ) {
         self.content = content
         self.deliver = deliver
+        self.answer = answer
         super.init()
     }
 
     public func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         let request = task.request
+        if request.url?.path == Self.syncPath {
+            liveTasks.insert(ObjectIdentifier(task))
+            startSyncCall(task)
+            return
+        }
         guard request.url?.path == Self.framePath else {
             content.webView(webView, start: task)
             return
         }
+        liveTasks.insert(ObjectIdentifier(task))
         guard request.httpMethod == "POST" else {
             // A GET on the frame endpoint is not a file that happens to be
             // missing -- 405 says which of the two it is, and a 404 here would
@@ -117,7 +172,45 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
         }
     }
 
+    /// One synchronous call: read the body, let the engine answer, send the
+    /// answer back as the body of a 200.
+    ///
+    /// Every verdict the engine reaches -- including a failed call -- is a 200
+    /// with the engine's answer body, because the verdict is in the body and the
+    /// producer reads it there. A status other than 200 is reserved for "there
+    /// is no answer", which the producer reports as a transport failure rather
+    /// than as a verdict it could act on.
+    private func startSyncCall(_ task: WKURLSchemeTask) {
+        let request = task.request
+        guard request.httpMethod == "POST" else {
+            refuseSync(task, status: 405, reason: "the sync endpoint takes POST")
+            return
+        }
+        syncQueue.async { [weak self] in
+            guard let self else { return }
+            switch Self.readBody(from: request, limit: Self.maximumSyncCallBytes) {
+            case .complete(let body):
+                guard let answer = self.answer(body) else {
+                    self.refuseSync(
+                        task, status: 503, reason: "no session is answering synchronous calls")
+                    return
+                }
+                self.note { $0.syncCallsAnswered += 1 }
+                // The header and the reply as two pieces of one body: joining
+                // them here would copy a readback that can be a full screen.
+                self.finish(
+                    task, status: 200, mime: "application/octet-stream",
+                    pieces: [answer.header] + (answer.reply.map { [$0] } ?? []))
+            case .failed(let reason):
+                self.refuseSync(task, status: 400, reason: reason)
+            }
+        }
+    }
+
     public func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
+        // An engine-endpoint task: its answer, if one is still coming, must not
+        // be delivered. Removing an identity that is not in the set is nothing.
+        liveTasks.remove(ObjectIdentifier(task))
         // Delegated unconditionally: the content origin tracks task liveness by
         // identity and a stop it never hears about leaves a task in its live set
         // forever. A stop for a frame task is not in that set and removing
@@ -147,7 +240,7 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
     static func readBody(from request: URLRequest, limit: Int) -> BodyOutcome {
         if let inline = request.httpBody {
             guard inline.count <= limit else {
-                return .failed("the frame is \(inline.count) bytes; the limit is \(limit)")
+                return .failed("the body is \(inline.count) bytes; the limit is \(limit)")
             }
             return .complete(inline)
         }
@@ -176,7 +269,7 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
             }
             collected.append(contentsOf: buffer[0..<read])
             if collected.count > limit {
-                return .failed("the frame exceeds \(limit) bytes, which is the wire format's own ceiling")
+                return .failed("the body exceeds \(limit) bytes, which is the wire format's own ceiling")
             }
         }
         return .complete(collected)
@@ -198,30 +291,51 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
         finish(task, status: status, mime: "text/plain; charset=utf-8", body: Data(reason.utf8))
     }
 
+    private func refuseSync(_ task: WKURLSchemeTask, status: Int, reason: String) {
+        note {
+            $0.syncCallsRefused += 1
+            $0.lastRefusal = "\(status): \(reason)"
+        }
+        finish(task, status: status, mime: "text/plain; charset=utf-8", body: Data(reason.utf8))
+    }
+
     private func finish(_ task: WKURLSchemeTask, status: Int, mime: String, body: Data) {
-        // On the main queue, and the liveness question is WebKit's own: calling
-        // into a task WebKit has reclaimed traps rather than throwing, and the
-        // window between a check on another queue and the call is exactly the
-        // crash the check was for. `didReceive` on a stopped task is the failure
-        // mode; the content origin solves it with a live set it owns, and this
-        // handler is on the same main queue when it answers.
-        DispatchQueue.main.async {
+        finish(task, status: status, mime: mime, pieces: body.isEmpty ? [] : [body])
+    }
+
+    /// Answer with a body delivered in pieces, in order.
+    private func finish(_ task: WKURLSchemeTask, status: Int, mime: String, pieces: [Data]) {
+        let length = pieces.reduce(0) { $0 + $1.count }
+        // On the main queue, where WebKit calls `start` and `stop`, so the live
+        // set below is only ever touched on one thread and the check and the
+        // call cannot be separated by a `stop`.
+        DispatchQueue.main.async { [weak self] in
+            // A task WebKit has stopped traps on `didReceive` rather than
+            // throwing. That is the ordinary end of a synchronous call its
+            // producer gave up on -- the request's own timeout cancels it while
+            // the engine is still answering -- so it is checked, not assumed.
+            guard let self, self.liveTasks.remove(ObjectIdentifier(task)) != nil else { return }
             guard
                 let response = HTTPURLResponse(
                     url: task.request.url ?? MigoWebKitContentOrigin.baseURL, statusCode: status,
                     httpVersion: "HTTP/1.1",
                     headerFields: [
                         "Content-Type": mime,
-                        "Content-Length": String(body.count),
-                        // The producer's own origin, and only it. A frame
+                        "Content-Length": String(length),
+                        // The producer's own origin, and only it. An engine
                         // endpoint reachable from another origin is a native
                         // surface any page could post to.
                         "Access-Control-Allow-Origin": MigoWebKitContentOrigin.baseURL
                             .absoluteString,
                     ])
-            else { return }
+            else {
+                task.didFailWithError(URLError(.cannotParseResponse))
+                return
+            }
             task.didReceive(response)
-            if !body.isEmpty { task.didReceive(body) }
+            for piece in pieces where !piece.isEmpty {
+                task.didReceive(piece)
+            }
             task.didFinish()
         }
     }

@@ -395,6 +395,64 @@ not share one. That is an identity in practice rather than by construction, and
 it is the reason a producer-owned sequence belongs in the next version of this
 record rather than in a field borrowed from something else.
 
+### A request as one body
+
+The record above is a cell two agents share, which needs `SharedArrayBuffer`,
+and the Apple lane's content origin is a custom scheme on which WebKit does not
+isolate the page: G0 measured `SharedArrayBuffer is not a constructor` there.
+What that origin does have is a synchronous request from a Worker. So the same
+request can travel as the body of a blocking request, and its answer as the
+response, with no record and no relay.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 8 | `runtime_generation` | as in the record |
+| 8 | 8 | `surface_generation` | as in the record |
+| 16 | 8 | `resource_epoch` | as in the record |
+| 24 | 8 | `triggering_sequence` | as in the record, and waited for the same way |
+| 32 | 4 | `operation` | as in the record |
+| 36 | 4 | `max_reply_bytes` | as in the record: `1..=16777216` |
+| 40 | 4 | `timeout_millis` | how long the producer will wait; `1..=60000` |
+| 44 | 4 | `reserved` | exactly `0` |
+
+The operation's arguments follow from offset 48, and the whole body is at most
+4096 bytes. Arguments are small by construction -- anything bulky is a frame --
+and the bound is what lets a transport refuse an oversized body before it has
+read it rather than after.
+
+**No deadline, a timeout.** The record's `deadline_nanos` is on the host's
+clock, which a producer in another process cannot read. The body carries a
+duration instead, and the host turns it into a deadline on its own clock when
+the body arrives. The producer's own wait is longer than `timeout_millis` by a
+margin, so the host's verdict is what it normally reads; its timeout is for a
+host that will never answer, not a second opinion on one that will.
+
+A body that is too short, carries a reserved word that is not zero, or names a
+timeout outside the bound is answered `FAILED`, never dropped: the producer is
+blocked on the response either way.
+
+### An answer as one body
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | `state` | `READY=2`, `FAILED=3` or `CANCELLED=4`: settled, never `FREE` or `PENDING` |
+| 4 | 4 | `error` | as in the record: `0` unless `FAILED` |
+| 8 | 4 | `request_id` | the host's id for this request; `0` when it was refused before it was given one |
+| 12 | 4 | `reply_bytes` | bytes of reply that follow; `0` unless `READY` |
+
+The reply follows from offset 16, and the body is exactly `16 + reply_bytes`
+long. A response of any other length, or with a status other than 200, is a
+transport failure, not an answer.
+
+**The identity problem above does not exist here, by construction.** The answer
+is written by the host under the same lock that settled the request, from the
+bytes that request's own readback produced, and it travels back as the response
+to the request that asked. There is no slot for a slow answer to land in: a
+producer that gave up on a request is not reading that response any more, and
+the next request is answered on its own. The host frees the mailbox as it writes
+the answer, because a producer holding the response has the bytes, which is the
+event the record's producer signals by clearing the slot.
+
 ## The resource lane
 
 A frame packet is small and bounded; a texture atlas is neither. Large assets

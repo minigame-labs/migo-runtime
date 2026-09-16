@@ -136,6 +136,18 @@ POST body delivery, cancellation, streaming and backpressure.
 
 ## Boundary and buffers
 
+**Synchronous calls (2026-09-16).** The content origin has no
+`SharedArrayBuffer`, so the Worker blocks in a synchronous request to
+`/__migo/sync` on its own origin. `MigoPerformancePlusOrigin` reads the body on a
+serial queue of its own -- not the frame queue, because a read waits for the
+frame it names and that frame may be arriving on the frame queue -- and
+`migo_session_call_sync` answers it. The answer's header and the renderer's own
+readback buffer go back as two pieces of one response: the reply is handed to
+`Data` by ownership and never copied on the host. An answer that arrives after
+the producer's request timed out finds its task stopped and is dropped; WebKit
+traps on `didReceive` to a stopped task, so the origin tracks which of its tasks
+are live.
+
 `SharedArrayBuffer` is allowed only as a small same-WebContent-process
 synchronization mailbox for bounded control and reply state. It must never carry
 frame bytes -- and it cannot: `WebSocket.send` takes no shared view, because

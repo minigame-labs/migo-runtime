@@ -219,6 +219,267 @@ impl ReadPixelsParams {
     }
 }
 
+/// A synchronous request carried whole in one request body.
+///
+/// The mailbox record above is a cell two agents share, which needs
+/// `SharedArrayBuffer`, and the Apple lane's content origin is a custom scheme
+/// on which WebKit does not isolate the page: G0 measured `SharedArrayBuffer is
+/// not a constructor` there. What that origin does have is a synchronous request
+/// from a Worker. So the same request travels as a body, and the answer as the
+/// response -- see [`SyncAnswer`].
+///
+/// It names no deadline. The mailbox's `deadline_nanos` is on the host's clock,
+/// which a producer in another process cannot read; this carries how long the
+/// producer is prepared to wait instead, and the host turns that into a deadline
+/// on its own clock.
+///
+/// The layout is [`SYNC_CALL_LAYOUT`], checked against
+/// `contracts/frame-wire/wire-v1.md` ("A request as one body").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyncCall<'a> {
+    pub runtime_generation: u64,
+    pub surface_generation: u64,
+    pub resource_epoch: u64,
+    pub triggering_sequence: u64,
+    pub operation: u32,
+    pub max_reply_bytes: u32,
+    pub timeout_millis: u32,
+    pub params: &'a [u8],
+}
+
+/// Bytes before a [`SyncCall`]'s arguments.
+pub const SYNC_CALL_HEADER_BYTES: usize = 48;
+
+/// The largest body a [`SyncCall`] may be, arguments included.
+///
+/// Arguments are small by construction -- `readPixels` takes 32 bytes, and
+/// anything bulky travels as a frame -- so this is a bound on what a producer
+/// can make a transport assemble, not a guess at traffic. It is a constant of
+/// the format rather than of a transport so that every transport refuses the
+/// same bodies, and refuses them before reading them.
+pub const SYNC_CALL_MAX_BYTES: usize = 4096;
+
+/// The longest a producer may ask to wait. A minute: longer than any readback
+/// a device can take, and short enough that a producer blocked on a host that
+/// will never answer is released while its user is still looking at the screen.
+pub const SYNC_CALL_MAX_TIMEOUT_MILLIS: u32 = 60_000;
+
+const SYNC_CALL_OFF_RUNTIME_GENERATION: usize = 0;
+const SYNC_CALL_OFF_SURFACE_GENERATION: usize = 8;
+const SYNC_CALL_OFF_RESOURCE_EPOCH: usize = 16;
+const SYNC_CALL_OFF_TRIGGERING_SEQUENCE: usize = 24;
+const SYNC_CALL_OFF_OPERATION: usize = 32;
+const SYNC_CALL_OFF_MAX_REPLY_BYTES: usize = 36;
+const SYNC_CALL_OFF_TIMEOUT_MILLIS: usize = 40;
+const SYNC_CALL_OFF_RESERVED: usize = 44;
+
+/// The call body's fixed part, in order, with no gaps.
+pub const SYNC_CALL_LAYOUT: &[crate::HeaderField] = &[
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_RUNTIME_GENERATION as u32,
+        size: 8,
+        name: "runtime_generation",
+    },
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_SURFACE_GENERATION as u32,
+        size: 8,
+        name: "surface_generation",
+    },
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_RESOURCE_EPOCH as u32,
+        size: 8,
+        name: "resource_epoch",
+    },
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_TRIGGERING_SEQUENCE as u32,
+        size: 8,
+        name: "triggering_sequence",
+    },
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_OPERATION as u32,
+        size: 4,
+        name: "operation",
+    },
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_MAX_REPLY_BYTES as u32,
+        size: 4,
+        name: "max_reply_bytes",
+    },
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_TIMEOUT_MILLIS as u32,
+        size: 4,
+        name: "timeout_millis",
+    },
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_RESERVED as u32,
+        size: 4,
+        name: "reserved",
+    },
+];
+
+fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+    let mut word = [0u8; 8];
+    word.copy_from_slice(&bytes[offset..offset + 8]);
+    u64::from_le_bytes(word)
+}
+
+fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+    let mut word = [0u8; 4];
+    word.copy_from_slice(&bytes[offset..offset + 4]);
+    u32::from_le_bytes(word)
+}
+
+impl<'a> SyncCall<'a> {
+    /// Decode and validate the envelope. The arguments are the operation's to
+    /// judge; they are borrowed, not copied.
+    ///
+    /// A malformed envelope is `UnsupportedOperation`, the same answer a
+    /// malformed argument record gets: neither is something the producer can
+    /// fix by asking again, and neither is a transient failure of the host.
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, SyncError> {
+        if bytes.len() < SYNC_CALL_HEADER_BYTES || bytes.len() > SYNC_CALL_MAX_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        // Zero now so a later version can give the word a meaning without an
+        // older host reading it as this version's.
+        if u32_at(bytes, SYNC_CALL_OFF_RESERVED) != 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let timeout_millis = u32_at(bytes, SYNC_CALL_OFF_TIMEOUT_MILLIS);
+        if timeout_millis == 0 || timeout_millis > SYNC_CALL_MAX_TIMEOUT_MILLIS {
+            return Err(SyncError::BadDeadline);
+        }
+        Ok(Self {
+            runtime_generation: u64_at(bytes, SYNC_CALL_OFF_RUNTIME_GENERATION),
+            surface_generation: u64_at(bytes, SYNC_CALL_OFF_SURFACE_GENERATION),
+            resource_epoch: u64_at(bytes, SYNC_CALL_OFF_RESOURCE_EPOCH),
+            triggering_sequence: u64_at(bytes, SYNC_CALL_OFF_TRIGGERING_SEQUENCE),
+            operation: u32_at(bytes, SYNC_CALL_OFF_OPERATION),
+            max_reply_bytes: u32_at(bytes, SYNC_CALL_OFF_MAX_REPLY_BYTES),
+            timeout_millis,
+            params: &bytes[SYNC_CALL_HEADER_BYTES..],
+        })
+    }
+
+    /// The mailbox request this call is, with its deadline on the host's clock.
+    pub fn request(&self, now_nanos: u64) -> SyncRequest {
+        SyncRequest {
+            request_id: 0,
+            runtime_generation: self.runtime_generation,
+            surface_generation: self.surface_generation,
+            resource_epoch: self.resource_epoch,
+            triggering_sequence: self.triggering_sequence,
+            operation: self.operation,
+            max_reply_bytes: self.max_reply_bytes,
+            deadline_nanos: now_nanos
+                .saturating_add(u64::from(self.timeout_millis).saturating_mul(1_000_000)),
+        }
+    }
+}
+
+/// The answer to a [`SyncCall`], carried whole as the response body.
+///
+/// Written by the host under the lock that settled the request, from the bytes
+/// that request's own readback produced, so the record's identity problem --
+/// a slow answer landing in a slot the next request is using -- has nowhere to
+/// happen. See `contracts/frame-wire/wire-v1.md`, "An answer as one body".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyncAnswer {
+    /// Settled: `Ready`, `Failed` or `Cancelled`.
+    pub state: SyncState,
+    pub error: Option<SyncError>,
+    /// `0` when the call was refused before it was given an id.
+    pub request_id: u32,
+    /// Bytes of reply after the header; `0` unless `Ready`.
+    pub reply_bytes: u32,
+}
+
+/// Bytes before an answer's reply.
+pub const SYNC_ANSWER_HEADER_BYTES: usize = 16;
+
+const SYNC_ANSWER_OFF_STATE: usize = 0;
+const SYNC_ANSWER_OFF_ERROR: usize = 4;
+const SYNC_ANSWER_OFF_REQUEST_ID: usize = 8;
+const SYNC_ANSWER_OFF_REPLY_BYTES: usize = 12;
+
+/// The answer body's fixed part, in order, with no gaps.
+pub const SYNC_ANSWER_LAYOUT: &[crate::HeaderField] = &[
+    crate::HeaderField {
+        offset: SYNC_ANSWER_OFF_STATE as u32,
+        size: 4,
+        name: "state",
+    },
+    crate::HeaderField {
+        offset: SYNC_ANSWER_OFF_ERROR as u32,
+        size: 4,
+        name: "error",
+    },
+    crate::HeaderField {
+        offset: SYNC_ANSWER_OFF_REQUEST_ID as u32,
+        size: 4,
+        name: "request_id",
+    },
+    crate::HeaderField {
+        offset: SYNC_ANSWER_OFF_REPLY_BYTES as u32,
+        size: 4,
+        name: "reply_bytes",
+    },
+];
+
+impl SyncAnswer {
+    /// A call that ended without an answer.
+    pub const fn failed(request_id: u32, error: SyncError) -> Self {
+        Self {
+            state: SyncState::Failed,
+            error: Some(error),
+            request_id,
+            reply_bytes: 0,
+        }
+    }
+
+    /// The whole body's length: the header and the reply after it.
+    #[inline]
+    pub const fn body_bytes(&self) -> usize {
+        SYNC_ANSWER_HEADER_BYTES + self.reply_bytes as usize
+    }
+
+    /// Write the header. The reply, when there is one, is sent after it as a
+    /// separate part: it is the vector the renderer answered with, and placing
+    /// it behind a header in one buffer would be a copy of up to 16 MiB.
+    ///
+    /// # Panics
+    /// When `out` is shorter than [`SYNC_ANSWER_HEADER_BYTES`].
+    pub fn write_header(&self, out: &mut [u8]) {
+        let error = self.error.map_or(0, SyncError::code);
+        out[SYNC_ANSWER_OFF_STATE..SYNC_ANSWER_OFF_STATE + 4]
+            .copy_from_slice(&self.state.code().to_le_bytes());
+        out[SYNC_ANSWER_OFF_ERROR..SYNC_ANSWER_OFF_ERROR + 4].copy_from_slice(&error.to_le_bytes());
+        out[SYNC_ANSWER_OFF_REQUEST_ID..SYNC_ANSWER_OFF_REQUEST_ID + 4]
+            .copy_from_slice(&self.request_id.to_le_bytes());
+        out[SYNC_ANSWER_OFF_REPLY_BYTES..SYNC_ANSWER_OFF_REPLY_BYTES + 4]
+            .copy_from_slice(&self.reply_bytes.to_le_bytes());
+    }
+
+    /// Read a header back. For tests and for a Rust producer; the host only
+    /// writes these.
+    pub fn read_header(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < SYNC_ANSWER_HEADER_BYTES {
+            return None;
+        }
+        let error = u32_at(bytes, SYNC_ANSWER_OFF_ERROR);
+        Some(Self {
+            state: SyncState::from_code(u32_at(bytes, SYNC_ANSWER_OFF_STATE))?,
+            error: if error == 0 {
+                None
+            } else {
+                Some(*SyncError::ALL.iter().find(|known| known.code() == error)?)
+            },
+            request_id: u32_at(bytes, SYNC_ANSWER_OFF_REQUEST_ID),
+            reply_bytes: u32_at(bytes, SYNC_ANSWER_OFF_REPLY_BYTES),
+        })
+    }
+}
+
 /// Where a request is.
 ///
 /// The numbers are what the producer reads out of a shared cell with an atomic
@@ -531,6 +792,12 @@ impl SyncMailbox {
         true
     }
 
+    /// Whether the session has ended, after which no request is answered.
+    #[inline]
+    pub const fn is_ended(&self) -> bool {
+        self.ended
+    }
+
     /// The session is going away.
     ///
     /// Every outstanding request is failed, and every later one is refused. A
@@ -583,5 +850,142 @@ impl SyncMailbox {
         self.state = SyncState::Failed;
         self.error = Some(error);
         self.reply_bytes = 0;
+    }
+}
+
+#[cfg(test)]
+mod sync_call_tests {
+    use super::*;
+
+    fn body(max_reply_bytes: u32, timeout_millis: u32, reserved: u32, params: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for word in [1u64, 2, 3, 4] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        for word in [
+            SYNC_OP_READ_PIXELS,
+            max_reply_bytes,
+            timeout_millis,
+            reserved,
+        ] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes.extend_from_slice(params);
+        bytes
+    }
+
+    #[test]
+    fn a_call_decodes_every_field_and_borrows_its_arguments() {
+        let bytes = body(16, 250, 0, &[9, 8, 7]);
+        let call = SyncCall::decode(&bytes).expect("valid");
+        assert_eq!(
+            (
+                call.runtime_generation,
+                call.surface_generation,
+                call.resource_epoch,
+                call.triggering_sequence,
+                call.operation,
+                call.max_reply_bytes,
+                call.timeout_millis,
+                call.params,
+            ),
+            (1, 2, 3, 4, SYNC_OP_READ_PIXELS, 16, 250, &[9u8, 8, 7][..])
+        );
+        let request = call.request(1_000);
+        assert_eq!(request.deadline_nanos, 1_000 + 250_000_000);
+        assert_eq!(request.triggering_sequence, 4);
+    }
+
+    #[test]
+    fn the_call_layout_is_gapless_and_ends_where_the_arguments_begin() {
+        let mut end = 0;
+        for field in SYNC_CALL_LAYOUT {
+            assert_eq!(
+                field.offset, end,
+                "{} does not follow its predecessor",
+                field.name
+            );
+            end += field.size;
+        }
+        assert_eq!(end as usize, SYNC_CALL_HEADER_BYTES);
+    }
+
+    #[test]
+    fn a_short_long_or_reserved_envelope_is_refused() {
+        let bytes = body(16, 250, 0, &[]);
+        assert_eq!(
+            SyncCall::decode(&bytes[..SYNC_CALL_HEADER_BYTES - 1]),
+            Err(SyncError::UnsupportedOperation)
+        );
+        assert_eq!(
+            SyncCall::decode(&body(16, 250, 1, &[])),
+            Err(SyncError::UnsupportedOperation)
+        );
+        let at_bound = body(
+            16,
+            250,
+            0,
+            &vec![0; SYNC_CALL_MAX_BYTES - SYNC_CALL_HEADER_BYTES],
+        );
+        assert!(
+            SyncCall::decode(&at_bound).is_ok(),
+            "the bound is inclusive"
+        );
+        let past_bound = body(
+            16,
+            250,
+            0,
+            &vec![0; SYNC_CALL_MAX_BYTES - SYNC_CALL_HEADER_BYTES + 1],
+        );
+        assert_eq!(
+            SyncCall::decode(&past_bound),
+            Err(SyncError::UnsupportedOperation)
+        );
+    }
+
+    #[test]
+    fn a_wait_of_nothing_or_of_more_than_a_minute_is_refused() {
+        for timeout in [0, SYNC_CALL_MAX_TIMEOUT_MILLIS + 1, u32::MAX] {
+            assert_eq!(
+                SyncCall::decode(&body(16, timeout, 0, &[])),
+                Err(SyncError::BadDeadline),
+                "timeout {timeout}"
+            );
+        }
+        assert!(SyncCall::decode(&body(16, SYNC_CALL_MAX_TIMEOUT_MILLIS, 0, &[])).is_ok());
+    }
+
+    #[test]
+    fn an_answer_header_round_trips_every_field() {
+        for answer in [
+            SyncAnswer {
+                state: SyncState::Ready,
+                error: None,
+                request_id: 7,
+                reply_bytes: 4,
+            },
+            SyncAnswer::failed(0, SyncError::BadDeadline),
+            SyncAnswer::failed(u32::MAX, SyncError::OperationFailed),
+            SyncAnswer {
+                state: SyncState::Cancelled,
+                error: None,
+                request_id: 3,
+                reply_bytes: 0,
+            },
+        ] {
+            let mut out = [0xAAu8; SYNC_ANSWER_HEADER_BYTES];
+            answer.write_header(&mut out);
+            assert_eq!(SyncAnswer::read_header(&out), Some(answer));
+        }
+        let mut end = 0;
+        for field in SYNC_ANSWER_LAYOUT {
+            assert_eq!(
+                field.offset, end,
+                "{} does not follow its predecessor",
+                field.name
+            );
+            end += field.size;
+        }
+        assert_eq!(end as usize, SYNC_ANSWER_HEADER_BYTES);
     }
 }

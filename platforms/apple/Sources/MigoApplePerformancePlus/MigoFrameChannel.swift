@@ -62,6 +62,14 @@ public final class MigoFrameChannel {
         /// than raised: between a WebContent termination and the rebuilt
         /// producer's connection this is the expected state, not a fault.
         public var sendsWithoutProducer: Int = 0
+        /// Synchronous calls answered. Every answer counts, including one that
+        /// tells the producer its call failed: that is the engine doing its job.
+        public var syncCallsAnswered: Int = 0
+        /// Synchronous calls this channel could not produce an answer for at
+        /// all -- the session was gone, or the engine refused the arguments.
+        /// Non-zero means a producer was blocked on a response that said
+        /// nothing, which it reports as a transport failure.
+        public var syncCallsUnanswered: Int = 0
     }
 
     /// The largest downlink message this channel will carry in one send.
@@ -87,9 +95,23 @@ public final class MigoFrameChannel {
     public typealias Submit = (Data) -> Disposition
     /// Fill the buffer with the next downlink message and return its length.
     public typealias TakeDownlink = (UnsafeMutableBufferPointer<UInt8>) -> Int
+    /// One synchronous call's answer: the header, then the reply when there is
+    /// one. Sent in that order they are one response body.
+    ///
+    /// Two parts because the reply is the engine's own readback buffer, wrapped
+    /// rather than copied, and joining it to a header would copy it.
+    public struct SyncAnswer {
+        public let header: Data
+        public let reply: Data?
+    }
+
+    /// Answer one synchronous call body, or `nil` when no answer could be
+    /// produced at all. Blocks.
+    public typealias AnswerSync = (Data) -> SyncAnswer?
 
     private let submit: Submit
     private let takeDownlink: TakeDownlink
+    private let answerSync: AnswerSync
     private let transport: MigoFrameTransport
     private let lock = NSLock()
     private var statistics = Statistics()
@@ -127,17 +149,59 @@ public final class MigoFrameChannel {
                 let result = migo_session_take_downlink(
                     session, buffer.baseAddress, buffer.count, &written)
                 return result == MIGO_OK ? written : 0
+            },
+            answerSync: { call in
+                var header = Data(count: Int(MIGO_SYNC_ANSWER_HEADER_BYTES))
+                var reply: OpaquePointer?
+                let result = call.withUnsafeBytes { body in
+                    header.withUnsafeMutableBytes { out in
+                        migo_session_call_sync(
+                            session, body.bindMemory(to: UInt8.self).baseAddress, call.count,
+                            // Only ever differenced by the engine, against this
+                            // same reading: any monotonic clock is correct, and
+                            // this one does not step.
+                            DispatchTime.now().uptimeNanoseconds,
+                            out.bindMemory(to: UInt8.self).baseAddress, out.count, &reply)
+                    }
+                }
+                guard result == MIGO_OK else {
+                    // Nothing was handed over on failure, but a handle that did
+                    // come back must not leak on a path that reports none.
+                    if let reply { _ = migo_sync_reply_release(reply) }
+                    return nil
+                }
+                guard let reply else { return SyncAnswer(header: header, reply: nil) }
+
+                var bytes: UnsafePointer<UInt8>?
+                var length = 0
+                guard migo_sync_reply_bytes(reply, &bytes, &length) == MIGO_OK, let bytes,
+                    length > 0
+                else {
+                    _ = migo_sync_reply_release(reply)
+                    return nil
+                }
+                // The renderer's buffer, owned by `Data` from here: no copy, and
+                // released when WebKit has taken the bytes and the last reference
+                // goes. `Data` never writes through a no-copy buffer it did not
+                // allocate -- a mutation copies first -- so handing it a pointer
+                // the engine considers read-only is sound.
+                let wrapped = Data(
+                    bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes), count: length,
+                    deallocator: .custom { _, _ in _ = migo_sync_reply_release(reply) })
+                return SyncAnswer(header: header, reply: wrapped)
             })
     }
 
     init(
         transport: MigoFrameTransport = MigoFrameTransport(),
         submit: @escaping Submit,
-        takeDownlink: @escaping TakeDownlink
+        takeDownlink: @escaping TakeDownlink,
+        answerSync: @escaping AnswerSync = { _ in nil }
     ) {
         self.transport = transport
         self.submit = submit
         self.takeDownlink = takeDownlink
+        self.answerSync = answerSync
     }
 
     /// Start listening and return what the producer needs to connect.
@@ -218,6 +282,30 @@ public final class MigoFrameChannel {
     @discardableResult
     public func submitFromOrigin(_ packet: Data) -> Disposition {
         receive(packet)
+    }
+
+    /// One synchronous call, answered.
+    ///
+    /// The producer is a Worker blocked in a synchronous request to the content
+    /// origin, because that origin has no SharedArrayBuffer to block on. The
+    /// body goes to the engine unchanged and the answer comes back unchanged;
+    /// the engine waits for the frame the call names before it reads, and writes
+    /// the answer under the lock that settled it, so nothing here orders or
+    /// matches anything.
+    ///
+    /// Blocks for as long as the call takes. Call it on a queue that is NOT the
+    /// one frames arrive on: the frame a read waits for would otherwise queue
+    /// behind the read, and the read would wait out its whole timeout for it.
+    public func answerSyncCall(_ call: Data) -> SyncAnswer? {
+        let answer = answerSync(call)
+        lock.lock()
+        if answer == nil {
+            statistics.syncCallsUnanswered += 1
+        } else {
+            statistics.syncCallsAnswered += 1
+        }
+        lock.unlock()
+        return answer
     }
 
     // MARK: - Private

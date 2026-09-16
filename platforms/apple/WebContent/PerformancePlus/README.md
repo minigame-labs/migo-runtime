@@ -34,12 +34,21 @@ synchronous XHR round trip costs **1.15 ms against the socket's 0.216** — 5.4�
 latency and 6.1× on host CPU, on every synchronous readback the engine performs.
 Window stays supported as a fallback with a known price, not as a candidate.
 
-When a Worker is selected, game JavaScript/Wasm runs there and the Window is a
-relay. A small `SharedArrayBuffer` may be used only for same-WebContent
-Worker↔Window synchronization (control/reply mailbox); it never carries frame
-bytes. Frame bytes use a bounded transferable `ArrayBuffer` ping-pong/pool to
-the Window before entering the transport selected by G0. When Window is
-selected, there is no Worker relay.
+Game JavaScript/Wasm runs in the Worker, and the Worker owns its own transport:
+frames go out on the socket or as scheme requests (`uplink.mjs`), and verdicts
+and ticks come back on the socket. There is no Window relay on the frame path.
+
+**A synchronous readback is a synchronous request, not `Atomics.wait`.** The
+content origin is a custom scheme, which WebKit does not isolate, so there is no
+`SharedArrayBuffer` for the record in `sync-mailbox.mjs` to live in -- G0
+measured that, and eliminated every topology that needed one. What remains, and
+what G0 measured available at both origins, is a Worker's synchronous request:
+`sync-call.mjs` POSTs the call as one body to `/__migo/sync` and blocks in
+`send`, and the host's answer comes back as the response (wire format: "A
+request as one body" / "An answer as one body"). The price is the one measured
+above -- about a millisecond per call -- against a budget of fewer than one
+synchronous call per ten frames. `sync-mailbox.mjs` and `sync-relay.mjs` stay:
+the record is the same request, and an origin that is isolated can use it.
 
 The transport probe compares custom scheme, loopback WebSocket, and a hybrid
 only after directional-bottleneck evidence. WebKit bug

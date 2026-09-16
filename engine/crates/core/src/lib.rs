@@ -139,7 +139,9 @@ pub use runtime::{
 /// boundary maps these onto stable numbers the producer reads, and it should
 /// not have to reach into the wire crate to name them.
 #[cfg(feature = "external-frames")]
-pub use frame_wire::sync::{SyncError, SyncRequest, SyncState};
+pub use frame_wire::sync::{
+    SYNC_ANSWER_HEADER_BYTES, SYNC_CALL_MAX_BYTES, SyncAnswer, SyncError, SyncRequest, SyncState,
+};
 /// Re-exported so the C boundary can translate an outcome without depending on
 /// the wire crate directly: the boundary's job is to copy numbers across, not
 /// to know how a packet is parsed.
@@ -149,8 +151,8 @@ pub use frame_wire::{IngressDecision, IngressOutcome};
 /// process, for the Apple Performance+ product.
 #[cfg(feature = "external-frames")]
 pub use runtime::external::{
-    ExternalFrameClock, ExternalFrameSession, SpawnedExternalSession, SyncSnapshot,
-    spawn_external_frame_session,
+    AnsweredCall, ExternalFrameClock, ExternalFrameSession, SpawnedExternalSession, SyncHandle,
+    SyncSnapshot, spawn_external_frame_session,
 };
 pub use runtime::{HostThread, SpawnedSurfaceHost};
 #[cfg(feature = "embedded-v8")]

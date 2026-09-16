@@ -458,7 +458,76 @@ Returns:
 
 Threading:
 
-Serialized with other session entry points. This call completes while the producer is blocked; do not queue it before it enters.
+Blocks until the request is settled: first for the frame it names to be admitted, then for the readback. The library takes the sync handle under the session lock and **releases the lock before it blocks**, because the frame it waits for arrives through `migo_session_submit_external_frame`, which needs that lock. Call it on a thread that may block, and never while holding a lock that frame submission needs. The outcome it reports is **this request's own** verdict, not whatever the mailbox holds by the time it returns.
+
+---
+
+## migo_session_call_sync
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_call_sync(
+    MigoSession    *session,
+    const uint8_t  *call,
+    size_t          call_bytes,
+    uint64_t        now_nanos,
+    uint8_t        *header,
+    size_t          header_capacity,
+    MigoSyncReply **out_reply);
+```
+
+A synchronous call as one body in and one body out, for a producer that cannot share memory with the host. On Apple the content origin is a custom scheme, where WebKit provides no `SharedArrayBuffer`, so a Worker blocks in a synchronous request. The transport hands its body here unchanged, and sends back, as one response body, the header this writes followed by the reply's bytes. Both layouts are the wire format's (`contracts/frame-wire/wire-v1.md`, "A request as one body" and "An answer as one body"); the transport parses neither.
+
+The body carries how long the producer **will wait**, not a deadline, because its clock is not the host's. The deadline is `now_nanos` plus that wait, so `now_nanos` is the caller's monotonic clock, as for `migo_session_post_sync_request`.
+
+**The reply is not copied**: `*out_reply` is the buffer the renderer itself allocated, handed over, with no second copy in the library. A readback can be a full screen at device scale, on the path a producer is blocked on. Read its address and length with `migo_sync_reply_bytes`, and release it with `migo_sync_reply_release` once the bytes have been sent.
+
+The verdict is read under the lock that settles the request, the reply is that request's own readback, and the slot is freed in the same step. There is no take step, and no window in which another request's answer can be taken for this one.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `session` | Target session handle; must not be NULL. |
+| `call` / `call_bytes` | The body, unchanged from the producer. A body above `MIGO_SYNC_CALL_MAX_BYTES` should be refused by the transport before it is read. |
+| `now_nanos` | Caller monotonic-clock reading. |
+| `header` / `header_capacity` | Where the answer header is written; at least `MIGO_SYNC_ANSWER_HEADER_BYTES`. Less is refused **before** the call is posted, so no readback is spent on an answer that could not be delivered. |
+| `out_reply` | The reply handle when the call was answered with bytes; `NULL` otherwise, including for every failure, whose verdict is in the header. |
+
+Returns:
+
+- `MIGO_OK`: The header was written, including for a call that failed or could not be decoded: the producer is blocked on the response whatever happened, and the verdict belongs in it.
+- `MIGO_ERROR_INVALID_ARGUMENT`: A pointer is NULL, or `header_capacity` is too small. `*out_reply` is `NULL`.
+- `MIGO_ERROR_INVALID_STATE`: The session has no renderer yet (no surface attached) or was destroyed. No header is written.
+
+Threading:
+
+As for `migo_session_post_sync_request`: it blocks, and only after releasing the session lock; never call it while holding a lock frame submission needs. A producer has one agent blocked at a time, so one serial queue is enough -- but that queue must **not** be the one frame uploads arrive on, or the frame a read waits for queues behind the read.
+
+---
+
+## migo_sync_reply_bytes
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_sync_reply_bytes(
+    const MigoSyncReply  *reply,
+    const uint8_t       **out_bytes,
+    size_t               *out_length);
+```
+
+Where a reply's bytes are, and how many. Valid until the reply is released. On failure `*out_bytes` is `NULL` and `*out_length` is 0.
+
+---
+
+## migo_sync_reply_release
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_sync_reply_release(MigoSyncReply *reply);
+```
+
+Frees a reply; the handle and its bytes are invalid afterwards. `NULL` is refused with `MIGO_ERROR_INVALID_ARGUMENT` rather than ignored: releasing a reply that was never received is a caller that lost track of which answers carried bytes.
 
 ---
 

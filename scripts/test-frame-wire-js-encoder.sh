@@ -249,8 +249,11 @@ if (( emitted_params < 64 )); then
     exit 1
 fi
 
+# Filtered to its own test: the file also holds the one-body call tests below,
+# which need directories this step does not make.
 output="$(cd engine && MIGO_JS_SYNC_PARAM_DIR="$SYNC_PARAMS" \
-    cargo test -p migo-frame-wire --test sync_js_interop -- --ignored --nocapture 2>&1)"
+    cargo test -p migo-frame-wire --test sync_js_interop -- --ignored --nocapture \
+    read_pixels_arguments_from_the_javascript_producer 2>&1)"
 status=$?
 printf '%s\n' "$output" | grep -E 'decoded [0-9]+ JavaScript-encoded readPixels|test result' || true
 if (( status != 0 )); then
@@ -262,6 +265,49 @@ if ! printf '%s\n' "$output" | grep -qE 'decoded 64 JavaScript-encoded readPixel
     echo "FAIL: the interop test did not report decoding 64 records; it may not have run." >&2
     exit 1
 fi
+
+# --- the synchronous call as one body, in both directions --------------------
+#
+# The Apple lane's content origin has no SharedArrayBuffer, so a readback there
+# is a Worker's synchronous request: `sync-call.mjs` encodes the call body and
+# decodes the answer body, and `frame_wire::sync::{SyncCall, SyncAnswer}` are the
+# host's halves. The unit suite checks the JavaScript against the document's
+# tables; this puts bytes through both languages, because two halves each
+# faithful to a table can still read it two ways -- and the way that reaches a
+# user is a `readPixels` answered with another field's value.
+SYNC_CALL_TEST="$TEST_DIR/sync-call.test.mjs"
+node "$SYNC_CALL_TEST"
+RAN_TESTS+=("$SYNC_CALL_TEST")
+
+SYNC_CALLS="$(mktemp -d)"
+SYNC_ANSWERS="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$SYNC_CALLS" "$SYNC_ANSWERS"' EXIT
+node "$TEST_DIR/emit-sync-calls.mjs" write "$SYNC_CALLS"
+status=0
+output="$(cd engine && MIGO_JS_SYNC_CALL_DIR="$SYNC_CALLS" \
+    cargo test -p migo-frame-wire --test sync_js_interop -- \
+    --ignored --nocapture calls_from_the_javascript_producer 2>&1)" || status=$?
+printf '%s\n' "$output" | grep -E 'decoded [0-9]+ JavaScript-encoded synchronous calls|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust decoder rejected call bodies built by the JavaScript producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'decoded 64 JavaScript-encoded synchronous calls'; then
+    echo "FAIL: the call interop test did not report decoding 64 bodies; it may not have run." >&2
+    exit 1
+fi
+status=0
+output="$(cd engine && MIGO_SYNC_ANSWER_OUT_DIR="$SYNC_ANSWERS" \
+    cargo test -p migo-frame-wire --test sync_js_interop -- \
+    --ignored --nocapture the_rust_host_writes_answers 2>&1)" || status=$?
+printf '%s\n' "$output" | grep -E 'wrote [0-9]+ synchronous answers|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust host could not write the answer corpus." >&2
+    exit 1
+fi
+node "$TEST_DIR/emit-sync-calls.mjs" read "$SYNC_ANSWERS"
 
 # --- the host-to-producer direction, in both directions ----------------------
 #
@@ -302,7 +348,7 @@ RAN_TESTS+=("$UPLINK_TEST")
 
 DOWN_FROM_JS="$(mktemp -d)"
 DOWN_FROM_RUST="$(mktemp -d)"
-trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$DOWN_FROM_JS" "$DOWN_FROM_RUST"' EXIT
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$SYNC_CALLS" "$SYNC_ANSWERS" "$DOWN_FROM_JS" "$DOWN_FROM_RUST"' EXIT
 
 node platforms/apple/WebContent/PerformancePlus/test/emit-downlink.mjs write "$DOWN_FROM_JS"
 
