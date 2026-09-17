@@ -386,12 +386,67 @@ MigoResult migo_session_request_external_frame(MigoSession *session);
 
 返回：
 
-- `MIGO_OK`：请求已投递。
-- `MIGO_ERROR_INVALID_STATE`：渲染器尚未就绪（session 创建后、第一帧能力就绪前的合法中间状态）。
+- `MIGO_OK`：请求已记下。多个请求合并为一帧；渲染器尚未就绪时请求被**锁存**，渲染器起来时立即武装，不会丢。
+- `MIGO_ERROR_INVALID_STATE`：尚未 attach surface（此时没有帧时钟）。
 - `MIGO_ERROR_INVALID_ARGUMENT`：`session` 为空。
 
+生产方自己的请求走 socket 上的控制消息（见 `migo_session_submit_uplink_control`）；此入口供宿主代生产方请求。
+
 线程模型：
-在 vsync 回调线程调用。与 `migo_session_notify_vsync` 类似，是驱动帧时钟的信号，不阻塞。
+任意线程可调用，不阻塞。
+
+---
+
+## migo_uplink_message_kind
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_uplink_message_kind(
+    const uint8_t          *bytes,
+    size_t                  byte_count,
+    MigoUplinkMessageKind  *out_kind);
+```
+
+生产方的 socket 上有两种消息：帧包，和控制消息（目前只有"请求下一帧"）。传输层**问库**这条消息该进哪扇门，而不是自己比较 magic——宿主自己编码这条规则，就是 wire 格式又多一份会漂移的实现。
+
+- `MIGO_UPLINK_MESSAGE_CONTROL`：交给 `migo_session_submit_uplink_control`。
+- `MIGO_UPLINK_MESSAGE_FRAME`：交给 `migo_session_submit_external_frame`。**凡不是控制消息的都是这个**，包括连帧也不是的字节——由帧 ingress 以生产方看得到的判决拒绝它。
+
+不需要 session，最多读前 4 个字节。`byte_count` 为 0 时 `bytes` 可为 `NULL`。走内容源（custom scheme）上行的消息一律是帧，无需询问。
+
+返回：`out_kind` 为空，或 `bytes` 为空而 `byte_count` 非 0，返回 `MIGO_ERROR_INVALID_ARGUMENT`；否则 `MIGO_OK`。
+
+线程模型：无状态，任意线程。
+
+---
+
+## migo_session_submit_uplink_control
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_submit_uplink_control(
+    MigoSession    *session,
+    const uint8_t  *bytes,
+    size_t          byte_count,
+    uint32_t       *out_refusal_code);
+```
+
+读取一条控制消息并执行。Migo 的 `requestAnimationFrame` 在所有平台上都由宿主 vsync 驱动，生产方对下一帧的需求要跨进程到达这里，帧钟 tick 才会产生。格式见 `contracts/frame-wire/wire-v1.md` 的 *Uplink control messages*。
+
+规则：
+
+- **整条先校验再执行**：任何一处不合法，整条消息都不生效。
+- `*out_refusal_code` 为 0 表示已读取——**包括其中的请求属于别的运行时代际**（忽略而非拒绝：发出它的生产方已经不在了）；非 0 为 3001 起的拒绝码（见 wire 契约的 *Control refusals*），按拒绝帧的方式上报。
+- 渲染器尚未就绪时的帧请求被**锁存**，渲染器起来时武装——生产方的第一次请求与宿主启动赛跑，没有任何东西会让它再问一次。
+- 请求合并：一次 tick 回应之前的所有请求。
+
+返回：
+
+- `MIGO_OK`：`*out_refusal_code` 已写入。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`session`、`bytes` 或 `out_refusal_code` 为空，或 `byte_count` 为 0。
+- `MIGO_ERROR_INVALID_STATE`：尚未 attach surface。
+
+线程模型：在传输线程调用，与 `migo_session_submit_external_frame` 相同；不阻塞。
 
 ---
 
@@ -602,11 +657,42 @@ MigoResult migo_session_take_downlink(
 
 - **整条整出**：容量不足以装信封加一条记录时，一个字节也不写、队列原样保留；换上更大缓冲再调不丢任何东西。**4096 字节足以装下该队列产出的任何消息**。
 - **`out_written` 为 0 是正常答案**，不是错误，也不要空转：帧与帧之间的空隙里就是"没有东西要发"。
-- **何时调用**：每次 submit 之后、每帧投递之后；队列有界且会合并 tick，传输层落后的代价是生产方调度延迟，不是内存——每条记录都是绝对的，下一条读到的就是当前正确值。
+- **何时调用**：每次 submit 之后，以及下行唤醒回调（`migo_session_set_downlink_waker`）触发之后；队列有界且会合并 tick，传输层落后的代价是生产方调度延迟，不是内存——每条记录都是绝对的，下一条读到的就是当前正确值。
+- **tick 携带窗口**：`(remaining_credits, accepted_sequence)`。判决只为帧而发，一个最后判决为 0 的生产方只能从它请求的 tick 得知 credit 已归还。
 
 返回：指针为空为 `MIGO_ERROR_INVALID_ARGUMENT`；其余合法调用均为 `MIGO_OK`（含"没东西要发"）。
 
 线程模型：与 session 串行；适合放在传输发送线程上。
+
+---
+
+## migo_session_set_downlink_waker
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+typedef void (MIGO_CALL *MigoDownlinkWakerFn)(void *user_data);
+
+MigoResult migo_session_set_downlink_waker(
+    MigoSession          *session,
+    MigoDownlinkWakerFn   waker,
+    void                 *user_data);
+```
+
+安装（或以 `NULL` 清除）下行唤醒回调。库排入一条**不是传输层引起的**下行记录——帧钟 tick——时调用它。判决是在传输层自己的 submit 里排入的，submit 之后本来就会排空；tick 不是，没有唤醒它就会一直等到生产方发点什么，而一个在等 tick 的生产方什么也不会发。
+
+规则：
+
+- 在 session 自己的线程上调用。**只调度排空，不要在回调里执行排空**：立即返回，不要在回调里回调库——尤其不要调用 `migo_session_set_downlink_waker`，它会等正在进行的回调返回。
+- 每个 session 一个回调，再次安装即替换。**清除在任何进行中的调用返回后才返回**，所以返回后即可释放 `user_data`。
+- 在 `migo_session_destroy` 之前清除。
+
+返回：
+
+- `MIGO_OK`：已安装或清除。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`session` 为空。
+- `MIGO_ERROR_INVALID_STATE`：尚未 attach surface。
+
+线程模型：任意线程调用；回调在 session 线程上被调用。
 
 ---
 
