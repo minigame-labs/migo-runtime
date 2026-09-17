@@ -82,6 +82,7 @@ self.onmessage = async (event) => {
         identity: readEngineSessionConfig(config.engineSession),
         socketCeilingBytes: config.socketCeilingBytes,
         sync,
+        report,
       });
       await import("./engine/boot.mjs");
     } catch (error) {

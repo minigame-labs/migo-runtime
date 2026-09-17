@@ -2,6 +2,7 @@ import Foundation
 import MigoAppleCore
 import MigoAppleWebKit
 import WebKit
+import os
 
 #if os(iOS)
     import UIKit
@@ -46,9 +47,18 @@ import WebKit
         public var originActivity: MigoPerformancePlusOrigin.Activity { origin.activity }
 
         /// What the producer said. The dictionary is content-shaped JSON: `type` is
-        /// always present and is one of `connected`, `ready`, `verdict`,
-        /// `generation-lost`, `failed`.
+        /// always present and is one of `connected`, `engine-ready`, `ready`,
+        /// `verdict`, `generation-lost`, `failed`.
+        ///
+        /// The engine's console is not a report. Its lines go to the platform log
+        /// under the `dev.migo` subsystem, at the level the engine gave them, which
+        /// is where the engine's own log goes on every platform that runs it in
+        /// process -- an app that wants them reads the log, and an app that does
+        /// not is not handed a main-thread callback per line.
         public typealias Report = [String: Any]
+
+        /// Where content's console lines go.
+        private static let contentLog = Logger(subsystem: "dev.migo", category: "content")
 
         /// The session the engine's own JavaScript API layer answers for.
         ///
@@ -389,7 +399,25 @@ import WebKit
             // attributed to the one that is.
             guard let webView, message.webView === webView else { return }
             guard let body = message.body as? Report else { return }
+            if body["type"] as? String == "console" {
+                Self.log(consoleLine: body)
+                return
+            }
             onReport?(body)
+        }
+
+        /// The engine's `op_console` levels, as the embedded op maps them: 1 info,
+        /// 2 warn, 3 error, anything else debug. The message keeps the platform
+        /// log's default privacy -- content's console can carry a player's data,
+        /// and the log redacts dynamic strings unless a debugger is attached.
+        private static func log(consoleLine body: Report) {
+            let message = body["message"] as? String ?? ""
+            switch body["level"] as? Int {
+            case 1: contentLog.info("\(message)")
+            case 2: contentLog.warning("\(message)")
+            case 3: contentLog.error("\(message)")
+            default: contentLog.debug("\(message)")
+            }
         }
     }
 

@@ -55,16 +55,20 @@ export function readEngineSessionConfig(config) {
  * @param {object} options.identity from `readEngineSessionConfig`.
  * @param {number} options.socketCeilingBytes the host's uplink threshold.
  * @param {object} [options.sync] the synchronous caller, when the host serves one.
+ * @param {(message: object) => void} options.report posts a message to the host,
+ *   through the page; nothing waits for it.
  */
-export function bindEngineHost({ session, identity, socketCeilingBytes, sync }) {
+export function bindEngineHost({ session, identity, socketCeilingBytes, sync, report }) {
   if (bound !== null) throw new Error("the engine host is already bound");
   if (!(session instanceof FrameSession)) throw new TypeError("the engine host needs a FrameSession");
   if (typeof socketCeilingBytes !== "number" || !Number.isFinite(socketCeilingBytes)) {
     throw new TypeError("the engine host needs the host's socketCeilingBytes");
   }
+  if (typeof report !== "function") throw new TypeError("the engine host needs a report function");
   bound = Object.freeze({
     session,
     sync,
+    report,
     socketCeilingBytes,
     launchNonce: identity.launchNonce,
     runtimeGeneration: identity.runtimeGeneration,

@@ -113,7 +113,8 @@ const session = new FrameSession({
     }, 1);
   },
 });
-bindEngineHost({ session, identity, socketCeilingBytes: 64 * 1024 });
+const reports = [];
+bindEngineHost({ session, identity, socketCeilingBytes: 64 * 1024, report: (message) => reports.push(message) });
 
 log("The engine's API layer on the producer");
 
@@ -125,6 +126,20 @@ const { core } = await import(`${root}/engine/core/mod.mjs`);
 const missing = manifest.core_members.filter((member) => !(member in core));
 check(missing.length === 0, `core provides every member the engine uses (${manifest.core_members.length})`);
 if (missing.length) log(`       missing: ${missing.join(", ")}`);
+
+// The engine's console is the engine's op, and it reaches the host as a report
+// at the level the embedded op logs at -- including for a value whose ToString
+// throws, which the Rust op logs as "<invalid value>" rather than raising.
+console.warn("careful", 3);
+console.error({ toString() { throw new Error("no"); } });
+check(
+  reports.some((r) => r.type === "console" && r.level === 2 && r.message.includes("careful")),
+  "console.warn reached the host at warn level",
+);
+check(
+  reports.some((r) => r.type === "console" && r.level === 3),
+  "console.error with a throwing value still reached the host",
+);
 
 const canvas = migo.createCanvas();
 check(canvas.width === 64 && canvas.height === 48, "the main canvas has the surface's size");
