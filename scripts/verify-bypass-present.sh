@@ -115,6 +115,13 @@ run_probe() {
   fi
   if [[ "$painted" -lt 1 ]]; then
     c_err "$name never painted, so its pixel says nothing about presentation; see $log"
+    # The log is on the machine that ran the probe, which on CI is a runner
+    # nobody can open afterwards. The reason a player painted nothing is at the
+    # end of it -- a failed EGL bring-up, a panic, a content error -- so it is
+    # printed here rather than named. Measured 2026-09-17: every probe painted
+    # zero frames on the hosted runner and seven on a workstation, and the gate
+    # said only "see /tmp/...".
+    tail -n 40 "$log" | sed 's/^/    | /' >&2
     failures=$((failures + 1))
     return
   fi
