@@ -141,6 +141,18 @@ jobs:
           # `package-apple-skia-binaries.sh` refuses a downloaded build, so it
           # would fail rather than lie, but it would fail for an obscure reason.
           export MIGO_SKIA_FROM_SOURCE=1
+          # The macOS deployment floor, from the contract every Apple build reads
+          # it from. Without it clang falls back to the runner's own OS: the
+          # first archives published from here carried `minos 15.0` in every
+          # Skia object and `15.5` in the bindings, against an 11.0 floor, and
+          # the apple-sdk floor gate turned red on every macOS leg that linked
+          # them. skia-bindings also turns this into the
+          # __MAC_OS_X_VERSION_{MIN_REQUIRED,MAX_ALLOWED} defines Skia's sources
+          # branch on, so the archive is not the build apple-sdk.yml makes from
+          # source unless this is set the way build-apple-sdk.sh sets it.
+          MACOSX_DEPLOYMENT_TARGET="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platforms"]["macos"]["deployment_target"])' ../contracts/apple/deployment-floor.json)"
+          export MACOSX_DEPLOYMENT_TARGET
+          echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
           # shellcheck source=scripts/apple-skia-gl-env.sh
           . ../scripts/apple-skia-gl-env.sh
           cargo build -p migo-graphics --target ${{ matrix.target }} --lib
@@ -178,10 +190,16 @@ jobs:
           path: archives
           merge-multiple: true
 
-      # The tag names the two things that decide what is inside: the
-      # skia-bindings crate version, which fixes the archive layout, and the
-      # rust-skia commit, which is the first component of every key. Same shape
-      # as `angle-apple-<hash>`.
+      # The tag names the things that decide what is inside: the skia-bindings
+      # crate version, which fixes the archive layout; the rust-skia commit,
+      # which is the first component of every key; and the macOS deployment
+      # floor the objects were compiled against, which no key carries and which
+      # changed the bytes once already. Same shape as `angle-apple-<hash>`.
+      #
+      # A published asset is never replaced. The lock pins each archive's
+      # sha256, and `scripts/test-apple-skia-pin-contract.sh` exists because an
+      # asset that changes under a fixed tag is a build that downloads different
+      # bytes than the ones that were verified. A recipe change is a new tag.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -203,14 +221,25 @@ jobs:
           # Naming a release after the requirement would make two different
           # builds share a tag.
           version="$(tar -xzOf "${archives[0]}" skia-binaries/tag.txt)"
-          tag="skia-apple-${version}-${hash:0:8}"
+          floor="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platforms"]["macos"]["deployment_target"])' contracts/apple/deployment-floor.json)"
+          tag="skia-apple-${version}-${hash:0:8}-macos${floor}"
           echo "tag $tag"
           for archive in "${archives[@]}"; do
-            shasum -a 256 "$archive" || sha256sum "$archive"
+            sha256sum "$archive"
+            wc -c < "$archive"
           done
-          if ! gh release view "$tag" >/dev/null 2>&1; then
+          if gh release view "$tag" >/dev/null 2>&1; then
+            existing="$(gh release view "$tag" --json assets -q '.assets[].name')"
+            for archive in "${archives[@]}"; do
+              if grep -qxF "$(basename "$archive")" <<<"$existing"; then
+                echo "::error::$tag already carries $(basename "$archive"). Published archives are" >&2
+                echo "::error::immutable: the lock pins their sha256. Change the recipe's tag instead." >&2
+                exit 1
+              fi
+            done
+          else
             gh release create "$tag" \
-              --title "Skia for Apple, built with skia_gl_standard=\"\"" \
-              --notes "Built by .github/workflows/apple-skia-binaries.yml from scripts/package-apple-skia-binaries.sh. These are skia-bindings archives for the darwin triples, built from source with the GN argument that lets Skia accept an ANGLE ES context; see scripts/apple-skia-gl-env.sh for why the stock ones cannot."
+              --title "Skia for Apple, built with skia_gl_standard=\"\" for macOS ${floor}" \
+              --notes "Built by .github/workflows/apple-skia-binaries.yml from scripts/package-apple-skia-binaries.sh. These are skia-bindings archives for the darwin triples, built from source with the GN argument that lets Skia accept an ANGLE ES context (see scripts/apple-skia-gl-env.sh for why the stock ones cannot) and against the macOS ${floor} deployment floor in contracts/apple/deployment-floor.json."
           fi
-          gh release upload "$tag" "${archives[@]}" --clobber
+          gh release upload "$tag" "${archives[@]}"
