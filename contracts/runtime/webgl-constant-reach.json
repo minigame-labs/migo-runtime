@@ -54,7 +54,8 @@
     "engine/crates/graphics/src/compressed_upload.rs": "Compressed texture upload, reached by content through compressedTexImage2D.",
     "engine/crates/graphics/src/texture_import.rs": "Texture import paths content reaches through texImage2D with an external source.",
     "_shim_constants": "engine/crates/runtime-v8/src/rendering/webgl/01_constants.js",
-    "engine/crates/graphics/src/backend/gl/state_tracker.rs": "Shadows the GL state content sets so redundant calls can be skipped -- which makes it a content boundary, not an internal one. Classified internal at first, and that was wrong: the eight WebGL 2 pixel-store parameters are named here and nowhere else, so the misclassification left the only file that names them unchecked and content could not name them either."
+    "engine/crates/graphics/src/backend/gl/state_tracker.rs": "Shadows the GL state content sets so redundant calls can be skipped -- which makes it a content boundary, not an internal one. Classified internal at first, and that was wrong: the eight WebGL 2 pixel-store parameters are named here and nowhere else, so the misclassification left the only file that names them unchecked and content could not name them either.",
+    "engine/crates/graphics/src/backend/gl/readback.rs": "Pixel transfers, including readPixels into client memory and into a PIXEL_PACK_BUFFER: content chooses the format, type and pack state these paths honour, so their enums are content's."
   },
   "not_exposed_by_webgl": {
     "INFO_LOG_LENGTH": "WebGL has no length query: getShaderInfoLog and getProgramInfoLog return a string, so the executor reads this length to size its own buffer and content never names it.",
@@ -62,10 +63,14 @@
     "EXTENSIONS": "WebGL replaces the GL string query with getSupportedExtensions(), which is implemented. Declaring the enum would offer content a getParameter path WebGL does not define.",
     "DRAW_FRAMEBUFFER_BINDING": "GLES 3 gives it the same enum as FRAMEBUFFER_BINDING (0x8CA6), which is declared. A second name for one enum would imply two queries where there is one.",
     "PROGRAM_BINARY_LENGTH": "WebGL exposes no program-binary API: getProgramBinary/programBinary are GLES calls with no WebGL counterpart and no extension that adds one. The shader cache uses this to size its own buffer, and content has no way to ask for a binary at all.",
-    "NUM_PROGRAM_BINARY_FORMATS": "Same as PROGRAM_BINARY_LENGTH: WebGL has no program-binary API, so there is nothing for content to enumerate formats for."
+    "NUM_PROGRAM_BINARY_FORMATS": "Same as PROGRAM_BINARY_LENGTH: WebGL has no program-binary API, so there is nothing for content to enumerate formats for.",
+    "MAP_READ_BIT": "An access bit for glMapBufferRange, which WebGL 2 does not have: content reads a buffer back with getBufferSubData, and the engine maps only its own pack buffers."
   },
   "internal_only": {
     "engine/crates/graphics/src/atlas/mod.rs": "Glyph and image atlas allocation. Content never names an atlas, let alone its formats.",
+    "engine/crates/graphics/src/backend/gl/readback_native_test.rs": "Opt-in native pixel tests on Mesa's surfaceless EGL. Compiled only for tests.",
+    "engine/crates/graphics/src/backend/gl/readback_test_gl.rs": "Test support: a deterministic GL double and the native EGL fixture. Compiled only for tests.",
+    "engine/crates/graphics/src/backend/gl/texture_copy.rs": "Engine-owned texture copies for snapshots and imports; it binds READ framebuffers the engine created and restores content's binding, and content never names what it uses.",
     "engine/crates/graphics/src/canvas/manager/context_2d_impl.rs": "Canvas2D's own GL use. Canvas2D's content-facing surface is strings and numbers, not GL enums.",
     "engine/crates/graphics/src/canvas/manager/drawing_buffer.rs": "The onscreen drawing buffer the engine owns. Content sees a canvas, not this.",
     "engine/crates/graphics/src/canvas/manager/pbo_upload.rs": "Pixel-buffer upload internals, including the engine's own fences. Content's fences go through the executor.",

@@ -77,6 +77,13 @@ fetch_header() {
   local path="$1" base="$2"
   local out="$HEADERS_DIR/$path"
   if [ -s "$out" ]; then return; fi
+  # A machine with the distro's -dev packages (libegl-dev, libgles-dev,
+  # libgl-dev) already has this header on the compiler's default include path,
+  # and needs nothing from the network. CI installs exactly those packages and
+  # still fetched every header here until registry.khronos.org began answering
+  # the runners with 403 (2026-09-17), which failed the host build before it
+  # started -- for files that were already installed.
+  if [ -s "/usr/include/$path" ]; then return; fi
   echo "[dev-setup-skia] fetching $path"
   curl -sSLf "$base/$path" -o "$out"
 }

@@ -1005,6 +1005,13 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+        with:
+          # Named, because the action's default is `tools platform-tools` and
+          # `tools` -- the SDK Tools package cmdline-tools replaced -- is gone from
+          # the repository the runner's cmdline-tools 20.0 reads: sdkmanager
+          # reports "Failed to find package 'tools'" and exits 1 before any step
+          # that builds. Nothing here uses it; platform-tools is what adb comes from.
+          packages: platform-tools
 
       # Pins one NDK for the whole job (see the action for why every NDK env var
       # must point at it, not just ANDROID_NDK_HOME).
@@ -1254,6 +1261,13 @@ jobs:
 
       - name: Setup Android SDK and adb
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+        with:
+          # Named, because the action's default is `tools platform-tools` and
+          # `tools` -- the SDK Tools package cmdline-tools replaced -- is gone from
+          # the repository the runner's cmdline-tools 20.0 reads: sdkmanager
+          # reports "Failed to find package 'tools'" and exits 1 before any step
+          # that builds. Nothing here uses it; platform-tools is what adb comes from.
+          packages: platform-tools
 
       - name: Download the hosted builder's Android release bytes
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

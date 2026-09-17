@@ -69,6 +69,32 @@ const WebglConstants = {
     PIXEL_UNPACK_BUFFER_BINDING: 35055,
     TRANSFORM_FEEDBACK_BUFFER: 35982,
     TRANSFORM_FEEDBACK_BUFFER_BINDING: 35983,
+    // What getProgramParameter answers for these two pnames, and the two modes
+    // transformFeedbackVaryings takes. The executor hands the mode back to
+    // content, so a missing name is `gl.INTERLEAVED_ATTRIBS === undefined` and a
+    // comparison against it that is silently never true.
+    TRANSFORM_FEEDBACK_BUFFER_MODE: 35967,
+    TRANSFORM_FEEDBACK_VARYINGS: 35971,
+    INTERLEAVED_ATTRIBS: 35980,
+    SEPARATE_ATTRIBS: 35981,
+    // WebGL 2.0 buffer usages beyond the three DRAW hints, integer pixel
+    // formats, and the buffers clearBuffer* names. Each family is declared
+    // whole: content that passes `gl.DYNAMIC_READ` or `gl.RGBA_INTEGER` and gets
+    // `undefined` reaches the driver as 0, which is an INVALID_ENUM nobody asked
+    // for rather than the call content wrote.
+    STREAM_READ: 35041,
+    STREAM_COPY: 35042,
+    STATIC_READ: 35045,
+    STATIC_COPY: 35046,
+    DYNAMIC_READ: 35049,
+    DYNAMIC_COPY: 35050,
+    RED_INTEGER: 36244,
+    RG_INTEGER: 33320,
+    RGB_INTEGER: 36248,
+    RGBA_INTEGER: 36249,
+    COLOR: 6144,
+    DEPTH: 6145,
+    STENCIL: 6146,
     STREAM_DRAW: 35040,
     STATIC_DRAW: 35044,
     DYNAMIC_DRAW: 35048,
