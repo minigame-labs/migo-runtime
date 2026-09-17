@@ -31,6 +31,31 @@ next change to a field offset, a flag bit, or a rejection code is a
 then a shipped Swift transport and a shipped JavaScript encoder will disagree
 with anything else.
 
+### Amendment, 2026-09-17: barrier packets
+
+The paragraph above says a flag change is a version bump, and this amendment
+changes what the one flag means without one. The audit that allowed the
+refreeze was repeated and came out the same way, and one fact it did not have
+makes a transition pointless rather than merely unnecessary:
+
+- No product release contains this format. `v0.9.6` and every earlier tag
+  predate `include/migo/external_frames.h`; the only tags that contain the
+  commit that added it are the `angle-apple-*` and `skia-apple-*` artifact
+  releases, which ship no engine.
+- The producer that writes these packets is not a separate deliverable. Its
+  JavaScript is a resource of the same Swift package as the host that reads
+  them (`MigoApplePerformancePlus`), served from the app's own bundle, so a
+  producer and a reader of different versions cannot meet. A period accepting
+  both would be code for a combination that does not occur.
+
+What changed: `PRESENT` is no longer required. A packet without it is a
+**barrier** -- executed, not presented (see *Flags*). Code 16
+(`MissingPresent`) is retired, not reused. `SYNC_OP_AWAIT_WINDOW` was added
+beside `SYNC_OP_READ_PIXELS`, and *Decoded storage* publishes the budget a
+producer splits frames against. The next change to a field offset, a flag bit
+or a rejection code is still a `wire_version` bump -- and the audit above is
+what will have to be false by then for that to matter.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.
@@ -87,19 +112,37 @@ measured in kilobytes would be a false economy.
 
 | Bit | Name | Meaning |
 |---:|---|---|
-| 0 | `PRESENT` | this packet is a complete frame: execute it and end the frame |
+| 0 | `PRESENT` | this packet ends a frame: execute it, then present |
 
-`PRESENT` is **required**. Any other bit set is a rejection, and a packet
-without it is a rejection.
+A packet without `PRESENT` (`flags == 0`) is a **barrier**: the host executes it
+and the frame goes on. Any other bit set is a rejection.
 
-**v1 has no `CONTINUED` flag, and no semantic frame continuation.** An earlier
-draft had one. A packet that carries drawing work but does not end a frame is a
-packet whose effects a *later* packet depends on, which means a rejected or
-lost middle packet leaves the renderer holding half a frame — and makes every
-question about credits, sequence gaps and generation loss a question about
-partial state. With a 4 MiB ceiling and real frames measured in tens of
-kilobytes, continuation buys nothing and costs that entire class of bug.
-Requiring `PRESENT` is how the absence is enforced rather than merely intended.
+A producer sends barriers for two reasons, and both are ordinary:
+
+- **A question mid-frame.** A synchronous call has to see the commands recorded
+  before it -- `getShaderParameter` asks about the compile a moment ago -- so
+  the producer sends what it has recorded as a barrier and names that packet as
+  the call's `triggering_sequence`. Sending it as a presenting packet instead
+  would put half a frame on screen every time content asked a question inside
+  `requestAnimationFrame`.
+- **A frame larger than one packet.** A level load uploading its textures can
+  exceed the wire ceiling or *Decoded storage*; the producer splits it, and
+  every packet but the last is a barrier.
+
+The embedded runtime already works this way in process: its synchronous ops
+and its batch flush hand the renderer a packet with no `Present`, and a barrier
+is that packet crossing a process boundary. On the host a barrier is decoded
+exactly as a presenting packet is -- trailing 2D work is materialized, so a
+following readback sees it -- and differs only in that no present is queued.
+
+A barrier is admitted under every rule a presenting packet is: identity,
+contiguous sequence, credits, generation. An earlier draft had a `CONTINUED`
+flag and it was refused because a rejected or lost middle packet would leave the
+renderer holding half a frame. That concern does not survive the rules below: a
+rejection terminates the content and voids its generation
+(`contracts/apple/profile-policy.json`), so no later packet of that frame is
+ever executed on top of the half, and a lost packet is a sequence gap, which is
+the same rejection.
 
 Transport-level fragmentation is a different thing and is still allowed: a
 transport that splits bytes reassembles them **before** the parser is called,
@@ -221,6 +264,52 @@ uniform spills, materialization scratch and packet operations. Wire size alone
 cannot provide this bound: a one-word record can become a much larger command.
 This implementation limit excludes independently bounded wire/pool caches and
 GPU/process memory; it is not a whole-device memory budget.
+
+## Decoded storage
+
+The host refuses a packet whose decoded storage exceeds **4 MiB**
+(`frame_decode::MAX_DECODED_FRAME_BYTES`), and a refusal ends the content. A
+producer therefore has to know where to split a frame, and the storage depends
+on the reader's type sizes, which a producer in another process cannot know. So
+the estimate is published here over **upper bounds**, and the reader asserts at
+compile time that its real sizes are within them (`frame_decode::producer_bounds`).
+The estimate only grows with each size, so a packet a producer estimates within
+budget is never one the reader refuses.
+
+| Bound | Value |
+|---|---:|
+| GL command | 144 bytes |
+| Canvas2D command | 64 bytes |
+| frame op | 64 bytes |
+| frame packet | 64 bytes |
+| uniform inline payload | 16 words |
+| GL batch minimum capacity | 16 |
+| Canvas2D batch minimum capacity | 8 |
+| frame-op list minimum capacity | 8 |
+| pending-canvas scratch minimum capacity | 4 |
+
+Walking the command stream's records in order, with `cap(n, m)` meaning
+`max(n, m)` rounded up to a power of two:
+
+- `SELECT_CANVAS` closes the open Canvas2D batch and marks a canvas selected.
+- Any other 2D record, once a canvas is selected, closes the open GL batch and
+  adds one to the Canvas2D batch. Before a selection it is charged nothing.
+- A GL record closes the open Canvas2D batch, moves every pending canvas into
+  the op count (its materialize), and adds one to the GL batch. A uniform array
+  whose payload exceeds the inline size also charges `cap(payload, 0) * 4`.
+- Closing a Canvas2D batch of `n` charges `cap(n, 8) * 64`, one op, and one
+  pending canvas; closing a GL batch of `n` charges `cap(n, 16) * 144` and one
+  op. An empty batch closes for nothing.
+
+At the end both batches close and pending canvases materialize; the packet is
+then charged `cap(ops + 2, 8) * 64` for its op list, `cap(peak pending, 4) * 4`
+when any canvas was ever pending, and 64 for the packet.
+
+`platforms/apple/WebContent/PerformancePlus/src/decode-budget.mjs` implements
+this and `engine/crates/frame-decode/tests/decode_budget_js_agreement.rs` holds
+it equal to `frame_decode::producer_estimated_bytes` on generated streams.
+A producer that splits a frame after a canvas was selected repeats the selection
+at the start of the next packet: a 2D record before any selection is an error.
 
 ## Identity, ordering and resource admission
 
@@ -428,6 +517,26 @@ mailbox and a second waiter, and the producer is a single agent that is blocked
 while it waits; if that ever becomes two, the protocol needs a request queue,
 which is a change worth noticing rather than absorbing.
 
+### Operations
+
+| Value | Name | Parameters | Reply |
+|---:|---|---|---|
+| 1 | `READ_PIXELS` | 32 bytes: canvas id, x, y, width, height, format, type, reserved | `width * height * 4` bytes of RGBA8 rows |
+| 2 | `AWAIT_WINDOW` | none | 16 bytes: `remaining_credits` u32, a zero u32, `accepted_sequence` u64 |
+
+`AWAIT_WINDOW` exists because a producer whose calls are synchronous cannot wait
+for a credit the way a running one does. A barrier has to be sent from inside the
+call that needs it, and when the renderer holds every credit, the verdicts and
+ticks that would reopen the window are queued behind that very call. So the
+producer blocks here, naming the last packet it sent as `triggering_sequence`,
+and the host answers once that packet is admitted **and** a credit is free, with
+the advertisement read at that moment -- the same pair, with the same meaning,
+that *The window* describes. The downlink records queued meanwhile are older;
+applying one afterwards only makes the producer more conservative until the next
+arrives, and every admitted packet is answered on the downlink, so the newest
+record there is never older than this reply. The deadline bounds the wait: a
+renderer that returns no credit is `TIMED_OUT`, not a producer blocked for good.
+
 ### Record — 64 bytes, fixed
 
 | Offset | Size | Field | Rule |
@@ -618,7 +727,7 @@ either without ambiguity).
 | 13 | `UnknownRequiredSection` | an unknown non-advisory section kind is present |
 | 14 | `ChecksumMismatch` | the payload checksum does not match |
 | 15 | `UnknownFlags` | a flag bit outside v1 is set |
-| 16 | `MissingPresent` | `PRESENT` is not set |
+| 16 | `MissingPresent` | **retired, never produced** (2026-09-17): a packet without `PRESENT` is a barrier. Kept so the number keeps its meaning in telemetry |
 | 17 | `CommandStreamNotWordAligned` | the command stream is not a whole number of words |
 | 18 | `ItemCountInconsistent` | `item_count` disagrees with `byte_length` for this kind |
 | 19 | `MissingCommandStream` | the packet carries no command stream |

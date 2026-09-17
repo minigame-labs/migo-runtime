@@ -36,6 +36,8 @@ export const SECTION_KIND_TIMING = 0x80000002;
 export const RESOURCE_REFERENCE_BYTES = 4;
 export const DAMAGE_RECT_BYTES = 16;
 
+/// Set when a packet ends a frame. A packet without it is a barrier: the host
+/// executes it and the frame goes on. See "Flags" in wire-v1.md.
 export const FLAG_PRESENT = 1 << 0;
 
 // Header offsets, in the order the document lists them.
@@ -175,8 +177,10 @@ export function encodeFrame({
   surfaceGeneration = 0n,
   resourceEpoch = 0n,
   frameId = 0,
+  present = true,
   sections,
 }) {
+  if (typeof present !== "boolean") throw new TypeError("present is a boolean");
   if (!Array.isArray(sections) || sections.length === 0) {
     throw new TypeError("a packet must carry at least a command stream");
   }
@@ -216,10 +220,9 @@ export function encodeFrame({
   writeU64(view, OFF_SURFACE_GENERATION, surfaceGeneration);
   writeU64(view, OFF_RESOURCE_EPOCH, resourceEpoch);
   view.setUint32(OFF_FRAME_ID, frameId >>> 0, true);
-  // PRESENT is required and is the only bit v1 defines, so it is not a
-  // parameter. A caller that could clear it could ask for a packet the reader
-  // must refuse.
-  view.setUint32(OFF_FLAGS, FLAG_PRESENT, true);
+  // PRESENT is the only bit v1 defines, so a boolean is the whole choice: a
+  // caller cannot ask for a bit the reader refuses.
+  view.setUint32(OFF_FLAGS, present ? FLAG_PRESENT : 0, true);
   view.setUint32(OFF_SECTION_COUNT, sections.length, true);
 
   sections.forEach((section, index) => {
@@ -304,6 +307,16 @@ export class FramePacketWriter {
   }
 
   /**
+   * Whether `count` more words still make a packet within the ceiling. What a
+   * producer that splits frames asks before appending, rather than learning it
+   * from the RangeError `appendWords` throws.
+   */
+  fits(count) {
+    const used = this.#used === 0 ? STREAM_HEADER_WORDS : this.#used;
+    return alignUp(STREAM_PAYLOAD_OFFSET + (used + count) * 4) <= MAX_TOTAL_BYTES;
+  }
+
+  /**
    * Append `words[from, to)`, which are complete command records.
    * Throws RangeError past the packet ceiling: a frame that large cannot be
    * represented, and dropping part of it would draw half a frame.
@@ -332,11 +345,12 @@ export class FramePacketWriter {
   }
 
   /**
-   * Finish the frame and return its packet, a view over this writer's buffer.
+   * Finish the packet and return it, a view over this writer's buffer.
    * `sequence` and `frameId` are Numbers; a sequence stays inside 2^53 for
-   * longer than a session runs.
+   * longer than a session runs. `present` false makes it a barrier: the host
+   * executes it and the frame goes on.
    */
-  finish(sequence, frameId) {
+  finish(sequence, frameId, present = true) {
     if (this.#used === 0) throw new Error("finish() on a frame with no commands");
     const words = this.#words;
     const payloadWord = STREAM_PAYLOAD_OFFSET / 4;
@@ -359,7 +373,7 @@ export class FramePacketWriter {
     writeU64(view, OFF_SURFACE_GENERATION, this.surfaceGeneration);
     writeU64(view, OFF_RESOURCE_EPOCH, this.resourceEpoch);
     view.setUint32(OFF_FRAME_ID, frameId >>> 0, true);
-    view.setUint32(OFF_FLAGS, FLAG_PRESENT, true);
+    view.setUint32(OFF_FLAGS, present ? FLAG_PRESENT : 0, true);
     view.setUint32(OFF_SECTION_COUNT, 1, true);
     view.setUint32(HEADER_BYTES, SECTION_KIND_COMMAND_STREAM, true);
     view.setUint32(HEADER_BYTES + 4, STREAM_PAYLOAD_OFFSET, true);

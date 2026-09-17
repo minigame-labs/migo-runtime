@@ -95,6 +95,9 @@ export const OP_UNIFORM_MATRIX4FV = 266;
 // Derived from engine/crates/frame-wire/src/canvas2d.rs, and
 // scripts/test-render-opcode-agreement.sh keeps the three tables in step.
 
+// The first 2D opcode: everything at or above it is a 2D record. A range
+// marker, as in canvas2d.rs, not an opcode of its own.
+export const OP2D_BASE = 512;
 export const OP2D_SELECT_CANVAS = 512;
 export const OP2D_BEGIN_PATH = 513;
 export const OP2D_CLOSE_PATH = 514;

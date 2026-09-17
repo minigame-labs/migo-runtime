@@ -190,6 +190,19 @@ typedef struct MigoSyncOutcome {
 #define MIGO_SYNC_OP_READ_PIXELS 1U
 
 /*
+ * Wait for the frame window to open, and report it.
+ *
+ * For a producer whose calls are synchronous and that must send a barrier
+ * packet (a packet without PRESENT) while the renderer holds every credit. The
+ * library answers once every packet through `triggering_sequence` is admitted
+ * and a credit is free. No parameters. The reply is MIGO_SYNC_WINDOW_REPLY_BYTES:
+ * remaining credits (u32), a zero u32, the accepted sequence (u64), all
+ * little-endian -- the same advertisement a frame verdict or clock tick carries.
+ */
+#define MIGO_SYNC_OP_AWAIT_WINDOW 2U
+#define MIGO_SYNC_WINDOW_REPLY_BYTES 16U
+
+/*
  * `readPixels`' arguments, which are NOT in the descriptor.
  *
  * The descriptor is a fixed rendezvous record the producer polls with atomics;

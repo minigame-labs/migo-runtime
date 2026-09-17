@@ -429,6 +429,43 @@ if (( status != 0 )); then
 fi
 node "$TEST_DIR/emit-control.mjs" read "$CONTROL_FROM_RUST"
 
+# --- a frame larger than one packet, and what the host will decode ----------
+#
+# The host refuses a packet whose decoded storage is over its budget, and on the
+# Apple lane that ends the content. The producer cannot know the host's type
+# sizes, so it estimates with the contract's upper bounds and splits frames into
+# barriers against that. Two things have to hold and neither side can show them
+# alone: the producer's estimate is EXACTLY the Rust formula over those bounds
+# (a drift toward caution would pass a weaker "at least" check and then split
+# frames for no reason), and the packets it splits a frame into are admitted in
+# order, each within budget, with every 2D record decoding against a selected
+# canvas. The node suite writes streams and split packets; the Rust test reads
+# them, and the counts it prints are asserted so a run that checked nothing
+# cannot pass.
+ENGINE_FRAMES_TEST="$TEST_DIR/engine-frames.test.mjs"
+ENGINE_FRAMES_OUT="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$ENGINE_FRAMES_OUT"' EXIT
+node "$ENGINE_FRAMES_TEST" "$ENGINE_FRAMES_OUT"
+RAN_TESTS+=("$ENGINE_FRAMES_TEST")
+status=0
+output="$(cd engine && MIGO_ENGINE_FRAMES_TEST_DIR="$ENGINE_FRAMES_OUT" \
+    cargo test -p migo-frame-decode --test decode_budget_js_agreement -- --ignored --nocapture 2>&1)" \
+    || status=$?
+printf '%s\n' "$output" | grep -E 'producer estimates agree|admitted [0-9]+ barriers|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the producer's decode estimate or its split frames disagree with the host." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE '[0-9]+ producer estimates agree, [1-9][0-9]* of them over budget'; then
+    echo "FAIL: the estimate agreement did not report checking streams over the budget." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'admitted [1-9][0-9]* barriers and [1-9][0-9]* presenting packets'; then
+    echo "FAIL: the split-frame check did not report admitting barriers; it may not have run." >&2
+    exit 1
+fi
+
 # --- the engine's API layer on the producer ---------------------------------
 #
 # `engine-bundle.test.mjs` needs the staged engine and a Rust check of the frames

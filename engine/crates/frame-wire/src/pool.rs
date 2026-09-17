@@ -32,9 +32,10 @@
 //! paths one path.
 
 use std::sync::{
-    Arc, Mutex, MutexGuard,
+    Arc, Condvar, Mutex, MutexGuard,
     atomic::{AtomicU32, AtomicUsize, Ordering},
 };
+use std::time::Instant;
 
 /// The credit window, shared between the ingress and every frame in flight.
 ///
@@ -45,6 +46,14 @@ use std::sync::{
 pub struct CreditWindow {
     max: u32,
     in_flight: AtomicU32,
+    /// How many threads are inside [`Self::wait_for_credit`]. A return reads it
+    /// and takes the lock only when somebody is waiting, so the render thread
+    /// pays one atomic load per frame and no lock in the ordinary case.
+    waiters: AtomicU32,
+    /// Held across a waiter's check-then-wait and across a return's wake, which
+    /// is what makes a return between the two impossible to miss.
+    wake_lock: Mutex<()>,
+    returned: Condvar,
 }
 
 impl CreditWindow {
@@ -52,6 +61,9 @@ impl CreditWindow {
         Self {
             max,
             in_flight: AtomicU32::new(0),
+            waiters: AtomicU32::new(0),
+            wake_lock: Mutex::new(()),
+            returned: Condvar::new(),
         }
     }
 
@@ -60,9 +72,14 @@ impl CreditWindow {
         self.max
     }
 
+    // Every access to `in_flight` and `waiters` is `SeqCst`. The waiter stores
+    // to `waiters` and then loads `in_flight`; a return stores to `in_flight`
+    // and then loads `waiters`. That is the store-then-load pair on two cells
+    // for which only sequential consistency guarantees that at least one side
+    // sees the other's store -- which is the whole no-lost-wake-up argument.
     #[inline]
     pub fn in_flight(&self) -> u32 {
-        self.in_flight.load(Ordering::Acquire)
+        self.in_flight.load(Ordering::SeqCst)
     }
 
     #[inline]
@@ -76,7 +93,7 @@ impl CreditWindow {
     /// the limit between the two operations, and the whole point of the window
     /// is that it cannot be exceeded.
     pub(crate) fn try_acquire(&self) -> bool {
-        let mut current = self.in_flight.load(Ordering::Acquire);
+        let mut current = self.in_flight.load(Ordering::SeqCst);
         loop {
             if current >= self.max {
                 return false;
@@ -84,8 +101,8 @@ impl CreditWindow {
             match self.in_flight.compare_exchange_weak(
                 current,
                 current + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
             ) {
                 Ok(_) => return true,
                 Err(observed) => current = observed,
@@ -97,7 +114,7 @@ impl CreditWindow {
     /// the useful failure is a stalled producer someone investigates rather than
     /// a counter that wraps and turns backpressure off.
     fn release(&self) {
-        let mut current = self.in_flight.load(Ordering::Acquire);
+        let mut current = self.in_flight.load(Ordering::SeqCst);
         loop {
             if current == 0 {
                 return;
@@ -105,13 +122,58 @@ impl CreditWindow {
             match self.in_flight.compare_exchange_weak(
                 current,
                 current - 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
             ) {
-                Ok(_) => return,
+                Ok(_) => break,
                 Err(observed) => current = observed,
             }
         }
+        if self.waiters.load(Ordering::SeqCst) != 0 {
+            // Taken and dropped before the wake, not held across it: the lock is
+            // there to order this wake after a waiter's check, not to protect
+            // anything the waiter reads.
+            drop(
+                self.wake_lock
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            self.returned.notify_all();
+        }
+    }
+
+    /// Block until a credit is free, or until `until`. Whether one is.
+    ///
+    /// For a producer that is itself blocked and cannot wait for the credit the
+    /// way a running one does -- on the next tick's advertisement. The Apple
+    /// producer's GL calls are synchronous, so a barrier it has to send while
+    /// the renderer holds every credit has nowhere to wait but here, on the
+    /// host, inside the synchronous request that asked (see `SYNC_OP_AWAIT_WINDOW`).
+    ///
+    /// Nothing is taken: the answer is advisory to a single producer that sends
+    /// next, and the ingress takes the credit when that packet arrives.
+    pub fn wait_for_credit(&self, until: Instant) -> bool {
+        self.waiters.fetch_add(1, Ordering::SeqCst);
+        let mut guard = self
+            .wake_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let free = loop {
+            if self.remaining() > 0 {
+                break true;
+            }
+            let now = Instant::now();
+            if now >= until {
+                break false;
+            }
+            guard = match self.returned.wait_timeout(guard, until - now) {
+                Ok((guard, _)) => guard,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        };
+        drop(guard);
+        self.waiters.fetch_sub(1, Ordering::SeqCst);
+        free
     }
 }
 
@@ -297,6 +359,57 @@ impl Drop for PooledFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn taken(window: &Arc<CreditWindow>) -> FrameCredit {
+        assert!(window.try_acquire(), "the test window has a credit");
+        FrameCredit {
+            window: Arc::clone(window),
+        }
+    }
+
+    #[test]
+    fn a_waiter_returns_at_once_when_a_credit_is_already_free() {
+        let window = Arc::new(CreditWindow::new(2));
+        let _one = taken(&window);
+        assert!(window.wait_for_credit(Instant::now()));
+        assert_eq!(window.waiters.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_waiter_times_out_when_nothing_is_returned() {
+        let window = Arc::new(CreditWindow::new(1));
+        let _held = taken(&window);
+        let started = Instant::now();
+        assert!(!window.wait_for_credit(started + std::time::Duration::from_millis(20)));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(20));
+        assert_eq!(
+            window.waiters.load(Ordering::SeqCst),
+            0,
+            "the waiter left the count"
+        );
+    }
+
+    /// Every return that races a waiter's check wakes it. Run many times with
+    /// the return on another thread and no sleep to line the two up: a lost wake
+    /// shows as a wait that runs out its whole (long) deadline.
+    #[test]
+    fn a_credit_returned_while_a_waiter_checks_is_never_missed() {
+        let window = Arc::new(CreditWindow::new(1));
+        for _ in 0..2_000 {
+            let credit = taken(&window);
+            let returner = std::thread::spawn(move || drop(credit));
+            let started = Instant::now();
+            assert!(
+                window.wait_for_credit(started + std::time::Duration::from_secs(10)),
+                "the return was missed"
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "a wake was lost and the deadline released the waiter"
+            );
+            returner.join().expect("returner");
+        }
+    }
 
     /// The pool's two bounds are not reachable through `FrameIngress` today: it
     /// sizes `max_idle` to one more than the credit window, and the ceiling

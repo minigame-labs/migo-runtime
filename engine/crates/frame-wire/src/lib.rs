@@ -130,14 +130,23 @@ pub const RESOURCE_REFERENCE_BYTES: u32 = 4;
 /// Four `u32` per advisory damage rectangle.
 pub const DAMAGE_RECT_BYTES: u32 = 16;
 
-/// Set when this packet is a complete frame: execute it and end the frame.
+/// Set when this packet ends a frame: execute it, then present.
 ///
-/// Required on every packet. v1 has no `CONTINUED` flag and no semantic frame
-/// continuation: a packet that carries drawing work without ending a frame is a
-/// packet whose effects a later one depends on, which turns every question
-/// about credits, sequence gaps and generation loss into a question about
-/// partial renderer state. Requiring this bit is how the absence is enforced
-/// rather than merely intended.
+/// A packet without it is a **barrier**: execute it and do not end the frame.
+/// The producer sends one when the host has to act on commands recorded so far
+/// before the frame is over -- a synchronous query needs the shader compiled
+/// that it asks about, and a frame larger than one packet (a level load
+/// uploading its textures) has to cross in several. The embedded runtime does
+/// the same thing in process: its synchronous ops flush the pending commands to
+/// the renderer as a packet with no `Present`, and so does its batch flush.
+///
+/// A barrier is admitted under exactly the rules a presenting packet is:
+/// identity, contiguous sequence, credits, generation. What an earlier draft's
+/// `CONTINUED` flag was refused for -- a rejected middle packet leaving the
+/// renderer holding half a frame -- does not arise, because a rejection
+/// terminates the content and voids its generation (see *Identity, ordering and
+/// resource admission* in `contracts/frame-wire/wire-v1.md`); no later packet of
+/// that frame is ever executed on top of the half.
 pub const FLAG_PRESENT: u32 = 1 << 0;
 
 pub(crate) const FLAG_KNOWN_MASK: u32 = FLAG_PRESENT;
@@ -280,6 +289,10 @@ pub enum WireError {
     UnknownRequiredSection = 13,
     ChecksumMismatch = 14,
     UnknownFlags = 15,
+    /// **Retired, never produced.** It refused a packet without `PRESENT`, and
+    /// such a packet is now a barrier (see [`FLAG_PRESENT`]). Kept rather than
+    /// removed because codes are never renumbered and this one reached host
+    /// telemetry: a record carrying 16 still means what it meant.
     MissingPresent = 16,
     CommandStreamNotWordAligned = 17,
     ItemCountInconsistent = 18,
@@ -355,7 +368,9 @@ impl fmt::Display for WireError {
             Self::UnknownRequiredSection => "an unknown non-advisory section kind is present",
             Self::ChecksumMismatch => "the payload checksum does not match",
             Self::UnknownFlags => "a flag bit outside this wire version is set",
-            Self::MissingPresent => "PRESENT is not set, and v1 has no frame continuation",
+            Self::MissingPresent => {
+                "retired: PRESENT is not required since barrier packets; this code is never produced"
+            }
             Self::CommandStreamNotWordAligned => {
                 "the command stream is not a whole number of words"
             }
@@ -433,10 +448,8 @@ impl<'a> WireFrame<'a> {
     pub const fn flags(&self) -> u32 {
         self.flags
     }
-    /// Always true for a validated v1 frame: `PRESENT` is required. Kept as an
-    /// accessor because a later version may reintroduce non-presenting packets
-    /// under semantics that define what happens to them, and a consumer that
-    /// asks is then already correct.
+    /// Whether this packet ends a frame. `false` is a barrier: its commands are
+    /// executed and the frame goes on. See [`FLAG_PRESENT`].
     #[inline]
     pub const fn presents(&self) -> bool {
         self.flags & FLAG_PRESENT != 0
@@ -553,9 +566,6 @@ pub fn validate(bytes: &[u8]) -> Result<WireFrame<'_>, WireError> {
     let flags = read_u32(bytes, OFF_FLAGS);
     if flags & !FLAG_KNOWN_MASK != 0 {
         return Err(WireError::UnknownFlags);
-    }
-    if flags & FLAG_PRESENT == 0 {
-        return Err(WireError::MissingPresent);
     }
 
     let section_count = read_u32(bytes, OFF_SECTION_COUNT);

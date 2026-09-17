@@ -236,6 +236,12 @@ impl WindowSource {
             accepted_sequence,
         }
     }
+
+    /// Block until a credit is free or `until` passes; whether one is. See
+    /// [`CreditWindow::wait_for_credit`].
+    pub fn wait_for_credit(&self, until: std::time::Instant) -> bool {
+        self.credits.wait_for_credit(until)
+    }
 }
 
 impl FrameIngress {

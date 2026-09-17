@@ -143,7 +143,8 @@ pub use frame_wire::control::{ControlError, ControlRecord, encode_control, is_co
 /// not have to reach into the wire crate to name them.
 #[cfg(feature = "external-frames")]
 pub use frame_wire::sync::{
-    SYNC_ANSWER_HEADER_BYTES, SYNC_CALL_MAX_BYTES, SyncAnswer, SyncError, SyncRequest, SyncState,
+    SYNC_ANSWER_HEADER_BYTES, SYNC_CALL_MAX_BYTES, SYNC_OP_AWAIT_WINDOW, SYNC_OP_READ_PIXELS,
+    SyncAnswer, SyncError, SyncRequest, SyncState, WINDOW_REPLY_BYTES,
 };
 /// Re-exported so the C boundary can translate an outcome without depending on
 /// the wire crate directly: the boundary's job is to copy numbers across, not

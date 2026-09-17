@@ -77,6 +77,7 @@ for (const entry of index.cases) {
   const input = entry.input;
   check(input !== undefined, `${entry.name}: the index publishes no input specification`);
   if (input === undefined) continue;
+  check(input.flags === 0 || input.flags === 1, `${entry.name}: flags ${input.flags} is not PRESENT or a barrier`);
 
   // The wide fields arrive as decimal strings, and BigInt is what reads them
   // without loss. Number() here would pass on three of the four cases.
@@ -88,6 +89,9 @@ for (const entry of index.cases) {
       surfaceGeneration: BigInt(input.surface_generation),
       resourceEpoch: BigInt(input.resource_epoch),
       frameId: input.frame_id,
+      // The only bit v1 defines, so a boolean carries the whole field; anything
+      // else in the index is a case this encoder cannot represent.
+      present: input.flags === 1,
       sections: input.sections.map((section) => ({
         kind: section.kind,
         itemCount: section.item_count,
@@ -138,6 +142,10 @@ for (const entry of index.cases) {
 }
 
 check(accepted >= 3, `at least three accepted cases were encoded, saw ${accepted}`);
+check(
+  index.cases.some((entry) => entry.input?.flags === 0 && entry.accepted === true),
+  "the corpus pins an accepted barrier packet",
+);
 check(deviations >= 1, `at least one deliberately non-canonical case was covered, saw ${deviations}`);
 
 // The refusals. An encoder that will build anything asked of it puts the whole
