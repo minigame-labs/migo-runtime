@@ -301,6 +301,21 @@ if [ -f "$BUILD_SCRIPT" ]; then
             continue
         fi
         info "ok: build-apple-sdk.sh reports $platform $reported"
+
+        # The environment assignment a build that is not this one exports to
+        # compile against the same floor. Checked here because it is what lets
+        # such a build never name the variable, which is what keeps the sweep
+        # below finding one declaration.
+        variable="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platforms"][sys.argv[2]].get("xcode_variable",""))' "$CONTRACT" "$platform" 2>/dev/null)"
+        if ! reported_env="$(bash "$BUILD_SCRIPT" --print-deployment-env "$platform" 2>&1)"; then
+            fail "build-apple-sdk.sh could not report its $platform deployment environment: $reported_env"
+            continue
+        fi
+        if [ -z "$variable" ] || [ "$reported_env" != "$variable=$expected" ]; then
+            fail "build-apple-sdk.sh would export '$reported_env' for $platform, contract says '$variable=$expected'"
+            continue
+        fi
+        info "ok: build-apple-sdk.sh exports $reported_env for $platform"
     done
 else
     info "skip: $BUILD_SCRIPT does not exist yet"

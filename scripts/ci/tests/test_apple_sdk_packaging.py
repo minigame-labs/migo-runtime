@@ -35,7 +35,7 @@ elif tool == "cargo":
         profile = "release" if "--release" in args else "debug"
         dest = pathlib.Path("target") / target / profile / "libmigo_capi.a"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text("fixture archive " + target + " " + " ".join(args))
+        dest.write_text("fixture archive " + target + " " + " ".join(args) + " SKIA_BINARIES_URL=" + os.environ.get("SKIA_BINARIES_URL", ""))
 elif tool == "lipo":
     output = pathlib.Path(args[args.index("-output") + 1])
     output.write_bytes(b"\n".join(pathlib.Path(p).read_bytes() for p in args[1:args.index("-output")]))
@@ -77,7 +77,7 @@ class SDKPackaging(unittest.TestCase):
         for path in ("contracts/apple", "include/migo", "platforms/apple/core", "platforms/apple/Sources", "platforms/apple/Tests", "platforms/apple/WebContent"):
             shutil.copytree(ROOT/path, self.root/path)
         (self.root/"scripts").mkdir()
-        for name in ("build-apple-sdk.sh", "build-angle-apple.sh", "apple-sdk-package.py", "embed-apple-angle.sh", "test-apple-shipping-package-contract.sh"):
+        for name in ("build-apple-sdk.sh", "build-angle-apple.sh", "apple-sdk-package.py", "embed-apple-angle.sh", "test-apple-shipping-package-contract.sh", "apple-skia-gl-env.sh", "materialise-apple-skia.py"):
             if (ROOT/"scripts"/name).exists():
                 shutil.copy2(ROOT/"scripts"/name, self.root/"scripts"/name)
         # The V8 materialiser and the helper it sources. The macos-v8 product links
@@ -110,6 +110,22 @@ class SDKPackaging(unittest.TestCase):
                     "rust_binding": hashlib.sha256(binding).hexdigest(),
                 },
             }, indent=2) + "\n")
+        # The corrected macOS Skia, one fixture archive per darwin triple, behind a
+        # lock that names their bytes -- what scripts/materialise-apple-skia.py
+        # checks before the macOS build may link them. A file:// release, so the
+        # real materialiser runs without a 34 MiB download inside a unit test.
+        skia_release = self.root/"skia-release"
+        skia_release.mkdir()
+        skia_targets = {}
+        for triple in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
+            asset = f"skia-binaries-fixture-{triple}-gl.tar.gz"
+            body = f"fixture skia {triple}".encode()
+            (skia_release/asset).write_bytes(body)
+            skia_targets[triple] = {"asset": asset, "size_bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()}
+        (self.root/"contracts/artifact-manifest/apple-skia.lock.json").write_text(json.dumps({
+            "url_template": f"file://{skia_release}/skia-binaries-{{key}}.tar.gz",
+            "targets": skia_targets,
+        }, indent=2) + "\n")
         for platform in ("ios", "ios-simulator", "macos"):
             angle = self.root/"engine/third_party"/f"angle-apple-{platform}"
             angle.mkdir(parents=True)
@@ -157,14 +173,34 @@ class SDKPackaging(unittest.TestCase):
             external_flags = "--no-default-features --features external-frames"
             if entry["SupportedPlatform"] == "ios":
                 self.assertIn(external_flags, archive)
+                # iOS keeps upstream's Skia: its default GL standard is already
+                # ANGLE's, and the corrected archives have no iOS key.
+                self.assertNotIn("SKIA_BINARIES_URL=file://", archive)
             else:
                 self.assertNotIn(external_flags, archive)
+                # Every macOS slice linked the locked archives from the verified
+                # directory, never a network URL skia-bindings would cache and resume.
+                urls = {line.split("SKIA_BINARIES_URL=", 1)[1] for line in archive.splitlines() if "SKIA_BINARIES_URL=" in line}
+                self.assertEqual(len(urls), 1, archive)
+                url = urls.pop()
+                self.assertTrue(url.startswith("file://"), url)
+                directory = Path(url[len("file://"):]).parent
+                for triple in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
+                    self.assertTrue((directory/f"skia-binaries-fixture-{triple}-gl.tar.gz").is_file())
         # The consumer receives an executable helper closure, not just a
         # producer-repository path that disappears when artifacts are copied.
         helper = self.framework.parent/"Scripts/embed-apple-angle.sh"
         result = subprocess.run(["bash", str(helper), "--frameworks-dir", str(self.framework.parent), "--destination", str(self.root/"Host.app/Contents/Frameworks"), "--architectures", "arm64 x86_64"], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.root/"Host.app/Contents/Frameworks/libGLESv2.dylib").is_file())
+
+    def test_macos_build_refuses_skia_archives_the_lock_does_not_name(self):
+        # A published asset replaced under its tag, or a lock edited without the
+        # release: the build stops before cargo, and says where.
+        (self.root/"skia-release/skia-binaries-fixture-aarch64-apple-darwin-gl.tar.gz").write_bytes(b"replaced")
+        result = self.build("macos", success=False)
+        self.assertIn("is not the archive the lock names", result.stderr)
+        self.assertFalse((self.root/"engine/target/aarch64-apple-darwin/debug/libmigo_capi.a").exists())
 
     def test_macos_performance_plus_cannot_replace_shipping_engine(self):
         self.build("macos")

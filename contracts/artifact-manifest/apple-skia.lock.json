@@ -19,7 +19,19 @@
     "",
     "The recipe is scripts/package-apple-skia-binaries.sh and the machine that",
     "runs it is .github/workflows/apple-skia-binaries.yml. Both refuse to package",
-    "a downloaded build, which is the mistake a rebuild is most likely to make."
+    "a downloaded build, which is the mistake a rebuild is most likely to make.",
+    "",
+    "The objects are compiled against the macOS deployment floor in",
+    "contracts/apple/deployment-floor.json, which the tag names. The first archives",
+    "(tag skia-apple-0.93.1-31932366) were not: clang took the build runner's OS, so every",
+    "Skia object said minos 15.0 against an 11.0 floor. The recipe now checks the bytes",
+    "before packaging, and a published tag is never re-uploaded.",
+    "",
+    "Builds do not let skia-bindings download these. Its downloader caches by file",
+    "name and resumes, the names are upstream's, and a build directory that once held",
+    "upstream's archive linked it again with a green build. scripts/materialise-apple-skia.py",
+    "fetches them whole, checks size and sha256 against this file, and hands",
+    "skia-bindings a file:// URL."
   ],
   "source": {
     "crate": "skia-bindings",
@@ -27,27 +39,28 @@
     "rust_skia_commit": "319323662b1685a112f5",
     "gn_args_override": "skia_gl_standard=\"\"",
     "features": "gl-jpegd-jpege-pdf-textlayout",
-    "built_on": "2026-09-11"
+    "built_on": "2026-09-17",
+    "macos_deployment_target": "11.0"
   },
-  "release": "https://github.com/minigame-labs/migo-runtime/releases/download/skia-apple-0.93.1-31932366",
-  "tag": "skia-apple-0.93.1-31932366",
+  "release": "https://github.com/minigame-labs/migo-runtime/releases/download/skia-apple-0.93.1-31932366-macos11.0",
+  "tag": "skia-apple-0.93.1-31932366-macos11.0",
   "_url_template_comment": [
     "skia-bindings expands {tag} and {key} in SKIA_BINARIES_URL. The key is its",
     "own construction -- commit, target triple, feature set -- so one template",
     "serves both darwin triples and a key it cannot find simply misses and",
     "source-builds, which is slow and never wrong."
   ],
-  "url_template": "https://github.com/minigame-labs/migo-runtime/releases/download/skia-apple-0.93.1-31932366/skia-binaries-{key}.tar.gz",
+  "url_template": "https://github.com/minigame-labs/migo-runtime/releases/download/skia-apple-0.93.1-31932366-macos11.0/skia-binaries-{key}.tar.gz",
   "targets": {
     "aarch64-apple-darwin": {
       "asset": "skia-binaries-319323662b1685a112f5-aarch64-apple-darwin-gl-jpegd-jpege-pdf-textlayout.tar.gz",
-      "size_bytes": 16787684,
-      "sha256": "a83ff282ab84bda335ec181343831fa61b32d21b5cd78286ee1fe9f95fae0c20"
+      "size_bytes": 16787746,
+      "sha256": "d987f3988e79d0b63859a2d04b40872bbb9c47fc644b1022d17baa3fbf6d08bc"
     },
     "x86_64-apple-darwin": {
       "asset": "skia-binaries-319323662b1685a112f5-x86_64-apple-darwin-gl-jpegd-jpege-pdf-textlayout.tar.gz",
-      "size_bytes": 17822314,
-      "sha256": "e70d9ab97518d5f166ec8a0c83292eb0031c362b92b5b928d00b9e0d793eb560"
+      "size_bytes": 17822277,
+      "sha256": "9734c2e52d26dd9ecd2db220712cd4d04350a5e7be755b63f4f7a96ba1424b7a"
     }
   }
 }
