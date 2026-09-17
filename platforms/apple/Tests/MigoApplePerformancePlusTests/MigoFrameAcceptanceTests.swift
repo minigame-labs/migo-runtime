@@ -357,7 +357,9 @@ import XCTest
             self.harness = harness
             try Data(
                 """
-                export function start() {
+                // `report`, not `self.postMessage`: with the engine loaded that global
+                // is the mini-game one, as it is for a game on every other platform.
+                export function start({ report }) {
                   const canvas = migo.createCanvas();
                   const gl = canvas.getContext("webgl");
                   let frames = 0;
@@ -369,7 +371,7 @@ import XCTest
                       requestAnimationFrame(draw);
                     } else {
                       // After this callback returns, the frame loop ends the frame.
-                      setTimeout(() => self.postMessage({ type: "drawn", frames,
+                      setTimeout(() => report({ type: "drawn", frames,
                         width: canvas.width, height: canvas.height }), 0);
                     }
                   };

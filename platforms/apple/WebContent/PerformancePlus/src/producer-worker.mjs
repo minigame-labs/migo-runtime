@@ -15,9 +15,17 @@ import { bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
 import { SyncCaller } from "./sync-call.mjs";
 import { connectFrameSession } from "./worker-bootstrap.mjs";
 
+// The Worker's own `postMessage`, taken before anything else can replace it.
+// The engine's global scope installs a mini-game `postMessage` -- the open data
+// context's, which is what content means by that name on every Migo platform --
+// and from then on `self.postMessage` is the engine's function, not the channel
+// to the page. Measured: a report sent through the global after the engine
+// loaded went to the open data context and asked for an offscreen canvas.
+const postToPage = self.postMessage.bind(self);
+
 /** Tell the page, which relays to the host. */
 function report(message) {
-  self.postMessage(message);
+  postToPage(message);
 }
 
 let session = null;
@@ -106,7 +114,9 @@ self.onmessage = async (event) => {
       // `start` returns once content is initialised. It is not the frame loop:
       // the loop is driven by clock ticks from the host, and a `start` that
       // never returned would be content that never reports itself ready.
-      await module.start({ session, sync });
+      // `report` because content cannot use the global to reach the host once
+      // the engine is loaded: that name is the engine's (see `postToPage`).
+      await module.start({ session, sync, report });
     } catch (error) {
       report({ type: "failed", stage: "content", detail: String(error) });
       return;
