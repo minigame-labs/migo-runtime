@@ -24,6 +24,124 @@ pub(crate) fn lock_egl_display() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// A GLES3 context on Mesa's surfaceless EGL platform, for the crate's opt-in
+/// native pixel tests, released in the right order when the scope drops.
+///
+/// Test support, and the one place outside the platform providers that names an
+/// EGL library: `scripts/test-surface-attachment-contract.sh` exempts this file
+/// and nothing else. Production EGL selection belongs to the providers because
+/// it is a per-platform decision; a test that deliberately asks for Mesa's
+/// surfaceless display is not making that decision. It used to be written out
+/// twice -- here in `readback_native_test.rs` and again in
+/// `canvas/manager/drawing_buffer.rs` -- which is also how the display lock
+/// above came to exist in two copies.
+pub(crate) struct NativeEglScope {
+    pub(crate) api: khronos_egl::DynamicInstance<khronos_egl::EGL1_5>,
+    pub(crate) display: khronos_egl::Display,
+    pub(crate) surface: Option<khronos_egl::Surface>,
+    pub(crate) context: Option<khronos_egl::Context>,
+    pub(crate) _display_lifetime: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for NativeEglScope {
+    fn drop(&mut self) {
+        let _ = self.api.make_current(self.display, None, None, None);
+        if let Some(surface) = self.surface {
+            let _ = self.api.destroy_surface(self.display, surface);
+        }
+        if let Some(context) = self.context {
+            let _ = self.api.destroy_context(self.display, context);
+        }
+        let _ = self.api.terminate(self.display);
+    }
+}
+
+pub(crate) fn native_gles3_context() -> (NativeEglScope, glow::Context) {
+    let display_lifetime = crate::backend::gl::readback_test_gl::lock_egl_display();
+    let api = unsafe {
+        khronos_egl::DynamicInstance::<khronos_egl::EGL1_5>::load_required_from_filename(
+            "libEGL.so.1",
+        )
+    }
+    .expect("load EGL 1.5");
+    // EGL_PLATFORM_SURFACELESS_MESA uses EGL_DEFAULT_DISPLAY (null).
+    let display = unsafe {
+        api.get_platform_display(0x31DD, std::ptr::null_mut(), &[khronos_egl::ATTRIB_NONE])
+    }
+    .expect("Mesa surfaceless display");
+    api.initialize(display).expect("initialize EGL");
+    let mut scope = NativeEglScope {
+        api,
+        display,
+        surface: None,
+        context: None,
+        _display_lifetime: display_lifetime,
+    };
+    scope.api.bind_api(khronos_egl::OPENGL_ES_API).unwrap();
+    let config = scope
+        .api
+        .choose_first_config(
+            display,
+            &[
+                khronos_egl::SURFACE_TYPE,
+                khronos_egl::PBUFFER_BIT,
+                khronos_egl::RENDERABLE_TYPE,
+                0x40, // EGL_OPENGL_ES3_BIT
+                khronos_egl::RED_SIZE,
+                8,
+                khronos_egl::GREEN_SIZE,
+                8,
+                khronos_egl::BLUE_SIZE,
+                8,
+                khronos_egl::ALPHA_SIZE,
+                8,
+                khronos_egl::NONE,
+            ],
+        )
+        .unwrap()
+        .expect("RGBA8 GLES3 pbuffer config");
+    scope.context = Some(
+        scope
+            .api
+            .create_context(
+                display,
+                config,
+                None,
+                &[khronos_egl::CONTEXT_CLIENT_VERSION, 3, khronos_egl::NONE],
+            )
+            .unwrap(),
+    );
+    scope.surface = Some(
+        scope
+            .api
+            .create_pbuffer_surface(
+                display,
+                config,
+                &[
+                    khronos_egl::WIDTH,
+                    3,
+                    khronos_egl::HEIGHT,
+                    2,
+                    khronos_egl::NONE,
+                ],
+            )
+            .unwrap(),
+    );
+    scope
+        .api
+        .make_current(display, scope.surface, scope.surface, scope.context)
+        .unwrap();
+    let gl = unsafe {
+        glow::Context::from_loader_function(|name| {
+            scope
+                .api
+                .get_proc_address(name)
+                .map_or(std::ptr::null(), |f| f as *const std::ffi::c_void)
+        })
+    };
+    (scope, gl)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Bindings {
     // alignment, row length, skipped rows, skipped pixels

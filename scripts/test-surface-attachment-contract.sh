@@ -77,10 +77,16 @@ fi
 # one per platform on purpose — a new backend has to add itself here, and that
 # review is the point of the gate. Build scripts are exempt because they
 # configure link flags at compile time, not runtime implementation selection.
+# The one non-provider exemption is test support: `readback_test_gl.rs` opens
+# Mesa's surfaceless display for the crate's opt-in native pixel tests, which is
+# a test asking for a specific driver rather than the product choosing one. It
+# is one file on purpose -- the fixture used to be written out in two, and a
+# second copy is exactly where the next unexempted load would appear.
 if rg -n 'libEGL\.so' "$CRATES" \
     --glob '!**/platform/src/android/presenter.rs' \
     --glob '!**/platform/src/linux/presenter.rs' \
     --glob '!**/platform/src/ohos/presenter.rs' \
+    --glob '!**/graphics/src/backend/gl/readback_test_gl.rs' \
     --glob '!**/build.rs'; then
     fail "EGL implementation selection escaped the platform providers"
 fi
