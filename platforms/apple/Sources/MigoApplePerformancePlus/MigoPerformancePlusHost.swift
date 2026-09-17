@@ -2,6 +2,7 @@ import Foundation
 import MigoAppleCore
 import MigoAppleWebKit
 import WebKit
+import os
 
 #if os(iOS)
     import UIKit
@@ -46,9 +47,78 @@ import WebKit
         public var originActivity: MigoPerformancePlusOrigin.Activity { origin.activity }
 
         /// What the producer said. The dictionary is content-shaped JSON: `type` is
-        /// always present and is one of `connected`, `ready`, `verdict`,
-        /// `generation-lost`, `failed`.
+        /// always present and is one of `connected`, `engine-ready`, `ready`,
+        /// `verdict`, `generation-lost`, `failed`.
+        ///
+        /// The engine's console is not a report. Its lines go to the platform log
+        /// under the `dev.migo` subsystem, at the level the engine gave them, which
+        /// is where the engine's own log goes on every platform that runs it in
+        /// process -- an app that wants them reads the log, and an app that does
+        /// not is not handed a main-thread callback per line.
         public typealias Report = [String: Any]
+
+        /// Where content's console lines go.
+        private static let contentLog = Logger(subsystem: "dev.migo", category: "content")
+
+        /// The session the engine's own JavaScript API layer answers for.
+        ///
+        /// Given, the producer loads the engine's WebGL, Canvas2D and `migo.*`
+        /// layer before content, as every other Migo platform evaluates it before
+        /// a game's first line, and content draws through `migo.createCanvas()`.
+        /// Absent, content talks to the frame channel directly, which is what a
+        /// lane bring-up test wants and what a product build never does.
+        ///
+        /// The values are the ones the host gave the engine: the launch nonce from
+        /// `MigoSessionConfig`, the generation of the attached surface and its
+        /// size in pixels. The producer stamps them on every packet, and ingress
+        /// refuses a packet whose identity is not this session's.
+        public struct EngineSession: Equatable, Sendable {
+            /// The 16 bytes of `MigoSessionConfig.launch_nonce`, in that order.
+            public var launchNonce: [UInt8]
+            public var runtimeGeneration: UInt64
+            public var surfaceGeneration: UInt64
+            public var resourceEpoch: UInt64
+            public var surfaceWidthPixels: Int
+            public var surfaceHeightPixels: Int
+
+            public init(
+                launchNonce: [UInt8], runtimeGeneration: UInt64 = 1, surfaceGeneration: UInt64,
+                resourceEpoch: UInt64 = 0, surfaceWidthPixels: Int, surfaceHeightPixels: Int
+            ) {
+                self.launchNonce = launchNonce
+                self.runtimeGeneration = runtimeGeneration
+                self.surfaceGeneration = surfaceGeneration
+                self.resourceEpoch = resourceEpoch
+                self.surfaceWidthPixels = surfaceWidthPixels
+                self.surfaceHeightPixels = surfaceHeightPixels
+            }
+
+            /// What the page is handed. The 64- and 128-bit fields are strings,
+            /// because a JSON number is a double and these are identities: a
+            /// nonce rounded to 53 bits is a foreign session.
+            var injected: [String: Any] {
+                // The nonce is little-endian bytes; the string is the number.
+                let hex = launchNonce.reversed().map { String(format: "%02x", $0) }.joined()
+                return [
+                    "launchNonce": "0x" + hex,
+                    "runtimeGeneration": String(runtimeGeneration),
+                    "surfaceGeneration": String(surfaceGeneration),
+                    "resourceEpoch": String(resourceEpoch),
+                    "surfaceWidth": surfaceWidthPixels,
+                    "surfaceHeight": surfaceHeightPixels,
+                ]
+            }
+
+            /// Why this description cannot be handed to a producer, or nil.
+            var problem: String? {
+                if launchNonce.count != 16 { return "the launch nonce is \(launchNonce.count) bytes, not 16" }
+                if launchNonce.allSatisfy({ $0 == 0 }) { return "the launch nonce is all zero" }
+                if !(1...0xffff).contains(surfaceWidthPixels) || !(1...0xffff).contains(surfaceHeightPixels) {
+                    return "the surface size \(surfaceWidthPixels)x\(surfaceHeightPixels) is not a pixel size"
+                }
+                return nil
+            }
+        }
 
         /// Everything the page needs that is not in its own bundle.
         public struct Configuration {
@@ -69,15 +139,18 @@ import WebKit
             /// exists to shorten -- to deliver a credit level the producer has
             /// already applied.
             public var reportVerdicts: Bool
+            /// The session the engine's API layer answers for; see `EngineSession`.
+            public var engineSession: EngineSession?
 
             public init(
                 contentRoot: URL, contentEntry: String? = nil, engineRoot: URL? = nil,
-                reportVerdicts: Bool = false
+                reportVerdicts: Bool = false, engineSession: EngineSession? = nil
             ) {
                 self.contentRoot = contentRoot
                 self.contentEntry = contentEntry
                 self.engineRoot = engineRoot
                 self.reportVerdicts = reportVerdicts
+                self.engineSession = engineSession
             }
         }
 
@@ -91,6 +164,10 @@ import WebKit
             /// The frame channel could not start: it could not listen, or the
             /// engine would not install its downlink waker.
             case transport(Error)
+            /// The engine session cannot be handed to a producer; the reason is
+            /// named. Refused here because a producer given it would have every
+            /// packet refused by ingress, which reads as a black screen.
+            case invalidEngineSession(String)
 
             public var description: String {
                 switch self {
@@ -102,6 +179,8 @@ import WebKit
                         + " resources, and a build that skipped it produces exactly this."
                 case .transport(let error):
                     return "the frame channel could not start: \(error)"
+                case .invalidEngineSession(let reason):
+                    return "the engine session cannot be used: \(reason)"
                 }
             }
         }
@@ -183,6 +262,18 @@ import WebKit
                     atPath: engineRoot.appendingPathComponent("producer-page.html").path)
             else {
                 throw StartFailure.engineModulesMissing(engineRoot)
+            }
+            if let session = configuration.engineSession {
+                if let problem = session.problem { throw StartFailure.invalidEngineSession(problem) }
+                // The engine's own modules are generated into the bundle by the SDK
+                // build; a producer told to load them from a bundle without them
+                // fails in WebContent, where nobody sees why.
+                guard
+                    FileManager.default.fileExists(
+                        atPath: engineRoot.appendingPathComponent("engine/boot.mjs").path)
+                else {
+                    throw StartFailure.engineModulesMissing(engineRoot.appendingPathComponent("engine"))
+                }
             }
             self.configuration = configuration
             self.channel = channel
@@ -283,6 +374,7 @@ import WebKit
                 "reportVerdicts": configuration.reportVerdicts,
             ]
             if let entry = configuration.contentEntry { fields["contentEntry"] = entry }
+            if let session = configuration.engineSession { fields["engineSession"] = session.injected }
             guard let data = try? JSONSerialization.data(withJSONObject: fields),
                 let json = String(data: data, encoding: .utf8)
             else {
@@ -307,7 +399,25 @@ import WebKit
             // attributed to the one that is.
             guard let webView, message.webView === webView else { return }
             guard let body = message.body as? Report else { return }
+            if body["type"] as? String == "console" {
+                Self.log(consoleLine: body)
+                return
+            }
             onReport?(body)
+        }
+
+        /// The engine's `op_console` levels, as the embedded op maps them: 1 info,
+        /// 2 warn, 3 error, anything else debug. The message keeps the platform
+        /// log's default privacy -- content's console can carry a player's data,
+        /// and the log redacts dynamic strings unless a debugger is attached.
+        private static func log(consoleLine body: Report) {
+            let message = body["message"] as? String ?? ""
+            switch body["level"] as? Int {
+            case 1: contentLog.info("\(message)")
+            case 2: contentLog.warning("\(message)")
+            case 3: contentLog.error("\(message)")
+            default: contentLog.debug("\(message)")
+            }
         }
     }
 

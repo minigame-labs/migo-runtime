@@ -167,7 +167,7 @@ export class FrameSession {
         if (record.decision === DECISION_ACCEPTED) {
           this.#advertised(record.remainingCredits, record.acceptedSequence);
         } else if (record.decision === DECISION_GENERATION_LOST) {
-          this.#closed = true;
+          this.close();
           this.#onGenerationLost?.(record.generation);
         }
         this.#onVerdict?.(record);
@@ -191,6 +191,7 @@ export class FrameSession {
   /// a closed socket.
   close() {
     this.#closed = true;
+    this.#settleCreditWaiters(false);
   }
 
   get isClosed() {
@@ -200,6 +201,28 @@ export class FrameSession {
   #advertised(remainingCredits, acceptedSequence) {
     this.#remaining = remainingCredits;
     this.#accepted = acceptedSequence;
+    if (this.#creditWaiters.length > 0 && this.credits > 0) this.#settleCreditWaiters(true);
+  }
+
+  // Resolvers waiting for the window to open, settled together.
+  #creditWaiters = [];
+
+  #settleCreditWaiters(open) {
+    const waiters = this.#creditWaiters;
+    this.#creditWaiters = [];
+    for (const settle of waiters) settle(open);
+  }
+
+  /// A promise for the window being open: `true` once a packet may be sent,
+  /// `false` if the session closes first. Resolved at once when it already is.
+  ///
+  /// What a producer holding a packet it could not send waits on. Polling
+  /// `credits` instead would either spin or add a timer's latency to every frame
+  /// the renderer was briefly behind on.
+  whenCredit() {
+    if (this.#closed) return Promise.resolve(false);
+    if (this.credits > 0) return Promise.resolve(true);
+    return new Promise((resolve) => this.#creditWaiters.push(resolve));
   }
 
   #tick(timestampMillis, frameId) {

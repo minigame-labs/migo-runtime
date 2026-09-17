@@ -85,12 +85,19 @@ class SDKPackaging(unittest.TestCase):
         # before building -- and a fixture that omitted this would exercise a
         # different code path than the one that ships.
         (self.root/"scripts/lib").mkdir()
-        for name in ("v8-materialise.sh", "python-cmd.sh"):
+        for name in ("v8-materialise.sh", "python-cmd.sh", "runtime_ops.py", "runtime_modules.py"):
             shutil.copy2(ROOT/"scripts/lib"/name, self.root/"scripts/lib"/name)
+        # The producer's engine is generated during assembly from the engine's
+        # own JavaScript and the op-boundary contract -- real inputs, because a
+        # stubbed generator would make "the bundle carries the engine" a claim
+        # about the stub.
+        shutil.copy2(ROOT/"scripts/gen-performance-plus-engine.py", self.root/"scripts/gen-performance-plus-engine.py")
+        shutil.copytree(ROOT/"contracts/runtime", self.root/"contracts/runtime")
+        shutil.copytree(ROOT/"engine/crates/runtime-v8/src", self.root/"engine/crates/runtime-v8/src")
         shutil.copy2(ROOT/"platforms/apple/Package.swift", self.root/"platforms/apple/Package.swift")
         (self.root/"contracts/artifact-manifest").mkdir()
         shutil.copy2(ROOT/"contracts/artifact-manifest/apple-angle.lock.json", self.root/"contracts/artifact-manifest/apple-angle.lock.json")
-        (self.root/"engine").mkdir()
+        (self.root/"engine").mkdir(exist_ok=True)
         # A V8 component per darwin triple: three files and two hashes that match
         # them, which is exactly what scripts/lib/v8-materialise.sh checks. Mocked
         # the way the compilers above are mocked -- the packager's V8 step is what
@@ -231,6 +238,21 @@ class SDKPackaging(unittest.TestCase):
         generated = (package/"Frameworks", package/"Sources/MigoApplePerformancePlus/Resources")
         return {str(path.relative_to(package)): path.read_bytes()
                 for directory in generated for path in directory.rglob("*") if path.is_file()}
+
+    def test_the_producer_bundle_carries_the_engine_api_layer(self):
+        self.build("ios")
+        resources = self.root/"platforms/apple/Sources/MigoApplePerformancePlus/Resources"
+        for relative in ("producer-worker.mjs", "engine-core.mjs", "engine/boot.mjs",
+                         "engine/core/ops.mjs", "engine/core/mod.mjs",
+                         "engine/host_v8_webgl/02_webgl_context.js", "engine/runtime/99_main.js"):
+            self.assertTrue((resources/relative).is_file(), f"{relative} is not in the assembled bundle")
+        manifest = json.loads((resources/"engine/manifest.json").read_text())
+        self.assertEqual(manifest["profile"], "performance_plus")
+        self.assertGreater(manifest["modules"], 100)
+        import re
+        statement = re.compile(r"""(?m)^\s*(?:import|export)\b[^;]*?["']ext:""")
+        for staged in (resources/"engine").rglob("*.js"):
+            self.assertIsNone(statement.search(staged.read_text()), f"{staged} still imports an ext: specifier")
 
     def test_missing_producer_preserves_previous_complete_sdk(self):
         self.build("ios")

@@ -617,6 +617,14 @@ jobs:
       - name: Frame wire JavaScript encoder against the golden corpus
         run: bash scripts/test-frame-wire-js-encoder.sh
 
+      # The engine's own JavaScript API layer, staged for the Performance+
+      # producer and run: content draws through migo.createCanvas() and the
+      # engine's WebGL facade, and the host's ingress admits the frames. A module
+      # the engine adds, an op implemented on the wrong lane, or a frame the host
+      # would refuse is caught here rather than as a black screen on a device.
+      - name: Performance+ engine API layer
+        run: bash scripts/test-performance-plus-engine-contract.sh
+
       # Three tables name the same opcodes: the Rust wire format, the in-process
       # JavaScript encoder, and the WebContent producer. A record header is
       # twelve bits of opcode and twenty of word count, so nothing across that

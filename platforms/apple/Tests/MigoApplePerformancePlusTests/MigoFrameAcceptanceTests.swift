@@ -342,6 +342,91 @@ import XCTest
                 "the last frame sent is red; blue is its predecessor run after it")
         }
 
+        /// Content draws through the engine's own API layer, not the frame channel.
+        ///
+        /// Every test above has content build packets itself. A game does not: it
+        /// calls `migo.createCanvas().getContext("webgl")` and draws in
+        /// `requestAnimationFrame`, and on every other Migo platform that is the
+        /// engine's JavaScript -- its WebGL facade and frame loop -- running beside
+        /// the engine. Here the same modules run in WebContent, staged by the SDK
+        /// build, and this is the first test in which nothing in content knows a
+        /// wire format exists. Three frames: blue, blue, red; the surface has to
+        /// show the last one.
+        func testContentDrawsThroughTheEnginesOwnWebGLFacade() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                // `report`, not `self.postMessage`: with the engine loaded that global
+                // is the mini-game one, as it is for a game on every other platform.
+                export function start({ report }) {
+                  const canvas = migo.createCanvas();
+                  const gl = canvas.getContext("webgl");
+                  let frames = 0;
+                  const draw = () => {
+                    frames += 1;
+                    gl.clearColor(frames < 3 ? 0 : 1, 0, frames < 3 ? 1 : 0, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    if (frames < 3) {
+                      requestAnimationFrame(draw);
+                    } else {
+                      // After this callback returns, the frame loop ends the frame.
+                      setTimeout(() => report({ type: "drawn", frames,
+                        width: canvas.width, height: canvas.height }), 0);
+                    }
+                  };
+                  requestAnimationFrame(draw);
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let drawn = expectation(description: "content drew three frames through the engine")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "drawn":
+                    report = message
+                    drawn.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    drawn.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [drawn], timeout: 240)
+            XCTAssertNil(failure)
+            XCTAssertEqual(report?["frames"] as? Int, 3)
+            XCTAssertEqual(report?["width"] as? Int, harness.sizePixels, "the main canvas is the surface")
+
+            let pollDeadline = Date().addingTimeInterval(30)
+            while host.channel.currentStatistics.framesAccepted < 3, Date() < pollDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            let statistics = host.channel.currentStatistics
+            print(
+                "engine facade: accepted=\(statistics.framesAccepted) refused=\(statistics.framesRefused)"
+                    + " requests=\(statistics.controlMessagesReceived) wakes=\(statistics.downlinkWakes)")
+            XCTAssertEqual(statistics.framesAccepted, 3, "one packet per frame the engine's loop ended")
+            XCTAssertEqual(statistics.framesRefused, 0)
+            XCTAssertEqual(statistics.controlMessagesRefused, 0)
+
+            let pixel = try readPixel(session: harness.session, x: 0, y: 0, triggeringSequence: 3)
+            XCTAssertEqual(pixel, [255, 0, 0, 255], "the third frame, drawn by the engine's WebGL facade, is red")
+        }
+
         /// The read content makes itself, from its own Worker, sees the frame it
         /// submitted.
         ///

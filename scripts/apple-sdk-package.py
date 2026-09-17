@@ -15,6 +15,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -142,6 +143,15 @@ def assemble(args):
         if staged_resources.exists():
             shutil.rmtree(staged_resources)
         shutil.copytree(args.webcontent_source, staged_resources)
+        # The engine's own JavaScript API layer, staged for the producer from the
+        # engine's sources and contracts/runtime/op-boundary.json. Generated at
+        # build time rather than committed: it is derived entirely from files in
+        # this repository, and a committed copy would be a second copy of the
+        # engine's JavaScript to fall behind the first.
+        subprocess.run(
+            [sys.executable, str(args.repo_root / "scripts/gen-performance-plus-engine.py"),
+             "--root", str(args.repo_root), "--out", str(staged_resources)],
+            check=True)
         # The destination's own `.gitignore` is carried across, because publishing
         # replaces that directory wholesale and the source it is copied from has
         # no such file. Without this, every non-diagnostic Apple build deleted a
