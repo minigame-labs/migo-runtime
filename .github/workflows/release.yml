@@ -640,6 +640,14 @@ jobs:
       - name: Synchronous surface contract
         run: bash scripts/test-synchronous-surface-contract.sh
 
+      # Every op the engine's JavaScript imports has a decided lane for a
+      # runtime where that JavaScript does not run beside its ops -- iOS
+      # Performance+, where the API layer runs in WebContent. The op list is
+      # derived from the extension registrations and the imports; the contract
+      # classifies it, and the gate checks each lane against the op's signature.
+      - name: Runtime op boundary contract
+        run: bash scripts/test-runtime-op-boundary-contract.sh
+
       # `isEnabled` is answered on the producer side, from a ten-bit shadow of
       # the capabilities content has enabled. A capability missing from the
       # JavaScript half of that table is silent: the query answers `false`
