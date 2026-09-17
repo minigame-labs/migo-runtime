@@ -388,8 +388,92 @@ MIGO_API MigoResult MIGO_CALL migo_session_cancel_sync(
     MigoSession *session, uint64_t now_nanos, MigoSyncOutcome *out_outcome);
 
 /* ---------------------------------------------------------------------------
+ * The socket's other message
+ *
+ * The producer's socket carries frame packets and one more thing: control
+ * messages, which today are requests for the next frame. Migo's
+ * requestAnimationFrame is fed by host vsync on every platform, and that demand
+ * has to cross the process boundary for a frame-clock tick to exist.
+ *
+ * A transport routes each message by asking the library which it is, rather
+ * than by comparing magic numbers of its own: a host that encoded the rule
+ * itself would be one more implementation of the wire format to drift. The
+ * contract is contracts/frame-wire/wire-v1.md, "Uplink control messages".
+ * ------------------------------------------------------------------------- */
+
+typedef uint32_t MigoUplinkMessageKind;
+/*
+ * Offer it to migo_session_submit_external_frame. Everything that is not a
+ * control message is this -- including bytes that are not a frame either,
+ * which frame ingress refuses with a verdict the producer sees. A third
+ * "unknown" answer would need a third place to report it from.
+ */
+#define MIGO_UPLINK_MESSAGE_FRAME   1U
+/* Offer it to migo_session_submit_uplink_control. */
+#define MIGO_UPLINK_MESSAGE_CONTROL 2U
+
+/*
+ * Which door a message that arrived on the producer's socket goes through.
+ *
+ * Needs no session and reads at most the first four bytes. `bytes` may be NULL
+ * only when `byte_count` is 0. Messages that arrive on the content origin
+ * instead of the socket are always frames and need not be asked about.
+ */
+MIGO_API MigoResult MIGO_CALL migo_uplink_message_kind(
+    const uint8_t *bytes, size_t byte_count, MigoUplinkMessageKind *out_kind);
+
+/*
+ * Read one control message and act on it.
+ *
+ * `bytes` is borrowed for the call. The whole message is validated before any
+ * of it is acted on. *out_refusal_code receives 0 when the message was read --
+ * including when its requests belonged to another runtime generation, which
+ * are ignored rather than refused -- or a code from 3001 up naming the rule it
+ * broke (see "Control refusals" in the wire contract). Report a refusal the
+ * way a refused frame is reported.
+ *
+ * A request for a frame made before the renderer is up is held and armed when
+ * it starts, not refused: the producer's first request races the host's
+ * bring-up, and nothing would tell it to ask again.
+ *
+ * Returns MIGO_OK when *out_refusal_code was written. A non-OK result means the
+ * call could not be made: a bad handle, a NULL buffer or output, or no surface
+ * attached yet.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_submit_uplink_control(
+    MigoSession *session, const uint8_t *bytes, size_t byte_count,
+    uint32_t *out_refusal_code);
+
+/* ---------------------------------------------------------------------------
  * The return path
  * -------------------------------------------------------------------------*/
+
+/*
+ * Called when the library has queued a downlink record the transport did not
+ * cause -- a frame-clock tick. A verdict is queued inside a submit the
+ * transport made and drains right after, so it needs no wake-up; a tick does,
+ * or it waits until the producer sends something, and a producer waiting for a
+ * tick sends nothing.
+ *
+ * Called on the session's own thread. SCHEDULE THE DRAIN, DO NOT PERFORM IT:
+ * return promptly, and do not call back into the library from inside the
+ * waker -- in particular not migo_session_set_downlink_waker, which waits for
+ * the call in progress to return.
+ */
+typedef void(MIGO_CALL *MigoDownlinkWakerFn)(void *user_data);
+
+/*
+ * Install the downlink waker, or clear it with a NULL waker.
+ *
+ * One waker per session; installing replaces the previous one. Clearing
+ * returns only after any call already in progress has returned, so once it
+ * returns `user_data` may be freed. Clear it before migo_session_destroy.
+ *
+ * Needs an attached surface, like every other entry point on this path, and
+ * returns MIGO_ERROR_INVALID_STATE without one.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_set_downlink_waker(
+    MigoSession *session, MigoDownlinkWakerFn waker, void *user_data);
 
 /*
  * Take the next message the host owes the producer.
@@ -581,9 +665,10 @@ MigoResult migo_session_submit_external_frame(MigoSession *session,
  *
  * The producer renders when told to: Migo's requestAnimationFrame is fed by
  * host vsync on every platform, and this is that signal crossing a process
- * boundary instead of a thread boundary. MIGO_ERROR_INVALID_STATE means the
- * renderer is not up yet, which is the truthful answer for a session that
- * cannot produce a frame.
+ * boundary instead of a thread boundary. Requests coalesce, and one made before
+ * the renderer is up is held and armed when it starts. The producer's own
+ * requests arrive as control messages; this is for a host that asks on its
+ * behalf. MIGO_ERROR_INVALID_STATE means no surface is attached.
  */
 MigoResult migo_session_request_external_frame(MigoSession *session);
 

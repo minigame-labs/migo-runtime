@@ -36,6 +36,8 @@ const tick = (timestampNs, frameId) => ({
   generation: 0x12345678,
   frameId,
   timestampNs,
+  remainingCredits: frameId % 3,
+  acceptedSequence: timestampNs + 0x1_0000_0000,
 });
 
 // The same spread the Rust side carries, in the same order. Values past 2^32 in

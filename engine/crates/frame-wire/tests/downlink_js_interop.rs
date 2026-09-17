@@ -33,6 +33,8 @@ fn corpus() -> Vec<Vec<DownlinkRecord>> {
         generation: 0x1234_5678,
         frame_id: id,
         timestamp_ns: ns,
+        remaining_credits: id % 3,
+        accepted_sequence: ns + 0x1_0000_0000,
     };
     vec![
         // An envelope with nothing in it is legal and has to survive: a host

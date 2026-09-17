@@ -20,6 +20,15 @@ pub const MIGO_FRAME_INGRESS_REJECTED: u32 = 3;
 pub const MIGO_FRAME_INGRESS_GENERATION_LOST: u32 = 4;
 pub const MIGO_FRAME_INGRESS_DEFERRED: u32 = 5;
 
+/// Which door a socket message goes through; see `migo_uplink_message_kind`.
+pub type MigoUplinkMessageKind = u32;
+pub const MIGO_UPLINK_MESSAGE_FRAME: MigoUplinkMessageKind = 1;
+pub const MIGO_UPLINK_MESSAGE_CONTROL: MigoUplinkMessageKind = 2;
+
+/// Called on the session thread when a downlink record the transport did not
+/// cause has been queued.
+pub type MigoDownlinkWakerFn = unsafe extern "C" fn(user_data: *mut std::ffi::c_void);
+
 /// One ingress answer.
 ///
 /// `accepted_sequence` is placed before the 32-bit fields so the record is 32

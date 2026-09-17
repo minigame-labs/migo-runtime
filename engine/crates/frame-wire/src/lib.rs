@@ -767,15 +767,20 @@ pub mod gl;
 /// The Canvas2D block. See its module docs for why one stream carries both.
 pub mod canvas2d;
 
-/// The synchronous barrier: the few calls whose return value is the answer.
+/// What the producer sends that is not a frame: a request for the next one.
+pub mod control;
+/// What the host sends the producer: verdicts and frame-clock ticks.
 pub mod downlink;
 pub mod ingress;
 pub mod pool;
 /// The resource lane: large bytes uploaded out of band and referenceable only
 /// once verified.
 pub mod resource;
+/// The synchronous barrier: the few calls whose return value is the answer.
 pub mod sync;
-pub use ingress::{FrameIngress, IngressDecision, IngressOutcome};
+pub use ingress::{
+    FrameIngress, IngressDecision, IngressOutcome, WindowAdvertisement, WindowSource,
+};
 pub use pool::{CreditWindow, FrameCredit, FramePool, PooledFrame};
 
 #[cfg(any(test, feature = "test-support"))]

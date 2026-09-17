@@ -58,13 +58,21 @@ pub const DOWN_FRAME_VERDICT: u32 = 1;
 /// producer. Host-driven on every Migo platform; see
 /// `runtime-v8/src/rendering/webgl/03_raf.js` for the in-process shape this
 /// keeps isomorphic.
+///
+/// It also carries the credit window, and that is not an extra: a verdict is
+/// only ever sent for a packet, so a producer whose last verdict said zero
+/// would otherwise never hear that a credit came back. The tick is the record a
+/// waiting producer is guaranteed to receive, because it asked for one. See
+/// *The window* in `contracts/frame-wire/wire-v1.md`.
 pub const DOWN_CLOCK_TICK: u32 = 2;
 
 /// Header word plus generation, decision, wire_error_code, remaining_credits,
 /// and the two halves of `accepted_sequence`.
 pub const FRAME_VERDICT_WORDS: u32 = 7;
-/// Header word plus generation, frame_id, and the two halves of the timestamp.
-pub const CLOCK_TICK_WORDS: u32 = 5;
+/// Header word plus generation, frame_id, the two halves of the timestamp,
+/// remaining_credits, and the two halves of `accepted_sequence` -- the window
+/// in the verdict's own field order, so a reader has one advertisement layout.
+pub const CLOCK_TICK_WORDS: u32 = 8;
 
 /// The envelope's two leading words.
 pub const ENVELOPE_WORDS: usize = 2;
@@ -83,6 +91,10 @@ pub enum DownlinkRecord {
         generation: u32,
         frame_id: u32,
         timestamp_ns: u64,
+        /// With `accepted_sequence`, the window as of this tick. Read by the
+        /// host sequence first, so it is never more generous than the truth.
+        remaining_credits: u32,
+        accepted_sequence: u64,
     },
 }
 
@@ -128,6 +140,50 @@ impl DownlinkRecord {
         }
     }
 
+    /// Write this record's words, little-endian, into exactly
+    /// `word_count() * 4` bytes -- the same words [`Self::write_words`]
+    /// appends, without a buffer to append them to.
+    fn write_le(&self, out: &mut [u8]) {
+        debug_assert_eq!(out.len(), self.word_count() as usize * 4);
+        let mut at = 0;
+        let mut put = |word: u32| {
+            out[at..at + 4].copy_from_slice(&word.to_le_bytes());
+            at += 4;
+        };
+        put(pack_header(self.kind(), self.word_count()));
+        match *self {
+            Self::FrameVerdict {
+                generation,
+                decision,
+                wire_error_code,
+                remaining_credits,
+                accepted_sequence,
+            } => {
+                put(generation);
+                put(decision);
+                put(wire_error_code);
+                put(remaining_credits);
+                put(accepted_sequence as u32);
+                put((accepted_sequence >> 32) as u32);
+            }
+            Self::ClockTick {
+                generation,
+                frame_id,
+                timestamp_ns,
+                remaining_credits,
+                accepted_sequence,
+            } => {
+                put(generation);
+                put(frame_id);
+                put(timestamp_ns as u32);
+                put((timestamp_ns >> 32) as u32);
+                put(remaining_credits);
+                put(accepted_sequence as u32);
+                put((accepted_sequence >> 32) as u32);
+            }
+        }
+    }
+
     /// Append this record's words to `out`.
     ///
     /// The 64-bit fields go low word first, which is the order
@@ -154,11 +210,16 @@ impl DownlinkRecord {
                 generation,
                 frame_id,
                 timestamp_ns,
+                remaining_credits,
+                accepted_sequence,
             } => {
                 out.push(generation);
                 out.push(frame_id);
                 out.push(timestamp_ns as u32);
                 out.push((timestamp_ns >> 32) as u32);
+                out.push(remaining_credits);
+                out.push(accepted_sequence as u32);
+                out.push((accepted_sequence >> 32) as u32);
             }
         }
     }
@@ -233,6 +294,8 @@ pub fn decode_message(words: &[u32]) -> Result<Vec<DownlinkRecord>, DownlinkErro
                     generation: body[0],
                     frame_id: body[1],
                     timestamp_ns: u64::from(body[2]) | (u64::from(body[3]) << 32),
+                    remaining_credits: body[4],
+                    accepted_sequence: u64::from(body[5]) | (u64::from(body[6]) << 32),
                 }
             }
             other => return Err(DownlinkError::UnknownKind(other)),
@@ -283,9 +346,10 @@ pub const QUEUE_CAPACITY: usize = 64;
 /// # Why the two kinds are treated differently under pressure
 ///
 /// A clock tick is superseded by the next one: a producer that missed tick 41
-/// and got tick 42 has lost nothing it can act on, because the only thing it
-/// does with a tick is schedule the next frame. So ticks COALESCE -- at most one
-/// is ever queued, and pushing a new one replaces it.
+/// and got tick 42 has lost nothing it can act on, because what it does with a
+/// tick is schedule the next frame against the window the tick carries, and
+/// tick 42's window is the newer one. So ticks COALESCE -- at most one is ever
+/// queued, and pushing a new one replaces it.
 ///
 /// A verdict is about a specific frame, so it does not coalesce. But it is also
 /// *absolute* rather than incremental -- `remaining_credits` is a level, not a
@@ -324,22 +388,25 @@ impl DownlinkQueue {
 
     /// Queue a tick, replacing any tick already waiting.
     ///
-    /// Replaced in place rather than removed and appended: a verdict queued
-    /// before the old tick was sent still has to arrive before it, because the
-    /// producer reads a verdict as "this is the credit level as of the frame
-    /// I just sent" and a later tick would otherwise overtake it.
+    /// The replaced tick is removed and the new one goes to the BACK, behind
+    /// every verdict queued so far. A tick carries a window read after those
+    /// verdicts were queued, so it is the newest advertisement in the queue and
+    /// has to be the last one the producer applies. Replacing in place -- what
+    /// this did before ticks carried a window -- would put a newer window ahead
+    /// of an older verdict's, and the producer, which applies the latest one it
+    /// read, would end the message on the stale level.
     pub fn push_tick(&mut self, record: DownlinkRecord) {
         debug_assert!(
             matches!(record, DownlinkRecord::ClockTick { .. }),
             "push_tick is for ticks"
         );
-        if let Some(slot) = self
+        // At most one tick is ever queued, so the scan stops at the first.
+        if let Some(index) = self
             .records
-            .iter_mut()
-            .find(|queued| matches!(queued, DownlinkRecord::ClockTick { .. }))
+            .iter()
+            .position(|queued| matches!(queued, DownlinkRecord::ClockTick { .. }))
         {
-            *slot = record;
-            return;
+            self.records.remove(index);
         }
         while self.records.len() >= QUEUE_CAPACITY {
             self.records.pop_front();
@@ -378,6 +445,10 @@ impl DownlinkQueue {
     /// Whole records only. A message carrying half a record is not a smaller
     /// message, it is a malformed one, and the producer's reader is written to
     /// refuse it rather than wait for the rest.
+    ///
+    /// Written straight into `out`, with no intermediate buffer: the transport
+    /// drains after every submit and every tick, and an allocation per drain is
+    /// an allocation per frame on the path this lane exists to shorten.
     pub fn drain_into(&mut self, out: &mut [u8]) -> usize {
         if self.records.is_empty() {
             return 0;
@@ -386,27 +457,41 @@ impl DownlinkQueue {
         if capacity_words <= ENVELOPE_WORDS {
             return 0;
         }
-        let mut words: Vec<u32> = Vec::with_capacity(capacity_words.min(QUEUE_CAPACITY * 8));
-        words.push(MAGIC_DOWN);
-        words.push(DOWNLINK_VERSION);
+        let mut at = ENVELOPE_WORDS;
         while let Some(next) = self.records.front() {
-            if words.len() + next.word_count() as usize > capacity_words {
+            let count = next.word_count() as usize;
+            if at + count > capacity_words {
                 break;
             }
             let record = self.records.pop_front().expect("peeked on the line above");
-            record.write_words(&mut words);
+            record.write_le(&mut out[at * 4..(at + count) * 4]);
+            at += count;
         }
-        if words.len() == ENVELOPE_WORDS {
+        if at == ENVELOPE_WORDS {
             // Nothing fitted. An envelope with no records is legal, but sending
             // one here would tell the producer "no news" while news is queued.
             return 0;
         }
-        for (index, word) in words.iter().enumerate() {
-            out[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
-        }
-        words.len() * 4
+        out[0..4].copy_from_slice(&MAGIC_DOWN.to_le_bytes());
+        out[4..8].copy_from_slice(&DOWNLINK_VERSION.to_le_bytes());
+        at * 4
     }
 }
+
+/// The largest message a full queue drains into, in bytes.
+///
+/// `include/migo/external_frames.h` promises a host that 4096 bytes holds any
+/// message this queue produces; this is that promise, checked when a record
+/// grows rather than when a host's buffer turns out to be short.
+pub const MAX_MESSAGE_BYTES: usize = (ENVELOPE_WORDS
+    + QUEUE_CAPACITY
+        * if FRAME_VERDICT_WORDS > CLOCK_TICK_WORDS {
+            FRAME_VERDICT_WORDS as usize
+        } else {
+            CLOCK_TICK_WORDS as usize
+        })
+    * 4;
+const _: () = assert!(MAX_MESSAGE_BYTES <= 4096);
 
 #[cfg(test)]
 mod tests {
@@ -429,6 +514,19 @@ mod tests {
             generation: 7,
             frame_id: 99,
             timestamp_ns: 0x0000_0123_4567_89AB,
+            remaining_credits: 1,
+            // Past 32 bits for the same reason as the verdict's.
+            accepted_sequence: 0x0000_0042_8765_4321,
+        }
+    }
+
+    fn tick_numbered(frame_id: u32) -> DownlinkRecord {
+        DownlinkRecord::ClockTick {
+            generation: 1,
+            frame_id,
+            timestamp_ns: u64::from(frame_id),
+            remaining_credits: 2,
+            accepted_sequence: u64::from(frame_id),
         }
     }
 
@@ -564,34 +662,45 @@ mod tests {
     }
 
     #[test]
-    fn a_replaced_tick_keeps_its_place_behind_an_earlier_verdict() {
-        // The producer reads a verdict as the credit level as of the frame it
-        // just sent. A tick that overtook it would let the producer schedule
-        // against a level it has not been told about yet.
+    fn a_replacing_tick_moves_behind_every_verdict_queued_before_it() {
+        // The producer applies the latest window it read. The new tick's window
+        // was read after the verdict was queued, so it has to be read after the
+        // verdict too; left in the old tick's place it would be overwritten by
+        // the older level the verdict carries.
         let mut queue = DownlinkQueue::new();
-        queue.push_tick(DownlinkRecord::ClockTick {
-            generation: 1,
-            frame_id: 1,
-            timestamp_ns: 1,
-        });
+        queue.push_tick(tick_numbered(1));
         queue.push_verdict(verdict());
-        queue.push_tick(DownlinkRecord::ClockTick {
-            generation: 1,
-            frame_id: 2,
-            timestamp_ns: 2,
-        });
+        queue.push_tick(tick_numbered(2));
 
         let mut out = [0u8; 256];
         let written = queue.drain_into(&mut out);
         let read = decode_bytes(&out[..written]).expect("round trip");
-        assert_eq!(read.len(), 2, "the tick was replaced, not appended");
-        assert!(
-            matches!(read[0], DownlinkRecord::ClockTick { frame_id: 2, .. }),
-            "the newest tick takes the old one's place: {read:?}"
+        assert_eq!(
+            read.len(),
+            2,
+            "the tick was replaced, not appended: {read:?}"
         );
         assert!(
-            matches!(read[1], DownlinkRecord::FrameVerdict { .. }),
-            "and the verdict queued after it still follows: {read:?}"
+            matches!(read[0], DownlinkRecord::FrameVerdict { .. }),
+            "the verdict is read first: {read:?}"
+        );
+        assert!(
+            matches!(read[1], DownlinkRecord::ClockTick { frame_id: 2, .. }),
+            "and the newest tick, with the newest window, last: {read:?}"
+        );
+    }
+
+    #[test]
+    fn a_tick_with_nothing_behind_it_is_not_disturbed_by_its_replacement() {
+        let mut queue = DownlinkQueue::new();
+        queue.push_verdict(verdict());
+        queue.push_tick(tick_numbered(1));
+        queue.push_tick(tick_numbered(2));
+        let mut out = [0u8; 256];
+        let written = queue.drain_into(&mut out);
+        assert_eq!(
+            decode_bytes(&out[..written]).expect("round trip"),
+            vec![verdict(), tick_numbered(2)],
         );
     }
 
@@ -670,6 +779,39 @@ mod tests {
             ),
             "in order: {read:?}"
         );
+    }
+
+    #[test]
+    fn a_drain_writes_exactly_the_bytes_the_reference_encoder_writes() {
+        // Two writers of one layout -- `write_le` for the drain, `write_words`
+        // for everything else -- held to each other byte for byte.
+        let mut queue = DownlinkQueue::new();
+        let records = [verdict(), tick(), verdict()];
+        queue.push_verdict(records[0]);
+        queue.push_tick(records[1]);
+        queue.push_verdict(records[2]);
+        let mut out = [0xEEu8; MAX_MESSAGE_BYTES];
+        let written = queue.drain_into(&mut out);
+        assert_eq!(&out[..written], &encode_bytes(&records)[..]);
+    }
+
+    #[test]
+    fn a_full_queue_of_the_longest_record_fits_the_promised_buffer() {
+        let mut queue = DownlinkQueue::new();
+        for i in 0..QUEUE_CAPACITY as u64 {
+            queue.push_verdict(DownlinkRecord::FrameVerdict {
+                generation: 1,
+                decision: 1,
+                wire_error_code: 0,
+                remaining_credits: 0,
+                accepted_sequence: i,
+            });
+        }
+        queue.push_tick(tick());
+        let mut out = [0u8; 4096];
+        let written = queue.drain_into(&mut out);
+        assert!(written > 0 && written <= MAX_MESSAGE_BYTES);
+        assert!(queue.is_empty(), "one 4096-byte buffer drains a full queue");
     }
 
     #[test]

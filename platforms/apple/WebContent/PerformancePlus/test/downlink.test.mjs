@@ -75,6 +75,8 @@ const tick = {
   generation: 7,
   frameId: 99,
   timestampNs: 0x123_4567_89ab,
+  remainingCredits: 1,
+  acceptedSequence: 0x42_8765_4321,
 };
 
 console.log("The producer's downlink reader");
@@ -86,6 +88,8 @@ check("a batch survives the round trip in order", () => {
   assertEqual(read[1].kind, DOWN_FRAME_VERDICT, "second record kind");
   assertEqual(read[1].acceptedSequence, verdict.acceptedSequence, "sequence across 32 bits");
   assertEqual(read[2].timestampNs, tick.timestampNs, "timestamp across 32 bits");
+  assertEqual(read[2].remainingCredits, tick.remainingCredits, "the tick's window credits");
+  assertEqual(read[2].acceptedSequence, tick.acceptedSequence, "and its sequence, across 32 bits");
 });
 
 check("bytes and words agree", () => {

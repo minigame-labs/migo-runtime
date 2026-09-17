@@ -334,9 +334,12 @@ after the read only make the truth more generous.
 **Before any advertisement** the producer may send one packet: the window is
 `(1, 0)`. Not zero, which would wait for an advertisement that only a packet
 produces; and not the host's configured depth, which the producer has no copy
-of. A generation's second packet therefore always leaves after its first was
-admitted, which is also what makes "nothing is held before sequence 1" cost
-nothing.
+of. **Until a generation's first packet is accepted, the host advertises at
+most one credit** -- a tick answers a request, and requesting a frame is the
+first thing a producer does, so a tick can arrive before any packet has, and an
+honest `(2, 0)` would let sequences 1 and 2 leave together. A generation's
+second packet therefore always leaves after its first was admitted, which is
+also what makes "nothing is held before sequence 1" cost nothing.
 
 A packet sent in a window of two can overtake the one before it on the other
 uplink; that is the packet ingress holds (see *Identity, ordering and resource
@@ -371,6 +374,33 @@ sent it is gone, and nothing it asked for is owed to the one that replaced it.
 An unknown kind, a wrong word count, a wrong magic or version, or trailing bytes
 are refused, and the transport reports them as it reports a refused frame.
 Requests coalesce: one tick answers every request made before it.
+
+A request that arrives before the renderer is up is **held**, not refused, and
+armed when the renderer starts: the producer's first request races the host's
+bring-up, and a producer whose request was dropped would wait for a tick
+nothing is going to send.
+
+A transport routes each socket message by its first word: `MUC1` goes to the
+control reader and everything else to frame ingress, which refuses what it
+cannot read. Nothing in a control message is acted on unless all of it is well
+formed.
+
+### Control refusals
+
+Numbered from 3001, clear of the frame, ingress and external-session ranges, so
+one telemetry field carries any of them. The list lives in
+`engine/crates/frame-wire/src/control.rs` (`ControlError`).
+
+| Code | Name | Meaning |
+|---:|---|---|
+| 3001 | `TrailingBytes` | the byte count is not a whole number of words |
+| 3002 | `TooShort` | fewer words than the envelope and one record header |
+| 3003 | `TooLong` | more than 64 words |
+| 3004 | `BadMagic` | the first word is not `MUC1` |
+| 3005 | `UnsupportedVersion` | the version is not 1 |
+| 3006 | `RecordLengthOutOfRange` | a record's word count is zero or runs past the end |
+| 3007 | `UnknownKind` | a kind this version does not define |
+| 3008 | `WrongLengthForKind` | a known kind with a word count it does not have |
 
 ## Checksum
 

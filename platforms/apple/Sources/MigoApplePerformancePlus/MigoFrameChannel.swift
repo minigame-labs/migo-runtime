@@ -19,13 +19,22 @@ import MigoEngine
 /// for, and a channel hop here would put a scheduling delay on the latency path
 /// this lane exists to shorten.
 ///
-/// ## Why the host never builds a reply
+/// ## Why the host never builds a reply, or reads a message's kind
 ///
 /// `migo_session_take_downlink` writes whole downlink messages -- verdicts for
 /// submitted frames, ticks from the frame clock -- and this copies them onto the
 /// socket. A host that assembled records itself would be a third implementation
 /// of a wire format that already has two, in a language neither the golden
-/// corpus nor the interop gate checks.
+/// corpus nor the interop gate checks. The same goes the other way: the socket
+/// carries frames and control messages, and `migo_uplink_message_kind` says
+/// which is which rather than this comparing magic numbers of its own.
+///
+/// ## Ticks the transport did not cause
+///
+/// A verdict is queued inside a submit this channel made, and this drains right
+/// after. A tick is queued by the engine's frame clock on its own thread, so the
+/// engine calls the waker this channel installs, and the drain is scheduled on
+/// a queue of this channel's -- never performed inside the engine's call.
 ///
 /// ## Ownership
 ///
@@ -70,12 +79,32 @@ public final class MigoFrameChannel {
         /// Non-zero means a producer was blocked on a response that said
         /// nothing, which it reports as a transport failure.
         public var syncCallsUnanswered: Int = 0
+        /// Control messages the producer sent: its requests for a frame.
+        public var controlMessagesReceived: Int = 0
+        /// Control messages the engine refused, counted as a refused frame is.
+        /// Non-zero is a producer writing a format the engine does not read, and
+        /// a producer whose request was refused is waiting for a tick.
+        public var controlMessagesRefused: Int = 0
+        /// The code of the most recent refusal, from 3001 up; 0 when there has
+        /// been none, or the message could not be delivered at all.
+        public var lastControlRefusalCode: UInt32 = 0
+        /// Times the engine woke this channel to send a tick.
+        public var downlinkWakes: Int = 0
+    }
+
+    /// Why the channel would not start.
+    public enum StartFailure: Error, Equatable {
+        /// The engine would not install the downlink waker -- in practice, no
+        /// surface is attached yet. Refused rather than started without one:
+        /// without it a tick waits in the queue until the producer sends
+        /// something, and a producer waiting for a tick sends nothing.
+        case downlinkWakerRefused
     }
 
     /// The largest downlink message this channel will carry in one send.
     ///
-    /// The queue holds at most `QUEUE_CAPACITY` records of at most seven words,
-    /// so 4 KiB cannot be reached; it is a ceiling on the buffer rather than a
+    /// The queue holds at most `QUEUE_CAPACITY` records of at most eight words,
+    /// so 4 KiB cannot be exceeded; it is a ceiling on the buffer rather than a
     /// guess at the traffic. A message that did not fit would be sent as two,
     /// because `migo_session_take_downlink` drains whole records and keeps the
     /// rest -- so this number is a latency choice, not a correctness one.
@@ -91,8 +120,28 @@ public final class MigoFrameChannel {
         case refused
     }
 
+    /// Which door a message from the producer's socket goes through.
+    public enum UplinkKind: Sendable, Equatable {
+        case frame
+        case control
+    }
+
+    /// What the engine did with one control message.
+    public enum ControlDisposition: Sendable, Equatable {
+        case read
+        /// Refused, with the engine's code; 0 when the call could not be made.
+        case refused(code: UInt32)
+    }
+
     /// Hand one packet to the engine and report what became of it.
     public typealias Submit = (Data) -> Disposition
+    /// Hand one control message to the engine and report what became of it.
+    public typealias SubmitControl = (Data) -> ControlDisposition
+    /// Ask the engine which kind a socket message is.
+    public typealias Classify = (Data) -> UplinkKind
+    /// Install the engine's downlink waker, or clear it with `nil`; `false` when
+    /// the engine would not. Clearing returns once no call is in progress.
+    public typealias SetDownlinkWaker = ((() -> Void)?) -> Bool
     /// Fill the buffer with the next downlink message and return its length.
     public typealias TakeDownlink = (UnsafeMutableBufferPointer<UInt8>) -> Int
     /// One synchronous call's answer: the header, then the reply when there is
@@ -112,10 +161,23 @@ public final class MigoFrameChannel {
     private let submit: Submit
     private let takeDownlink: TakeDownlink
     private let answerSync: AnswerSync
+    private let classify: Classify
+    private let submitControl: SubmitControl
+    private let setDownlinkWaker: SetDownlinkWaker
     private let transport: MigoFrameTransport
     private let lock = NSLock()
     private var statistics = Statistics()
     private var downlink = [UInt8](repeating: 0, count: MigoFrameChannel.downlinkBufferBytes)
+
+    /// Where a wake-up's drain runs. Serial and its own, because the engine's
+    /// call must return at once and the transport's queue is where frames
+    /// arrive; `userInteractive`, because a tick is the start of a frame.
+    private let wakeQueue = DispatchQueue(
+        label: "dev.migo.frame-channel.downlink", qos: .userInteractive)
+    /// A drain is already scheduled. Coalesces wake-ups that arrive faster than
+    /// the queue runs, so a busy frame clock costs one pending block, not many.
+    private var wakePending = false
+    private let wakeLock = NSLock()
 
     /// The production shape: a live session.
     ///
@@ -189,25 +251,61 @@ public final class MigoFrameChannel {
                     bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes), count: length,
                     deallocator: .custom { _, _ in _ = migo_sync_reply_release(reply) })
                 return SyncAnswer(header: header, reply: wrapped)
-            })
+            },
+            submitControl: { message in
+                var refusal: UInt32 = 0
+                let result = message.withUnsafeBytes { bytes -> MigoResult in
+                    migo_session_submit_uplink_control(
+                        session, bytes.bindMemory(to: UInt8.self).baseAddress, message.count,
+                        &refusal)
+                }
+                guard result == MIGO_OK else { return .refused(code: 0) }
+                return refusal == 0 ? .read : .refused(code: refusal)
+            },
+            setDownlinkWaker: MigoDownlinkWakerSlot(session: session).install)
+    }
+
+    /// The engine's answer to "which door": the default for every channel,
+    /// because it needs no session and a test that faked it would be testing a
+    /// copy of the rule.
+    public static func engineClassify(_ message: Data) -> UplinkKind {
+        var kind: MigoUplinkMessageKind = 0
+        let result = message.withUnsafeBytes { bytes -> MigoResult in
+            migo_uplink_message_kind(
+                bytes.bindMemory(to: UInt8.self).baseAddress, message.count, &kind)
+        }
+        return result == MIGO_OK && kind == MigoUplinkMessageKind(MIGO_UPLINK_MESSAGE_CONTROL)
+            ? .control : .frame
     }
 
     init(
         transport: MigoFrameTransport = MigoFrameTransport(),
         submit: @escaping Submit,
         takeDownlink: @escaping TakeDownlink,
-        answerSync: @escaping AnswerSync = { _ in nil }
+        answerSync: @escaping AnswerSync = { _ in nil },
+        classify: @escaping Classify = MigoFrameChannel.engineClassify,
+        submitControl: @escaping SubmitControl = { _ in .read },
+        setDownlinkWaker: @escaping SetDownlinkWaker = { _ in true }
     ) {
         self.transport = transport
         self.submit = submit
         self.takeDownlink = takeDownlink
         self.answerSync = answerSync
+        self.classify = classify
+        self.submitControl = submitControl
+        self.setDownlinkWaker = setDownlinkWaker
     }
 
     /// Start listening and return what the producer needs to connect.
+    ///
+    /// Installs the engine's downlink waker too, and throws
+    /// `StartFailure.downlinkWakerRefused` rather than start without it.
     public func start() throws -> MigoFrameTransport.Endpoint {
+        guard setDownlinkWaker({ [weak self] in self?.wake() }) else {
+            throw StartFailure.downlinkWakerRefused
+        }
         transport.onFrame = { [weak self] data in
-            self?.receive(data)
+            self?.receiveFromSocket(data)
         }
         transport.onConnectionChange = { [weak self] connected in
             // A producer that has just connected is a producer that has missed
@@ -216,7 +314,12 @@ public final class MigoFrameChannel {
             // immediately, which is what it needs before it can send anything.
             if connected { self?.pump() }
         }
-        return try transport.start()
+        do {
+            return try transport.start()
+        } catch {
+            _ = setDownlinkWaker(nil)
+            throw error
+        }
     }
 
     /// Send whatever the engine has queued.
@@ -248,8 +351,12 @@ public final class MigoFrameChannel {
         }
     }
 
-    /// Stop the transport. Idempotent.
+    /// Stop the transport and clear the engine's waker. Idempotent.
+    ///
+    /// The waker first: clearing it returns only once the engine is not inside
+    /// a call to it, so nothing reaches this channel after `stop` returns.
     public func stop() {
+        _ = setDownlinkWaker(nil)
         transport.onFrame = nil
         transport.onConnectionChange = nil
         transport.stop()
@@ -310,6 +417,49 @@ public final class MigoFrameChannel {
 
     // MARK: - Private
 
+    /// One message from the socket, to whichever door the engine names.
+    private func receiveFromSocket(_ message: Data) {
+        switch classify(message) {
+        case .frame: receive(message)
+        case .control: receiveControl(message)
+        }
+    }
+
+    /// A request for a frame. Nothing is queued for the producer by reading one
+    /// -- the tick it asks for arrives through the waker -- so there is no pump.
+    private func receiveControl(_ message: Data) {
+        let disposition = submitControl(message)
+        lock.lock()
+        statistics.controlMessagesReceived += 1
+        if case .refused(let code) = disposition {
+            statistics.controlMessagesRefused += 1
+            statistics.lastControlRefusalCode = code
+        }
+        lock.unlock()
+    }
+
+    /// Called by the engine, on its thread, when a tick is queued. Schedules a
+    /// drain and returns.
+    private func wake() {
+        wakeLock.lock()
+        let alreadyPending = wakePending
+        wakePending = true
+        wakeLock.unlock()
+        guard !alreadyPending else { return }
+        wakeQueue.async { [weak self] in
+            guard let self else { return }
+            // Cleared before the drain, so a tick queued while it runs schedules
+            // another rather than waiting for the next one.
+            self.wakeLock.lock()
+            self.wakePending = false
+            self.wakeLock.unlock()
+            self.lock.lock()
+            self.statistics.downlinkWakes += 1
+            self.lock.unlock()
+            self.pump()
+        }
+    }
+
     @discardableResult
     private func receive(_ packet: Data) -> Disposition {
         let disposition = submit(packet)
@@ -327,5 +477,65 @@ public final class MigoFrameChannel {
         // indistinguishable from a host that died.
         pump()
         return disposition
+    }
+}
+
+/// The engine's downlink waker for one session, and the box its pointer names.
+///
+/// The box is retained while the engine holds its pointer and released only
+/// after the engine has let go: `migo_session_set_downlink_waker` returns from a
+/// clear or a replacement only once no call to the old waker is in progress, so
+/// releasing after it returns cannot free what a call is using.
+final class MigoDownlinkWakerSlot {
+
+    private final class Box {
+        let wake: () -> Void
+        init(_ wake: @escaping () -> Void) { self.wake = wake }
+    }
+
+    private let session: OpaquePointer
+    private let lock = NSLock()
+    private var installed: Unmanaged<Box>?
+
+    init(session: OpaquePointer) {
+        self.session = session
+    }
+
+    deinit {
+        // Unreachable while installed: the closure that owns this slot is held
+        // by a channel, whose `stop` clears the waker. A box still here was
+        // never cleared, and releasing it could free what the engine calls.
+        if installed != nil {
+            assertionFailure("a downlink waker was never cleared; stop the channel first")
+        }
+    }
+
+    func install(_ wake: (() -> Void)?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let wake else {
+            guard let previous = installed else { return true }
+            let result = migo_session_set_downlink_waker(session, nil, nil)
+            // INVALID_STATE means the session has no engine, so nothing can be
+            // calling the waker. Any other failure means the engine may still
+            // hold the pointer, and a leaked box is the safe outcome.
+            guard result == MIGO_OK || result == MIGO_ERROR_INVALID_STATE else { return false }
+            previous.release()
+            installed = nil
+            return true
+        }
+        let box = Unmanaged.passRetained(Box(wake))
+        let result = migo_session_set_downlink_waker(
+            session, { userData in
+                guard let userData else { return }
+                Unmanaged<Box>.fromOpaque(userData).takeUnretainedValue().wake()
+            }, box.toOpaque())
+        guard result == MIGO_OK else {
+            box.release()
+            return false
+        }
+        installed?.release()
+        installed = box
+        return true
     }
 }

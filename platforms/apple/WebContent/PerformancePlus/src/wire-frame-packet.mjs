@@ -77,6 +77,24 @@ function crc32(bytes, from, to) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+/**
+ * The sequence an encoded packet carries, or -1 when the bytes are too short to
+ * hold one.
+ *
+ * Read as a Number, byte by byte, with no view allocated: the producer reads it
+ * on every submit to count the packet against its window. A sequence stays
+ * inside 2^53 for longer than any session runs -- at sixty frames a second that
+ * is four million years -- so the Number is exact wherever it is used.
+ */
+export function sequenceOf(bytes) {
+  if (bytes.length < OFF_SEQUENCE + 8) return -1;
+  const at = OFF_SEQUENCE;
+  const low = (bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16) | (bytes[at + 3] << 24)) >>> 0;
+  const high =
+    (bytes[at + 4] | (bytes[at + 5] << 8) | (bytes[at + 6] << 16) | (bytes[at + 7] << 24)) >>> 0;
+  return low + high * 0x1_0000_0000;
+}
+
 /** CRC32 of the whole packet with the checksum field's own four bytes as zero. */
 export function checksum(bytes) {
   let crc = 0xffffffff;

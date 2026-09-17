@@ -88,7 +88,8 @@ import WebKit
             /// loads and a worker that never connects -- which reads like a
             /// transport fault and is a packaging one.
             case engineModulesMissing(URL)
-            /// The frame channel could not listen.
+            /// The frame channel could not start: it could not listen, or the
+            /// engine would not install its downlink waker.
             case transport(Error)
 
             public var description: String {
@@ -100,7 +101,7 @@ import WebKit
                         + " platforms/apple/WebContent/PerformancePlus/src into the package's"
                         + " resources, and a build that skipped it produces exactly this."
                 case .transport(let error):
-                    return "the frame channel could not listen: \(error)"
+                    return "the frame channel could not start: \(error)"
                 }
             }
         }

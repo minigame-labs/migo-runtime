@@ -21,7 +21,10 @@ export const DOWN_FRAME_VERDICT = 1;
 export const DOWN_CLOCK_TICK = 2;
 
 export const FRAME_VERDICT_WORDS = 7;
-export const CLOCK_TICK_WORDS = 5;
+// The tick carries the credit window after its timestamp, in the verdict's own
+// field order: a verdict is only sent for a packet, so a producer whose last one
+// said zero hears that a credit came back from the tick it asked for.
+export const CLOCK_TICK_WORDS = 8;
 
 export const ENVELOPE_WORDS = 2;
 
@@ -122,6 +125,8 @@ export function decodeMessage(words) {
         generation: words[body],
         frameId: words[body + 1],
         timestampNs: readU64(words, body + 2),
+        remainingCredits: words[body + 4],
+        acceptedSequence: readU64(words, body + 5),
       });
     } else {
       throw new DownlinkFormatError(`downlink record kind ${kind} is not one this build reads`);
@@ -151,6 +156,8 @@ export function encodeMessage(records) {
       out.push(record.generation >>> 0);
       out.push(record.frameId >>> 0);
       writeU64(out, record.timestampNs);
+      out.push(record.remainingCredits >>> 0);
+      writeU64(out, record.acceptedSequence);
     } else {
       throw new DownlinkFormatError(`cannot encode downlink record kind ${record.kind}`);
     }

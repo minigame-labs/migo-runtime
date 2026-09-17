@@ -10,7 +10,10 @@
 //! current, which sequence number comes next, whether the resource table is
 //! ready, and how many frames the renderer is already holding.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use crate::{
     MAX_TOTAL_BYTES, WireError,
@@ -169,7 +172,70 @@ pub struct FrameIngress {
     credits: Arc<CreditWindow>,
     pool: Arc<FramePool>,
     last_accepted_sequence: u64,
+    /// `last_accepted_sequence`, published for readers that do not hold this
+    /// ingress: the frame clock advertises the window on every tick, from the
+    /// render signal, and must not wait behind a submit for the lock. Written
+    /// only by [`Self::commit_sequence`], after the committed packet took its
+    /// credit -- the order [`WindowSource::read`] depends on.
+    accepted: Arc<AtomicU64>,
     deferred: Option<DeferredFrame>,
+}
+
+/// What a producer may send against: "having accepted every packet through
+/// `accepted_sequence`, this many credits were free".
+///
+/// See *The window* in `contracts/frame-wire/wire-v1.md`. A producer that has
+/// sent through `sent` may send `remaining_credits - (sent - accepted_sequence)`
+/// more, floored at zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowAdvertisement {
+    pub remaining_credits: u32,
+    pub accepted_sequence: u64,
+}
+
+/// The window, readable from any thread without the ingress lock.
+///
+/// Holds the two things an advertisement is read from and nothing else, so a
+/// frame clock can carry one without reaching the ingress -- whose lock is held
+/// for a whole decode and queue submission.
+#[derive(Clone, Debug)]
+pub struct WindowSource {
+    accepted: Arc<AtomicU64>,
+    credits: Arc<CreditWindow>,
+}
+
+impl WindowSource {
+    /// Read an advertisement that is never more generous than the truth.
+    ///
+    /// **The sequence first, the free count second.** Admission takes a credit
+    /// and only then commits the sequence, so a packet admitted between the
+    /// two reads here is counted twice -- once as a taken credit, once as sent
+    /// after the advertised sequence -- and never zero times. The other order
+    /// can read the free count before a packet takes its credit and the
+    /// sequence after it commits, which counts that packet nowhere and lets
+    /// the producer send one packet past the window. Credits returned between
+    /// the reads only make the truth more generous.
+    ///
+    /// **At most one before the generation's first packet is accepted.**
+    /// Ingress holds nothing ahead of sequence 1 -- that is what leaves a
+    /// replayed later packet nowhere to wait -- so a producer told two before
+    /// then could send 1 and 2 back to back, have 2 overtake 1 on the other
+    /// uplink, and be refused for a gap. A frame-clock tick is the one
+    /// advertisement that can arrive before any packet, since the first thing
+    /// a producer does is ask for a frame; the cap keeps it from undoing the
+    /// `(1, 0)` window a producer starts with.
+    pub fn read(&self) -> WindowAdvertisement {
+        let accepted_sequence = self.accepted.load(Ordering::Acquire);
+        let free = self.credits.remaining();
+        WindowAdvertisement {
+            remaining_credits: if accepted_sequence == 0 {
+                free.min(1)
+            } else {
+                free
+            },
+            accepted_sequence,
+        }
+    }
 }
 
 impl FrameIngress {
@@ -195,6 +261,7 @@ impl FrameIngress {
                 MAX_TOTAL_BYTES as usize,
             )),
             last_accepted_sequence: 0,
+            accepted: Arc::new(AtomicU64::new(0)),
             deferred: None,
         }
     }
@@ -329,6 +396,24 @@ impl FrameIngress {
         self.last_accepted_sequence
     }
 
+    /// Where the window is read from without this ingress.
+    ///
+    /// Take it after the builder calls: [`Self::with_max_credits`] replaces the
+    /// credit window, and a source taken before would advertise the old one.
+    pub fn window_source(&self) -> WindowSource {
+        WindowSource {
+            accepted: Arc::clone(&self.accepted),
+            credits: Arc::clone(&self.credits),
+        }
+    }
+
+    /// Record `sequence` as accepted. The one place the published copy is
+    /// written, so it cannot fall behind the field.
+    fn commit_sequence(&mut self, sequence: u64) {
+        self.last_accepted_sequence = sequence;
+        self.accepted.store(sequence, Ordering::Release);
+    }
+
     /// Offer one packet.
     ///
     /// Every legality check runs before the credit check, and that order is
@@ -339,7 +424,7 @@ impl FrameIngress {
     pub fn submit(&mut self, bytes: &[u8]) -> (IngressOutcome, Option<PooledFrame>) {
         let (outcome, frame) = self.admit(bytes);
         if frame.is_some() {
-            self.last_accepted_sequence = outcome.accepted_sequence;
+            self.commit_sequence(outcome.accepted_sequence);
         }
         (outcome, frame)
     }
@@ -391,7 +476,7 @@ impl FrameIngress {
         };
         match consume(frame) {
             Ok(()) => {
-                self.last_accepted_sequence = outcome.accepted_sequence;
+                self.commit_sequence(outcome.accepted_sequence);
                 outcome.remaining_credits = self.remaining_credits();
                 outcome
             }

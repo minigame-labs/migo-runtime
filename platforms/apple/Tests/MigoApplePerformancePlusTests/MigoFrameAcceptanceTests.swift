@@ -201,6 +201,139 @@ import XCTest
             XCTAssertEqual(pixel, [255, 0, 0, 255], "the later, red frame is not the one on the surface")
         }
 
+        /// Content drives its own frame loop: it asks for a frame, draws on the
+        /// tick, and asks again -- the loop every game is.
+        ///
+        /// This is what the frame clock crossing the process boundary has to
+        /// carry. Each request is a control message on the socket, which the
+        /// engine arms (the first one races the renderer's bring-up, and is held);
+        /// each tick comes back through the waker, carrying the window, because
+        /// nothing else would tell a producer whose last verdict said zero that a
+        /// credit came back. Without that the loop stops after two frames.
+        ///
+        /// Each tick sends a pair: a frame above the socket ceiling, then an
+        /// ordinary one, as a texture-heavy frame and the next would go. When the
+        /// window says two, both leave together on different uplinks and the
+        /// small one can arrive first. Ingress holds it and runs it second; the
+        /// test requires that to have happened at least once, and that nothing was
+        /// refused and the last frame drawn is the last one sent.
+        func testContentRunsItsOwnFrameLoopAndFramesThatOvertakeAreRunInOrder() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                import { encodeFrame, SECTION_KIND_COMMAND_STREAM } from "/__migo/wire-frame-packet.mjs";
+                import { MAGIC, STREAM_VERSION, OP_CLEAR, OP_CLEAR_COLOR } from "/__migo/render-opcodes.mjs";
+
+                const scratch = new DataView(new ArrayBuffer(4));
+                const bits = (v) => { scratch.setFloat32(0, v, true); return scratch.getUint32(0, true); };
+                const header = (op, words) => ((words << 12) | op) >>> 0;
+
+                function frame(sequence, rgba, clears) {
+                  const words = [MAGIC, STREAM_VERSION,
+                    header(OP_CLEAR_COLOR, 6), 1, bits(rgba[0]), bits(rgba[1]), bits(rgba[2]), bits(rgba[3])];
+                  for (let i = 0; i < clears; i += 1) words.push(header(OP_CLEAR, 3), 1, 0x4000);
+                  const stream = new Uint8Array(words.length * 4);
+                  const view = new DataView(stream.buffer);
+                  words.forEach((w, i) => view.setUint32(i * 4, w, true));
+                  return encodeFrame({ launchNonce: 0xa3n, sequence, runtimeGeneration: 1n,
+                    surfaceGeneration: 1n, resourceEpoch: 0n,
+                    sections: [{ kind: SECTION_KIND_COMMAND_STREAM, payload: stream }] });
+                }
+
+                const TICKS = 40;
+                export function start({ session }) {
+                  let sequence = 0n;
+                  let ticks = 0;
+                  let sent = 0;
+                  let bothInOneTick = 0;
+                  let waiting = [];
+                  const loop = () => {
+                    ticks += 1;
+                    if (waiting.length === 0 && ticks <= TICKS) {
+                      // 6,000 clears is 72 KiB: above the socket ceiling. Blue, then red.
+                      waiting = [frame(++sequence, [0, 0, 1, 1], 6000), frame(++sequence, [1, 0, 0, 1], 1)];
+                    }
+                    // In order: once one is held back, everything after it is too.
+                    let went = 0;
+                    while (waiting.length > 0 && session.submit(waiting[0]) === true) {
+                      waiting.shift();
+                      went += 1;
+                    }
+                    sent += went;
+                    if (went === 2) bothInOneTick += 1;
+                    if (ticks < TICKS || waiting.length > 0) {
+                      session.requestFrame(1n, loop);
+                    } else {
+                      self.postMessage({ type: "looped", ticks, sent, bothInOneTick,
+                        lastSequence: Number(sequence) });
+                    }
+                  };
+                  session.requestFrame(1n, loop);
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            let looped = expectation(description: "content ran its frame loop to the end")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "looped":
+                    report = message
+                    looped.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    looped.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            // 240 s for WebContent's own start on a starved runner, as above. A loop
+            // that stalls -- a request dropped, a tick never sent, a window never
+            // reopened -- runs out this clock rather than finishing.
+            wait(for: [looped], timeout: 240)
+            XCTAssertNil(failure)
+
+            let ticks = report?["ticks"] as? Int ?? 0
+            let sent = report?["sent"] as? Int ?? 0
+            let lastSequence = report?["lastSequence"] as? Int ?? 0
+            XCTAssertGreaterThanOrEqual(ticks, 10, "the loop has to run at least ten frames")
+            XCTAssertEqual(sent, lastSequence, "every frame content made was sent")
+            XCTAssertGreaterThanOrEqual(sent, 20)
+            XCTAssertGreaterThan(
+                report?["bothInOneTick"] as? Int ?? 0, 0,
+                "the window never said two, so no pair left together and nothing could overtake")
+
+            let pollDeadline = Date().addingTimeInterval(30)
+            while host.channel.currentStatistics.framesReceived < sent, Date() < pollDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            let statistics = host.channel.currentStatistics
+            XCTAssertEqual(statistics.framesReceived, sent)
+            XCTAssertEqual(
+                statistics.framesRefused, 0,
+                "a frame was refused: a producer that follows the window is never told to wait,"
+                    + " and a gap ends the content")
+            XCTAssertEqual(statistics.framesAccepted + statistics.framesDeferred, sent)
+            XCTAssertGreaterThan(
+                statistics.framesDeferred, 0,
+                "no frame overtook its predecessor, so the held-frame path went unexercised")
+            XCTAssertGreaterThanOrEqual(statistics.controlMessagesReceived, ticks)
+            XCTAssertEqual(statistics.controlMessagesRefused, 0)
+            XCTAssertGreaterThan(statistics.downlinkWakes, 0, "ticks reached the producer by being woken")
+
+            let pixel = try readPixel(session: harness.session, x: 0, y: 0, triggeringSequence: UInt64(sent))
+            XCTAssertEqual(
+                pixel, [255, 0, 0, 255],
+                "the last frame sent is red; blue is its predecessor run after it")
+        }
+
         /// The read content makes itself, from its own Worker, sees the frame it
         /// submitted.
         ///
@@ -399,15 +532,18 @@ import XCTest
             self.window = window
         }
 
-        /// One pixel, through the synchronous barrier.
-        private func readPixel(session: OpaquePointer, x: Int32, y: Int32) throws -> [UInt8] {
+        /// One pixel, through the synchronous barrier, once the frame numbered
+        /// `triggeringSequence` has been admitted.
+        private func readPixel(
+            session: OpaquePointer, x: Int32, y: Int32, triggeringSequence: UInt64 = 1
+        ) throws -> [UInt8] {
             var request = MigoSyncRequestDescriptor()
             request.struct_size = UInt32(MemoryLayout<MigoSyncRequestDescriptor>.size)
             request.abi_version = MIGO_ABI_VERSION_CURRENT
             request.runtime_generation = 1
             request.surface_generation = MigoFrameHarness.fixtureGeneration
             request.resource_epoch = 0
-            request.triggering_sequence = 1
+            request.triggering_sequence = triggeringSequence
             request.deadline_nanos = deadline
             request.operation = MIGO_SYNC_OP_READ_PIXELS
             request.max_reply_bytes = 4

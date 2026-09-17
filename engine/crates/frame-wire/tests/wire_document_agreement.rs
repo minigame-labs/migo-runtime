@@ -13,6 +13,10 @@ use std::{fs, path::PathBuf};
 
 use frame_wire::{
     HEADER_BYTES, HEADER_LAYOUT, HeaderField, MAX_SECTIONS, MAX_TOTAL_BYTES, WireError,
+    control::{
+        CONTROL_ERROR_BASE, CONTROL_VERSION, ControlError, MAGIC_CONTROL, MAX_CONTROL_WORDS,
+        REQUEST_FRAME_WORDS, UP_REQUEST_FRAME,
+    },
     ingress::{INGRESS_ERROR_BASE, INGRESS_ERROR_CODES},
     resource::{ResourceError, ResourceState},
     sync::{
@@ -550,4 +554,108 @@ fn the_protocol_enums_export_every_variant_their_source_declares() {
             );
         }
     }
+}
+
+// --- uplink control messages ------------------------------------------------
+//
+// A second envelope on the same socket as frames. The producer writes it from
+// the document's tables, so the tables are held to the crate the same way the
+// frame header is.
+
+/// Variant names in declaration order, for an enum whose variants carry data
+/// and so have no `= code` to parse.
+fn variant_names_in(file: &str, enum_name: &str) -> Vec<String> {
+    let text = source(file);
+    let start = text
+        .find(&format!("pub enum {enum_name} {{"))
+        .unwrap_or_else(|| panic!("{file} declares no enum {enum_name}"));
+    let body = &text[start..];
+    let end = body.find("\n}").expect("the enum has a closing brace");
+    body[..end]
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|line| line.starts_with(|c: char| c.is_ascii_uppercase()))
+        .map(|line| {
+            line.split(|c: char| !c.is_ascii_alphanumeric())
+                .next()
+                .expect("a variant line starts with its name")
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn the_document_control_envelope_and_kinds_match_the_crate() {
+    let document = document();
+    let section = &document[document
+        .find("## Uplink control messages")
+        .expect("the document specifies control messages")..];
+
+    assert!(
+        section.contains(&format!("exactly `0x{MAGIC_CONTROL:08X}`")),
+        "the control magic is not stated as 0x{MAGIC_CONTROL:08X}"
+    );
+    assert!(
+        section.contains(&format!("| `version` | exactly `{CONTROL_VERSION}` |")),
+        "the control version is not stated as {CONTROL_VERSION}"
+    );
+    assert!(
+        section.contains(&format!("at most {MAX_CONTROL_WORDS} words")),
+        "the control ceiling is not stated as {MAX_CONTROL_WORDS} words"
+    );
+
+    // Anchored on the kinds table's own header row, which `table_after` skips.
+    let declared: Vec<(u32, String, u32)> = table_after(section, "| Kind | Name | Words |")
+        .iter()
+        .map(|cells| {
+            (
+                cells[0].parse().expect("the kind column is a number"),
+                strip_code_ticks(&cells[1]),
+                cells[2].parse().expect("the words column is a number"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        declared,
+        vec![(
+            UP_REQUEST_FRAME,
+            "REQUEST_FRAME".to_string(),
+            REQUEST_FRAME_WORDS
+        )],
+        "the document's control kinds and the crate's disagree"
+    );
+}
+
+#[test]
+fn the_document_control_refusal_table_lists_exactly_the_codes_the_crate_defines() {
+    let in_source = variant_names_in("control.rs", "ControlError");
+    let exported: Vec<String> = ControlError::ALL
+        .iter()
+        .map(|error| error.name().to_string())
+        .collect();
+    assert_eq!(
+        exported, in_source,
+        "ControlError::ALL is not the source's variants in order"
+    );
+
+    let document = document();
+    let documented: Vec<(u32, String)> = table_after(&document, "### Control refusals")
+        .iter()
+        .map(|cells| {
+            (
+                cells[0].parse().expect("the code column is a number"),
+                strip_code_ticks(&cells[1]),
+            )
+        })
+        .collect();
+    let expected: Vec<(u32, String)> = ControlError::ALL
+        .iter()
+        .map(|error| (error.code(), error.name().to_string()))
+        .collect();
+    assert_eq!(
+        documented, expected,
+        "the document's control refusal table and the crate's codes disagree"
+    );
+    assert_eq!(expected[0].0, CONTROL_ERROR_BASE);
 }
