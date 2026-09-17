@@ -237,15 +237,16 @@ done
 
 # The deployment floor, read out of the bytes about to be published.
 #
-# The first archives published by this recipe were compiled with no
-# MACOSX_DEPLOYMENT_TARGET, so clang used the build machine's own OS: every Skia
+# The first archives published by this recipe were compiled with no macOS
+# deployment target in the environment, so clang used the build machine's own OS: every Skia
 # object said `minos 15.0` and the bindings `15.5`, against an 11.0 floor. That
 # was caught by the apple-sdk floor gate on every macOS leg that linked them --
 # after publication, in every consumer. The same gate, with the same Mach-O
 # reader and the same contract, runs here before there is anything to consume.
 if ! bash "$ROOT/scripts/test-apple-deployment-floor-contract.sh" --artifacts "$STAGE/skia-binaries" >&2; then
     fail "the staged libraries are not built against the macOS floor in contracts/apple/deployment-floor.json.
-      Build with MACOSX_DEPLOYMENT_TARGET set from that file, as .github/workflows/apple-skia-binaries.yml does."
+      Export what 'scripts/build-apple-sdk.sh --print-deployment-env macos' prints before building,
+      as .github/workflows/apple-skia-binaries.yml does."
 fi
 info "deployment floor      every staged object is at or below contracts/apple/deployment-floor.json"
 

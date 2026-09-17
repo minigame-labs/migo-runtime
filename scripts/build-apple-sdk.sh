@@ -40,6 +40,7 @@ CONFIGURATION="Debug"
 CODE_SIGNING="off"
 PRODUCT=""
 PRINT_TARGET=""
+PRINT_ENV=""
 PRINT_SLICES=""
 PRINT_PLATFORMS=0
 ASSEMBLE_ONLY=0
@@ -57,6 +58,7 @@ usage: build-apple-sdk.sh --platform <ios|ios-simulator|macos>
                           [--code-signing on|off]
                           [--assemble-only] [--require-all-slices]
        build-apple-sdk.sh --print-deployment-target <ios|macos>
+       build-apple-sdk.sh --print-deployment-env <ios|macos>
        build-apple-sdk.sh --print-slices <ios|ios-simulator|macos>
        build-apple-sdk.sh --print-platforms
 
@@ -65,6 +67,15 @@ usage: build-apple-sdk.sh --platform <ios|ios-simulator|macos>
                              and exit. Runs on any host: it is how the contract
                              gate checks the script's real behaviour instead of
                              grepping it for a number.
+  --print-deployment-env     Print the compiler environment assignment for that
+                             target -- the platform's variable name and value,
+                             both from the contract, as NAME=VALUE -- and exit.
+                             For a build that is not this one but has to compile
+                             against the same floor (the macOS Skia archives):
+                             it exports what this prints instead of naming the
+                             variable itself, so the floor gate's sweep still
+                             finds one declaration, and the gate checks this
+                             output the way it checks --print-deployment-target.
   --print-slices             Print the Rust target triples this platform's
                              xcframework slice group is built from, one per
                              line, and exit. Also runs on any host, and for the
@@ -129,6 +140,7 @@ while [ $# -gt 0 ]; do
         --configuration) CONFIGURATION="${2:-}"; shift 2 ;;
         --code-signing)  CODE_SIGNING="${2:-}"; shift 2 ;;
         --print-deployment-target) PRINT_TARGET="${2:-}"; shift 2 ;;
+        --print-deployment-env) PRINT_ENV="${2:-}"; shift 2 ;;
         --print-slices)  PRINT_SLICES="${2:-}"; shift 2 ;;
         --print-platforms) PRINT_PLATFORMS=1; shift ;;
         --assemble-only) ASSEMBLE_ONLY=1; shift ;;
@@ -184,12 +196,24 @@ CAPILIB
 }
 
 read_deployment_target() {
-    local platform="$1"
-    python3 - "$CONTRACT" "$platform" <<'PY'
+    read_deployment_floor "$1" target
+}
+
+# NAME=VALUE for the platform's compiler environment, both halves from the
+# contract. The build below exports exactly this, so --print-deployment-env and
+# the build cannot disagree about either the name or the number.
+read_deployment_env() {
+    read_deployment_floor "$1" env
+}
+
+read_deployment_floor() {
+    local platform="$1" form="$2"
+    python3 - "$CONTRACT" "$platform" "$form" <<'PY'
 import json
+import re
 import sys
 
-path, platform = sys.argv[1], sys.argv[2]
+path, platform, form = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path, encoding="utf-8") as handle:
     contract = json.load(handle)
 entry = (contract.get("platforms") or {}).get(platform)
@@ -200,7 +224,14 @@ target = entry.get("deployment_target")
 if not target:
     print(f"{platform} declares no deployment_target", file=sys.stderr)
     raise SystemExit(1)
-print(target)
+if form == "target":
+    print(target)
+    raise SystemExit(0)
+variable = entry.get("xcode_variable") or ""
+if not re.fullmatch(r"[A-Z][A-Z0-9_]*", variable):
+    print(f"{platform} declares no usable xcode_variable: {variable!r}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"{variable}={target}")
 PY
 }
 
@@ -222,6 +253,11 @@ resolve_platform() {
 
 if [ -n "$PRINT_TARGET" ]; then
     read_deployment_target "$PRINT_TARGET" || exit 1
+    exit 0
+fi
+
+if [ -n "$PRINT_ENV" ]; then
+    read_deployment_env "$PRINT_ENV" || exit 1
     exit 0
 fi
 
@@ -443,10 +479,11 @@ cd "$ENGINE_DIR" || exit 1
 
 for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
     info "cargo build $target"
+    DEPLOYMENT_ENV="$(read_deployment_env "$FLOOR_PLATFORM")" || exit 1
+    export "${DEPLOYMENT_ENV?}"
     case "$FLOOR_PLATFORM" in
-        ios)   export IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" ;;
+        ios)   ;;
         macos)
-            export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
             # Skia's macOS default is compile-time desktop GL, and every GL
             # context Migo supplies on Apple is ANGLE, which is ES. Without this
             # no Canvas2D surface can build a GrDirectContext on macOS at all --

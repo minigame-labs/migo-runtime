@@ -141,18 +141,19 @@ jobs:
           # `package-apple-skia-binaries.sh` refuses a downloaded build, so it
           # would fail rather than lie, but it would fail for an obscure reason.
           export MIGO_SKIA_FROM_SOURCE=1
-          # The macOS deployment floor, from the contract every Apple build reads
-          # it from. Without it clang falls back to the runner's own OS: the
-          # first archives published from here carried `minos 15.0` in every
-          # Skia object and `15.5` in the bindings, against an 11.0 floor, and
-          # the apple-sdk floor gate turned red on every macOS leg that linked
-          # them. skia-bindings also turns this into the
-          # __MAC_OS_X_VERSION_{MIN_REQUIRED,MAX_ALLOWED} defines Skia's sources
-          # branch on, so the archive is not the build apple-sdk.yml makes from
-          # source unless this is set the way build-apple-sdk.sh sets it.
-          MACOSX_DEPLOYMENT_TARGET="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platforms"]["macos"]["deployment_target"])' ../contracts/apple/deployment-floor.json)"
-          export MACOSX_DEPLOYMENT_TARGET
-          echo "MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+          # The macOS deployment floor, exported exactly as build-apple-sdk.sh
+          # exports it for its own macOS build -- the variable and the value
+          # both come from contracts/apple/deployment-floor.json through that
+          # script, so this file names neither. Without it clang falls back to
+          # the runner's own OS: the first archives published from here carried
+          # `minos 15.0` in every Skia object and `15.5` in the bindings against
+          # an 11.0 floor, and the apple-sdk floor gate turned red on every
+          # macOS leg that linked them. skia-bindings also turns the floor into
+          # the version-bound defines Skia's sources branch on, so the archive
+          # is only the build apple-sdk.yml would make from source with it set.
+          deployment_env="$(bash ../scripts/build-apple-sdk.sh --print-deployment-env macos)"
+          export "${deployment_env?}"
+          echo "deployment environment: $deployment_env"
           # shellcheck source=scripts/apple-skia-gl-env.sh
           . ../scripts/apple-skia-gl-env.sh
           cargo build -p migo-graphics --target ${{ matrix.target }} --lib
@@ -221,7 +222,7 @@ jobs:
           # Naming a release after the requirement would make two different
           # builds share a tag.
           version="$(tar -xzOf "${archives[0]}" skia-binaries/tag.txt)"
-          floor="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platforms"]["macos"]["deployment_target"])' contracts/apple/deployment-floor.json)"
+          floor="$(bash scripts/build-apple-sdk.sh --print-deployment-target macos)"
           tag="skia-apple-${version}-${hash:0:8}-macos${floor}"
           echo "tag $tag"
           for archive in "${archives[@]}"; do
