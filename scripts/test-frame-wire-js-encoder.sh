@@ -429,6 +429,14 @@ if (( status != 0 )); then
 fi
 node "$TEST_DIR/emit-control.mjs" read "$CONTROL_FROM_RUST"
 
+# --- the engine's API layer on the producer ---------------------------------
+#
+# `engine-bundle.test.mjs` needs the staged engine and a Rust check of the frames
+# it draws, so scripts/test-performance-plus-engine-contract.sh runs it with
+# both. Named here so the coverage check below does not run it a second time
+# without the half that reads its output.
+RAN_TESTS+=("$TEST_DIR/engine-bundle.test.mjs")
+
 # --- the producer's own suites: run the named ones, then prove that was all ---
 #
 # Each `node "$..."` above has a paragraph saying what that suite establishes,

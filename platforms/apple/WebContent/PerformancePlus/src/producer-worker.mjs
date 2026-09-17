@@ -11,6 +11,7 @@
 // content is the game's, this is the engine's, and one bundle holding both would
 // mean an engine release could not be swapped under a game that already shipped.
 
+import { bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
 import { SyncCaller } from "./sync-call.mjs";
 import { connectFrameSession } from "./worker-bootstrap.mjs";
 
@@ -69,6 +70,26 @@ self.onmessage = async (event) => {
   // build endpoints.
   const sync =
     typeof config.syncCallUrl === "string" ? new SyncCaller({ url: config.syncCallUrl }) : undefined;
+
+  // The engine's own API layer -- WebGL, Canvas2D, `migo.*` -- when the host
+  // described the session it answers for. Loaded before content, as the
+  // embedded runtime evaluates its extensions before a game's first line: content
+  // finds `migo`, `requestAnimationFrame` and the canvases already there.
+  if (config.engineSession !== undefined) {
+    try {
+      bindEngineHost({
+        session,
+        identity: readEngineSessionConfig(config.engineSession),
+        socketCeilingBytes: config.socketCeilingBytes,
+        sync,
+      });
+      await import("./engine/boot.mjs");
+    } catch (error) {
+      report({ type: "failed", stage: "engine", detail: String(error && (error.stack || error)) });
+      return;
+    }
+    report({ type: "engine-ready" });
+  }
 
   if (typeof config.contentEntry === "string") {
     try {

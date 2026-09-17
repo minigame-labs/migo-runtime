@@ -17,6 +17,16 @@ export const CHANNEL_SOCKET = "loopback_websocket";
 export const CHANNEL_SCHEME = "scheme_request";
 
 /**
+ * Whether a packet of `byteLength` bytes leaves as a scheme request rather than
+ * on the socket. The one statement of the rule, because a producer that reuses
+ * packet buffers has to know it too: the socket copies a packet when it is sent,
+ * and a scheme request's body is read later.
+ */
+export function leavesOnScheme(byteLength, socketCeilingBytes) {
+  return byteLength > socketCeilingBytes;
+}
+
+/**
  * A sender that picks a channel per packet.
  *
  * @param {object} options
@@ -46,7 +56,7 @@ export function createHybridSender({
   }
 
   return function send(bytes) {
-    if (bytes.byteLength <= socketCeilingBytes || typeof schemeUrl !== "string") {
+    if (!leavesOnScheme(bytes.byteLength, socketCeilingBytes) || typeof schemeUrl !== "string") {
       sendOverSocket(bytes);
       return CHANNEL_SOCKET;
     }

@@ -53,28 +53,65 @@ const OFF_FLAGS = 68;
 const OFF_SECTION_COUNT = 72;
 const OFF_CHECKSUM = 76;
 
-const CRC_TABLE = (() => {
-  // CRC32 (IEEE), the same polynomial crc32fast uses on the reading side.
-  // Built once rather than pulled from a dependency: this file is loaded into
-  // the process that runs untrusted game code, and every import is one more
-  // thing inside that boundary.
-  const table = new Uint32Array(256);
+// CRC32 (IEEE), the same polynomial crc32fast uses on the reading side, table
+// driven eight bytes at a time ("slicing-by-8"). Built here rather than pulled
+// from a dependency: this file is loaded into the process that runs untrusted
+// game code, and every import is one more thing inside that boundary. Eight at
+// a time because the producer checksums every frame it sends, whole, and a
+// byte-at-a-time loop is the difference between a checksum that shows up in a
+// frame's profile and one that does not.
+const CRC_TABLES = (() => {
+  const tables = new Uint32Array(256 * 8);
   for (let index = 0; index < 256; index += 1) {
     let value = index;
     for (let bit = 0; bit < 8; bit += 1) {
       value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
     }
-    table[index] = value >>> 0;
+    tables[index] = value >>> 0;
   }
-  return table;
+  for (let slice = 1; slice < 8; slice += 1) {
+    for (let index = 0; index < 256; index += 1) {
+      const previous = tables[(slice - 1) * 256 + index];
+      tables[slice * 256 + index] = (previous >>> 8) ^ tables[previous & 0xff];
+    }
+  }
+  return tables;
 })();
 
-function crc32(bytes, from, to) {
-  let crc = 0xffffffff;
-  for (let index = from; index < to; index += 1) {
-    crc = CRC_TABLE[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
+/** Fold bytes[from, to) into a running CRC (pre-inverted state in, out). */
+function crcUpdate(state, bytes, from, to) {
+  const t = CRC_TABLES;
+  let crc = state;
+  let index = from;
+  for (; to - index >= 8; index += 8) {
+    const word =
+      crc ^ (bytes[index] | (bytes[index + 1] << 8) | (bytes[index + 2] << 16) | (bytes[index + 3] << 24));
+    crc =
+      t[1792 + (word & 0xff)] ^
+      t[1536 + ((word >>> 8) & 0xff)] ^
+      t[1280 + ((word >>> 16) & 0xff)] ^
+      t[1024 + (word >>> 24)] ^
+      t[768 + bytes[index + 4]] ^
+      t[512 + bytes[index + 5]] ^
+      t[256 + bytes[index + 6]] ^
+      t[bytes[index + 7]];
   }
-  return (crc ^ 0xffffffff) >>> 0;
+  for (; index < to; index += 1) {
+    crc = t[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
+  }
+  return crc >>> 0;
+}
+
+function crcZeros(state, count) {
+  let crc = state;
+  for (let index = 0; index < count; index += 1) {
+    crc = CRC_TABLES[crc & 0xff] ^ (crc >>> 8);
+  }
+  return crc >>> 0;
+}
+
+function crc32(bytes, from, to) {
+  return (crcUpdate(0xffffffff, bytes, from, to) ^ 0xffffffff) >>> 0;
 }
 
 /**
@@ -97,17 +134,13 @@ export function sequenceOf(bytes) {
 
 /** CRC32 of the whole packet with the checksum field's own four bytes as zero. */
 export function checksum(bytes) {
-  let crc = 0xffffffff;
-  const update = (byte) => {
-    crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  };
   const head = Math.min(bytes.length, OFF_CHECKSUM);
-  for (let index = 0; index < head; index += 1) update(bytes[index]);
-  if (bytes.length >= OFF_CHECKSUM + 4) {
-    for (let index = 0; index < 4; index += 1) update(0);
-    for (let index = OFF_CHECKSUM + 4; index < bytes.length; index += 1) update(bytes[index]);
-  } else if (bytes.length > OFF_CHECKSUM) {
-    for (let index = 0; index < 4; index += 1) update(0);
+  let crc = crcUpdate(0xffffffff, bytes, 0, head);
+  if (bytes.length > OFF_CHECKSUM) {
+    crc = crcZeros(crc, 4);
+    if (bytes.length >= OFF_CHECKSUM + 4) {
+      crc = crcUpdate(crc, bytes, OFF_CHECKSUM + 4, bytes.length);
+    }
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
@@ -200,6 +233,155 @@ export function encodeFrame({
 
   view.setUint32(OFF_CHECKSUM, checksum(bytes), true);
   return bytes;
+}
+
+// A frame's command words are copied into the packet through a Uint32Array
+// view, which writes in the platform's byte order; the wire is little-endian.
+// Every platform WebKit ships on is, and this says so rather than assuming.
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+// The one-section packet the producer sends every frame: header, a single
+// COMMAND_STREAM table entry, then the stream at the first aligned offset.
+const STREAM_PAYLOAD_OFFSET = HEADER_BYTES + SECTION_ENTRY_BYTES;
+const STREAM_HEADER_WORDS = 2;
+
+/**
+ * One frame's packet, built in place.
+ *
+ * The encoder above takes finished sections and copies them into a new packet,
+ * which is right for a corpus and wrong for a frame loop: every frame would pay
+ * an allocation the size of its stream and a second copy of every command. This
+ * reserves the header and the section table at the front of one buffer, takes
+ * the frame's command words straight into it, and fills the header in when the
+ * frame ends -- so a frame costs one copy of its words, one checksum pass, and
+ * no allocation once the buffer has grown to the frame sizes content produces.
+ *
+ * The bytes are exactly `encodeFrame`'s for the same frame: the producer's test
+ * suite holds the two to each other.
+ */
+export class FramePacketWriter {
+  constructor({ launchNonce, runtimeGeneration, surfaceGeneration = 0n, resourceEpoch = 0n, magic, streamVersion }) {
+    if (!LITTLE_ENDIAN) {
+      throw new Error("FramePacketWriter needs a little-endian platform; the frame wire is little-endian");
+    }
+    for (const [name, value] of Object.entries({ launchNonce, runtimeGeneration, surfaceGeneration, resourceEpoch })) {
+      if (typeof value !== "bigint") throw new TypeError(`${name} is a BigInt`);
+    }
+    if (typeof magic !== "number" || typeof streamVersion !== "number") {
+      throw new TypeError("the command stream's magic and version come from render-opcodes.mjs");
+    }
+    this.#launchNonce = launchNonce;
+    this.#runtimeGeneration = runtimeGeneration;
+    this.surfaceGeneration = surfaceGeneration;
+    this.resourceEpoch = resourceEpoch;
+    this.#magic = magic;
+    this.#streamVersion = streamVersion;
+    this.#allocate(64 * 1024);
+  }
+
+  #launchNonce;
+  #runtimeGeneration;
+  #magic;
+  #streamVersion;
+  #buffer;
+  #bytes;
+  #words;
+  #view;
+  // Words appended so far, the stream header included once anything is.
+  #used = 0;
+
+  #allocate(bytes) {
+    this.#buffer = new ArrayBuffer(bytes);
+    this.#bytes = new Uint8Array(this.#buffer);
+    this.#words = new Uint32Array(this.#buffer);
+    this.#view = new DataView(this.#buffer);
+    this.#used = 0;
+  }
+
+  /** Command words appended to this frame, not counting the stream header. */
+  get wordCount() {
+    return this.#used === 0 ? 0 : this.#used - STREAM_HEADER_WORDS;
+  }
+
+  /**
+   * Append `words[from, to)`, which are complete command records.
+   * Throws RangeError past the packet ceiling: a frame that large cannot be
+   * represented, and dropping part of it would draw half a frame.
+   */
+  appendWords(words, from, to) {
+    const count = to - from;
+    if (count <= 0) return;
+    if (this.#used === 0) this.#used = STREAM_HEADER_WORDS;
+    const neededBytes = STREAM_PAYLOAD_OFFSET + (this.#used + count) * 4 + SECTION_ALIGNMENT;
+    if (neededBytes > this.#buffer.byteLength) {
+      if (neededBytes > MAX_TOTAL_BYTES) {
+        throw new RangeError(`a frame of ${neededBytes} bytes is above the ${MAX_TOTAL_BYTES}-byte packet ceiling`);
+      }
+      let capacity = this.#buffer.byteLength;
+      while (capacity < neededBytes) capacity *= 2;
+      const previous = this.#bytes;
+      const usedBytes = STREAM_PAYLOAD_OFFSET + this.#used * 4;
+      const used = this.#used;
+      this.#allocate(Math.min(capacity, MAX_TOTAL_BYTES));
+      this.#bytes.set(previous.subarray(0, usedBytes));
+      this.#used = used;
+    }
+    // Word index, not byte offset: the payload starts on a word boundary.
+    this.#words.set(words.subarray(from, to), STREAM_PAYLOAD_OFFSET / 4 + this.#used);
+    this.#used += count;
+  }
+
+  /**
+   * Finish the frame and return its packet, a view over this writer's buffer.
+   * `sequence` and `frameId` are Numbers; a sequence stays inside 2^53 for
+   * longer than a session runs.
+   */
+  finish(sequence, frameId) {
+    if (this.#used === 0) throw new Error("finish() on a frame with no commands");
+    const words = this.#words;
+    const payloadWord = STREAM_PAYLOAD_OFFSET / 4;
+    words[payloadWord] = this.#magic;
+    words[payloadWord + 1] = this.#streamVersion;
+    const streamBytes = this.#used * 4;
+    const end = STREAM_PAYLOAD_OFFSET + streamBytes;
+    const total = alignUp(end);
+    this.#bytes.fill(0, end, total);
+
+    const view = this.#view;
+    view.setUint32(OFF_MAGIC, WIRE_MAGIC, true);
+    view.setUint32(OFF_WIRE_VERSION, WIRE_VERSION, true);
+    view.setUint32(OFF_HEADER_BYTES, HEADER_BYTES, true);
+    view.setUint32(OFF_TOTAL_BYTES, total, true);
+    writeU128(view, OFF_LAUNCH_NONCE, this.#launchNonce);
+    view.setUint32(OFF_SEQUENCE, sequence >>> 0, true);
+    view.setUint32(OFF_SEQUENCE + 4, Math.floor(sequence / 0x1_0000_0000) >>> 0, true);
+    writeU64(view, OFF_RUNTIME_GENERATION, this.#runtimeGeneration);
+    writeU64(view, OFF_SURFACE_GENERATION, this.surfaceGeneration);
+    writeU64(view, OFF_RESOURCE_EPOCH, this.resourceEpoch);
+    view.setUint32(OFF_FRAME_ID, frameId >>> 0, true);
+    view.setUint32(OFF_FLAGS, FLAG_PRESENT, true);
+    view.setUint32(OFF_SECTION_COUNT, 1, true);
+    view.setUint32(HEADER_BYTES, SECTION_KIND_COMMAND_STREAM, true);
+    view.setUint32(HEADER_BYTES + 4, STREAM_PAYLOAD_OFFSET, true);
+    view.setUint32(HEADER_BYTES + 8, streamBytes, true);
+    view.setUint32(HEADER_BYTES + 12, this.#used, true);
+    const packet = this.#bytes.subarray(0, total);
+    view.setUint32(OFF_CHECKSUM, checksum(packet), true);
+    return packet;
+  }
+
+  /** Start the next frame in the same buffer. The last packet's bytes are dead. */
+  reset() {
+    this.#used = 0;
+  }
+
+  /**
+   * Start the next frame in a new buffer, leaving the last packet's bytes to
+   * whoever still holds them -- a request body the uplink has not read yet.
+   */
+  detach() {
+    this.#allocate(this.#buffer.byteLength);
+  }
 }
 
 export { crc32 as crc32ForTesting };

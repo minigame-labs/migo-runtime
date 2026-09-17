@@ -1,4 +1,8 @@
-const { core } = Deno;
+// From ext:core/mod.js, as every other engine module takes it: the global
+// `Deno` is deno_core's bootstrap object, deleted before content runs and absent
+// on a runtime that is not deno_core.
+import { core } from "ext:core/mod.js";
+
 const { ops } = core;
 
 // Line height is a pure function of (family, size, bold, italic). The only
