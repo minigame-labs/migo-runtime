@@ -61,6 +61,37 @@ fi
 checked=0
 broken=0
 
+# The file with its fenced code blocks blanked. Text inside a fence is shown,
+# not rendered: a template that spells out `[back](/docs/<same path>/)` for an
+# author to copy is not a link anybody can click, and reading it as one fails
+# every page that documents how to write links. CommonMark's rule: a fence opens
+# with three or more backticks or tildes and closes with at least as many of the
+# same character.
+prose_only() {
+    awk '
+        {
+            line = $0
+            sub(/^ {0,3}/, "", line)
+            if (fence_len > 0) {
+                closing = line
+                sub(/[[:space:]]+$/, "", closing)
+                if (closing ~ ("^" fence_char "+$") && length(closing) >= fence_len) {
+                    fence_len = 0
+                }
+                print ""
+                next
+            }
+            if (match(line, /^(`{3,}|~{3,})/)) {
+                fence_char = substr(line, 1, 1)
+                fence_len = RLENGTH
+                print ""
+                next
+            }
+            print
+        }
+    ' "$1"
+}
+
 while IFS= read -r md; do
     dir="$(dirname "$md")"
     while IFS= read -r match; do
@@ -81,7 +112,7 @@ while IFS= read -r md; do
             echo "  untracked: $md -> $link (present here, absent in a clone)" >&2
             broken=$((broken + 1))
         fi
-    done < <(grep -oE '\]\([^)[:space:]]+\)' "$md" 2>/dev/null || true)
+    done < <(prose_only "$md" | grep -oE '\]\([^)[:space:]]+\)' 2>/dev/null || true)
 done <<< "$md_list"
 
 # ── The same rule for the contracts, which are read rather than clicked ──────

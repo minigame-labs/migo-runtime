@@ -964,7 +964,7 @@ pub(crate) const ANDROID_PERMISSION_GATED_METHODS: &[(&str, Scope)] = &[
     ("RecorderService::pause", Scope::Record),
     ("RecorderService::resume", Scope::Record),
     ("CameraService::create", Scope::Camera),
-    ("CameraService::take_photo", Scope::Camera),
+    ("CameraService::take_photo_async", Scope::Camera),
     ("CameraService::start_record", Scope::Camera),
     ("CameraService::set_zoom", Scope::Camera),
     ("CameraService::listen_frame_change", Scope::Camera),

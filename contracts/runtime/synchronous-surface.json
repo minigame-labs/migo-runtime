@@ -140,6 +140,12 @@
       "producer_answers_locally": "no",
       "note": "The pixels are on the renderer's side by definition. No producer-side answer exists."
     },
+    "GLCmd::ReadPixelsToBuffer": {
+      "api": "WebGL2RenderingContext.readPixels (with a PIXEL_PACK_BUFFER bound)",
+      "reply": "always",
+      "producer_answers_locally": "no",
+      "note": "No pixels come back: they are written into the bound pack buffer on the renderer. The reply carries only the outcome, which the op turns into a WebGL error (OUT_OF_MEMORY, INVALID_VALUE, INVALID_FRAMEBUFFER_OPERATION). Nothing but that error depends on waiting, so the call could be answerless -- errors surfaced at the next getError, as the Performance+ op boundary already classifies op_read_pixels_to_buffer -- and is recorded as crossing because today it does."
+    },
     "GLCmd::ShaderSource": {
       "api": "WebGLRenderingContext.shaderSource",
       "reply": "optional",

@@ -257,7 +257,7 @@ check_literal "$FLOOR_SWIFT" "let performancePlusMinimumIOS = $(swift_tuple "$pe
 # Both configurations, because a Debug-only floor is the one an operator
 # actually installs on a phone and a Release-only floor is the one a lane
 # builds -- either alone would leave the other unchecked.
-for pbxproj in "${XCODE_PBXPROJS[@]}"; do
+for pbxproj in ${XCODE_PBXPROJS[@]+"${XCODE_PBXPROJS[@]}"}; do
     rel="${pbxproj#$REPO_ROOT/}"
     if [ ! -f "$pbxproj" ]; then
         # Listed and absent is a stale list, not a project that has not been
