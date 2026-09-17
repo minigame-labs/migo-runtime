@@ -6,7 +6,7 @@ use shared::command_vec_pool::{
     CANVAS_COMMAND_VEC_INITIAL_CAPACITY, FRAME_OP_VEC_INITIAL_CAPACITY,
     GL_COMMAND_VEC_INITIAL_CAPACITY,
 };
-use shared::protocol::render_cmd::{Canvas2DCmd, GLCmd, UniformF32Values};
+use shared::protocol::render_cmd::{Canvas2DCmd, GLCmd};
 use shared::protocol::{FrameOp, FramePacket};
 
 /// The most owned storage one external frame packet may decode into.
@@ -216,6 +216,7 @@ impl Counter {
 #[cfg(test)]
 mod bound_tests {
     use super::*;
+    use shared::protocol::render_cmd::UniformF32Values;
 
     /// Not a compile-time assertion only because `SmallVec`'s inline size is not
     /// a `const` expression.
