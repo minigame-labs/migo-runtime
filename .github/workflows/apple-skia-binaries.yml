@@ -155,7 +155,7 @@ jobs:
           export "${deployment_env?}"
           echo "deployment environment: $deployment_env"
           # shellcheck source=scripts/apple-skia-gl-env.sh
-          . ../scripts/apple-skia-gl-env.sh
+          . ../scripts/apple-skia-gl-env.sh ${{ matrix.target }}
           cargo build -p migo-graphics --target ${{ matrix.target }} --lib
 
       - name: Package

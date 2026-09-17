@@ -490,7 +490,7 @@ for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
             # see the file for the mechanism. iOS needs nothing: its default is
             # already "gles".
             # shellcheck source=scripts/apple-skia-gl-env.sh
-            . "$SCRIPT_DIR/apple-skia-gl-env.sh"
+            . "$SCRIPT_DIR/apple-skia-gl-env.sh" "$target" || exit 1
             ;;
     esac
 

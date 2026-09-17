@@ -25,7 +25,13 @@
     "contracts/apple/deployment-floor.json, which the tag names. The first archives",
     "(tag skia-apple-0.93.1-31932366) were not: clang took the build runner's OS, so every",
     "Skia object said minos 15.0 against an 11.0 floor. The recipe now checks the bytes",
-    "before packaging, and a published tag is never re-uploaded."
+    "before packaging, and a published tag is never re-uploaded.",
+    "",
+    "Builds do not let skia-bindings download these. Its downloader caches by file",
+    "name and resumes, the names are upstream's, and a build directory that once held",
+    "upstream's archive linked it again with a green build. scripts/materialise-apple-skia.py",
+    "fetches them whole, checks size and sha256 against this file, and hands",
+    "skia-bindings a file:// URL."
   ],
   "source": {
     "crate": "skia-bindings",

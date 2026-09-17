@@ -161,23 +161,46 @@ export SKIA_GN_ARGS="${SKIA_GN_ARGS:+$SKIA_GN_ARGS }skia_gl_standard=\"\""
 # switch that takes the download out of the path. `MIGO_SKIA_FROM_SOURCE=1`
 # restores it, and two callers need that: the packaging workflow, which must
 # build what it is going to publish, and anybody bisecting Skia itself.
+#
+# ## The download is ours, not skia-bindings'
+#
+# Pointing `SKIA_BINARIES_URL` at the release was not enough, and the reason is
+# in `scripts/materialise-apple-skia.py`: skia-bindings caches downloads by file
+# name and resumes them, our archives share their names with upstream's, and a
+# build directory that ever held upstream's archive "resumed" into it and linked
+# desktop-GL Skia with a green build. Measured 2026-09-17 on the CI row that
+# restores a cached target directory, while the row that caches nothing passed
+# with the same lock. So the archives are fetched and checked against the lock's
+# sha256 there, and skia-bindings is given a `file://` template, which it reads
+# directly and never caches.
+#
+# Source this with the target triples the build is for:
+#
+#     . scripts/apple-skia-gl-env.sh aarch64-apple-darwin
+#
+# Named rather than defaulted to "all of them", because a sourced file with no
+# arguments sees its CALLER's positional parameters, and a build script's own
+# arguments are not triples. A triple the lock does not have is refused.
 if [ -n "${MIGO_SKIA_FROM_SOURCE:-}" ]; then
     export FORCE_SKIA_BUILD=1
 else
-    # Read from the lock rather than repeated here: a URL in two places is a URL
-    # that gets updated in one of them.
-    _migo_skia_lock="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/contracts/artifact-manifest/apple-skia.lock.json"
-    if [ -f "$_migo_skia_lock" ]; then
-        SKIA_BINARIES_URL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["url_template"])' "$_migo_skia_lock")"
-        export SKIA_BINARIES_URL
-    else
-        # Fail loud rather than fall back to upstream's archives: those are the
-        # ones with SK_ASSUME_GL compiled in, and taking them silently is the
-        # original defect returning with a green build.
-        echo "apple-skia-gl-env.sh: $_migo_skia_lock is missing, so the corrected" >&2
-        echo "  macOS Skia cannot be located. Building from source instead, which is" >&2
-        echo "  slow and correct. Set MIGO_SKIA_FROM_SOURCE=1 to silence this." >&2
-        export FORCE_SKIA_BUILD=1
+    if [ "$#" -eq 0 ]; then
+        echo "apple-skia-gl-env.sh: name the target triples, e.g." >&2
+        echo "  . scripts/apple-skia-gl-env.sh aarch64-apple-darwin" >&2
+        return 1 2>/dev/null || exit 1
     fi
-    unset _migo_skia_lock
+    # Not a fallback to a source build when this fails. An archive that does not
+    # match the lock is an integrity failure, and a network that cannot reach the
+    # release is a machine that should say so; `MIGO_SKIA_FROM_SOURCE=1` is the
+    # deliberate way to build without it.
+    _migo_skia_scripts="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+    if ! SKIA_BINARIES_URL="$(python3 "$_migo_skia_scripts/materialise-apple-skia.py" "$@")"; then
+        unset _migo_skia_scripts
+        unset SKIA_BINARIES_URL
+        echo "apple-skia-gl-env.sh: the locked macOS Skia archives could not be materialised." >&2
+        echo "  Set MIGO_SKIA_FROM_SOURCE=1 to build Skia from source instead (8-9 minutes a target)." >&2
+        return 1 2>/dev/null || exit 1
+    fi
+    unset _migo_skia_scripts
+    export SKIA_BINARIES_URL
 fi

@@ -72,6 +72,11 @@ on:
       # exactly the traffic that would not notice.
       - 'engine/crates/graphics/**'
       - 'scripts/apple-skia-gl-env.sh'
+      # What that fragment links: the locked archives, and the script that
+      # fetches and verifies them. A lock change is a different Skia in every
+      # macOS row, and it did not trigger this workflow.
+      - 'scripts/materialise-apple-skia.py'
+      - 'contracts/artifact-manifest/apple-skia.lock.json'
       - 'scripts/build-apple-sdk.sh'
       # The gate that runs a game through the shipping macOS archive, and the
       # fixture it runs. Both are macOS-only and neither was here.
@@ -418,7 +423,7 @@ jobs:
         run: |
           host="$(rustc -vV | sed -n 's/^host: //p')"
           # shellcheck source=scripts/apple-skia-gl-env.sh
-          . ../scripts/apple-skia-gl-env.sh
+          . ../scripts/apple-skia-gl-env.sh "$host"
           cargo test -p migo-graphics --locked --target "$host" --tests
 
       - name: The Apple presenter's ANGLE bring-up runs on Apple silicon
@@ -430,7 +435,7 @@ jobs:
           # to be the same one: this step asks whether Skia builds a Canvas2D
           # context on ANGLE, and a Skia compiled for desktop GL answers no for a
           # reason that is about this command line rather than about the product.
-          . ../scripts/apple-skia-gl-env.sh
+          . ../scripts/apple-skia-gl-env.sh "$host"
           DYLD_LIBRARY_PATH="$MIGO_DIAGNOSTIC_ANGLE" \
             cargo test -p migo-platform --locked --target "$host" \
             --no-default-features --features external-frames
