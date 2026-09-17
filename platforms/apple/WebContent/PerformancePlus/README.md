@@ -35,8 +35,12 @@ latency and 6.1× on host CPU, on every synchronous readback the engine performs
 Window stays supported as a fallback with a known price, not as a candidate.
 
 Game JavaScript/Wasm runs in the Worker, and the Worker owns its own transport:
-frames go out on the socket or as scheme requests (`uplink.mjs`), and verdicts
+frames go out on the socket or as scheme requests (`uplink.mjs`), requests for the
+next frame go out on the socket as control messages (`control.mjs`), and verdicts
 and ticks come back on the socket. There is no Window relay on the frame path.
+`FrameSession` (`frame-session.mjs`) sends against the window the host last
+advertised -- `remaining_credits - (sent - accepted_sequence)` -- from an accepted
+verdict or a tick, and starts at `(1, 0)`.
 
 **A synchronous readback is a synchronous request, not `Atomics.wait`.** The
 content origin is a custom scheme, which WebKit does not isolate, so there is no

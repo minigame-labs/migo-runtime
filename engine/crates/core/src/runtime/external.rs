@@ -21,7 +21,7 @@
 use std::collections::VecDeque;
 use std::sync::{
     Arc, OnceLock, Weak,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use parking_lot::{Condvar, Mutex};
@@ -35,13 +35,14 @@ use shared::{
     surface::SurfaceRef,
 };
 
-use frame_wire::IngressDecision;
+use frame_wire::control::{ControlError, ControlRecord, read_control};
 use frame_wire::downlink::{DownlinkQueue, DownlinkRecord};
 use frame_wire::sync::{
     ReadPixelsParams, SYNC_OP_READ_PIXELS, SyncAnswer, SyncError, SyncMailbox, SyncRequest,
     SyncState,
 };
 use frame_wire::{FrameIngress, IngressOutcome, PooledFrame, stream};
+use frame_wire::{IngressDecision, WindowSource};
 
 use crate::runtime::session_thread::{
     HostThread, SessionThreadContext, StartedHost, create_basic_runtime,
@@ -764,11 +765,18 @@ struct RenderDispatch {
 /// latency path this lane exists to shorten, and putting it through the bounded
 /// command queue would put it behind whatever else is queued.
 pub struct ExternalFrameClock {
-    /// Populated by the session thread once the renderer is up. A producer that
-    /// asks before then is told no rather than silently ignored: a warm start
-    /// has no clock yet, and a request that appears to succeed and produces no
-    /// frame is indistinguishable from a hung renderer.
+    /// Populated by the session thread once the renderer is up.
     inner: OnceLock<FrameClockParts>,
+    /// A request made before `inner` was published, waiting to be armed.
+    ///
+    /// Held rather than refused, because the producer's first request races the
+    /// host's bring-up and nothing tells it to ask again: a dropped request is a
+    /// producer waiting for a tick that is never sent. [`Self::request_frame`]
+    /// sets this and then looks for the parts; [`Self::publish`] sets the parts
+    /// and then drains this. Whichever runs second sees the other's write, so a
+    /// request racing publication is armed once or twice and never zero times --
+    /// and twice is free, because demand is a latch rather than a count.
+    held: AtomicBool,
     ticks: AtomicU64,
     last_timestamp_millis: AtomicU64,
     /// The same queue the session drains. The clock holds it because the tick
@@ -780,34 +788,140 @@ pub struct ExternalFrameClock {
     /// because the clock runs on the render signal and must not take the
     /// ingress lock to answer it.
     runtime_generation: u64,
+    /// Where each tick's window is read from, without the ingress lock.
+    window: WindowSource,
+    /// Called after a tick is queued, so the transport sends it.
+    ///
+    /// A tick is the one record nothing on the transport's side caused -- a
+    /// verdict is queued inside a submit the transport made and drains right
+    /// after -- so without this a tick waits in the queue until the producer
+    /// happens to send something, and a producer waiting for a tick sends
+    /// nothing. Held under its lock for the call, so clearing it returns only
+    /// once no call is in progress, which is what lets a host free whatever the
+    /// waker points at.
+    waker: Mutex<Option<DownlinkWaker>>,
 }
+
+/// Called on the session thread whenever a record the transport did not cause
+/// is queued. It must return promptly and must not call back into the session:
+/// schedule the drain, do not perform it.
+pub type DownlinkWaker = Box<dyn Fn() + Send + Sync>;
 
 struct FrameClockParts {
     demand: shared::raf_signal::RafDemandRef,
     arm: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
+impl FrameClockParts {
+    fn arm(&self) {
+        self.demand.mark_waiting();
+        if let Some(arm) = &self.arm {
+            arm();
+        }
+    }
+}
+
+/// What became of a request for a frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameRequest {
+    /// The renderer is up and one frame is armed.
+    Armed,
+    /// The renderer is not up yet; the request is held and armed when it is.
+    Held,
+}
+
+/// What a control message asked for, once it was read in full.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ControlOutcome {
+    /// Requests for a frame from the current generation. They coalesce: any
+    /// number of them arm one frame.
+    pub frames_requested: u32,
+    /// Records from another generation, ignored rather than refused: the
+    /// producer that sent them is gone, and nothing it asked for is owed to its
+    /// replacement.
+    pub other_generation: u32,
+}
+
 impl ExternalFrameClock {
-    fn new(downlink: Arc<Mutex<DownlinkQueue>>, runtime_generation: u64) -> Self {
+    fn new(
+        downlink: Arc<Mutex<DownlinkQueue>>,
+        window: WindowSource,
+        runtime_generation: u64,
+    ) -> Self {
         Self {
             inner: OnceLock::new(),
+            held: AtomicBool::new(false),
             ticks: AtomicU64::new(0),
             last_timestamp_millis: AtomicU64::new(0),
             downlink,
             runtime_generation,
+            window,
+            waker: Mutex::new(None),
         }
     }
 
-    /// Ask for one frame. Returns `false` if the session is not yet rendering.
-    pub fn request_frame(&self) -> bool {
+    /// Ask for one frame.
+    ///
+    /// Requests coalesce: one tick answers every request made before it. A
+    /// request made before the renderer is up is held and armed when it is, so
+    /// it is never lost; the `held` field says why that cannot race.
+    pub fn request_frame(&self) -> FrameRequest {
+        // `SeqCst` on both sides of the hand-off: correctness here is about the
+        // order of writes to two different locations -- this flag, and the
+        // `OnceLock` the session thread publishes into -- which is exactly the
+        // case the weaker orderings make no promise about.
+        self.held.store(true, Ordering::SeqCst);
         let Some(parts) = self.inner.get() else {
-            return false;
+            return FrameRequest::Held;
         };
-        parts.demand.mark_waiting();
-        if let Some(arm) = &parts.arm {
-            arm();
+        if self.held.swap(false, Ordering::SeqCst) {
+            parts.arm();
         }
-        true
+        FrameRequest::Armed
+    }
+
+    /// Publish the renderer's frame demand, and arm any request that arrived
+    /// before it. Called once, by the session thread, when the renderer is up.
+    fn publish(&self, parts: FrameClockParts) {
+        if self.inner.set(parts).is_err() {
+            return;
+        }
+        if self.held.swap(false, Ordering::SeqCst)
+            && let Some(parts) = self.inner.get()
+        {
+            parts.arm();
+        }
+    }
+
+    /// Read one control message and act on it.
+    ///
+    /// Validated in full before anything is acted on, so a refused message
+    /// arms nothing.
+    pub fn handle_control(&self, bytes: &[u8]) -> Result<ControlOutcome, ControlError> {
+        let message = read_control(bytes)?;
+        // The wire carries the low 32 bits; see *Uplink control messages*.
+        let current = self.runtime_generation as u32;
+        let mut outcome = ControlOutcome::default();
+        for record in message.records() {
+            match record {
+                ControlRecord::RequestFrame { generation } if generation == current => {
+                    outcome.frames_requested += 1;
+                }
+                ControlRecord::RequestFrame { .. } => outcome.other_generation += 1,
+            }
+        }
+        if outcome.frames_requested > 0 {
+            self.request_frame();
+        }
+        Ok(outcome)
+    }
+
+    /// Install or clear the downlink waker.
+    ///
+    /// Clearing returns only after any call in progress has returned. Must not
+    /// be called from inside the waker, which holds the same lock.
+    pub fn set_downlink_waker(&self, waker: Option<DownlinkWaker>) {
+        *self.waker.lock() = waker;
     }
 
     /// How many frame signals the renderer has delivered to this session.
@@ -834,11 +948,28 @@ impl ExternalFrameClock {
         // sixteenth of a frame. `f64` milliseconds hold nanosecond precision for
         // the first 104 days of a session, which is longer than one runs.
         let timestamp_ns = (timestamp_millis * 1_000_000.0).max(0.0) as u64;
-        self.downlink.lock().push_tick(DownlinkRecord::ClockTick {
-            generation: self.runtime_generation as u32,
-            frame_id: frame_id as u32,
-            timestamp_ns,
-        });
+        {
+            let mut downlink = self.downlink.lock();
+            // Read under the downlink lock, so this tick's window is at least as
+            // new as every verdict queued ahead of it: a verdict is queued under
+            // this lock after its sequence was committed, so a verdict already in
+            // the queue describes a state this read has seen. The producer
+            // applies the last advertisement it reads, and this keeps the last
+            // one the newest one.
+            let window = self.window.read();
+            downlink.push_tick(DownlinkRecord::ClockTick {
+                generation: self.runtime_generation as u32,
+                frame_id: frame_id as u32,
+                timestamp_ns,
+                remaining_credits: window.remaining_credits,
+                accepted_sequence: window.accepted_sequence,
+            });
+        }
+        // After the queue lock is released, so a transport that drains from
+        // inside its wake-up does not find the lock still held by this thread.
+        if let Some(wake) = self.waker.lock().as_ref() {
+            wake();
+        }
     }
 }
 
@@ -1134,6 +1265,21 @@ impl ExternalFrameSession {
         self.downlink.lock().take_dropped()
     }
 
+    /// Read one uplink control message and act on it.
+    ///
+    /// Called on the transport's thread, like [`Self::submit_frame`]. A refusal
+    /// names the rule the message broke; see *Control refusals* in the wire
+    /// contract for the codes.
+    pub fn submit_control(&self, bytes: &[u8]) -> Result<ControlOutcome, ControlError> {
+        self.clock.handle_control(bytes)
+    }
+
+    /// Install or clear what is called when a tick is queued. See
+    /// [`ExternalFrameClock::set_downlink_waker`].
+    pub fn set_downlink_waker(&self, waker: Option<DownlinkWaker>) {
+        self.clock.set_downlink_waker(waker);
+    }
+
     /// Whether the caller is the session's own thread.
     ///
     /// Exposed for the same reason `HostThread` exposes it: joining from inside
@@ -1189,6 +1335,7 @@ impl ExternalFrameSession {
             launch_nonce,
             INITIAL_RUNTIME_GENERATION,
         ))));
+        let window = admission.ingress.lock().window_source();
         Self {
             host: HostThread::from_join_handle_for_test(host_id, join),
             submit: SubmitPath {
@@ -1206,6 +1353,7 @@ impl ExternalFrameSession {
             )),
             clock: Arc::new(ExternalFrameClock::new(
                 Arc::clone(&downlink),
+                window,
                 INITIAL_RUNTIME_GENERATION,
             )),
             downlink,
@@ -1252,6 +1400,7 @@ pub fn spawn_external_frame_session(
     let downlink = Arc::new(Mutex::new(DownlinkQueue::new()));
     let clock = Arc::new(ExternalFrameClock::new(
         Arc::clone(&downlink),
+        ingress.lock().window_source(),
         INITIAL_RUNTIME_GENERATION,
     ));
     let thread_clock = Arc::clone(&clock);
@@ -1373,10 +1522,9 @@ fn run_external_session(
         t_start: _t_start,
     } = shell;
 
-    // Publish the clock only once the renderer is up. Before this point
-    // `request_frame` answers no, which is the truthful answer for a session
-    // that cannot yet produce a frame.
-    let _ = clock.inner.set(FrameClockParts {
+    // Publish the clock only once the renderer is up. A request made before
+    // this point was held, and is armed here.
+    clock.publish(FrameClockParts {
         demand: Arc::clone(&raf_demand),
         arm: request_vsync.clone(),
     });
@@ -1803,28 +1951,106 @@ mod tests {
         }
     }
 
-    /// A producer that asks for a frame before the renderer is up is told no.
-    ///
-    /// The alternative -- returning success and arming nothing -- is
-    /// indistinguishable at the far end from a renderer that has hung, and the
-    /// far end is in another process with no way to tell them apart.
-    #[test]
-    fn the_clock_refuses_before_the_renderer_is_up() {
+    /// A clock over a fresh ingress, and the queue it fills.
+    fn clock_with_queue() -> (ExternalFrameClock, Arc<Mutex<DownlinkQueue>>, FrameIngress) {
+        let queue = Arc::new(Mutex::new(DownlinkQueue::new()));
+        let ingress = FrameIngress::new(NONCE, INITIAL_RUNTIME_GENERATION);
         let clock = ExternalFrameClock::new(
-            Arc::new(Mutex::new(DownlinkQueue::new())),
+            Arc::clone(&queue),
+            ingress.window_source(),
             INITIAL_RUNTIME_GENERATION,
         );
-        assert!(!clock.request_frame());
+        (clock, queue, ingress)
+    }
+
+    /// Parts whose arm is counted, so a test can see a frame being armed.
+    fn counted_parts() -> (
+        FrameClockParts,
+        shared::raf_signal::RafDemandRef,
+        Arc<AtomicU64>,
+    ) {
+        let demand = Arc::new(shared::raf_signal::RafDemand::new());
+        let armed = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&armed);
+        (
+            FrameClockParts {
+                demand: Arc::clone(&demand),
+                arm: Some(Arc::new(move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                })),
+            },
+            demand,
+            armed,
+        )
+    }
+
+    fn drain_records(queue: &Mutex<DownlinkQueue>) -> Vec<DownlinkRecord> {
+        let mut out = [0u8; 4096];
+        let written = queue.lock().drain_into(&mut out);
+        frame_wire::downlink::decode_bytes(&out[..written])
+            .expect("the queue writes what the producer reads")
+    }
+
+    /// A producer's first request races the host's bring-up. Dropped, it is a
+    /// producer waiting for a tick nothing will send; so it is held, and armed
+    /// the moment the renderer is.
+    #[test]
+    fn a_request_before_the_renderer_is_up_is_held_and_armed_when_it_starts() {
+        let (clock, _queue, _ingress) = clock_with_queue();
+        assert_eq!(clock.request_frame(), FrameRequest::Held);
         assert_eq!(clock.ticks(), 0);
-        assert_eq!(clock.last_timestamp_millis(), 0);
+
+        let (parts, demand, armed) = counted_parts();
+        clock.publish(parts);
+        assert!(demand.is_waiting(), "the held request became demand");
+        assert_eq!(armed.load(Ordering::SeqCst), 1, "and armed one frame");
+
+        assert_eq!(clock.request_frame(), FrameRequest::Armed);
+        assert_eq!(
+            armed.load(Ordering::SeqCst),
+            2,
+            "a later request arms directly"
+        );
+    }
+
+    #[test]
+    fn publishing_with_nothing_held_arms_nothing() {
+        let (clock, _queue, _ingress) = clock_with_queue();
+        let (parts, demand, armed) = counted_parts();
+        clock.publish(parts);
+        assert!(!demand.is_waiting());
+        assert_eq!(armed.load(Ordering::SeqCst), 0);
+    }
+
+    /// The hand-off's claim, under real scheduling: whichever of a request and
+    /// the renderer's publication runs second sees the other, so the request is
+    /// armed at least once.
+    #[test]
+    fn a_request_racing_the_renderer_start_is_never_lost() {
+        for _ in 0..2_000 {
+            let (clock, _queue, _ingress) = clock_with_queue();
+            let clock = Arc::new(clock);
+            let (parts, demand, armed) = counted_parts();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let requester = {
+                let clock = Arc::clone(&clock);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    clock.request_frame()
+                })
+            };
+            barrier.wait();
+            clock.publish(parts);
+            requester.join().expect("requester");
+            assert!(demand.is_waiting(), "a request was lost to the race");
+            assert!(armed.load(Ordering::SeqCst) >= 1, "and nothing was armed");
+        }
     }
 
     #[test]
     fn recorded_ticks_accumulate_and_keep_the_latest_timestamp() {
-        let clock = ExternalFrameClock::new(
-            Arc::new(Mutex::new(DownlinkQueue::new())),
-            INITIAL_RUNTIME_GENERATION,
-        );
+        let (clock, _queue, _ingress) = clock_with_queue();
         clock.record(16.7);
         clock.record(33.4);
         clock.record(50.1);
@@ -1897,20 +2123,17 @@ mod tests {
     /// is why this asserts the queued bytes rather than the counters.
     #[test]
     fn a_recorded_tick_is_queued_for_the_producer_in_nanoseconds() {
-        let queue = Arc::new(Mutex::new(DownlinkQueue::new()));
-        let clock = ExternalFrameClock::new(Arc::clone(&queue), INITIAL_RUNTIME_GENERATION);
+        let (clock, queue, _ingress) = clock_with_queue();
         clock.record(16.7);
 
-        let mut out = [0u8; 256];
-        let written = queue.lock().drain_into(&mut out);
-        let records = frame_wire::downlink::decode_bytes(&out[..written])
-            .expect("the queue writes what the producer reads");
+        let records = drain_records(&queue);
         assert_eq!(records.len(), 1, "one record for one tick");
         match records[0] {
             DownlinkRecord::ClockTick {
                 generation,
                 frame_id,
                 timestamp_ns,
+                ..
             } => {
                 assert_eq!(generation, INITIAL_RUNTIME_GENERATION as u32);
                 assert_eq!(frame_id, 1, "the first tick is frame 1, not frame 0");
@@ -1928,8 +2151,7 @@ mod tests {
     /// must not grow the queue.
     #[test]
     fn a_producer_that_never_reads_does_not_grow_the_queue() {
-        let queue = Arc::new(Mutex::new(DownlinkQueue::new()));
-        let clock = ExternalFrameClock::new(Arc::clone(&queue), INITIAL_RUNTIME_GENERATION);
+        let (clock, queue, _ingress) = clock_with_queue();
         for i in 0..1_000 {
             clock.record(f64::from(i) * 16.7);
         }
@@ -1943,6 +2165,164 @@ mod tests {
             0,
             "coalescing is not dropping: nothing was lost that the newest tick does not carry"
         );
+    }
+
+    /// The tick is how a waiting producer hears that a credit came back, so it
+    /// carries the window -- read from the ingress without its lock.
+    #[test]
+    fn a_tick_carries_the_window_as_of_the_moment_it_was_queued() {
+        let (clock, queue, mut ingress) = clock_with_queue();
+
+        clock.record(1.0);
+        assert!(
+            matches!(
+                drain_records(&queue)[..],
+                [DownlinkRecord::ClockTick {
+                    remaining_credits: 1,
+                    accepted_sequence: 0,
+                    ..
+                }]
+            ),
+            "before the first packet, at most one: sequences 1 and 2 sent together can reorder"
+        );
+
+        let (outcome, frame) = ingress.submit(&packet(1));
+        assert_eq!(outcome.decision, IngressDecision::Accepted);
+        clock.record(2.0);
+        assert!(
+            matches!(
+                drain_records(&queue)[..],
+                [DownlinkRecord::ClockTick {
+                    remaining_credits: 1,
+                    accepted_sequence: 1,
+                    ..
+                }]
+            ),
+            "the accepted frame still holds its credit"
+        );
+
+        drop(frame);
+        clock.record(3.0);
+        assert!(
+            matches!(
+                drain_records(&queue)[..],
+                [DownlinkRecord::ClockTick {
+                    remaining_credits: 2,
+                    accepted_sequence: 1,
+                    frame_id: 3,
+                    ..
+                }]
+            ),
+            "and the credit it returned is advertised on the next tick"
+        );
+    }
+
+    #[test]
+    fn a_request_from_this_generation_arms_a_frame_and_one_from_another_does_not() {
+        use frame_wire::control::{ControlRecord, encode_control};
+        let (clock, _queue, _ingress) = clock_with_queue();
+        let (parts, demand, armed) = counted_parts();
+        clock.publish(parts);
+
+        let stale = encode_control(&[ControlRecord::RequestFrame {
+            generation: INITIAL_RUNTIME_GENERATION as u32 + 1,
+        }]);
+        assert_eq!(
+            clock.handle_control(&stale),
+            Ok(ControlOutcome {
+                frames_requested: 0,
+                other_generation: 1,
+            })
+        );
+        assert!(
+            !demand.is_waiting(),
+            "nothing is owed to a generation that is gone"
+        );
+        assert_eq!(armed.load(Ordering::SeqCst), 0);
+
+        let current = encode_control(&[
+            ControlRecord::RequestFrame {
+                generation: INITIAL_RUNTIME_GENERATION as u32,
+            },
+            ControlRecord::RequestFrame {
+                generation: INITIAL_RUNTIME_GENERATION as u32,
+            },
+        ]);
+        assert_eq!(
+            clock.handle_control(&current),
+            Ok(ControlOutcome {
+                frames_requested: 2,
+                other_generation: 0,
+            })
+        );
+        assert!(demand.is_waiting());
+        assert_eq!(
+            armed.load(Ordering::SeqCst),
+            1,
+            "requests coalesce into one frame"
+        );
+    }
+
+    #[test]
+    fn a_refused_control_message_arms_nothing_and_holds_nothing() {
+        use frame_wire::control::{ControlRecord, encode_control};
+        let (clock, _queue, _ingress) = clock_with_queue();
+        let mut bytes = encode_control(&[ControlRecord::RequestFrame {
+            generation: INITIAL_RUNTIME_GENERATION as u32,
+        }]);
+        bytes.push(0);
+        assert_eq!(
+            clock.handle_control(&bytes),
+            Err(ControlError::TrailingBytes)
+        );
+        let (parts, demand, armed) = counted_parts();
+        clock.publish(parts);
+        assert!(
+            !demand.is_waiting(),
+            "a refused request must not be held and armed later"
+        );
+        assert_eq!(armed.load(Ordering::SeqCst), 0);
+    }
+
+    /// A tick is the one record nothing on the transport's side caused, so the
+    /// transport is told when one is queued -- and not after its waker is gone.
+    #[test]
+    fn a_queued_tick_wakes_the_transport_until_the_waker_is_cleared() {
+        let (clock, _queue, _ingress) = clock_with_queue();
+        let woken = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&woken);
+        clock.set_downlink_waker(Some(Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+        clock.record(1.0);
+        clock.record(2.0);
+        assert_eq!(woken.load(Ordering::SeqCst), 2, "one wake per queued tick");
+
+        clock.set_downlink_waker(None);
+        clock.record(3.0);
+        assert_eq!(
+            woken.load(Ordering::SeqCst),
+            2,
+            "a cleared waker is not called"
+        );
+    }
+
+    /// The waker may drain the queue from inside the call; the tick must already
+    /// be there, and the queue's lock must already be free.
+    #[test]
+    fn a_waker_that_drains_at_once_finds_the_tick() {
+        let (clock, queue, _ingress) = clock_with_queue();
+        let clock = Arc::new(clock);
+        let seen = Arc::new(AtomicU64::new(0));
+        {
+            let queue = Arc::clone(&queue);
+            let seen = Arc::clone(&seen);
+            clock.set_downlink_waker(Some(Box::new(move || {
+                seen.fetch_add(drain_records(&queue).len() as u64, Ordering::SeqCst);
+            })));
+        }
+        clock.record(1.0);
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
     }
 
     /// Every packet is measured against the generation the session is on, and

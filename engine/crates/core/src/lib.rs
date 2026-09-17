@@ -135,6 +135,9 @@ pub use runtime::{
 // The host thread and its spawn entry points belong to the embedded execution:
 // they own a JavaScript runtime. A build without one does not get a narrower
 // version of them, it gets a different execution mode.
+/// The uplink's control messages: routed by the transport, read by the session.
+#[cfg(feature = "external-frames")]
+pub use frame_wire::control::{ControlError, ControlRecord, encode_control, is_control_message};
 /// The synchronous barrier's vocabulary, re-exported for the same reason: the C
 /// boundary maps these onto stable numbers the producer reads, and it should
 /// not have to reach into the wire crate to name them.
@@ -151,8 +154,8 @@ pub use frame_wire::{IngressDecision, IngressOutcome};
 /// process, for the Apple Performance+ product.
 #[cfg(feature = "external-frames")]
 pub use runtime::external::{
-    AnsweredCall, ExternalFrameClock, ExternalFrameSession, SpawnedExternalSession, SyncHandle,
-    SyncSnapshot, spawn_external_frame_session,
+    AnsweredCall, ControlOutcome, DownlinkWaker, ExternalFrameClock, ExternalFrameSession,
+    FrameRequest, SpawnedExternalSession, SyncHandle, SyncSnapshot, spawn_external_frame_session,
 };
 pub use runtime::{HostThread, SpawnedSurfaceHost};
 #[cfg(feature = "embedded-v8")]

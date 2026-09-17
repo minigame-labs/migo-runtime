@@ -52,6 +52,26 @@ _Static_assert(MIGO_FRAME_INGRESS_REJECTED != UINT32_C(0), "zero is not REJECTED
 _Static_assert(MIGO_FRAME_INGRESS_GENERATION_LOST != UINT32_C(0), "zero is not GENERATION_LOST");
 
 
+/*
+ * The socket's two doors. Distinct, and neither is zero: a zeroed output must
+ * not route a message anywhere.
+ */
+_Static_assert(MIGO_UPLINK_MESSAGE_FRAME != UINT32_C(0), "zero is not a door");
+_Static_assert(MIGO_UPLINK_MESSAGE_CONTROL != UINT32_C(0), "zero is not a door");
+_Static_assert(MIGO_UPLINK_MESSAGE_FRAME != MIGO_UPLINK_MESSAGE_CONTROL, "two doors");
+_Static_assert(sizeof(MigoUplinkMessageKind) == 4, "a 32-bit kind");
+
+/* The waker is a plain C function of one pointer, callable with MIGO_CALL. */
+static void MIGO_CALL migo_external_frames_contract_waker(void *user_data) {
+    (void)user_data;
+}
+static const MigoDownlinkWakerFn migo_external_frames_contract_waker_ref =
+    migo_external_frames_contract_waker;
+
+int migo_external_frames_contract_waker_is_callable(void) {
+    return migo_external_frames_contract_waker_ref != 0;
+}
+
 /* ---------------------------------------------------------------------------
  * The synchronous barrier
  *

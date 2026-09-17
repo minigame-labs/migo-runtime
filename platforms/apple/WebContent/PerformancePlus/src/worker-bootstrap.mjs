@@ -1,4 +1,4 @@
-// The twelve lines that put a real socket under `FrameSession`.
+// The few lines that put a real socket under `FrameSession`.
 //
 // Separated from the session for one reason: a `WebSocket` cannot be stood up in
 // `node` without a dependency, and this directory ships into WebContent beside
@@ -73,6 +73,9 @@ export function connectFrameSession({
               onSchemeFailure,
             })
           : (bytes) => socket.send(bytes),
+      // Control messages are the socket's alone: they are a few words, and the
+      // host reads them only where frames and verdicts already meet.
+      sendControl: (bytes) => socket.send(bytes),
       onFrame,
       onVerdict,
       onGenerationLost,

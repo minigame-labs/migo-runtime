@@ -31,6 +31,7 @@ DOWN_SRC="platforms/apple/WebContent/PerformancePlus/src/downlink.mjs"
 SESSION_TEST="platforms/apple/WebContent/PerformancePlus/test/frame-session.test.mjs"
 SESSION_SRC="platforms/apple/WebContent/PerformancePlus/src/frame-session.mjs"
 BOOTSTRAP_SRC="platforms/apple/WebContent/PerformancePlus/src/worker-bootstrap.mjs"
+CONTROL_SRC="platforms/apple/WebContent/PerformancePlus/src/control.mjs"
 SRC_DIR="platforms/apple/WebContent/PerformancePlus/src"
 TEST_DIR="platforms/apple/WebContent/PerformancePlus/test"
 # Every suite this gate runs, collected as it runs them, so the check at the
@@ -38,7 +39,8 @@ TEST_DIR="platforms/apple/WebContent/PerformancePlus/test"
 RAN_TESTS=()
 
 for required in "$TEST" "$ENCODER" "$SYNC_TEST" "$SYNC_SRC" "$RELAY_TEST" "$RELAY_SRC" \
-                "$DOWN_TEST" "$DOWN_SRC" "$SESSION_TEST" "$SESSION_SRC" "$BOOTSTRAP_SRC"; do
+                "$DOWN_TEST" "$DOWN_SRC" "$SESSION_TEST" "$SESSION_SRC" "$BOOTSTRAP_SRC" \
+                "$CONTROL_SRC"; do
     if [[ ! -f "$required" ]]; then
         echo "FAIL: $required is missing; the cross-language corpus check cannot run." >&2
         exit 1
@@ -382,6 +384,50 @@ fi
 # wrote. A failure here is the one a device would show as a frame clock that
 # stops ticking, with nothing in either log saying why.
 node platforms/apple/WebContent/PerformancePlus/test/emit-downlink.mjs read "$DOWN_FROM_RUST"
+
+# --- the uplink's control messages, in both directions -----------------------
+#
+# The producer asks for every frame with a control message on the socket, and
+# `frame_wire::control` reads it. In production only JavaScript writes and Rust
+# reads; a request the host refuses or misreads is a producer waiting for a tick
+# nobody arms, which on a device is a game that draws one frame and stops. The
+# JavaScript half is checked byte for byte against the Rust reference writer,
+# including through the buffer the producer reuses every frame.
+CONTROL_TEST="$TEST_DIR/control.test.mjs"
+node "$CONTROL_TEST"
+RAN_TESTS+=("$CONTROL_TEST")
+
+CONTROL_FROM_JS="$(mktemp -d)"
+CONTROL_FROM_RUST="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$SYNC_CALLS" "$SYNC_ANSWERS" "$DOWN_FROM_JS" "$DOWN_FROM_RUST" "$CONTROL_FROM_JS" "$CONTROL_FROM_RUST"' EXIT
+
+node "$TEST_DIR/emit-control.mjs" write "$CONTROL_FROM_JS"
+status=0
+output="$(cd engine && MIGO_CONTROL_IN_DIR="$CONTROL_FROM_JS" \
+    cargo test -p migo-frame-wire --test control_js_interop -- \
+    --ignored --nocapture control_messages_from 2>&1)" || status=$?
+printf '%s\n' "$output" | grep -E 'read [0-9]+ JavaScript-encoded control messages|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust reader refused control messages written by the JavaScript producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'read [0-9]+ JavaScript-encoded control messages'; then
+    echo "FAIL: the control interop test did not report reading anything; it may not have run." >&2
+    exit 1
+fi
+
+status=0
+output="$(cd engine && MIGO_CONTROL_OUT_DIR="$CONTROL_FROM_RUST" \
+    cargo test -p migo-frame-wire --test control_js_interop -- \
+    --ignored --nocapture the_rust_writer 2>&1)" || status=$?
+printf '%s\n' "$output" | grep -E 'wrote [0-9]+ control messages|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust writer could not produce the control corpus." >&2
+    exit 1
+fi
+node "$TEST_DIR/emit-control.mjs" read "$CONTROL_FROM_RUST"
 
 # --- the producer's own suites: run the named ones, then prove that was all ---
 #

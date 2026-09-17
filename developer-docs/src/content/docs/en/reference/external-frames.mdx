@@ -386,13 +386,68 @@ Parameters:
 
 Returns:
 
-- `MIGO_OK`: The request was delivered.
-- `MIGO_ERROR_INVALID_STATE`: The renderer is not ready (a valid intermediate state after session creation and before first-frame capabilities are ready).
+- `MIGO_OK`: The request was recorded. Requests coalesce into one frame; a request made before the renderer is ready is **held** and armed when it starts, never lost.
+- `MIGO_ERROR_INVALID_STATE`: No surface is attached yet (there is no frame clock).
 - `MIGO_ERROR_INVALID_ARGUMENT`: `session` is NULL.
+
+The producer's own requests arrive as control messages on the socket (see `migo_session_submit_uplink_control`); this entry point is for a host asking on its behalf.
 
 Threading:
 
-Call on the vsync callback thread. Like `migo_session_notify_vsync`, this is a signal that drives the frame clock and does not block.
+Callable from any thread; does not block.
+
+---
+
+## migo_uplink_message_kind
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_uplink_message_kind(
+    const uint8_t          *bytes,
+    size_t                  byte_count,
+    MigoUplinkMessageKind  *out_kind);
+```
+
+The producer's socket carries two kinds of message: frame packets and control messages (today, only "request the next frame"). The transport **asks the library** which door a message goes through instead of comparing magic numbers itself — a host that encoded the rule would be one more implementation of the wire format to drift.
+
+- `MIGO_UPLINK_MESSAGE_CONTROL`: pass it to `migo_session_submit_uplink_control`.
+- `MIGO_UPLINK_MESSAGE_FRAME`: pass it to `migo_session_submit_external_frame`. **Everything that is not a control message is this**, including bytes that are not a frame either — frame ingress refuses them with a verdict the producer sees.
+
+Needs no session and reads at most the first four bytes. `bytes` may be `NULL` when `byte_count` is 0. Messages that arrive on the content origin (the custom scheme) are always frames and need not be asked about.
+
+Returns: `MIGO_ERROR_INVALID_ARGUMENT` when `out_kind` is NULL, or `bytes` is NULL with a non-zero `byte_count`; otherwise `MIGO_OK`.
+
+Threading: stateless; any thread.
+
+---
+
+## migo_session_submit_uplink_control
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_submit_uplink_control(
+    MigoSession    *session,
+    const uint8_t  *bytes,
+    size_t          byte_count,
+    uint32_t       *out_refusal_code);
+```
+
+Reads one control message and acts on it. Migo's `requestAnimationFrame` is driven by host vsync on every platform, and the producer's demand for the next frame has to cross the process boundary to reach here for a frame-clock tick to exist. The format is *Uplink control messages* in `contracts/frame-wire/wire-v1.md`.
+
+Rules:
+
+- **Validated whole before anything is acted on**: if any part is malformed, none of the message takes effect.
+- `*out_refusal_code` is 0 when the message was read — **including when its requests belong to another runtime generation** (ignored rather than refused: the producer that sent them is gone). A non-zero value is a refusal code from 3001 up (see *Control refusals* in the wire contract); report it the way a refused frame is reported.
+- A frame request made before the renderer is ready is **held** and armed when it starts — the producer's first request races the host's bring-up, and nothing would tell it to ask again.
+- Requests coalesce: one tick answers every request made before it.
+
+Returns:
+
+- `MIGO_OK`: `*out_refusal_code` was written.
+- `MIGO_ERROR_INVALID_ARGUMENT`: `session`, `bytes` or `out_refusal_code` is NULL, or `byte_count` is 0.
+- `MIGO_ERROR_INVALID_STATE`: No surface is attached yet.
+
+Threading: call on the transport thread, like `migo_session_submit_external_frame`; does not block.
 
 ---
 
@@ -605,11 +660,42 @@ Rules:
 
 - **Whole message out:** If capacity cannot hold the envelope and one record, not a single byte is written and the queue is left unchanged; provide a larger buffer and call again without losing anything. **4096 bytes is enough for every message this queue can produce.**
 - **`out_written` equal to 0 is a normal answer**, not an error, and must not be busy-looped: between frames there may simply be "nothing to send".
-- **When to call:** after every submit and after delivering every frame. The queue is bounded and coalesces ticks; transport lag costs producer scheduling latency, not memory — each record is absolute, so the next record read is the current correct value.
+- **When to call:** after every submit, and after the downlink waker (`migo_session_set_downlink_waker`) fires. The queue is bounded and coalesces ticks; transport lag costs producer scheduling latency, not memory — each record is absolute, so the next record read is the current correct value.
+- **A tick carries the window**: `(remaining_credits, accepted_sequence)`. A verdict is only sent for a frame, so a producer whose last verdict said zero learns that a credit came back from the tick it asked for.
 
 Returns: a NULL pointer returns `MIGO_ERROR_INVALID_ARGUMENT`; every other valid call returns `MIGO_OK`, including when there is nothing to send.
 
 Threading: serialized with the Session; suitable for the transport send thread.
+
+---
+
+## migo_session_set_downlink_waker
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+typedef void (MIGO_CALL *MigoDownlinkWakerFn)(void *user_data);
+
+MigoResult migo_session_set_downlink_waker(
+    MigoSession          *session,
+    MigoDownlinkWakerFn   waker,
+    void                 *user_data);
+```
+
+Installs (or, with `NULL`, clears) the downlink waker. The library calls it when it queues a downlink record **the transport did not cause** — a frame-clock tick. A verdict is queued inside a submit the transport made, which drains right after; a tick is not, and without a wake-up it waits until the producer sends something, while a producer waiting for a tick sends nothing.
+
+Rules:
+
+- Called on the session's own thread. **Schedule the drain; do not perform it in the waker**: return promptly, and do not call back into the library from inside it — in particular not `migo_session_set_downlink_waker`, which waits for the call in progress to return.
+- One waker per session; installing again replaces it. **Clearing returns only after any call in progress has returned**, so `user_data` may be freed once it returns.
+- Clear it before `migo_session_destroy`.
+
+Returns:
+
+- `MIGO_OK`: Installed or cleared.
+- `MIGO_ERROR_INVALID_ARGUMENT`: `session` is NULL.
+- `MIGO_ERROR_INVALID_STATE`: No surface is attached yet.
+
+Threading: callable from any thread; the waker is called on the session thread.
 
 ---
 

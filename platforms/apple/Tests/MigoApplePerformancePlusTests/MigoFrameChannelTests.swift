@@ -26,6 +26,13 @@ final class MigoFrameChannelTests: XCTestCase {
         return bytes
     }()
 
+    /// A request for a frame, as the producer's `control.mjs` writes one:
+    /// magic "MUC1", version 1, and one two-word REQUEST_FRAME for generation 1.
+    fileprivate static let requestFrameMessage: [UInt8] = {
+        let words: [UInt32] = [0x4D55_4331, 1, (2 << 12) | 1, 1]
+        return words.flatMap { word in withUnsafeBytes(of: word.littleEndian, Array.init) }
+    }()
+
     private func client(for endpoint: MigoFrameTransport.Endpoint) -> URLSessionWebSocketTask {
         let task = URLSession(configuration: .ephemeral).webSocketTask(with: endpoint.url)
         task.resume()
@@ -178,6 +185,142 @@ final class MigoFrameChannelTests: XCTestCase {
         producer.receive { _ in nothing.fulfill() }
         wait(for: [nothing], timeout: 1.5)
         XCTAssertEqual(channel.currentStatistics.messagesSent, 0)
+    }
+
+    /// The engine says which door a message goes through, and a request for a
+    /// frame never reaches frame ingress -- which would refuse it as a bad packet
+    /// and end the content.
+    func testARequestForAFrameGoesToTheControlDoor() throws {
+        let received = expectation(description: "the engine is handed the request")
+        var frames = 0
+        var seen: Data?
+        let channel = MigoFrameChannel(
+            submit: { _ in
+                frames += 1
+                return .accepted
+            },
+            takeDownlink: { _ in 0 },
+            submitControl: { message in
+                seen = message
+                received.fulfill()
+                return .read
+            })
+        let endpoint = try channel.start()
+        defer { channel.stop() }
+        let producer = client(for: endpoint)
+        defer { producer.cancel(with: .goingAway, reason: nil) }
+
+        producer.send(.data(Data(Self.requestFrameMessage))) { XCTAssertNil($0) }
+        wait(for: [received], timeout: 10)
+        XCTAssertEqual(seen.map(Array.init), Self.requestFrameMessage)
+        XCTAssertEqual(frames, 0, "a control message is not a frame")
+        let statistics = channel.currentStatistics
+        XCTAssertEqual(statistics.controlMessagesReceived, 1)
+        XCTAssertEqual(statistics.controlMessagesRefused, 0)
+        XCTAssertEqual(statistics.framesReceived, 0)
+    }
+
+    func testARefusedControlMessageIsCountedWithItsCode() throws {
+        let refused = expectation(description: "the engine refuses the message")
+        let channel = MigoFrameChannel(
+            submit: { _ in .accepted },
+            takeDownlink: { _ in 0 },
+            submitControl: { _ in
+                defer { refused.fulfill() }
+                return .refused(code: 3001)
+            })
+        let endpoint = try channel.start()
+        defer { channel.stop() }
+        let producer = client(for: endpoint)
+        defer { producer.cancel(with: .goingAway, reason: nil) }
+
+        producer.send(.data(Data(Self.requestFrameMessage))) { _ in }
+        wait(for: [refused], timeout: 10)
+        // The statistics are written after the closure returns.
+        let deadline = Date().addingTimeInterval(5)
+        while channel.currentStatistics.controlMessagesRefused == 0, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+        }
+        XCTAssertEqual(channel.currentStatistics.controlMessagesRefused, 1)
+        XCTAssertEqual(channel.currentStatistics.lastControlRefusalCode, 3001)
+    }
+
+    /// A tick is queued on the engine's thread, and nothing the transport did
+    /// caused it. The engine's wake-up is what sends it.
+    func testAWakeFromTheEngineSendsWhatIsQueued() throws {
+        let tickQueued = NSLock()
+        var queued = false
+        var waker: (() -> Void)?
+        let channel = MigoFrameChannel(
+            submit: { _ in .accepted },
+            takeDownlink: { buffer in
+                tickQueued.lock()
+                defer { tickQueued.unlock() }
+                guard queued else { return 0 }
+                queued = false
+                _ = buffer.update(fromContentsOf: Self.verdictMessage)
+                return Self.verdictMessage.count
+            },
+            setDownlinkWaker: { wake in
+                waker = wake
+                return true
+            })
+        let endpoint = try channel.start()
+        defer { channel.stop() }
+        XCTAssertNotNil(waker, "starting installs the waker")
+
+        let producer = client(for: endpoint)
+        defer { producer.cancel(with: .goingAway, reason: nil) }
+        let connected = expectation(description: "the producer is connected")
+        let deadline = Date().addingTimeInterval(10)
+        DispatchQueue.global().async {
+            while !channel.isConnected, Date() < deadline { usleep(1_000) }
+            connected.fulfill()
+        }
+        wait(for: [connected], timeout: 11)
+
+        let delivered = expectation(description: "the woken channel sends the tick")
+        producer.receive { result in
+            if case .success(.data(let data)) = result, Array(data) == Self.verdictMessage {
+                delivered.fulfill()
+            } else {
+                XCTFail("expected the queued message, got \(result)")
+            }
+        }
+        // As the engine does: queue, then wake, from a thread of its own.
+        DispatchQueue.global().async {
+            tickQueued.lock()
+            queued = true
+            tickQueued.unlock()
+            waker?()
+        }
+        wait(for: [delivered], timeout: 10)
+        XCTAssertGreaterThanOrEqual(channel.currentStatistics.downlinkWakes, 1)
+    }
+
+    func testStoppingClearsTheWakerAndARefusedWakerStopsTheStart() throws {
+        var installs: [Bool] = []
+        let channel = MigoFrameChannel(
+            submit: { _ in .accepted },
+            takeDownlink: { _ in 0 },
+            setDownlinkWaker: { wake in
+                installs.append(wake != nil)
+                return true
+            })
+        _ = try channel.start()
+        channel.stop()
+        XCTAssertEqual(installs, [true, false], "installed on start, cleared on stop")
+
+        let refusing = MigoFrameChannel(
+            submit: { _ in .accepted },
+            takeDownlink: { _ in 0 },
+            setDownlinkWaker: { wake in wake == nil })
+        XCTAssertThrowsError(try refusing.start()) { error in
+            XCTAssertEqual(
+                error as? MigoFrameChannel.StartFailure, .downlinkWakerRefused,
+                "a channel whose ticks could never be sent does not start")
+        }
+        XCTAssertFalse(refusing.isConnected)
     }
 
     func testPumpingWithNoProducerIsCountedRatherThanThrown() throws {

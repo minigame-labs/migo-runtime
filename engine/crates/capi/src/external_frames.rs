@@ -23,7 +23,8 @@ use migo_capi_abi::{
         MIGO_SYNC_ERROR_SESSION_ENDED, MIGO_SYNC_ERROR_STALE_GENERATION, MIGO_SYNC_ERROR_TIMED_OUT,
         MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION, MIGO_SYNC_STATE_CANCELLED, MIGO_SYNC_STATE_FAILED,
         MIGO_SYNC_STATE_FREE, MIGO_SYNC_STATE_PENDING, MIGO_SYNC_STATE_READY,
-        MigoFrameIngressOutcome, MigoSyncOutcome, MigoSyncRequestDescriptor,
+        MIGO_UPLINK_MESSAGE_CONTROL, MIGO_UPLINK_MESSAGE_FRAME, MigoDownlinkWakerFn,
+        MigoFrameIngressOutcome, MigoSyncOutcome, MigoSyncRequestDescriptor, MigoUplinkMessageKind,
         write_frame_ingress_outcome, write_sync_outcome,
     },
 };
@@ -116,9 +117,9 @@ pub unsafe extern "C" fn migo_session_submit_external_frame(
 ///
 /// The producer is blocked on the host's clock: it renders when told to, the
 /// same way every other Migo platform's `requestAnimationFrame` is fed by host
-/// vsync rather than by a browser. Returns `MIGO_ERROR_INVALID_STATE` when the
-/// renderer is not up yet, which is the truthful answer for a session that
-/// cannot produce a frame.
+/// vsync rather than by a browser. A request made before the renderer is up is
+/// held and armed when it starts, so both outcomes are `MIGO_OK`; the state
+/// error is for a session with no surface, which has no clock at all.
 ///
 /// # Safety
 /// `session` must be a live session handle.
@@ -138,11 +139,159 @@ pub unsafe extern "C" fn migo_session_request_external_frame(
         let Some(engine) = state.host.as_ref() else {
             return MIGO_ERROR_INVALID_STATE;
         };
-        if engine.clock().request_frame() {
-            MIGO_OK
-        } else {
-            MIGO_ERROR_INVALID_STATE
+        // Armed or held, the request is not lost, and neither is something
+        // the host has to act on.
+        let _ = engine.clock().request_frame();
+        MIGO_OK
+    })
+}
+
+/// Which door a message from the producer's socket goes through.
+///
+/// # Safety
+/// `bytes` must be readable for `byte_count` bytes, or null when `byte_count` is
+/// zero. `out_kind` must be writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_uplink_message_kind(
+    bytes: *const u8,
+    byte_count: usize,
+    out_kind: *mut MigoUplinkMessageKind,
+) -> MigoResult {
+    guard("migo_uplink_message_kind", || {
+        if out_kind.is_null() || (bytes.is_null() && byte_count != 0) {
+            return MIGO_ERROR_INVALID_ARGUMENT;
         }
+        if byte_count > isize::MAX as usize {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let message = if byte_count == 0 {
+            &[][..]
+        } else {
+            // SAFETY: null and length were checked above; the contract requires
+            // the range to be readable for the call.
+            unsafe { std::slice::from_raw_parts(bytes, byte_count) }
+        };
+        let kind = if migo_core::is_control_message(message) {
+            MIGO_UPLINK_MESSAGE_CONTROL
+        } else {
+            MIGO_UPLINK_MESSAGE_FRAME
+        };
+        // SAFETY: checked non-null above.
+        unsafe { out_kind.write(kind) };
+        MIGO_OK
+    })
+}
+
+/// Read one control message from the producer and act on it.
+///
+/// `*out_refusal_code` is zero when the message was read, including when its
+/// requests belonged to another generation, and otherwise the stable code of
+/// the rule it broke. The call's own result is about whether the call could be
+/// made, exactly as for `migo_session_submit_external_frame`.
+///
+/// # Safety
+/// `session` must be a live session handle. `bytes` must be readable for
+/// `byte_count` bytes. `out_refusal_code` must be writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_submit_uplink_control(
+    session: *mut MigoSession,
+    bytes: *const u8,
+    byte_count: usize,
+    out_refusal_code: *mut u32,
+) -> MigoResult {
+    guard("migo_session_submit_uplink_control", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        if bytes.is_null() || byte_count == 0 || out_refusal_code.is_null() {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        if byte_count > isize::MAX as usize {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let Ok(state) = session.state.lock() else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        let Some(engine) = state.host.as_ref() else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        // SAFETY: null and length were checked above; nothing derived from the
+        // slice outlives this call.
+        let message = unsafe { std::slice::from_raw_parts(bytes, byte_count) };
+        let refusal = match engine.submit_control(message) {
+            Ok(_) => 0,
+            Err(error) => error.code(),
+        };
+        drop(state);
+        // SAFETY: checked non-null above.
+        unsafe { out_refusal_code.write(refusal) };
+        MIGO_OK
+    })
+}
+
+/// A C waker and the pointer it is called with, as the session calls it.
+#[cfg(feature = "external-frames")]
+struct CWaker {
+    waker: MigoDownlinkWakerFn,
+    user_data: *mut std::ffi::c_void,
+}
+
+// SAFETY: the pointer is the host's and is only ever handed back to the host's
+// own function; the header makes the host responsible for it being usable from
+// the session thread, which is the only thread this is called on.
+#[cfg(feature = "external-frames")]
+unsafe impl Send for CWaker {}
+#[cfg(feature = "external-frames")]
+unsafe impl Sync for CWaker {}
+
+#[cfg(feature = "external-frames")]
+impl CWaker {
+    /// A method rather than a field call in the closure below: a closure names
+    /// fields it uses and would capture the raw pointer on its own, which is
+    /// neither `Send` nor `Sync`. Through `&self` it captures this struct.
+    fn wake(&self) {
+        // The host's function is called directly rather than through the panic
+        // barrier: it is C, it cannot unwind into Rust, and a barrier here
+        // would cost a closure per tick for nothing.
+        // SAFETY: the host's contract for this waker, in the header.
+        unsafe { (self.waker)(self.user_data) }
+    }
+}
+
+/// Install or clear the function called when a tick is queued.
+///
+/// # Safety
+/// `session` must be a live session handle. `waker`, when non-null, must be
+/// callable from any thread with `user_data` until it is cleared or replaced.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_set_downlink_waker(
+    session: *mut MigoSession,
+    waker: Option<MigoDownlinkWakerFn>,
+    user_data: *mut std::ffi::c_void,
+) -> MigoResult {
+    guard("migo_session_set_downlink_waker", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let Ok(state) = session.state.lock() else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        let Some(engine) = state.host.as_ref() else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        let installed = waker.map(|waker| {
+            let target = CWaker { waker, user_data };
+            Box::new(move || target.wake()) as migo_core::DownlinkWaker
+        });
+        // Under the session's state lock, which the session thread never takes,
+        // so waiting here for a call in progress cannot deadlock with it.
+        engine.set_downlink_waker(installed);
+        MIGO_OK
     })
 }
 
@@ -463,13 +612,220 @@ mod tests {
     }
 
     #[test]
-    fn asking_for_a_frame_before_the_renderer_is_up_is_a_state_error() {
+    fn asking_for_a_frame_before_a_surface_is_attached_is_a_state_error() {
         with_session("external-request-frame", |session| {
             assert_eq!(
                 unsafe { migo_session_request_external_frame(session) },
                 MIGO_ERROR_INVALID_STATE
             );
         });
+    }
+
+    /// A session with a started engine and no renderer, which is the state a
+    /// producer's first request races.
+    fn with_engine_installed(tag: &str, body: impl FnOnce(*mut MigoSession)) {
+        with_session(tag, |session| {
+            {
+                let pinned = unsafe { &*session };
+                let mut state = pinned.state.lock().expect("SessionControl");
+                let join = std::thread::Builder::new()
+                    .name(format!("Migo-Main-{tag}"))
+                    .spawn(|| {})
+                    .expect("spawn inert test Host");
+                state.host = Some(crate::session_engine::engine_for_test(i32::MAX - 1, join));
+            }
+            body(session);
+            // Taken back out before the session is destroyed, which refuses a
+            // session whose engine it did not start and cannot retire.
+            let host = unsafe { &*session }
+                .state
+                .lock()
+                .expect("SessionControl")
+                .host
+                .take();
+            drop(host);
+        });
+    }
+
+    fn control(generation: u32) -> Vec<u8> {
+        migo_core::encode_control(&[migo_core::ControlRecord::RequestFrame { generation }])
+    }
+
+    #[test]
+    fn the_router_is_told_which_door_a_message_goes_through() {
+        let mut kind = 0;
+        let request = control(1);
+        assert_eq!(
+            unsafe { migo_uplink_message_kind(request.as_ptr(), request.len(), &mut kind) },
+            MIGO_OK
+        );
+        assert_eq!(kind, MIGO_UPLINK_MESSAGE_CONTROL);
+
+        let frame = [0x46u8, 0x50, 0x47, 0x4D, 1, 0, 0, 0];
+        assert_eq!(
+            unsafe { migo_uplink_message_kind(frame.as_ptr(), frame.len(), &mut kind) },
+            MIGO_OK
+        );
+        assert_eq!(
+            kind, MIGO_UPLINK_MESSAGE_FRAME,
+            "a frame goes to the frame door"
+        );
+
+        assert_eq!(
+            unsafe { migo_uplink_message_kind(std::ptr::null(), 0, &mut kind) },
+            MIGO_OK
+        );
+        assert_eq!(
+            kind, MIGO_UPLINK_MESSAGE_FRAME,
+            "so does nothing at all: frame ingress is what refuses it"
+        );
+        assert_eq!(
+            unsafe { migo_uplink_message_kind(std::ptr::null(), 4, &mut kind) },
+            MIGO_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { migo_uplink_message_kind(request.as_ptr(), 4, std::ptr::null_mut()) },
+            MIGO_ERROR_INVALID_ARGUMENT
+        );
+    }
+
+    #[test]
+    fn a_control_message_needs_a_surface_and_somewhere_to_answer() {
+        let request = control(1);
+        let mut refusal = u32::MAX;
+        assert_eq!(
+            unsafe {
+                migo_session_submit_uplink_control(
+                    std::ptr::null_mut(),
+                    request.as_ptr(),
+                    request.len(),
+                    &mut refusal,
+                )
+            },
+            MIGO_ERROR_INVALID_ARGUMENT
+        );
+        with_session("external-control-no-surface", |session| {
+            assert_eq!(
+                unsafe {
+                    migo_session_submit_uplink_control(
+                        session,
+                        request.as_ptr(),
+                        request.len(),
+                        &mut refusal,
+                    )
+                },
+                MIGO_ERROR_INVALID_STATE
+            );
+            assert_eq!(
+                unsafe {
+                    migo_session_submit_uplink_control(
+                        session,
+                        request.as_ptr(),
+                        request.len(),
+                        std::ptr::null_mut(),
+                    )
+                },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+        });
+        assert_eq!(
+            refusal,
+            u32::MAX,
+            "nothing was written by a call that was not made"
+        );
+    }
+
+    #[test]
+    fn a_control_message_is_read_or_refused_with_the_rule_it_broke() {
+        with_engine_installed("external-control-read", |session| {
+            let mut refusal = u32::MAX;
+            let request = control(1);
+            assert_eq!(
+                unsafe {
+                    migo_session_submit_uplink_control(
+                        session,
+                        request.as_ptr(),
+                        request.len(),
+                        &mut refusal,
+                    )
+                },
+                MIGO_OK
+            );
+            assert_eq!(
+                refusal, 0,
+                "a request before the renderer is up is held, not refused"
+            );
+
+            let stale = control(9);
+            assert_eq!(
+                unsafe {
+                    migo_session_submit_uplink_control(
+                        session,
+                        stale.as_ptr(),
+                        stale.len(),
+                        &mut refusal,
+                    )
+                },
+                MIGO_OK
+            );
+            assert_eq!(
+                refusal, 0,
+                "another generation's request is ignored, not refused"
+            );
+
+            let mut malformed = control(1);
+            malformed.push(0);
+            assert_eq!(
+                unsafe {
+                    migo_session_submit_uplink_control(
+                        session,
+                        malformed.as_ptr(),
+                        malformed.len(),
+                        &mut refusal,
+                    )
+                },
+                MIGO_OK
+            );
+            assert_eq!(refusal, migo_core::ControlError::TrailingBytes.code());
+        });
+    }
+
+    unsafe extern "C" fn count_wake(user_data: *mut std::ffi::c_void) {
+        let counter = unsafe { &*(user_data as *const std::sync::atomic::AtomicU32) };
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_waker_needs_a_surface_and_can_be_installed_and_cleared() {
+        let counter = std::sync::atomic::AtomicU32::new(0);
+        let user_data = &counter as *const _ as *mut std::ffi::c_void;
+        assert_eq!(
+            unsafe {
+                migo_session_set_downlink_waker(std::ptr::null_mut(), Some(count_wake), user_data)
+            },
+            MIGO_ERROR_INVALID_ARGUMENT
+        );
+        with_session("external-waker-no-surface", |session| {
+            assert_eq!(
+                unsafe { migo_session_set_downlink_waker(session, Some(count_wake), user_data) },
+                MIGO_ERROR_INVALID_STATE
+            );
+        });
+        with_engine_installed("external-waker", |session| {
+            assert_eq!(
+                unsafe { migo_session_set_downlink_waker(session, Some(count_wake), user_data) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { migo_session_set_downlink_waker(session, None, std::ptr::null_mut()) },
+                MIGO_OK
+            );
+        });
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "installing is not a tick"
+        );
     }
 
     #[test]

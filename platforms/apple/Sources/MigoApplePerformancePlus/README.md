@@ -98,6 +98,16 @@ the embedded JavaScript unchanged; only the op's landing point moves. A WebConte
 would introduce a second timeline, and the phase error between the two is a problem this
 topology does not otherwise have.
 
+How the demand crosses (landed with the frame loop, see `contracts/frame-wire/wire-v1.md`
+*The window* and *Uplink control messages*): content's `session.requestFrame` sends a
+`REQUEST_FRAME` control message on the socket; `MigoFrameChannel` routes it by the kind
+`migo_uplink_message_kind` reports and the engine arms one vsync -- or holds the request
+until the renderer is up. The tick is queued on the engine's thread, which calls the waker
+the channel installed (`migo_session_set_downlink_waker`), and the channel sends it. The
+tick carries the credit window `(remaining_credits, accepted_sequence)`, because a verdict
+is only sent for a frame and a producer whose last verdict said zero would otherwise never
+learn a credit came back.
+
 ## What the host shape must satisfy, and what is still measured
 
 
