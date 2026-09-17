@@ -160,3 +160,69 @@ export function opcodeOf(header) {
 export function wordCountOf(header) {
   return (header >>> 12) & 0xfffff;
 }
+
+// The WebGL resource block: object lifetimes, shader and program set-up, and
+// the uploads that carry bytes. Fixed records 128..=191, payload records
+// 192..=255 (a byte_length and zero-padded bytes, or a count and words). The
+// in-process encoder does not carry this block -- those calls stay ops there --
+// so scripts/test-render-opcode-agreement.sh checks it between this file and
+// engine/crates/frame-wire/src/gl_resource.rs only.
+
+export const OPR_BASE = 128;
+export const OPR_PAYLOAD_BASE = 192;
+export const OPR_END = 256;
+export const OPR_CREATE_BUFFER = 128;
+export const OPR_CREATE_FRAMEBUFFER = 129;
+export const OPR_CREATE_PROGRAM = 130;
+export const OPR_CREATE_QUERY = 131;
+export const OPR_CREATE_RENDERBUFFER = 132;
+export const OPR_CREATE_SAMPLER = 133;
+export const OPR_CREATE_SHADER = 134;
+export const OPR_CREATE_TEXTURE = 135;
+export const OPR_CREATE_TRANSFORM_FEEDBACK = 136;
+export const OPR_CREATE_VERTEX_ARRAY = 137;
+export const OPR_DELETE_BUFFER = 138;
+export const OPR_DELETE_FRAMEBUFFER = 139;
+export const OPR_DELETE_PROGRAM = 140;
+export const OPR_DELETE_QUERY = 141;
+export const OPR_DELETE_RENDERBUFFER = 142;
+export const OPR_DELETE_SAMPLER = 143;
+export const OPR_DELETE_SHADER = 144;
+export const OPR_DELETE_SYNC = 145;
+export const OPR_DELETE_TEXTURE = 146;
+export const OPR_DELETE_TRANSFORM_FEEDBACK = 147;
+export const OPR_DELETE_VERTEX_ARRAY = 148;
+export const OPR_ATTACH_SHADER = 149;
+export const OPR_COMPILE_SHADER = 150;
+export const OPR_LINK_PROGRAM = 151;
+export const OPR_BEGIN_QUERY = 152;
+export const OPR_END_QUERY = 153;
+export const OPR_BEGIN_TRANSFORM_FEEDBACK = 154;
+export const OPR_END_TRANSFORM_FEEDBACK = 155;
+export const OPR_PAUSE_TRANSFORM_FEEDBACK = 156;
+export const OPR_RESUME_TRANSFORM_FEEDBACK = 157;
+export const OPR_BIND_TRANSFORM_FEEDBACK = 158;
+export const OPR_BLIT_FRAMEBUFFER = 159;
+export const OPR_FENCE_SYNC = 160;
+export const OPR_FRAMEBUFFER_RENDERBUFFER = 161;
+export const OPR_FRAMEBUFFER_TEXTURE_2D = 162;
+export const OPR_RENDERBUFFER_STORAGE = 163;
+export const OPR_RENDERBUFFER_STORAGE_MULTISAMPLE = 164;
+export const OPR_TEX_STORAGE_2D = 165;
+export const OPR_TEX_STORAGE_3D = 166;
+export const OPR_UNIFORM_BLOCK_BINDING = 167;
+export const OPR_LOSE_CONTEXT = 168;
+export const OPR_SHADER_SOURCE = 192;
+export const OPR_BIND_ATTRIB_LOCATION = 193;
+export const OPR_BUFFER_DATA = 194;
+export const OPR_BUFFER_SUB_DATA = 195;
+export const OPR_TEX_IMAGE_2D = 196;
+export const OPR_TEX_SUB_IMAGE_2D = 197;
+export const OPR_COMPRESSED_TEX_IMAGE_2D = 198;
+export const OPR_COMPRESSED_TEX_SUB_IMAGE_2D = 199;
+export const OPR_TEX_IMAGE_3D = 200;
+export const OPR_TEX_SUB_IMAGE_3D = 201;
+export const OPR_DRAW_BUFFERS = 202;
+export const OPR_INVALIDATE_FRAMEBUFFER = 203;
+export const OPR_TRANSFORM_FEEDBACK_VARYINGS = 204;
+export const MAX_RESOURCE_WORD_LIST = 64;

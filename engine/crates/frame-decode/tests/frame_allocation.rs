@@ -17,6 +17,12 @@ impl GlDecodeContext for Context {
     fn transform_feedback_captures(&self, _: u32) -> bool {
         false
     }
+    fn set_transform_feedback(
+        &mut self,
+        _canvas_id: u32,
+        _phase: frame_decode::TransformFeedbackPhase,
+    ) {
+    }
 }
 
 #[test]

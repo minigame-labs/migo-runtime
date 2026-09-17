@@ -73,6 +73,12 @@ fn admitted_storage_covers_real_capacities_after_a_larger_pooled_frame() {
         fn transform_feedback_captures(&self, _: u32) -> bool {
             false
         }
+        fn set_transform_feedback(
+            &mut self,
+            _canvas_id: u32,
+            _phase: frame_decode::TransformFeedbackPhase,
+        ) {
+        }
     }
     impl RenderSink for Sink {
         fn canvas_batch(&mut self, canvas_id: u32, commands: PooledVec<Canvas2DCmd>) {

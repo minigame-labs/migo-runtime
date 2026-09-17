@@ -773,6 +773,8 @@ pub mod stream;
 
 /// The WebGL block: its opcodes and their record shapes.
 pub mod gl;
+/// The WebGL resource block: object lifetimes and the uploads that carry bytes.
+pub mod gl_resource;
 
 /// The Canvas2D block. See its module docs for why one stream carries both.
 pub mod canvas2d;

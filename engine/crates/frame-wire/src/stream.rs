@@ -83,6 +83,13 @@ pub enum StreamError {
     BadBool,
     /// Variable uniform payload exceeds `MAX_STREAM_UNIFORM_WORDS`.
     UniformPayloadTooLarge,
+    /// A byte payload's words disagree with its `byte_length`, its padding is
+    /// not zero, or a payload marked absent carries bytes.
+    BadPayload,
+    /// A payload that is text is not UTF-8.
+    PayloadNotUtf8,
+    /// A word list's `count` disagrees with the record or exceeds its bound.
+    BadWordList,
 }
 
 impl StreamError {
@@ -100,6 +107,9 @@ impl StreamError {
             StreamError::BadBool => 10,
             StreamError::UniformPayloadTooLarge => 11,
             StreamError::Overflow => 12,
+            StreamError::BadPayload => 13,
+            StreamError::PayloadNotUtf8 => 14,
+            StreamError::BadWordList => 15,
         }
     }
 }
@@ -135,6 +145,32 @@ pub enum RecordSpec {
         /// Word index (within the record) holding the transpose bool.
         transpose_word_idx: u8,
     },
+    /// Fixed words, then bytes: `H prefix... byte_length bytes...`, the bytes
+    /// padded to a word with zero bytes (little-endian, so the pad is the high
+    /// end of the last word). `word_count = prefix_words + 1 + ceil(len / 4)`.
+    ///
+    /// Zero padding for the reason the envelope requires zero pads between
+    /// sections: bytes the checksum covers and no consumer reads are room for a
+    /// second channel.
+    Bytes {
+        /// Words before `byte_length`, the header included.
+        prefix_words: u8,
+        /// A bool word in the prefix saying whether the payload exists at all,
+        /// for calls whose data argument is nullable. When it is 0 the length
+        /// must be 0: an absent payload with bytes is two answers to one
+        /// question.
+        presence_word: Option<u8>,
+        /// The bytes are text and must be UTF-8. A JavaScript string encoded by
+        /// the producer always is, so bytes that are not were not written by one.
+        text: bool,
+    },
+    /// Fixed words, then a word list: `H prefix... count words...`.
+    /// `word_count = prefix_words + 1 + count`.
+    Words {
+        /// Words before `count`, the header included.
+        prefix_words: u8,
+        max_count: u32,
+    },
 }
 
 // ─── record_spec ─────────────────────────────────────────────────────────────
@@ -147,9 +183,52 @@ pub enum RecordSpec {
 pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
     if opcode >= crate::canvas2d::OP2D_BASE {
         crate::canvas2d::record_spec(opcode)
+    } else if (crate::gl_resource::OPR_BASE..crate::gl_resource::OPR_END).contains(&opcode) {
+        crate::gl_resource::record_spec(opcode)
     } else {
         crate::gl::record_spec(opcode)
     }
+}
+
+/// Whether bytes, read in order, are UTF-8. Allocation-free, for Pass 1.
+///
+/// The standard's well-formed table (Unicode 15, table 3-7): no overlong
+/// encodings, no surrogates, nothing above U+10FFFF. What `str::from_utf8`
+/// accepts, and tested against it.
+pub(crate) fn is_utf8(bytes: impl Iterator<Item = u8>) -> bool {
+    // How many continuation bytes are still owed, and the range the next one
+    // must fall in (the second byte's range depends on the first).
+    let mut owed = 0u8;
+    let mut low = 0x80u8;
+    let mut high = 0xBFu8;
+    for byte in bytes {
+        if owed == 0 {
+            match byte {
+                0x00..=0x7F => {}
+                0xC2..=0xDF => owed = 1,
+                0xE0 => (owed, low, high) = (2, 0xA0, 0xBF),
+                0xE1..=0xEC | 0xEE..=0xEF => owed = 2,
+                0xED => (owed, low, high) = (2, 0x80, 0x9F),
+                0xF0 => (owed, low, high) = (3, 0x90, 0xBF),
+                0xF1..=0xF3 => owed = 3,
+                0xF4 => (owed, low, high) = (3, 0x80, 0x8F),
+                _ => return false,
+            }
+        } else {
+            if byte < low || byte > high {
+                return false;
+            }
+            owed -= 1;
+            low = 0x80;
+            high = 0xBF;
+        }
+    }
+    owed == 0
+}
+
+/// The payload bytes of `words`, the first `len` of them in little-endian order.
+pub(crate) fn payload_bytes(words: &[u32], len: usize) -> impl Iterator<Item = u8> + '_ {
+    words.iter().flat_map(|word| word.to_le_bytes()).take(len)
 }
 
 // ─── ValidatedStream ─────────────────────────────────────────────────────────
@@ -299,6 +378,52 @@ fn validate_stream_with_limit(
                 let t_val = *words.get(t_idx).ok_or(StreamError::Truncated)?;
                 if t_val > 1 {
                     return Err(StreamError::BadBool);
+                }
+            }
+            RecordSpec::Bytes {
+                prefix_words,
+                presence_word,
+                text,
+            } => {
+                let prefix = prefix_words as usize;
+                if (wc as usize) <= prefix {
+                    return Err(StreamError::BadArity);
+                }
+                let len = words[cursor + prefix] as usize;
+                let payload = &words[cursor + prefix + 1..record_end];
+                // `div_ceil` on a usize that came from a u32: it cannot overflow.
+                if payload.len() != len.div_ceil(4) {
+                    return Err(StreamError::BadPayload);
+                }
+                if let Some(index) = presence_word {
+                    match words[cursor + index as usize] {
+                        0 if len != 0 => return Err(StreamError::BadPayload),
+                        0 | 1 => {}
+                        _ => return Err(StreamError::BadBool),
+                    }
+                }
+                let tail = len % 4;
+                if tail != 0 {
+                    let last = payload[payload.len() - 1];
+                    if last >> (tail * 8) != 0 {
+                        return Err(StreamError::BadPayload);
+                    }
+                }
+                if text && !is_utf8(payload_bytes(payload, len)) {
+                    return Err(StreamError::PayloadNotUtf8);
+                }
+            }
+            RecordSpec::Words {
+                prefix_words,
+                max_count,
+            } => {
+                let prefix = prefix_words as usize;
+                if (wc as usize) <= prefix {
+                    return Err(StreamError::BadArity);
+                }
+                let count = words[cursor + prefix];
+                if count > max_count || count as usize != wc as usize - prefix - 1 {
+                    return Err(StreamError::BadWordList);
                 }
             }
         }
@@ -848,20 +973,23 @@ mod tests {
     #[test]
     fn every_opcode_is_routed_to_the_block_that_knows_it() {
         for opcode in 0..(crate::canvas2d::OP2D_BASE * 2) {
-            let from_gl = crate::gl::record_spec(opcode);
-            let from_2d = crate::canvas2d::record_spec(opcode);
+            let claims = [
+                crate::gl::record_spec(opcode),
+                crate::gl_resource::record_spec(opcode),
+                crate::canvas2d::record_spec(opcode),
+            ];
 
-            // Neither block may claim an opcode the other also claims: the
-            // envelope picks exactly one, so an overlap would make which table
-            // supplied a record's length depend on the order of an `if`.
+            // No block may claim an opcode another also claims: the envelope
+            // picks exactly one, so an overlap would make which table supplied a
+            // record's length depend on the order of an `if`.
             assert!(
-                from_gl.is_none() || from_2d.is_none(),
-                "opcode {opcode} is claimed by both the GL and the 2D block"
+                claims.iter().filter(|claim| claim.is_some()).count() <= 1,
+                "opcode {opcode} is claimed by more than one block"
             );
 
             assert_eq!(
                 super::record_spec(opcode),
-                from_gl.or(from_2d),
+                claims.into_iter().flatten().next(),
                 "opcode {opcode} was routed to the block that does not know it"
             );
         }
@@ -951,9 +1079,12 @@ mod tests {
         }
     }
 
+    /// The gap between the GL block's fixed and variable ranges is empty apart
+    /// from the resource block, which owns 128..=255 and is checked by its own
+    /// module.
     #[test]
-    fn opcodes_between_59_and_255_return_none() {
-        for op in 59u32..=255 {
+    fn opcodes_between_59_and_127_return_none() {
+        for op in 59u32..=127 {
             assert!(
                 super::record_spec(op).is_none(),
                 "opcode {} should not have a spec",
@@ -1110,5 +1241,159 @@ mod tests {
         words[2] = h;
         words[5] = 1; // transpose = 1 (valid bool)
         assert!(validate_stream(&words, 2 + total).is_ok());
+    }
+
+    // ── the resource block's payload shapes ──────────────────────────────────
+
+    use crate::gl_resource::{
+        OPR_BUFFER_DATA, OPR_DRAW_BUFFERS, OPR_SHADER_SOURCE, OPR_TEX_IMAGE_2D,
+    };
+
+    /// `[MAGIC, VERSION, record...]`, validated.
+    fn check(record: &[u32]) -> Result<(), StreamError> {
+        let mut words = vec![MAGIC, STREAM_VERSION];
+        words.extend_from_slice(record);
+        validate_frame_stream(&words, words.len() as u32).map(|_| ())
+    }
+
+    /// Bytes as a record's payload: `len` then words, little-endian, zero-padded.
+    fn payload(bytes: &[u8]) -> Vec<u32> {
+        let mut out = vec![bytes.len() as u32];
+        for chunk in bytes.chunks(4) {
+            let mut word = [0u8; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            out.push(u32::from_le_bytes(word));
+        }
+        out
+    }
+
+    fn shader_source(bytes: &[u8]) -> Vec<u32> {
+        let mut record = vec![0, 1, 7];
+        record.extend(payload(bytes));
+        record[0] = pack_header(OPR_SHADER_SOURCE, record.len() as u32);
+        record
+    }
+
+    #[test]
+    fn a_byte_payload_of_every_tail_length_validates() {
+        for len in 0..=9usize {
+            let text: Vec<u8> = (0..len).map(|i| b'a' + i as u8).collect();
+            assert_eq!(check(&shader_source(&text)), Ok(()), "len {len}");
+        }
+    }
+
+    #[test]
+    fn a_byte_payload_whose_words_disagree_with_its_length_is_refused() {
+        let mut record = shader_source(b"abcde");
+        record[3] = 9; // claims nine bytes, carries two words
+        assert_eq!(check(&record), Err(StreamError::BadPayload));
+        let mut record = shader_source(b"abcd");
+        record[3] = 3; // three bytes fit in one word, and there is one
+        record[4] &= 0x00FF_FFFF;
+        assert_eq!(check(&record), Ok(()));
+        record[3] = 5; // five do not
+        assert_eq!(check(&record), Err(StreamError::BadPayload));
+    }
+
+    #[test]
+    fn padding_after_the_payload_must_be_zero() {
+        let mut record = shader_source(b"abcde");
+        let last = record.len() - 1;
+        record[last] |= 0x0000_FF00; // the byte after 'e'
+        assert_eq!(check(&record), Err(StreamError::BadPayload));
+    }
+
+    #[test]
+    fn text_that_is_not_utf8_is_refused() {
+        assert_eq!(
+            check(&shader_source(&[b'a', 0xC0, 0x80])),
+            Err(StreamError::PayloadNotUtf8),
+            "an overlong NUL"
+        );
+        assert_eq!(check(&shader_source("ok \u{1F600}".as_bytes())), Ok(()));
+    }
+
+    #[test]
+    fn an_absent_payload_carries_no_bytes_and_its_presence_is_a_bool() {
+        // H C target size:I usage has_data | len data
+        let record = |has_data: u32, bytes: &[u8]| {
+            let mut record = vec![0, 1, 0x8892, 16, 0x88E4, has_data];
+            record.extend(payload(bytes));
+            record[0] = pack_header(OPR_BUFFER_DATA, record.len() as u32);
+            record
+        };
+        assert_eq!(check(&record(0, &[])), Ok(()));
+        assert_eq!(check(&record(1, &[1, 2, 3])), Ok(()));
+        assert_eq!(check(&record(1, &[])), Ok(()), "present and empty");
+        assert_eq!(check(&record(0, &[1])), Err(StreamError::BadPayload));
+        assert_eq!(check(&record(2, &[])), Err(StreamError::BadBool));
+    }
+
+    #[test]
+    fn a_word_list_s_count_is_its_length_and_is_bounded() {
+        let record = |count: u32, words: &[u32]| {
+            let mut record = vec![0, 1, count];
+            record.extend_from_slice(words);
+            record[0] = pack_header(OPR_DRAW_BUFFERS, record.len() as u32);
+            record
+        };
+        assert_eq!(check(&record(2, &[0x8CE0, 0x8CE1])), Ok(()));
+        assert_eq!(
+            check(&record(3, &[0x8CE0, 0x8CE1])),
+            Err(StreamError::BadWordList)
+        );
+        let many = vec![0u32; 65];
+        assert_eq!(check(&record(65, &many)), Err(StreamError::BadWordList));
+    }
+
+    #[test]
+    fn the_resource_block_is_routed_to_its_own_table() {
+        assert_eq!(
+            super::record_spec(OPR_TEX_IMAGE_2D),
+            crate::gl_resource::record_spec(OPR_TEX_IMAGE_2D)
+        );
+        assert!(super::record_spec(crate::gl_resource::OPR_BASE + 63).is_none());
+    }
+
+    /// The validator against the standard library, on every one- and two-byte
+    /// sequence and on a quarter of a million longer ones.
+    #[test]
+    fn the_utf8_check_agrees_with_the_standard_library() {
+        for a in 0..=255u8 {
+            assert_eq!(
+                is_utf8([a].into_iter()),
+                std::str::from_utf8(&[a]).is_ok(),
+                "{a:02x}"
+            );
+            for b in 0..=255u8 {
+                assert_eq!(
+                    is_utf8([a, b].into_iter()),
+                    std::str::from_utf8(&[a, b]).is_ok(),
+                    "{a:02x} {b:02x}"
+                );
+            }
+        }
+        let mut state = 0x9E37_79B9u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        let interesting = [
+            0x00, 0x41, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0, 0xC1, 0xC2, 0xDF, 0xE0,
+            0xE1, 0xEC, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF3, 0xF4, 0xF5, 0xFF,
+        ];
+        for _ in 0..250_000 {
+            let len = (next() % 8) as usize + 3;
+            let bytes: Vec<u8> = (0..len)
+                .map(|_| interesting[(next() as usize) % interesting.len()])
+                .collect();
+            assert_eq!(
+                is_utf8(bytes.iter().copied()),
+                std::str::from_utf8(&bytes).is_ok(),
+                "{bytes:02x?}"
+            );
+        }
     }
 }

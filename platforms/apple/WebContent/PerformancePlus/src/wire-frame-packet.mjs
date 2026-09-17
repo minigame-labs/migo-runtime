@@ -324,24 +324,45 @@ export class FramePacketWriter {
   appendWords(words, from, to) {
     const count = to - from;
     if (count <= 0) return;
-    if (this.#used === 0) this.#used = STREAM_HEADER_WORDS;
-    const neededBytes = STREAM_PAYLOAD_OFFSET + (this.#used + count) * 4 + SECTION_ALIGNMENT;
-    if (neededBytes > this.#buffer.byteLength) {
-      if (neededBytes > MAX_TOTAL_BYTES) {
-        throw new RangeError(`a frame of ${neededBytes} bytes is above the ${MAX_TOTAL_BYTES}-byte packet ceiling`);
-      }
-      let capacity = this.#buffer.byteLength;
-      while (capacity < neededBytes) capacity *= 2;
-      const previous = this.#bytes;
-      const usedBytes = STREAM_PAYLOAD_OFFSET + this.#used * 4;
-      const used = this.#used;
-      this.#allocate(Math.min(capacity, MAX_TOTAL_BYTES));
-      this.#bytes.set(previous.subarray(0, usedBytes));
-      this.#used = used;
-    }
+    this.#reserve(count);
     // Word index, not byte offset: the payload starts on a word boundary.
     this.#words.set(words.subarray(from, to), STREAM_PAYLOAD_OFFSET / 4 + this.#used);
     this.#used += count;
+  }
+
+  /**
+   * Append a record's byte payload after its `byte_length` word: the bytes,
+   * then zero bytes to the word boundary. Copied straight into the packet, which
+   * is the one copy a payload makes on this side. The caller has already counted
+   * these words in `fits`.
+   */
+  appendPayload(bytes) {
+    const words = (bytes.byteLength + 3) >>> 2;
+    if (words === 0) return;
+    this.#reserve(words);
+    const offset = STREAM_PAYLOAD_OFFSET + this.#used * 4;
+    this.#bytes.set(bytes, offset);
+    // The pad is written, not assumed: a reused buffer holds the last packet's
+    // bytes there, and the reader refuses a pad that is not zero.
+    this.#bytes.fill(0, offset + bytes.byteLength, offset + words * 4);
+    this.#used += words;
+  }
+
+  #reserve(count) {
+    if (this.#used === 0) this.#used = STREAM_HEADER_WORDS;
+    const neededBytes = STREAM_PAYLOAD_OFFSET + (this.#used + count) * 4 + SECTION_ALIGNMENT;
+    if (neededBytes <= this.#buffer.byteLength) return;
+    if (neededBytes > MAX_TOTAL_BYTES) {
+      throw new RangeError(`a frame of ${neededBytes} bytes is above the ${MAX_TOTAL_BYTES}-byte packet ceiling`);
+    }
+    let capacity = this.#buffer.byteLength;
+    while (capacity < neededBytes) capacity *= 2;
+    const previous = this.#bytes;
+    const usedBytes = STREAM_PAYLOAD_OFFSET + this.#used * 4;
+    const used = this.#used;
+    this.#allocate(Math.min(capacity, MAX_TOTAL_BYTES));
+    this.#bytes.set(previous.subarray(0, usedBytes));
+    this.#used = used;
   }
 
   /**

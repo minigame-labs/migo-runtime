@@ -25,8 +25,15 @@
 #      failed asking for an offscreen canvas), so the producer's modules may use
 #      the Worker's `postMessage` only through the reference taken before the
 #      engine is imported.
+#   5. The resource calls. fixtures/webgl-resource-calls.js makes every WebGL
+#      resource call the producer answers on its stream lane, through the
+#      engine's WebGL 2 facade, on the producer and in the embedded V8 runtime.
+#      The producer's records must decode to exactly the commands the in-process
+#      ops build, and record the same errors
+#      (engine/crates/runtime-v8/src/rendering/webgl/resource_parity.rs).
 #
-# Host-only: python3, node, cargo. No Apple toolchain.
+# Host-only: python3, node, cargo (with the host V8 the runtime's own tests use).
+# No Apple toolchain.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -76,6 +83,20 @@ if (( status != 0 )); then
 fi
 printf '%s\n' "$rust" | grep -qE "admitted $frames frames from the engine's WebGL facade" \
     || { printf '%s\n' "$rust" >&2; fail "the Rust check did not report admitting $frames frames; it may not have run"; }
+
+PARITY="$WORK/parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$PARITY" \
+    || fail "the resource calls did not run on the producer"
+status=0
+parity="$(cd engine && MIGO_RESOURCE_PARITY_DIR="$PARITY" cargo test -p migo-runtime-v8 --lib \
+    resource_parity -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$parity" >&2
+    fail "the producer's resource records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$parity" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
+    || { printf '%s\n' "$parity" >&2; fail "the resource parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$parity" | grep -E 'commands and [0-9]+ errors agree'
 
 python3 - "$STAGED/engine/manifest.json" <<'PY'
 import json, sys

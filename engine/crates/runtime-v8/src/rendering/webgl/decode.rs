@@ -65,6 +65,19 @@ impl frame_decode::GlDecodeContext for OpStateRenderTarget<'_> {
             .borrow::<WebGLErrorState>()
             .transform_feedback_captures(canvas_id)
     }
+
+    #[inline]
+    fn set_transform_feedback(
+        &mut self,
+        canvas_id: u32,
+        phase: frame_decode::TransformFeedbackPhase,
+    ) {
+        crate::rendering::webgl::error_state::set_transform_feedback(
+            self.state,
+            canvas_id,
+            phase.into(),
+        );
+    }
 }
 
 impl RenderSink for OpStateRenderTarget<'_> {

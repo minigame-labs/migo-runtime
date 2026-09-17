@@ -126,9 +126,35 @@ const MAX_ERROR_CANVASES: usize = 256;
 #[derive(Debug, Default)]
 pub struct ExternalGlErrors {
     queues: Mutex<Vec<(u32, VecDeque<u32>)>>,
+    /// Canvases whose transform feedback is capturing, as the decoded begin,
+    /// pause, resume and end records left it. What `bindBufferBase` on a
+    /// feedback buffer is refused against; the embedded runtime keeps the same
+    /// state beside its error queues. Bounded like the queues.
+    capturing: Mutex<Vec<u32>>,
 }
 
 impl ExternalGlErrors {
+    fn set_transform_feedback(&self, canvas_id: u32, phase: frame_decode::TransformFeedbackPhase) {
+        let mut capturing = self.capturing.lock();
+        let index = capturing.iter().position(|id| *id == canvas_id);
+        match (phase, index) {
+            (frame_decode::TransformFeedbackPhase::Active, None) => {
+                if capturing.len() < MAX_ERROR_CANVASES {
+                    capturing.push(canvas_id);
+                }
+            }
+            (frame_decode::TransformFeedbackPhase::Active, Some(_)) => {}
+            (_, Some(index)) => {
+                capturing.swap_remove(index);
+            }
+            (_, None) => {}
+        }
+    }
+
+    fn transform_feedback_captures(&self, canvas_id: u32) -> bool {
+        self.capturing.lock().contains(&canvas_id)
+    }
+
     fn push(&self, canvas_id: u32, code: u32) {
         let mut queues = self.queues.lock();
         let queue = match queues.iter_mut().find(|(id, _)| *id == canvas_id) {
@@ -172,12 +198,16 @@ impl frame_decode::GlDecodeContext for ExternalDecodeContext<'_> {
         self.errors.push(canvas_id, code);
     }
 
-    fn transform_feedback_captures(&self, _canvas_id: u32) -> bool {
-        // The producer runs the WebGL shim and knows its own feedback state; it
-        // is not mirrored here. Answering `false` is what the in-process path
-        // does for a canvas it has no record of, and the render thread rejects
-        // the call for real if it is genuinely illegal.
-        false
+    fn transform_feedback_captures(&self, canvas_id: u32) -> bool {
+        self.errors.transform_feedback_captures(canvas_id)
+    }
+
+    fn set_transform_feedback(
+        &mut self,
+        canvas_id: u32,
+        phase: frame_decode::TransformFeedbackPhase,
+    ) {
+        self.errors.set_transform_feedback(canvas_id, phase);
     }
 }
 

@@ -45,13 +45,16 @@ SOURCES = {
     "rust envelope": (Path("engine/crates/frame-wire/src/stream.rs"), set()),
     "rust": (Path("engine/crates/frame-wire/src/gl.rs"), {"gl"}),
     "rust 2d": (Path("engine/crates/frame-wire/src/canvas2d.rs"), {"2d"}),
+    # The resource block has two encoders, not three: the in-process runtime
+    # makes these calls as ops, so its encoder declares only gl and 2d below.
+    "rust resource": (Path("engine/crates/frame-wire/src/gl_resource.rs"), {"res"}),
     "in-process js": (
         Path("engine/crates/runtime-v8/src/rendering/webgl/00_render_command_stream.js"),
         {"gl", "2d"},
     ),
     "webcontent js": (
         Path("platforms/apple/WebContent/PerformancePlus/src/render-opcodes.mjs"),
-        {"gl", "2d"},
+        {"gl", "2d", "res"},
     ),
 }
 
@@ -61,6 +64,10 @@ PATTERNS = {
         "in-process js": re.compile(r"^\s*const (OP_[A-Z0-9_]+) = (\d+);", re.M),
         "webcontent js": re.compile(r"^export const (OP_[A-Z0-9_]+) = (\d+);", re.M),
     },
+    "res": {
+        "rust resource": re.compile(r"^pub const (OPR_[A-Z0-9_]+): u32 = (\d+);", re.M),
+        "webcontent js": re.compile(r"^export const (OPR_[A-Z0-9_]+) = (\d+);", re.M),
+    },
     "2d": {
         "rust 2d": re.compile(r"^pub const (OP2D_[A-Z0-9_]+): u32 = (\d+);", re.M),
         "in-process js": re.compile(r"^\s*const (OP2D_[A-Z0-9_]+) = (\d+);", re.M),
@@ -68,7 +75,7 @@ PATTERNS = {
     },
 }
 # Range markers, not opcodes: they name where the block starts and ends.
-BLOCK_MARKERS = {"OP2D_BASE", "OP2D_END"}
+BLOCK_MARKERS = {"OP2D_BASE", "OP2D_END", "OPR_BASE", "OPR_PAYLOAD_BASE", "OPR_END"}
 
 HEADER = {
     "rust envelope": re.compile(
@@ -174,6 +181,22 @@ for block, patterns in PATTERNS.items():
             problems.append("gl: an opcode has reached the 2D block at 512")
         print(f"    {len(fixed)} fixed-length (1..={fixed[-1] if fixed else 0}), "
               f"{len(variable)} variable-length (256..={variable[-1] if variable else 0})")
+    elif block == "res":
+        # Two contiguous runs: fixed records from 128, payload records from 192,
+        # and nothing of this block outside 128..=255.
+        PAYLOAD_BASE = 192
+        fixed = sorted(v for v in values if v < PAYLOAD_BASE)
+        payload = sorted(v for v in values if v >= PAYLOAD_BASE)
+        if fixed != list(range(128, 128 + len(fixed))):
+            gaps = [n for n in range(128, (fixed or [128])[-1] + 1) if n not in set(fixed)]
+            problems.append(f"res: the fixed records are not contiguous from 128; missing {gaps[:8]}")
+        if payload != list(range(PAYLOAD_BASE, PAYLOAD_BASE + len(payload))):
+            gaps = [n for n in range(PAYLOAD_BASE, (payload or [PAYLOAD_BASE])[-1] + 1) if n not in set(payload)]
+            problems.append(f"res: the payload records are not contiguous from 192; missing {gaps[:8]}")
+        if values and (values[0] < 128 or values[-1] > 255):
+            problems.append("res: an opcode is outside the block's 128..=255")
+        print(f"    {len(fixed)} fixed (128..={fixed[-1] if fixed else 0}), "
+              f"{len(payload)} payload (192..={payload[-1] if payload else 0})")
     else:
         if values != list(range(512, 512 + len(values))):
             gaps = [n for n in range(512, values[-1] + 1) if n not in set(values)]

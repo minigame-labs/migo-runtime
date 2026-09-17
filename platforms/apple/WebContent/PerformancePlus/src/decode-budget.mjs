@@ -15,7 +15,26 @@
 // Kept equal to `frame_decode::producer_estimated_bytes` on the same streams by
 // engine/crates/frame-decode/tests/decode_budget_js_agreement.rs.
 
-import { OP2D_BASE, OP2D_SELECT_CANVAS, OP_UNIFORM1IV, OP_UNIFORM_MATRIX2FV, OP_UNIFORM_MATRIX4FV } from "./render-opcodes.mjs";
+import {
+  OP2D_BASE,
+  OP2D_SELECT_CANVAS,
+  OP_UNIFORM1IV,
+  OP_UNIFORM_MATRIX2FV,
+  OP_UNIFORM_MATRIX4FV,
+  OPR_BIND_ATTRIB_LOCATION,
+  OPR_BUFFER_DATA,
+  OPR_BUFFER_SUB_DATA,
+  OPR_COMPRESSED_TEX_IMAGE_2D,
+  OPR_COMPRESSED_TEX_SUB_IMAGE_2D,
+  OPR_DRAW_BUFFERS,
+  OPR_INVALIDATE_FRAMEBUFFER,
+  OPR_SHADER_SOURCE,
+  OPR_TEX_IMAGE_2D,
+  OPR_TEX_IMAGE_3D,
+  OPR_TEX_SUB_IMAGE_2D,
+  OPR_TEX_SUB_IMAGE_3D,
+  OPR_TRANSFORM_FEEDBACK_VARYINGS,
+} from "./render-opcodes.mjs";
 
 export const MAX_DECODED_FRAME_BYTES = 4 * 1024 * 1024;
 
@@ -28,7 +47,36 @@ export const GL_BATCH_MIN_CAPACITY = 16;
 export const CANVAS_BATCH_MIN_CAPACITY = 8;
 export const FRAME_OP_MIN_CAPACITY = 8;
 export const PENDING_CANVAS_MIN_CAPACITY = 4;
+export const PAYLOAD_OVERHEAD_BYTES = 64;
+export const STRING_BYTES = 24;
 
+const HEADER_WORD_SHIFT = 12;
+const HEADER_OPCODE_MASK = 0xfff;
+
+/**
+ * The payload records' shapes: words before `byte_length` (a byte payload) or
+ * before `count` (a word list), the header included. The encoder writes these
+ * records with the same prefixes; engine/crates/frame-wire/src/gl_resource.rs is
+ * the source, and a record written with the wrong prefix is one the Rust
+ * envelope refuses in engine-frames.test.mjs's interop run.
+ */
+export const PAYLOAD_PREFIX_WORDS = new Map([
+  [OPR_SHADER_SOURCE, 3],
+  [OPR_BIND_ATTRIB_LOCATION, 3],
+  [OPR_BUFFER_DATA, 6],
+  [OPR_BUFFER_SUB_DATA, 4],
+  [OPR_TEX_IMAGE_2D, 11],
+  [OPR_TEX_SUB_IMAGE_2D, 10],
+  [OPR_COMPRESSED_TEX_IMAGE_2D, 8],
+  [OPR_COMPRESSED_TEX_SUB_IMAGE_2D, 9],
+  [OPR_TEX_IMAGE_3D, 13],
+  [OPR_TEX_SUB_IMAGE_3D, 14],
+  [OPR_TRANSFORM_FEEDBACK_VARYINGS, 4],
+]);
+export const WORD_LIST_PREFIX_WORDS = new Map([
+  [OPR_DRAW_BUFFERS, 2],
+  [OPR_INVALIDATE_FRAMEBUFFER, 3],
+]);
 /** `max(count, minimum).next_power_of_two()`, as Rust computes it (0 -> 1). */
 function capacity(count, minimum) {
   const value = count > minimum ? count : minimum;
@@ -39,12 +87,25 @@ function capacity(count, minimum) {
 }
 
 /**
- * Payload words of a uniform-array record, or 0. The same split `record_spec`
- * makes: vector uniforms carry a three-word prefix, matrix uniforms four.
+ * What a GL record owns beyond its command: a uniform array's spill, or a
+ * payload record's bytes and their allocation. `frame_decode::budget`'s
+ * `owned_payload_bytes`, over the same bounds.
  */
-function uniformPayloadWords(opcode, wordCount) {
-  if (opcode >= OP_UNIFORM_MATRIX2FV && opcode <= OP_UNIFORM_MATRIX4FV) return wordCount - 4;
-  if (opcode >= OP_UNIFORM1IV && opcode < OP_UNIFORM_MATRIX2FV) return wordCount - 3;
+function ownedPayloadBytes(words, start, opcode, wordCount) {
+  if (opcode >= OP_UNIFORM1IV && opcode <= OP_UNIFORM_MATRIX4FV) {
+    const payload = wordCount - (opcode >= OP_UNIFORM_MATRIX2FV ? 4 : 3);
+    return payload > UNIFORM_INLINE_WORDS ? capacity(payload, 0) * 4 : 0;
+  }
+  const prefix = PAYLOAD_PREFIX_WORDS.get(opcode);
+  if (prefix !== undefined) {
+    const length = words[start + prefix];
+    if (opcode === OPR_TRANSFORM_FEEDBACK_VARYINGS) {
+      return length + STRING_BYTES * (length + 1) + PAYLOAD_OVERHEAD_BYTES;
+    }
+    return length + PAYLOAD_OVERHEAD_BYTES;
+  }
+  const listPrefix = WORD_LIST_PREFIX_WORDS.get(opcode);
+  if (listPrefix !== undefined) return (wordCount - listPrefix - 1) * 4 + PAYLOAD_OVERHEAD_BYTES;
   return 0;
 }
 
@@ -52,8 +113,10 @@ function uniformPayloadWords(opcode, wordCount) {
  * The running estimate for one packet's command stream.
  *
  * `fits` asks whether one more record keeps the finished packet within budget
- * without changing anything; `add` accounts it. Both are a handful of integer
- * operations, because they run once per record on the frame path.
+ * without changing anything; `add` accounts it. Both take the record where it is
+ * -- `words[start]` is its header -- because a payload record's charge is read
+ * from its `byte_length`. Both are a handful of integer operations, because they
+ * run once per record on the frame path.
  */
 export class DecodeBudget {
   #bytes = 0;
@@ -86,8 +149,11 @@ export class DecodeBudget {
     );
   }
 
-  /** Whether adding this record keeps the finished estimate within budget. */
-  fits(opcode, wordCount) {
+  /** Whether adding the record at `words[start]` keeps the finished estimate within budget. */
+  fits(words, start) {
+    const header = words[start];
+    const opcode = header & HEADER_OPCODE_MASK;
+    const wordCount = header >>> HEADER_WORD_SHIFT;
     let bytes = this.#bytes;
     let ops = this.#ops;
     let canvasCommands = this.#canvasCommands;
@@ -122,14 +188,16 @@ export class DecodeBudget {
       ops += pending;
       pending = 0;
       glCommands += 1;
-      const payload = uniformPayloadWords(opcode, wordCount);
-      if (payload > UNIFORM_INLINE_WORDS) bytes += capacity(payload, 0) * 4;
+      bytes += ownedPayloadBytes(words, start, opcode, wordCount);
     }
     return finish(bytes, ops, canvasCommands, glCommands, pending, peak) <= MAX_DECODED_FRAME_BYTES;
   }
 
-  /** Account one record. */
-  add(opcode, wordCount) {
+  /** Account the record at `words[start]`. */
+  add(words, start) {
+    const header = words[start];
+    const opcode = header & HEADER_OPCODE_MASK;
+    const wordCount = header >>> HEADER_WORD_SHIFT;
     if (opcode === OP2D_SELECT_CANVAS) {
       this.#closeCanvasBatch();
       this.#canvasSelected = true;
@@ -143,8 +211,7 @@ export class DecodeBudget {
       this.#ops += this.#pendingCanvases;
       this.#pendingCanvases = 0;
       this.#glCommands += 1;
-      const payload = uniformPayloadWords(opcode, wordCount);
-      if (payload > UNIFORM_INLINE_WORDS) this.#bytes += capacity(payload, 0) * 4;
+      this.#bytes += ownedPayloadBytes(words, start, opcode, wordCount);
     }
   }
 

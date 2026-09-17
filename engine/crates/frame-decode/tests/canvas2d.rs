@@ -24,6 +24,12 @@ impl GlDecodeContext for RecordingContext {
     fn transform_feedback_captures(&self, _canvas_id: u32) -> bool {
         false
     }
+    fn set_transform_feedback(
+        &mut self,
+        _canvas_id: u32,
+        _phase: frame_decode::TransformFeedbackPhase,
+    ) {
+    }
 }
 
 fn record(opcode: u32, words: &[u32]) -> Vec<u32> {

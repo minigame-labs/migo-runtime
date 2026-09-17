@@ -52,6 +52,8 @@ mod budget;
 /// Canvas2D records. See its module docs for why 2D and GL share one stream.
 pub mod canvas2d;
 pub mod codes;
+/// The WebGL resource block, and the builders the in-process ops share with it.
+pub mod resource;
 mod scratch;
 pub mod validate;
 
@@ -59,7 +61,7 @@ pub use budget::{
     FrameDecodeBudget, FrameDecodeBudgetError, MAX_DECODED_FRAME_BYTES, producer_bounds,
     producer_estimated_bytes, validate_frame_budget,
 };
-pub use validate::GlDecodeContext;
+pub use validate::{GlDecodeContext, TransformFeedbackPhase};
 
 use validate::{
     validate_bind_buffer_base, validate_bind_buffer_range, validate_bind_buffer_target,
@@ -162,7 +164,9 @@ fn cmd_approx_bytes(cmd: &GLCmd) -> usize {
                 base
             }
         }
-        _ => base,
+        // Everything else, payload-carrying resource commands included, is
+        // measured by the command's own account of what it owns.
+        _ => cmd.approx_deep_size_bytes(),
     }
 }
 
@@ -1013,6 +1017,12 @@ fn decode_record<C: GlDecodeContext>(
             })
         }
 
+        _ if (frame_wire::gl_resource::OPR_BASE..frame_wire::gl_resource::OPR_END)
+            .contains(&opcode) =>
+        {
+            resource::decode_record(context, opcode, record)
+        }
+
         // Unreachable: Pass 1 guarantees all opcodes are in the allowed set.
         _ => {
             debug_assert!(
@@ -1085,6 +1095,11 @@ impl<C: GlDecodeContext> GlDecodeContext for FrameOpSink<'_, C> {
     #[inline]
     fn transform_feedback_captures(&self, canvas_id: u32) -> bool {
         self.context.transform_feedback_captures(canvas_id)
+    }
+
+    #[inline]
+    fn set_transform_feedback(&mut self, canvas_id: u32, phase: TransformFeedbackPhase) {
+        self.context.set_transform_feedback(canvas_id, phase);
     }
 }
 
@@ -1297,6 +1312,7 @@ mod tests {
             fn transform_feedback_captures(&self, _: u32) -> bool {
                 false
             }
+            fn set_transform_feedback(&mut self, _: u32, _: TransformFeedbackPhase) {}
         }
 
         let words = [
