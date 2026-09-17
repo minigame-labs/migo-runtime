@@ -315,6 +315,14 @@ import XCTest
                 RunLoop.current.run(until: Date().addingTimeInterval(0.005))
             }
             let statistics = host.channel.currentStatistics
+            // The run's own numbers, in the log, so a pass can be cited rather
+            // than inferred: how many pairs left together and how many overtook.
+            print(
+                "frame loop: ticks=\(ticks) sent=\(sent)"
+                    + " bothInOneTick=\(report?["bothInOneTick"] as? Int ?? 0)"
+                    + " accepted=\(statistics.framesAccepted) deferred=\(statistics.framesDeferred)"
+                    + " refused=\(statistics.framesRefused) requests=\(statistics.controlMessagesReceived)"
+                    + " wakes=\(statistics.downlinkWakes)")
             XCTAssertEqual(statistics.framesReceived, sent)
             XCTAssertEqual(
                 statistics.framesRefused, 0,
