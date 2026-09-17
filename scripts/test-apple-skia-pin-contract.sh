@@ -53,6 +53,32 @@ fi
 RELEASE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release"])' "$LOCK")"
 c_info "release $RELEASE"
 
+# The tag, the release URL and the download template name one release, and the
+# floor the lock records is the contract's. Three spellings of one location drift
+# one at a time; a floor written here and not checked is the defect the
+# `-macos<floor>` tag suffix exists to make visible.
+FLOOR="$(bash scripts/build-apple-sdk.sh --print-deployment-target macos)" \
+    || fail "build-apple-sdk.sh could not report the macOS deployment floor"
+python3 - "$LOCK" "$FLOOR" <<'PY' || fail "$LOCK does not name one release built against the macOS $FLOOR floor"
+import json, sys
+lock = json.load(open(sys.argv[1]))
+floor = sys.argv[2]
+tag = lock["tag"]
+problems = []
+if not lock["release"].endswith("/" + tag):
+    problems.append(f"release {lock['release']} is not the release for tag {tag}")
+if not lock["url_template"].startswith(lock["release"] + "/"):
+    problems.append(f"url_template {lock['url_template']} does not download from {lock['release']}")
+if not tag.endswith("-macos" + floor):
+    problems.append(f"tag {tag} does not carry the -macos{floor} suffix of the floor it was built for")
+if lock["source"].get("macos_deployment_target") != floor:
+    problems.append(f"source.macos_deployment_target is {lock['source'].get('macos_deployment_target')!r}, the contract says {floor}")
+for problem in problems:
+    print("  " + problem, file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
+c_ok "the lock names one release, built against the macOS $FLOOR floor"
+
 sha256_of() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
     elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
