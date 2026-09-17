@@ -123,3 +123,150 @@ fn read_pixels_arguments_from_the_javascript_producer_decode_unchanged() {
 
     println!("decoded {decoded} JavaScript-encoded readPixels argument records");
 }
+
+/// A string-valued field, for 64-bit values the manifest writes as strings.
+fn wide(line: &str, key: &str) -> u64 {
+    field(line, key)
+        .parse()
+        .unwrap_or_else(|error| panic!("{key} is not a u64: {error}"))
+}
+
+#[test]
+#[ignore = "needs calls emitted by node; run through scripts/test-frame-wire-js-encoder.sh"]
+fn calls_from_the_javascript_producer_decode_unchanged() {
+    use frame_wire::sync::SyncCall;
+
+    let directory = PathBuf::from(
+        std::env::var("MIGO_JS_SYNC_CALL_DIR")
+            .expect("MIGO_JS_SYNC_CALL_DIR must name the emitter's output directory"),
+    );
+    let manifest = fs::read_to_string(directory.join("calls.jsonl"))
+        .expect("the emitter writes calls.jsonl beside the bodies");
+    let entries: Vec<&str> = manifest
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert!(
+        entries.len() >= 64,
+        "the manifest holds {} calls; the emitter writes 64",
+        entries.len()
+    );
+
+    for entry in &entries {
+        let name = field(entry, "file");
+        let bytes =
+            fs::read(directory.join(name)).unwrap_or_else(|error| panic!("read {name}: {error}"));
+        let call = SyncCall::decode(&bytes)
+            .unwrap_or_else(|error| panic!("{name}: the JavaScript producer emitted {error}"));
+        assert_eq!(
+            (
+                call.runtime_generation,
+                call.surface_generation,
+                call.resource_epoch,
+                call.triggering_sequence,
+            ),
+            (
+                wide(entry, "runtime_generation"),
+                wide(entry, "surface_generation"),
+                wide(entry, "resource_epoch"),
+                wide(entry, "triggering_sequence"),
+            ),
+            "{name}: a 64-bit field"
+        );
+        assert_eq!(
+            i64::from(call.operation),
+            number(entry, "operation"),
+            "{name} operation"
+        );
+        assert_eq!(
+            i64::from(call.max_reply_bytes),
+            number(entry, "max_reply_bytes"),
+            "{name} reservation"
+        );
+        assert_eq!(
+            i64::from(call.timeout_millis),
+            number(entry, "timeout_millis"),
+            "{name} timeout"
+        );
+        assert_eq!(
+            call.params.len() as i64,
+            number(entry, "params_bytes"),
+            "{name} argument length"
+        );
+        assert_eq!(
+            call.params.iter().map(|&b| i64::from(b)).sum::<i64>(),
+            number(entry, "params_sum"),
+            "{name} arguments"
+        );
+    }
+    println!(
+        "decoded {} JavaScript-encoded synchronous calls",
+        entries.len()
+    );
+}
+
+#[test]
+#[ignore = "writes answers for node to read; run through scripts/test-frame-wire-js-encoder.sh"]
+fn the_rust_host_writes_answers_the_producer_reads() {
+    use frame_wire::sync::{SYNC_ANSWER_HEADER_BYTES, SyncAnswer, SyncError, SyncState};
+
+    let directory = PathBuf::from(
+        std::env::var("MIGO_SYNC_ANSWER_OUT_DIR")
+            .expect("MIGO_SYNC_ANSWER_OUT_DIR must name where the answers go"),
+    );
+    fs::create_dir_all(&directory).expect("answer directory");
+
+    let mut answers: Vec<(SyncAnswer, Vec<u8>)> = vec![
+        (
+            SyncAnswer::failed(0, SyncError::UnsupportedOperation),
+            Vec::new(),
+        ),
+        (
+            SyncAnswer::failed(u32::MAX, SyncError::OperationFailed),
+            Vec::new(),
+        ),
+        (
+            SyncAnswer {
+                state: SyncState::Cancelled,
+                error: None,
+                request_id: 0x8000_0001,
+                reply_bytes: 0,
+            },
+            Vec::new(),
+        ),
+    ];
+    for error in SyncError::ALL {
+        answers.push((SyncAnswer::failed(error.code() * 7, *error), Vec::new()));
+    }
+    for (index, length) in [1usize, 4, 255, 4096, 65_537].into_iter().enumerate() {
+        let reply: Vec<u8> = (0..length).map(|i| (i * 31 + index) as u8).collect();
+        answers.push((
+            SyncAnswer {
+                state: SyncState::Ready,
+                error: None,
+                request_id: 0x0102_0304 + index as u32,
+                reply_bytes: length as u32,
+            },
+            reply,
+        ));
+    }
+
+    let mut manifest = String::new();
+    for (index, (answer, reply)) in answers.iter().enumerate() {
+        let name = format!("answer-{index:04}.bin");
+        let mut body = vec![0u8; answer.body_bytes()];
+        answer.write_header(&mut body);
+        body[SYNC_ANSWER_HEADER_BYTES..].copy_from_slice(reply);
+        fs::write(directory.join(&name), &body).expect("write answer");
+        manifest.push_str(&format!(
+            "{{\"file\":\"{name}\",\"state\":{},\"error\":{},\"request_id\":{},\"reply_bytes\":{},\"reply_sum\":{}}}\n",
+            answer.state.code(),
+            answer.error.map_or(0, SyncError::code),
+            answer.request_id,
+            answer.reply_bytes,
+            reply.iter().map(|&b| u64::from(b)).sum::<u64>(),
+        ));
+    }
+    fs::write(directory.join("answers.jsonl"), manifest).expect("write manifest");
+    println!("wrote {} synchronous answers", answers.len());
+}

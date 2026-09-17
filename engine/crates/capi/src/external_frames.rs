@@ -14,13 +14,13 @@ use migo_capi_abi::{
     MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_ERROR_INVALID_STATE, MIGO_OK,
     MigoResult,
     external_frames::{
-        MIGO_FRAME_INGRESS_ACCEPTED, MIGO_FRAME_INGRESS_GENERATION_LOST,
-        MIGO_FRAME_INGRESS_REJECTED, MIGO_FRAME_INGRESS_WOULD_BLOCK,
-        MIGO_SYNC_ERROR_ALREADY_PENDING, MIGO_SYNC_ERROR_BAD_DEADLINE,
-        MIGO_SYNC_ERROR_BAD_REPLY_RESERVATION, MIGO_SYNC_ERROR_LATE_REPLY,
-        MIGO_SYNC_ERROR_OPERATION_FAILED, MIGO_SYNC_ERROR_REPLY_TOO_LARGE,
-        MIGO_SYNC_ERROR_REQUEST_ID_MISMATCH, MIGO_SYNC_ERROR_SESSION_ENDED,
-        MIGO_SYNC_ERROR_STALE_GENERATION, MIGO_SYNC_ERROR_TIMED_OUT,
+        MIGO_FRAME_INGRESS_ACCEPTED, MIGO_FRAME_INGRESS_DEFERRED,
+        MIGO_FRAME_INGRESS_GENERATION_LOST, MIGO_FRAME_INGRESS_REJECTED,
+        MIGO_FRAME_INGRESS_WOULD_BLOCK, MIGO_SYNC_ERROR_ALREADY_PENDING,
+        MIGO_SYNC_ERROR_BAD_DEADLINE, MIGO_SYNC_ERROR_BAD_REPLY_RESERVATION,
+        MIGO_SYNC_ERROR_LATE_REPLY, MIGO_SYNC_ERROR_OPERATION_FAILED,
+        MIGO_SYNC_ERROR_REPLY_TOO_LARGE, MIGO_SYNC_ERROR_REQUEST_ID_MISMATCH,
+        MIGO_SYNC_ERROR_SESSION_ENDED, MIGO_SYNC_ERROR_STALE_GENERATION, MIGO_SYNC_ERROR_TIMED_OUT,
         MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION, MIGO_SYNC_STATE_CANCELLED, MIGO_SYNC_STATE_FAILED,
         MIGO_SYNC_STATE_FREE, MIGO_SYNC_STATE_PENDING, MIGO_SYNC_STATE_READY,
         MigoFrameIngressOutcome, MigoSyncOutcome, MigoSyncRequestDescriptor,
@@ -97,6 +97,7 @@ pub unsafe extern "C" fn migo_session_submit_external_frame(
             IngressDecision::WouldBlock => MIGO_FRAME_INGRESS_WOULD_BLOCK,
             IngressDecision::Rejected => MIGO_FRAME_INGRESS_REJECTED,
             IngressDecision::GenerationLost => MIGO_FRAME_INGRESS_GENERATION_LOST,
+            IngressDecision::Deferred => MIGO_FRAME_INGRESS_DEFERRED,
         };
         // SAFETY: forwarded from this function's output contract.
         unsafe {
@@ -205,6 +206,141 @@ mod tests {
     /// Reported as a call that could not be made rather than as a rejected
     /// packet: the bytes may be perfectly good, and telling the producer they
     /// were rejected would send it looking for a bug in its encoder.
+    /// A call whose header or reply has nowhere to go is refused before the
+    /// session is even consulted, and leaves no pointer behind.
+    #[test]
+    fn a_call_with_nowhere_to_answer_is_refused_before_it_is_posted() {
+        with_session("external-call-sync-arguments", |session| {
+            let body = [0u8; 80];
+            let mut header = [0u8; 16];
+            assert_eq!(
+                unsafe {
+                    migo_session_call_sync(
+                        session,
+                        body.as_ptr(),
+                        body.len(),
+                        0,
+                        header.as_mut_ptr(),
+                        header.len(),
+                        std::ptr::null_mut(),
+                    )
+                },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+
+            // A stale pointer in the output, as a caller reusing a variable
+            // would leave: it must come back null, not be left to be released.
+            let mut reply = std::ptr::NonNull::<MigoSyncReply>::dangling().as_ptr();
+            assert_eq!(
+                unsafe {
+                    migo_session_call_sync(
+                        session,
+                        body.as_ptr(),
+                        body.len(),
+                        0,
+                        header.as_mut_ptr(),
+                        migo_core::SYNC_ANSWER_HEADER_BYTES - 1,
+                        &mut reply,
+                    )
+                },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+            assert!(reply.is_null());
+            assert_eq!(
+                unsafe {
+                    migo_session_call_sync(
+                        session,
+                        body.as_ptr(),
+                        body.len(),
+                        0,
+                        std::ptr::null_mut(),
+                        16,
+                        &mut reply,
+                    )
+                },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                unsafe {
+                    migo_session_call_sync(
+                        session,
+                        std::ptr::null(),
+                        body.len(),
+                        0,
+                        header.as_mut_ptr(),
+                        header.len(),
+                        &mut reply,
+                    )
+                },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+            assert!(reply.is_null());
+        });
+    }
+
+    /// No renderer, no answer: a state error the transport reports as such,
+    /// rather than a header it would send as a verdict.
+    #[test]
+    fn a_call_before_a_surface_is_attached_is_a_state_error() {
+        with_session("external-call-sync-no-surface", |session| {
+            let body = [0u8; 80];
+            let mut header = [0xAAu8; 16];
+            let mut reply = std::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    migo_session_call_sync(
+                        session,
+                        body.as_ptr(),
+                        body.len(),
+                        0,
+                        header.as_mut_ptr(),
+                        header.len(),
+                        &mut reply,
+                    )
+                },
+                MIGO_ERROR_INVALID_STATE
+            );
+            assert!(reply.is_null());
+            assert_eq!(header, [0xAA; 16], "no header was written for no answer");
+        });
+    }
+
+    /// The handle gives back exactly the bytes it was made from, at the address
+    /// they were allocated at -- the renderer's buffer, not a copy of it.
+    #[test]
+    fn a_reply_hands_over_its_own_bytes_and_is_freed_once() {
+        let pixels: Vec<u8> = (0..=255).collect();
+        let address = pixels.as_ptr();
+        let reply = Box::into_raw(Box::new(MigoSyncReply(pixels)));
+
+        let mut bytes = std::ptr::null();
+        let mut length = usize::MAX;
+        assert_eq!(
+            unsafe { migo_sync_reply_bytes(reply, &mut bytes, &mut length) },
+            MIGO_OK
+        );
+        assert_eq!((bytes, length), (address, 256));
+        let copied = unsafe { std::slice::from_raw_parts(bytes, length) };
+        assert!(copied.iter().enumerate().all(|(i, &b)| b == i as u8));
+
+        assert_eq!(unsafe { migo_sync_reply_release(reply) }, MIGO_OK);
+    }
+
+    #[test]
+    fn a_null_reply_is_refused_and_clears_what_it_would_have_written() {
+        let mut bytes = [0u8; 1].as_ptr();
+        let mut length = 7usize;
+        assert_eq!(
+            unsafe { migo_sync_reply_bytes(std::ptr::null(), &mut bytes, &mut length) },
+            MIGO_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!((bytes, length), (std::ptr::null(), 0));
+        assert_eq!(
+            unsafe { migo_sync_reply_release(std::ptr::null_mut()) },
+            MIGO_ERROR_INVALID_ARGUMENT
+        );
+    }
+
     #[test]
     fn submitting_before_a_surface_is_attached_is_a_state_error() {
         with_session("external-submit-no-surface", |session| {
@@ -306,6 +442,24 @@ mod tests {
             unsafe { migo_session_take_external_gl_error(std::ptr::null_mut(), 1, &mut code) },
             MIGO_ERROR_INVALID_ARGUMENT
         );
+        let body = [0u8; 80];
+        let mut header = [0u8; 16];
+        let mut reply = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                migo_session_call_sync(
+                    std::ptr::null_mut(),
+                    body.as_ptr(),
+                    body.len(),
+                    0,
+                    header.as_mut_ptr(),
+                    header.len(),
+                    &mut reply,
+                )
+            },
+            MIGO_ERROR_INVALID_ARGUMENT
+        );
+        assert!(reply.is_null());
     }
 
     #[test]
@@ -445,14 +599,22 @@ pub unsafe extern "C" fn migo_session_post_sync_request(
             unsafe { std::slice::from_raw_parts(params, param_bytes) }
         };
 
-        let Ok(state) = session.state.lock() else {
-            return MIGO_ERROR_INTERNAL;
-        };
-        let Some(engine) = state.host.as_ref() else {
-            return MIGO_ERROR_INVALID_STATE;
+        // The handle is taken under the session lock and the lock is released
+        // before the request is answered. Answering blocks -- for the frame the
+        // request names, then for the readback -- and that frame arrives through
+        // migo_session_submit_external_frame, which needs this lock. Holding it
+        // here would make the read wait for a frame that is waiting for the read.
+        let sync = {
+            let Ok(state) = session.state.lock() else {
+                return MIGO_ERROR_INTERNAL;
+            };
+            let Some(engine) = state.host.as_ref() else {
+                return MIGO_ERROR_INVALID_STATE;
+            };
+            engine.sync_handle()
         };
 
-        let posted = engine.post_sync_request(
+        let posted = sync.post(
             migo_core::SyncRequest {
                 request_id: 0,
                 runtime_generation: descriptor.runtime_generation,
@@ -466,10 +628,12 @@ pub unsafe extern "C" fn migo_session_post_sync_request(
             params,
             now_nanos,
         );
+        // The post reports where its own request ended. A poll here instead
+        // would read whatever the mailbox holds by then, and with the session
+        // lock released that can be the next request.
         let snapshot = match posted {
-            Ok(_) => engine.poll_sync(now_nanos),
+            Ok(snapshot) => snapshot,
             Err(error) => {
-                drop(state);
                 // SAFETY: forwarded from this function's output contract.
                 return unsafe {
                     write_sync_outcome(
@@ -482,11 +646,149 @@ pub unsafe extern "C" fn migo_session_post_sync_request(
                 };
             }
         };
-        drop(state);
 
         // SAFETY: forwarded from this function's output contract.
         unsafe { write_sync_snapshot(out_outcome, snapshot) }
     })
+}
+
+/// The reply to a one-body synchronous call: the bytes the renderer answered
+/// with, owned here until the host releases them.
+///
+/// Opaque so the bytes cross the boundary by ownership rather than by copy.
+/// The vector is kept as it came -- not shrunk to a boxed slice, because a
+/// shrink that cannot happen in place is a reallocation and a copy, which is
+/// what #250 measured on macOS.
+#[cfg(feature = "external-frames")]
+pub struct MigoSyncReply(Vec<u8>);
+
+/// Answer a synchronous call carried whole in one body.
+///
+/// # Safety
+/// `session` must be a live session handle. `call` must be readable for
+/// `call_bytes` bytes, or null with `call_bytes` zero. `header` must be
+/// writable for `header_capacity` bytes. `out_reply` must be writable for one
+/// pointer.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_call_sync(
+    session: *mut MigoSession,
+    call: *const u8,
+    call_bytes: usize,
+    now_nanos: u64,
+    header: *mut u8,
+    header_capacity: usize,
+    out_reply: *mut *mut MigoSyncReply,
+) -> MigoResult {
+    guard("migo_session_call_sync", || {
+        let Some(out_reply) = (unsafe { out_reply.as_mut() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        // Cleared before anything can fail, so a caller that ignores the result
+        // cannot release, or send, a pointer it never received.
+        *out_reply = std::ptr::null_mut();
+        // Checked before the call is posted: a header with nowhere to go is an
+        // answer that could not be delivered, and nothing should be read back
+        // for it.
+        if header.is_null() || header_capacity < migo_core::SYNC_ANSWER_HEADER_BYTES {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let Some(body) = (unsafe { call_body(call, call_bytes) }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+
+        // Taken under the lock, used outside it, for the reason
+        // migo_session_post_sync_request gives: answering waits for a frame
+        // that arrives through a call needing this lock.
+        let sync = {
+            let Ok(state) = session.state.lock() else {
+                return MIGO_ERROR_INTERNAL;
+            };
+            let Some(engine) = state.host.as_ref() else {
+                return MIGO_ERROR_INVALID_STATE;
+            };
+            engine.sync_handle()
+        };
+
+        let answered = sync.answer(body, now_nanos);
+        // SAFETY: non-null and at least SYNC_ANSWER_HEADER_BYTES long, checked
+        // above; nothing derived from it outlives this call.
+        let header =
+            unsafe { std::slice::from_raw_parts_mut(header, migo_core::SYNC_ANSWER_HEADER_BYTES) };
+        answered.answer.write_header(header);
+        if !answered.reply.is_empty() {
+            *out_reply = Box::into_raw(Box::new(MigoSyncReply(answered.reply)));
+        }
+        MIGO_OK
+    })
+}
+
+/// Where a reply's bytes are.
+///
+/// # Safety
+/// `reply` must be a live handle from [`migo_session_call_sync`]. `out_bytes`
+/// and `out_length` must be writable. The bytes are valid until the handle is
+/// released.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_sync_reply_bytes(
+    reply: *const MigoSyncReply,
+    out_bytes: *mut *const u8,
+    out_length: *mut usize,
+) -> MigoResult {
+    guard("migo_sync_reply_bytes", || {
+        let (Some(out_bytes), Some(out_length)) = (unsafe { out_bytes.as_mut() }, unsafe {
+            out_length.as_mut()
+        }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_bytes = std::ptr::null();
+        *out_length = 0;
+        let Some(reply) = (unsafe { reply.as_ref() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_bytes = reply.0.as_ptr();
+        *out_length = reply.0.len();
+        MIGO_OK
+    })
+}
+
+/// Free a reply.
+///
+/// # Safety
+/// `reply` must be a unique live handle from [`migo_session_call_sync`], or
+/// null. It is invalid afterwards.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_sync_reply_release(reply: *mut MigoSyncReply) -> MigoResult {
+    guard("migo_sync_reply_release", || {
+        if reply.is_null() {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        // SAFETY: the caller hands back the unique handle this library boxed.
+        drop(unsafe { Box::from_raw(reply) });
+        MIGO_OK
+    })
+}
+
+/// A call body as a slice, or `None` for a pointer and length that cannot be one.
+///
+/// # Safety
+/// `call` must be readable for `call_bytes` bytes, or null with `call_bytes` zero.
+#[cfg(feature = "external-frames")]
+unsafe fn call_body<'a>(call: *const u8, call_bytes: usize) -> Option<&'a [u8]> {
+    if call_bytes > isize::MAX as usize || (call.is_null() && call_bytes != 0) {
+        return None;
+    }
+    if call_bytes == 0 {
+        return Some(&[]);
+    }
+    // SAFETY: non-null and bounded, per the caller's contract.
+    Some(unsafe { std::slice::from_raw_parts(call, call_bytes) })
 }
 
 /// Where the outstanding request is.

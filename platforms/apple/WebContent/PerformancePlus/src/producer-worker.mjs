@@ -11,6 +11,7 @@
 // content is the game's, this is the engine's, and one bundle holding both would
 // mean an engine release could not be swapped under a game that already shipped.
 
+import { SyncCaller } from "./sync-call.mjs";
 import { connectFrameSession } from "./worker-bootstrap.mjs";
 
 /** Tell the page, which relays to the host. */
@@ -61,6 +62,14 @@ self.onmessage = async (event) => {
   // owns, so a failure after it is content's and a failure before it is ours.
   report({ type: "connected", credits: session.credits });
 
+  // The synchronous barrier, when the host serves one. A blocking request from
+  // this Worker rather than `Atomics.wait` on a shared record: the content
+  // origin is a custom scheme, where WebKit provides no SharedArrayBuffer. The
+  // URL is the host's for the same reason the socket's is -- this file does not
+  // build endpoints.
+  const sync =
+    typeof config.syncCallUrl === "string" ? new SyncCaller({ url: config.syncCallUrl }) : undefined;
+
   if (typeof config.contentEntry === "string") {
     try {
       const module = await import(config.contentEntry);
@@ -75,7 +84,7 @@ self.onmessage = async (event) => {
       // `start` returns once content is initialised. It is not the frame loop:
       // the loop is driven by clock ticks from the host, and a `start` that
       // never returned would be content that never reports itself ready.
-      await module.start({ session });
+      await module.start({ session, sync });
     } catch (error) {
       report({ type: "failed", stage: "content", detail: String(error) });
       return;

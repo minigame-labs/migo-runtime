@@ -37,6 +37,15 @@ pub enum IngressDecision {
     /// WebContent process was replaced, or the session was reloaded. Not an
     /// error on anyone's part, and not something a retry fixes.
     GenerationLost = 4,
+    /// Legal and addressed to this session, but one ahead of the packet that
+    /// has to come before it. Held, costing no credit, and admitted -- with a
+    /// verdict of its own -- as soon as that packet arrives.
+    ///
+    /// A producer does not see this: no verdict is sent for it, because the
+    /// credit level at this moment does not yet include the frame that closes
+    /// the gap, and a producer told it would send against a window it does not
+    /// have. See [`MAX_DEFERRED_FRAMES`] for why this exists at all.
+    Deferred = 5,
 }
 
 /// The full answer, including what the producer needs to schedule the next one.
@@ -116,6 +125,31 @@ pub const INGRESS_ERROR_BASE: u32 = 1001;
 pub const MAX_CREDITS: u32 = 2;
 pub const DEFAULT_MAX_CREDITS: u32 = MAX_CREDITS;
 
+/// How many packets may arrive ahead of their predecessor and be held.
+///
+/// The producer's uplink is two independent streams: a packet above the socket
+/// ceiling is a scheme request, anything smaller goes on the socket, and nothing
+/// makes the one that left first arrive first. Contiguity is still the rule for
+/// what executes -- a gap executed would draw with state a lost packet never
+/// established -- so the order is restored here, at the only place that knows
+/// the next sequence, instead of being given up.
+///
+/// One, and the credit window is why that is enough rather than a guess. A
+/// producer honouring its credits has at most [`MAX_CREDITS`] frames that the
+/// renderer has not finished, so at most one of them can overtake the other.
+/// A second packet arriving out of order is a producer sending past its window,
+/// and it is refused exactly as a gap was before.
+pub const MAX_DEFERRED_FRAMES: u64 = (MAX_CREDITS - 1) as u64;
+
+/// A packet held until the one before it arrives: its sequence, and a copy of
+/// its bytes in a pool buffer. The borrowed bytes it arrived as do not outlive
+/// the call that offered them.
+#[derive(Debug)]
+struct DeferredFrame {
+    sequence: u64,
+    bytes: Vec<u8>,
+}
+
 /// Accepts frames for one runtime generation of one session.
 ///
 /// A new generation gets a new `FrameIngress`. Nothing here is reset in place:
@@ -135,6 +169,7 @@ pub struct FrameIngress {
     credits: Arc<CreditWindow>,
     pool: Arc<FramePool>,
     last_accepted_sequence: u64,
+    deferred: Option<DeferredFrame>,
 }
 
 impl FrameIngress {
@@ -160,6 +195,7 @@ impl FrameIngress {
                 MAX_TOTAL_BYTES as usize,
             )),
             last_accepted_sequence: 0,
+            deferred: None,
         }
     }
 
@@ -308,6 +344,38 @@ impl FrameIngress {
         (outcome, frame)
     }
 
+    /// The sequence of the packet being held for its predecessor, if any.
+    #[inline]
+    pub fn deferred_sequence(&self) -> Option<u64> {
+        self.deferred.as_ref().map(|held| held.sequence)
+    }
+
+    /// Admit the held packet if the one before it has now been accepted.
+    ///
+    /// Call after every [`Self::submit_with`] that answered `Accepted`. The held
+    /// bytes go through `submit_with` again from the start rather than being
+    /// trusted from when they were held: a surface generation or resource epoch
+    /// can move in between, and one set of rules applied twice is safer than a
+    /// second, shorter set applied once. `None` when nothing is held or the gap
+    /// is still open.
+    ///
+    /// Whatever the answer, the packet stops being held: `WouldBlock` sends the
+    /// producer back to it exactly as it would for a packet that had arrived in
+    /// order, and a refusal is final either way.
+    pub fn admit_deferred_with(
+        &mut self,
+        consume: impl FnOnce(PooledFrame) -> Result<(), u32>,
+    ) -> Option<IngressOutcome> {
+        let next = self.last_accepted_sequence.saturating_add(1);
+        if self.deferred.as_ref()?.sequence != next {
+            return None;
+        }
+        let held = self.deferred.take()?;
+        let outcome = self.submit_with(&held.bytes, consume);
+        self.pool.release(held.bytes);
+        Some(outcome)
+    }
+
     /// Commit sequence admission only after the consumer has validated and
     /// queued the frame. A refused frame can be retried with the same sequence.
     /// The consumer must drop its frame/credit on failure and return a nonzero
@@ -416,7 +484,46 @@ impl FrameIngress {
         // generation, so there is no "skip the bad one and carry on" path for a
         // gap to serve. A producer that is told to wait keeps its number,
         // because WouldBlock is decided after this check and consumes nothing.
-        if frame.sequence() != self.last_accepted_sequence.saturating_add(1) {
+        let expected = self.last_accepted_sequence.saturating_add(1);
+        if frame.sequence() != expected {
+            // Ahead by no more than the window allows, and nothing already
+            // held: the packet before it is still in flight on the other uplink.
+            // Every other rule has already passed, so what is held is a packet
+            // that is legal except for when it arrived.
+            //
+            // Never before the first packet of a generation has been accepted:
+            // sequence 1 first is what gives a replayed later packet nothing to
+            // land on, and holding one would give it somewhere to wait.
+            let ahead = frame.sequence().wrapping_sub(expected);
+            if self.last_accepted_sequence != 0
+                && frame.sequence() > expected
+                && ahead <= MAX_DEFERRED_FRAMES
+                && self.deferred.is_none()
+            {
+                let Some(mut held) = self.pool.acquire(bytes.len()) else {
+                    return (
+                        IngressOutcome::refused(
+                            INGRESS_ERROR_PACKET_TOO_LARGE,
+                            self.remaining_credits(),
+                        ),
+                        None,
+                    );
+                };
+                held.extend_from_slice(bytes);
+                self.deferred = Some(DeferredFrame {
+                    sequence: frame.sequence(),
+                    bytes: held,
+                });
+                return (
+                    IngressOutcome {
+                        decision: IngressDecision::Deferred,
+                        remaining_credits: self.remaining_credits(),
+                        accepted_sequence: 0,
+                        wire_error_code: 0,
+                    },
+                    None,
+                );
+            }
             return (
                 IngressOutcome::refused(
                     INGRESS_ERROR_NONCONTIGUOUS_SEQUENCE,

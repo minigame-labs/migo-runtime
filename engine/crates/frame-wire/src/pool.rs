@@ -167,7 +167,7 @@ impl FramePool {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn acquire(&self, wanted: usize) -> Option<Vec<u8>> {
+    pub(crate) fn acquire(&self, wanted: usize) -> Option<Vec<u8>> {
         if wanted > self.max_bytes {
             return None;
         }
@@ -196,7 +196,7 @@ impl FramePool {
         }
     }
 
-    fn release(&self, buffer: Vec<u8>) {
+    pub(crate) fn release(&self, buffer: Vec<u8>) {
         // A buffer that grew past the ceiling is dropped rather than kept: the
         // ceiling can be lowered while frames are in flight, and retaining an
         // over-sized buffer would make the lowered ceiling a suggestion.

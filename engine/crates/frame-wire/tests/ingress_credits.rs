@@ -219,7 +219,9 @@ fn sequences_must_be_strictly_contiguous() {
         "the first accepted sequence is 1"
     );
 
-    for wrong in [1u64, 0, 3, 100, u64::MAX] {
+    // Not 3: one ahead is held for the packet before it (see the deferral tests
+    // below), and executes only once that packet has.
+    for wrong in [1u64, 0, 4, 100, u64::MAX] {
         let bytes = packet(wrong);
         let (outcome, frame) = ingress.submit(&bytes);
         assert_eq!(
@@ -490,4 +492,179 @@ fn a_packet_above_this_sessions_ceiling_is_refused_before_it_is_parsed() {
     // The same bytes are fine for a session that did not tighten.
     let mut default = ingress();
     assert_eq!(default.submit(&big).0.decision, IngressDecision::Accepted);
+}
+
+// ---------------------------------------------------------------------------
+// Deferral: the uplink is two independent streams, so a packet can arrive one
+// ahead of its predecessor. It is held and executed in order, never skipped to.
+// ---------------------------------------------------------------------------
+
+fn consume(frame: frame_wire::PooledFrame) -> Result<(), u32> {
+    drop(frame);
+    Ok(())
+}
+
+#[test]
+fn a_packet_one_ahead_is_held_and_admitted_after_the_one_before_it() {
+    let mut ingress = ingress();
+    assert_eq!(
+        ingress.submit_with(&packet(1), consume).decision,
+        IngressDecision::Accepted
+    );
+
+    let held = ingress.submit_with(&packet(3), consume);
+    assert_eq!(held.decision, IngressDecision::Deferred);
+    assert_eq!(held.wire_error_code, 0);
+    assert_eq!(
+        ingress.last_accepted_sequence(),
+        1,
+        "a held packet is not accepted"
+    );
+    assert_eq!(ingress.deferred_sequence(), Some(3));
+    assert_eq!(
+        ingress.admit_deferred_with(consume),
+        None,
+        "the gap is still open, so nothing may be admitted yet"
+    );
+
+    let filler = ingress.submit_with(&packet(2), consume);
+    assert_eq!(filler.decision, IngressDecision::Accepted);
+    let admitted = ingress
+        .admit_deferred_with(consume)
+        .expect("the held packet is admitted once its predecessor is");
+    assert_eq!(admitted.decision, IngressDecision::Accepted);
+    assert_eq!(admitted.accepted_sequence, 3);
+    assert_eq!(ingress.last_accepted_sequence(), 3);
+    assert_eq!(ingress.deferred_sequence(), None);
+    assert_eq!(
+        ingress.submit_with(&packet(4), consume).decision,
+        IngressDecision::Accepted
+    );
+}
+
+#[test]
+fn a_held_packet_executes_after_the_packet_before_it_and_never_before() {
+    let mut ingress = ingress();
+    let mut order = Vec::new();
+    assert_eq!(
+        ingress
+            .submit_with(&packet(1), |f| {
+                order.push(f.sequence());
+                Ok(())
+            })
+            .decision,
+        IngressDecision::Accepted
+    );
+    assert_eq!(
+        ingress
+            .submit_with(&packet(3), |f| {
+                order.push(f.sequence());
+                Ok(())
+            })
+            .decision,
+        IngressDecision::Deferred
+    );
+    assert_eq!(
+        order,
+        [1],
+        "a held packet reached the consumer before its predecessor"
+    );
+    ingress.submit_with(&packet(2), |f| {
+        order.push(f.sequence());
+        Ok(())
+    });
+    ingress.admit_deferred_with(|f| {
+        order.push(f.sequence());
+        Ok(())
+    });
+    assert_eq!(order, [1, 2, 3]);
+}
+
+#[test]
+fn nothing_is_held_before_the_first_packet_of_a_generation() {
+    let mut ingress = ingress();
+    let outcome = ingress.submit_with(&packet(2), consume);
+    assert_eq!(outcome.decision, IngressDecision::Rejected);
+    assert_eq!(
+        outcome.wire_error_code,
+        INGRESS_ERROR_NONCONTIGUOUS_SEQUENCE
+    );
+    assert_eq!(ingress.deferred_sequence(), None);
+}
+
+#[test]
+fn only_one_packet_is_held_and_a_second_out_of_order_is_refused() {
+    let mut ingress = ingress();
+    ingress.submit_with(&packet(1), consume);
+    assert_eq!(
+        ingress.submit_with(&packet(3), consume).decision,
+        IngressDecision::Deferred
+    );
+
+    // Further ahead than a producer within its credits can be.
+    let far = ingress.submit_with(&packet(4), consume);
+    assert_eq!(far.decision, IngressDecision::Rejected);
+    assert_eq!(far.wire_error_code, INGRESS_ERROR_NONCONTIGUOUS_SEQUENCE);
+
+    // The same sequence again while it is held: a duplicate, not a second slot.
+    let again = ingress.submit_with(&packet(3), consume);
+    assert_eq!(again.decision, IngressDecision::Rejected);
+    assert_eq!(ingress.deferred_sequence(), Some(3));
+}
+
+#[test]
+fn holding_a_packet_costs_no_credit() {
+    let mut ingress = ingress();
+    let before = ingress.remaining_credits();
+    let held = ingress.submit_with(&packet(3), consume);
+    assert_eq!(
+        held.decision,
+        IngressDecision::Rejected,
+        "not before the first packet"
+    );
+    let mut first = None;
+    ingress.submit_with(&packet(1), |f| {
+        first = Some(f);
+        Ok(())
+    });
+    let after_first = ingress.remaining_credits();
+    assert_eq!(after_first, before - 1);
+    let held = ingress.submit_with(&packet(3), consume);
+    assert_eq!(held.decision, IngressDecision::Deferred);
+    assert_eq!(held.remaining_credits, after_first);
+    assert_eq!(
+        ingress.remaining_credits(),
+        after_first,
+        "a held packet took a credit"
+    );
+    drop(first);
+}
+
+#[test]
+fn a_held_packet_is_checked_again_when_it_is_admitted() {
+    let mut ingress = ingress();
+    ingress.submit_with(&packet(1), consume);
+    assert_eq!(
+        ingress.submit_with(&packet(3), consume).decision,
+        IngressDecision::Deferred
+    );
+    // The resource epoch moves while it is held: the ids it was built against
+    // name something else now.
+    assert!(ingress.set_resource_epoch(1));
+    ingress.mark_resources_ready();
+    let filler = build(2, NONCE, GENERATION, 0, 1);
+    assert_eq!(
+        ingress.submit_with(&filler, consume).decision,
+        IngressDecision::Accepted
+    );
+    let admitted = ingress
+        .admit_deferred_with(consume)
+        .expect("the gap closed");
+    assert_eq!(admitted.decision, IngressDecision::Rejected);
+    assert_eq!(admitted.wire_error_code, INGRESS_ERROR_STALE_RESOURCE_EPOCH);
+    assert_eq!(
+        ingress.deferred_sequence(),
+        None,
+        "a refused held packet is not held again"
+    );
 }

@@ -192,7 +192,11 @@ import WebKit
             self.origin = MigoPerformancePlusOrigin(
                 content: MigoWebKitContentOrigin(
                     root: configuration.contentRoot, engineRoot: engineRoot),
-                deliver: { [weak channel] packet in channel?.submitFromOrigin(packet) ?? false })
+                deliver: { [weak channel] packet in channel?.submitFromOrigin(packet) },
+                // Weak for the reason `deliver` is, and `nil` once the channel is
+                // gone: the origin answers that as "no answer", which the
+                // producer reports rather than reading as a verdict.
+                answer: { [weak channel] call in channel?.answerSyncCall(call) })
             self.onReport = onReport
             self.view = UIView(frame: .zero)
             super.init()
@@ -267,6 +271,9 @@ import WebKit
             var fields: [String: Any] = [
                 "frameChannelUrl": endpoint.url.absoluteString,
                 "frameSchemeUrl": MigoPerformancePlusOrigin.frameURL.absoluteString,
+                // Where a synchronous call goes. Same origin as the page, so a
+                // Worker's blocking request needs no CORS and no second listener.
+                "syncCallUrl": MigoPerformancePlusOrigin.syncURL.absoluteString,
                 // From `MigoFrameChannelPolicy`, so the producer has no copy of a
                 // measured number. A constant in both languages would drift the
                 // first time the measurement is redone on new hardware --

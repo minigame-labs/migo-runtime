@@ -92,7 +92,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 submit: { packet in
                     seen = packet
                     submitted.fulfill()
-                    return true
+                    return .accepted
                 },
                 takeDownlink: { _ in 0 })
 
@@ -170,7 +170,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
-                channel: MigoFrameChannel(submit: { _ in true }, takeDownlink: { _ in 0 }))
+                channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
             self.host = host
             host.onReport = { report in
                 switch report["type"] as? String {
@@ -190,6 +190,149 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             XCTAssertNil(failure, "a report arrived that the real producer would never make")
         }
 
+        /// A synchronous call from content's Worker reaches the answerer, and the
+        /// header and reply come back to the Worker as one body.
+        ///
+        /// The answerer is a closure, so what is asserted is the endpoint: the
+        /// route, the body passed through unchanged, the two pieces joined in
+        /// order by WebKit rather than by a copy here, and the Worker's decoder
+        /// reading them. The engine's half is `MigoFrameAcceptanceTests`.
+        func testASynchronousCallFromContentIsAnsweredInOneBody() throws {
+            try writeContent(
+                """
+                import { encodeReadPixelsParams, SYNC_OP_READ_PIXELS } from "/__migo/sync-mailbox.mjs";
+                export function start({ sync }) {
+                  let detail;
+                  try {
+                    const reply = sync.call({
+                      runtimeGeneration: 1n, surfaceGeneration: 2n, resourceEpoch: 3n,
+                      triggeringSequence: 4n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 4,
+                      timeoutMillis: 5000,
+                      params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
+                    });
+                    detail = Array.from(reply).join(",");
+                  } catch (error) {
+                    detail = `${error.name}: ${error.message}`;
+                  }
+                  self.postMessage({ type: "answered", detail });
+                }
+                """, to: "game/main.mjs")
+
+            var calls: [Data] = []
+            let callsLock = NSLock()
+            let channel = MigoFrameChannel(
+                submit: { _ in .accepted }, takeDownlink: { _ in 0 },
+                answerSync: { call in
+                    callsLock.lock()
+                    calls.append(call)
+                    callsLock.unlock()
+                    // READY, request 9, four reply bytes -- written the way the
+                    // document lays it out, which is the one place this test
+                    // builds an answer.
+                    var header = Data()
+                    for word: UInt32 in [2, 0, 9, 4] {
+                        withUnsafeBytes(of: word.littleEndian) { header.append(contentsOf: $0) }
+                    }
+                    return .init(header: header, reply: Data([10, 20, 30, 40]))
+                })
+
+            let answered = expectation(description: "content's call was answered")
+            var detail: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: channel)
+            self.host = host
+            host.onReport = { report in
+                switch report["type"] as? String {
+                case "answered":
+                    detail = report["detail"] as? String
+                    answered.fulfill()
+                case "failed":
+                    detail = "failed at \(report["stage"] as? String ?? "?"): \(report["detail"] as? String ?? "?")"
+                    answered.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [answered], timeout: Self.reportTimeout)
+
+            XCTAssertEqual(detail, "10,20,30,40", "the Worker did not read the answer's reply")
+            callsLock.lock()
+            let seen = calls
+            callsLock.unlock()
+            XCTAssertEqual(seen.count, 1)
+            // The envelope (48 bytes) and readPixels' arguments (32), unchanged.
+            XCTAssertEqual(seen.first?.count, 80)
+            XCTAssertEqual(host.originActivity.syncCallsAnswered, 1)
+            XCTAssertEqual(host.originActivity.syncCallsRefused, 0)
+        }
+
+        /// An answer that arrives after its page went away goes nowhere -- rather
+        /// than to a task WebKit has already stopped, which traps and takes the
+        /// app with it.
+        ///
+        /// The page going away is the case that exists. A producer cannot give up
+        /// on a call from its side: WebKit applies no timeout to a synchronous
+        /// request on this origin (the first version of this test assumed one,
+        /// and the Worker waited out the thirty seconds the answerer held it for).
+        /// What can happen is the host tearing the web view down while the engine
+        /// is still answering -- a backgrounded app, a session being replaced --
+        /// and then the answer arrives for a task that no longer exists.
+        func testAnAnswerForACallWhosePageWentAwayIsDropped() throws {
+            try writeContent(
+                """
+                import { encodeReadPixelsParams, SYNC_OP_READ_PIXELS } from "/__migo/sync-mailbox.mjs";
+                export function start({ sync }) {
+                  sync.call({
+                    runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
+                    triggeringSequence: 0n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 4,
+                    timeoutMillis: 60000,
+                    params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
+                  });
+                }
+                """, to: "game/main.mjs")
+
+            let arrived = expectation(description: "the call reached the answerer")
+            let released = DispatchSemaphore(value: 0)
+            let answerReturned = expectation(description: "the late answer was produced")
+            let channel = MigoFrameChannel(
+                submit: { _ in .accepted }, takeDownlink: { _ in 0 },
+                answerSync: { _ in
+                    arrived.fulfill()
+                    // Held until the page is gone, so the answer is late by
+                    // construction rather than by timing.
+                    _ = released.wait(timeout: .now() + 60)
+                    defer { answerReturned.fulfill() }
+                    var header = Data()
+                    for word: UInt32 in [2, 0, 1, 4] {
+                        withUnsafeBytes(of: word.littleEndian) { header.append(contentsOf: $0) }
+                    }
+                    return .init(header: header, reply: Data([1, 2, 3, 4]))
+                })
+
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: channel)
+            self.host = host
+            mount(host)
+            try host.start()
+            wait(for: [arrived], timeout: Self.reportTimeout)
+
+            // The page goes away with the call outstanding: WebKit stops the task.
+            host.stop()
+            self.host = nil
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+
+            // Now let the answer go, and give the main queue time to try to deliver it.
+            released.signal()
+            wait(for: [answerReturned], timeout: 10)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            XCTAssertEqual(
+                host.originActivity.syncCallsAnswered, 1,
+                "the answer was produced; reaching here without a trap is the assertion")
+        }
+
         func testAMissingProducerBundleIsNamedRatherThanSilent() {
             // The packaging step is what puts the producer in the resource bundle,
             // and a build that skipped it otherwise presents as a worker that never
@@ -199,7 +342,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                     configuration: .init(
                         contentRoot: contentRoot,
                         engineRoot: contentRoot.appendingPathComponent("nothing-here")),
-                    channel: MigoFrameChannel(submit: { _ in true }, takeDownlink: { _ in 0 }))
+                    channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
             ) { error in
                 guard case MigoPerformancePlusHost.StartFailure.engineModulesMissing = error else {
                     return XCTFail("expected engineModulesMissing, got \(error)")
@@ -248,7 +391,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 submit: { packet in
                     seen = packet
                     submitted.fulfill()
-                    return true
+                    return .accepted
                 },
                 takeDownlink: { _ in 0 })
 
@@ -306,7 +449,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 submit: { packet in
                     seen = packet
                     submitted.fulfill()
-                    return true
+                    return .accepted
                 },
                 takeDownlink: { _ in 0 })
 
@@ -347,7 +490,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             var status: Int?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
-                channel: MigoFrameChannel(submit: { _ in true }, takeDownlink: { _ in 0 }))
+                channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
             self.host = host
             host.onReport = { report in
                 if report["type"] as? String == "probe" {

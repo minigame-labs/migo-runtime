@@ -62,13 +62,20 @@ function session(overrides = {}) {
 
 console.log("The producer's frame session");
 
-check("the first frame goes before any verdict has arrived", () => {
+check("the first frame goes before any verdict has arrived, and only the first", () => {
   // The level the producer needs is published by the verdict its first frame
   // produces. A session that started at zero would deadlock against it.
   const { instance, sent } = session();
-  assertEqual(instance.credits, null, "credits before the first verdict");
+  assertEqual(instance.credits, 1, "credits before the first verdict");
   assertEqual(instance.submit(new Uint8Array([1, 2, 3, 4])), true, "the first submit");
   assertEqual(sent.length, 1, "sent");
+  // And a second one waits for that verdict. Sent back to back, it can reach
+  // the host first on the other uplink, before the generation has accepted
+  // anything -- where a packet out of order is a gap, and a gap ends the content.
+  assertEqual(instance.submit(new Uint8Array([5])), SUBMIT_NO_CREDIT, "the second, before a verdict");
+  assertEqual(sent.length, 1, "nothing more went on the wire");
+  instance.handleMessage(verdict(1));
+  assertEqual(instance.submit(new Uint8Array([5])), true, "the second, after the verdict");
 });
 
 check("a verdict replaces the estimate rather than adjusting it", () => {

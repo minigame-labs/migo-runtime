@@ -52,6 +52,15 @@ typedef uint32_t MigoFrameIngressDecision;
  * whoever reads the telemetry looking for a bug that is not there.
  */
 #define MIGO_FRAME_INGRESS_GENERATION_LOST 4U
+/*
+ * Legal and addressed to this session, but one ahead of the packet that must
+ * come before it. The uplink is two independent streams, so a packet can
+ * overtake its predecessor in transit. It is held, costing no credit, and
+ * executed in order as soon as the predecessor arrives; the producer's verdict
+ * for it is sent then. Not an error, and the host must not resend or count it
+ * as refused.
+ */
+#define MIGO_FRAME_INGRESS_DEFERRED 5U
 
 /*
  * Library-written, so it grows append-only: a caller compiled against an
@@ -241,6 +250,87 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_sync_request(
     MigoSession *session, const MigoSyncRequestDescriptor *request,
     const uint8_t *params, size_t param_bytes, uint64_t now_nanos,
     MigoSyncOutcome *out_outcome);
+
+/*
+ * The largest body migo_session_call_sync accepts, arguments included.
+ *
+ * A constant of the wire format (contracts/frame-wire/wire-v1.md, "A request as
+ * one body"), published here so a transport can refuse a larger body before it
+ * reads it rather than after.
+ */
+#define MIGO_SYNC_CALL_MAX_BYTES 4096U
+
+/*
+ * How many bytes of answer header migo_session_call_sync writes.
+ *
+ * The header is the wire format's (contracts/frame-wire/wire-v1.md, "An answer
+ * as one body"); the transport sends it unread, followed by the reply.
+ */
+#define MIGO_SYNC_ANSWER_HEADER_BYTES 16U
+
+/* The bytes a synchronous call was answered with. Owned by the library until
+ * migo_sync_reply_release. */
+typedef struct MigoSyncReply MigoSyncReply;
+
+/*
+ * Answer a synchronous call carried whole in one body.
+ *
+ * For a producer that cannot share memory with the host: on Apple the content
+ * origin is a custom scheme, where WebKit provides no SharedArrayBuffer, so a
+ * Worker blocks in a synchronous request. The transport hands its body here
+ * unchanged, and sends back, as one response body, the header this writes
+ * followed by the reply's bytes. Both layouts are the wire format's
+ * (contracts/frame-wire/wire-v1.md, "A request as one body" and "An answer as
+ * one body"); the transport parses neither.
+ *
+ * The call carries how long the producer will wait, not a deadline: its clock
+ * is not the host's. The deadline is now_nanos plus that wait, so now_nanos is
+ * the caller's monotonic clock, as for migo_session_post_sync_request.
+ *
+ * header must have room for MIGO_SYNC_ANSWER_HEADER_BYTES; less is refused
+ * with MIGO_ERROR_INVALID_ARGUMENT before the call is posted, so nothing is
+ * read back for an answer that could not be delivered.
+ *
+ * *out_reply receives the reply when the call was answered with bytes, and
+ * NULL otherwise -- including for every failure, whose verdict is in the
+ * header. A reply is the renderer's own buffer, handed over rather than copied:
+ * read it with migo_sync_reply_bytes, and release it with
+ * migo_sync_reply_release once the bytes have been sent. A readback can be a
+ * full screen at device scale, and this is the path a producer is blocked on.
+ *
+ * Every protocol outcome is an answer and returns MIGO_OK, including a call
+ * that failed or could not be decoded: the producer is blocked on the response
+ * whatever happened, and the verdict belongs in it.
+ *
+ * The verdict is read under the lock that settles the request, the reply is
+ * that request's own readback, and the slot is freed in the same step. There is
+ * no take step, and no window in which another request's answer can be taken
+ * for this one.
+ *
+ * Blocks until the call is settled: first for the frame it names, which the
+ * library waits for rather than answering early, then for the operation. Call
+ * it on a thread that may block, and never while holding a lock that frame
+ * submission on this session needs -- the frame it waits for arrives through
+ * migo_session_submit_external_frame.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_call_sync(
+    MigoSession *session, const uint8_t *call, size_t call_bytes, uint64_t now_nanos,
+    uint8_t *header, size_t header_capacity, MigoSyncReply **out_reply);
+
+/*
+ * Where a reply's bytes are, and how many. Valid until the reply is released.
+ * *out_bytes and *out_length receive NULL and zero on failure.
+ */
+MIGO_API MigoResult MIGO_CALL migo_sync_reply_bytes(
+    const MigoSyncReply *reply, const uint8_t **out_bytes, size_t *out_length);
+
+/*
+ * Free a reply. The handle and its bytes are invalid afterwards. NULL is
+ * refused with MIGO_ERROR_INVALID_ARGUMENT rather than ignored: releasing a
+ * reply that was never received is a caller that lost track of which answers
+ * carried bytes.
+ */
+MIGO_API MigoResult MIGO_CALL migo_sync_reply_release(MigoSyncReply *reply);
 
 /*
  * Where the outstanding request is.

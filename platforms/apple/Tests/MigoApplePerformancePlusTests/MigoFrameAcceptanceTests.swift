@@ -1,4 +1,5 @@
 import MigoAppleFrameHarness
+import enum MigoAppleCore.MigoFrameChannelPolicy
 import MigoEngine
 import XCTest
 
@@ -88,6 +89,222 @@ import XCTest
         /// the first test already covers.
         func testTheReadStillSeesTheFrameAfterItHasPresented() throws {
             try submitFromContentThenRead(afterRunLoop: 0.5)
+        }
+
+        /// A generation's first two frames, one on each uplink, execute in order.
+        ///
+        /// The hybrid uplink sends a packet above `socketCeilingBytes` as a
+        /// scheme request and anything smaller on the socket, and those are two
+        /// independent streams: nothing makes a request that left first arrive
+        /// first. Ingress holds a packet that overtakes its predecessor -- but not
+        /// before a generation's first packet has been accepted, because sequence
+        /// 1 first is what leaves a replayed later packet nothing to wait on. So
+        /// a scene load followed by its first ordinary frame, sent back to back,
+        /// was the ordinary way to lose a session: measured on the simulator, the
+        /// small frame won the race, was refused as a gap, and the surface stayed
+        /// on the first frame.
+        ///
+        /// What keeps them in order is the producer, not the host: before the
+        /// first verdict it has one credit, so the second frame waits for the
+        /// first to be decided. The second submit is refused locally, and nothing
+        /// is refused by the host.
+        func testFramesKeepTheirOrderAcrossTheTwoUplinks() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                import { encodeFrame, SECTION_KIND_COMMAND_STREAM } from "/__migo/wire-frame-packet.mjs";
+                import { MAGIC, STREAM_VERSION, OP_CLEAR, OP_CLEAR_COLOR } from "/__migo/render-opcodes.mjs";
+
+                const scratch = new DataView(new ArrayBuffer(4));
+                const bits = (v) => { scratch.setFloat32(0, v, true); return scratch.getUint32(0, true); };
+                const header = (op, words) => ((words << 12) | op) >>> 0;
+
+                function frame(sequence, rgba, clears) {
+                  const words = [MAGIC, STREAM_VERSION,
+                    header(OP_CLEAR_COLOR, 6), 1, bits(rgba[0]), bits(rgba[1]), bits(rgba[2]), bits(rgba[3])];
+                  for (let i = 0; i < clears; i += 1) words.push(header(OP_CLEAR, 3), 1, 0x4000);
+                  const stream = new Uint8Array(words.length * 4);
+                  const view = new DataView(stream.buffer);
+                  words.forEach((w, i) => view.setUint32(i * 4, w, true));
+                  return encodeFrame({ launchNonce: 0xa3n, sequence, runtimeGeneration: 1n,
+                    surfaceGeneration: 1n, resourceEpoch: 0n,
+                    sections: [{ kind: SECTION_KIND_COMMAND_STREAM, payload: stream }] });
+                }
+
+                export async function start({ session }) {
+                  // 6,000 clears is 72 KiB of stream: above the socket ceiling.
+                  const large = frame(1n, [0, 0, 1, 1], 6000);
+                  const small = frame(2n, [1, 0, 0, 1], 1);
+                  const first = session.submit(large);
+                  // Back to back, as a scene load and its first frame would be.
+                  const early = session.submit(small);
+                  // And again until the window opens, which is what content does
+                  // on its next tick; bounded, so a verdict that never comes is a
+                  // failure this test reports rather than a hang.
+                  let second = early;
+                  for (let i = 0; second !== true && i < 30000; i += 1) {
+                    await new Promise((resolve) => setTimeout(resolve, 1));
+                    second = session.submit(small);
+                  }
+                  self.postMessage({ type: "submitted", outcome: `${first},${early},${second}`, bytes: large.length });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            let submitted = expectation(description: "content submitted both frames")
+            var submittedBytes: Int?
+            var outcome: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { report in
+                switch report["type"] as? String {
+                case "submitted":
+                    submittedBytes = report["bytes"] as? Int
+                    outcome = report["outcome"] as? String
+                    submitted.fulfill()
+                case "failed":
+                    outcome = "failed at \(report["stage"] as? String ?? "?"): \(report["detail"] as? String ?? "?")"
+                    submitted.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [submitted], timeout: 240)
+            XCTAssertEqual(
+                outcome, "true,no-credit,true",
+                "the first frame goes, the second waits for its verdict, then goes")
+            XCTAssertGreaterThan(
+                submittedBytes ?? 0, MigoFrameChannelPolicy.socketCeilingBytes,
+                "the first frame has to be above the socket ceiling or this tests one uplink")
+
+            let pollDeadline = Date().addingTimeInterval(30)
+            while host.channel.currentStatistics.framesReceived < 2, Date() < pollDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            let statistics = host.channel.currentStatistics
+            XCTAssertEqual(
+                statistics.framesRefused, 0,
+                """
+                a frame was refused. Two frames that left in order on different uplinks \
+                reached ingress out of order, and ingress answers a gap by ending the content.
+                """)
+            // Both accepted on arrival. Nothing was held: the second frame left
+            // after the first was decided, so it could not overtake it.
+            XCTAssertEqual(statistics.framesAccepted, 2)
+            XCTAssertEqual(statistics.framesDeferred, 0)
+
+            let pixel = try readPixel(session: harness.session, x: 0, y: 0)
+            XCTAssertEqual(pixel, [255, 0, 0, 255], "the later, red frame is not the one on the surface")
+        }
+
+        /// The read content makes itself, from its own Worker, sees the frame it
+        /// submitted.
+        ///
+        /// Every test above reads through the C ABI from the test's thread. This
+        /// one is the lane's actual readback: content calls `sync.call` in the
+        /// module worker, which blocks in a synchronous request to the content
+        /// origin -- there is no SharedArrayBuffer on a custom scheme to block on
+        /// instead -- and the answer body comes back to the Worker.
+        ///
+        /// The frame goes over the SCHEME uplink and the call leaves right after
+        /// it, so the two are separate requests that nothing orders: the engine
+        /// has to hold the read until the frame it names is admitted. A read that
+        /// overtook it would see the cleared-to-nothing surface rather than blue.
+        func testContentReadsBackTheFrameItSubmittedThroughItsOwnSynchronousCall() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                import { encodeFrame, SECTION_KIND_COMMAND_STREAM } from "/__migo/wire-frame-packet.mjs";
+                import { MAGIC, STREAM_VERSION, OP_CLEAR, OP_CLEAR_COLOR } from "/__migo/render-opcodes.mjs";
+                import { encodeReadPixelsParams, SYNC_OP_READ_PIXELS } from "/__migo/sync-mailbox.mjs";
+
+                const scratch = new DataView(new ArrayBuffer(4));
+                const bits = (v) => { scratch.setFloat32(0, v, true); return scratch.getUint32(0, true); };
+                const header = (op, words) => ((words << 12) | op) >>> 0;
+
+                export function start({ session, sync }) {
+                  if (!sync) {
+                    self.postMessage({ type: "read", detail: "the host injected no sync endpoint" });
+                    return;
+                  }
+                  // 6,000 clears is 72 KiB of stream: above the socket ceiling, so
+                  // this frame is a scheme request of its own.
+                  const words = [MAGIC, STREAM_VERSION, header(OP_CLEAR_COLOR, 6), 1,
+                    bits(0), bits(0), bits(1), bits(1)];
+                  for (let i = 0; i < 6000; i += 1) words.push(header(OP_CLEAR, 3), 1, 0x4000);
+                  const stream = new Uint8Array(words.length * 4);
+                  const view = new DataView(stream.buffer);
+                  words.forEach((w, i) => view.setUint32(i * 4, w, true));
+                  const packet = encodeFrame({ launchNonce: 0xa3n, sequence: 1n, runtimeGeneration: 1n,
+                    surfaceGeneration: 1n, resourceEpoch: 0n,
+                    sections: [{ kind: SECTION_KIND_COMMAND_STREAM, payload: stream }] });
+                  const submitted = session.submit(packet);
+
+                  const into = new Uint8Array(4);
+                  let detail;
+                  try {
+                    const pixel = sync.call({
+                      runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
+                      triggeringSequence: 1n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 4,
+                      // A minute, for the reason the Swift reads in this file give:
+                      // the first readback in a process pays ANGLE's bring-up.
+                      timeoutMillis: 60000,
+                      params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
+                    }, into);
+                    detail = Array.from(pixel).join(",");
+                  } catch (error) {
+                    detail = `${error.name}: ${error.message}`;
+                  }
+                  self.postMessage({ type: "read", submitted: String(submitted), bytes: packet.length, detail });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            let read = expectation(description: "content read its frame back")
+            var detail: String?
+            var submitted: String?
+            var bytes: Int?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { report in
+                switch report["type"] as? String {
+                case "read":
+                    detail = report["detail"] as? String
+                    submitted = report["submitted"] as? String
+                    bytes = report["bytes"] as? Int
+                    read.fulfill()
+                case "failed":
+                    detail = "failed at \(report["stage"] as? String ?? "?"): \(report["detail"] as? String ?? "?")"
+                    read.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [read], timeout: 240)
+
+            XCTAssertEqual(submitted, "true", "content's submit did not go out")
+            XCTAssertGreaterThan(
+                bytes ?? 0, MigoFrameChannelPolicy.socketCeilingBytes,
+                "the frame has to be above the socket ceiling or the read and the frame share a stream")
+            XCTAssertEqual(
+                detail, "0,0,255,255",
+                """
+                content's own synchronous read did not see the blue frame it submitted. \
+                [0,0,0,0] or the clear colour of an empty surface is a read that overtook its \
+                frame; a SyncTransportError is the endpoint, a SyncRequestError is the engine's verdict.
+                """)
+            XCTAssertEqual(host.originActivity.syncCallsAnswered, 1)
+            XCTAssertEqual(host.originActivity.syncCallsRefused, 0)
+            XCTAssertEqual(host.channel.currentStatistics.syncCallsAnswered, 1)
+            XCTAssertEqual(host.channel.currentStatistics.framesRefused, 0)
         }
 
         private func submitFromContentThenRead(afterRunLoop settle: TimeInterval) throws {

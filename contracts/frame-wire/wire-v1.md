@@ -239,6 +239,20 @@ them, because they depend on state the host owns.
   `contracts/apple/profile-policy.json` answers `wire_validation_failed` by
   terminating the content and voiding the generation, so there is no "skip the
   bad one and continue" path for a gap to serve.
+  **What executes is contiguous; what arrives need not be.** The producer's
+  uplink is two independent streams (a packet above the socket ceiling is a
+  scheme request, anything smaller goes on the socket), so a packet can overtake
+  its predecessor in transit. A packet exactly one ahead of the next expected
+  sequence, arriving after the first packet of the generation was accepted and
+  while nothing else is held, passes every other rule, and is **held**: answered
+  `DEFERRED` (5), costing no credit and sending the producer no verdict. When
+  its predecessor is accepted the held packet is offered again through the
+  whole rule set -- a timeline may have moved -- and its verdict follows the
+  predecessor's. One slot is enough rather than a guess: a producer within its
+  `MAX_CREDITS` of two has at most one frame that can overtake another, so a
+  second packet out of order is a producer past its window and is rejected as a
+  gap. Nothing is held before sequence 1, which keeps a replayed later packet
+  from having somewhere to wait.
   The external submit path commits an accepted sequence only after structural
   command validation, decoded-storage admission and queue submission succeed.
   A renderer/queue refusal does not advance the sequence or consume a credit;
@@ -326,6 +340,16 @@ which is a change worth noticing rather than absorbing.
 | 52 | 4 | `error` | stable code, `0` when none |
 | 56 | 8 | `deadline_nanos` | monotonic host clock, strictly in the future. Not wall time: a producer blocked across a clock adjustment would wake early or never |
 
+### When a request is answered
+
+After the frame it names. `triggering_sequence` is the frame the producer had
+submitted when it blocked, and the request and that frame can arrive on
+different streams in either order. The host does not execute the operation
+until ingress has accepted that sequence -- admission queues the frame for the
+renderer before it records the sequence, so the operation cannot overtake it --
+and waits no longer than `deadline_nanos` for it. `0` means nothing had been
+submitted, and nothing is waited for.
+
 ### Every way a waiter is woken
 
 A blocked producer waits exactly as long as it is told to, so every path ends
@@ -370,6 +394,66 @@ derives it from its own reading of a monotonic clock, so consecutive requests do
 not share one. That is an identity in practice rather than by construction, and
 it is the reason a producer-owned sequence belongs in the next version of this
 record rather than in a field borrowed from something else.
+
+### A request as one body
+
+The record above is a cell two agents share, which needs `SharedArrayBuffer`,
+and the Apple lane's content origin is a custom scheme on which WebKit does not
+isolate the page: G0 measured `SharedArrayBuffer is not a constructor` there.
+What that origin does have is a synchronous request from a Worker. So the same
+request can travel as the body of a blocking request, and its answer as the
+response, with no record and no relay.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 8 | `runtime_generation` | as in the record |
+| 8 | 8 | `surface_generation` | as in the record |
+| 16 | 8 | `resource_epoch` | as in the record |
+| 24 | 8 | `triggering_sequence` | as in the record, and waited for the same way |
+| 32 | 4 | `operation` | as in the record |
+| 36 | 4 | `max_reply_bytes` | as in the record: `1..=16777216` |
+| 40 | 4 | `timeout_millis` | how long the producer will wait; `1..=60000` |
+| 44 | 4 | `reserved` | exactly `0` |
+
+The operation's arguments follow from offset 48, and the whole body is at most
+4096 bytes. Arguments are small by construction -- anything bulky is a frame --
+and the bound is what lets a transport refuse an oversized body before it has
+read it rather than after.
+
+**No deadline, a timeout.** The record's `deadline_nanos` is on the host's
+clock, which a producer in another process cannot read. The body carries a
+duration instead, and the host turns it into a deadline on its own clock when
+the body arrives. **That deadline is the only thing that releases the
+producer**: WebKit applies no timeout to a synchronous request on the content
+origin -- measured, a two-second `timeout` waited thirty seconds and returned
+the answer -- so the host answers every call within `timeout_millis`, with
+`TIMED_OUT` when there is nothing else to say.
+
+A body that is too short, carries a reserved word that is not zero, or names a
+timeout outside the bound is answered `FAILED`, never dropped: the producer is
+blocked on the response either way.
+
+### An answer as one body
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | `state` | `READY=2`, `FAILED=3` or `CANCELLED=4`: settled, never `FREE` or `PENDING` |
+| 4 | 4 | `error` | as in the record: `0` unless `FAILED` |
+| 8 | 4 | `request_id` | the host's id for this request; `0` when it was refused before it was given one |
+| 12 | 4 | `reply_bytes` | bytes of reply that follow; `0` unless `READY` |
+
+The reply follows from offset 16, and the body is exactly `16 + reply_bytes`
+long. A response of any other length, or with a status other than 200, is a
+transport failure, not an answer.
+
+**The identity problem above does not exist here, by construction.** The answer
+is written by the host under the same lock that settled the request, from the
+bytes that request's own readback produced, and it travels back as the response
+to the request that asked. There is no slot for a slow answer to land in: the
+response belongs to its request by construction, and a request whose page went
+away has nothing to deliver to. The host frees the mailbox as it writes
+the answer, because a producer holding the response has the bytes, which is the
+event the record's producer signals by clearing the slot.
 
 ## The resource lane
 
