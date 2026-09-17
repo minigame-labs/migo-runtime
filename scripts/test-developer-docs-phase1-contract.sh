@@ -258,7 +258,9 @@ for header in headers_dir.glob("*.h"):
 
 for name in sorted(marked_api - set(sections)):
     error(f"header 公开函数缺函数节:{name}(reference/*.mdx 无 `## {name}`)")
-for name in sorted(set(sections) - header_symbols):
+# 带 MIGO_API 的声明本身就是调用形态;只认上面四个前缀时,新的一族
+# (migo_sync_reply_*)明明在 header 里声明了,也会被报成找不到
+for name in sorted(set(sections) - header_symbols - marked_api):
     error(f"函数节无 header 声明对应:{name}(在 include/migo/*.h 找不到调用形态)")
 
 # 示例祖先:所有 ```c 块内的 migo_* 调用都要在 tests/c_host 有真实调用形态
