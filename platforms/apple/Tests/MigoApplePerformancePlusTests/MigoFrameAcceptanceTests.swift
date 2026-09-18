@@ -800,6 +800,84 @@ import XCTest
             XCTAssertGreaterThan(blue, 200, "and did not cover the whole of it")
         }
 
+        /// What a game reads before it draws: the screen, the pixel ratio, the
+        /// safe area, the model.
+        ///
+        /// Every one of these is synchronous and none of it changes during a
+        /// session, so the host hands the JSON to the producer at startup and
+        /// the calls are answered there without crossing. What this checks is
+        /// that the numbers content reads are the ones the host described --
+        /// through the engine's own `migo.*` layer, which parses them and
+        /// converts the safe area from insets to positions.
+        func testContentReadsTheDeviceTheHostDescribed() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                export function start({ report }) {
+                  try {
+                    const window = migo.getWindowInfo();
+                    const system = migo.getSystemInfoSync();
+                    report({ type: "described",
+                      screenWidth: window.screenWidth, screenHeight: window.screenHeight,
+                      pixelRatio: window.pixelRatio, statusBarHeight: window.statusBarHeight,
+                      safeTop: window.safeArea.top, safeBottom: window.safeArea.bottom,
+                      model: system.model, platform: system.platform });
+                  } catch (error) {
+                    report({ type: "failed", stage: "device", detail: `${error.name}: ${error.message}` });
+                  }
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let described = expectation(description: "content read the device")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            typealias Profile = MigoPerformancePlusHost.DeviceProfile
+            let profile = Profile(
+                screenWidth: 390, screenHeight: 844, windowWidth: 390, windowHeight: 844,
+                pixelRatio: 3, statusBarHeight: 47,
+                safeAreaInsets: Profile.SafeAreaInsets(left: 0, top: 47, right: 0, bottom: 34),
+                brand: "Apple", model: "iPhone14,5", system: "iOS 26.0", platform: "ios")
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels,
+                        device: profile)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "described":
+                    report = message
+                    described.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    described.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [described], timeout: 240)
+            XCTAssertNil(failure)
+
+            XCTAssertEqual(report?["screenWidth"] as? Double, 390)
+            XCTAssertEqual(report?["screenHeight"] as? Double, 844)
+            XCTAssertEqual(report?["pixelRatio"] as? Double, 3)
+            XCTAssertEqual(report?["statusBarHeight"] as? Double, 47)
+            // Insets in, positions out: the engine's own conversion, which is
+            // the reason these cross as insets rather than as positions.
+            XCTAssertEqual(report?["safeTop"] as? Double, 47)
+            XCTAssertEqual(report?["safeBottom"] as? Double, 844 - 34)
+            XCTAssertEqual(report?["model"] as? String, "iPhone14,5")
+            XCTAssertEqual(report?["platform"] as? String, "ios")
+        }
+
         /// A frame too large for one packet crosses as barriers and one present.
         ///
         /// Sixty thousand clears in one `requestAnimationFrame` is 256 KiB of
