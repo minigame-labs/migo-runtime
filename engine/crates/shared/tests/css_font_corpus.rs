@@ -18,8 +18,8 @@ use shared::css_font_shorthand::parse_font_shorthand;
 fn print_the_corpus_verdicts() {
     let corpus = std::env::var("MIGO_CSS_FONT_CORPUS")
         .expect("MIGO_CSS_FONT_CORPUS must name the shared corpus file");
-    let output = std::env::var("MIGO_CSS_FONT_OUT")
-        .expect("MIGO_CSS_FONT_OUT must name the file to write");
+    let output =
+        std::env::var("MIGO_CSS_FONT_OUT").expect("MIGO_CSS_FONT_OUT must name the file to write");
     let text = fs::read_to_string(&corpus).expect("the corpus file");
 
     let mut lines = Vec::new();

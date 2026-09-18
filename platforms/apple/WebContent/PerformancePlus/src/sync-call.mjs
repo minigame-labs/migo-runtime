@@ -19,6 +19,8 @@
 
 import {
   MAX_REPLY_BYTES,
+  MAX_SERVICE_REPLY_BYTES,
+  SYNC_OP_SERVICE,
   SYNC_ERROR_BAD_DEADLINE,
   SYNC_ERROR_BAD_REPLY_RESERVATION,
   SYNC_ERROR_UNSUPPORTED_OPERATION,
@@ -28,8 +30,10 @@ import {
   SyncRequestError,
 } from "./sync-mailbox.mjs";
 
-export const SYNC_CALL_HEADER_BYTES = 48;
+export const SYNC_CALL_HEADER_BYTES = 56;
 export const SYNC_CALL_MAX_BYTES = 4096;
+/// A SERVICE call's body bound: the header and a whole service message.
+export const SERVICE_CALL_MAX_BYTES = SYNC_CALL_HEADER_BYTES + 64 * 1024 * 1024;
 export const SYNC_CALL_MAX_TIMEOUT_MILLIS = 60_000;
 export const SYNC_ANSWER_HEADER_BYTES = 16;
 
@@ -42,6 +46,7 @@ const CALL_OFF_OPERATION = 32;
 const CALL_OFF_MAX_REPLY_BYTES = 36;
 const CALL_OFF_TIMEOUT_MILLIS = 40;
 const CALL_OFF_RESERVED = 44;
+const CALL_OFF_SERVICE_SEQUENCE = 48;
 
 // Answer body offsets.
 const ANSWER_OFF_STATE = 0;
@@ -76,9 +81,12 @@ export function encodeSyncCall({
   operation,
   maxReplyBytes,
   timeoutMillis,
+  serviceSequence = 0n,
   params = new Uint8Array(0),
 }) {
-  if (!(Number.isInteger(maxReplyBytes) && maxReplyBytes >= 1 && maxReplyBytes <= MAX_REPLY_BYTES)) {
+  const service = operation === SYNC_OP_SERVICE;
+  const replyCeiling = service ? MAX_SERVICE_REPLY_BYTES : MAX_REPLY_BYTES;
+  if (!(Number.isInteger(maxReplyBytes) && maxReplyBytes >= 1 && maxReplyBytes <= replyCeiling)) {
     throw new SyncRequestError(SYNC_ERROR_BAD_REPLY_RESERVATION);
   }
   if (
@@ -86,7 +94,7 @@ export function encodeSyncCall({
   ) {
     throw new SyncRequestError(SYNC_ERROR_BAD_DEADLINE);
   }
-  if (SYNC_CALL_HEADER_BYTES + params.byteLength > SYNC_CALL_MAX_BYTES) {
+  if (SYNC_CALL_HEADER_BYTES + params.byteLength > (service ? SERVICE_CALL_MAX_BYTES : SYNC_CALL_MAX_BYTES)) {
     throw new SyncRequestError(SYNC_ERROR_UNSUPPORTED_OPERATION);
   }
 
@@ -100,6 +108,7 @@ export function encodeSyncCall({
   view.setUint32(CALL_OFF_MAX_REPLY_BYTES, maxReplyBytes, true);
   view.setUint32(CALL_OFF_TIMEOUT_MILLIS, timeoutMillis, true);
   view.setUint32(CALL_OFF_RESERVED, 0, true);
+  view.setBigUint64(CALL_OFF_SERVICE_SEQUENCE, BigInt(serviceSequence), true);
   body.set(params, SYNC_CALL_HEADER_BYTES);
   return body;
 }

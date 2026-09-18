@@ -11,7 +11,9 @@
 // content is the game's, this is the engine's, and one bundle holding both would
 // mean an engine release could not be swapped under a game that already shipped.
 
+import { constructOpError } from "./engine-core.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
+import { ServiceChannel } from "./service.mjs";
 import { SyncCaller } from "./sync-call.mjs";
 import { connectFrameSession } from "./worker-bootstrap.mjs";
 
@@ -38,6 +40,33 @@ self.onmessage = async (event) => {
   self.onmessage = null;
 
   const config = message.config ?? {};
+
+  // The engine session, read before connecting: the service stream is stamped
+  // with its generation and shares the socket the connection opens.
+  let identity;
+  let services;
+  if (config.engineSession !== undefined) {
+    try {
+      identity = readEngineSessionConfig(config.engineSession);
+      if (typeof config.serviceUrl === "string") {
+        services = new ServiceChannel({
+          generation: identity.runtimeGeneration,
+          socketCeilingBytes: config.socketCeilingBytes,
+          serviceUrl: config.serviceUrl,
+          replyUrl: config.replyUrl,
+          // The class the engine registered under the name the host sent --
+          // `StorageError`, `IOError` -- so content's `catch` sees what it
+          // sees on every other platform.
+          errorFor: constructOpError,
+          onFailure: (error) => report({ type: "failed", stage: "services", detail: String(error) }),
+        });
+      }
+    } catch (error) {
+      report({ type: "failed", stage: "engine", detail: String(error && (error.stack || error)) });
+      return;
+    }
+  }
+
   try {
     session = await connectFrameSession({
       url: config.frameChannelUrl,
@@ -61,6 +90,7 @@ self.onmessage = async (event) => {
       // Always reported: the host replaced the runtime under us, which is
       // terminal for this content and happens once.
       onGenerationLost: (generation) => report({ type: "generation-lost", generation }),
+      services,
     });
   } catch (error) {
     report({ type: "failed", stage: "connect", detail: String(error) });
@@ -83,13 +113,14 @@ self.onmessage = async (event) => {
   // described the session it answers for. Loaded before content, as the
   // embedded runtime evaluates its extensions before a game's first line: content
   // finds `migo`, `requestAnimationFrame` and the canvases already there.
-  if (config.engineSession !== undefined) {
+  if (identity !== undefined) {
     try {
       bindEngineHost({
         session,
-        identity: readEngineSessionConfig(config.engineSession),
+        identity,
         socketCeilingBytes: config.socketCeilingBytes,
         sync,
+        services,
         report,
       });
       await import("./engine/boot.mjs");

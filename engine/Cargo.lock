@@ -1719,6 +1719,7 @@ dependencies = [
  "migo-graphics",
  "migo-io",
  "migo-runtime-v8",
+ "migo-services",
  "migo-shared",
  "parking_lot",
  "serde",
@@ -1862,6 +1863,7 @@ dependencies = [
  "migo-frame-decode",
  "migo-frame-wire",
  "migo-io",
+ "migo-services",
  "migo-shared",
  "parking_lot",
  "percent-encoding",
@@ -1875,6 +1877,17 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "zip",
+]
+
+[[package]]
+name = "migo-services"
+version = "0.9.6"
+dependencies = [
+ "migo-io",
+ "migo-shared",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

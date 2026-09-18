@@ -62,6 +62,7 @@ if (mode === "write") {
       operation: index === 1 ? 0xffff_ffff : SYNC_OP_READ_PIXELS,
       maxReplyBytes: index === 2 ? MAX_REPLY_BYTES : 1 + next(MAX_REPLY_BYTES),
       timeoutMillis: index === 3 ? SYNC_CALL_MAX_TIMEOUT_MILLIS : 1 + next(SYNC_CALL_MAX_TIMEOUT_MILLIS),
+      serviceSequence: index === 5 ? 0n : wide(),
       params: Uint8Array.from(
         { length: index === 4 ? SYNC_CALL_MAX_BYTES - SYNC_CALL_HEADER_BYTES : next(64) },
         () => next(256),
@@ -74,6 +75,7 @@ if (mode === "write") {
         `"surface_generation":"${call.surfaceGeneration}","resource_epoch":"${call.resourceEpoch}",` +
         `"triggering_sequence":"${call.triggeringSequence}","operation":${call.operation},` +
         `"max_reply_bytes":${call.maxReplyBytes},"timeout_millis":${call.timeoutMillis},` +
+        `"service_sequence":"${call.serviceSequence}",` +
         `"params_bytes":${call.params.length},"params_sum":${call.params.reduce((a, b) => a + b, 0)}}`,
     );
   }

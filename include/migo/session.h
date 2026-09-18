@@ -416,6 +416,12 @@ MIGO_API MigoResult MIGO_CALL migo_session_create(
  * synchronously; failures raised while the content runs arrive through
  * on_error, because by then the caller's stack is long gone. A Session loads
  * content once: a second call returns MIGO_ERROR_INVALID_STATE.
+ *
+ * On an external-frame build (Apple Performance+) the content's JavaScript runs
+ * in another process, so this mounts the content -- its code, and the game's
+ * user, cache and temp directories -- before it returns, and refuses content
+ * that was never installed with MIGO_ERROR_INTERNAL. The code directory is then
+ * available from migo_session_copy_content_root (external_frames.h).
  */
 MIGO_API MigoResult MIGO_CALL migo_session_load_content(
     MigoSession *session,

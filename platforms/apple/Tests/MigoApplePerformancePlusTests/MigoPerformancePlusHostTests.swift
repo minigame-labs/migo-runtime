@@ -262,8 +262,8 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             let seen = calls
             callsLock.unlock()
             XCTAssertEqual(seen.count, 1)
-            // The envelope (48 bytes) and readPixels' arguments (32), unchanged.
-            XCTAssertEqual(seen.first?.count, 80)
+            // The envelope (56 bytes) and readPixels' arguments (32), unchanged.
+            XCTAssertEqual(seen.first?.count, 88)
             XCTAssertEqual(host.originActivity.syncCallsAnswered, 1)
             XCTAssertEqual(host.originActivity.syncCallsRefused, 0)
         }

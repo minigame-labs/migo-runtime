@@ -788,8 +788,13 @@ pub mod pool;
 /// The resource lane: large bytes uploaded out of band and referenceable only
 /// once verified.
 pub mod resource;
+/// The service stream: files, storage, images, audio, network -- everything a
+/// producer asks the host to do that is not drawing.
+pub mod service;
 /// The synchronous barrier: the few calls whose return value is the answer.
 pub mod sync;
+/// Tagged values: the service stream's arguments and answers.
+pub mod value;
 pub use ingress::{
     FrameIngress, IngressDecision, IngressOutcome, WindowAdvertisement, WindowSource,
 };

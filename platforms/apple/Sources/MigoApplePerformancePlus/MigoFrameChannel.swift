@@ -90,6 +90,11 @@ public final class MigoFrameChannel {
         public var lastControlRefusalCode: UInt32 = 0
         /// Times the engine woke this channel to send a tick.
         public var downlinkWakes: Int = 0
+        public var serviceMessagesReceived: Int = 0
+        public var serviceMessagesRefused: Int = 0
+        public var lastServiceRefusalCode: UInt32 = 0
+        public var serviceMessagesSent: Int = 0
+        public var parkedRepliesTaken: Int = 0
     }
 
     /// Why the channel would not start.
@@ -124,6 +129,20 @@ public final class MigoFrameChannel {
     public enum UplinkKind: Sendable, Equatable {
         case frame
         case control
+        /// The service stream: files, storage, images, audio, network.
+        case service
+    }
+
+    /// What the engine did with one service message.
+    public enum ServiceDisposition: Sendable, Equatable {
+        /// Admitted, held until the message before it arrives, or ignored as
+        /// another generation's -- the three the producer needs no answer for.
+        case admitted
+        /// Refused, with the engine's code. The engine has told the producer on
+        /// the return stream; the stream is broken from here.
+        case refused(code: UInt32)
+        /// The session has no engine, or has ended.
+        case unavailable
     }
 
     /// What the engine did with one control message.
@@ -135,6 +154,11 @@ public final class MigoFrameChannel {
 
     /// Hand one packet to the engine and report what became of it.
     public typealias Submit = (Data) -> Disposition
+    public typealias SubmitService = (Data) -> ServiceDisposition
+    /// The next message of answers and events, handed over without a copy.
+    public typealias TakeServiceMessage = () -> Data?
+    /// A parked answer by generation and request id, handed over without a copy.
+    public typealias TakeParkedReply = (UInt32, UInt32) -> Data?
     /// Hand one control message to the engine and report what became of it.
     public typealias SubmitControl = (Data) -> ControlDisposition
     /// Ask the engine which kind a socket message is.
@@ -163,6 +187,9 @@ public final class MigoFrameChannel {
     private let answerSync: AnswerSync
     private let classify: Classify
     private let submitControl: SubmitControl
+    private let submitService: SubmitService
+    private let takeServiceMessage: TakeServiceMessage
+    private let takeParked: TakeParkedReply
     private let setDownlinkWaker: SetDownlinkWaker
     private let transport: MigoFrameTransport
     private let lock = NSLock()
@@ -262,7 +289,46 @@ public final class MigoFrameChannel {
                 guard result == MIGO_OK else { return .refused(code: 0) }
                 return refusal == 0 ? .read : .refused(code: refusal)
             },
-            setDownlinkWaker: MigoDownlinkWakerSlot(session: session).install)
+            setDownlinkWaker: MigoDownlinkWakerSlot(session: session).install,
+            submitService: { message in
+                var refusal: UInt32 = 0
+                let result = message.withUnsafeBytes { bytes -> MigoResult in
+                    migo_session_submit_service(
+                        session, bytes.bindMemory(to: UInt8.self).baseAddress, message.count,
+                        &refusal)
+                }
+                guard result == MIGO_OK else { return .unavailable }
+                return refusal == 0 ? .admitted : .refused(code: refusal)
+            },
+            takeServiceMessage: {
+                var owned: OpaquePointer?
+                guard migo_session_take_service_message(session, &owned) == MIGO_OK else { return nil }
+                return MigoFrameChannel.adopt(owned)
+            },
+            takeParked: { generation, requestId in
+                var owned: OpaquePointer?
+                guard
+                    migo_session_take_parked_reply(session, generation, requestId, &owned) == MIGO_OK
+                else { return nil }
+                return MigoFrameChannel.adopt(owned)
+            })
+    }
+
+    /// The engine's bytes, owned by `Data` from here: no copy, released when the
+    /// last reference goes. `Data` never writes through a no-copy buffer it did
+    /// not allocate -- a mutation copies first -- so a pointer the engine treats
+    /// as read-only is sound to hand it.
+    static func adopt(_ owned: OpaquePointer?) -> Data? {
+        guard let owned else { return nil }
+        var bytes: UnsafePointer<UInt8>?
+        var length = 0
+        guard migo_owned_bytes_view(owned, &bytes, &length) == MIGO_OK, let bytes, length > 0 else {
+            _ = migo_owned_bytes_release(owned)
+            return nil
+        }
+        return Data(
+            bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes), count: length,
+            deallocator: .custom { _, _ in _ = migo_owned_bytes_release(owned) })
     }
 
     /// The engine's answer to "which door": the default for every channel,
@@ -274,8 +340,12 @@ public final class MigoFrameChannel {
             migo_uplink_message_kind(
                 bytes.bindMemory(to: UInt8.self).baseAddress, message.count, &kind)
         }
-        return result == MIGO_OK && kind == MigoUplinkMessageKind(MIGO_UPLINK_MESSAGE_CONTROL)
-            ? .control : .frame
+        guard result == MIGO_OK else { return .frame }
+        switch kind {
+        case MigoUplinkMessageKind(MIGO_UPLINK_MESSAGE_CONTROL): return .control
+        case MigoUplinkMessageKind(MIGO_UPLINK_MESSAGE_SERVICE): return .service
+        default: return .frame
+        }
     }
 
     init(
@@ -285,7 +355,10 @@ public final class MigoFrameChannel {
         answerSync: @escaping AnswerSync = { _ in nil },
         classify: @escaping Classify = MigoFrameChannel.engineClassify,
         submitControl: @escaping SubmitControl = { _ in .read },
-        setDownlinkWaker: @escaping SetDownlinkWaker = { _ in true }
+        setDownlinkWaker: @escaping SetDownlinkWaker = { _ in true },
+        submitService: @escaping SubmitService = { _ in .unavailable },
+        takeServiceMessage: @escaping TakeServiceMessage = { nil },
+        takeParked: @escaping TakeParkedReply = { _, _ in nil }
     ) {
         self.transport = transport
         self.submit = submit
@@ -294,6 +367,9 @@ public final class MigoFrameChannel {
         self.classify = classify
         self.submitControl = submitControl
         self.setDownlinkWaker = setDownlinkWaker
+        self.submitService = submitService
+        self.takeServiceMessage = takeServiceMessage
+        self.takeParked = takeParked
     }
 
     /// Start listening and return what the producer needs to connect.
@@ -342,12 +418,25 @@ public final class MigoFrameChannel {
         lock.lock()
         defer { lock.unlock() }
         let written = downlink.withUnsafeMutableBufferPointer { takeDownlink($0) }
-        guard written > 0 else { return }
-        statistics.messagesSent += 1
-        do {
-            try transport.send(Data(downlink[0..<written]))
-        } catch {
-            statistics.sendsWithoutProducer += 1
+        if written > 0 {
+            statistics.messagesSent += 1
+            do {
+                try transport.send(Data(downlink[0..<written]))
+            } catch {
+                statistics.sendsWithoutProducer += 1
+            }
+        }
+        // The service stream's answers and events, in the order the engine
+        // produced them, behind the frame records: the same waker fires for
+        // both, and one drain sends both.
+        while let message = takeServiceMessage() {
+            statistics.serviceMessagesSent += 1
+            do {
+                try transport.send(message)
+            } catch {
+                statistics.sendsWithoutProducer += 1
+                break
+            }
         }
     }
 
@@ -403,6 +492,25 @@ public final class MigoFrameChannel {
     /// Blocks for as long as the call takes. Call it on a queue that is NOT the
     /// one frames arrive on: the frame a read waits for would otherwise queue
     /// behind the read, and the read would wait out its whole timeout for it.
+    /// A service message that arrived as a POST to the content origin: the ones
+    /// too large for the socket. The engine restores the order the two paths
+    /// lost, so this is answered at once.
+    @discardableResult
+    public func submitServiceFromOrigin(_ message: Data) -> ServiceDisposition {
+        receiveService(message)
+    }
+
+    /// A parked answer the producer asked the content origin for. Taken once.
+    public func takeParkedReply(generation: UInt32, requestId: UInt32) -> Data? {
+        let reply = takeParked(generation, requestId)
+        if reply != nil {
+            lock.lock()
+            statistics.parkedRepliesTaken += 1
+            lock.unlock()
+        }
+        return reply
+    }
+
     public func answerSyncCall(_ call: Data) -> SyncAnswer? {
         let answer = answerSync(call)
         lock.lock()
@@ -422,7 +530,26 @@ public final class MigoFrameChannel {
         switch classify(message) {
         case .frame: receive(message)
         case .control: receiveControl(message)
+        case .service: receiveService(message)
         }
+    }
+
+    @discardableResult
+    private func receiveService(_ message: Data) -> ServiceDisposition {
+        // May block while the engine's queue of admitted work is full, which is
+        // back-pressure on whichever path carried the message.
+        let disposition = submitService(message)
+        lock.lock()
+        statistics.serviceMessagesReceived += 1
+        if case .refused(let code) = disposition {
+            statistics.serviceMessagesRefused += 1
+            statistics.lastServiceRefusalCode = code
+        }
+        lock.unlock()
+        // A refusal is queued for the producer; send it now rather than behind
+        // whatever next wakes the drain.
+        if case .refused = disposition { pump() }
+        return disposition
     }
 
     /// A request for a frame. Nothing is queued for the producer by reading one

@@ -878,6 +878,81 @@ import XCTest
             XCTAssertEqual(report?["platform"] as? String, "ios")
         }
 
+        /// The engine's storage API, answered by the host's storage service.
+        ///
+        /// The whole service stream in one test: content is installed and
+        /// loaded through the C ABI, the host serves the directory the engine
+        /// mounted, and `migo.*Storage*` -- synchronous and awaited -- reaches the
+        /// same SQLite store and the same rules the embedded runtime uses; an
+        /// oversized value is refused with the message games match on.
+        func testContentReachesTheHostsStorageThroughTheServiceStream() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let content = Data(
+                """
+                export async function start({ report }) {
+                  try {
+                    migo.setStorageSync("sync-key", { n: 1, s: "h\\u00e9llo" });
+                    const syncBack = migo.getStorageSync("sync-key");
+                    await migo.setStorage({ key: "async-key", data: 42 });
+                    const syncOfAsync = migo.getStorageSync("async-key");
+                    const asyncBack = (await migo.getStorage({ key: "async-key" })).data;
+                    const info = migo.getStorageInfoSync();
+                    let refused = null;
+                    try {
+                      migo.setStorageSync("big", "x".repeat(1024 * 1024 + 1));
+                    } catch (error) {
+                      refused = `${error.name}: ${error.message}`;
+                    }
+                    report({ type: "stored", syncBack: JSON.stringify(syncBack), syncOfAsync, asyncBack,
+                      keys: info.keys.slice().sort().join(","), refused });
+                  } catch (error) {
+                    // An awaited mini-game API rejects with `{errMsg}`, not an Error.
+                    const detail = error instanceof Error ? `${error.name}: ${error.message}` : JSON.stringify(error);
+                    report({ type: "failed", stage: "storage", detail });
+                  }
+                }
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "storage-game", entry: "game/main.mjs", files: ["game/main.mjs": content])
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let stored = expectation(description: "content used storage")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, contentEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "stored":
+                    report = message
+                    stored.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    stored.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [stored], timeout: 240)
+            XCTAssertNil(failure)
+            XCTAssertEqual(report?["syncBack"] as? String, #"{"n":1,"s":"héllo"}"#)
+            XCTAssertEqual(report?["syncOfAsync"] as? Double, 42, "one store behind both kinds of call")
+            XCTAssertEqual(report?["asyncBack"] as? Double, 42)
+            XCTAssertEqual(report?["keys"] as? String, "async-key,sync-key")
+            XCTAssertEqual(
+                report?["refused"] as? String, "Error: setStorage:fail data exceeds max size",
+                "refused by the host's rule, with the message the embedded op throws")
+        }
+
         /// A frame too large for one packet crosses as barriers and one present.
         ///
         /// Sixty thousand clears in one `requestAnimationFrame` is 256 KiB of

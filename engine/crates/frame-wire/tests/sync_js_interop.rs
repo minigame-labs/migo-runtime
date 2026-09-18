@@ -192,6 +192,11 @@ fn calls_from_the_javascript_producer_decode_unchanged() {
             "{name} timeout"
         );
         assert_eq!(
+            call.service_sequence,
+            wide(entry, "service_sequence"),
+            "{name} service_sequence"
+        );
+        assert_eq!(
             call.params.len() as i64,
             number(entry, "params_bytes"),
             "{name} argument length"
@@ -309,7 +314,11 @@ fn gl_query_arguments_from_the_javascript_producer_decode_unchanged() {
         let decoded = GlQueryParams::decode(&bytes)
             .unwrap_or_else(|error| panic!("{file} was refused: {error:?}"));
 
-        assert_eq!(i64::from(decoded.kind), number(line, "kind"), "{file}: kind");
+        assert_eq!(
+            i64::from(decoded.kind),
+            number(line, "kind"),
+            "{file}: kind"
+        );
         assert_eq!(
             i64::from(decoded.canvas_id),
             number(line, "canvas_id"),
@@ -398,13 +407,21 @@ fn canvas2d_query_arguments_from_the_javascript_producer_decode_unchanged() {
         let decoded = Canvas2DQueryParams::decode(&bytes)
             .unwrap_or_else(|error| panic!("{file} was refused: {error:?}"));
 
-        assert_eq!(i64::from(decoded.kind), number(line, "kind"), "{file}: kind");
+        assert_eq!(
+            i64::from(decoded.kind),
+            number(line, "kind"),
+            "{file}: kind"
+        );
         assert_eq!(
             i64::from(decoded.canvas_id),
             number(line, "canvas_id"),
             "{file}: canvas"
         );
-        assert_eq!(i64::from(decoded.flags), number(line, "flags"), "{file}: flags");
+        assert_eq!(
+            i64::from(decoded.flags),
+            number(line, "flags"),
+            "{file}: flags"
+        );
         assert_eq!(
             decoded.text.len() as i64,
             number(line, "text_bytes"),

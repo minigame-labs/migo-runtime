@@ -46,7 +46,7 @@ embedded-v8 = ["dep:runtime-v8"]
 # is between the neutral bring-up above line ~150 and the runtime assembly
 # below it -- not the 49 `self.js.*` call sites, which belong to the embedded
 # execution either way and do not move.
-external-frames = ["dep:migo-frame-wire", "dep:frame-decode"]
+external-frames = ["dep:migo-frame-wire", "dep:frame-decode", "dep:migo-services"]
 
 profile-full = ["embedded-v8", "runtime-v8?/profile-full", "v8-limits", "code-signing", "api-sensors", "api-media", "api-connectivity", "api-commerce", "api-system", "graphics/profile-full"]
 profile-slim = ["embedded-v8", "runtime-v8?/profile-slim", "v8-limits", "code-signing", "graphics/profile-slim"]
@@ -78,6 +78,9 @@ migo-frame-wire = { path = "../frame-wire", default-features = false, optional =
 frame-decode = { package = "migo-frame-decode", path = "../frame-decode", default-features = false, optional = true }
 graphics = { package = "migo-graphics", path = "../graphics", default-features = false }
 migo-io = { path = "../io", default-features = false }
+# The work behind the ops, shared with the embedded runtime; the external
+# session's service dispatcher calls it directly.
+migo-services = { path = "../services", optional = true }
 audio = { package = "migo-audio", path = "../audio", default-features = false, optional = true }
 crossbeam-channel = { workspace = true }
 futures = { workspace = true }

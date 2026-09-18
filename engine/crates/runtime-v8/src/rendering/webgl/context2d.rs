@@ -1526,7 +1526,10 @@ pub fn op_set_text_align(state: &mut OpState, #[smi] canvas_id: u32, #[smi] alig
 #[op2(fast)]
 pub fn op_set_text_baseline(state: &mut OpState, #[smi] canvas_id: u32, #[smi] baseline: u8) {
     with_collector(state, |collector| {
-        collector.set_text_baseline(canvas_id, frame_decode::canvas2d::text_baseline_of(baseline));
+        collector.set_text_baseline(
+            canvas_id,
+            frame_decode::canvas2d::text_baseline_of(baseline),
+        );
     });
 }
 

@@ -21,9 +21,12 @@
 // embedded runtime pays too (`send_gl_sync_with_flush`), and it is why the
 // engine's facade caches locations rather than asking per draw.
 
+import { constructOpError } from "./engine-core.mjs";
 import { engineHost } from "./engine-host.mjs";
-import { stringOf, toU32 } from "./op-args.mjs";
+import { bytesOf, stringOf, toU32 } from "./op-args.mjs";
 import { flushToHost } from "./engine-frames.mjs";
+import { decodeServiceOutcome, encodeServiceCall } from "./service.mjs";
+import { SERVICE_OP } from "./service-ops.mjs";
 import {
   ACTIVE_VARIABLE_HEADER_BYTES,
   CANVAS2D_FLAG_BOLD,
@@ -50,6 +53,8 @@ import {
   SYNC_OP_GL_QUERY_ACTIVE,
   SYNC_OP_GL_QUERY_SCALAR,
   SYNC_OP_GL_QUERY_TEXT,
+  SYNC_OP_SERVICE,
+  MAX_SERVICE_REPLY_BYTES,
   TEXT_METRICS_BYTES,
   decodeActiveReply,
   decodeMetricsReply,
@@ -243,4 +248,85 @@ export function op_get_text_line_height(fontFamily, fontSize, bold, italic) {
     }),
   );
   return decodeNumberReply(reply);
+}
+
+// ---- service ops called synchronously ---------------------------------------
+//
+// `getStorageSync`, `readFileSync`: service ops whose return value is the
+// answer. What content asked for on the service stream before the call is sent
+// first, and the call names it (`serviceSequence`), so the host runs this after
+// it -- a `readFileSync` never overtakes the `writeFile` in front of it. No
+// barrier: these are not about the frame being built.
+
+/**
+ * Run one service op on the host, blocked, and return its value.
+ *
+ * The op's own failure -- a missing file, a full quota -- comes back as an
+ * answer and is thrown here as the class the engine registered under its name;
+ * the barrier failing (a timeout, a session that ended) is thrown by the caller.
+ */
+export function callService(op, writeArgs) {
+  const host = engineHost();
+  if (host.sync === undefined || host.services === undefined) {
+    const error = new Error(
+      "this producer has no synchronous service endpoint, and the op has no answer without one",
+    );
+    error.name = "ServiceUnavailable";
+    throw error;
+  }
+  const serviceSequence = host.services.flush();
+  const { state } = host;
+  const reply = host.sync.call({
+    runtimeGeneration: host.runtimeGeneration,
+    surfaceGeneration: state.surfaceGeneration,
+    resourceEpoch: state.resourceEpoch,
+    triggeringSequence: 0n,
+    operation: SYNC_OP_SERVICE,
+    maxReplyBytes: MAX_SERVICE_REPLY_BYTES,
+    timeoutMillis: QUERY_TIMEOUT_MILLIS,
+    serviceSequence,
+    params: encodeServiceCall(op, writeArgs),
+  });
+  const outcome = decodeServiceOutcome(reply);
+  if (outcome.ok) return outcome.value;
+  throw constructOpError(outcome.className, outcome.message);
+}
+
+// ---- storage ------------------------------------------------------------------
+
+export function op_storage_get(key) {
+  const k = stringOf(key, "key");
+  return callService(SERVICE_OP.op_storage_get, (w) => w.str(k));
+}
+
+export function op_storage_set(key, value) {
+  const k = stringOf(key, "key");
+  const v = stringOf(value, "value");
+  callService(SERVICE_OP.op_storage_set, (w) => {
+    w.str(k);
+    w.str(v);
+  });
+}
+
+export function op_storage_remove(key) {
+  const k = stringOf(key, "key");
+  callService(SERVICE_OP.op_storage_remove, (w) => w.str(k));
+}
+
+export function op_storage_clear() {
+  callService(SERVICE_OP.op_storage_clear);
+}
+
+export function op_storage_info() {
+  return callService(SERVICE_OP.op_storage_info);
+}
+
+export function op_create_buffer_url(buffer) {
+  const bytes = bytesOf(buffer, "buffer");
+  return callService(SERVICE_OP.op_create_buffer_url, (w) => w.bytes(bytes));
+}
+
+export function op_revoke_buffer_url(url) {
+  const u = stringOf(url, "url");
+  callService(SERVICE_OP.op_revoke_buffer_url, (w) => w.str(u));
 }

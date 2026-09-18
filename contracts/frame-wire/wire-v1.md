@@ -65,6 +65,15 @@ additive; a producer of the previous version refuses an unknown kind rather than
 misreading it, and the two halves ship in one package -- the same audit the
 amendment above rests on.
 
+### Amendment, 2026-09-18: the service stream
+
+`MUS1`/`MDS1` join the format (see *The service stream*), the synchronous call
+body gains `service_sequence` at offset 48 so its arguments now start at 56,
+and `SERVICE` joins the synchronous operations. Additive for the envelope and
+the frame; a change to the call body, made in place on the same audit as the
+two amendments above -- the producer and the host ship in one package, and no
+product release contains either.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.
@@ -575,6 +584,7 @@ which is a change worth noticing rather than absorbing.
 | 5 | `GL_QUERY_ACTIVE` | a query record | `size` i32, `type` u32, then the name's UTF-8 bytes |
 | 6 | `CANVAS2D_METRICS` | a 2D query record (below) | 48 bytes: twelve `f32`, the `TextMetrics` fields |
 | 7 | `CANVAS2D_NUMBER` | a 2D query record | 8 bytes, a little-endian `f64` |
+| 8 | `SERVICE` | `op` u32, then the op's arguments as values | `outcome` u32, then one value, or a class string and a message string |
 
 **The WebGL queries.** `getShaderParameter`, `getUniformLocation`, `getError`
 and the twelve others are calls whose return value *is* the answer, asked about
@@ -720,11 +730,19 @@ response, with no record and no relay.
 | 36 | 4 | `max_reply_bytes` | as in the record: `1..=16777216` |
 | 40 | 4 | `timeout_millis` | how long the producer will wait; `1..=60000` |
 | 44 | 4 | `reserved` | exactly `0` |
+| 48 | 8 | `service_sequence` | the last service message the producer had sent; the host answers only once it is admitted. `0` when none was sent |
 
-The operation's arguments follow from offset 48, and the whole body is at most
-4096 bytes. Arguments are small by construction -- anything bulky is a frame --
-and the bound is what lets a transport refuse an oversized body before it has
-read it rather than after.
+The operation's arguments follow from offset 56, and the whole body is at most
+4096 bytes -- except for `SERVICE`, whose body is bounded by the service
+stream's own message bound (below). Arguments are small by construction --
+anything bulky is a frame -- and the bound is what lets a transport refuse an
+oversized body before it has read it rather than after.
+
+**`service_sequence`** orders a synchronous call after the service messages
+sent before it, the way `triggering_sequence` orders it after frames: content
+that calls `writeFile` and then `readFileSync` is answered after the write was
+admitted. The two streams are independent and can arrive in either order, so
+the host waits, within the call's own timeout.
 
 **No deadline, a timeout.** The record's `deadline_nanos` is on the host's
 clock, which a producer in another process cannot read. The body carries a
@@ -760,6 +778,147 @@ response belongs to its request by construction, and a request whose page went
 away has nothing to deliver to. The host frees the mailbox as it writes
 the answer, because a producer holding the response has the bytes, which is the
 event the record's producer signals by clearing the slot.
+
+## The service stream
+
+Everything content asks the host to do that is not drawing -- read a file,
+write a save, load an image, play a sound, open a socket -- is a service call.
+On every other Migo platform it is an op call away; here it is a process away,
+and it travels on a stream of its own.
+
+**Why not in the frame.** A frame is admitted only once the renderer is up and
+only inside the credit window. A game reads its configuration and its save
+before its first frame, and a service call that waited for a credit would wait
+behind the renderer.
+
+**Why one ordered stream.** Commands and requests to one subsystem have to run
+in the order content made them. The embedded runtime's audio commands and its
+awaited `stop` and `connect` go down one channel to the audio thread, and
+"create the node, then stop it" is the meaning, not a detail. So every message
+carries a sequence and the host admits them strictly in order.
+
+**Transport.** The measured rule the frame uplink follows: a message of at most
+64 KiB travels on the socket; a larger one -- a file write, a request body, an
+encoded sound -- is POSTed to `/__migo/service`. The two paths reorder, so the
+host admits strictly by sequence and **holds a message that arrives ahead of its
+predecessor**, up to 256 messages and 67108864 bytes, releasing them in order
+when the gap closes. The producer never waits for one message to land before
+sending the next: a synchronous call blocks its Worker, and a producer holding
+messages behind a request only that Worker's event loop can settle would hold
+them past the call that needs them.
+
+### Uplink message
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | `magic` | exactly `0x4D555331` ("MUS1") |
+| 4 | 4 | `version` | exactly `1` |
+| 8 | 4 | `generation` | the low 32 bits of the runtime generation; a message from another generation is ignored |
+| 12 | 4 | `reserved` | exactly `0` |
+| 16 | 8 | `sequence` | `1`, `2`, `3`... per generation, with no gaps and never `0` |
+
+Records follow from offset 24, one or more, to the end of the message; the whole
+message is a whole number of words and at most 67108864 bytes. A record is
+`kind` u32, `byte_length` u32, then `byte_length` bytes of body and zero padding
+to a word. Not the command stream's twenty-bit word count: a record in a message
+carried by a scheme request can be many megabytes.
+
+| Kind | Name | Body |
+|---:|---|---|
+| 1 | `REQUEST` | `request_id` u32 (never `0`), `op` u32, then the op's arguments as values |
+| 2 | `COMMAND` | `op` u32, then the op's arguments as values. Nothing answers it |
+| 3 | `CANCEL` | `request_id` u32. The answer, if one is produced, is still sent and the producer drops it |
+
+`op` numbers are `contracts/runtime/service-ops.json`: assigned once, never
+reused, never renumbered.
+
+### Service values
+
+Arguments and answers are self-describing, because the service stream is not on
+the per-draw path and every op's arguments are whatever its Rust signature says:
+a handler that expected a string and was sent a number refuses the call by name
+instead of reading a length as text. Every value starts with a tag word -- the
+tag in the low eight bits, zero above -- and ends on a word boundary.
+
+| Tag | Name | Payload |
+|---:|---|---|
+| 0 | `NULL` | none |
+| 1 | `FALSE` | none |
+| 2 | `TRUE` | none |
+| 3 | `U32` | u32 |
+| 4 | `I32` | i32 |
+| 5 | `F64` | f64 |
+| 6 | `U64` | u64 |
+| 7 | `I64` | i64 |
+| 8 | `STRING` | `byte_length` u32, UTF-8, zero padding |
+| 9 | `BYTES` | `byte_length` u32, bytes, zero padding |
+| 10 | `JSON` | `byte_length` u32, UTF-8 JSON text, zero padding |
+| 11 | `ARRAY` | `count` u32, then `count` values |
+
+Arrays nest at most 16 deep. A string that is not UTF-8, padding that is not
+zero, a tag this version does not define or a length past the end refuses the
+whole message.
+
+### Downlink message
+
+`MDS1` rather than more kinds in the frame downlink, because the two queues have
+opposite rules: a verdict or a tick is a level the next one supersedes, so that
+queue coalesces and may drop; an answer is owed exactly once and none may be
+lost.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | `magic` | exactly `0x4D445331` ("MDS1") |
+| 4 | 4 | `version` | exactly `1` |
+| 8 | 4 | `generation` | the generation the records answer |
+| 12 | 4 | `reserved` | exactly `0` |
+
+Records follow from offset 16, in the uplink's record framing.
+
+| Kind | Name | Body |
+|---:|---|---|
+| 1 | `REPLY` | `request_id` u32, `outcome` u32; then one value when `outcome` is `0`, or a class string and a message string when it is `1` |
+| 2 | `REPLY_PARKED` | `request_id` u32, `byte_length` u32 |
+| 3 | `EVENT` | `event` u32, then its values |
+| 4 | `REFUSED` | `code` u32, `reserved` u32, `sequence` u64 |
+
+**An error carries its class by name**, because content matches on it: the
+embedded runtime's storage ops throw `StorageError` and its file ops `IOError`,
+and a game that catches one has to see the same class here.
+
+**A reply larger than 65536 bytes is parked.** The downlink carries
+`REPLY_PARKED`, and the producer takes the whole `REPLY` record --
+`byte_length` bytes, header included -- with `GET
+/__migo/reply/<generation>/<request_id>`. Taken once; a generation's parked
+replies are released when it ends, and their total is bounded. The same
+crossover as the uplink, applied to the direction that carries file contents.
+
+**`REFUSED` is terminal.** A refused message breaks the sequence, so every later
+one would be refused too; the producer reports it and stops, as it does for a
+refused frame.
+
+### Service refusals
+
+Numbered from 4001, clear of the frame, ingress, external-session and control
+ranges. The list lives in `engine/crates/frame-wire/src/service.rs`
+(`ServiceError`).
+
+| Code | Name | Meaning |
+|---:|---|---|
+| 4001 | `TooShort` | fewer bytes than the header and one record header |
+| 4002 | `TooLong` | more than the message bound |
+| 4003 | `NotWordAligned` | the byte count is not a whole number of words |
+| 4004 | `BadMagic` | the first word is not `MUS1` |
+| 4005 | `UnsupportedVersion` | the version is not 1 |
+| 4006 | `ReservedNotZero` | the reserved word is not zero |
+| 4007 | `ZeroSequence` | sequence `0` |
+| 4008 | `RecordOutOfRange` | a record's length runs past the end |
+| 4009 | `PaddingNotZero` | padding after a record's body is not zero |
+| 4010 | `UnknownKind` | a record kind this version does not define |
+| 4011 | `MalformedRecord` | a record too short for its kind, or a request id of `0` |
+| 4012 | `BadValues` | a record's arguments are not a valid run of values |
+| 4013 | `OutOfSequence` | at or behind the last admitted sequence, or a second copy of a held message |
+| 4014 | `TooFarAhead` | ahead of a missing predecessor with the host's hold already full |
 
 ## The resource lane
 

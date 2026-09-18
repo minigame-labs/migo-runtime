@@ -13,6 +13,7 @@
 // to whatever else is listening.
 
 import { FrameSession } from "./frame-session.mjs";
+import { isServiceDownMessage } from "./service.mjs";
 import { createHybridSender } from "./uplink.mjs";
 
 /**
@@ -33,6 +34,9 @@ import { createHybridSender } from "./uplink.mjs";
  *        not carry a copy of a measured number.
  * @param {(error: Error, byteCount: number) => void} [options.onSchemeFailure]
  *        a large packet that did not arrive.
+ * @param {import("./service.mjs").ServiceChannel} [options.services] the
+ *        service stream, which shares the socket: its small messages go out on
+ *        it once it is open, and the host's answers (`MDS1`) come back on it.
  * @returns {Promise<FrameSession>} resolved once the socket is open, because a
  *          session handed back before then would accept a submit it could only
  *          drop.
@@ -46,6 +50,7 @@ export function connectFrameSession({
   onFrame,
   onVerdict,
   onGenerationLost,
+  services,
 } = {}) {
   return new Promise((resolve, reject) => {
     let socket;
@@ -93,16 +98,26 @@ export function connectFrameSession({
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      services?.attachSocket((bytes) => socket.send(bytes));
       resolve(session);
     });
     socket.addEventListener("message", (event) => {
-      session.handleMessage(new Uint8Array(event.data));
+      const bytes = new Uint8Array(event.data);
+      // Routed by the first word, as the host routes the other direction: the
+      // service stream's answers have their own envelope.
+      if (services !== undefined && isServiceDownMessage(bytes)) {
+        services.handleMessage(bytes);
+      } else {
+        session.handleMessage(bytes);
+      }
     });
     socket.addEventListener("close", () => {
       session.close();
+      services?.close();
     });
     socket.addEventListener("error", (event) => {
       session.close();
+      services?.close();
       if (settled) return;
       settled = true;
       clearTimeout(timer);

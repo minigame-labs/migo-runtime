@@ -27,193 +27,78 @@
 //! serialized response is capped before it reaches JS.
 
 use std::cell::RefCell;
-use std::fs;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use deno_core::{Extension, JsBuffer, OpState, op2};
 use deno_error::JsErrorBox;
-use migo_io::storage_ops::{self, StorageInfo};
-use migo_io::task::{IoRequest, PriorityClass, RequestKind};
-use shared::error::{EngineError, ErrorCode};
+use migo_services::storage;
 use shared::op_state::HostOpState;
 
 use crate::io_state::IoSchedulerState;
 
-/// Storage directory name under the game's user-data directory.
-///
-/// The SQLite file itself lives at `{STORAGE_DIR}/storage.db`; the
-/// directory layer is kept so per-game cleanup tools that `rm -rf`
-/// the folder keep working.
-const STORAGE_DIR: &str = "kv_storage";
-
-/// Buffer URL directory name under the game's cache directory.
-const BUFFER_URL_DIR: &str = "buffer_urls";
-
-/// Maximum size of a single stored value (1 MB).
-const MAX_VALUE_SIZE: usize = 1024 * 1024;
-
-/// Keep oversized keys off the scheduler queue as well as out of SQLite.
-const MAX_KEY_SIZE: usize = 16 * 1024;
-
-/// Maximum total storage size in KB (10 MB = 10240 KB).
-const LIMIT_SIZE_KB: u32 = 10240;
-
-/// Maximum total storage size in bytes.
-///
-/// Visible to the crate so the two-Session quota test spends the *shipped* limit
-/// rather than one of its own: a fixture with a small quota of its own would prove
-/// per-instance accounting without proving that this is the number each game gets.
-pub(crate) const MAX_TOTAL_BYTES: u64 = LIMIT_SIZE_KB as u64 * 1024;
-
-/// Cap the wire string built for `getStorageInfo`; the JS wrapper parses this
-/// whole string before exposing it, so truncating only after formatting would
-/// leave the peak allocation unchanged.
-const MAX_INFO_JSON_BYTES: usize = 512 * 1024;
-
-// ==================== Path Helpers ====================
-
-/// Per-game storage root.
-///
-/// Anchored to the game's own user-data directory, not to the host app's files
-/// directory. A host that runs several games -- a game centre with a catalogue
-/// of third-party titles is the case this product is sold into -- would
-/// otherwise give all of them one SQLite file: any game could read another's
-/// saves by guessing keys, a single `migo.clearStorage()` would wipe the whole
-/// catalogue, and the 10 MB quota would be a shared pool one game could
-/// exhaust for the rest. Code, cache and user-data directories were already
-/// per-game; this was the one that was not.
-///
-/// It also restores the common mini-game platform's own semantics, where each mini-game has its own 10 MB.
-///
-/// Fails when no game is loaded rather than falling back to a shared location:
-/// `game_paths` is populated when a module is evaluated, so content cannot be
-/// running without it, and a fallback would silently reintroduce the shared
-/// file it exists to prevent.
-#[inline]
-pub(crate) fn storage_dir(state: &OpState) -> Result<PathBuf, EngineError> {
-    let host = state.borrow::<HostOpState>();
-    match host.game_paths.as_ref() {
-        Some(paths) => Ok(paths.user_data_dir().join(STORAGE_DIR)),
-        None => Err(EngineError::from_detail(
-            ErrorCode::InvalidOperation,
-            "storage is unavailable before a game is loaded".to_string(),
-        )),
-    }
-}
-
-/// Per-game scratch space for `URL.createObjectURL` payloads.
-///
-/// Same isolation as [`storage_dir`], for the same reason: these are files
-/// written on behalf of one game, and the host app's cache directory is shared
-/// by every game it runs.
-///
-/// Inside the sandbox subtree rather than the cache root: the payload is the
-/// game's own bytes handed back to it, so the path this returns has to stay one
-/// the game can read, and the root is reserved for runtime state.
-#[inline]
-pub(crate) fn buffer_url_dir(state: &OpState) -> Result<PathBuf, EngineError> {
-    let host = state.borrow::<HostOpState>();
-    match host.game_paths.as_ref() {
-        Some(paths) => Ok(paths.sandbox_cache_dir().join(BUFFER_URL_DIR)),
-        None => Err(EngineError::from_detail(
-            ErrorCode::InvalidOperation,
-            "buffer URLs are unavailable before a game is loaded".to_string(),
-        )),
-    }
-}
+/// The per-game quota, re-exported for the two-Session quota test so it spends
+/// the *shipped* limit rather than one of its own.
+#[cfg(test)]
+pub(crate) const MAX_TOTAL_BYTES: u64 = storage::MAX_TOTAL_BYTES;
 
 #[inline]
 fn get_scheduler(state: &OpState) -> Arc<migo_io::scheduler::IoScheduler> {
     state.borrow::<IoSchedulerState>().0.clone()
 }
 
+/// The game's paths, if a game is loaded. Cloned out of op state so an awaited
+/// call does not hold a borrow across its await.
 #[inline]
-fn pool_err(err: migo_io::pools::PoolError) -> StorageError {
-    StorageError::Message(err.to_string())
+fn game_paths(state: &OpState) -> Option<Arc<shared::vfs::GamePaths>> {
+    state.borrow::<HostOpState>().game_paths.clone()
 }
 
-fn ensure_dir(dir: &std::path::Path) -> Result<(), JsErrorBox> {
-    if !dir.exists() {
-        fs::create_dir_all(dir)
-            .map_err(|e| JsErrorBox::generic(format!("storage: mkdir fail {e}")))?;
-    }
-    Ok(())
+/// The storage root the ops resolve for the game this op state has loaded:
+/// the production resolver over this state's `game_paths`, which is what the
+/// isolation tests put their questions to.
+#[cfg(test)]
+pub(crate) fn storage_dir(
+    state: &OpState,
+) -> Result<std::path::PathBuf, shared::error::EngineError> {
+    storage::storage_dir(game_paths(state).as_deref())
 }
 
-/// Convert an engine-layer error to the JS-visible message. Keeps
-/// the user-facing string equivalent to the old ops so existing
-/// error-match code in games keeps working.
-fn js_err(e: EngineError) -> JsErrorBox {
-    match &e.detail {
-        Some(d) => JsErrorBox::generic(d.clone()),
-        None => JsErrorBox::generic(e.msg.to_string()),
-    }
+/// As [`storage_dir`], for buffer URLs.
+#[cfg(test)]
+pub(crate) fn buffer_url_dir(
+    state: &OpState,
+) -> Result<std::path::PathBuf, shared::error::EngineError> {
+    storage::buffer_url_dir(game_paths(state).as_deref())
 }
-/// Serialize [`StorageInfo`] into the JSON shape expected by the JS wrapper.
-/// Sizes are reported in KiB (ceil), mirroring the legacy format.
-fn info_to_json(info: &StorageInfo) -> String {
-    // Ceil to KiB so a 1-byte value reports currentSize=1.
-    let current_kib = (info.current_bytes + 1023) / 1024;
-    let limit_kib = (info.limit_bytes + 1023) / 1024;
-    let suffix = format!(r#"],"currentSize":{current_kib},"limitSize":{limit_kib}}}"#);
-    let mut out =
-        String::with_capacity(MAX_INFO_JSON_BYTES.min(info.keys.len().saturating_mul(16)));
-    let mut first = true;
-    for k in &info.keys {
-        // Escape one key at a time so an oversized key list never creates a
-        // second full-size staging string.
-        let mut escaped = String::with_capacity(k.len());
-        for c in k.chars() {
-            match c {
-                '"' => escaped.push_str("\\\""),
-                '\\' => escaped.push_str("\\\\"),
-                '\n' => escaped.push_str("\\n"),
-                '\r' => escaped.push_str("\\r"),
-                '\t' => escaped.push_str("\\t"),
-                c if (c as u32) < 0x20 => {
-                    escaped.push_str(&format!("\\u{:04x}", c as u32));
-                }
-                c => escaped.push(c),
-            }
-        }
-        let separator_len = usize::from(!first);
-        if out
-            .len()
-            .saturating_add(separator_len)
-            .saturating_add(escaped.len())
-            .saturating_add(2)
-            .saturating_add(suffix.len())
-            > MAX_INFO_JSON_BYTES
-        {
-            break;
-        }
-        if !first {
-            out.push(',');
-        }
-        first = false;
-        out.push('"');
-        out.push_str(&escaped);
-        out.push('"');
-    }
-    out.push_str(&suffix);
-    debug_assert!(out.len() <= MAX_INFO_JSON_BYTES);
-    out
+
+/// A service error as the class content has always caught.
+fn js_err(error: migo_services::ServiceError) -> JsErrorBox {
+    JsErrorBox::new(error.class, error.message)
 }
+
+/// Registered in JS as a constructor under this exact name (see
+/// `01_storage.js`); the awaited ops throw it.
+#[derive(Debug, thiserror::Error, deno_error::JsError)]
+pub enum StorageError {
+    #[class("StorageError")]
+    #[error("{0}")]
+    Message(String),
+}
+
+fn storage_err(error: migo_services::ServiceError) -> StorageError {
+    StorageError::Message(error.message)
+}
+
+// The rules and messages are `migo_services::storage`'s; these are adapters,
+// so the external session's service dispatcher applies the same ones.
 
 // ==================== Sync Storage Ops ====================
 
 #[op2]
 #[string]
 pub fn op_storage_get(state: &mut OpState, #[string] key: &str) -> Result<String, JsErrorBox> {
-    let scheduler = get_scheduler(state);
-    let dir = storage_dir(state).map_err(js_err)?;
-    // Missing key maps to "" so the JS-side `deserialize("")` contract
-    // (return empty string) keeps working without a wire-format change.
-    storage_ops::storage_get_sync_with_scheduler(scheduler, dir, key.to_string(), MAX_TOTAL_BYTES)
-        .map(|opt| opt.unwrap_or_default())
-        .map_err(js_err)
+    storage::get_sync(get_scheduler(state), game_paths(state).as_deref(), key).map_err(js_err)
 }
 
 #[op2(fast)]
@@ -222,94 +107,41 @@ pub fn op_storage_set(
     #[string] key: &str,
     #[string] value: &str,
 ) -> Result<(), JsErrorBox> {
-    if value.len() > MAX_VALUE_SIZE {
-        return Err(JsErrorBox::generic("setStorage:fail data exceeds max size"));
-    }
-    if key.len() > MAX_KEY_SIZE {
-        return Err(JsErrorBox::generic("setStorage:fail key exceeds max size"));
-    }
-    let scheduler = get_scheduler(state);
-    let dir = storage_dir(state).map_err(js_err)?;
-    storage_ops::storage_set_sync_with_scheduler(
-        scheduler,
-        dir,
-        key.to_string(),
-        value.to_string(),
-        MAX_TOTAL_BYTES,
+    storage::set_sync(
+        get_scheduler(state),
+        game_paths(state).as_deref(),
+        key,
+        value,
     )
     .map_err(js_err)
 }
 
 #[op2(fast)]
 pub fn op_storage_remove(state: &mut OpState, #[string] key: &str) -> Result<(), JsErrorBox> {
-    let scheduler = get_scheduler(state);
-    let dir = storage_dir(state).map_err(js_err)?;
-    storage_ops::storage_remove_sync_with_scheduler(
-        scheduler,
-        dir,
-        key.to_string(),
-        MAX_TOTAL_BYTES,
-    )
-    .map_err(js_err)
+    storage::remove_sync(get_scheduler(state), game_paths(state).as_deref(), key).map_err(js_err)
 }
 
 #[op2(fast)]
 pub fn op_storage_clear(state: &mut OpState) -> Result<(), JsErrorBox> {
-    let scheduler = get_scheduler(state);
-    let dir = storage_dir(state).map_err(js_err)?;
-    storage_ops::storage_clear_sync_with_scheduler(scheduler, dir, MAX_TOTAL_BYTES).map_err(js_err)
+    storage::clear_sync(get_scheduler(state), game_paths(state).as_deref()).map_err(js_err)
 }
 
 #[op2]
 #[string]
 pub fn op_storage_info(state: &mut OpState) -> Result<String, JsErrorBox> {
-    let scheduler = get_scheduler(state);
-    let dir = storage_dir(state).map_err(js_err)?;
-    let info = storage_ops::storage_info_sync_with_scheduler(scheduler, dir, MAX_TOTAL_BYTES)
-        .map_err(js_err)?;
-    Ok(info_to_json(&info))
+    storage::info_sync(get_scheduler(state), game_paths(state).as_deref()).map_err(js_err)
 }
 
 // ==================== Async Storage Ops ====================
 
-#[derive(Debug, thiserror::Error, deno_error::JsError)]
-pub enum StorageError {
-    #[class("StorageError")]
-    #[error("{0}")]
-    Message(String),
-}
-
-impl From<EngineError> for StorageError {
-    #[inline]
-    fn from(e: EngineError) -> Self {
-        match &e.detail {
-            Some(d) => StorageError::Message(format!("{} ({})", e.msg, d)),
-            None => StorageError::Message(e.msg.to_string()),
-        }
-    }
-}
-
-/// Route a blocking KvStore call through the IoScheduler as an async
-/// task. All four mutate-style async ops share this shape, so folding
-/// the boilerplate into one helper keeps the call sites obvious.
-async fn run_mutate_async<F>(state: Rc<RefCell<OpState>>, f: F) -> Result<(), StorageError>
-where
-    F: FnOnce(&std::path::Path) -> Result<(), EngineError> + Send + 'static,
-{
-    let (scheduler, dir) = {
-        let st = state.borrow();
-        (get_scheduler(&st), storage_dir(&st)?)
-    };
-    scheduler
-        .run_async(
-            IoRequest::StorageMutate {
-                request: RequestKind::Async,
-                priority: PriorityClass::from(RequestKind::Async),
-            },
-            move || f(&dir).map_err(StorageError::from),
-        )
-        .await
-        .map_err(pool_err)?
+fn scheduler_and_paths(
+    state: &Rc<RefCell<OpState>>,
+) -> (
+    Arc<migo_io::scheduler::IoScheduler>,
+    Option<Arc<shared::vfs::GamePaths>>,
+) {
+    let st = state.borrow();
+    (get_scheduler(&st), game_paths(&st))
 }
 
 #[op2(async(lazy), fast)]
@@ -318,20 +150,10 @@ pub async fn op_storage_get_async(
     state: Rc<RefCell<OpState>>,
     #[string] key: String,
 ) -> Result<String, StorageError> {
-    let (scheduler, dir) = {
-        let st = state.borrow();
-        (get_scheduler(&st), storage_dir(&st)?)
-    };
-    storage_ops::storage_get_with_scheduler(
-        scheduler,
-        dir,
-        key,
-        MAX_TOTAL_BYTES,
-        RequestKind::Async,
-    )
-    .await
-    .map(|opt| opt.unwrap_or_default())
-    .map_err(StorageError::from)
+    let (scheduler, paths) = scheduler_and_paths(&state);
+    storage::get(scheduler, paths.as_deref(), key)
+        .await
+        .map_err(storage_err)
 }
 
 #[op2(async(lazy), fast)]
@@ -340,20 +162,10 @@ pub async fn op_storage_set_async(
     #[string] key: String,
     #[string] value: String,
 ) -> Result<(), StorageError> {
-    if value.len() > MAX_VALUE_SIZE {
-        return Err(StorageError::Message(
-            "setStorage:fail data exceeds max size".into(),
-        ));
-    }
-    if key.len() > MAX_KEY_SIZE {
-        return Err(StorageError::Message(
-            "setStorage:fail key exceeds max size".into(),
-        ));
-    }
-    run_mutate_async(state, move |dir| {
-        storage_ops::storage_set(dir, &key, &value, MAX_TOTAL_BYTES)
-    })
-    .await
+    let (scheduler, paths) = scheduler_and_paths(&state);
+    storage::set(scheduler, paths.as_deref(), key, value)
+        .await
+        .map_err(storage_err)
 }
 
 #[op2(async(lazy), fast)]
@@ -361,38 +173,27 @@ pub async fn op_storage_remove_async(
     state: Rc<RefCell<OpState>>,
     #[string] key: String,
 ) -> Result<(), StorageError> {
-    run_mutate_async(state, move |dir| {
-        storage_ops::storage_remove(dir, &key, MAX_TOTAL_BYTES)
-    })
-    .await
+    let (scheduler, paths) = scheduler_and_paths(&state);
+    storage::remove(scheduler, paths.as_deref(), key)
+        .await
+        .map_err(storage_err)
 }
 
 #[op2(async(lazy), fast)]
 pub async fn op_storage_clear_async(state: Rc<RefCell<OpState>>) -> Result<(), StorageError> {
-    run_mutate_async(state, move |dir| {
-        storage_ops::storage_clear(dir, MAX_TOTAL_BYTES)
-    })
-    .await
+    let (scheduler, paths) = scheduler_and_paths(&state);
+    storage::clear(scheduler, paths.as_deref())
+        .await
+        .map_err(storage_err)
 }
 
 #[op2(async(lazy), fast)]
 #[string]
 pub async fn op_storage_info_async(state: Rc<RefCell<OpState>>) -> Result<String, StorageError> {
-    let (scheduler, dir) = {
-        let st = state.borrow();
-        (get_scheduler(&st), storage_dir(&st)?)
-    };
-    let info = scheduler
-        .run_async(
-            IoRequest::StorageInfo {
-                request: RequestKind::Async,
-                priority: PriorityClass::from(RequestKind::Async),
-            },
-            move || storage_ops::storage_info(&dir, MAX_TOTAL_BYTES).map_err(StorageError::from),
-        )
+    let (scheduler, paths) = scheduler_and_paths(&state);
+    storage::info(scheduler, paths.as_deref())
         .await
-        .map_err(pool_err)??;
-    Ok(info_to_json(&info))
+        .map_err(storage_err)
 }
 
 // ==================== Buffer URL Ops ====================
@@ -403,35 +204,12 @@ pub fn op_create_buffer_url(
     state: &mut OpState,
     #[buffer] buffer: JsBuffer,
 ) -> Result<String, JsErrorBox> {
-    let dir = buffer_url_dir(state).map_err(js_err)?;
-    ensure_dir(&dir)?;
-
-    // Unique file name: nanosecond timestamp in hex.
-    let id = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        format!("{nanos:x}")
-    };
-
-    let path = dir.join(&id);
-    fs::write(&path, &*buffer)
-        .map_err(|e| JsErrorBox::generic(format!("createBufferURL:fail {e}")))?;
-
-    Ok(path.to_string_lossy().into_owned())
+    storage::create_buffer_url(game_paths(state).as_deref(), &buffer).map_err(js_err)
 }
 
 #[op2(fast)]
 pub fn op_revoke_buffer_url(state: &mut OpState, #[string] url: &str) -> Result<(), JsErrorBox> {
-    let dir = buffer_url_dir(state).map_err(js_err)?;
-    let path = std::path::Path::new(url);
-    // Only allow deleting files within the buffer URL directory.
-    if path.starts_with(&dir) && path.is_file() {
-        let _ = fs::remove_file(path);
-    }
-    Ok(())
+    storage::revoke_buffer_url(game_paths(state).as_deref(), url).map_err(js_err)
 }
 
 // ==================== Extension ====================
@@ -465,26 +243,4 @@ pub fn storage_extensions() -> Vec<Extension> {
 
 pub fn storage_lazy_extensions() -> Vec<Extension> {
     vec![host_v8_storage::lazy_init()]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn info_json_is_bounded_for_large_key_lists() {
-        let info = StorageInfo {
-            keys: (0..100)
-                .map(|i| format!("key-{i}-{}", "x".repeat(8 * 1024)))
-                .collect(),
-            current_bytes: 1,
-            limit_bytes: 10 * 1024 * 1024,
-        };
-        let json = info_to_json(&info);
-        assert!(
-            json.len() <= 512 * 1024,
-            "getStorageInfo JSON must stay below the cap, got {} bytes",
-            json.len()
-        );
-    }
 }

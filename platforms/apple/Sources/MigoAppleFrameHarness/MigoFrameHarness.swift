@@ -171,6 +171,42 @@ public final class MigoFrameHarness {
         return released
     }
 
+    /// Install a game where the engine looks for installed content, load it,
+    /// and answer with the directory the engine mounted -- the one a
+    /// Performance+ host serves at the content origin's root.
+    ///
+    /// The install layout is the one `session.h` documents for
+    /// `MigoContentDescriptor` (`<files_dir>/migo/games/<id>/code`): writing it is
+    /// what an installer does. Where the code is *served from* is asked of the
+    /// engine rather than recomputed here, which is the property a product host
+    /// relies on.
+    public func installAndLoadContent(id: String, entry: String, files: [String: Data]) throws -> URL {
+        let code = root.appendingPathComponent("files/migo/games/\(id)/code")
+        for (path, bytes) in files {
+            let target = code.appendingPathComponent(path)
+            try FileManager.default.createDirectory(
+                at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try bytes.write(to: target)
+        }
+        let loaded = id.withCString { idText in
+            entry.withCString { entryText -> MigoResult in
+                var descriptor = MigoContentDescriptor()
+                descriptor.struct_size = UInt32(MemoryLayout<MigoContentDescriptor>.size)
+                descriptor.abi_version = MIGO_ABI_VERSION_CURRENT
+                descriptor.content_id_utf8 = idText
+                descriptor.entry_utf8 = entryText
+                return migo_session_load_content(session, &descriptor)
+            }
+        }
+        guard loaded == MIGO_OK else { throw Failure.call("migo_session_load_content", loaded) }
+        var length = 0
+        _ = migo_session_copy_content_root(session, nil, 0, &length)
+        var buffer = [CChar](repeating: 0, count: length + 1)
+        let copied = migo_session_copy_content_root(session, &buffer, buffer.count, &length)
+        guard copied == MIGO_OK else { throw Failure.call("migo_session_copy_content_root", copied) }
+        return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
+    }
+
     /// The argument record a blocked `readPixels` sends through the barrier.
     ///
     /// Built here rather than in each test because it is the wire format's, not

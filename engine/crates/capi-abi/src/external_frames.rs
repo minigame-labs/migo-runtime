@@ -24,6 +24,13 @@ pub const MIGO_FRAME_INGRESS_DEFERRED: u32 = 5;
 pub type MigoUplinkMessageKind = u32;
 pub const MIGO_UPLINK_MESSAGE_FRAME: MigoUplinkMessageKind = 1;
 pub const MIGO_UPLINK_MESSAGE_CONTROL: MigoUplinkMessageKind = 2;
+pub const MIGO_UPLINK_MESSAGE_SERVICE: MigoUplinkMessageKind = 3;
+
+/// The largest service message; see `frame_wire::service::MAX_SERVICE_MESSAGE_BYTES`.
+pub const MIGO_SERVICE_MESSAGE_MAX_BYTES: u32 = 64 * 1024 * 1024;
+/// The largest `MIGO_SYNC_OP_SERVICE` call body; see
+/// `frame_wire::sync::SERVICE_CALL_MAX_BYTES`.
+pub const MIGO_SERVICE_CALL_MAX_BYTES: u32 = 56 + MIGO_SERVICE_MESSAGE_MAX_BYTES;
 
 /// Called on the session thread when a downlink record the transport did not
 /// cause has been queued.
@@ -156,6 +163,8 @@ pub const MIGO_SYNC_ERROR_OPERATION_FAILED: u32 = 11;
 pub const MIGO_SYNC_OP_READ_PIXELS: u32 = 1;
 /// Wait for the frame window to open, and report it. See `frame_wire::sync::SYNC_OP_AWAIT_WINDOW`.
 pub const MIGO_SYNC_OP_AWAIT_WINDOW: u32 = 2;
+/// A service call made synchronously. See `frame_wire::sync::SYNC_OP_SERVICE`.
+pub const MIGO_SYNC_OP_SERVICE: u32 = 8;
 /// Size of the `MIGO_SYNC_OP_AWAIT_WINDOW` reply.
 pub const MIGO_SYNC_WINDOW_REPLY_BYTES: u32 = 16;
 

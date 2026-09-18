@@ -1,0 +1,32 @@
+[package]
+name = "migo-services"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+[lib]
+name = "migo_services"
+
+# The engine's host services, callable without a script runtime.
+#
+# An op is two things: the adapter that takes arguments out of V8 and puts an
+# answer back, and the work -- resolve a path, read a file, charge a quota,
+# decode an image. The embedded runtime used to hold both in one function, which
+# was fine while V8 was the only caller. On iOS Performance+ the caller is a
+# producer in another process, and the work has to run where no V8 is linked.
+# So the work lives here, once, and both executions call it: the embedded ops
+# as thin adapters, the external session's service dispatcher directly. Two
+# copies of the same rules would be two behaviours for the same game.
+#
+# No JavaScript engine is reachable from this crate, and
+# scripts/test-apple-performance-rust-closure.sh measures that through the
+# external session that depends on it.
+[dependencies]
+shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs"] }
+migo-io = { path = "../io", default-features = false }
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "macros"] }

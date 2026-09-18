@@ -77,11 +77,11 @@ fn the_producer_s_text_records_decode_to_the_commands_the_ops_build() {
         std::env::var("MIGO_CANVAS2D_PARITY_DIR")
             .expect("MIGO_CANVAS2D_PARITY_DIR names engine-resource-parity.mjs's output"),
     );
-    let script = std::fs::read_to_string(
-        repository()
-            .join("platforms/apple/WebContent/PerformancePlus/test/fixtures/canvas2d-text-calls.js"),
-    )
-    .expect("the fixture script");
+    let script =
+        std::fs::read_to_string(repository().join(
+            "platforms/apple/WebContent/PerformancePlus/test/fixtures/canvas2d-text-calls.js",
+        ))
+        .expect("the fixture script");
 
     // In process.
     let (mut runtime, render_rx) = new_webgl_runtime();
@@ -144,8 +144,8 @@ fn the_producer_s_text_records_decode_to_the_commands_the_ops_build() {
         .filter(|command| !command.contains("CreateContext2D"))
         .collect();
 
-    if let Some(index) =
-        (0..embedded.len().max(decoded.len())).find(|&index| embedded.get(index) != decoded.get(index))
+    if let Some(index) = (0..embedded.len().max(decoded.len()))
+        .find(|&index| embedded.get(index) != decoded.get(index))
     {
         panic!(
             "command {index} differs (in process {} commands, producer {}):\n  in process: {}\n  producer:   {}",
