@@ -51,6 +51,13 @@ pub mod producer_bounds {
     pub const FRAME_OP_MIN_CAPACITY: usize =
         shared::command_vec_pool::FRAME_OP_VEC_INITIAL_CAPACITY;
     pub const PENDING_CANVAS_MIN_CAPACITY: usize = super::PENDING_CANVAS_MIN_CAPACITY;
+    /// What a payload record owns beyond its bytes: the allocation holding them
+    /// (a `Vec`, an `Arc<Vec>`, a `String`) and allocator slack. Charged once per
+    /// payload, on top of `byte_length` or `count * 4`.
+    pub const PAYLOAD_OVERHEAD_BYTES: usize = 64;
+    /// Bounds `size_of::<String>()`: one per name in `transformFeedbackVaryings`,
+    /// charged per payload byte plus one because a name can be empty.
+    pub const STRING_BYTES: usize = 24;
 }
 
 const _: () = {
@@ -59,6 +66,9 @@ const _: () = {
     assert!(size_of::<Canvas2DCmd>() <= bound::CANVAS2D_COMMAND_BYTES);
     assert!(size_of::<FrameOp>() <= bound::FRAME_OP_BYTES);
     assert!(size_of::<FramePacket>() <= bound::FRAME_PACKET_BYTES);
+    assert!(size_of::<String>() <= bound::STRING_BYTES);
+    // An `Arc<Vec<u8>>` payload: the Arc's two counts beside the Vec, allocated.
+    assert!(2 * size_of::<usize>() + size_of::<Vec<u8>>() <= bound::PAYLOAD_OVERHEAD_BYTES);
     // The producer's literal copies of the capacities, which are not bounds but
     // the same numbers: `decode-budget.mjs` restates them, and the agreement
     // test is what holds that file to these.
@@ -269,6 +279,7 @@ fn estimate_with(stream: &ValidatedStream<'_>, sizes: Sizes) -> FrameDecodeBudge
     let mut cursor = 2;
     let words = stream.words();
     while cursor < words.len() {
+        let start = cursor;
         let opcode = opcode_of(words[cursor]);
         let wc = word_count_of(words[cursor]) as usize;
         cursor += wc;
@@ -284,19 +295,9 @@ fn estimate_with(stream: &ValidatedStream<'_>, sizes: Sizes) -> FrameDecodeBudge
             count.canvas_batch(sizes);
             count.materialize();
             count.gl_commands += 1;
-            let payload_words = match record_spec(opcode) {
-                Some(RecordSpec::VectorUniform { .. }) => wc - 3,
-                Some(RecordSpec::MatrixUniform { .. }) => wc - 4,
-                _ => 0,
-            };
-            // Both uniform element types have the same inline capacity. Their
-            // exact-size iterator is collected with SmallVec's power-of-two
-            // reserve, including the 17 -> 32 element spill.
-            if payload_words > producer_bounds::UNIFORM_INLINE_WORDS {
-                count.bytes = count.bytes.saturating_add(
-                    storage_capacity(payload_words, 0).saturating_mul(size_of::<u32>()),
-                );
-            }
+            count.bytes = count
+                .bytes
+                .saturating_add(owned_payload_bytes(&words[start..cursor], opcode));
         }
     }
     count.canvas_batch(sizes);
@@ -319,6 +320,39 @@ fn estimate_with(stream: &ValidatedStream<'_>, sizes: Sizes) -> FrameDecodeBudge
         max_frame_ops,
         frame_op_capacity,
         pending_canvas_capacity,
+    }
+}
+
+/// What a GL record owns beyond the command itself.
+fn owned_payload_bytes(record: &[u32], opcode: u32) -> usize {
+    use producer_bounds::{PAYLOAD_OVERHEAD_BYTES, STRING_BYTES, UNIFORM_INLINE_WORDS};
+    let wc = record.len();
+    // Both uniform element types have the same inline capacity. Their exact-size
+    // iterator is collected with SmallVec's power-of-two reserve, including the
+    // 17 -> 32 element spill.
+    let uniform_spill = |payload_words: usize| {
+        if payload_words > UNIFORM_INLINE_WORDS {
+            storage_capacity(payload_words, 0).saturating_mul(size_of::<u32>())
+        } else {
+            0
+        }
+    };
+    match record_spec(opcode) {
+        Some(RecordSpec::VectorUniform { .. }) => uniform_spill(wc - 3),
+        Some(RecordSpec::MatrixUniform { .. }) => uniform_spill(wc - 4),
+        Some(RecordSpec::Bytes { prefix_words, .. }) => {
+            let len = record[prefix_words as usize] as usize;
+            if opcode == frame_wire::gl_resource::OPR_TRANSFORM_FEEDBACK_VARYINGS {
+                len.saturating_add(STRING_BYTES.saturating_mul(len + 1))
+                    .saturating_add(PAYLOAD_OVERHEAD_BYTES)
+            } else {
+                len.saturating_add(PAYLOAD_OVERHEAD_BYTES)
+            }
+        }
+        Some(RecordSpec::Words { prefix_words, .. }) => (wc - prefix_words as usize - 1)
+            .saturating_mul(size_of::<u32>())
+            .saturating_add(PAYLOAD_OVERHEAD_BYTES),
+        _ => 0,
     }
 }
 

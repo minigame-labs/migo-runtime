@@ -107,6 +107,12 @@ impl GlDecodeContext for Counting {
     fn transform_feedback_captures(&self, _canvas_id: u32) -> bool {
         false
     }
+    fn set_transform_feedback(
+        &mut self,
+        _canvas_id: u32,
+        _phase: frame_decode::TransformFeedbackPhase,
+    ) {
+    }
 }
 
 impl RenderSink for Counting {

@@ -129,6 +129,12 @@ function pushError(canvasId, code) {
   }
 }
 
+/// Queue a WebGL error the producer found itself, for `getError`. Not an op: the
+/// stream lane calls it for a call it could not encode.
+export function recordProducerError(canvasId, code) {
+  pushError(canvasId >>> 0, code);
+}
+
 /// Oldest queued producer-side error for a canvas, or 0. Not an op: the sync
 /// lane's `op_webgl_get_error` calls it before crossing.
 export function drainProducerError(canvasId) {

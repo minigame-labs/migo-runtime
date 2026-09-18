@@ -328,7 +328,7 @@ fn the_document_rejection_table_lists_exactly_the_codes_the_crate_defines() {
 #[test]
 fn the_document_sync_record_table_matches_the_exported_layout() {
     let document = document();
-    let rows = table_after(&document, "### Record");
+    let rows = table_after(&document, "### Record — 64 bytes, fixed");
 
     let declared: Vec<HeaderField> = rows
         .iter()

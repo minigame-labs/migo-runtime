@@ -19,6 +19,10 @@ mod raf;
 /// the shared wire-format table.
 #[cfg(test)]
 mod render_stream_js_agreement;
+/// Test-only: the Performance+ producer's resource records decode to the
+/// commands this crate's ops build for the same facade calls.
+#[cfg(test)]
+mod resource_parity;
 mod webgl;
 
 use context2d::*;

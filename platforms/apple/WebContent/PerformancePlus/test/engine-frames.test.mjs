@@ -37,6 +37,11 @@ import {
   OP_CLEAR,
   OP_UNIFORM4FV,
   OP_UNIFORM_MATRIX4FV,
+  OPR_CREATE_BUFFER,
+  OPR_DRAW_BUFFERS,
+  OPR_SHADER_SOURCE,
+  OPR_TEX_IMAGE_2D,
+  OPR_TRANSFORM_FEEDBACK_VARYINGS,
   STREAM_VERSION,
 } from "../src/render-opcodes.mjs";
 import { SYNC_OP_AWAIT_WINDOW, WINDOW_REPLY_BYTES } from "../src/sync-mailbox.mjs";
@@ -65,9 +70,41 @@ function next() {
 }
 const pick = (limit) => next() % limit;
 
+/** `prefix` then `byte_length` then the bytes, zero-padded to a word. */
+function payloadRecord(opcode, prefix, bytes) {
+  const words = [0, ...prefix, bytes.length];
+  for (let i = 0; i < bytes.length; i += 4) {
+    let word = 0;
+    for (let b = 0; b < 4 && i + b < bytes.length; b += 1) word |= bytes[i + b] << (8 * b);
+    words.push(word >>> 0);
+  }
+  words[0] = header(opcode, words.length);
+  return words;
+}
+const ascii = (length) => Array.from({ length }, () => 0x20 + pick(0x5f));
+
 /** One random record, as words. */
 function randomRecord(selected) {
-  switch (pick(selected ? 7 : 5)) {
+  switch (pick(selected ? 12 : 10)) {
+    case 5:
+      return [header(OPR_CREATE_BUFFER, 3), 1, next()];
+    case 6:
+      return payloadRecord(OPR_SHADER_SOURCE, [1, next()], ascii(pick(60)));
+    case 7: {
+      const hasData = pick(2);
+      const bytes = hasData ? Array.from({ length: pick(400) }, () => pick(256)) : [];
+      return payloadRecord(OPR_TEX_IMAGE_2D, [1, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, hasData], bytes);
+    }
+    case 8: {
+      const count = pick(9);
+      return [header(OPR_DRAW_BUFFERS, 3 + count), 1, count, ...Array.from({ length: count }, () => 0x8ce0 + pick(8))];
+    }
+    case 9:
+      return payloadRecord(OPR_TRANSFORM_FEEDBACK_VARYINGS, [1, next(), 0x8c8c], [...ascii(pick(20)), 0x1f, ...ascii(pick(20))]);
+    case 10:
+      return [header(OP2D_FILL_RECT, 5), next(), next(), next(), next()];
+    case 11:
+      return [header(OP2D_SAVE, 1)];
     case 0:
     case 1:
       return [header(OP_CLEAR, 3), 1, 0x4000];
@@ -79,12 +116,8 @@ function randomRecord(selected) {
       const payload = pick(2) ? 16 : 32;
       return [header(OP_UNIFORM_MATRIX4FV, 4 + payload), 1, pick(8), 0, ...Array.from({ length: payload }, next)];
     }
-    case 4:
-      return [header(OP2D_SELECT_CANVAS, 2), 1 + pick(3)];
-    case 5:
-      return [header(OP2D_FILL_RECT, 5), next(), next(), next(), next()];
     default:
-      return [header(OP2D_SAVE, 1)];
+      return [header(OP2D_SELECT_CANVAS, 2), 1 + pick(3)];
   }
 }
 
@@ -104,8 +137,9 @@ for (let index = 0; index < 64; index += 1) {
     const record = randomRecord(selected);
     const opcode = record[0] & 0xfff;
     if (opcode === OP2D_SELECT_CANVAS) selected = true;
-    const fits = budget.fits(opcode, record.length);
-    budget.add(opcode, record.length);
+    const typed = Uint32Array.from(record);
+    const fits = budget.fits(typed, 0);
+    budget.add(typed, 0);
     if (fits !== budget.estimatedBytes <= MAX_DECODED_FRAME_BYTES) fitsAgreed = false;
     words.push(...record);
   }
@@ -141,6 +175,7 @@ const session = new FrameSession({
   },
   sendControl() {},
 });
+const reports = [];
 const syncCalls = [];
 const sync = {
   call(call) {
@@ -167,7 +202,7 @@ bindEngineHost({
   }),
   socketCeilingBytes: 64 * 1024,
   sync,
-  report() {},
+  report: (message) => reports.push(message),
 });
 
 const BUFFER_WORDS = 8192;
@@ -273,6 +308,22 @@ check(sequenceBefore === sequenceOf(sent.at(-1)), "and returns that barrier's se
 check(flushToHost() === sequenceBefore, "a flush with nothing recorded sends nothing and names the last packet");
 endFrame();
 check(sent.length === afterBarriers + 1, "a frame end with nothing recorded after the flush sends nothing");
+
+// An upload no packet can carry: refused the way GL refuses an allocation, with
+// the reason in the host's log, and nothing sent.
+{
+  const { op_tex_image_2d } = await import("../src/lane-stream.mjs");
+  const { drainProducerError } = await import("../src/lane-local.mjs");
+  const before = sent.length;
+  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 2048, 1024, 0, 0x1908, 0x1401, new Uint8Array(2048 * 1024 * 4));
+  endFrame();
+  check(drainProducerError(1) === 0x0505, "an upload larger than a packet is OUT_OF_MEMORY on the producer");
+  check(
+    reports.some((report) => report.type === "console" && report.level === 2 && /resource lane/.test(report.message)),
+    "and the host's log says why",
+  );
+  check(sent.length === before, "and nothing was sent for it");
+}
 
 if (outputDirectory) {
   mkdirSync(join(outputDirectory, "streams"), { recursive: true });

@@ -427,6 +427,113 @@ import XCTest
             XCTAssertEqual(pixel, [255, 0, 0, 255], "the third frame, drawn by the engine's WebGL facade, is red")
         }
 
+        /// Content draws a textured triangle through the engine's WebGL facade:
+        /// shaders compiled and linked, a vertex buffer and a texture uploaded,
+        /// all as resource records the host decodes.
+        ///
+        /// The texture is two texels, green then magenta, drawn with nearest
+        /// filtering across the whole surface, so the left half must read green
+        /// and the right half magenta. A shader that did not compile, a program
+        /// that did not link, an attribute that was not bound, a buffer or texel
+        /// that did not upload -- each reads as the blue clear instead.
+        func testContentDrawsATexturedTriangleThroughTheEnginesWebGLFacade() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                import { lastSequence } from "/__migo/engine-frames.mjs";
+
+                export function start({ report }) {
+                  const gl = migo.createCanvas().getContext("webgl");
+                  const vertex = gl.createShader(gl.VERTEX_SHADER);
+                  gl.shaderSource(vertex, "attribute vec2 p; varying vec2 uv; " +
+                    "void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }");
+                  gl.compileShader(vertex);
+                  const fragment = gl.createShader(gl.FRAGMENT_SHADER);
+                  gl.shaderSource(fragment, "precision mediump float; varying vec2 uv; " +
+                    "uniform sampler2D t; void main() { gl_FragColor = texture2D(t, uv); }");
+                  gl.compileShader(fragment);
+                  const program = gl.createProgram();
+                  gl.attachShader(program, vertex);
+                  gl.attachShader(program, fragment);
+                  gl.bindAttribLocation(program, 0, "p");
+                  gl.linkProgram(program);
+
+                  const buffer = gl.createBuffer();
+                  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                  // One triangle that covers the whole surface.
+                  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+                  const texture = gl.createTexture();
+                  gl.bindTexture(gl.TEXTURE_2D, texture);
+                  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 2, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                    new Uint8Array([0, 255, 0, 255, 255, 0, 255, 255]));
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+                  requestAnimationFrame(() => {
+                    gl.clearColor(0, 0, 1, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.useProgram(program);
+                    gl.enableVertexAttribArray(0);
+                    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+                    gl.drawArrays(gl.TRIANGLES, 0, 3);
+                    setTimeout(() => report({ type: "drawn", sequence: lastSequence() }), 0);
+                  });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let drawn = expectation(description: "content drew a textured triangle through the engine")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "drawn":
+                    report = message
+                    drawn.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    drawn.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [drawn], timeout: 240)
+            XCTAssertNil(failure)
+            let sequence = UInt64(report?["sequence"] as? Int ?? 0)
+            XCTAssertGreaterThan(sequence, 0)
+
+            let pollDeadline = Date().addingTimeInterval(60)
+            while host.channel.currentStatistics.framesAccepted < Int(sequence), Date() < pollDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            XCTAssertEqual(host.channel.currentStatistics.framesRefused, 0)
+
+            let quarter = Int32(harness.sizePixels / 4)
+            let middle = Int32(harness.sizePixels / 2)
+            let left = try readPixel(
+                session: harness.session, x: quarter, y: middle, triggeringSequence: sequence)
+            let right = try readPixel(
+                session: harness.session, x: 3 * quarter, y: middle, triggeringSequence: sequence)
+            print("textured triangle: left=\(left) right=\(right) sequence=\(sequence)")
+            XCTAssertEqual(left, [0, 255, 0, 255], "the left half samples the green texel")
+            XCTAssertEqual(right, [255, 0, 255, 255], "the right half samples the magenta texel")
+        }
+
         /// A frame too large for one packet crosses as barriers and one present.
         ///
         /// Sixty thousand clears in one `requestAnimationFrame` is 256 KiB of

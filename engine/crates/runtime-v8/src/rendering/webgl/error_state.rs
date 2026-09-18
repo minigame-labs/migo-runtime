@@ -282,6 +282,25 @@ impl frame_decode::GlDecodeContext for OpStateDecodeContext<'_> {
         let queue = self.0.borrow::<WebGLErrorState>();
         queue.transform_feedback_captures(canvas_id)
     }
+
+    #[inline]
+    fn set_transform_feedback(
+        &mut self,
+        canvas_id: u32,
+        phase: frame_decode::TransformFeedbackPhase,
+    ) {
+        set_transform_feedback(self.0, canvas_id, phase.into());
+    }
+}
+
+impl From<frame_decode::TransformFeedbackPhase> for TransformFeedback {
+    fn from(phase: frame_decode::TransformFeedbackPhase) -> Self {
+        match phase {
+            frame_decode::TransformFeedbackPhase::Inactive => Self::Inactive,
+            frame_decode::TransformFeedbackPhase::Active => Self::Active,
+            frame_decode::TransformFeedbackPhase::Paused => Self::Paused,
+        }
+    }
 }
 
 #[inline]

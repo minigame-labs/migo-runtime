@@ -33,6 +33,12 @@ impl GlDecodeContext for RecordingContext {
     fn transform_feedback_captures(&self, _canvas_id: u32) -> bool {
         self.capturing
     }
+    fn set_transform_feedback(
+        &mut self,
+        _canvas_id: u32,
+        _phase: frame_decode::TransformFeedbackPhase,
+    ) {
+    }
 }
 
 /// `word_count` in a record header counts the header itself, which is what a

@@ -100,7 +100,7 @@ export function appendStream(words, usedWords) {
     if (wordCount === 0 || cursor + wordCount > usedWords) {
       throw new TypeError(`a record at word ${cursor} claims ${wordCount} words of ${usedWords}`);
     }
-    if (!budget.fits(opcode, wordCount) || !frame.fits(cursor + wordCount - runStart)) {
+    if (!budget.fits(words, cursor) || !frame.fits(cursor + wordCount - runStart)) {
       frame.appendWords(words, runStart, cursor);
       runStart = cursor;
       if (frame.wordCount === 0) {
@@ -114,9 +114,9 @@ export function appendStream(words, usedWords) {
       // draws nothing.
       if (canvasSelected) {
         frame.appendWords(selectCanvas, 0, SELECT_CANVAS_WORDS);
-        budget.add(OP2D_SELECT_CANVAS, SELECT_CANVAS_WORDS);
+        budget.add(selectCanvas, 0);
       }
-      if (!budget.fits(opcode, wordCount) || !frame.fits(wordCount)) {
+      if (!budget.fits(words, cursor) || !frame.fits(wordCount)) {
         throw new RangeError(`a ${wordCount}-word record does not fit in one frame packet`);
       }
     }
@@ -124,10 +124,42 @@ export function appendStream(words, usedWords) {
       selectCanvas.set(words.subarray(cursor, cursor + SELECT_CANVAS_WORDS));
       canvasSelected = true;
     }
-    budget.add(opcode, wordCount);
+    budget.add(words, cursor);
     cursor += wordCount;
   }
   frame.appendWords(words, runStart, usedWords);
+}
+
+/**
+ * Append one record the producer writes itself rather than receives in a flushed
+ * buffer: a resource call. `record[0, headerWords)` is its header and fixed
+ * words -- ending with `byte_length` or `count` when it carries a payload -- and
+ * `payload` is the bytes (a Uint8Array) or words (a Uint32Array) that follow, or
+ * null. Split into a new packet first if it does not fit this one.
+ *
+ * Returns false, appending nothing, when the record cannot fit even an empty
+ * packet: an upload above what one packet carries. Those need the resource
+ * lane; the caller reports it the way GL reports an allocation it cannot make.
+ */
+export function appendRecord(record, headerWords, payload) {
+  const frame = currentWriter();
+  const wordCount = record[0] >>> 12;
+  if (!budget.fits(record, 0) || !frame.fits(wordCount)) {
+    if (frame.wordCount === 0) return false;
+    sendBarrier(frame);
+    if (!budget.fits(record, 0) || !frame.fits(wordCount)) return false;
+  }
+  frame.appendWords(record, 0, headerWords);
+  if (payload instanceof Uint8Array) {
+    frame.appendPayload(payload);
+  } else if (payload instanceof Uint32Array) {
+    frame.appendWords(payload, 0, payload.length);
+  }
+  budget.add(record, 0);
+  // A resource record is GL work between the engine's flushed buffers, and the
+  // next buffer selects its own canvas.
+  canvasSelected = false;
+  return true;
 }
 
 /** End the frame: send its packet, or hold it until the window opens. */

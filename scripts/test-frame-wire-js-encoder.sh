@@ -429,6 +429,16 @@ if (( status != 0 )); then
 fi
 node "$TEST_DIR/emit-control.mjs" read "$CONTROL_FROM_RUST"
 
+# --- an op's arguments, as deno_core converts them --------------------------
+#
+# The stream lane answers ops whose Rust bodies see arguments deno_core has
+# already converted: -1 as a u32 is 0xFFFFFFFF, 1.9 is 1, a BigInt keeps its low
+# bits, a string where a number belongs is a TypeError. A lane that converted
+# differently would turn a call that is an error in one runtime into a different
+# call in the other, and nothing downstream could tell.
+node "$TEST_DIR/op-args.test.mjs"
+RAN_TESTS+=("$TEST_DIR/op-args.test.mjs")
+
 # --- a frame larger than one packet, and what the host will decode ----------
 #
 # The host refuses a packet whose decoded storage is over its budget, and on the

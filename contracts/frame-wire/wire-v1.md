@@ -231,6 +231,25 @@ Complete external frames use `validate_frame_stream`, bounded by the packet
 ceiling. The embedded runtime's `validate_stream` retains its separate
 8192-word batch limit; that batch limit does not cap an entire external frame.
 
+### Payload records
+
+The opcode tables are code, not this document -- `engine/crates/frame-wire/src/`
+`gl.rs` (1..=58 fixed, 256..=266 uniform arrays), `gl_resource.rs` (128..=191
+fixed, 192..=255 carrying a payload) and `canvas2d.rs` (512..) -- and
+`scripts/test-render-opcode-agreement.sh` holds every encoder to them. What the
+envelope checks of a record is its shape, and two shapes carry data:
+
+- **Bytes**: fixed words, then `byte_length`, then that many bytes padded to a
+  word with zero bytes (little-endian, so the pad is the high end of the last
+  word). The word count must be exactly the fixed words, one, and
+  `ceil(byte_length / 4)`. A record whose data argument is nullable has a
+  presence bool among its fixed words, and when it is 0 the length must be 0.
+  Text -- shader sources, attribute and varying names -- must be UTF-8.
+- **Words**: fixed words, then `count`, then that many words, at most 64.
+
+Zero padding and exact counts for the reason sections are canonical: no word or
+byte is covered by the checksum and read by nobody.
+
 ## Ceilings
 
 | Ceiling | Value | Where it lives |
@@ -283,6 +302,8 @@ budget is never one the reader refuses.
 | frame op | 64 bytes |
 | frame packet | 64 bytes |
 | uniform inline payload | 16 words |
+| payload allocation overhead | 64 bytes |
+| string | 24 bytes |
 | GL batch minimum capacity | 16 |
 | Canvas2D batch minimum capacity | 8 |
 | frame-op list minimum capacity | 8 |
@@ -295,8 +316,12 @@ Walking the command stream's records in order, with `cap(n, m)` meaning
 - Any other 2D record, once a canvas is selected, closes the open GL batch and
   adds one to the Canvas2D batch. Before a selection it is charged nothing.
 - A GL record closes the open Canvas2D batch, moves every pending canvas into
-  the op count (its materialize), and adds one to the GL batch. A uniform array
-  whose payload exceeds the inline size also charges `cap(payload, 0) * 4`.
+  the op count (its materialize), and adds one to the GL batch. It also charges
+  what the command owns beyond itself: a uniform array whose payload exceeds the
+  inline size `cap(payload, 0) * 4`; a byte-payload record `byte_length + 64`,
+  except `TRANSFORM_FEEDBACK_VARYINGS`, whose names are separate strings,
+  `byte_length + 24 * (byte_length + 1) + 64`; a word-list record
+  `count * 4 + 64`.
 - Closing a Canvas2D batch of `n` charges `cap(n, 8) * 64`, one op, and one
   pending canvas; closing a GL batch of `n` charges `cap(n, 16) * 144` and one
   op. An empty batch closes for nothing.
