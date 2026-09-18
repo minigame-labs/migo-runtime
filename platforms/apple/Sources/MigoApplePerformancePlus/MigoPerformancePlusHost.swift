@@ -81,8 +81,9 @@ import os
             public var surfaceWidthPixels: Int
             public var surfaceHeightPixels: Int
             /// What `migo.getWindowInfo()` and `getSystemInfoSync()` answer
-            /// with. `nil` leaves those calls failing as they do on a platform
-            /// with no device services.
+            /// with; see `MigoPerformancePlusHost.DeviceProfile`. `nil` leaves
+            /// those calls failing as they do on a platform with no device
+            /// services.
             public var device: DeviceProfile?
 
             public init(

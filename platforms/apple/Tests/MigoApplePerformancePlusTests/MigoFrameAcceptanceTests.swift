@@ -835,10 +835,11 @@ import XCTest
             let described = expectation(description: "content read the device")
             var report: MigoPerformancePlusHost.Report?
             var failure: String?
-            let profile = MigoPerformancePlusHost.EngineSession.DeviceProfile(
+            typealias Profile = MigoPerformancePlusHost.DeviceProfile
+            let profile = Profile(
                 screenWidth: 390, screenHeight: 844, windowWidth: 390, windowHeight: 844,
                 pixelRatio: 3, statusBarHeight: 47,
-                safeAreaInsets: .init(left: 0, top: 47, right: 0, bottom: 34),
+                safeAreaInsets: Profile.SafeAreaInsets(left: 0, top: 47, right: 0, bottom: 34),
                 brand: "Apple", model: "iPhone14,5", system: "iOS 26.0", platform: "ios")
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
