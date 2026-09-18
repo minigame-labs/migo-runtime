@@ -268,6 +268,39 @@ if ! printf '%s\n' "$output" | grep -qE 'decoded 64 JavaScript-encoded readPixel
     exit 1
 fi
 
+# --- the WebGL queries' arguments -------------------------------------------
+#
+# A query is three numbers and a name, and every one of them is a way to ask
+# about the wrong thing: an object id taken from the wrong word asks about
+# another program, and a name length read as characters rather than bytes
+# truncates a uniform's name into one nothing has. Both are ANSWERED rather than
+# refused -- `getUniformLocation` returns -1 for a name that does not exist --
+# so the failure is a uniform that silently does nothing in a frame that draws.
+GL_QUERIES="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$GL_QUERIES"' EXIT
+
+node platforms/apple/WebContent/PerformancePlus/test/emit-gl-query-params.mjs "$GL_QUERIES" 60
+emitted_queries="$(find "$GL_QUERIES" -name 'query-*.bin' | wc -l)"
+if (( emitted_queries < 60 )); then
+    echo "FAIL: the emitter wrote $emitted_queries query records, expected 60." >&2
+    exit 1
+fi
+
+output="$(cd engine && MIGO_JS_GL_QUERY_DIR="$GL_QUERIES" \
+    cargo test -p migo-frame-wire --test sync_js_interop -- --ignored --nocapture \
+    gl_query_arguments_from_the_javascript_producer 2>&1)"
+status=$?
+printf '%s\n' "$output" | grep -E 'read [0-9]+ JavaScript-encoded query records|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust decoder rejected query records built by the JavaScript producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'read 15 JavaScript-encoded query records'; then
+    echo "FAIL: the query interop did not report every kind; it may not have run." >&2
+    exit 1
+fi
+
 # --- the synchronous call as one body, in both directions --------------------
 #
 # The Apple lane's content origin has no SharedArrayBuffer, so a readback there
