@@ -178,3 +178,45 @@ export function op_gl_is_context_lost() {
 export function op_text_cache_peek_pin() {
   return 0;
 }
+
+// ---- what the host knows about the device -----------------------------------
+//
+// A game reads these before its first frame -- `migo.getWindowInfo()` to lay
+// itself out, `getSystemInfoSync()` for the model and the safe area -- and each
+// is synchronous. None of it changes during a session, so the host hands the
+// JSON over at startup (see `engine-host.mjs`) and these answer from it without
+// crossing. That is what the contract means by the `local` lane for them.
+//
+// When the host described nothing, they fail the way they do on a platform with
+// no device services: the op's own message. A plausible screen size nobody
+// measured would be worse than a failure -- a game would lay itself out to it.
+
+function described(key, call) {
+  const profile = engineHost().device;
+  const json = profile === null ? undefined : profile[key];
+  if (json === undefined) {
+    // The message the Rust op raises, so content sees one failure, not two.
+    throw new Error(`${call}:fail not supported`);
+  }
+  return json;
+}
+
+export function op_get_window_info() {
+  return described("windowInfo", "getWindowInfo");
+}
+
+export function op_get_device_info() {
+  return described("deviceInfo", "getDeviceInfo");
+}
+
+export function op_get_system_settings() {
+  return described("systemSettings", "getSystemSetting");
+}
+
+export function op_get_menu_button_rect() {
+  return described("menuButtonRect", "getMenuButtonBoundingClientRect");
+}
+
+export function op_get_network_type() {
+  return described("networkType", "getNetworkType");
+}

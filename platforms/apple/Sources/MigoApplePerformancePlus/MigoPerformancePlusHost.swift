@@ -80,10 +80,15 @@ import os
             public var resourceEpoch: UInt64
             public var surfaceWidthPixels: Int
             public var surfaceHeightPixels: Int
+            /// What `migo.getWindowInfo()` and `getSystemInfoSync()` answer
+            /// with. `nil` leaves those calls failing as they do on a platform
+            /// with no device services.
+            public var device: DeviceProfile?
 
             public init(
                 launchNonce: [UInt8], runtimeGeneration: UInt64 = 1, surfaceGeneration: UInt64,
-                resourceEpoch: UInt64 = 0, surfaceWidthPixels: Int, surfaceHeightPixels: Int
+                resourceEpoch: UInt64 = 0, surfaceWidthPixels: Int, surfaceHeightPixels: Int,
+                device: DeviceProfile? = nil
             ) {
                 self.launchNonce = launchNonce
                 self.runtimeGeneration = runtimeGeneration
@@ -91,6 +96,7 @@ import os
                 self.resourceEpoch = resourceEpoch
                 self.surfaceWidthPixels = surfaceWidthPixels
                 self.surfaceHeightPixels = surfaceHeightPixels
+                self.device = device
             }
 
             /// What the page is handed. The 64- and 128-bit fields are strings,
@@ -99,7 +105,7 @@ import os
             var injected: [String: Any] {
                 // The nonce is little-endian bytes; the string is the number.
                 let hex = launchNonce.reversed().map { String(format: "%02x", $0) }.joined()
-                return [
+                var fields: [String: Any] = [
                     "launchNonce": "0x" + hex,
                     "runtimeGeneration": String(runtimeGeneration),
                     "surfaceGeneration": String(surfaceGeneration),
@@ -107,6 +113,8 @@ import os
                     "surfaceWidth": surfaceWidthPixels,
                     "surfaceHeight": surfaceHeightPixels,
                 ]
+                if let device { fields["device"] = device.injected }
+                return fields
             }
 
             /// Why this description cannot be handed to a producer, or nil.
@@ -117,6 +125,120 @@ import os
                     return "the surface size \(surfaceWidthPixels)x\(surfaceHeightPixels) is not a pixel size"
                 }
                 return nil
+            }
+        }
+
+        /// What the host knows about the device, for the `migo.*` calls a game
+        /// makes before its first frame.
+        ///
+        /// `migo.getWindowInfo()` and `getSystemInfoSync()` are synchronous and
+        /// a game reads them to lay itself out. None of it changes during a
+        /// session, so it is handed to the producer at startup and answered
+        /// there without crossing -- which is what the op boundary calls the
+        /// `local` lane.
+        ///
+        /// Absent, those calls fail with the message the engine raises on a
+        /// platform with no device services. That is deliberate: a screen size
+        /// nobody measured is worse than a failure, because a game lays itself
+        /// out to it.
+        public struct DeviceProfile: Equatable, Sendable {
+            /// Points, as the mini-game API reports them: the physical pixels
+            /// divided by `pixelRatio`.
+            public var screenWidth: Double
+            public var screenHeight: Double
+            /// The drawable area, which on a phone is the screen minus nothing
+            /// and in a split window is less.
+            public var windowWidth: Double
+            public var windowHeight: Double
+            public var pixelRatio: Double
+            public var statusBarHeight: Double
+            /// Insets from each edge, which is the shape the engine converts
+            /// into absolute positions.
+            public var safeAreaInsets: SafeAreaInsets
+            public var brand: String
+            public var model: String
+            public var system: String
+            /// `"ios"` or `"macos"`; the engine passes it through to content.
+            public var platform: String
+
+            public struct SafeAreaInsets: Equatable, Sendable {
+                public var left: Double
+                public var top: Double
+                public var right: Double
+                public var bottom: Double
+
+                public init(left: Double = 0, top: Double = 0, right: Double = 0, bottom: Double = 0) {
+                    self.left = left
+                    self.top = top
+                    self.right = right
+                    self.bottom = bottom
+                }
+            }
+
+            public init(
+                screenWidth: Double, screenHeight: Double, windowWidth: Double,
+                windowHeight: Double, pixelRatio: Double, statusBarHeight: Double = 0,
+                safeAreaInsets: SafeAreaInsets = SafeAreaInsets(), brand: String = "Apple",
+                model: String = "unknown", system: String = "", platform: String = "ios"
+            ) {
+                self.screenWidth = screenWidth
+                self.screenHeight = screenHeight
+                self.windowWidth = windowWidth
+                self.windowHeight = windowHeight
+                self.pixelRatio = pixelRatio
+                self.statusBarHeight = statusBarHeight
+                self.safeAreaInsets = safeAreaInsets
+                self.brand = brand
+                self.model = model
+                self.system = system
+                self.platform = platform
+            }
+
+            /// The JSON each op answers with, as the engine's JavaScript parses
+            /// it: snake_case for the window, camelCase for the device, because
+            /// that is what `system/03_window_info.js` and `10_system_info.js`
+            /// read. One shape, not a translation on either side.
+            var injected: [String: Any] {
+                let window: [String: Any] = [
+                    "pixel_ratio": pixelRatio,
+                    "screen_width": screenWidth,
+                    "screen_height": screenHeight,
+                    "window_width": windowWidth,
+                    "window_height": windowHeight,
+                    "status_bar_height": statusBarHeight,
+                    "screen_top": 0,
+                    "safe_area": [
+                        "left": safeAreaInsets.left,
+                        "top": safeAreaInsets.top,
+                        "right": safeAreaInsets.right,
+                        "bottom": safeAreaInsets.bottom,
+                    ],
+                ]
+                let device: [String: Any] = [
+                    "brand": brand,
+                    "model": model,
+                    "system": system,
+                    "platform": platform,
+                    // -1 is what the API reports for "not benchmarked", which is
+                    // the truth here: nothing has measured this device.
+                    "benchmarkLevel": -1,
+                ]
+                return [
+                    "windowInfo": Self.json(window),
+                    "deviceInfo": Self.json(device),
+                ]
+            }
+
+            private static func json(_ value: [String: Any]) -> String {
+                guard let data = try? JSONSerialization.data(withJSONObject: value),
+                    let text = String(data: data, encoding: .utf8)
+                else {
+                    // Unreachable for the value types above; an empty object is
+                    // still valid JSON, so content sees defaults rather than a
+                    // parse error it cannot act on.
+                    return "{}"
+                }
+                return text
             }
         }
 
