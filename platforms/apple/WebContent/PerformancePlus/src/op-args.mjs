@@ -88,3 +88,35 @@ export function stringOf(value, name) {
   if (typeof value === "string") return value;
   throw refuse(name, "a string", value);
 }
+
+/**
+ * An `f32` argument, as the bits a record carries.
+ *
+ * deno_core hands the op body a `f32`, which is V8's double rounded once; the
+ * record carries that rounding rather than the double, so the host reads the
+ * number the op would have seen. A non-finite value survives as itself: Canvas
+ * 2D says a call with one draws nothing, and that is the renderer's rule to
+ * apply, not this layer's to pre-empt.
+ */
+export function f32BitsOf(value, name) {
+  if (typeof value !== "number") throw refuse(name, "a number", value);
+  F32[0] = value;
+  return F32_BITS[0];
+}
+
+const F32 = new Float32Array(1);
+const F32_BITS = new Uint32Array(F32.buffer);
+
+/**
+ * A list of `f32`, as the words a record carries. Takes what
+ * `setLineDash` gives: an array of numbers, or a typed array of them.
+ */
+export function f32ListOf(value, name) {
+  if (value instanceof Float32Array) return new Uint32Array(value.buffer, value.byteOffset, value.length).slice();
+  if (!Array.isArray(value) && !ArrayBuffer.isView(value)) throw refuse(name, "an array of numbers", value);
+  const out = new Uint32Array(value.length);
+  for (let index = 0; index < value.length; index += 1) {
+    out[index] = f32BitsOf(Number(value[index]), name);
+  }
+  return out;
+}

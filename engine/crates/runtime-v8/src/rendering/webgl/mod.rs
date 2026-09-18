@@ -23,6 +23,9 @@ mod render_stream_js_agreement;
 /// commands this crate's ops build for the same facade calls.
 #[cfg(test)]
 mod resource_parity;
+/// Test-only: the same, for the Canvas2D text records.
+#[cfg(test)]
+mod canvas2d_parity;
 mod webgl;
 
 use context2d::*;

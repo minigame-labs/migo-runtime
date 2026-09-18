@@ -593,7 +593,7 @@
         "op_tex_sub_image_2d_from_image": "stream",
         "op_tex_sub_image_2d_from_snapshot": "stream",
         "op_tex_sub_image_3d": "stream",
-        "op_text_cache_peek_pin": "sync",
+        "op_text_cache_peek_pin": "local",
         "op_text_cache_unpin": "stream",
         "op_transform_feedback_varyings": "stream",
         "op_uniform1f": "stream",

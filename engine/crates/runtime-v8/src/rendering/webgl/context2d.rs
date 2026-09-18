@@ -1533,31 +1533,14 @@ pub fn op_set_font(state: &mut OpState, #[smi] canvas_id: u32, #[string] font: S
 #[op2(fast)]
 pub fn op_set_text_align(state: &mut OpState, #[smi] canvas_id: u32, #[smi] align: u8) {
     with_collector(state, |collector| {
-        let align = match align {
-            0 => TextAlign::Start,
-            1 => TextAlign::End,
-            2 => TextAlign::Left,
-            3 => TextAlign::Right,
-            4 => TextAlign::Center,
-            _ => TextAlign::Start,
-        };
-        collector.set_text_align(canvas_id, align);
+        collector.set_text_align(canvas_id, frame_decode::canvas2d::text_align_of(align));
     });
 }
 
 #[op2(fast)]
 pub fn op_set_text_baseline(state: &mut OpState, #[smi] canvas_id: u32, #[smi] baseline: u8) {
     with_collector(state, |collector| {
-        let baseline = match baseline {
-            0 => TextBaseline::Top,
-            1 => TextBaseline::Hanging,
-            2 => TextBaseline::Middle,
-            3 => TextBaseline::Alphabetic,
-            4 => TextBaseline::Ideographic,
-            5 => TextBaseline::Bottom,
-            _ => TextBaseline::Alphabetic,
-        };
-        collector.set_text_baseline(canvas_id, baseline);
+        collector.set_text_baseline(canvas_id, frame_decode::canvas2d::text_baseline_of(baseline));
     });
 }
 
@@ -1568,12 +1551,12 @@ pub fn op_set_text_baseline(state: &mut OpState, #[smi] canvas_id: u32, #[smi] b
 #[op2(fast)]
 pub fn op_set_text_direction(state: &mut OpState, #[smi] canvas_id: u32, #[smi] direction: u8) {
     with_collector(state, |collector| {
-        let direction = match direction {
-            1 => shared::protocol::render_cmd::TextDirection::Ltr,
-            2 => shared::protocol::render_cmd::TextDirection::Rtl,
-            _ => shared::protocol::render_cmd::TextDirection::Inherit,
-        };
-        collector.push(canvas_id, Canvas2DCmd::SetTextDirection { direction });
+        collector.push(
+            canvas_id,
+            Canvas2DCmd::SetTextDirection {
+                direction: frame_decode::canvas2d::text_direction_of(direction),
+            },
+        );
     });
 }
 

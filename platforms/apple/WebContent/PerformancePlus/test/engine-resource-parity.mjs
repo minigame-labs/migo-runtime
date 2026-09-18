@@ -1,4 +1,4 @@
-// The producer's half of the resource-record parity check.
+// The producer's half of the record parity checks.
 //
 // Loads the staged engine the way producer-worker.mjs does, runs
 // fixtures/webgl-resource-calls.js through the engine's own WebGL 2 facade, ends
@@ -14,11 +14,15 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const [, , rootArg, outputDirectory] = process.argv;
+const [, , rootArg, outputDirectory, fixtureArg] = process.argv;
 if (!rootArg || !outputDirectory) {
-  console.error("usage: node engine-resource-parity.mjs <staged resource root> <output dir>");
+  console.error("usage: node engine-resource-parity.mjs <staged resource root> <output dir> [fixture]");
   process.exit(2);
 }
+// Which script to run through the facade. One harness, because what is being
+// checked -- the producer's records against the ops, call for call -- is the
+// same question for WebGL resources and for Canvas2D text.
+const fixture = fixtureArg ?? "fixtures/webgl-resource-calls.js";
 const root = pathToFileURL(resolve(rootArg)).href;
 const here = dirname(fileURLToPath(import.meta.url));
 const log = console.log.bind(console);
@@ -63,7 +67,7 @@ await import(`${root}/engine/boot.mjs`);
 
 // Indirect eval: the fixture is a classic script over the engine's globals, as
 // the embedded runtime runs it.
-(0, eval)(readFileSync(join(here, "fixtures/webgl-resource-calls.js"), "utf8"));
+(0, eval)(readFileSync(join(here, fixture), "utf8"));
 // The frame end the embedded runtime reaches through its `_internalFrameEnd`
 // host hook, which the engine takes off the global after it is captured.
 const { frameEndAll } = await import(`${root}/engine/host_v8_webgl/02_2d_context.js`);
@@ -83,4 +87,4 @@ packets.forEach((packet, index) =>
 writeFileSync(join(outputDirectory, "producer-errors.txt"), errors.map(([c, e]) => `${c} ${e}`).join("\n") + "\n");
 const warnings = reports.filter((report) => report.type === "console");
 if (warnings.length > 0) log(`the producer logged: ${warnings.map((w) => w.message).join(" | ")}`);
-log(`wrote ${packets.length} resource packets and ${errors.length} producer errors to ${outputDirectory}`);
+log(`wrote ${packets.length} packets and ${errors.length} producer errors from ${fixture} to ${outputDirectory}`);

@@ -4,10 +4,26 @@
 // these ops no answer to send back; where the Rust op returns a status, the
 // contract's `local_answer` says what the producer answers instead.
 
-import { appendRecord, appendStream, endFrame, flushToHost } from "./engine-frames.mjs";
+import {
+  appendCanvas2DRecord,
+  appendRecord,
+  appendStream,
+  endFrame,
+  flushToHost,
+} from "./engine-frames.mjs";
 import { engineHost } from "./engine-host.mjs";
 import { recordProducerError } from "./lane-local.mjs";
-import { optionalBytesOf, bytesOf, stringOf, toI32, toU32, u32ArrayOf } from "./op-args.mjs";
+import {
+  bytesOf,
+  f32BitsOf,
+  f32ListOf,
+  optionalBytesOf,
+  stringOf,
+  toI32,
+  toU32,
+  u32ArrayOf,
+} from "./op-args.mjs";
+import { parseFontShorthand } from "./css-font.mjs";
 import * as R from "./render-opcodes.mjs";
 
 const OUT_OF_MEMORY = 0x0505;
@@ -506,4 +522,126 @@ export function op_transform_feedback_varyings(canvasId, program, varyingsJoined
     toU32(program, "program"),
     toU32(bufferMode, "buffer_mode"),
   );
+}
+
+// ---- Canvas2D text ----------------------------------------------------------
+//
+// The 2D block's records carry no canvas: the selection before them does, and
+// `appendCanvas2DRecord` writes one when this packet does not already have the
+// right canvas selected. Everything else here is the op's arguments in the
+// order the record declares them.
+
+/** Append a fixed 2D record for `canvasId`. */
+function emit2D(canvasId, opcode, ...args) {
+  const words = fixed(opcode, ...args);
+  if (!appendCanvas2DRecord(canvasId, record, words, null)) {
+    throw new RangeError(`a ${words}-word 2D record did not fit a packet`);
+  }
+}
+
+/** Append a 2D record that ends in text. */
+function emit2DText(canvasId, opcode, text, ...prefix) {
+  const bytes = utf8.encode(text);
+  const headerWords = prefix.length + 2;
+  const wordCount = headerWords + Math.ceil(bytes.byteLength / 4);
+  if (wordCount > MAX_RECORD_WORDS) {
+    // A string this long is not text anyone draws; the record could not carry
+    // it, and a 2D call that fails does nothing rather than raising.
+    recordProducerError(canvasId, OUT_OF_MEMORY);
+    return;
+  }
+  record[0] = ((wordCount << 12) | opcode) >>> 0;
+  for (let i = 0; i < prefix.length; i += 1) record[i + 1] = prefix[i] >>> 0;
+  record[headerWords - 1] = bytes.byteLength;
+  if (!appendCanvas2DRecord(canvasId, record, headerWords, bytes)) {
+    recordProducerError(canvasId, OUT_OF_MEMORY);
+  }
+}
+
+/**
+ * `canvas.getContext("2d")`.
+ *
+ * Answers success, as the contract's `local_answer` says: the canvas id is the
+ * producer's, and the record is what brings the context into existence on the
+ * host. A canvas the host cannot give a context to is reported as a
+ * context-loss event, not as a return value nobody is waiting for.
+ */
+export function op_create_context_2d(canvasId) {
+  emit2D(toU32(canvasId, "canvas_id"), R.OP2D_CREATE_CONTEXT);
+  return 0;
+}
+
+/**
+ * `ctx.font = "..."`, which answers whether the shorthand parsed.
+ *
+ * The parser is the producer's own port of the host's, held to it by
+ * `scripts/test-css-font-agreement.sh`. A shorthand that does not parse is a
+ * no-op that keeps the previous font -- what a browser does, and what the op
+ * this stands in for does -- so no record is written for one.
+ */
+export function op_set_font(canvasId, font) {
+  const text = stringOf(font, "font");
+  if (parseFontShorthand(text) === null) return false;
+  emit2DText(toU32(canvasId, "canvas_id"), R.OP2D_SET_FONT, text);
+  return true;
+}
+
+export function op_fill_text(canvasId, text, x, y, maxWidth) {
+  emit2DText(
+    toU32(canvasId, "canvas_id"),
+    R.OP2D_FILL_TEXT,
+    stringOf(text, "text"),
+    f32BitsOf(x, "x"),
+    f32BitsOf(y, "y"),
+    f32BitsOf(maxWidth, "max_width"),
+  );
+}
+
+export function op_stroke_text(canvasId, text, x, y, maxWidth) {
+  emit2DText(
+    toU32(canvasId, "canvas_id"),
+    R.OP2D_STROKE_TEXT,
+    stringOf(text, "text"),
+    f32BitsOf(x, "x"),
+    f32BitsOf(y, "y"),
+    f32BitsOf(maxWidth, "max_width"),
+  );
+}
+
+export function op_set_text_align(canvasId, align) {
+  emit2D(toU32(canvasId, "canvas_id"), R.OP2D_SET_TEXT_ALIGN, toU32(align, "align") & 0xff);
+}
+
+export function op_set_text_baseline(canvasId, baseline) {
+  emit2D(toU32(canvasId, "canvas_id"), R.OP2D_SET_TEXT_BASELINE, toU32(baseline, "baseline") & 0xff);
+}
+
+export function op_set_text_direction(canvasId, direction) {
+  emit2D(toU32(canvasId, "canvas_id"), R.OP2D_SET_TEXT_DIRECTION, toU32(direction, "direction") & 0xff);
+}
+
+/**
+ * `setLineDash([...])`.
+ *
+ * The op takes the segments as bytes -- a `Float32Array`'s bytes, which is what
+ * the facade passes -- and the record carries them as the words they are.
+ */
+export function op_set_line_dash(canvasId, segments) {
+  const canvas = toU32(canvasId, "canvas_id");
+  const bytes = bytesOf(segments, "segments");
+  const words = new Uint32Array(bytes.byteLength >> 2);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let index = 0; index < words.length; index += 1) words[index] = view.getUint32(index * 4, true);
+  if (words.length > R.MAX_LINE_DASH_SEGMENTS) {
+    // Longer than any pattern that draws differently from a shorter one; the
+    // host refuses the record, so the producer does not write it.
+    recordProducerError(canvas, INVALID_VALUE);
+    return;
+  }
+  const headerWords = 2;
+  record[0] = (((headerWords + words.length) << 12) | R.OP2D_SET_LINE_DASH) >>> 0;
+  record[1] = words.length;
+  if (!appendCanvas2DRecord(canvas, record, headerWords, words)) {
+    recordProducerError(canvas, OUT_OF_MEMORY);
+  }
 }
