@@ -14,7 +14,8 @@
 //!   records are queued for the session thread -- all under one lock, so the
 //!   queue order is the sequence order.
 //! - **Dispatch** happens on the session thread, in queue order: a request is
-//!   started, a command is applied, a synchronous call is run. Started in order
+//!   started, a command is applied, a synchronous call is given its turn (and
+//!   runs on the thread that made it; see [`ServiceHost::call_sync`]). Started in order
 //!   is the property the embedded runtime has -- its ops run on the JavaScript
 //!   thread in call order and send to their subsystems' channels as they go --
 //!   and it is the property content depends on: "create the node, then stop it".
@@ -93,11 +94,11 @@ pub(crate) const MAX_OUTBOX_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) enum ServiceWork {
     /// The records of one admitted message.
     Records(Vec<OwnedServiceRecord>),
-    /// A synchronous call, answered on `reply`.
+    /// A synchronous call's turn: everything admitted before it has been
+    /// started. The caller runs the op itself when this is sent -- see
+    /// [`ServiceHost::call_sync`].
     Sync {
-        op: u32,
-        args: Vec<OwnedValue>,
-        reply: std::sync::mpsc::SyncSender<Result<OwnedValue, ServiceError>>,
+        turn: std::sync::mpsc::SyncSender<()>,
     },
 }
 
@@ -489,8 +490,9 @@ impl ServiceContext {
             .map(|content| content.game_paths.code_dir().to_path_buf())
     }
 
-    /// Run a synchronous op. Called off the session thread (see
-    /// [`ServiceDispatcher`]), because these block on file and database work.
+    /// Run a synchronous op. Called on the host's synchronous endpoint once
+    /// the call's turn comes (see [`ServiceHost::call_sync`]), never on the
+    /// session thread: these block on file and database work.
     fn call_sync(&self, op: u32, args: Vec<OwnedValue>) -> Result<OwnedValue, ServiceError> {
         let paths = self.game_paths();
         let paths = paths.as_deref();
@@ -946,6 +948,17 @@ impl ServiceHost {
     /// Run one synchronous service call, in order behind every admitted
     /// message, and answer with its encoded outcome.
     ///
+    /// The call joins the session's queue and waits for its turn -- the
+    /// session thread reaching it means every record admitted before it has
+    /// been started, which is the ordering content relies on -- and then runs
+    /// **on the calling thread**. That thread is the host's synchronous
+    /// endpoint, already blocked for exactly this answer; running the op there
+    /// saves a hop and, measured on the iOS simulator (2026-09-19), removes a
+    /// priority inversion: the endpoint's user-interactive queue used to wait
+    /// on a blocking-pool thread at default QoS. `until` bounds the wait for the
+    /// turn. A call that gives up waiting never runs; one that has started
+    /// answers with what it did, because a write that happened is not a timeout.
+    ///
     /// The op's own failure is an answer (`OUTCOME_ERROR`); the barrier failing
     /// -- a malformed call, a timeout, a session that ended -- is the error.
     pub(crate) fn call_sync(&self, params: &[u8], until: Instant) -> Result<Vec<u8>, SyncError> {
@@ -958,17 +971,17 @@ impl ServiceHost {
             .iter()
             .map(|value| value.to_owned_value())
             .collect();
-        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        let (turn, my_turn) = std::sync::mpsc::sync_channel(1);
         self.work
-            .blocking_send(ServiceWork::Sync { op, args, reply })
+            .blocking_send(ServiceWork::Sync { turn })
             .map_err(|_| SyncError::SessionEnded)?;
-        let outcome = answer
+        my_turn
             .recv_timeout(until.saturating_duration_since(Instant::now()))
             .map_err(|error| match error {
                 std::sync::mpsc::RecvTimeoutError::Timeout => SyncError::TimedOut,
                 std::sync::mpsc::RecvTimeoutError::Disconnected => SyncError::SessionEnded,
             })?;
-        Ok(encode_outcome(outcome))
+        Ok(encode_outcome(self.context.call_sync(op, args)))
     }
 
     /// Refuse everything from here on and release every waiter.
@@ -1079,17 +1092,13 @@ impl ServiceDispatcher {
                     self.record(record);
                 }
             }
-            ServiceWork::Sync { op, args, reply } => {
-                // Off the session thread: these block on file and database
-                // work, and the session thread is the one that forwards frame
-                // clock ticks. Dispatched in order is what the queue buys;
-                // blocking the queue for the length of a disk read is not.
-                let context = Arc::clone(&self.context);
-                tokio::task::spawn_blocking(move || {
-                    // A caller that timed out has dropped the receiver; the
-                    // answer has nowhere to go and is dropped with it.
-                    let _ = reply.send(context.call_sync(op, args));
-                });
+            ServiceWork::Sync { turn } => {
+                // The call's turn, not its work: the caller runs the op on its
+                // own thread (see `ServiceHost::call_sync`), so the session
+                // thread -- the one that forwards frame clock ticks -- never
+                // blocks for a disk read. A caller that timed out has dropped
+                // the receiver and will not run it.
+                let _ = turn.send(());
             }
         }
     }
@@ -1772,5 +1781,57 @@ mod tests {
             type_errors.join("\n  ")
         );
         println!("ran {} producer file calls on the host", answers.len());
+    }
+
+    fn sync_params(op: u32, values: &[OwnedValue]) -> Vec<u8> {
+        let mut writer = ValueWriter::over(op.to_le_bytes().to_vec());
+        for value in values {
+            value.write_to(&mut writer);
+        }
+        writer.into_bytes()
+    }
+
+    /// A synchronous call runs on the thread that made it, once the session
+    /// thread gives it its turn -- not on a pool thread of lower priority.
+    #[test]
+    fn a_synchronous_call_runs_on_its_own_thread_when_its_turn_comes() {
+        let (host, mut work) = host();
+        host.context.bind_session(1);
+        let turns = std::thread::spawn(move || {
+            let Some(ServiceWork::Sync { turn }) = work.blocking_recv() else {
+                panic!("the call's turn was queued");
+            };
+            turn.send(()).unwrap();
+            std::thread::current().id()
+        });
+        let caller = std::thread::current().id();
+        let answer = host
+            .call_sync(
+                &sync_params(id::op_access_sync, &[OwnedValue::Str("/user/a".into())]),
+                Instant::now() + std::time::Duration::from_secs(10),
+            )
+            .expect("an answer");
+        assert_ne!(turns.join().unwrap(), caller);
+        // No content is loaded: the op's own IOError, run here.
+        assert_eq!(
+            u32::from_le_bytes(answer[..4].try_into().unwrap()),
+            OUTCOME_ERROR
+        );
+    }
+
+    /// A call that gave up waiting for its turn never runs.
+    #[test]
+    fn a_synchronous_call_that_times_out_waiting_is_not_run() {
+        let (host, mut work) = host();
+        host.context.bind_session(1);
+        let outcome = host.call_sync(
+            &sync_params(id::op_access_sync, &[OwnedValue::Str("/user/a".into())]),
+            Instant::now() + std::time::Duration::from_millis(20),
+        );
+        assert_eq!(outcome, Err(SyncError::TimedOut));
+        let Ok(ServiceWork::Sync { turn }) = work.try_recv() else {
+            panic!("the call was queued");
+        };
+        assert!(turn.send(()).is_err(), "nobody is waiting to run it");
     }
 }
