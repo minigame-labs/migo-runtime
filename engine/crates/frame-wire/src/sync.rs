@@ -193,6 +193,173 @@ pub const SYNC_OP_GL_QUERY_ACTIVE: u32 = 5;
 /// `size` and `type` before an active variable's name.
 pub const ACTIVE_VARIABLE_HEADER_BYTES: usize = 8;
 
+/// A Canvas2D query whose answer is a run of `f32`: `measureText`'s metrics.
+///
+/// Reply: [`TEXT_METRICS_BYTES`], twelve little-endian `f32` in the order
+/// `context2d.rs` writes them, which is the order the engine's facade reads a
+/// `TextMetrics` back in. One layout, not a second one to keep in step.
+pub const SYNC_OP_CANVAS2D_METRICS: u32 = 6;
+
+/// A Canvas2D query whose answer is one number: the line height of a font.
+///
+/// Reply: eight bytes, a little-endian `f64`, because the op it stands in for
+/// returns one and rounding it here would be a different answer.
+pub const SYNC_OP_CANVAS2D_NUMBER: u32 = 7;
+
+/// Twelve `f32`: the `TextMetrics` fields, in `encode_text_metrics`' order.
+pub const TEXT_METRICS_BYTES: usize = 48;
+
+/// Which Canvas2D query a [`Canvas2DQueryParams`] asks.
+pub mod canvas2d_query {
+    /// `measureText(text)` against a CSS font shorthand: `text` is the string,
+    /// `font` the shorthand.
+    pub const MEASURE_TEXT: u32 = 1;
+    /// The line height of a family at a size: `font` is the family, `number`
+    /// the size in pixels, and the flags carry bold and italic.
+    pub const TEXT_LINE_HEIGHT: u32 = 2;
+    // `loadFont` is not here. It reads a font file, which this host cannot do
+    // until the file lane exists -- and a query that answered "could not load"
+    // would be a custom font silently replaced by a fallback. The op stays
+    // unimplemented, which names itself.
+
+    /// Whether a kind is one this build knows.
+    pub fn is_known(kind: u32) -> bool {
+        (MEASURE_TEXT..=TEXT_LINE_HEIGHT).contains(&kind)
+    }
+
+    /// `bold`, in the flags word.
+    pub const FLAG_BOLD: u32 = 1 << 0;
+    /// `italic`, in the flags word.
+    pub const FLAG_ITALIC: u32 = 1 << 1;
+    /// Every bit this build reads; a flags word with another set is refused
+    /// rather than masked, because a bit nobody reads is a second channel.
+    pub const FLAG_MASK: u32 = FLAG_BOLD | FLAG_ITALIC;
+}
+
+/// The arguments of a Canvas2D query: two strings and two numbers.
+///
+/// Two strings because every one of these takes a pair -- a text and a font, a
+/// path and a family -- and joining them with a separator would make a text
+/// that contains that separator a different query. Each is UTF-8, its length is
+/// a byte count, and each is padded to a word with zeros: the frame stream's
+/// payload rule, for the reason that rule exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Canvas2DQueryParams<'a> {
+    pub kind: u32,
+    pub canvas_id: u32,
+    /// A `f32`'s bits: the font size, where the query takes one.
+    pub number: u32,
+    pub flags: u32,
+    pub text: &'a [u8],
+    pub font: &'a [u8],
+}
+
+/// The words before a [`Canvas2DQueryParams`]'s payloads: the four fields above
+/// and the two lengths.
+pub const CANVAS2D_QUERY_HEADER_BYTES: usize = 24;
+
+/// The longest string a Canvas2D query may carry.
+///
+/// A label is a line of text and a path is a path; this is far above either and
+/// far below the body ceiling, so a string that reaches it is a producer bug.
+pub const CANVAS2D_QUERY_MAX_TEXT_BYTES: usize = 2048;
+
+impl<'a> Canvas2DQueryParams<'a> {
+    pub fn encode(&self) -> Vec<u8> {
+        let text_padded = self.text.len().div_ceil(4) * 4;
+        let font_padded = self.font.len().div_ceil(4) * 4;
+        let mut out = Vec::with_capacity(CANVAS2D_QUERY_HEADER_BYTES + text_padded + font_padded);
+        for word in [
+            self.kind,
+            self.canvas_id,
+            self.number,
+            self.flags,
+            self.text.len() as u32,
+            self.font.len() as u32,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        out.extend_from_slice(self.text);
+        out.resize(CANVAS2D_QUERY_HEADER_BYTES + text_padded, 0);
+        out.extend_from_slice(self.font);
+        out.resize(CANVAS2D_QUERY_HEADER_BYTES + text_padded + font_padded, 0);
+        out
+    }
+
+    /// Decode and validate: a known kind, lengths that agree with the body,
+    /// flags this build reads, and zero padding.
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, SyncError> {
+        if bytes.len() < CANVAS2D_QUERY_HEADER_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |offset: usize| -> u32 {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        let kind = word(0);
+        if !canvas2d_query::is_known(kind) {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let flags = word(12);
+        if flags & !canvas2d_query::FLAG_MASK != 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let text_len = word(16) as usize;
+        let font_len = word(20) as usize;
+        if text_len > CANVAS2D_QUERY_MAX_TEXT_BYTES || font_len > CANVAS2D_QUERY_MAX_TEXT_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let text_padded = text_len.div_ceil(4) * 4;
+        let font_padded = font_len.div_ceil(4) * 4;
+        if bytes.len() != CANVAS2D_QUERY_HEADER_BYTES + text_padded + font_padded {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let text_at = CANVAS2D_QUERY_HEADER_BYTES;
+        let font_at = text_at + text_padded;
+        if bytes[text_at + text_len..font_at].iter().any(|b| *b != 0)
+            || bytes[font_at + font_len..].iter().any(|b| *b != 0)
+        {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(Self {
+            kind,
+            canvas_id: word(4),
+            number: word(8),
+            flags,
+            text: &bytes[text_at..text_at + text_len],
+            font: &bytes[font_at..font_at + font_len],
+        })
+    }
+
+    /// The text, with lone surrogates replaced -- V8's conversion for a
+    /// `#[string]` argument.
+    pub fn text_str(&self) -> std::borrow::Cow<'a, str> {
+        String::from_utf8_lossy(self.text)
+    }
+
+    /// The font or family, likewise.
+    pub fn font_str(&self) -> std::borrow::Cow<'a, str> {
+        String::from_utf8_lossy(self.font)
+    }
+
+    /// The `f32` the `number` word carries.
+    pub fn number_f32(&self) -> f32 {
+        f32::from_bits(self.number)
+    }
+
+    /// Which operation answers this kind, and therefore what its reply is.
+    pub fn operation(kind: u32) -> u32 {
+        match kind {
+            canvas2d_query::MEASURE_TEXT => SYNC_OP_CANVAS2D_METRICS,
+            _ => SYNC_OP_CANVAS2D_NUMBER,
+        }
+    }
+}
+
 /// Which WebGL query a [`GlQueryParams`] asks.
 ///
 /// Numbered and stable, like an opcode: the producer writes one of these and

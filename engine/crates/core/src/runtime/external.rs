@@ -557,6 +557,15 @@ impl SyncPath {
                 deadline_nanos,
                 now_nanos,
             ),
+            frame_wire::sync::SYNC_OP_CANVAS2D_METRICS
+            | frame_wire::sync::SYNC_OP_CANVAS2D_NUMBER => self.canvas2d_query(
+                operation,
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
             frame_wire::sync::SYNC_OP_GL_QUERY_SCALAR
             | frame_wire::sync::SYNC_OP_GL_QUERY_TEXT
             | frame_wire::sync::SYNC_OP_GL_QUERY_ACTIVE => self.gl_query(
@@ -868,6 +877,110 @@ impl SyncPath {
                 reply.extend_from_slice(&type_.to_le_bytes());
                 reply.extend_from_slice(name.as_bytes());
                 Ok(reply)
+            }
+            _ => Err(SyncError::UnsupportedOperation),
+        }
+    }
+
+    /// `SYNC_OP_CANVAS2D_*`: one Canvas2D query, answered after the frame it
+    /// names.
+    ///
+    /// `measureText` is the one every game with a label calls, and it asks
+    /// about state the frame being built set: the font two records ago. So it
+    /// takes the same route as a WebGL query -- a barrier, then a blocked call
+    /// naming its sequence -- and the renderer measures with the canvas's own
+    /// font, which the barrier has by then applied.
+    fn canvas2d_query(
+        &self,
+        operation: u32,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        use frame_wire::sync::{
+            Canvas2DQueryParams, SYNC_OP_CANVAS2D_METRICS, SYNC_OP_CANVAS2D_NUMBER,
+            TEXT_METRICS_BYTES, canvas2d_query,
+        };
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCmdResp, RenderCommand};
+
+        let query = Canvas2DQueryParams::decode(params)?;
+        if Canvas2DQueryParams::operation(query.kind) != operation {
+            return Err(SyncError::UnsupportedOperation);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        let Some(dispatch) = self.dispatch.get() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let deadline = std::time::Duration::from_nanos(budget);
+
+        match operation {
+            SYNC_OP_CANVAS2D_METRICS => {
+                if (max_reply_bytes as usize) < TEXT_METRICS_BYTES {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let command = RenderCommand::Canvas2D {
+                    canvas_id: query.canvas_id,
+                    cmd: Canvas2DCmd::MeasureText {
+                        text: query.text_str().into_owned(),
+                        resp: RenderCmdResp::from_sync(tx),
+                    },
+                };
+                if sender.send_blocking_bounded(command).is_err() {
+                    return Err(SyncError::SessionEnded);
+                }
+                let metrics = match rx.recv_timeout(deadline) {
+                    Ok(Ok(metrics)) => metrics,
+                    Ok(Err(_)) => return Err(SyncError::OperationFailed),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        return Err(SyncError::TimedOut);
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        return Err(SyncError::SessionEnded);
+                    }
+                };
+                Ok(frame_decode::canvas2d::encode_text_metrics(&metrics))
+            }
+            SYNC_OP_CANVAS2D_NUMBER => {
+                if (max_reply_bytes as usize) < 8 {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                if query.kind != canvas2d_query::TEXT_LINE_HEIGHT {
+                    return Err(SyncError::UnsupportedOperation);
+                }
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let command = RenderCommand::GetTextLineHeight {
+                    font_family: query.font_str().into_owned(),
+                    font_size: query.number_f32(),
+                    bold: query.flags & canvas2d_query::FLAG_BOLD != 0,
+                    italic: query.flags & canvas2d_query::FLAG_ITALIC != 0,
+                    resp: RenderCmdResp::from_sync(tx),
+                };
+                if sender.send_blocking_bounded(command).is_err() {
+                    return Err(SyncError::SessionEnded);
+                }
+                let height = match rx.recv_timeout(deadline) {
+                    Ok(Ok(height)) => height,
+                    Ok(Err(_)) => return Err(SyncError::OperationFailed),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        return Err(SyncError::TimedOut);
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        return Err(SyncError::SessionEnded);
+                    }
+                };
+                Ok(f64::from(height).to_le_bytes().to_vec())
             }
             _ => Err(SyncError::UnsupportedOperation),
         }
@@ -3750,6 +3863,72 @@ mod sync_tests {
 
         assert_eq!(ask(&path), frame_decode::codes::INVALID_VALUE);
         assert_eq!(ask(&path), 0, "the queue drains one error per call");
+    }
+
+    /// `measureText` asks the renderer and answers with the twelve numbers the
+    /// engine's facade reads a `TextMetrics` back from.
+    #[test]
+    fn a_text_measurement_is_answered_with_the_metrics_the_renderer_gave() {
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCommand, TextMetrics};
+
+        use frame_wire::sync::{
+            Canvas2DQueryParams, SYNC_OP_CANVAS2D_METRICS, TEXT_METRICS_BYTES, canvas2d_query,
+        };
+
+        let (sender, commands) = new_render_channel();
+        let path = path_with_dispatch(&sender);
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::Canvas2D {
+                canvas_id,
+                cmd: Canvas2DCmd::MeasureText { text, resp },
+            }) = commands.recv()
+            else {
+                panic!("the barrier sent something other than a text measurement");
+            };
+            assert_eq!(canvas_id, 1);
+            // The text has to arrive whole: a measurement of a truncated string
+            // is a number, not a failure, and it lays the label out wrong.
+            assert_eq!(text, "score: 120");
+            resp.ok(TextMetrics {
+                width: 64.5,
+                actual_bounding_box_left: 0.0,
+                actual_bounding_box_right: 0.0,
+                actual_bounding_box_ascent: 12.0,
+                actual_bounding_box_descent: 0.0,
+                font_bounding_box_ascent: 0.0,
+                font_bounding_box_descent: 0.0,
+                em_height_ascent: 0.0,
+                em_height_descent: 0.0,
+                hanging_baseline: 0.0,
+                alphabetic_baseline: 0.0,
+                ideographic_baseline: 0.0,
+            });
+        });
+
+        let params = Canvas2DQueryParams {
+            kind: canvas2d_query::MEASURE_TEXT,
+            canvas_id: 1,
+            number: 0,
+            flags: 0,
+            text: b"score: 120",
+            font: b"16px sans-serif",
+        }
+        .encode();
+        let mut call = request(SYNC_OP_CANVAS2D_METRICS, TEXT_METRICS_BYTES as u32);
+        call.deadline_nanos = NOW + 30_000_000_000;
+        call.triggering_sequence = 0;
+        post(&path, call, &params, NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+
+        let mut out = [0u8; TEXT_METRICS_BYTES];
+        assert_eq!(path.take_reply(&mut out), Ok(TEXT_METRICS_BYTES));
+        let width = f32::from_le_bytes(out[0..4].try_into().unwrap());
+        assert_eq!(width, 64.5, "the first field is the advance width");
+        // The ascent is the eighth field, which is where a layout that restated
+        // the order rather than sharing it would put something else.
+        let ascent = f32::from_le_bytes(out[28..32].try_into().unwrap());
+        assert_eq!(ascent, 12.0);
+        drop(sender);
     }
 
     /// A kind sent under the wrong operation is refused rather than answered:

@@ -536,26 +536,12 @@ pub fn op_measure_text_flat(
 /// Field order matches the layout table on [`op_measure_text_flat`]
 /// so the JS side can use a zero-copy `Float32Array` view.
 #[inline]
+/// See [`frame_decode::canvas2d::encode_text_metrics`], which is where the
+/// layout lives: the Performance+ lane answers `measureText` with these bytes
+/// too, and two copies of a field order is how a label ends up laid out against
+/// the wrong number.
 fn encode_text_metrics(m: &TextMetrics) -> Vec<u8> {
-    let fields: [f32; 12] = [
-        m.width,
-        m.actual_bounding_box_left,
-        m.actual_bounding_box_right,
-        m.em_height_ascent,
-        m.em_height_descent,
-        m.alphabetic_baseline,
-        m.font_bounding_box_descent,
-        m.actual_bounding_box_ascent,
-        m.actual_bounding_box_descent,
-        m.font_bounding_box_ascent,
-        m.hanging_baseline,
-        m.ideographic_baseline,
-    ];
-    let mut out = Vec::with_capacity(fields.len() * 4);
-    for f in fields {
-        out.extend_from_slice(&f.to_le_bytes());
-    }
-    out
+    frame_decode::canvas2d::encode_text_metrics(m)
 }
 
 const OP_GET_IMAGE_DATA: &str = "canvas2d get_image_data";

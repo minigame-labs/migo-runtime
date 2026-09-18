@@ -20,6 +20,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  CANVAS2D_FLAG_BOLD,
+  CANVAS2D_FLAG_ITALIC,
+  CANVAS2D_QUERY_MEASURE_TEXT,
+  CANVAS2D_QUERY_TEXT_LINE_HEIGHT,
   GL_QUERY_ACTIVE_ATTRIB,
   GL_QUERY_ACTIVE_UNIFORM,
   GL_QUERY_ATTRIB_LOCATION,
@@ -35,6 +39,7 @@ import {
   GL_QUERY_TRANSFORM_FEEDBACK_VARYING,
   GL_QUERY_UNIFORM_BLOCK_INDEX,
   GL_QUERY_UNIFORM_LOCATION,
+  encodeCanvas2DQueryParams,
   encodeGlQueryParams,
 } from "../src/sync-mailbox.mjs";
 
@@ -117,4 +122,41 @@ for (let index = 0; index < count; index += 1) {
 }
 
 writeFileSync(join(outputDirectory, "manifest.jsonl"), `${manifest.join("\n")}\n`);
-console.log(`emitted ${manifest.length} query records into ${outputDirectory}`);
+
+// The Canvas2D queries, whose arguments are two strings rather than one: a text
+// and a font, a family and a size. The pair is where an encoder goes wrong --
+// the second length read from the first's padded end, or a size that crossed as
+// a double -- so both strings vary in length modulo four and one is not ASCII.
+const TEXTS = ["", "A", "hi", "score: 0", "\u4e2d\u6587\u6807\u9898", "The quick brown fox"];
+const FONTS = ["16px sans-serif", "italic bold 24px 'Noto Sans'", "sans-serif", ""];
+const canvas2d = [];
+for (let index = 0; index < TEXTS.length * FONTS.length; index += 1) {
+  const text = TEXTS[index % TEXTS.length];
+  const font = FONTS[index % FONTS.length];
+  const measure = index % 2 === 0;
+  const record = {
+    kind: measure ? CANVAS2D_QUERY_MEASURE_TEXT : CANVAS2D_QUERY_TEXT_LINE_HEIGHT,
+    canvasId: 1 + (index % 4),
+    // A size with a fractional part, so a `f32` that crossed as something else
+    // is a different number rather than the same integer.
+    number: measure ? 0 : 12.5 + index,
+    flags: (index % 2 === 0 ? CANVAS2D_FLAG_BOLD : 0) | (index % 3 === 0 ? CANVAS2D_FLAG_ITALIC : 0),
+    text,
+    font,
+  };
+  const bytes = encodeCanvas2DQueryParams(record);
+  const file = `canvas2d-${String(index).padStart(4, "0")}.bin`;
+  writeFileSync(join(outputDirectory, file), bytes);
+  canvas2d.push(
+    `{"file":"${file}","kind":${record.kind},"canvas_id":${record.canvasId},` +
+      `"number":${Math.fround(record.number)},"flags":${record.flags},` +
+      `"text":"${escape(text)}","text_bytes":${encoder.encode(text).byteLength},` +
+      `"font":"${escape(font)}","font_bytes":${encoder.encode(font).byteLength},` +
+      `"total_bytes":${bytes.byteLength}}`,
+  );
+}
+writeFileSync(join(outputDirectory, "canvas2d-manifest.jsonl"), `${canvas2d.join("\n")}\n`);
+
+console.log(
+  `emitted ${manifest.length} query records and ${canvas2d.length} Canvas2D query records into ${outputDirectory}`,
+);

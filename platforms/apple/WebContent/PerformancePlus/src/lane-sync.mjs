@@ -22,9 +22,14 @@
 // engine's facade caches locations rather than asking per draw.
 
 import { engineHost } from "./engine-host.mjs";
+import { stringOf, toU32 } from "./op-args.mjs";
 import { flushToHost } from "./engine-frames.mjs";
 import {
   ACTIVE_VARIABLE_HEADER_BYTES,
+  CANVAS2D_FLAG_BOLD,
+  CANVAS2D_FLAG_ITALIC,
+  CANVAS2D_QUERY_MEASURE_TEXT,
+  CANVAS2D_QUERY_TEXT_LINE_HEIGHT,
   GL_QUERY_ACTIVE_ATTRIB,
   GL_QUERY_ACTIVE_UNIFORM,
   GL_QUERY_ATTRIB_LOCATION,
@@ -40,10 +45,16 @@ import {
   GL_QUERY_TRANSFORM_FEEDBACK_VARYING,
   GL_QUERY_UNIFORM_BLOCK_INDEX,
   GL_QUERY_UNIFORM_LOCATION,
+  SYNC_OP_CANVAS2D_METRICS,
+  SYNC_OP_CANVAS2D_NUMBER,
   SYNC_OP_GL_QUERY_ACTIVE,
   SYNC_OP_GL_QUERY_SCALAR,
   SYNC_OP_GL_QUERY_TEXT,
+  TEXT_METRICS_BYTES,
   decodeActiveReply,
+  decodeMetricsReply,
+  decodeNumberReply,
+  encodeCanvas2DQueryParams,
   decodeScalarReply,
   decodeTextReply,
   encodeGlQueryParams,
@@ -191,4 +202,45 @@ export function op_client_wait_sync(sync, flags) {
  */
 export function op_webgl_get_error(canvasId) {
   return scalar({ kind: GL_QUERY_GET_ERROR, canvasId }) >>> 0;
+}
+
+// ---- Canvas2D ---------------------------------------------------------------
+
+/**
+ * `measureText(text)`, as the flat op answers it: twelve `f32`.
+ *
+ * The measurement is of the canvas's *current* font, which is a record in the
+ * frame being built -- so the barrier goes first, as it does for every query
+ * here, and the renderer measures against the font it has by then applied. The
+ * shorthand crosses too, because the op takes it and a host with a JS-thread
+ * measurer installed uses it; this host measures on the render thread.
+ */
+export function op_measure_text_flat(canvasId, text, cssFont) {
+  const reply = ask(
+    SYNC_OP_CANVAS2D_METRICS,
+    TEXT_METRICS_BYTES,
+    encodeCanvas2DQueryParams({
+      kind: CANVAS2D_QUERY_MEASURE_TEXT,
+      canvasId: toU32(canvasId, "canvas_id"),
+      text: stringOf(text, "text"),
+      font: stringOf(cssFont, "css_font"),
+    }),
+  );
+  return decodeMetricsReply(reply);
+}
+
+/** The line height of a family at a size, which the font loader caches. */
+export function op_get_text_line_height(fontFamily, fontSize, bold, italic) {
+  const flags = (bold ? CANVAS2D_FLAG_BOLD : 0) | (italic ? CANVAS2D_FLAG_ITALIC : 0);
+  const reply = ask(
+    SYNC_OP_CANVAS2D_NUMBER,
+    8,
+    encodeCanvas2DQueryParams({
+      kind: CANVAS2D_QUERY_TEXT_LINE_HEIGHT,
+      number: Number(fontSize),
+      flags,
+      font: stringOf(fontFamily, "font_family"),
+    }),
+  );
+  return decodeNumberReply(reply);
 }

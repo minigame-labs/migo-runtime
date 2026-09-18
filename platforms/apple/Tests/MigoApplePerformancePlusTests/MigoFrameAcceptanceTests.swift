@@ -712,6 +712,13 @@ import XCTest
                     ctx.textAlign = "left";
                     ctx.textBaseline = "top";
                     ctx.fillStyle = "#00ff00";
+                    // The measurement crosses as a barrier and a blocked call,
+                    // and it is of the font two records ago: a host that
+                    // answered before applying it would measure at the default
+                    // size, which is half of this.
+                    const measured = ctx.measureText("ABC");
+                    answers.measuredWidth = measured.width;
+                    answers.measuredNarrower = ctx.measureText("A").width;
                     // Large enough that any face puts ink in the top-left
                     // quadrant, and placed so the bottom rows stay untouched.
                     ctx.fillText("ABC", 0, 0);
@@ -760,6 +767,18 @@ import XCTest
                 report?["fontAfterRefusal"] as? String, report?["refusedFont"] as? String,
                 "a shorthand with no size is a no-op, as it is in a browser")
             XCTAssertEqual(report?["fontApplied"] as? String, "48px sans-serif")
+
+            // The measurement is the renderer's, of the font the barrier
+            // applied. Its exact value is the face's business; that it is a
+            // plausible width for three glyphs at 48 px, and that one glyph
+            // measures narrower than three, is the query working.
+            let width = report?["measuredWidth"] as? Double ?? 0
+            let narrower = report?["measuredNarrower"] as? Double ?? 0
+            print("2D measure: ABC=\(width) A=\(narrower)")
+            XCTAssertGreaterThan(width, 24, "three glyphs at 48px are wider than that")
+            XCTAssertLessThan(width, 400)
+            XCTAssertLessThan(narrower, width, "one glyph is narrower than three")
+            XCTAssertGreaterThan(narrower, 0)
 
             let size = harness.sizePixels
             let inked = try readPixels(
