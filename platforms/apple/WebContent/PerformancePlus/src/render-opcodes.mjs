@@ -144,6 +144,21 @@ export const OP2D_SET_SHADOW_COLOR = 548;
 // with no error anywhere.
 export const OP2D_CREATE_CONTEXT = 549;
 
+// ─── 2D text (550..=556) ─────────────────────────────────────────────────────
+//
+// The block's first payload records: a font shorthand and a string to draw are
+// bytes, and a dash pattern is a list of floats. The in-process encoder does not
+// write these -- there the calls are ops -- which is why this lane has them.
+export const OP2D_SET_FONT = 550;
+export const OP2D_FILL_TEXT = 551;
+export const OP2D_STROKE_TEXT = 552;
+export const OP2D_SET_TEXT_ALIGN = 553;
+export const OP2D_SET_TEXT_BASELINE = 554;
+export const OP2D_SET_TEXT_DIRECTION = 555;
+export const OP2D_SET_LINE_DASH = 556;
+/** The host's cap on a dash pattern; a longer one is a record it refuses. */
+export const MAX_LINE_DASH_SEGMENTS = 256;
+
 /// Pack a record header: low twelve bits opcode, high twenty word count.
 ///
 /// `wordCount` counts the header word itself. A fixture written from the opcode

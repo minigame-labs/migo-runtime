@@ -111,8 +111,54 @@ pub const OP2D_SET_SHADOW_COLOR: u32 = 548;
 /// every other record in this block takes its canvas.
 pub const OP2D_CREATE_CONTEXT: u32 = 549;
 
+// ─── Text (550..=556) ────────────────────────────────────────────────────────
+//
+// Everything above is numbers. Text is the block's first payload: a font
+// shorthand and a string to draw, which is why the two payload record shapes
+// the resource block introduced are used here rather than restated.
+
+/// The font shorthand, as CSS writes it: `italic bold 16px "Noto Sans", sans`.
+///
+/// `H byte_length | utf8`. The producer answers `setFont` locally -- the op it
+/// stands in for returns whether the shorthand parses -- so a record only ever
+/// carries a shorthand the producer already parsed. The host parses it again,
+/// because it is the one that has to turn it into a typeface, and because a
+/// record is not trusted for being well-formed.
+pub const OP2D_SET_FONT: u32 = 550;
+
+/// `fillText(text, x, y, maxWidth)`: `H x:F y:F max_width:F byte_length | utf8`.
+///
+/// `max_width` is `+inf` when content passed none, which is what the facade
+/// already does and what the renderer reads as "no limit".
+pub const OP2D_FILL_TEXT: u32 = 551;
+/// `strokeText`, the same shape.
+pub const OP2D_STROKE_TEXT: u32 = 552;
+
+/// `textAlign`, as the op's `u8`: start, end, left, right, center.
+pub const OP2D_SET_TEXT_ALIGN: u32 = 553;
+/// `textBaseline`: top, hanging, middle, alphabetic, ideographic, bottom.
+pub const OP2D_SET_TEXT_BASELINE: u32 = 554;
+/// `direction`: ltr, rtl, inherit.
+pub const OP2D_SET_TEXT_DIRECTION: u32 = 555;
+
+/// `setLineDash([...])`: `H count | f32 bits`.
+///
+/// A word list rather than a byte payload, because the segments are `f32` and
+/// the bits are what crosses -- the same reinterpretation the uniform records
+/// make, for the same reason.
+pub const OP2D_SET_LINE_DASH: u32 = 556;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 550;
+pub const OP2D_END: u32 = 557;
+
+/// The longest dash pattern a record may carry.
+///
+/// A dash array is a handful of numbers -- `[5, 5]`, `[10, 3, 2, 3]` -- and the
+/// specification lets content pass any array at all. The cap is far above any
+/// pattern that draws differently from a shorter one and far below a record
+/// that would cost a frame anything, so a producer that reaches it has a bug
+/// rather than a dashed line.
+pub const MAX_LINE_DASH_SEGMENTS: u32 = 256;
 
 /// The shape of one 2D record, or `None` for an opcode this reader does not
 /// know.
@@ -161,6 +207,32 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         // destination, and packing to 8-bit channels here would quantise a
         // value the renderer keeps at full precision.
         OP2D_SET_FILL_STYLE | OP2D_SET_STROKE_STYLE | OP2D_SET_SHADOW_COLOR => (5, &[]),
+
+        OP2D_SET_TEXT_ALIGN | OP2D_SET_TEXT_BASELINE | OP2D_SET_TEXT_DIRECTION => (2, &[]),
+
+        // The payload records: their length is a word of their own rather than
+        // their word count. Both shapes are the ones the resource block
+        // introduced; see `RecordSpec::Bytes` and `Words`.
+        OP2D_SET_FONT => {
+            return Some(RecordSpec::Bytes {
+                prefix_words: 1,
+                presence_word: None,
+                text: true,
+            });
+        }
+        OP2D_FILL_TEXT | OP2D_STROKE_TEXT => {
+            return Some(RecordSpec::Bytes {
+                prefix_words: 4,
+                presence_word: None,
+                text: true,
+            });
+        }
+        OP2D_SET_LINE_DASH => {
+            return Some(RecordSpec::Words {
+                prefix_words: 1,
+                max_count: MAX_LINE_DASH_SEGMENTS,
+            });
+        }
 
         _ => return None,
     };

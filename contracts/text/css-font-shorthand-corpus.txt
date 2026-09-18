@@ -1,0 +1,55 @@
+# The `ctx.font` shorthands both parsers are held to.
+#
+# One per line; a line starting with `#` is a comment and an empty line is
+# skipped. Every line is put through `shared::css_font_shorthand` and through
+# `platforms/apple/WebContent/PerformancePlus/src/css-font.mjs`, and the two
+# must agree on the verdict AND on the parse -- size, weight, slant, families.
+#
+# The cases are the ones where two implementations of one grammar drift: the
+# bare number that is a weight only because a size follows, the unit that is
+# not px, the quoted family with spaces, the line-height nobody uses, and the
+# inputs that must be REFUSED, because a parser that accepts everything agrees
+# with nothing.
+10px sans-serif
+16px Arial
+italic 700 24px 'Noto Sans CJK SC'
+bold 14px Helvetica
+14px "Noto Sans", Arial, sans-serif
+   12px   serif
+normal normal 400 18px sans-serif
+small-caps 300 11px Georgia
+oblique 22px "Zapfino"
+lighter 16px sans-serif
+bolder bold 16px sans-serif
+900 32px Impact
+1000 32px Impact
+1001 32px Impact
+0 32px Impact
+12pt Times
+1.5em sans-serif
+2rem "Fira Sans"
+150% serif
+16px/1.5 sans-serif
+16px /1.5 sans-serif
+italic small-caps bold condensed 16px/2 "Noto Sans", sans-serif
+16PX sans-serif
+16Px Sans-Serif
+.5em serif
++16px serif
+-16px serif
+0px serif
+16px
+16px ,
+16px , , Arial
+16px 'Unclosed
+16px "Two Words", 'Another One', fallback
+sans-serif
+bold
+16
+16 32px serif
+1e3px serif
+16.px serif
+16.5px serif
+abc serif
+%
+16% 

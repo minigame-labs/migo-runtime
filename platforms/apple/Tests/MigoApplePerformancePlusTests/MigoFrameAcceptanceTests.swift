@@ -668,6 +668,119 @@ import XCTest
             XCTAssertEqual(pixel, [0, 255, 0, 255], "the frame is the colour the located uniform was set to")
         }
 
+        /// Text, drawn by the engine's own 2D context.
+        ///
+        /// The acceptance for D15.4a. `ctx.font = "..."` is answered by the
+        /// producer -- it parses the shorthand itself, because the assignment
+        /// returns whether it parsed and the host's answer is a frame away --
+        /// and the string, the coordinates and the alignment cross as records
+        /// the host decodes into the commands its own ops build.
+        ///
+        /// WHAT THE PIXELS PROVE. Not which pixels a glyph fills: that is the
+        /// font's business, and a test that named them would be a test of the
+        /// rasteriser. The canvas is cleared to blue and the text is drawn in
+        /// green, so what is asserted is that green ink arrived inside the box
+        /// the call named, that none arrived outside it, and that a shorthand
+        /// the parser refuses draws nothing at all.
+        func testContentDrawsTextThroughTheEngines2DContext() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                export function start({ report }) {
+                  const canvas = migo.createCanvas();
+                  const ctx = canvas.getContext("2d");
+                  const answers = {};
+                  const stage = (name, run) => {
+                    try { return run(); }
+                    catch (error) { report({ type: "failed", stage: name, detail: `${error.name}: ${error.message}` }); throw error; }
+                  };
+
+                  stage("draw", () => {
+                    ctx.fillStyle = "#0000ff";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                    // A shorthand with no size: refused by the parser here, and
+                    // the font stays what it was -- which is what the assignment
+                    // answers, and the only thing content can observe about it.
+                    answers.refusedFont = ctx.font;
+                    ctx.font = "not-a-font";
+                    answers.fontAfterRefusal = ctx.font;
+
+                    ctx.font = "48px sans-serif";
+                    answers.fontApplied = ctx.font;
+                    ctx.textAlign = "left";
+                    ctx.textBaseline = "top";
+                    ctx.fillStyle = "#00ff00";
+                    // Large enough that any face puts ink in the top-left
+                    // quadrant, and placed so the bottom rows stay untouched.
+                    ctx.fillText("ABC", 0, 0);
+                  });
+
+                  requestAnimationFrame(() => {
+                    setTimeout(() => report({ type: "drew", ...answers,
+                      width: canvas.width, height: canvas.height }), 0);
+                  });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let drew = expectation(description: "content drew text")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "drew":
+                    report = message
+                    drew.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    drew.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [drew], timeout: 240)
+            XCTAssertNil(failure)
+
+            // The refused shorthand left the font alone, which is the whole of
+            // what `ctx.font =` answers.
+            XCTAssertEqual(
+                report?["fontAfterRefusal"] as? String, report?["refusedFont"] as? String,
+                "a shorthand with no size is a no-op, as it is in a browser")
+            XCTAssertEqual(report?["fontApplied"] as? String, "48px sans-serif")
+
+            let size = harness.sizePixels
+            let inked = try readPixels(
+                session: harness.session, x: 0, y: 0, width: Int32(size), height: Int32(size))
+            var green = 0
+            var blue = 0
+            var other = 0
+            for index in stride(from: 0, to: inked.count, by: 4) {
+                let pixel = Array(inked[index..<index + 4])
+                if pixel == [0, 255, 0, 255] { green += 1 } else if pixel == [0, 0, 255, 255] {
+                    blue += 1
+                } else {
+                    // Antialiased edges: between the two colours, alpha opaque.
+                    other += 1
+                }
+            }
+            print("2D text: green=\(green) blue=\(blue) other=\(other) of \(size * size)")
+            XCTAssertGreaterThan(green, 20, "the text put ink on the canvas")
+            XCTAssertGreaterThan(blue, 200, "and did not cover the whole of it")
+        }
+
         /// A frame too large for one packet crosses as barriers and one present.
         ///
         /// Sixty thousand clears in one `requestAnimationFrame` is 256 KiB of
@@ -1035,6 +1148,55 @@ import XCTest
 
         /// One pixel, through the synchronous barrier, once the frame numbered
         /// `triggeringSequence` has been admitted.
+        /// A rectangle of pixels, for a test whose question is "did anything get
+        /// painted here" rather than "what colour is this pixel".
+        ///
+        /// Glyph coverage is the font's business: which pixels an `M` fills at
+        /// 48 px depends on the face, the hinting and the rasteriser, and a test
+        /// that named one of them would be a test of the font. What text drawing
+        /// owes its caller is that the ink arrives, in the fill colour, inside
+        /// the box the call named.
+        private func readPixels(
+            session: OpaquePointer, x: Int32, y: Int32, width: Int32, height: Int32,
+            triggeringSequence: UInt64 = 1
+        ) throws -> [UInt8] {
+            var request = MigoSyncRequestDescriptor()
+            request.struct_size = UInt32(MemoryLayout<MigoSyncRequestDescriptor>.size)
+            request.abi_version = MIGO_ABI_VERSION_CURRENT
+            request.runtime_generation = 1
+            request.surface_generation = MigoFrameHarness.fixtureGeneration
+            request.resource_epoch = 0
+            request.triggering_sequence = triggeringSequence
+            request.deadline_nanos = deadline
+            request.operation = MIGO_SYNC_OP_READ_PIXELS
+            let expected = Int(width) * Int(height) * 4
+            request.max_reply_bytes = UInt32(expected)
+
+            var outcome = MigoSyncOutcome()
+            outcome.struct_size = UInt32(MemoryLayout<MigoSyncOutcome>.size)
+            outcome.abi_version = MIGO_ABI_VERSION_CURRENT
+
+            let params = MigoFrameHarness.readPixelsParameters(
+                x: x, y: y, width: width, height: height)
+            let posted = params.withUnsafeBufferPointer { buffer in
+                migo_session_post_sync_request(
+                    session, &request, buffer.baseAddress, buffer.count, now, &outcome)
+            }
+            XCTAssertEqual(posted, MIGO_OK, "post")
+            XCTAssertEqual(
+                outcome.state, MIGO_SYNC_STATE_READY,
+                "the readback failed with error \(outcome.error)")
+
+            var pixels = [UInt8](repeating: 0, count: expected)
+            var written = 0
+            let taken = pixels.withUnsafeMutableBufferPointer { out in
+                migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
+            }
+            XCTAssertEqual(taken, MIGO_OK, "take")
+            XCTAssertEqual(written, expected, "the rectangle's RGBA8 rows")
+            return pixels
+        }
+
         private func readPixel(
             session: OpaquePointer, x: Int32, y: Int32, triggeringSequence: UInt64 = 1
         ) throws -> [UInt8] {

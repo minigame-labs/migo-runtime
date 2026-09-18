@@ -98,6 +98,25 @@ printf '%s\n' "$parity" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
     || { printf '%s\n' "$parity" >&2; fail "the resource parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$parity" | grep -E 'commands and [0-9]+ errors agree'
 
+# The same question for the Canvas2D text records, which is where the two
+# implementations are most likely to drift: a font shorthand parsed on both
+# sides, a `maxWidth` that is usually infinite, and alignment keywords that are
+# numbers on the wire.
+TEXT_PARITY="$WORK/text-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$TEXT_PARITY" \
+    fixtures/canvas2d-text-calls.js \
+    || fail "the Canvas2D text calls did not run on the producer"
+status=0
+text="$(cd engine && MIGO_CANVAS2D_PARITY_DIR="$TEXT_PARITY" cargo test -p migo-runtime-v8 --lib \
+    canvas2d_parity -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$text" >&2
+    fail "the producer's text records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$text" | grep -qE '[0-9]+ Canvas2D commands agree' \
+    || { printf '%s\n' "$text" >&2; fail "the text parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$text" | grep -E '[0-9]+ Canvas2D commands agree'
+
 python3 - "$STAGED/engine/manifest.json" <<'PY'
 import json, sys
 manifest = json.load(open(sys.argv[1]))

@@ -15,6 +15,7 @@ import * as raf from "ext:host_v8_webgl/03_raf.js";
 import * as fontApi from "ext:host_v8_webgl/04_font.js";
 import * as canvas from "ext:host_v8_web/03_canvas.js";
 import * as webgl from 'ext:host_v8_webgl/02_webgl_context.js';
+import * as context2d from 'ext:host_v8_webgl/02_2d_context.js';
 import * as touch from 'ext:host_v8_touch/01_touch.js';
 import * as keyboard from 'ext:host_v8_touch/02_keyboard.js';
 import * as envApi from 'ext:host_v8_env/00_env.js';
@@ -63,6 +64,13 @@ const WindowGlobalScope = {
 
     WebGLRenderingContext: core.propNonEnumerable(webgl.WebGLRenderingContext),
     WebGL2RenderingContext: core.propNonEnumerable(webgl.WebGL2RenderingContext),
+    // Beside the two WebGL context classes, and for the same reason: content
+    // writes `ctx instanceof CanvasRenderingContext2D` as readily as it writes
+    // the WebGL one, and a browser has all three. It is also what lets the
+    // Canvas2D parity fixture build a context without a render thread, the way
+    // the WebGL fixture already does.
+    CanvasRenderingContext2D: core.propNonEnumerable(context2d.CanvasRenderingContext2D),
+    CanvasGradient: core.propNonEnumerable(context2d.CanvasGradient),
 
     performance: core.propNonEnumerable(performance.performance),
     getPerformance: core.propNonEnumerable(performance.getPerformance),

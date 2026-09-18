@@ -156,3 +156,25 @@ export function op_webgl_record_out_of_memory(canvasId) {
 export function op_gl_is_context_lost() {
   return engineHost().state.contextLost;
 }
+
+// ---- the text-texture cache ---------------------------------------------------
+
+/**
+ * `op_text_cache_peek_pin`: a miss, always, and that is the truth rather than a
+ * placeholder.
+ *
+ * The cache it asks about is a host-side optimisation for one pattern -- a 2D
+ * canvas whose whole contents are a single label, re-rendered and re-uploaded
+ * every frame, which is what Cocos does for score text. A host that keeps such
+ * a cache can answer "hit" and skip the paint; this host keeps none, so nothing
+ * is cached and the text is painted. The engine's facade takes 0 as "render
+ * normally", which is exactly right.
+ *
+ * Answered here rather than on the synchronous lane because a round trip would
+ * block the Worker once per `fillText` to be told something that cannot change
+ * until the cache exists. When it does, this moves back to the sync lane (see
+ * contracts/runtime/op-boundary.json).
+ */
+export function op_text_cache_peek_pin() {
+  return 0;
+}

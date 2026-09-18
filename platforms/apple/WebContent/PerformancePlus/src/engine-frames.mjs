@@ -142,13 +142,48 @@ export function appendStream(words, usedWords) {
  * lane; the caller reports it the way GL reports an allocation it cannot make.
  */
 export function appendRecord(record, headerWords, payload) {
+  if (!fitRecord(record)) return false;
+  writeRecord(record, headerWords, payload);
+  // A resource record is GL work between the engine's flushed buffers, and the
+  // next buffer selects its own canvas.
+  canvasSelected = false;
+  return true;
+}
+
+/**
+ * Append a Canvas2D record the producer writes itself: the same as above, with
+ * the canvas selected first.
+ *
+ * A 2D record carries no canvas -- the selection before it does, which is what
+ * makes a batch of them one canvas's work -- and the host reads a 2D record
+ * before any selection as an error. The engine's own flushed buffers select
+ * their canvas themselves; a record written between them has to say which
+ * canvas it is for, and has to say it again after a split.
+ */
+export function appendCanvas2DRecord(canvasId, record, headerWords, payload) {
+  if (!fitRecord(record)) return false;
+  selectCanvasFor(canvasId);
+  writeRecord(record, headerWords, payload);
+  return true;
+}
+
+/** Make room for a record, splitting the packet when it does not fit. */
+function fitRecord(record) {
   const frame = currentWriter();
   const wordCount = record[0] >>> 12;
-  if (!budget.fits(record, 0) || !frame.fits(wordCount)) {
+  // Two words of headroom: a 2D record may have to repeat its canvas selection
+  // in the packet a split starts, and a record that fits only without it would
+  // be a selection the next packet has no room for.
+  if (!budget.fits(record, 0) || !frame.fits(wordCount + SELECT_CANVAS_WORDS)) {
     if (frame.wordCount === 0) return false;
     sendBarrier(frame);
-    if (!budget.fits(record, 0) || !frame.fits(wordCount)) return false;
+    if (!budget.fits(record, 0) || !frame.fits(wordCount + SELECT_CANVAS_WORDS)) return false;
   }
+  return true;
+}
+
+function writeRecord(record, headerWords, payload) {
+  const frame = currentWriter();
   frame.appendWords(record, 0, headerWords);
   if (payload instanceof Uint8Array) {
     frame.appendPayload(payload);
@@ -156,10 +191,17 @@ export function appendRecord(record, headerWords, payload) {
     frame.appendWords(payload, 0, payload.length);
   }
   budget.add(record, 0);
-  // A resource record is GL work between the engine's flushed buffers, and the
-  // next buffer selects its own canvas.
-  canvasSelected = false;
-  return true;
+}
+
+/** Select `canvasId` unless this packet already has it selected. */
+function selectCanvasFor(canvasId) {
+  if (canvasSelected && selectCanvas[1] === canvasId) return;
+  const frame = currentWriter();
+  selectCanvas[0] = ((SELECT_CANVAS_WORDS << 12) | OP2D_SELECT_CANVAS) >>> 0;
+  selectCanvas[1] = canvasId >>> 0;
+  frame.appendWords(selectCanvas, 0, SELECT_CANVAS_WORDS);
+  budget.add(selectCanvas, 0);
+  canvasSelected = true;
 }
 
 /** End the frame: send its packet, or hold it until the window opens. */

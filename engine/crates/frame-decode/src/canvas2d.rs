@@ -14,7 +14,7 @@
 //! that belong here are the ones the *specification* names, and they live with
 //! the renderer that has the state to judge them.
 
-use shared::protocol::render_cmd::Canvas2DCmd;
+use shared::protocol::render_cmd::{Canvas2DCmd, TextAlign, TextBaseline, TextDirection};
 
 use frame_wire::canvas2d::*;
 
@@ -186,8 +186,108 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             color: color_of(record),
         },
 
+        // ── Text ────────────────────────────────────────────────────────────
+        OP2D_SET_FONT => Canvas2DCmd::SetFont {
+            font: text_of(record, 1)?,
+        },
+        OP2D_FILL_TEXT => Canvas2DCmd::FillText {
+            text: text_of(record, 4)?,
+            x: f(record[1]),
+            y: f(record[2]),
+            max_width: f(record[3]),
+        },
+        OP2D_STROKE_TEXT => Canvas2DCmd::StrokeText {
+            text: text_of(record, 4)?,
+            x: f(record[1]),
+            y: f(record[2]),
+            max_width: f(record[3]),
+        },
+        OP2D_SET_TEXT_ALIGN => Canvas2DCmd::SetTextAlign {
+            align: text_align_of(record[1] as u8),
+        },
+        OP2D_SET_TEXT_BASELINE => Canvas2DCmd::SetTextBaseline {
+            baseline: text_baseline_of(record[1] as u8),
+        },
+        OP2D_SET_TEXT_DIRECTION => Canvas2DCmd::SetTextDirection {
+            direction: text_direction_of(record[1] as u8),
+        },
+        OP2D_SET_LINE_DASH => Canvas2DCmd::SetLineDash {
+            segments: floats_of(record, 1)?,
+        },
+
         _ => return None,
     })
+}
+
+/// The `u8` a text-state call carries, as the enum it names.
+///
+/// One body per call, the resource block's rule: `op_set_text_align` and the
+/// record that stands in for it must agree on which number is `Center`, and the
+/// only way to guarantee that is for both to call this. An unknown value is the
+/// initial state rather than a refusal, which is what a browser does with a
+/// `textAlign` it does not know.
+pub fn text_align_of(value: u8) -> TextAlign {
+    match value {
+        0 => TextAlign::Start,
+        1 => TextAlign::End,
+        2 => TextAlign::Left,
+        3 => TextAlign::Right,
+        4 => TextAlign::Center,
+        _ => TextAlign::Start,
+    }
+}
+
+/// See [`text_align_of`].
+pub fn text_baseline_of(value: u8) -> TextBaseline {
+    match value {
+        0 => TextBaseline::Top,
+        1 => TextBaseline::Hanging,
+        2 => TextBaseline::Middle,
+        3 => TextBaseline::Alphabetic,
+        4 => TextBaseline::Ideographic,
+        5 => TextBaseline::Bottom,
+        _ => TextBaseline::Alphabetic,
+    }
+}
+
+/// See [`text_align_of`].
+pub fn text_direction_of(value: u8) -> TextDirection {
+    match value {
+        1 => TextDirection::Ltr,
+        2 => TextDirection::Rtl,
+        _ => TextDirection::Inherit,
+    }
+}
+
+/// A record's text payload: the length word at `prefix_words`, then the bytes.
+///
+/// Pass 1 checked that they are UTF-8 and that the padding is zero, so this is
+/// a copy rather than a parse. `None` only when the allocation fails, which
+/// drops the one command rather than the frame.
+fn text_of(record: &[u32], prefix_words: usize) -> Option<String> {
+    let len = record[prefix_words] as usize;
+    let words = &record[prefix_words + 1..];
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).ok()?;
+    let whole = len / 4;
+    for word in &words[..whole] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    if len % 4 != 0 {
+        bytes.extend_from_slice(&words[whole].to_le_bytes()[..len % 4]);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// A record's `f32` list: the count word at `prefix_words`, then the bits.
+///
+/// A reinterpretation, like every other float in this block.
+fn floats_of(record: &[u32], prefix_words: usize) -> Option<Vec<f32>> {
+    let count = record[prefix_words] as usize;
+    let mut values = Vec::new();
+    values.try_reserve_exact(count).ok()?;
+    values.extend(record[prefix_words + 1..prefix_words + 1 + count].iter().map(|word| f(*word)));
+    Some(values)
 }
 
 /// Four floats, in the order the destination's `Color` declares them.

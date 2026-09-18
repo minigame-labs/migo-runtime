@@ -1149,6 +1149,22 @@ const OP2D_SET_SHADOW_COLOR = 548;
 // batched, and silently dropped.
 const OP2D_CREATE_CONTEXT = 549;
 
+// --- 2D text ---
+//
+// Like OP2D_CREATE_CONTEXT above: this encoder does not write these. The
+// engine's 2D context calls `op_set_font`, `op_fill_text` and the rest as ops,
+// which is what a runtime whose JavaScript sits beside its ops should do -- the
+// call is one crossing either way, and a record would add an encode. The lane
+// that needs them is the external producer, where there is no op to call, and
+// they are in this table because the table is one of three that must agree.
+const OP2D_SET_FONT = 550;
+const OP2D_FILL_TEXT = 551;
+const OP2D_STROKE_TEXT = 552;
+const OP2D_SET_TEXT_ALIGN = 553;
+const OP2D_SET_TEXT_BASELINE = 554;
+const OP2D_SET_TEXT_DIRECTION = 555;
+const OP2D_SET_LINE_DASH = 556;
+
 // --- 2D canvas selection ---
 //
 // `Canvas2DCmd` carries no canvas id -- the id lives on the batch -- so the
