@@ -22,6 +22,14 @@
 
 import { ServiceValueError, ValueWriter, readValue, readValues } from "./service-value.mjs";
 
+// The Worker's own `queueMicrotask`, bound to the global it belongs to and
+// taken before the engine installs its globals. Bound because WebKit refuses
+// the call with any other `this` -- "Can only call
+// WorkerGlobalScope.queueMicrotask on instances of WorkerGlobalScope", measured
+// on the simulator, where a channel calling it as its own method failed every
+// batch -- and node does not check, so only a device-side run would say so.
+const platformQueueMicrotask = globalThis.queueMicrotask.bind(globalThis);
+
 export const MAGIC_SERVICE = 0x4d555331; // "MUS1"
 export const MAGIC_SERVICE_DOWN = 0x4d445331; // "MDS1"
 export const SERVICE_VERSION = 1;
@@ -251,7 +259,7 @@ export class ServiceChannel {
     errorFor = (className, message) => Object.assign(new Error(message), { name: className }),
     onFailure,
     onEvent,
-    schedule = queueMicrotask,
+    schedule = platformQueueMicrotask,
     post = defaultPost,
     fetchParked = defaultFetchParked,
   } = {}) {

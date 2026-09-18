@@ -292,3 +292,33 @@ test("only the host's service envelope is routed here", () => {
   assert.equal(isServiceDownMessage(downMessage(1, [])), true);
   assert.equal(isServiceDownMessage(new Uint8Array([0x31, 0x4c, 0x44, 0x4d])), false, "MDL1 is the frame downlink's");
 });
+
+test("the default scheduler calls queueMicrotask on the global scope, as WebKit requires", async () => {
+  // WebKit throws when `queueMicrotask` is called with any `this` but the
+  // global scope; node does not. So the check is reproduced here, and the
+  // module is loaded fresh after it is installed, because the channel takes
+  // the function when the module is evaluated.
+  const original = globalThis.queueMicrotask;
+  globalThis.queueMicrotask = function (callback) {
+    if (this !== globalThis) {
+      throw new TypeError("Can only call WorkerGlobalScope.queueMicrotask on instances of WorkerGlobalScope");
+    }
+    return original.call(globalThis, callback);
+  };
+  try {
+    const { ServiceChannel: Fresh } = await import(`../src/service.mjs?strict-this=${Date.now()}`);
+    const sent = [];
+    const services = new Fresh({
+      generation: 1n,
+      socketCeilingBytes: 1024,
+      serviceUrl: "migo://game/__migo/service",
+      replyUrl: "migo://game/__migo/reply",
+    });
+    services.attachSocket((bytes) => sent.push(bytes));
+    services.command(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(sent.length, 1, "the batch left at the end of the task");
+  } finally {
+    globalThis.queueMicrotask = original;
+  }
+});
