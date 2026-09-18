@@ -1026,18 +1026,17 @@ import XCTest
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
+            // A game reports the way games do: through `console`.
+            host.onConsole = { _, text in
+                guard text.hasPrefix("game-result ") else { return }
+                let json = Data(text.dropFirst("game-result ".count).utf8)
+                result = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
+                finished.fulfill()
+            }
             host.onReport = { message in
-                switch message["type"] as? String {
-                case "console":
-                    guard let text = message["message"] as? String, text.hasPrefix("game-result ")
-                    else { return }
-                    let json = Data(text.dropFirst("game-result ".count).utf8)
-                    result = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
-                    finished.fulfill()
-                case "failed":
+                if message["type"] as? String == "failed" {
                     failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
                     finished.fulfill()
-                default: break
                 }
             }
             mount(host)

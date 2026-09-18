@@ -383,6 +383,13 @@ import os
         /// Called on the main queue for every report the producer makes.
         public var onReport: ((Report) -> Void)?
 
+        /// Called on the main queue for every line content writes to its
+        /// `console`, after it is written to the platform log: the engine's
+        /// `op_console` level (1 info, 2 warn, 3 error, anything else debug) and
+        /// the text. For an app that keeps its own log, and for a test that
+        /// watches a game the way a game reports -- through `console`.
+        public var onConsole: ((_ level: Int, _ message: String) -> Void)?
+
         private let configuration: Configuration
         private let origin: MigoPerformancePlusOrigin
         private let engineRoot: URL
@@ -574,6 +581,7 @@ import os
             guard let body = message.body as? Report else { return }
             if body["type"] as? String == "console" {
                 Self.log(consoleLine: body)
+                onConsole?(body["level"] as? Int ?? 0, body["message"] as? String ?? "")
                 return
             }
             onReport?(body)
