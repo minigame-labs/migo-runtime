@@ -573,6 +573,8 @@ which is a change worth noticing rather than absorbing.
 | 3 | `GL_QUERY_SCALAR` | a query record (below) | 4 bytes, little-endian, read as `i32` or `u32` by the query |
 | 4 | `GL_QUERY_TEXT` | a query record | the UTF-8 bytes, and nothing else |
 | 5 | `GL_QUERY_ACTIVE` | a query record | `size` i32, `type` u32, then the name's UTF-8 bytes |
+| 6 | `CANVAS2D_METRICS` | a 2D query record (below) | 48 bytes: twelve `f32`, the `TextMetrics` fields |
+| 7 | `CANVAS2D_NUMBER` | a 2D query record | 8 bytes, a little-endian `f64` |
 
 **The WebGL queries.** `getShaderParameter`, `getUniformLocation`, `getError`
 and the twelve others are calls whose return value *is* the answer, asked about
@@ -593,7 +595,24 @@ then name_length bytes of UTF-8, zero-padded to a word
 The padding must be zero and the length must agree with the body, as a frame
 record's payload must; the name is bounded at 1024 bytes. A kind sent under an
 operation that is not the one its answer's shape belongs to is refused, not
-answered. `GET_ERROR` is answered from the host's own error queue -- the one its
+answered. **The Canvas2D queries.** `measureText` and the line height of a font take the
+same route, and for the same reason: a measurement is of the canvas's *current*
+font, which is a record in the frame being built. Their parameters are two
+strings rather than one, because each takes a pair -- a text and a font, a family
+and a size -- and joining them would make a text containing the separator a
+different query:
+
+```text
+kind u32, canvas_id u32, size f32 bits, flags u32, text_length u32,
+font_length u32, then each string's UTF-8 bytes, each zero-padded to a word
+```
+
+`flags` carries bold and italic; a bit this version does not read is a refusal
+rather than a mask. Both strings are bounded at 2048 bytes. `loadFont` is not
+here: it reads a font file, which needs the file lane, and a query that answered
+"could not load" would be a custom font silently replaced by a fallback.
+
+`GET_ERROR` is answered from the host's own error queue -- the one its
 decoder fills for this producer's records -- without asking the renderer, after
 the same wait, because an error made by the frame being asked about has to be in
 the queue before it is read.

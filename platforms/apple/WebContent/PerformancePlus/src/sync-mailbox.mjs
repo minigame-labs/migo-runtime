@@ -59,6 +59,76 @@ export const SYNC_OP_GL_QUERY_SCALAR = 3;
 export const SYNC_OP_GL_QUERY_TEXT = 4;
 export const SYNC_OP_GL_QUERY_ACTIVE = 5;
 
+// The Canvas2D queries: a measurement and a line height, whose answers come
+// back in shapes of their own. Two operations rather than one, for the reason
+// the WebGL queries have three: the operation is what sizes the reply.
+export const SYNC_OP_CANVAS2D_METRICS = 6;
+export const SYNC_OP_CANVAS2D_NUMBER = 7;
+
+export const CANVAS2D_QUERY_MEASURE_TEXT = 1;
+export const CANVAS2D_QUERY_TEXT_LINE_HEIGHT = 2;
+
+/** The four fields and the two lengths before a 2D query's strings. */
+export const CANVAS2D_QUERY_HEADER_BYTES = 24;
+/** Twelve `f32`: the `TextMetrics` fields, in the order the host writes them. */
+export const TEXT_METRICS_BYTES = 48;
+/** The host's cap on either string a 2D query carries. */
+export const CANVAS2D_QUERY_MAX_TEXT_BYTES = 2048;
+
+export const CANVAS2D_FLAG_BOLD = 1;
+export const CANVAS2D_FLAG_ITALIC = 2;
+
+/**
+ * Encode a Canvas2D query's arguments: four words, two lengths, then the two
+ * strings, each padded to a word with zeros.
+ *
+ * Two strings rather than one joined pair, because a text that contained the
+ * separator would otherwise be a different query.
+ */
+export function encodeCanvas2DQueryParams({ kind, canvasId = 0, number = 0, flags = 0, text = "", font = "" }) {
+  const textBytes = queryNameEncoder.encode(text);
+  const fontBytes = queryNameEncoder.encode(font);
+  for (const bytes of [textBytes, fontBytes]) {
+    if (bytes.byteLength > CANVAS2D_QUERY_MAX_TEXT_BYTES) {
+      throw new RangeError(
+        `a 2D query string of ${bytes.byteLength} bytes is past the ${CANVAS2D_QUERY_MAX_TEXT_BYTES}-byte limit`,
+      );
+    }
+  }
+  const textPadded = (textBytes.byteLength + 3) & ~3;
+  const fontPadded = (fontBytes.byteLength + 3) & ~3;
+  const out = new Uint8Array(CANVAS2D_QUERY_HEADER_BYTES + textPadded + fontPadded);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, kind, true);
+  view.setUint32(4, canvasId, true);
+  // The size crosses as an `f32`'s bits, which is the width the op takes.
+  view.setFloat32(8, number, true);
+  view.setUint32(12, flags, true);
+  view.setUint32(16, textBytes.byteLength, true);
+  view.setUint32(20, fontBytes.byteLength, true);
+  out.set(textBytes, CANVAS2D_QUERY_HEADER_BYTES);
+  out.set(fontBytes, CANVAS2D_QUERY_HEADER_BYTES + textPadded);
+  return out;
+}
+
+/** The twelve `f32` of a `measureText` answer, as the facade reads them. */
+export function decodeMetricsReply(reply) {
+  if (reply.byteLength !== TEXT_METRICS_BYTES) {
+    throw new RangeError(`text metrics are ${TEXT_METRICS_BYTES} bytes, not ${reply.byteLength}`);
+  }
+  // Copied rather than viewed: the reply may be a view over a buffer the next
+  // call reuses, and the facade keeps these numbers.
+  return new Float32Array(reply.slice().buffer);
+}
+
+/** The `f64` of a number answer. */
+export function decodeNumberReply(reply) {
+  if (reply.byteLength !== 8) {
+    throw new RangeError(`a number answer is eight bytes, not ${reply.byteLength}`);
+  }
+  return new DataView(reply.buffer, reply.byteOffset, 8).getFloat64(0, true);
+}
+
 // Which query. The host's table is `frame_wire::sync::gl_query`, and the
 // interop gate holds the two together.
 export const GL_QUERY_PROGRAM_PARAMETER = 1;

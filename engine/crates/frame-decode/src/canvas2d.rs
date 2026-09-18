@@ -299,3 +299,33 @@ fn color_of(record: &[u32]) -> shared::protocol::color::Color {
         a: f(record[4]),
     }
 }
+
+/// The twelve `f32` a `measureText` answer is, in the order the flat op writes
+/// them.
+///
+/// One layout, not two: `op_measure_text_flat` answers with these bytes in
+/// process, the Canvas2D metrics query answers with them across the boundary,
+/// and the engine's facade reads a `TextMetrics` back from exactly this order.
+/// A field swapped here is a label laid out against another field's number,
+/// which lays the text out wrong rather than failing.
+pub fn encode_text_metrics(metrics: &shared::protocol::render_cmd::TextMetrics) -> Vec<u8> {
+    let fields: [f32; 12] = [
+        metrics.width,
+        metrics.actual_bounding_box_left,
+        metrics.actual_bounding_box_right,
+        metrics.em_height_ascent,
+        metrics.em_height_descent,
+        metrics.alphabetic_baseline,
+        metrics.font_bounding_box_descent,
+        metrics.actual_bounding_box_ascent,
+        metrics.actual_bounding_box_descent,
+        metrics.font_bounding_box_ascent,
+        metrics.hanging_baseline,
+        metrics.ideographic_baseline,
+    ];
+    let mut out = Vec::with_capacity(fields.len() * 4);
+    for field in fields {
+        out.extend_from_slice(&field.to_le_bytes());
+    }
+    out
+}

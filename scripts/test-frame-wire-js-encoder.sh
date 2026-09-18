@@ -301,6 +301,25 @@ if ! printf '%s\n' "$output" | grep -qE 'read 15 JavaScript-encoded query record
     exit 1
 fi
 
+# The Canvas2D queries' arguments, whose two strings are where a pair of
+# payloads goes wrong: a second length read from the first's unpadded end takes
+# the font out of the middle of the text, and `measureText` then measures a
+# string nobody passed -- answered, not refused.
+output="$(cd engine && MIGO_JS_GL_QUERY_DIR="$GL_QUERIES" \
+    cargo test -p migo-frame-wire --test sync_js_interop -- --ignored --nocapture \
+    canvas2d_query_arguments_from_the_javascript_producer 2>&1)"
+status=$?
+printf '%s\n' "$output" | grep -E 'read [0-9]+ JavaScript-encoded Canvas2D query records|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust decoder rejected Canvas2D query records built by the producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'read [1-9][0-9]* JavaScript-encoded Canvas2D query records'; then
+    echo "FAIL: the Canvas2D query interop reported nothing; it may not have run." >&2
+    exit 1
+fi
+
 # --- the synchronous call as one body, in both directions --------------------
 #
 # The Apple lane's content origin has no SharedArrayBuffer, so a readback there
