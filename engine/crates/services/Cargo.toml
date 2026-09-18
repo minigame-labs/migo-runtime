@@ -24,9 +24,20 @@ name = "migo_services"
 [dependencies]
 shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs"] }
 migo-io = { path = "../io", default-features = false }
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = { workspace = true }
+parking_lot = { workspace = true }
+# Data URLs carry base64 or percent-encoded payloads, and are cache-keyed by
+# their SHA-256 (the same digest the package integrity check uses, taken here
+# directly because that check is a code-signing feature this crate must not
+# require).
+base64 = "0.22"
+percent-encoding = "2.3"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }
+# Section 7.3's contention gate, for the image alias registry.
+migo-contention-probe = { path = "../../testing/contention-probe", default-features = false }

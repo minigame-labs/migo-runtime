@@ -156,6 +156,9 @@ export const OP2D_SET_TEXT_ALIGN = 553;
 export const OP2D_SET_TEXT_BASELINE = 554;
 export const OP2D_SET_TEXT_DIRECTION = 555;
 export const OP2D_SET_LINE_DASH = 556;
+export const OP2D_DRAW_IMAGE = 557;
+export const OP2D_DRAW_IMAGE_BATCH = 558;
+export const DRAW_IMAGE_BATCH_ENTRY_WORDS = 9;
 /** The host's cap on a dash pattern; a longer one is a record it refuses. */
 export const MAX_LINE_DASH_SEGMENTS = 256;
 
@@ -227,6 +230,8 @@ export const OPR_TEX_STORAGE_2D = 165;
 export const OPR_TEX_STORAGE_3D = 166;
 export const OPR_UNIFORM_BLOCK_BINDING = 167;
 export const OPR_LOSE_CONTEXT = 168;
+export const OPR_TEX_IMAGE_2D_FROM_IMAGE = 169;
+export const OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE = 170;
 export const OPR_SHADER_SOURCE = 192;
 export const OPR_BIND_ATTRIB_LOCATION = 193;
 export const OPR_BUFFER_DATA = 194;

@@ -11,6 +11,12 @@ static ALLOCATOR: CountingAllocator = CountingAllocator::system();
 
 struct Context;
 impl GlDecodeContext for Context {
+    fn image_upload(
+        &mut self,
+        _upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        None
+    }
     fn push_error(&mut self, _: u32, _: u32) {
         panic!("valid fixture");
     }

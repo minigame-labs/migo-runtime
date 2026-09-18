@@ -8,7 +8,7 @@
 
 import { engineHost } from "./engine-host.mjs";
 import { drained } from "./engine-frames.mjs";
-import { stringOf } from "./op-args.mjs";
+import { stringOf, toI32, toU32 } from "./op-args.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
 
 /** The service stream, or a throw that says why there is none. */
@@ -74,4 +74,57 @@ export function op_storage_clear_async() {
 
 export function op_storage_info_async() {
   return servicesOf(engineHost()).request(SERVICE_OP.op_storage_info_async);
+}
+
+// ---- images ------------------------------------------------------------------
+//
+// An image decodes on the host, where the texture it becomes lives: the path is
+// resolved in the game's sandbox, the pixels go through the engine's own
+// decoders and caches, and only the shared id and the size come back.
+
+export function op_load_image(imageId, src, targetWidth, targetHeight) {
+  const id = toU32(imageId, "image_id");
+  const source = stringOf(src, "src");
+  const width = toU32(targetWidth, "target_width");
+  const height = toU32(targetHeight, "target_height");
+  return servicesOf(engineHost()).request(SERVICE_OP.op_load_image, (w) => {
+    w.u32(id);
+    w.str(source);
+    w.u32(width);
+    w.u32(height);
+  });
+}
+
+export function op_load_image_subrect(imageId, src, sx, sy, sw, sh, resizeW, resizeH) {
+  const args = [
+    toU32(imageId, "image_id"),
+    stringOf(src, "src"),
+    toI32(sx, "sx"),
+    toI32(sy, "sy"),
+    toU32(sw, "sw"),
+    toU32(sh, "sh"),
+    toU32(resizeW, "resize_w"),
+    toU32(resizeH, "resize_h"),
+  ];
+  return servicesOf(engineHost()).request(SERVICE_OP.op_load_image_subrect, (w) => {
+    w.u32(args[0]);
+    w.str(args[1]);
+    w.i32(args[2]);
+    w.i32(args[3]);
+    w.u32(args[4]);
+    w.u32(args[5]);
+    w.u32(args[6]);
+    w.u32(args[7]);
+  });
+}
+
+/// `#[serde] Vec<String>`: an array of strings, and nothing converted to one.
+export function op_preload_images(paths) {
+  if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string")) {
+    throw new TypeError("paths: expected an array of strings");
+  }
+  return servicesOf(engineHost()).request(SERVICE_OP.op_preload_images, (w) => {
+    w.array(paths.length);
+    for (const path of paths) w.str(path);
+  });
 }

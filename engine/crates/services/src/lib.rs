@@ -6,6 +6,7 @@
 
 pub mod content;
 pub mod error;
+pub mod image;
 pub mod storage;
 
 pub use error::ServiceError;

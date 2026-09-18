@@ -45,8 +45,8 @@ use frame_wire::{FrameIngress, IngressOutcome, PooledFrame, stream};
 use frame_wire::{IngressDecision, WindowSource};
 
 use crate::runtime::external_services::{
-    ServiceAdmission, ServiceDispatcher, ServiceHandle, ServiceHost, ServiceSubmitError,
-    ServiceWork, WakerSlot,
+    RenderHandles, ServiceAdmission, ServiceContext, ServiceDispatcher, ServiceHandle, ServiceHost,
+    ServiceSubmitError, ServiceWork, WakerSlot,
 };
 use crate::runtime::session_thread::{
     HostThread, SessionThreadContext, StartedHost, create_basic_runtime,
@@ -197,6 +197,9 @@ impl ExternalGlErrors {
 /// The decoder's view of an external session.
 struct ExternalDecodeContext<'a> {
     errors: &'a ExternalGlErrors,
+    /// The session's services, whose image table resolves `texImage2D(…,
+    /// image)`. `None` on a submit path built without them.
+    services: Option<&'a ServiceContext>,
     builder: shared::FramePacketBuilder,
 }
 
@@ -215,6 +218,13 @@ impl frame_decode::GlDecodeContext for ExternalDecodeContext<'_> {
         phase: frame_decode::TransformFeedbackPhase,
     ) {
         self.errors.set_transform_feedback(canvas_id, phase);
+    }
+
+    fn image_upload(
+        &mut self,
+        upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        self.services?.image_upload(upload)
     }
 }
 
@@ -1596,6 +1606,9 @@ struct SubmitPath {
     /// be queued while the ingress lock is still held -- see `submit_frame`.
     downlink: Arc<Mutex<DownlinkQueue>>,
     runtime_generation: u64,
+    /// The session's services, for the records whose answer is the host's:
+    /// an upload from an image it loaded.
+    services: Option<Arc<ServiceContext>>,
 }
 
 impl SubmitPath {
@@ -1702,6 +1715,7 @@ impl SubmitPath {
             .map_err(|_| EXTERNAL_ERROR_BAD_COMMAND_STREAM)?;
         let mut sink = ExternalDecodeContext {
             errors: &self.errors,
+            services: self.services.as_deref(),
             builder: shared::FramePacketBuilder::with_op_capacity(
                 u64::from(parsed.frame_id()),
                 0.0,
@@ -2000,6 +2014,7 @@ impl ExternalFrameSession {
                 dispatch: Arc::clone(&dispatch),
                 downlink: Arc::clone(&downlink),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
+                services: None,
             },
             sync: Arc::new(SyncPath::new(
                 INITIAL_RUNTIME_GENERATION,
@@ -2093,7 +2108,7 @@ pub fn spawn_external_frame_session(
                 thread_ingress,
                 thread_clock,
                 thread_dispatch,
-                ServiceDispatcher::new(&thread_services),
+                thread_services,
                 service_work,
             )
         },
@@ -2121,6 +2136,7 @@ pub fn spawn_external_frame_session(
                 dispatch,
                 downlink: Arc::clone(&downlink),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
+                services: Some(Arc::clone(&services.context)),
             },
             clock,
             downlink,
@@ -2137,7 +2153,7 @@ fn run_external_session(
     ingress: Arc<Mutex<FrameIngress>>,
     clock: Arc<ExternalFrameClock>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
-    services: ServiceDispatcher,
+    services: Arc<ServiceHost>,
     mut service_work: tokio::sync::mpsc::Receiver<ServiceWork>,
 ) {
     let SessionThreadContext {
@@ -2203,7 +2219,7 @@ fn run_external_session(
         // channel answers a producer's synchronous queries from; both land
         // with it.
         network_policy: _network_policy,
-        gpu_caps: _gpu_caps,
+        gpu_caps,
         context_lost: _context_lost,
         timer_backgrounded: _timer_backgrounded,
         gpu_init_started: _gpu_init_started,
@@ -2224,6 +2240,16 @@ fn run_external_session(
     // submitted before the renderer existed would be told the renderer is not
     // ready, which is the truthful answer.
     let lifecycle_sender = Arc::new(render.sender());
+    // The services that hand the renderer work -- image uploads -- reach it
+    // through these, owned by this thread's dispatcher so the sender goes when
+    // the session does.
+    let services = ServiceDispatcher::new(
+        &services,
+        RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(render.sender(), id),
+            gpu_caps: Arc::clone(&gpu_caps),
+        },
+    );
     let _ = dispatch.set(RenderDispatch {
         sender: Arc::downgrade(&lifecycle_sender),
         words: Mutex::new(Vec::new()),
@@ -2780,6 +2806,7 @@ mod tests {
             dispatch: Arc::new(OnceLock::new()),
             downlink: Arc::clone(&downlink),
             runtime_generation: INITIAL_RUNTIME_GENERATION,
+            services: None,
         };
 
         let outcome = submit.submit_frame(&packet(1));
@@ -3120,6 +3147,7 @@ mod tests {
             dispatch: Arc::new(OnceLock::new()),
             downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
             runtime_generation: INITIAL_RUNTIME_GENERATION,
+            services: None,
         };
 
         let bytes = packet(1);
@@ -3178,6 +3206,7 @@ mod tests {
                 dispatch: Arc::new(dispatch),
                 downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
+                services: None,
             },
             receiver,
             lifecycle_sender,

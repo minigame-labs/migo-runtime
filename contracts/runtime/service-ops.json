@@ -28,6 +28,12 @@
     "op_storage_clear_async": 9,
     "op_storage_info_async": 10,
     "op_create_buffer_url": 11,
-    "op_revoke_buffer_url": 12
+    "op_revoke_buffer_url": 12,
+    "op_load_image": 13,
+    "op_load_image_subrect": 14,
+    "op_preload_images": 15,
+    "op_destroy_image": 16,
+    "op_clear_image_cache": 17,
+    "op_get_image_cache_stats": 18
   }
 }

@@ -1,6 +1,7 @@
 import MigoAppleFrameHarness
 import enum MigoAppleCore.MigoFrameChannelPolicy
 import MigoEngine
+import ImageIO
 import XCTest
 
 @testable import MigoApplePerformancePlus
@@ -951,6 +952,205 @@ import XCTest
             XCTAssertEqual(
                 report?["refused"] as? String, "Error: setStorage:fail data exceeds max size",
                 "refused by the host's rule, with the message the embedded op throws")
+        }
+
+        /// An image the game ships, loaded and drawn in 2D.
+        ///
+        /// The acceptance for D15.4c's 2D half: `Image.src` names a file in the
+        /// installed package, the host resolves it in the game's sandbox and
+        /// decodes it with the engine's own decoders, uploads it where the
+        /// texture lives, and answers with a shared id and the size -- no pixel
+        /// crosses. `drawImage` then names that id. Two adjacent draws exercise
+        /// the producer folding them into one batch record.
+        func testContentDrawsAnImageItShipsThroughThe2DContext() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let script = Data(
+                """
+                import { lastSequence } from "/__migo/engine-frames.mjs";
+
+                export function start({ report }) {
+                  const canvas = migo.createCanvas();
+                  const ctx = canvas.getContext("2d");
+                  const image = createImage();
+                  image.onerror = (event) => report({ type: "failed", stage: "load",
+                    detail: String(event && event.error && (event.error.message || event.error)) });
+                  image.onload = () => {
+                    try {
+                      ctx.fillStyle = "#0000ff";
+                      ctx.fillRect(0, 0, canvas.width, canvas.height);
+                      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                      // The right half again, over itself: adjacent to the draw
+                      // above, so the two leave as one batch.
+                      ctx.drawImage(image, image.width / 2, 0, image.width / 2, image.height,
+                        canvas.width / 2, 0, canvas.width / 2, canvas.height);
+                    } catch (error) {
+                      report({ type: "failed", stage: "draw", detail: `${error.name}: ${error.message}` });
+                      return;
+                    }
+                    requestAnimationFrame(() => setTimeout(() =>
+                      report({ type: "drew", width: image.width, height: image.height,
+                        sequence: lastSequence() }), 0));
+                  };
+                  image.src = "img/split.png";
+                }
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "image-game", entry: "game/main.mjs",
+                files: ["game/main.mjs": script, "img/split.png": Self.splitPNG(width: 16, height: 16)])
+            let report = try runEngineContent(harness: harness, root: root, until: "drew")
+            XCTAssertEqual(report["width"] as? Double, 16, "the host answered the decoded size")
+            XCTAssertEqual(report["height"] as? Double, 16)
+            let sequence = UInt64(report["sequence"] as? Int ?? 1)
+
+            let quarter = Int32(harness.sizePixels / 4)
+            let middle = Int32(harness.sizePixels / 2)
+            let left = try readPixel(
+                session: harness.session, x: quarter, y: middle, triggeringSequence: sequence)
+            let right = try readPixel(
+                session: harness.session, x: 3 * quarter, y: middle, triggeringSequence: sequence)
+            print("2D image: left=\(left) right=\(right)")
+            XCTAssertEqual(left, [0, 255, 0, 255], "the image's left half is green")
+            XCTAssertEqual(right, [255, 0, 0, 255], "and its right half red, the right way round")
+        }
+
+        /// The same image, uploaded into a WebGL texture and drawn.
+        ///
+        /// `texImage2D(…, image)` names an image the host holds: the host's
+        /// frame decoder resolves the id against the images this session loaded
+        /// and builds the upload the embedded op builds.
+        func testContentUploadsAnImageItShipsIntoAWebGLTexture() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let script = Data(
+                """
+                import { lastSequence } from "/__migo/engine-frames.mjs";
+
+                export function start({ report }) {
+                  const gl = migo.createCanvas().getContext("webgl");
+                  const vertex = gl.createShader(gl.VERTEX_SHADER);
+                  gl.shaderSource(vertex, "attribute vec2 p; varying vec2 uv; " +
+                    "void main() { uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }");
+                  gl.compileShader(vertex);
+                  const fragment = gl.createShader(gl.FRAGMENT_SHADER);
+                  gl.shaderSource(fragment, "precision mediump float; varying vec2 uv; " +
+                    "uniform sampler2D t; void main() { gl_FragColor = texture2D(t, uv); }");
+                  gl.compileShader(fragment);
+                  const program = gl.createProgram();
+                  gl.attachShader(program, vertex);
+                  gl.attachShader(program, fragment);
+                  gl.bindAttribLocation(program, 0, "p");
+                  gl.linkProgram(program);
+                  const buffer = gl.createBuffer();
+                  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+                  const image = createImage();
+                  image.onerror = (event) => report({ type: "failed", stage: "load",
+                    detail: String(event && event.error && (event.error.message || event.error)) });
+                  image.onload = () => {
+                    const texture = gl.createTexture();
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                    requestAnimationFrame(() => {
+                      gl.clearColor(0, 0, 1, 1);
+                      gl.clear(gl.COLOR_BUFFER_BIT);
+                      gl.useProgram(program);
+                      gl.enableVertexAttribArray(0);
+                      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+                      gl.drawArrays(gl.TRIANGLES, 0, 3);
+                      setTimeout(() => report({ type: "drawn", sequence: lastSequence() }), 0);
+                    });
+                  };
+                  image.src = "img/split.png";
+                }
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "texture-game", entry: "game/main.mjs",
+                files: ["game/main.mjs": script, "img/split.png": Self.splitPNG(width: 16, height: 16)])
+            let report = try runEngineContent(harness: harness, root: root, until: "drawn")
+            let sequence = UInt64(report["sequence"] as? Int ?? 1)
+
+            let quarter = Int32(harness.sizePixels / 4)
+            let middle = Int32(harness.sizePixels / 2)
+            let left = try readPixel(
+                session: harness.session, x: quarter, y: middle, triggeringSequence: sequence)
+            let right = try readPixel(
+                session: harness.session, x: 3 * quarter, y: middle, triggeringSequence: sequence)
+            print("WebGL image texture: left=\(left) right=\(right)")
+            XCTAssertEqual(left, [0, 255, 0, 255], "the left half samples the image's green")
+            XCTAssertEqual(right, [255, 0, 0, 255], "the right half samples its red")
+        }
+
+        /// A PNG, `width` by `height`: the left half opaque green, the right half
+        /// opaque red. Encoded by ImageIO, which is what a game's asset pipeline
+        /// hands the engine -- the decode is the engine's.
+        private static func splitPNG(width: Int, height: Int) -> Data {
+            let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.setFillColor(red: 0, green: 1, blue: 0, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: width / 2, height: height))
+            context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+            context.fill(CGRect(x: width / 2, y: 0, width: width - width / 2, height: height))
+            let encoded = NSMutableData()
+            let destination = CGImageDestinationCreateWithData(
+                encoded, "public.png" as CFString, 1, nil)!
+            CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+            CGImageDestinationFinalize(destination)
+            return encoded as Data
+        }
+
+        /// Run installed content with the engine's API layer, and answer with the
+        /// first report of `type` -- or fail with the one that says why not.
+        private func runEngineContent(
+            harness: MigoFrameHarness, root: URL, until type: String
+        ) throws -> MigoPerformancePlusHost.Report {
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let done = expectation(description: "content reported \(type)")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, contentEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case type:
+                    report = message
+                    done.fulfill()
+                case "failed":
+                    failure =
+                        "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    done.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [done], timeout: 240)
+            if let failure { XCTFail(failure) }
+            let answered = try XCTUnwrap(report)
+            // The frame the report followed has to have been admitted before its
+            // pixels are read: the readback names its sequence, and the channel's
+            // own count says when it arrived.
+            let sequence = answered["sequence"] as? Int ?? 0
+            let deadline = Date().addingTimeInterval(60)
+            while host.channel.currentStatistics.framesAccepted < sequence, Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            XCTAssertEqual(host.channel.currentStatistics.framesRefused, 0)
+            return answered
         }
 
         /// A frame too large for one packet crosses as barriers and one present.

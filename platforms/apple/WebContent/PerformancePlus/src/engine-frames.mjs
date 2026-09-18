@@ -26,7 +26,14 @@
 import { DecodeBudget } from "./decode-budget.mjs";
 import { engineHost } from "./engine-host.mjs";
 import { SUBMIT_CLOSED, SUBMIT_NO_CREDIT } from "./frame-session.mjs";
-import { MAGIC, OP2D_SELECT_CANVAS, STREAM_VERSION } from "./render-opcodes.mjs";
+import {
+  DRAW_IMAGE_BATCH_ENTRY_WORDS,
+  MAGIC,
+  OP2D_DRAW_IMAGE,
+  OP2D_DRAW_IMAGE_BATCH,
+  OP2D_SELECT_CANVAS,
+  STREAM_VERSION,
+} from "./render-opcodes.mjs";
 import { SYNC_OP_AWAIT_WINDOW, WINDOW_REPLY_BYTES, decodeWindowReply } from "./sync-mailbox.mjs";
 import { leavesOnScheme } from "./uplink.mjs";
 import { FramePacketWriter } from "./wire-frame-packet.mjs";
@@ -67,6 +74,24 @@ const statistics = { packets: 0, barriers: 0, windowWaits: 0 };
 let drainWaiters = [];
 let draining = false;
 
+// A run of `drawImage` calls on one canvas, not yet written.
+//
+// Games draw sprites one `drawImage` at a time, and adjacent draws on one
+// canvas run against the same 2D state -- every state change is itself a
+// record, and it ends the run -- so they are one `DRAW_IMAGE_BATCH`: nine words
+// a sprite instead of ten, one record, and one command on the host, where a
+// batch is what the atlas path draws in one go. Folded here rather than by the
+// host's decoder, because a record is charged against the decode budget
+// exactly while a batch the decoder grew by pushing would outgrow its estimate.
+//
+// Anything else that reaches the stream -- a record, a non-empty flushed
+// buffer, a frame end, a barrier -- writes the run first, so order holds.
+const MAX_IMAGE_RUN_ENTRIES = 65_536;
+let imageRun = new Uint32Array(DRAW_IMAGE_BATCH_ENTRY_WORDS * 64);
+let imageRunEntries = 0;
+let imageRunCanvas = 0;
+const imageRunRecord = new Uint32Array(DRAW_IMAGE_BATCH_ENTRY_WORDS + 1);
+
 function currentWriter() {
   if (writer === null) {
     const host = engineHost();
@@ -93,6 +118,10 @@ export function appendStream(words, usedWords) {
   if (usedWords < 2 || words[0] !== MAGIC || words[1] !== STREAM_VERSION) {
     throw new TypeError(`a flushed command buffer must start with the stream header; got ${usedWords} words`);
   }
+  // An empty buffer is the facade's barrier before a draw, and changes nothing:
+  // it must not end an image run.
+  if (usedWords === 2) return;
+  writeImageRun();
   const frame = currentWriter();
   // A new buffer starts with no canvas selected, whatever the last one chose.
   canvasSelected = false;
@@ -152,6 +181,7 @@ export function appendStream(words, usedWords) {
  * lane; the caller reports it the way GL reports an allocation it cannot make.
  */
 export function appendRecord(record, headerWords, payload) {
+  writeImageRun();
   if (!fitRecord(record)) return false;
   writeRecord(record, headerWords, payload);
   // A resource record is GL work between the engine's flushed buffers, and the
@@ -172,6 +202,11 @@ export function appendRecord(record, headerWords, payload) {
  * canvas it is for, and has to say it again after a split.
  */
 export function appendCanvas2DRecord(canvasId, record, headerWords, payload) {
+  writeImageRun();
+  return appendCanvas2DRecordNow(canvasId, record, headerWords, payload);
+}
+
+function appendCanvas2DRecordNow(canvasId, record, headerWords, payload) {
   if (!fitRecord(record)) return false;
   selectCanvasFor(canvasId);
   writeRecord(record, headerWords, payload);
@@ -216,8 +251,48 @@ function selectCanvasFor(canvasId) {
   selectionInPacket = true;
 }
 
+/**
+ * `drawImage` on `canvasId`: the image id and the eight rectangle floats, as
+ * the nine words of a batch entry. Joins the run, or starts one.
+ *
+ * Returns false when the run it ends could not be written -- a run is bounded
+ * by the engine's own batch limit, so that is a packet with no room at all.
+ */
+export function appendDrawImage(canvasId, entry) {
+  if (imageRunEntries !== 0 && (imageRunCanvas !== canvasId || imageRunEntries === MAX_IMAGE_RUN_ENTRIES)) {
+    if (!writeImageRun()) return false;
+  }
+  const at = imageRunEntries * DRAW_IMAGE_BATCH_ENTRY_WORDS;
+  if (at + DRAW_IMAGE_BATCH_ENTRY_WORDS > imageRun.length) {
+    const grown = new Uint32Array(imageRun.length * 2);
+    grown.set(imageRun.subarray(0, at));
+    imageRun = grown;
+  }
+  imageRun.set(entry, at);
+  imageRunCanvas = canvasId;
+  imageRunEntries += 1;
+  return true;
+}
+
+/** Write the pending image run, as one draw or one batch. */
+function writeImageRun() {
+  const entries = imageRunEntries;
+  if (entries === 0) return true;
+  imageRunEntries = 0;
+  if (entries === 1) {
+    imageRunRecord[0] = (((DRAW_IMAGE_BATCH_ENTRY_WORDS + 1) << HEADER_WORD_SHIFT) | OP2D_DRAW_IMAGE) >>> 0;
+    imageRunRecord.set(imageRun.subarray(0, DRAW_IMAGE_BATCH_ENTRY_WORDS), 1);
+    return appendCanvas2DRecordNow(imageRunCanvas, imageRunRecord, DRAW_IMAGE_BATCH_ENTRY_WORDS + 1, null);
+  }
+  const words = entries * DRAW_IMAGE_BATCH_ENTRY_WORDS;
+  imageRunRecord[0] = (((words + 2) << HEADER_WORD_SHIFT) | OP2D_DRAW_IMAGE_BATCH) >>> 0;
+  imageRunRecord[1] = words;
+  return appendCanvas2DRecordNow(imageRunCanvas, imageRunRecord, 2, imageRun.subarray(0, words));
+}
+
 /** End the frame: send its packet, or hold it until the window opens. */
 export function endFrame() {
+  writeImageRun();
   const frame = currentWriter();
   if (frame.wordCount === 0) return;
   const host = engineHost();
@@ -239,6 +314,7 @@ export function endFrame() {
  * call names as its triggering sequence. 0 when nothing was ever sent.
  */
 export function flushToHost() {
+  writeImageRun();
   const frame = currentWriter();
   if (frame.wordCount !== 0) {
     sendBarrier(frame);

@@ -148,8 +148,32 @@ pub const OP2D_SET_TEXT_DIRECTION: u32 = 555;
 /// make, for the same reason.
 pub const OP2D_SET_LINE_DASH: u32 = 556;
 
+// ─── Images (557..=558) ──────────────────────────────────────────────────────
+//
+// A loaded image is a texture the host already holds under its shared id --
+// `Image.src` decoded and uploaded it there -- so drawing one names the id and
+// the rectangles, and no pixel crosses.
+
+/// `drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh)`:
+/// `H image_id:U sx sy sw sh dx dy dw dh:F`. The facade has already expanded
+/// the two- and four-argument forms, so every record carries all eight.
+pub const OP2D_DRAW_IMAGE: u32 = 557;
+
+/// `drawImageBatch(draws)`: `H count | entries`, nine words per entry --
+/// `image_id:U` then the eight rectangle `f32`s -- so `count` is a multiple of
+/// nine. The id is an exact word: shared image ids live above 2^30, where an
+/// `f32` cannot tell two consecutive ids apart.
+pub const OP2D_DRAW_IMAGE_BATCH: u32 = 558;
+
+/// Words per `drawImageBatch` entry.
+pub const DRAW_IMAGE_BATCH_ENTRY_WORDS: u32 = 9;
+
+/// The most entries a batch record may carry: the engine's own bound on
+/// `drawImageBatch` (`shared::protocol::render_cmd::MAX_DRAW_IMAGE_BATCH_ENTRIES`).
+pub const MAX_DRAW_IMAGE_BATCH_ENTRIES: u32 = 65_536;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 557;
+pub const OP2D_END: u32 = 559;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -209,6 +233,14 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OP2D_SET_FILL_STYLE | OP2D_SET_STROKE_STYLE | OP2D_SET_SHADOW_COLOR => (5, &[]),
 
         OP2D_SET_TEXT_ALIGN | OP2D_SET_TEXT_BASELINE | OP2D_SET_TEXT_DIRECTION => (2, &[]),
+
+        OP2D_DRAW_IMAGE => (10, &[]),
+        OP2D_DRAW_IMAGE_BATCH => {
+            return Some(RecordSpec::Words {
+                prefix_words: 1,
+                max_count: MAX_DRAW_IMAGE_BATCH_ENTRIES * DRAW_IMAGE_BATCH_ENTRY_WORDS,
+            });
+        }
 
         // The payload records: their length is a word of their own rather than
         // their word count. Both shapes are the ones the resource block

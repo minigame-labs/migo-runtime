@@ -4628,7 +4628,7 @@ pub(super) mod tests {
     /// Section 7.3 still lists as unmeasured.
     #[test]
     fn steady_state_image_texture_resolve_never_reaches_the_heap() {
-        use super::{RgbaLookup, resolve_cached_image_rgba};
+        use migo_services::image::gl::{RgbaLookup, resolve_cached_image_rgba};
 
         // Unique path: the decoded-bytes cache this fixture inserts into is shared
         // with every other test in this binary.
@@ -4642,7 +4642,7 @@ pub(super) mod tests {
 
         assert!(
             matches!(
-                resolve_cached_image_rgba(&images, 1),
+                resolve_cached_image_rgba(&images.aliases, images.session, 1),
                 RgbaLookup::Found { .. }
             ),
             "the fixture must resolve to bytes, or the burst measures the miss path"
@@ -4654,7 +4654,7 @@ pub(super) mod tests {
                 warmup: 4,
                 measured: 64,
             },
-            |_| match resolve_cached_image_rgba(&images, 1) {
+            |_| match resolve_cached_image_rgba(&images.aliases, images.session, 1) {
                 RgbaLookup::Found { width, .. } => width,
                 _ => panic!("a pinned, resident alias stopped resolving mid-burst"),
             },
@@ -4901,102 +4901,6 @@ fn send_gl_sync_with_flush<T>(
     })?;
     let ctx = state.borrow::<CanvasOpState>();
     send_gl_with_resp_sync(ctx, build)
-}
-
-/// Result of trying to resolve RGBA bytes for a caller `image_id`.
-///
-/// Encodes the distinction between "the caller is referencing an id
-/// we've never seen" and "we know the id but the bytes are missing"
-/// so the miss-diagnostic log can tell the two failure modes apart.
-enum RgbaLookup {
-    Found {
-        width: i32,
-        height: i32,
-        data: Arc<Vec<u8>>,
-        /// Which code path served the bytes.  Used only for the
-        /// `warn!` miss log — it tells us whether the pinned path
-        /// (H-1) is doing its job on the next production drop.
-        #[allow(dead_code)]
-        source: RgbaSource,
-    },
-    UnknownAlias,
-    AliasKnownButEvicted {
-        cache_key: crate::rendering::image::cache::ImageCacheKey,
-    },
-}
-
-#[derive(Debug)]
-enum RgbaSource {
-    /// Bytes came from the pin-protected migo_io::global_cache.  This
-    /// is the only path post-H-5; the variant is kept so future
-    /// alternate sources (GPU-copy, direct-from-Skia) can be
-    /// distinguished in diagnostic logs without a schema change.
-    #[allow(dead_code)]
-    IoCache,
-}
-
-#[inline]
-fn resolve_cached_image_rgba(images: &ImageCacheState, image_id: u32) -> RgbaLookup {
-    // H-5: the migo_io::global_cache is now the single source of truth
-    // for decoded RGBA bytes, with `pin()` / `unpin()` keeping
-    // actively referenced entries exempt from LRU eviction.  The
-    // runtime-v8 IMAGE_CACHE just tells us whether we have an
-    // alias for this caller `image_id` at all (and maps it to
-    // the canonical cache key); the byte lookup then runs
-    // against migo_io::global_cache directly.
-    //
-    // The alias-known-but-evicted branch therefore only fires
-    // when something outside the pin path has cleared the LRU
-    // (e.g. `image_cache::global_cache().clear()` called
-    // manually, or a pin-mismatch bug — both of which we want to
-    // surface in the warn log rather than paper over silently).
-    //
-    // Both lookups run under this Session's alias lock, so the key is borrowed
-    // out of the alias table rather than copied out of it. That is what makes
-    // this path allocation-free: an owned key here is a `String` clone per call,
-    // and `op_tex_sub_image_2d_from_image` reaches this helper unconditionally.
-    //
-    // **Lock order: this Session's alias table, then the process-wide
-    // decoded-bytes cache.** That is the order this file's only other nesting
-    // already takes -- every `pin`/`unpin` in `ImageCache` runs with the alias
-    // lock held, and `ImageCache::drain` holds an io guard inside it -- and the
-    // reverse cannot be written: `migo-io` does not depend on `runtime-v8`, so
-    // no code holding the io lock can reach an alias table at all.
-    let aliases = images.aliases.lock();
-    let Some(key) = aliases.cache_key_for_image_id(image_id) else {
-        return RgbaLookup::UnknownAlias;
-    };
-
-    let cached = migo_io::global_cache().get(key, images.session);
-    match cached {
-        Some(entry) => {
-            // Diag: trace confirms WebGL texImage2D actually
-            // found bytes for `image_id`.  Used to verify the
-            // H-5 pin path is keeping live aliases resident —
-            // a spike of warn-level `miss (bytes evicted)` logs
-            // would signal the pin is leaking.
-            tracing::trace!(
-                image_id,
-                path = key.0.as_str(),
-                gen = key.1,
-                width = entry.width,
-                height = entry.height,
-                "resolve_cached_image_rgba hit"
-            );
-            RgbaLookup::Found {
-                width: entry.width as i32,
-                height: entry.height as i32,
-                data: Arc::clone(&entry.rgba),
-                source: RgbaSource::IoCache,
-            }
-        }
-        // The miss path owns its key: it is a diagnostic that outlives the guard,
-        // and it is not steady state -- reaching it means the pin accounting has
-        // already gone wrong.
-        None => RgbaLookup::AliasKnownButEvicted {
-            cache_key: key.clone(),
-        },
-    }
 }
 
 #[op2(fast)]
@@ -5687,79 +5591,26 @@ pub fn op_tex_image_2d_from_image(
     #[smi] type_: u32,
     #[smi] image_id: u32,
 ) {
-    // Fast path: the image has already been uploaded to a GL texture
-    // by `op_load_image` (CanvasCmd::LoadImage path) and is sitting
-    // in the render thread's `ImageStore`.  We hand the destination
-    // upload off as a GPU-side copy from that existing texture, so
-    // the WebGL texImage2D round-trip never re-reads the CPU-side
-    // RGBA bytes.  Mirrors what Chrome does for HTMLImageElement →
-    // gl.texImage2D after the bitmap has been promoted to a GPU
-    // texture.
-    let shared = {
-        let c = state.borrow::<ImageCacheState>().aliases.lock();
-        c.shared_for_image_id(image_id)
-    };
-    if let Some((source_shared_id, (w, h))) = shared {
-        queue_gl_fire_and_forget(
-            state,
-            GLCmd::TexImage2DFromShared {
-                canvas_id,
-                target,
-                level,
-                internalformat,
-                format,
-                type_,
-                source_shared_id,
-                src_width: w as i32,
-                src_height: h as i32,
-            },
-        );
-        return;
-    }
-
-    // Slow path: the image's GL texture is not (yet) live in the
-    // store but the decoded RGBA bytes are still in the io cache —
-    // re-upload from CPU bytes.  Also covers the diagnostic miss
-    // classes (unknown alias / evicted bytes).
-    let (width, height, data) =
-        match resolve_cached_image_rgba(state.borrow::<ImageCacheState>(), image_id) {
-            RgbaLookup::Found {
-                width,
-                height,
-                data,
-                ..
-            } => (width, height, data),
-            RgbaLookup::UnknownAlias => {
-                warn!(
-                    "op_tex_image_2d_from_image miss (unknown alias): image_id={}",
-                    image_id
-                );
-                return;
-            }
-            RgbaLookup::AliasKnownButEvicted { cache_key } => {
-                warn!(
-                    "op_tex_image_2d_from_image miss (bytes evicted): image_id={}, src={}, gen={}",
-                    image_id, cache_key.0, cache_key.1
-                );
-                return;
-            }
-        };
-
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexImage2D {
+    // A GPU-side copy from the image's texture when the id is a live alias,
+    // the decoded bytes otherwise; `migo_services::image::gl`, which the
+    // external session's frame decoder calls too.
+    let command = {
+        let images = state.borrow::<ImageCacheState>();
+        migo_services::image::gl::tex_image_2d_from_image(
+            &images.aliases,
+            images.session,
             canvas_id,
             target,
             level,
             internalformat,
-            width,
-            height,
-            border: 0,
             format,
             type_,
-            data: Some(data),
-        },
-    );
+            image_id,
+        )
+    };
+    if let Some(command) = command {
+        queue_gl_fire_and_forget(state, command);
+    }
 }
 
 /// `texImage2D` from a Canvas2D snapshot allocated by
@@ -5953,47 +5804,24 @@ pub fn op_tex_sub_image_2d_from_image(
     #[smi] type_: u32,
     #[smi] image_id: u32,
 ) {
-    let (width, height, data) = match resolve_cached_image_rgba(
-        state.borrow::<ImageCacheState>(),
-        image_id,
-    ) {
-        RgbaLookup::Found {
-            width,
-            height,
-            data,
-            ..
-        } => (width, height, data),
-        RgbaLookup::UnknownAlias => {
-            warn!(
-                "op_tex_sub_image_2d_from_image miss (unknown alias): image_id={}",
-                image_id
-            );
-            return;
-        }
-        RgbaLookup::AliasKnownButEvicted { cache_key } => {
-            warn!(
-                "op_tex_sub_image_2d_from_image miss (bytes evicted): image_id={}, src={}, gen={}",
-                image_id, cache_key.0, cache_key.1
-            );
-            return;
-        }
-    };
-
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexSubImage2D {
+    let command = {
+        let images = state.borrow::<ImageCacheState>();
+        migo_services::image::gl::tex_sub_image_2d_from_image(
+            &images.aliases,
+            images.session,
             canvas_id,
             target,
             level,
             xoffset,
             yoffset,
-            width,
-            height,
             format,
             type_,
-            data,
-        },
-    );
+            image_id,
+        )
+    };
+    if let Some(command) = command {
+        queue_gl_fire_and_forget(state, command);
+    }
 }
 
 #[op2(fast)]

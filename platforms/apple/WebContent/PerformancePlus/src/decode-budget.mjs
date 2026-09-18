@@ -17,7 +17,12 @@
 
 import {
   OP2D_BASE,
+  OP2D_DRAW_IMAGE_BATCH,
+  OP2D_FILL_TEXT,
   OP2D_SELECT_CANVAS,
+  OP2D_SET_FONT,
+  OP2D_SET_LINE_DASH,
+  OP2D_STROKE_TEXT,
   OP_UNIFORM1IV,
   OP_UNIFORM_MATRIX2FV,
   OP_UNIFORM_MATRIX4FV,
@@ -77,6 +82,30 @@ export const WORD_LIST_PREFIX_WORDS = new Map([
   [OPR_DRAW_BUFFERS, 2],
   [OPR_INVALIDATE_FRAMEBUFFER, 3],
 ]);
+/**
+ * The 2D payload records' shapes, from engine/crates/frame-wire/src/canvas2d.rs:
+ * a font or a text is a string the decode copies out, a dash list or an image
+ * batch a vector of the record's own words.
+ */
+export const CANVAS2D_PAYLOAD_PREFIX_WORDS = new Map([
+  [OP2D_SET_FONT, 1],
+  [OP2D_FILL_TEXT, 4],
+  [OP2D_STROKE_TEXT, 4],
+]);
+export const CANVAS2D_WORD_LIST_PREFIX_WORDS = new Map([
+  [OP2D_SET_LINE_DASH, 1],
+  [OP2D_DRAW_IMAGE_BATCH, 1],
+]);
+
+/** What a selected 2D record owns beyond its command. `canvas2d_payload_bytes`. */
+function canvas2dPayloadBytes(words, start, opcode, wordCount) {
+  const prefix = CANVAS2D_PAYLOAD_PREFIX_WORDS.get(opcode);
+  if (prefix !== undefined) return words[start + prefix] + PAYLOAD_OVERHEAD_BYTES;
+  const listPrefix = CANVAS2D_WORD_LIST_PREFIX_WORDS.get(opcode);
+  if (listPrefix !== undefined) return (wordCount - listPrefix - 1) * 4 + PAYLOAD_OVERHEAD_BYTES;
+  return 0;
+}
+
 /** `max(count, minimum).next_power_of_two()`, as Rust computes it (0 -> 1). */
 function capacity(count, minimum) {
   const value = count > minimum ? count : minimum;
@@ -176,6 +205,7 @@ export class DecodeBudget {
           ops += 1;
         }
         canvasCommands += 1;
+        bytes += canvas2dPayloadBytes(words, start, opcode, wordCount);
       }
     } else {
       if (canvasCommands !== 0) {
@@ -205,6 +235,7 @@ export class DecodeBudget {
       if (this.#canvasSelected) {
         this.#closeGlBatch();
         this.#canvasCommands += 1;
+        this.#bytes += canvas2dPayloadBytes(words, start, opcode, wordCount);
       }
     } else {
       this.#closeCanvasBatch();

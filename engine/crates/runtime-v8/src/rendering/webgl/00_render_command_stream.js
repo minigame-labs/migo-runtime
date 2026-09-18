@@ -1165,6 +1165,14 @@ const OP2D_SET_TEXT_BASELINE = 554;
 const OP2D_SET_TEXT_DIRECTION = 555;
 const OP2D_SET_LINE_DASH = 556;
 
+// --- 2D images ---
+//
+// Also the external producer's alone: `drawImage` here is an op, for the
+// reason the text records above are. They are listed because the three tables
+// must agree.
+const OP2D_DRAW_IMAGE = 557;
+const OP2D_DRAW_IMAGE_BATCH = 558;
+
 // --- 2D canvas selection ---
 //
 // `Canvas2DCmd` carries no canvas id -- the id lives on the batch -- so the

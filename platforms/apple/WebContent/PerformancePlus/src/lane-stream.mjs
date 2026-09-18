@@ -6,6 +6,7 @@
 
 import {
   appendCanvas2DRecord,
+  appendDrawImage,
   appendRecord,
   appendStream,
   endFrame,
@@ -644,4 +645,88 @@ export function op_set_line_dash(canvasId, segments) {
   if (!appendCanvas2DRecord(canvas, record, headerWords, words)) {
     recordProducerError(canvas, OUT_OF_MEMORY);
   }
+}
+
+// ---- images ------------------------------------------------------------------
+//
+// A loaded image is a texture the host already holds -- `Image.src` decoded
+// and uploaded it there, and answered with its shared id -- so drawing or
+// uploading one names the id, and no pixel crosses.
+
+/// `drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh)`, the facade having
+/// expanded the shorter forms. Adjacent draws on one canvas leave as one batch
+/// record; see `appendDrawImage`.
+const drawImageEntry = new Uint32Array(R.DRAW_IMAGE_BATCH_ENTRY_WORDS);
+export function op_draw_image(canvasId, imageId, sx, sy, sw, sh, dx, dy, dw, dh) {
+  const canvas = toU32(canvasId, "canvas_id");
+  drawImageEntry[0] = toU32(imageId, "image_id");
+  drawImageEntry[1] = f32BitsOf(sx, "sx");
+  drawImageEntry[2] = f32BitsOf(sy, "sy");
+  drawImageEntry[3] = f32BitsOf(sw, "sw");
+  drawImageEntry[4] = f32BitsOf(sh, "sh");
+  drawImageEntry[5] = f32BitsOf(dx, "dx");
+  drawImageEntry[6] = f32BitsOf(dy, "dy");
+  drawImageEntry[7] = f32BitsOf(dw, "dw");
+  drawImageEntry[8] = f32BitsOf(dh, "dh");
+  if (!appendDrawImage(canvas, drawImageEntry)) recordProducerError(canvas, OUT_OF_MEMORY);
+}
+
+/// The most entries a batch may carry: the engine's own bound, which the op
+/// refuses above and so does this.
+const MAX_DRAW_IMAGE_BATCH_ENTRIES = 65_536;
+const DRAW_IMAGE_BATCH_ENTRY_BYTES = R.DRAW_IMAGE_BATCH_ENTRY_WORDS * 4;
+
+/**
+ * `drawImageBatch(draws)`: the facade's buffer of nine-word entries -- the image
+ * id's own bits, then eight floats -- carried as the words they are.
+ *
+ * A buffer that is not whole entries, or holds more than the engine allows, is
+ * dropped as the op drops it; an empty one draws nothing.
+ */
+export function op_draw_image_batch(canvasId, data) {
+  const canvas = toU32(canvasId, "canvas_id");
+  const bytes = bytesOf(data, "data");
+  if (bytes.byteLength % DRAW_IMAGE_BATCH_ENTRY_BYTES !== 0) return;
+  const entries = bytes.byteLength / DRAW_IMAGE_BATCH_ENTRY_BYTES;
+  if (entries === 0 || entries > MAX_DRAW_IMAGE_BATCH_ENTRIES) return;
+  const words = new Uint32Array(bytes.byteLength >> 2);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let index = 0; index < words.length; index += 1) words[index] = view.getUint32(index * 4, true);
+  const headerWords = 2;
+  record[0] = (((headerWords + words.length) << 12) | R.OP2D_DRAW_IMAGE_BATCH) >>> 0;
+  record[1] = words.length;
+  if (!appendCanvas2DRecord(canvas, record, headerWords, words)) {
+    recordProducerError(canvas, OUT_OF_MEMORY);
+  }
+}
+
+/// `texImage2D(target, level, internalformat, format, type, image)`: the host
+/// resolves the id against the images it loaded -- a GPU-side copy from the
+/// image's texture where it can, the decoded bytes otherwise.
+export function op_tex_image_2d_from_image(canvasId, target, level, internalformat, format, type, imageId) {
+  emit(
+    R.OPR_TEX_IMAGE_2D_FROM_IMAGE,
+    toU32(canvasId, "canvas_id"),
+    toU32(target, "target"),
+    toI32(level, "level"),
+    toI32(internalformat, "internalformat"),
+    toU32(format, "format"),
+    toU32(type, "type_"),
+    toU32(imageId, "image_id"),
+  );
+}
+
+/// `texSubImage2D(target, level, x, y, format, type, image)`.
+export function op_tex_sub_image_2d_from_image(canvasId, target, level, xoffset, yoffset, format, type, imageId) {
+  emit(
+    R.OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE,
+    toU32(canvasId, "canvas_id"),
+    toU32(target, "target"),
+    toI32(level, "level"),
+    toI32(xoffset, "xoffset"),
+    toI32(yoffset, "yoffset"),
+    toU32(format, "format"),
+    toU32(type, "type_"),
+    toU32(imageId, "image_id"),
+  );
 }

@@ -215,6 +215,22 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             segments: floats_of(record, 1)?,
         },
 
+        // ── Images ──────────────────────────────────────────────────────────
+        OP2D_DRAW_IMAGE => Canvas2DCmd::DrawImage {
+            image_id: record[1],
+            sx: f(record[2]),
+            sy: f(record[3]),
+            sw: f(record[4]),
+            sh: f(record[5]),
+            dx: f(record[6]),
+            dy: f(record[7]),
+            dw: f(record[8]),
+            dh: f(record[9]),
+        },
+        OP2D_DRAW_IMAGE_BATCH => Canvas2DCmd::DrawImageBatch {
+            draws: draw_image_entries(record)?,
+        },
+
         _ => return None,
     })
 }
@@ -292,6 +308,33 @@ fn floats_of(record: &[u32], prefix_words: usize) -> Option<Vec<f32>> {
             .map(|word| f(*word)),
     );
     Some(values)
+}
+
+/// A `drawImageBatch` record's entries: nine words each, the id then the eight
+/// rectangle floats. `None` for a word count that is not whole entries, which
+/// drops the one command -- what the op does with a buffer that is not.
+fn draw_image_entries(record: &[u32]) -> Option<Vec<shared::protocol::render_cmd::DrawImageEntry>> {
+    let words = &record[2..2 + record[1] as usize];
+    let per = frame_wire::canvas2d::DRAW_IMAGE_BATCH_ENTRY_WORDS as usize;
+    if words.is_empty() || !words.len().is_multiple_of(per) {
+        return None;
+    }
+    let mut draws = Vec::new();
+    draws.try_reserve_exact(words.len() / per).ok()?;
+    draws.extend(words.chunks_exact(per).map(|entry| {
+        shared::protocol::render_cmd::DrawImageEntry {
+            image_id: entry[0],
+            sx: f(entry[1]),
+            sy: f(entry[2]),
+            sw: f(entry[3]),
+            sh: f(entry[4]),
+            dx: f(entry[5]),
+            dy: f(entry[6]),
+            dw: f(entry[7]),
+            dh: f(entry[8]),
+        }
+    }));
+    Some(draws)
 }
 
 /// Four floats, in the order the destination's `Color` declares them.

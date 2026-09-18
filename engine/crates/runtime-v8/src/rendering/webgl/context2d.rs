@@ -1619,54 +1619,87 @@ pub fn op_draw_image(
 
 #[op2(fast)]
 pub fn op_draw_image_batch(state: &mut OpState, #[smi] canvas_id: u32, #[buffer] data: &[u8]) {
+    match draw_image_batch_entries(data) {
+        Ok(Some(draws)) => queue_canvas2d(state, canvas_id, Canvas2DCmd::DrawImageBatch { draws }),
+        Ok(None) => {}
+        Err(reason) => error!("op_draw_image_batch: {reason}"),
+    }
+}
+
+/// A `drawImageBatch` buffer as entries: nine 32-bit words each, the image id's
+/// own bits then the eight rectangle floats. `Ok(None)` for an empty batch.
+///
+/// The id is read as bits, not converted from a float: shared image ids live
+/// above 2^30, where an `f32` cannot tell consecutive ids apart, and the facade
+/// writes the id through a `Uint32Array` over the same buffer.
+fn draw_image_batch_entries(
+    data: &[u8],
+) -> Result<Option<Vec<shared::protocol::render_cmd::DrawImageEntry>>, String> {
     use shared::protocol::render_cmd::DrawImageEntry;
 
     const ENTRY_SIZE: usize = 9 * 4;
 
     if data.len() % ENTRY_SIZE != 0 {
-        error!("op_draw_image_batch: invalid buffer size");
-        return;
+        return Err("invalid buffer size".to_string());
     }
-
     let entry_count = data.len() / ENTRY_SIZE;
     if entry_count == 0 {
-        return;
+        return Ok(None);
     }
     if entry_count > MAX_DRAW_IMAGE_BATCH_ENTRIES {
-        error!("op_draw_image_batch: entry count exceeds {MAX_DRAW_IMAGE_BATCH_ENTRIES}");
-        return;
+        return Err(format!(
+            "entry count exceeds {MAX_DRAW_IMAGE_BATCH_ENTRIES}"
+        ));
     }
-
     let mut draws = Vec::new();
     if draws.try_reserve_exact(entry_count).is_err() {
-        error!("op_draw_image_batch: allocation failed for {entry_count} entries");
-        return;
+        return Err(format!("allocation failed for {entry_count} entries"));
     }
-
+    let word = |at: usize| u32::from_ne_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
     for i in 0..entry_count {
-        let offset = i * ENTRY_SIZE;
-        let floats: &[f32] = bytemuck::cast_slice(&data[offset..offset + ENTRY_SIZE]);
-
+        let at = i * ENTRY_SIZE;
+        let float = |n: usize| f32::from_bits(word(at + n * 4));
         draws.push(DrawImageEntry {
-            image_id: floats[0] as u32,
-            sx: floats[1],
-            sy: floats[2],
-            sw: floats[3],
-            sh: floats[4],
-            dx: floats[5],
-            dy: floats[6],
-            dw: floats[7],
-            dh: floats[8],
+            image_id: word(at),
+            sx: float(1),
+            sy: float(2),
+            sw: float(3),
+            sh: float(4),
+            dx: float(5),
+            dy: float(6),
+            dw: float(7),
+            dh: float(8),
         });
     }
-
-    queue_canvas2d(state, canvas_id, Canvas2DCmd::DrawImageBatch { draws });
+    Ok(Some(draws))
 }
 
 // Tests for the unified frame collector are in frame_collector.rs.
 
 #[cfg(test)]
 mod tests {
+    /// A batch entry names the image the facade meant. Shared ids start at
+    /// 2^30, where consecutive `f32` values are 128 apart: an id converted
+    /// through a float named another image -- the defect this replaced.
+    #[test]
+    fn a_batch_entry_keeps_its_exact_image_id() {
+        let mut data = Vec::new();
+        for id in [0x4000_0001u32, 0x4000_0002] {
+            data.extend_from_slice(&id.to_ne_bytes());
+            for value in [0.0f32, 0.0, 8.0, 8.0, 16.0, 16.0, 8.0, 8.0] {
+                data.extend_from_slice(&value.to_ne_bytes());
+            }
+        }
+        let draws = super::draw_image_batch_entries(&data)
+            .expect("a whole batch")
+            .expect("not empty");
+        let ids: Vec<u32> = draws.iter().map(|draw| draw.image_id).collect();
+        assert_eq!(ids, vec![0x4000_0001, 0x4000_0002]);
+        assert_eq!(draws[1].dx, 16.0);
+        assert!(super::draw_image_batch_entries(&data[..35]).is_err());
+        assert!(super::draw_image_batch_entries(&[]).unwrap().is_none());
+    }
+
     use super::super::font::{OP_GET_TEXT_LINE_HEIGHT, OP_LOAD_FONT};
     use super::{OP_FORCE_READBACK_SNAPSHOT, OP_GET_IMAGE_DATA, OP_MEASURE_TEXT};
     use shared::protocol::{SyncOpClass, class_for_op};

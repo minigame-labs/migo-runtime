@@ -78,6 +78,13 @@ impl frame_decode::GlDecodeContext for OpStateRenderTarget<'_> {
             phase.into(),
         );
     }
+
+    fn image_upload(
+        &mut self,
+        upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        crate::rendering::webgl::error_state::image_upload(self.state, upload)
+    }
 }
 
 impl RenderSink for OpStateRenderTarget<'_> {
