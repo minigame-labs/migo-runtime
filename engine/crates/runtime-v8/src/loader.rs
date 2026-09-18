@@ -114,16 +114,11 @@ impl MyModuleLoader {
     #[inline]
     fn patch_amd(mut source: ModuleSource) -> Result<ModuleSource, ModuleLoaderError> {
         let code = String::from_utf8_lossy(source.code.as_bytes());
-
-        if code.contains("define.amd") || code.contains("typeof define") {
-            let mut patched = code.into_owned();
-            patched.push_str("\nexport default globalThis._lastDefinedModule;\n");
-            source.code = ModuleSourceCode::String(patched.into());
-        } else if shared::cjs_compat::is_cjs(&code) {
-            let patched = shared::cjs_compat::wrap_cjs(&code);
+        // The loader's one rewrite, shared with the external session's content
+        // origin so both evaluate the same module text.
+        if let Some(patched) = shared::cjs_compat::module_source(&code) {
             source.code = ModuleSourceCode::String(patched.into());
         }
-
         Ok(source)
     }
 

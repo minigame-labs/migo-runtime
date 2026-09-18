@@ -62,6 +62,35 @@ pub fn wrap_cjs(code: &str) -> String {
     )
 }
 
+/// The source a content module is evaluated as, when it is not its own text.
+///
+/// The one place the engine's module loader rewrites what content wrote, used
+/// by both executions: the embedded runtime's loader for every module it loads,
+/// and the external session for every module the content origin serves. So a
+/// game's `game.js` is evaluated as the same module text in V8 and in WebKit.
+///
+/// - AMD source (`define.amd`, `typeof define`) runs as written and exports
+///   what it defined: the `define` shim leaves it on `_lastDefinedModule`.
+/// - CommonJS source becomes an AMD `define` of `require`, `exports` and
+///   `module` ([`wrap_cjs`]).
+/// - Anything else -- an ES module, or a plain script -- is `None`: evaluated
+///   as written.
+pub fn module_source(code: &str) -> Option<String> {
+    if code.contains("define.amd") || code.contains("typeof define") {
+        let mut patched = String::with_capacity(code.len() + AMD_EXPORT.len());
+        patched.push_str(code);
+        patched.push_str(AMD_EXPORT);
+        Some(patched)
+    } else if is_cjs(code) {
+        Some(wrap_cjs(code))
+    } else {
+        None
+    }
+}
+
+/// What an AMD module gains so the module loader sees its definition.
+const AMD_EXPORT: &str = "\nexport default globalThis._lastDefinedModule;\n";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +134,25 @@ mod tests {
     #[test]
     fn plain_code_is_not_cjs() {
         assert!(!is_cjs("console.log('hello');"));
+    }
+
+    #[test]
+    fn amd_source_runs_as_written_and_exports_its_definition() {
+        let amd = "if (typeof define === 'function') define([], () => 1);";
+        assert_eq!(
+            module_source(amd).as_deref(),
+            Some(format!("{amd}\nexport default globalThis._lastDefinedModule;\n").as_str())
+        );
+    }
+
+    #[test]
+    fn commonjs_is_wrapped_and_modules_and_scripts_are_left_alone() {
+        assert_eq!(
+            module_source("module.exports = 1;"),
+            Some(wrap_cjs("module.exports = 1;"))
+        );
+        assert_eq!(module_source("export const a = 1;"), None);
+        assert_eq!(module_source("console.log('plain');"), None);
     }
 
     #[test]

@@ -30,6 +30,10 @@ pub mod external;
 #[cfg(feature = "external-frames")]
 pub mod external_services;
 #[cfg(feature = "external-frames")]
+mod service_args;
+#[cfg(feature = "external-frames")]
+mod service_fs;
+#[cfg(feature = "external-frames")]
 mod service_ops;
 
 #[cfg(all(test, feature = "embedded-v8"))]

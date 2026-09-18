@@ -119,6 +119,19 @@ public enum MigoWebKitOriginRules {
         return .file(path: candidate)
     }
 
+    /// Whether a request is for a content module the engine serves: a script
+    /// in the package -- `.js`, `.mjs` or `.cjs`, the names the engine's module
+    /// loader loads -- and not one of the engine's own modules under the
+    /// reserved prefix, which are served as they are.
+    ///
+    /// Case-sensitive, as the engine's loader is: `GAME.JS` is not a name it
+    /// resolves to a module, so it is not one this serves as one either.
+    public static func isContentModule(requestPath: String) -> Bool {
+        guard !requestPath.hasPrefix(engineAssetPrefix) else { return false }
+        return requestPath.hasSuffix(".js") || requestPath.hasSuffix(".mjs")
+            || requestPath.hasSuffix(".cjs")
+    }
+
     /// The MIME type for a file name, from the system's own table where it has one.
     ///
     /// Derived rather than listed, because a hand-written extension map stops

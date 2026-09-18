@@ -7,9 +7,9 @@
 // synchronous readback the engine supports needs. Both are recorded with their
 // evidence in `../../../Sources/MigoApplePerformancePlus/README.md`.
 //
-// The content entry point is imported here rather than bundled with this file:
-// content is the game's, this is the engine's, and one bundle holding both would
-// mean an engine release could not be swapped under a game that already shipped.
+// The game's entry is imported here rather than bundled with this file: content
+// is the game's, this is the engine's, and one bundle holding both would mean an
+// engine release could not be swapped under a game that already shipped.
 
 import { constructOpError } from "./engine-core.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
@@ -131,21 +131,43 @@ self.onmessage = async (event) => {
     report({ type: "engine-ready" });
   }
 
-  if (typeof config.contentEntry === "string") {
+  // The game: its entry evaluated as the embedded runtime evaluates one -- a
+  // module, after the engine's API layer, whose source (and every script it
+  // imports) the host serves with the engine's module rules, so a CommonJS
+  // `game.js` runs wrapped and its `require` resolves in the package. Settled
+  // when the module has run; the game's frames are the clock's from there.
+  if (typeof config.gameEntry === "string") {
+    if (identity === undefined) {
+      report({ type: "failed", stage: "content", detail: "a game entry needs the engine session" });
+      return;
+    }
     try {
-      const module = await import(config.contentEntry);
+      // Against the package root, not `location.origin`: a custom scheme's
+      // origin is opaque, and serialises as "null".
+      await import(new URL(config.gameEntry, new URL("/", self.location.href)).href);
+    } catch (error) {
+      report({ type: "failed", stage: "content", detail: String(error && (error.stack || error)) });
+      return;
+    }
+  }
+
+  // A harness: a module whose `start` is handed the producer's own session, for
+  // lane tests that drive frames and calls below the engine's API.
+  if (typeof config.harnessEntry === "string") {
+    try {
+      const module = await import(config.harnessEntry);
       if (typeof module.start !== "function") {
         report({
           type: "failed",
           stage: "content",
-          detail: `${config.contentEntry} exports no start()`,
+          detail: `${config.harnessEntry} exports no start()`,
         });
         return;
       }
-      // `start` returns once content is initialised. It is not the frame loop:
-      // the loop is driven by clock ticks from the host, and a `start` that
-      // never returned would be content that never reports itself ready.
-      // `report` because content cannot use the global to reach the host once
+      // `start` returns once the harness is initialised. It is not the frame
+      // loop: the loop is driven by clock ticks from the host, and a `start`
+      // that never returned would be a harness that never reports itself ready.
+      // `report` because a harness cannot use the global to reach the host once
       // the engine is loaded: that name is the engine's (see `postToPage`).
       await module.start({ session, sync, report });
     } catch (error) {

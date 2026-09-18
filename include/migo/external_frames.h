@@ -628,6 +628,31 @@ MIGO_API MigoResult MIGO_CALL migo_session_take_parked_reply(
 MIGO_API MigoResult MIGO_CALL migo_session_copy_content_root(
     MigoSession *session, char *buffer, size_t capacity, size_t *out_length);
 
+/* What migo_session_read_content_module handed over. */
+#define MIGO_CONTENT_MODULE_SERVED 0U     /* the bytes are the module's source */
+#define MIGO_CONTENT_MODULE_NOT_FOUND 1U  /* the bytes are why: answer 404 */
+#define MIGO_CONTENT_MODULE_REFUSED 2U    /* the bytes are why: answer 403 */
+#define MIGO_CONTENT_MODULE_UNREADABLE 3U /* the bytes are why: answer 500 */
+
+/*
+ * The source of the content module at `path` -- a path on the content origin,
+ * "/game.js" -- as the engine evaluates it: resolved through the mounted
+ * package (subpackage overlays and pack-backed packages included), contained
+ * in it, UTF-8, and with the module loader's one rewrite applied, so a
+ * CommonJS entry runs wrapped exactly as it does in the embedded runtime. The
+ * content origin answers every script request of a game with this rather than
+ * with the file.
+ *
+ * `path` is borrowed UTF-8 of `path_length` bytes. *out_module receives the
+ * bytes -- the source, or the reason it was not served, as *out_status says --
+ * which the caller releases with migo_owned_bytes_release. Reads the file on
+ * the calling thread. Returns MIGO_ERROR_INVALID_STATE before content is
+ * loaded.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_read_content_module(
+    MigoSession *session, const char *path, size_t path_length, MigoOwnedBytes **out_module,
+    uint32_t *out_status);
+
 /* ---------------------------------------------------------------------------
  * The resource lane
  *

@@ -34,6 +34,9 @@
 #      The producer's records must decode to exactly the commands the in-process
 #      ops build, and record the same errors
 #      (engine/crates/runtime-v8/src/rendering/webgl/resource_parity.rs).
+#   6. The file system. Every file call and `require` the producer makes is run
+#      by the host's own dispatch on a real game sandbox, and the producer's
+#      reading of the real answers is checked (test/emit-file-calls.mjs).
 #
 # Host-only: python3, node, cargo (with the host V8 the runtime's own tests use).
 # No Apple toolchain.
@@ -119,6 +122,26 @@ fi
 printf '%s\n' "$text" | grep -qE '[0-9]+ Canvas2D commands agree' \
     || { printf '%s\n' "$text" >&2; fail "the text parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$text" | grep -E '[0-9]+ Canvas2D commands agree'
+
+# The file system and `require`: every call the producer's lanes make, run by
+# the host's own dispatch on a real game sandbox, and the producer's reading of
+# the host's real answers. emit-file-calls.mjs records the calls, the Rust test
+# replays them in order and writes each answer, and the same script then runs
+# again against those answers and checks what content would see.
+FILE_CALLS="$WORK/file-calls"
+node platforms/apple/WebContent/PerformancePlus/test/emit-file-calls.mjs write "$FILE_CALLS" \
+    || fail "the producer's file calls could not be recorded"
+status=0
+files="$(cd engine && MIGO_FILE_CALLS_DIR="$FILE_CALLS" cargo test -p migo-core --no-default-features \
+    --features external-frames --lib the_producer_s_file_calls -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$files" >&2
+    fail "the host refused or failed the producer's file calls"
+fi
+printf '%s\n' "$files" | grep -qE 'ran [0-9]+ producer file calls on the host' \
+    || { printf '%s\n' "$files" >&2; fail "the file-call replay did not report running; it may not have run"; }
+node platforms/apple/WebContent/PerformancePlus/test/emit-file-calls.mjs read "$FILE_CALLS" \
+    || fail "the producer misread the host's answers to its file calls"
 
 python3 - "$STAGED/engine/manifest.json" <<'PY'
 import json, sys

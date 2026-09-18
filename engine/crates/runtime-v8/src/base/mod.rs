@@ -182,80 +182,12 @@ struct HeapStats {
     external_memory: usize,
 }
 
-/// Check whether `specifier` looks like an absolute filesystem path.
-///
-/// Matches Unix absolute paths (`/foo`) and Windows drive-letter paths (`C:\foo`).
-#[inline]
-fn is_absolute_path(specifier: &str) -> bool {
-    specifier.starts_with('/')
-        || (specifier.len() >= 3
-            && specifier.as_bytes()[0].is_ascii_alphabetic()
-            && specifier.as_bytes()[1] == b':'
-            && matches!(specifier.as_bytes()[2], b'/' | b'\\'))
-}
-
-/// Resolve `path` using the Node.js-style extension/index resolution order:
-///
-/// 1. exact path
-/// 2. path.js
-/// 3. path.json
-/// 4. path/index.js
-///
-/// Checks both filesystem AND MountTable (for pack-backed overlays where
-/// files don't exist on disk but are accessible via the mount).
-fn resolve_module_path(
-    path: std::path::PathBuf,
-    mount_table: Option<&shared::vfs::MountTable>,
-    code_dir: &str,
-) -> std::path::PathBuf {
-    let code_path = std::path::Path::new(code_dir);
-
-    // Helper: check if a candidate path exists on filesystem OR in mount table.
-    let exists = |p: &std::path::Path| -> bool {
-        if p.is_file() {
-            return true;
-        }
-        // Check mount table for pack-backed entries.
-        if let Some(mt) = mount_table {
-            if let Ok(rel) = p.strip_prefix(code_path) {
-                if let Some(rel_str) = rel.to_str() {
-                    return mt.is_file(rel_str);
-                }
-            }
-        }
-        false
-    };
-
-    if exists(&path) {
-        return path;
-    }
-
-    // Try appending .js
-    if !path.extension().map_or(false, |e| e == "js" || e == "json") {
-        let with_js = path.with_extension("js");
-        if exists(&with_js) {
-            return with_js;
-        }
-        let with_json = path.with_extension("json");
-        if exists(&with_json) {
-            return with_json;
-        }
-    }
-
-    // Try path/index.js (directory as module)
-    let index_js = path.join("index.js");
-    if exists(&index_js) {
-        return index_js;
-    }
-
-    // Fall back to original (will produce a clear "not found" error)
-    path
-}
-
 /// Synchronously read a file as UTF-8 text, used by the JS `require()` shim.
 ///
 /// Resolves `specifier` relative to `referrer_dir`. If `referrer_dir` is empty,
-/// falls back to `HostOpState::code_dir`.
+/// falls back to `HostOpState::code_dir`. The resolution is
+/// [`migo_services::require::resolve_and_read`], shared with the external
+/// session so both find the same module for the same `require`.
 #[op2]
 #[serde]
 fn op_require_resolve_and_read(
@@ -266,132 +198,18 @@ fn op_require_resolve_and_read(
     let host = state.borrow::<HostOpState>();
     let mount_table = host.mount_table.clone();
     let code_dir = host.code_dir.clone().unwrap_or_default();
-    let _ = host;
-
-    let base_dir = if referrer_dir.is_empty() {
-        code_dir.clone()
-    } else {
-        referrer_dir
-    };
-
-    // Reject absolute paths — they must go through /code resolution.
-    if is_absolute_path(&specifier) {
-        return Err(RequireError::Io(format!(
-            "require: absolute path not allowed: {specifier}"
-        )));
-    }
-
-    let raw_path = std::path::PathBuf::from(&base_dir).join(&specifier);
-    let resolved = resolve_module_path(raw_path, mount_table.as_deref(), &code_dir);
-
-    // Compute a normalized relative path for the canonical module key.
-    // This ensures ./foo and ./a/../foo produce the same cache key.
-    let code_path = std::path::Path::new(&code_dir);
-    let normalized_relative = resolved
-        .strip_prefix(code_path)
-        .ok()
-        .and_then(|r| r.to_str())
-        .map(|s| {
-            // Normalize .. and . textually.
-            let mut parts: Vec<&str> = Vec::new();
-            for c in s.split('/') {
-                match c {
-                    "" | "." => {}
-                    ".." => {
-                        parts.pop();
-                    }
-                    c => parts.push(c),
-                }
-            }
-            parts.join("/")
-        });
-
-    if let (Some(mt), Some(rel)) = (&mount_table, &normalized_relative) {
-        // Use resolve() as the single source of truth for overlay shadow semantics.
-        // resolve() returns:
-        //   Some(real_path=Some) → file on disk (dir-backed overlay or base)
-        //   Some(real_path=None) → file in pack-backed overlay
-        //   None + overlay matches → shadow: file missing in overlay, don't fall to base
-        //   None + no overlay → path not in any overlay, may fall to base filesystem
-        let resolved_info = mt.resolve(rel);
-        let overlay_claims_subtree = mt.has_overlay_for(rel);
-
-        match &resolved_info {
-            Some(info) => {
-                // MountTable found the file. Read it.
-                match mt.read(rel) {
-                    Ok(bytes) => {
-                        let content = String::from_utf8(bytes)
-                            .map_err(|e| RequireError::Io(format!("require: not UTF-8: {e}")))?;
-                        let is_pack = info.real_path.is_none();
-                        let abs_path = if is_pack {
-                            // Per-source mounted_at: only changes when THIS source
-                            // is replaced, not when other overlays change.
-                            format!(
-                                "{}#s{}",
-                                code_path.join(rel).display(),
-                                info.source_mounted_at
-                            )
-                        } else {
-                            code_path.join(rel).to_string_lossy().into_owned()
-                        };
-                        let parent = code_path
-                            .join(rel)
-                            .parent()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        return Ok(RequireResult {
-                            code: content,
-                            abs_path,
-                            dir: parent,
-                        });
-                    }
-                    Err(e) => {
-                        return Err(RequireError::Io(format!(
-                            "require: resolved but read failed: {rel}: {e}"
-                        )));
-                    }
-                }
-            }
-            None if overlay_claims_subtree => {
-                // An overlay covers this subtree but the file doesn't exist in it.
-                // Shadow: do NOT fall through to base.
-                return Err(RequireError::Io(format!(
-                    "require: module not found (shadowed by overlay): {rel}"
-                )));
-            }
-            None => {
-                // No overlay covers this path. Fall through to base filesystem.
-            }
-        }
-    }
-
-    // Fallback: base filesystem read (only for paths NOT shadowed by an overlay).
-    let path = std::fs::canonicalize(&resolved).unwrap_or(resolved);
-
-    // Sandbox: reject paths outside code_dir.
-    if !code_dir.is_empty() {
-        if !path.starts_with(code_path) {
-            return Err(RequireError::Io(format!(
-                "require: path escapes /code sandbox: {}",
-                path.display()
-            )));
-        }
-    }
-
-    let abs_path = path.to_string_lossy().into_owned();
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| RequireError::Io(format!("require: cannot read {}: {}", abs_path, e)))?;
-    let parent = path
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-
-    Ok(RequireResult {
-        code: content,
-        abs_path,
-        dir: parent,
+    migo_services::require::resolve_and_read(
+        mount_table.as_deref(),
+        &code_dir,
+        &specifier,
+        &referrer_dir,
+    )
+    .map(|module| RequireResult {
+        code: module.code,
+        abs_path: module.abs_path,
+        dir: module.dir,
     })
+    .map_err(|error| RequireError::Io(error.message))
 }
 
 #[derive(serde::Serialize)]

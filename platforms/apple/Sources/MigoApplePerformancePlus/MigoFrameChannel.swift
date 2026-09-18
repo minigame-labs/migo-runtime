@@ -1,5 +1,6 @@
 import Foundation
 import MigoAppleCore
+import MigoAppleWebKit
 import MigoEngine
 
 /// The producer's frames in, the host's answers out.
@@ -159,6 +160,9 @@ public final class MigoFrameChannel {
     public typealias TakeServiceMessage = () -> Data?
     /// A parked answer by generation and request id, handed over without a copy.
     public typealias TakeParkedReply = (UInt32, UInt32) -> Data?
+    /// A content module's source as the engine evaluates it; see
+    /// `MigoWebKitContentOrigin.ModuleSource`.
+    public typealias ReadContentModule = (String) -> MigoWebKitContentOrigin.ModuleLookup
     /// Hand one control message to the engine and report what became of it.
     public typealias SubmitControl = (Data) -> ControlDisposition
     /// Ask the engine which kind a socket message is.
@@ -190,6 +194,7 @@ public final class MigoFrameChannel {
     private let submitService: SubmitService
     private let takeServiceMessage: TakeServiceMessage
     private let takeParked: TakeParkedReply
+    private let readContentModule: ReadContentModule
     private let setDownlinkWaker: SetDownlinkWaker
     private let transport: MigoFrameTransport
     private let lock = NSLock()
@@ -311,6 +316,28 @@ public final class MigoFrameChannel {
                     migo_session_take_parked_reply(session, generation, requestId, &owned) == MIGO_OK
                 else { return nil }
                 return MigoFrameChannel.adopt(owned)
+            },
+            readContentModule: { path in
+                var owned: OpaquePointer?
+                var status: UInt32 = 0
+                let result = path.utf8CString.withUnsafeBufferPointer { text -> MigoResult in
+                    // Without the NUL: the engine takes a length.
+                    migo_session_read_content_module(
+                        session, text.baseAddress, text.count - 1, &owned, &status)
+                }
+                guard result == MIGO_OK else {
+                    return .unavailable("the engine has no content loaded to serve \(path) from")
+                }
+                // An empty module is a module: adopted bytes of length zero
+                // come back as nil, and are served as empty source.
+                let bytes = MigoFrameChannel.adopt(owned) ?? Data()
+                let reason = { String(decoding: bytes, as: UTF8.self) }
+                switch status {
+                case UInt32(MIGO_CONTENT_MODULE_SERVED): return .source(bytes)
+                case UInt32(MIGO_CONTENT_MODULE_NOT_FOUND): return .notFound(reason())
+                case UInt32(MIGO_CONTENT_MODULE_REFUSED): return .refused(reason())
+                default: return .unreadable(reason())
+                }
             })
     }
 
@@ -358,7 +385,10 @@ public final class MigoFrameChannel {
         setDownlinkWaker: @escaping SetDownlinkWaker = { _ in true },
         submitService: @escaping SubmitService = { _ in .unavailable },
         takeServiceMessage: @escaping TakeServiceMessage = { nil },
-        takeParked: @escaping TakeParkedReply = { _, _ in nil }
+        takeParked: @escaping TakeParkedReply = { _, _ in nil },
+        readContentModule: @escaping ReadContentModule = { path in
+            .unavailable("this channel has no engine to serve \(path) from")
+        }
     ) {
         self.transport = transport
         self.submit = submit
@@ -370,6 +400,7 @@ public final class MigoFrameChannel {
         self.submitService = submitService
         self.takeServiceMessage = takeServiceMessage
         self.takeParked = takeParked
+        self.readContentModule = readContentModule
     }
 
     /// Start listening and return what the producer needs to connect.
@@ -501,6 +532,12 @@ public final class MigoFrameChannel {
     }
 
     /// A parked answer the producer asked the content origin for. Taken once.
+    /// A content module's source, as the engine evaluates it. Reads the file on
+    /// the calling thread.
+    public func contentModule(path: String) -> MigoWebKitContentOrigin.ModuleLookup {
+        readContentModule(path)
+    }
+
     public func takeParkedReply(generation: UInt32, requestId: UInt32) -> Data? {
         let reply = takeParked(generation, requestId)
         if reply != nil {

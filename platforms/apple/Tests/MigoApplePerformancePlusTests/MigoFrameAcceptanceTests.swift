@@ -157,7 +157,7 @@ import XCTest
             var submittedBytes: Int?
             var outcome: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
             host.onReport = { report in
@@ -279,7 +279,7 @@ import XCTest
             var report: MigoPerformancePlusHost.Report?
             var failure: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
             host.onReport = { message in
@@ -388,7 +388,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -494,7 +494,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -629,7 +629,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -740,7 +740,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -844,7 +844,7 @@ import XCTest
                 brand: "Apple", model: "iPhone14,5", system: "iOS 26.0", platform: "ios")
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels,
@@ -924,7 +924,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: root, contentEntry: "/game/main.mjs",
+                    contentRoot: root, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -952,6 +952,115 @@ import XCTest
             XCTAssertEqual(
                 report?["refused"] as? String, "Error: setStorage:fail data exceeds max size",
                 "refused by the host's rule, with the message the embedded op throws")
+        }
+
+        /// A game as games are written: a CommonJS `game.js` that `require`s its
+        /// own modules and keeps its saves with the file system.
+        ///
+        /// The acceptance for D15.5b. The host names the entry (`gameEntry`) and
+        /// nothing else: the producer imports it after the engine, the content
+        /// origin serves it -- and every script it pulls in -- through the
+        /// engine's module rules, so it runs wrapped exactly as the embedded
+        /// loader wraps it (as a module); `require` resolves in the
+        /// package through the synchronous service call; and
+        /// `migo.getFileSystemManager()` reads and writes the game's sandbox on
+        /// the host, sync and awaited, with a relative path meaning the package.
+        /// The game reports through `console`, the one channel a game has.
+        func testAGameWrittenAsCommonJSRunsFromItsEntryAndKeepsItsFiles() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let game = Data(
+                """
+                const lib = require("./js/lib");
+                const entryStrict = (function () { return this === undefined; })();
+                const fs = migo.getFileSystemManager();
+                function done(result) { console.log("game-result " + JSON.stringify(result)); }
+                try {
+                  fs.writeFileSync("/user/save.json", JSON.stringify({ level: lib.level }), "utf8");
+                  const back = JSON.parse(fs.readFileSync("/user/save.json", "utf8"));
+                  const size = fs.statSync("/user/save.json").size;
+                  const listed = fs.readdirSync("/user").filter((name) => name.endsWith(".json"));
+                  const packaged = fs.readFileSync("js/data.txt", "utf8");
+                  let readOnly = null;
+                  try { fs.writeFileSync("js/data.txt", "x", "utf8"); } catch (error) { readOnly = error.errMsg; }
+                  fs.writeFile({
+                    filePath: "/user/async.txt", data: "hi", encoding: "utf8",
+                    success() {
+                      fs.readFile({
+                        filePath: "/user/async.txt", encoding: "utf8",
+                        success(res) {
+                          done({ back, size, listed, packaged, readOnly, asyncRead: res.data,
+                            entryStrict, libStrict: lib.strict, sameModule: require("./js/lib") === lib });
+                        },
+                        fail(error) { done({ error: error.errMsg }); },
+                      });
+                    },
+                    fail(error) { done({ error: error.errMsg }); },
+                  });
+                } catch (error) {
+                  done({ error: String(error && (error.errMsg || error.stack || error)) });
+                }
+                """.utf8)
+            let lib = Data(
+                """
+                // CommonJS, required by the entry: evaluated by the engine's shim,
+                // which the package serves through the synchronous service call.
+                module.exports = { level: 3, strict: (function () { return this === undefined; })() };
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "cjs-game", entry: "game.js",
+                files: [
+                    "game.js": game, "js/lib.js": lib, "js/data.txt": Data("shipped".utf8),
+                ])
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let finished = expectation(description: "the game reported")
+            var result: [String: Any]?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, gameEntry: "/game.js",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "console":
+                    guard let text = message["message"] as? String, text.hasPrefix("game-result ")
+                    else { return }
+                    let json = Data(text.dropFirst("game-result ".count).utf8)
+                    result = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
+                    finished.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    finished.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [finished], timeout: 240)
+            XCTAssertNil(failure)
+            let answered = try XCTUnwrap(result, "the game's report was not JSON")
+            XCTAssertNil(answered["error"], "\(answered["error"] ?? "")")
+            XCTAssertEqual((answered["back"] as? [String: Any])?["level"] as? Int, 3)
+            XCTAssertEqual(answered["size"] as? Int, 11, #"{"level":3} is eleven bytes"#)
+            XCTAssertEqual(answered["listed"] as? [String], ["save.json"])
+            XCTAssertEqual(answered["packaged"] as? String, "shipped", "a relative path is the package")
+            XCTAssertEqual(
+                answered["readOnly"] as? String,
+                "writeFileSync:fail Permission denied: js/data.txt",
+                "the package is read-only, in the embedded op's words")
+            XCTAssertEqual(answered["asyncRead"] as? String, "hi")
+            // The embedded runtime's semantics, both halves: the entry is a module
+            // (strict), and a required module is the shim's `new Function` body
+            // (sloppy) -- the same shim runs on the producer.
+            XCTAssertEqual(answered["entryStrict"] as? Bool, true, "the entry runs as a module")
+            XCTAssertEqual(answered["libStrict"] as? Bool, false, "a required module runs as the shim runs it")
+            XCTAssertEqual(answered["sameModule"] as? Bool, true, "require caches by module")
         }
 
         /// An image the game ships, loaded and drawn in 2D.
@@ -1118,7 +1227,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: root, contentEntry: "/game/main.mjs",
+                    contentRoot: root, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -1189,7 +1298,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -1287,7 +1396,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -1389,7 +1498,7 @@ import XCTest
             var submitted: String?
             var bytes: Int?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
             host.onReport = { report in
@@ -1450,7 +1559,7 @@ import XCTest
             var submittedBytes: Int?
             var submitOutcome: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
             host.onReport = { report in

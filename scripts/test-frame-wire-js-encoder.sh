@@ -537,6 +537,15 @@ node "$TEST_DIR/emit-service.mjs" read "$SERVICE_FROM_RUST"
 node "$TEST_DIR/op-args.test.mjs"
 RAN_TESTS+=("$TEST_DIR/op-args.test.mjs")
 
+# --- a read larger than one service answer ----------------------------------
+#
+# The file lanes read into a caller's buffer in pieces, so no answer approaches
+# the synchronous reply ceiling or the host's outbox bound. The pieces have to
+# be the embedded op's one read: continuing by position or by cursor, stopping
+# at end of file, and asking once even for nothing.
+node "$TEST_DIR/files.test.mjs"
+RAN_TESTS+=("$TEST_DIR/files.test.mjs")
+
 # --- a frame larger than one packet, and what the host will decode ----------
 #
 # The host refuses a packet whose decoded storage is over its budget, and on the
