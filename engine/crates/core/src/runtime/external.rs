@@ -972,6 +972,68 @@ impl ExternalFrameClock {
         }
     }
 
+    /// The clock as the session holds it: shared, and listening to the credit
+    /// window.
+    ///
+    /// The listener is installed here rather than by the caller because
+    /// forgetting it is not a compile error and not a test failure -- it is a
+    /// session that stops drawing with its last frame unsent, once, under load.
+    /// `Weak`, so the clock and the window that calls it do not own each other.
+    fn shared(
+        downlink: Arc<Mutex<DownlinkQueue>>,
+        window: WindowSource,
+        runtime_generation: u64,
+    ) -> Arc<Self> {
+        let clock = Arc::new(Self::new(downlink, window, runtime_generation));
+        let weak = Arc::downgrade(&clock);
+        clock
+            .window
+            .on_credit_returned(Box::new(move || {
+                if let Some(clock) = weak.upgrade() {
+                    clock.window_opened();
+                }
+            }));
+        clock
+    }
+
+    /// A credit came back on the render thread. Tell the producer, if that is
+    /// news to it.
+    ///
+    /// News exactly when the last window it was given was zero: it holds a
+    /// packet only then, and a held packet is why it is not asking for the next
+    /// frame -- the tick that would otherwise carry this. While it is drawing
+    /// normally the queue's own rule makes this a load and a return.
+    ///
+    /// Installed on the credit window by [`Self::watch_credits`], and called
+    /// from wherever the renderer finished with a frame.
+    fn window_opened(&self) {
+        let queued = {
+            let mut downlink = self.downlink.lock();
+            if downlink.last_advertised_credits() != Some(0) {
+                return;
+            }
+            let window = self.window.read();
+            if window.remaining_credits == 0 {
+                // Another packet took the credit between the release and this
+                // read. Nothing to tell, and the producer will hear from the
+                // verdict for that packet.
+                return;
+            }
+            downlink.push_window_open(DownlinkRecord::WindowOpen {
+                generation: self.runtime_generation as u32,
+                remaining_credits: window.remaining_credits,
+                accepted_sequence: window.accepted_sequence,
+            })
+        };
+        // Outside the queue lock, and only when something was queued: the waker
+        // schedules a drain, and a drain takes this lock.
+        if queued
+            && let Some(wake) = self.waker.lock().as_ref()
+        {
+            wake();
+        }
+    }
+
     /// Ask for one frame.
     ///
     /// Requests coalesce: one tick answers every request made before it. A
@@ -1468,11 +1530,11 @@ impl ExternalFrameSession {
                 dispatch,
                 admission,
             )),
-            clock: Arc::new(ExternalFrameClock::new(
+            clock: ExternalFrameClock::shared(
                 Arc::clone(&downlink),
                 window,
                 INITIAL_RUNTIME_GENERATION,
-            )),
+            ),
             downlink,
         }
     }
@@ -1515,11 +1577,11 @@ pub fn spawn_external_frame_session(
     let thread_ingress = Arc::clone(&ingress);
     let admission = Admission::new(Arc::clone(&ingress));
     let downlink = Arc::new(Mutex::new(DownlinkQueue::new()));
-    let clock = Arc::new(ExternalFrameClock::new(
+    let clock = ExternalFrameClock::shared(
         Arc::clone(&downlink),
         ingress.lock().window_source(),
         INITIAL_RUNTIME_GENERATION,
-    ));
+    );
     let thread_clock = Arc::clone(&clock);
     let errors = Arc::new(ExternalGlErrors::default());
     let dispatch: Arc<OnceLock<RenderDispatch>> = Arc::new(OnceLock::new());
@@ -2281,6 +2343,70 @@ mod tests {
             queue.lock().dropped(),
             0,
             "coalescing is not dropping: nothing was lost that the newest tick does not carry"
+        );
+    }
+
+    /// The deadlock this exists to break.
+    ///
+    /// A frame whose last packet the window would not admit is held by the
+    /// producer; the producer's next frame request waits for that packet to go;
+    /// the tick that would carry the returned credit waits for that request. So
+    /// a credit coming back has to reach a producer that is asking for nothing,
+    /// and this is the record that does it.
+    #[test]
+    fn a_credit_that_comes_back_reaches_a_producer_that_asked_for_nothing() {
+        let queue = Arc::new(Mutex::new(DownlinkQueue::new()));
+        let ingress = Arc::new(Mutex::new(FrameIngress::new(
+            NONCE,
+            INITIAL_RUNTIME_GENERATION,
+        )));
+        let clock = ExternalFrameClock::shared(
+            Arc::clone(&queue),
+            ingress.lock().window_source(),
+            INITIAL_RUNTIME_GENERATION,
+        );
+        // Kept alive: the window holds only a `Weak` to it.
+        let _clock = Arc::clone(&clock);
+
+        // Fill the window and tell the producer it is shut, which is the state a
+        // producer is in when it holds a packet it could not send.
+        let mut frames = Vec::new();
+        let capacity = ingress.lock().credits().max() as u64;
+        for sequence in 1..=capacity {
+            let (outcome, frame) = ingress.lock().submit(&packet(sequence));
+            assert_eq!(outcome.decision, IngressDecision::Accepted);
+            frames.push(frame);
+        }
+        queue.lock().push_verdict(DownlinkRecord::FrameVerdict {
+            generation: INITIAL_RUNTIME_GENERATION as u32,
+            decision: 0,
+            wire_error_code: 0,
+            remaining_credits: 0,
+            accepted_sequence: capacity,
+        });
+        drain_records(&queue);
+
+        // The renderer finishes with one frame. No tick, no verdict, nothing the
+        // producer did -- and it still hears about it.
+        drop(frames.pop().expect("a frame in flight"));
+        assert!(
+            matches!(
+                drain_records(&queue)[..],
+                [DownlinkRecord::WindowOpen {
+                    remaining_credits: 1,
+                    ..
+                }]
+            ),
+            "a returned credit is advertised when the producer was last told zero"
+        );
+
+        // And a second return says nothing: the producer already knows the
+        // window is open, and a message per returned credit is what this avoids.
+        drop(frames.pop().expect("another frame in flight"));
+        assert_eq!(
+            queue.lock().len(),
+            0,
+            "the advertisement is sent when it is news, not on every credit"
         );
     }
 

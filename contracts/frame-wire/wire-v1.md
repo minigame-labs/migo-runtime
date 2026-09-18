@@ -56,6 +56,15 @@ producer splits frames against. The next change to a field offset, a flag bit
 or a rejection code is still a `wire_version` bump -- and the audit above is
 what will have to be false by then for that to matter.
 
+### Amendment, 2026-09-18: the window advertisement
+
+`DOWN_WINDOW_OPEN` joins the downlink, for the deadlock described under *The
+window*: a held packet, a frame clock waiting for it to go, and a credit that
+comes back with no record entitled to carry the news. Downlink-only and
+additive; a producer of the previous version refuses an unknown kind rather than
+misreading it, and the two halves ship in one package -- the same audit the
+amendment above rests on.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.
@@ -417,10 +426,10 @@ credit on decode refusal, queue failure and unwinding.
 The credit is taken at admission and returned when the renderer is done, and
 the producer can see neither event. What it sees is an **advertisement**: a
 pair `(remaining_credits, accepted_sequence)` meaning "having accepted every
-packet through `accepted_sequence`, this many credits were free". Two downlink
-records carry one -- the verdict on an accepted packet, and every frame-clock
-tick -- and from the latest it read, with `sent` the highest sequence it has
-sent, the producer may send
+packet through `accepted_sequence`, this many credits were free". Three downlink
+records carry one -- the verdict on an accepted packet, every frame-clock tick,
+and the window advertisement below -- and from the latest it read, with `sent`
+the highest sequence it has sent, the producer may send
 
 ```text
 remaining_credits - (sent - accepted_sequence)     floored at zero
@@ -435,6 +444,19 @@ it would stop after two frames and wait for a verdict nothing is going to send.
 The tick is the record a waiting producer is guaranteed to receive -- it asks
 for one -- and the credit it is waiting for is returned by exactly the frame the
 tick follows.
+
+**Why the tick is not enough.** The argument above assumes a producer that is
+asking for frames. One is not: a producer whose frame ended with a packet the
+window would not admit holds that packet, and its frame clock does not ask for
+another frame until the held one goes. It asks for no tick, it sends no packet,
+and the credit it waits for comes back on the render thread in silence -- a
+session that stops with its last frame undrawn, which for a game is a pause
+screen that never appears. So the host sends a **window advertisement**
+(`DOWN_WINDOW_OPEN`) when a credit comes back *and* the last window it
+advertised was zero. That condition is exactly when a producer can be holding
+something: it holds only when its own arithmetic gives zero, and with everything
+it sent admitted, that is the number it was last told. While a producer is
+drawing normally this record is never sent.
 
 **Why the formula is safe to apply in any order.** The host reads
 `accepted_sequence` first and the free count second. A packet is committed to
