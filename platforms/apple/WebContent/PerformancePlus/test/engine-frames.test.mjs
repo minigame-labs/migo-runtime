@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { DecodeBudget, MAX_DECODED_FRAME_BYTES } from "../src/decode-budget.mjs";
 import { DOWN_FRAME_VERDICT, encodeBytes } from "../src/downlink.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "../src/engine-host.mjs";
-import { appendStream, endFrame, flushToHost } from "../src/engine-frames.mjs";
+import { appendCanvas2DRecord, appendStream, endFrame, flushToHost } from "../src/engine-frames.mjs";
 import { FrameSession } from "../src/frame-session.mjs";
 import {
   MAGIC,
@@ -59,6 +59,15 @@ function check(condition, message) {
 }
 
 const header = (opcode, words) => ((words << 12) | opcode) >>> 0;
+
+/** A packet's command-stream words, header and version included. */
+function wordsOf(packet) {
+  const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+  const headerBytes = view.getUint32(8, true);
+  const offset = view.getUint32(headerBytes + 4, true);
+  const count = view.getUint32(headerBytes + 12, true);
+  return new Uint32Array(packet.buffer.slice(packet.byteOffset + offset, packet.byteOffset + offset + count * 4));
+}
 
 // xorshift32: the same streams every run, so a disagreement is reproducible.
 let state = 0x2545f491;
@@ -324,6 +333,35 @@ check(sent.length === afterBarriers + 1, "a frame end with nothing recorded afte
   );
   check(sent.length === before, "and nothing was sent for it");
 }
+
+// ---- 3. a 2D record after a barrier ----------------------------------------
+//
+// A selection holds inside the packet that carries it and nowhere else, so a
+// `fillText` after a `measureText` -- which sends a barrier -- is in a packet
+// whose canvas nothing selected. The host drops a 2D record with no selection:
+// an accepted frame that draws no text, which is how this was found, on a
+// simulator, by a test that counted green pixels.
+
+console.log("A 2D record after a barrier");
+answerVerdicts = true;
+const beforeText = sent.length;
+const textRecord = Uint32Array.of(
+  // OP2D_SET_TEXT_ALIGN, two words: the smallest 2D record with an argument.
+  ((2 << 12) | 553) >>> 0,
+  2,
+);
+check(appendCanvas2DRecord(7, textRecord, 2, null), "the first 2D record was appended");
+flushToHost();
+check(appendCanvas2DRecord(7, textRecord, 2, null), "and one more after the barrier");
+endFrame();
+const afterBarrier = sent.slice(beforeText);
+check(afterBarrier.length >= 2, `the barrier and the frame both went (${afterBarrier.length})`);
+const lastPacket = afterBarrier.at(-1);
+const lastWords = wordsOf(lastPacket);
+check(
+  lastWords[2] === (((2 << 12) | 512) >>> 0) && lastWords[3] === 7,
+  "the packet after a barrier selects its canvas again before the 2D record",
+);
 
 if (outputDirectory) {
   mkdirSync(join(outputDirectory, "streams"), { recursive: true });

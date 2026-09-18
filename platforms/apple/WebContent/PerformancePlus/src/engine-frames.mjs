@@ -49,6 +49,13 @@ let frameId = 0;
 // repeat it: the host reads a 2D record before any selection as an error.
 const selectCanvas = new Uint32Array(SELECT_CANVAS_WORDS);
 let canvasSelected = false;
+// Whether THIS packet carries that selection. A packet is a unit of execution
+// and a selection only holds inside the one that carries it, so every packet
+// that ends -- a frame end, a split, or a barrier a synchronous call sent --
+// leaves the next one with nothing selected. Kept apart from `canvasSelected`,
+// which is the producer's stream state: after a barrier the producer still
+// knows which canvas is current, and it is the packet that has forgotten.
+let selectionInPacket = false;
 // Presenting packets finished but not yet admitted by the window, oldest first.
 // At most one in practice, because the frame clock waits on it; a queue so an
 // extra frame end outside the clock cannot overwrite a held one.
@@ -89,6 +96,7 @@ export function appendStream(words, usedWords) {
   const frame = currentWriter();
   // A new buffer starts with no canvas selected, whatever the last one chose.
   canvasSelected = false;
+  selectionInPacket = false;
   // Contiguous records that fit are appended as one range: one copy per range,
   // not per record, which is the common case of a buffer that fits entirely.
   let runStart = 2;
@@ -115,6 +123,7 @@ export function appendStream(words, usedWords) {
       if (canvasSelected) {
         frame.appendWords(selectCanvas, 0, SELECT_CANVAS_WORDS);
         budget.add(selectCanvas, 0);
+        selectionInPacket = true;
       }
       if (!budget.fits(words, cursor) || !frame.fits(wordCount)) {
         throw new RangeError(`a ${wordCount}-word record does not fit in one frame packet`);
@@ -123,6 +132,7 @@ export function appendStream(words, usedWords) {
     if (opcode === OP2D_SELECT_CANVAS) {
       selectCanvas.set(words.subarray(cursor, cursor + SELECT_CANVAS_WORDS));
       canvasSelected = true;
+      selectionInPacket = true;
     }
     budget.add(words, cursor);
     cursor += wordCount;
@@ -147,6 +157,7 @@ export function appendRecord(record, headerWords, payload) {
   // A resource record is GL work between the engine's flushed buffers, and the
   // next buffer selects its own canvas.
   canvasSelected = false;
+  selectionInPacket = false;
   return true;
 }
 
@@ -195,13 +206,14 @@ function writeRecord(record, headerWords, payload) {
 
 /** Select `canvasId` unless this packet already has it selected. */
 function selectCanvasFor(canvasId) {
-  if (canvasSelected && selectCanvas[1] === canvasId) return;
+  if (selectionInPacket && selectCanvas[1] === canvasId) return;
   const frame = currentWriter();
   selectCanvas[0] = ((SELECT_CANVAS_WORDS << 12) | OP2D_SELECT_CANVAS) >>> 0;
   selectCanvas[1] = canvasId >>> 0;
   frame.appendWords(selectCanvas, 0, SELECT_CANVAS_WORDS);
   budget.add(selectCanvas, 0);
   canvasSelected = true;
+  selectionInPacket = true;
 }
 
 /** End the frame: send its packet, or hold it until the window opens. */
@@ -237,6 +249,12 @@ export function flushToHost() {
 }
 
 function finishPacket(frame, host, present) {
+  // The packet about to leave is the one that carried the selection; whatever
+  // goes into the next one has to select again. This is the line whose absence
+  // made a `fillText` after a `measureText` -- which sends a barrier -- land in
+  // a packet with no canvas selected, where the host drops it: an accepted
+  // frame that drew no text.
+  selectionInPacket = false;
   statistics.packets += 1;
   if (!present) statistics.barriers += 1;
   frame.surfaceGeneration = host.state.surfaceGeneration;
