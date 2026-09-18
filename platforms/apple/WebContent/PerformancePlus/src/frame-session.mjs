@@ -198,6 +198,30 @@ export class FrameSession {
     return this.#closed;
   }
 
+  /// The highest sequence this session has sent; 0 before any.
+  get sentSequence() {
+    return this.#sent;
+  }
+
+  /// Apply a window advertisement that did not come over the downlink: the
+  /// answer to a synchronous AWAIT_WINDOW, which a producer blocked in a GL
+  /// call receives while its downlink messages wait behind that call.
+  ///
+  /// Same meaning and same effect as the advertisement a verdict or tick
+  /// carries. The downlink records queued meanwhile are older, and applying one
+  /// of those afterwards only makes the window more conservative until the next
+  /// arrives -- every accepted packet is answered on the downlink, so the last
+  /// record there is never older than this.
+  applyWindow(remainingCredits, acceptedSequence) {
+    if (!Number.isInteger(remainingCredits) || remainingCredits < 0) {
+      throw new TypeError("remainingCredits is a non-negative integer");
+    }
+    if (!Number.isSafeInteger(acceptedSequence) || acceptedSequence < 0 || acceptedSequence > this.#sent) {
+      throw new RangeError(`accepted sequence ${acceptedSequence} is not one this session sent`);
+    }
+    this.#advertised(remainingCredits, acceptedSequence);
+  }
+
   #advertised(remainingCredits, acceptedSequence) {
     this.#remaining = remainingCredits;
     this.#accepted = acceptedSequence;

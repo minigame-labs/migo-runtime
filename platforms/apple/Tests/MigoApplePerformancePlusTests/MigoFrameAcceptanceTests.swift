@@ -427,6 +427,173 @@ import XCTest
             XCTAssertEqual(pixel, [255, 0, 0, 255], "the third frame, drawn by the engine's WebGL facade, is red")
         }
 
+        /// A frame too large for one packet crosses as barriers and one present.
+        ///
+        /// Sixty thousand clears in one `requestAnimationFrame` is 256 KiB of
+        /// wire but over 8 MiB of decoded GL commands against the host's 4 MiB
+        /// budget, so the engine's frames have to be split -- and a split the
+        /// host refused would end the content. The last clear is red; every
+        /// packet but the last must be a barrier, and nothing may be refused.
+        func testAFrameLargerThanOnePacketCrossesAsBarriersAndPresentsOnce() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                import { frameStatistics, lastSequence } from "/__migo/engine-frames.mjs";
+
+                export function start({ report }) {
+                  const gl = migo.createCanvas().getContext("webgl");
+                  requestAnimationFrame(() => {
+                    gl.clearColor(0, 0, 1, 1);
+                    for (let i = 0; i < 60000; i += 1) gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.clearColor(1, 0, 0, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    // After this callback returns, the frame loop ends the frame.
+                    setTimeout(() => report({ type: "split", sequence: lastSequence(),
+                      ...frameStatistics() }), 0);
+                  });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let split = expectation(description: "content drew a frame larger than one packet")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "split":
+                    report = message
+                    split.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    split.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [split], timeout: 240)
+            XCTAssertNil(failure)
+
+            let packets = report?["packets"] as? Int ?? 0
+            let barriers = report?["barriers"] as? Int ?? 0
+            let sequence = report?["sequence"] as? Int ?? 0
+            let pollDeadline = Date().addingTimeInterval(60)
+            while host.channel.currentStatistics.framesAccepted < packets, Date() < pollDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            let statistics = host.channel.currentStatistics
+            print(
+                "split frame: packets=\(packets) barriers=\(barriers)"
+                    + " windowWaits=\(report?["windowWaits"] as? Int ?? -1)"
+                    + " accepted=\(statistics.framesAccepted) refused=\(statistics.framesRefused)"
+                    + " syncCalls=\(statistics.syncCallsAnswered)")
+            XCTAssertGreaterThanOrEqual(barriers, 1, "the frame was not split")
+            XCTAssertEqual(packets, barriers + 1, "one packet presents, and only one")
+            XCTAssertEqual(sequence, packets)
+            XCTAssertEqual(statistics.framesAccepted, packets)
+            XCTAssertEqual(statistics.framesRefused, 0, "the host refused a packet the producer split")
+
+            let pixel = try readPixel(
+                session: harness.session, x: 0, y: 0, triggeringSequence: UInt64(sequence))
+            XCTAssertEqual(pixel, [255, 0, 0, 255], "the frame's last clear is red")
+        }
+
+        /// A barrier that leaves on the socket, then a synchronous call naming it.
+        ///
+        /// The call blocks the Worker in a synchronous request, and the barrier
+        /// is a WebSocket message sent a moment before -- the one combination the
+        /// earlier tests avoided by making their frames large enough for the
+        /// scheme. If WebKit held the socket message until the Worker unblocked,
+        /// the host would wait for a packet that cannot arrive and the call would
+        /// run out its timeout. The elapsed time is reported as evidence either
+        /// way.
+        func testASynchronousCallSeesTheBarrierSentOnTheSocketJustBeforeIt() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                import { frameStatistics, lastSequence } from "/__migo/engine-frames.mjs";
+                import { encodeReadPixelsParams, SYNC_OP_READ_PIXELS } from "/__migo/sync-mailbox.mjs";
+
+                export function start({ sync, report }) {
+                  const gl = migo.createCanvas().getContext("webgl");
+                  gl.clearColor(0, 0, 1, 1);
+                  gl.clear(gl.COLOR_BUFFER_BIT);
+                  // The engine's own barrier: flushes the facade's buffer and sends
+                  // what is recorded without presenting. A few dozen bytes, so it
+                  // leaves on the socket.
+                  gl.flush();
+                  const sequence = lastSequence();
+                  const started = Date.now();
+                  let detail;
+                  try {
+                    const pixel = sync.call({
+                      runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
+                      triggeringSequence: BigInt(sequence), operation: SYNC_OP_READ_PIXELS,
+                      maxReplyBytes: 4, timeoutMillis: 30000,
+                      params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
+                    }, new Uint8Array(4));
+                    detail = Array.from(pixel).join(",");
+                  } catch (error) {
+                    detail = `${error.name}: ${error.message}`;
+                  }
+                  report({ type: "read", detail, sequence, elapsedMillis: Date.now() - started,
+                    ...frameStatistics() });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let read = expectation(description: "content read back through its barrier")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "read":
+                    report = message
+                    read.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    read.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [read], timeout: 240)
+            XCTAssertNil(failure)
+            print(
+                "socket barrier then sync read: elapsed=\(report?["elapsedMillis"] as? Int ?? -1)ms"
+                    + " sequence=\(report?["sequence"] as? Int ?? -1)"
+                    + " barriers=\(report?["barriers"] as? Int ?? -1)"
+                    + " detail=\(report?["detail"] as? String ?? "?")")
+            XCTAssertEqual(report?["barriers"] as? Int, 1)
+            XCTAssertEqual(
+                report?["detail"] as? String, "0,0,255,255",
+                "the read did not see the blue the barrier carried; a TimedOut error means the socket barrier never arrived while the Worker was blocked")
+            XCTAssertEqual(host.channel.currentStatistics.framesRefused, 0)
+        }
+
         /// The read content makes itself, from its own Worker, sees the frame it
         /// submitted.
         ///

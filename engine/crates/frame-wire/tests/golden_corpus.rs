@@ -214,6 +214,27 @@ fn cases() -> Vec<Case> {
             deviation: None,
             expect: Expect::Accepted,
         },
+        // A barrier: `flags == 0`. The same bytes as a presenting packet but for
+        // that one field and the checksum, so an encoder that ignored the flag
+        // -- or a reader that refused the packet, as v1 once did -- disagrees
+        // with the corpus here and nowhere else.
+        Case {
+            name: "barrier",
+            launch_nonce: 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210,
+            sequence: 7,
+            runtime_generation: 3,
+            surface_generation: 9,
+            resource_epoch: 2,
+            frame_id: 6,
+            flags: 0,
+            sections: vec![section(
+                SECTION_KIND_COMMAND_STREAM,
+                8,
+                (0..32u8).map(|value| value.wrapping_mul(5)).collect(),
+            )],
+            deviation: None,
+            expect: Expect::Accepted,
+        },
         // Well formed in every respect except that its section does not start
         // where the canonical layout puts it. Aligned, in order, in bounds,
         // checksum correct -- and rejected, because the eight bytes of gap are

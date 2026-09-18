@@ -154,6 +154,10 @@ pub const MIGO_SYNC_ERROR_OPERATION_FAILED: u32 = 11;
 
 /// Which call the producer blocked in.
 pub const MIGO_SYNC_OP_READ_PIXELS: u32 = 1;
+/// Wait for the frame window to open, and report it. See `frame_wire::sync::SYNC_OP_AWAIT_WINDOW`.
+pub const MIGO_SYNC_OP_AWAIT_WINDOW: u32 = 2;
+/// Size of the `MIGO_SYNC_OP_AWAIT_WINDOW` reply.
+pub const MIGO_SYNC_WINDOW_REPLY_BYTES: u32 = 16;
 
 /// Caller-written. The 64-bit members precede the 32-bit ones so the record is
 /// 56 bytes with no interior padding on both LP64 and ILP32.

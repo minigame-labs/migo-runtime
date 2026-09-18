@@ -38,8 +38,8 @@ use shared::{
 use frame_wire::control::{ControlError, ControlRecord, read_control};
 use frame_wire::downlink::{DownlinkQueue, DownlinkRecord};
 use frame_wire::sync::{
-    ReadPixelsParams, SYNC_OP_READ_PIXELS, SyncAnswer, SyncError, SyncMailbox, SyncRequest,
-    SyncState,
+    ReadPixelsParams, SYNC_OP_AWAIT_WINDOW, SYNC_OP_READ_PIXELS, SyncAnswer, SyncError,
+    SyncMailbox, SyncRequest, SyncState, WINDOW_REPLY_BYTES, WindowReply,
 };
 use frame_wire::{FrameIngress, IngressOutcome, PooledFrame, stream};
 use frame_wire::{IngressDecision, WindowSource};
@@ -102,10 +102,9 @@ pub const EXTERNAL_ERROR_NO_COMMAND_STREAM: u32 = 2002;
 pub const EXTERNAL_ERROR_BAD_COMMAND_STREAM: u32 = 2003;
 pub const EXTERNAL_ERROR_RENDERER_UNREACHABLE: u32 = 2004;
 
-/// Hard per-frame decoded-storage ceiling. Together with the two-credit window
-/// this bounds queued command storage independently of the 4 MiB wire ceiling.
-/// It is a safety limit, not a measurement of total process or GPU memory.
-const MAX_DECODED_FRAME_BYTES: usize = 4 * 1024 * 1024;
+/// Hard per-frame decoded-storage ceiling; see
+/// [`frame_decode::MAX_DECODED_FRAME_BYTES`], which a producer splits against.
+use frame_decode::MAX_DECODED_FRAME_BYTES;
 
 /// The most WebGL errors kept per canvas before the oldest is dropped.
 ///
@@ -289,13 +288,18 @@ impl SyncHandle {
 struct Admission {
     ingress: Arc<Mutex<FrameIngress>>,
     admitted: Arc<Condvar>,
+    /// The window, readable and waitable without the ingress lock -- which a
+    /// frame's whole decode holds, and which a credit wait must not.
+    window: WindowSource,
 }
 
 impl Admission {
     fn new(ingress: Arc<Mutex<FrameIngress>>) -> Self {
+        let window = ingress.lock().window_source();
         Self {
             ingress,
             admitted: Arc::new(Condvar::new()),
+            window,
         }
     }
 }
@@ -502,9 +506,111 @@ impl SyncPath {
         deadline_nanos: u64,
         now_nanos: u64,
     ) -> Result<Vec<u8>, SyncError> {
-        if operation != SYNC_OP_READ_PIXELS {
+        match operation {
+            SYNC_OP_READ_PIXELS => self.read_pixels(
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
+            SYNC_OP_AWAIT_WINDOW => self.await_window(
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
+            _ => Err(SyncError::UnsupportedOperation),
+        }
+    }
+
+    /// Wait until ingress has admitted `triggering_sequence`, within `budget`.
+    ///
+    /// Admission dispatches a frame to the renderer before it records the
+    /// sequence, so once the sequence is here the frame is already ahead of
+    /// anything this request queues next. Zero means the producer had submitted
+    /// nothing, and there is nothing to wait for.
+    fn wait_for_admission(&self, triggering_sequence: u64, budget: u64) -> Result<(), SyncError> {
+        if triggering_sequence == 0 {
+            return Ok(());
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_nanos(budget);
+        let mut ingress = self.admission.ingress.lock();
+        while ingress.last_accepted_sequence() < triggering_sequence {
+            // Checked under the ingress lock, which is the lock `end_session`
+            // takes to set it: a session ending between this check and the wait
+            // below would otherwise be a wake-up nobody receives.
+            if self.mailbox.lock().is_ended() {
+                return Err(SyncError::SessionEnded);
+            }
+            if self
+                .admission
+                .admitted
+                .wait_until(&mut ingress, until)
+                .timed_out()
+                && ingress.last_accepted_sequence() < triggering_sequence
+            {
+                return Err(SyncError::TimedOut);
+            }
+        }
+        Ok(())
+    }
+
+    /// `SYNC_OP_AWAIT_WINDOW`: every packet the producer sent is admitted and a
+    /// credit is free, and here is the window.
+    ///
+    /// The advertisement is read after both, so it is the one a producer
+    /// sending next is entitled to -- the same read, under the same rule, a
+    /// verdict or a tick makes.
+    fn await_window(
+        &self,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        if !params.is_empty() {
             return Err(SyncError::UnsupportedOperation);
         }
+        if (max_reply_bytes as usize) < WINDOW_REPLY_BYTES {
+            return Err(SyncError::ReplyTooLarge);
+        }
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_nanos(budget);
+        self.wait_for_admission(triggering_sequence, budget)?;
+        if !self.admission.window.wait_for_credit(until) {
+            // A renderer that holds every credit past the producer's deadline.
+            // The session ending returns its credits as the queue is dropped, so
+            // this is a stall, not a teardown.
+            return Err(if self.mailbox.lock().is_ended() {
+                SyncError::SessionEnded
+            } else {
+                SyncError::TimedOut
+            });
+        }
+        let window = self.admission.window.read();
+        Ok(WindowReply {
+            remaining_credits: window.remaining_credits,
+            accepted_sequence: window.accepted_sequence,
+        }
+        .encode()
+        .to_vec())
+    }
+
+    /// `SYNC_OP_READ_PIXELS`.
+    fn read_pixels(
+        &self,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
         let params = ReadPixelsParams::decode(params)?;
         let wanted = params.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
         // Checked here as well as by the mailbox, because refusing before the
@@ -529,32 +635,8 @@ impl SyncPath {
             return Err(SyncError::TimedOut);
         }
 
-        // Wait for the frame the read is about. Admission dispatches the frame to
-        // the renderer before it records the sequence, so once the sequence is
-        // here the frame is already ahead of this read in the render queue, and
-        // the command below cannot overtake it. Zero means the producer had
-        // submitted nothing, and there is nothing to wait for.
-        if triggering_sequence != 0 {
-            let until = std::time::Instant::now() + std::time::Duration::from_nanos(budget);
-            let mut ingress = self.admission.ingress.lock();
-            while ingress.last_accepted_sequence() < triggering_sequence {
-                // Checked under the ingress lock, which is the lock
-                // `end_session` takes to set it: a session ending between this check and the
-                // wait below would otherwise be a wake-up nobody receives.
-                if self.mailbox.lock().is_ended() {
-                    return Err(SyncError::SessionEnded);
-                }
-                if self
-                    .admission
-                    .admitted
-                    .wait_until(&mut ingress, until)
-                    .timed_out()
-                    && ingress.last_accepted_sequence() < triggering_sequence
-                {
-                    return Err(SyncError::TimedOut);
-                }
-            }
-        }
+        // The frame the read is about, before the read: see `wait_for_admission`.
+        self.wait_for_admission(triggering_sequence, budget)?;
 
         let (resp_tx, resp_rx) = crossbeam_channel::bounded(1);
         let command = shared::protocol::render_cmd::RenderCommand::GL(
@@ -1104,11 +1186,16 @@ impl SubmitPath {
         };
         frame_decode::decode_render_stream_into_with_plan(&mut sink, validated, budget);
         drop(scratch);
-        let packet = sink
-            .builder
-            .push(shared::FrameOp::Present)
-            .finish()
-            .with_credit(frame.into_credit());
+        // A barrier ends here: its commands run, its trailing 2D work is
+        // materialized by the decoder, and the frame goes on -- the shape of the
+        // embedded runtime's own barrier flush. Presenting it would put half a
+        // frame on screen whenever content asked a question mid-frame.
+        let builder = if parsed.presents() {
+            sink.builder.push(shared::FrameOp::Present)
+        } else {
+            sink.builder
+        };
+        let packet = builder.finish().with_credit(frame.into_credit());
 
         sender
             .dispatch(shared::protocol::render_cmd::RenderCommand::FramePacket(
@@ -2572,6 +2659,72 @@ mod tests {
         assert_eq!(submit.ingress.lock().last_accepted_sequence(), 3);
     }
 
+    /// A barrier runs its commands and does not end the frame; the packet after
+    /// it that does is the one that presents.
+    ///
+    /// Asserted on what reaches the renderer, which is the only place the
+    /// difference exists: both packets are admitted, credited and answered the
+    /// same way.
+    #[test]
+    fn a_barrier_executes_without_presenting_and_the_packet_that_ends_the_frame_presents() {
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        let packet = |sequence: u64, flags: u32| {
+            let words: Vec<u8> = [
+                stream::MAGIC,
+                stream::STREAM_VERSION,
+                (3 << 12) | frame_wire::gl::OP_CLEAR,
+                1,
+                0x4000,
+            ]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+            let mut frame = frame_wire::builder::WireFrameBuilder::new();
+            frame.launch_nonce = NONCE;
+            frame.sequence = sequence;
+            frame.flags = flags;
+            frame
+                .section(frame_wire::SECTION_KIND_COMMAND_STREAM, 5, &words)
+                .build()
+        };
+        let received = |receiver: &crossbeam_channel::Receiver<
+            shared::protocol::render_cmd::RenderCommand,
+        >| {
+            let Ok(shared::protocol::render_cmd::RenderCommand::FramePacket(packet)) =
+                receiver.try_recv()
+            else {
+                panic!("the renderer was not handed a frame packet");
+            };
+            let presents = packet
+                .ops()
+                .iter()
+                .any(|op| matches!(op, shared::FrameOp::Present));
+            let draws = packet
+                .ops()
+                .iter()
+                .any(|op| matches!(op, shared::FrameOp::GlBatch(_)));
+            (presents, draws)
+        };
+
+        assert_eq!(
+            submit.submit_frame(&packet(1, 0)).decision,
+            IngressDecision::Accepted
+        );
+        assert_eq!(
+            received(&receiver),
+            (false, true),
+            "a barrier's commands run and it does not present"
+        );
+        assert_eq!(
+            submit
+                .submit_frame(&packet(2, frame_wire::FLAG_PRESENT))
+                .decision,
+            IngressDecision::Accepted
+        );
+        assert_eq!(received(&receiver), (true, true));
+        assert_eq!(submit.ingress.lock().last_accepted_sequence(), 2);
+    }
+
     #[test]
     fn disconnected_renderer_returns_credit_without_committing_sequence() {
         let (submit, receiver, _lifecycle_sender) = ready_submit();
@@ -3496,5 +3649,179 @@ mod sync_teardown_tests {
                  mailbox, so a producer blocked in Atomics.wait is never woken"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod await_window_tests {
+    use super::*;
+
+    const NONCE: u128 = 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210;
+    const NOW: u64 = 1_000_000_000;
+
+    fn packet(sequence: u64) -> Vec<u8> {
+        let stream: [u8; 0] = [];
+        let mut frame = frame_wire::builder::WireFrameBuilder::new();
+        frame.launch_nonce = NONCE;
+        frame.runtime_generation = INITIAL_RUNTIME_GENERATION;
+        frame.sequence = sequence;
+        frame
+            .section(frame_wire::SECTION_KIND_COMMAND_STREAM, 0, &stream)
+            .build()
+    }
+
+    fn request(triggering_sequence: u64, max_reply_bytes: u32, deadline_nanos: u64) -> SyncRequest {
+        SyncRequest {
+            request_id: 0,
+            runtime_generation: INITIAL_RUNTIME_GENERATION,
+            surface_generation: 1,
+            resource_epoch: 0,
+            triggering_sequence,
+            operation: SYNC_OP_AWAIT_WINDOW,
+            max_reply_bytes,
+            deadline_nanos,
+        }
+    }
+
+    /// No renderer: the window is answered from ingress alone, and a path that
+    /// needed one would fail these with `SessionEnded`.
+    fn path() -> (Arc<SyncPath>, Admission) {
+        let admission = Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+            NONCE,
+            INITIAL_RUNTIME_GENERATION,
+        ))));
+        let path = Arc::new(SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            Arc::new(OnceLock::new()),
+            admission.clone(),
+        ));
+        (path, admission)
+    }
+
+    /// Admit `sequence` and keep its credit, as a renderer still working on it does.
+    fn admit_and_hold(admission: &Admission, sequence: u64, held: &mut Vec<PooledFrame>) {
+        let mut taken = None;
+        let outcome = admission
+            .ingress
+            .lock()
+            .submit_with(&packet(sequence), |frame| {
+                taken = Some(frame);
+                Ok(())
+            });
+        assert_eq!(outcome.decision, IngressDecision::Accepted);
+        held.push(taken.expect("the frame was handed over"));
+        admission.admitted.notify_all();
+    }
+
+    fn reply(path: &SyncPath) -> WindowReply {
+        let mut out = [0u8; 64];
+        let written = path.take_reply(&mut out).expect("a ready reply");
+        WindowReply::decode(&out[..written]).expect("a window reply")
+    }
+
+    #[test]
+    fn an_open_window_is_answered_at_once() {
+        let (path, _admission) = path();
+        let snapshot = path
+            .post(request(0, 16, NOW + 1_000_000_000), &[], NOW)
+            .expect("posted");
+        assert_eq!(snapshot.state, SyncState::Ready);
+        // Nothing accepted yet: one, not two -- the cap every advertisement
+        // before the first packet carries.
+        assert_eq!(
+            reply(&path),
+            WindowReply {
+                remaining_credits: 1,
+                accepted_sequence: 0
+            }
+        );
+    }
+
+    /// The case the operation exists for: the renderer holds every credit, the
+    /// producer is blocked, and the answer comes when one frame finishes.
+    #[test]
+    fn a_closed_window_is_answered_when_the_renderer_returns_a_credit() {
+        let (path, admission) = path();
+        let mut held = Vec::new();
+        admit_and_hold(&admission, 1, &mut held);
+        admit_and_hold(&admission, 2, &mut held);
+        assert_eq!(admission.window.read().remaining_credits, 0);
+
+        let waiter = {
+            let path = Arc::clone(&path);
+            std::thread::spawn(move || path.post(request(2, 16, NOW + 30_000_000_000), &[], NOW))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(
+            path.snapshot(NOW).state,
+            SyncState::Pending,
+            "answered while every credit was held"
+        );
+
+        drop(held.remove(0));
+        let snapshot = waiter.join().expect("waiter").expect("posted");
+        assert_eq!(snapshot.state, SyncState::Ready);
+        assert_eq!(
+            reply(&path),
+            WindowReply {
+                remaining_credits: 1,
+                accepted_sequence: 2
+            }
+        );
+    }
+
+    /// Admission first: a producer that sent through 1 is not told the window
+    /// until 1 is in, even with credits free -- an advertisement that did not
+    /// count its packet would let it send past the window.
+    #[test]
+    fn the_answer_waits_for_the_producer_s_last_packet_to_be_admitted() {
+        let (path, admission) = path();
+        let waiter = {
+            let path = Arc::clone(&path);
+            std::thread::spawn(move || path.post(request(1, 16, NOW + 30_000_000_000), &[], NOW))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(path.snapshot(NOW).state, SyncState::Pending);
+
+        let mut held = Vec::new();
+        admit_and_hold(&admission, 1, &mut held);
+        waiter.join().expect("waiter").expect("posted");
+        assert_eq!(
+            reply(&path),
+            WindowReply {
+                remaining_credits: 1,
+                accepted_sequence: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_window_that_never_opens_is_a_timeout_not_a_hang() {
+        let (path, admission) = path();
+        let mut held = Vec::new();
+        admit_and_hold(&admission, 1, &mut held);
+        admit_and_hold(&admission, 2, &mut held);
+        let started = std::time::Instant::now();
+        let snapshot = path
+            .post(request(2, 16, NOW + 50_000_000), &[], NOW)
+            .expect("posted");
+        assert_eq!(snapshot.state, SyncState::Failed);
+        assert_eq!(snapshot.error, Some(SyncError::TimedOut));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn parameters_or_a_short_reservation_are_refused() {
+        let (path, _admission) = path();
+        let snapshot = path
+            .post(request(0, 16, NOW + 1_000_000_000), &[1, 2, 3, 4], NOW)
+            .expect("posted");
+        assert_eq!(snapshot.error, Some(SyncError::UnsupportedOperation));
+        path.mailbox.lock().acknowledge();
+
+        let snapshot = path
+            .post(request(0, 15, NOW + 1_000_000_000), &[], NOW)
+            .expect("posted");
+        assert_eq!(snapshot.error, Some(SyncError::ReplyTooLarge));
     }
 }

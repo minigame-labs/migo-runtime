@@ -55,7 +55,10 @@ pub mod codes;
 mod scratch;
 pub mod validate;
 
-pub use budget::{FrameDecodeBudget, FrameDecodeBudgetError, validate_frame_budget};
+pub use budget::{
+    FrameDecodeBudget, FrameDecodeBudgetError, MAX_DECODED_FRAME_BYTES, producer_bounds,
+    producer_estimated_bytes, validate_frame_budget,
+};
 pub use validate::GlDecodeContext;
 
 use validate::{

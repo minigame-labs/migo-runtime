@@ -47,6 +47,10 @@ _Static_assert(MIGO_FRAME_INGRESS_DEFERRED != MIGO_FRAME_INGRESS_GENERATION_LOST
 
 /* Zero is not a decision: a zeroed record must not read as a valid answer. */
 _Static_assert(MIGO_FRAME_INGRESS_ACCEPTED != UINT32_C(0), "zero is not ACCEPTED");
+_Static_assert(MIGO_SYNC_OP_READ_PIXELS == UINT32_C(1), "operation numbers are the wire's");
+_Static_assert(MIGO_SYNC_OP_AWAIT_WINDOW == UINT32_C(2), "AWAIT_WINDOW is appended, not renumbered");
+_Static_assert(MIGO_SYNC_WINDOW_REPLY_BYTES == UINT32_C(16),
+               "remaining u32, a zero u32, accepted sequence u64");
 _Static_assert(MIGO_FRAME_INGRESS_WOULD_BLOCK != UINT32_C(0), "zero is not WOULD_BLOCK");
 _Static_assert(MIGO_FRAME_INGRESS_REJECTED != UINT32_C(0), "zero is not REJECTED");
 _Static_assert(MIGO_FRAME_INGRESS_GENERATION_LOST != UINT32_C(0), "zero is not GENERATION_LOST");

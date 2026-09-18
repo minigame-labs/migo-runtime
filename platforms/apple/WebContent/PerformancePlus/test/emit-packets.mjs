@@ -106,6 +106,8 @@ for (let index = 0; index < count; index += 1) {
     surfaceGeneration: pick(2) ? wide() : 0n,
     resourceEpoch: wide(),
     frameId: next(),
+    // One in four a barrier, so both flag values cross in every run.
+    present: pick(4) !== 0,
     sections,
   };
 
@@ -121,6 +123,7 @@ for (let index = 0; index < count; index += 1) {
     surface_generation: frame.surfaceGeneration.toString(),
     resource_epoch: frame.resourceEpoch.toString(),
     frame_id: frame.frameId,
+    presents: frame.present,
     section_count: sections.length,
     section_kinds: sections.map((section) => section.kind),
   });

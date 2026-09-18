@@ -142,6 +142,65 @@ pub const SYNC_LAYOUT: &[crate::HeaderField] = &[
 /// return value IS the answer, so there is no safe default to return.
 pub const SYNC_OP_READ_PIXELS: u32 = 1;
 
+/// Wait for the window to open, and say what it is.
+///
+/// A producer whose calls are synchronous cannot wait for a credit the way a
+/// running one does -- on the next advertisement to arrive -- because its agent
+/// is inside a GL call and nothing arrives until it returns. It meets this when
+/// it has to send a barrier (see `FLAG_PRESENT`) while the renderer holds every
+/// credit: before a synchronous query, or when a frame outgrows one packet. So
+/// it asks here, blocked, and the host answers once
+///
+/// 1. every packet through `triggering_sequence` -- the last one the producer
+///    sent -- has been admitted, and
+/// 2. at least one credit is free,
+///
+/// with the advertisement read at that moment ([`WindowReply`]). No parameters;
+/// the reply is [`WINDOW_REPLY_BYTES`]. The deadline bounds the wait like any
+/// other request: a renderer that never finishes a frame is a `TIMED_OUT`, not
+/// a producer blocked for good.
+pub const SYNC_OP_AWAIT_WINDOW: u32 = 2;
+
+/// Serialised size of [`WindowReply`].
+pub const WINDOW_REPLY_BYTES: usize = 16;
+
+/// The window, as `SYNC_OP_AWAIT_WINDOW` answers it: the same two numbers a
+/// frame verdict or a clock tick carries, with the same meaning -- "having
+/// accepted every packet through `accepted_sequence`, this many credits were
+/// free".
+///
+/// `remaining_credits` u32, a reserved u32 that is zero, `accepted_sequence`
+/// u64, little-endian: the sequence at its full width, where it is naturally
+/// aligned.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowReply {
+    pub remaining_credits: u32,
+    pub accepted_sequence: u64,
+}
+
+impl WindowReply {
+    pub fn encode(&self) -> [u8; WINDOW_REPLY_BYTES] {
+        let mut out = [0u8; WINDOW_REPLY_BYTES];
+        out[0..4].copy_from_slice(&self.remaining_credits.to_le_bytes());
+        out[8..16].copy_from_slice(&self.accepted_sequence.to_le_bytes());
+        out
+    }
+
+    /// Decode and validate: exactly [`WINDOW_REPLY_BYTES`], reserved word zero.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != WINDOW_REPLY_BYTES || bytes[4..8] != [0; 4] {
+            return None;
+        }
+        Some(Self {
+            remaining_credits: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            accepted_sequence: u64::from_le_bytes([
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
+            ]),
+        })
+    }
+}
+
 /// `readPixels`' arguments, as the producer sends them.
 ///
 /// They are not in the mailbox record. That record is the rendezvous -- a small

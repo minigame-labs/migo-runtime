@@ -44,6 +44,33 @@ export const SYNC_ERROR_OPERATION_FAILED = 11;
 
 export const SYNC_OP_READ_PIXELS = 1;
 
+// Wait for the frame window to open, and report it. No parameters; the reply
+// is WINDOW_REPLY_BYTES: remaining credits (u32), a zero u32, the accepted
+// sequence (u64), little-endian -- the advertisement a verdict or a tick
+// carries. See `SYNC_OP_AWAIT_WINDOW` in engine/crates/frame-wire/src/sync.rs.
+export const SYNC_OP_AWAIT_WINDOW = 2;
+export const WINDOW_REPLY_BYTES = 16;
+
+/**
+ * Read an AWAIT_WINDOW reply. Refuses what the host would never send: a reply
+ * of the wrong length, or a reserved word that is not zero.
+ *
+ * @param {Uint8Array} reply
+ * @returns {{remainingCredits: number, acceptedSequence: number}}
+ */
+export function decodeWindowReply(reply) {
+  if (!(reply instanceof Uint8Array) || reply.byteLength !== WINDOW_REPLY_BYTES) {
+    throw new TypeError(`a window reply is ${WINDOW_REPLY_BYTES} bytes`);
+  }
+  const view = new DataView(reply.buffer, reply.byteOffset, reply.byteLength);
+  if (view.getUint32(4, true) !== 0) throw new TypeError("a window reply's reserved word is zero");
+  const accepted = view.getBigUint64(8, true);
+  if (accepted > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError("an accepted sequence past 2^53 is not one this producer sent");
+  }
+  return { remainingCredits: view.getUint32(0, true), acceptedSequence: Number(accepted) };
+}
+
 // Record offsets, in the order the document lists them.
 export const OFF_STATE = 0;
 export const OFF_REQUEST_ID = 4;

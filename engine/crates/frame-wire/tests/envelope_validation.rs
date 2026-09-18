@@ -186,11 +186,6 @@ fn each_header_rule_has_its_own_rejection() {
             WireError::UnknownFlags,
         ),
         (
-            "no PRESENT",
-            mutate(|bytes| put_u32(bytes, OFF_FLAGS, 0)),
-            WireError::MissingPresent,
-        ),
-        (
             "too many sections",
             mutate(|bytes| put_u32(bytes, OFF_SECTION_COUNT, MAX_SECTIONS + 1)),
             WireError::TooManySections,
@@ -235,8 +230,25 @@ fn the_retired_continuation_flag_is_now_an_unknown_bit() {
     assert_eq!(
         validate(&only_continued),
         Err(WireError::UnknownFlags),
-        "the retired bit is checked before the missing PRESENT"
+        "a barrier is flags == 0, not a packet with the retired bit and no PRESENT"
     );
+}
+
+/// A packet without `PRESENT` is a barrier: valid, and it says so.
+///
+/// It used to be `MissingPresent`. That code is retired rather than reused --
+/// nothing produces it now -- and this is the test that would fail if the
+/// parser started refusing barriers again.
+#[test]
+fn a_packet_without_present_is_a_valid_barrier() {
+    let barrier = mutate(|bytes| put_u32(bytes, OFF_FLAGS, 0));
+    let frame = validate(&barrier).expect("a barrier is a valid packet");
+    assert!(!frame.presents());
+    assert_eq!(frame.flags(), 0);
+
+    let fixture = good();
+    let presenting = validate(&fixture).expect("the fixture presents");
+    assert!(presenting.presents());
 }
 
 /// A transport that splits a packet must reassemble before calling the parser.

@@ -34,6 +34,9 @@ import {
   SYNC_ERROR_TIMED_OUT,
   SYNC_ERROR_UNSUPPORTED_OPERATION,
   SYNC_OP_READ_PIXELS,
+  SYNC_OP_AWAIT_WINDOW,
+  WINDOW_REPLY_BYTES,
+  decodeWindowReply,
   MAX_REPLY_BYTES,
   OFF_STATE,
   OFF_REQUEST_ID,
@@ -234,6 +237,41 @@ check("readPixels' arguments encode as eight little-endian words", () => {
   assertEqual(view.getUint32(24, true), GL_UNSIGNED_BYTE, "type");
   assertEqual(view.getUint32(28, true), 0, "reserved");
   assertEqual(readPixelsReplyBytes(11, 13), 11 * 13 * 4, "reply size");
+});
+
+// The same sixteen bytes `window_reply_matches_the_committed_bytes` in
+// engine/crates/frame-wire/tests/sync_protocol.rs encodes: remaining 2, a zero
+// word, accepted 0x0000_0102_0304_0506. Both sides against one fixed answer,
+// rather than against each other.
+const WINDOW_REPLY_FIXTURE = Uint8Array.from([
+  0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x00,
+]);
+
+check("an AWAIT_WINDOW reply decodes to the window the host read", () => {
+  assertEqual(SYNC_OP_AWAIT_WINDOW, 2, "operation number");
+  assertEqual(WINDOW_REPLY_BYTES, 16, "reply size");
+  const window = decodeWindowReply(WINDOW_REPLY_FIXTURE);
+  assertEqual(window.remainingCredits, 2, "remaining credits");
+  assertEqual(window.acceptedSequence, 0x0102_0304_0506, "accepted sequence at full width");
+});
+
+check("an AWAIT_WINDOW reply of the wrong shape is refused", () => {
+  let refused = 0;
+  for (const bad of [WINDOW_REPLY_FIXTURE.subarray(0, 15), Uint8Array.from([...WINDOW_REPLY_FIXTURE, 0])]) {
+    try {
+      decodeWindowReply(bad);
+    } catch {
+      refused += 1;
+    }
+  }
+  const reserved = WINDOW_REPLY_FIXTURE.slice();
+  reserved[5] = 1;
+  try {
+    decodeWindowReply(reserved);
+  } catch {
+    refused += 1;
+  }
+  assertEqual(refused, 3, "short, long and a non-zero reserved word are all refused");
 });
 
 // ---------------------------------------------------------------------------

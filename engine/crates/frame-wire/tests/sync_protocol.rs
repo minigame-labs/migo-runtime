@@ -417,3 +417,27 @@ fn fail_request_refuses_once_the_request_is_settled() {
     assert_eq!(mailbox.state(), SyncState::Ready);
     assert_eq!(mailbox.reply_bytes(), 16);
 }
+
+/// The fixed answer `sync-mailbox.test.mjs` decodes. Both sides are held to
+/// these bytes, not to each other.
+#[test]
+fn window_reply_matches_the_committed_bytes() {
+    use frame_wire::sync::{SYNC_OP_AWAIT_WINDOW, WINDOW_REPLY_BYTES, WindowReply};
+    const FIXTURE: [u8; 16] = [
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00,
+        0x00,
+    ];
+    let reply = WindowReply {
+        remaining_credits: 2,
+        accepted_sequence: 0x0000_0102_0304_0506,
+    };
+    assert_eq!(SYNC_OP_AWAIT_WINDOW, 2);
+    assert_eq!(WINDOW_REPLY_BYTES, FIXTURE.len());
+    assert_eq!(reply.encode(), FIXTURE);
+    assert_eq!(WindowReply::decode(&FIXTURE), Some(reply));
+
+    let mut reserved = FIXTURE;
+    reserved[5] = 1;
+    assert_eq!(WindowReply::decode(&reserved), None);
+    assert_eq!(WindowReply::decode(&FIXTURE[..15]), None);
+}

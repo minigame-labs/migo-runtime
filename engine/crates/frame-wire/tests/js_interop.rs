@@ -106,7 +106,11 @@ fn packets_from_the_javascript_encoder_are_accepted_unchanged() {
             field(entry, "bytes"),
             "{name}: total_bytes"
         );
-        assert!(frame.presents(), "{name}: PRESENT is required in v1");
+        assert_eq!(
+            frame.presents().to_string(),
+            field(entry, "presents"),
+            "{name}: PRESENT, or a barrier"
+        );
         assert!(
             frame.command_stream().is_some(),
             "{name}: every packet carries a command stream"

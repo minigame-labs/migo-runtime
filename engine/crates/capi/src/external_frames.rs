@@ -30,6 +30,23 @@ use migo_capi_abi::{
 };
 use migo_core::IngressDecision;
 
+// The C ABI's operation numbers and reply size are the wire's, asserted at
+// compile time: a renumbering on either side is a build failure rather than a
+// producer blocked on an operation the library dispatches as another.
+const _: () = {
+    assert!(
+        migo_capi_abi::external_frames::MIGO_SYNC_OP_READ_PIXELS == migo_core::SYNC_OP_READ_PIXELS
+    );
+    assert!(
+        migo_capi_abi::external_frames::MIGO_SYNC_OP_AWAIT_WINDOW
+            == migo_core::SYNC_OP_AWAIT_WINDOW
+    );
+    assert!(
+        migo_capi_abi::external_frames::MIGO_SYNC_WINDOW_REPLY_BYTES as usize
+            == migo_core::WINDOW_REPLY_BYTES
+    );
+};
+
 use crate::{MigoSession, panic_barrier::guard, pin_session};
 
 /// Offer one frame produced outside this process.
