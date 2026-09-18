@@ -198,12 +198,13 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
         case .outsidePackage:
             refuse(task, status: 403, reason: "the path resolves outside the content package")
         case .file(let path):
-            if let moduleSource, MigoWebKitOriginRules.isContentModule(requestPath: url.path) {
-                // Decided by the engine, not by the file: the path goes to it
-                // as content asked for it, and it resolves, contains and reads.
-                let requestPath = url.path
+            if let moduleSource,
+                let modulePath = MigoWebKitOriginRules.contentModulePath(requestPath: url.path)
+            {
+                // Decided by the engine, not by the file: the module's path goes
+                // to it, and it resolves, contains and reads.
                 queue.async { [weak self] in
-                    self?.serveModule(moduleSource(requestPath), url: url, task: task)
+                    self?.serveModule(moduleSource(modulePath), url: url, task: task)
                 }
                 return
             }

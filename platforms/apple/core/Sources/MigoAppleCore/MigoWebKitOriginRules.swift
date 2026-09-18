@@ -119,17 +119,25 @@ public enum MigoWebKitOriginRules {
         return .file(path: candidate)
     }
 
-    /// Whether a request is for a content module the engine serves: a script
-    /// in the package -- `.js`, `.mjs` or `.cjs`, the names the engine's module
-    /// loader loads -- and not one of the engine's own modules under the
-    /// reserved prefix, which are served as they are.
+    /// The module a request names, when it names one the engine serves: a
+    /// script in the package -- `.js`, `.mjs` or `.cjs` -- or a path with no
+    /// extension at all, which the engine's module loader completes with `.js`
+    /// (`import "./utils"` loads `utils.js` in the embedded runtime, and WebKit
+    /// asks for `/utils`). `nil` for the engine's own modules under the reserved
+    /// prefix, which are served as they are, and for any other file.
     ///
     /// Case-sensitive, as the engine's loader is: `GAME.JS` is not a name it
     /// resolves to a module, so it is not one this serves as one either.
-    public static func isContentModule(requestPath: String) -> Bool {
-        guard !requestPath.hasPrefix(engineAssetPrefix) else { return false }
-        return requestPath.hasSuffix(".js") || requestPath.hasSuffix(".mjs")
+    public static func contentModulePath(requestPath: String) -> String? {
+        guard !requestPath.hasPrefix(engineAssetPrefix) else { return nil }
+        if requestPath.hasSuffix(".js") || requestPath.hasSuffix(".mjs")
             || requestPath.hasSuffix(".cjs")
+        {
+            return requestPath
+        }
+        let name = requestPath.split(separator: "/", omittingEmptySubsequences: false).last ?? ""
+        guard !name.isEmpty, !name.contains(".") else { return nil }
+        return requestPath + ".js"
     }
 
     /// The MIME type for a file name, from the system's own table where it has one.

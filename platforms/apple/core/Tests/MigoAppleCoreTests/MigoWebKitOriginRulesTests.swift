@@ -271,19 +271,23 @@ final class MigoWebKitOriginRulesTests: XCTestCase {
         XCTAssertEqual(url?.host, Rules.host)
     }
 
-    /// A game's scripts are the engine's to serve; the engine's own modules and
-    /// everything else are files.
-    func testOnlyAPackageScriptIsAContentModule() {
-        XCTAssertTrue(Rules.isContentModule(requestPath: "/game.js"))
-        XCTAssertTrue(Rules.isContentModule(requestPath: "/js/lib.mjs"))
-        XCTAssertTrue(Rules.isContentModule(requestPath: "/js/old.cjs"))
-        XCTAssertFalse(
-            Rules.isContentModule(requestPath: Rules.engineAssetPrefix + "producer-worker.mjs"),
+    /// A game's scripts are the engine's to serve, named as its module loader
+    /// names them; the engine's own modules and everything else are files.
+    func testAPackageScriptIsAContentModuleNamedAsTheLoaderNamesIt() {
+        XCTAssertEqual(Rules.contentModulePath(requestPath: "/game.js"), "/game.js")
+        XCTAssertEqual(Rules.contentModulePath(requestPath: "/js/lib.mjs"), "/js/lib.mjs")
+        XCTAssertEqual(Rules.contentModulePath(requestPath: "/js/old.cjs"), "/js/old.cjs")
+        XCTAssertEqual(
+            Rules.contentModulePath(requestPath: "/js/utils"), "/js/utils.js",
+            "an extensionless import is completed with .js, as the loader completes it")
+        XCTAssertNil(
+            Rules.contentModulePath(requestPath: Rules.engineAssetPrefix + "producer-worker.mjs"),
             "the engine's own modules are served as they are")
-        XCTAssertFalse(Rules.isContentModule(requestPath: "/img/bg.png"))
-        XCTAssertFalse(Rules.isContentModule(requestPath: "/data/levels.json"))
-        XCTAssertFalse(
-            Rules.isContentModule(requestPath: "/GAME.JS"),
+        XCTAssertNil(Rules.contentModulePath(requestPath: "/img/bg.png"))
+        XCTAssertNil(Rules.contentModulePath(requestPath: "/data/levels.json"))
+        XCTAssertNil(Rules.contentModulePath(requestPath: "/js/"), "a directory is not a module")
+        XCTAssertNil(
+            Rules.contentModulePath(requestPath: "/GAME.JS"),
             "case-sensitive, as the engine's loader is")
     }
 }
