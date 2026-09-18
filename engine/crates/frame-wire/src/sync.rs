@@ -161,6 +161,195 @@ pub const SYNC_OP_READ_PIXELS: u32 = 1;
 /// a producer blocked for good.
 pub const SYNC_OP_AWAIT_WINDOW: u32 = 2;
 
+/// A WebGL query whose answer is one number.
+///
+/// `getProgramParameter`, `getShaderParameter`, `getUniformLocation`,
+/// `checkFramebufferStatus`, `getError` and the rest: the calls a WebGL program
+/// makes between recording work and drawing with it, whose return value is the
+/// answer and for which there is no safe default. Which query is in the
+/// parameters ([`GlQuery`]), not the operation, because the operation is what
+/// sizes the reply -- a host that answered a location and an info log through
+/// one code would have to guess a reply size for both.
+///
+/// Reply: four bytes, little-endian, read as `i32` or `u32` by the query.
+pub const SYNC_OP_GL_QUERY_SCALAR: u32 = 3;
+
+/// A WebGL query whose answer is text: the info logs, and `getParameter` for
+/// the strings a context reports about itself.
+///
+/// Reply: the UTF-8 bytes, and nothing else -- the request already carries how
+/// many there are.
+pub const SYNC_OP_GL_QUERY_TEXT: u32 = 4;
+
+/// A WebGL query whose answer describes an active variable:
+/// `getActiveAttrib`, `getActiveUniform`, `getTransformFeedbackVarying`.
+///
+/// Reply: `size:i32`, `type:u32`, then the name's UTF-8 bytes. A reply of
+/// exactly [`ACTIVE_VARIABLE_HEADER_BYTES`] with an empty name is the answer for
+/// an index the program does not have, which WebGL returns as `null`; the
+/// producer distinguishes the two by the `type` being zero.
+pub const SYNC_OP_GL_QUERY_ACTIVE: u32 = 5;
+
+/// `size` and `type` before an active variable's name.
+pub const ACTIVE_VARIABLE_HEADER_BYTES: usize = 8;
+
+/// Which WebGL query a [`GlQueryParams`] asks.
+///
+/// Numbered and stable, like an opcode: the producer writes one of these and
+/// the host dispatches on it, and nothing between them is typed.
+pub mod gl_query {
+    /// `getProgramParameter(program, pname)` -- `object` is the program.
+    pub const PROGRAM_PARAMETER: u32 = 1;
+    /// `getShaderParameter(shader, pname)` -- `object` is the shader.
+    pub const SHADER_PARAMETER: u32 = 2;
+    /// `getQueryParameter(query, pname)` -- `object` is the query object.
+    pub const QUERY_PARAMETER: u32 = 3;
+    /// `checkFramebufferStatus(target)` -- `pname` is the target.
+    pub const CHECK_FRAMEBUFFER_STATUS: u32 = 4;
+    /// `clientWaitSync(sync, flags, timeout)` -- `object` is the sync object,
+    /// `pname` the flags, `extra` the timeout in milliseconds.
+    pub const CLIENT_WAIT_SYNC: u32 = 5;
+    /// `getError()`, answered from the errors the host recorded while decoding
+    /// this producer's records -- there is no round trip to the renderer,
+    /// because the error queue is the host's.
+    pub const GET_ERROR: u32 = 6;
+    /// `getUniformLocation(program, name)`; -1 when there is none.
+    pub const UNIFORM_LOCATION: u32 = 7;
+    /// `getAttribLocation(program, name)`; -1 when there is none.
+    pub const ATTRIB_LOCATION: u32 = 8;
+    /// `getUniformBlockIndex(program, name)`; `INVALID_INDEX` when there is none.
+    pub const UNIFORM_BLOCK_INDEX: u32 = 9;
+    /// `getProgramInfoLog(program)`.
+    pub const PROGRAM_INFO_LOG: u32 = 10;
+    /// `getShaderInfoLog(shader)`.
+    pub const SHADER_INFO_LOG: u32 = 11;
+    /// `getParameter(pname)`, whose answer this host renders as text.
+    pub const PARAMETER: u32 = 12;
+    /// `getActiveAttrib(program, index)` -- `pname` is the index.
+    pub const ACTIVE_ATTRIB: u32 = 13;
+    /// `getActiveUniform(program, index)`.
+    pub const ACTIVE_UNIFORM: u32 = 14;
+    /// `getTransformFeedbackVarying(program, index)`.
+    pub const TRANSFORM_FEEDBACK_VARYING: u32 = 15;
+
+    /// Whether a kind is one this build knows. A query nobody implements is
+    /// [`super::SyncError::UnsupportedOperation`], never an answer of zero.
+    pub fn is_known(kind: u32) -> bool {
+        (PROGRAM_PARAMETER..=TRANSFORM_FEEDBACK_VARYING).contains(&kind)
+    }
+}
+
+/// The arguments of every WebGL query, in one shape.
+///
+/// Six words and a name, because that is the union of what fifteen queries
+/// take: an object id, a `pname` or an index, one more number for
+/// `clientWaitSync`'s timeout, and a name for the three that look one up. The
+/// name is UTF-8, its length is a byte count, and the bytes are padded to a word
+/// with zeros -- the frame stream's payload rule, for the same reason: one
+/// encoding of a given request rather than four.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GlQueryParams<'a> {
+    pub kind: u32,
+    pub canvas_id: u32,
+    pub object: u32,
+    pub pname: u32,
+    pub extra: u32,
+    pub name: &'a [u8],
+}
+
+/// Words before a [`GlQueryParams`]'s name: the five fields above and the
+/// name's byte length.
+pub const GL_QUERY_HEADER_BYTES: usize = 24;
+
+/// The longest name a query may carry. A GLSL identifier is bounded by the
+/// shader it came from; this is far above any real one and far below the body
+/// ceiling, so a name that reaches it is a producer bug rather than a program.
+pub const GL_QUERY_MAX_NAME_BYTES: usize = 1024;
+
+impl<'a> GlQueryParams<'a> {
+    /// Encode into a fresh buffer, which is what a test or a host-side producer
+    /// needs; the producer proper writes these bytes in JavaScript.
+    pub fn encode(&self) -> Vec<u8> {
+        let padded = self.name.len().div_ceil(4) * 4;
+        let mut out = Vec::with_capacity(GL_QUERY_HEADER_BYTES + padded);
+        for word in [
+            self.kind,
+            self.canvas_id,
+            self.object,
+            self.pname,
+            self.extra,
+            self.name.len() as u32,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        out.extend_from_slice(self.name);
+        out.resize(GL_QUERY_HEADER_BYTES + padded, 0);
+        out
+    }
+
+    /// Decode and validate. Refuses a kind it does not know, a length that
+    /// disagrees with the body, and padding that is not zero.
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, SyncError> {
+        if bytes.len() < GL_QUERY_HEADER_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |offset: usize| -> u32 {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        let kind = word(0);
+        if !gl_query::is_known(kind) {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let name_len = word(20) as usize;
+        if name_len > GL_QUERY_MAX_NAME_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let padded = name_len.div_ceil(4) * 4;
+        if bytes.len() != GL_QUERY_HEADER_BYTES + padded {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        if bytes[GL_QUERY_HEADER_BYTES + name_len..]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(Self {
+            kind,
+            canvas_id: word(4),
+            object: word(8),
+            pname: word(12),
+            extra: word(16),
+            name: &bytes[GL_QUERY_HEADER_BYTES..GL_QUERY_HEADER_BYTES + name_len],
+        })
+    }
+
+    /// The name as text, with lone surrogates replaced -- the conversion V8
+    /// makes for a `#[string]` argument, so a name that crossed as a query and
+    /// one that crossed as an op name the same variable.
+    pub fn name_str(&self) -> std::borrow::Cow<'a, str> {
+        String::from_utf8_lossy(self.name)
+    }
+
+    /// Which operation answers this kind, and therefore what shape its reply is.
+    pub fn operation(kind: u32) -> u32 {
+        match kind {
+            gl_query::PROGRAM_INFO_LOG | gl_query::SHADER_INFO_LOG | gl_query::PARAMETER => {
+                SYNC_OP_GL_QUERY_TEXT
+            }
+            gl_query::ACTIVE_ATTRIB
+            | gl_query::ACTIVE_UNIFORM
+            | gl_query::TRANSFORM_FEEDBACK_VARYING => SYNC_OP_GL_QUERY_ACTIVE,
+            _ => SYNC_OP_GL_QUERY_SCALAR,
+        }
+    }
+}
+
 /// Serialised size of [`WindowReply`].
 pub const WINDOW_REPLY_BYTES: usize = 16;
 

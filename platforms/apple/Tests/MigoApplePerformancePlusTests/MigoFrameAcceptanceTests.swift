@@ -534,6 +534,140 @@ import XCTest
             XCTAssertEqual(right, [255, 0, 255, 255], "the right half samples the magenta texel")
         }
 
+        /// The queries: a compile status, a link status, a uniform location, an
+        /// error code -- each answered after the frame it is about.
+        ///
+        /// The acceptance for D15.3c. Every one of these is a call whose return
+        /// value IS the answer, and each asks about work that is *records in the
+        /// frame being built*: the shader whose `COMPILE_STATUS` content wants
+        /// was given its source three records ago. So the producer sends what it
+        /// has recorded as a barrier -- executed, not presented, or the half
+        /// frame would flash onto the screen -- and blocks until the host has
+        /// run it. Three.js does exactly this the first time it uses a material.
+        ///
+        /// The pixels are what prove the location is right: the fragment shader
+        /// has one uniform and nothing else decides its colour, so a location
+        /// that came back wrong draws black.
+        func testContentQueriesTheEngineAndDrawsWithWhatItLearns() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                export function start({ report }) {
+                  const gl = migo.createCanvas().getContext("webgl");
+                  const stage = (name, run) => {
+                    try { return run(); }
+                    catch (error) { report({ type: "failed", stage: name, detail: `${error.name}: ${error.message}` }); throw error; }
+                  };
+
+                  const answers = stage("program", () => {
+                    const vertex = gl.createShader(gl.VERTEX_SHADER);
+                    gl.shaderSource(vertex, "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }");
+                    gl.compileShader(vertex);
+                    const fragment = gl.createShader(gl.FRAGMENT_SHADER);
+                    gl.shaderSource(fragment, "precision mediump float; uniform vec4 uColor; " +
+                      "void main() { gl_FragColor = uColor; }");
+                    gl.compileShader(fragment);
+                    const program = gl.createProgram();
+                    gl.attachShader(program, vertex);
+                    gl.attachShader(program, fragment);
+                    gl.bindAttribLocation(program, 0, "p");
+                    gl.linkProgram(program);
+                    return {
+                      // Each of these crosses as a barrier and a blocking call.
+                      vertexCompiled: gl.getShaderParameter(vertex, gl.COMPILE_STATUS) === true,
+                      fragmentCompiled: gl.getShaderParameter(fragment, gl.COMPILE_STATUS) === true,
+                      linked: gl.getProgramParameter(program, gl.LINK_STATUS) === true,
+                      // An empty log is the normal answer for a program that
+                      // linked; what matters is that it came back as a string.
+                      logIsText: typeof gl.getProgramInfoLog(program) === "string",
+                      attributes: gl.getProgramParameter(program, gl.ACTIVE_ATTRIBUTES),
+                      activeUniform: (gl.getActiveUniform(program, 0) || {}).name,
+                      program,
+                    };
+                  });
+
+                  stage("draw", () => {
+                    const buffer = gl.createBuffer();
+                    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+                    gl.useProgram(answers.program);
+                    // The location content asks for, used to colour the frame.
+                    const location = gl.getUniformLocation(answers.program, "uColor");
+                    answers.locationFound = location !== null && location !== -1;
+                    gl.uniform4f(location, 0, 1, 0, 1);
+                    gl.enableVertexAttribArray(0);
+                    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+                    gl.viewport(0, 0, 64, 64);
+                    gl.clearColor(0, 0, 1, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.drawArrays(gl.TRIANGLES, 0, 3);
+                  });
+
+                  // The error queue is the host's, filled while it decoded this
+                  // producer's own records: a negative offset is INVALID_VALUE
+                  // there, and this is how content reads it back.
+                  stage("error", () => {
+                    answers.errorBeforeMistake = gl.getError();
+                    gl.bufferSubData(gl.ARRAY_BUFFER, -4, new Float32Array([1, 2]));
+                    answers.errorAfterMistake = gl.getError();
+                    answers.errorDrained = gl.getError();
+                  });
+
+                  requestAnimationFrame(() => {
+                    setTimeout(() => report({ type: "queried", ...answers, program: undefined }), 0);
+                  });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let queried = expectation(description: "content asked the engine and drew")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "queried":
+                    report = message
+                    queried.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    queried.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [queried], timeout: 240)
+            XCTAssertNil(failure)
+
+            XCTAssertEqual(report?["vertexCompiled"] as? Bool, true, "the vertex shader compiled")
+            XCTAssertEqual(report?["fragmentCompiled"] as? Bool, true, "the fragment shader compiled")
+            XCTAssertEqual(report?["linked"] as? Bool, true, "the program linked")
+            XCTAssertEqual(report?["logIsText"] as? Bool, true, "the info log came back as text")
+            XCTAssertEqual(report?["attributes"] as? Int, 1, "the program has one active attribute")
+            XCTAssertEqual(report?["activeUniform"] as? String, "uColor", "and one active uniform, by name")
+            XCTAssertEqual(report?["locationFound"] as? Bool, true, "the uniform's location came back")
+            XCTAssertEqual(report?["errorBeforeMistake"] as? Int, 0, "no error before the mistake")
+            XCTAssertEqual(
+                report?["errorAfterMistake"] as? Int, 0x0501,
+                "a negative bufferSubData offset is INVALID_VALUE, recorded where the record was decoded")
+            XCTAssertEqual(report?["errorDrained"] as? Int, 0, "and the queue drains, one error per call")
+
+            let pixel = try readPixel(session: harness.session, x: 0, y: 0, triggeringSequence: 1)
+            print("queries: pixel=\(pixel) attributes=\(report?["attributes"] as? Int ?? -1)")
+            XCTAssertEqual(pixel, [0, 255, 0, 255], "the frame is the colour the located uniform was set to")
+        }
+
         /// A frame too large for one packet crosses as barriers and one present.
         ///
         /// Sixty thousand clears in one `requestAnimationFrame` is 256 KiB of

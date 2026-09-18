@@ -51,6 +51,98 @@ export const SYNC_OP_READ_PIXELS = 1;
 export const SYNC_OP_AWAIT_WINDOW = 2;
 export const WINDOW_REPLY_BYTES = 16;
 
+// One WebGL query, answered after the frame the producer names. Three
+// operations, one per reply shape, because the operation is what sizes the
+// reply: a scalar is four bytes, text is the bytes themselves, and an active
+// variable is a size, a type and a name. Which query is in the parameters.
+export const SYNC_OP_GL_QUERY_SCALAR = 3;
+export const SYNC_OP_GL_QUERY_TEXT = 4;
+export const SYNC_OP_GL_QUERY_ACTIVE = 5;
+
+// Which query. The host's table is `frame_wire::sync::gl_query`, and the
+// interop gate holds the two together.
+export const GL_QUERY_PROGRAM_PARAMETER = 1;
+export const GL_QUERY_SHADER_PARAMETER = 2;
+export const GL_QUERY_QUERY_PARAMETER = 3;
+export const GL_QUERY_CHECK_FRAMEBUFFER_STATUS = 4;
+export const GL_QUERY_CLIENT_WAIT_SYNC = 5;
+export const GL_QUERY_GET_ERROR = 6;
+export const GL_QUERY_UNIFORM_LOCATION = 7;
+export const GL_QUERY_ATTRIB_LOCATION = 8;
+export const GL_QUERY_UNIFORM_BLOCK_INDEX = 9;
+export const GL_QUERY_PROGRAM_INFO_LOG = 10;
+export const GL_QUERY_SHADER_INFO_LOG = 11;
+export const GL_QUERY_PARAMETER = 12;
+export const GL_QUERY_ACTIVE_ATTRIB = 13;
+export const GL_QUERY_ACTIVE_UNIFORM = 14;
+export const GL_QUERY_TRANSFORM_FEEDBACK_VARYING = 15;
+
+/** Words before a query's name: five fields and the name's byte length. */
+export const GL_QUERY_HEADER_BYTES = 24;
+/** `size` and `type` before an active variable's name. */
+export const ACTIVE_VARIABLE_HEADER_BYTES = 8;
+/** The longest name a query may carry, as the host bounds it. */
+export const GL_QUERY_MAX_NAME_BYTES = 1024;
+
+const queryNameEncoder = new TextEncoder();
+const queryReplyDecoder = new TextDecoder();
+
+/**
+ * Encode a WebGL query's arguments: five words, the name's length, then the
+ * name's UTF-8 bytes padded to a word with zeros -- the frame stream's payload
+ * rule, and the host refuses padding that is not zero.
+ */
+export function encodeGlQueryParams({ kind, canvasId = 0, object = 0, pname = 0, extra = 0, name = "" }) {
+  const encoded = name.length === 0 ? EMPTY_NAME : queryNameEncoder.encode(name);
+  if (encoded.byteLength > GL_QUERY_MAX_NAME_BYTES) {
+    throw new RangeError(`a query name of ${encoded.byteLength} bytes is past the ${GL_QUERY_MAX_NAME_BYTES}-byte limit`);
+  }
+  const padded = (encoded.byteLength + 3) & ~3;
+  const bytes = new Uint8Array(GL_QUERY_HEADER_BYTES + padded);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, kind, true);
+  view.setUint32(4, canvasId, true);
+  view.setUint32(8, object, true);
+  view.setUint32(12, pname, true);
+  view.setUint32(16, extra, true);
+  view.setUint32(20, encoded.byteLength, true);
+  bytes.set(encoded, GL_QUERY_HEADER_BYTES);
+  return bytes;
+}
+
+const EMPTY_NAME = new Uint8Array(0);
+
+/** The four bytes of a scalar answer, as a signed integer. */
+export function decodeScalarReply(reply) {
+  if (reply.byteLength !== 4) {
+    throw new RangeError(`a scalar query answers with four bytes, not ${reply.byteLength}`);
+  }
+  return new DataView(reply.buffer, reply.byteOffset, 4).getInt32(0, true);
+}
+
+/** A text answer: the reply's bytes are the whole of it. */
+export function decodeTextReply(reply) {
+  return queryReplyDecoder.decode(reply);
+}
+
+/**
+ * An active variable's answer. A zero type is the index the program does not
+ * have, which WebGL reports as `null`.
+ */
+export function decodeActiveReply(reply) {
+  if (reply.byteLength < ACTIVE_VARIABLE_HEADER_BYTES) {
+    throw new RangeError(`an active variable answers with at least ${ACTIVE_VARIABLE_HEADER_BYTES} bytes, not ${reply.byteLength}`);
+  }
+  const view = new DataView(reply.buffer, reply.byteOffset, ACTIVE_VARIABLE_HEADER_BYTES);
+  const type = view.getUint32(4, true);
+  if (type === 0) return null;
+  return {
+    size: view.getInt32(0, true),
+    type,
+    name: queryReplyDecoder.decode(reply.subarray(ACTIVE_VARIABLE_HEADER_BYTES)),
+  };
+}
+
 /**
  * Read an AWAIT_WINDOW reply. Refuses what the host would never send: a reply
  * of the wrong length, or a reserved word that is not zero.

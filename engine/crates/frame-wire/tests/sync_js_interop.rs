@@ -17,7 +17,9 @@
 
 use std::{fs, path::PathBuf};
 
-use frame_wire::sync::{GL_RGBA, GL_UNSIGNED_BYTE, ReadPixelsParams};
+use frame_wire::sync::{
+    GL_QUERY_HEADER_BYTES, GL_RGBA, GL_UNSIGNED_BYTE, GlQueryParams, ReadPixelsParams, gl_query,
+};
 
 /// One flat JSON object's value for `key`.
 ///
@@ -269,4 +271,95 @@ fn the_rust_host_writes_answers_the_producer_reads() {
     }
     fs::write(directory.join("answers.jsonl"), manifest).expect("write manifest");
     println!("wrote {} synchronous answers", answers.len());
+}
+
+/// The same check for the WebGL queries' arguments.
+///
+/// A query is three numbers and a name, and every one of them is a way to ask
+/// about the wrong thing: an object id read from the wrong word asks about
+/// another program, and a name length read as characters rather than bytes
+/// truncates a uniform's name into one that does not exist. Both are answered
+/// rather than refused -- `getUniformLocation` returns -1 for a name nothing
+/// has -- so the failure is a uniform that silently does nothing.
+#[test]
+#[ignore = "needs records emitted by node; run through scripts/test-frame-wire-js-encoder.sh"]
+fn gl_query_arguments_from_the_javascript_producer_decode_unchanged() {
+    let directory = PathBuf::from(
+        std::env::var("MIGO_JS_GL_QUERY_DIR")
+            .expect("MIGO_JS_GL_QUERY_DIR must name the emitter's output directory"),
+    );
+    let manifest = fs::read_to_string(directory.join("manifest.jsonl"))
+        .expect("the emitter writes manifest.jsonl beside the records");
+    let entries: Vec<&str> = manifest
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert!(
+        entries.len() >= 15,
+        "the manifest has {} entries; a run that checked nothing would pass",
+        entries.len()
+    );
+
+    let mut kinds_seen = std::collections::BTreeSet::new();
+    let mut names_with_padding = 0;
+    for line in entries {
+        let file = field(line, "file");
+        let bytes = fs::read(directory.join(file)).expect("a record the manifest names");
+        let decoded = GlQueryParams::decode(&bytes)
+            .unwrap_or_else(|error| panic!("{file} was refused: {error:?}"));
+
+        assert_eq!(i64::from(decoded.kind), number(line, "kind"), "{file}: kind");
+        assert_eq!(
+            i64::from(decoded.canvas_id),
+            number(line, "canvas_id"),
+            "{file}: canvas"
+        );
+        assert_eq!(
+            i64::from(decoded.object),
+            number(line, "object"),
+            "{file}: object"
+        );
+        assert_eq!(
+            i64::from(decoded.pname),
+            number(line, "pname"),
+            "{file}: pname"
+        );
+        assert_eq!(
+            i64::from(decoded.extra),
+            number(line, "extra"),
+            "{file}: extra"
+        );
+        assert_eq!(
+            decoded.name.len() as i64,
+            number(line, "name_bytes"),
+            "{file}: the name's length is a byte count"
+        );
+        assert_eq!(
+            bytes.len() as i64,
+            number(line, "total_bytes"),
+            "{file}: the record's size"
+        );
+        // Re-encoding must produce the same bytes: one encoding of a request,
+        // which is what makes a comparison of bytes meaningful at all.
+        assert_eq!(
+            decoded.encode(),
+            bytes,
+            "{file} did not survive a round trip through the Rust encoder"
+        );
+        if (bytes.len() - GL_QUERY_HEADER_BYTES) != decoded.name.len() {
+            names_with_padding += 1;
+        }
+        kinds_seen.insert(decoded.kind);
+    }
+
+    assert_eq!(
+        kinds_seen.len(),
+        (gl_query::TRANSFORM_FEEDBACK_VARYING - gl_query::PROGRAM_PARAMETER + 1) as usize,
+        "every query kind has to appear, or the corpus covers a table it does not exercise"
+    );
+    assert!(
+        names_with_padding > 0,
+        "no record had a padded name, so the padding rule went unchecked"
+    );
+    println!("read {} JavaScript-encoded query records", kinds_seen.len());
 }

@@ -336,6 +336,10 @@ impl Admission {
 
 struct SyncPath {
     mailbox: Mutex<SyncMailbox>,
+    /// The errors this producer's own records made while being decoded, which
+    /// is what `getError` answers from: the queue is the host's, so there is no
+    /// renderer round trip to make.
+    errors: Arc<ExternalGlErrors>,
     /// Holds the vector the renderer answered with, moved rather than copied
     /// into. Its capacity is whatever the last reply needed and is released
     /// when the next one replaces it, so a session that reads a full screen
@@ -350,9 +354,11 @@ impl SyncPath {
         runtime_generation: u64,
         dispatch: Arc<OnceLock<RenderDispatch>>,
         admission: Admission,
+        errors: Arc<ExternalGlErrors>,
     ) -> Self {
         Self {
             mailbox: Mutex::new(SyncMailbox::new(runtime_generation)),
+            errors,
             reply: Mutex::new(Vec::new()),
             dispatch,
             admission,
@@ -551,6 +557,16 @@ impl SyncPath {
                 deadline_nanos,
                 now_nanos,
             ),
+            frame_wire::sync::SYNC_OP_GL_QUERY_SCALAR
+            | frame_wire::sync::SYNC_OP_GL_QUERY_TEXT
+            | frame_wire::sync::SYNC_OP_GL_QUERY_ACTIVE => self.gl_query(
+                operation,
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
             _ => Err(SyncError::UnsupportedOperation),
         }
     }
@@ -630,6 +646,231 @@ impl SyncPath {
         }
         .encode()
         .to_vec())
+    }
+
+    /// `SYNC_OP_GL_QUERY_*`: one WebGL query, answered after the frame it names.
+    ///
+    /// Every one of these is a call whose return value IS the answer -- a link
+    /// status, a uniform location, an info log -- so there is no default to
+    /// return and no way to defer. The producer records its work, sends a
+    /// barrier so the host executes it, and blocks here naming that barrier's
+    /// sequence; this waits for it to be admitted and then asks the renderer.
+    ///
+    /// `getError` is the exception that proves the shape: the error queue is the
+    /// host's, filled while decoding this producer's own records, so it is
+    /// answered here without a round trip -- after the same wait, because an
+    /// error recorded by the frame the producer is asking about has to be in the
+    /// queue before it is read.
+    fn gl_query(
+        &self,
+        operation: u32,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        use frame_wire::sync::{
+            ACTIVE_VARIABLE_HEADER_BYTES, GlQueryParams, SYNC_OP_GL_QUERY_ACTIVE,
+            SYNC_OP_GL_QUERY_SCALAR, SYNC_OP_GL_QUERY_TEXT, gl_query,
+        };
+        use shared::protocol::render_cmd::{GLCmd, RenderCmdResp, RenderCommand};
+
+        let query = GlQueryParams::decode(params)?;
+        // The operation sizes the reply, so a kind sent under the wrong one
+        // would be answered in a shape the producer is not reading.
+        if GlQueryParams::operation(query.kind) != operation {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        if (max_reply_bytes as usize) < 4 {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        if query.kind == gl_query::GET_ERROR {
+            let code = self.errors.take(query.canvas_id).unwrap_or(0);
+            return Ok(code.to_le_bytes().to_vec());
+        }
+
+        let Some(dispatch) = self.dispatch.get() else {
+            // The renderer is not up yet. Not "unsupported": this host does
+            // implement the query, and a producer told otherwise stops asking.
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let deadline = std::time::Duration::from_nanos(budget);
+
+        /// Send a command carrying a reply channel, and wait for the answer.
+        macro_rules! ask {
+            ($build:expr) => {{
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                if sender
+                    .send_blocking_bounded(RenderCommand::GL($build(RenderCmdResp::from_sync(tx))))
+                    .is_err()
+                {
+                    return Err(SyncError::SessionEnded);
+                }
+                match rx.recv_timeout(deadline) {
+                    Ok(Ok(answer)) => answer,
+                    // The renderer answered and the answer was an error: an
+                    // object that does not exist, a context that went away. Not
+                    // "unsupported", which is permanent and would stop the
+                    // producer asking for the rest of the session.
+                    Ok(Err(_)) => return Err(SyncError::OperationFailed),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        return Err(SyncError::TimedOut);
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        return Err(SyncError::SessionEnded);
+                    }
+                }
+            }};
+        }
+
+        let name = query.name_str().into_owned();
+        match operation {
+            SYNC_OP_GL_QUERY_SCALAR => {
+                let value: i32 = match query.kind {
+                    gl_query::PROGRAM_PARAMETER => ask!(|resp| GLCmd::GetProgramParameter {
+                        program_id: query.object,
+                        pname: query.pname,
+                        resp,
+                    }),
+                    gl_query::SHADER_PARAMETER => ask!(|resp| GLCmd::GetShaderParameter {
+                        shader_id: query.object,
+                        pname: query.pname,
+                        resp,
+                    }),
+                    gl_query::QUERY_PARAMETER => {
+                        let value: u32 = ask!(|resp| GLCmd::GetQueryParameter {
+                            query: query.object,
+                            pname: query.pname,
+                            resp,
+                        });
+                        value as i32
+                    }
+                    gl_query::CHECK_FRAMEBUFFER_STATUS => {
+                        let value: u32 = ask!(|resp| GLCmd::CheckFramebufferStatus {
+                            canvas_id: query.canvas_id,
+                            target: query.pname,
+                            resp,
+                        });
+                        value as i32
+                    }
+                    gl_query::CLIENT_WAIT_SYNC => {
+                        let value: u32 = ask!(|resp| GLCmd::ClientWaitSync {
+                            sync: query.object,
+                            flags: query.pname,
+                            resp,
+                        });
+                        value as i32
+                    }
+                    gl_query::UNIFORM_LOCATION => {
+                        // `null` is -1, the value WebGL's own location type is
+                        // compared against; the producer hands it straight back.
+                        let found: Option<u32> = ask!(|resp| GLCmd::GetUniformLocation {
+                            canvas_id: query.canvas_id,
+                            program_id: query.object,
+                            name: name.clone(),
+                            resp,
+                        });
+                        found.map_or(-1, |location| location as i32)
+                    }
+                    gl_query::ATTRIB_LOCATION => {
+                        let found: Option<u32> = ask!(|resp| GLCmd::GetAttribLocation {
+                            canvas_id: query.canvas_id,
+                            program_id: query.object,
+                            name: name.clone(),
+                            resp,
+                        });
+                        found.map_or(-1, |location| location as i32)
+                    }
+                    gl_query::UNIFORM_BLOCK_INDEX => {
+                        let index: u32 = ask!(|resp| GLCmd::GetUniformBlockIndex {
+                            program_id: query.object,
+                            name: name.clone(),
+                            resp,
+                        });
+                        index as i32
+                    }
+                    _ => return Err(SyncError::UnsupportedOperation),
+                };
+                Ok(value.to_le_bytes().to_vec())
+            }
+            SYNC_OP_GL_QUERY_TEXT => {
+                let text: String = match query.kind {
+                    gl_query::PROGRAM_INFO_LOG => {
+                        let log: Option<String> = ask!(|resp| GLCmd::GetProgramInfoLog {
+                            program_id: query.object,
+                            resp,
+                        });
+                        log.unwrap_or_default()
+                    }
+                    gl_query::SHADER_INFO_LOG => {
+                        let log: Option<String> = ask!(|resp| GLCmd::GetShaderInfoLog {
+                            shader_id: query.object,
+                            resp,
+                        });
+                        log.unwrap_or_default()
+                    }
+                    gl_query::PARAMETER => ask!(|resp| GLCmd::GetParameter {
+                        canvas_id: query.canvas_id,
+                        pname: query.pname,
+                        resp,
+                    }),
+                    _ => return Err(SyncError::UnsupportedOperation),
+                };
+                // Truncating an info log would be a wrong answer that looks
+                // like a right one, which is what this whole barrier refuses.
+                if text.len() > max_reply_bytes as usize {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                Ok(text.into_bytes())
+            }
+            SYNC_OP_GL_QUERY_ACTIVE => {
+                let found: Option<(String, i32, u32)> = match query.kind {
+                    gl_query::ACTIVE_ATTRIB => ask!(|resp| GLCmd::GetActiveAttrib {
+                        canvas_id: query.canvas_id,
+                        program_id: query.object,
+                        index: query.pname,
+                        resp,
+                    }),
+                    gl_query::ACTIVE_UNIFORM => ask!(|resp| GLCmd::GetActiveUniform {
+                        canvas_id: query.canvas_id,
+                        program_id: query.object,
+                        index: query.pname,
+                        resp,
+                    }),
+                    gl_query::TRANSFORM_FEEDBACK_VARYING => {
+                        ask!(|resp| GLCmd::GetTransformFeedbackVarying {
+                            program: query.object,
+                            index: query.pname,
+                            resp,
+                        })
+                    }
+                    _ => return Err(SyncError::UnsupportedOperation),
+                };
+                // No such index is `null` in WebGL, and here a reply with a zero
+                // type and no name: every real variable has a type.
+                let (name, size, type_) = found.unwrap_or_default();
+                if ACTIVE_VARIABLE_HEADER_BYTES + name.len() > max_reply_bytes as usize {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                let mut reply = Vec::with_capacity(ACTIVE_VARIABLE_HEADER_BYTES + name.len());
+                reply.extend_from_slice(&size.to_le_bytes());
+                reply.extend_from_slice(&type_.to_le_bytes());
+                reply.extend_from_slice(name.as_bytes());
+                Ok(reply)
+            }
+            _ => Err(SyncError::UnsupportedOperation),
+        }
     }
 
     /// `SYNC_OP_READ_PIXELS`.
@@ -1515,21 +1756,24 @@ impl ExternalFrameSession {
             INITIAL_RUNTIME_GENERATION,
         ))));
         let window = admission.ingress.lock().window_source();
+        let errors = Arc::new(ExternalGlErrors::default());
         Self {
             host: HostThread::from_join_handle_for_test(host_id, join),
             submit: SubmitPath {
                 ingress: Arc::clone(&admission.ingress),
                 admitted: Arc::clone(&admission.admitted),
-                errors: Arc::new(ExternalGlErrors::default()),
+                errors: Arc::clone(&errors),
                 dispatch: Arc::clone(&dispatch),
                 downlink: Arc::clone(&downlink),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
             },
             sync: Arc::new(SyncPath::new(
-                INITIAL_RUNTIME_GENERATION,
-                dispatch,
+            INITIAL_RUNTIME_GENERATION,
+            dispatch,
                 admission,
-            )),
+                errors,
+            Arc::new(ExternalGlErrors::default()),
+        )),
             clock: ExternalFrameClock::shared(
                 Arc::clone(&downlink),
                 window,
@@ -1603,6 +1847,7 @@ pub fn spawn_external_frame_session(
                 INITIAL_RUNTIME_GENERATION,
                 Arc::clone(&dispatch),
                 admission.clone(),
+                Arc::clone(&errors),
             )),
             submit: SubmitPath {
                 ingress,
@@ -3037,6 +3282,7 @@ mod sync_tests {
                 0,
                 INITIAL_RUNTIME_GENERATION,
             )))),
+            Arc::new(ExternalGlErrors::default()),
         )
     }
 
@@ -3248,6 +3494,7 @@ mod sync_tests {
                 0,
                 INITIAL_RUNTIME_GENERATION,
             )))),
+            Arc::new(ExternalGlErrors::default()),
         );
 
         let renderer = std::thread::spawn(move || {
@@ -3305,6 +3552,235 @@ mod sync_tests {
         drop(sender);
     }
 
+    /// A command channel and a dispatch that points at it: what a query needs
+    /// to reach a stand-in renderer.
+    fn new_render_channel() -> (
+        Arc<shared::render_command_sender::CommandSender>,
+        crossbeam_channel::Receiver<shared::protocol::render_cmd::RenderCommand>,
+    ) {
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        (Arc::new(sender), commands)
+    }
+
+    fn path_with_dispatch(sender: &Arc<shared::render_command_sender::CommandSender>) -> SyncPath {
+        let dispatch = Arc::new(OnceLock::new());
+        assert!(
+            dispatch
+                .set(RenderDispatch {
+                    sender: Arc::downgrade(sender),
+                    words: Mutex::new(Vec::new()),
+                })
+                .is_ok()
+        );
+        SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            dispatch,
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+            Arc::new(ExternalGlErrors::default()),
+        )
+    }
+
+    /// A scalar query: the producer asks, the renderer answers, and the four
+    /// bytes that come back are the number it gave.
+    #[test]
+    fn a_scalar_query_is_answered_with_the_renderers_number() {
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+        use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+
+        let (sender, commands) = new_render_channel();
+        let path = path_with_dispatch(&sender);
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::GL(GLCmd::GetUniformLocation { name, resp, .. })) =
+                commands.recv()
+            else {
+                panic!("the barrier sent something other than a uniform location query");
+            };
+            // The name has to arrive whole: a location looked up under a
+            // truncated name is answered, not refused, with `None`.
+            assert_eq!(name, "uColor");
+            resp.ok(Some(7));
+        });
+
+        let params = GlQueryParams {
+            kind: gl_query::UNIFORM_LOCATION,
+            canvas_id: 1,
+            object: 4,
+            pname: 0,
+            extra: 0,
+            name: b"uColor",
+        }
+        .encode();
+        let mut call = request(SYNC_OP_GL_QUERY_SCALAR, 4);
+        call.deadline_nanos = NOW + 30_000_000_000;
+        call.triggering_sequence = 0;
+        post(&path, call, &params, NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+
+        let snapshot = path.snapshot(NOW);
+        assert_eq!((snapshot.state, snapshot.error), (SyncState::Ready, None));
+        let mut out = [0u8; 4];
+        assert_eq!(path.take_reply(&mut out), Ok(4));
+        assert_eq!(i32::from_le_bytes(out), 7);
+        drop(sender);
+    }
+
+    /// A location nothing has is -1, which is what WebGL compares against --
+    /// not a refusal, and not zero, which is a real location.
+    #[test]
+    fn a_location_that_does_not_exist_is_minus_one() {
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+        use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+
+        let (sender, commands) = new_render_channel();
+        let path = path_with_dispatch(&sender);
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::GL(GLCmd::GetAttribLocation { resp, .. })) = commands.recv()
+            else {
+                panic!("the barrier sent something other than an attribute location query");
+            };
+            resp.ok(None);
+        });
+
+        let params = GlQueryParams {
+            kind: gl_query::ATTRIB_LOCATION,
+            canvas_id: 1,
+            object: 4,
+            pname: 0,
+            extra: 0,
+            name: b"missing",
+        }
+        .encode();
+        let mut call = request(SYNC_OP_GL_QUERY_SCALAR, 4);
+        call.deadline_nanos = NOW + 30_000_000_000;
+        call.triggering_sequence = 0;
+        post(&path, call, &params, NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+        let mut out = [0u8; 4];
+        assert_eq!(path.take_reply(&mut out), Ok(4));
+        assert_eq!(i32::from_le_bytes(out), -1);
+        drop(sender);
+    }
+
+    /// An active variable: a size, a type and a name, in one reply the producer
+    /// turns back into the object the engine's facade parses.
+    #[test]
+    fn an_active_variable_answers_with_its_size_type_and_name() {
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+        use frame_wire::sync::{
+            ACTIVE_VARIABLE_HEADER_BYTES, GlQueryParams, SYNC_OP_GL_QUERY_ACTIVE, gl_query,
+        };
+
+        let (sender, commands) = new_render_channel();
+        let path = path_with_dispatch(&sender);
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::GL(GLCmd::GetActiveUniform { index, resp, .. })) = commands.recv()
+            else {
+                panic!("the barrier sent something other than an active uniform query");
+            };
+            assert_eq!(index, 2);
+            resp.ok(Some(("uColor".to_owned(), 1, 0x8B52)));
+        });
+
+        let params = GlQueryParams {
+            kind: gl_query::ACTIVE_UNIFORM,
+            canvas_id: 1,
+            object: 4,
+            pname: 2,
+            extra: 0,
+            name: &[],
+        }
+        .encode();
+        let mut call = request(SYNC_OP_GL_QUERY_ACTIVE, 128);
+        call.deadline_nanos = NOW + 30_000_000_000;
+        call.triggering_sequence = 0;
+        post(&path, call, &params, NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+
+        let mut out = [0u8; 128];
+        let written = path.take_reply(&mut out).expect("a reply");
+        assert_eq!(written, ACTIVE_VARIABLE_HEADER_BYTES + "uColor".len());
+        assert_eq!(i32::from_le_bytes(out[0..4].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), 0x8B52);
+        assert_eq!(&out[8..written], b"uColor");
+        drop(sender);
+    }
+
+    /// `getError` is answered from the host's own queue -- the errors its
+    /// decoder recorded for this producer's records -- without asking the
+    /// renderer anything, and it drains one per call.
+    #[test]
+    fn get_error_drains_the_queue_the_host_filled_while_decoding() {
+        use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+
+        let errors = Arc::new(ExternalGlErrors::default());
+        errors.push(1, frame_decode::codes::INVALID_VALUE);
+        let path = SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            // No renderer at all: a query that needed one would fail here, and
+            // that is the point -- this one must not need one.
+            Arc::new(OnceLock::new()),
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+            Arc::clone(&errors),
+        );
+
+        let ask = |path: &SyncPath| {
+            let params = GlQueryParams {
+                kind: gl_query::GET_ERROR,
+                canvas_id: 1,
+                object: 0,
+                pname: 0,
+                extra: 0,
+                name: &[],
+            }
+            .encode();
+            let mut call = request(SYNC_OP_GL_QUERY_SCALAR, 4);
+            call.deadline_nanos = NOW + 1_000_000_000;
+            call.triggering_sequence = 0;
+            post(path, call, &params, NOW).expect("posted");
+            let mut out = [0u8; 4];
+            assert_eq!(path.take_reply(&mut out), Ok(4));
+            u32::from_le_bytes(out)
+        };
+
+        assert_eq!(ask(&path), frame_decode::codes::INVALID_VALUE);
+        assert_eq!(ask(&path), 0, "the queue drains one error per call");
+    }
+
+    /// A kind sent under the wrong operation is refused rather than answered:
+    /// the operation is what sizes the reply, so an info log answered as a
+    /// scalar would be four bytes of a string.
+    #[test]
+    fn a_query_under_the_wrong_operation_is_refused() {
+        use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+
+        let path = path();
+        let params = GlQueryParams {
+            kind: gl_query::PROGRAM_INFO_LOG,
+            canvas_id: 1,
+            object: 4,
+            pname: 0,
+            extra: 0,
+            name: &[],
+        }
+        .encode();
+        let mut call = request(SYNC_OP_GL_QUERY_SCALAR, 4);
+        call.deadline_nanos = NOW + 1_000_000_000;
+        call.triggering_sequence = 0;
+        let snapshot = post(&path, call, &params, NOW).expect("the request is posted");
+        assert_eq!(
+            (snapshot.state, snapshot.error),
+            (SyncState::Failed, Some(SyncError::UnsupportedOperation)),
+            "the call is answered as failed, not answered with four bytes of something else"
+        );
+        assert_eq!(snapshot.reply_bytes, 0);
+    }
+
     #[test]
     fn ending_the_session_refuses_every_later_request() {
         let path = path();
@@ -3339,6 +3815,7 @@ mod sync_answer_tests {
                 0,
                 INITIAL_RUNTIME_GENERATION,
             )))),
+            Arc::new(ExternalGlErrors::default()),
         )
     }
 
@@ -3638,6 +4115,7 @@ mod sync_fence_tests {
             INITIAL_RUNTIME_GENERATION,
             dispatch,
             admission.clone(),
+            Arc::new(ExternalGlErrors::default()),
         ));
         (path, admission, sender, commands)
     }
@@ -3764,6 +4242,7 @@ mod sync_teardown_tests {
                 0,
                 INITIAL_RUNTIME_GENERATION,
             )))),
+            Arc::new(ExternalGlErrors::default()),
         );
         // The state the wiring has to reach. `request_shutdown` needs a running
         // thread, so this asserts the same call the two entry points make.
@@ -3850,6 +4329,7 @@ mod await_window_tests {
             INITIAL_RUNTIME_GENERATION,
             Arc::new(OnceLock::new()),
             admission.clone(),
+            Arc::new(ExternalGlErrors::default()),
         ));
         (path, admission)
     }
