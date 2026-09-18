@@ -570,6 +570,33 @@ which is a change worth noticing rather than absorbing.
 |---:|---|---|---|
 | 1 | `READ_PIXELS` | 32 bytes: canvas id, x, y, width, height, format, type, reserved | `width * height * 4` bytes of RGBA8 rows |
 | 2 | `AWAIT_WINDOW` | none | 16 bytes: `remaining_credits` u32, a zero u32, `accepted_sequence` u64 |
+| 3 | `GL_QUERY_SCALAR` | a query record (below) | 4 bytes, little-endian, read as `i32` or `u32` by the query |
+| 4 | `GL_QUERY_TEXT` | a query record | the UTF-8 bytes, and nothing else |
+| 5 | `GL_QUERY_ACTIVE` | a query record | `size` i32, `type` u32, then the name's UTF-8 bytes |
+
+**The WebGL queries.** `getShaderParameter`, `getUniformLocation`, `getError`
+and the twelve others are calls whose return value *is* the answer, asked about
+work that is still records in the frame being built: the shader whose
+`COMPILE_STATUS` content wants was given its source three records ago. So the
+producer sends what it has recorded as a **barrier** -- executed, not presented,
+or the half frame would reach the screen -- and blocks here naming that
+barrier's sequence; the host answers once it has been admitted and run.
+
+Three operations rather than fifteen, because the operation is what sizes the
+reply and there are three shapes of answer. Which query is in the parameters:
+
+```text
+kind u32, canvas_id u32, object u32, pname u32, extra u32, name_length u32,
+then name_length bytes of UTF-8, zero-padded to a word
+```
+
+The padding must be zero and the length must agree with the body, as a frame
+record's payload must; the name is bounded at 1024 bytes. A kind sent under an
+operation that is not the one its answer's shape belongs to is refused, not
+answered. `GET_ERROR` is answered from the host's own error queue -- the one its
+decoder fills for this producer's records -- without asking the renderer, after
+the same wait, because an error made by the frame being asked about has to be in
+the queue before it is read.
 
 `AWAIT_WINDOW` exists because a producer whose calls are synchronous cannot wait
 for a credit the way a running one does. A barrier has to be sent from inside the
