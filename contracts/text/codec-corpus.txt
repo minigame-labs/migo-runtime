@@ -1,0 +1,56 @@
+# The text codec cases both implementations are held to.
+#
+# Each line is `direction<TAB>encoding<TAB>value`:
+#   enc  a string to turn into bytes, JSON-escaped
+#   dec  bytes as hex, to turn into a string
+# A fourth field `producer-refuses:<message>` marks a case where the two are
+# expected to differ, with the message the producer must give.
+# A line starting with `#` is a comment and an empty line is skipped.
+#
+# The cases are where two implementations of one table drift: `ucs2` is
+# big-endian with a BOM in this API, `ascii` masks rather than refuses, `latin1`
+# refuses rather than masks, `decode(base64)` encodes, an odd byte count is a
+# refusal, an unpaired surrogate is a refusal, and an encoding nobody knows is
+# named in the error.
+enc	utf8	"hello"
+enc	utf8	"中文 text"
+enc	utf-8	"café"
+enc		"an empty coding is utf8"
+enc	ascii	"plain"
+enc	ascii	"é中"
+enc	latin1	"café"
+enc	latin1	"中"
+enc	binary	"ÿ"
+enc	hex	"48656c6c6f"
+enc	hex	"4865 6c"
+enc	hex	"zz"
+enc	base64	"aGVsbG8="
+enc	base64	"data:text/plain;base64,aGVsbG8="
+enc	base64	"not base64!"
+enc	utf16le	"hi"
+enc	utf16le	"中文"
+enc	ucs2	"hi"
+enc	ucs2	"😀"
+# WebKit has no GBK encoder -- the encoding standard removed every encoder but
+# UTF-8 -- so the producer refuses where the host converts. Recorded here rather
+# than left out, so the gate asserts THIS difference and no other: a producer
+# that started answering, or refused differently, fails.
+enc	gbk	"中文"	producer-refuses:GBK encode error: this runtime has no GBK encoder
+enc	shift_jis	"anything"
+dec	utf8	68656c6c6f
+dec	utf8	e4b8ade69687
+dec	utf8	ff
+dec	ascii	48656c6cff
+dec	latin1	48656cff
+dec	base64	68656c6c6f
+dec	base64	00ff10
+dec	hex	00ff10
+dec	utf16le	68006900
+dec	utf16le	680069
+dec	utf16le	00d8
+dec	ucs2	feff00680069
+dec	ucs2	00680069
+dec	ucs2	0068006
+dec	gbk	d6d0cec4
+dec	gbk	ff
+dec	shift_jis	4869

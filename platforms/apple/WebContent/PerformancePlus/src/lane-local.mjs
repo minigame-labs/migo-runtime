@@ -7,7 +7,9 @@
 // implements only ops the contract gives this lane is checked by
 // scripts/gen-performance-plus-engine.py.
 
+import { bytesOf, stringOf } from "./op-args.mjs";
 import { platform } from "./engine-core.mjs";
+import { decodeBytes, encodeString } from "./text-codec.mjs";
 import { engineHost } from "./engine-host.mjs";
 
 // ---- time -------------------------------------------------------------------
@@ -219,4 +221,75 @@ export function op_get_menu_button_rect() {
 
 export function op_get_network_type() {
   return described("networkType", "getNetworkType");
+}
+
+// ---- counters and hints -------------------------------------------------------
+
+/**
+ * `op_alloc_host_callback_id`: the next id a host callback registers under.
+ *
+ * The embedded op takes it from a per-session allocator that refuses to wrap --
+ * a caller must fail to register rather than register under someone else's id --
+ * and the ids are only ever compared, never sent anywhere that assigns meaning
+ * to their value. So the producer keeps the same allocator here: its own
+ * counter, exhausted rather than wrapped.
+ */
+export function op_alloc_host_callback_id() {
+  if (nextCallbackId > MAX_CALLBACK_ID) {
+    throw new RangeError("host callback ids are exhausted");
+  }
+  const id = nextCallbackId;
+  nextCallbackId += 1;
+  return id;
+}
+
+let nextCallbackId = 1;
+// The op returns an `i32`, and a callback id that wrapped would be one handler
+// answering for another's events.
+const MAX_CALLBACK_ID = 0x7fff_ffff;
+
+/**
+ * `op_trigger_gc`: nothing, and that is the honest answer here.
+ *
+ * The embedded op asks V8 for a full collection through
+ * `low_memory_notification`, which is an engine-private call. The JavaScript
+ * engine this content runs in is WebKit's, in this process, and it exposes no
+ * such call to a Worker -- there is nothing to forward the hint to, and a round
+ * trip to the host would ask the wrong engine. Content's `triggerGC()` is a
+ * hint in its own API too, so a hint nobody can act on is a hint dropped.
+ */
+export function op_trigger_gc() {}
+
+/**
+ * `op_create_image`: the id a new `Image` gets.
+ *
+ * A counter bump in process too -- the embedded op stopped asking the render
+ * thread for one because a busy renderer blocked `new Image()` for hundreds of
+ * milliseconds -- and the id means nothing until the image is loaded. The
+ * producer allocates from its own range for the same reason it allocates GL
+ * resource ids: the host binds whatever it is told.
+ */
+export function op_create_image() {
+  const id = nextImageId;
+  nextImageId += 1;
+  return id >>> 0;
+}
+
+let nextImageId = 1;
+
+// ---- text codecs ---------------------------------------------------------------
+//
+// A string into bytes and back takes no host resource, which is why the op
+// boundary answers these here. The conversions are `text-codec.mjs`, a port of
+// `shared::codec` held to it by `scripts/test-text-codec-agreement.sh` -- a game
+// that writes a save file on one platform has to be able to read it on another.
+
+/// `migo.encodeMultiFormats(text, coding)`.
+export function op_encode_multi_formats(original, coding) {
+  return encodeString(stringOf(original, "original"), stringOf(coding, "coding"));
+}
+
+/// `migo.decodeMultiFormats(bytes, coding)`.
+export function op_decode_multi_formats(buffer, coding) {
+  return decodeBytes(bytesOf(buffer, "buf"), stringOf(coding, "coding"));
 }
