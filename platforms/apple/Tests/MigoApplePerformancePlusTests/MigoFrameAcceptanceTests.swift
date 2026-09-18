@@ -907,7 +907,9 @@ import XCTest
                     report({ type: "stored", syncBack: JSON.stringify(syncBack), syncOfAsync, asyncBack,
                       keys: info.keys.slice().sort().join(","), refused });
                   } catch (error) {
-                    report({ type: "failed", stage: "storage", detail: `${error.name}: ${error.message}` });
+                    // An awaited mini-game API rejects with `{errMsg}`, not an Error.
+                    const detail = error instanceof Error ? `${error.name}: ${error.message}` : JSON.stringify(error);
+                    report({ type: "failed", stage: "storage", detail });
                   }
                 }
                 """.utf8)
