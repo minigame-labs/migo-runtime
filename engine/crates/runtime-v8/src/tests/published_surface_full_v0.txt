@@ -20,6 +20,8 @@ BigInt64Array
 BigUint64Array
 BiquadFilterNode
 Boolean
+CanvasGradient
+CanvasRenderingContext2D
 ChannelMergerNode
 ChannelSplitterNode
 ConstantSourceNode
@@ -450,6 +452,8 @@ AudioListener
 AudioNode
 AudioParam
 BiquadFilterNode
+CanvasGradient
+CanvasRenderingContext2D
 ChannelMergerNode
 ChannelSplitterNode
 ConstantSourceNode

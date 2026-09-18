@@ -155,7 +155,11 @@ mod js_agreement {
 /// the encoders against the same function the validator uses rather than against
 /// a second reading of it.
 mod canvas2d_agreement {
-    use frame_wire::canvas2d::{OP2D_BASE, OP2D_CREATE_CONTEXT, OP2D_END, OP2D_SELECT_CANVAS};
+    use frame_wire::canvas2d::{
+        OP2D_BASE, OP2D_CREATE_CONTEXT, OP2D_END, OP2D_FILL_TEXT, OP2D_SELECT_CANVAS,
+        OP2D_SET_FONT, OP2D_SET_LINE_DASH, OP2D_SET_TEXT_ALIGN, OP2D_SET_TEXT_BASELINE,
+        OP2D_SET_TEXT_DIRECTION, OP2D_STROKE_TEXT,
+    };
     use frame_wire::stream::RecordSpec;
     use std::collections::HashMap;
 
@@ -338,6 +342,27 @@ mod canvas2d_agreement {
                 );
                 continue;
             }
+            // The 2D opcodes only the external producer writes. Kept as a
+            // list with its names so the check below can name what it looked
+            // for, and short enough that adding to it is a decision.
+            const PRODUCER_ONLY_2D: [u32; 7] = [
+                OP2D_SET_FONT,
+                OP2D_FILL_TEXT,
+                OP2D_STROKE_TEXT,
+                OP2D_SET_TEXT_ALIGN,
+                OP2D_SET_TEXT_BASELINE,
+                OP2D_SET_TEXT_DIRECTION,
+                OP2D_SET_LINE_DASH,
+            ];
+            const PRODUCER_ONLY_2D_NAMES: [&str; 7] = [
+                "OP2D_SET_FONT",
+                "OP2D_FILL_TEXT",
+                "OP2D_STROKE_TEXT",
+                "OP2D_SET_TEXT_ALIGN",
+                "OP2D_SET_TEXT_BASELINE",
+                "OP2D_SET_TEXT_DIRECTION",
+                "OP2D_SET_LINE_DASH",
+            ];
             if opcode == OP2D_CREATE_CONTEXT {
                 // The one opcode in this table that exists for the OTHER lane.
                 //
@@ -364,6 +389,37 @@ mod canvas2d_agreement {
                 // `OP2D_CREATE_CONTEXT_RENAMED`, which is how the injection that
                 // was supposed to turn this red came back green.
                 let declaration = format!("const OP2D_CREATE_CONTEXT = {OP2D_CREATE_CONTEXT};");
+                assert!(
+                    JS.contains(&declaration),
+                    "this runtime's table does not declare `{declaration}`, so the three tables \
+                     scripts/test-render-opcode-agreement.sh compares cannot agree"
+                );
+                continue;
+            }
+            if PRODUCER_ONLY_2D.contains(&opcode) {
+                // The 2D text records, which the external producer writes and
+                // this runtime does not.
+                //
+                // In process these calls ARE ops -- `op_set_font`,
+                // `op_fill_text` -- and moving them onto the stream is a change
+                // to the shipped path with a measurement attached: text is per
+                // frame for a HUD, so the win is real, and so is the risk of
+                // reordering it against the text-texture cache that sits around
+                // `fillText`. Until that measurement exists this runtime keeps
+                // its op crossing, deliberately, and the producer -- which has
+                // no op to call -- uses the records.
+                //
+                // Honest for the reason the exception above is: the producer's
+                // own table is held to this one by
+                // `scripts/test-render-opcode-agreement.sh`, so "no encoder
+                // here" cannot quietly become "nobody emits it". The
+                // declaration is checked with its number, not its name, because
+                // a renamed constant satisfied the first version of that check.
+                let name = PRODUCER_ONLY_2D_NAMES[PRODUCER_ONLY_2D
+                    .iter()
+                    .position(|candidate| *candidate == opcode)
+                    .expect("just matched")];
+                let declaration = format!("const {name} = {opcode};");
                 assert!(
                     JS.contains(&declaration),
                     "this runtime's table does not declare `{declaration}`, so the three tables \
