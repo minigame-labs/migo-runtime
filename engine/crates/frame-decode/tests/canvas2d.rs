@@ -18,6 +18,13 @@ struct RecordingContext {
 }
 
 impl GlDecodeContext for RecordingContext {
+    fn image_upload(
+        &mut self,
+
+        _upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        None
+    }
     fn push_error(&mut self, canvas_id: u32, code: u32) {
         self.errors.push((canvas_id, code));
     }

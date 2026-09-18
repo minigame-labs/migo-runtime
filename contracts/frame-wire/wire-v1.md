@@ -332,7 +332,10 @@ Walking the command stream's records in order, with `cap(n, m)` meaning
 
 - `SELECT_CANVAS` closes the open Canvas2D batch and marks a canvas selected.
 - Any other 2D record, once a canvas is selected, closes the open GL batch and
-  adds one to the Canvas2D batch. Before a selection it is charged nothing.
+  adds one to the Canvas2D batch. It also charges what it owns, by the same
+  rules as a GL record: a font or a text `byte_length + 64`, a dash list or an
+  image batch `count * 4 + 64` (an image batch entry is its nine words). Before
+  a selection it is charged nothing.
 - A GL record closes the open Canvas2D batch, moves every pending canvas into
   the op count (its materialize), and adds one to the GL batch. It also charges
   what the command owns beyond itself: a uniform array whose payload exceeds the

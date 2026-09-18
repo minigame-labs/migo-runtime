@@ -1883,9 +1883,15 @@ dependencies = [
 name = "migo-services"
 version = "0.9.6"
 dependencies = [
+ "base64",
+ "hex",
+ "migo-contention-probe",
  "migo-io",
  "migo-shared",
+ "parking_lot",
+ "percent-encoding",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
 ]

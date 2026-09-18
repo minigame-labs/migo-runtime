@@ -105,6 +105,14 @@ pub const OPR_TEX_STORAGE_3D: u32 = 166;
 pub const OPR_UNIFORM_BLOCK_BINDING: u32 = 167;
 // H C
 pub const OPR_LOSE_CONTEXT: u32 = 168;
+/// `texImage2D(target, level, internalformat, format, type, image)`:
+/// `H C target level internalformat format type image_id`. The image is one the
+/// host decoded and holds; which pixels it names is the host's to resolve, so
+/// none cross.
+pub const OPR_TEX_IMAGE_2D_FROM_IMAGE: u32 = 169;
+/// `texSubImage2D(target, level, x, y, format, type, image)`:
+/// `H C target level xoffset yoffset format type image_id`.
+pub const OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE: u32 = 170;
 
 // ─── Payload records ─────────────────────────────────────────────────────────
 
@@ -193,6 +201,8 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_TEX_STORAGE_3D => fixed(8),
         OPR_UNIFORM_BLOCK_BINDING => fixed(4),
         OPR_LOSE_CONTEXT => fixed(2),
+        OPR_TEX_IMAGE_2D_FROM_IMAGE => fixed(8),
+        OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE => fixed(9),
 
         OPR_SHADER_SOURCE => bytes(3, None, true),
         OPR_BIND_ATTRIB_LOCATION => bytes(3, None, true),

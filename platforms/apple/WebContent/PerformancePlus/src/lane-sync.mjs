@@ -330,3 +330,10 @@ export function op_revoke_buffer_url(url) {
   const u = stringOf(url, "url");
   callService(SERVICE_OP.op_revoke_buffer_url, (w) => w.str(u));
 }
+
+// ---- images -------------------------------------------------------------------
+
+/// This game's image cache figures, as the embedded op's serde answer.
+export function op_get_image_cache_stats() {
+  return callService(SERVICE_OP.op_get_image_cache_stats);
+}

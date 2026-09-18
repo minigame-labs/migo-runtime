@@ -586,6 +586,29 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             uniform_block_binding: record[3],
         },
         OPR_LOSE_CONTEXT => GLCmd::DebugLoseContext { canvas_id: c },
+        OPR_TEX_IMAGE_2D_FROM_IMAGE => {
+            return context.image_upload(crate::validate::ImageUpload::Full {
+                canvas_id: c,
+                target: record[2],
+                level: i(record[3]),
+                internalformat: i(record[4]),
+                format: record[5],
+                type_: record[6],
+                image_id: record[7],
+            });
+        }
+        OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE => {
+            return context.image_upload(crate::validate::ImageUpload::Sub {
+                canvas_id: c,
+                target: record[2],
+                level: i(record[3]),
+                xoffset: i(record[4]),
+                yoffset: i(record[5]),
+                format: record[6],
+                type_: record[7],
+                image_id: record[8],
+            });
+        }
 
         OPR_SHADER_SOURCE => return shader_source(context, c, record[2], payload(record, 3)),
         OPR_BIND_ATTRIB_LOCATION => GLCmd::BindAttribLocation {

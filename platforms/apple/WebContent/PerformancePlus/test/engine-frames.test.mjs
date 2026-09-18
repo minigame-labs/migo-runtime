@@ -31,9 +31,12 @@ import { appendCanvas2DRecord, appendStream, endFrame, flushToHost } from "../sr
 import { FrameSession } from "../src/frame-session.mjs";
 import {
   MAGIC,
+  OP2D_DRAW_IMAGE_BATCH,
   OP2D_FILL_RECT,
+  OP2D_FILL_TEXT,
   OP2D_SAVE,
   OP2D_SELECT_CANVAS,
+  OP2D_SET_LINE_DASH,
   OP_CLEAR,
   OP_UNIFORM4FV,
   OP_UNIFORM_MATRIX4FV,
@@ -94,7 +97,19 @@ const ascii = (length) => Array.from({ length }, () => 0x20 + pick(0x5f));
 
 /** One random record, as words. */
 function randomRecord(selected) {
-  switch (pick(selected ? 12 : 10)) {
+  switch (pick(selected ? 15 : 10)) {
+    // The 2D payload records, which own what they carry: a text, a dash list,
+    // an image batch of whole nine-word entries.
+    case 12:
+      return payloadRecord(OP2D_FILL_TEXT, [next(), next(), next()], ascii(pick(80)));
+    case 13: {
+      const count = pick(12);
+      return [header(OP2D_SET_LINE_DASH, 2 + count), count, ...Array.from({ length: count }, next)];
+    }
+    case 14: {
+      const words = 9 * (1 + pick(4));
+      return [header(OP2D_DRAW_IMAGE_BATCH, 2 + words), words, ...Array.from({ length: words }, next)];
+    }
     case 5:
       return [header(OPR_CREATE_BUFFER, 3), 1, next()];
     case 6:
@@ -362,6 +377,44 @@ check(
   lastWords[2] === (((2 << 12) | 512) >>> 0) && lastWords[3] === 7,
   "the packet after a barrier selects its canvas again before the 2D record",
 );
+
+// ---- 4. adjacent drawImage calls fold into one batch -------------------------
+//
+// Games draw a sprite per `drawImage`. Adjacent draws on one canvas leave as one
+// DRAW_IMAGE_BATCH record; a canvas switch, anything else that reaches the
+// stream, or a frame end ends the run -- but the facade's empty flush before
+// each draw must not.
+
+console.log("drawImage runs");
+{
+  const { op_draw_image } = await import("../src/lane-stream.mjs");
+  const EMPTY = Uint32Array.of(MAGIC, STREAM_VERSION);
+  const drawn = (id) => op_draw_image(7, id, 0, 0, 8, 8, 0, 0, 8, 8);
+  const before = sent.length;
+  drawn(0x40000001);
+  appendStream(EMPTY, 2); // the facade's barrier before the next draw
+  drawn(0x40000002);
+  drawn(0x40000003);
+  op_draw_image(8, 0x40000004, 0, 0, 8, 8, 0, 0, 8, 8); // another canvas
+  appendStream(Uint32Array.of(MAGIC, STREAM_VERSION, header(OP2D_SELECT_CANVAS, 2), 8, header(OP2D_SAVE, 1)), 5);
+  drawn(0x40000005);
+  endFrame();
+  const records = sent.slice(before).flatMap(recordsOf);
+  const shapes = records.map((record) => record[0] & 0xfff);
+  const batches = records.filter((record) => (record[0] & 0xfff) === 558);
+  const singles = records.filter((record) => (record[0] & 0xfff) === 557);
+  check(batches.length === 1 && batches[0][1] === 27, "three adjacent draws on canvas 7 left as one batch of three entries");
+  check(
+    batches.length === 1 && [batches[0][2], batches[0][11], batches[0][20]].join() === [0x40000001, 0x40000002, 0x40000003].join(),
+    "with their ids exact and in order",
+  );
+  check(singles.length === 2, "a draw on another canvas and a draw after other work each left alone");
+  const order = shapes.filter((opcode) => opcode === 557 || opcode === 558 || opcode === OP2D_SAVE);
+  check(
+    order.join() === [558, 557, OP2D_SAVE, 557].join(),
+    `in the order they were made (${order.join()})`,
+  );
+}
 
 if (outputDirectory) {
   mkdirSync(join(outputDirectory, "streams"), { recursive: true });

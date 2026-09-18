@@ -30,6 +30,12 @@ struct Host {
 }
 
 impl frame_decode::GlDecodeContext for Host {
+    fn image_upload(
+        &mut self,
+        _upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        None
+    }
     fn push_error(&mut self, _canvas_id: u32, _code: u32) {}
     fn transform_feedback_captures(&self, _canvas_id: u32) -> bool {
         false
@@ -156,7 +162,7 @@ fn the_producer_s_text_records_decode_to_the_commands_the_ops_build() {
         );
     }
     assert!(
-        embedded.len() >= 15,
+        embedded.len() >= 17,
         "the fixture built only {} commands; it covers more than that",
         embedded.len()
     );

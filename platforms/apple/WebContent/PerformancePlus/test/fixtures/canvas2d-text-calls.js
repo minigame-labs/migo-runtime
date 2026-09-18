@@ -1,5 +1,5 @@
-// Every Canvas2D text call the Performance+ producer answers on its stream
-// lane, made through the engine's own 2D facade.
+// Every Canvas2D text and image call the Performance+ producer answers on its
+// stream lane, made through the engine's own 2D facade.
 //
 // Run twice, like the WebGL fixture beside it: in the embedded runtime, where
 // the facade's calls reach the Rust ops, and on the producer, where they become
@@ -41,3 +41,16 @@ ctx.fillText("", 1, 1);
 ctx.setLineDash([5, 5]);
 ctx.setLineDash([10, 3, 2, 3]);
 ctx.setLineDash([]);
+
+// Images: a loaded image as the facade reads one -- `loaded`, its shared id,
+// its size. The ids sit above 2^30, where consecutive f32 values are 128 apart:
+// the batch used to carry its ids as floats and name another image.
+const image = { loaded: true, rid: 0x40000001, width: 32, height: 16 };
+const other = { loaded: true, rid: 0x40000002, width: 8, height: 8 };
+ctx.drawImage(image, 4, 8);
+ctx.drawImage(image, 0, 0, 64, 32);
+ctx.drawImage(other, 1, 2, 3, 4, 5, 6, 7, 8);
+ctx.drawImageBatch([
+  { image, dx: 1, dy: 2 },
+  { image: other, sx: 0, sy: 0, sw: 8, sh: 8, dx: 3, dy: 4, dw: 16, dh: 16 },
+]);

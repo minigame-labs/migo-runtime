@@ -67,6 +67,12 @@ const _: () = {
     assert!(size_of::<FrameOp>() <= bound::FRAME_OP_BYTES);
     assert!(size_of::<FramePacket>() <= bound::FRAME_PACKET_BYTES);
     assert!(size_of::<String>() <= bound::STRING_BYTES);
+    // A `drawImageBatch` entry is its record's nine words, which is what lets
+    // a word-list record be charged by its words whichever list it carries.
+    assert!(
+        size_of::<shared::protocol::render_cmd::DrawImageEntry>()
+            <= frame_wire::canvas2d::DRAW_IMAGE_BATCH_ENTRY_WORDS as usize * size_of::<u32>()
+    );
     // An `Arc<Vec<u8>>` payload: the Arc's two counts beside the Vec, allocated.
     assert!(2 * size_of::<usize>() + size_of::<Vec<u8>>() <= bound::PAYLOAD_OVERHEAD_BYTES);
     // The producer's literal copies of the capacities, which are not bounds but
@@ -290,6 +296,9 @@ fn estimate_with(stream: &ValidatedStream<'_>, sizes: Sizes) -> FrameDecodeBudge
             if canvas_selected {
                 count.gl_batch(sizes);
                 count.canvas_commands += 1;
+                count.bytes = count
+                    .bytes
+                    .saturating_add(canvas2d_payload_bytes(&words[start..cursor], opcode));
             }
         } else {
             count.canvas_batch(sizes);
@@ -350,6 +359,24 @@ fn owned_payload_bytes(record: &[u32], opcode: u32) -> usize {
             }
         }
         Some(RecordSpec::Words { prefix_words, .. }) => (wc - prefix_words as usize - 1)
+            .saturating_mul(size_of::<u32>())
+            .saturating_add(PAYLOAD_OVERHEAD_BYTES),
+        _ => 0,
+    }
+}
+
+/// What a 2D record owns beyond the command: a font or a text as a `String`, a
+/// dash list as a `Vec<f32>`, an image batch as a `Vec<DrawImageEntry>` -- whose
+/// entries are the record's own nine words each, so every word-list record owns
+/// its words' bytes. Unselected 2D records are refused, not decoded, and are not
+/// charged; neither are they by the caller.
+fn canvas2d_payload_bytes(record: &[u32], opcode: u32) -> usize {
+    use producer_bounds::PAYLOAD_OVERHEAD_BYTES;
+    match frame_wire::canvas2d::record_spec(opcode) {
+        Some(RecordSpec::Bytes { prefix_words, .. }) => {
+            (record[prefix_words as usize] as usize).saturating_add(PAYLOAD_OVERHEAD_BYTES)
+        }
+        Some(RecordSpec::Words { prefix_words, .. }) => (record.len() - prefix_words as usize - 1)
             .saturating_mul(size_of::<u32>())
             .saturating_add(PAYLOAD_OVERHEAD_BYTES),
         _ => 0,

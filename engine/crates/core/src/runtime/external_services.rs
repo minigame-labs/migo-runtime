@@ -58,6 +58,7 @@ use frame_wire::value::{OwnedValue, ValueWriter, read_values};
 use migo_io::scheduler::IoScheduler;
 use migo_services::ServiceError;
 use migo_services::content::MountedContent;
+use migo_services::image::cache::{ImageCache, SharedImageCache};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
 use super::service_ops::{self, id};
@@ -277,6 +278,10 @@ pub(crate) struct ServiceContext {
     scheduler: OnceLock<Arc<IoScheduler>>,
     session_id: OnceLock<i32>,
     content: RwLock<Option<MountedContent>>,
+    /// This session's image alias table: which texture each of content's image
+    /// ids names. Loads fill it on the session thread; the frame decoder reads
+    /// it on the transport's thread for `texImage2D(…, image)`.
+    aliases: SharedImageCache,
 }
 
 impl ServiceContext {
@@ -287,7 +292,106 @@ impl ServiceContext {
             scheduler: OnceLock::new(),
             session_id: OnceLock::new(),
             content: RwLock::new(None),
+            aliases: Arc::new(parking_lot::Mutex::new(ImageCache::new())),
         }
+    }
+
+    fn session(&self) -> i32 {
+        // Set before the session is handed out; zero only in a test that never
+        // started one, where no image is loaded either.
+        self.session_id.get().copied().unwrap_or(0)
+    }
+
+    /// The command that uploads a loaded image into a texture, for the frame
+    /// decoder: the function the embedded runtime's ops call, over this
+    /// session's table.
+    pub(crate) fn image_upload(
+        &self,
+        upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        use migo_services::image::gl;
+        let session = self.session();
+        match upload {
+            frame_decode::ImageUpload::Full {
+                canvas_id,
+                target,
+                level,
+                internalformat,
+                format,
+                type_,
+                image_id,
+            } => gl::tex_image_2d_from_image(
+                &self.aliases,
+                session,
+                canvas_id,
+                target,
+                level,
+                internalformat,
+                format,
+                type_,
+                image_id,
+            ),
+            frame_decode::ImageUpload::Sub {
+                canvas_id,
+                target,
+                level,
+                xoffset,
+                yoffset,
+                format,
+                type_,
+                image_id,
+            } => gl::tex_sub_image_2d_from_image(
+                &self.aliases,
+                session,
+                canvas_id,
+                target,
+                level,
+                xoffset,
+                yoffset,
+                format,
+                type_,
+                image_id,
+            ),
+        }
+    }
+
+    /// Release this session's claims on the decoded-bytes cache.
+    ///
+    /// The cache is process-wide and outlives the session, so a pin left here
+    /// would keep those bytes un-evictable for the life of the process. The
+    /// textures the table names need no destroy: they die with the renderer's
+    /// context.
+    fn release_images(&self) {
+        let _textures_of_a_dead_context = self.aliases.lock().drain();
+    }
+
+    /// What an image load reads, or why there is nothing to load from.
+    fn image_env(
+        &self,
+        render: &RenderHandles,
+    ) -> Result<migo_services::image::ImageEnv, ServiceError> {
+        let content = self.content.read().clone();
+        Ok(migo_services::image::ImageEnv {
+            scheduler: self.scheduler()?,
+            vfs: content.as_ref().map(|content| Arc::clone(&content.vfs)),
+            mount_table: content
+                .as_ref()
+                .map(|content| Arc::clone(&content.mount_table)),
+            game_cache_dir: content.as_ref().map(|content| {
+                content
+                    .game_paths
+                    .cache_dir()
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            gpu_caps: Arc::clone(&render.gpu_caps),
+            // No hardware-buffer decode exists on this lane (it is Android's),
+            // so CPU-backed pixels are always what a decode produces.
+            cpu_backing_required: Arc::new(AtomicBool::new(true)),
+            canvas: render.canvas.clone(),
+            aliases: Arc::clone(&self.aliases),
+            session: self.session(),
+        })
     }
 
     pub(crate) fn bind_session(&self, session_id: i32) {
@@ -386,6 +490,13 @@ impl ServiceContext {
                 migo_services::storage::create_buffer_url(paths, &bytes(op, 0, buffer)?)
                     .map(OwnedValue::Str)
             }
+            id::op_get_image_cache_stats => {
+                let [] = exactly(op, args)?;
+                let stats = migo_io::image_ops::get_image_cache_stats(self.session());
+                serde_json::to_string(&stats)
+                    .map(OwnedValue::Json)
+                    .map_err(|error| ServiceError::generic(error.to_string()))
+            }
             id::op_revoke_buffer_url => {
                 let [url] = exactly(op, args)?;
                 migo_services::storage::revoke_buffer_url(paths, &string(op, 0, url)?)
@@ -401,9 +512,68 @@ impl ServiceContext {
         &self,
         op: u32,
         args: Vec<OwnedValue>,
+        render: &RenderHandles,
     ) -> Result<BoxFuture<'static, Result<OwnedValue, ServiceError>>, ServiceError> {
         let paths = self.game_paths();
         Ok(match op {
+            id::op_load_image => {
+                let [image_id, src, tw, th] = exactly(op, args)?;
+                let (image_id, src) = (u32_of(op, 0, image_id)?, string(op, 1, src)?);
+                let (tw, th) = (u32_of(op, 2, tw)?, u32_of(op, 3, th)?);
+                let env = self.image_env(render)?;
+                Box::pin(async move {
+                    migo_services::image::load_image(
+                        &env,
+                        image_id,
+                        src,
+                        (tw > 0).then_some(tw),
+                        (th > 0).then_some(th),
+                        |url| async move { Err(http_images_unavailable(&url)) },
+                    )
+                    .await
+                    .map(loaded_image)
+                    .map_err(image_error)
+                })
+            }
+            id::op_load_image_subrect => {
+                let [image_id, src, sx, sy, sw, sh, rw, rh] = exactly(op, args)?;
+                let image_id = u32_of(op, 0, image_id)?;
+                let src = string(op, 1, src)?;
+                let (sx, sy) = (i32_of(op, 2, sx)?, i32_of(op, 3, sy)?);
+                let (sw, sh) = (u32_of(op, 4, sw)?, u32_of(op, 5, sh)?);
+                let (rw, rh) = (u32_of(op, 6, rw)?, u32_of(op, 7, rh)?);
+                let env = self.image_env(render)?;
+                Box::pin(async move {
+                    migo_services::image::load_image_subrect(
+                        &env, image_id, src, sx, sy, sw, sh, rw, rh,
+                    )
+                    .await
+                    .map(loaded_image)
+                    .map_err(image_error)
+                })
+            }
+            id::op_preload_images => {
+                let [paths_arg] = exactly(op, args)?;
+                let paths = strings(op, 0, paths_arg)?;
+                let env = self.image_env(render)?;
+                Box::pin(async move {
+                    let entries = migo_services::image::preload_images(&env, paths).await;
+                    Ok(OwnedValue::Array(
+                        entries
+                            .into_iter()
+                            .map(|(path, ok, width, height, message)| {
+                                OwnedValue::Array(vec![
+                                    OwnedValue::Str(path),
+                                    OwnedValue::Bool(ok),
+                                    OwnedValue::U32(width),
+                                    OwnedValue::U32(height),
+                                    OwnedValue::Str(message),
+                                ])
+                            })
+                            .collect(),
+                    ))
+                })
+            }
             id::op_storage_get_async => {
                 let [key] = exactly(op, args)?;
                 let (scheduler, key) = (self.scheduler()?, string(op, 0, key)?);
@@ -459,9 +629,78 @@ impl ServiceContext {
 
     /// Apply a command. Nothing answers it, so a failure is logged -- which is
     /// what the embedded runtime does with a failed fire-and-forget op too.
-    fn command(&self, op: u32, _args: Vec<OwnedValue>) -> Result<(), ServiceError> {
-        Err(not_a(op, "command"))
+    fn command(
+        &self,
+        op: u32,
+        args: Vec<OwnedValue>,
+        render: &RenderHandles,
+    ) -> Result<(), ServiceError> {
+        match op {
+            id::op_destroy_image => {
+                let [image_id] = exactly(op, args)?;
+                migo_services::image::destroy_image(
+                    &self.aliases,
+                    &render.canvas.tx,
+                    u32_of(op, 0, image_id)?,
+                );
+                Ok(())
+            }
+            id::op_clear_image_cache => {
+                let [] = exactly(op, args)?;
+                let cache_dir = self
+                    .game_paths()
+                    .map(|paths| paths.cache_dir().to_string_lossy().into_owned());
+                migo_services::image::clear_image_cache(
+                    &self.aliases,
+                    &render.canvas.tx,
+                    cache_dir.as_deref(),
+                    self.session(),
+                );
+                Ok(())
+            }
+            other => Err(not_a(other, "command")),
+        }
     }
+}
+
+/// What the renderer is, for the services that hand it work: images upload
+/// through it. Built on the session thread once the renderer is up, and owned
+/// there -- a strong sender held anywhere else would keep the render queue
+/// alive past the session.
+pub(crate) struct RenderHandles {
+    pub(crate) canvas: shared::op_state::CanvasOpState,
+    pub(crate) gpu_caps: Arc<shared::device::gpu_caps::GpuCaps>,
+}
+
+/// An image load's answer, as the embedded op returns it: `[shared id,
+/// [width, height]]`.
+fn loaded_image((shared_id, (width, height)): (u32, (usize, usize))) -> OwnedValue {
+    OwnedValue::Array(vec![
+        OwnedValue::U32(shared_id),
+        OwnedValue::Array(vec![
+            OwnedValue::U32(width as u32),
+            OwnedValue::U32(height as u32),
+        ]),
+    ])
+}
+
+/// An image load's failure, in the text the embedded op throws.
+fn image_error(error: EngineError) -> ServiceError {
+    ServiceError::generic(match &error.detail {
+        Some(detail) => format!("[{:?}] {} ({})", error.code, error.msg, detail),
+        None => format!("[{:?}] {}", error.code, error.msg),
+    })
+}
+
+/// An `http(s)://` image source, before the network service exists on this
+/// lane: refused with the reason, as the embedded runtime refuses a source its
+/// network policy blocks.
+fn http_images_unavailable(url: &str) -> EngineError {
+    EngineError::new(ErrorCode::Unsupported)
+        .with_msg("image fetch unavailable")
+        .with_detail(format!(
+            "{url}: this session has no network service to fetch it with"
+        ))
 }
 
 /// The error for an op this host does not run in that shape.
@@ -506,6 +745,30 @@ fn string(op: u32, index: usize, value: OwnedValue) -> Result<String, ServiceErr
     match value {
         OwnedValue::Str(text) => Ok(text),
         other => Err(wrong_type(op, index, "string", &other)),
+    }
+}
+
+fn u32_of(op: u32, index: usize, value: OwnedValue) -> Result<u32, ServiceError> {
+    match value {
+        OwnedValue::U32(value) => Ok(value),
+        other => Err(wrong_type(op, index, "u32", &other)),
+    }
+}
+
+fn i32_of(op: u32, index: usize, value: OwnedValue) -> Result<i32, ServiceError> {
+    match value {
+        OwnedValue::I32(value) => Ok(value),
+        other => Err(wrong_type(op, index, "i32", &other)),
+    }
+}
+
+fn strings(op: u32, index: usize, value: OwnedValue) -> Result<Vec<String>, ServiceError> {
+    match value {
+        OwnedValue::Array(values) => values
+            .into_iter()
+            .map(|value| string(op, index, value))
+            .collect(),
+        other => Err(wrong_type(op, index, "array of strings", &other)),
     }
 }
 
@@ -801,14 +1064,25 @@ pub(crate) struct ServiceDispatcher {
     context: Arc<ServiceContext>,
     outbox: Arc<ServiceOutbox>,
     in_flight: InFlight,
+    render: RenderHandles,
+}
+
+impl Drop for ServiceDispatcher {
+    /// The dispatcher goes when the session thread does, after its runtime --
+    /// and every load that runtime was running -- has gone. So this is the one
+    /// point after which nothing can pin an image again.
+    fn drop(&mut self) {
+        self.context.release_images();
+    }
 }
 
 impl ServiceDispatcher {
-    pub(crate) fn new(host: &ServiceHost) -> Self {
+    pub(crate) fn new(host: &ServiceHost, render: RenderHandles) -> Self {
         Self {
             context: Arc::clone(&host.context),
             outbox: Arc::clone(&host.outbox),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
+            render,
         }
     }
 
@@ -841,7 +1115,7 @@ impl ServiceDispatcher {
                 request_id,
                 op,
                 args,
-            } => match self.context.call_async(op, args) {
+            } => match self.context.call_async(op, args, &self.render) {
                 Ok(future) => {
                     let outbox = Arc::clone(&self.outbox);
                     let in_flight = Arc::clone(&self.in_flight);
@@ -862,7 +1136,7 @@ impl ServiceDispatcher {
                 Err(error) => self.outbox.reply(request_id, Err(error)),
             },
             OwnedServiceRecord::Command { op, args } => {
-                if let Err(error) = self.context.command(op, args) {
+                if let Err(error) = self.context.command(op, args, &self.render) {
                     warn!("service command refused: {error}");
                 }
             }
@@ -1193,10 +1467,19 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
         let read = runtime
             .block_on(
                 context
-                    .call_async(id::op_storage_get_async, vec![OwnedValue::Str("k".into())])
+                    .call_async(
+                        id::op_storage_get_async,
+                        vec![OwnedValue::Str("k".into())],
+                        &render,
+                    )
                     .expect("a known async op"),
             )
             .expect("get");
