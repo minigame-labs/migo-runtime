@@ -206,6 +206,49 @@ pub const SYNC_OP_CANVAS2D_METRICS: u32 = 6;
 /// returns one and rounding it here would be a different answer.
 pub const SYNC_OP_CANVAS2D_NUMBER: u32 = 7;
 
+/// A service call made synchronously: `readFileSync`, `getStorageSync`, the
+/// calls on the service stream whose return value is the answer.
+///
+/// Parameters: `op u32`, then the op's arguments as a run of values (see
+/// [`crate::value`]). Reply: `outcome u32`, then one value when it is
+/// [`crate::service::OUTCOME_OK`], or a class string and a message string when
+/// it is [`crate::service::OUTCOME_ERROR`] -- the body of a service reply
+/// without its request id, because the response already belongs to its request.
+///
+/// A service call's own failure (a missing file, a quota) is an answer, READY
+/// with an error outcome; the barrier's FAILED is kept for the barrier failing
+/// (a timeout, a session that ended). The two mean different things to a
+/// producer: one is thrown into content as the op's error, the other says the
+/// host did not answer at all.
+///
+/// Its body and reply are bounded by [`SERVICE_CALL_MAX_BYTES`] and
+/// [`MAX_SERVICE_REPLY_BYTES`] rather than by the barrier's own bounds: a
+/// synchronous file read answers with the file, and a synchronous write sends
+/// one.
+pub const SYNC_OP_SERVICE: u32 = 8;
+
+/// The most a [`SYNC_OP_SERVICE`] call may be answered with.
+///
+/// The embedded runtime reads up to 100 MiB in one call
+/// (`shared::protocol::io_cmd::MAX_READ_LENGTH`); this is that and the reply's
+/// own framing, rounded up. The answer is produced into memory the host owns
+/// and handed to the transport without a copy, so the bound is on what a call
+/// may make the host hold, not on a buffer anyone preallocates.
+pub const MAX_SERVICE_REPLY_BYTES: u32 = 128 * 1024 * 1024;
+
+/// The most a [`SYNC_OP_SERVICE`] call body may be, header included.
+pub const SERVICE_CALL_MAX_BYTES: usize =
+    SYNC_CALL_HEADER_BYTES + crate::service::MAX_SERVICE_MESSAGE_BYTES;
+
+/// The reservation ceiling for `operation`.
+pub const fn reply_ceiling(operation: u32) -> u32 {
+    if operation == SYNC_OP_SERVICE {
+        MAX_SERVICE_REPLY_BYTES
+    } else {
+        MAX_REPLY_BYTES
+    }
+}
+
 /// Twelve `f32`: the `TextMetrics` fields, in `encode_text_metrics`' order.
 pub const TEXT_METRICS_BYTES: usize = 48;
 
@@ -659,13 +702,20 @@ pub struct SyncCall<'a> {
     pub operation: u32,
     pub max_reply_bytes: u32,
     pub timeout_millis: u32,
+    /// The last service message the producer had sent when it blocked; the
+    /// host answers only once that message is admitted, so a synchronous call
+    /// never overtakes a command content made before it. Zero when it had sent
+    /// none. See [`crate::service`].
+    pub service_sequence: u64,
     pub params: &'a [u8],
 }
 
 /// Bytes before a [`SyncCall`]'s arguments.
-pub const SYNC_CALL_HEADER_BYTES: usize = 48;
+pub const SYNC_CALL_HEADER_BYTES: usize = 56;
 
-/// The largest body a [`SyncCall`] may be, arguments included.
+/// The largest body a [`SyncCall`] may be, arguments included, for every
+/// operation but [`SYNC_OP_SERVICE`] (which is bounded by
+/// [`SERVICE_CALL_MAX_BYTES`]).
 ///
 /// Arguments are small by construction -- `readPixels` takes 32 bytes, and
 /// anything bulky travels as a frame -- so this is a bound on what a producer
@@ -687,6 +737,7 @@ const SYNC_CALL_OFF_OPERATION: usize = 32;
 const SYNC_CALL_OFF_MAX_REPLY_BYTES: usize = 36;
 const SYNC_CALL_OFF_TIMEOUT_MILLIS: usize = 40;
 const SYNC_CALL_OFF_RESERVED: usize = 44;
+const SYNC_CALL_OFF_SERVICE_SEQUENCE: usize = 48;
 
 /// The call body's fixed part, in order, with no gaps.
 pub const SYNC_CALL_LAYOUT: &[crate::HeaderField] = &[
@@ -730,6 +781,11 @@ pub const SYNC_CALL_LAYOUT: &[crate::HeaderField] = &[
         size: 4,
         name: "reserved",
     },
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_SERVICE_SEQUENCE as u32,
+        size: 8,
+        name: "service_sequence",
+    },
 ];
 
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {
@@ -752,7 +808,13 @@ impl<'a> SyncCall<'a> {
     /// malformed argument record gets: neither is something the producer can
     /// fix by asking again, and neither is a transient failure of the host.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, SyncError> {
-        if bytes.len() < SYNC_CALL_HEADER_BYTES || bytes.len() > SYNC_CALL_MAX_BYTES {
+        // The absolute bound first, before anything is read; the operation's
+        // own bound once the operation is known.
+        if bytes.len() < SYNC_CALL_HEADER_BYTES || bytes.len() > SERVICE_CALL_MAX_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let operation = u32_at(bytes, SYNC_CALL_OFF_OPERATION);
+        if operation != SYNC_OP_SERVICE && bytes.len() > SYNC_CALL_MAX_BYTES {
             return Err(SyncError::UnsupportedOperation);
         }
         // Zero now so a later version can give the word a meaning without an
@@ -769,9 +831,10 @@ impl<'a> SyncCall<'a> {
             surface_generation: u64_at(bytes, SYNC_CALL_OFF_SURFACE_GENERATION),
             resource_epoch: u64_at(bytes, SYNC_CALL_OFF_RESOURCE_EPOCH),
             triggering_sequence: u64_at(bytes, SYNC_CALL_OFF_TRIGGERING_SEQUENCE),
-            operation: u32_at(bytes, SYNC_CALL_OFF_OPERATION),
+            operation,
             max_reply_bytes: u32_at(bytes, SYNC_CALL_OFF_MAX_REPLY_BYTES),
             timeout_millis,
+            service_sequence: u64_at(bytes, SYNC_CALL_OFF_SERVICE_SEQUENCE),
             params: &bytes[SYNC_CALL_HEADER_BYTES..],
         })
     }
@@ -1127,7 +1190,9 @@ impl SyncMailbox {
         if request.runtime_generation != self.runtime_generation {
             return Err(SyncError::StaleGeneration);
         }
-        if request.max_reply_bytes == 0 || request.max_reply_bytes > MAX_REPLY_BYTES {
+        if request.max_reply_bytes == 0
+            || request.max_reply_bytes > reply_ceiling(request.operation)
+        {
             return Err(SyncError::BadReplyReservation);
         }
         if request.deadline_nanos <= now_nanos {
@@ -1273,18 +1338,31 @@ mod sync_call_tests {
     use super::*;
 
     fn body(max_reply_bytes: u32, timeout_millis: u32, reserved: u32, params: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        for word in [1u64, 2, 3, 4] {
-            bytes.extend_from_slice(&word.to_le_bytes());
-        }
-        for word in [
+        body_for(
             SYNC_OP_READ_PIXELS,
             max_reply_bytes,
             timeout_millis,
             reserved,
-        ] {
+            params,
+        )
+    }
+
+    fn body_for(
+        operation: u32,
+        max_reply_bytes: u32,
+        timeout_millis: u32,
+        reserved: u32,
+        params: &[u8],
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for word in [1u64, 2, 3, 4] {
             bytes.extend_from_slice(&word.to_le_bytes());
         }
+        for word in [operation, max_reply_bytes, timeout_millis, reserved] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        // Past 32 bits: the producer writes it from a BigInt.
+        bytes.extend_from_slice(&((1u64 << 40) + 9).to_le_bytes());
         bytes.extend_from_slice(params);
         bytes
     }
@@ -1302,9 +1380,20 @@ mod sync_call_tests {
                 call.operation,
                 call.max_reply_bytes,
                 call.timeout_millis,
+                call.service_sequence,
                 call.params,
             ),
-            (1, 2, 3, 4, SYNC_OP_READ_PIXELS, 16, 250, &[9u8, 8, 7][..])
+            (
+                1,
+                2,
+                3,
+                4,
+                SYNC_OP_READ_PIXELS,
+                16,
+                250,
+                (1u64 << 40) + 9,
+                &[9u8, 8, 7][..]
+            )
         );
         let request = call.request(1_000);
         assert_eq!(request.deadline_nanos, 1_000 + 250_000_000);
@@ -1356,6 +1445,40 @@ mod sync_call_tests {
             SyncCall::decode(&past_bound),
             Err(SyncError::UnsupportedOperation)
         );
+    }
+
+    #[test]
+    fn a_service_call_may_carry_more_than_the_barrier_bound_and_no_other_may() {
+        let large = vec![0; SYNC_CALL_MAX_BYTES];
+        assert!(
+            SyncCall::decode(&body_for(SYNC_OP_SERVICE, 16, 250, 0, &large)).is_ok(),
+            "a synchronous file write carries the file"
+        );
+        assert_eq!(
+            SyncCall::decode(&body_for(SYNC_OP_READ_PIXELS, 16, 250, 0, &large)),
+            Err(SyncError::UnsupportedOperation),
+            "the barrier's own operations keep their bound"
+        );
+    }
+
+    #[test]
+    fn a_service_call_may_reserve_a_whole_file_and_no_other_may() {
+        let mut mailbox = SyncMailbox::new(1);
+        let request = |operation| SyncRequest {
+            request_id: 0,
+            runtime_generation: 1,
+            surface_generation: 0,
+            resource_epoch: 0,
+            triggering_sequence: 0,
+            operation,
+            max_reply_bytes: MAX_REPLY_BYTES + 1,
+            deadline_nanos: 10,
+        };
+        assert_eq!(
+            mailbox.post(request(SYNC_OP_READ_PIXELS), 1),
+            Err(SyncError::BadReplyReservation)
+        );
+        assert!(mailbox.post(request(SYNC_OP_SERVICE), 1).is_ok());
     }
 
     #[test]

@@ -659,3 +659,144 @@ fn the_document_control_refusal_table_lists_exactly_the_codes_the_crate_defines(
     );
     assert_eq!(expected[0].0, CONTROL_ERROR_BASE);
 }
+
+/// Rows of the table after `heading` as `(number, name)`, the shape every
+/// kind, tag and refusal table in the service section has.
+fn numbered_names(section: &str, heading: &str) -> Vec<(u32, String)> {
+    table_after(section, heading)
+        .iter()
+        .map(|cells| {
+            (
+                cells[0].parse().expect("the first column is a number"),
+                strip_code_ticks(&cells[1]),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_document_service_stream_matches_the_crate() {
+    use frame_wire::service::{
+        DOWN_EVENT, DOWN_REFUSED, DOWN_REPLY, DOWN_REPLY_PARKED, MAGIC_SERVICE, MAGIC_SERVICE_DOWN,
+        MAX_INLINE_REPLY_BYTES, MAX_SERVICE_MESSAGE_BYTES, SERVICE_DOWN_HEADER_BYTES,
+        SERVICE_HEADER_BYTES, SERVICE_VERSION, UP_CANCEL, UP_COMMAND, UP_REQUEST,
+    };
+    use frame_wire::value::{
+        MAX_DEPTH, TAG_ARRAY, TAG_BYTES, TAG_F64, TAG_FALSE, TAG_I32, TAG_I64, TAG_JSON, TAG_NULL,
+        TAG_STRING, TAG_TRUE, TAG_U32, TAG_U64,
+    };
+
+    let document = document();
+    let section = &document[document
+        .find("## The service stream")
+        .expect("the document specifies the service stream")..];
+    let section = &section[..section.find("## The resource lane").expect("next section")];
+    let prose = section.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for (stated, what) in [
+        (
+            format!("exactly `0x{MAGIC_SERVICE:08X}`"),
+            "the uplink magic",
+        ),
+        (
+            format!("exactly `0x{MAGIC_SERVICE_DOWN:08X}`"),
+            "the downlink magic",
+        ),
+        (
+            format!("| `version` | exactly `{SERVICE_VERSION}` |"),
+            "the version",
+        ),
+        (
+            format!("Records follow from offset {SERVICE_HEADER_BYTES}"),
+            "the uplink header",
+        ),
+        (
+            format!("Records follow from offset {SERVICE_DOWN_HEADER_BYTES}"),
+            "the downlink header",
+        ),
+        (
+            format!("at most {MAX_SERVICE_MESSAGE_BYTES} bytes"),
+            "the message bound",
+        ),
+        (
+            format!("larger than {MAX_INLINE_REPLY_BYTES} bytes is parked"),
+            "the inline bound",
+        ),
+        (
+            format!("nest at most {MAX_DEPTH} deep"),
+            "the nesting bound",
+        ),
+    ] {
+        assert!(
+            prose.contains(&stated),
+            "the service section does not state {what} as {stated:?}"
+        );
+    }
+
+    assert_eq!(
+        numbered_names(section, "| Kind | Name | Body |"),
+        vec![
+            (UP_REQUEST, "REQUEST".to_string()),
+            (UP_COMMAND, "COMMAND".to_string()),
+            (UP_CANCEL, "CANCEL".to_string()),
+        ],
+        "the uplink kinds disagree"
+    );
+    let downlink = &section[section.find("### Downlink message").expect("downlink")..];
+    assert_eq!(
+        numbered_names(downlink, "| Kind | Name | Body |"),
+        vec![
+            (DOWN_REPLY, "REPLY".to_string()),
+            (DOWN_REPLY_PARKED, "REPLY_PARKED".to_string()),
+            (DOWN_EVENT, "EVENT".to_string()),
+            (DOWN_REFUSED, "REFUSED".to_string()),
+        ],
+        "the downlink kinds disagree"
+    );
+    assert_eq!(
+        numbered_names(section, "| Tag | Name | Payload |"),
+        [
+            (TAG_NULL, "NULL"),
+            (TAG_FALSE, "FALSE"),
+            (TAG_TRUE, "TRUE"),
+            (TAG_U32, "U32"),
+            (TAG_I32, "I32"),
+            (TAG_F64, "F64"),
+            (TAG_U64, "U64"),
+            (TAG_I64, "I64"),
+            (TAG_STRING, "STRING"),
+            (TAG_BYTES, "BYTES"),
+            (TAG_JSON, "JSON"),
+            (TAG_ARRAY, "ARRAY"),
+        ]
+        .into_iter()
+        .map(|(tag, name)| (tag, name.to_string()))
+        .collect::<Vec<_>>(),
+        "the value tags disagree"
+    );
+}
+
+#[test]
+fn the_document_service_refusal_table_lists_exactly_the_codes_the_crate_defines() {
+    use frame_wire::service::{SERVICE_ERROR_BASE, ServiceError};
+    let in_source = variant_names_in("service.rs", "ServiceError");
+    let exported: Vec<String> = ServiceError::ALL
+        .iter()
+        .map(|error| error.name().to_string())
+        .collect();
+    assert_eq!(
+        exported, in_source,
+        "ServiceError::ALL is not the source's variants in order"
+    );
+    let document = document();
+    let expected: Vec<(u32, String)> = ServiceError::ALL
+        .iter()
+        .map(|error| (error.code(), error.name().to_string()))
+        .collect();
+    assert_eq!(
+        numbered_names(&document, "### Service refusals"),
+        expected,
+        "the document's service refusal table and the crate's codes disagree"
+    );
+    assert_eq!(expected[0].0, SERVICE_ERROR_BASE);
+}

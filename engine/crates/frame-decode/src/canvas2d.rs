@@ -286,7 +286,11 @@ fn floats_of(record: &[u32], prefix_words: usize) -> Option<Vec<f32>> {
     let count = record[prefix_words] as usize;
     let mut values = Vec::new();
     values.try_reserve_exact(count).ok()?;
-    values.extend(record[prefix_words + 1..prefix_words + 1 + count].iter().map(|word| f(*word)));
+    values.extend(
+        record[prefix_words + 1..prefix_words + 1 + count]
+            .iter()
+            .map(|word| f(*word)),
+    );
     Some(values)
 }
 

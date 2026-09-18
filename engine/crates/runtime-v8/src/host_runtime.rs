@@ -905,29 +905,15 @@ impl HostJsRuntime {
         // Get base directories from HostOpState
         let (files_dir, cache_dir) = self.get_base_dirs();
 
-        // Create GamePaths from base dirs + game_id
-        let game_paths =
-            GamePaths::new(&files_dir, &cache_dir, &game_id, self.host_id).map_err(|e| {
-                EngineError::new(ErrorCode::InvalidArgument)
-                    .with_msg("create game paths")
-                    .with_detail(e.to_string())
-            })?;
-
-        // Ensure directories exist
-        game_paths.ensure_directories().map_err(|e| {
-            EngineError::new(ErrorCode::IoError)
-                .with_msg("create game directories")
-                .with_detail(e.to_string())
-        })?;
-
-        // Pin every sandbox root before exposing the VFS to untrusted code.
-        // A path-only VFS would allow the mapping root itself to be replaced
-        // between construction and a later read.
-        let vfs = VirtualFS::try_from_game_paths(&game_paths).map_err(|_| {
-            EngineError::new(ErrorCode::IoError)
-                .with_msg("initialize sandbox filesystem")
-                .with_detail("failed to pin sandbox roots")
-        })?;
+        // The paths, the directories and the pinned sandbox, by the rules the
+        // external session mounts content with too (`migo_services::content`).
+        let migo_services::content::PreparedContent { game_paths, vfs } =
+            migo_services::content::prepare_content(
+                &files_dir,
+                &cache_dir,
+                &game_id,
+                self.host_id,
+            )?;
         let code_dir = game_paths.code_dir().to_path_buf();
         let code_dir_str = code_dir.to_string_lossy().into_owned();
         let game_paths = Arc::new(game_paths);
@@ -1001,27 +987,16 @@ impl HostJsRuntime {
             );
         }
 
-        // Create MountTable for /code path resolution.
-        let mount_table = Arc::new(MountTable::new(code_dir.clone()));
-
-        // Restore previously installed subpackages from the per-game manifest.
-        // This makes preDownloadSubpackage results survive across sessions.
-        // Skipped when code signing is enabled (downloaded packages lack signatures).
+        // Mount /code: the base package, restored subpackages, and the
+        // derived-cache prune -- `migo_services::content::mount_code`, shared
+        // with the external session. Subpackages are not restored under code
+        // signing: downloaded packages carry no signature.
         #[cfg(feature = "code-signing")]
         let cs_enabled = self.code_signing_enabled;
         #[cfg(not(feature = "code-signing"))]
         let cs_enabled = false;
-        shared::vfs::mount::restore_installed_packages(
-            &mount_table,
-            game_paths.cache_dir(),
-            cs_enabled,
-        );
-
-        // Bound the derived texture cache. It gains a sidecar on every decode
-        // miss and nothing else caps the directory, so its budget only holds
-        // if someone prunes at session start. Fire-and-forget on the
-        // background lane — launch does not wait on a directory scan.
-        migo_io::schedule_derived_cache_prune(&self.io_scheduler(), game_paths.cache_dir());
+        let mount_table =
+            migo_services::content::mount_code(&game_paths, cs_enabled, &self.io_scheduler());
 
         // Store paths, VFS, and mount table in op state.
         self.set_game_paths(Some(game_paths));

@@ -411,7 +411,15 @@ import os
                 // Weak for the reason `deliver` is, and `nil` once the channel is
                 // gone: the origin answers that as "no answer", which the
                 // producer reports rather than reading as a verdict.
-                answer: { [weak channel] call in channel?.answerSyncCall(call) })
+                answer: { [weak channel] call in channel?.answerSyncCall(call) },
+                // A service message too large for the socket, and an answer too
+                // large for it: the same channel, reached through the origin.
+                submitService: { [weak channel] message in
+                    channel?.submitServiceFromOrigin(message) ?? .unavailable
+                },
+                takeParked: { [weak channel] generation, requestId in
+                    channel?.takeParkedReply(generation: generation, requestId: requestId)
+                })
             self.onReport = onReport
             self.view = UIView(frame: .zero)
             super.init()
@@ -489,6 +497,12 @@ import os
                 // Where a synchronous call goes. Same origin as the page, so a
                 // Worker's blocking request needs no CORS and no second listener.
                 "syncCallUrl": MigoPerformancePlusOrigin.syncURL.absoluteString,
+                // The service stream's two scheme endpoints: a message too large
+                // for the socket goes to the first, an answer too large for it
+                // is taken from the second. Same origin, for the reason the
+                // sync endpoint is.
+                "serviceUrl": MigoPerformancePlusOrigin.serviceURL.absoluteString,
+                "replyUrl": MigoPerformancePlusOrigin.replyURL.absoluteString,
                 // From `MigoFrameChannelPolicy`, so the producer has no copy of a
                 // measured number. A constant in both languages would drift the
                 // first time the measurement is redone on new hardware --

@@ -64,6 +64,12 @@ export const SYNC_OP_GL_QUERY_ACTIVE = 5;
 // the WebGL queries have three: the operation is what sizes the reply.
 export const SYNC_OP_CANVAS2D_METRICS = 6;
 export const SYNC_OP_CANVAS2D_NUMBER = 7;
+/// A service op called synchronously -- `readFileSync`, `getStorageSync`. Its
+/// body and reply have the service stream's bounds, not the barrier's; see
+/// `frame_wire::sync::SYNC_OP_SERVICE`.
+export const SYNC_OP_SERVICE = 8;
+/// What a SERVICE call may be answered with: a whole file and its framing.
+export const MAX_SERVICE_REPLY_BYTES = 128 * 1024 * 1024;
 
 export const CANVAS2D_QUERY_MEASURE_TEXT = 1;
 export const CANVAS2D_QUERY_TEXT_LINE_HEIGHT = 2;

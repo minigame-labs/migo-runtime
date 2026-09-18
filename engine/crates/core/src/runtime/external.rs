@@ -44,6 +44,10 @@ use frame_wire::sync::{
 use frame_wire::{FrameIngress, IngressOutcome, PooledFrame, stream};
 use frame_wire::{IngressDecision, WindowSource};
 
+use crate::runtime::external_services::{
+    ServiceAdmission, ServiceDispatcher, ServiceHandle, ServiceHost, ServiceSubmitError,
+    ServiceWork, WakerSlot,
+};
 use crate::runtime::session_thread::{
     HostThread, SessionThreadContext, StartedHost, create_basic_runtime,
     create_runtime_before_ready, spawn_session_thread,
@@ -73,6 +77,9 @@ pub struct ExternalFrameSession {
     /// them, not here -- the clock and the submit path each carry their own
     /// copy so neither has to reach for the ingress lock to answer.
     downlink: Arc<Mutex<DownlinkQueue>>,
+    /// The service stream: files, storage, images, audio, network. Shared with
+    /// the transports that admit into it and the session thread that runs it.
+    services: Arc<ServiceHost>,
 }
 
 /// A started external session and, when it was given a Surface, the lease for
@@ -347,6 +354,9 @@ struct SyncPath {
     reply: Mutex<Vec<u8>>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
     admission: Admission,
+    /// The service stream, for `SYNC_OP_SERVICE`. Absent on a path built
+    /// without one, which answers that operation as unsupported.
+    services: Option<Arc<ServiceHost>>,
 }
 
 impl SyncPath {
@@ -362,7 +372,14 @@ impl SyncPath {
             reply: Mutex::new(Vec::new()),
             dispatch,
             admission,
+            services: None,
         }
+    }
+
+    /// Answer `SYNC_OP_SERVICE` through `services`.
+    fn with_services(mut self, services: Arc<ServiceHost>) -> Self {
+        self.services = Some(services);
+        self
     }
 
     /// Post a request and answer it.
@@ -422,6 +439,9 @@ impl SyncPath {
             params,
             max_reply_bytes,
             triggering_sequence,
+            // The shared record has no field for it: a producer on that path
+            // orders its service calls itself.
+            0,
             deadline_nanos,
             now_nanos,
         );
@@ -471,6 +491,7 @@ impl SyncPath {
             call.params,
             request.max_reply_bytes,
             request.triggering_sequence,
+            call.service_sequence,
             request.deadline_nanos,
             now_nanos,
         );
@@ -533,16 +554,25 @@ impl SyncPath {
     /// whether they still answer anything: this runs without that lock, for as
     /// long as the readback takes, and the request it was for can be settled
     /// and replaced in the meantime.
+    #[allow(clippy::too_many_arguments)]
     fn execute(
         &self,
         operation: u32,
         params: &[u8],
         max_reply_bytes: u32,
         triggering_sequence: u64,
+        service_sequence: u64,
         deadline_nanos: u64,
         now_nanos: u64,
     ) -> Result<Vec<u8>, SyncError> {
         match operation {
+            frame_wire::sync::SYNC_OP_SERVICE => self.service_call(
+                params,
+                max_reply_bytes,
+                service_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
             SYNC_OP_READ_PIXELS => self.read_pixels(
                 params,
                 max_reply_bytes,
@@ -578,6 +608,38 @@ impl SyncPath {
             ),
             _ => Err(SyncError::UnsupportedOperation),
         }
+    }
+
+    /// `SYNC_OP_SERVICE`: a service op whose return value is the answer --
+    /// `readFileSync`, `getStorageSync`.
+    ///
+    /// Waits for the service message the producer sent before it, then runs in
+    /// order behind everything admitted (see `external_services`). The op's own
+    /// failure is part of the reply; only the barrier failing is an error here.
+    fn service_call(
+        &self,
+        params: &[u8],
+        max_reply_bytes: u32,
+        service_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        let Some(services) = &self.services else {
+            return Err(SyncError::UnsupportedOperation);
+        };
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_nanos(budget);
+        services.wait_admitted(service_sequence, until)?;
+        let reply = services.call_sync(params, until)?;
+        if reply.len() > max_reply_bytes as usize {
+            // Refused rather than cut: a truncated file is a wrong answer that
+            // looks like a right one.
+            return Err(SyncError::ReplyTooLarge);
+        }
+        Ok(reply)
     }
 
     /// Wait until ingress has admitted `triggering_sequence`, within `budget`.
@@ -1265,7 +1327,7 @@ pub struct ExternalFrameClock {
     /// nothing. Held under its lock for the call, so clearing it returns only
     /// once no call is in progress, which is what lets a host free whatever the
     /// waker points at.
-    waker: Mutex<Option<DownlinkWaker>>,
+    waker: Arc<WakerSlot>,
 }
 
 /// Called on the session thread whenever a record the transport did not cause
@@ -1309,10 +1371,23 @@ pub struct ControlOutcome {
 }
 
 impl ExternalFrameClock {
+    /// A clock with a waker slot of its own, for the tests that drive one alone.
+    #[cfg(test)]
     fn new(
         downlink: Arc<Mutex<DownlinkQueue>>,
         window: WindowSource,
         runtime_generation: u64,
+    ) -> Self {
+        Self::new_with(downlink, window, runtime_generation, Arc::default())
+    }
+
+    /// With the waker slot the session's service outbox shares, so one
+    /// installed waker drains both.
+    fn new_with(
+        downlink: Arc<Mutex<DownlinkQueue>>,
+        window: WindowSource,
+        runtime_generation: u64,
+        waker: Arc<WakerSlot>,
     ) -> Self {
         Self {
             inner: OnceLock::new(),
@@ -1322,7 +1397,7 @@ impl ExternalFrameClock {
             downlink,
             runtime_generation,
             window,
-            waker: Mutex::new(None),
+            waker,
         }
     }
 
@@ -1333,20 +1408,28 @@ impl ExternalFrameClock {
     /// forgetting it is not a compile error and not a test failure -- it is a
     /// session that stops drawing with its last frame unsent, once, under load.
     /// `Weak`, so the clock and the window that calls it do not own each other.
+    #[cfg(any(test, feature = "test-support"))]
     fn shared(
         downlink: Arc<Mutex<DownlinkQueue>>,
         window: WindowSource,
         runtime_generation: u64,
     ) -> Arc<Self> {
-        let clock = Arc::new(Self::new(downlink, window, runtime_generation));
+        Self::shared_with(downlink, window, runtime_generation, Arc::default())
+    }
+
+    fn shared_with(
+        downlink: Arc<Mutex<DownlinkQueue>>,
+        window: WindowSource,
+        runtime_generation: u64,
+        waker: Arc<WakerSlot>,
+    ) -> Arc<Self> {
+        let clock = Arc::new(Self::new_with(downlink, window, runtime_generation, waker));
         let weak = Arc::downgrade(&clock);
-        clock
-            .window
-            .on_credit_returned(Box::new(move || {
-                if let Some(clock) = weak.upgrade() {
-                    clock.window_opened();
-                }
-            }));
+        clock.window.on_credit_returned(Box::new(move || {
+            if let Some(clock) = weak.upgrade() {
+                clock.window_opened();
+            }
+        }));
         clock
     }
 
@@ -1381,10 +1464,8 @@ impl ExternalFrameClock {
         };
         // Outside the queue lock, and only when something was queued: the waker
         // schedules a drain, and a drain takes this lock.
-        if queued
-            && let Some(wake) = self.waker.lock().as_ref()
-        {
-            wake();
+        if queued {
+            self.waker.wake();
         }
     }
 
@@ -1449,7 +1530,7 @@ impl ExternalFrameClock {
     /// Clearing returns only after any call in progress has returned. Must not
     /// be called from inside the waker, which holds the same lock.
     pub fn set_downlink_waker(&self, waker: Option<DownlinkWaker>) {
-        *self.waker.lock() = waker;
+        self.waker.set(waker);
     }
 
     /// How many frame signals the renderer has delivered to this session.
@@ -1495,9 +1576,7 @@ impl ExternalFrameClock {
         }
         // After the queue lock is released, so a transport that drains from
         // inside its wake-up does not find the lock still held by this thread.
-        if let Some(wake) = self.waker.lock().as_ref() {
-            wake();
-        }
+        self.waker.wake();
     }
 }
 
@@ -1807,6 +1886,46 @@ impl ExternalFrameSession {
         self.clock.handle_control(bytes)
     }
 
+    /// Admit one service message (`MUS1`), or hold it until the one before it
+    /// arrives -- the socket and a scheme request reorder. Blocks while the
+    /// session's work queue is full. Must not be called from inside a Tokio
+    /// runtime.
+    pub fn submit_service(&self, bytes: &[u8]) -> Result<ServiceAdmission, ServiceSubmitError> {
+        self.services.submit(bytes)
+    }
+
+    /// The service stream, to use without holding whatever lock guards this
+    /// session; see [`ServiceHandle`].
+    pub fn service_handle(&self) -> ServiceHandle {
+        ServiceHandle(Arc::clone(&self.services))
+    }
+
+    /// One `MDS1` message of queued answers and events, or `None`.
+    pub fn take_service_message(&self) -> Option<Vec<u8>> {
+        self.services.outbox.take_message()
+    }
+
+    /// A parked answer, taken once.
+    pub fn take_parked_reply(&self, generation: u32, request_id: u32) -> Option<Vec<u8>> {
+        self.services.outbox.take_parked(generation, request_id)
+    }
+
+    /// Mount the content the host names -- `migo_session_load_content` on this
+    /// execution -- and answer with the directory its code is served from.
+    ///
+    /// Synchronous, unlike the embedded execution's, because what the embedded
+    /// execution does next -- evaluate the entry module -- happens in another
+    /// process here, and that process's host needs this directory before it can
+    /// serve the module at all.
+    pub fn load_content(&self, game_id: &str) -> EngineResult<std::path::PathBuf> {
+        self.services.context.load_content(game_id)
+    }
+
+    /// Where the loaded content's code is, or `None` before any is loaded.
+    pub fn content_root(&self) -> Option<std::path::PathBuf> {
+        self.services.context.content_root()
+    }
+
     /// Install or clear what is called when a tick is queued. See
     /// [`ExternalFrameClock::set_downlink_waker`].
     pub fn set_downlink_waker(&self, waker: Option<DownlinkWaker>) {
@@ -1829,6 +1948,7 @@ impl ExternalFrameSession {
         // until WebKit reclaims its process. Which is a game that stopped
         // drawing and never said why.
         self.end_sync();
+        self.services.end();
         self.host.request_shutdown()
     }
 
@@ -1841,6 +1961,7 @@ impl ExternalFrameSession {
         // waking the producer is not something to do only on the path somebody
         // happened to test.
         self.end_sync();
+        self.services.end();
         self.host.shutdown_and_join()
     }
 
@@ -1881,17 +2002,23 @@ impl ExternalFrameSession {
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
             },
             sync: Arc::new(SyncPath::new(
-            INITIAL_RUNTIME_GENERATION,
-            dispatch,
+                INITIAL_RUNTIME_GENERATION,
+                dispatch,
                 admission,
                 errors,
-            Arc::new(ExternalGlErrors::default()),
-        )),
+            )),
             clock: ExternalFrameClock::shared(
                 Arc::clone(&downlink),
                 window,
                 INITIAL_RUNTIME_GENERATION,
             ),
+            services: ServiceHost::new(
+                INITIAL_RUNTIME_GENERATION,
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+                Arc::default(),
+            )
+            .0,
             downlink,
         }
     }
@@ -1934,12 +2061,22 @@ pub fn spawn_external_frame_session(
     let thread_ingress = Arc::clone(&ingress);
     let admission = Admission::new(Arc::clone(&ingress));
     let downlink = Arc::new(Mutex::new(DownlinkQueue::new()));
-    let clock = ExternalFrameClock::shared(
+    // One slot for the one drain: frame records and service answers both wake it.
+    let waker = Arc::new(WakerSlot::default());
+    let clock = ExternalFrameClock::shared_with(
         Arc::clone(&downlink),
         ingress.lock().window_source(),
         INITIAL_RUNTIME_GENERATION,
+        Arc::clone(&waker),
     );
     let thread_clock = Arc::clone(&clock);
+    let (services, service_work) = ServiceHost::new(
+        INITIAL_RUNTIME_GENERATION,
+        opt.files_dir().to_path_buf(),
+        opt.cache_dir().to_path_buf(),
+        waker,
+    );
+    let thread_services = Arc::clone(&services);
     let errors = Arc::new(ExternalGlErrors::default());
     let dispatch: Arc<OnceLock<RenderDispatch>> = Arc::new(OnceLock::new());
     let thread_dispatch = Arc::clone(&dispatch);
@@ -1950,18 +2087,33 @@ pub fn spawn_external_frame_session(
         platform,
         opt,
         public_generation,
-        move |ctx| run_external_session(ctx, thread_ingress, thread_clock, thread_dispatch),
+        move |ctx| {
+            run_external_session(
+                ctx,
+                thread_ingress,
+                thread_clock,
+                thread_dispatch,
+                ServiceDispatcher::new(&thread_services),
+                service_work,
+            )
+        },
     )?;
+    // Before the session is handed out, so nothing that can reach the services
+    // -- only the session handle can -- finds them without their scheduler.
+    services.context.bind_session(started.host.id());
 
     Ok(SpawnedExternalSession {
         session: ExternalFrameSession {
             host: started.host,
-            sync: Arc::new(SyncPath::new(
-                INITIAL_RUNTIME_GENERATION,
-                Arc::clone(&dispatch),
-                admission.clone(),
-                Arc::clone(&errors),
-            )),
+            sync: Arc::new(
+                SyncPath::new(
+                    INITIAL_RUNTIME_GENERATION,
+                    Arc::clone(&dispatch),
+                    admission.clone(),
+                    Arc::clone(&errors),
+                )
+                .with_services(Arc::clone(&services)),
+            ),
             submit: SubmitPath {
                 ingress,
                 admitted: Arc::clone(&admission.admitted),
@@ -1972,6 +2124,7 @@ pub fn spawn_external_frame_session(
             },
             clock,
             downlink,
+            services,
         },
         resource: started.resource,
         ingress: started.ingress,
@@ -1984,6 +2137,8 @@ fn run_external_session(
     ingress: Arc<Mutex<FrameIngress>>,
     clock: Arc<ExternalFrameClock>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
+    services: ServiceDispatcher,
+    mut service_work: tokio::sync::mpsc::Receiver<ServiceWork>,
 ) {
     let SessionThreadContext {
         id,
@@ -2136,6 +2291,12 @@ fn run_external_session(
                     ) {
                         break;
                     }
+                }
+                // Admitted service work, in admission order. The branch is
+                // disabled once every sender is gone, which is the session's
+                // service host being dropped -- teardown, not an error.
+                Some(work) = service_work.recv() => {
+                    services.dispatch(work);
                 }
                 () = render_notify.notified() => {
                     drain_render_events(
@@ -3700,8 +3861,8 @@ mod sync_tests {
     /// bytes that come back are the number it gave.
     #[test]
     fn a_scalar_query_is_answered_with_the_renderers_number() {
-        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
         use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
 
         let (sender, commands) = new_render_channel();
         let path = path_with_dispatch(&sender);
@@ -3744,8 +3905,8 @@ mod sync_tests {
     /// not a refusal, and not zero, which is a real location.
     #[test]
     fn a_location_that_does_not_exist_is_minus_one() {
-        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
         use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
 
         let (sender, commands) = new_render_channel();
         let path = path_with_dispatch(&sender);
@@ -3781,15 +3942,16 @@ mod sync_tests {
     /// turns back into the object the engine's facade parses.
     #[test]
     fn an_active_variable_answers_with_its_size_type_and_name() {
-        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
         use frame_wire::sync::{
             ACTIVE_VARIABLE_HEADER_BYTES, GlQueryParams, SYNC_OP_GL_QUERY_ACTIVE, gl_query,
         };
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
 
         let (sender, commands) = new_render_channel();
         let path = path_with_dispatch(&sender);
         let renderer = std::thread::spawn(move || {
-            let Ok(RenderCommand::GL(GLCmd::GetActiveUniform { index, resp, .. })) = commands.recv()
+            let Ok(RenderCommand::GL(GLCmd::GetActiveUniform { index, resp, .. })) =
+                commands.recv()
             else {
                 panic!("the barrier sent something other than an active uniform query");
             };
@@ -4008,6 +4170,8 @@ mod sync_answer_tests {
         for word in [SYNC_OP_READ_PIXELS, max_reply_bytes, timeout_millis, 0] {
             body.extend_from_slice(&word.to_le_bytes());
         }
+        // service_sequence: nothing sent on the service stream.
+        body.extend_from_slice(&0u64.to_le_bytes());
         for word in [
             1u32,
             0,

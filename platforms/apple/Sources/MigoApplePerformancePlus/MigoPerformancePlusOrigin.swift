@@ -48,9 +48,31 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
     }
 
     /// The largest call body this origin will read: the wire format's own
-    /// bound, from the engine's header, so the transport and the decoder refuse
-    /// the same bodies.
-    public static let maximumSyncCallBytes = Int(MIGO_SYNC_CALL_MAX_BYTES)
+    /// bound for a synchronous service call -- which carries a whole file
+    /// write -- from the engine's header. The engine refuses a call of any
+    /// other operation above `MIGO_SYNC_CALL_MAX_BYTES` itself, so the
+    /// transport and the decoder still refuse the same bodies.
+    public static let maximumSyncCallBytes = Int(MIGO_SERVICE_CALL_MAX_BYTES)
+
+    /// Where the producer POSTs a service message too large for the socket: a
+    /// file write, a request body, an encoded sound. Under the reserved prefix
+    /// for the reason `framePath` is.
+    public static var servicePath: String { MigoWebKitOriginRules.engineAssetPrefix + "service" }
+
+    public static var serviceURL: URL {
+        MigoWebKitContentOrigin.baseURL.appendingPathComponent(String(servicePath.dropFirst()))
+    }
+
+    /// Where the producer takes an answer too large for the socket:
+    /// `<replyPrefix><generation>/<request id>`.
+    public static var replyPrefix: String { MigoWebKitOriginRules.engineAssetPrefix + "reply/" }
+
+    public static var replyURL: URL {
+        MigoWebKitContentOrigin.baseURL.appendingPathComponent(String(replyPrefix.dropFirst().dropLast()))
+    }
+
+    /// The largest service message this origin will assemble: the format's.
+    public static let maximumServiceMessageBytes = Int(MIGO_SERVICE_MESSAGE_MAX_BYTES)
 
     /// The largest frame this origin will assemble from a request body.
     ///
@@ -94,9 +116,17 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
     /// Answer one synchronous call body, or `nil` when no answer exists. Blocks.
     public typealias Answer = (Data) -> MigoFrameChannel.SyncAnswer?
 
+    /// Admit a POSTed service message; see `MigoFrameChannel.submitServiceFromOrigin`.
+    public typealias SubmitService = (Data) -> MigoFrameChannel.ServiceDisposition
+
+    /// Take a parked answer by generation and request id.
+    public typealias TakeParked = (UInt32, UInt32) -> Data?
+
     private let content: MigoWebKitContentOrigin
     private let deliver: Deliver
     private let answer: Answer
+    private let submitService: SubmitService
+    private let takeParked: TakeParked
     private let lock = NSLock()
     private var record = Activity()
 
@@ -126,13 +156,24 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
     private let syncQueue = DispatchQueue(
         label: "dev.migo.performance-plus.sync", qos: .userInteractive)
 
+    /// Service messages and parked answers, off WebKit's thread and off the
+    /// other two queues: admitting a message can wait for the engine's work
+    /// queue, and a synchronous call waiting for that same message must not be
+    /// queued behind it.
+    private let serviceQueue = DispatchQueue(
+        label: "dev.migo.performance-plus.service", qos: .userInteractive)
+
     public init(
         content: MigoWebKitContentOrigin, deliver: @escaping Deliver,
-        answer: @escaping Answer = { _ in nil }
+        answer: @escaping Answer = { _ in nil },
+        submitService: @escaping SubmitService = { _ in .unavailable },
+        takeParked: @escaping TakeParked = { _, _ in nil }
     ) {
         self.content = content
         self.deliver = deliver
         self.answer = answer
+        self.submitService = submitService
+        self.takeParked = takeParked
         super.init()
     }
 
@@ -141,6 +182,16 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
         if request.url?.path == Self.syncPath {
             liveTasks.insert(ObjectIdentifier(task))
             startSyncCall(task)
+            return
+        }
+        if request.url?.path == Self.servicePath {
+            liveTasks.insert(ObjectIdentifier(task))
+            startServiceMessage(task)
+            return
+        }
+        if let path = request.url?.path, path.hasPrefix(Self.replyPrefix) {
+            liveTasks.insert(ObjectIdentifier(task))
+            startParkedReply(task, path: path)
             return
         }
         guard request.url?.path == Self.framePath else {
@@ -169,6 +220,62 @@ public final class MigoPerformancePlusOrigin: NSObject, WKURLSchemeHandler {
             case .failed(let reason):
                 self.refuse(task, status: 400, reason: reason)
             }
+        }
+    }
+
+    /// One service message too large for the socket.
+    ///
+    /// Answered as soon as the engine has it: the engine puts the socket's
+    /// messages and these back in sequence order itself, so the producer never
+    /// waits on this before sending the next. A refusal is 409 -- the engine
+    /// has already told the producer why on the return stream; this status is
+    /// for whoever reads a log.
+    private func startServiceMessage(_ task: WKURLSchemeTask) {
+        let request = task.request
+        guard request.httpMethod == "POST" else {
+            refuse(task, status: 405, reason: "the service endpoint takes POST")
+            return
+        }
+        serviceQueue.async { [weak self] in
+            guard let self else { return }
+            switch Self.readBody(from: request, limit: Self.maximumServiceMessageBytes) {
+            case .complete(let body):
+                switch self.submitService(body) {
+                case .admitted:
+                    self.finish(task, status: 204, mime: "application/octet-stream", body: Data())
+                case .refused(let code):
+                    self.refuse(task, status: 409, reason: "the engine refused the message: \(code)")
+                case .unavailable:
+                    self.refuse(task, status: 503, reason: "no session is admitting service messages")
+                }
+            case .failed(let reason):
+                self.refuse(task, status: 400, reason: reason)
+            }
+        }
+    }
+
+    /// A parked answer: `GET <replyPrefix><generation>/<request id>`.
+    ///
+    /// 404 for an answer that is not there -- taken already, another
+    /// generation's, or never parked -- which is a producer that asked twice.
+    private func startParkedReply(_ task: WKURLSchemeTask, path: String) {
+        guard task.request.httpMethod == "GET" || task.request.httpMethod == nil else {
+            refuse(task, status: 405, reason: "a parked answer is taken with GET")
+            return
+        }
+        let parts = path.dropFirst(Self.replyPrefix.count).split(separator: "/")
+        guard parts.count == 2, let generation = UInt32(parts[0]), let requestId = UInt32(parts[1])
+        else {
+            refuse(task, status: 400, reason: "a parked answer is named by generation and request id")
+            return
+        }
+        serviceQueue.async { [weak self] in
+            guard let self else { return }
+            guard let reply = self.takeParked(generation, requestId) else {
+                self.refuse(task, status: 404, reason: "no parked answer \(generation)/\(requestId)")
+                return
+            }
+            self.finish(task, status: 200, mime: "application/octet-stream", body: reply)
         }
     }
 

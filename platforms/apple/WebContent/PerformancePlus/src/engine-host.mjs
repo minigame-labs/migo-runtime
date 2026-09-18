@@ -89,10 +89,12 @@ function deviceProfile(described) {
  * @param {object} options.identity from `readEngineSessionConfig`.
  * @param {number} options.socketCeilingBytes the host's uplink threshold.
  * @param {object} [options.sync] the synchronous caller, when the host serves one.
+ * @param {import("./service.mjs").ServiceChannel} [options.services] the service
+ *   stream, when the host serves one.
  * @param {(message: object) => void} options.report posts a message to the host,
  *   through the page; nothing waits for it.
  */
-export function bindEngineHost({ session, identity, socketCeilingBytes, sync, report }) {
+export function bindEngineHost({ session, identity, socketCeilingBytes, sync, services, report }) {
   if (bound !== null) throw new Error("the engine host is already bound");
   if (!(session instanceof FrameSession)) throw new TypeError("the engine host needs a FrameSession");
   if (typeof socketCeilingBytes !== "number" || !Number.isFinite(socketCeilingBytes)) {
@@ -102,6 +104,7 @@ export function bindEngineHost({ session, identity, socketCeilingBytes, sync, re
   bound = Object.freeze({
     session,
     sync,
+    services,
     report,
     socketCeilingBytes,
     launchNonce: identity.launchNonce,

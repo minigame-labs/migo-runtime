@@ -87,6 +87,9 @@ use migo_capi_abi::{
     MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_ERROR_INVALID_STATE,
     MIGO_ERROR_WOULD_BLOCK, MIGO_OK, MigoResult,
 };
+// The embedded execution evaluates content on its host thread; the external one
+// mounts it at the call (see `migo_session_load_content`).
+#[cfg(not(feature = "external-frames"))]
 use migo_core::send_command_to_host;
 
 use crate::session_engine::SessionEngine;
@@ -691,6 +694,39 @@ pub unsafe extern "C" fn migo_session_load_content(
             return MIGO_ERROR_INVALID_STATE;
         }
 
+        // The external execution mounts content here, synchronously: its entry
+        // module is evaluated by WebKit in another process, and that process's
+        // host needs the mounted code directory before it can serve it. See
+        // `migo_session_copy_content_root`.
+        #[cfg(feature = "external-frames")]
+        {
+            let _ = host;
+            let Some(engine) = state.host.as_ref() else {
+                return MIGO_ERROR_INVALID_STATE;
+            };
+            return match engine.load_content(&content.content_id) {
+                Ok(root) => {
+                    tracing::info!(
+                        "migo_session_load_content: '{}' mounted at {}; entry '{}' is the producer's to import",
+                        content.content_id,
+                        root.display(),
+                        content.entry
+                    );
+                    state.content_loaded = true;
+                    MIGO_OK
+                }
+                Err(error) => {
+                    tracing::error!("migo_session_load_content: {error}");
+                    if error.code == shared::error::ErrorCode::InvalidArgument {
+                        MIGO_ERROR_INVALID_ARGUMENT
+                    } else {
+                        MIGO_ERROR_INTERNAL
+                    }
+                }
+            };
+        }
+
+        #[cfg(not(feature = "external-frames"))]
         match send_command_to_host(
             host,
             HostCommand::EvaluateModule {

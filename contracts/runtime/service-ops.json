@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "$comment": [
+    "The number each service op travels under on the service stream (wire-v1.md, *The service stream*).",
+    "",
+    "WHY NUMBERS. A service record names its op in one u32 rather than by its name: the stream carries",
+    "audio parameter edits and storage writes at whatever rate content makes them, and a name per record",
+    "is bytes and a string compare for nothing. The price of numbers is drift between two halves, so both",
+    "halves are held to this file: the host's table in engine/crates/core/src/runtime/service_ops.rs by",
+    "a unit test that reads it, and the producer's (platforms/apple/WebContent/PerformancePlus/src/",
+    "service-ops.mjs) by the generator that stages the engine (scripts/gen-performance-plus-engine.py),",
+    "which stops the build on any difference.",
+    "",
+    "RULES. Append only. A number is never reused and never renumbered, because a producer and a host",
+    "that disagree about one op's number call a different op with the right-looking arguments. An op",
+    "listed here must be classified async, command or sync in op-boundary.json; which of the three it",
+    "is decides whether it travels as a request, a command or a synchronous SERVICE call."
+  ],
+  "ops": {
+    "op_storage_get": 1,
+    "op_storage_set": 2,
+    "op_storage_remove": 3,
+    "op_storage_clear": 4,
+    "op_storage_info": 5,
+    "op_storage_get_async": 6,
+    "op_storage_set_async": 7,
+    "op_storage_remove_async": 8,
+    "op_storage_clear_async": 9,
+    "op_storage_info_async": 10,
+    "op_create_buffer_url": 11,
+    "op_revoke_buffer_url": 12
+  }
+}

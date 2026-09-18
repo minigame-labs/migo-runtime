@@ -481,6 +481,52 @@ if (( status != 0 )); then
 fi
 node "$TEST_DIR/emit-control.mjs" read "$CONTROL_FROM_RUST"
 
+# --- the service stream, in both directions ----------------------------------
+#
+# Everything content asks the host to do that is not drawing -- a file read, a
+# storage write, an image load -- travels as `MUS1` and is answered as `MDS1`.
+# The producer writes one and reads the other, and a disagreement reaches a user
+# as a write the host reads under another key or a read answered with another
+# request's bytes. The node suite covers what only the producer has (batching
+# per task, the hybrid send, parked answers, a refusal breaking the stream); the
+# corpus is checked byte for byte against the Rust writer, and the Rust answers
+# are read back by the producer's reader.
+SERVICE_TEST="$TEST_DIR/service.test.mjs"
+node "$SERVICE_TEST"
+RAN_TESTS+=("$SERVICE_TEST")
+
+SERVICE_FROM_JS="$(mktemp -d)"
+SERVICE_FROM_RUST="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$SYNC_CALLS" "$SYNC_ANSWERS" "$DOWN_FROM_JS" "$DOWN_FROM_RUST" "$CONTROL_FROM_JS" "$CONTROL_FROM_RUST" "$SERVICE_FROM_JS" "$SERVICE_FROM_RUST"' EXIT
+
+node "$TEST_DIR/emit-service.mjs" write "$SERVICE_FROM_JS"
+status=0
+output="$(cd engine && MIGO_SERVICE_IN_DIR="$SERVICE_FROM_JS" \
+    cargo test -p migo-frame-wire --test service_js_interop -- \
+    --ignored --nocapture service_messages_from 2>&1)" || status=$?
+printf '%s\n' "$output" | grep -E 'read [0-9]+ JavaScript-encoded service messages|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust reader refused service messages written by the JavaScript producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'read [1-9][0-9]* JavaScript-encoded service messages'; then
+    echo "FAIL: the service interop test did not report reading anything; it may not have run." >&2
+    exit 1
+fi
+
+status=0
+output="$(cd engine && MIGO_SERVICE_OUT_DIR="$SERVICE_FROM_RUST" \
+    cargo test -p migo-frame-wire --test service_js_interop -- \
+    --ignored --nocapture the_rust_writer 2>&1)" || status=$?
+printf '%s\n' "$output" | grep -E 'wrote [0-9]+ service answer messages|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust writer could not produce the service answer corpus." >&2
+    exit 1
+fi
+node "$TEST_DIR/emit-service.mjs" read "$SERVICE_FROM_RUST"
+
 # --- an op's arguments, as deno_core converts them --------------------------
 #
 # The stream lane answers ops whose Rust bodies see arguments deno_core has

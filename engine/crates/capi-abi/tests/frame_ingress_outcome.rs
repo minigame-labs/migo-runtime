@@ -597,3 +597,48 @@ fn the_session_config_and_the_descriptor_read_a_nonce_identically() {
     };
     assert_eq!(zeroed.validate().expect("still valid").launch_nonce, None);
 }
+
+/// The service stream's bounds and kinds, header against the format. A
+/// transport reads the header; the format enforces the crate's.
+#[test]
+fn the_header_states_the_service_stream_constants_the_format_enforces() {
+    use migo_capi_abi::external_frames::{
+        MIGO_SERVICE_CALL_MAX_BYTES, MIGO_SERVICE_MESSAGE_MAX_BYTES, MIGO_SYNC_OP_SERVICE,
+        MIGO_UPLINK_MESSAGE_SERVICE,
+    };
+    let defines = header_defines("MIGO_SERVICE_");
+    let find = |name: &str| {
+        defines
+            .iter()
+            .find(|(declared, _)| declared == name)
+            .unwrap_or_else(|| panic!("the header has no {name}"))
+            .1
+    };
+    assert_eq!(
+        find("MIGO_SERVICE_MESSAGE_MAX_BYTES") as usize,
+        frame_wire::service::MAX_SERVICE_MESSAGE_BYTES
+    );
+    assert_eq!(
+        MIGO_SERVICE_MESSAGE_MAX_BYTES as usize,
+        frame_wire::service::MAX_SERVICE_MESSAGE_BYTES
+    );
+    assert_eq!(
+        find("MIGO_SERVICE_CALL_MAX_BYTES") as usize,
+        frame_wire::sync::SERVICE_CALL_MAX_BYTES
+    );
+    assert_eq!(
+        MIGO_SERVICE_CALL_MAX_BYTES as usize,
+        frame_wire::sync::SERVICE_CALL_MAX_BYTES
+    );
+    let op = header_defines("MIGO_SYNC_OP_");
+    assert!(op.contains(&(
+        "MIGO_SYNC_OP_SERVICE".to_string(),
+        frame_wire::sync::SYNC_OP_SERVICE
+    )));
+    assert_eq!(MIGO_SYNC_OP_SERVICE, frame_wire::sync::SYNC_OP_SERVICE);
+    let kinds = header_defines("MIGO_UPLINK_MESSAGE_");
+    assert!(kinds.contains(&(
+        "MIGO_UPLINK_MESSAGE_SERVICE".to_string(),
+        MIGO_UPLINK_MESSAGE_SERVICE
+    )));
+}
