@@ -65,6 +65,20 @@ pub const DOWN_FRAME_VERDICT: u32 = 1;
 /// waiting producer is guaranteed to receive, because it asked for one. See
 /// *The window* in `contracts/frame-wire/wire-v1.md`.
 pub const DOWN_CLOCK_TICK: u32 = 2;
+/// The window opened again, for a producer that has nothing to send it with.
+///
+/// A verdict rides a packet and a tick rides a frame request, and there is one
+/// state where a producer makes neither: it finished a frame whose last packet
+/// the window would not admit, so the packet is held, and the frame clock will
+/// not ask for another frame until it goes. Nothing it does produces a record
+/// carrying a window, and the credit it is waiting for comes back on the render
+/// thread, silently. That is a session that stops drawing with its last frame
+/// unsent -- a paused game whose pause screen never appears.
+///
+/// So the host says it: when a credit comes back and the producer was last told
+/// the window was shut, this record carries the window and nothing else. Only
+/// then, which is why it costs nothing while a producer is drawing.
+pub const DOWN_WINDOW_OPEN: u32 = 3;
 
 /// Header word plus generation, decision, wire_error_code, remaining_credits,
 /// and the two halves of `accepted_sequence`.
@@ -73,6 +87,11 @@ pub const FRAME_VERDICT_WORDS: u32 = 7;
 /// remaining_credits, and the two halves of `accepted_sequence` -- the window
 /// in the verdict's own field order, so a reader has one advertisement layout.
 pub const CLOCK_TICK_WORDS: u32 = 8;
+
+/// Header word plus generation, remaining_credits, and the two halves of
+/// `accepted_sequence` -- the window in the verdict's field order, so a reader
+/// has one advertisement layout.
+pub const WINDOW_OPEN_WORDS: u32 = 5;
 
 /// The envelope's two leading words.
 pub const ENVELOPE_WORDS: usize = 2;
@@ -93,6 +112,12 @@ pub enum DownlinkRecord {
         timestamp_ns: u64,
         /// With `accepted_sequence`, the window as of this tick. Read by the
         /// host sequence first, so it is never more generous than the truth.
+        remaining_credits: u32,
+        accepted_sequence: u64,
+    },
+    /// The window, and only the window. See [`DOWN_WINDOW_OPEN`].
+    WindowOpen {
+        generation: u32,
         remaining_credits: u32,
         accepted_sequence: u64,
     },
@@ -130,6 +155,7 @@ impl DownlinkRecord {
         match self {
             Self::FrameVerdict { .. } => FRAME_VERDICT_WORDS,
             Self::ClockTick { .. } => CLOCK_TICK_WORDS,
+            Self::WindowOpen { .. } => WINDOW_OPEN_WORDS,
         }
     }
 
@@ -137,6 +163,7 @@ impl DownlinkRecord {
         match self {
             Self::FrameVerdict { .. } => DOWN_FRAME_VERDICT,
             Self::ClockTick { .. } => DOWN_CLOCK_TICK,
+            Self::WindowOpen { .. } => DOWN_WINDOW_OPEN,
         }
     }
 
@@ -181,6 +208,16 @@ impl DownlinkRecord {
                 put(accepted_sequence as u32);
                 put((accepted_sequence >> 32) as u32);
             }
+            Self::WindowOpen {
+                generation,
+                remaining_credits,
+                accepted_sequence,
+            } => {
+                put(generation);
+                put(remaining_credits);
+                put(accepted_sequence as u32);
+                put((accepted_sequence >> 32) as u32);
+            }
         }
     }
 
@@ -217,6 +254,16 @@ impl DownlinkRecord {
                 out.push(frame_id);
                 out.push(timestamp_ns as u32);
                 out.push((timestamp_ns >> 32) as u32);
+                out.push(remaining_credits);
+                out.push(accepted_sequence as u32);
+                out.push((accepted_sequence >> 32) as u32);
+            }
+            Self::WindowOpen {
+                generation,
+                remaining_credits,
+                accepted_sequence,
+            } => {
+                out.push(generation);
                 out.push(remaining_credits);
                 out.push(accepted_sequence as u32);
                 out.push((accepted_sequence >> 32) as u32);
@@ -298,6 +345,16 @@ pub fn decode_message(words: &[u32]) -> Result<Vec<DownlinkRecord>, DownlinkErro
                     accepted_sequence: u64::from(body[5]) | (u64::from(body[6]) << 32),
                 }
             }
+            DOWN_WINDOW_OPEN => {
+                if count != WINDOW_OPEN_WORDS {
+                    return Err(DownlinkError::WrongLengthForKind { kind, words: count });
+                }
+                DownlinkRecord::WindowOpen {
+                    generation: body[0],
+                    remaining_credits: body[1],
+                    accepted_sequence: u64::from(body[2]) | (u64::from(body[3]) << 32),
+                }
+            }
             other => return Err(DownlinkError::UnknownKind(other)),
         };
         records.push(record);
@@ -363,6 +420,12 @@ pub const QUEUE_CAPACITY: usize = 64;
 pub struct DownlinkQueue {
     records: std::collections::VecDeque<DownlinkRecord>,
     dropped: u32,
+    /// The `remaining_credits` of the last record queued that carried a window,
+    /// which is what the producer will believe once it has read the queue.
+    ///
+    /// `None` before any: a producer starts with the one credit the contract
+    /// gives it, and telling it so again would be a message that says nothing.
+    last_advertised_credits: Option<u32>,
 }
 
 impl DownlinkQueue {
@@ -370,7 +433,28 @@ impl DownlinkQueue {
         Self {
             records: std::collections::VecDeque::with_capacity(QUEUE_CAPACITY),
             dropped: 0,
+            last_advertised_credits: None,
         }
+    }
+
+    /// What the producer will believe the window is, once it has read what is
+    /// queued. `None` before anything carrying a window has been queued.
+    pub fn last_advertised_credits(&self) -> Option<u32> {
+        self.last_advertised_credits
+    }
+
+    fn note_advertisement(&mut self, record: &DownlinkRecord) {
+        self.last_advertised_credits = match *record {
+            DownlinkRecord::FrameVerdict {
+                remaining_credits, ..
+            }
+            | DownlinkRecord::ClockTick {
+                remaining_credits, ..
+            }
+            | DownlinkRecord::WindowOpen {
+                remaining_credits, ..
+            } => Some(remaining_credits),
+        };
     }
 
     /// Queue a verdict, dropping the oldest if there is no room.
@@ -383,6 +467,7 @@ impl DownlinkQueue {
             self.records.pop_front();
             self.dropped = self.dropped.saturating_add(1);
         }
+        self.note_advertisement(&record);
         self.records.push_back(record);
     }
 
@@ -412,7 +497,44 @@ impl DownlinkQueue {
             self.records.pop_front();
             self.dropped = self.dropped.saturating_add(1);
         }
+        self.note_advertisement(&record);
         self.records.push_back(record);
+    }
+
+    /// Queue an advertisement for a credit that came back, but only when the
+    /// producer was last told the window was shut. Whether one was queued.
+    ///
+    /// The condition is the whole point: a producer holds a packet only when its
+    /// view of the window is zero, and its view is what the last advertisement
+    /// said (everything it sent was admitted, or it would have had a verdict
+    /// saying otherwise). So a returned credit is news exactly when the last
+    /// number the producer was given was zero -- and while it is drawing
+    /// normally, this queues nothing at all.
+    ///
+    /// At most one is queued, like a tick: the window is a level, and the newest
+    /// record carries it.
+    pub fn push_window_open(&mut self, record: DownlinkRecord) -> bool {
+        debug_assert!(
+            matches!(record, DownlinkRecord::WindowOpen { .. }),
+            "push_window_open is for window advertisements"
+        );
+        if self.last_advertised_credits != Some(0) {
+            return false;
+        }
+        if let Some(index) = self
+            .records
+            .iter()
+            .position(|queued| matches!(queued, DownlinkRecord::WindowOpen { .. }))
+        {
+            self.records.remove(index);
+        }
+        while self.records.len() >= QUEUE_CAPACITY {
+            self.records.pop_front();
+            self.dropped = self.dropped.saturating_add(1);
+        }
+        self.note_advertisement(&record);
+        self.records.push_back(record);
+        true
     }
 
     /// How many records are waiting.

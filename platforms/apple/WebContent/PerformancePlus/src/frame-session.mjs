@@ -11,7 +11,12 @@
 // The host half is `MigoFrameChannel` in the Swift package; the formats are
 // `downlink.mjs` and `control.mjs`, which the interop gate checks against Rust.
 
-import { DOWN_CLOCK_TICK, DOWN_FRAME_VERDICT, decodeBytes } from "./downlink.mjs";
+import {
+  DOWN_CLOCK_TICK,
+  DOWN_FRAME_VERDICT,
+  DOWN_WINDOW_OPEN,
+  decodeBytes,
+} from "./downlink.mjs";
 import { RequestFrameMessage, generationWord } from "./control.mjs";
 import { sequenceOf } from "./wire-frame-packet.mjs";
 
@@ -171,6 +176,11 @@ export class FrameSession {
           this.#onGenerationLost?.(record.generation);
         }
         this.#onVerdict?.(record);
+      } else if (record.kind === DOWN_WINDOW_OPEN) {
+        // A credit came back while this producer was holding a packet and
+        // asking for nothing. Applying it is all that is needed: whoever is
+        // waiting on a credit is woken by `#advertised`.
+        this.#advertised(record.remainingCredits, record.acceptedSequence);
       } else if (record.kind === DOWN_CLOCK_TICK) {
         this.#advertised(record.remainingCredits, record.acceptedSequence);
         this.#lastFrameId = record.frameId;

@@ -12,6 +12,7 @@
 
 import {
   DOWN_CLOCK_TICK,
+  DOWN_WINDOW_OPEN,
   DOWN_FRAME_VERDICT,
   DOWNLINK_VERSION,
   DownlinkFormatError,
@@ -70,6 +71,13 @@ const verdict = {
   acceptedSequence: 0xff_1234_5678,
 };
 
+const windowOpen = {
+  kind: DOWN_WINDOW_OPEN,
+  generation: 7,
+  remainingCredits: 2,
+  acceptedSequence: 0x9_8765_4321,
+};
+
 const tick = {
   kind: DOWN_CLOCK_TICK,
   generation: 7,
@@ -90,6 +98,14 @@ check("a batch survives the round trip in order", () => {
   assertEqual(read[2].timestampNs, tick.timestampNs, "timestamp across 32 bits");
   assertEqual(read[2].remainingCredits, tick.remainingCredits, "the tick's window credits");
   assertEqual(read[2].acceptedSequence, tick.acceptedSequence, "and its sequence, across 32 bits");
+});
+
+check("a window advertisement survives the round trip", () => {
+  const read = decodeMessage(encodeMessage([windowOpen]));
+  assertEqual(read.length, 1, "record count");
+  assertEqual(read[0].kind, DOWN_WINDOW_OPEN, "kind");
+  assertEqual(read[0].remainingCredits, windowOpen.remainingCredits, "credits");
+  assertEqual(read[0].acceptedSequence, windowOpen.acceptedSequence, "sequence across 32 bits");
 });
 
 check("bytes and words agree", () => {
