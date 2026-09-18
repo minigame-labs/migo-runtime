@@ -11,8 +11,11 @@
 #
 #   1. The staging. A module the engine adds, an `ext:` specifier left
 #      unrewritten, a primordials name or `core` member the producer cannot
-#      supply, a lane module implementing an op on the wrong lane: the generator
-#      refuses each, and the staged modules are then actually loaded.
+#      supply, a lane module implementing an op on the wrong lane, an argument a
+#      lane converts by a rule other than the one deno_core applies to that
+#      parameter -- or leaves unconverted: the generator refuses each, and the
+#      staged modules are then actually loaded. (The rules themselves are pinned
+#      to V8 by op_args_agreement.rs and test/op-args.test.mjs.)
 #   2. The frames. Content calls `migo.createCanvas().getContext("webgl")` and
 #      draws two frames through a fake host; the packets that leave must carry the
 #      session's identity and exactly the command words the facade encodes.

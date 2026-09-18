@@ -8,7 +8,7 @@
 
 import { engineHost } from "./engine-host.mjs";
 import { drained } from "./engine-frames.mjs";
-import { stringOf, toI32, toU32 } from "./op-args.mjs";
+import { smiU32, stringOf, toI32 } from "./op-args.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
 
 /** The service stream, or a throw that says why there is none. */
@@ -83,10 +83,10 @@ export function op_storage_info_async() {
 // decoders and caches, and only the shared id and the size come back.
 
 export function op_load_image(imageId, src, targetWidth, targetHeight) {
-  const id = toU32(imageId, "image_id");
+  const id = smiU32(imageId, "image_id");
   const source = stringOf(src, "src");
-  const width = toU32(targetWidth, "target_width");
-  const height = toU32(targetHeight, "target_height");
+  const width = smiU32(targetWidth, "target_width");
+  const height = smiU32(targetHeight, "target_height");
   return servicesOf(engineHost()).request(SERVICE_OP.op_load_image, (w) => {
     w.u32(id);
     w.str(source);
@@ -97,14 +97,14 @@ export function op_load_image(imageId, src, targetWidth, targetHeight) {
 
 export function op_load_image_subrect(imageId, src, sx, sy, sw, sh, resizeW, resizeH) {
   const args = [
-    toU32(imageId, "image_id"),
+    smiU32(imageId, "image_id"),
     stringOf(src, "src"),
     toI32(sx, "sx"),
     toI32(sy, "sy"),
-    toU32(sw, "sw"),
-    toU32(sh, "sh"),
-    toU32(resizeW, "resize_w"),
-    toU32(resizeH, "resize_h"),
+    smiU32(sw, "sw"),
+    smiU32(sh, "sh"),
+    smiU32(resizeW, "resize_w"),
+    smiU32(resizeH, "resize_h"),
   ];
   return servicesOf(engineHost()).request(SERVICE_OP.op_load_image_subrect, (w) => {
     w.u32(args[0]);

@@ -7,7 +7,7 @@
 
 import { engineHost } from "./engine-host.mjs";
 import { servicesOf } from "./lane-async.mjs";
-import { toU32 } from "./op-args.mjs";
+import { smiU32, toU8 } from "./op-args.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
 
 /// A console line, for the host's log.
@@ -19,13 +19,14 @@ import { SERVICE_OP } from "./service-ops.mjs";
 /// op's answer -- rather than turning a log call into an exception, which
 /// would make a failing `toString` fatal to whatever was being reported.
 export function op_console(value, level) {
+  const severity = toU8(level, "level");
   let message;
   try {
     message = `${value}`;
   } catch {
     message = "<invalid value>";
   }
-  engineHost().report({ type: "console", level: level & 0xff, message });
+  engineHost().report({ type: "console", level: severity, message });
 }
 
 // ---- images ------------------------------------------------------------------
@@ -34,7 +35,7 @@ export function op_console(value, level) {
 /// `local_answer` says: the id is the producer's, and the host's table is what
 /// the command updates.
 export function op_destroy_image(imageId) {
-  servicesOf(engineHost()).command(SERVICE_OP.op_destroy_image, (w) => w.u32(toU32(imageId, "image_id")));
+  servicesOf(engineHost()).command(SERVICE_OP.op_destroy_image, (w) => w.u32(smiU32(imageId, "image_id")));
   return true;
 }
 

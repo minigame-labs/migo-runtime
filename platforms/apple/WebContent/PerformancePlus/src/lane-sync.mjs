@@ -23,7 +23,7 @@
 
 import { constructOpError } from "./engine-core.mjs";
 import { engineHost } from "./engine-host.mjs";
-import { bytesOf, stringOf, toU32 } from "./op-args.mjs";
+import { bytesOf, smiU32, stringOf, toBool, toF64 } from "./op-args.mjs";
 import { flushToHost } from "./engine-frames.mjs";
 import { decodeServiceOutcome, encodeServiceCall } from "./service.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
@@ -133,67 +133,111 @@ function activeVariable(kind, canvasId, program, index) {
 // ---- program and shader state ----------------------------------------------
 
 export function op_get_program_parameter(programId, pname) {
-  return scalar({ kind: GL_QUERY_PROGRAM_PARAMETER, object: programId, pname });
+  return scalar({
+    kind: GL_QUERY_PROGRAM_PARAMETER,
+    object: smiU32(programId, "program_id"),
+    pname: smiU32(pname, "pname"),
+  });
 }
 
 export function op_get_shader_parameter(shaderId, pname) {
-  return scalar({ kind: GL_QUERY_SHADER_PARAMETER, object: shaderId, pname });
+  return scalar({
+    kind: GL_QUERY_SHADER_PARAMETER,
+    object: smiU32(shaderId, "shader_id"),
+    pname: smiU32(pname, "pname"),
+  });
 }
 
 export function op_get_program_info_log(programId) {
-  return text({ kind: GL_QUERY_PROGRAM_INFO_LOG, object: programId });
+  return text({ kind: GL_QUERY_PROGRAM_INFO_LOG, object: smiU32(programId, "program_id") });
 }
 
 export function op_get_shader_info_log(shaderId) {
-  return text({ kind: GL_QUERY_SHADER_INFO_LOG, object: shaderId });
+  return text({ kind: GL_QUERY_SHADER_INFO_LOG, object: smiU32(shaderId, "shader_id") });
 }
 
 // ---- locations and indices --------------------------------------------------
 
 export function op_get_uniform_location(canvasId, programId, name) {
-  return scalar({ kind: GL_QUERY_UNIFORM_LOCATION, canvasId, object: programId, name });
+  return scalar({
+    kind: GL_QUERY_UNIFORM_LOCATION,
+    canvasId: smiU32(canvasId, "canvas_id"),
+    object: smiU32(programId, "program_id"),
+    name: stringOf(name, "name"),
+  });
 }
 
 export function op_get_attrib_location(canvasId, programId, name) {
-  return scalar({ kind: GL_QUERY_ATTRIB_LOCATION, canvasId, object: programId, name });
+  return scalar({
+    kind: GL_QUERY_ATTRIB_LOCATION,
+    canvasId: smiU32(canvasId, "canvas_id"),
+    object: smiU32(programId, "program_id"),
+    name: stringOf(name, "name"),
+  });
 }
 
 export function op_get_uniform_block_index(programId, name) {
   // The op is `#[smi] u32`: an index, and `INVALID_INDEX` (0xFFFFFFFF) when
   // there is none, which is the same bits the scalar reply carries.
-  return scalar({ kind: GL_QUERY_UNIFORM_BLOCK_INDEX, object: programId, name }) >>> 0;
+  return (
+    scalar({
+      kind: GL_QUERY_UNIFORM_BLOCK_INDEX,
+      object: smiU32(programId, "program_id"),
+      name: stringOf(name, "name"),
+    }) >>> 0
+  );
 }
 
 // ---- active variables -------------------------------------------------------
 
 export function op_get_active_attrib(canvasId, programId, index) {
-  return activeVariable(GL_QUERY_ACTIVE_ATTRIB, canvasId, programId, index);
+  return activeVariable(
+    GL_QUERY_ACTIVE_ATTRIB,
+    smiU32(canvasId, "canvas_id"),
+    smiU32(programId, "program_id"),
+    smiU32(index, "index"),
+  );
 }
 
 export function op_get_active_uniform(canvasId, programId, index) {
-  return activeVariable(GL_QUERY_ACTIVE_UNIFORM, canvasId, programId, index);
+  return activeVariable(
+    GL_QUERY_ACTIVE_UNIFORM,
+    smiU32(canvasId, "canvas_id"),
+    smiU32(programId, "program_id"),
+    smiU32(index, "index"),
+  );
 }
 
 export function op_get_transform_feedback_varying(program, index) {
-  return activeVariable(GL_QUERY_TRANSFORM_FEEDBACK_VARYING, 0, program, index);
+  return activeVariable(GL_QUERY_TRANSFORM_FEEDBACK_VARYING, 0, smiU32(program, "program"), smiU32(index, "index"));
 }
 
 // ---- context state ----------------------------------------------------------
 
 export function op_get_parameter(canvasId, pname) {
-  return text({ kind: GL_QUERY_PARAMETER, canvasId, pname });
+  return text({ kind: GL_QUERY_PARAMETER, canvasId: smiU32(canvasId, "canvas_id"), pname: smiU32(pname, "pname") });
 }
 
 export function op_check_framebuffer_status(canvasId, target) {
-  return scalar({ kind: GL_QUERY_CHECK_FRAMEBUFFER_STATUS, canvasId, pname: target }) >>> 0;
+  return (
+    scalar({
+      kind: GL_QUERY_CHECK_FRAMEBUFFER_STATUS,
+      canvasId: smiU32(canvasId, "canvas_id"),
+      pname: smiU32(target, "target"),
+    }) >>> 0
+  );
 }
 
 export function op_get_query_parameter(query, pname) {
-  return scalar({ kind: GL_QUERY_QUERY_PARAMETER, object: query, pname }) >>> 0;
+  return (
+    scalar({ kind: GL_QUERY_QUERY_PARAMETER, object: smiU32(query, "query"), pname: smiU32(pname, "pname") }) >>> 0
+  );
 }
 
 export function op_client_wait_sync(sync, flags) {
-  return scalar({ kind: GL_QUERY_CLIENT_WAIT_SYNC, object: sync, pname: flags }) >>> 0;
+  return (
+    scalar({ kind: GL_QUERY_CLIENT_WAIT_SYNC, object: smiU32(sync, "sync"), pname: smiU32(flags, "flags") }) >>> 0
+  );
 }
 
 /**
@@ -206,7 +250,7 @@ export function op_client_wait_sync(sync, flags) {
  * be in the queue before it is read.
  */
 export function op_webgl_get_error(canvasId) {
-  return scalar({ kind: GL_QUERY_GET_ERROR, canvasId }) >>> 0;
+  return scalar({ kind: GL_QUERY_GET_ERROR, canvasId: smiU32(canvasId, "canvas_id") }) >>> 0;
 }
 
 // ---- Canvas2D ---------------------------------------------------------------
@@ -226,7 +270,7 @@ export function op_measure_text_flat(canvasId, text, cssFont) {
     TEXT_METRICS_BYTES,
     encodeCanvas2DQueryParams({
       kind: CANVAS2D_QUERY_MEASURE_TEXT,
-      canvasId: toU32(canvasId, "canvas_id"),
+      canvasId: smiU32(canvasId, "canvas_id"),
       text: stringOf(text, "text"),
       font: stringOf(cssFont, "css_font"),
     }),
@@ -236,15 +280,18 @@ export function op_measure_text_flat(canvasId, text, cssFont) {
 
 /** The line height of a family at a size, which the font loader caches. */
 export function op_get_text_line_height(fontFamily, fontSize, bold, italic) {
-  const flags = (bold ? CANVAS2D_FLAG_BOLD : 0) | (italic ? CANVAS2D_FLAG_ITALIC : 0);
+  const family = stringOf(fontFamily, "font_family");
+  const size = toF64(fontSize, "font_size");
+  const flags =
+    (toBool(bold, "bold") ? CANVAS2D_FLAG_BOLD : 0) | (toBool(italic, "italic") ? CANVAS2D_FLAG_ITALIC : 0);
   const reply = ask(
     SYNC_OP_CANVAS2D_NUMBER,
     8,
     encodeCanvas2DQueryParams({
       kind: CANVAS2D_QUERY_TEXT_LINE_HEIGHT,
-      number: Number(fontSize),
+      number: size,
       flags,
-      font: stringOf(fontFamily, "font_family"),
+      font: family,
     }),
   );
   return decodeNumberReply(reply);

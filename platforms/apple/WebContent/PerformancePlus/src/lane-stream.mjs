@@ -17,11 +17,11 @@ import { recordProducerError } from "./lane-local.mjs";
 import {
   bytesOf,
   f32BitsOf,
-  f32ListOf,
   optionalBytesOf,
+  smiU32,
+  smiU8,
   stringOf,
   toI32,
-  toU32,
   u32ArrayOf,
 } from "./op-args.mjs";
 import { parseFontShorthand } from "./css-font.mjs";
@@ -103,7 +103,7 @@ function emitWords(canvasId, opcode, list, ...prefix) {
 /// producer builds the packet, and a packet the host refuses is answered on the
 /// downlink as a verdict, not here.
 export function op_submit_render_stream(words, usedWords) {
-  appendStream(words, usedWords);
+  appendStream(u32ArrayOf(words, "words"), smiU32(usedWords, "used_words"));
   return 0;
 }
 
@@ -130,7 +130,7 @@ export function op_gl_flush() {
 
 const create = (opcode) =>
   function (canvasId, clientId) {
-    emit(opcode, toU32(canvasId, "canvas_id"), toU32(clientId, "client_id"));
+    emit(opcode, smiU32(canvasId, "canvas_id"), smiU32(clientId, "client_id"));
   };
 export const op_create_buffer = create(R.OPR_CREATE_BUFFER);
 export const op_create_framebuffer = create(R.OPR_CREATE_FRAMEBUFFER);
@@ -143,59 +143,80 @@ export const op_create_transform_feedback = create(R.OPR_CREATE_TRANSFORM_FEEDBA
 export const op_create_vertex_array = create(R.OPR_CREATE_VERTEX_ARRAY);
 
 export function op_create_shader(canvasId, clientId, ty) {
-  emit(R.OPR_CREATE_SHADER, toU32(canvasId, "canvas_id"), toU32(clientId, "client_id"), toU32(ty, "ty"));
+  emit(R.OPR_CREATE_SHADER, smiU32(canvasId, "canvas_id"), smiU32(clientId, "client_id"), smiU32(ty, "ty"));
 }
 
-const remove = (opcode) =>
-  function (id) {
-    emit(opcode, toU32(id, "id"));
-  };
-export const op_delete_buffer = remove(R.OPR_DELETE_BUFFER);
-export const op_delete_framebuffer = remove(R.OPR_DELETE_FRAMEBUFFER);
-export const op_delete_program = remove(R.OPR_DELETE_PROGRAM);
-export const op_delete_query = remove(R.OPR_DELETE_QUERY);
-export const op_delete_renderbuffer = remove(R.OPR_DELETE_RENDERBUFFER);
-export const op_delete_sampler = remove(R.OPR_DELETE_SAMPLER);
-export const op_delete_shader = remove(R.OPR_DELETE_SHADER);
-export const op_delete_sync = remove(R.OPR_DELETE_SYNC);
-export const op_delete_texture = remove(R.OPR_DELETE_TEXTURE);
-export const op_delete_transform_feedback = remove(R.OPR_DELETE_TRANSFORM_FEEDBACK);
-export const op_delete_vertex_array = remove(R.OPR_DELETE_VERTEX_ARRAY);
+// Written out rather than stamped by a factory: each op's one argument has its
+// own Rust name, and the conversion check matches conversions to parameters by
+// that name.
+export function op_delete_buffer(bufferId) {
+  emit(R.OPR_DELETE_BUFFER, smiU32(bufferId, "buffer_id"));
+}
+export function op_delete_framebuffer(framebufferId) {
+  emit(R.OPR_DELETE_FRAMEBUFFER, smiU32(framebufferId, "framebuffer_id"));
+}
+export function op_delete_program(programId) {
+  emit(R.OPR_DELETE_PROGRAM, smiU32(programId, "program_id"));
+}
+export function op_delete_query(query) {
+  emit(R.OPR_DELETE_QUERY, smiU32(query, "query"));
+}
+export function op_delete_renderbuffer(renderbufferId) {
+  emit(R.OPR_DELETE_RENDERBUFFER, smiU32(renderbufferId, "renderbuffer_id"));
+}
+export function op_delete_sampler(sampler) {
+  emit(R.OPR_DELETE_SAMPLER, smiU32(sampler, "sampler"));
+}
+export function op_delete_shader(shaderId) {
+  emit(R.OPR_DELETE_SHADER, smiU32(shaderId, "shader_id"));
+}
+export function op_delete_sync(sync) {
+  emit(R.OPR_DELETE_SYNC, smiU32(sync, "sync"));
+}
+export function op_delete_texture(textureId) {
+  emit(R.OPR_DELETE_TEXTURE, smiU32(textureId, "texture_id"));
+}
+export function op_delete_transform_feedback(tf) {
+  emit(R.OPR_DELETE_TRANSFORM_FEEDBACK, smiU32(tf, "tf"));
+}
+export function op_delete_vertex_array(vao) {
+  emit(R.OPR_DELETE_VERTEX_ARRAY, smiU32(vao, "vao"));
+}
 
 export function op_attach_shader(programId, shaderId) {
-  emit(R.OPR_ATTACH_SHADER, toU32(programId, "program_id"), toU32(shaderId, "shader_id"));
+  emit(R.OPR_ATTACH_SHADER, smiU32(programId, "program_id"), smiU32(shaderId, "shader_id"));
 }
 export function op_compile_shader(shaderId) {
-  emit(R.OPR_COMPILE_SHADER, toU32(shaderId, "shader_id"));
+  emit(R.OPR_COMPILE_SHADER, smiU32(shaderId, "shader_id"));
 }
 export function op_link_program(programId) {
-  emit(R.OPR_LINK_PROGRAM, toU32(programId, "program_id"));
+  emit(R.OPR_LINK_PROGRAM, smiU32(programId, "program_id"));
 }
 export function op_begin_query(canvasId, target, query) {
-  emit(R.OPR_BEGIN_QUERY, toU32(canvasId, "canvas_id"), toU32(target, "target"), toU32(query, "query"));
+  emit(R.OPR_BEGIN_QUERY, smiU32(canvasId, "canvas_id"), smiU32(target, "target"), smiU32(query, "query"));
 }
 export function op_end_query(canvasId, target) {
-  emit(R.OPR_END_QUERY, toU32(canvasId, "canvas_id"), toU32(target, "target"));
+  emit(R.OPR_END_QUERY, smiU32(canvasId, "canvas_id"), smiU32(target, "target"));
 }
 export function op_begin_transform_feedback(canvasId, primitiveMode) {
-  emit(R.OPR_BEGIN_TRANSFORM_FEEDBACK, toU32(canvasId, "canvas_id"), toU32(primitiveMode, "primitive_mode"));
+  emit(R.OPR_BEGIN_TRANSFORM_FEEDBACK, smiU32(canvasId, "canvas_id"), smiU32(primitiveMode, "primitive_mode"));
 }
 export function op_end_transform_feedback(canvasId) {
-  emit(R.OPR_END_TRANSFORM_FEEDBACK, toU32(canvasId, "canvas_id"));
+  emit(R.OPR_END_TRANSFORM_FEEDBACK, smiU32(canvasId, "canvas_id"));
 }
 export function op_pause_transform_feedback(canvasId) {
-  emit(R.OPR_PAUSE_TRANSFORM_FEEDBACK, toU32(canvasId, "canvas_id"));
+  emit(R.OPR_PAUSE_TRANSFORM_FEEDBACK, smiU32(canvasId, "canvas_id"));
 }
 export function op_resume_transform_feedback(canvasId) {
-  emit(R.OPR_RESUME_TRANSFORM_FEEDBACK, toU32(canvasId, "canvas_id"));
+  emit(R.OPR_RESUME_TRANSFORM_FEEDBACK, smiU32(canvasId, "canvas_id"));
 }
 export function op_bind_transform_feedback(canvasId, target, tf) {
-  emit(R.OPR_BIND_TRANSFORM_FEEDBACK, toU32(canvasId, "canvas_id"), toU32(target, "target"), toU32(tf, "tf"));
+  emit(R.OPR_BIND_TRANSFORM_FEEDBACK, smiU32(canvasId, "canvas_id"), smiU32(target, "target"), smiU32(tf, "tf"));
 }
 export function op_blit_framebuffer(canvasId, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter) {
   emit(
     R.OPR_BLIT_FRAMEBUFFER,
-    toU32(canvasId, "canvas_id"),
+    smiU32(canvasId, "canvas_id"),
     toI32(srcX0, "src_x0"),
     toI32(srcY0, "src_y0"),
     toI32(srcX1, "src_x1"),
@@ -204,36 +225,36 @@ export function op_blit_framebuffer(canvasId, srcX0, srcY0, srcX1, srcY1, dstX0,
     toI32(dstY0, "dst_y0"),
     toI32(dstX1, "dst_x1"),
     toI32(dstY1, "dst_y1"),
-    toU32(mask, "mask"),
-    toU32(filter, "filter"),
+    smiU32(mask, "mask"),
+    smiU32(filter, "filter"),
   );
 }
 export function op_fence_sync(canvasId, clientId, condition, flags) {
   emit(
     R.OPR_FENCE_SYNC,
-    toU32(canvasId, "canvas_id"),
-    toU32(clientId, "client_id"),
-    toU32(condition, "condition"),
-    toU32(flags, "flags"),
+    smiU32(canvasId, "canvas_id"),
+    smiU32(clientId, "client_id"),
+    smiU32(condition, "condition"),
+    smiU32(flags, "flags"),
   );
 }
 export function op_framebuffer_renderbuffer(canvasId, target, attachment, renderbuffertarget, renderbuffer) {
   emit(
     R.OPR_FRAMEBUFFER_RENDERBUFFER,
-    toU32(canvasId, "canvas_id"),
-    toU32(target, "target"),
-    toU32(attachment, "attachment"),
-    toU32(renderbuffertarget, "renderbuffertarget"),
+    smiU32(canvasId, "canvas_id"),
+    smiU32(target, "target"),
+    smiU32(attachment, "attachment"),
+    smiU32(renderbuffertarget, "renderbuffertarget"),
     toI32(renderbuffer, "renderbuffer"),
   );
 }
 export function op_framebuffer_texture_2d(canvasId, target, attachment, textarget, texture, level) {
   emit(
     R.OPR_FRAMEBUFFER_TEXTURE_2D,
-    toU32(canvasId, "canvas_id"),
-    toU32(target, "target"),
-    toU32(attachment, "attachment"),
-    toU32(textarget, "textarget"),
+    smiU32(canvasId, "canvas_id"),
+    smiU32(target, "target"),
+    smiU32(attachment, "attachment"),
+    smiU32(textarget, "textarget"),
     toI32(texture, "texture"),
     toI32(level, "level"),
   );
@@ -241,9 +262,9 @@ export function op_framebuffer_texture_2d(canvasId, target, attachment, textarge
 export function op_renderbuffer_storage(canvasId, target, internalformat, width, height) {
   emit(
     R.OPR_RENDERBUFFER_STORAGE,
-    toU32(canvasId, "canvas_id"),
-    toU32(target, "target"),
-    toU32(internalformat, "internalformat"),
+    smiU32(canvasId, "canvas_id"),
+    smiU32(target, "target"),
+    smiU32(internalformat, "internalformat"),
     toI32(width, "width"),
     toI32(height, "height"),
   );
@@ -251,10 +272,10 @@ export function op_renderbuffer_storage(canvasId, target, internalformat, width,
 export function op_renderbuffer_storage_multisample(canvasId, target, samples, internalFormat, width, height) {
   emit(
     R.OPR_RENDERBUFFER_STORAGE_MULTISAMPLE,
-    toU32(canvasId, "canvas_id"),
-    toU32(target, "target"),
+    smiU32(canvasId, "canvas_id"),
+    smiU32(target, "target"),
     toI32(samples, "samples"),
-    toU32(internalFormat, "internal_format"),
+    smiU32(internalFormat, "internal_format"),
     toI32(width, "width"),
     toI32(height, "height"),
   );
@@ -262,10 +283,10 @@ export function op_renderbuffer_storage_multisample(canvasId, target, samples, i
 export function op_tex_storage_2d(canvasId, target, levels, internalFormat, width, height) {
   emit(
     R.OPR_TEX_STORAGE_2D,
-    toU32(canvasId, "canvas_id"),
-    toU32(target, "target"),
+    smiU32(canvasId, "canvas_id"),
+    smiU32(target, "target"),
     toI32(levels, "levels"),
-    toU32(internalFormat, "internal_format"),
+    smiU32(internalFormat, "internal_format"),
     toI32(width, "width"),
     toI32(height, "height"),
   );
@@ -273,10 +294,10 @@ export function op_tex_storage_2d(canvasId, target, levels, internalFormat, widt
 export function op_tex_storage_3d(canvasId, target, levels, internalFormat, width, height, depth) {
   emit(
     R.OPR_TEX_STORAGE_3D,
-    toU32(canvasId, "canvas_id"),
-    toU32(target, "target"),
+    smiU32(canvasId, "canvas_id"),
+    smiU32(target, "target"),
     toI32(levels, "levels"),
-    toU32(internalFormat, "internal_format"),
+    smiU32(internalFormat, "internal_format"),
     toI32(width, "width"),
     toI32(height, "height"),
     toI32(depth, "depth"),
@@ -285,116 +306,116 @@ export function op_tex_storage_3d(canvasId, target, levels, internalFormat, widt
 export function op_uniform_block_binding(programId, index, binding) {
   emit(
     R.OPR_UNIFORM_BLOCK_BINDING,
-    toU32(programId, "program_id"),
-    toU32(index, "uniform_block_index"),
-    toU32(binding, "uniform_block_binding"),
+    smiU32(programId, "program_id"),
+    smiU32(index, "uniform_block_index"),
+    smiU32(binding, "uniform_block_binding"),
   );
 }
 export function op_gl_lose_context(canvasId) {
-  emit(R.OPR_LOSE_CONTEXT, toU32(canvasId, "canvas_id"));
+  emit(R.OPR_LOSE_CONTEXT, smiU32(canvasId, "canvas_id"));
 }
 
 export function op_shader_source(canvasId, shaderId, source) {
-  const canvas = toU32(canvasId, "canvas_id");
-  const shader = toU32(shaderId, "shader_id");
+  const canvas = smiU32(canvasId, "canvas_id");
+  const shader = smiU32(shaderId, "shader_id");
   emitBytes(canvas, R.OPR_SHADER_SOURCE, utf8.encode(stringOf(source, "source")), canvas, shader);
 }
 export function op_bind_attrib_location(programId, index, name) {
-  const program = toU32(programId, "program_id");
-  const location = toU32(index, "index");
+  const program = smiU32(programId, "program_id");
+  const location = smiU32(index, "index");
   // No canvas among this op's arguments; an upload refusal it cannot have.
   emitBytes(0, R.OPR_BIND_ATTRIB_LOCATION, utf8.encode(stringOf(name, "name")), program, location);
 }
 export function op_buffer_data(canvasId, target, size, data, usage) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   const bytes = optionalBytesOf(data, "data");
   emitBytes(
     canvas,
     R.OPR_BUFFER_DATA,
     bytes ?? EMPTY,
     canvas,
-    toU32(target, "target"),
+    smiU32(target, "target"),
     toI32(size, "size"),
-    toU32(usage, "usage"),
+    smiU32(usage, "usage"),
     bytes === null ? 0 : 1,
   );
 }
 export function op_buffer_sub_data(canvasId, target, offset, data) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   emitBytes(
     canvas,
     R.OPR_BUFFER_SUB_DATA,
     bytesOf(data, "data"),
     canvas,
-    toU32(target, "target"),
+    smiU32(target, "target"),
     toI32(offset, "offset"),
   );
 }
 export function op_tex_image_2d(canvasId, target, level, internalformat, width, height, border, format, type, data) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   const bytes = optionalBytesOf(data, "data");
   emitBytes(
     canvas,
     R.OPR_TEX_IMAGE_2D,
     bytes ?? EMPTY,
     canvas,
-    toU32(target, "target"),
+    smiU32(target, "target"),
     toI32(level, "level"),
     toI32(internalformat, "internalformat"),
     toI32(width, "width"),
     toI32(height, "height"),
     toI32(border, "border"),
-    toU32(format, "format"),
-    toU32(type, "type_"),
+    smiU32(format, "format"),
+    smiU32(type, "type_"),
     bytes === null ? 0 : 1,
   );
 }
 export function op_tex_sub_image_2d(canvasId, target, level, xoffset, yoffset, width, height, format, type, data) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   emitBytes(
     canvas,
     R.OPR_TEX_SUB_IMAGE_2D,
     bytesOf(data, "data"),
     canvas,
-    toU32(target, "target"),
+    smiU32(target, "target"),
     toI32(level, "level"),
     toI32(xoffset, "xoffset"),
     toI32(yoffset, "yoffset"),
     toI32(width, "width"),
     toI32(height, "height"),
-    toU32(format, "format"),
-    toU32(type, "type_"),
+    smiU32(format, "format"),
+    smiU32(type, "type_"),
   );
 }
 export function op_compressed_tex_image_2d(canvasId, target, level, internalformat, width, height, border, data) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   emitBytes(
     canvas,
     R.OPR_COMPRESSED_TEX_IMAGE_2D,
     bytesOf(data, "data"),
     canvas,
-    toU32(target, "target"),
+    smiU32(target, "target"),
     toI32(level, "level"),
-    toU32(internalformat, "internalformat"),
+    smiU32(internalformat, "internalformat"),
     toI32(width, "width"),
     toI32(height, "height"),
     toI32(border, "border"),
   );
 }
 export function op_compressed_tex_sub_image_2d(canvasId, target, level, xoffset, yoffset, width, height, format, data) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   emitBytes(
     canvas,
     R.OPR_COMPRESSED_TEX_SUB_IMAGE_2D,
     bytesOf(data, "data"),
     canvas,
-    toU32(target, "target"),
+    smiU32(target, "target"),
     toI32(level, "level"),
     toI32(xoffset, "xoffset"),
     toI32(yoffset, "yoffset"),
     toI32(width, "width"),
     toI32(height, "height"),
-    toU32(format, "format"),
+    smiU32(format, "format"),
   );
 }
 
@@ -427,12 +448,12 @@ export function op_tex_image_3d(
   bytesPerElement,
   pboOffset,
 ) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   const pbo = toI32(pboOffset, "pbo_offset");
   const bytes = pixels3d(
     optionalBytesOf(pixels, "pixels"),
-    toU32(srcOffset, "src_offset"),
-    toU32(bytesPerElement, "bytes_per_element"),
+    smiU32(srcOffset, "src_offset"),
+    smiU32(bytesPerElement, "bytes_per_element"),
     pbo,
   );
   emitBytes(
@@ -440,15 +461,15 @@ export function op_tex_image_3d(
     R.OPR_TEX_IMAGE_3D,
     bytes ?? EMPTY,
     canvas,
-    toU32(target, "target"),
+    smiU32(target, "target"),
     toI32(level, "level"),
     toI32(internalFormat, "internal_format"),
     toI32(width, "width"),
     toI32(height, "height"),
     toI32(depth, "depth"),
     toI32(border, "border"),
-    toU32(format, "format"),
-    toU32(ty, "ty"),
+    smiU32(format, "format"),
+    smiU32(ty, "ty"),
     pbo,
     bytes === null ? 0 : 1,
   );
@@ -471,12 +492,12 @@ export function op_tex_sub_image_3d(
   bytesPerElement,
   pboOffset,
 ) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   const pbo = toI32(pboOffset, "pbo_offset");
   const bytes = pixels3d(
     optionalBytesOf(pixels, "pixels"),
-    toU32(srcOffset, "src_offset"),
-    toU32(bytesPerElement, "bytes_per_element"),
+    smiU32(srcOffset, "src_offset"),
+    smiU32(bytesPerElement, "bytes_per_element"),
     pbo,
   );
   emitBytes(
@@ -484,7 +505,7 @@ export function op_tex_sub_image_3d(
     R.OPR_TEX_SUB_IMAGE_3D,
     bytes ?? EMPTY,
     canvas,
-    toU32(target, "target"),
+    smiU32(target, "target"),
     toI32(level, "level"),
     toI32(xoffset, "xoffset"),
     toI32(yoffset, "yoffset"),
@@ -492,36 +513,36 @@ export function op_tex_sub_image_3d(
     toI32(width, "width"),
     toI32(height, "height"),
     toI32(depth, "depth"),
-    toU32(format, "format"),
-    toU32(ty, "ty"),
+    smiU32(format, "format"),
+    smiU32(ty, "ty"),
     pbo,
     bytes === null ? 0 : 1,
   );
 }
 
 export function op_draw_buffers(canvasId, buffers) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   emitWords(canvas, R.OPR_DRAW_BUFFERS, u32ArrayOf(buffers, "buffers"), canvas);
 }
 export function op_invalidate_framebuffer(canvasId, target, attachments) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   emitWords(
     canvas,
     R.OPR_INVALIDATE_FRAMEBUFFER,
     u32ArrayOf(attachments, "attachments"),
     canvas,
-    toU32(target, "target"),
+    smiU32(target, "target"),
   );
 }
 export function op_transform_feedback_varyings(canvasId, program, varyingsJoined, bufferMode) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   emitBytes(
     canvas,
     R.OPR_TRANSFORM_FEEDBACK_VARYINGS,
     utf8.encode(stringOf(varyingsJoined, "varyings_joined")),
     canvas,
-    toU32(program, "program"),
-    toU32(bufferMode, "buffer_mode"),
+    smiU32(program, "program"),
+    smiU32(bufferMode, "buffer_mode"),
   );
 }
 
@@ -568,7 +589,7 @@ function emit2DText(canvasId, opcode, text, ...prefix) {
  * context-loss event, not as a return value nobody is waiting for.
  */
 export function op_create_context_2d(canvasId) {
-  emit2D(toU32(canvasId, "canvas_id"), R.OP2D_CREATE_CONTEXT);
+  emit2D(smiU32(canvasId, "canvas_id"), R.OP2D_CREATE_CONTEXT);
   return 0;
 }
 
@@ -583,13 +604,13 @@ export function op_create_context_2d(canvasId) {
 export function op_set_font(canvasId, font) {
   const text = stringOf(font, "font");
   if (parseFontShorthand(text) === null) return false;
-  emit2DText(toU32(canvasId, "canvas_id"), R.OP2D_SET_FONT, text);
+  emit2DText(smiU32(canvasId, "canvas_id"), R.OP2D_SET_FONT, text);
   return true;
 }
 
 export function op_fill_text(canvasId, text, x, y, maxWidth) {
   emit2DText(
-    toU32(canvasId, "canvas_id"),
+    smiU32(canvasId, "canvas_id"),
     R.OP2D_FILL_TEXT,
     stringOf(text, "text"),
     f32BitsOf(x, "x"),
@@ -600,7 +621,7 @@ export function op_fill_text(canvasId, text, x, y, maxWidth) {
 
 export function op_stroke_text(canvasId, text, x, y, maxWidth) {
   emit2DText(
-    toU32(canvasId, "canvas_id"),
+    smiU32(canvasId, "canvas_id"),
     R.OP2D_STROKE_TEXT,
     stringOf(text, "text"),
     f32BitsOf(x, "x"),
@@ -610,15 +631,15 @@ export function op_stroke_text(canvasId, text, x, y, maxWidth) {
 }
 
 export function op_set_text_align(canvasId, align) {
-  emit2D(toU32(canvasId, "canvas_id"), R.OP2D_SET_TEXT_ALIGN, toU32(align, "align") & 0xff);
+  emit2D(smiU32(canvasId, "canvas_id"), R.OP2D_SET_TEXT_ALIGN, smiU8(align, "align"));
 }
 
 export function op_set_text_baseline(canvasId, baseline) {
-  emit2D(toU32(canvasId, "canvas_id"), R.OP2D_SET_TEXT_BASELINE, toU32(baseline, "baseline") & 0xff);
+  emit2D(smiU32(canvasId, "canvas_id"), R.OP2D_SET_TEXT_BASELINE, smiU8(baseline, "baseline"));
 }
 
 export function op_set_text_direction(canvasId, direction) {
-  emit2D(toU32(canvasId, "canvas_id"), R.OP2D_SET_TEXT_DIRECTION, toU32(direction, "direction") & 0xff);
+  emit2D(smiU32(canvasId, "canvas_id"), R.OP2D_SET_TEXT_DIRECTION, smiU8(direction, "direction"));
 }
 
 /**
@@ -628,7 +649,7 @@ export function op_set_text_direction(canvasId, direction) {
  * the facade passes -- and the record carries them as the words they are.
  */
 export function op_set_line_dash(canvasId, segments) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   const bytes = bytesOf(segments, "segments");
   const words = new Uint32Array(bytes.byteLength >> 2);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -658,8 +679,8 @@ export function op_set_line_dash(canvasId, segments) {
 /// record; see `appendDrawImage`.
 const drawImageEntry = new Uint32Array(R.DRAW_IMAGE_BATCH_ENTRY_WORDS);
 export function op_draw_image(canvasId, imageId, sx, sy, sw, sh, dx, dy, dw, dh) {
-  const canvas = toU32(canvasId, "canvas_id");
-  drawImageEntry[0] = toU32(imageId, "image_id");
+  const canvas = smiU32(canvasId, "canvas_id");
+  drawImageEntry[0] = smiU32(imageId, "image_id");
   drawImageEntry[1] = f32BitsOf(sx, "sx");
   drawImageEntry[2] = f32BitsOf(sy, "sy");
   drawImageEntry[3] = f32BitsOf(sw, "sw");
@@ -684,7 +705,7 @@ const DRAW_IMAGE_BATCH_ENTRY_BYTES = R.DRAW_IMAGE_BATCH_ENTRY_WORDS * 4;
  * dropped as the op drops it; an empty one draws nothing.
  */
 export function op_draw_image_batch(canvasId, data) {
-  const canvas = toU32(canvasId, "canvas_id");
+  const canvas = smiU32(canvasId, "canvas_id");
   const bytes = bytesOf(data, "data");
   if (bytes.byteLength % DRAW_IMAGE_BATCH_ENTRY_BYTES !== 0) return;
   const entries = bytes.byteLength / DRAW_IMAGE_BATCH_ENTRY_BYTES;
@@ -706,13 +727,13 @@ export function op_draw_image_batch(canvasId, data) {
 export function op_tex_image_2d_from_image(canvasId, target, level, internalformat, format, type, imageId) {
   emit(
     R.OPR_TEX_IMAGE_2D_FROM_IMAGE,
-    toU32(canvasId, "canvas_id"),
-    toU32(target, "target"),
+    smiU32(canvasId, "canvas_id"),
+    smiU32(target, "target"),
     toI32(level, "level"),
     toI32(internalformat, "internalformat"),
-    toU32(format, "format"),
-    toU32(type, "type_"),
-    toU32(imageId, "image_id"),
+    smiU32(format, "format"),
+    smiU32(type, "type_"),
+    smiU32(imageId, "image_id"),
   );
 }
 
@@ -720,13 +741,13 @@ export function op_tex_image_2d_from_image(canvasId, target, level, internalform
 export function op_tex_sub_image_2d_from_image(canvasId, target, level, xoffset, yoffset, format, type, imageId) {
   emit(
     R.OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE,
-    toU32(canvasId, "canvas_id"),
-    toU32(target, "target"),
+    smiU32(canvasId, "canvas_id"),
+    smiU32(target, "target"),
     toI32(level, "level"),
     toI32(xoffset, "xoffset"),
     toI32(yoffset, "yoffset"),
-    toU32(format, "format"),
-    toU32(type, "type_"),
-    toU32(imageId, "image_id"),
+    smiU32(format, "format"),
+    smiU32(type, "type_"),
+    smiU32(imageId, "image_id"),
   );
 }

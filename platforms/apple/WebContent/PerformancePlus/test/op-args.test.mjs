@@ -1,114 +1,91 @@
-// An op's arguments, converted as deno_core converts them.
+// An op's arguments, converted as V8 running deno_core converts them.
 //
-// The expected values are the Rust ones: `to_u32_option` / `to_i32_option` in
-// deno_core's runtime/ops.rs take an int32 or uint32 Number as its 32 bits, any
-// other Number through `as u64` / `as i64` (truncating toward zero, saturating,
-// NaN to 0) and then its low 32 bits, a BigInt by its low 64 then 32 bits, and
-// refuse everything else.
+// fixtures/op-arg-probes.js holds the values that tell the conversion rules
+// apart; fixtures/op-arg-answers.json holds what real deno_core ops made of
+// each one, per argument kind, and is itself checked against V8 by
+// engine/crates/runtime-v8/src/tests/op_args_agreement.rs. This test puts the
+// same values through op-args.mjs and requires the same answer for every value
+// and every kind -- the result, or the error class and message.
+//
+// Which function answers for which kind is read from op-args.mjs's own `@kind`
+// tags -- the tags the build's conversion check trusts -- so a function cannot
+// claim a kind V8 has not been asked about, and every kind it claims is tested.
 //
 // Run:  node test/op-args.test.mjs
 // Gate: scripts/test-frame-wire-js-encoder.sh
 
-import { bytesOf, optionalBytesOf, stringOf, toI32, toU32, u32ArrayOf } from "../src/op-args.mjs";
+import { readFileSync } from "node:fs";
+import { runInThisContext } from "node:vm";
+
+import * as opArgs from "../src/op-args.mjs";
+
+const fixtures = new URL("./fixtures/", import.meta.url);
+runInThisContext(readFileSync(new URL("op-arg-probes.js", fixtures), "utf8"), { filename: "op-arg-probes.js" });
+const answers = JSON.parse(readFileSync(new URL("op-arg-answers.json", fixtures), "utf8"));
+
+// The tags, read as scripts/gen-performance-plus-engine.py reads them.
+const source = readFileSync(new URL("../src/op-args.mjs", import.meta.url), "utf8");
+const TAGGED = /\/\*\*(?:(?!\*\/)[\s\S])*?@kind\s+([a-z0-9_, ]+?)\s*\n(?:(?!\*\/)[\s\S])*?\*\/\s*export\s+function\s+(\w+)/g;
+const converters = new Map();
+for (const [, listed, name] of source.matchAll(TAGGED)) {
+  for (const kind of listed.split(",").map((part) => part.trim()).filter(Boolean)) {
+    if (converters.has(kind)) throw new Error(`${kind} is claimed by both ${converters.get(kind)} and ${name}`);
+    converters.set(kind, name);
+  }
+}
+
+const hex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+const F64 = new Float64Array(1);
+const F64_BITS = new BigUint64Array(F64.buffer);
+
+/** What the probe op for `kind` in op_args_agreement.rs renders for a value it received. */
+function render(kind, value) {
+  if (kind.startsWith("option_")) return value === null ? "none" : render(kind.slice("option_".length), value);
+  if (kind === "f32") return value.toString(16).padStart(8, "0");
+  if (kind === "f64") {
+    F64[0] = value;
+    return F64_BITS[0].toString(16).padStart(16, "0");
+  }
+  if (kind === "string") return JSON.stringify(value);
+  if (kind === "u8_buffer") return `bytes:${hex(value)}`;
+  if (kind === "u32_buffer") return `u32s:${Array.from(value).join(",")}`;
+  return String(value);
+}
 
 let failures = 0;
-function check(name, fn) {
-  try {
-    fn();
-    console.log(`  ok   ${name}`);
-  } catch (error) {
+let compared = 0;
+for (const kind of Object.keys(answers)) {
+  if (!converters.has(kind)) {
     failures += 1;
-    console.log(`  FAIL ${name}\n       ${error && error.message}`);
+    console.log(`  FAIL ${kind}: V8 answered for a kind no op-args.mjs function is tagged with`);
   }
 }
-function equal(actual, expected, what) {
-  if (!Object.is(actual, expected)) throw new Error(`${what}: expected ${expected}, got ${actual}`);
-}
-function throws(fn, what) {
-  try {
-    fn();
-  } catch (error) {
-    if (error instanceof TypeError) return;
-    throw error;
+for (const [kind, name] of converters) {
+  const expectedRow = answers[kind];
+  if (expectedRow === undefined) {
+    failures += 1;
+    console.log(`  FAIL ${name} claims ${kind}, which op-arg-answers.json has no V8 answers for`);
+    continue;
   }
-  throw new Error(`${what}: did not throw`);
+  const convert = opArgs[name];
+  let kindFailures = 0;
+  for (const [label, value] of globalThis.OP_ARG_PROBES) {
+    if (!(label in expectedRow)) continue; // a probe only one runtime could build
+    compared += 1;
+    let actual;
+    try {
+      actual = render(kind, convert(value, "value"));
+    } catch (error) {
+      actual = `${error.name}: ${error.message}`;
+    }
+    if (actual !== expectedRow[label]) {
+      kindFailures += 1;
+      console.log(`  FAIL ${kind} (${name}) / ${label}: V8 ${expectedRow[label]}, producer ${actual}`);
+    }
+  }
+  failures += kindFailures;
+  if (kindFailures === 0) console.log(`  ok   ${kind} (${name})`);
 }
 
-check("u32: integers in either 32-bit range are their 32 bits", () => {
-  equal(toU32(0, "x"), 0, "0");
-  equal(toU32(7, "x"), 7, "7");
-  equal(toU32(-1, "x"), 0xffffffff, "-1");
-  equal(toU32(-2147483648, "x"), 0x80000000, "i32::MIN");
-  equal(toU32(4294967295, "x"), 0xffffffff, "u32::MAX");
-});
-
-check("u32: every other Number goes through `as u64`", () => {
-  equal(toU32(1.9, "x"), 1, "1.9 truncates");
-  equal(toU32(-1.5, "x"), 0, "negative saturates to 0");
-  equal(toU32(-2147483649, "x"), 0, "below i32 saturates to 0, not wraps");
-  equal(toU32(NaN, "x"), 0, "NaN");
-  equal(toU32(Infinity, "x"), 0xffffffff, "+inf saturates to u64::MAX");
-  equal(toU32(-Infinity, "x"), 0, "-inf");
-  equal(toU32(4294967296, "x"), 0, "2^32 keeps its low bits");
-  equal(toU32(4294967297.5, "x"), 1, "2^32 + 1.5");
-  // Doubles near 2^60 are 256 apart, so this value is exact, as the case needs.
-  equal(toU32(2 ** 60 + 2 ** 33 + 256, "x"), 256, "2^60 + 2^33 + 256, past 2^53");
-  equal(toU32(2 ** 64, "x"), 0xffffffff, "2^64 saturates");
-});
-
-check("u32: a BigInt keeps its low bits", () => {
-  equal(toU32(5n, "x"), 5, "5n");
-  equal(toU32(-1n, "x"), 0xffffffff, "-1n");
-  equal(toU32((1n << 40n) + 3n, "x"), 3, "2^40 + 3");
-});
-
-check("i32: uint32 wraps, int32 is itself", () => {
-  equal(toI32(-1, "x"), -1, "-1");
-  equal(toI32(4294967295, "x"), -1, "u32::MAX wraps");
-  equal(toI32(2147483648, "x"), -2147483648, "2^31 wraps");
-});
-
-check("i32: every other Number goes through `as i64`", () => {
-  equal(toI32(-1.5, "x"), -1, "-1.5 truncates toward zero");
-  equal(toI32(NaN, "x"), 0, "NaN");
-  equal(toI32(Infinity, "x"), -1, "+inf saturates to i64::MAX, low 32 bits all ones");
-  equal(toI32(-Infinity, "x"), 0, "-inf saturates to i64::MIN, low 32 bits zero");
-  equal(toI32(-4294967297, "x"), -1, "-(2^32 + 1)");
-  equal(toI32(4294967296 + 7, "x"), 7, "2^32 + 7");
-});
-
-check("i32: a BigInt keeps its low bits, signed", () => {
-  equal(toI32(-2n, "x"), -2, "-2n");
-  equal(toI32((1n << 32n) - 1n, "x"), -1, "2^32 - 1");
-});
-
-check("anything that is not a number is refused, as the op refuses it", () => {
-  for (const value of ["1", null, undefined, {}, true]) {
-    throws(() => toU32(value, "x"), `u32 ${String(value)}`);
-    throws(() => toI32(value, "x"), `i32 ${String(value)}`);
-  }
-});
-
-check("buffers: any ArrayBufferView, as its bytes; null only where optional", () => {
-  const source = new Uint16Array([0x0201, 0x0403, 0x0605]);
-  const view = new Uint16Array(source.buffer, 2, 2);
-  const bytes = bytesOf(view, "data");
-  equal(bytes.byteLength, 4, "byte length");
-  equal(bytes[0], 0x03, "starts at the view's offset");
-  equal(optionalBytesOf(null, "data"), null, "null is None");
-  equal(optionalBytesOf(undefined, "data"), null, "undefined is None");
-  throws(() => bytesOf(null, "data"), "a required buffer refuses null");
-  throws(() => bytesOf(new ArrayBuffer(4), "data"), "an ArrayBuffer is not a view");
-});
-
-check("u32 arrays and strings are taken only as themselves", () => {
-  const list = new Uint32Array([1, 2]);
-  equal(u32ArrayOf(list, "buffers"), list, "the same array");
-  throws(() => u32ArrayOf([1, 2], "buffers"), "a plain array");
-  throws(() => u32ArrayOf(new Int32Array(2), "buffers"), "an Int32Array");
-  equal(stringOf("p", "name"), "p", "a string");
-  throws(() => stringOf(1, "name"), "a number is not converted");
-});
-
-console.log(failures === 0 ? "PASS" : `FAIL: ${failures} check(s) failed`);
+console.log(failures === 0 ? `PASS (${compared} conversions agree with V8)` : `FAIL: ${failures} conversion(s) differ`);
 process.exit(failures === 0 ? 0 : 1);
