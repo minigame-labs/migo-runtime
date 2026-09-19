@@ -1125,8 +1125,12 @@ import XCTest
             }
             mount(host)
             try host.start()
-            wait(for: [listening], timeout: 240)
-            XCTAssertNil(failure)
+            // Touches sent before the game listens have no hook to reach, as in
+            // process; so a game that never started is a failure here, not a
+            // lost touch later.
+            guard XCTWaiter().wait(for: [listening], timeout: 240) == .completed, failure == nil else {
+                return XCTFail(failure ?? "the game never reported that it is listening")
+            }
 
             let down = MigoTouchPoint(
                 id: 3, x: 12.5, y: 20, pressure: 0.5, flags: MIGO_TOUCH_FLAG_CHANGED)
