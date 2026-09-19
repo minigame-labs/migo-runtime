@@ -213,8 +213,8 @@ impl ServiceOutbox {
         );
     }
 
-    /// Tell content something no request asked for.
-    #[allow(dead_code)] // The first events (input, sockets) land with their services.
+    /// Tell content something no request asked for: input, for now (see
+    /// `host_events`).
     pub(crate) fn event(&self, event: u32, values: Vec<OwnedValue>) {
         self.push(&ServiceDownRecord::Event { event, values }, None);
     }
@@ -1084,6 +1084,11 @@ impl ServiceDispatcher {
         }
     }
 
+    /// Where host events for the producer are queued.
+    pub(crate) fn outbox(&self) -> &ServiceOutbox {
+        &self.outbox
+    }
+
     /// Start one piece of work. Must run inside the session's Tokio runtime.
     pub(crate) fn dispatch(&self, work: ServiceWork) {
         match work {
@@ -1833,5 +1838,121 @@ mod tests {
             panic!("the call was queued");
         };
         assert!(turn.send(()).is_err(), "nobody is waiting to run it");
+    }
+
+    /// The host's input, routed and encoded as the external session does it,
+    /// written for `test/host-events.test.mjs` -- which delivers it to the
+    /// engine's own host bridge and checks what content's listeners see.
+    ///
+    /// The script ends in a focus loss with a finger, a mouse button, a key
+    /// and a composition still held, so the retractions the shared routing
+    /// synthesizes are part of what crosses.
+    #[test]
+    #[ignore = "writes the corpus for node; run through scripts/test-performance-plus-engine-contract.sh"]
+    fn the_host_s_input_as_the_producer_receives_it() {
+        use shared::payload_pool::PayloadPool;
+        use shared::protocol::host_cmd::{
+            GamepadButtonState, GamepadState, HostCommand, TouchData, TouchPoint, TouchType,
+        };
+
+        let dir = PathBuf::from(
+            std::env::var("MIGO_HOST_EVENTS_DIR")
+                .expect("MIGO_HOST_EVENTS_DIR names where to write"),
+        );
+        std::fs::create_dir_all(&dir).expect("the corpus directory");
+        let outbox = ServiceOutbox::new(1, Arc::new(WakerSlot::default()));
+        let mut sink = super::super::host_events::ServiceEventSink { outbox: &outbox };
+        let mut state = super::super::input_state::InputState::default();
+
+        let touches = PayloadPool::new(4);
+        let touch = |touch_type, x: f32, y: f32, flags| {
+            let mut points = [TouchPoint::default(); 10];
+            points[0] = TouchPoint {
+                id: 7,
+                x,
+                y,
+                pressure: 0.5,
+                flags,
+            };
+            HostCommand::OnTouch(
+                touches
+                    .try_insert(TouchData {
+                        touch_type,
+                        count: 1,
+                        points,
+                        timestamp_ms: 100,
+                    })
+                    .expect("a pooled touch"),
+            )
+        };
+        let pads = PayloadPool::new(1);
+        let mut pad = GamepadState {
+            index: 0,
+            axis_count: 2,
+            button_count: 1,
+            axes: [0.0; shared::protocol::host_cmd::GAMEPAD_MAX_AXES],
+            buttons: [GamepadButtonState::default();
+                shared::protocol::host_cmd::GAMEPAD_MAX_BUTTONS],
+            timestamp_ms: 42.0,
+        };
+        pad.axes[0] = 0.5;
+        pad.axes[1] = -0.25;
+        pad.buttons[0] = GamepadButtonState {
+            pressed: true,
+            touched: true,
+            value: 1.0,
+        };
+        let script = vec![
+            touch(TouchType::Start, 10.0, 20.0, 1),
+            touch(TouchType::Move, 11.0, 21.0, 1),
+            HostCommand::OnKeyDown {
+                key: "a".into(),
+                code: "KeyA".into(),
+                timestamp_ms: 5.0,
+                modifiers: 2,
+                repeat: false,
+            },
+            HostCommand::OnMouseDown {
+                x: 1.5,
+                y: 2.5,
+                button: 0,
+                timestamp_ms: 6.0,
+            },
+            HostCommand::OnWheel {
+                delta_x: 1.0,
+                delta_y: -2.0,
+                delta_z: 0.0,
+                delta_mode: 1,
+                timestamp_ms: 7.0,
+            },
+            HostCommand::OnKeyboardInput {
+                value: "h\u{e9}llo".into(),
+                runtime_generation: None,
+            },
+            HostCommand::OnCompositionStart { data: "ni".into() },
+            HostCommand::OnGamepadConnected {
+                index: 0,
+                id: "pad".into(),
+                mapping: "standard".into(),
+                axis_count: 2,
+                button_count: 1,
+            },
+            HostCommand::OnGamepadState(pads.try_insert(pad).expect("a pooled sample")),
+            HostCommand::OnFocusChanged { focused: false },
+        ];
+        for command in script {
+            assert!(
+                crate::runtime::input_route::route(&mut state, &mut sink, command).is_none(),
+                "every scripted command is input"
+            );
+        }
+        let mut written = 0;
+        while let Some(message) = outbox.take_message() {
+            std::fs::write(dir.join(format!("events-{written:03}.bin")), message)
+                .expect("write a message");
+            written += 1;
+        }
+        assert!(written > 0);
+        println!("wrote {written} host-event messages");
     }
 }

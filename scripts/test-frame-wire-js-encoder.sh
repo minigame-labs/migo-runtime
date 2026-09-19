@@ -590,6 +590,9 @@ fi
 # both. Named here so the coverage check below does not run it a second time
 # without the half that reads its output.
 RAN_TESTS+=("$TEST_DIR/engine-bundle.test.mjs")
+# The same for `host-events.test.mjs`: it delivers events the Rust host encodes
+# to the staged engine's bridge, so the engine contract runs it with both.
+RAN_TESTS+=("$TEST_DIR/host-events.test.mjs")
 
 # --- the producer's own suites: run the named ones, then prove that was all ---
 #

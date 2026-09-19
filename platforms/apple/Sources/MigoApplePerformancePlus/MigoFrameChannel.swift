@@ -448,18 +448,12 @@ public final class MigoFrameChannel {
         // enqueue.
         lock.lock()
         defer { lock.unlock() }
-        let written = downlink.withUnsafeMutableBufferPointer { takeDownlink($0) }
-        if written > 0 {
-            statistics.messagesSent += 1
-            do {
-                try transport.send(Data(downlink[0..<written]))
-            } catch {
-                statistics.sendsWithoutProducer += 1
-            }
-        }
-        // The service stream's answers and events, in the order the engine
-        // produced them, behind the frame records: the same waker fires for
-        // both, and one drain sends both.
+        // The service stream first -- its answers and the host's input events,
+        // in the order the engine produced them -- then the frame records: the
+        // same waker fires for both, and one drain sends both. Input queued
+        // before a tick has to reach content before that tick's frame callbacks
+        // run, or the frame is drawn against input one frame old; the producer
+        // handles its messages in the order they arrive.
         while let message = takeServiceMessage() {
             statistics.serviceMessagesSent += 1
             do {
@@ -467,6 +461,15 @@ public final class MigoFrameChannel {
             } catch {
                 statistics.sendsWithoutProducer += 1
                 break
+            }
+        }
+        let written = downlink.withUnsafeMutableBufferPointer { takeDownlink($0) }
+        if written > 0 {
+            statistics.messagesSent += 1
+            do {
+                try transport.send(Data(downlink[0..<written]))
+            } catch {
+                statistics.sendsWithoutProducer += 1
             }
         }
     }

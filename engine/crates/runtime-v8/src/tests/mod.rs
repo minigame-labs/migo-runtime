@@ -22,6 +22,7 @@ mod canvas_follows_surface;
 mod code_cache_dir;
 mod global_surface;
 mod host_bridge_dispatch;
+mod host_events_contract;
 mod install_receipt;
 mod op_args_agreement;
 #[cfg(feature = "api-connectivity")]

@@ -1062,6 +1062,91 @@ import XCTest
             XCTAssertEqual(answered["sameModule"] as? Bool, true, "require caches by module")
         }
 
+        /// A game hears the touches the host sends.
+        ///
+        /// The acceptance for input on this lane: the host's touches enter
+        /// through the C ABI (`migo_session_send_touch`) exactly as on every
+        /// platform, the external session routes them by the routing the
+        /// embedded runtime uses and sends them as service events, and the
+        /// producer calls the engine's own touch hook -- so `migo.onTouchStart`
+        /// hears the point in CSS pixels, and `onTouchEnd` the lifted finger.
+        func testAGameHearsTheTouchesTheHostSends() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let game = Data(
+                """
+                migo.onTouchStart((event) => {
+                  const touch = event.touches[0];
+                  console.log("touch-start " + JSON.stringify({
+                    id: touch.identifier, x: touch.clientX, y: touch.clientY, count: event.touches.length }));
+                });
+                migo.onTouchEnd((event) => {
+                  console.log("touch-end " + JSON.stringify({
+                    changed: event.changedTouches.length, remaining: event.touches.length,
+                    id: event.changedTouches[0].identifier }));
+                });
+                console.log("listening");
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "touch-game", entry: "game.js", files: ["game.js": game])
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let listening = expectation(description: "the game is listening")
+            let heard = expectation(description: "the game heard a start and an end")
+            heard.expectedFulfillmentCount = 2
+            var lines: [String: [String: Any]] = [:]
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, gameEntry: "/game.js",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onConsole = { _, text in
+                if text == "listening" {
+                    listening.fulfill()
+                    return
+                }
+                for prefix in ["touch-start ", "touch-end "] where text.hasPrefix(prefix) {
+                    lines[String(prefix.dropLast())] =
+                        (try? JSONSerialization.jsonObject(with: Data(text.dropFirst(prefix.count).utf8)))
+                        as? [String: Any]
+                    heard.fulfill()
+                }
+            }
+            host.onReport = { message in
+                if message["type"] as? String == "failed" {
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    listening.fulfill()
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [listening], timeout: 240)
+            XCTAssertNil(failure)
+
+            let down = MigoTouchPoint(
+                id: 3, x: 12.5, y: 20, pressure: 0.5, flags: MIGO_TOUCH_FLAG_CHANGED)
+            try harness.sendTouch(MIGO_TOUCH_START, points: [down], timestampMilliseconds: 1000)
+            var up = down
+            up.flags = MIGO_TOUCH_FLAG_CHANGED | MIGO_TOUCH_FLAG_REMOVED
+            try harness.sendTouch(MIGO_TOUCH_END, points: [up], timestampMilliseconds: 1016)
+            wait(for: [heard], timeout: 60)
+
+            let start = try XCTUnwrap(lines["touch-start"])
+            XCTAssertEqual(start["id"] as? Int, 3)
+            XCTAssertEqual(start["x"] as? Double, 12.5, "CSS pixels, as the host sent them")
+            XCTAssertEqual(start["y"] as? Double, 20)
+            XCTAssertEqual(start["count"] as? Int, 1)
+            let end = try XCTUnwrap(lines["touch-end"])
+            XCTAssertEqual(end["changed"] as? Int, 1)
+            XCTAssertEqual(end["remaining"] as? Int, 0, "the lifted finger is no longer on the surface")
+            XCTAssertEqual(end["id"] as? Int, 3)
+        }
+
         /// An image the game ships, loaded and drawn in 2D.
         ///
         /// The acceptance for D15.4c's 2D half: `Image.src` names a file in the

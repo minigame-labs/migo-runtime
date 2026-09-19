@@ -37,6 +37,9 @@
 #   6. The file system. Every file call and `require` the producer makes is run
 #      by the host's own dispatch on a real game sandbox, and the producer's
 #      reading of the real answers is checked (test/emit-file-calls.mjs).
+#   7. Input. The host's HostCommands, routed and encoded by the external
+#      session, reach the engine's own listeners with the values the embedded
+#      runtime delivers (test/host-events.test.mjs).
 #
 # Host-only: python3, node, cargo (with the host V8 the runtime's own tests use).
 # No Apple toolchain.
@@ -142,6 +145,24 @@ printf '%s\n' "$files" | grep -qE 'ran [0-9]+ producer file calls on the host' \
     || { printf '%s\n' "$files" >&2; fail "the file-call replay did not report running; it may not have run"; }
 node platforms/apple/WebContent/PerformancePlus/test/emit-file-calls.mjs read "$FILE_CALLS" \
     || fail "the producer misread the host's answers to its file calls"
+
+# The host's input: HostCommands routed by the routing both executions share
+# and encoded by the external session's sink, then delivered to the staged
+# engine's own host bridge -- and what content's listeners hear checked,
+# including the releases a focus loss synthesizes.
+HOST_EVENTS="$WORK/host-events"
+status=0
+events="$(cd engine && MIGO_HOST_EVENTS_DIR="$HOST_EVENTS" cargo test -p migo-core --no-default-features \
+    --features external-frames --lib the_host_s_input_as_the_producer_receives_it -- --ignored --nocapture 2>&1)" \
+    || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$events" >&2
+    fail "the host could not encode its input as events"
+fi
+printf '%s\n' "$events" | grep -qE 'wrote [1-9][0-9]* host-event messages' \
+    || { printf '%s\n' "$events" >&2; fail "the host-event corpus was not written; the Rust side may not have run"; }
+node platforms/apple/WebContent/PerformancePlus/test/host-events.test.mjs "$STAGED" "$HOST_EVENTS" \
+    || fail "content did not hear the host's input as the embedded runtime delivers it"
 
 python3 - "$STAGED/engine/manifest.json" <<'PY'
 import json, sys

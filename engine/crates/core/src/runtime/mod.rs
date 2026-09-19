@@ -6,7 +6,9 @@ pub type HostId = i32;
 // and compiled either way, because both execution modes need exactly those.
 #[cfg(feature = "embedded-v8")]
 mod host;
-#[cfg(feature = "embedded-v8")]
+// What content has been told is held down, and the one routing of a host's
+// input to the engine's host bridge: both executions deliver input.
+mod input_route;
 mod input_state;
 #[cfg(feature = "embedded-v8")]
 mod session_temp;
@@ -29,6 +31,8 @@ pub mod external;
 // The service stream's host half, and the numbers its ops travel under.
 #[cfg(feature = "external-frames")]
 pub mod external_services;
+#[cfg(feature = "external-frames")]
+mod host_events;
 #[cfg(feature = "external-frames")]
 mod service_args;
 #[cfg(feature = "external-frames")]

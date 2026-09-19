@@ -13,6 +13,7 @@
 
 import { constructOpError } from "./engine-core.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
+import { bindHostEvents, dispatchHostEvent } from "./host-events.mjs";
 import { ServiceChannel } from "./service.mjs";
 import { SyncCaller } from "./sync-call.mjs";
 import { connectFrameSession } from "./worker-bootstrap.mjs";
@@ -58,6 +59,8 @@ self.onmessage = async (event) => {
           // `StorageError`, `IOError` -- so content's `catch` sees what it
           // sees on every other platform.
           errorFor: constructOpError,
+          // The host's input, delivered to the engine's host bridge.
+          onEvent: dispatchHostEvent,
           onFailure: (error) => report({ type: "failed", stage: "services", detail: String(error) }),
         });
       }
@@ -124,6 +127,14 @@ self.onmessage = async (event) => {
         report,
       });
       await import("./engine/boot.mjs");
+      // The host bridge: its functions taken now -- the engine has loaded and
+      // content has not run -- and its name retired, as the embedded bindings
+      // retire it (js_bindings.rs, `retire_bridge_name`). `Symbol.for` reads
+      // the global registry, so content could otherwise reach every hook behind
+      // it, a rewarded-video completion among them.
+      const bridgeName = Symbol.for("Migo.hostBridge");
+      bindHostEvents(globalThis[bridgeName]);
+      delete globalThis[bridgeName];
     } catch (error) {
       report({ type: "failed", stage: "engine", detail: String(error && (error.stack || error)) });
       return;

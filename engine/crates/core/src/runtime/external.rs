@@ -48,6 +48,10 @@ use crate::runtime::external_services::{
     RenderHandles, ServiceAdmission, ServiceContext, ServiceDispatcher, ServiceHandle, ServiceHost,
     ServiceSubmitError, ServiceWork, WakerSlot,
 };
+use crate::runtime::host_events::ServiceEventSink;
+use crate::runtime::input_route;
+use crate::runtime::input_state::InputState;
+use crate::runtime::restart_boundary::is_retired_callback;
 use crate::runtime::session_thread::{
     HostThread, SessionThreadContext, StartedHost, create_basic_runtime,
     create_runtime_before_ready, spawn_session_thread,
@@ -2303,6 +2307,8 @@ fn run_external_session(
 
     let mut last_context_epoch = 0u64;
     let mut last_swap_report: Option<std::time::Instant> = None;
+    // What content has been told is held down, so losing focus can release it.
+    let mut input = InputState::default();
     runtime.block_on(async move {
         loop {
             tokio::select! {
@@ -2310,6 +2316,18 @@ fn run_external_session(
                     let Some(command) = command else {
                         info!("[Host {id}] command channel closed");
                         break;
+                    };
+                    // A callback for a runtime that has since been replaced is
+                    // dropped before it reaches content, as in the embedded
+                    // execution; then input goes to the producer, by the routing
+                    // both executions share.
+                    if is_retired_callback(&command, restart_boundary.current()) {
+                        debug!("[Host {id}] dropping a retired generation's callback");
+                        continue;
+                    }
+                    let mut sink = ServiceEventSink { outbox: services.outbox() };
+                    let Some(command) = input_route::route(&mut input, &mut sink, command) else {
+                        continue;
                     };
                     if !handle_command(
                         id, command, &mut render, &mut audio, &backgrounded, &ingress,
@@ -2524,16 +2542,12 @@ fn handle_command(
         HostCommand::OnAudioInterruptionBegin => audio.pause(),
         HostCommand::OnAudioInterruptionEnd => audio.resume(),
 
-        // Everything else is addressed to a script runtime this session does
-        // not have. Logged rather than silently dropped: the two that will
-        // arrive in production -- input and the frame clock -- belong to the
-        // control channel that carries them to the producer, and until that
-        // exists a host sending them is a host expecting something to happen.
+        // Input was routed to the producer before this match. What is left is
+        // addressed to a capability this lane does not carry yet -- sensors,
+        // camera, Bluetooth -- and is logged rather than silently dropped: a
+        // host sending it is a host expecting something to happen.
         other => {
-            debug!(
-                "[Host {id}] {other:?} has no consumer in an external-frame session; \
-                 input and clock delivery arrive with the control channel"
-            );
+            debug!("[Host {id}] {other:?} has no consumer in an external-frame session");
         }
     }
     true
