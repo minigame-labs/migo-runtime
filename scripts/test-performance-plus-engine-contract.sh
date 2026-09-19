@@ -11,8 +11,11 @@
 #
 #   1. The staging. A module the engine adds, an `ext:` specifier left
 #      unrewritten, a primordials name or `core` member the producer cannot
-#      supply, a lane module implementing an op on the wrong lane: the generator
-#      refuses each, and the staged modules are then actually loaded.
+#      supply, a lane module implementing an op on the wrong lane, an argument a
+#      lane converts by a rule other than the one deno_core applies to that
+#      parameter -- or leaves unconverted: the generator refuses each, and the
+#      staged modules are then actually loaded. (The rules themselves are pinned
+#      to V8 by op_args_agreement.rs and test/op-args.test.mjs.)
 #   2. The frames. Content calls `migo.createCanvas().getContext("webgl")` and
 #      draws two frames through a fake host; the packets that leave must carry the
 #      session's identity and exactly the command words the facade encodes.
@@ -31,6 +34,12 @@
 #      The producer's records must decode to exactly the commands the in-process
 #      ops build, and record the same errors
 #      (engine/crates/runtime-v8/src/rendering/webgl/resource_parity.rs).
+#   6. The file system. Every file call and `require` the producer makes is run
+#      by the host's own dispatch on a real game sandbox, and the producer's
+#      reading of the real answers is checked (test/emit-file-calls.mjs).
+#   7. Input. The host's HostCommands, routed and encoded by the external
+#      session, reach the engine's own listeners with the values the embedded
+#      runtime delivers (test/host-events.test.mjs).
 #
 # Host-only: python3, node, cargo (with the host V8 the runtime's own tests use).
 # No Apple toolchain.
@@ -116,6 +125,44 @@ fi
 printf '%s\n' "$text" | grep -qE '[0-9]+ Canvas2D commands agree' \
     || { printf '%s\n' "$text" >&2; fail "the text parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$text" | grep -E '[0-9]+ Canvas2D commands agree'
+
+# The file system and `require`: every call the producer's lanes make, run by
+# the host's own dispatch on a real game sandbox, and the producer's reading of
+# the host's real answers. emit-file-calls.mjs records the calls, the Rust test
+# replays them in order and writes each answer, and the same script then runs
+# again against those answers and checks what content would see.
+FILE_CALLS="$WORK/file-calls"
+node platforms/apple/WebContent/PerformancePlus/test/emit-file-calls.mjs write "$FILE_CALLS" \
+    || fail "the producer's file calls could not be recorded"
+status=0
+files="$(cd engine && MIGO_FILE_CALLS_DIR="$FILE_CALLS" cargo test -p migo-core --no-default-features \
+    --features external-frames --lib the_producer_s_file_calls -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$files" >&2
+    fail "the host refused or failed the producer's file calls"
+fi
+printf '%s\n' "$files" | grep -qE 'ran [0-9]+ producer file calls on the host' \
+    || { printf '%s\n' "$files" >&2; fail "the file-call replay did not report running; it may not have run"; }
+node platforms/apple/WebContent/PerformancePlus/test/emit-file-calls.mjs read "$FILE_CALLS" \
+    || fail "the producer misread the host's answers to its file calls"
+
+# The host's input: HostCommands routed by the routing both executions share
+# and encoded by the external session's sink, then delivered to the staged
+# engine's own host bridge -- and what content's listeners hear checked,
+# including the releases a focus loss synthesizes.
+HOST_EVENTS="$WORK/host-events"
+status=0
+events="$(cd engine && MIGO_HOST_EVENTS_DIR="$HOST_EVENTS" cargo test -p migo-core --no-default-features \
+    --features external-frames --lib the_host_s_input_as_the_producer_receives_it -- --ignored --nocapture 2>&1)" \
+    || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$events" >&2
+    fail "the host could not encode its input as events"
+fi
+printf '%s\n' "$events" | grep -qE 'wrote [1-9][0-9]* host-event messages' \
+    || { printf '%s\n' "$events" >&2; fail "the host-event corpus was not written; the Rust side may not have run"; }
+node platforms/apple/WebContent/PerformancePlus/test/host-events.test.mjs "$STAGED" "$HOST_EVENTS" \
+    || fail "content did not hear the host's input as the embedded runtime delivers it"
 
 python3 - "$STAGED/engine/manifest.json" <<'PY'
 import json, sys

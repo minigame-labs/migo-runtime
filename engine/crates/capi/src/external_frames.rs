@@ -1591,6 +1591,72 @@ pub unsafe extern "C" fn migo_session_take_parked_reply(
     })
 }
 
+/// `migo_session_read_content_module`'s statuses; see the header.
+#[cfg(feature = "external-frames")]
+pub const MIGO_CONTENT_MODULE_SERVED: u32 = 0;
+#[cfg(feature = "external-frames")]
+pub const MIGO_CONTENT_MODULE_NOT_FOUND: u32 = 1;
+#[cfg(feature = "external-frames")]
+pub const MIGO_CONTENT_MODULE_REFUSED: u32 = 2;
+#[cfg(feature = "external-frames")]
+pub const MIGO_CONTENT_MODULE_UNREADABLE: u32 = 3;
+
+/// The source of a content module, as the engine evaluates it.
+///
+/// # Safety
+/// `session` must be a live session handle. `path` must be readable for
+/// `path_length` bytes. `out_module` and `out_status` must be writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_read_content_module(
+    session: *mut MigoSession,
+    path: *const std::ffi::c_char,
+    path_length: usize,
+    out_module: *mut *mut MigoOwnedBytes,
+    out_status: *mut u32,
+) -> MigoResult {
+    guard("migo_session_read_content_module", || {
+        let (Some(out_module), Some(out_status)) = (unsafe { out_module.as_mut() }, unsafe {
+            out_status.as_mut()
+        }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_module = std::ptr::null_mut();
+        *out_status = MIGO_CONTENT_MODULE_NOT_FOUND;
+        if path.is_null() || path_length == 0 || path_length > isize::MAX as usize {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        // SAFETY: null and length checked above; nothing derived outlives the call.
+        let path = unsafe { std::slice::from_raw_parts(path.cast::<u8>(), path_length) };
+        let Ok(path) = std::str::from_utf8(path) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        // The handle is taken under the session's lock and read through
+        // outside it: a module is file IO.
+        let services = match service_handle(&session) {
+            Ok(services) => services,
+            Err(error) => return error,
+        };
+        let Some(outcome) = services.content_module(path) else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        use migo_core::ModuleError;
+        let (status, bytes) = match outcome {
+            Ok(source) => (MIGO_CONTENT_MODULE_SERVED, source),
+            Err(ModuleError::NotFound(why)) => (MIGO_CONTENT_MODULE_NOT_FOUND, why.into_bytes()),
+            Err(ModuleError::Refused(why)) => (MIGO_CONTENT_MODULE_REFUSED, why.into_bytes()),
+            Err(ModuleError::Unreadable(why)) => (MIGO_CONTENT_MODULE_UNREADABLE, why.into_bytes()),
+        };
+        *out_status = status;
+        hand_over(Some(bytes), out_module);
+        MIGO_OK
+    })
+}
+
 /// Copy where the loaded content's code is.
 ///
 /// # Safety

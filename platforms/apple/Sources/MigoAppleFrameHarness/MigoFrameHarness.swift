@@ -207,6 +207,24 @@ public final class MigoFrameHarness {
         return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
     }
 
+    /// Send one touch event the way a host's view does: through the C ABI, in
+    /// CSS pixels, one point per finger.
+    public func sendTouch(
+        _ type: MigoTouchType, points: [MigoTouchPoint], timestampMilliseconds: Int64
+    ) throws {
+        var event = MigoTouchEvent()
+        event.struct_size = UInt32(MemoryLayout<MigoTouchEvent>.size)
+        event.abi_version = MIGO_ABI_VERSION_CURRENT
+        event.type = type
+        event.point_count = UInt32(points.count)
+        event.timestamp_ms = timestampMilliseconds
+        let result = points.withUnsafeBufferPointer { buffer -> MigoResult in
+            event.points = buffer.baseAddress
+            return migo_session_send_touch(session, &event)
+        }
+        guard result == MIGO_OK else { throw Failure.call("migo_session_send_touch", result) }
+    }
+
     /// The argument record a blocked `readPixels` sends through the barrier.
     ///
     /// Built here rather than in each test because it is the wire format's, not

@@ -240,7 +240,7 @@ fn fsync_parent_dir(path: &Path) -> std::io::Result<()> {
     {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                return std::fs::File::open(parent)?.sync_all();
+                return crate::durable::sync_dir(parent);
             }
         }
     }
@@ -485,7 +485,7 @@ impl FdIo {
             // `sync_data` (fdatasync) rather than `sync_all`: we only need
             // data + size durable, not atime/mtime — the cheaper guarantee
             // callers of `'as'` actually want.
-            self.file.sync_data().map_err(io_err)?;
+            crate::durable::sync_data(&self.file).map_err(io_err)?;
         }
         Ok(data.len())
     }
@@ -987,7 +987,7 @@ fn rename_cross_fs(old_path: &str, new_path: &str) -> std::io::Result<()> {
             dst.write_all(&buf[..n])?;
         }
         dst.flush()?;
-        dst.sync_all()?;
+        crate::durable::sync(&dst)?;
     }
 
     if let Err(e) = std::fs::rename(&tmp_path, new_path) {
@@ -1001,9 +1001,7 @@ fn rename_cross_fs(old_path: &str, new_path: &str) -> std::io::Result<()> {
     // resurface as a live entry.
     #[cfg(unix)]
     {
-        if let Ok(dir) = File::open(parent) {
-            let _ = dir.sync_all();
-        }
+        let _ = crate::durable::sync_dir(parent);
     }
 
     // Now the destination is durable — unlink the source.
@@ -1020,9 +1018,7 @@ fn rename_cross_fs(old_path: &str, new_path: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         if let Some(src_parent) = std::path::Path::new(old_path).parent() {
-            if let Ok(dir) = File::open(src_parent) {
-                let _ = dir.sync_all();
-            }
+            let _ = crate::durable::sync_dir(src_parent);
         }
     }
 
@@ -1717,7 +1713,7 @@ pub fn write_file(
                 // Ensure the appended region is on disk before we return
                 // success to JS; without this an `appendFile` immediately
                 // followed by a power loss can lose the just-appended bytes.
-                file.sync_all().map_err(io_err)?;
+                crate::durable::sync(&file).map_err(io_err)?;
                 if created {
                     // Data + size are durable, but for a file we just
                     // created the directory entry (the name itself) also

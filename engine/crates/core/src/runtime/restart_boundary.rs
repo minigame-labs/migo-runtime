@@ -26,6 +26,20 @@ use std::sync::{
 };
 
 use shared::error::{EngineError, EngineResult, ErrorCode};
+use shared::protocol::host_cmd::HostCommand;
+
+/// Whether `cmd` was produced for a runtime that is no longer the current one.
+///
+/// The only implementation of the rule, called by both executions before a
+/// command reaches content; a free function so it can be driven without a live
+/// session.
+///
+/// A command carrying no generation is never retired — see
+/// [`HostCommand::callback_generation`] for the two reasons it may carry none,
+/// neither of which means "stale".
+pub(crate) fn is_retired_callback(cmd: &HostCommand, current_generation: i64) -> bool {
+    matches!(cmd.callback_generation(), Some(produced_for) if produced_for.get() != current_generation)
+}
 
 /// The writer. One per Host, constructed before any sender is registered.
 pub(crate) struct RestartBoundary {

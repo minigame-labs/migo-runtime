@@ -11,19 +11,6 @@ use std::{
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
-/// Whether `cmd` was produced for a runtime that is no longer the current one.
-///
-/// The only implementation of the rule, called by `handle_command_inner`; it is
-/// a free function purely so it can be driven without a live `Host`, which needs
-/// V8, a render thread and an audio thread to exist.
-///
-/// A command carrying no generation is never retired — see
-/// [`HostCommand::callback_generation`] for the two reasons it may carry none,
-/// neither of which means "stale".
-fn is_retired_callback(cmd: &HostCommand, current_generation: i64) -> bool {
-    matches!(cmd.callback_generation(), Some(produced_for) if produced_for.get() != current_generation)
-}
-
 use shared::{
     config::InitOptions,
     error::EngineResult,
@@ -41,7 +28,9 @@ use crate::runtime::shell::SessionShell;
 use crate::{
     runtime::{
         HostId,
-        input_state::{InputRetraction, InputState},
+        input_route::{self, InputSink},
+        input_state::InputState,
+        restart_boundary::is_retired_callback,
         session_temp::SessionTemp,
     },
     services::{AudioService, PlatformServices, RenderService},
@@ -689,6 +678,11 @@ impl Host {
             return Ok(());
         }
 
+        // Input first: the routing both executions share.
+        let Some(cmd) = input_route::route(&mut self.input_state, &mut *self.js, cmd) else {
+            return Ok(());
+        };
+
         match cmd {
             HostCommand::EvaluateModule { game_id, entry } => {
                 self.on_evaluate_module(game_id, entry).await
@@ -745,14 +739,6 @@ impl Host {
                 Ok(())
             }
 
-            HostCommand::OnFocusChanged { focused } => {
-                if !focused {
-                    self.retract_input_for_focus_loss();
-                }
-                self.js.dispatch_focus_changed(focused);
-                Ok(())
-            }
-
             HostCommand::OnAudioInterruptionBegin => {
                 self.js
                     .invoke_host_hook("_internalTriggerAudioInterruptionBegin", HOOK_ARGS_NONE);
@@ -762,17 +748,6 @@ impl Host {
             HostCommand::OnAudioInterruptionEnd => {
                 self.js
                     .invoke_host_hook("_internalTriggerAudioInterruptionEnd", HOOK_ARGS_NONE);
-                Ok(())
-            }
-
-            HostCommand::OnTouch(touch) => {
-                let count = (touch.count as usize).min(touch.points.len());
-                self.input_state.observe_touch(&touch);
-                self.js.dispatch_touch(
-                    touch.touch_type,
-                    &touch.points[..count],
-                    touch.timestamp_ms,
-                );
                 Ok(())
             }
 
@@ -915,140 +890,6 @@ impl Host {
                         entry.height,
                     );
                 }
-                Ok(())
-            }
-
-            HostCommand::OnKeyboardInput { value, .. } => {
-                self.js.dispatch_keyboard_input(&value);
-                Ok(())
-            }
-
-            HostCommand::OnKeyboardHeightChange { height, .. } => {
-                self.js.dispatch_keyboard_height_change(height);
-                Ok(())
-            }
-
-            HostCommand::OnKeyboardConfirm { value, .. } => {
-                self.js.dispatch_keyboard_confirm(&value);
-                Ok(())
-            }
-
-            HostCommand::OnKeyboardComplete { value, .. } => {
-                self.js.dispatch_keyboard_complete(&value);
-                Ok(())
-            }
-
-            HostCommand::OnCompositionStart { data } => {
-                self.js.dispatch_composition_start(&data);
-                self.input_state.observe_composition_start();
-                Ok(())
-            }
-
-            HostCommand::OnCompositionUpdate { data } => {
-                self.js.dispatch_composition_update(&data);
-                Ok(())
-            }
-
-            HostCommand::OnCompositionEnd { data } => {
-                self.js.dispatch_composition_end(&data);
-                self.input_state.observe_composition_end();
-                Ok(())
-            }
-
-            HostCommand::OnGamepadConnected {
-                index,
-                id,
-                mapping,
-                axis_count,
-                button_count,
-            } => {
-                self.js
-                    .dispatch_gamepad_connected(index, &id, &mapping, axis_count, button_count);
-                Ok(())
-            }
-
-            HostCommand::OnGamepadDisconnected { index } => {
-                self.js.dispatch_gamepad_disconnected(index);
-                Ok(())
-            }
-
-            HostCommand::OnGamepadState(state) => {
-                self.js.dispatch_gamepad_state(&state);
-                Ok(())
-            }
-
-            HostCommand::OnKeyDown {
-                key,
-                code,
-                timestamp_ms,
-                modifiers,
-                repeat,
-            } => {
-                self.js
-                    .dispatch_key_down(&key, &code, timestamp_ms, modifiers, repeat);
-                self.input_state
-                    .observe_key_down(key, code, timestamp_ms, modifiers);
-                Ok(())
-            }
-
-            HostCommand::OnKeyUp {
-                key,
-                code,
-                timestamp_ms,
-                modifiers,
-                repeat,
-            } => {
-                self.js
-                    .dispatch_key_up(&key, &code, timestamp_ms, modifiers, repeat);
-                self.input_state.observe_key_up(&code);
-                Ok(())
-            }
-
-            HostCommand::OnMouseDown {
-                x,
-                y,
-                button,
-                timestamp_ms,
-            } => {
-                self.input_state
-                    .observe_mouse_down(x, y, button, timestamp_ms);
-                self.js.dispatch_mouse_down(x, y, button, timestamp_ms);
-                Ok(())
-            }
-
-            HostCommand::OnMouseMove {
-                x,
-                y,
-                button,
-                timestamp_ms,
-            } => {
-                self.input_state
-                    .observe_mouse_move(x, y, button, timestamp_ms);
-                self.js.dispatch_mouse_move(x, y, button, timestamp_ms);
-                Ok(())
-            }
-
-            HostCommand::OnMouseUp {
-                x,
-                y,
-                button,
-                timestamp_ms,
-            } => {
-                self.input_state
-                    .observe_mouse_up(x, y, button, timestamp_ms);
-                self.js.dispatch_mouse_up(x, y, button, timestamp_ms);
-                Ok(())
-            }
-
-            HostCommand::OnWheel {
-                delta_x,
-                delta_y,
-                delta_z,
-                delta_mode,
-                timestamp_ms,
-            } => {
-                self.js
-                    .dispatch_wheel(delta_x, delta_y, delta_z, delta_mode, timestamp_ms);
                 Ok(())
             }
 
@@ -1440,30 +1281,6 @@ impl Host {
         }
     }
 
-    fn retract_input_for_focus_loss(&mut self) {
-        let js = &mut self.js;
-        self.input_state
-            .retract_for_focus_loss(|retraction| match retraction {
-                InputRetraction::TouchCancel(touch) => {
-                    let count = usize::from(touch.count).min(touch.points.len());
-                    js.dispatch_touch(touch.touch_type, &touch.points[..count], touch.timestamp_ms);
-                }
-                InputRetraction::MouseUp {
-                    x,
-                    y,
-                    button,
-                    timestamp_ms,
-                } => js.dispatch_mouse_up(x, y, button, timestamp_ms),
-                InputRetraction::KeyUp {
-                    key,
-                    code,
-                    timestamp_ms,
-                    modifiers,
-                } => js.dispatch_key_up(&key, &code, timestamp_ms, modifiers, false),
-                InputRetraction::CompositionEnd => js.dispatch_composition_end(""),
-            });
-    }
-
     async fn on_restart(&mut self) -> EngineResult<()> {
         // Native WebAudio state belongs to the Host rather than the isolate. The
         // barrier must complete before the old isolate (and its retry timers) is
@@ -1707,9 +1524,87 @@ impl Host {
     }
 }
 
+/// The embedded execution's input: each call straight into the engine's host
+/// bridge in this process.
+impl InputSink for HostJsRuntime {
+    fn touch(
+        &mut self,
+        touch_type: shared::protocol::host_cmd::TouchType,
+        points: &[shared::protocol::host_cmd::TouchPoint],
+        timestamp_ms: i64,
+    ) {
+        self.dispatch_touch(touch_type, points, timestamp_ms);
+    }
+    fn focus_changed(&mut self, focused: bool) {
+        self.dispatch_focus_changed(focused);
+    }
+    fn keyboard_input(&mut self, value: &str) {
+        self.dispatch_keyboard_input(value);
+    }
+    fn keyboard_height_change(&mut self, height: f64) {
+        self.dispatch_keyboard_height_change(height);
+    }
+    fn keyboard_confirm(&mut self, value: &str) {
+        self.dispatch_keyboard_confirm(value);
+    }
+    fn keyboard_complete(&mut self, value: &str) {
+        self.dispatch_keyboard_complete(value);
+    }
+    fn composition_start(&mut self, data: &str) {
+        self.dispatch_composition_start(data);
+    }
+    fn composition_update(&mut self, data: &str) {
+        self.dispatch_composition_update(data);
+    }
+    fn composition_end(&mut self, data: &str) {
+        self.dispatch_composition_end(data);
+    }
+    fn gamepad_connected(
+        &mut self,
+        index: u32,
+        id: &str,
+        mapping: &str,
+        axis_count: u8,
+        button_count: u8,
+    ) {
+        self.dispatch_gamepad_connected(index, id, mapping, axis_count, button_count);
+    }
+    fn gamepad_disconnected(&mut self, index: u32) {
+        self.dispatch_gamepad_disconnected(index);
+    }
+    fn gamepad_state(&mut self, state: &shared::protocol::host_cmd::GamepadState) {
+        self.dispatch_gamepad_state(state);
+    }
+    fn key_down(&mut self, key: &str, code: &str, timestamp_ms: f64, modifiers: u32, repeat: bool) {
+        self.dispatch_key_down(key, code, timestamp_ms, modifiers, repeat);
+    }
+    fn key_up(&mut self, key: &str, code: &str, timestamp_ms: f64, modifiers: u32, repeat: bool) {
+        self.dispatch_key_up(key, code, timestamp_ms, modifiers, repeat);
+    }
+    fn mouse_down(&mut self, x: f32, y: f32, button: u32, timestamp_ms: f64) {
+        self.dispatch_mouse_down(x, y, button, timestamp_ms);
+    }
+    fn mouse_move(&mut self, x: f32, y: f32, button: u32, timestamp_ms: f64) {
+        self.dispatch_mouse_move(x, y, button, timestamp_ms);
+    }
+    fn mouse_up(&mut self, x: f32, y: f32, button: u32, timestamp_ms: f64) {
+        self.dispatch_mouse_up(x, y, button, timestamp_ms);
+    }
+    fn wheel(
+        &mut self,
+        delta_x: f64,
+        delta_y: f64,
+        delta_z: f64,
+        delta_mode: u32,
+        timestamp_ms: f64,
+    ) {
+        self.dispatch_wheel(delta_x, delta_y, delta_z, delta_mode, timestamp_ms);
+    }
+}
+
 #[cfg(test)]
 mod retired_callback_tests {
-    use super::is_retired_callback;
+    use crate::runtime::restart_boundary::is_retired_callback;
     use shared::HostCommand;
     use std::num::NonZeroI64;
 

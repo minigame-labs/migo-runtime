@@ -22,8 +22,10 @@ name = "migo_services"
 # scripts/test-apple-performance-rust-closure.sh measures that through the
 # external session that depends on it.
 [dependencies]
-shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs"] }
-migo-io = { path = "../io", default-features = false }
+shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs", "codec"] }
+# `zip-extract` because `unzip` and `readZipEntry` are file-system calls every
+# execution offers; the embedded runtime has always enabled it.
+migo-io = { path = "../io", default-features = false, features = ["zip-extract"] }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = { workspace = true }
 parking_lot = { workspace = true }

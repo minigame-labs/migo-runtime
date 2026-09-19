@@ -1,6 +1,8 @@
 //! Actual-op regressions. JS is never deliberately raced with an IO worker.
 use super::*;
 use deno_core::{JsRuntime, RuntimeOptions};
+use shared::{protocol::io_cmd::OpenFlag, vfs::VirtualFS};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_TEST: AtomicU64 = AtomicU64::new(1);

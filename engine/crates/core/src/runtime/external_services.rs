@@ -14,7 +14,8 @@
 //!   records are queued for the session thread -- all under one lock, so the
 //!   queue order is the sequence order.
 //! - **Dispatch** happens on the session thread, in queue order: a request is
-//!   started, a command is applied, a synchronous call is run. Started in order
+//!   started, a command is applied, a synchronous call is given its turn (and
+//!   runs on the thread that made it; see [`ServiceHost::call_sync`]). Started in order
 //!   is the property the embedded runtime has -- its ops run on the JavaScript
 //!   thread in call order and send to their subsystems' channels as they go --
 //!   and it is the property content depends on: "create the node, then stop it".
@@ -61,7 +62,8 @@ use migo_services::content::MountedContent;
 use migo_services::image::cache::{ImageCache, SharedImageCache};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
-use super::service_ops::{self, id};
+use super::service_args::{bytes, exactly, i32_of, not_a, string, strings, u32_of};
+use super::service_ops::id;
 
 /// The most messages held ahead of a predecessor that has not arrived.
 ///
@@ -88,19 +90,15 @@ const WORK_CAPACITY: usize = 1024;
 /// reading one large file at a time never approaches it.
 pub(crate) const MAX_OUTBOX_BYTES: usize = 256 * 1024 * 1024;
 
-/// The class a malformed call is thrown as, matching what `deno_core` throws
-/// when an op is handed an argument of the wrong type.
-const CLASS_TYPE_ERROR: &str = "TypeError";
-
 /// Work for the session thread, in admission order.
 pub(crate) enum ServiceWork {
     /// The records of one admitted message.
     Records(Vec<OwnedServiceRecord>),
-    /// A synchronous call, answered on `reply`.
+    /// A synchronous call's turn: everything admitted before it has been
+    /// started. The caller runs the op itself when this is sent -- see
+    /// [`ServiceHost::call_sync`].
     Sync {
-        op: u32,
-        args: Vec<OwnedValue>,
-        reply: std::sync::mpsc::SyncSender<Result<OwnedValue, ServiceError>>,
+        turn: std::sync::mpsc::SyncSender<()>,
     },
 }
 
@@ -215,8 +213,8 @@ impl ServiceOutbox {
         );
     }
 
-    /// Tell content something no request asked for.
-    #[allow(dead_code)] // The first events (input, sockets) land with their services.
+    /// Tell content something no request asked for: input, for now (see
+    /// `host_events`).
     pub(crate) fn event(&self, event: u32, values: Vec<OwnedValue>) {
         self.push(&ServiceDownRecord::Event { event, values }, None);
     }
@@ -406,6 +404,38 @@ impl ServiceContext {
             .ok_or_else(|| ServiceError::generic("the session's services are not started"))
     }
 
+    /// What a file-system call reads: the scheduler, and the sandbox once
+    /// content is mounted.
+    fn fs_env(&self) -> Result<migo_services::fs::FsEnv, ServiceError> {
+        Ok(super::service_fs::env(
+            self.scheduler()?,
+            self.content.read().as_ref(),
+        ))
+    }
+
+    /// `require()`'s read, against the package root -- or, before content is
+    /// mounted, against nothing, as the embedded op before a game loads.
+    fn require(&self, specifier: &str, referrer_dir: &str) -> Result<OwnedValue, ServiceError> {
+        let content = self.content.read().clone();
+        let code_dir = content
+            .as_ref()
+            .map(|content| content.game_paths.code_dir().to_string_lossy().into_owned())
+            .unwrap_or_default();
+        migo_services::require::resolve_and_read(
+            content.as_ref().map(|content| content.mount_table.as_ref()),
+            &code_dir,
+            specifier,
+            referrer_dir,
+        )
+        .map(|module| {
+            OwnedValue::Array(vec![
+                OwnedValue::Str(module.code),
+                OwnedValue::Str(module.abs_path),
+                OwnedValue::Str(module.dir),
+            ])
+        })
+    }
+
     fn game_paths(&self) -> Option<Arc<shared::vfs::GamePaths>> {
         self.content
             .read()
@@ -443,6 +473,16 @@ impl ServiceContext {
         Ok(root)
     }
 
+    pub(crate) fn content_module(
+        &self,
+        request_path: &str,
+    ) -> Option<Result<Vec<u8>, migo_services::content::ModuleError>> {
+        // Cloned out of the lock: a module read is file IO, and a load or a
+        // service call must not wait behind it.
+        let content = self.content.read().clone()?;
+        Some(content.module_source(request_path))
+    }
+
     pub(crate) fn content_root(&self) -> Option<PathBuf> {
         self.content
             .read()
@@ -450,8 +490,9 @@ impl ServiceContext {
             .map(|content| content.game_paths.code_dir().to_path_buf())
     }
 
-    /// Run a synchronous op. Called off the session thread (see
-    /// [`ServiceDispatcher`]), because these block on file and database work.
+    /// Run a synchronous op. Called on the host's synchronous endpoint once
+    /// the call's turn comes (see [`ServiceHost::call_sync`]), never on the
+    /// session thread: these block on file and database work.
     fn call_sync(&self, op: u32, args: Vec<OwnedValue>) -> Result<OwnedValue, ServiceError> {
         let paths = self.game_paths();
         let paths = paths.as_deref();
@@ -501,6 +542,13 @@ impl ServiceContext {
                 let [url] = exactly(op, args)?;
                 migo_services::storage::revoke_buffer_url(paths, &string(op, 0, url)?)
                     .map(|()| OwnedValue::Null)
+            }
+            id::op_require_resolve_and_read => {
+                let [specifier, referrer_dir] = exactly(op, args)?;
+                self.require(&string(op, 0, specifier)?, &string(op, 1, referrer_dir)?)
+            }
+            file if super::service_fs::is_sync(file) => {
+                super::service_fs::call_sync(&self.fs_env()?, file, args)
             }
             other => Err(not_a(other, "synchronous")),
         }
@@ -623,6 +671,9 @@ impl ServiceContext {
                         .map(OwnedValue::Str)
                 })
             }
+            file if super::service_fs::is_async(file) => {
+                return super::service_fs::call_async(self.fs_env()?, file, args);
+            }
             other => return Err(not_a(other, "awaited")),
         })
     }
@@ -701,82 +752,6 @@ fn http_images_unavailable(url: &str) -> EngineError {
         .with_detail(format!(
             "{url}: this session has no network service to fetch it with"
         ))
-}
-
-/// The error for an op this host does not run in that shape.
-fn not_a(op: u32, shape: &str) -> ServiceError {
-    ServiceError::classed(
-        CLASS_TYPE_ERROR,
-        match service_ops::name_of(op) {
-            Some(name) => format!("{name} is not a {shape} service op"),
-            None => format!("service op {op} is not one this host knows"),
-        },
-    )
-}
-
-fn exactly<const N: usize>(
-    op: u32,
-    args: Vec<OwnedValue>,
-) -> Result<[OwnedValue; N], ServiceError> {
-    let count = args.len();
-    args.try_into().map_err(|_| {
-        ServiceError::classed(
-            CLASS_TYPE_ERROR,
-            format!(
-                "{} takes {N} argument(s), not {count}",
-                service_ops::name_of(op).unwrap_or("this op")
-            ),
-        )
-    })
-}
-
-fn wrong_type(op: u32, index: usize, wanted: &str, got: &OwnedValue) -> ServiceError {
-    ServiceError::classed(
-        CLASS_TYPE_ERROR,
-        format!(
-            "argument {index} of {} is a {wanted}, not a {}",
-            service_ops::name_of(op).unwrap_or("this op"),
-            got.kind_name()
-        ),
-    )
-}
-
-fn string(op: u32, index: usize, value: OwnedValue) -> Result<String, ServiceError> {
-    match value {
-        OwnedValue::Str(text) => Ok(text),
-        other => Err(wrong_type(op, index, "string", &other)),
-    }
-}
-
-fn u32_of(op: u32, index: usize, value: OwnedValue) -> Result<u32, ServiceError> {
-    match value {
-        OwnedValue::U32(value) => Ok(value),
-        other => Err(wrong_type(op, index, "u32", &other)),
-    }
-}
-
-fn i32_of(op: u32, index: usize, value: OwnedValue) -> Result<i32, ServiceError> {
-    match value {
-        OwnedValue::I32(value) => Ok(value),
-        other => Err(wrong_type(op, index, "i32", &other)),
-    }
-}
-
-fn strings(op: u32, index: usize, value: OwnedValue) -> Result<Vec<String>, ServiceError> {
-    match value {
-        OwnedValue::Array(values) => values
-            .into_iter()
-            .map(|value| string(op, index, value))
-            .collect(),
-        other => Err(wrong_type(op, index, "array of strings", &other)),
-    }
-}
-
-fn bytes(op: u32, index: usize, value: OwnedValue) -> Result<Vec<u8>, ServiceError> {
-    match value {
-        OwnedValue::Bytes(bytes) => Ok(bytes),
-        other => Err(wrong_type(op, index, "bytes", &other)),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -973,6 +948,17 @@ impl ServiceHost {
     /// Run one synchronous service call, in order behind every admitted
     /// message, and answer with its encoded outcome.
     ///
+    /// The call joins the session's queue and waits for its turn -- the
+    /// session thread reaching it means every record admitted before it has
+    /// been started, which is the ordering content relies on -- and then runs
+    /// **on the calling thread**. That thread is the host's synchronous
+    /// endpoint, already blocked for exactly this answer; running the op there
+    /// saves a hop and, measured on the iOS simulator (2026-09-19), removes a
+    /// priority inversion: the endpoint's user-interactive queue used to wait
+    /// on a blocking-pool thread at default QoS. `until` bounds the wait for the
+    /// turn. A call that gives up waiting never runs; one that has started
+    /// answers with what it did, because a write that happened is not a timeout.
+    ///
     /// The op's own failure is an answer (`OUTCOME_ERROR`); the barrier failing
     /// -- a malformed call, a timeout, a session that ended -- is the error.
     pub(crate) fn call_sync(&self, params: &[u8], until: Instant) -> Result<Vec<u8>, SyncError> {
@@ -985,17 +971,17 @@ impl ServiceHost {
             .iter()
             .map(|value| value.to_owned_value())
             .collect();
-        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        let (turn, my_turn) = std::sync::mpsc::sync_channel(1);
         self.work
-            .blocking_send(ServiceWork::Sync { op, args, reply })
+            .blocking_send(ServiceWork::Sync { turn })
             .map_err(|_| SyncError::SessionEnded)?;
-        let outcome = answer
+        my_turn
             .recv_timeout(until.saturating_duration_since(Instant::now()))
             .map_err(|error| match error {
                 std::sync::mpsc::RecvTimeoutError::Timeout => SyncError::TimedOut,
                 std::sync::mpsc::RecvTimeoutError::Disconnected => SyncError::SessionEnded,
             })?;
-        Ok(encode_outcome(outcome))
+        Ok(encode_outcome(self.context.call_sync(op, args)))
     }
 
     /// Refuse everything from here on and release every waiter.
@@ -1028,6 +1014,18 @@ impl ServiceHandle {
     /// One `MDS1` message of queued answers and events, or `None`.
     pub fn take_message(&self) -> Option<Vec<u8>> {
         self.0.outbox.take_message()
+    }
+
+    /// The text the content module at `request_path` is evaluated as, for the
+    /// origin that serves content to WebKit: see
+    /// [`migo_services::content::MountedContent::module_source`]. `None` before
+    /// content is loaded, when there is no package to serve from. Reads the
+    /// file on the calling thread.
+    pub fn content_module(
+        &self,
+        request_path: &str,
+    ) -> Option<Result<Vec<u8>, migo_services::content::ModuleError>> {
+        self.0.context.content_module(request_path)
     }
 
     /// A parked answer, taken once.
@@ -1086,6 +1084,11 @@ impl ServiceDispatcher {
         }
     }
 
+    /// Where host events for the producer are queued.
+    pub(crate) fn outbox(&self) -> &ServiceOutbox {
+        &self.outbox
+    }
+
     /// Start one piece of work. Must run inside the session's Tokio runtime.
     pub(crate) fn dispatch(&self, work: ServiceWork) {
         match work {
@@ -1094,17 +1097,13 @@ impl ServiceDispatcher {
                     self.record(record);
                 }
             }
-            ServiceWork::Sync { op, args, reply } => {
-                // Off the session thread: these block on file and database
-                // work, and the session thread is the one that forwards frame
-                // clock ticks. Dispatched in order is what the queue buys;
-                // blocking the queue for the length of a disk read is not.
-                let context = Arc::clone(&self.context);
-                tokio::task::spawn_blocking(move || {
-                    // A caller that timed out has dropped the receiver; the
-                    // answer has nowhere to go and is dropped with it.
-                    let _ = reply.send(context.call_sync(op, args));
-                });
+            ServiceWork::Sync { turn } => {
+                // The call's turn, not its work: the caller runs the op on its
+                // own thread (see `ServiceHost::call_sync`), so the session
+                // thread -- the one that forwards frame clock ticks -- never
+                // blocks for a disk read. A caller that timed out has dropped
+                // the receiver and will not run it.
+                let _ = turn.send(());
             }
         }
     }
@@ -1159,6 +1158,7 @@ impl ServiceDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::service_args::CLASS_TYPE_ERROR;
     use frame_wire::service::{encode_service_message, read_down_message, read_down_record_bytes};
     use frame_wire::value::read_value;
 
@@ -1485,5 +1485,474 @@ mod tests {
             .expect("get");
         assert_eq!(read, OwnedValue::Str("v".into()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The file system and `require` answer through the same sandbox the
+    /// embedded ops read: a save written to `/user` reads back, `/code` lists
+    /// the package, a descriptor reads what is there, a relative require
+    /// resolves against the package root, and a write into `/code` is the
+    /// embedded op's refusal.
+    #[test]
+    fn files_and_require_answer_through_the_mounted_content() {
+        let root =
+            std::env::temp_dir().join(format!("migo-external-services-fs-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir().join("js")).unwrap();
+        std::fs::write(
+            installed.code_dir().join("game.js"),
+            "require('./js/main');",
+        )
+        .unwrap();
+        std::fs::write(
+            installed.code_dir().join("js/main.js"),
+            "module.exports = 7;",
+        )
+        .unwrap();
+
+        let context = Arc::new(ServiceContext::new(files, cache));
+        context.bind_session(1);
+        let before = context
+            .call_sync(id::op_access_sync, vec![OwnedValue::Str("/user/a".into())])
+            .expect_err("no sandbox before content is loaded");
+        assert_eq!(before.class, "IOError");
+        assert_eq!(before.message, "File system not initialized");
+        assert!(
+            context.content_module("/game.js").is_none(),
+            "no module is served before content is loaded"
+        );
+        context.load_content("g").expect("installed content mounts");
+        assert_eq!(
+            context
+                .content_module("/game.js")
+                .expect("content is loaded")
+                .expect("the entry is served"),
+            shared::cjs_compat::wrap_cjs("require('./js/main');").into_bytes(),
+            "the entry is served as the embedded loader evaluates it"
+        );
+
+        let str = |text: &str| OwnedValue::Str(text.into());
+        let written = context
+            .call_sync(
+                id::op_write_or_append_file_sync,
+                vec![
+                    str("/user/save.json"),
+                    OwnedValue::Null,
+                    str("{\"level\":3}"),
+                    str("utf8"),
+                    OwnedValue::Bool(false),
+                    OwnedValue::Bool(true),
+                ],
+            )
+            .expect("write a save");
+        assert_eq!(written, OwnedValue::Bool(true));
+        let read = context
+            .call_sync(
+                id::op_read_file_sync,
+                vec![str("/user/save.json"), OwnedValue::Null, OwnedValue::Null],
+            )
+            .expect("read it back");
+        assert_eq!(read, OwnedValue::Bytes(b"{\"level\":3}".to_vec()));
+
+        let stat = context
+            .call_sync(
+                id::op_stat_sync,
+                vec![str("/user/save.json"), OwnedValue::Bool(false)],
+            )
+            .expect("stat");
+        let OwnedValue::Array(stat) = stat else {
+            panic!("a stat is an array")
+        };
+        assert_eq!(stat[0], OwnedValue::U32(0), "a single stat");
+        let OwnedValue::Array(fields) = &stat[1] else {
+            panic!("its fields")
+        };
+        assert_eq!(fields[1], OwnedValue::F64(11.0), "size, a Number");
+        assert_eq!(fields[4], OwnedValue::Bool(true), "is_file");
+
+        let listed = context
+            .call_sync(id::op_readdir_sync, vec![str("/code")])
+            .expect("readdir");
+        let OwnedValue::Array(mut names) = listed else {
+            panic!("names")
+        };
+        names.sort_by_key(|name| format!("{name:?}"));
+        assert_eq!(names, vec![str("game.js"), str("js")]);
+
+        let fd = context
+            .call_sync(id::op_open_file_sync, vec![str("js/main.js"), str("r")])
+            .expect("open a package file by its relative path");
+        let OwnedValue::U32(fd) = fd else {
+            panic!("a descriptor")
+        };
+        let window = context
+            .call_sync(
+                id::op_read_fd_into_sync,
+                vec![OwnedValue::U32(fd), OwnedValue::U64(6), OwnedValue::U64(17)],
+            )
+            .expect("read into a window");
+        assert_eq!(
+            window,
+            OwnedValue::Bytes(b"7;".to_vec()),
+            "the filled prefix only"
+        );
+        context
+            .call_sync(id::op_close_file_sync, vec![OwnedValue::U32(fd)])
+            .expect("close");
+
+        let refused = context
+            .call_sync(
+                id::op_write_or_append_file_sync,
+                vec![
+                    str("/code/game.js"),
+                    OwnedValue::Bytes(vec![1]),
+                    OwnedValue::Null,
+                    OwnedValue::Null,
+                    OwnedValue::Bool(false),
+                    OwnedValue::Bool(true),
+                ],
+            )
+            .expect_err("the package is read-only");
+        assert_eq!(refused.message, "Permission denied: /code/game.js");
+
+        let module = context
+            .call_sync(
+                id::op_require_resolve_and_read,
+                vec![str("./js/main"), str("")],
+            )
+            .expect("require resolves against the package root");
+        let OwnedValue::Array(module) = module else {
+            panic!("code, path, dir")
+        };
+        assert_eq!(module[0], str("module.exports = 7;"));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+        let awaited = runtime
+            .block_on(
+                context
+                    .call_async(
+                        id::op_read_file,
+                        vec![str("game.js"), OwnedValue::U64(0), OwnedValue::U64(7)],
+                        &render,
+                    )
+                    .expect("a known async op"),
+            )
+            .expect("an awaited ranged read");
+        assert_eq!(awaited, OwnedValue::Bytes(b"require".to_vec()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn hex_bytes(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    fn hex_text(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// The producer's file calls, as its lanes encode them, run through this
+    /// host's dispatch on a real game sandbox, in the order content made them.
+    ///
+    /// `test/emit-file-calls.mjs write` records every service call a script of
+    /// file operations makes -- all 41 file ops and `require`, sync and
+    /// awaited -- and `read` checks what the producer makes of the answers this
+    /// writes. A TypeError here is the producer and the host disagreeing about
+    /// an op's arguments; the rest of the verdict is the producer's.
+    #[test]
+    #[ignore = "needs the producer's calls from node; run through scripts/test-performance-plus-engine-contract.sh"]
+    fn the_producer_s_file_calls_run_on_the_host() {
+        let dir = PathBuf::from(
+            std::env::var("MIGO_FILE_CALLS_DIR")
+                .expect("MIGO_FILE_CALLS_DIR names emit-file-calls.mjs's output"),
+        );
+        let calls: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("calls.json")).expect("calls.json"),
+        )
+        .expect("the calls are JSON");
+
+        let root =
+            std::env::temp_dir().join(format!("migo-external-file-calls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir().join("js")).unwrap();
+        std::fs::write(
+            installed.code_dir().join("game.js"),
+            "require('./js/main');",
+        )
+        .unwrap();
+        std::fs::write(
+            installed.code_dir().join("js/main.js"),
+            "module.exports = 7;",
+        )
+        .unwrap();
+        let context = Arc::new(ServiceContext::new(files, cache));
+        context.bind_session(1);
+        context.load_content("g").expect("installed content mounts");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+
+        // The producer was answered descriptor 7 for every open; the host's
+        // own descriptor replaces it in the calls that name one.
+        const RECORDED_FD: u32 = 7;
+        let takes_fd = |name: &str| {
+            let base = name.strip_suffix("_sync").unwrap_or(name);
+            matches!(
+                base,
+                "op_close_file"
+                    | "op_fstat"
+                    | "op_ftruncate"
+                    | "op_write_file"
+                    | "op_read_fd"
+                    | "op_read_fd_into"
+            )
+        };
+        let mut host_fd = None;
+        let mut answers = Vec::new();
+        let mut type_errors = Vec::new();
+        for call in calls.as_array().expect("a list") {
+            let name = call["op"].as_str().expect("an op name");
+            let op = crate::runtime::service_ops::ALL
+                .iter()
+                .find(|(known, _)| *known == name)
+                .map(|(_, id)| *id)
+                .unwrap_or_else(|| panic!("{name} has no number"));
+            let mut args = read_values(&hex_bytes(call["args"].as_str().expect("args")))
+                .unwrap_or_else(|error| panic!("{name}: the arguments do not read: {error:?}"))
+                .iter()
+                .map(|value| value.to_owned_value())
+                .collect::<Vec<_>>();
+            if takes_fd(name) {
+                assert_eq!(
+                    args.first(),
+                    Some(&OwnedValue::U32(RECORDED_FD)),
+                    "{name} passes the descriptor it was given"
+                );
+                args[0] = OwnedValue::U32(host_fd.expect("a descriptor is open"));
+            }
+            let outcome = match call["shape"].as_str() {
+                Some("sync") => context.call_sync(op, args),
+                Some("async") => match context.call_async(op, args, &render) {
+                    Ok(future) => runtime.block_on(future),
+                    Err(error) => Err(error),
+                },
+                other => panic!("{name}: shape {other:?}"),
+            };
+            if name.starts_with("op_open_file")
+                && let Ok(OwnedValue::U32(fd)) = &outcome
+            {
+                host_fd = Some(*fd);
+            }
+            if let Err(error) = &outcome
+                && error.class == CLASS_TYPE_ERROR
+            {
+                type_errors.push(format!("{name}: {}", error.message));
+            }
+            answers.push(serde_json::json!({
+                "op": name,
+                "outcome": hex_text(&encode_outcome(outcome)),
+            }));
+        }
+        std::fs::write(
+            dir.join("answers.json"),
+            serde_json::to_string(&answers).expect("JSON"),
+        )
+        .expect("write the answers");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            type_errors.is_empty(),
+            "the host refused the producer's arguments:\n  {}",
+            type_errors.join("\n  ")
+        );
+        println!("ran {} producer file calls on the host", answers.len());
+    }
+
+    fn sync_params(op: u32, values: &[OwnedValue]) -> Vec<u8> {
+        let mut writer = ValueWriter::over(op.to_le_bytes().to_vec());
+        for value in values {
+            value.write_to(&mut writer);
+        }
+        writer.into_bytes()
+    }
+
+    /// A synchronous call runs on the thread that made it, once the session
+    /// thread gives it its turn -- not on a pool thread of lower priority.
+    #[test]
+    fn a_synchronous_call_runs_on_its_own_thread_when_its_turn_comes() {
+        let (host, mut work) = host();
+        host.context.bind_session(1);
+        let turns = std::thread::spawn(move || {
+            let Some(ServiceWork::Sync { turn }) = work.blocking_recv() else {
+                panic!("the call's turn was queued");
+            };
+            turn.send(()).unwrap();
+            std::thread::current().id()
+        });
+        let caller = std::thread::current().id();
+        let answer = host
+            .call_sync(
+                &sync_params(id::op_access_sync, &[OwnedValue::Str("/user/a".into())]),
+                Instant::now() + std::time::Duration::from_secs(10),
+            )
+            .expect("an answer");
+        assert_ne!(turns.join().unwrap(), caller);
+        // No content is loaded: the op's own IOError, run here.
+        assert_eq!(
+            u32::from_le_bytes(answer[..4].try_into().unwrap()),
+            OUTCOME_ERROR
+        );
+    }
+
+    /// A call that gave up waiting for its turn never runs.
+    #[test]
+    fn a_synchronous_call_that_times_out_waiting_is_not_run() {
+        let (host, mut work) = host();
+        host.context.bind_session(1);
+        let outcome = host.call_sync(
+            &sync_params(id::op_access_sync, &[OwnedValue::Str("/user/a".into())]),
+            Instant::now() + std::time::Duration::from_millis(20),
+        );
+        assert_eq!(outcome, Err(SyncError::TimedOut));
+        let Ok(ServiceWork::Sync { turn }) = work.try_recv() else {
+            panic!("the call was queued");
+        };
+        assert!(turn.send(()).is_err(), "nobody is waiting to run it");
+    }
+
+    /// The host's input, routed and encoded as the external session does it,
+    /// written for `test/host-events.test.mjs` -- which delivers it to the
+    /// engine's own host bridge and checks what content's listeners see.
+    ///
+    /// The script ends in a focus loss with a finger, a mouse button, a key
+    /// and a composition still held, so the retractions the shared routing
+    /// synthesizes are part of what crosses.
+    #[test]
+    #[ignore = "writes the corpus for node; run through scripts/test-performance-plus-engine-contract.sh"]
+    fn the_host_s_input_as_the_producer_receives_it() {
+        use shared::payload_pool::PayloadPool;
+        use shared::protocol::host_cmd::{
+            GamepadButtonState, GamepadState, HostCommand, TouchData, TouchPoint, TouchType,
+        };
+
+        let dir = PathBuf::from(
+            std::env::var("MIGO_HOST_EVENTS_DIR")
+                .expect("MIGO_HOST_EVENTS_DIR names where to write"),
+        );
+        std::fs::create_dir_all(&dir).expect("the corpus directory");
+        let outbox = ServiceOutbox::new(1, Arc::new(WakerSlot::default()));
+        let mut sink = super::super::host_events::ServiceEventSink { outbox: &outbox };
+        let mut state = super::super::input_state::InputState::default();
+
+        let touches = PayloadPool::new(4);
+        let touch = |touch_type, x: f32, y: f32, flags| {
+            let mut points = [TouchPoint::default(); 10];
+            points[0] = TouchPoint {
+                id: 7,
+                x,
+                y,
+                pressure: 0.5,
+                flags,
+            };
+            HostCommand::OnTouch(
+                touches
+                    .try_insert(TouchData {
+                        touch_type,
+                        count: 1,
+                        points,
+                        timestamp_ms: 100,
+                    })
+                    .expect("a pooled touch"),
+            )
+        };
+        let pads = PayloadPool::new(1);
+        let mut pad = GamepadState {
+            index: 0,
+            axis_count: 2,
+            button_count: 1,
+            axes: [0.0; shared::protocol::host_cmd::GAMEPAD_MAX_AXES],
+            buttons: [GamepadButtonState::default();
+                shared::protocol::host_cmd::GAMEPAD_MAX_BUTTONS],
+            timestamp_ms: 42.0,
+        };
+        pad.axes[0] = 0.5;
+        pad.axes[1] = -0.25;
+        pad.buttons[0] = GamepadButtonState {
+            pressed: true,
+            touched: true,
+            value: 1.0,
+        };
+        let script = vec![
+            touch(TouchType::Start, 10.0, 20.0, 1),
+            touch(TouchType::Move, 11.0, 21.0, 1),
+            HostCommand::OnKeyDown {
+                key: "a".into(),
+                code: "KeyA".into(),
+                timestamp_ms: 5.0,
+                modifiers: 2,
+                repeat: false,
+            },
+            HostCommand::OnMouseDown {
+                x: 1.5,
+                y: 2.5,
+                button: 0,
+                timestamp_ms: 6.0,
+            },
+            HostCommand::OnWheel {
+                delta_x: 1.0,
+                delta_y: -2.0,
+                delta_z: 0.0,
+                delta_mode: 1,
+                timestamp_ms: 7.0,
+            },
+            HostCommand::OnKeyboardInput {
+                value: "h\u{e9}llo".into(),
+                runtime_generation: None,
+            },
+            HostCommand::OnCompositionStart { data: "ni".into() },
+            HostCommand::OnGamepadConnected {
+                index: 0,
+                id: "pad".into(),
+                mapping: "standard".into(),
+                axis_count: 2,
+                button_count: 1,
+            },
+            HostCommand::OnGamepadState(pads.try_insert(pad).expect("a pooled sample")),
+            HostCommand::OnFocusChanged { focused: false },
+        ];
+        for command in script {
+            assert!(
+                crate::runtime::input_route::route(&mut state, &mut sink, command).is_none(),
+                "every scripted command is input"
+            );
+        }
+        let mut written = 0;
+        while let Some(message) = outbox.take_message() {
+            std::fs::write(dir.join(format!("events-{written:03}.bin")), message)
+                .expect("write a message");
+            written += 1;
+        }
+        assert!(written > 0);
+        println!("wrote {written} host-event messages");
     }
 }

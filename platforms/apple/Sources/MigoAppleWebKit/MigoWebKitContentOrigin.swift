@@ -61,6 +61,32 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     /// a root it can accidentally expose.
     private let engineRoot: URL?
 
+    /// What a content module's source is, when something other than the file
+    /// decides it.
+    public enum ModuleLookup: Equatable, Sendable {
+        /// The module's source, served as JavaScript.
+        case source(Data)
+        /// Nothing is there: 404, with the reason.
+        case notFound(String)
+        /// Something is there that content may not load: 403.
+        case refused(String)
+        /// It is there and could not be read as module text: 500.
+        case unreadable(String)
+        /// Nothing can answer -- no engine, no content loaded: 503.
+        case unavailable(String)
+    }
+
+    /// Answer a content module by its request path, `/js/main.js`. Called on
+    /// this origin's queue; may block on file IO.
+    public typealias ModuleSource = (String) -> ModuleLookup
+
+    /// Where content modules come from on a lane that evaluates them with the
+    /// engine's module rules (Performance+: the engine rewrites a CommonJS
+    /// entry the way its own loader does, and resolves through its mount
+    /// table). `nil` serves every script as its file, which is the WebKit Full
+    /// lane and a harness page.
+    private let moduleSource: ModuleSource?
+
     /// Reads happen here, never on the main thread: a page load that stalls the main
     /// queue on a file read stalls the frame the content is trying to present.
     private let queue = DispatchQueue(label: "com.migo.webkit.content-origin", qos: .userInitiated)
@@ -125,10 +151,14 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
     /// no gain, because WebKit consumes chunks as they arrive.
     public static let chunkSize = 256 * 1024
 
-    public init(root: URL, indexPath: String = "index.html", engineRoot: URL? = nil) {
+    public init(
+        root: URL, indexPath: String = "index.html", engineRoot: URL? = nil,
+        moduleSource: ModuleSource? = nil
+    ) {
         self.root = root.resolvingSymlinksInPath().standardizedFileURL
         self.indexPath = indexPath
         self.engineRoot = engineRoot?.resolvingSymlinksInPath().standardizedFileURL
+        self.moduleSource = moduleSource
         super.init()
     }
 
@@ -168,9 +198,51 @@ public final class MigoWebKitContentOrigin: NSObject, WKURLSchemeHandler {
         case .outsidePackage:
             refuse(task, status: 403, reason: "the path resolves outside the content package")
         case .file(let path):
+            if let moduleSource,
+                let modulePath = MigoWebKitOriginRules.contentModulePath(requestPath: url.path)
+            {
+                // Decided by the engine, not by the file: the module's path goes
+                // to it, and it resolves, contains and reads.
+                queue.async { [weak self] in
+                    self?.serveModule(moduleSource(modulePath), url: url, task: task)
+                }
+                return
+            }
             queue.async { [weak self] in
                 self?.begin(path: path, url: url, request: request, task: task)
             }
+        }
+    }
+
+    /// A content module, whole: its source is computed, not a file on disk, so
+    /// there is no range to serve and nothing to stream from.
+    private func serveModule(_ lookup: ModuleLookup, url: URL, task: WKURLSchemeTask) {
+        let source: Data
+        switch lookup {
+        case .source(let bytes): source = bytes
+        case .notFound(let why): return refuse(task, status: 404, reason: why)
+        case .refused(let why): return refuse(task, status: 403, reason: why)
+        case .unreadable(let why): return refuse(task, status: 500, reason: why)
+        case .unavailable(let why): return refuse(task, status: 503, reason: why)
+        }
+        guard
+            let response = HTTPURLResponse(
+                url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Type": "text/javascript; charset=utf-8",
+                    "Content-Length": String(source.count),
+                    "Cache-Control": "no-store",
+                ])
+        else {
+            return refuse(task, status: 500, reason: "the response could not be formed")
+        }
+        note { $0.promised += source.count }
+        onTask(task) { [weak self] task in
+            task.didReceive(response)
+            task.didReceive(source)
+            task.didFinish()
+            self?.note { $0.delivered += source.count }
+            self?.retire(task, .finished)
         }
     }
 

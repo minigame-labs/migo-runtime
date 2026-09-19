@@ -270,4 +270,24 @@ final class MigoWebKitOriginRulesTests: XCTestCase {
         XCTAssertEqual(url?.scheme, Rules.scheme)
         XCTAssertEqual(url?.host, Rules.host)
     }
+
+    /// A game's scripts are the engine's to serve, named as its module loader
+    /// names them; the engine's own modules and everything else are files.
+    func testAPackageScriptIsAContentModuleNamedAsTheLoaderNamesIt() {
+        XCTAssertEqual(Rules.contentModulePath(requestPath: "/game.js"), "/game.js")
+        XCTAssertEqual(Rules.contentModulePath(requestPath: "/js/lib.mjs"), "/js/lib.mjs")
+        XCTAssertEqual(Rules.contentModulePath(requestPath: "/js/old.cjs"), "/js/old.cjs")
+        XCTAssertEqual(
+            Rules.contentModulePath(requestPath: "/js/utils"), "/js/utils.js",
+            "an extensionless import is completed with .js, as the loader completes it")
+        XCTAssertNil(
+            Rules.contentModulePath(requestPath: Rules.engineAssetPrefix + "producer-worker.mjs"),
+            "the engine's own modules are served as they are")
+        XCTAssertNil(Rules.contentModulePath(requestPath: "/img/bg.png"))
+        XCTAssertNil(Rules.contentModulePath(requestPath: "/data/levels.json"))
+        XCTAssertNil(Rules.contentModulePath(requestPath: "/js/"), "a directory is not a module")
+        XCTAssertNil(
+            Rules.contentModulePath(requestPath: "/GAME.JS"),
+            "case-sensitive, as the engine's loader is")
+    }
 }

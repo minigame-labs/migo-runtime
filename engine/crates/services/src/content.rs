@@ -109,6 +109,79 @@ impl MountedContent {
     }
 }
 
+/// Why a content module could not be served.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ModuleError {
+    /// Nothing is there.
+    NotFound(String),
+    /// Something is there that content may not load as a module: a path that
+    /// leaves the package, or one an overlay shadows.
+    Refused(String),
+    /// It is there and could not be read as module text.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for ModuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(why) | Self::Refused(why) | Self::Unreadable(why) => f.write_str(why),
+        }
+    }
+}
+
+impl MountedContent {
+    /// The text the module at `request_path` -- a path in the package, as the
+    /// content origin receives it: `/js/main.js` -- is evaluated as.
+    ///
+    /// The embedded runtime's module loader's rules, for a loader that is
+    /// WebKit's: resolved through the mount table, so a subpackage overlay or a
+    /// pack-backed package serves its own files and a path an overlay claims
+    /// is not found underneath it; contained, so a symlink out of the package
+    /// is refused; UTF-8, as V8 requires; and rewritten by
+    /// [`shared::cjs_compat::module_source`], so a CommonJS `game.js` runs as
+    /// the same module in both executions.
+    pub fn module_source(&self, request_path: &str) -> Result<Vec<u8>, ModuleError> {
+        let relative = request_path.strip_prefix('/').unwrap_or(request_path);
+        let mounts = &self.mount_table;
+        let bytes = match mounts.resolve(relative) {
+            // `resolve` verified the real path is inside its mount.
+            Some(found) => match found.real_path {
+                Some(path) => std::fs::read(&path).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        ModuleError::NotFound(format!("no module at {request_path}"))
+                    } else {
+                        ModuleError::Unreadable(format!("{request_path}: {error}"))
+                    }
+                })?,
+                None => mounts.read(relative).map_err(|error| {
+                    ModuleError::Unreadable(format!(
+                        "failed to read module from package: {request_path}: {error}"
+                    ))
+                })?,
+            },
+            None if mounts.has_overlay_for(relative) => {
+                return Err(ModuleError::Refused(format!(
+                    "module import blocked by mounted overlay shadow: {request_path}"
+                )));
+            }
+            None => {
+                return Err(ModuleError::NotFound(format!(
+                    "no module at {request_path}"
+                )));
+            }
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|error| {
+            ModuleError::Unreadable(format!(
+                "module source is not UTF-8: {request_path}: {error}"
+            ))
+        })?;
+        Ok(match shared::cjs_compat::module_source(text) {
+            Some(rewritten) => rewritten.into_bytes(),
+            None => bytes,
+        })
+    }
+}
+
 impl std::fmt::Debug for MountedContent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MountedContent")
@@ -139,6 +212,48 @@ mod tests {
         assert!(mounted.game_paths.code_dir().starts_with(&files));
         assert!(mounted.game_paths.code_dir().ends_with("code"));
         assert!(mounted.game_paths.user_data_dir().is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_module_is_served_as_the_loader_evaluates_it() {
+        let root =
+            std::env::temp_dir().join(format!("migo-services-modules-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = GamePaths::new(&files, &cache, "m", 1).unwrap();
+        let code = installed.code_dir().to_path_buf();
+        std::fs::create_dir_all(code.join("js")).unwrap();
+        std::fs::write(code.join("game.js"), "require('./js/main');").unwrap();
+        std::fs::write(code.join("js/main.mjs"), "export const a = 1;").unwrap();
+        std::fs::write(code.join("bad.js"), [0xff, 0xfe]).unwrap();
+        let scheduler = IoScheduler::new(1);
+        let mounted = MountedContent::mount(&files, &cache, "m", 1, &scheduler).unwrap();
+
+        let game = mounted.module_source("/game.js").unwrap();
+        assert_eq!(
+            game,
+            shared::cjs_compat::wrap_cjs("require('./js/main');").into_bytes(),
+            "CommonJS runs wrapped, as in the embedded loader"
+        );
+        assert_eq!(
+            mounted.module_source("/js/main.mjs").unwrap(),
+            b"export const a = 1;",
+            "an ES module is served as written"
+        );
+        assert!(matches!(
+            mounted.module_source("/absent.js"),
+            Err(ModuleError::NotFound(_))
+        ));
+        assert!(matches!(
+            mounted.module_source("/bad.js"),
+            Err(ModuleError::Unreadable(_))
+        ));
+        assert!(
+            mounted.module_source("/../files/escape.js").is_err(),
+            "a path out of the package resolves to nothing"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

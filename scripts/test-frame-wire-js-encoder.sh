@@ -537,6 +537,15 @@ node "$TEST_DIR/emit-service.mjs" read "$SERVICE_FROM_RUST"
 node "$TEST_DIR/op-args.test.mjs"
 RAN_TESTS+=("$TEST_DIR/op-args.test.mjs")
 
+# --- a read larger than one service answer ----------------------------------
+#
+# The file lanes read into a caller's buffer in pieces, so no answer approaches
+# the synchronous reply ceiling or the host's outbox bound. The pieces have to
+# be the embedded op's one read: continuing by position or by cursor, stopping
+# at end of file, and asking once even for nothing.
+node "$TEST_DIR/files.test.mjs"
+RAN_TESTS+=("$TEST_DIR/files.test.mjs")
+
 # --- a frame larger than one packet, and what the host will decode ----------
 #
 # The host refuses a packet whose decoded storage is over its budget, and on the
@@ -581,6 +590,9 @@ fi
 # both. Named here so the coverage check below does not run it a second time
 # without the half that reads its output.
 RAN_TESTS+=("$TEST_DIR/engine-bundle.test.mjs")
+# The same for `host-events.test.mjs`: it delivers events the Rust host encodes
+# to the staged engine's bridge, so the engine contract runs it with both.
+RAN_TESTS+=("$TEST_DIR/host-events.test.mjs")
 
 # --- the producer's own suites: run the named ones, then prove that was all ---
 #

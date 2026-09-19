@@ -7,7 +7,7 @@
 // implements only ops the contract gives this lane is checked by
 // scripts/gen-performance-plus-engine.py.
 
-import { bytesOf, stringOf } from "./op-args.mjs";
+import { bytesOf, f32BitsOf, smiU32, smiU8, stringOf, toBool } from "./op-args.mjs";
 import { platform } from "./engine-core.mjs";
 import { decodeBytes, encodeString } from "./text-codec.mjs";
 import { engineHost } from "./engine-host.mjs";
@@ -16,7 +16,8 @@ import { engineHost } from "./engine-host.mjs";
 
 /// Elapsed time since the session was bound, as the Rust op writes it: u32
 /// seconds then u32 nanoseconds, little-endian, into the caller's 8 bytes.
-export function op_now(buffer) {
+export function op_now(buf) {
+  const buffer = bytesOf(buf, "buf");
   if (buffer.byteLength < 8) return;
   const elapsedMs = platform.now() - engineHost().startedAt;
   const seconds = Math.floor(elapsedMs / 1000);
@@ -43,9 +44,10 @@ export function op_timer_is_backgrounded() {
 /// landed, so no other id can exist yet -- and the Rust op refuses an unknown id
 /// the same way.
 export function op_get_canvas_info(id) {
+  const canvasId = smiU32(id, "id");
   const { state } = engineHost();
-  if (id === 1) return [state.surfaceWidth, state.surfaceHeight];
-  throw new Error(`canvas ${id} not found`);
+  if (canvasId === 1) return [state.surfaceWidth, state.surfaceHeight];
+  throw new Error(`canvas ${canvasId} not found`);
 }
 
 // ---- WebGL ------------------------------------------------------------------
@@ -77,24 +79,24 @@ export function op_webgl_record_attributes(
   desynchronized,
   xrCompatible,
 ) {
-  contextAttributes.set(canvasId >>> 0, {
-    alpha: !!alpha,
-    antialias: !!antialias,
-    depth: !!depth,
-    stencil: !!stencil,
-    premultipliedAlpha: !!premultipliedAlpha,
-    preserveDrawingBuffer: !!preserveDrawingBuffer,
-    powerPreference: POWER_PREFERENCE[powerPreference] ?? "default",
-    failIfMajorPerformanceCaveat: !!failIfMajorPerformanceCaveat,
-    desynchronized: !!desynchronized,
-    xrCompatible: !!xrCompatible,
+  contextAttributes.set(smiU32(canvasId, "canvas_id"), {
+    alpha: toBool(alpha, "alpha"),
+    antialias: toBool(antialias, "antialias"),
+    depth: toBool(depth, "depth"),
+    stencil: toBool(stencil, "stencil"),
+    premultipliedAlpha: toBool(premultipliedAlpha, "premultiplied_alpha"),
+    preserveDrawingBuffer: toBool(preserveDrawingBuffer, "preserve_drawing_buffer"),
+    powerPreference: POWER_PREFERENCE[smiU8(powerPreference, "power_preference")] ?? "default",
+    failIfMajorPerformanceCaveat: toBool(failIfMajorPerformanceCaveat, "fail_if_major_performance_caveat"),
+    desynchronized: toBool(desynchronized, "desynchronized"),
+    xrCompatible: toBool(xrCompatible, "xr_compatible"),
   });
 }
 
 /// The recorded attributes, or WebGL 1.0's defaults (section 5.2.1) with the
 /// stencil the backend always has -- `ContextAttributes::default()` in Rust.
 export function op_webgl_get_context_attributes(canvasId) {
-  const recorded = contextAttributes.get(canvasId >>> 0);
+  const recorded = contextAttributes.get(smiU32(canvasId, "canvas_id"));
   if (recorded) return { ...recorded };
   return {
     alpha: true,
@@ -146,12 +148,15 @@ export function drainProducerError(canvasId) {
 
 /// Only the four codes content may record; anything else is INVALID_OPERATION.
 export function op_webgl_record_error(canvasId, code) {
-  const valid = code === INVALID_ENUM || code === INVALID_VALUE || code === INVALID_OPERATION || code === OUT_OF_MEMORY;
-  pushError(canvasId >>> 0, valid ? code : INVALID_OPERATION);
+  const canvas = smiU32(canvasId, "canvas_id");
+  const error = smiU32(code, "code");
+  const valid =
+    error === INVALID_ENUM || error === INVALID_VALUE || error === INVALID_OPERATION || error === OUT_OF_MEMORY;
+  pushError(canvas, valid ? error : INVALID_OPERATION);
 }
 
 export function op_webgl_record_out_of_memory(canvasId) {
-  pushError(canvasId >>> 0, OUT_OF_MEMORY);
+  pushError(smiU32(canvasId, "canvas_id"), OUT_OF_MEMORY);
 }
 
 /// Whether the host reported the GL context lost and not yet restored.
@@ -176,8 +181,32 @@ export function op_gl_is_context_lost() {
  * block the Worker once per `fillText` to be told something that cannot change
  * until the cache exists. When it does, this moves back to the sync lane (see
  * contracts/runtime/op-boundary.json).
+ *
+ * The arguments are converted all the same: deno_core converts them before the
+ * Rust body runs, so one it refuses is a TypeError there whatever the answer.
  */
-export function op_text_cache_peek_pin() {
+export function op_text_cache_peek_pin(
+  text,
+  fontRequest,
+  fontSize,
+  fontWeight,
+  italic,
+  fillColor,
+  textAlign,
+  textBaseline,
+  canvasW,
+  canvasH,
+) {
+  stringOf(text, "text");
+  stringOf(fontRequest, "font_request");
+  f32BitsOf(fontSize, "font_size");
+  smiU32(fontWeight, "font_weight");
+  toBool(italic, "italic");
+  smiU32(fillColor, "fill_color");
+  smiU8(textAlign, "text_align");
+  smiU8(textBaseline, "text_baseline");
+  smiU32(canvasW, "canvas_w");
+  smiU32(canvasH, "canvas_h");
   return 0;
 }
 

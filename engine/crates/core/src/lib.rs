@@ -155,6 +155,8 @@ pub use frame_wire::sync::{
 /// to know how a packet is parsed.
 #[cfg(feature = "external-frames")]
 pub use frame_wire::{IngressDecision, IngressOutcome};
+#[cfg(feature = "external-frames")]
+pub use migo_services::content::ModuleError;
 /// The external-frame execution. A session with no script runtime in this
 /// process, for the Apple Performance+ product.
 #[cfg(feature = "external-frames")]

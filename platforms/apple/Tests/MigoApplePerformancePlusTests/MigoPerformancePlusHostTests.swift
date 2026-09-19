@@ -100,7 +100,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             var connected = false
             var failure: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: channel)
             self.host = host
             host.onReport = { report in
@@ -169,7 +169,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             let ready = expectation(description: "the producer reports ready")
             var failure: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
             self.host = host
             host.onReport = { report in
@@ -239,7 +239,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             let answered = expectation(description: "content's call was answered")
             var detail: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: channel)
             self.host = host
             host.onReport = { report in
@@ -312,7 +312,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 })
 
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: channel)
             self.host = host
             mount(host)
@@ -398,7 +398,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             let ready = expectation(description: "the producer reports ready")
             var failure: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: channel)
             self.host = host
             host.onReport = { report in
@@ -455,7 +455,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
 
             let ready = expectation(description: "the producer reports ready")
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: channel)
             self.host = host
             host.onReport = { report in
@@ -489,7 +489,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             let answered = expectation(description: "the endpoint answered")
             var status: Int?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
             self.host = host
             host.onReport = { report in
