@@ -1,26 +1,26 @@
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use audio::AudioThread;
 
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use shared::audio_channel::{
     AudioCleanupTicket, AudioCleanupWaitError, AudioCommandReceiver, AudioCommandSendError,
     AudioCommandSender,
 };
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use shared::audio_resources::AudioResourceRegistry;
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use shared::channel::ThreadWakeup;
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use shared::error::{EngineError, EngineResult, ErrorCode};
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use shared::op_state::{AudioHostStartSignal, AudioSender, HostTx};
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use shared::protocol::audio_cmd::AudioCmd;
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use std::sync::Arc;
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use std::time::Duration;
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 use tracing::info;
 
 /// Lazy audio service — the actual `AudioThread` is not spawned until the
@@ -45,7 +45,7 @@ use tracing::info;
 ///    audio command (i.e. not PauseAll/ResumeAll/Shutdown), spawns the
 ///    real `AudioThread` via [`AudioThread::spawn_with_channel`] which
 ///    re-uses the **same channel** — no forwarding task needed.
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 pub(crate) struct AudioService {
     /// Sender end of the channel.  Ops write here immediately.
     tx: AudioCommandSender,
@@ -89,7 +89,42 @@ pub(crate) struct AudioService {
 ///
 /// Extracted because the handover itself needs an audio device and a host test
 /// cannot provide one, while this can be observed exactly.
-#[cfg(feature = "api-media")]
+/// The client streamed audio (`InnerAudioContext.src = "https://..."`) is
+/// fetched with.
+///
+/// The embedded execution's is the network layer's policy-checked client
+/// (allow list, HTTPS, SSRF-checking resolver, redirect gate). The external
+/// execution has no network layer yet -- it arrives with the network service --
+/// so a streamed source is refused with that reason rather than fetched past
+/// the policy every other request is held to.
+#[cfg(feature = "host-audio")]
+pub(crate) fn streaming_http_client_factory(
+    network_policy: shared::op_state::NetworkPolicy,
+) -> audio::streaming::StreamingHttpClientFactory {
+    #[cfg(feature = "api-media")]
+    {
+        Arc::new(move || {
+            runtime_v8::create_audio_http_client(&network_policy).map_err(|error| {
+                EngineError::from_detail(
+                    ErrorCode::IoError,
+                    format!("failed to build audio HTTP client: {error}"),
+                )
+            })
+        })
+    }
+    #[cfg(not(feature = "api-media"))]
+    {
+        let _ = network_policy;
+        Arc::new(|| {
+            Err(EngineError::from_detail(
+                ErrorCode::Unsupported,
+                "streamed audio needs the network service, which this session does not have yet",
+            ))
+        })
+    }
+}
+
+#[cfg(feature = "host-audio")]
 fn take_startup_backlog(pending: &mut Vec<AudioCmd>, is_paused: bool) -> Vec<AudioCmd> {
     let mut backlog: Vec<AudioCmd> = pending.drain(..).collect();
     if is_paused {
@@ -99,14 +134,14 @@ fn take_startup_backlog(pending: &mut Vec<AudioCmd>, is_paused: bool) -> Vec<Aud
     backlog
 }
 
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 fn complete_prestart_release_all_contexts(rx: &AudioCommandReceiver, pending: &mut Vec<AudioCmd>) {
     pending.clear();
     rx.discard_prestart_commands();
     rx.complete_release_all_contexts();
 }
 
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 fn cleanup_send_error(error: AudioCommandSendError) -> EngineError {
     match error {
         AudioCommandSendError::Full(_) | AudioCommandSendError::ByteLimit(_) => {
@@ -122,7 +157,7 @@ fn cleanup_send_error(error: AudioCommandSendError) -> EngineError {
     }
 }
 
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 async fn await_cleanup_ticket(ticket: AudioCleanupTicket, timeout: Duration) -> EngineResult<()> {
     match tokio::time::timeout(timeout, ticket.wait()).await {
         Ok(Ok(())) => Ok(()),
@@ -137,21 +172,19 @@ async fn await_cleanup_ticket(ticket: AudioCleanupTicket, timeout: Duration) -> 
     }
 }
 
-#[cfg(feature = "api-media")]
+#[cfg(feature = "host-audio")]
 impl AudioService {
     /// Create a lazy audio service. **No thread or HTTP client is created.**
-    pub(crate) fn new(host_tx: HostTx, network_policy: shared::op_state::NetworkPolicy) -> Self {
+    /// `http_client_factory` builds the client streamed audio fetches with,
+    /// lazily and once: the caller's, because the policy-checked client is the
+    /// network layer's and each execution has its own (see
+    /// [`streaming_http_client_factory`]).
+    pub(crate) fn new(
+        host_tx: HostTx,
+        http_client_factory: audio::streaming::StreamingHttpClientFactory,
+    ) -> Self {
         let (tx, rx) = shared::audio_channel::channel();
         let wakeup = ThreadWakeup::new();
-        let http_client_factory: audio::streaming::StreamingHttpClientFactory =
-            Arc::new(move || {
-                runtime_v8::create_audio_http_client(&network_policy).map_err(|error| {
-                    EngineError::from_detail(
-                        ErrorCode::IoError,
-                        format!("failed to build audio HTTP client: {error}"),
-                    )
-                })
-            });
         Self {
             tx,
             wakeup,
@@ -328,7 +361,7 @@ impl AudioService {
     }
 }
 
-#[cfg(not(feature = "api-media"))]
+#[cfg(not(feature = "host-audio"))]
 pub(crate) struct AudioService {
     /// Permanently disconnected: this profile has no audio thread to send to.
     ///
@@ -350,7 +383,7 @@ pub(crate) struct AudioService {
     start_signal: std::sync::Arc<shared::op_state::AudioHostStartSignal>,
 }
 
-#[cfg(not(feature = "api-media"))]
+#[cfg(not(feature = "host-audio"))]
 impl AudioService {
     pub(crate) fn new(
         _host_tx: shared::op_state::HostTx,
@@ -436,7 +469,7 @@ impl AudioService {
     pub(crate) fn shutdown(&mut self) {}
 }
 
-#[cfg(all(test, feature = "api-media"))]
+#[cfg(all(test, feature = "host-audio"))]
 mod tests {
     use super::*;
 
@@ -546,7 +579,10 @@ mod tests {
 
     fn service() -> AudioService {
         let (host_tx, _critical_host_tx, _host_rx) = shared::host_channel::channel(1);
-        AudioService::new(host_tx, shared::op_state::NetworkPolicy::default())
+        AudioService::new(
+            host_tx,
+            streaming_http_client_factory(shared::op_state::NetworkPolicy::default()),
+        )
     }
 
     fn one_frame() -> shared::audio_resources::AudioBufferFormat {

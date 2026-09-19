@@ -213,6 +213,12 @@ impl SessionShell {
         // ---- Services ----
         // AudioService is lazy — no thread spawned until the first
         // real audio command.  Saves ~80 ms on cold start.
+        #[cfg(feature = "host-audio")]
+        let audio = AudioService::new(
+            host_tx.clone(),
+            crate::services::audio::streaming_http_client_factory(network_policy.clone()),
+        );
+        #[cfg(not(feature = "host-audio"))]
         let audio = AudioService::new(host_tx.clone(), network_policy.clone());
         let gpu_caps = shared::device::gpu_caps::GpuCaps::new();
 

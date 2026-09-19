@@ -1,4 +1,4 @@
-mod audio;
+pub(crate) mod audio;
 mod device;
 mod platform;
 mod render;
