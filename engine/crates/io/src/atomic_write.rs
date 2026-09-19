@@ -8,8 +8,12 @@
 //! **new** contents, never a mix.
 //!
 //! # Guarantees
-//! * On success, `path` contains exactly `bytes` after a full power
-//!   cycle (assuming the underlying filesystem honours `fsync`).
+//! * After a crash or a power loss, `path` holds the old contents or the
+//!   new, never a mix. On success it holds the new contents across a full
+//!   power cycle everywhere but Apple platforms, where the sync is an I/O
+//!   barrier rather than a drive-cache flush and a power loss in the moments
+//!   after success can roll the write back to the old contents -- see
+//!   [`crate::durable`] for why, and what it measured.
 //! * On failure, `path` is unchanged; the temporary file is best-
 //!   effort cleaned up.
 //! * Concurrent callers writing to the same `path` do not interleave
@@ -61,7 +65,7 @@ fn sync_parent_dir(path: &Path) -> io::Result<()> {
             if parent.as_os_str().is_empty() {
                 return Ok(());
             }
-            return File::open(parent)?.sync_all();
+            return crate::durable::sync_dir(parent);
         }
     }
     #[cfg(windows)]
@@ -87,7 +91,7 @@ fn write_and_fsync(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
             .truncate(true)
             .open(tmp)?;
         f.write_all(bytes)?;
-        f.sync_all()?;
+        crate::durable::sync(&f)?;
         Ok(())
     })();
     if result.is_err() {
@@ -144,7 +148,7 @@ where
             .truncate(true)
             .open(&tmp)?;
         writer(&mut f)?;
-        f.sync_all()?;
+        crate::durable::sync(&f)?;
         Ok(())
     })();
     if let Err(e) = result {

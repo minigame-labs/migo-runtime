@@ -14,6 +14,7 @@ pub mod cost;
 pub mod count_min_sketch;
 pub mod derived_cache;
 pub mod domain;
+pub mod durable;
 pub mod etc2;
 mod fast_image_decoder;
 pub mod fs_ops;
