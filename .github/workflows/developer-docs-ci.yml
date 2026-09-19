@@ -2,20 +2,18 @@ name: Developer Docs CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - 'developer-docs/**'
       - 'include/migo/**'
       - 'release/VERSION'
       - 'scripts/test-developer-docs-phase1-contract.sh'
-      - 'scripts/check-developer-docs-ast.mjs'
   pull_request:
     paths:
       - 'developer-docs/**'
       - 'include/migo/**'
       - 'release/VERSION'
       - 'scripts/test-developer-docs-phase1-contract.sh'
-      - 'scripts/check-developer-docs-ast.mjs'
 
 jobs:
   docs:

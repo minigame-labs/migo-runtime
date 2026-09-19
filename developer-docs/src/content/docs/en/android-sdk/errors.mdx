@@ -50,7 +50,7 @@ Native pushes these via the `onError` callback with a structured code:
 | `204 NATIVE_JS_EXECUTION_TIMEOUT` | A single JS execution exceeded the watchdog timeout and was forcibly terminated |
 | `205 NATIVE_HOST_PANIC` | Host thread encountered an unrecoverable panic — `isRecoverable` returns false; the host should treat this as non-recoverable (show error page, capture logs) |
 | `206 NATIVE_ANR` | ANR detected at the native level, earlier than the system ANR |
-| `207 NATIVE_CODE_SIGNATURE_INVALID` | Code signature verification failed — remember the pubkey chain in [RuntimeConfig](/docs/android-sdk/config/) |
+| `207 NATIVE_CODE_SIGNATURE_INVALID` | Code signature verification failed — remember the pubkey chain in [RuntimeConfig](/docs/en/android-sdk/config/) |
 | `208 NATIVE_CODE_INTEGRITY_FAILED` | Code integrity verification failed — same as above |
 | `11 NATIVE_INPUT_SATURATED` | Input event injection rate into the transport exceeds the consumption rate; events are dropped and the transport enters backoff |
 
@@ -63,9 +63,9 @@ session.setListener(new GameSessionListener() {
     @Override
     public void onError(MigoException e) {
         if (!e.isRecoverable()) {
-            showErrorDialog(e.getMessage());   // 全屏错页,留下日志与现场变量
+            showErrorDialog(e.getMessage());   // full-screen error page; keep the log and the state
         } else {
-            Log.w(TAG, e.toString());          // 追迹但不拉警报
+            Log.w(TAG, e.toString());          // trace it, but raise no alarm
         }
     }
 });

@@ -31,7 +31,7 @@ Identifies the platform of a native window. Values are defined by the `MIGO_PLAT
 | `MIGO_PLATFORM_IOS_UI_VIEW` | 9 | iOS `UIView` |
 | `MIGO_PLATFORM_IOS_CA_METAL_LAYER` | 10 | iOS `CAMetalLayer` |
 
-The subset actually supported by the current build is reported by `migo_query_capabilities` in `platform_kinds` (see [capabilities.mdx](/docs/reference/capabilities/)). Passing a defined `platform_kind` that this build does not implement returns `MIGO_ERROR_UNSUPPORTED_PLATFORM`; passing a completely undefined value returns `MIGO_ERROR_INVALID_ARGUMENT`.
+The subset actually supported by the current build is reported by `migo_query_capabilities` in `platform_kinds` (see [capabilities.mdx](/docs/en/reference/capabilities/)). Passing a defined `platform_kind` that this build does not implement returns `MIGO_ERROR_UNSUPPORTED_PLATFORM`; passing a completely undefined value returns `MIGO_ERROR_INVALID_ARGUMENT`.
 
 ### MigoColorSpace
 
@@ -206,13 +206,13 @@ Migo uses the `generation` field to number each attach and update request from t
 **Host counter management recommendation** (the "declare, then commit" pattern):
 
 ```c
-/* attach_window 节选 */
-uint64_t gen = h->surface_generation + 1;  /* 先声明，不递增本地计数器 */
+/* excerpt from attach_window */
+uint64_t gen = h->surface_generation + 1;  /* declare first; do not bump the local counter */
 descriptor.generation = gen;
 MigoResult r = migo_session_attach_surface(session, &descriptor, &h->attachment);
 if (r == MIGO_OK) {
-    h->surface_generation = gen;  /* 已被接受，固化 */
-} /* 被拒绝时不修改 h->surface_generation，下次重试可复用 gen */
+    h->surface_generation = gen;  /* accepted: commit it */
+} /* on refusal h->surface_generation is untouched, so a retry can reuse gen */
 ```
 
 Every platform normally destroys and recreates windows — Android does so whenever it enters the background — so the host must maintain a persistent counter rather than use a constant.
@@ -224,22 +224,22 @@ Every platform normally destroys and recreates windows — Android does so whene
 Android destroys the `ANativeWindow` when the application enters the background and creates a new one on return. A complete application lifecycle therefore contains multiple `attach + begin_detach` cycles:
 
 ```text
-前台
+foreground
   │  migo_session_attach_surface(gen=1, window_A)  →  attachment_A
-  │  ... 渲染帧，notify_vsync ...
+  │  ... render frames, notify_vsync ...
   │
-  │  APP_CMD_TERM_WINDOW（系统准备回收 window_A）
+  │  APP_CMD_TERM_WINDOW (the system is about to reclaim window_A)
   │  migo_surface_begin_detach(attachment_A)        →  release_A
-  │  轮询 migo_surface_release_query(release_A)        直至 RELEASED
+  │  poll migo_surface_release_query(release_A)   until RELEASED
   │  migo_surface_release_destroy(release_A)
-  │  ← ANativeWindow_release(window_A) 现在安全；handler 返回
+  │  ← ANativeWindow_release(window_A) is safe now; the handler returns
   │
-后台（window_A 已被系统回收）
+background (window_A reclaimed by the system)
   │
-  │  APP_CMD_INIT_WINDOW（系统提供全新窗口 window_B）
+  │  APP_CMD_INIT_WINDOW (the system provides a fresh window_B)
   │  migo_session_attach_surface(gen=2, window_B)  →  attachment_B
-  │  ... 渲染帧 ...
-前台
+  │  ... render frames ...
+foreground
 ```
 
 Key constraints:
@@ -427,24 +427,24 @@ The following code comes from `tests/c_host/android/src/main/cpp/main.c`. It sho
 #include <migo/migo.h>
 #include <migo/platform/android.h>
 
-/* host 状态（简化） */
+/* host state (simplified) */
 struct host {
     MigoSession          *session;
     MigoSurfaceAttachment *attachment;
-    uint64_t              surface_generation; /* 跨轮次持久维护 */
+    uint64_t              surface_generation; /* kept across rounds */
     float                 density;
 };
 
 /* ---- attach ------------------------------------------------------------ */
 static void attach_window(struct host *h, ANativeWindow *window) {
-    /* 平台专属描述符 */
+    /* platform-specific descriptor */
     MigoAndroidNativeWindowDescriptor native = {0};
     native.struct_size   = sizeof native;
     native.abi_version   = MIGO_ABI_VERSION_CURRENT;
     native.platform_kind = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
-    native.native_window = window;  /* 引擎持有独立引用，此处不转移所有权 */
+    native.native_window = window;  /* the engine takes its own reference; ownership does not transfer */
 
-    /* 声明但不提前提交：被拒绝时不递增本地计数器 */
+    /* declared, not committed yet: a refusal leaves the local counter alone */
     uint64_t gen = h->surface_generation + 1;
 
     MigoSurfaceDescriptor surface = {0};
@@ -464,11 +464,11 @@ static void attach_window(struct host *h, ANativeWindow *window) {
 
     MigoResult r = migo_session_attach_surface(h->session, &surface, &h->attachment);
     if (r != MIGO_OK) return;
-    h->surface_generation = gen;  /* 已被接受，固化 */
+    h->surface_generation = gen;  /* accepted: commit it */
 }
 
 /* ---- vsync ------------------------------------------------------------- */
-/* Choreographer 回调（API >= 29 使用 64-bit 时间戳版本）*/
+/* Choreographer callback (API >= 29 uses the 64-bit timestamp version) */
 static void on_frame64(int64_t frame_time_nanos, void *data) {
     struct host *h = (struct host *)data;
     migo_session_notify_vsync(h->session, frame_time_nanos);
@@ -478,15 +478,15 @@ static void on_frame64(int64_t frame_time_nanos, void *data) {
 #define RELEASE_TIMEOUT_MS 2000
 #define RELEASE_POLL_US    2000
 
-/* 必须在 APP_CMD_TERM_WINDOW handler 返回前完成，
- * 因为 glue 在 handler 返回后立即释放对 window 的引用。 */
+/* must finish before the APP_CMD_TERM_WINDOW handler returns,
+ * because the glue drops its window reference right after the handler returns. */
 static void detach_window(struct host *h) {
     MigoSurfaceRelease *release = NULL;
     MigoResult r = migo_surface_begin_detach(h->attachment, &release);
     if (r != MIGO_OK) return;
-    h->attachment = NULL;  /* 已消费，立刻清空防止悬空指针 */
+    h->attachment = NULL;  /* consumed: clear it now so it cannot dangle */
 
-    /* 电平触发：即使 release 已完成也不会漏掉 */
+    /* level-triggered: nothing is missed even if the release already completed */
     for (long waited_us = 0; waited_us < RELEASE_TIMEOUT_MS * 1000L;
          waited_us += RELEASE_POLL_US) {
         MigoSurfaceReleaseStatus status = {0};
@@ -496,11 +496,11 @@ static void detach_window(struct host *h) {
         if (r != MIGO_OK) return;
         if (status.state == MIGO_SURFACE_RELEASE_RELEASED) {
             migo_surface_release_destroy(release);
-            return;  /* ANativeWindow 现在安全，可交还给系统 */
+            return;  /* the ANativeWindow is safe to give back to the system now */
         }
         usleep(RELEASE_POLL_US);
     }
-    /* 超时：泄漏 observer（刻意为之）；记录错误，window 即将被系统回收 */
+    /* timeout: leak the observer (deliberately); log it, the window is about to be reclaimed */
 }
 ```
 

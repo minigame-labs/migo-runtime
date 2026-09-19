@@ -16,7 +16,7 @@ sourcePaths:
 
 ```java
 MigoRuntime runtime = MigoRuntime.getInstance();
-String version = MigoRuntime.SDK_VERSION;   // BuildInfo.VERSION,编译期写入
+String version = MigoRuntime.SDK_VERSION;   // BuildInfo.VERSION, written at compile time
 ```
 
 | Method | Description |
@@ -34,10 +34,10 @@ String version = MigoRuntime.SDK_VERSION;   // BuildInfo.VERSION,编译期写入
 ## Session creation: four variants
 
 ```java
-GameSession createSession(Activity, Surface, RuntimeConfig, String gameId);      // 立即建面
-GameSession createSession(Context, Surface, RuntimeConfig, String gameId);      // 不依赖 Activity
-GameSession createSessionWarm(Activity, RuntimeConfig, String gameId);           // 预热,surface 后补
-Result<GameSession> createSessionSafe(Activity, Surface, RuntimeConfig, String);  // 不抛错
+GameSession createSession(Activity, Surface, RuntimeConfig, String gameId);      // creates the surface now
+GameSession createSession(Context, Surface, RuntimeConfig, String gameId);      // no Activity needed
+GameSession createSessionWarm(Activity, RuntimeConfig, String gameId);           // warm start; surface supplied later
+Result<GameSession> createSessionSafe(Activity, Surface, RuntimeConfig, String);  // does not throw
 Result<GameSession> createSessionWarmSafe(Activity, RuntimeConfig, String);
 ```
 
@@ -64,7 +64,7 @@ GameSession session = r.getValue();
 
 ```java
 if (!runtime.isNativeLoaded() || !runtime.isDeviceSupported()) {
-    // 向用户显示最低系统要求,不要默默崩
+    // tell the user the minimum OS requirement; do not crash silently
 }
 ```
 

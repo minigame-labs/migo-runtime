@@ -33,15 +33,15 @@ The Gaps column reflects rejected-promotion facts, not promises for a future rel
 
 ## Quick Decision
 
-- **Production today** → Android, no second choice; the [Android quickstart](/docs/getting-started/android/) is the primary path.
-- **HarmonyOS listing** → the OpenHarmony project genuinely runs: clone the repo, open DevEco, follow the [OpenHarmony quickstart](/docs/getting-started/openharmony/); but before buying hardware, verify multi-finger behavior on the API20 emulator — real-device multi-touch regression is your responsibility.
-- **Desktop channel (Windows)** → the published DLL integrates the C ABI directly; write your own Win32 window and input pump; the [Windows quickstart](/docs/getting-started/windows/) starts from the published package and the API surface pinned by `test-windows-sdk-contract.sh`.
-- **Apple ecosystem** → set expectations against the current integration surface, not a polished quickstart; the [Apple doc](/docs/getting-started/apple/) lists the **actually existing** SwiftPM lanes and their gaps, without fabricating an App Store-ready flow.
+- **Production today** → Android, no second choice; the [Android quickstart](/docs/en/getting-started/android/) is the primary path.
+- **HarmonyOS listing** → the OpenHarmony project genuinely runs: clone the repo, open DevEco, follow the [OpenHarmony quickstart](/docs/en/getting-started/openharmony/); but before buying hardware, verify multi-finger behavior on the API20 emulator — real-device multi-touch regression is your responsibility.
+- **Desktop channel (Windows)** → the published DLL integrates the C ABI directly; write your own Win32 window and input pump; the [Windows quickstart](/docs/en/getting-started/windows/) starts from the published package and the API surface pinned by `test-windows-sdk-contract.sh`.
+- **Apple ecosystem** → set expectations against the current integration surface, not a polished quickstart; the [Apple doc](/docs/en/getting-started/apple/) lists the **actually existing** SwiftPM lanes and their gaps, without fabricating an App Store-ready flow.
 - **Linux desktop host** → positioned as a **development host toolchain**, not a player-facing channel — it is the surface for cross-platform game logic verification, not a 0.9 shipping target.
 
 ## Shared C ABI Layer
 
-The cross-platform shared layer (`MigoEngine` / `MigoSession` / surface attach / `migo_session_send_*` / `migo_query_capabilities`) is in the API reference under [C ABI](/docs/reference/overview/) — the Android Java facade is also a translation layer above the ABI. Regardless of platform, the sequence is always the same: capability query → surface attach → lifecycle channel → input pump. This sequence is platform-agnostic.
+The cross-platform shared layer (`MigoEngine` / `MigoSession` / surface attach / `migo_session_send_*` / `migo_query_capabilities`) is in the API reference under [C ABI](/docs/en/reference/overview/) — the Android Java facade is also a translation layer above the ABI. Regardless of platform, the sequence is always the same: capability query → surface attach → lifecycle channel → input pump. This sequence is platform-agnostic.
 
 ## The Missing Row
 

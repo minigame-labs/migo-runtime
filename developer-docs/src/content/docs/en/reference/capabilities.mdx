@@ -37,7 +37,7 @@ No handle dependency; may be called from any thread. The structure is used exclu
 Example:
 
 ```c
-/* 在创建 engine 之前探测库能力 */
+/* probe the library's capabilities before creating an engine */
 MigoCapabilities caps;
 memset(&caps, 0, sizeof caps);
 caps.struct_size = (uint32_t)sizeof caps;
@@ -45,16 +45,16 @@ caps.abi_version = MIGO_ABI_VERSION_CURRENT;
 
 MigoResult result = migo_query_capabilities(&caps);
 if (result != MIGO_OK) {
-    fprintf(stderr, "migo_query_capabilities 失败: %d\n", (int)result);
+    fprintf(stderr, "migo_query_capabilities failed: %d\n", (int)result);
     return 1;
 }
 fprintf(stderr, "migo: abi %u..%u, platform kinds 0x%llx\n",
         caps.abi_version_min, caps.abi_version_max,
         (unsigned long long)caps.platform_kinds);
 
-/* 在尝试附接之前确认目标 surface 类型受支持 */
+/* confirm the target surface type is supported before attaching */
 if ((caps.platform_kinds & (UINT64_C(1) << MIGO_PLATFORM_WAYLAND_SURFACE)) == 0) {
-    fprintf(stderr, "此构建不支持 Wayland surface\n");
+    fprintf(stderr, "this build does not support Wayland surfaces\n");
     return 1;
 }
 ```
@@ -115,7 +115,7 @@ Idiomatic check for whether a given platform is supported:
 
 ```c
 if ((caps.platform_kinds & (UINT64_C(1) << MIGO_PLATFORM_X11_WINDOW)) != 0) {
-    /* 此构建支持 X11 surface */
+    /* this build supports X11 surfaces */
 }
 ```
 

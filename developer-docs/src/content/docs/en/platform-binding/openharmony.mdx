@@ -14,8 +14,8 @@ sourcePaths:
 ---
 
 This page covers only the platform-binding delta for OpenHarmony. The general
-attach / detach / release contract is described in [Surface Interface](/docs/reference/surface/);
-for Session foreground/background state see [Lifecycle Concepts](/docs/concepts/lifecycle/).
+attach / detach / release contract is described in [Surface Interface](/docs/en/reference/surface/);
+for Session foreground/background state see [Lifecycle Concepts](/docs/en/concepts/lifecycle/).
 
 **Availability:** 0.9 has been validated on the API 20 Mate 70 Pro x86\_64 emulator for surface
 attach, content loading, rendering, and touch input. The `aarch64` path on real devices described
@@ -36,7 +36,7 @@ typedef struct MigoOpenHarmonyNativeWindowDescriptor {
     uint32_t             struct_size;
     uint32_t             abi_version;
     MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW */
-    MigoPlatformDescriptorFlags flags; /* 须为 0 */
+    MigoPlatformDescriptorFlags flags; /* must be 0 */
     void                *native_window; /* OHNativeWindow* */
 } MigoOpenHarmonyNativeWindowDescriptor;
 ```
@@ -106,7 +106,7 @@ void on_xcomponent_surface_destroyed(void) {
     } while (status.state != MIGO_SURFACE_RELEASE_RELEASED);
 
     migo_surface_release_destroy(release);
-    /* 现在才可释放宿主持有的 OHNativeWindow/XComponent 资源。 */
+    /* only now may the host release its OHNativeWindow/XComponent resources. */
 }
 ```
 

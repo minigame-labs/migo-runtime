@@ -111,23 +111,23 @@ Returns:
 The following snippet is taken from `tests/c_host/linux/main.c` and demonstrates minimal Engine initialization and teardown:
 
 ```c
-/* 宿主负责提供三个存储根目录。 */
+/* the host provides the three storage roots. */
 MigoEngineConfig config;
 memset(&config, 0, sizeof(config));
 config.struct_size         = (uint32_t)sizeof(config);
 config.abi_version         = MIGO_ABI_VERSION_CURRENT;
-config.flags               = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT; /* 仅开发用 */
+config.flags               = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT; /* development only */
 config.files_dir_utf8      = "/data/migo/files";
 config.cache_dir_utf8      = "/data/migo/cache";
 config.code_cache_dir_utf8 = "/data/migo/code-cache";
 
 MigoEngine *engine = NULL;
 MigoResult r = migo_engine_create(&config, &engine);
-if (r != MIGO_OK) { /* 处理错误 */ }
+if (r != MIGO_OK) { /* handle the error */ }
 
-/* … 创建 Session，运行内容 … */
+/* … create sessions, run content … */
 
-/* 析构顺序：先 Session，再 Engine */
+/* teardown order: sessions first, then the engine */
 migo_session_destroy(session);
 migo_engine_destroy(engine);
 ```

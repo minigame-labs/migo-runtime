@@ -1,8 +1,9 @@
 import {test, expect, type Page} from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
-// Starlight routes: latest stable at the /docs/ root (no version prefix),
-// zh primary, en TranslationPending stubs under /docs/en/.
+// Starlight routes: the current docs at the /docs/ root (no version prefix),
+// zh primary, the English translation under /docs/en/, and the frozen 0.9
+// archive under /docs/0.9/ (zh) and /docs/en/0.9/ (TranslationPending stubs).
 
 async function openDocsPage(page: Page, path: string) {
   return page.goto(`/docs${path}`, {waitUntil: 'networkidle'});
@@ -41,10 +42,23 @@ test.describe('routing', () => {
   });
 
   test('marks English stub pages as noindex and links back to zh', async ({page}) => {
-    await openDocsPage(page, '/en/');
+    await openDocsPage(page, '/en/0.9/');
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/i);
     await expect(page.locator('.sl-markdown-content')).toContainText('Translation pending');
-    await expect(page.locator('a', {hasText: '中文版本'})).toHaveAttribute('href', '/docs/');
+    await expect(page.locator('a', {hasText: '中文版本'})).toHaveAttribute('href', '/docs/0.9/');
+  });
+
+  test('serves the English translation indexable, linking within English', async ({page}) => {
+    await openDocsPage(page, '/en/');
+    await expect(page.locator('meta[name="robots"][content*="noindex"]')).toHaveCount(0);
+    await expect(page.locator('.sl-markdown-content')).not.toContainText('Translation pending');
+    // A translated page that links into the zh tree drops an English reader
+    // into Chinese on the first click.
+    const hrefs = await page.locator('.sl-markdown-content a[href^="/docs/"]').evaluateAll(
+      (links) => links.map((link) => link.getAttribute('href')),
+    );
+    expect(hrefs.length).toBeGreaterThan(0);
+    expect(hrefs.filter((href) => !href?.startsWith('/docs/en/'))).toEqual([]);
   });
 });
 

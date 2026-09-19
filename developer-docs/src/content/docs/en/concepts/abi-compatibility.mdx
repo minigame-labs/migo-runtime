@@ -65,9 +65,9 @@ descriptor.abi_version = MIGO_ABI_VERSION_1;
 2. Device execution of the Android compatibility and performance gates with no substantive regressions;
 3. Regeneration of the verified V8 manifest for Android release artifacts, plus minimum/latest device gates.
 
-Once all three are cleared, the promotion PR will do all of the following together: flip `MIGO_C_ABI_CANDIDATE` to 0, remove the candidate notice pinned at the top of the [API Reference Overview](/docs/reference/overview/), and rewrite this page's status section as "frozen." Until then, betting on the ABI as a stable release is at your own risk.
+Once all three are cleared, the promotion PR will do all of the following together: flip `MIGO_C_ABI_CANDIDATE` to 0, remove the candidate notice pinned at the top of the [API Reference Overview](/docs/en/reference/overview/), and rewrite this page's status section as "frozen." Until then, betting on the ABI as a stable release is at your own risk.
 
 ## Related
 
-- [API Reference Overview](/docs/reference/overview/) — the CANDIDATE notice and eight-page mapping
-- [Threading and Dispatch](/docs/concepts/threading-and-dispatch/) — the concurrency contract that must be frozen alongside it
+- [API Reference Overview](/docs/en/reference/overview/) — the CANDIDATE notice and eight-page mapping
+- [Threading and Dispatch](/docs/en/concepts/threading-and-dispatch/) — the concurrency contract that must be frozen alongside it

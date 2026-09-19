@@ -22,6 +22,8 @@ The interface has three functional lanes:
 | **Frame ingress lane** | Submit cross-process frame packets to a session and obtain acceptance/rejection decisions and backpressure signals |
 | **Sync barrier lane** | Provide a request/reply mailbox for calls such as `readPixels`, `getImageData`, and `toDataURL` that must block while waiting for a result |
 | **Resource lane** | Reserve and upload large assets such as texture atlases in chunks outside frame packets; a frame may reference them only after validation succeeds |
+| **Service stream** | Everything content asks the host for that is not drawing -- read a file, write a save, load an image, play a sound -- admitted strictly in order and answered on a return stream of its own |
+| **Content origin** | The host serves a game's scripts through the engine's own module-loading rules, so the source WebKit evaluates is the source the embedded runtime evaluates |
 
 ---
 
@@ -338,7 +340,7 @@ Configuration descriptor for creating an external-frame session. Unlike the ordi
 ## migo_session_submit_external_frame
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_submit_external_frame(
     MigoSession              *session,
     const uint8_t            *bytes,
@@ -372,7 +374,7 @@ May be called from a transport thread. For an accepted packet, the library compl
 ## migo_session_request_external_frame
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_request_external_frame(MigoSession *session);
 ```
 
@@ -401,17 +403,18 @@ Callable from any thread; does not block.
 ## migo_uplink_message_kind
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_uplink_message_kind(
     const uint8_t          *bytes,
     size_t                  byte_count,
     MigoUplinkMessageKind  *out_kind);
 ```
 
-The producer's socket carries two kinds of message: frame packets and control messages (today, only "request the next frame"). The transport **asks the library** which door a message goes through instead of comparing magic numbers itself — a host that encoded the rule would be one more implementation of the wire format to drift.
+The producer's socket carries three kinds of message: frame packets, control messages (today, only "request the next frame") and service messages. The transport **asks the library** which door a message goes through instead of comparing magic numbers itself — a host that encoded the rule would be one more implementation of the wire format to drift.
 
 - `MIGO_UPLINK_MESSAGE_CONTROL`: pass it to `migo_session_submit_uplink_control`.
-- `MIGO_UPLINK_MESSAGE_FRAME`: pass it to `migo_session_submit_external_frame`. **Everything that is not a control message is this**, including bytes that are not a frame either — frame ingress refuses them with a verdict the producer sees.
+- `MIGO_UPLINK_MESSAGE_SERVICE`: pass it to `migo_session_submit_service`.
+- `MIGO_UPLINK_MESSAGE_FRAME`: pass it to `migo_session_submit_external_frame`. **Everything that is neither a control nor a service message is this**, including bytes that are not a frame either — frame ingress refuses them with a verdict the producer sees. A third "unknown" answer would need a third place to report it from.
 
 Needs no session and reads at most the first four bytes. `bytes` may be `NULL` when `byte_count` is 0. Messages that arrive on the content origin (the custom scheme) are always frames and need not be asked about.
 
@@ -424,7 +427,7 @@ Threading: stateless; any thread.
 ## migo_session_submit_uplink_control
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_submit_uplink_control(
     MigoSession    *session,
     const uint8_t  *bytes,
@@ -454,7 +457,7 @@ Threading: call on the transport thread, like `migo_session_submit_external_fram
 ## migo_session_take_external_gl_error
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_take_external_gl_error(
     MigoSession *session,
     uint32_t     canvas_id,
@@ -482,7 +485,7 @@ Returns:
 ## migo_session_post_sync_request
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_post_sync_request(
     MigoSession                      *session,
     const MigoSyncRequestDescriptor  *request,
@@ -520,7 +523,7 @@ Blocks until the request is settled: first for the frame it names to be admitted
 ## migo_session_call_sync
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_call_sync(
     MigoSession    *session,
     const uint8_t  *call,
@@ -564,7 +567,7 @@ As for `migo_session_post_sync_request`: it blocks, and only after releasing the
 ## migo_sync_reply_bytes
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_sync_reply_bytes(
     const MigoSyncReply  *reply,
     const uint8_t       **out_bytes,
@@ -578,7 +581,7 @@ Where a reply's bytes are, and how many. Valid until the reply is released. On f
 ## migo_sync_reply_release
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_sync_reply_release(MigoSyncReply *reply);
 ```
 
@@ -589,7 +592,7 @@ Frees a reply; the handle and its bytes are invalid afterwards. `NULL` is refuse
 ## migo_session_poll_sync
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_poll_sync(
     MigoSession      *session,
     uint64_t          now_nanos,
@@ -607,7 +610,7 @@ Threading: serialized with the Session; it may be called on the transport layer'
 ## migo_session_take_sync_reply
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_take_sync_reply(
     MigoSession *session,
     uint8_t     *buffer,
@@ -630,7 +633,7 @@ Threading: serialized with the Session; normally called immediately after `poll_
 ## migo_session_cancel_sync
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_cancel_sync(
     MigoSession      *session,
     uint64_t          now_nanos,
@@ -646,7 +649,7 @@ Threading: serialized with the Session.
 ## migo_session_take_downlink
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MigoResult migo_session_take_downlink(
     MigoSession *session,
     uint8_t     *buffer,
@@ -672,7 +675,7 @@ Threading: serialized with the Session; suitable for the transport send thread.
 ## migo_session_set_downlink_waker
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 typedef void (MIGO_CALL *MigoDownlinkWakerFn)(void *user_data);
 
 MigoResult migo_session_set_downlink_waker(
@@ -699,13 +702,196 @@ Threading: callable from any thread; the waker is called on the session thread.
 
 ---
 
+## migo_owned_bytes_view
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+typedef struct MigoOwnedBytes MigoOwnedBytes;
+
+MigoResult migo_owned_bytes_view(
+    const MigoOwnedBytes  *owned,
+    const uint8_t        **out_bytes,
+    size_t                *out_length);
+```
+
+`MigoOwnedBytes` are bytes the library hands to the caller and owns until `migo_owned_bytes_release`. A service answer can be a whole file, so it is **handed over** rather than copied into a caller buffer. This reports where the bytes are and how many; the view is valid until the handle is released.
+
+Returns:
+
+- `MIGO_OK`: `*out_bytes` and `*out_length` were written.
+- `MIGO_ERROR_INVALID_ARGUMENT`: a pointer is `NULL`; writable outputs receive `NULL` and zero.
+
+Threading: stateless, any thread; do not race a view against `migo_owned_bytes_release` on the same handle.
+
+---
+
+## migo_owned_bytes_release
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MigoResult migo_owned_bytes_release(MigoOwnedBytes *owned);
+```
+
+Frees the bytes; the handle is invalid afterwards. Release each handle exactly once.
+
+Returns: `MIGO_ERROR_INVALID_ARGUMENT` for a `NULL` handle, otherwise `MIGO_OK`.
+
+Threading: any thread.
+
+---
+
+## migo_session_submit_service
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+#define MIGO_SERVICE_MESSAGE_MAX_BYTES 67108864U
+
+MigoResult migo_session_submit_service(
+    MigoSession    *session,
+    const uint8_t  *bytes,
+    size_t          byte_count,
+    uint32_t       *out_refusal_code);
+```
+
+Admits one service message. The service stream carries everything content asks the host to do that is not drawing: read a file, write a save, load an image, play a sound, open a socket. Its messages are sequenced, **admitted strictly in order**, and answered on a return stream of their own. The format is `contracts/frame-wire/wire-v1.md`, *The service stream*; a transport parses none of it.
+
+Transport:
+
+- A message of at most 65536 bytes arrives on the producer's socket (`migo_uplink_message_kind` answers `MIGO_UPLINK_MESSAGE_SERVICE`); a larger one as a POST to the content origin's service endpoint. A transport reading a POST refuses one larger than `MIGO_SERVICE_MESSAGE_MAX_BYTES` before reading it.
+- The two paths reorder, so a message that arrives ahead of the one before it is **held** -- up to 256 messages and `MIGO_SERVICE_MESSAGE_MAX_BYTES` -- and admitted when that one arrives. Either way the call returns at once and a POST can be answered straight away.
+
+Rules:
+
+- `bytes` is borrowed for the call; admitted records are copied before it returns.
+- `*out_refusal_code` receives 0 when the message was admitted, held, or ignored as belonging to another runtime generation; otherwise a code from 4001 up (see *Service refusals* in the wire contract). A refusal is also reported to the producer on the return stream: **the stream is broken from there**.
+- Blocks while the session's queue of admitted work is full, which pushes back on the socket; call it on a thread that may block.
+
+Returns:
+
+- `MIGO_OK`: `*out_refusal_code` was written.
+- `MIGO_ERROR_INVALID_ARGUMENT`: `session`, `bytes` or `out_refusal_code` is `NULL`, or `byte_count` is 0.
+- `MIGO_ERROR_INVALID_STATE`: no surface attached yet, or the session has ended.
+
+Threading: the transport's threads (the socket reader or the content origin's request thread); may block.
+
+---
+
+## migo_session_take_service_message
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MigoResult migo_session_take_service_message(
+    MigoSession      *session,
+    MigoOwnedBytes  **out_message);
+```
+
+Takes the next message of answers and events the host owes the producer. `*out_message` receives `NULL` when nothing is queued -- the normal answer, not an error. Otherwise send the bytes on the socket **unread**, then release them with `migo_owned_bytes_release`.
+
+Call it wherever `migo_session_take_downlink` is called: the downlink waker fires for both.
+
+Returns:
+
+- `MIGO_OK`: `*out_message` was written (possibly `NULL`).
+- `MIGO_ERROR_INVALID_ARGUMENT`: `session` or `out_message` is `NULL`.
+- `MIGO_ERROR_INVALID_STATE`: no surface attached yet.
+
+Threading: as `migo_session_take_downlink`; suits the transport's sending thread.
+
+---
+
+## migo_session_take_parked_reply
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MigoResult migo_session_take_parked_reply(
+    MigoSession      *session,
+    uint32_t          generation,
+    uint32_t          request_id,
+    MigoOwnedBytes  **out_reply);
+```
+
+Takes a parked answer. An answer too large to send inline on the return stream is parked; the producer asks the content origin for it by generation and request id, and the content origin takes it with this call. **Taken once**: the library releases its copy as it hands this one over.
+
+`*out_reply` receives `NULL` when there is no such answer -- a producer asking twice, or asking for another generation's; answer that request with a 404.
+
+Returns:
+
+- `MIGO_OK`: `*out_reply` was written (possibly `NULL`).
+- `MIGO_ERROR_INVALID_ARGUMENT`: `session` or `out_reply` is `NULL`.
+- `MIGO_ERROR_INVALID_STATE`: no surface attached yet.
+
+Threading: the content origin's request thread; does not block.
+
+---
+
+## migo_session_copy_content_root
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MigoResult migo_session_copy_content_root(
+    MigoSession  *session,
+    char         *buffer,
+    size_t        capacity,
+    size_t       *out_length);
+```
+
+Where the loaded content's code is: the directory the host serves at the content origin's root, written as NUL-terminated UTF-8.
+
+On this execution `migo_session_load_content` mounts the content before it returns -- the entry module is evaluated by WebKit in another process, and that process's host needs this directory to serve it -- so the root is known as soon as that call succeeds.
+
+Returns:
+
+- `MIGO_OK`: written; `*out_length` is the length without the NUL.
+- `MIGO_ERROR_INVALID_ARGUMENT`: `out_length` is `NULL`, `buffer` is `NULL` with a non-zero `capacity`, or `capacity` cannot hold the path and its NUL. When the capacity is too small `*out_length` is still set, so the caller can retry.
+- `MIGO_ERROR_INVALID_STATE`: no content loaded yet.
+- `MIGO_ERROR_INTERNAL`: the path cannot be spelled in UTF-8 (refused rather than lossily rewritten).
+
+Threading: any thread.
+
+---
+
+## migo_session_read_content_module
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+#define MIGO_CONTENT_MODULE_SERVED     0U  /* the bytes are the module's source */
+#define MIGO_CONTENT_MODULE_NOT_FOUND  1U  /* the bytes are why: answer 404 */
+#define MIGO_CONTENT_MODULE_REFUSED    2U  /* the bytes are why: answer 403 */
+#define MIGO_CONTENT_MODULE_UNREADABLE 3U  /* the bytes are why: answer 500 */
+
+MigoResult migo_session_read_content_module(
+    MigoSession      *session,
+    const char       *path,
+    size_t            path_length,
+    MigoOwnedBytes  **out_module,
+    uint32_t         *out_status);
+```
+
+The source of the content module at `path` -- a path on the content origin, such as `"/game.js"` -- **as the engine evaluates it**: resolved through the mounted package (subpackage overlays and pack-backed packages included), contained in it, UTF-8, and with the module loader's one rewrite applied, so a CommonJS entry runs wrapped exactly as it does in the embedded runtime. The content origin answers every script request of a game with this rather than with the file.
+
+Rules:
+
+- `path` is borrowed UTF-8 of `path_length` bytes.
+- `*out_module` receives the bytes -- the source, or the reason it was not served, as `*out_status` says -- which the caller releases with `migo_owned_bytes_release`.
+- Reads the file on the calling thread.
+
+Returns:
+
+- `MIGO_OK`: `*out_module` and `*out_status` were written.
+- `MIGO_ERROR_INVALID_ARGUMENT`: a pointer is `NULL`, `path_length` is 0, or `path` is not UTF-8.
+- `MIGO_ERROR_INVALID_STATE`: no content loaded yet.
+
+Threading: the content origin's request thread; it does file IO, so keep it off the main thread.
+
+---
+
 ## Struct initialization convention
 
 Before filling any descriptor struct, zero it and then set `struct_size` and `abi_version`:
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
-/* 帧注入结果结构体：初始化一次，跨帧复用 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+/* ingress outcome: initialize once, reuse across frames */
 MigoFrameIngressOutcome outcome = {0};
 outcome.struct_size  = sizeof(outcome);
 outcome.abi_version  = MIGO_ABI_VERSION_CURRENT;
@@ -714,21 +900,21 @@ while (has_frame()) {
     const uint8_t *pkt  = next_packet(&pkt_len);
     MigoResult     r    = migo_session_submit_external_frame(
                               session, pkt, pkt_len, &outcome);
-    if (r != MIGO_OK) { /* 调用失败，非帧级拒绝 */ break; }
+    if (r != MIGO_OK) { /* the call failed; not a frame-level refusal */ break; }
 
     switch (outcome.decision) {
     case MIGO_FRAME_INGRESS_ACCEPTED:
-        /* outcome.accepted_sequence 可用于追踪完成通知 */
+        /* outcome.accepted_sequence tracks completion notifications */
         break;
     case MIGO_FRAME_INGRESS_WOULD_BLOCK:
-        /* 背压：等待信用恢复后重试，不可丢弃此帧 */
+        /* backpressure: retry once credit returns; never drop this frame */
         wait_for_credit();
         break;
     case MIGO_FRAME_INGRESS_REJECTED:
-        /* 包格式错误，记录 outcome.wire_error_code */
+        /* malformed packet; log outcome.wire_error_code */
         break;
     case MIGO_FRAME_INGRESS_GENERATION_LOST:
-        /* 运行时代已消失，无需重试 */
+        /* the runtime generation is gone; do not retry */
         break;
     }
 }
@@ -739,9 +925,10 @@ while (has_frame()) {
 - `MigoFrameIngressOutcome`, `MigoSyncOutcome`, and `MigoResourceOutcome` are allocated by the caller; the library only writes them and does not retain them.
 - `MigoSyncRequestDescriptor`, `MigoResourceReservationDescriptor`, and `MigoExternalSessionDescriptor` are filled by the caller and borrowed for the duration of the call; they may be released after the call returns.
 - The `bytes` pointer passed to `migo_session_submit_external_frame` is borrowed only during the call; the library completes its copy before returning.
+- `MigoOwnedBytes` are allocated by the library and handed to the caller, who releases each exactly once with `migo_owned_bytes_release`.
 
 ## See also
 
-- [session.mdx](/docs/reference/session/) — `MigoSessionConfig.launch_nonce` and session lifecycle
-- [surface.mdx](/docs/reference/surface/) — surface attach/detach and vsync driving
-- [engine.mdx](/docs/reference/engine/) — engine creation and capability query
+- [session.mdx](/docs/en/reference/session/) — `MigoSessionConfig.launch_nonce` and session lifecycle
+- [surface.mdx](/docs/en/reference/surface/) — surface attach/detach and vsync driving
+- [engine.mdx](/docs/en/reference/engine/) — engine creation and capability query
