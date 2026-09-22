@@ -35,6 +35,11 @@ futures.workspace = true
 # second one.
 reqwest.workspace = true
 http.workspace = true
+# A response body arrives as `Bytes`, and a chunk handed to content is a
+# window into the one the connection produced rather than a copy of it.
+bytes.workspace = true
+# `data:` URLs, which `fetch` answers without a connection.
+data-url.workspace = true
 # Also the network policy's URL rules, which is the same parser the engine's
 # own `fetch` uses.
 # Classifies an InnerAudioContext `src` exactly as the embedded runtime always

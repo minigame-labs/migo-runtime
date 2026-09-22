@@ -10,4 +10,6 @@
 pub mod address_filter;
 pub mod client;
 pub mod dns_cache;
+pub mod fetch;
 pub mod gate;
+pub mod resources;

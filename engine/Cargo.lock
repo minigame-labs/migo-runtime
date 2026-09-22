@@ -1884,6 +1884,8 @@ name = "migo-services"
 version = "0.9.6"
 dependencies = [
  "base64",
+ "bytes",
+ "data-url",
  "futures",
  "hex",
  "http",
