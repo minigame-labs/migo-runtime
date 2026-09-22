@@ -271,6 +271,17 @@ fn install_observer() {
     });
 }
 
+/// An `NSError`'s code, for a refusal a person has to act on: the four-letter
+/// OSStatus AVFoundation reports, as a number.
+fn error_code(error: *mut Object) -> String {
+    if error.is_null() {
+        return "no error reported".to_string();
+    }
+    let code: unsafe extern "C" fn(*const Object, Sel) -> isize =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    format!("NSError code {}", unsafe { code(error, selector("code")) })
+}
+
 fn shared_session() -> Option<*mut Object> {
     let session_class = class("AVAudioSession")?;
     let session = unsafe { send(session_class, selector("sharedInstance")) };
@@ -321,7 +332,10 @@ pub fn configure(options: AudioSessionOptions) -> EngineResult<()> {
     if !set {
         return Err(EngineError::from_detail(
             ErrorCode::Internal,
-            "setInnerAudioOption:fail the audio session refused the category",
+            format!(
+                "setInnerAudioOption:fail the audio session refused the category ({})",
+                error_code(error)
+            ),
         ));
     }
     let set_active: unsafe extern "C" fn(*const Object, Sel, bool, *mut *mut Object) -> bool =
@@ -331,9 +345,21 @@ pub fn configure(options: AudioSessionOptions) -> EngineResult<()> {
     if !active {
         return Err(EngineError::from_detail(
             ErrorCode::Internal,
-            "setInnerAudioOption:fail the audio session could not be activated",
+            format!(
+                "setInnerAudioOption:fail the audio session could not be activated ({})",
+                error_code(error)
+            ),
         ));
     }
+    info!(
+        "audio session active: category={}, mixWithOthers={}",
+        if options.obey_mute_switch {
+            "ambient"
+        } else {
+            "playback"
+        },
+        options.mix_with_other
+    );
     let mut state = state().lock().expect("the session state is never poisoned");
     state.options = options;
     state.applied = true;
