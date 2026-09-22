@@ -1724,11 +1724,15 @@ import XCTest
                 """
                 export async function start({ report }) {
                   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                  const step = (name) => console.log("audio-step " + name);
                   try {
                     const fs = migo.getFileSystemManager();
                     const encoded = fs.readFileSync("sounds/beep.wav");
+                    step("read " + encoded.byteLength);
                     const ctx = new AudioContext();
+                    step("context " + ctx.sampleRate);
                     const buffer = await ctx.decodeAudioData(encoded);
+                    step("decoded " + buffer.length + " frames");
                     let peak = 0;
                     const samples = buffer.getChannelData(0);
                     for (let index = 0; index < samples.length; index += 1) {
@@ -1745,6 +1749,7 @@ import XCTest
                     gain.connect(analyser);
                     analyser.connect(ctx.destination);
                     source.start();
+                    step("started");
                     let heard = 0;
                     const wave = new Uint8Array(analyser.frequencyBinCount);
                     for (let attempt = 0; attempt < 100 && heard === 0; attempt += 1) {
@@ -1753,6 +1758,7 @@ import XCTest
                       for (const sample of wave) heard = Math.max(heard, Math.abs(sample - 128));
                     }
                     source.stop();
+                    step("heard " + heard);
 
                     const inner = migo.createInnerAudioContext();
                     const events = [];
@@ -1765,6 +1771,7 @@ import XCTest
                     for (let attempt = 0; attempt < 200 && !events.includes("ended"); attempt += 1) {
                       await wait(50);
                     }
+                    step("inner " + events.join(","));
                     const refused = await new Promise((resolve) => {
                       const streamed = migo.createInnerAudioContext();
                       streamed.onError((error) => resolve(error.errMsg || "error"));
@@ -1805,6 +1812,10 @@ import XCTest
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
+            // Printed, because a game that stops halfway through its sounds
+            // says where it stopped and the test otherwise reports only that
+            // nothing arrived.
+            host.onConsole = { _, text in print("[content] \(text)") }
             host.onReport = { message in
                 switch message["type"] as? String {
                 case "audio":
