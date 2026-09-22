@@ -4,6 +4,7 @@
 //! is here, and the ops -- the embedded runtime's, and the external session's
 //! service dispatcher -- are adapters over it.
 
+pub mod audio;
 pub mod content;
 pub mod error;
 pub mod fs;

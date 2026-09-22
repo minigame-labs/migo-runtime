@@ -3,11 +3,9 @@ import {
   op_audio_close_context,
   op_audio_release_context,
   op_audio_decode_audio_data,
-  op_audio_reserve_buffer,
   op_audio_abort_buffer,
   op_audio_create_buffer_source,
   op_audio_create_gain,
-  op_audio_take_decoded_buffer_data,
   op_audio_create_oscillator,
   op_audio_create_delay,
   op_audio_create_biquad_filter,
@@ -201,30 +199,20 @@ class BaseAudioContext {
     }
 
     const decodePromise = (async () => {
+      // The decode is adopted natively as the buffer's PCM, and `info.id`
+      // names it: the AudioBuffer starts with no JavaScript backing, playing
+      // it shares the native samples, and only reading its channels copies
+      // them here. A clip that is only played is never copied at all.
       const info = await op_audio_decode_audio_data(
         this.#nativeId,
         audioData
       );
-
-      let buffer;
-      let globalBufferId = 0;
       try {
-        globalBufferId = op_audio_reserve_buffer(
-          info.channels,
-          info.length,
-          info.sample_rate,
-        );
-        // Atomically move the temporary native decode into one exact,
-        // channel-major planar ArrayBuffer. The audio thread drops its
-        // interleaved allocation before this promise resumes.
-        const flat = await op_audio_take_decoded_buffer_data(this.#nativeId, info.id);
-        buffer = createDecodedAudioBuffer(globalBufferId, info, flat);
+        return createDecodedAudioBuffer(info.id, info);
       } catch (error) {
-        if (globalBufferId !== 0) op_audio_abort_buffer(globalBufferId);
+        op_audio_abort_buffer(info.id);
         throw error;
       }
-
-      return buffer;
     })();
 
     // Legacy callbacks observe the same settlement but are deliberately

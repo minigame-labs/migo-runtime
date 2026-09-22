@@ -45,7 +45,7 @@
       }
     },
     "host_v8_audio": {
-      "reason": "Audio plays on the host (profile D18: PCM never crosses the process boundary; control messages do). Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous. Recording needs the microphone, which the profile does not grant.",
+      "reason": "Audio plays on the host (profile D18: PCM never crosses the process boundary; control messages do). A decode is adopted on the host as the AudioBuffer's PCM, so its samples cross only when content reads its channels (materialize, synchronous) or starts a buffer it wrote. Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous, and so is setInnerAudioOption, whose refusal is what its facade reports as fail. Recording needs the microphone, which the profile does not grant.",
       "ops": {
         "op_audio_abort_buffer": "command",
         "op_audio_analyser_byte_frequency": "async",
@@ -89,7 +89,7 @@
         "op_audio_set_biquad_filter_type": "command",
         "op_audio_set_distance_model": "command",
         "op_audio_set_gain_value": "command",
-        "op_audio_set_inner_audio_option": "command",
+        "op_audio_set_inner_audio_option": "sync",
         "op_audio_set_loop": "command",
         "op_audio_set_node_param": "command",
         "op_audio_set_oscillator_type": "command",
@@ -105,7 +105,6 @@
         "op_audio_stop_constant_source": "command",
         "op_audio_stop_oscillator": "command",
         "op_audio_suspend_context": "async",
-        "op_audio_take_decoded_buffer_data": "async",
         "op_inner_audio_create": "sync",
         "op_inner_audio_destroy": "command",
         "op_inner_audio_get_state": "async",

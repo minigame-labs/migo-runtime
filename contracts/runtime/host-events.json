@@ -37,6 +37,8 @@
     "_internalTriggerMouseDown": 15,
     "_internalTriggerMouseMove": 16,
     "_internalTriggerMouseUp": 17,
-    "_internalTriggerWheel": 18
+    "_internalTriggerWheel": 18,
+    "_internalEnqueueInnerAudioEvent": 19,
+    "_internalDispatch": 20
   }
 }

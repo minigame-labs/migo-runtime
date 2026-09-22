@@ -6,6 +6,16 @@
 // calls -- `migo_services` -- so the answer and the error class are the ones
 // every other platform gives.
 
+import {
+  arrayBufferOf,
+  audioError,
+  bufferInfo,
+  bytesAsNumbers,
+  checkEncodedAudioBytes,
+  floatsAsNumbers,
+  innerAudioState,
+  transferOut,
+} from "./audio.mjs";
 import { engineHost } from "./engine-host.mjs";
 import { drained } from "./engine-frames.mjs";
 import {
@@ -27,6 +37,7 @@ import {
   smiU64,
   stringOf,
   toBool,
+  toF64,
   toI32,
   toU64,
 } from "./op-args.mjs";
@@ -374,4 +385,138 @@ export function op_list_saved_files(dir, prefix) {
       w.str(p);
     })
     .then(savedFiles);
+}
+
+// ---- audio ----------------------------------------------------------------------
+//
+// The audio ops that answer. Each command is sent when the op is called, in
+// the order content made its calls, so "create the node, then stop it" holds
+// across a request and a command; the promise only waits for the answer.
+
+function audioRequest(op, writeArgs) {
+  return servicesOf(engineHost()).request(op, writeArgs);
+}
+
+export function op_audio_close_context(ctxId) {
+  const ctx = smiU32(ctxId, "ctx_id");
+  return audioRequest(SERVICE_OP.op_audio_close_context, (w) => w.u32(ctx)).then(nothing);
+}
+
+export function op_audio_resume_context(ctxId) {
+  const ctx = smiU32(ctxId, "ctx_id");
+  return audioRequest(SERVICE_OP.op_audio_resume_context, (w) => w.u32(ctx)).then(nothing);
+}
+
+export function op_audio_suspend_context(ctxId) {
+  const ctx = smiU32(ctxId, "ctx_id");
+  return audioRequest(SERVICE_OP.op_audio_suspend_context, (w) => w.u32(ctx)).then(nothing);
+}
+
+/// `decodeAudioData`: the encoded bytes go to the host and the ArrayBuffer is
+/// detached, as the embedded op detaches it before its promise exists. The
+/// answer is the buffer's shape and the id of the host entry its PCM was
+/// adopted as -- the PCM itself stays on the host.
+///
+/// The checks the embedded op makes before its future are made here too, in
+/// its order, and throw where it throws: a buffer that cannot be given up, one
+/// past the size bound (which would otherwise cross before the host refused
+/// it).
+export function op_audio_decode_audio_data(ctxId, data) {
+  const ctx = smiU32(ctxId, "ctx_id");
+  const buffer = arrayBufferOf(data);
+  const cannotDetach = "audioData is detached or cannot be detached";
+  if (buffer.detached === true) throw audioError(cannotDetach);
+  checkEncodedAudioBytes(buffer.byteLength);
+  const encoded = transferOut(buffer, cannotDetach);
+  return audioRequest(SERVICE_OP.op_audio_decode_audio_data, (w) => {
+    w.u32(ctx);
+    w.bytes(encoded);
+  }).then(bufferInfo);
+}
+
+export function op_audio_stop(nodeId, when) {
+  const node = smiU32(nodeId, "node_id");
+  const at = toF64(when, "when");
+  return audioRequest(SERVICE_OP.op_audio_stop, (w) => {
+    w.u32(node);
+    w.f64(at);
+  }).then(nothing);
+}
+
+export function op_audio_connect(src, dst, srcOutput, dstInput) {
+  const from = smiU32(src, "src");
+  const to = smiU32(dst, "dst");
+  const output = smiU32(srcOutput, "src_output");
+  const input = smiU32(dstInput, "dst_input");
+  return audioRequest(SERVICE_OP.op_audio_connect, (w) => {
+    w.u32(from);
+    w.u32(to);
+    w.u32(output);
+    w.u32(input);
+  }).then(nothing);
+}
+
+export function op_audio_disconnect(nodeId) {
+  const node = smiU32(nodeId, "node_id");
+  return audioRequest(SERVICE_OP.op_audio_disconnect, (w) => w.u32(node)).then(nothing);
+}
+
+/// `#[buffer] Vec<u8>`: a Uint8Array, as the host sent it.
+export function op_audio_analyser_byte_time_domain(nodeId) {
+  const node = smiU32(nodeId, "node_id");
+  return audioRequest(SERVICE_OP.op_audio_analyser_byte_time_domain, (w) => w.u32(node));
+}
+
+/// `#[buffer] Vec<u8>` holding `f32`s: the facade views them as a Float32Array.
+export function op_audio_analyser_float_time_domain(nodeId) {
+  const node = smiU32(nodeId, "node_id");
+  return audioRequest(SERVICE_OP.op_audio_analyser_float_time_domain, (w) => w.u32(node));
+}
+
+/// `#[serde] Vec<u8>`: an Array of Numbers.
+export function op_audio_analyser_byte_frequency(nodeId) {
+  const node = smiU32(nodeId, "node_id");
+  return audioRequest(SERVICE_OP.op_audio_analyser_byte_frequency, (w) => w.u32(node)).then(
+    bytesAsNumbers,
+  );
+}
+
+/// `#[serde] Vec<f32>`: an Array of Numbers.
+export function op_audio_analyser_float_frequency(nodeId) {
+  const node = smiU32(nodeId, "node_id");
+  return audioRequest(SERVICE_OP.op_audio_analyser_float_frequency, (w) => w.u32(node)).then(
+    floatsAsNumbers,
+  );
+}
+
+/// `#[serde] (Vec<f32>, Vec<f32>)`: magnitude and phase, two Arrays.
+export function op_audio_get_frequency_response(nodeId, frequencies) {
+  const node = smiU32(nodeId, "node_id");
+  const hz = bytesOf(frequencies, "frequencies");
+  return audioRequest(SERVICE_OP.op_audio_get_frequency_response, (w) => {
+    w.u32(node);
+    w.bytes(hz);
+  }).then(([magnitude, phase]) => [floatsAsNumbers(magnitude), floatsAsNumbers(phase)]);
+}
+
+export function op_audio_get_reduction(nodeId) {
+  const node = smiU32(nodeId, "node_id");
+  return audioRequest(SERVICE_OP.op_audio_get_reduction, (w) => w.u32(node));
+}
+
+/// An InnerAudioContext's `src`: a sound in the game's package, read and
+/// decoded on the host. A streamed `http(s)` source is refused until this lane
+/// has its network service.
+export function op_inner_audio_load_url(id, src) {
+  const inner = smiU32(id, "id");
+  const source = stringOf(src, "src");
+  return audioRequest(SERVICE_OP.op_inner_audio_load_url, (w) => {
+    w.u32(inner);
+    w.str(source);
+  }).then(nothing);
+}
+
+export function op_inner_audio_get_state(id) {
+  const inner = smiU32(id, "id");
+  return audioRequest(SERVICE_OP.op_inner_audio_get_state, (w) => w.u32(inner)).then(innerAudioState);
 }

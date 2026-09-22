@@ -2244,6 +2244,14 @@ fn run_external_session(
     // submitted before the renderer existed would be told the renderer is not
     // ready, which is the truthful answer.
     let lifecycle_sender = Arc::new(render.sender());
+    // Audio plays here, driven by the service stream: its commands go through
+    // the audio service's own sender, and buffer ids are scoped to the one
+    // runtime generation this session has. Bound before the first service
+    // work can be dispatched, which is below.
+    services
+        .context
+        .bind_audio(audio.sender(), restart_boundary.current());
+    let audio_signal = audio.start_signal();
     // The services that hand the renderer work -- image uploads -- reach it
     // through these, owned by this thread's dispatcher so the sender goes when
     // the session does.
@@ -2329,6 +2337,9 @@ fn run_external_session(
                     let Some(command) = input_route::route(&mut input, &mut sink, command) else {
                         continue;
                     };
+                    let Some(command) = route_audio_event(&sink, command) else {
+                        continue;
+                    };
                     if !handle_command(
                         id, command, &mut render, &mut audio, &backgrounded, &ingress,
                         &platform_for_error,
@@ -2341,6 +2352,16 @@ fn run_external_session(
                 // service host being dropped -- teardown, not an error.
                 Some(work) = service_work.recv() => {
                     services.dispatch(work);
+                }
+                // Content's first audio command: start the audio thread it is
+                // waiting in the queue for. The signal disables itself once the
+                // thread is installed, so this stops firing.
+                () = audio_signal.notified() => {
+                    if let Err(error) = audio.check_and_start() {
+                        // Not fatal: the game runs without sound, as it does
+                        // in process when the device will not open.
+                        error!("[Host {id}] failed to start the audio thread: {error}");
+                    }
                 }
                 () = render_notify.notified() => {
                     drain_render_events(
@@ -2419,6 +2440,33 @@ fn run_external_session(
         drop(lifecycle_sender);
         info!("[Host {id}] external-frame session exited");
     });
+}
+
+/// The audio thread's events and the host's audio interruptions, delivered to
+/// content as the embedded runtime delivers them: an InnerAudioContext event
+/// to its enqueue hook, an interruption to the engine's interruption hooks
+/// through the bridge's dispatch entry point. Neither pauses anything here --
+/// in process an interruption is the game's to act on (`03_audio_interruption.js`),
+/// and a lane that paused natively besides would play the same game
+/// differently. Anything else is returned for [`handle_command`].
+fn route_audio_event(sink: &ServiceEventSink<'_>, command: HostCommand) -> Option<HostCommand> {
+    match command {
+        HostCommand::InnerAudioEvent {
+            id,
+            event_type,
+            current_time,
+        } => sink.inner_audio_event(id, event_type.as_str(), current_time),
+        HostCommand::OnAudioInterruptionBegin => sink.host_hook(
+            "_internalTriggerAudioInterruptionBegin",
+            shared::js_escape::HOOK_ARGS_NONE,
+        ),
+        HostCommand::OnAudioInterruptionEnd => sink.host_hook(
+            "_internalTriggerAudioInterruptionEnd",
+            shared::js_escape::HOOK_ARGS_NONE,
+        ),
+        other => return Some(other),
+    }
+    None
 }
 
 /// Returns `false` when the session should stop.
@@ -2538,9 +2586,6 @@ fn handle_command(
             render.pause();
             audio.pause();
         }
-
-        HostCommand::OnAudioInterruptionBegin => audio.pause(),
-        HostCommand::OnAudioInterruptionEnd => audio.resume(),
 
         // Input was routed to the producer before this match. What is left is
         // addressed to a capability this lane does not carry yet -- sensors,

@@ -26,7 +26,12 @@ shared = { package = "migo-shared", path = "../shared", default-features = false
 # `zip-extract` because `unzip` and `readZipEntry` are file-system calls every
 # execution offers; the embedded runtime has always enabled it.
 migo-io = { path = "../io", default-features = false, features = ["zip-extract"] }
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util"] }
+# Classifies an InnerAudioContext `src` exactly as the embedded runtime always
+# has -- WHATWG parsing, so " HTTP://x" is remote -- and names the URL a
+# caller's network policy admits. Already in the build through `deno_core`
+# and the network stack; this is the same version, not a second copy.
+url = "2.5"
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 # Data URLs carry base64 or percent-encoded payloads, and are cache-keyed by

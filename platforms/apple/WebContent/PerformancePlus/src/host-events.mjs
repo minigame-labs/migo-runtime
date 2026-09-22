@@ -33,6 +33,8 @@ export const HOST_EVENT = Object.freeze({
   _internalTriggerMouseMove: 16,
   _internalTriggerMouseUp: 17,
   _internalTriggerWheel: 18,
+  _internalEnqueueInnerAudioEvent: 19,
+  _internalDispatch: 20,
 });
 
 /** event number → the bridge function it calls, once the engine is bound. */

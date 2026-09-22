@@ -44,6 +44,7 @@ import {
   toF64,
   toU64,
 } from "./op-args.mjs";
+import { arrayBufferAnswer } from "./audio.mjs";
 import { flushToHost } from "./engine-frames.mjs";
 import { decodeServiceOutcome, encodeServiceCall } from "./service.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
@@ -598,4 +599,68 @@ export function op_require_resolve_and_read(specifier, referrerDir) {
       w.str(from);
     }),
   );
+}
+
+// ---- audio ----------------------------------------------------------------------
+//
+// Audio plays on the host. These are the audio ops whose failure content
+// catches where it made the call -- creating a context or a player, admitting
+// an AudioBuffer, setting the session's audio option -- so they wait for the
+// host's answer; everything else about audio is a command (lane-command.mjs).
+
+/// `new AudioContext()`: the id is content's, so the context is usable at once.
+export function op_audio_create_context(ctxId, sampleRate) {
+  const ctx = smiU32(ctxId, "ctx_id");
+  const rate = smiU32(sampleRate, "sample_rate");
+  callService(SERVICE_OP.op_audio_create_context, (w) => {
+    w.u32(ctx);
+    w.u32(rate);
+  });
+}
+
+/// Admit a writable AudioBuffer before content allocates its backing.
+export function op_audio_reserve_buffer(channels, length, sampleRate) {
+  const c = smiU32(channels, "channels");
+  const l = smiU32(length, "length");
+  const r = smiU32(sampleRate, "sample_rate");
+  return callService(SERVICE_OP.op_audio_reserve_buffer, (w) => {
+    w.u32(c);
+    w.u32(l);
+    w.u32(r);
+  });
+}
+
+/// A decoded buffer's channels, when content first reads them: the one time
+/// its PCM crosses to WebContent. The planar ArrayBuffer is the reply's own.
+export function op_audio_materialize_buffer(bufferId) {
+  const id = smiU32(bufferId, "buffer_id");
+  return arrayBufferAnswer(callService(SERVICE_OP.op_audio_materialize_buffer, (w) => w.u32(id)));
+}
+
+/// `setInnerAudioOption`, whose refusal is the facade's `fail`: answered, so
+/// it is not reported as success before the host has said whether it can.
+export function op_audio_set_inner_audio_option(mixWithOther, obeyMuteSwitch, speakerOn) {
+  const mix = toBool(mixWithOther, "mix_with_other");
+  const obey = toBool(obeyMuteSwitch, "obey_mute_switch");
+  const speaker = toBool(speakerOn, "speaker_on");
+  callService(SERVICE_OP.op_audio_set_inner_audio_option, (w) => {
+    w.bool(mix);
+    w.bool(obey);
+    w.bool(speaker);
+  });
+}
+
+export function op_audio_get_available_audio_sources() {
+  return callService(SERVICE_OP.op_audio_get_available_audio_sources);
+}
+
+export function op_media_audio_player_create(playerId) {
+  const id = smiU32(playerId, "player_id");
+  callService(SERVICE_OP.op_media_audio_player_create, (w) => w.u32(id));
+}
+
+/// `createInnerAudioContext()`: the id is content's, as for a context.
+export function op_inner_audio_create(id) {
+  const inner = smiU32(id, "id");
+  callService(SERVICE_OP.op_inner_audio_create, (w) => w.u32(inner));
 }

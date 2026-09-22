@@ -53,7 +53,10 @@ pub type AudioResp<T> = oneshot::Sender<EngineResult<T>>;
 
 /// Information about a decoded audio buffer.
 ///
-/// Returned by `DecodeAudioData` to provide metadata about the decoded audio.
+/// What `op_audio_decode_audio_data` answers once the decode is adopted: `id`
+/// is then the buffer's `AudioResourceRegistry` serial, the id every other
+/// `AudioBuffer` op takes. (`CreateBuffer`'s answer has the same shape with a
+/// context-local id.)
 ///
 /// # Example Response
 ///
@@ -78,6 +81,18 @@ pub struct AudioBufferInfo {
     pub channels: u32,
     /// Total number of sample frames.
     pub length: u32,
+}
+
+/// A finished decode: interleaved samples at the context's rate.
+///
+/// `frames * channels == samples.len()`, which the decoder guarantees and the
+/// registry checks again when it adopts them.
+#[derive(Debug)]
+pub struct DecodedPcm {
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub frames: u32,
+    pub samples: Vec<f32>,
 }
 
 /// Playback state of an AudioContext.
@@ -156,13 +171,19 @@ pub enum AudioCmd {
     },
 
     // ==================== Buffer ====================
-    /// Decode audio data into an AudioBuffer.
-    /// Data is Arc-wrapped to avoid copying the entire compressed file
-    /// from the JS thread to the audio/decode thread.
+    /// Decode audio data for `decodeAudioData`, at the context's rate.
+    ///
+    /// The samples are answered, not kept: the caller adopts them into the
+    /// host's `AudioResourceRegistry` as the `AudioBuffer`'s frozen snapshot,
+    /// so a decoded clip lives in one allocation that playback shares and
+    /// JavaScript only copies if it reads the channels. The context is still
+    /// named because a decode belongs to it -- closing it refuses the answer.
+    /// Data is Arc-wrapped to avoid copying the entire compressed file from
+    /// the JS thread to the audio/decode thread.
     DecodeAudioData {
         ctx_id: AudioContextId,
         data: std::sync::Arc<Vec<u8>>,
-        resp: AudioResp<AudioBufferInfo>,
+        resp: AudioResp<DecodedPcm>,
     },
 
     /// Idempotently release this context's map reference to an AudioBuffer.
@@ -523,15 +544,6 @@ pub enum AudioCmd {
         resp: AudioResp<Vec<f32>>,
     },
 
-    /// Move a decoded buffer out of its temporary context entry and return one
-    /// planar, channel-major vector. The temporary native allocation is
-    /// released whether conversion succeeds or fails.
-    TakeDecodedBufferData {
-        ctx_id: AudioContextId,
-        buffer_id: AudioBufferId,
-        resp: AudioResp<Vec<f32>>,
-    },
-
     /// Copy data to a buffer channel
     CopyToChannel {
         ctx_id: AudioContextId,
@@ -721,7 +733,6 @@ impl AudioCmd {
             | Self::GetAnalyserFloatFrequencyData { .. }
             | Self::CreateBuffer { .. }
             | Self::GetChannelData { .. }
-            | Self::TakeDecodedBufferData { .. }
             | Self::CreateMediaAudioPlayer { .. }
             | Self::MediaAudioPlayerAddSource { .. }
             | Self::MediaAudioPlayerRemoveSource { .. }
@@ -836,16 +847,5 @@ mod tests {
 
         assert_eq!(start.queued_payload_bytes(), 0);
         assert_eq!(replace.queued_payload_bytes(), 0);
-    }
-
-    #[test]
-    fn all_channel_data_response_is_flat() {
-        let (resp, _receiver) = oneshot::channel::<EngineResult<Vec<f32>>>();
-        let command = AudioCmd::TakeDecodedBufferData {
-            ctx_id: 7,
-            buffer_id: 11,
-            resp,
-        };
-        assert_eq!(command.queued_payload_bytes(), 0);
     }
 }

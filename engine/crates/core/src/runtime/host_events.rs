@@ -49,6 +49,8 @@ host_events! {
     _internalTriggerMouseMove = 16,
     _internalTriggerMouseUp = 17,
     _internalTriggerWheel = 18,
+    _internalEnqueueInnerAudioEvent = 19,
+    _internalDispatch = 20,
 }
 
 /// The size of one `MigoTouchPoint` record, as `01_touch.js` reads it.
@@ -134,6 +136,36 @@ fn gamepad_packed(state: &GamepadState) -> Vec<OwnedValue> {
         packed.push(OwnedValue::F64(f64::from(button.value)));
     }
     packed
+}
+
+impl ServiceEventSink<'_> {
+    /// An InnerAudioContext event from the audio thread -- `canplay`, `play`,
+    /// `ended`, `timeUpdate` -- as the embedded binding passes it: the
+    /// context's id, the event's name, the playback position in seconds.
+    pub(crate) fn inner_audio_event(&self, id: u32, event_type: &str, current_time: f64) {
+        self.send(
+            event::_internalEnqueueInnerAudioEvent,
+            vec![
+                OwnedValue::U32(id),
+                OwnedValue::Str(event_type.to_owned()),
+                OwnedValue::F64(current_time),
+            ],
+        );
+    }
+
+    /// A host-bridge hook called by name through the bridge's one dispatch
+    /// entry point, with its arguments as a JSON array: how the embedded
+    /// runtime delivers every hook that has no binding of its own
+    /// (`invoke_host_hook`) -- the audio interruption, the lifecycle.
+    pub(crate) fn host_hook(&self, hook: &str, args_json: &str) {
+        self.send(
+            event::_internalDispatch,
+            vec![
+                OwnedValue::Str(hook.to_owned()),
+                OwnedValue::Str(args_json.to_owned()),
+            ],
+        );
+    }
 }
 
 impl InputSink for ServiceEventSink<'_> {

@@ -79,7 +79,6 @@ use crate::audio::ops::{
     op_audio_stop_constant_source,
     op_audio_stop_oscillator,
     op_audio_suspend_context,
-    op_audio_take_decoded_buffer_data,
     // InnerAudioContext ops
     op_inner_audio_create,
     op_inner_audio_destroy,
@@ -145,7 +144,6 @@ extension!(host_v8_audio,
         op_audio_param_cancel_scheduled,
         // AudioBuffer data access ops
         op_audio_create_buffer,
-        op_audio_take_decoded_buffer_data,
         op_audio_get_channel_data,
         op_audio_copy_to_channel,
         // Phase 2: OscillatorNode ops

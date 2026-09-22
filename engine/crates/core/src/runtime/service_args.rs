@@ -145,3 +145,31 @@ pub(crate) fn optional_bytes(
         other => bytes(op, index, other).map(Some),
     }
 }
+
+/// `f64`: a Number, as the producer converted it.
+pub(crate) fn f64_of(op: u32, index: usize, value: OwnedValue) -> Result<f64, ServiceError> {
+    match value {
+        OwnedValue::F64(value) => Ok(value),
+        other => Err(wrong_type(op, index, "f64", &other)),
+    }
+}
+
+/// `f32`: its bits, which the producer rounded once (`f32BitsOf`) exactly as
+/// `as f32` rounds -- carried as bits so no second rounding can happen.
+pub(crate) fn f32_bits_of(op: u32, index: usize, value: OwnedValue) -> Result<f32, ServiceError> {
+    match value {
+        OwnedValue::U32(bits) => Ok(f32::from_bits(bits)),
+        other => Err(wrong_type(op, index, "f32 bits", &other)),
+    }
+}
+
+/// `#[serde] Vec<f64>`: an array of Numbers.
+pub(crate) fn f64s(op: u32, index: usize, value: OwnedValue) -> Result<Vec<f64>, ServiceError> {
+    match value {
+        OwnedValue::Array(values) => values
+            .into_iter()
+            .map(|value| f64_of(op, index, value))
+            .collect(),
+        other => Err(wrong_type(op, index, "array of numbers", &other)),
+    }
+}

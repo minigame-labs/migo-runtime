@@ -1704,6 +1704,182 @@ import XCTest
 
         /// Attached and off-screen: an unattached web view is killed since iOS 16
         /// and an occluded one stops executing JavaScript.
+        /// A game hears its own sounds: both audio APIs, on the host's audio
+        /// thread, driven from WebContent.
+        ///
+        /// The acceptance for D15.5c. `decodeAudioData` sends the packaged
+        /// bytes and gets back a buffer whose PCM never crossed -- the host
+        /// adopted it -- which is why `getChannelData` is what brings the
+        /// samples over, and why the graph can play the buffer with nothing but
+        /// its id. What the analyser hears is the proof that the graph the
+        /// producer built (source -> gain -> analyser -> destination) is the one
+        /// the host's audio thread rendered. `InnerAudioContext` takes the same
+        /// file by path, read and decoded inside the game's sandbox, and its
+        /// events come back the other way -- through the service stream as host
+        /// events -- to the listeners the game registered.
+        func testAGamePlaysItsPackagedSoundsThroughTheHostsAudio() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let content = Data(
+                """
+                export async function start({ report }) {
+                  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                  try {
+                    const fs = migo.getFileSystemManager();
+                    const encoded = fs.readFileSync("sounds/beep.wav");
+                    const ctx = new AudioContext();
+                    const buffer = await ctx.decodeAudioData(encoded);
+                    let peak = 0;
+                    const samples = buffer.getChannelData(0);
+                    for (let index = 0; index < samples.length; index += 1) {
+                      peak = Math.max(peak, Math.abs(samples[index]));
+                    }
+                    const source = ctx.createBufferSource();
+                    source.buffer = buffer;
+                    source.loop = true;
+                    const gain = ctx.createGain();
+                    gain.gain.value = 0.5;
+                    const analyser = ctx.createAnalyser();
+                    analyser.fftSize = 2048;
+                    source.connect(gain);
+                    gain.connect(analyser);
+                    analyser.connect(ctx.destination);
+                    source.start();
+                    let heard = 0;
+                    const wave = new Uint8Array(analyser.frequencyBinCount);
+                    for (let attempt = 0; attempt < 100 && heard === 0; attempt += 1) {
+                      await wait(50);
+                      await analyser.getByteTimeDomainData(wave);
+                      for (const sample of wave) heard = Math.max(heard, Math.abs(sample - 128));
+                    }
+                    source.stop();
+
+                    const inner = migo.createInnerAudioContext();
+                    const events = [];
+                    inner.onCanplay(() => events.push("canplay"));
+                    inner.onPlay(() => events.push("play"));
+                    inner.onEnded(() => events.push("ended"));
+                    inner.onError((error) => events.push("error:" + JSON.stringify(error)));
+                    inner.src = "sounds/beep.wav";
+                    inner.play();
+                    for (let attempt = 0; attempt < 200 && !events.includes("ended"); attempt += 1) {
+                      await wait(50);
+                    }
+                    const refused = await new Promise((resolve) => {
+                      const streamed = migo.createInnerAudioContext();
+                      streamed.onError((error) => resolve(error.errMsg || "error"));
+                      streamed.src = "https://media.example/clip.mp3";
+                      streamed.play();
+                    });
+                    report({
+                      type: "audio",
+                      channels: buffer.numberOfChannels,
+                      rate: buffer.sampleRate,
+                      duration: buffer.duration,
+                      peak,
+                      heard,
+                      events: events.join(","),
+                      innerDuration: inner.duration,
+                      refused,
+                    });
+                  } catch (error) {
+                    const detail = error instanceof Error ? `${error.name}: ${error.message}` : JSON.stringify(error);
+                    report({ type: "failed", stage: "audio", detail });
+                  }
+                }
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "audio-game", entry: "game/main.mjs",
+                files: ["game/main.mjs": content, "sounds/beep.wav": Self.beepWav])
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let played = expectation(description: "content played its sounds")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, harnessEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "audio":
+                    report = message
+                    played.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    played.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [played], timeout: 240)
+            XCTAssertNil(failure)
+            let answered = try XCTUnwrap(report)
+            XCTAssertEqual(answered["channels"] as? Double, 1, "the clip is mono")
+            // Decoded at the context's rate, so the duration is the clip's and
+            // the rate is the graph's.
+            XCTAssertEqual(answered["duration"] as? Double ?? 0, 0.25, accuracy: 0.02)
+            XCTAssertGreaterThan(answered["rate"] as? Double ?? 0, 8000)
+            XCTAssertEqual(
+                answered["peak"] as? Double ?? 0, 0.8, accuracy: 0.05,
+                "getChannelData is what brings the decoded samples across")
+            XCTAssertGreaterThan(
+                answered["heard"] as? Double ?? 0, 4,
+                "the analyser heard the buffer the graph is playing")
+            XCTAssertEqual(
+                answered["events"] as? String, "canplay,play,ended",
+                "the audio thread's events reached the game's listeners")
+            XCTAssertEqual(answered["innerDuration"] as? Double ?? 0, 0.25, accuracy: 0.02)
+            XCTAssertEqual(
+                (answered["refused"] as? String)?.contains("no network service"), true,
+                "a streamed source says why it cannot be fetched yet, rather than failing silently")
+        }
+
+        /// A quarter second of 440 Hz at 0.8 amplitude: 16-bit mono PCM in a
+        /// WAV container, built here so the fixture is the one the assertions
+        /// describe.
+        private static let beepWav: Data = {
+            let rate = 8000
+            let frames = rate / 4
+            var samples = Data(capacity: frames * 2)
+            for frame in 0..<frames {
+                let value = Int16(
+                    (0.8 * sin(2 * Double.pi * 440 * Double(frame) / Double(rate)) * 32767)
+                        .rounded())
+                samples.append(UInt8(truncatingIfNeeded: value))
+                samples.append(UInt8(truncatingIfNeeded: value >> 8))
+            }
+            func word(_ value: UInt32) -> Data {
+                Data([
+                    UInt8(value & 0xff), UInt8((value >> 8) & 0xff),
+                    UInt8((value >> 16) & 0xff), UInt8((value >> 24) & 0xff),
+                ])
+            }
+            func half(_ value: UInt16) -> Data {
+                Data([UInt8(value & 0xff), UInt8((value >> 8) & 0xff)])
+            }
+            var wav = Data("RIFF".utf8)
+            wav += word(UInt32(36 + samples.count))
+            wav += Data("WAVEfmt ".utf8)
+            wav += word(16)  // PCM header size
+            wav += half(1)  // PCM
+            wav += half(1)  // mono
+            wav += word(UInt32(rate))
+            wav += word(UInt32(rate * 2))  // bytes per second
+            wav += half(2)  // block align
+            wav += half(16)  // bits per sample
+            wav += Data("data".utf8)
+            wav += word(UInt32(samples.count))
+            wav += samples
+            return wav
+        }()
+
         private func mount(_ host: MigoPerformancePlusHost) {
             let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
             let controller = UIViewController()

@@ -13,7 +13,7 @@ use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::op_state::HostTx;
 use shared::protocol::audio_cmd::{
     AudioBufferInfo, AudioCmd, AudioContextId, AudioContextState, AudioNodeId, AudioResp,
-    InnerAudioEvent, InnerAudioId, InnerAudioInfo, InnerAudioState,
+    DecodedPcm, InnerAudioEvent, InnerAudioId, InnerAudioInfo, InnerAudioState,
 };
 use shared::protocol::host_cmd::HostCommand;
 use tracing::{error, info, warn};
@@ -63,7 +63,7 @@ enum DecodeResult {
     AudioBuffer {
         ctx_id: AudioContextId,
         result: EngineResult<DecodedAudio>,
-        resp: AudioResp<AudioBufferInfo>,
+        resp: AudioResp<DecodedPcm>,
     },
     /// Completed decode for `AudioCmd::InnerAudioLoad`.
     InnerAudio {
@@ -82,7 +82,7 @@ enum DecodeJob {
     AudioBuffer {
         ctx_id: AudioContextId,
         data: std::sync::Arc<Vec<u8>>,
-        resp: AudioResp<AudioBufferInfo>,
+        resp: AudioResp<DecodedPcm>,
     },
     InnerAudio {
         id: InnerAudioId,
@@ -949,57 +949,62 @@ fn start_buffer_scoped(
         && context.start_source(node_id, when, offset, duration)
 }
 
-/// Integrate one completed WebAudio decode only while its originating runtime
+/// Answer one completed WebAudio decode, only while its originating runtime
 /// still owns the response receiver. A closed receiver identifies stale work
 /// from a dropped/restarted runtime; its decoded PCM is dropped immediately,
 /// even if a newer context has since reused the same numeric id.
+///
+/// The samples go to the caller rather than into the context: it adopts them
+/// as the `AudioBuffer`'s frozen snapshot in the host registry, which is what
+/// playback shares (see `AudioResourceRegistry::adopt_frozen`). The context is
+/// consulted only to refuse a decode it did not live to see.
 fn integrate_audio_buffer_decode_result(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &HashMap<AudioContextId, AudioContext>,
     ctx_id: AudioContextId,
     result: EngineResult<DecodedAudio>,
-    resp: AudioResp<AudioBufferInfo>,
+    resp: AudioResp<DecodedPcm>,
 ) {
     if resp.is_closed() {
         return;
     }
+    let answer = result.and_then(|decoded| {
+        if !contexts.contains_key(&ctx_id) {
+            return Err(EngineError::from_detail(
+                ErrorCode::NotFound,
+                format!("AudioContext {} closed during decode", ctx_id),
+            ));
+        }
+        decoded_pcm(decoded)
+    });
+    let _ = resp.send(answer);
+}
 
-    match result {
-        Ok(resampled) => {
-            let Some(context) = contexts.get_mut(&ctx_id) else {
-                let _ = resp.send(Err(EngineError::from_detail(
-                    ErrorCode::NotFound,
-                    format!("AudioContext {} closed during decode", ctx_id),
-                )));
-                return;
-            };
-            let duration = resampled.duration();
-            let sample_rate = resampled.sample_rate;
-            let channels = resampled.channels;
-            let length = resampled.frame_count() as u32;
-            match context.add_buffer(resampled) {
-                Ok(id) => {
-                    let response = AudioBufferInfo {
-                        id,
-                        duration,
-                        sample_rate,
-                        channels,
-                        length,
-                    };
-                    if resp.send(Ok(response)).is_err() {
-                        // The receiver closed between the liveness check and
-                        // send. No caller learned the id, so roll insertion back.
-                        context.remove_buffer(id);
-                    }
-                }
-                Err(error) => {
-                    let _ = resp.send(Err(error));
-                }
-            }
-        }
-        Err(error) => {
-            let _ = resp.send(Err(error));
-        }
+/// A decode's samples with their shape, refusing one no `AudioBuffer` can hold:
+/// a frame count past `u32`, or samples that are not whole frames.
+fn decoded_pcm(decoded: DecodedAudio) -> EngineResult<DecodedPcm> {
+    let channels = usize::try_from(decoded.channels).unwrap_or(0);
+    if channels == 0 || !decoded.samples.len().is_multiple_of(channels) {
+        return Err(EngineError::from_detail(
+            ErrorCode::Internal,
+            format!(
+                "decoder produced {} samples for {} channels",
+                decoded.samples.len(),
+                decoded.channels
+            ),
+        ));
     }
+    let frames = u32::try_from(decoded.samples.len() / channels).map_err(|_| {
+        EngineError::from_detail(
+            ErrorCode::InputSaturated,
+            "decoded audio has more frames than an AudioBuffer can hold",
+        )
+    })?;
+    Ok(DecodedPcm {
+        sample_rate: decoded.sample_rate,
+        channels: decoded.channels,
+        frames,
+        samples: decoded.samples,
+    })
 }
 
 /// Result of thread initialization
@@ -2342,34 +2347,6 @@ fn run_audio_thread(
                     }
                 }
 
-                AudioCmd::TakeDecodedBufferData {
-                    ctx_id,
-                    buffer_id,
-                    resp,
-                } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id) {
-                        match ctx.take_decoded_buffer_data(buffer_id) {
-                            Ok(Some(data)) => {
-                                let _ = resp.send(Ok(data));
-                            }
-                            Ok(None) => {
-                                let _ = resp.send(Err(EngineError::from_detail(
-                                    ErrorCode::NotFound,
-                                    format!("Buffer {} not found in context {}", buffer_id, ctx_id),
-                                )));
-                            }
-                            Err(error) => {
-                                let _ = resp.send(Err(error));
-                            }
-                        }
-                    } else {
-                        let _ = resp.send(Err(EngineError::from_detail(
-                            ErrorCode::NotFound,
-                            format!("AudioContext {} not found", ctx_id),
-                        )));
-                    }
-                }
-
                 AudioCmd::CopyToChannel {
                     ctx_id,
                     buffer_id,
@@ -2624,7 +2601,7 @@ fn run_audio_thread(
                     result,
                     resp,
                 } => {
-                    integrate_audio_buffer_decode_result(&mut contexts, ctx_id, result, resp);
+                    integrate_audio_buffer_decode_result(&contexts, ctx_id, result, resp);
                 }
                 DecodeResult::InnerAudio { id, result, resp } => match result {
                     Ok(resampled) => {
@@ -2986,7 +2963,7 @@ mod tests {
         data: Arc<Vec<u8>>,
     ) -> (
         DecodeJob,
-        tokio::sync::oneshot::Receiver<EngineResult<AudioBufferInfo>>,
+        tokio::sync::oneshot::Receiver<EngineResult<DecodedPcm>>,
     ) {
         let (resp, rx) = tokio::sync::oneshot::channel();
         (DecodeJob::AudioBuffer { ctx_id, data, resp }, rx)
@@ -3569,7 +3546,7 @@ mod tests {
     }
 
     #[test]
-    fn abandoned_audio_buffer_decode_result_never_enters_same_numeric_context() {
+    fn abandoned_audio_buffer_decode_result_is_dropped_unanswered() {
         let mut contexts = HashMap::new();
         contexts.insert(12, AudioContext::new(12, 48_000, 2));
         let (resp, receiver) = tokio::sync::oneshot::channel();
@@ -3580,30 +3557,61 @@ mod tests {
             channels: 2,
         };
 
-        integrate_audio_buffer_decode_result(&mut contexts, 12, Ok(decoded), resp);
+        integrate_audio_buffer_decode_result(&contexts, 12, Ok(decoded), resp);
 
         assert_eq!(contexts.get(&12).unwrap().buffer_channels(1), None);
     }
 
     #[test]
-    fn live_audio_buffer_decode_result_is_inserted_and_replied() {
+    fn a_live_decode_answers_its_samples_and_leaves_the_context_untouched() {
         let mut contexts = HashMap::new();
         contexts.insert(13, AudioContext::new(13, 48_000, 2));
         let (resp, mut receiver) = tokio::sync::oneshot::channel();
+        let samples = vec![0.25, -0.25, 0.5, -0.5];
+        let samples_at = samples.as_ptr();
         let decoded = DecodedAudio {
-            samples: vec![0.25, -0.25],
+            samples,
             sample_rate: 48_000,
             channels: 2,
         };
 
-        integrate_audio_buffer_decode_result(&mut contexts, 13, Ok(decoded), resp);
+        integrate_audio_buffer_decode_result(&contexts, 13, Ok(decoded), resp);
 
-        let info = receiver
+        let pcm = receiver
             .try_recv()
             .expect("live receiver gets completion")
-            .expect("decode insertion succeeds");
-        assert_eq!(info.id, 1);
-        assert_eq!(contexts.get(&13).unwrap().buffer_channels(info.id), Some(2));
+            .expect("the decode is answered");
+        assert_eq!((pcm.sample_rate, pcm.channels, pcm.frames), (48_000, 2, 2));
+        // Moved, not copied: the caller adopts this very allocation.
+        assert_eq!(pcm.samples.as_ptr(), samples_at);
+        assert_eq!(contexts.get(&13).unwrap().buffer_channels(1), None);
+    }
+
+    #[test]
+    fn a_decode_whose_context_closed_meanwhile_is_refused() {
+        let contexts = HashMap::new();
+        let (resp, mut receiver) = tokio::sync::oneshot::channel();
+        let decoded = DecodedAudio {
+            samples: vec![0.25],
+            sample_rate: 48_000,
+            channels: 1,
+        };
+
+        integrate_audio_buffer_decode_result(&contexts, 14, Ok(decoded), resp);
+
+        let error = receiver.try_recv().unwrap().expect_err("closed context");
+        assert_eq!(error.code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn samples_that_are_not_whole_frames_are_refused() {
+        let error = decoded_pcm(DecodedAudio {
+            samples: vec![0.0; 3],
+            sample_rate: 48_000,
+            channels: 2,
+        })
+        .expect_err("three samples are not stereo frames");
+        assert_eq!(error.code, ErrorCode::Internal);
     }
 
     #[test]

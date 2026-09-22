@@ -546,6 +546,18 @@ RAN_TESTS+=("$TEST_DIR/op-args.test.mjs")
 node "$TEST_DIR/files.test.mjs"
 RAN_TESTS+=("$TEST_DIR/files.test.mjs")
 
+# --- what an audio command refuses before it is sent ------------------------
+#
+# Audio plays on the host, and almost every audio op is a command: nothing
+# answers it, so an argument the embedded op throws for has to be refused by
+# the producer, before it leaves, with the same class and words. The answers
+# are generated from `migo_services::audio`'s own checks (the Rust test
+# `the_producer_s_command_checks_answer_as_these_do` fails when they drift), and
+# the strings are measured three ways, because the Rust check reads UTF-8 bytes
+# and a producer that counted UTF-16 units would pass every ASCII case.
+node "$TEST_DIR/audio-checks.test.mjs"
+RAN_TESTS+=("$TEST_DIR/audio-checks.test.mjs")
+
 # --- a frame larger than one packet, and what the host will decode ----------
 #
 # The host refuses a packet whose decoded storage is over its budget, and on the

@@ -2,10 +2,12 @@
 use audio::AudioThread;
 
 #[cfg(feature = "host-audio")]
-use shared::audio_channel::{
-    AudioCleanupTicket, AudioCleanupWaitError, AudioCommandReceiver, AudioCommandSendError,
-    AudioCommandSender,
-};
+use shared::audio_channel::{AudioCommandReceiver, AudioCommandSender};
+// The restart barrier's: only an execution whose runtime restarts in place has
+// one. The external execution's generation is fixed for the session's life --
+// a restart there is a new session -- so it neither sends nor awaits it.
+#[cfg(all(feature = "host-audio", feature = "embedded-v8"))]
+use shared::audio_channel::{AudioCleanupTicket, AudioCleanupWaitError, AudioCommandSendError};
 #[cfg(feature = "host-audio")]
 use shared::audio_resources::AudioResourceRegistry;
 #[cfg(feature = "host-audio")]
@@ -18,7 +20,7 @@ use shared::op_state::{AudioHostStartSignal, AudioSender, HostTx};
 use shared::protocol::audio_cmd::AudioCmd;
 #[cfg(feature = "host-audio")]
 use std::sync::Arc;
-#[cfg(feature = "host-audio")]
+#[cfg(all(feature = "host-audio", feature = "embedded-v8"))]
 use std::time::Duration;
 #[cfg(feature = "host-audio")]
 use tracing::info;
@@ -141,7 +143,7 @@ fn complete_prestart_release_all_contexts(rx: &AudioCommandReceiver, pending: &m
     rx.complete_release_all_contexts();
 }
 
-#[cfg(feature = "host-audio")]
+#[cfg(all(feature = "host-audio", feature = "embedded-v8"))]
 fn cleanup_send_error(error: AudioCommandSendError) -> EngineError {
     match error {
         AudioCommandSendError::Full(_) | AudioCommandSendError::ByteLimit(_) => {
@@ -157,7 +159,7 @@ fn cleanup_send_error(error: AudioCommandSendError) -> EngineError {
     }
 }
 
-#[cfg(feature = "host-audio")]
+#[cfg(all(feature = "host-audio", feature = "embedded-v8"))]
 async fn await_cleanup_ticket(ticket: AudioCleanupTicket, timeout: Duration) -> EngineResult<()> {
     match tokio::time::timeout(timeout, ticket.wait()).await {
         Ok(Ok(())) => Ok(()),
@@ -317,6 +319,7 @@ impl AudioService {
     /// after discarding older WebAudio commands and releasing every WebAudio
     /// context. Before lazy start there can be no native contexts, so the
     /// service drops the old backlog/channel itself and completes immediately.
+    #[cfg(feature = "embedded-v8")]
     pub(crate) async fn release_all_contexts(&mut self) -> EngineResult<()> {
         const CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -340,16 +343,19 @@ impl AudioService {
 
     /// End the restart fence only after the old isolate and all of its senders
     /// have been retired. A failed/timed-out barrier deliberately cannot reopen.
+    #[cfg(feature = "embedded-v8")]
     pub(crate) fn finish_release_all_contexts(&mut self) {
         self.tx.finish_release_all_contexts();
     }
 
     /// Fence JS backing admission before the native cleanup barrier begins.
+    #[cfg(feature = "embedded-v8")]
     pub(crate) fn begin_retire(&self, runtime_generation: i64) {
         self.resources.begin_retire(runtime_generation);
     }
 
     /// Return JS backing permits only after the owning isolate is destroyed.
+    #[cfg(feature = "embedded-v8")]
     pub(crate) fn finish_runtime_drop(&self, runtime_generation: i64) {
         self.resources.finish_runtime_drop(runtime_generation);
     }
@@ -558,6 +564,7 @@ mod tests {
         assert!(ticket.is_complete(), "pre-start cleanup completes directly");
     }
 
+    #[cfg(feature = "embedded-v8")]
     #[tokio::test]
     async fn cleanup_timeout_is_fail_closed_and_keeps_late_data_fenced() {
         let (tx, _rx) = shared::audio_channel::channel();
@@ -607,6 +614,7 @@ mod tests {
         assert!(second.resources().unwrap().release_buffer(lease.key()));
     }
 
+    #[cfg(feature = "embedded-v8")]
     #[test]
     fn service_retire_and_drop_forward_to_the_shared_registry() {
         let service = service();
