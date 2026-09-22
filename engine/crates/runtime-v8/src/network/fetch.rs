@@ -41,12 +41,10 @@ use http::header::CONTENT_LENGTH;
 use http::header::HOST;
 use http::header::PRAGMA;
 use http::header::RANGE;
-use http::header::USER_AGENT;
 use reqwest::Body;
 use reqwest::Client;
 use reqwest::Method;
 use reqwest::Response;
-use reqwest::redirect::Policy;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::debug;
@@ -85,49 +83,6 @@ pub(crate) fn is_blocked_header(name: &HeaderName) -> bool {
             | "forwarded"
             | "proxy-authorization"
     )
-}
-
-/// Custom DNS resolver that checks ALL resolved addresses against the
-/// blocked-address list before returning them to reqwest.  This is injected
-/// into every `reqwest::Client` via `ClientBuilder::dns_resolver()`, so
-/// reqwest connects **only** to addresses we have verified — no separate
-/// pre-flight check needed, no double-resolution TOCTOU window.
-///
-/// Note: hyper-util bypasses the resolver for IP-literal hosts, so callers
-/// must also call `reject_blocked_ip_literal()` before sending requests.
-struct SsrfCheckingResolver {
-    operation: &'static str,
-}
-
-impl reqwest::dns::Resolve for SsrfCheckingResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let operation = self.operation;
-        Box::pin(async move {
-            let host = name.as_str();
-            let addr_str = format!("{}:0", host);
-            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(&addr_str)
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
-                .collect();
-
-            for addr in &addrs {
-                if super::address_filter::is_blocked_address(addr) {
-                    return Err(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        format!(
-                            "{}: connection to {} is not allowed (private/loopback address)",
-                            operation,
-                            addr.ip()
-                        ),
-                    ))
-                        as Box<dyn std::error::Error + Send + Sync>);
-                }
-            }
-
-            let addrs: reqwest::dns::Addrs = Box::new(addrs.into_iter());
-            Ok(addrs)
-        })
-    }
 }
 
 #[derive(Serialize)]
@@ -617,7 +572,7 @@ pub async fn op_fetch_send(
     // performed DNS resolution internally.  The pre-flight check in op_fetch
     // only catches IP-literal URLs; this covers the domain-name path.
     if let Some(addr) = remote_addr {
-        if super::address_filter::is_blocked_address(&addr) {
+        if migo_services::network::address_filter::is_blocked_address(&addr) {
             return Err(JsErrorBox::generic(format!(
                 "fetch: connection to {} is not allowed (private/loopback address)",
                 addr.ip()
@@ -689,13 +644,14 @@ pub fn create_http_client(
     enable_http2: bool,
     net_policy: &shared::op_state::NetworkPolicy,
 ) -> Result<Client, AnyError> {
-    create_policy_http_client(
+    migo_services::network::client::create_policy_http_client(
         user_agent,
         enable_http2,
         net_policy,
         super::gate::GateKind::FetchRedirect,
         "fetch",
     )
+    .map_err(|error| AnyError::from(std::io::Error::other(error.to_string())))
 }
 
 /// Build the per-host client used by streamed audio. Construction is lazy at
@@ -705,125 +661,14 @@ pub fn create_http_client(
 pub fn create_audio_http_client(
     net_policy: &shared::op_state::NetworkPolicy,
 ) -> Result<Client, AnyError> {
-    create_policy_http_client(
+    migo_services::network::client::create_policy_http_client(
         "migo",
         true,
         net_policy,
         super::gate::GateKind::AudioStreamRedirect,
         "audio",
     )
-}
-
-fn create_policy_http_client(
-    user_agent: &str,
-    enable_http2: bool,
-    net_policy: &shared::op_state::NetworkPolicy,
-    redirect_kind: super::gate::GateKind,
-    operation: &'static str,
-) -> Result<Client, AnyError> {
-    let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, user_agent.parse().unwrap());
-
-    // Capture network policy for the redirect closure.  `Policy`
-    // builds a boxed `Fn` internally, so we must move a *clone* of
-    // the policy into the closure rather than borrowing from
-    // `net_policy`.
-    let redirect_policy = net_policy.clone();
-
-    // Custom redirect policy: runs the shared gate on every redirect
-    // target so `allowed.com -> 302 -> blocked.com` and
-    // `https -> 302 -> http` are both rejected.  Centralising here
-    // means redirect enforcement never drifts from the initial-URL
-    // enforcement.
-    let ssrf_redirect_policy = Policy::custom(move |attempt| {
-        if attempt.previous().len() >= 10 {
-            return attempt.stop();
-        }
-        match super::gate::evaluate_policy(attempt.url(), &redirect_policy, redirect_kind) {
-            Ok(()) => attempt.follow(),
-            Err(reject) => attempt.error(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                redirect_reject_message(operation, &reject),
-            )),
-        }
-    });
-
-    let mut builder = Client::builder()
-        .dns_resolver(std::sync::Arc::new(SsrfCheckingResolver { operation }))
-        .redirect(ssrf_redirect_policy)
-        .default_headers(headers)
-        // Connect timeout applies to TCP + TLS handshake only; per-
-        // request `RequestBuilder::timeout` still bounds the full
-        // exchange. Mobile networks frequently stall at connect time
-        // when going through captive portals, so cap that specifically
-        // rather than waiting for the OS-level SYN retry window.
-        .connect_timeout(Duration::from_secs(5));
-
-    if enable_http2 {
-        // HTTP/2 multiplexes many streams over a single TCP connection, so we
-        // need fewer idle connections but want to keep them alive longer.
-        builder = builder
-            .pool_max_idle_per_host(3)
-            .pool_idle_timeout(Duration::from_secs(120))
-            .http2_adaptive_window(true)
-            .http2_keep_alive_interval(Duration::from_secs(30))
-            .http2_keep_alive_timeout(Duration::from_secs(10));
-    } else {
-        // HTTP/1.1 needs more idle connections since each handles one
-        // request at a time. Shorter idle timeout to free resources.
-        builder = builder
-            .pool_max_idle_per_host(6)
-            .pool_idle_timeout(Duration::from_secs(90))
-            .http1_only();
-    }
-
-    builder.build().map_err(|e| e.into())
-}
-
-fn redirect_reject_message(operation: &str, reject: &super::gate::GateReject) -> String {
-    let detail = match reject {
-        super::gate::GateReject::BlockedAddress { display } => {
-            format!("connection to {display} is not allowed (private/loopback address)")
-        }
-        super::gate::GateReject::NotWhitelisted { host } => {
-            format!("'{host}' is not in the allowed domain list")
-        }
-        super::gate::GateReject::HttpsRequired => "HTTPS required (enforce_https=true)".to_string(),
-        super::gate::GateReject::UnsupportedScheme { scheme } => {
-            format!("scheme '{scheme}' is not allowed")
-        }
-        super::gate::GateReject::MissingHost => "URL has no host".to_string(),
-    };
-    format!("{operation}: redirect rejected: {detail}")
-}
-
-#[cfg(all(test, feature = "api-media"))]
-mod q10_client_tests {
-    use super::*;
-
-    #[test]
-    fn fetch_redirect_error_vocabulary_stays_backward_compatible() {
-        let reject = super::super::gate::GateReject::NotWhitelisted {
-            host: "blocked.example".to_string(),
-        };
-        assert_eq!(
-            redirect_reject_message("fetch", &reject),
-            "fetch: redirect rejected: 'blocked.example' is not in the allowed domain list"
-        );
-        assert_eq!(
-            redirect_reject_message("audio", &reject),
-            "audio: redirect rejected: 'blocked.example' is not in the allowed domain list"
-        );
-    }
-
-    #[test]
-    fn audio_policy_client_build_is_side_effect_free() {
-        let policy = shared::op_state::NetworkPolicy {
-            domain_whitelist: vec!["media.example".to_string()],
-            enforce_https: true,
-        };
-        create_audio_http_client(&policy).expect("client construction must not require a runtime");
-    }
+    .map_err(|error| AnyError::from(std::io::Error::other(error.to_string())))
 }
 
 #[cfg(test)]

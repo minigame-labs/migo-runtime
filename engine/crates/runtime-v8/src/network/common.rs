@@ -41,7 +41,7 @@ pub(super) async fn resolve_first(addr: &str) -> Result<SocketAddr, std::io::Err
         )
     })?;
     for resolved in &addrs {
-        if super::address_filter::is_blocked_address(resolved) {
+        if migo_services::network::address_filter::is_blocked_address(resolved) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 format!(

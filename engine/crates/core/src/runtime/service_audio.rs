@@ -38,6 +38,9 @@ pub(crate) struct AudioBinding {
     pub(crate) runtime_generation: i64,
     /// What `setInnerAudioOption` acts on, where the platform has one.
     pub(crate) platform: Option<std::sync::Arc<dyn shared::services::AudioPlatformService>>,
+    /// What a streamed `src` is held to: this session's allow list, HTTPS
+    /// enforcement and address rules -- the same policy `fetch` is held to.
+    pub(crate) network_policy: shared::op_state::NetworkPolicy,
 }
 
 impl AudioBinding {
@@ -289,10 +292,20 @@ pub(crate) fn call_async(
             let [inner_id, src] = exactly(op, args)?;
             let inner_id = u32_of(op, 0, inner_id)?;
             let src = service::prepare_inner_audio_src(&string(op, 1, src)?)?;
+            let policy = audio.network_policy.clone();
             let sources = InnerAudioSources {
                 code_dir: sources.code_dir,
                 vfs: sources.vfs,
-                admit_remote: remote_audio_unavailable,
+                // The same gate the embedded runtime holds a streamed source
+                // to, over this session's own policy.
+                admit_remote: move |url: &service::Url| {
+                    migo_services::network::gate::enforce(
+                        url,
+                        &policy,
+                        migo_services::network::gate::GateKind::AudioStream,
+                    )
+                    .map_err(service::audio_error)
+                },
             };
             let tx = tx.clone();
             Box::pin(async move {
@@ -308,16 +321,6 @@ pub(crate) fn call_async(
         }
         other => return Err(not_a(other, "awaited audio")),
     })
-}
-
-/// A streamed `src`, before the network service exists on this lane: refused
-/// with the reason, as the embedded runtime refuses a source its network
-/// policy blocks -- never fetched past the policy every other request is held
-/// to.
-fn remote_audio_unavailable(url: &service::Url) -> Result<(), ServiceError> {
-    Err(service::audio_error(format!(
-        "{url}: this session has no network service to stream audio with"
-    )))
 }
 
 /// Whether `op` is an audio command this module applies.

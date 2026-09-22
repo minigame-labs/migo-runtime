@@ -92,38 +92,29 @@ pub(crate) struct AudioService {
 /// Extracted because the handover itself needs an audio device and a host test
 /// cannot provide one, while this can be observed exactly.
 /// The client streamed audio (`InnerAudioContext.src = "https://..."`) is
-/// fetched with.
-///
-/// The embedded execution's is the network layer's policy-checked client
-/// (allow list, HTTPS, SSRF-checking resolver, redirect gate). The external
-/// execution has no network layer yet -- it arrives with the network service --
-/// so a streamed source is refused with that reason rather than fetched past
-/// the policy every other request is held to.
+/// fetched with: the policy-checked one every outbound request in this engine
+/// uses -- allow list, HTTPS enforcement, an SSRF-checking resolver and a
+/// redirect gate (`migo_services::network::client`). Built lazily and once,
+/// because a session that never streams audio should not pay for a TLS client.
 #[cfg(feature = "host-audio")]
 pub(crate) fn streaming_http_client_factory(
     network_policy: shared::op_state::NetworkPolicy,
 ) -> audio::streaming::StreamingHttpClientFactory {
-    #[cfg(feature = "api-media")]
-    {
-        Arc::new(move || {
-            runtime_v8::create_audio_http_client(&network_policy).map_err(|error| {
-                EngineError::from_detail(
-                    ErrorCode::IoError,
-                    format!("failed to build audio HTTP client: {error}"),
-                )
-            })
+    Arc::new(move || {
+        migo_services::network::client::create_policy_http_client(
+            "migo",
+            true,
+            &network_policy,
+            migo_services::network::gate::GateKind::AudioStreamRedirect,
+            "audio",
+        )
+        .map_err(|error| {
+            EngineError::from_detail(
+                ErrorCode::IoError,
+                format!("failed to build audio HTTP client: {error}"),
+            )
         })
-    }
-    #[cfg(not(feature = "api-media"))]
-    {
-        let _ = network_policy;
-        Arc::new(|| {
-            Err(EngineError::from_detail(
-                ErrorCode::Unsupported,
-                "streamed audio needs the network service, which this session does not have yet",
-            ))
-        })
-    }
+    })
 }
 
 #[cfg(feature = "host-audio")]

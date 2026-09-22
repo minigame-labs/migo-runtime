@@ -2222,8 +2222,9 @@ fn run_external_session(
         mut audio,
         // The network policy and capability snapshot are what the control
         // channel answers a producer's synchronous queries from; both land
-        // with it.
-        network_policy: _network_policy,
+        // with it -- and the policy is also what a streamed audio source is
+        // held to, as it is in the embedded execution.
+        network_policy,
         gpu_caps,
         context_lost: _context_lost,
         timer_backgrounded: _timer_backgrounded,
@@ -2249,9 +2250,11 @@ fn run_external_session(
     // the audio service's own sender, and buffer ids are scoped to the one
     // runtime generation this session has. Bound before the first service
     // work can be dispatched, which is below.
-    services
-        .context
-        .bind_audio(audio.sender(), restart_boundary.current());
+    services.context.bind_audio(
+        audio.sender(),
+        restart_boundary.current(),
+        network_policy.clone(),
+    );
     let audio_signal = audio.start_signal();
     // The services that hand the renderer work -- image uploads -- reach it
     // through these, owned by this thread's dispatcher so the sender goes when

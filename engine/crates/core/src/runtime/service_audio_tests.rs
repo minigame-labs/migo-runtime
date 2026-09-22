@@ -18,6 +18,12 @@ fn binding() -> (AudioBinding, AudioCommandReceiver) {
             ),
             runtime_generation: 1,
             platform: None,
+            // An allow list with one host, so a refusal a test asserts is the
+            // policy's and not "this lane has no network".
+            network_policy: shared::op_state::NetworkPolicy {
+                domain_whitelist: vec!["media.example".to_string()],
+                enforce_https: true,
+            },
         },
         rx,
     )
@@ -302,10 +308,31 @@ fn inner_audio_state_is_answered_in_its_field_order() {
     );
 }
 
+/// A streamed source is held to this session's network policy -- the same gate
+/// `fetch` is held to -- and one it admits reaches the audio thread.
 #[test]
-fn a_streamed_source_is_refused_until_this_lane_has_a_network_service() {
+fn a_streamed_source_goes_through_the_session_s_network_policy() {
     let (audio, rx) = binding();
-    let future = call_async(
+    let refused = call_async(
+        &audio,
+        no_sources(),
+        id::op_inner_audio_load_url,
+        vec![
+            OwnedValue::U32(3),
+            OwnedValue::Str("https://blocked.example/a.mp3".into()),
+        ],
+    )
+    .unwrap();
+    let error = runtime().block_on(refused).unwrap_err();
+    assert_eq!(error.class, "AudioError");
+    assert!(
+        error.message.contains("is not in the allowed list"),
+        "{}",
+        error.message
+    );
+    assert!(rx.try_recv().is_err(), "a refused source is never queued");
+
+    let admitted = call_async(
         &audio,
         no_sources(),
         id::op_inner_audio_load_url,
@@ -315,14 +342,22 @@ fn a_streamed_source_is_refused_until_this_lane_has_a_network_service() {
         ],
     )
     .unwrap();
-    let error = runtime().block_on(future).unwrap_err();
-    assert_eq!(error.class, "AudioError");
-    assert!(
-        error.message.contains("no network service"),
-        "{}",
-        error.message
-    );
-    assert!(rx.try_recv().is_err(), "nothing was queued");
+    let rt = runtime();
+    let answer = rt.spawn(admitted);
+    let command = rt.block_on(async {
+        loop {
+            if let Ok(command) = rx.try_recv() {
+                return command;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+    let AudioCmd::InnerAudioLoadUrl { id: 3, url, resp } = command else {
+        panic!("a streamed load");
+    };
+    assert_eq!(url, "https://media.example/a.mp3");
+    resp.send(Ok(())).unwrap();
+    rt.block_on(answer).unwrap().unwrap();
 }
 
 #[test]

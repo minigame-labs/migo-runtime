@@ -190,7 +190,7 @@ pub async fn op_ws_create(
             ));
         }
         for addr in &addrs {
-            if super::address_filter::is_blocked_address(addr) {
+            if migo_services::network::address_filter::is_blocked_address(addr) {
                 return Err(JsErrorBox::generic(format!(
                     "WebSocket connection to {} is not allowed (private/loopback address)",
                     addr.ip()

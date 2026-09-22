@@ -26,7 +26,17 @@ shared = { package = "migo-shared", path = "../shared", default-features = false
 # `zip-extract` because `unzip` and `readZipEntry` are file-system calls every
 # execution offers; the embedded runtime has always enabled it.
 migo-io = { path = "../io", default-features = false, features = ["zip-extract"] }
-tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util", "net"] }
+# `join_all` for the DNS warm-up, which resolves a capped batch at a time
+# rather than spawning one task per host.
+futures.workspace = true
+# The HTTP client every outbound request is made with (see network::client):
+# one builder, so the resolver and the redirect gate cannot be forgotten by a
+# second one.
+reqwest.workspace = true
+http.workspace = true
+# Also the network policy's URL rules, which is the same parser the engine's
+# own `fetch` uses.
 # Classifies an InnerAudioContext `src` exactly as the embedded runtime always
 # has -- WHATWG parsing, so " HTTP://x" is remote -- and names the URL a
 # caller's network policy admits. Already in the build through `deno_core`

@@ -411,11 +411,13 @@ impl ServiceContext {
         &self,
         sender: shared::op_state::AudioSender,
         runtime_generation: i64,
+        network_policy: shared::op_state::NetworkPolicy,
     ) {
         let _ = self.audio.set(AudioBinding {
             sender,
             runtime_generation,
             platform: crate::services::audio::platform_audio_service(),
+            network_policy,
         });
     }
 

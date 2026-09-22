@@ -31,7 +31,7 @@ const MAX_CONCURRENT_RESOLVES: usize = 6;
 /// could fan out into an unbounded number of background tasks. Callers
 /// (`op_prefetch_dns`) have already applied the domain whitelist and
 /// capped the list length.
-pub(crate) fn pre_resolve(hosts: Vec<String>) {
+pub fn pre_resolve(hosts: Vec<String>) {
     tokio::spawn(async move {
         for batch in hosts.chunks(MAX_CONCURRENT_RESOLVES) {
             let resolves = batch.iter().cloned().map(resolve_one);

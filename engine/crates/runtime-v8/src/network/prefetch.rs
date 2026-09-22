@@ -21,8 +21,8 @@ use deno_core::url::Url;
 use deno_error::JsErrorBox;
 use tracing::debug;
 
-use super::dns_cache;
 use super::fetch::get_or_create_client_from_state;
+use migo_services::network::dns_cache;
 
 /// Maximum number of concurrent prefetch requests.
 const MAX_CONCURRENT_PREFETCH: usize = 6;
