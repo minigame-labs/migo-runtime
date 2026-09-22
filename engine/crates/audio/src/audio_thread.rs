@@ -1134,6 +1134,11 @@ impl AudioThread {
         http_client_factory: StreamingHttpClientFactory,
     ) -> EngineResult<Self> {
         let wakeup_for_thread = wakeup.clone();
+        // What the system does to this process's audio -- a call, Siri, another
+        // app -- reaches content as an interruption, and reaches the stream
+        // gate below as the reason not to restart the unit until it ends.
+        #[cfg(target_os = "ios")]
+        crate::apple_session::watch_interruptions(host_tx.clone());
 
         let handle = thread::Builder::new()
             .name("Migo-AudioThread".into())
@@ -2770,7 +2775,15 @@ fn run_audio_thread(
             }
         }
 
-        let stream_action = stream_gate.next_action(false, output_power_state);
+        // While the system holds the audio -- a call, Siri, another app -- the
+        // unit is stopped and starting it again fails, so the gate is told the
+        // same thing a backgrounded app tells it. The end of the interruption
+        // is what lets it resume, on the tick after it arrives.
+        #[cfg(target_os = "ios")]
+        let interrupted = crate::apple_session::interruption_state().is_interrupted();
+        #[cfg(not(target_os = "ios"))]
+        let interrupted = false;
+        let stream_action = stream_gate.next_action(interrupted, output_power_state);
         if stream_action == Some(AudioStreamAction::Pause) && output.pause_stream() {
             stream_gate.commit(AudioStreamAction::Pause);
             info!("AudioThread entered idle sleep (stream paused)");
