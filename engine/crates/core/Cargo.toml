@@ -86,7 +86,7 @@ graphics = { package = "migo-graphics", path = "../graphics", default-features =
 migo-io = { path = "../io", default-features = false }
 # The work behind the ops, shared with the embedded runtime; the external
 # session's service dispatcher calls it directly.
-migo-services = { path = "../services", optional = true }
+migo-services = { path = "../services", default-features = false, optional = true }
 audio = { package = "migo-audio", path = "../audio", default-features = false, optional = true }
 crossbeam-channel = { workspace = true }
 futures = { workspace = true }
