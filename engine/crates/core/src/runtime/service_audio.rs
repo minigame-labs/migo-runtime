@@ -36,6 +36,8 @@ use super::service_ops::id;
 pub(crate) struct AudioBinding {
     pub(crate) sender: AudioSender,
     pub(crate) runtime_generation: i64,
+    /// What `setInnerAudioOption` acts on, where the platform has one.
+    pub(crate) platform: Option<std::sync::Arc<dyn shared::services::AudioPlatformService>>,
 }
 
 impl AudioBinding {
@@ -162,10 +164,8 @@ pub(crate) fn call_sync(
         }
         id::op_audio_set_inner_audio_option => {
             let [mix_with_other, obey_mute_switch, speaker_on] = exactly(op, args)?;
-            // No platform audio service on this lane yet: the refusal the
-            // embedded op gives without one is the truthful answer.
             service::set_inner_audio_option(
-                None,
+                audio.platform.as_deref(),
                 boolean(op, 0, mix_with_other)?,
                 boolean(op, 1, obey_mute_switch)?,
                 boolean(op, 2, speaker_on)?,
@@ -174,7 +174,7 @@ pub(crate) fn call_sync(
         }
         id::op_audio_get_available_audio_sources => {
             let [] = exactly(op, args)?;
-            service::get_available_audio_sources(None).map(|sources| {
+            service::get_available_audio_sources(audio.platform.as_deref()).map(|sources| {
                 OwnedValue::Array(sources.into_iter().map(OwnedValue::Str).collect())
             })
         }

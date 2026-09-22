@@ -163,11 +163,17 @@ pub fn watch_interruptions(host_tx: shared::op_state::HostTx) {
 }
 
 fn deliver(interrupted: bool) {
-    interruptions().interrupted.store(interrupted, Ordering::Release);
-    let command = if interrupted {
-        HostCommand::OnAudioInterruptionBegin
-    } else {
-        HostCommand::OnAudioInterruptionEnd
+    interruptions()
+        .interrupted
+        .store(interrupted, Ordering::Release);
+    // Built per listener: a host command owns what it carries and is not
+    // cloneable, and these two carry nothing.
+    let command = || {
+        if interrupted {
+            HostCommand::OnAudioInterruptionBegin
+        } else {
+            HostCommand::OnAudioInterruptionEnd
+        }
     };
     let mut listeners = interruptions()
         .listeners
@@ -175,7 +181,7 @@ fn deliver(interrupted: bool) {
         .expect("the interruption listeners are never poisoned");
     // A host whose session has gone takes nothing more; dropping it here is
     // how this list stays the live ones.
-    listeners.retain(|host_tx| host_tx.try_send(command.clone()).is_ok());
+    listeners.retain(|host_tx| host_tx.try_send(command()).is_ok());
 }
 
 /// The notification's `AVAudioSessionInterruptionTypeKey`, as a began/ended.
@@ -224,10 +230,9 @@ fn install_observer() {
             class_addMethod(
                 observer_class,
                 selector("onInterruption:"),
-                std::mem::transmute::<
-                    unsafe extern "C" fn(*const Object, Sel, *const Object),
-                    Imp,
-                >(on_interruption),
+                std::mem::transmute::<unsafe extern "C" fn(*const Object, Sel, *const Object), Imp>(
+                    on_interruption,
+                ),
                 types.as_ptr(),
             )
         };

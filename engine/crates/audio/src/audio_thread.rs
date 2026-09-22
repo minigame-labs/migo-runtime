@@ -949,6 +949,19 @@ fn start_buffer_scoped(
         && context.start_source(node_id, when, offset, duration)
 }
 
+/// Give up a queue no audio thread will run.
+///
+/// Everything already queued is waiting for a thread that will not run it.
+/// Discarding it drops each command's response sender, which fails the awaited
+/// ops with a closed channel; dropping the receiver disconnects the queue, so
+/// every later call fails at once with the audio thread's own error. Without
+/// this a game that decodes a sound on a device that cannot open simply stops:
+/// the promise never settles, and nothing says why.
+fn abandon_queue(rx: AudioCommandReceiver) {
+    rx.discard_prestart_commands();
+    drop(rx);
+}
+
 /// Answer one completed WebAudio decode, only while its originating runtime
 /// still owns the response receiver. A closed receiver identifies stale work
 /// from a dropped/restarted runtime; its decoded PCM is dropped immediately,
@@ -1154,8 +1167,7 @@ impl AudioThread {
                                 "AudioThread (lazy): failed to initialise audio output: {}",
                                 e
                             );
-                            // Drain the channel so senders don't block/leak.
-                            drop(rx);
+                            abandon_queue(rx);
                             return;
                         }
                     };
@@ -3614,6 +3626,37 @@ mod tests {
 
         let error = receiver.try_recv().unwrap().expect_err("closed context");
         assert_eq!(error.code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn a_queue_no_thread_will_run_fails_its_callers_instead_of_holding_them() {
+        let (tx, rx) = shared::audio_channel::channel();
+        let (resp, mut answer) = tokio::sync::oneshot::channel();
+        tx.try_send(AudioCmd::CloseContext { ctx_id: 1, resp })
+            .expect("the fixture queues one awaited command");
+
+        abandon_queue(rx);
+
+        assert!(
+            matches!(
+                answer.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
+            "an awaited command must fail rather than wait for a thread that will not run"
+        );
+        let (later, _) = tokio::sync::oneshot::channel();
+        assert!(
+            matches!(
+                tx.try_send(AudioCmd::CloseContext {
+                    ctx_id: 2,
+                    resp: later
+                }),
+                Err(shared::audio_channel::AudioCommandSendError::Disconnected(
+                    _
+                ))
+            ),
+            "a call made afterwards fails at once"
+        );
     }
 
     #[test]

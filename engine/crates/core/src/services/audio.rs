@@ -174,6 +174,24 @@ async fn await_cleanup_ticket(ticket: AudioCleanupTicket, timeout: Duration) -> 
     }
 }
 
+/// The platform's audio service, where the engine is the platform.
+///
+/// On iOS the process's `AVAudioSession` is the engine's -- nothing else on
+/// that lane configures it (`audio::apple_session`) -- so `setInnerAudioOption`
+/// acts on it directly. Elsewhere the platform's own services answer, or
+/// nothing does.
+#[cfg(feature = "host-audio")]
+pub(crate) fn platform_audio_service() -> Option<Arc<dyn shared::services::AudioPlatformService>> {
+    #[cfg(target_os = "ios")]
+    {
+        Some(audio::apple_session::platform_service())
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        None
+    }
+}
+
 #[cfg(feature = "host-audio")]
 impl AudioService {
     /// Create a lazy audio service. **No thread or HTTP client is created.**

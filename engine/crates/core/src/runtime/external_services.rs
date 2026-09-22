@@ -415,6 +415,7 @@ impl ServiceContext {
         let _ = self.audio.set(AudioBinding {
             sender,
             runtime_generation,
+            platform: crate::services::audio::platform_audio_service(),
         });
     }
 

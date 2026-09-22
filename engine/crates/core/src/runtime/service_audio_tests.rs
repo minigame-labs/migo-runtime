@@ -17,6 +17,7 @@ fn binding() -> (AudioBinding, AudioCommandReceiver) {
                 AudioResourceRegistry::new(),
             ),
             runtime_generation: 1,
+            platform: None,
         },
         rx,
     )
