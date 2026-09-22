@@ -30,6 +30,7 @@ use tracing::{debug, error, info, warn};
 use shared::{
     config::InitOptions,
     error::{EngineResult, ErrorCode},
+    js_escape::{HOOK_ARGS_NONE, hook_args_one},
     protocol::host_cmd::HostCommand,
     render_event::RenderEvent,
     surface::SurfaceRef,
@@ -2317,6 +2318,8 @@ fn run_external_session(
     let mut last_swap_report: Option<std::time::Instant> = None;
     // What content has been told is held down, so losing focus can release it.
     let mut input = InputState::default();
+    // What content has been told about being shown and hidden.
+    let mut lifecycle = Lifecycle::default();
     runtime.block_on(async move {
         loop {
             tokio::select! {
@@ -2342,7 +2345,7 @@ fn run_external_session(
                     };
                     if !handle_command(
                         id, command, &mut render, &mut audio, &backgrounded, &ingress,
-                        &platform_for_error,
+                        &platform_for_error, &sink, &mut lifecycle,
                     ) {
                         break;
                     }
@@ -2442,6 +2445,67 @@ fn run_external_session(
     });
 }
 
+/// What the host's lifecycle tells content, and when.
+///
+/// The hooks are the embedded execution's, in its order and with its arguments
+/// (`Host::handle_command`, `enter_foreground`): `onHide` as the app goes away,
+/// `onShow` when it comes back -- but only once there is a surface to come back
+/// to, because a host that shows before its surface exists (Android's
+/// `onResume` before `surfaceCreated`) would otherwise tell content it is
+/// visible while nothing can be presented. A foreground with a live surface
+/// also restarts the frame loop content stopped while hidden and re-measures
+/// the window, which is what the embedded execution does there.
+#[derive(Default)]
+struct Lifecycle {
+    /// `onShow`'s arguments, waiting for a surface.
+    pending_show: Option<String>,
+}
+
+impl Lifecycle {
+    /// The host says the app is visible. The arguments are its options object,
+    /// as JSON, in the array `_internalDispatch` applies -- the embedded
+    /// execution's `build_on_show_args`, including its fallbacks.
+    fn show(&mut self, options_json: Option<&str>) {
+        self.pending_show = Some(on_show_args(options_json));
+    }
+
+    /// A surface is live and the app is not hidden.
+    fn entered_foreground(&mut self, sink: &ServiceEventSink<'_>) {
+        // The frame loop self-stops after a few idle frames while hidden, and
+        // the window may have changed size behind the app's back.
+        sink.host_hook("_internalRestartRafLoop", HOOK_ARGS_NONE);
+        sink.host_hook("_internalTriggerWindowResize", HOOK_ARGS_NONE);
+        if let Some(args) = self.pending_show.take() {
+            sink.host_hook("_internalTriggerOnShow", &args);
+        }
+    }
+
+    fn hide(&mut self, sink: &ServiceEventSink<'_>) {
+        // A show that never reached content is not delivered late, after the
+        // hide that overtook it.
+        self.pending_show = None;
+        sink.host_hook("_internalTriggerOnHide", HOOK_ARGS_NONE);
+    }
+}
+
+/// `onShow`'s options as the hook takes them: one argument, or none when the
+/// host named none and when what it named is not an object -- the embedded
+/// execution's rule, so a host's malformed options are ignored the same way
+/// rather than passed to content on one lane only.
+fn on_show_args(options_json: Option<&str>) -> String {
+    let Some(options_json) = options_json.map(str::trim).filter(|json| !json.is_empty()) else {
+        return HOOK_ARGS_NONE.to_string();
+    };
+    match serde_json::from_str::<serde_json::Value>(options_json) {
+        Ok(value) if value.is_object() => hook_args_one(value).into_owned(),
+        Ok(_) => HOOK_ARGS_NONE.to_string(),
+        Err(error) => {
+            warn!("an onShow options JSON the host sent is not JSON: {error}");
+            HOOK_ARGS_NONE.to_string()
+        }
+    }
+}
+
 /// The audio thread's events and the host's audio interruptions, delivered to
 /// content as the embedded runtime delivers them: an InnerAudioContext event
 /// to its enqueue hook, an interruption to the engine's interruption hooks
@@ -2456,14 +2520,12 @@ fn route_audio_event(sink: &ServiceEventSink<'_>, command: HostCommand) -> Optio
             event_type,
             current_time,
         } => sink.inner_audio_event(id, event_type.as_str(), current_time),
-        HostCommand::OnAudioInterruptionBegin => sink.host_hook(
-            "_internalTriggerAudioInterruptionBegin",
-            shared::js_escape::HOOK_ARGS_NONE,
-        ),
-        HostCommand::OnAudioInterruptionEnd => sink.host_hook(
-            "_internalTriggerAudioInterruptionEnd",
-            shared::js_escape::HOOK_ARGS_NONE,
-        ),
+        HostCommand::OnAudioInterruptionBegin => {
+            sink.host_hook("_internalTriggerAudioInterruptionBegin", HOOK_ARGS_NONE)
+        }
+        HostCommand::OnAudioInterruptionEnd => {
+            sink.host_hook("_internalTriggerAudioInterruptionEnd", HOOK_ARGS_NONE)
+        }
         other => return Some(other),
     }
     None
@@ -2478,6 +2540,8 @@ fn handle_command(
     backgrounded: &Arc<std::sync::atomic::AtomicBool>,
     ingress: &Arc<Mutex<FrameIngress>>,
     platform: &Arc<dyn PlatformServices>,
+    sink: &ServiceEventSink<'_>,
+    lifecycle: &mut Lifecycle,
 ) -> bool {
     use std::sync::atomic::Ordering;
 
@@ -2549,6 +2613,7 @@ fn handle_command(
             if render.confirm_install(revision) && !backgrounded.load(Ordering::Relaxed) {
                 render.resume();
                 audio.resume();
+                lifecycle.entered_foreground(sink);
             }
         }
 
@@ -2566,16 +2631,19 @@ fn handle_command(
             render.pause();
         }
 
-        HostCommand::OnShow { .. } => {
+        HostCommand::OnShow { options_json } => {
             backgrounded.store(false, Ordering::Relaxed);
+            lifecycle.show(options_json.as_deref());
             // Only resume against a surface that is actually live. Android
             // fires `onResume` before `surfaceCreated`, so on that path the old
             // surface is already gone and the resume belongs to the
             // `UpdateSurface` that follows; resuming here would run a renderer
-            // with nothing to present into.
+            // with nothing to present into -- and content is told it is shown
+            // when that surface arrives, not before.
             if render.has_live_surface() {
                 render.resume();
                 audio.resume();
+                lifecycle.entered_foreground(sink);
             } else {
                 debug!("[Host {id}] OnShow with no live surface; resume waits for UpdateSurface");
             }
@@ -2585,6 +2653,11 @@ fn handle_command(
             backgrounded.store(true, Ordering::Relaxed);
             render.pause();
             audio.pause();
+            lifecycle.hide(sink);
+        }
+
+        HostCommand::OnUserCaptureScreen { .. } => {
+            sink.host_hook("_internalTriggerUserCaptureScreen", HOOK_ARGS_NONE);
         }
 
         // Input was routed to the producer before this match. What is left is
@@ -2715,6 +2788,104 @@ mod tests {
             .find("#[cfg(test)]")
             .expect("this module has a test section");
         &SOURCE_WITH_TESTS[..end]
+    }
+
+    /// The lifecycle content is told about, in the calls the embedded
+    /// execution makes: the hooks, their order, and the arguments.
+    #[test]
+    fn a_show_reaches_content_when_its_surface_does_and_a_hide_cancels_it() {
+        let (host, _work) = ServiceHost::new(
+            1,
+            std::path::PathBuf::new(),
+            std::path::PathBuf::new(),
+            Arc::new(WakerSlot::default()),
+        );
+        let sink = ServiceEventSink {
+            outbox: &host.outbox,
+        };
+        let hooks = |sink: &ServiceEventSink<'_>| {
+            let mut called = Vec::new();
+            while let Some(message) = sink.outbox.take_message() {
+                let (_, records) =
+                    frame_wire::service::read_down_message(&message).expect("a down message");
+                for record in records {
+                    let frame_wire::service::ServiceDownRecord::Event { event, values } = record
+                    else {
+                        panic!("a lifecycle hook is an event");
+                    };
+                    assert_eq!(event, crate::runtime::host_events::event::_internalDispatch);
+                    let [
+                        frame_wire::value::OwnedValue::Str(hook),
+                        frame_wire::value::OwnedValue::Str(args),
+                    ] = values.as_slice()
+                    else {
+                        panic!("a hook call is its name and its arguments");
+                    };
+                    called.push((hook.clone(), args.clone()));
+                }
+            }
+            called
+        };
+
+        let mut lifecycle = Lifecycle::default();
+        // Shown before there is a surface: content hears nothing yet, as it
+        // hears nothing in the embedded execution until the surface arrives.
+        lifecycle.show(Some(r#"{"scene": 1001}"#));
+        assert!(hooks(&sink).is_empty());
+
+        lifecycle.entered_foreground(&sink);
+        assert_eq!(
+            hooks(&sink),
+            vec![
+                ("_internalRestartRafLoop".to_string(), "[]".to_string()),
+                ("_internalTriggerWindowResize".to_string(), "[]".to_string()),
+                (
+                    "_internalTriggerOnShow".to_string(),
+                    r#"[{"scene":1001}]"#.to_string()
+                ),
+            ]
+        );
+
+        // A second foreground without a show does not repeat it.
+        lifecycle.entered_foreground(&sink);
+        assert_eq!(
+            hooks(&sink),
+            vec![
+                ("_internalRestartRafLoop".to_string(), "[]".to_string()),
+                ("_internalTriggerWindowResize".to_string(), "[]".to_string()),
+            ]
+        );
+
+        lifecycle.hide(&sink);
+        assert_eq!(
+            hooks(&sink),
+            vec![("_internalTriggerOnHide".to_string(), "[]".to_string())]
+        );
+
+        // A show the surface never arrived for is dropped by the hide that
+        // overtook it, rather than delivered late.
+        lifecycle.show(None);
+        lifecycle.hide(&sink);
+        lifecycle.entered_foreground(&sink);
+        assert_eq!(
+            hooks(&sink),
+            vec![
+                ("_internalTriggerOnHide".to_string(), "[]".to_string()),
+                ("_internalRestartRafLoop".to_string(), "[]".to_string()),
+                ("_internalTriggerWindowResize".to_string(), "[]".to_string()),
+            ]
+        );
+    }
+
+    /// The embedded execution's rule for a host's `onShow` options, including
+    /// what it does with options that are not an object.
+    #[test]
+    fn on_show_options_are_one_argument_or_none() {
+        assert_eq!(on_show_args(None), "[]");
+        assert_eq!(on_show_args(Some("   ")), "[]");
+        assert_eq!(on_show_args(Some("[1]")), "[]");
+        assert_eq!(on_show_args(Some("not json")), "[]");
+        assert_eq!(on_show_args(Some(r#"{"a":1}"#)), r#"[{"a":1}]"#);
     }
 
     #[test]
