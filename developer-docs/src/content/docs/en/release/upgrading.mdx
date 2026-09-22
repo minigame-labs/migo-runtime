@@ -23,7 +23,7 @@ Switching to a different SDK series is not "replace the jar and rebuild". This p
 1. **SDK first, documentation second.** The release order is always SDK artifacts first (including `release/VERSION`), documentation next, and the website last. The same applies to your code: upgrade the SDK dependency and get the build green first, then return to the new documentation pages.
 2. **Read the current-series section of the CHANGELOG.** It follows the [Keep a Changelog](https://keepachangelog.com/) format with five sections: Added, Changed, Deprecated, Removed, and Fixed.
 3. **Let the developer documentation follow the series number.** The version switcher at the top of the documentation sidebar reads `release/VERSION`; after upgrading the SDK, check whether the `docs-version` meta tag or sidebar version should switch (a patch within the same series does not switch it).
-4. **Run your critical scenarios.** While ABI remains CANDIDATE, run the full `surface` attach/retire flow, the input pump, and your custom dispatcher first. Before the freeze, a minor release may also rearrange the caller-facing structures — the only mechanism guaranteed to provide forward compatibility is `struct_size`/`abi_version` negotiation (see [ABI Compatibility](/docs/concepts/abi-compatibility/)).
+4. **Run your critical scenarios.** While ABI remains CANDIDATE, run the full `surface` attach/retire flow, the input pump, and your custom dispatcher first. Before the freeze, a minor release may also rearrange the caller-facing structures — the only mechanism guaranteed to provide forward compatibility is `struct_size`/`abi_version` negotiation (see [ABI Compatibility](/docs/en/concepts/abi-compatibility/)).
 5. **If you copied documentation snippets.** When the documentation's archive prefix (`/docs/0.9/`) appears, update referenced links to the archived form or to the current latest — archived content is frozen, and behavior for the new series appears only on latest.
 
 ## 0.9 → 0.10 (This Section Is Filled In When 0.10 Is Finalized)
@@ -32,5 +32,5 @@ The breaking-change list, migration steps, and minimum toolchain requirements fo
 
 ## Stable Release Line
 
-- For the list of released SDK series, artifact shapes, and minimum platform-support requirements, see [Support and Version Matrix](/docs/release/support-matrix/).
-- For when ABI will lose its cap and freeze, the blockers subsection of [ABI Compatibility](/docs/concepts/abi-compatibility/) is the authoritative status.
+- For the list of released SDK series, artifact shapes, and minimum platform-support requirements, see [Support and Version Matrix](/docs/en/release/support-matrix/).
+- For when ABI will lose its cap and freeze, the blockers subsection of [ABI Compatibility](/docs/en/concepts/abi-compatibility/) is the authoritative status.

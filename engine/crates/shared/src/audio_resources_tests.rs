@@ -545,3 +545,140 @@ fn runtime_drop_reclaims_frozen_entry_but_not_a_live_node_arc() {
     drop(node);
     assert_eq!(scope.process_usage(), (0, 0));
 }
+
+#[test]
+fn an_adopted_decode_is_frozen_from_the_start_and_plays_without_a_copy() {
+    let scope = AudioResourceTestScope::new(transition_limits(96, 8));
+    let registry = scope.registry();
+    let format = stereo_three_frames();
+    let interleaved = vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0];
+    let samples_at = interleaved.as_ptr();
+
+    let lease = registry.adopt_frozen(55, format, interleaved).unwrap();
+    assert_eq!(lease.format(), format);
+    assert_eq!(lease.byte_len(), 24);
+    // One allocation, charged once, to the process and to its runtime.
+    assert_eq!(scope.process_usage(), (24, 1));
+    assert_eq!(registry.runtime_usage(55), (24, 1));
+
+    // Starting it reuses the adopted samples themselves: no JavaScript backing
+    // is asked for, and no second allocation is made.
+    let playing = registry.prepare_snapshot(lease.key(), None).unwrap();
+    let node = playing.snapshot();
+    assert_eq!(node.samples().as_ptr(), samples_at);
+    playing.commit();
+    assert_eq!(scope.process_usage(), (24, 1));
+
+    // Reading its channels is what makes a planar copy.
+    let materialized = registry.prepare_materialize(lease.key()).unwrap();
+    assert_eq!(materialized.samples(), &[1.0, 2.0, 3.0, 10.0, 20.0, 30.0]);
+    drop(materialized);
+
+    assert!(registry.release_buffer(lease.key()));
+    assert_eq!(registry.runtime_usage(55), (0, 0));
+    drop(node);
+    assert_eq!(scope.process_usage(), (0, 0));
+}
+
+#[test]
+fn an_adopted_decode_is_admitted_as_a_reservation_is_and_refusal_returns_everything() {
+    let scope = AudioResourceTestScope::new(transition_limits(24, 8));
+    let registry = scope.registry();
+    let format = stereo_three_frames();
+
+    assert_eq!(
+        registry
+            .adopt_frozen(56, format, vec![0.0; 5])
+            .expect_err("five samples are not three stereo frames")
+            .code,
+        ErrorCode::InvalidArgument
+    );
+    let held = registry.adopt_frozen(56, format, vec![0.0; 6]).unwrap();
+    assert_eq!(
+        registry
+            .adopt_frozen(56, format, vec![0.0; 6])
+            .expect_err("the process budget holds one of these")
+            .code,
+        ErrorCode::InputSaturated
+    );
+    assert_eq!(scope.process_usage(), (24, 1));
+    assert!(registry.release_buffer(held.key()));
+    assert_eq!(scope.process_usage(), (0, 0));
+
+    // With the budget free again, a retiring runtime is refused for being
+    // retired, and returns the budget it was about to take.
+    registry.begin_retire(57);
+    assert_eq!(
+        registry
+            .adopt_frozen(57, format, vec![0.0; 6])
+            .expect_err("a retiring runtime takes nothing new")
+            .code,
+        ErrorCode::InvalidOperation
+    );
+    assert_eq!(scope.process_usage(), (0, 0));
+}
+
+#[test]
+fn spare_decoder_capacity_is_not_retained_outside_the_budget() {
+    let scope = AudioResourceTestScope::new(transition_limits(96, 8));
+    let registry = scope.registry();
+    let mut interleaved = Vec::with_capacity(64);
+    interleaved.extend_from_slice(&[0.5; 6]);
+
+    let lease = registry
+        .adopt_frozen(58, stereo_three_frames(), interleaved)
+        .unwrap();
+    let playing = registry.prepare_snapshot(lease.key(), None).unwrap();
+    let node = playing.commit();
+    assert_eq!(node.samples().len(), 6);
+    // The budget charged six samples; six is what is kept.
+    assert_eq!(scope.process_usage(), (24, 1));
+    assert!(registry.release_buffer(lease.key()));
+    drop(node);
+}
+
+#[test]
+fn a_planar_backing_sent_as_bytes_freezes_as_the_same_snapshot() {
+    let scope = AudioResourceTestScope::new(transition_limits(96, 8));
+    let registry = scope.registry();
+    let format = stereo_three_frames();
+    let planar = [1.0f32, 2.0, 3.0, 10.0, 20.0, 30.0];
+    let bytes: Vec<u8> = planar
+        .iter()
+        .flat_map(|sample| sample.to_le_bytes())
+        .collect();
+
+    let from_bytes = registry.reserve_backing(59, format).unwrap();
+    assert_eq!(
+        registry
+            .prepare_snapshot_from_le_bytes(from_bytes.key(), &bytes[..bytes.len() - 1])
+            .expect_err("bytes that end mid-sample")
+            .code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        registry
+            .prepare_snapshot_from_le_bytes(from_bytes.key(), &bytes[..bytes.len() - 4])
+            .expect_err("one sample short")
+            .code,
+        ErrorCode::InvalidArgument
+    );
+    // An odd offset: a message gives no alignment, and none is needed.
+    let mut unaligned = vec![0u8];
+    unaligned.extend_from_slice(&bytes);
+    let prepared = registry
+        .prepare_snapshot_from_le_bytes(from_bytes.key(), &unaligned[1..])
+        .unwrap();
+    let node = prepared.commit();
+    assert_eq!(node.samples(), &[1.0, 10.0, 2.0, 20.0, 3.0, 30.0]);
+
+    let from_samples = registry.reserve_backing(59, format).unwrap();
+    let same = registry
+        .prepare_snapshot(from_samples.key(), Some(&planar))
+        .unwrap()
+        .commit();
+    assert_eq!(node.samples(), same.samples());
+
+    assert!(registry.release_buffer(from_bytes.key()));
+    assert!(registry.release_buffer(from_samples.key()));
+}

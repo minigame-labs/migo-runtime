@@ -30,7 +30,7 @@ The SDK provides two integration paths: **self-contained views** and **manual or
 ```java
 MigoGameView gameView = new MigoGameView(context);
 RuntimeConfig config = new RuntimeConfig.Builder(context)
-    .setImmersiveMode(false)   // 嵌入式场景通常 false
+    .setImmersiveMode(false)   // usually false when embedded
     .build();
 gameView.setConfig(config);
 gameView.setGameListener(listener);
@@ -42,7 +42,7 @@ Once available in a callback, `getSession()` can be used by external feature sur
 
 ### Manual orchestration: your own `SurfaceView` + `GameSession`
 
-When the game page is a full-screen, single-game container, the standard approach is fully listed on the [MigoRuntime](/docs/android-sdk/runtime/) and [GameSession](/docs/android-sdk/session/) pages — wire the three Surface callbacks, pause/resume/close, and touch forwarding yourself. You get the control plane, at the cost of rewriting the same lifecycle code in every project template.
+When the game page is a full-screen, single-game container, the standard approach is fully listed on the [MigoRuntime](/docs/en/android-sdk/runtime/) and [GameSession](/docs/en/android-sdk/session/) pages — wire the three Surface callbacks, pause/resume/close, and touch forwarding yourself. You get the control plane, at the cost of rewriting the same lifecycle code in every project template.
 
 ### `MigoGameActivity`
 

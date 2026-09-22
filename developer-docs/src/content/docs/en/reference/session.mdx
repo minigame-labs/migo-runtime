@@ -13,7 +13,7 @@ sourcePaths:
 > `MIGO_C_ABI_CANDIDATE == 1`. Production hosts must recheck headers, struct layouts, and
 > ownership rules when upgrading; the candidate interface makes no long-term binary-compatibility promise.
 
-A Session is a host-owned execution unit: one Session carries one piece of content, binds one Surface, and dispatches all callbacks through one dispatcher. An Engine may hold multiple Sessions concurrently; the host must serialize every call on an individual Session. See [engine.mdx](/docs/reference/engine/) for Engine creation and destruction, and [surface.mdx](/docs/reference/surface/) for Surface attach, detach, and release.
+A Session is a host-owned execution unit: one Session carries one piece of content, binds one Surface, and dispatches all callbacks through one dispatcher. An Engine may hold multiple Sessions concurrently; the host must serialize every call on an individual Session. See [engine.mdx](/docs/en/reference/engine/) for Engine creation and destruction, and [surface.mdx](/docs/en/reference/surface/) for Surface attach, detach, and release.
 
 ## MigoSessionConfig
 
@@ -35,7 +35,7 @@ MigoSessionConfig cfg;
 memset(&cfg, 0, sizeof cfg);
 cfg.struct_size = (uint32_t)sizeof cfg;
 cfg.abi_version = MIGO_ABI_VERSION_CURRENT;
-/* flags 置零；无外部生产者则 launch_nonce 已全零 */
+/* flags zeroed; with no external producer launch_nonce is already all zero */
 ```
 
 ## MigoContentDescriptor
@@ -91,11 +91,11 @@ typedef struct MigoHostCallbacks {
     MigoOnErrorFn           on_error;
     MigoOnExitRequestedFn   on_exit_requested;
     MigoOnSurfaceLostFn     on_surface_lost;
-    MigoOnRequestFrameFn    on_request_frame;      /* 可选：宿主驱帧 */
-    MigoOnShowKeyboardFn    on_show_keyboard;       /* 三者全装或全不装 */
+    MigoOnRequestFrameFn    on_request_frame;      /* optional: host-driven frames */
+    MigoOnShowKeyboardFn    on_show_keyboard;       /* install all three or none */
     MigoOnHideKeyboardFn    on_hide_keyboard;
     MigoOnUpdateKeyboardFn  on_update_keyboard;
-    MigoOnSurfaceReleasedFn on_surface_released;   /* 可选：surface 释放通知 */
+    MigoOnSurfaceReleasedFn on_surface_released;   /* optional: surface release notification */
 } MigoHostCallbacks;
 ```
 
@@ -178,7 +178,7 @@ typedef void (MIGO_CALL *MigoOnSurfaceLostFn)(
     MigoSurfaceLossReason reason);
 ```
 
-Notifies the host that the Surface for the specified `generation` has been retired, with the reason for the loss. The host must start the `migo_surface_begin_detach` flow after receiving this callback and must wait for the corresponding generation to reach RELEASED before destroying native window resources. See [surface.mdx](/docs/reference/surface/).
+Notifies the host that the Surface for the specified `generation` has been retired, with the reason for the loss. The host must start the `migo_surface_begin_detach` flow after receiving this callback and must wait for the corresponding generation to reach RELEASED before destroying native window resources. See [surface.mdx](/docs/en/reference/surface/).
 
 ### MigoOnSurfaceReleasedFn
 
@@ -414,7 +414,7 @@ if (r != MIGO_OK) return 1;
 ## migo_session_set_lifecycle
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MIGO_API MigoResult MIGO_CALL migo_session_set_lifecycle(
     MigoSession *session,
     MigoLifecycleState state);
@@ -436,8 +436,8 @@ Returns:
 - `MIGO_ERROR_INVALID_STATE` — The Session was destroyed, or `state` is `MIGO_LIFECYCLE_CREATED`.
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
-/* Android NativeActivity on_cmd 生命周期映射示例 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+/* mapping the Android NativeActivity on_cmd lifecycle */
 switch (cmd) {
 case APP_CMD_RESUME:
     migo_session_set_lifecycle(h->session, MIGO_LIFECYCLE_RUNNING);
@@ -519,13 +519,13 @@ Thread model:
 Call from the host-selected frame-callback thread—the thread that receives the platform vsync signal—not from an engine worker thread.
 
 ```c
-/* Android AChoreographer 64 位回调 */
+/* Android AChoreographer 64-bit callback */
 static void on_frame64(int64_t frame_time_nanos, void *data) {
     struct host *h = (struct host *)data;
     migo_session_notify_vsync(h->session, frame_time_nanos);
 }
 
-/* on_request_frame 中注册下一帧回调 */
+/* register the next frame callback from on_request_frame */
 static void on_request_frame(void *user_data, MigoSession *session) {
     struct host *h = (struct host *)user_data;
     AChoreographer_postFrameCallback64(
@@ -552,12 +552,12 @@ Thread model:
 Do not call from an engine worker thread (the engine thread on which the host dispatcher may schedule tasks). It returns `MIGO_ERROR_INVALID_STATE`, leaves the Session intact, and requires the host to retry from its own thread after the callback unwinds.
 
 ```c
-/* 1. 退役所有 surface 并等待 RELEASED（见 surface.mdx） */
+/* 1. retire every surface and wait for RELEASED (see surface.mdx) */
 if (detach_and_await_release(attachment) != 0) return 1;
-/* 2. Session 必须在 attachment 释放后销毁 */
+/* 2. destroy the session only after its attachments are released */
 MigoResult r = migo_session_destroy(session);
 if (r != MIGO_OK) return 1;
-/* 3. 所有 Session 销毁后再销毁 Engine */
+/* 3. destroy the engine after every session */
 r = migo_engine_destroy(engine);
 if (r != MIGO_OK) return 1;
 ```

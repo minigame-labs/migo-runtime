@@ -617,6 +617,15 @@ jobs:
       - name: Frame wire JavaScript encoder against the golden corpus
         run: bash scripts/test-frame-wire-js-encoder.sh
 
+      # Two parsers for `ctx.font`, and two text codecs, each held to one
+      # corpus: the op boundary answers both on the producer, so the conversion
+      # exists twice in this repository and a difference is a font that never
+      # applies or a save file one platform cannot read.
+      - name: Producer-local parsers agree with the engine's
+        run: |
+          bash scripts/test-css-font-agreement.sh
+          bash scripts/test-text-codec-agreement.sh
+
       # The engine's own JavaScript API layer, staged for the Performance+
       # producer and run: content draws through migo.createCanvas() and the
       # engine's WebGL facade, and the host's ingress admits the frames. A module

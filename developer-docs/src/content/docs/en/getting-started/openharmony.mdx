@@ -45,10 +45,10 @@ Build the static library package on Linux (`lib/libmigo_capi.a`, public headers,
 package):
 
 ```bash
-# x86_64（仿真器目标）：
+# x86_64 (emulator target):
 bash scripts/build-ohos-sdk.sh x86_64
 
-# aarch64（真机目标）：
+# aarch64 (device target):
 bash scripts/build-ohos-sdk.sh aarch64
 ```
 
@@ -59,7 +59,7 @@ The output directory is `dist/migo-ohos-<arch>/`.
 Stage the SDK and build the HAP with one command:
 
 ```bash
-bash scripts/build-ohos-host.sh --arch x86_64   # 仿真器
+bash scripts/build-ohos-host.sh --arch x86_64   # emulator
 ```
 
 **Note**: hvigor rejects UNC project paths and reports `Invalid project path`, so

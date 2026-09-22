@@ -15,9 +15,9 @@ sourcePaths:
 ## Minimal lifecycle
 
 ```java
-// surfaceCreated 回调里
+// in the surfaceCreated callback
 session = runtime.createSession(activity, surface, config, gameId);
-session.startGame("game.js");        // game.js 在 session.getPaths().getCodeDir() 下
+session.startGame("game.js");        // game.js lives under session.getPaths().getCodeDir()
 
 // Activity
 @Override protected void onPause()  { if (session != null) session.pause();  }
@@ -40,7 +40,7 @@ surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
         session.updateSurface(h.getSurface(), w, h);
     }
     public void surfaceDestroyed(SurfaceHolder h) {
-        session.onSurfaceDestroyed();       // 引擎推进 surface 丢失路径;JS 的 onHide 在这里停
+        session.onSurfaceDestroyed();       // the engine takes the surface-lost path; JS onHide fires here
     }
 });
 ```
@@ -52,11 +52,11 @@ Forgetting `onSurfaceDestroyed` is the most common source of deadlocks: the engi
 ```java
 surfaceView.setOnTouchListener((v, ev) -> session.dispatchTouchEvent(ev));
 
-// 宿主 → JS
+// host → JS
 session.evaluateJavaScript("console.log('hello from host')");
 
-// JS → 宿主:migo.sendToHost(type, payload) 走这里
-session.setMessageHandler((type, payload) -> { /* JSON String,可能 null */ });
+// JS → host: migo.sendToHost(type, payload) arrives here
+session.setMessageHandler((type, payload) -> { /* JSON String, may be null */ });
 ```
 
 `evaluateJavaScript` returns immediately; the script is queued asynchronously on the host thread. To receive a reply, pair `migo.sendToHost` with `MessageHandler`.
@@ -76,7 +76,7 @@ session.setMessageHandler((type, payload) -> { /* JSON String,可能 null */ });
 
 ## Handler setters (10 domains + Listener)
 
-Install these before opening the package; see the detailed contract in [Host capabilities overview](/docs/capabilities/overview/):
+Install these before opening the package; see the detailed contract in [Host capabilities overview](/docs/en/capabilities/overview/):
 
 ```java
 session.setMessageHandler(...);      setAuthHandler(...);
@@ -84,7 +84,7 @@ session.setPermissionHandler(...);   setAdHandler(...);
 session.setSettingHandler(...);      setShareHandler(...);
 session.setNavigationHandler(...);   setPaymentHandler(...);
 session.setSubpackageHandler(...);   setGameLogHandler(...);
-session.setListener(GameSessionListener);   // loading 级钩子
+session.setListener(GameSessionListener);   // loading-level hooks
 ```
 
 Not setting a handler means the fallback in the overview table applies. After installing one, do not swap it mid-session — in-flight requests already hold the sink for the old handler.

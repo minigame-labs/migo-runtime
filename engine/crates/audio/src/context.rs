@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use shared::audio_resources::AudioSnapshot;
-use shared::error::{EngineError, EngineResult, ErrorCode};
+use shared::error::EngineResult;
 use shared::protocol::audio_cmd::{AudioBufferId, AudioContextId, AudioContextState, AudioNodeId};
 
 use crate::decoder::DecodedAudio;
@@ -499,58 +499,6 @@ impl AudioContext {
             data.push(buffer.samples[frame * channels + ch]);
         }
         Some(data)
-    }
-
-    /// Return all channels in one flat channel-major vector.
-    ///
-    /// The native buffer remains interleaved; this allocates exactly one
-    /// result vector and fills it without constructing one `Vec` per channel.
-    /// Reservation is fallible so malformed dimensions or allocator failure
-    /// become structured errors before any output is built.
-    pub fn take_decoded_buffer_data(
-        &mut self,
-        buffer_id: AudioBufferId,
-    ) -> EngineResult<Option<Vec<f32>>> {
-        let buffer = match self.buffers.remove(&buffer_id) {
-            Some(buffer) => buffer,
-            None => return Ok(None),
-        };
-        let channels = usize::try_from(buffer.channels).map_err(|_| {
-            EngineError::from_detail(
-                ErrorCode::InvalidArgument,
-                "channel count does not fit usize",
-            )
-        })?;
-        let frames = buffer.frame_count();
-        let sample_count = channels.checked_mul(frames).ok_or_else(|| {
-            EngineError::from_detail(
-                ErrorCode::InvalidArgument,
-                "audio channel data sample count overflow",
-            )
-        })?;
-
-        let mut output = Vec::new();
-        output.try_reserve_exact(sample_count).map_err(|_| {
-            EngineError::from_detail(
-                ErrorCode::OutOfMemory,
-                "audio channel data allocation failed",
-            )
-        })?;
-        for channel in 0..channels {
-            for frame in 0..frames {
-                let sample_index = frame
-                    .checked_mul(channels)
-                    .and_then(|base| base.checked_add(channel))
-                    .ok_or_else(|| {
-                        EngineError::from_detail(
-                            ErrorCode::InvalidArgument,
-                            "audio channel data index overflow",
-                        )
-                    })?;
-                output.push(buffer.samples[sample_index]);
-            }
-        }
-        Ok(Some(output))
     }
 
     /// Copy data into a specific channel of a buffer (copy-on-write via Arc::make_mut).
@@ -1342,25 +1290,6 @@ mod tests {
             AudioContext::new_with_pcm_budget(1, 48_000, 2, budget),
             context,
         )
-    }
-
-    #[test]
-    fn all_channel_data_is_one_channel_major_flat_buffer() {
-        let mut ctx = AudioContext::new(1, 48_000, 2);
-        let id = ctx
-            .add_buffer(DecodedAudio {
-                samples: vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0],
-                sample_rate: 48_000,
-                channels: 2,
-            })
-            .unwrap();
-
-        assert_eq!(
-            ctx.take_decoded_buffer_data(id).unwrap(),
-            Some(vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0])
-        );
-        assert!(ctx.get_buffer(id).is_none());
-        assert_eq!(ctx.take_decoded_buffer_data(id).unwrap(), None);
     }
 
     #[test]

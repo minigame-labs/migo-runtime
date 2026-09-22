@@ -27,10 +27,14 @@ npm run docs:serve
 ## 2. 目录结构
 
 ```
-src/content/docs/            # 中文页面(latest,直接映射 /docs/ 路由)
+src/content/docs/            # 中文页面(当前版本,直接映射 /docs/ 路由)
   index.mdx                  # /docs/ 首页
-  en/**/*.mdx                # 英文占位页(Translation pending)
-src/components/              # Header/SiteTitle/Search/ThemeProvider/ThemeSelect 覆盖件
+  0.9/**/*.mdx               # 0.9 冻结归档(starlight-versions 生成,禁止手改)
+  en/**/*.mdx                # 英文实译(latest);en/0.9/** 为 Translation pending 占位
+src/content/versions/        # 归档版本的侧栏快照(0.9.json)
+src/content/i18n/            # zh-CN 的 starlight-versions 文案
+src/components/              # Header/SiteTitle/ThemeProvider/ThemeSelect 覆盖件
+src/plugins/                 # vite-pagefind-noworker(Pagefind 不起 Worker,替代原 Search fork)
 src/styles/custom.css        # 品牌层:SmileySans 标题字、Portal 红色 accent
 docs.config.mjs              # release/VERSION → docsSeries 的唯一来源(被 astro.config 的 head 用作 docs-version meta)
 astro.config.mjs             # base、locale、sidebar、插件
@@ -59,9 +63,11 @@ Mermaid 图不能是唯一信息来源(客户端渲染,禁 JS 时不出现)。�
 
 ## 6. i18n 与英文占位页
 
-zh 是 root locale,内容在 `src/content/docs/`;en 页面在 `src/content/docs/en/`,`astro.config.mjs` 的 sitemap filter 已把 `/docs/en/` 排除。
+zh 是 root locale,内容在 `src/content/docs/`;en 页面在 `src/content/docs/en/`。latest 英文已于 2026-09-15 全量翻译并进 sitemap;sitemap filter 只排除两个归档树 `/docs/0.9/` 与 `/docs/en/0.9/`。
 
-zh 页面新建后,如果英文翻译没完成,复制同路径占位页到 `en/`,模板:
+**英文实译页的站内链接必须写 `/docs/en/…`**:Starlight 不改写正文里的绝对链接,写成中文路由就把英文读者第一次点击送进中文页。phase1 契约 §5b 拦截;参考页的 `## migo_*` 函数节还必须与中文页逐页一致(§7)。
+
+zh 页面新建后,如果英文翻译没完成,运行 `npm run docs:sync-en` 生成同路径占位页,模板:
 
 ```mdx
 ---
@@ -82,11 +88,11 @@ This page is pending translation. The 中文版本 (link below) is the current s
 [→ 中文版本](/docs/<同路径>/)
 ```
 
-不要把中文正文伪装成英文翻译;占位页必须带 `noindex` 和回链。翻译完成后替换正文、去掉上面的 aside 与 noindex,并在 sitemap filter 放行(先把 `filter` 里 `/docs/en/` 条件去掉,再检查 sitemap)。
+不要把中文正文伪装成英文翻译;占位页必须带 `noindex` 和回链。翻译完成后替换正文(代码块注释一并译成英文)、去掉上面的 aside 与 noindex,把站内链接改成 `/docs/en/…`。
 
 ## 7. 主题与站点导航
 
-Portal 是纯深色,所以文档也是深色锁定(`ThemeProvider.astro` + 空 `ThemeSelect.astro`)。跨站链接(`Header.astro` 顶栏:首页/开发者文档/性能数据/常见问题/SDK 下载)指向 `https://minigame-labs.com` 的绝对地址,改 Portal 导航时这里同步改。**文档面不放门户式 Footer**:页尾只留 starlight 默认的 pager —— 门户 footer 的法律/仓库信息在文档里没有读者收益(2026-09-15 删除 `Footer.astro` 覆盖件)。品牌色只允许 Migo 红 `#e5352c` 一个 accent(`custom.css` 的 `--sl-color-accent`)。品牌 lockup 是单一资产 `public/brand/lockup-on-dark.svg` —— 与 Portal `/brand/` 保持同步,两者来自同一个几何源。
+Portal 是纯深色,所以文档也是深色锁定(`ThemeProvider.astro` + `ThemeSelect.astro`,后者只渲染版本切换、不出主题切换)。跨站链接(`Header.astro` 顶栏:首页/开发者文档/性能数据/常见问题/SDK 下载)指向 `https://minigame-labs.com` 的绝对地址,改 Portal 导航时这里同步改。**文档面不放门户式 Footer**:页尾只留 starlight 默认的 pager —— 门户 footer 的法律/仓库信息在文档里没有读者收益(2026-09-15 删除 `Footer.astro` 覆盖件)。品牌色只允许 Migo 红 `#e5352c` 一个 accent(`custom.css` 的 `--sl-color-accent`)。品牌 lockup 是单一资产 `public/brand/lockup-on-dark.svg` —— 与 Portal `/brand/` 保持同步,两者来自同一个几何源。
 
 ## 8. 发布新版本(0.10 时读这里)
 

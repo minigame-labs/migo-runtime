@@ -238,6 +238,65 @@ def embed_angle(args):
     print(f"embedded ANGLE macOS pair in {args.destination}")
 
 
+NATIVE_NOTE = "note: native-static-libs:"
+
+
+def parse_native_libs(log_text):
+    """The link flags rustc reported for the static archive, in order, once each.
+
+    rustc prints them as one note (`--print=native-static-libs`); cargo replays
+    it for an up-to-date crate. `-framework X` is one flag of two words.
+    """
+    notes = [line.split(NATIVE_NOTE, 1)[1] for line in log_text.splitlines() if NATIVE_NOTE in line]
+    if not notes:
+        raise ValueError("rustc printed no native-static-libs note")
+    words = notes[-1].split()
+    flags, index = [], 0
+    while index < len(words):
+        word = words[index]
+        if word == "-framework":
+            if index + 1 == len(words):
+                raise ValueError("a -framework flag names no framework")
+            flag = ("framework", words[index + 1])
+            index += 2
+        elif word.startswith("-l") and len(word) > 2:
+            flag = ("library", word[2:])
+            index += 1
+        else:
+            raise ValueError(f"unrecognised native link flag {word!r}")
+        if flag not in flags:
+            flags.append(flag)
+    return flags
+
+
+def native_libs(args):
+    flags = parse_native_libs(args.cargo_log.read_text(errors="replace"))
+    args.output.write_text("".join(f"{kind} {name}\n" for kind, name in flags))
+
+
+def render_modulemap(flag_files):
+    """The engine's module map: every header under `migo`, and a `link` line per
+    native dependency any slice's archive has, so Clang autolinks them for each
+    target that imports the module."""
+    flags = []
+    for path in flag_files:
+        for line in path.read_text().splitlines():
+            kind, name = line.split(" ", 1)
+            if (kind, name) not in flags:
+                flags.append((kind, name))
+    if not flags:
+        raise ValueError("no native link dependencies were recorded for any slice")
+    links = "".join(
+        f'    link framework "{name}"\n' if kind == "framework" else f'    link "{name}"\n'
+        for kind, name in flags
+    )
+    return "module MigoEngine {\n    umbrella \"migo\"\n    export *\n" + links + "}\n"
+
+
+def modulemap(args):
+    args.output.write_text(render_modulemap(args.flag_files))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -258,6 +317,12 @@ def main():
         embed.add_argument("--" + field, type=Path, required=True)
     embed.add_argument("--architectures", required=True)
     embed.add_argument("--sign", default="")
+    natives = commands.add_parser("native-libs")
+    natives.add_argument("--cargo-log", type=Path, required=True)
+    natives.add_argument("--output", type=Path, required=True)
+    module = commands.add_parser("modulemap")
+    module.add_argument("--output", type=Path, required=True)
+    module.add_argument("flag_files", type=Path, nargs="+")
     args = parser.parse_args()
     try:
         if args.command == "record":
@@ -266,6 +331,10 @@ def main():
             assemble(args)
         elif args.command == "embed-angle":
             embed_angle(args)
+        elif args.command == "native-libs":
+            native_libs(args)
+        elif args.command == "modulemap":
+            modulemap(args)
         else:
             check_runtime(args.repo_root, args.platform)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:

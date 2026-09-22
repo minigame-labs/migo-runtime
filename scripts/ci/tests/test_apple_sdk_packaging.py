@@ -36,6 +36,11 @@ elif tool == "cargo":
         dest = pathlib.Path("target") / target / profile / "libmigo_capi.a"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("fixture archive " + target + " " + " ".join(args) + " SKIA_BINARIES_URL=" + os.environ.get("SKIA_BINARIES_URL", ""))
+        # What rustc says the archive links, as `--print=native-static-libs`
+        # prints it -- unless a test is asking what happens when it does not.
+        if "--print=native-static-libs" in args and not os.environ.get("NO_NATIVE_NOTE"):
+            print("warning: an unrelated warning", file=sys.stderr)
+            print("note: native-static-libs: -lobjc -lc++ -framework CoreText -framework AudioToolbox -framework CoreFoundation -lobjc -lSystem", file=sys.stderr)
 elif tool == "lipo":
     output = pathlib.Path(args[args.index("-output") + 1])
     output.write_bytes(b"\n".join(pathlib.Path(p).read_bytes() for p in args[1:args.index("-output")]))
@@ -168,6 +173,23 @@ class SDKPackaging(unittest.TestCase):
 
     def slices(self):
         return plistlib.loads((self.framework/"Info.plist").read_bytes())["AvailableLibraries"]
+
+    def test_the_module_map_links_what_rustc_says_the_archive_needs(self):
+        self.build("ios-simulator")
+        slice_dir = next(p for p in self.framework.iterdir() if p.name.endswith("simulator"))
+        modulemap = (slice_dir/"Headers"/"module.modulemap").read_text()
+        self.assertIn('umbrella "migo"', modulemap)
+        # Each dependency once, in rustc's order, whatever repeats the note had.
+        self.assertEqual(
+            [line.strip() for line in modulemap.splitlines() if line.strip().startswith("link")],
+            ['link "objc"', 'link "c++"', 'link framework "CoreText"',
+             'link framework "AudioToolbox"', 'link framework "CoreFoundation"', 'link "System"'],
+        )
+
+    def test_a_build_with_no_native_link_account_is_refused(self):
+        result = self.build("ios-simulator", success=False, NO_NATIVE_NOTE="1")
+        self.assertIn("reported no native link dependencies", result.stdout + result.stderr)
+        self.assertFalse(self.framework.exists(), "nothing was packaged with a guessed link list")
 
     def test_sequential_builds_preserve_device_simulator_and_native_macos(self):
         for platform in ("ios", "ios-simulator", "macos"):
@@ -422,3 +444,40 @@ class PackagePublication(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NativeLinkAccount(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("apple_sdk_package", ROOT/"scripts/apple-sdk-package.py")
+        self.package = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.package)
+
+    def test_frameworks_and_libraries_are_read_in_order_once_each(self):
+        log = "Compiling x\nnote: native-static-libs: -lobjc -framework UIKit -lobjc -framework UIKit -lm\n"
+        self.assertEqual(
+            self.package.parse_native_libs(log),
+            [("library", "objc"), ("framework", "UIKit"), ("library", "m")],
+        )
+
+    def test_the_last_note_is_the_archive_s(self):
+        log = "note: native-static-libs: -lold\nnote: native-static-libs: -lnew\n"
+        self.assertEqual(self.package.parse_native_libs(log), [("library", "new")])
+
+    def test_a_flag_it_cannot_read_is_refused_rather_than_dropped(self):
+        for note in ("-framework", "-Wl,-foo", "-l"):
+            with self.assertRaises(ValueError, msg=note):
+                self.package.parse_native_libs(f"note: native-static-libs: {note}\n")
+        with self.assertRaises(ValueError):
+            self.package.parse_native_libs("no note at all\n")
+
+    def test_the_module_map_is_the_union_over_slices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp)/"a.txt", Path(tmp)/"b.txt"
+            first.write_text("library objc\nframework UIKit\n")
+            second.write_text("framework UIKit\nframework AudioToolbox\n")
+            text = self.package.render_modulemap([first, second])
+        self.assertEqual(
+            text,
+            'module MigoEngine {\n    umbrella "migo"\n    export *\n'
+            '    link "objc"\n    link framework "UIKit"\n    link framework "AudioToolbox"\n}\n',
+        )

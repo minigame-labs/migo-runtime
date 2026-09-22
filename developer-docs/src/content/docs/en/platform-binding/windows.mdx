@@ -16,8 +16,8 @@ sourcePaths:
 
 This page covers only the platform-specific differences for Windows native surfaces. The general
 attach, resize, asynchronous detach, and release rules are described in
-[Surface Interface](/docs/reference/surface/); for the Session shutdown sequence see
-[Lifecycle Concepts](/docs/concepts/lifecycle/).
+[Surface Interface](/docs/en/reference/surface/); for the Session shutdown sequence see
+[Lifecycle Concepts](/docs/en/concepts/lifecycle/).
 
 **Availability:** The Win32 C ABI (`migo.dll` / `migo.lib`, x86\_64 and arm64) is released in 0.9;
 `migo_query_capabilities` will report `MIGO_PLATFORM_WIN32_HWND`. WinUI `SwapChainPanel` is a
@@ -36,7 +36,7 @@ caps.struct_size = (uint32_t)sizeof caps;
 caps.abi_version = MIGO_ABI_VERSION_CURRENT;
 if (migo_query_capabilities(&caps) != MIGO_OK ||
     (caps.platform_kinds & (1ULL << MIGO_PLATFORM_WIN32_HWND)) == 0)
-    return; /* 当前 DLL 不支持 Win32 surface；不要继续 attach。 */
+    return; /* this DLL does not support Win32 surfaces; do not attach. */
 ```
 
 ## Win32: Child `HWND`
@@ -50,7 +50,7 @@ typedef struct MigoWin32HwndDescriptor {
     uint32_t             struct_size;
     uint32_t             abi_version;
     MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_WIN32_HWND */
-    MigoPlatformDescriptorFlags flags; /* 须为 0 */
+    MigoPlatformDescriptorFlags flags; /* must be 0 */
     void                *hwnd;          /* host-owned child HWND */
 } MigoWin32HwndDescriptor;
 ```
@@ -98,8 +98,8 @@ only when `migo_surface_release_query` reports `MIGO_SURFACE_RELEASE_RELEASED` m
 ```c
 MigoSurfaceRelease *release = NULL;
 if (migo_surface_begin_detach(attachment, &release) == MIGO_OK) {
-    attachment = NULL; /* handle 已被消费 */
-    /* 在宿主消息循环中反复 query，非阻塞；确认 RELEASED 后再 DestroyWindow。 */
+    attachment = NULL; /* the handle has been consumed */
+    /* query repeatedly from the host message loop (non-blocking); DestroyWindow only after RELEASED. */
 }
 ```
 

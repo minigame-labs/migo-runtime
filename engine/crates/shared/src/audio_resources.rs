@@ -355,6 +355,39 @@ impl PreparedAudioBacking {
     }
 }
 
+/// A writable `AudioBuffer`'s channel-major samples, as the caller holds them.
+#[derive(Clone, Copy)]
+enum PlanarPcm<'a> {
+    /// Viewed in place: a V8 backing store in this process.
+    Samples(&'a [f32]),
+    /// Four little-endian bytes per sample, with no alignment promised.
+    LittleEndian(&'a [u8]),
+}
+
+impl PlanarPcm<'_> {
+    /// How many samples this is, or `None` for bytes that end mid-sample.
+    fn sample_count(self) -> Option<usize> {
+        match self {
+            Self::Samples(samples) => Some(samples.len()),
+            Self::LittleEndian(bytes) => bytes
+                .len()
+                .is_multiple_of(size_of::<f32>())
+                .then_some(bytes.len() / size_of::<f32>()),
+        }
+    }
+
+    #[inline]
+    fn sample(self, index: usize) -> f32 {
+        match self {
+            Self::Samples(samples) => samples[index],
+            Self::LittleEndian(bytes) => {
+                let at = index * size_of::<f32>();
+                f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+            }
+        }
+    }
+}
+
 /// Per-host registry for JS-owned Web Audio resources.
 ///
 /// Clones share one registry. Separately constructed production registries
@@ -411,6 +444,79 @@ impl AudioResourceRegistry {
     ) -> EngineResult<AudioBackingLease> {
         let byte_len = validated_byte_len(format, self.inner.limits.max_single_bytes)?;
         let process_permit = self.inner.process.try_reserve(byte_len)?;
+        self.admit(
+            runtime_generation,
+            format,
+            byte_len,
+            BackingState::Writable {
+                _process_permit: process_permit,
+            },
+        )
+    }
+
+    /// Admit PCM that already exists natively -- a decode -- as a frozen entry.
+    ///
+    /// No JavaScript backing store is made: the samples stay here, interleaved
+    /// as the audio thread plays them, and the `AudioBuffer` starts with no
+    /// backing. Starting it reuses this snapshot without a copy; reading its
+    /// channels materializes a writable copy ([`Self::prepare_materialize`]).
+    /// A decoded clip that is only played therefore costs one PCM allocation,
+    /// where handing it to JavaScript cost three -- the decode, the planar copy
+    /// V8 adopted, and the interleaved snapshot `start()` froze back from it --
+    /// with two of them alive at once. And where content's JavaScript runs in
+    /// another process, the PCM never crosses to it unless content reads it.
+    ///
+    /// Admitted exactly as [`Self::reserve_backing`] admits: a retiring runtime
+    /// or a spent budget refuses it before anything is recorded, and dropping
+    /// the refused samples returns everything.
+    pub fn adopt_frozen(
+        &self,
+        runtime_generation: i64,
+        format: AudioBufferFormat,
+        mut interleaved: Vec<f32>,
+    ) -> EngineResult<AudioBackingLease> {
+        let byte_len = validated_byte_len(format, self.inner.limits.max_single_bytes)?;
+        let sample_count = checked_sample_count(format)?;
+        if interleaved.len() != sample_count {
+            return Err(EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "decoded PCM length mismatch: expected {sample_count}, got {}",
+                    interleaved.len()
+                ),
+            ));
+        }
+        // The budget counts the samples, so what is retained must be exactly
+        // them: a decoder's spare capacity would be memory no limit sees.
+        interleaved.shrink_to_fit();
+        if interleaved.capacity() != sample_count {
+            let mut exact = try_exact_pcm_allocation(sample_count)?;
+            exact.copy_from_slice(&interleaved);
+            interleaved = exact;
+        }
+        let process_permit = self.inner.process.try_reserve(byte_len)?;
+        self.admit(
+            runtime_generation,
+            format,
+            byte_len,
+            BackingState::Frozen(Arc::new(AudioSnapshot {
+                format,
+                samples: interleaved,
+                _process_permit: process_permit,
+            })),
+        )
+    }
+
+    /// Record a new entry whose process budget is already held by `backing`,
+    /// charging its runtime. On refusal `backing` is dropped, which returns
+    /// that budget.
+    fn admit(
+        &self,
+        runtime_generation: i64,
+        format: AudioBufferFormat,
+        byte_len: usize,
+        backing: BackingState,
+    ) -> EngineResult<AudioBackingLease> {
         let mut state = self.inner.state.lock();
 
         if runtime_generation <= state.retired_through
@@ -468,9 +574,7 @@ impl AudioResourceRegistry {
             BackingEntry {
                 format,
                 byte_len,
-                state: BackingState::Writable {
-                    _process_permit: process_permit,
-                },
+                state: backing,
             },
         );
         debug_assert!(previous.is_none(), "monotonic AudioBuffer key collided");
@@ -495,6 +599,27 @@ impl AudioResourceRegistry {
         &self,
         key: AudioBufferKey,
         planar: Option<&[f32]>,
+    ) -> EngineResult<PreparedAudioSnapshot> {
+        self.prepare_snapshot_of(key, planar.map(PlanarPcm::Samples))
+    }
+
+    /// [`Self::prepare_snapshot`] for a writable entry whose planar PCM arrived
+    /// as little-endian bytes: from content in another process, where the
+    /// buffer crossed as a message rather than as memory this process can view
+    /// as `f32`. Read straight into the interleaved snapshot, so the bytes are
+    /// not first copied into an aligned planar buffer.
+    pub fn prepare_snapshot_from_le_bytes(
+        &self,
+        key: AudioBufferKey,
+        planar: &[u8],
+    ) -> EngineResult<PreparedAudioSnapshot> {
+        self.prepare_snapshot_of(key, Some(PlanarPcm::LittleEndian(planar)))
+    }
+
+    fn prepare_snapshot_of(
+        &self,
+        key: AudioBufferKey,
+        planar: Option<PlanarPcm<'_>>,
     ) -> EngineResult<PreparedAudioSnapshot> {
         let (format, byte_len) = {
             let state = self.inner.state.lock();
@@ -529,13 +654,15 @@ impl AudioResourceRegistry {
 
         let planar = planar.expect("Writable was checked to carry planar PCM");
         let sample_count = checked_sample_count(format)?;
-        if planar.len() != sample_count {
+        if planar.sample_count() != Some(sample_count) {
             return Err(EngineError::from_detail(
                 ErrorCode::InvalidArgument,
-                format!(
-                    "AudioBuffer planar PCM length mismatch: expected {sample_count}, got {}",
-                    planar.len()
-                ),
+                match planar.sample_count() {
+                    Some(got) => format!(
+                        "AudioBuffer planar PCM length mismatch: expected {sample_count}, got {got}"
+                    ),
+                    None => "AudioBuffer planar PCM bytes are not f32 aligned".to_string(),
+                },
             ));
         }
 
@@ -547,7 +674,7 @@ impl AudioResourceRegistry {
         let frames = format.frames as usize;
         for frame in 0..frames {
             for channel in 0..channels {
-                interleaved[frame * channels + channel] = planar[channel * frames + frame];
+                interleaved[frame * channels + channel] = planar.sample(channel * frames + frame);
             }
         }
         let snapshot = Arc::new(AudioSnapshot {

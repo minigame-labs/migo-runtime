@@ -37,7 +37,7 @@ The **first rejection** is reported through `MigoOnErrorFn`; any later successfu
 
 ### Automatic retract on focus loss
 
-When `migo_session_set_focus(session, 0)` is called (see [`./session.mdx`](/docs/reference/session/)), before reporting focus loss to the content, the engine automatically retracts in FIFO order all previously accepted but unfinished touches, pointer buttons, physical keys, and IME compositions. Repeated focus-loss reports do not produce duplicate retracts; the host does not need to resend these events manually on focus loss.
+When `migo_session_set_focus(session, 0)` is called (see [`./session.mdx`](/docs/en/reference/session/)), before reporting focus loss to the content, the engine automatically retracts in FIFO order all previously accepted but unfinished touches, pointer buttons, physical keys, and IME compositions. Repeated focus-loss reports do not produce duplicate retracts; the host does not need to resend these events manually on focus loss.
 
 ### Coordinate units
 
@@ -87,7 +87,7 @@ May be called from any thread, but the host must define the order of concurrent 
 Example: Android MotionEvent → migo_session_send_touch:
 
 ```c
-/* 单指示例；多指时循环填充 MigoTouchPoint 数组并增大 point_count。 */
+/* one finger; for more, fill the MigoTouchPoint array and raise point_count. */
 static void forward_touch(MigoSession *session, AInputEvent *ev, float density) {
     int32_t action = AMotionEvent_getAction(ev);
     int32_t masked = action & AMOTION_EVENT_ACTION_MASK;
@@ -109,7 +109,7 @@ static void forward_touch(MigoSession *session, AInputEvent *ev, float density) 
 ## migo_session_send_pointer_event
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MIGO_API MigoResult MIGO_CALL migo_session_send_pointer_event(
     MigoSession *session,
     const MigoPointerEvent *event);
@@ -141,7 +141,7 @@ May be called from any thread; the host must define the order of concurrent call
 ## migo_session_send_wheel_event
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MIGO_API MigoResult MIGO_CALL migo_session_send_wheel_event(
     MigoSession *session,
     const MigoWheelEvent *event);
@@ -206,12 +206,12 @@ May be called from any thread; the host must define the order of concurrent call
 Example: complete soft-keyboard flow:
 
 ```c
-/* 宿主实现 on_show_keyboard 回调后，按此顺序发送事件 */
+/* once the host implements on_show_keyboard, send events in this order */
 send_keyboard(session, MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, NULL, 260.0f);
 send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT,         "m",    0.0);
 send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT,         "mi",   0.0);
 send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT,         "migo", 0.0);
-/* 用户确认，然后键盘收起 */
+/* the user confirms, then the keyboard hides */
 send_keyboard(session, MIGO_KEYBOARD_EVENT_CONFIRM,       "migo", 0.0);
 send_keyboard(session, MIGO_KEYBOARD_EVENT_COMPLETE,      "migo", 0.0);
 send_keyboard(session, MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, NULL,   0.0);
@@ -222,7 +222,7 @@ send_keyboard(session, MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, NULL,   0.0);
 ## migo_session_send_key_event
 
 ```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
 MIGO_API MigoResult MIGO_CALL migo_session_send_key_event(
     MigoSession *session,
     const MigoKeyEvent *event);
@@ -294,13 +294,13 @@ May be called from any thread; the host must define the order of concurrent call
 Example: IME pinyin input flow:
 
 ```c
-/* 合成与软键盘配合：preedit 增长后提交，提交文本同步通过软键盘送出 */
+/* composition with the soft keyboard: preedit grows, then commits; the committed text also goes out through the soft keyboard */
 send_composition(session, MIGO_COMPOSITION_EVENT_START,  "");
 send_composition(session, MIGO_COMPOSITION_EVENT_UPDATE, "ni");
 send_composition(session, MIGO_COMPOSITION_EVENT_UPDATE, "nihao");
-/* END 的 data 是上屏文本；空则表示用户取消 */
+/* END's data is the committed text; empty means the user cancelled */
 send_composition(session, MIGO_COMPOSITION_EVENT_END,    "\u4f60\u597d");
-/* 软键盘同步更新完整字段文本 */
+/* the soft keyboard sends the field's full text */
 send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT, "migo\u4f60\u597d", 0.0);
 ```
 
@@ -353,10 +353,10 @@ info.button_count  = 17;
 info.id_utf8       = "Xbox Wireless Controller (Vendor: 045e Product: 02fd)";
 info.mapping_utf8  = "standard";
 
-/* 上线 */
+/* connect */
 migo_session_set_gamepad_connected(session, &info, 1);
-/* ... 游戏循环中持续发送样本 ... */
-/* 下线：只需 index，可复用同一结构体 */
+/* ... keep sending samples from the game loop ... */
+/* disconnect: only the index is needed; the same struct can be reused */
 migo_session_set_gamepad_connected(session, &info, 0);
 ```
 
@@ -402,12 +402,12 @@ float axes[4] = { phase, -phase, 0.0f, 0.0f };
 MigoGamepadButton buttons[17] = {0};
 buttons[0].flags = MIGO_GAMEPAD_BUTTON_FLAG_PRESSED | MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED;
 buttons[0].value = 1.0f;
-buttons[6].flags = MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED; /* 25% 未必算 pressed */
+buttons[6].flags = MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED; /* 25% need not count as pressed */
 buttons[6].value = 0.25f;
 MigoGamepadStateEvent ev = {sizeof ev, MIGO_ABI_VERSION_CURRENT, 0, 4, 17, 0,
     axes, buttons, (double)elapsed_ms};
 MigoResult r = migo_session_send_gamepad_state(session, &ev);
-if (r == MIGO_ERROR_WOULD_BLOCK) { /* 下一帧重试 */ }
+if (r == MIGO_ERROR_WOULD_BLOCK) { /* retry next frame */ }
 ```
 
 ---
@@ -418,10 +418,10 @@ if (r == MIGO_ERROR_WOULD_BLOCK) { /* 下一帧重试 */ }
 
 ```c
 typedef uint32_t MigoTouchType;
-#define MIGO_TOUCH_START  0U  /* touchstart：指针接触 surface */
-#define MIGO_TOUCH_MOVE   1U  /* touchmove：位置变化 */
-#define MIGO_TOUCH_END    2U  /* touchend：指针离开 surface */
-#define MIGO_TOUCH_CANCEL 3U  /* touchcancel：系统中断（来电、弹窗等） */
+#define MIGO_TOUCH_START  0U  /* touchstart: a pointer touches the surface */
+#define MIGO_TOUCH_MOVE   1U  /* touchmove: the position changed */
+#define MIGO_TOUCH_END    2U  /* touchend: a pointer leaves the surface */
+#define MIGO_TOUCH_CANCEL 3U  /* touchcancel: interrupted by the system (a call, a dialog, ...) */
 ```
 
 ### MigoTouchPointFlags
@@ -429,17 +429,17 @@ typedef uint32_t MigoTouchType;
 ```c
 typedef uint32_t MigoTouchPointFlags;
 #define MIGO_TOUCH_FLAG_NONE    0U
-#define MIGO_TOUCH_FLAG_CHANGED (1U << 0)  /* 本事件中此点发生变化 */
-#define MIGO_TOUCH_FLAG_REMOVED (1U << 1)  /* 此点随本事件离开，从 touches 移除 */
+#define MIGO_TOUCH_FLAG_CHANGED (1U << 0)  /* this point changed in this event */
+#define MIGO_TOUCH_FLAG_REMOVED (1U << 1)  /* this point leaves with this event and is removed from touches */
 ```
 
 ### MigoPointerEventType
 
 ```c
 typedef uint32_t MigoPointerEventType;
-#define MIGO_POINTER_EVENT_DOWN 0U  /* 按键按下 */
-#define MIGO_POINTER_EVENT_MOVE 1U  /* 指针移动 */
-#define MIGO_POINTER_EVENT_UP   2U  /* 按键抬起 */
+#define MIGO_POINTER_EVENT_DOWN 0U  /* button down */
+#define MIGO_POINTER_EVENT_MOVE 1U  /* pointer moved */
+#define MIGO_POINTER_EVENT_UP   2U  /* button up */
 ```
 
 The `button` field is `uint32_t` and follows DOM `MouseEvent.button`: 0 primary (left), 1 middle, and 2 secondary (right); the maximum allowed value is `MIGO_POINTER_BUTTON_MAX` (31).
@@ -448,27 +448,27 @@ The `button` field is `uint32_t` and follows DOM `MouseEvent.button`: 0 primary 
 
 ```c
 typedef uint32_t MigoWheelDeltaMode;
-#define MIGO_WHEEL_DELTA_MODE_PIXEL 0U  /* delta 单位为像素 */
-#define MIGO_WHEEL_DELTA_MODE_LINE  1U  /* delta 单位为行 */
-#define MIGO_WHEEL_DELTA_MODE_PAGE  2U  /* delta 单位为页 */
+#define MIGO_WHEEL_DELTA_MODE_PIXEL 0U  /* delta in pixels */
+#define MIGO_WHEEL_DELTA_MODE_LINE  1U  /* delta in lines */
+#define MIGO_WHEEL_DELTA_MODE_PAGE  2U  /* delta in pages */
 ```
 
 ### MigoKeyboardEventType
 
 ```c
 typedef uint32_t MigoKeyboardEventType;
-#define MIGO_KEYBOARD_EVENT_INPUT         0U  /* 字段文本更新（完整当前值） */
-#define MIGO_KEYBOARD_EVENT_CONFIRM       1U  /* 用户按下确认键（回车） */
-#define MIGO_KEYBOARD_EVENT_COMPLETE      2U  /* 键盘收起完成 */
-#define MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE 3U  /* 键盘高度变化（CSS 像素） */
+#define MIGO_KEYBOARD_EVENT_INPUT         0U  /* field text updated (full current value) */
+#define MIGO_KEYBOARD_EVENT_CONFIRM       1U  /* the user pressed confirm (Enter) */
+#define MIGO_KEYBOARD_EVENT_COMPLETE      2U  /* the keyboard finished hiding */
+#define MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE 3U  /* keyboard height changed (CSS pixels) */
 ```
 
 ### MigoKeyEventType
 
 ```c
 typedef uint32_t MigoKeyEventType;
-#define MIGO_KEY_EVENT_DOWN 0U  /* 按键按下 */
-#define MIGO_KEY_EVENT_UP   1U  /* 按键抬起 */
+#define MIGO_KEY_EVENT_DOWN 0U  /* button down */
+#define MIGO_KEY_EVENT_UP   1U  /* button up */
 ```
 
 ### MigoKeyModifiers (modifier-key mask)
@@ -487,16 +487,16 @@ typedef uint32_t MigoKeyModifiers;
 ```c
 typedef uint32_t MigoKeyEventFlags;
 #define MIGO_KEY_EVENT_FLAG_NONE   0U
-#define MIGO_KEY_EVENT_FLAG_REPEAT (1U << 0)  /* 平台自动重复，对应 DOM KeyboardEvent.repeat */
+#define MIGO_KEY_EVENT_FLAG_REPEAT (1U << 0)  /* platform auto-repeat, as DOM KeyboardEvent.repeat */
 ```
 
 ### MigoCompositionEventType
 
 ```c
 typedef uint32_t MigoCompositionEventType;
-#define MIGO_COMPOSITION_EVENT_START  0U  /* 合成开始，data 为初始 preedit（可为空） */
-#define MIGO_COMPOSITION_EVENT_UPDATE 1U  /* preedit 更新，data 为完整当前候选文本 */
-#define MIGO_COMPOSITION_EVENT_END    2U  /* 提交或取消，data 为上屏文本（取消时为空） */
+#define MIGO_COMPOSITION_EVENT_START  0U  /* composition started; data is the initial preedit (may be empty) */
+#define MIGO_COMPOSITION_EVENT_UPDATE 1U  /* preedit updated; data is the full current candidate text */
+#define MIGO_COMPOSITION_EVENT_END    2U  /* committed or cancelled; data is the committed text (empty when cancelled) */
 ```
 
 ### MigoGamepadButtonFlags
@@ -504,6 +504,6 @@ typedef uint32_t MigoCompositionEventType;
 ```c
 typedef uint32_t MigoGamepadButtonFlags;
 #define MIGO_GAMEPAD_BUTTON_FLAG_NONE    0U
-#define MIGO_GAMEPAD_BUTTON_FLAG_PRESSED (1U << 0)  /* 设备判定为已按下 */
-#define MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED (1U << 1)  /* 手指触及但未必按下（如扳机） */
+#define MIGO_GAMEPAD_BUTTON_FLAG_PRESSED (1U << 0)  /* the device reports it pressed */
+#define MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED (1U << 1)  /* touched but not necessarily pressed (a trigger, say) */
 ```

@@ -76,6 +76,19 @@ EXEMPT=(
     # resolved at load time and tolerated at link time.
     "skia-safe=pdf, so Skia builds the pathops its always-compiled wrappers reference; ld64 cannot hide them the way GNU ld does"
     "skia-bindings=jpeg/jpeg-decode/jpeg-encode/pdf arrive with skia-safe's pdf feature above, which is what supplies SkJpeg* and SkPDF* to the linker"
+    # The audio device, which is the one thing a host cannot be portable about.
+    # `host-audio` is part of `external-frames` because the Performance+ lane
+    # plays sound in this process (WebContent never touches PCM), and cpal
+    # reaches the device through ALSA on Linux and CoreAudio on Apple. So the
+    # two resolutions differ by exactly one backend each, in both directions --
+    # which is the difference existing rather than drifting.
+    "alsa=cpal's Linux backend; the Apple resolution reaches the device through CoreAudio instead"
+    "alsa-sys=alsa's bindings, for the same reason"
+    "coreaudio-rs=cpal's Apple backend, where Linux uses ALSA"
+    "coreaudio-sys=coreaudio-rs's bindings, for the same reason"
+    "core-foundation-sys=coreaudio-sys's, for the CoreFoundation types its API takes"
+    "mach2=coreaudio-rs's, for the Mach timebase its render callbacks are timed against"
+    "bitflags=the CoreAudio crates take it with its default feature; the Linux graph has it without"
 )
 
 problems=()

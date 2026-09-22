@@ -18,10 +18,10 @@ import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 A **capability** in Migo is the layer between **content calling `migo.*`** and the host's actual implementation. The engine never fabricates system capabilities the host does not provide — an unregistered capability returns an explicit "not supported" instead of pretending to succeed. Three categories:
 
 <CardGrid>
-  <LinkCard title="Commerce: Ads" href="/docs/capabilities/commerce/ads/" description="The SDK is already delivered to content; the host calls the other end. Rewarded video settled fallback and callback dispatch are all covered here." />
-  <LinkCard title="Commerce: Payment" href="/docs/capabilities/commerce/payment/" description="Midas/Android payment handler contract and fallback behavior when isMidasPaymentSupported defaults to false." />
-  <LinkCard title="Platform Services" href="/docs/capabilities/services/auth/" description="Login/auth, share, settings, permissions, subpackages, logging, mini-program navigation — contracts and fallbacks for seven platform handlers." />
-  <LinkCard title="Soft Keyboard and Key Events" href="/docs/capabilities/keyboard/" description="The only C-ABI-level capability: the on_show/hide/update_keyboard triad plus IME composition events." />
+  <LinkCard title="Commerce: Ads" href="/docs/en/capabilities/commerce/ads/" description="The SDK is already delivered to content; the host calls the other end. Rewarded video settled fallback and callback dispatch are all covered here." />
+  <LinkCard title="Commerce: Payment" href="/docs/en/capabilities/commerce/payment/" description="Midas/Android payment handler contract and fallback behavior when isMidasPaymentSupported defaults to false." />
+  <LinkCard title="Platform Services" href="/docs/en/capabilities/services/auth/" description="Login/auth, share, settings, permissions, subpackages, logging, mini-program navigation — contracts and fallbacks for seven platform handlers." />
+  <LinkCard title="Soft Keyboard and Key Events" href="/docs/en/capabilities/keyboard/" description="The only C-ABI-level capability: the on_show/hide/update_keyboard triad plus IME composition events." />
 </CardGrid>
 
 ## 1. Input Events: Host Feeds the Engine
@@ -36,7 +36,7 @@ Touch, pointer, scroll wheel, physical keys, IME composition, gamepad — all ar
 | IME composition | `migo_session_send_composition_event` | IME candidate / composition state |
 | Gamepad state | `migo_session_send_gamepad_state` | Gamepad polling or interrupt |
 
-Full structs and flags are on the [Input Events](/docs/reference/input/) page; that page is the data-plane reference. This page only answers "who is responsible for sending what to whom".
+Full structs and flags are on the [Input Events](/docs/en/reference/input/) page; that page is the data-plane reference. This page only answers "who is responsible for sending what to whom".
 
 ## 2. Soft Keyboard: Provided by Host, Shown/Hidden by Content
 
@@ -47,9 +47,9 @@ The mini-program-style soft keyboard is not an input event — it is a **capabil
 
 When content opens the keyboard it receives `MigoKeyboardShowOptions`: `MIGO_KEYBOARD_FLAG_MULTIPLE` (multiline), `MIGO_KEYBOARD_FLAG_CONFIRM_HOLD` (confirm key does not auto-dismiss), confirm key shape (DONE/NEXT/SEARCH/GO/SEND), keyboard type (TEXT/NUMBER), initial value, and length limit.
 
-The host reports events back via `migo_session_send_keyboard_event` — four types: INPUT / CONFIRM / COMPLETE / HEIGHT\_CHANGE. Height events must be in **CSS px** (for the cost of getting the DPI conversion wrong, see the [Soft Keyboard page](/docs/capabilities/keyboard/)).
+The host reports events back via `migo_session_send_keyboard_event` — four types: INPUT / CONFIRM / COMPLETE / HEIGHT\_CHANGE. Height events must be in **CSS px** (for the cost of getting the DPI conversion wrong, see the [Soft Keyboard page](/docs/en/capabilities/keyboard/)).
 
-See [Soft Keyboard and Key Events](/docs/capabilities/keyboard/) for details.
+See [Soft Keyboard and Key Events](/docs/en/capabilities/keyboard/) for details.
 
 ## 3. Android Handler Contracts: Host Registers in the Java Layer
 
@@ -74,11 +74,11 @@ Two categories of "fake fallback" are explicitly rejected:
 - **Payment**: `isMidasPaymentSupported` defaults to `false` — content uses this value to decide whether to render a recharge UI. Reporting `true` amounts to advertising a store that refuses every purchase.
 - **Ads**: `showAd` accepts a silent settle, but `onClose` is the trigger for content to grant rewards. Even when no ad was actually shown, a close must be sent — and it must use `isEnded=false`. Otherwise the signal sent is "reward granted for an ad the user never watched".
 
-Details: [Ads](/docs/capabilities/commerce/ads/) / [Payment](/docs/capabilities/commerce/payment/).
+Details: [Ads](/docs/en/capabilities/commerce/ads/) / [Payment](/docs/en/capabilities/commerce/payment/).
 
 ## Distinction: Symbol Missing vs Capability Missing
 
 - **Symbol missing**: `migo_engine_create` itself is absent from the library (`platform/oh.h` wrong-link class, platform header) — fails at compile/link time, never reaches the runtime.
 - **Capability missing**: `migo_query_capabilities` reports no such `platform_kinds` bit / the soft-keyboard triad is incomplete / `setAdHandler` is not registered — the runtime settles per the table above; content, including its fallback branches, is fully documented in the `migo.*` protocol.
 
-The fields and ABI-check protocol for runtime capability queries are covered in [Runtime Capability Queries](/docs/reference/capabilities/).
+The fields and ABI-check protocol for runtime capability queries are covered in [Runtime Capability Queries](/docs/en/reference/capabilities/).

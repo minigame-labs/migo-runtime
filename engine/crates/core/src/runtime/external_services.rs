@@ -63,6 +63,7 @@ use migo_services::image::cache::{ImageCache, SharedImageCache};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
 use super::service_args::{bytes, exactly, i32_of, not_a, string, strings, u32_of};
+use super::service_audio::{self, AudioBinding, LocalSources};
 use super::service_ops::id;
 
 /// The most messages held ahead of a predecessor that has not arrived.
@@ -280,6 +281,10 @@ pub(crate) struct ServiceContext {
     /// ids names. Loads fill it on the session thread; the frame decoder reads
     /// it on the transport's thread for `texImage2D(…, image)`.
     aliases: SharedImageCache,
+    /// The session's audio, once the session thread has built it. Read on the
+    /// session thread and on the synchronous endpoint's: the sender is the one
+    /// every audio command goes through, in the order it is dispatched.
+    audio: OnceLock<AudioBinding>,
 }
 
 impl ServiceContext {
@@ -291,6 +296,7 @@ impl ServiceContext {
             session_id: OnceLock::new(),
             content: RwLock::new(None),
             aliases: Arc::new(parking_lot::Mutex::new(ImageCache::new())),
+            audio: OnceLock::new(),
         }
     }
 
@@ -395,6 +401,40 @@ impl ServiceContext {
     pub(crate) fn bind_session(&self, session_id: i32) {
         let _ = self.session_id.set(session_id);
         let _ = self.scheduler.set(Arc::new(IoScheduler::new(session_id)));
+    }
+
+    /// Give the services the session's audio: the sender its audio service
+    /// hands out, and the runtime generation that scopes `AudioBuffer` ids.
+    /// Once, on the session thread, before the first service work is
+    /// dispatched.
+    pub(crate) fn bind_audio(
+        &self,
+        sender: shared::op_state::AudioSender,
+        runtime_generation: i64,
+    ) {
+        let _ = self.audio.set(AudioBinding {
+            sender,
+            runtime_generation,
+            platform: crate::services::audio::platform_audio_service(),
+        });
+    }
+
+    fn audio(&self) -> Result<&AudioBinding, ServiceError> {
+        self.audio
+            .get()
+            .ok_or_else(|| migo_services::audio::audio_error("the session's audio is not started"))
+    }
+
+    /// Where an InnerAudioContext reads a packaged sound: the mounted
+    /// package's sandbox, or -- before content is mounted -- nowhere.
+    fn audio_sources(&self) -> LocalSources {
+        let content = self.content.read();
+        LocalSources {
+            code_dir: content
+                .as_ref()
+                .map(|content| content.game_paths.code_dir().to_string_lossy().into_owned()),
+            vfs: content.as_ref().map(|content| Arc::clone(&content.vfs)),
+        }
     }
 
     fn scheduler(&self) -> Result<Arc<IoScheduler>, ServiceError> {
@@ -550,6 +590,9 @@ impl ServiceContext {
             file if super::service_fs::is_sync(file) => {
                 super::service_fs::call_sync(&self.fs_env()?, file, args)
             }
+            audio if service_audio::is_sync(audio) => {
+                service_audio::call_sync(self.audio()?, audio, args)
+            }
             other => Err(not_a(other, "synchronous")),
         }
     }
@@ -674,6 +717,9 @@ impl ServiceContext {
             file if super::service_fs::is_async(file) => {
                 return super::service_fs::call_async(self.fs_env()?, file, args);
             }
+            audio if service_audio::is_async(audio) => {
+                return service_audio::call_async(self.audio()?, self.audio_sources(), audio, args);
+            }
             other => return Err(not_a(other, "awaited")),
         })
     }
@@ -708,6 +754,9 @@ impl ServiceContext {
                     self.session(),
                 );
                 Ok(())
+            }
+            audio if service_audio::is_command(audio) => {
+                service_audio::command(self.audio()?, audio, args)
             }
             other => Err(not_a(other, "command")),
         }

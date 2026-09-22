@@ -46,7 +46,13 @@ embedded-v8 = ["dep:runtime-v8"]
 # is between the neutral bring-up above line ~150 and the runtime assembly
 # below it -- not the 49 `self.js.*` call sites, which belong to the embedded
 # execution either way and do not move.
-external-frames = ["dep:migo-frame-wire", "dep:frame-decode", "dep:migo-services"]
+external-frames = ["dep:migo-frame-wire", "dep:frame-decode", "dep:migo-services", "host-audio"]
+# The host's audio thread: the WebAudio graph, InnerAudioContext and the device
+# output, with no opinion about where the JavaScript that drives it runs. The
+# embedded execution reaches it through its ops (`api-media`); the external one
+# through the service stream -- on iOS Performance+ PCM never crosses to
+# WebContent, so the audio has to play here.
+host-audio = ["dep:audio"]
 
 profile-full = ["embedded-v8", "runtime-v8?/profile-full", "v8-limits", "code-signing", "api-sensors", "api-media", "api-connectivity", "api-commerce", "api-system", "graphics/profile-full"]
 profile-slim = ["embedded-v8", "runtime-v8?/profile-slim", "v8-limits", "code-signing", "graphics/profile-slim"]
@@ -57,7 +63,7 @@ test-support = []
 v8-limits = ["embedded-v8", "runtime-v8?/v8-limits", "shared/v8-limits"]
 code-signing = ["embedded-v8", "runtime-v8?/code-signing", "shared/code-signing"]
 api-sensors = ["embedded-v8", "runtime-v8?/api-sensors"]
-api-media = ["embedded-v8", "runtime-v8?/api-media", "dep:audio"]
+api-media = ["embedded-v8", "runtime-v8?/api-media", "host-audio"]
 api-connectivity = ["embedded-v8", "runtime-v8?/api-connectivity"]
 api-commerce = ["embedded-v8", "runtime-v8?/api-commerce"]
 api-system = ["embedded-v8", "runtime-v8?/api-system"]
@@ -80,7 +86,7 @@ graphics = { package = "migo-graphics", path = "../graphics", default-features =
 migo-io = { path = "../io", default-features = false }
 # The work behind the ops, shared with the embedded runtime; the external
 # session's service dispatcher calls it directly.
-migo-services = { path = "../services", optional = true }
+migo-services = { path = "../services", default-features = false, optional = true }
 audio = { package = "migo-audio", path = "../audio", default-features = false, optional = true }
 crossbeam-channel = { workspace = true }
 futures = { workspace = true }

@@ -479,6 +479,10 @@ pub(crate) fn register_sender(
 /// Install the wake used to cancel startup evaluation. Registration itself is
 /// intentionally unchanged because it runs before the Host exists; this setter
 /// closes that construction gap before the ready handshake is published.
+///
+/// Only the embedded execution evaluates at startup; the external session has
+/// no script to cancel, and stops on its command channel.
+#[cfg(feature = "embedded-v8")]
 pub(crate) fn install_shutdown_notify(
     id: HostId,
     notify: Arc<tokio::sync::Notify>,
@@ -751,6 +755,8 @@ mod tests {
         assert_eq!(ingress.host_id(), id);
         RegisteredHost(id)
     }
+
+    #[cfg(feature = "embedded-v8")]
     #[test]
     fn shutdown_host_wakes_startup_evaluation_cancellation() {
         let id = alloc_host_id();

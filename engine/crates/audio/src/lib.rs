@@ -84,6 +84,10 @@
 static COUNTING_ALLOCATOR: migo_alloc_probe::CountingAllocator =
     migo_alloc_probe::CountingAllocator::system();
 
+/// The engine's own `AVAudioSession`: an iOS process plays through one, and
+/// nothing else on this lane configures it (see the module).
+#[cfg(target_os = "ios")]
+pub mod apple_session;
 mod audio_thread;
 pub mod cache;
 mod context;

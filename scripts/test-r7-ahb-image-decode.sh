@@ -13,8 +13,14 @@ CANVAS_MANAGER="$ROOT/engine/crates/graphics/src/canvas/manager/mod.rs"
 IMAGE_MANAGER="$ROOT/engine/crates/graphics/src/canvas/manager/image.rs"
 TEXTURE_IMPORT="$ROOT/engine/crates/graphics/src/texture_import.rs"
 IMAGE_OPS="$ROOT/engine/crates/io/src/image_ops.rs"
+# The inline decode itself is a service both executions call; what stayed in
+# the runtime is fetching an `http(s)` source under its network policy.
+INLINE_DECODE="$ROOT/engine/crates/services/src/image/inline.rs"
 INLINE_SRC="$ROOT/engine/crates/runtime-v8/src/rendering/image/inline_src.rs"
-IMAGE_MOD="$ROOT/engine/crates/runtime-v8/src/rendering/image/mod.rs"
+# Loading an image -- data URL, package path, cache -- is a service both
+# executions call (`migo-services::image`); what stayed in the runtime is the
+# op adapters and the policy-checked fetch of an `http(s)` source.
+IMAGE_LOADER="$ROOT/engine/crates/services/src/image/loader.rs"
 
 fail() {
   printf 'R7 contract failure: %s\n' "$*" >&2
@@ -57,17 +63,17 @@ grep -Fq 'gpu_caps: &shared::device::gpu_caps::GpuCaps' "$IMAGE_MANAGER" || fail
 grep -Fq 'gpu_caps.ahb' "$IMAGE_OPS" || fail 'filesystem decode does not gate AHB on renderer import support'
 grep -Fq 'run_image_job_with_live_caps' "$IMAGE_OPS" || fail 'queued filesystem decode snapshots AHB caps before its worker starts'
 grep -Fq 'run_bounded_inline_image_job' "$IMAGE_OPS" || fail 'inline decode has no shared IO budget/semaphore scheduler path'
-grep -Fq 'allow_ahb: bool' "$INLINE_SRC" || fail 'inline decode does not require an explicit AHB capability decision'
-grep -Fq 'decode_image_to_any(bytes, hint_mime, allow_ahb)' "$INLINE_SRC" || fail 'inline decode bypasses the AHB capability gate'
-grep -Fq 'io::probe_image_dimensions(bytes)' "$INLINE_SRC" || fail 'untrusted inline images lack a pre-allocation dimension guard'
-grep -Fq 'validate_data_url_cache_input(&src)' "$IMAGE_MOD" || fail 'data URL cache keying happens before hostile metadata/payload size validation'
-grep -Fq 'data:sha256:' "$IMAGE_MOD" || fail 'multi-megabyte data URLs are retained verbatim as shared cache keys'
-grep -Fq 'gpu_caps.snapshot().ahb' "$IMAGE_MOD" || fail 'data/http image decode does not consume the final AHB capability snapshot'
-if [[ "$(grep -Fc 'run_bounded_inline_image_job' "$IMAGE_MOD")" -lt 2 ]]; then
+grep -Fq 'allow_ahb: bool' "$INLINE_DECODE" || fail 'inline decode does not require an explicit AHB capability decision'
+grep -Fq 'decode_image_to_any(bytes, hint_mime, allow_ahb)' "$INLINE_DECODE" || fail 'inline decode bypasses the AHB capability gate'
+grep -Fq 'probe_image_dimensions(bytes)' "$INLINE_DECODE" || fail 'untrusted inline images lack a pre-allocation dimension guard'
+grep -Fq 'validate_data_url_cache_input(&src)' "$IMAGE_LOADER" || fail 'data URL cache keying happens before hostile metadata/payload size validation'
+grep -Fq 'data:sha256:' "$IMAGE_LOADER" || fail 'multi-megabyte data URLs are retained verbatim as shared cache keys'
+grep -Fq 'gpu_caps.snapshot().ahb' "$IMAGE_LOADER" || fail 'data/http image decode does not consume the final AHB capability snapshot'
+if [[ "$(grep -Fc 'run_bounded_inline_image_job' "$IMAGE_LOADER")" -lt 2 ]]; then
   fail 'data/http image decode does not share the bounded image scheduler path'
 fi
-data_begin_line="$(awk '/async fn load_image_from_inline_bytes/ { in_fn=1 } in_fn && /c\.begin_load/ { print NR; exit }' "$IMAGE_MOD")"
-data_parse_line="$(awk '/async fn load_image_from_inline_bytes/ { in_fn=1 } in_fn && /parse_data_url/ { print NR; exit }' "$IMAGE_MOD")"
+data_begin_line="$(awk '/async fn load_image_from_inline_bytes/ { in_fn=1 } in_fn && /c\.begin_load/ { print NR; exit }' "$IMAGE_LOADER")"
+data_parse_line="$(awk '/async fn load_image_from_inline_bytes/ { in_fn=1 } in_fn && /parse_data_url/ { print NR; exit }' "$IMAGE_LOADER")"
 if [[ -z "$data_begin_line" || -z "$data_parse_line" || "$data_begin_line" -ge "$data_parse_line" ]]; then
   fail 'data URL is parsed/decoded before shared-cache begin_load deduplication'
 fi

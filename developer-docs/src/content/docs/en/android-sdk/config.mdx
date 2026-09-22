@@ -17,8 +17,8 @@ sourcePaths:
 The Builder has two entry points:
 
 ```java
-new RuntimeConfig.Builder(Context)                          // cacheDir/filesDir/displayDensity 从 Context 推
-new RuntimeConfig.Builder(cacheDir, filesDir, density)      // 完全自供,脱离 Context
+new RuntimeConfig.Builder(Context)                          // cacheDir/filesDir/displayDensity derived from the Context
+new RuntimeConfig.Builder(cacheDir, filesDir, density)      // fully caller-supplied, no Context
 ```
 
 | Field | Description |

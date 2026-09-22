@@ -35,7 +35,7 @@ globalThis.addEventListener = () => {};
 
 const { FrameSession } = await import(`${root}/frame-session.mjs`);
 const { bindEngineHost, readEngineSessionConfig } = await import(`${root}/engine-host.mjs`);
-const { bindHostEvents, dispatchHostEvent } = await import(`${root}/host-events.mjs`);
+const { HOST_EVENT, bindHostEvents, dispatchHostEvent } = await import(`${root}/host-events.mjs`);
 const { DOWN_EVENT, decodeServiceDownMessage } = await import(`${root}/service.mjs`);
 
 bindEngineHost({
@@ -100,7 +100,11 @@ function check(what, fn) {
 const of = (name) => seen.filter(([kind]) => kind === name).map(([, event]) => event);
 const touch = (event) => ({ id: event.touches.concat(event.changedTouches)[0]?.identifier, x: event.changedTouches[0]?.clientX });
 
-check("the bridge had a hook for every event number", () => assert.equal(bound, 18));
+// Every event the contract numbers, bound to a function the engine has: an
+// event whose hook the bridge does not carry is one the host would send and
+// nothing would deliver.
+check("the bridge had a hook for every event number", () =>
+  assert.equal(bound, Object.keys(HOST_EVENT).length));
 check("a touch start and move carry the host's point and time", () => {
   const [start] = of("touchstart");
   assert.equal(start.touches.length, 1);
