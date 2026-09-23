@@ -856,6 +856,59 @@ export function forgetSnapshots() {
 }
 
 /**
+ * The same capture, from the path that would have recorded it in a text cache.
+ *
+ * `fillText` asks `op_text_cache_peek_pin` whether the host already holds the
+ * texture for this exact label; a host that keeps such a cache answers hit and
+ * the paint is skipped. This one keeps none and answers miss, always
+ * (`lane-local.mjs`), so what is left of this op is the capture -- the `ImageData`
+ * that follows it is the same one, and the record is the same record, without a
+ * key for a cache nobody would read.
+ *
+ * The key's arguments are converted all the same: deno_core converts before the
+ * Rust body runs, so one it refuses is a TypeError in the embedded runtime
+ * whatever the body would have done with it.
+ */
+export function op_capture_canvas2d_snapshot_for_cache(
+  canvasId,
+  x,
+  y,
+  width,
+  height,
+  snapshotId,
+  text,
+  fontRequest,
+  fontSize,
+  fontWeight,
+  italic,
+  fillColor,
+  textAlign,
+  textBaseline,
+  canvasW,
+  canvasH,
+) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const left = toI32(x, "x");
+  const top = toI32(y, "y");
+  const w = smiU32(width, "width");
+  const h = smiU32(height, "height");
+  const id = smiU32(snapshotId, "snapshot_id");
+  stringOf(text, "text");
+  stringOf(fontRequest, "font_request");
+  f32BitsOf(fontSize, "font_size");
+  smiU32(fontWeight, "font_weight");
+  toBool(italic, "italic");
+  smiU32(fillColor, "fill_color");
+  smiU8(textAlign, "text_align");
+  smiU8(textBaseline, "text_baseline");
+  smiU32(canvasW, "canvas_w");
+  smiU32(canvasH, "canvas_h");
+  if (id === 0 || !canvasSizeFits(w, h)) return;
+  snapshotSizes.set(id, [w, h]);
+  emit2D(canvas, R.OP2D_CAPTURE_SNAPSHOT, left >>> 0, top >>> 0, w, h, id);
+}
+
+/**
  * `getImageData`'s capture: the pixels stay on the host.
  *
  * The engine's 2D facade captures rather than reading back, because the picture
