@@ -39,14 +39,59 @@ export function op_timer_is_backgrounded() {
 
 // ---- canvases ---------------------------------------------------------------
 
+/// The sizes of the canvases this producer created, by id.
+///
+/// The host has the real ones -- it allocated the surfaces -- but asking it
+/// would be a synchronous round trip on the one call every canvas makes in its
+/// constructor, and the answer is one this side already knows: the producer
+/// chose the size in `op_create_offscreen_canvas` and changes it in
+/// `op_resize_canvas`, which is exactly what `canvas.width` means. Contract
+/// `local_answer`, and the reason the op is on the local lane.
+const canvasSizes = new Map();
+
+/// The next canvas id this producer hands out.
+///
+/// From `shared::protocol::render_cmd::PRODUCER_CANVAS_ID_BASE`, which is where
+/// the in-process runtime's own counter starts, and below which the renderer
+/// refuses a registration: the renderer allocates its ids from 2 upwards, so a
+/// caller that allocated from 2 as well would name a canvas the renderer is
+/// about to create.
+const PRODUCER_CANVAS_ID_BASE = 1 << 24;
+let nextCanvasId = PRODUCER_CANVAS_ID_BASE;
+
+/// Take an id for a canvas the stream lane is about to register, and record the
+/// size it is being created at.
+export function allocateCanvas(width, height) {
+  const id = nextCanvasId >>> 0;
+  nextCanvasId += 1;
+  canvasSizes.set(id, [width, height]);
+  return id;
+}
+
+/// A resize this producer sent, as `canvas.width`/`height` will read it back.
+export function recordCanvasSize(id, width, height) {
+  const size = canvasSizes.get(id);
+  if (size === undefined) return;
+  if (width !== null) size[0] = width;
+  if (height !== null) size[1] = height;
+}
+
+/// A canvas the content threw away; a later `op_get_canvas_info` for it is the
+/// "not found" the in-process op answers once the render thread has dropped it.
+export function forgetCanvas(id) {
+  canvasSizes.delete(id);
+}
+
 /// The main canvas (id 1) is the surface; its size is the one the host
-/// described. Offscreen canvases are created on the stream lane, which has not
-/// landed, so no other id can exist yet -- and the Rust op refuses an unknown id
-/// the same way.
+/// described. Every other id is one this producer allocated, and the size is
+/// the one it chose -- an id from neither is refused, as the Rust op refuses an
+/// id the render thread does not hold.
 export function op_get_canvas_info(id) {
   const canvasId = smiU32(id, "id");
   const { state } = engineHost();
   if (canvasId === 1) return [state.surfaceWidth, state.surfaceHeight];
+  const size = canvasSizes.get(canvasId);
+  if (size !== undefined) return [size[0], size[1]];
   throw new Error(`canvas ${canvasId} not found`);
 }
 

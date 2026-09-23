@@ -145,6 +145,24 @@ printf '%s\n' "$text" | grep -qE '[0-9]+ Canvas2D commands agree' \
     || { printf '%s\n' "$text" >&2; fail "the text parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$text" | grep -E '[0-9]+ Canvas2D commands agree'
 
+# The canvas itself: created, resized and destroyed. Every other fixture draws
+# on a canvas the host already had, so the one ordering this lane has to carry
+# in its own stream -- create it, then draw on it -- was never exercised.
+LIFETIME_PARITY="$WORK/canvas-lifetime-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$LIFETIME_PARITY" \
+    fixtures/canvas-lifetime-calls.js \
+    || fail "the canvas lifetime calls did not run on the producer"
+status=0
+lifetime="$(cd engine && MIGO_CANVAS_LIFETIME_PARITY_DIR="$LIFETIME_PARITY" cargo test -p migo-runtime-v8 --lib \
+    canvas_lifetime_parity -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$lifetime" >&2
+    fail "the producer's canvas lifetime records do not have the effect the in-process ops have"
+fi
+printf '%s\n' "$lifetime" | grep -qE '[0-9]+ canvas lifetime effects agree' \
+    || { printf '%s\n' "$lifetime" >&2; fail "the canvas lifetime parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$lifetime" | grep -E '[0-9]+ canvas lifetime effects agree'
+
 # The file system and `require`: every call the producer's lanes make, run by
 # the host's own dispatch on a real game sandbox, and the producer's reading of
 # the host's real answers. emit-file-calls.mjs records the calls, the Rust test

@@ -13,11 +13,12 @@ import {
   flushToHost,
 } from "./engine-frames.mjs";
 import { engineHost } from "./engine-host.mjs";
-import { recordProducerError } from "./lane-local.mjs";
+import { allocateCanvas, forgetCanvas, recordCanvasSize, recordProducerError } from "./lane-local.mjs";
 import {
   bytesOf,
   f32BitsOf,
   optionalBytesOf,
+  optionalU32,
   smiU32,
   smiU8,
   stringOf,
@@ -612,6 +613,86 @@ function emit2DText(canvasId, opcode, text, ...prefix) {
   if (!appendCanvas2DRecord(canvasId, record, headerWords, bytes)) {
     recordProducerError(canvasId, OUT_OF_MEMORY);
   }
+}
+
+// ---- Canvas lifetime --------------------------------------------------------
+//
+// A canvas is created, resized and destroyed inside the run of records that
+// draws on it. In process these are ops that reach the render thread on the same
+// FIFO the frame packets travel, so "create it, then draw on it" is already
+// ordered; here the stream is the only path, and the records carry that order.
+
+// `shared::protocol::render_cmd::checked_canvas_pixel_count`, which is what the
+// ops below preflight with. Both bounds, not just the product: a 67-million-by-1
+// surface passes a pixel count and is not a surface any GPU API can represent.
+const MAX_CANVAS_DIMENSION = 8192;
+const MAX_CANVAS_PIXELS = MAX_CANVAS_DIMENSION * MAX_CANVAS_DIMENSION;
+
+/** Whether a canvas of this size is one the host will allocate. */
+function canvasSizeFits(width, height) {
+  if (width > MAX_CANVAS_DIMENSION || height > MAX_CANVAS_DIMENSION) return false;
+  return width * height <= MAX_CANVAS_PIXELS;
+}
+
+/**
+ * `createCanvas()` / `createOffscreenCanvas(w, h)`: the id of a new canvas.
+ *
+ * The contract's `local_answer`: the id is this producer's, allocated from the
+ * base the renderer requires and returned without waiting, exactly as the
+ * in-process op allocates and returns one rather than asking the render thread.
+ * The record that brings the canvas into existence rides the frame.
+ */
+export function op_create_offscreen_canvas(width, height) {
+  const w = smiU32(width, "width");
+  const h = smiU32(height, "height");
+  if (!canvasSizeFits(w, h)) {
+    throw new Error("[InvalidArgument] offscreen canvas dimensions exceed the surface pixel cap");
+  }
+  const id = allocateCanvas(w, h);
+  emit2D(id, R.OP2D_REGISTER_CANVAS, w, h);
+  return id;
+}
+
+/**
+ * `canvas.width = w` / `canvas.height = h`.
+ *
+ * Content assigns the two separately, so the op takes each as an option and so
+ * does the record -- one flags word rather than two records, because the host
+ * validates the pair the way the op does and a pair sent as two resizes would
+ * allocate an intermediate surface no frame ever drew to.
+ *
+ * Neither dimension named is a call that changes nothing: the in-process op
+ * sends a resize that the renderer applies to neither axis, and the record for
+ * it is one the reader refuses, so this writes nothing instead.
+ */
+export function op_resize_canvas(canvasId, width, height) {
+  const id = smiU32(canvasId, "id");
+  const w = optionalU32(width, "w");
+  const h = optionalU32(height, "h");
+  if ((w !== null && w > MAX_CANVAS_DIMENSION) || (h !== null && h > MAX_CANVAS_DIMENSION)) {
+    throw new Error("[InvalidArgument] canvas resize dimension exceeds the surface pixel cap");
+  }
+  let flags = 0;
+  if (w !== null) flags |= R.RESIZE_CANVAS_WIDTH;
+  if (h !== null) flags |= R.RESIZE_CANVAS_HEIGHT;
+  if (flags === 0) return;
+  recordCanvasSize(id, w, h);
+  emit2D(id, R.OP2D_RESIZE_CANVAS, flags, w ?? 0, h ?? 0);
+}
+
+/**
+ * The canvas the content threw away, which its finalizer reports.
+ *
+ * The onscreen canvas is not destroyed by either path: the in-process op returns
+ * before it sends anything, and the renderer refuses it as well. Returning here
+ * rather than sending a record the host would refuse keeps the two lanes' frames
+ * identical for the same calls.
+ */
+export function op_destroy_canvas(canvasId) {
+  const id = smiU32(canvasId, "rid");
+  if (id === 1) return;
+  forgetCanvas(id);
+  emit2D(id, R.OP2D_DESTROY_CANVAS);
 }
 
 /**

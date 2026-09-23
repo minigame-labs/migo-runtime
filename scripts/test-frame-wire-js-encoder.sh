@@ -568,6 +568,19 @@ RAN_TESTS+=("$TEST_DIR/audio-checks.test.mjs")
 node "$TEST_DIR/canvas2d-color.test.mjs"
 RAN_TESTS+=("$TEST_DIR/canvas2d-color.test.mjs")
 
+# --- the canvas the frame creates, resizes and destroys ---------------------
+#
+# The parity fixture drives these through the engine's own facade in both
+# runtimes and compares the effects, which covers creation and resizing. It
+# cannot reach two calls, because no facade call reaches them: `op_destroy_canvas`,
+# which the engine calls from a `FinalizationRegistry` that no test can schedule,
+# and a resize naming neither dimension, which the width and height setters
+# cannot produce. Those two, and the refusals the ops make before writing
+# anything -- the surface pixel cap, and the onscreen canvas, which neither lane
+# may destroy -- are checked here against the records the reader expects.
+node "$TEST_DIR/canvas-lifetime.test.mjs"
+RAN_TESTS+=("$TEST_DIR/canvas-lifetime.test.mjs")
+
 # --- what a socket event is on both sides -----------------------------------
 #
 # A socket cannot ride the record-and-replay harness the fetch calls do: a

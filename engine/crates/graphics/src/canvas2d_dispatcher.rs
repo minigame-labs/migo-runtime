@@ -66,6 +66,39 @@ impl Renderer2d {
             // and the canvas stays uninitialised — later draws hit
             // `get_2d_context_mut`'s `NotFound` error, matching the
             // pre-existing failure shape.
+            // The canvas itself, in the run that draws on it. The renderer call
+            // is the one `CanvasCmd::RegisterOffscreen` makes, so a canvas
+            // created from a frame stream and one created from an op are the
+            // same canvas -- the difference is only which path had to carry it.
+            // A failure is logged rather than propagated, exactly as that
+            // command's handler does: the canvas stays absent and the draws that
+            // follow fail where they already fail, which is one shape of failure
+            // instead of two.
+            Canvas2DCmd::RegisterCanvas { width, height } => {
+                if let Err(e) = cm.register_offscreen(canvas_id, width, height) {
+                    tracing::warn!(
+                        "Canvas2DCmd::RegisterCanvas failed: canvas={:?}, {}x{}, err={}",
+                        canvas_id,
+                        width,
+                        height,
+                        e
+                    );
+                }
+                Ok(false)
+            }
+            // The onscreen canvas is refused inside `destroy_canvas`, so this
+            // arm does not repeat that rule: one statement of it covers the op,
+            // the command and this record.
+            Canvas2DCmd::DestroyCanvas => {
+                if let Err(e) = cm.destroy_canvas(canvas_id) {
+                    tracing::warn!(
+                        "Canvas2DCmd::DestroyCanvas failed: canvas={:?}, err={}",
+                        canvas_id,
+                        e
+                    );
+                }
+                Ok(false)
+            }
             Canvas2DCmd::CreateContext2D => {
                 cm.init_skia_for_canvas(canvas_id)?;
                 Ok(false)
@@ -311,6 +344,8 @@ pub(crate) fn classify_draw_damage(
         | CaptureSnapshot { .. }
         | ReadSnapshotPixels { .. }
         | CreateContext2D
+        | RegisterCanvas { .. }
+        | DestroyCanvas
         | ResizeCanvas { .. } => return DamageEffect::NoDamage,
         _ => {}
     }

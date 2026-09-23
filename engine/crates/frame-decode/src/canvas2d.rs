@@ -172,6 +172,30 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
         // Everything else in this block needs the context this makes.
         OP2D_CREATE_CONTEXT => Canvas2DCmd::CreateContext2D,
 
+        OP2D_REGISTER_CANVAS => Canvas2DCmd::RegisterCanvas {
+            width: record[1],
+            height: record[2],
+        },
+        OP2D_DESTROY_CANVAS => Canvas2DCmd::DestroyCanvas,
+        // The one record in this block whose words the envelope cannot check.
+        // A word count says how many numbers arrived, and `bool_words` says
+        // which are 0 or 1; neither can say that a flags word names at least one
+        // dimension. So this is the reading, and a flags word that names none --
+        // or a bit this build does not know -- is a producer that encoded
+        // something this reader would have to guess at, which is what `None`
+        // means here: a stream the host does not execute rather than a resize
+        // applied to whichever dimension seemed likely.
+        OP2D_RESIZE_CANVAS => {
+            let flags = record[1];
+            if flags == 0 || flags & !(RESIZE_CANVAS_WIDTH | RESIZE_CANVAS_HEIGHT) != 0 {
+                return None;
+            }
+            Canvas2DCmd::ResizeCanvas {
+                w: (flags & RESIZE_CANVAS_WIDTH != 0).then_some(record[2]),
+                h: (flags & RESIZE_CANVAS_HEIGHT != 0).then_some(record[3]),
+            }
+        }
+
         OP2D_SET_COMPOSITE_OPERATION => Canvas2DCmd::SetCompositeOperation {
             op: record[1] as u8,
         },

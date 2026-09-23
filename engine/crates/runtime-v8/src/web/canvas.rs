@@ -17,13 +17,12 @@ const SYNC_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Process-global counter for JS-allocated offscreen canvas ids.
 ///
-/// Starts in a high range that the render-thread allocator
-/// (`CanvasManager::next_canvas_id`, bumps from 2) cannot reach in
-/// any realistic session, so the two pools never collide.  16M is
-/// well above any plausible canvas count and well below `u32::MAX`
-/// (which is reserved for the snapshot direct path).
-const JS_OFFSCREEN_CANVAS_ID_BASE: u32 = 1u32 << 24;
-static NEXT_JS_OFFSCREEN_CANVAS_ID: AtomicU32 = AtomicU32::new(JS_OFFSCREEN_CANVAS_ID_BASE);
+/// The base is `shared`'s, not this crate's: the external producer allocates
+/// from the same range for the record that stands in for this op, and the
+/// renderer refuses a registration below it. One definition, because the
+/// property is an agreement between three places rather than a local choice.
+static NEXT_JS_OFFSCREEN_CANVAS_ID: AtomicU32 =
+    AtomicU32::new(shared::protocol::render_cmd::PRODUCER_CANVAS_ID_BASE);
 
 #[inline]
 fn js_err_from_engine(e: EngineError) -> JsErrorBox {

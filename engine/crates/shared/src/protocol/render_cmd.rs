@@ -48,6 +48,23 @@ pub const MAX_CANVAS_DIMENSION: u32 = 8192;
 /// Maximum entries accepted by one non-standard Canvas draw batch.
 pub const MAX_DRAW_IMAGE_BATCH_ENTRIES: usize = 65_536;
 
+/// The first canvas id a caller outside the renderer may allocate for itself.
+///
+/// Two allocators name canvases and neither can see the other's numbers: the
+/// renderer's own (`CanvasManager::next_canvas_id`, which bumps from 2 and hands
+/// ids to `CanvasCmd::CreateOffscreen`), and the caller that creates a canvas
+/// without waiting for an answer -- the in-process runtime's
+/// `op_create_offscreen_canvas`, and the external producer's stream record for
+/// it. A caller allocates from this base upwards so the two pools cannot meet:
+/// 16M canvases is far past any session, and `u32::MAX` stays reserved for the
+/// snapshot direct path.
+///
+/// It is stated here, beside the commands that carry these ids, because both
+/// lanes need it and neither owns the other: the runtime allocates from it and
+/// the renderer refuses a registration below it, which is what makes a producer
+/// in another process unable to name a canvas the renderer is about to allocate.
+pub const PRODUCER_CANVAS_ID_BASE: u32 = 1 << 24;
+
 /// Checked Canvas surface pixel count. Zero-sized canvases are valid and do
 /// not allocate backing pixels; non-zero surfaces share the decoder's cap.
 #[inline]
@@ -1749,6 +1766,33 @@ pub enum GradientType {
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum Canvas2DCmd {
+    /// Bring the target canvas into existence at this size, with the id the
+    /// caller allocated.
+    ///
+    /// The lifetime twin of `CanvasCmd::RegisterOffscreen`, on the path that
+    /// carries a canvas's commands rather than the one that carries a session's.
+    /// The in-process runtime has an op for this and uses it; the external
+    /// producer has no op, and its only path to the renderer is the command
+    /// stream -- where "create this canvas, then draw on it" has to be one
+    /// ordered run or the draws arrive for a canvas that does not exist and are
+    /// dropped with nothing red.
+    ///
+    /// Fire-and-forget, for the reason `RegisterOffscreen` is: the id is the
+    /// caller's, allocated out of [`PRODUCER_CANVAS_ID_BASE`], so there is
+    /// nothing to wait for.
+    RegisterCanvas {
+        width: u32,
+        height: u32,
+    },
+
+    /// Drop the target canvas and everything the renderer holds for it.
+    ///
+    /// `CanvasCmd::DestroyCanvas` answers a responder because the in-process op
+    /// is synchronous; this one cannot be, so it is not -- the producer's op
+    /// answers locally and the destroy happens where the frame put it. The
+    /// onscreen canvas is refused by the manager on both paths.
+    DestroyCanvas,
+
     /// Init the Skia surface for the target canvas.  Fire-and-forget:
     /// the render thread processes commands FIFO, so this op completes
     /// before any subsequent Canvas2D command on the same canvas runs.
@@ -2072,7 +2116,9 @@ impl Canvas2DCmd {
         match self {
             Self::FillText { .. } | Self::StrokeText { .. } | Self::MeasureText { .. } => true,
 
-            Self::CreateContext2D
+            Self::RegisterCanvas { .. }
+            | Self::DestroyCanvas
+            | Self::CreateContext2D
             | Self::ResizeCanvas { .. }
             | Self::BeginPath
             | Self::ClosePath

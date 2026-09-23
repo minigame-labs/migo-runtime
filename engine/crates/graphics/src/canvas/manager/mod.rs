@@ -571,7 +571,7 @@ pub(crate) struct CanvasManager {
     /// failure mid-rebuild would keep running with ids that resolve to nothing.
     ///
     /// Parking it makes a retry resume the *original* debt.
-    /// `register_offscreen` already returns `Ok(())` for an id it holds, so
+    /// `insert_offscreen` already returns `Ok(())` for an id it holds, so
     /// re-running a partially applied plan is idempotent.
     ///
     /// Mirrors [`Self::pending_onscreen`], which exists for the same reason one
@@ -1197,7 +1197,7 @@ impl CanvasManager {
     /// `canvas.width`/`canvas.height` uses, matching browser semantics.
     pub(crate) fn create_offscreen(&mut self, w: u32, h: u32) -> EngineResult<CanvasId> {
         let id = self.new_canvas_id();
-        self.register_offscreen(id, w, h)?;
+        self.insert_offscreen(id, w, h)?;
         Ok(id)
     }
 
@@ -1205,7 +1205,38 @@ impl CanvasManager {
     /// of allocating one.  Used by the fire-and-forget JS path
     /// (`CanvasCmd::RegisterOffscreen`) where JS owns the id range.
     /// Idempotent: if `id` already exists this is a no-op.
+    ///
+    /// The id has to come from the caller's own pool, which starts at
+    /// `PRODUCER_CANVAS_ID_BASE`. In process that was true by construction --
+    /// the only caller allocated from that counter -- and it stopped being true
+    /// when the same registration became a record a producer in another process
+    /// writes: an id below the base is one `new_canvas_id` will hand out later,
+    /// so accepting it means two canvases with one id, the second silently
+    /// answered by the first. Refused here rather than at either lane's edge,
+    /// because this is the allocator's own invariant and both lanes reach it.
     pub(crate) fn register_offscreen(&mut self, id: CanvasId, w: u32, h: u32) -> EngineResult<()> {
+        if id < shared::protocol::render_cmd::PRODUCER_CANVAS_ID_BASE {
+            return Err(ee(
+                ErrorCode::InvalidArgument,
+                format!(
+                    "canvas id {id} is below the caller-allocated base {}",
+                    shared::protocol::render_cmd::PRODUCER_CANVAS_ID_BASE
+                ),
+            ));
+        }
+        self.insert_offscreen(id, w, h)
+    }
+
+    /// Create the canvas `id` names, whoever allocated it.
+    ///
+    /// `register_offscreen` is this plus the rule about who may name an id.
+    /// The renderer's own two callers -- `create_offscreen`, which just took the
+    /// id from `new_canvas_id`, and the share-group restore, which is
+    /// re-creating canvases it recorded -- name ids from the renderer's pool and
+    /// come here directly. Neither is a caller whose id has to be checked, and
+    /// routing them through the check would refuse every canvas the renderer
+    /// allocated for itself.
+    fn insert_offscreen(&mut self, id: CanvasId, w: u32, h: u32) -> EngineResult<()> {
         if shared::protocol::render_cmd::checked_canvas_pixel_count(w, h).is_none() {
             return Err(ee(
                 ErrorCode::InvalidArgument,
@@ -2936,7 +2967,7 @@ impl CanvasManager {
             }
         }
         for spec in &plan.offscreen {
-            self.register_offscreen(spec.id, spec.width, spec.height)?;
+            self.insert_offscreen(spec.id, spec.width, spec.height)?;
             if let Some(state) = spec.state_2d.clone() {
                 context_2d_impl::init_skia_for_canvas(self, spec.id)?;
                 if let Some(ctx) = self.contexts_2d.get_mut(&spec.id) {
