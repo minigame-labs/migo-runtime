@@ -159,6 +159,7 @@ pub(crate) fn is_async(op: u32) -> bool {
             | id::op_udp_send
             | id::op_udp_next_event
             | id::op_fetch_upload
+            | id::op_prefetch_assets
     )
 }
 
@@ -478,6 +479,19 @@ pub(crate) fn call_async(
                 )
                 .await
                 .map(upload_answer)
+            })
+        }
+        id::op_prefetch_assets => {
+            let [urls_json] = exactly(op, args)?;
+            let urls_json = string(op, 0, urls_json)?;
+            // The HTTP/2 client, as the embedded op takes: what a prefetch
+            // warms is what a later request will use.
+            let client = network.client(true)?;
+            let policy = network.policy.clone();
+            Box::pin(async move {
+                migo_services::network::prefetch::prefetch_assets(&policy, &client, &urls_json)
+                    .await
+                    .map(|()| OwnedValue::Null)
             })
         }
         other => return Err(not_a(other, "awaited network")),

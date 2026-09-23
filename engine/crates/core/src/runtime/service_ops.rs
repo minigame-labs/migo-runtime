@@ -179,6 +179,7 @@ service_ops! {
     op_udp_set_ttl = 156,
     op_fetch_upload_cancel_handle = 157,
     op_fetch_upload = 158,
+    op_prefetch_assets = 159,
 }
 
 /// The op's name, for a refusal a person will read.

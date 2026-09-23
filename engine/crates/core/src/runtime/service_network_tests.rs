@@ -270,9 +270,9 @@ fn every_claimed_op_is_answered_in_exactly_one_shape() {
         .collect();
     assert_eq!(
         claimed.len(),
-        22,
-        "fetch's three, the upload's two, the three core members, the socket's four \
-         and the ten raw-socket ops"
+        23,
+        "fetch's three, the upload's two, both prefetches, the three core members, \
+         the socket's four and the ten raw-socket ops"
     );
     for op in claimed {
         let shapes = u8::from(is_sync(op)) + u8::from(is_async(op)) + u8::from(is_command(op));

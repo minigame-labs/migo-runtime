@@ -717,3 +717,13 @@ export function op_fetch_upload(cancelRid, url, filePath, name, filename, header
     })
     .then(uploadAnswer);
 }
+
+/// Warm what the game is about to ask for: the connections and the DNS answers
+/// behind these URLs. Nothing is stored, and a URL the policy refuses is
+/// skipped rather than reported -- a warm-up that failed has cost nothing.
+export function op_prefetch_assets(urlsJson) {
+  const urls = stringOf(urlsJson, "urls_json");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_prefetch_assets, (w) => w.str(urls))
+    .then(nothing);
+}
