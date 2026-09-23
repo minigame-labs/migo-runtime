@@ -262,6 +262,19 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             repeat_y: record[3] != 0,
         },
 
+        // The capture the engine's `getImageData` makes: the pixels stay on the
+        // host, in its snapshot pool, and what crosses back is whatever the
+        // content actually asks for -- the bytes, or a texture upload that never
+        // brings them to JavaScript at all.
+        OP2D_CAPTURE_SNAPSHOT => Canvas2DCmd::CaptureSnapshot {
+            x: record[1] as i32,
+            y: record[2] as i32,
+            width: record[3],
+            height: record[4],
+            snapshot_id: record[5],
+            cache_key: None,
+        },
+
         OP2D_SET_TEXT_ALIGN => Canvas2DCmd::SetTextAlign {
             align: text_align_of(record[1] as u8),
         },

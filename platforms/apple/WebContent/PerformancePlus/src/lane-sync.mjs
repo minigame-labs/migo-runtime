@@ -24,6 +24,7 @@
 import { constructOpError } from "./engine-core.mjs";
 import { engineHost } from "./engine-host.mjs";
 import { recordProducerError } from "./lane-local.mjs";
+import { takeSnapshotSize } from "./lane-stream.mjs";
 import {
   fileBuffer,
   fileStat,
@@ -45,6 +46,7 @@ import {
   toBool,
   toF64,
   toI32,
+  toU32,
   toU64,
 } from "./op-args.mjs";
 import { arrayBufferAnswer } from "./audio.mjs";
@@ -90,7 +92,10 @@ import {
   encodeGlQueryParams,
   READ_PIXELS_LAYOUT_BYTES,
   SYNC_ERROR_OPERATION_FAILED,
+  SYNC_OP_CANVAS2D_IMAGE_DATA,
+  SYNC_OP_CANVAS2D_SNAPSHOT,
   SYNC_OP_READ_PIXELS,
+  encodeCanvas2DPixelsParams,
   decodeReadPixelsLayout,
   encodeReadPixelsParams,
   readPixelsReplyBytes,
@@ -1010,4 +1015,83 @@ export function op_read_pixels(canvasId, x, y, width, height, format, type_, pix
     rowStride: layout.rowStride,
     height: layout.height,
   };
+}
+
+// ---- Canvas2D pixels --------------------------------------------------------
+//
+// Two reads, one shape. `getImageData` in the engine's own facade captures into
+// the host's snapshot pool and asks for the bytes only when content reads them,
+// so the snapshot read is the common one; the direct rectangle read is the
+// fallback the facade takes for a read it cannot capture (zero area, out of
+// bounds). Both answer with tightly packed RGBA8 -- no layout travels with them,
+// unlike `readPixels`, because nothing but the rectangle decides where 2D rows
+// go.
+//
+// Both ops answer the empty array where the in-process op answers an empty
+// `Vec`: `getImageData` has no way to report a failure to content, and a
+// zero-filled picture would be a blank label nobody can see the cause of. The
+// host logs, as the op logs.
+
+/// `shared::protocol::render_cmd::checked_canvas_rgba_byte_len`'s two bounds.
+const MAX_CANVAS2D_DIMENSION = 8192;
+const MAX_CANVAS2D_PIXELS = MAX_CANVAS2D_DIMENSION * MAX_CANVAS2D_DIMENSION;
+
+const EMPTY_PIXELS = new Uint8Array(0);
+
+function canvas2dPixelBytes(width, height) {
+  if (width === 0 || height === 0) return 0;
+  if (width > MAX_CANVAS2D_DIMENSION || height > MAX_CANVAS2D_DIMENSION) return null;
+  const pixels = width * height;
+  return pixels <= MAX_CANVAS2D_PIXELS ? pixels * 4 : null;
+}
+
+/** Ask for one of the two reads, or answer empty the way the op does. */
+function canvas2dPixels(operation, params, replyBytes) {
+  try {
+    return ask(operation, replyBytes, params);
+  } catch (error) {
+    // The host tried the read and could not do it: a canvas that is gone, a
+    // snapshot the pool no longer holds. The op answers empty for those.
+    if (error && error.code === SYNC_ERROR_OPERATION_FAILED) return EMPTY_PIXELS;
+    throw error;
+  }
+}
+
+/** `getImageData(x, y, w, h)`, for a read the facade did not capture. */
+export function op_get_image_data(canvasId, x, y, width, height) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const left = toI32(x, "x");
+  const top = toI32(y, "y");
+  const w = toU32(width, "width");
+  const h = toU32(height, "height");
+  const bytes = canvas2dPixelBytes(w, h);
+  if (bytes === null || bytes === 0) return EMPTY_PIXELS;
+  return canvas2dPixels(
+    SYNC_OP_CANVAS2D_IMAGE_DATA,
+    encodeCanvas2DPixelsParams({ target: canvas, x: left, y: top, width: w, height: h }),
+    bytes,
+  );
+}
+
+/**
+ * The pixels of a snapshot this producer captured earlier in the frame.
+ *
+ * The size comes from the capture: the op takes only an id because in process
+ * the renderer's pool knows the rest, and here the reservation has to be made
+ * before the question is asked. A snapshot this producer did not capture, or one
+ * whose frame has ended, is the empty answer the op gives for a pool miss.
+ */
+export function op_force_readback_snapshot(snapshotId) {
+  const id = smiU32(snapshotId, "snapshot_id");
+  if (id === 0) return EMPTY_PIXELS;
+  const size = takeSnapshotSize(id);
+  if (size === undefined) return EMPTY_PIXELS;
+  const [width, height] = size;
+  const bytes = canvas2dPixelBytes(width, height);
+  if (bytes === null || bytes === 0) return EMPTY_PIXELS;
+  return canvas2dPixels(
+    SYNC_OP_CANVAS2D_SNAPSHOT,
+    encodeCanvas2DPixelsParams({ target: id, x: 0, y: 0, width, height }),
+    bytes,
+  );
 }

@@ -725,6 +725,54 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             target: record[2],
             attachments: record[4..].to_vec(),
         },
+        // The uploads whose pixels the host already holds. The ops drop a
+        // snapshot id of 0 and a zero-area canvas source before they queue
+        // anything, so a record carrying one is a producer that did not, and
+        // the command is built rather than second-guessed: the renderer makes
+        // the same decision for both lanes.
+        OPR_TEX_IMAGE_2D_FROM_SNAPSHOT => GLCmd::TexImage2DFromSnapshot {
+            canvas_id: c,
+            target: record[2],
+            level: i(record[3]),
+            internalformat: i(record[4]),
+            format: record[5],
+            type_: record[6],
+            snapshot_id: record[7],
+        },
+        OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT => GLCmd::TexSubImage2DFromSnapshot {
+            canvas_id: c,
+            target: record[2],
+            level: i(record[3]),
+            xoffset: i(record[4]),
+            yoffset: i(record[5]),
+            format: record[6],
+            type_: record[7],
+            snapshot_id: record[8],
+        },
+        OPR_TEX_IMAGE_2D_FROM_CANVAS2D => GLCmd::TexImage2DFromCanvas2D {
+            canvas_id: c,
+            target: record[2],
+            level: i(record[3]),
+            internalformat: i(record[4]),
+            canvas_2d_id: record[5],
+            x: i(record[6]),
+            y: i(record[7]),
+            width: record[8],
+            height: record[9],
+        },
+        OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D => GLCmd::TexSubImage2DFromCanvas2D {
+            canvas_id: c,
+            target: record[2],
+            level: i(record[3]),
+            xoffset: i(record[4]),
+            yoffset: i(record[5]),
+            canvas_2d_id: record[6],
+            x: i(record[7]),
+            y: i(record[8]),
+            width: record[9],
+            height: record[10],
+        },
+
         OPR_TRANSFORM_FEEDBACK_VARYINGS => transform_feedback_varyings(
             c,
             record[2],

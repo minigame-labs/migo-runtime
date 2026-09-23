@@ -99,6 +99,23 @@ fn the_producer_s_style_records_decode_to_the_commands_the_ops_build() {
     );
 }
 
+/// The same question for `getImageData`, which is a capture rather than a read.
+///
+/// The facade queues a snapshot beside the draws it follows and hands content a
+/// lazy `ImageData`; only a content read of the bytes brings them back. So what
+/// has to agree here is the capture -- its rectangle, its id and its place in
+/// the run -- and the read itself is checked in `test/canvas2d-pixels.test.mjs`,
+/// which can give it the host endpoint a synchronous call needs.
+#[test]
+#[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
+fn the_producer_s_snapshot_records_decode_to_the_commands_the_ops_build() {
+    compare_fixture(
+        "MIGO_CANVAS2D_SNAPSHOT_PARITY_DIR",
+        "canvas2d-snapshot-calls.js",
+        6,
+    );
+}
+
 fn compare_fixture(directory_var: &str, fixture: &str, least_commands: usize) {
     let directory =
         PathBuf::from(std::env::var(directory_var).unwrap_or_else(|_| {

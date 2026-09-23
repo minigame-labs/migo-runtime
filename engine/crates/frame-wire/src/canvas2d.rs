@@ -252,8 +252,26 @@ pub const OP2D_SET_FILL_STYLE_PATTERN: u32 = 564;
 /// `strokeStyle = pattern`, the same shape.
 pub const OP2D_SET_STROKE_STYLE_PATTERN: u32 = 565;
 
+// ─── Snapshots (566) ─────────────────────────────────────────────────────────
+
+/// Capture a rectangle of the selected canvas into the host's snapshot pool:
+/// `H x:I y:I width:U height:U snapshot_id:U`.
+///
+/// `getImageData` is this in both executions: the engine's 2D facade captures
+/// rather than reading back, because the pixels usually go straight into a
+/// texture and never need to cross to JavaScript at all. The id is the engine's
+/// own counter's, allocated in the same JavaScript on both lanes, and a capture
+/// with id 0 or a rectangle past the surface cap is one the op drops before it
+/// queues anything -- so the producer drops it too, rather than writing a record
+/// the host would refuse.
+///
+/// The cache-keyed form (`op_capture_canvas2d_snapshot_for_cache`) is not here:
+/// it carries a text, a font and a colour, and the text-texture cache it feeds
+/// is a piece of its own.
+pub const OP2D_CAPTURE_SNAPSHOT: u32 = 566;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 566;
+pub const OP2D_END: u32 = 567;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -320,6 +338,8 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OP2D_SET_FILL_STYLE_PATTERN | OP2D_SET_STROKE_STYLE_PATTERN => (4, &[2, 3]),
 
         OP2D_DRAW_IMAGE => (10, &[]),
+        // x, y, width, height, snapshot_id
+        OP2D_CAPTURE_SNAPSHOT => (6, &[]),
         OP2D_DRAW_IMAGE_BATCH => {
             return Some(RecordSpec::Words {
                 prefix_words: 1,

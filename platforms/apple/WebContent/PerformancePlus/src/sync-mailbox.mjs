@@ -274,6 +274,37 @@ export const SYNC_ERROR_TEXT = {
   [SYNC_ERROR_OPERATION_FAILED]: "the host tried the operation and it failed",
 };
 
+/// A rectangle of a 2D canvas, as `getImageData` reads one when the facade
+/// cannot capture it (`frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA`).
+export const SYNC_OP_CANVAS2D_IMAGE_DATA = 9;
+
+/// The pixels of a snapshot the host captured
+/// (`frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT`).
+export const SYNC_OP_CANVAS2D_SNAPSHOT = 10;
+
+/// Serialised size of the arguments both of those take.
+export const CANVAS2D_PIXELS_PARAM_BYTES = 24;
+
+/**
+ * Encode a 2D pixel read's arguments: six little-endian 32-bit words.
+ *
+ * `target` is the canvas for an image-data read and the snapshot for a snapshot
+ * read; the size travels for both, so the producer's reservation and the host's
+ * expectation are one number. The last word is reserved and must be zero -- the
+ * host refuses a record that sets it rather than ignoring it.
+ */
+export function encodeCanvas2DPixelsParams({ target, x = 0, y = 0, width, height }) {
+  const bytes = new Uint8Array(CANVAS2D_PIXELS_PARAM_BYTES);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, target, true);
+  view.setInt32(4, x, true);
+  view.setInt32(8, y, true);
+  view.setUint32(12, width, true);
+  view.setUint32(16, height, true);
+  view.setUint32(20, 0, true);
+  return bytes;
+}
+
 /**
  * Encode `readPixels`' arguments.
  *

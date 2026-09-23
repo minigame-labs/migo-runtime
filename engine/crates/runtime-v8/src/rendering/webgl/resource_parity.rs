@@ -83,6 +83,24 @@ fn the_producer_s_raw_records_decode_to_the_commands_the_ops_build() {
     compare_fixture("MIGO_RAW_PARITY_DIR", "webgl-raw-path-calls.js", 40);
 }
 
+/// The same question for the uploads whose pixels the host already holds.
+///
+/// Which command a `texImage2D` becomes is decided in JavaScript, from the shape
+/// of the source: a snapshot-backed `ImageData` becomes the snapshot upload, a
+/// canvas element the canvas one, and anything else the ordinary byte upload. So
+/// the fixture hands the facade each shape and both lanes must build the same
+/// command -- a drift here is a texture filled from the wrong thing, or a full
+/// readback where a GPU copy was meant.
+#[test]
+#[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
+fn the_producer_s_canvas_source_uploads_decode_to_the_commands_the_ops_build() {
+    compare_fixture(
+        "MIGO_CANVAS_SOURCE_PARITY_DIR",
+        "webgl-canvas-source-calls.js",
+        6,
+    );
+}
+
 fn compare_fixture(directory_var: &str, fixture: &str, least_commands: usize) {
     let directory =
         PathBuf::from(std::env::var(directory_var).unwrap_or_else(|_| {
