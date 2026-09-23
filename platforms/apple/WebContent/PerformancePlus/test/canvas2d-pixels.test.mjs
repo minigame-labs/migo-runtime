@@ -18,7 +18,7 @@
 import { DOWN_FRAME_VERDICT, encodeBytes } from "../src/downlink.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "../src/engine-host.mjs";
 import { FrameSession } from "../src/frame-session.mjs";
-import { op_force_readback_snapshot, op_get_image_data } from "../src/lane-sync.mjs";
+import { op_force_readback_snapshot, op_get_image_data, op_load_font } from "../src/lane-sync.mjs";
 import {
   op_capture_canvas2d_snapshot,
   op_capture_canvas2d_snapshot_for_cache,
@@ -26,6 +26,8 @@ import {
 } from "../src/lane-stream.mjs";
 import {
   CANVAS2D_PIXELS_PARAM_BYTES,
+  CANVAS2D_QUERY_LOAD_FONT,
+  SYNC_OP_CANVAS2D_FONT,
   SYNC_ERROR_OPERATION_FAILED,
   SYNC_ERROR_TIMED_OUT,
   SYNC_OP_CANVAS2D_IMAGE_DATA,
@@ -246,6 +248,33 @@ try {
 check(
   refused === "TypeError",
   "an argument the embedded op's conversion would refuse is refused here too",
+);
+
+// ---- loadFont ---------------------------------------------------------------
+//
+// Every step of it is the host's -- the sandbox, the file, the family the two
+// shared helpers derive, the renderer -- so what this side owns is the question
+// and the reading of the answer. An empty answer is the failure the op reports
+// the same way: content checks the key it got back.
+
+asked = null;
+let family = op_load_font("fonts/MyFont.ttf", "Brand Sans");
+const fontParams = new DataView(asked.params.buffer, asked.params.byteOffset, asked.params.byteLength);
+check(
+  asked.operation === SYNC_OP_CANVAS2D_FONT &&
+    fontParams.getUint32(0, true) === CANVAS2D_QUERY_LOAD_FONT &&
+    new TextDecoder().decode(asked.params.subarray(24, 24 + fontParams.getUint32(16, true))) ===
+      "fonts/MyFont.ttf",
+  "the request carries the path content named, under the loadFont kind",
+);
+check(family === "\u007f".repeat(asked.maxReplyBytes), "the answer is the family the host registered");
+
+asked = null;
+family = op_load_font("fonts/MyFont.ttf", undefined);
+check(
+  new DataView(asked.params.buffer, asked.params.byteOffset, asked.params.byteLength)
+    .getUint32(20, true) === 0,
+  "no family asked for is an empty one on the wire, not a missing field",
 );
 
 console.log(failures === 0 ? "PASS (Canvas2D pixels)" : `FAIL (${failures})`);

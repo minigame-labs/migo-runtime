@@ -500,9 +500,12 @@ impl ServiceContext {
             .ok_or_else(|| migo_services::audio::audio_error("the session's audio is not started"))
     }
 
-    /// Where an InnerAudioContext reads a packaged sound: the mounted
+    /// Where a call that reads a file the game shipped looks: the mounted
     /// package's sandbox, or -- before content is mounted -- nowhere.
-    fn audio_sources(&self) -> LocalSources {
+    ///
+    /// A packaged sound and a custom font are the same question, so they ask it
+    /// once.
+    pub(crate) fn local_sources(&self) -> LocalSources {
         let content = self.content.read();
         LocalSources {
             code_dir: content
@@ -510,6 +513,11 @@ impl ServiceContext {
                 .map(|content| content.game_paths.code_dir().to_string_lossy().into_owned()),
             vfs: content.as_ref().map(|content| Arc::clone(&content.vfs)),
         }
+    }
+
+    /// Where an InnerAudioContext reads a packaged sound.
+    fn audio_sources(&self) -> LocalSources {
+        self.local_sources()
     }
 
     fn scheduler(&self) -> Result<Arc<IoScheduler>, ServiceError> {

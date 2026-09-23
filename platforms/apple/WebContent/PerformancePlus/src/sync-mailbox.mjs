@@ -276,6 +276,17 @@ export const SYNC_ERROR_TEXT = {
 
 /// A rectangle of a 2D canvas, as `getImageData` reads one when the facade
 /// cannot capture it (`frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA`).
+/// `loadFont(path, family)`, answered with the family key the renderer
+/// registered the face under -- empty when it did not load
+/// (`frame_wire::sync::SYNC_OP_CANVAS2D_FONT`).
+export const SYNC_OP_CANVAS2D_FONT = 11;
+
+/// The query kind that asks it (`frame_wire::sync::canvas2d_query::LOAD_FONT`).
+export const CANVAS2D_QUERY_LOAD_FONT = 3;
+
+/// The most a family key may be, as the host bounds it.
+export const MAX_FONT_FAMILY_REPLY_BYTES = 4096;
+
 export const SYNC_OP_CANVAS2D_IMAGE_DATA = 9;
 
 /// The pixels of a snapshot the host captured
