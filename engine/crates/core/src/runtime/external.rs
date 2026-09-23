@@ -611,6 +611,15 @@ impl SyncPath {
                 deadline_nanos,
                 now_nanos,
             ),
+            frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA
+            | frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT => self.canvas2d_pixels(
+                operation,
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
             frame_wire::sync::SYNC_OP_GL_QUERY_SCALAR
             | frame_wire::sync::SYNC_OP_GL_QUERY_TEXT
             | frame_wire::sync::SYNC_OP_GL_QUERY_ACTIVE => self.gl_query(
@@ -957,6 +966,100 @@ impl SyncPath {
             }
             _ => Err(SyncError::UnsupportedOperation),
         }
+    }
+
+    /// `SYNC_OP_CANVAS2D_IMAGE_DATA` / `SYNC_OP_CANVAS2D_SNAPSHOT`: the pixels
+    /// of a 2D canvas, answered after the frame that drew them.
+    ///
+    /// Two operations, one shape. `getImageData` in the engine's own facade
+    /// captures into the host's snapshot pool and reads the bytes only if
+    /// content asks for them -- so the snapshot read is the common one, and the
+    /// direct rectangle read is the fallback the facade takes for a read it
+    /// cannot capture (zero area, out of bounds).
+    ///
+    /// The barrier matters for the same reason it does for `measureText`: the
+    /// capture is a record in the frame being built, so a read that overtook it
+    /// would find an empty pool and answer zeros -- which is a blank texture in
+    /// a game rather than an error anyone sees.
+    fn canvas2d_pixels(
+        &self,
+        operation: u32,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        use frame_wire::sync::{Canvas2DPixelsParams, SYNC_OP_CANVAS2D_SNAPSHOT};
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCmdResp, RenderCommand};
+
+        let read = Canvas2DPixelsParams::decode(params)?;
+        let wanted = read.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
+        // Refused before the renderer is asked, as the readback is: a rectangle
+        // the producer did not reserve for is one nobody can answer.
+        if wanted > max_reply_bytes {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        let Some(dispatch) = self.dispatch.get() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let command = if operation == SYNC_OP_CANVAS2D_SNAPSHOT {
+            RenderCommand::Canvas2D {
+                // The snapshot pool is the renderer's own and the canvas it was
+                // taken from is already recorded in it, so the id is what names
+                // the pixels; the embedded op passes 1 here for the same reason.
+                canvas_id: 1,
+                cmd: Canvas2DCmd::ReadSnapshotPixels {
+                    snapshot_id: read.target,
+                    resp: RenderCmdResp::from_sync(tx),
+                },
+            }
+        } else {
+            RenderCommand::Canvas2D {
+                canvas_id: read.target,
+                cmd: Canvas2DCmd::GetImageData {
+                    x: read.x,
+                    y: read.y,
+                    width: read.width,
+                    height: read.height,
+                    resp: RenderCmdResp::from_sync(tx),
+                },
+            }
+        };
+        // Blocking-bounded, as the readback is: this command carries a reply
+        // channel a producer is waiting on.
+        if sender.send_blocking_bounded(command).is_err() {
+            return Err(SyncError::SessionEnded);
+        }
+
+        let pixels = match rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(pixels)) => pixels,
+            Ok(Err(_)) => return Err(SyncError::OperationFailed),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => return Err(SyncError::TimedOut),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                return Err(SyncError::SessionEnded);
+            }
+        };
+        // The rectangle said one size and the renderer produced another: a
+        // snapshot that had been dropped answers empty, and copying that as if
+        // it were the picture is how a game draws a blank label and nothing
+        // says why. The producer sized its buffer from the same rectangle.
+        if u32::try_from(pixels.len()).map_err(|_| SyncError::OperationFailed)? != wanted {
+            return Err(SyncError::OperationFailed);
+        }
+        Ok(pixels)
     }
 
     /// `SYNC_OP_CANVAS2D_*`: one Canvas2D query, answered after the frame it
@@ -3945,6 +4048,167 @@ mod sync_tests {
         let snapshot = path.snapshot(NOW);
         assert_eq!(snapshot.state, SyncState::Failed);
         assert_eq!(snapshot.error, Some(SyncError::SessionEnded));
+    }
+
+    /// The two 2D reads reach the renderer as the commands the ops send, and
+    /// their answers reach the reply slot whole.
+    ///
+    /// The stand-in renderer answers each with the rectangle it was asked for.
+    /// What that pins is the pairing: an image-data read is a `GetImageData` on
+    /// the canvas the params name, a snapshot read is a `ReadSnapshotPixels` on
+    /// the id -- swapping them would answer a picture of the wrong thing, at the
+    /// right size, which nothing downstream can tell apart from the right one.
+    #[test]
+    fn the_two_canvas2d_reads_reach_the_renderer_as_their_own_commands() {
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCommand};
+
+        for (operation, target) in [
+            (frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA, 9u32),
+            (frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT, 77u32),
+        ] {
+            let (sender, commands) = shared::render_command_sender::CommandSender::new();
+            let sender = Arc::new(sender);
+            let dispatch = Arc::new(OnceLock::new());
+            assert!(
+                dispatch
+                    .set(RenderDispatch {
+                        sender: Arc::downgrade(&sender),
+                        words: Mutex::new(Vec::new()),
+                    })
+                    .is_ok()
+            );
+            let path = SyncPath::new(
+                INITIAL_RUNTIME_GENERATION,
+                dispatch,
+                Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                    0,
+                    INITIAL_RUNTIME_GENERATION,
+                )))),
+                Arc::new(ExternalGlErrors::default()),
+            );
+
+            let renderer = std::thread::spawn(move || {
+                let Ok(RenderCommand::Canvas2D { canvas_id, cmd }) = commands.recv() else {
+                    panic!("the barrier sent something other than a Canvas2D command");
+                };
+                match cmd {
+                    Canvas2DCmd::GetImageData {
+                        x,
+                        y,
+                        width,
+                        height,
+                        resp,
+                    } => {
+                        let answer = ((canvas_id, x, y), width, height);
+                        resp.send(Ok(vec![0xab; (width * height * 4) as usize]));
+                        ("image data", answer)
+                    }
+                    Canvas2DCmd::ReadSnapshotPixels { snapshot_id, resp } => {
+                        resp.send(Ok(vec![0xab; 3 * 2 * 4]));
+                        ("snapshot", ((snapshot_id, 0, 0), 3, 2))
+                    }
+                    other => panic!("the barrier sent {other:?}"),
+                }
+            });
+
+            let params = frame_wire::sync::Canvas2DPixelsParams {
+                target,
+                x: 5,
+                y: -6,
+                width: 3,
+                height: 2,
+            };
+            let mut read = request(operation, 3 * 2 * 4);
+            read.deadline_nanos = NOW + 30_000_000_000;
+            read.triggering_sequence = 0;
+            post(&path, read, &params.encode(), NOW).expect("posted");
+            let (kind, seen) = renderer.join().expect("the stand-in renderer answered");
+
+            let snapshot = path.snapshot(NOW);
+            assert_eq!(
+                (snapshot.state, snapshot.error),
+                (SyncState::Ready, None),
+                "{kind}: the renderer answered and the barrier did not accept its reply"
+            );
+            assert_eq!(snapshot.reply_bytes, 3 * 2 * 4);
+            if operation == frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA {
+                assert_eq!(
+                    seen,
+                    ((target, 5, -6), 3, 2),
+                    "an image-data read names its canvas and its rectangle"
+                );
+            } else {
+                assert_eq!(
+                    seen.0.0, target,
+                    "a snapshot read names the snapshot, not a canvas"
+                );
+            }
+            let mut out = [0u8; 24];
+            assert_eq!(path.take_reply(&mut out), Ok(24));
+            assert!(out.iter().all(|byte| *byte == 0xab), "{kind}: the rows");
+            drop(sender);
+        }
+    }
+
+    /// A renderer that answers a different number of bytes than the rectangle
+    /// implies is refused rather than copied: a snapshot the pool has dropped
+    /// answers empty, and passing that on is a blank picture with nothing said.
+    #[test]
+    fn a_canvas2d_read_answered_at_the_wrong_size_is_refused() {
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCommand};
+
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        let sender = Arc::new(sender);
+        let dispatch = Arc::new(OnceLock::new());
+        assert!(
+            dispatch
+                .set(RenderDispatch {
+                    sender: Arc::downgrade(&sender),
+                    words: Mutex::new(Vec::new()),
+                })
+                .is_ok()
+        );
+        let path = SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            dispatch,
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+            Arc::new(ExternalGlErrors::default()),
+        );
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::Canvas2D {
+                cmd: Canvas2DCmd::ReadSnapshotPixels { resp, .. },
+                ..
+            }) = commands.recv()
+            else {
+                panic!("the barrier sent something other than a snapshot read");
+            };
+            // What the pool answers for a snapshot it no longer holds.
+            resp.send(Ok(Vec::new()));
+        });
+
+        let params = frame_wire::sync::Canvas2DPixelsParams {
+            target: 3,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        };
+        let mut read = request(frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT, 4 * 4 * 4);
+        read.deadline_nanos = NOW + 30_000_000_000;
+        read.triggering_sequence = 0;
+        post(&path, read, &params.encode(), NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+
+        let snapshot = path.snapshot(NOW);
+        assert_eq!(
+            (snapshot.state, snapshot.error),
+            (SyncState::Failed, Some(SyncError::OperationFailed)),
+            "an answer of the wrong size was accepted"
+        );
+        drop(sender);
     }
 
     #[test]

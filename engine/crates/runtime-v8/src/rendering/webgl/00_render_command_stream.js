@@ -1196,6 +1196,14 @@ const OP2D_SET_STROKE_STYLE_GRADIENT = 563;
 const OP2D_SET_FILL_STYLE_PATTERN = 564;
 const OP2D_SET_STROKE_STYLE_PATTERN = 565;
 
+// --- 2D snapshots ---
+//
+// The producer's alone as well: in process `getImageData` calls
+// `op_capture_canvas2d_snapshot`, which queues the capture into the frame
+// collector beside the draws it follows. The producer has no collector and no
+// op, so the capture is a record in the same run.
+const OP2D_CAPTURE_SNAPSHOT = 566;
+
 // --- 2D canvas selection ---
 //
 // `Canvas2DCmd` carries no canvas id -- the id lives on the batch -- so the

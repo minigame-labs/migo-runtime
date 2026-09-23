@@ -174,6 +174,10 @@ export const OP2D_SET_STROKE_STYLE_GRADIENT = 563;
 export const OP2D_SET_FILL_STYLE_PATTERN = 564;
 export const OP2D_SET_STROKE_STYLE_PATTERN = 565;
 
+// `getImageData`'s capture: the pixels stay in the host's snapshot pool, and
+// only a content read of the `ImageData`'s bytes brings them back.
+export const OP2D_CAPTURE_SNAPSHOT = 566;
+
 // The flags word of OP2D_RESIZE_CANVAS: content assigns width and height
 // separately, and the op this stands for takes each as an option.
 export const RESIZE_CANVAS_WIDTH = 1;

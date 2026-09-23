@@ -227,6 +227,102 @@ pub const SYNC_OP_CANVAS2D_NUMBER: u32 = 7;
 /// one.
 pub const SYNC_OP_SERVICE: u32 = 8;
 
+/// A rectangle of a 2D canvas, as `getImageData` reads one when it cannot
+/// capture: `H canvas_id x y width height`, answered with tightly packed RGBA8.
+///
+/// The engine's facade captures into the host's snapshot pool for a read it can
+/// (see [`SYNC_OP_CANVAS2D_SNAPSHOT`]); this is the path it falls back to for a
+/// zero-area or out-of-bounds read, and it is the op's own fallback in process
+/// too. No layout travels with it, unlike `readPixels`: a 2D readback is the
+/// rectangle's rows and nothing else decides where they go.
+pub const SYNC_OP_CANVAS2D_IMAGE_DATA: u32 = 9;
+
+/// The pixels of a snapshot the host captured: `H snapshot_id width height`,
+/// answered with tightly packed RGBA8.
+///
+/// The capture is a record in the frame (`OP2D_CAPTURE_SNAPSHOT`), so this is
+/// only asked when content actually reads the `ImageData`'s bytes -- which is
+/// what makes the capture worth having: a snapshot that goes straight into a
+/// texture never crosses back at all.
+pub const SYNC_OP_CANVAS2D_SNAPSHOT: u32 = 10;
+
+/// Serialised size of [`Canvas2DPixelsParams`].
+pub const CANVAS2D_PIXELS_PARAMS_BYTES: usize = 24;
+
+/// What a 2D pixel read names: a canvas and a rectangle, or a snapshot and the
+/// size it was captured at.
+///
+/// One record for both, because the two answers are the same shape and the
+/// operation says which is being asked. The size is carried for a snapshot as
+/// well so the producer's reservation and the host's expectation are one
+/// number: a snapshot pool that answered a different rectangle than the capture
+/// asked for would be a picture nobody could tell was wrong.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Canvas2DPixelsParams {
+    /// The canvas for an image-data read, the snapshot for a snapshot read.
+    pub target: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Canvas2DPixelsParams {
+    pub fn encode(&self) -> [u8; CANVAS2D_PIXELS_PARAMS_BYTES] {
+        let mut out = [0u8; CANVAS2D_PIXELS_PARAMS_BYTES];
+        for (index, word) in [
+            self.target,
+            self.x as u32,
+            self.y as u32,
+            self.width,
+            self.height,
+            0,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            out[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        out
+    }
+
+    /// Decode and validate. Refuses rather than clamps, for the reason
+    /// [`ReadPixelsParams::decode`] does: a read answered over a rectangle the
+    /// producer did not ask for is a wrong answer that looks like a right one.
+    pub fn decode(bytes: &[u8]) -> Result<Self, SyncError> {
+        if bytes.len() != CANVAS2D_PIXELS_PARAMS_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |offset: usize| -> u32 {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        let params = Self {
+            target: word(0),
+            x: word(4) as i32,
+            y: word(8) as i32,
+            width: word(12),
+            height: word(16),
+        };
+        // A zero-area read has no pixels to answer with, and the reserved word
+        // is reserved: a producer that set it is one this host does not know.
+        if params.width == 0 || params.height == 0 || word(20) != 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(params)
+    }
+
+    /// How many bytes the answer will be: the rectangle in RGBA8, or `None`
+    /// when that does not fit in a `u32`.
+    pub fn reply_bytes(&self) -> Option<u32> {
+        self.width.checked_mul(self.height)?.checked_mul(4)
+    }
+}
+
 /// The most a [`SYNC_OP_SERVICE`] call may be answered with.
 ///
 /// The embedded runtime reads up to 100 MiB in one call

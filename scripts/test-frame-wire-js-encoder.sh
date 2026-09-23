@@ -568,6 +568,18 @@ RAN_TESTS+=("$TEST_DIR/audio-checks.test.mjs")
 node "$TEST_DIR/canvas2d-color.test.mjs"
 RAN_TESTS+=("$TEST_DIR/canvas2d-color.test.mjs")
 
+# --- the two 2D reads whose answer is pixels --------------------------------
+#
+# `getImageData` is a capture in this engine: the pixels stay in the host's
+# snapshot pool and only a content read of the bytes brings them back. The
+# capture is compared against the op by the parity fixture; what that fixture
+# cannot reach is the asking, because a synchronous call needs a host endpoint.
+# This suite gives it one and checks the arguments, the sizing -- a snapshot read
+# is sized from its capture, which is the only place that size exists on this
+# side -- and the empty answer both reads give where the op gives an empty Vec.
+node "$TEST_DIR/canvas2d-pixels.test.mjs"
+RAN_TESTS+=("$TEST_DIR/canvas2d-pixels.test.mjs")
+
 # --- readPixels, whose answer has to be placed rather than returned ---------
 #
 # The one query that writes into a view the caller already holds, at positions

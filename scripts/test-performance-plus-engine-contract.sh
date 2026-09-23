@@ -164,6 +164,24 @@ printf '%s\n' "$styles" | grep -qE '[0-9]+ Canvas2D commands agree' \
     || { printf '%s\n' "$styles" >&2; fail "the style parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$styles" | grep -E '[0-9]+ Canvas2D commands agree'
 
+# `getImageData`, which is a capture: the pixels stay in the host's snapshot pool
+# and only a content read of the bytes brings them back, so what this compares is
+# the capture's rectangle, its id and its place in the run of draws it follows.
+SNAPSHOT_PARITY="$WORK/snapshot-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$SNAPSHOT_PARITY" \
+    fixtures/canvas2d-snapshot-calls.js \
+    || fail "the Canvas2D snapshot calls did not run on the producer"
+status=0
+snapshots="$(cd engine && MIGO_CANVAS2D_SNAPSHOT_PARITY_DIR="$SNAPSHOT_PARITY" cargo test -p migo-runtime-v8 --lib \
+    the_producer_s_snapshot_records -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$snapshots" >&2
+    fail "the producer's snapshot records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$snapshots" | grep -qE '[0-9]+ Canvas2D commands agree' \
+    || { printf '%s\n' "$snapshots" >&2; fail "the snapshot parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$snapshots" | grep -E '[0-9]+ Canvas2D commands agree'
+
 # The canvas itself: created, resized and destroyed. Every other fixture draws
 # on a canvas the host already had, so the one ordering this lane has to carry
 # in its own stream -- create it, then draw on it -- was never exercised.

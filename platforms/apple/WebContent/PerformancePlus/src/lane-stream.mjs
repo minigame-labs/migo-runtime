@@ -145,6 +145,10 @@ export function op_submit_render_stream(words, usedWords) {
 /// The frame ends; its packet is sent or held for the window.
 export function op_frame_end_unified() {
   endFrame();
+  // The snapshots of the frame that just ended go with it: the host's pool
+  // drains at the same point, so a size kept past here would describe pixels
+  // nobody holds. A read after that answers empty on both lanes.
+  forgetSnapshots();
 }
 
 /// `gl.flush()`: what is recorded reaches the host now, and the frame goes on.
@@ -763,6 +767,49 @@ export function op_set_text_direction(canvasId, direction) {
  * The op takes the segments as bytes -- a `Float32Array`'s bytes, which is what
  * the facade passes -- and the record carries them as the words they are.
  */
+// ---- Canvas2D snapshots -----------------------------------------------------
+
+/// The size each live snapshot was captured at, by id.
+///
+/// `op_force_readback_snapshot` takes only an id, because in process the
+/// renderer's pool knows the rest. Here the producer has to reserve the reply
+/// before it asks, and the rectangle is what says how large it is -- so the
+/// capture records it. Cleared at frame end, which is the same life the pool
+/// gives a snapshot and the same life the engine's own per-frame budget counts.
+const snapshotSizes = new Map();
+
+/** The size a snapshot was captured at, and forget it. */
+export function takeSnapshotSize(snapshotId) {
+  const size = snapshotSizes.get(snapshotId);
+  snapshotSizes.delete(snapshotId);
+  return size;
+}
+
+/** Every snapshot of the frame that just ended is gone with it. */
+export function forgetSnapshots() {
+  snapshotSizes.clear();
+}
+
+/**
+ * `getImageData`'s capture: the pixels stay on the host.
+ *
+ * The engine's 2D facade captures rather than reading back, because the picture
+ * usually goes straight into a texture and never needs to reach JavaScript. An
+ * id of 0 or a rectangle past the surface cap is dropped before anything is
+ * written, which is what the op does before it queues anything.
+ */
+export function op_capture_canvas2d_snapshot(canvasId, x, y, width, height, snapshotId) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const left = toI32(x, "x");
+  const top = toI32(y, "y");
+  const w = smiU32(width, "width");
+  const h = smiU32(height, "height");
+  const id = smiU32(snapshotId, "snapshot_id");
+  if (id === 0 || !canvasSizeFits(w, h)) return;
+  snapshotSizes.set(id, [w, h]);
+  emit2D(canvas, R.OP2D_CAPTURE_SNAPSHOT, left >>> 0, top >>> 0, w, h, id);
+}
+
 // ---- Canvas2D gradients and patterns ----------------------------------------
 //
 // The two styles a colour cannot express. A gradient's stops are the string the
