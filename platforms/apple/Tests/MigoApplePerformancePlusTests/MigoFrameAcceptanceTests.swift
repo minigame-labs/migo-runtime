@@ -1464,10 +1464,11 @@ import XCTest
                     const pixel = sync.call({
                       runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
                       triggeringSequence: BigInt(sequence), operation: SYNC_OP_READ_PIXELS,
-                      maxReplyBytes: 4, timeoutMillis: 30000,
+                      // The layout (sixteen bytes) and then the one pixel.
+                      maxReplyBytes: 20, timeoutMillis: 30000,
                       params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
-                    }, new Uint8Array(4));
-                    detail = Array.from(pixel).join(",");
+                    }, new Uint8Array(20));
+                    detail = Array.from(pixel.subarray(16)).join(",");
                   } catch (error) {
                     detail = `${error.name}: ${error.message}`;
                   }
@@ -1561,18 +1562,21 @@ import XCTest
                     sections: [{ kind: SECTION_KIND_COMMAND_STREAM, payload: stream }] });
                   const submitted = session.submit(packet);
 
-                  const into = new Uint8Array(4);
+                  // The reply is the layout and then the rows: sixteen bytes of
+                  // placement (`frame_wire::sync::READ_PIXELS_LAYOUT_BYTES`) in
+                  // front of the one pixel this reads.
+                  const into = new Uint8Array(20);
                   let detail;
                   try {
                     const pixel = sync.call({
                       runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
-                      triggeringSequence: 1n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 4,
+                      triggeringSequence: 1n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 20,
                       // A minute, for the reason the Swift reads in this file give:
                       // the first readback in a process pays ANGLE's bring-up.
                       timeoutMillis: 60000,
                       params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
                     }, into);
-                    detail = Array.from(pixel).join(",");
+                    detail = Array.from(pixel.subarray(16)).join(",");
                   } catch (error) {
                     detail = `${error.name}: ${error.message}`;
                   }
@@ -1940,7 +1944,7 @@ import XCTest
             request.deadline_nanos = deadline
             request.operation = MIGO_SYNC_OP_READ_PIXELS
             let expected = Int(width) * Int(height) * 4
-            request.max_reply_bytes = UInt32(expected)
+            request.max_reply_bytes = UInt32(Self.readPixelsLayoutBytes + expected)
 
             var outcome = MigoSyncOutcome()
             outcome.struct_size = UInt32(MemoryLayout<MigoSyncOutcome>.size)
@@ -1957,14 +1961,42 @@ import XCTest
                 outcome.state, MIGO_SYNC_STATE_READY,
                 "the readback failed with error \(outcome.error)")
 
-            var pixels = [UInt8](repeating: 0, count: expected)
+            var reply = [UInt8](repeating: 0, count: Self.readPixelsLayoutBytes + expected)
             var written = 0
-            let taken = pixels.withUnsafeMutableBufferPointer { out in
+            let taken = reply.withUnsafeMutableBufferPointer { out in
                 migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
             }
             XCTAssertEqual(taken, MIGO_OK, "take")
-            XCTAssertEqual(written, expected, "the rectangle's RGBA8 rows")
-            return pixels
+            XCTAssertEqual(
+                written, Self.readPixelsLayoutBytes + expected,
+                "the layout and then the rectangle's RGBA8 rows")
+            return try Self.rowsOf(reply, width: width, height: height)
+        }
+
+        /// Bytes of the layout header a `readPixels` reply begins with
+        /// (`frame_wire::sync::READ_PIXELS_LAYOUT_BYTES`).
+        private static let readPixelsLayoutBytes = 16
+
+        /// The rows of a reply, after checking the layout in front of them.
+        ///
+        /// The layout is where the rows go in the caller's view, which the host
+        /// reads from its own `PACK_*` state -- the producer never sees
+        /// `pixelStorei`, so it cannot derive it. These reads set no pack state,
+        /// so the answer must be the compact one: no skip, a stride of exactly a
+        /// row, and as many rows as were asked for. A host that answered
+        /// something else would place a producer's rows wrongly in a view this
+        /// test does not have, and nothing else here would notice.
+        private static func rowsOf(_ reply: [UInt8], width: Int32, height: Int32) throws -> [UInt8] {
+            func word(_ index: Int) -> UInt32 {
+                let base = index * 4
+                return UInt32(reply[base]) | UInt32(reply[base + 1]) << 8
+                    | UInt32(reply[base + 2]) << 16 | UInt32(reply[base + 3]) << 24
+            }
+            XCTAssertEqual(word(0), 0, "a read with no PACK_SKIP_* starts at the first byte")
+            XCTAssertEqual(word(1), UInt32(width) * 4, "row bytes are the rectangle's width in RGBA8")
+            XCTAssertEqual(word(2), UInt32(width) * 4, "with no PACK_ALIGNMENT padding, the stride is the row")
+            XCTAssertEqual(word(3), UInt32(height), "one row per row asked for")
+            return Array(reply[readPixelsLayoutBytes...])
         }
 
         private func readPixel(
@@ -1979,7 +2011,7 @@ import XCTest
             request.triggering_sequence = triggeringSequence
             request.deadline_nanos = deadline
             request.operation = MIGO_SYNC_OP_READ_PIXELS
-            request.max_reply_bytes = 4
+            request.max_reply_bytes = UInt32(Self.readPixelsLayoutBytes + 4)
 
             var outcome = MigoSyncOutcome()
             outcome.struct_size = UInt32(MemoryLayout<MigoSyncOutcome>.size)
@@ -1998,14 +2030,15 @@ import XCTest
             // Sized from the request rather than the outcome: a failed readback
             // reports zero bytes, and an array sized from that is one the caller
             // indexes past -- a crash where an assertion should have been.
-            var pixel = [UInt8](repeating: 0, count: 4)
+            var reply = [UInt8](repeating: 0, count: Self.readPixelsLayoutBytes + 4)
             var written = 0
-            let taken = pixel.withUnsafeMutableBufferPointer { out in
+            let taken = reply.withUnsafeMutableBufferPointer { out in
                 migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
             }
             XCTAssertEqual(taken, MIGO_OK, "take")
-            XCTAssertEqual(written, 4, "one RGBA8 pixel")
-            return pixel
+            XCTAssertEqual(
+                written, Self.readPixelsLayoutBytes + 4, "the layout and one RGBA8 pixel")
+            return try Self.rowsOf(reply, width: 1, height: 1)
         }
     }
 #endif

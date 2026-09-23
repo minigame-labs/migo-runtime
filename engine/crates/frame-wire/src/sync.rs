@@ -668,12 +668,83 @@ impl ReadPixelsParams {
 
     /// How many bytes the answer will be, or `None` if that does not fit in a
     /// `u32` -- which is itself a refusal, not a number to truncate.
+    ///
+    /// The rows plus [`READ_PIXELS_LAYOUT_BYTES`]: the answer is the pixels and
+    /// where they go, because only the host knows the second part.
     pub fn reply_bytes(&self) -> Option<u32> {
+        self.pixel_bytes()?
+            .checked_add(READ_PIXELS_LAYOUT_BYTES as u32)
+    }
+
+    /// The pixels alone, without the layout that precedes them.
+    pub fn pixel_bytes(&self) -> Option<u32> {
         let width = u32::try_from(self.width).ok()?;
         let height = u32::try_from(self.height).ok()?;
         // RGBA8: four bytes per pixel. Checked, because width*height*4 for a
         // rectangle a producer named can overflow before it is ever refused.
         width.checked_mul(height)?.checked_mul(4)
+    }
+}
+
+/// Bytes of [`ReadPixelsLayout`] at the front of a `SYNC_OP_READ_PIXELS` reply.
+pub const READ_PIXELS_LAYOUT_BYTES: usize = 16;
+
+/// Where the rows of a readback go in the caller's view.
+///
+/// `readPixels` answers into a view the *caller* holds, at positions the GL
+/// `PACK_*` state decides: an alignment pads each row, `PACK_SKIP_ROWS` and
+/// `PACK_SKIP_PIXELS` move the first one, and `PACK_ROW_LENGTH` widens the
+/// stride. In process the op reads that state back from the renderer with the
+/// pixels and the engine's own facade places the rows.
+///
+/// On this lane the state is the host's and the view is the producer's, and
+/// neither can see the other's: the producer never sees `pixelStorei` at all,
+/// because the engine's encoder writes it straight into the command stream the
+/// producer forwards unread. So the placement crosses with the pixels. Four
+/// little-endian `u32`s, then the rows, compact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub struct ReadPixelsLayout {
+    /// Where the first row starts in the caller's view.
+    pub first_byte: u32,
+    /// Bytes of pixel data in each row.
+    pub row_bytes: u32,
+    /// Bytes from one row's start to the next, padding included.
+    pub row_stride: u32,
+    /// How many rows the reply carries.
+    pub height: u32,
+}
+
+impl ReadPixelsLayout {
+    /// The header, as it goes in front of the rows.
+    pub fn encode(&self) -> [u8; READ_PIXELS_LAYOUT_BYTES] {
+        let mut out = [0u8; READ_PIXELS_LAYOUT_BYTES];
+        out[0..4].copy_from_slice(&self.first_byte.to_le_bytes());
+        out[4..8].copy_from_slice(&self.row_bytes.to_le_bytes());
+        out[8..12].copy_from_slice(&self.row_stride.to_le_bytes());
+        out[12..16].copy_from_slice(&self.height.to_le_bytes());
+        out
+    }
+
+    /// Read a header a host wrote. `None` for a short one, which is a reply
+    /// that does not answer this operation rather than one to guess at.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < READ_PIXELS_LAYOUT_BYTES {
+            return None;
+        }
+        let word = |offset: usize| {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        Some(Self {
+            first_byte: word(0),
+            row_bytes: word(4),
+            row_stride: word(8),
+            height: word(12),
+        })
     }
 }
 

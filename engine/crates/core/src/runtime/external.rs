@@ -1073,10 +1073,11 @@ impl SyncPath {
         now_nanos: u64,
     ) -> Result<Vec<u8>, SyncError> {
         let params = ReadPixelsParams::decode(params)?;
-        let wanted = params.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
+        let wanted = params.pixel_bytes().ok_or(SyncError::ReplyTooLarge)?;
+        let reply_bytes = params.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
         // Checked here as well as by the mailbox, because refusing before the
         // renderer is asked saves a full-screen readback nobody may have.
-        if wanted > max_reply_bytes {
+        if reply_bytes > max_reply_bytes {
             return Err(SyncError::ReplyTooLarge);
         }
 
@@ -1119,7 +1120,8 @@ impl SyncPath {
                 // producer's view has room for whenever PACK_ALIGNMENT pads a row
                 // or PACK_SKIP_* is set -- a false INVALID_OPERATION for a
                 // footprint only the producer can check, against a view only it
-                // holds.
+                // holds. The footprint it checks against is the layout below,
+                // which is why that is answered rather than dropped.
                 destination_byte_length: usize::MAX,
                 resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(resp_tx),
             },
@@ -1131,10 +1133,13 @@ impl SyncPath {
             return Err(SyncError::SessionEnded);
         }
 
-        // The layout is dropped on purpose: it places rows in a destination view,
-        // and the producer derives the same placement from the PACK state it set.
-        let pixels = match resp_rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
-            Ok(Ok(readback)) => readback.pixels,
+        // The layout is answered, not dropped. It places rows in a destination
+        // view from `PACK_*` state that only this side holds: the producer never
+        // sees `pixelStorei`, because the engine's own encoder writes it into the
+        // command stream the producer forwards unread. An earlier version of this
+        // said the producer derives the placement itself, which it cannot.
+        let (pixels, layout) = match resp_rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(readback)) => (readback.pixels, readback.layout),
             // The renderer answered and the answer was an error: a canvas that
             // does not exist, a GL failure, a surface that went away mid-read.
             // Not "unsupported" -- that is permanent and would stop the
@@ -1158,12 +1163,20 @@ impl SyncPath {
             return Err(SyncError::OperationFailed);
         }
 
-        // Moved, not copied into a reused buffer. The renderer allocated this
-        // vector to answer with and hands it over owned, so taking it costs
-        // nothing and copying it costs a memcpy of the whole readback -- up to
-        // 14 MiB for a full-screen phone at 4x, on the path a producer is
-        // blocked on. Reusing a buffer here would save no allocation either,
-        // because the renderer's one is made whether or not we keep it.
+        // The layout in front of the rows a producer is waiting for. The vector
+        // the renderer allocated is kept rather than copied -- up to 14 MiB for a
+        // full-screen phone at 4x, on the path a producer is blocked on -- and
+        // the sixteen-byte header is spliced in front of it, which is one move of
+        // the tail rather than a second allocation of the whole readback.
+        let header = frame_wire::sync::ReadPixelsLayout {
+            first_byte: u32::try_from(layout.first_byte).map_err(|_| SyncError::ReplyTooLarge)?,
+            row_bytes: u32::try_from(layout.row_bytes).map_err(|_| SyncError::ReplyTooLarge)?,
+            row_stride: u32::try_from(layout.row_stride).map_err(|_| SyncError::ReplyTooLarge)?,
+            height: u32::try_from(layout.height).map_err(|_| SyncError::ReplyTooLarge)?,
+        }
+        .encode();
+        let mut pixels = pixels;
+        pixels.splice(0..0, header);
         Ok(pixels)
     }
 
