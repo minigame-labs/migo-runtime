@@ -172,8 +172,88 @@ pub const DRAW_IMAGE_BATCH_ENTRY_WORDS: u32 = 9;
 /// `drawImageBatch` (`shared::protocol::render_cmd::MAX_DRAW_IMAGE_BATCH_ENTRIES`).
 pub const MAX_DRAW_IMAGE_BATCH_ENTRIES: u32 = 65_536;
 
+// ─── Canvas lifetime (559..=561) ─────────────────────────────────────────────
+//
+// A canvas is not a drawing command, but every one of these names the canvas
+// the block already selected, applies in the order the rest of the run applies,
+// and has to be *in* that run: "create it, draw on it, hand the pixels to a
+// texture" is one ordered sequence, and a lifetime change arriving beside the
+// run rather than inside it is the race `Canvas2DCmd::ResizeCanvas` was added
+// to close in process -- a resize that overtook its own fillText left cocos's
+// pooled label canvas at the wrong size and the label blank.
+//
+// The in-process runtime reaches the same renderer calls through
+// `CanvasCmd::RegisterOffscreen` and a synchronous `CanvasCmd::DestroyCanvas`,
+// because there the ops and the renderer share a FIFO. The external producer
+// has neither an op nor that FIFO, so these are its only path.
+
+/// Bring the selected canvas into existence: `H width height`.
+///
+/// The id is the selected canvas's, allocated by the producer out of
+/// `shared::protocol::render_cmd::PRODUCER_CANVAS_ID_BASE` exactly as the
+/// in-process runtime allocates it, and the renderer refuses a registration
+/// below that base -- which is what stops a producer in another process from
+/// naming a canvas the renderer is about to allocate, or the onscreen one.
+pub const OP2D_REGISTER_CANVAS: u32 = 559;
+
+/// Resize the selected canvas: `H flags width height`.
+///
+/// `flags` is bit 0 for width and bit 1 for height, because content assigns
+/// `canvas.width` and `canvas.height` separately and the op this stands for
+/// takes each as an option. A pair arrives as one record rather than two, so
+/// the renderer validates the final size the way the op does instead of
+/// allocating an intermediate surface no frame ever drew to. Neither bit set is
+/// a producer that encoded nothing; the decoder refuses it rather than applying
+/// a resize to nothing.
+pub const OP2D_RESIZE_CANVAS: u32 = 560;
+
+/// Destroy the selected canvas: `H`.
+///
+/// The onscreen canvas is refused by the renderer, on this path and the
+/// in-process one, so a producer cannot destroy the window's canvas by naming
+/// it.
+pub const OP2D_DESTROY_CANVAS: u32 = 561;
+
+/// The bits `OP2D_RESIZE_CANVAS`'s flags word may set.
+pub const RESIZE_CANVAS_WIDTH: u32 = 1;
+/// The height bit of the same word.
+pub const RESIZE_CANVAS_HEIGHT: u32 = 2;
+
+// ─── Gradients and patterns (562..=565) ──────────────────────────────────────
+//
+// The two styles a colour cannot express. Both are set rarely -- once per style
+// change, not per draw -- and both name something the host already holds or can
+// build from what the record carries.
+
+/// `fillStyle = gradient`: `H type x0 y0 r0 x1 y1 r1 byte_length | utf8`.
+///
+/// `type` is 0 linear, 1 radial, 2 conic, as the op takes it. The six floats are
+/// the two circles the facade's `CanvasGradient` was built from, in the op's
+/// order; a linear gradient carries zero radii and a conic one carries its start
+/// angle where `x1` is, both of which the facade already decided.
+///
+/// The payload is the stops as the facade serialises them:
+/// `JSON.stringify([{offset, r, g, b, a}, ...])`, the same string the in-process
+/// op receives, read by the same
+/// `shared::protocol::render_cmd::parse_gradient_stops` on both lanes. Text
+/// rather than words deliberately -- it makes the two executions parse one
+/// thing, on the host, instead of holding a producer-side port to a corpus.
+pub const OP2D_SET_FILL_STYLE_GRADIENT: u32 = 562;
+/// `strokeStyle = gradient`, the same shape.
+pub const OP2D_SET_STROKE_STYLE_GRADIENT: u32 = 563;
+
+/// `fillStyle = pattern`: `H image_id repeat_x:B repeat_y:B`.
+///
+/// The image is the host's already -- loaded and uploaded under its shared id,
+/// as `drawImage` names one -- so no pixel crosses. The two bools are the
+/// repetition the facade resolved: `repeat-x` is x without y, `no-repeat` is
+/// neither.
+pub const OP2D_SET_FILL_STYLE_PATTERN: u32 = 564;
+/// `strokeStyle = pattern`, the same shape.
+pub const OP2D_SET_STROKE_STYLE_PATTERN: u32 = 565;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 559;
+pub const OP2D_END: u32 = 566;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -197,7 +277,9 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
     let (word_count, bool_words): (u32, &'static [u8]) = match opcode {
         OP2D_SELECT_CANVAS => (2, &[]),
 
-        OP2D_CREATE_CONTEXT | OP2D_BEGIN_PATH | OP2D_CLOSE_PATH => (1, &[]),
+        OP2D_CREATE_CONTEXT | OP2D_BEGIN_PATH | OP2D_CLOSE_PATH | OP2D_DESTROY_CANVAS => (1, &[]),
+        OP2D_REGISTER_CANVAS => (3, &[]),
+        OP2D_RESIZE_CANVAS => (4, &[]),
         OP2D_MOVE_TO | OP2D_LINE_TO => (3, &[]),
         OP2D_QUADRATIC_CURVE_TO => (5, &[]),
         OP2D_BEZIER_CURVE_TO => (7, &[]),
@@ -234,6 +316,9 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
 
         OP2D_SET_TEXT_ALIGN | OP2D_SET_TEXT_BASELINE | OP2D_SET_TEXT_DIRECTION => (2, &[]),
 
+        // image_id, repeat_x, repeat_y
+        OP2D_SET_FILL_STYLE_PATTERN | OP2D_SET_STROKE_STYLE_PATTERN => (4, &[2, 3]),
+
         OP2D_DRAW_IMAGE => (10, &[]),
         OP2D_DRAW_IMAGE_BATCH => {
             return Some(RecordSpec::Words {
@@ -263,6 +348,13 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
             return Some(RecordSpec::Words {
                 prefix_words: 1,
                 max_count: MAX_LINE_DASH_SEGMENTS,
+            });
+        }
+        OP2D_SET_FILL_STYLE_GRADIENT | OP2D_SET_STROKE_STYLE_GRADIENT => {
+            return Some(RecordSpec::Bytes {
+                prefix_words: 8,
+                presence_word: None,
+                text: true,
             });
         }
 

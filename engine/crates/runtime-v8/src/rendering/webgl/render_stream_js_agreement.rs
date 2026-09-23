@@ -156,9 +156,12 @@ mod js_agreement {
 /// a second reading of it.
 mod canvas2d_agreement {
     use frame_wire::canvas2d::{
-        OP2D_BASE, OP2D_CREATE_CONTEXT, OP2D_DRAW_IMAGE, OP2D_DRAW_IMAGE_BATCH, OP2D_END,
-        OP2D_FILL_TEXT, OP2D_SELECT_CANVAS, OP2D_SET_FONT, OP2D_SET_LINE_DASH, OP2D_SET_TEXT_ALIGN,
-        OP2D_SET_TEXT_BASELINE, OP2D_SET_TEXT_DIRECTION, OP2D_STROKE_TEXT,
+        OP2D_BASE, OP2D_CREATE_CONTEXT, OP2D_DESTROY_CANVAS, OP2D_DRAW_IMAGE,
+        OP2D_DRAW_IMAGE_BATCH, OP2D_END, OP2D_FILL_TEXT, OP2D_REGISTER_CANVAS, OP2D_RESIZE_CANVAS,
+        OP2D_SELECT_CANVAS, OP2D_SET_FILL_STYLE_GRADIENT, OP2D_SET_FILL_STYLE_PATTERN,
+        OP2D_SET_FONT, OP2D_SET_LINE_DASH, OP2D_SET_STROKE_STYLE_GRADIENT,
+        OP2D_SET_STROKE_STYLE_PATTERN, OP2D_SET_TEXT_ALIGN, OP2D_SET_TEXT_BASELINE,
+        OP2D_SET_TEXT_DIRECTION, OP2D_STROKE_TEXT,
     };
     use frame_wire::stream::RecordSpec;
     use std::collections::HashMap;
@@ -345,7 +348,14 @@ mod canvas2d_agreement {
             // The 2D opcodes only the external producer writes. Kept as a
             // list with its names so the check below can name what it looked
             // for, and short enough that adding to it is a decision.
-            const PRODUCER_ONLY_2D: [u32; 9] = [
+            //
+            // The last three are the canvas's own lifetime. In process those
+            // are ops -- `op_create_offscreen_canvas`, `op_resize_canvas`,
+            // `op_destroy_canvas` -- and they reach the render thread on the
+            // same FIFO this stream travels, so "create it, then draw on it" is
+            // already ordered without a record. The producer has no FIFO and no
+            // op, so for it they have to be records inside the run that draws.
+            const PRODUCER_ONLY_2D: [u32; 16] = [
                 OP2D_SET_FONT,
                 OP2D_FILL_TEXT,
                 OP2D_STROKE_TEXT,
@@ -355,8 +365,15 @@ mod canvas2d_agreement {
                 OP2D_SET_LINE_DASH,
                 OP2D_DRAW_IMAGE,
                 OP2D_DRAW_IMAGE_BATCH,
+                OP2D_REGISTER_CANVAS,
+                OP2D_RESIZE_CANVAS,
+                OP2D_DESTROY_CANVAS,
+                OP2D_SET_FILL_STYLE_GRADIENT,
+                OP2D_SET_STROKE_STYLE_GRADIENT,
+                OP2D_SET_FILL_STYLE_PATTERN,
+                OP2D_SET_STROKE_STYLE_PATTERN,
             ];
-            const PRODUCER_ONLY_2D_NAMES: [&str; 9] = [
+            const PRODUCER_ONLY_2D_NAMES: [&str; 16] = [
                 "OP2D_SET_FONT",
                 "OP2D_FILL_TEXT",
                 "OP2D_STROKE_TEXT",
@@ -366,6 +383,13 @@ mod canvas2d_agreement {
                 "OP2D_SET_LINE_DASH",
                 "OP2D_DRAW_IMAGE",
                 "OP2D_DRAW_IMAGE_BATCH",
+                "OP2D_REGISTER_CANVAS",
+                "OP2D_RESIZE_CANVAS",
+                "OP2D_DESTROY_CANVAS",
+                "OP2D_SET_FILL_STYLE_GRADIENT",
+                "OP2D_SET_STROKE_STYLE_GRADIENT",
+                "OP2D_SET_FILL_STYLE_PATTERN",
+                "OP2D_SET_STROKE_STYLE_PATTERN",
             ];
             if opcode == OP2D_CREATE_CONTEXT {
                 // The one opcode in this table that exists for the OTHER lane.

@@ -13,11 +13,12 @@ import {
   flushToHost,
 } from "./engine-frames.mjs";
 import { engineHost } from "./engine-host.mjs";
-import { recordProducerError } from "./lane-local.mjs";
+import { allocateCanvas, forgetCanvas, recordCanvasSize, recordProducerError } from "./lane-local.mjs";
 import {
   bytesOf,
   f32BitsOf,
   optionalBytesOf,
+  optionalU32,
   smiU32,
   smiU8,
   stringOf,
@@ -614,6 +615,86 @@ function emit2DText(canvasId, opcode, text, ...prefix) {
   }
 }
 
+// ---- Canvas lifetime --------------------------------------------------------
+//
+// A canvas is created, resized and destroyed inside the run of records that
+// draws on it. In process these are ops that reach the render thread on the same
+// FIFO the frame packets travel, so "create it, then draw on it" is already
+// ordered; here the stream is the only path, and the records carry that order.
+
+// `shared::protocol::render_cmd::checked_canvas_pixel_count`, which is what the
+// ops below preflight with. Both bounds, not just the product: a 67-million-by-1
+// surface passes a pixel count and is not a surface any GPU API can represent.
+const MAX_CANVAS_DIMENSION = 8192;
+const MAX_CANVAS_PIXELS = MAX_CANVAS_DIMENSION * MAX_CANVAS_DIMENSION;
+
+/** Whether a canvas of this size is one the host will allocate. */
+function canvasSizeFits(width, height) {
+  if (width > MAX_CANVAS_DIMENSION || height > MAX_CANVAS_DIMENSION) return false;
+  return width * height <= MAX_CANVAS_PIXELS;
+}
+
+/**
+ * `createCanvas()` / `createOffscreenCanvas(w, h)`: the id of a new canvas.
+ *
+ * The contract's `local_answer`: the id is this producer's, allocated from the
+ * base the renderer requires and returned without waiting, exactly as the
+ * in-process op allocates and returns one rather than asking the render thread.
+ * The record that brings the canvas into existence rides the frame.
+ */
+export function op_create_offscreen_canvas(width, height) {
+  const w = smiU32(width, "width");
+  const h = smiU32(height, "height");
+  if (!canvasSizeFits(w, h)) {
+    throw new Error("[InvalidArgument] offscreen canvas dimensions exceed the surface pixel cap");
+  }
+  const id = allocateCanvas(w, h);
+  emit2D(id, R.OP2D_REGISTER_CANVAS, w, h);
+  return id;
+}
+
+/**
+ * `canvas.width = w` / `canvas.height = h`.
+ *
+ * Content assigns the two separately, so the op takes each as an option and so
+ * does the record -- one flags word rather than two records, because the host
+ * validates the pair the way the op does and a pair sent as two resizes would
+ * allocate an intermediate surface no frame ever drew to.
+ *
+ * Neither dimension named is a call that changes nothing: the in-process op
+ * sends a resize that the renderer applies to neither axis, and the record for
+ * it is one the reader refuses, so this writes nothing instead.
+ */
+export function op_resize_canvas(canvasId, width, height) {
+  const id = smiU32(canvasId, "id");
+  const w = optionalU32(width, "w");
+  const h = optionalU32(height, "h");
+  if ((w !== null && w > MAX_CANVAS_DIMENSION) || (h !== null && h > MAX_CANVAS_DIMENSION)) {
+    throw new Error("[InvalidArgument] canvas resize dimension exceeds the surface pixel cap");
+  }
+  let flags = 0;
+  if (w !== null) flags |= R.RESIZE_CANVAS_WIDTH;
+  if (h !== null) flags |= R.RESIZE_CANVAS_HEIGHT;
+  if (flags === 0) return;
+  recordCanvasSize(id, w, h);
+  emit2D(id, R.OP2D_RESIZE_CANVAS, flags, w ?? 0, h ?? 0);
+}
+
+/**
+ * The canvas the content threw away, which its finalizer reports.
+ *
+ * The onscreen canvas is not destroyed by either path: the in-process op returns
+ * before it sends anything, and the renderer refuses it as well. Returning here
+ * rather than sending a record the host would refuse keeps the two lanes' frames
+ * identical for the same calls.
+ */
+export function op_destroy_canvas(canvasId) {
+  const id = smiU32(canvasId, "rid");
+  if (id === 1) return;
+  forgetCanvas(id);
+  emit2D(id, R.OP2D_DESTROY_CANVAS);
+}
+
 /**
  * `canvas.getContext("2d")`.
  *
@@ -682,6 +763,61 @@ export function op_set_text_direction(canvasId, direction) {
  * The op takes the segments as bytes -- a `Float32Array`'s bytes, which is what
  * the facade passes -- and the record carries them as the words they are.
  */
+// ---- Canvas2D gradients and patterns ----------------------------------------
+//
+// The two styles a colour cannot express. A gradient's stops are the string the
+// engine's own facade serialised (`JSON.stringify([{offset, r, g, b, a}, ...])`)
+// and the record carries it unread: the host parses it with the same function
+// the in-process op calls, so there is no second reading of it to keep right. A
+// pattern names an image the host already holds.
+
+/** `fillStyle = gradient`. */
+export function op_set_fill_style_gradient(canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson) {
+  emitGradient(R.OP2D_SET_FILL_STYLE_GRADIENT, canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson);
+}
+
+/** `strokeStyle = gradient`. */
+export function op_set_stroke_style_gradient(canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson) {
+  emitGradient(R.OP2D_SET_STROKE_STYLE_GRADIENT, canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson);
+}
+
+function emitGradient(opcode, canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson) {
+  emit2DText(
+    smiU32(canvasId, "canvas_id"),
+    opcode,
+    stringOf(stopsJson, "stops_json"),
+    smiU8(type, "gradient_type"),
+    f32BitsOf(x0, "x0"),
+    f32BitsOf(y0, "y0"),
+    f32BitsOf(r0, "r0"),
+    f32BitsOf(x1, "x1"),
+    f32BitsOf(y1, "y1"),
+    f32BitsOf(r1, "r1"),
+  );
+}
+
+/** `fillStyle = pattern`. */
+export function op_set_fill_style_pattern(canvasId, imageId, repeatX, repeatY) {
+  emit2D(
+    smiU32(canvasId, "canvas_id"),
+    R.OP2D_SET_FILL_STYLE_PATTERN,
+    smiU32(imageId, "image_id"),
+    toBool(repeatX, "repeat_x") ? 1 : 0,
+    toBool(repeatY, "repeat_y") ? 1 : 0,
+  );
+}
+
+/** `strokeStyle = pattern`. */
+export function op_set_stroke_style_pattern(canvasId, imageId, repeatX, repeatY) {
+  emit2D(
+    smiU32(canvasId, "canvas_id"),
+    R.OP2D_SET_STROKE_STYLE_PATTERN,
+    smiU32(imageId, "image_id"),
+    toBool(repeatX, "repeat_x") ? 1 : 0,
+    toBool(repeatY, "repeat_y") ? 1 : 0,
+  );
+}
+
 export function op_set_line_dash(canvasId, segments) {
   const canvas = smiU32(canvasId, "canvas_id");
   const bytes = bytesOf(segments, "segments");

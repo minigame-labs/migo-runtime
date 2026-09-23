@@ -1173,6 +1173,29 @@ const OP2D_SET_LINE_DASH = 556;
 const OP2D_DRAW_IMAGE = 557;
 const OP2D_DRAW_IMAGE_BATCH = 558;
 
+// --- 2D canvas lifetime ---
+//
+// The external producer's alone as well, and for a sharper reason than the
+// records above: in process a canvas is created, resized and destroyed by ops
+// that reach the renderer on the same FIFO this stream travels, so ordering is
+// already the order they were called in. The producer has no such FIFO -- its
+// only path is this stream -- so "create it, then draw on it" has to be two
+// records in one run. Listed here because the three tables must agree.
+const OP2D_REGISTER_CANVAS = 559;
+const OP2D_RESIZE_CANVAS = 560;
+const OP2D_DESTROY_CANVAS = 561;
+
+// --- 2D gradients and patterns ---
+//
+// The producer's alone, like the text records: in process `fillStyle = gradient`
+// calls `op_set_fill_style_gradient` with the stops the facade serialised, and a
+// record here would add an encode to a call that is already one crossing. The
+// producer has no op, so its record carries the same string to the same parser.
+const OP2D_SET_FILL_STYLE_GRADIENT = 562;
+const OP2D_SET_STROKE_STYLE_GRADIENT = 563;
+const OP2D_SET_FILL_STYLE_PATTERN = 564;
+const OP2D_SET_STROKE_STYLE_PATTERN = 565;
+
 // --- 2D canvas selection ---
 //
 // `Canvas2DCmd` carries no canvas id -- the id lives on the batch -- so the

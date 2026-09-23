@@ -98,6 +98,17 @@ fn op_probe_smi_option_u32(#[smi] value: Option<u32>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 
+/// `Option<u32>` with no attribute: what `op_resize_canvas` takes for each
+/// dimension, because content assigns `canvas.width` and `canvas.height`
+/// separately and either may be absent. A different conversion from the `#[smi]`
+/// form above -- `to_u32_option` rather than `to_i32_option` -- which is the
+/// whole reason the two are separate kinds.
+#[op2]
+#[string]
+fn op_probe_option_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
 #[op2]
 #[string]
 fn op_probe_bool(value: bool) -> String {
@@ -166,6 +177,7 @@ deno_core::extension!(
         op_probe_bigint_u64,
         op_probe_bigint_option_u64,
         op_probe_smi_option_u32,
+        op_probe_option_u32,
         op_probe_smi_u16,
         op_probe_bool,
         op_probe_f32,
@@ -216,6 +228,7 @@ fn deno_answers() -> serde_json::Value {
                     bigint_u64: ops.op_probe_bigint_u64,
                     option_bigint_u64: ops.op_probe_bigint_option_u64,
                     option_smi_u32: ops.op_probe_smi_option_u32,
+                    option_u32: ops.op_probe_option_u32,
                     smi_u16: ops.op_probe_smi_u16,
                     bool: ops.op_probe_bool,
                     f32: ops.op_probe_f32,

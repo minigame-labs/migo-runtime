@@ -1206,6 +1206,29 @@ mod tests {
         );
     }
 
+    /// A canvas's lifetime rides its batch, which is what makes the reorder safe
+    /// for it: destroying a canvas is a `Canvas2DCmd` like any other, so the
+    /// collision rule above already refuses to run the destroy in the first
+    /// phase while WebGL work for that canvas waits in the second. A lifetime
+    /// carried beside the batch instead -- as its own frame operation -- would
+    /// have needed its own rule here, and the first version that did not have
+    /// one would have deleted a canvas before the frame drew on it.
+    #[test]
+    fn destroying_a_canvas_the_gl_half_draws_on_forces_issue_order() {
+        let lifetime = FrameOp::CanvasBatch(CanvasBatchPayload {
+            canvas_id: CanvasId::from(7u32),
+            commands: vec![Canvas2DCmd::DestroyCanvas].into(),
+            present: false,
+            dirty_rect: None,
+        });
+        let ops = vec![gl_batch_touching(&[7]), lifetime];
+
+        assert!(
+            !packet_safe_to_reorder(&ops),
+            "a destroy hoisted into the first phase runs before the WebGL work it follows"
+        );
+    }
+
     /// A collision anywhere refuses, not just one the scan reaches early. The
     /// rewrite returns on the first hit, so the last command of the last batch
     /// is the case that pins the loop actually finishing.

@@ -158,6 +158,26 @@ export const OP2D_SET_TEXT_DIRECTION = 555;
 export const OP2D_SET_LINE_DASH = 556;
 export const OP2D_DRAW_IMAGE = 557;
 export const OP2D_DRAW_IMAGE_BATCH = 558;
+
+// The canvas itself: created, resized and destroyed inside the run that draws
+// on it. In process these are ops on the same FIFO as the stream; here the
+// stream is the only path, so they are records.
+export const OP2D_REGISTER_CANVAS = 559;
+export const OP2D_RESIZE_CANVAS = 560;
+export const OP2D_DESTROY_CANVAS = 561;
+
+// The two styles a colour cannot express. The gradient's stops travel as the
+// string the facade serialised, read on the host by the parser the in-process op
+// uses; a pattern names an image the host already holds.
+export const OP2D_SET_FILL_STYLE_GRADIENT = 562;
+export const OP2D_SET_STROKE_STYLE_GRADIENT = 563;
+export const OP2D_SET_FILL_STYLE_PATTERN = 564;
+export const OP2D_SET_STROKE_STYLE_PATTERN = 565;
+
+// The flags word of OP2D_RESIZE_CANVAS: content assigns width and height
+// separately, and the op this stands for takes each as an option.
+export const RESIZE_CANVAS_WIDTH = 1;
+export const RESIZE_CANVAS_HEIGHT = 2;
 export const DRAW_IMAGE_BATCH_ENTRY_WORDS = 9;
 /** The host's cap on a dash pattern; a longer one is a record it refuses. */
 export const MAX_LINE_DASH_SEGMENTS = 256;
