@@ -19,7 +19,11 @@ import { DOWN_FRAME_VERDICT, encodeBytes } from "../src/downlink.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "../src/engine-host.mjs";
 import { FrameSession } from "../src/frame-session.mjs";
 import { op_force_readback_snapshot, op_get_image_data } from "../src/lane-sync.mjs";
-import { op_capture_canvas2d_snapshot, op_frame_end_unified } from "../src/lane-stream.mjs";
+import {
+  op_capture_canvas2d_snapshot,
+  op_capture_canvas2d_snapshot_for_cache,
+  op_frame_end_unified,
+} from "../src/lane-stream.mjs";
 import {
   CANVAS2D_PIXELS_PARAM_BYTES,
   SYNC_ERROR_OPERATION_FAILED,
@@ -207,6 +211,41 @@ asked = null;
 check(
   op_force_readback_snapshot(503).length === 0 && asked === null,
   "a capture the op would have dropped leaves nothing to read",
+);
+
+// ---- the capture from the text-cache path -----------------------------------
+//
+// `fillText` asks whether the host already holds this exact label's texture;
+// this host keeps no such cache and answers miss, always, so the record path
+// through the cache is the capture and nothing else. The key's arguments are
+// still converted, because deno_core converts them before the op's body runs.
+
+op_capture_canvas2d_snapshot_for_cache(
+  1, 0, 0, 24, 12, 601,
+  "99", "16px sans-serif", 16, 400, false, 0xffffffff, 0, 3, 24, 12,
+);
+asked = null;
+check(
+  op_force_readback_snapshot(601).length === 24 * 12 * 4,
+  "a capture from the text-cache path is a capture: the size is registered and readable",
+);
+check(
+  paramsOf(asked).target === 601 && paramsOf(asked).width === 24,
+  "and it is the same snapshot the plain capture would have made",
+);
+
+let refused = "nothing";
+try {
+  op_capture_canvas2d_snapshot_for_cache(
+    1, 0, 0, 8, 8, 602,
+    "99", "16px sans-serif", 16, 400, false, 0xffffffff, 0, 3, 24, {},
+  );
+} catch (error) {
+  refused = error.name;
+}
+check(
+  refused === "TypeError",
+  "an argument the embedded op's conversion would refuse is refused here too",
 );
 
 console.log(failures === 0 ? "PASS (Canvas2D pixels)" : `FAIL (${failures})`);
