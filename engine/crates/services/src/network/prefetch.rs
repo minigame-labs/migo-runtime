@@ -40,7 +40,10 @@ pub async fn prefetch_assets(
     urls_json: &str,
 ) -> Result<(), ServiceError> {
     let urls: Vec<String> = serde_json::from_str(urls_json).map_err(|error| {
-        ServiceError::classed("TypeError", format!("prefetchAssets: invalid JSON: {error}"))
+        ServiceError::classed(
+            "TypeError",
+            format!("prefetchAssets: invalid JSON: {error}"),
+        )
     })?;
     if urls.is_empty() {
         return Ok(());
@@ -79,7 +82,12 @@ pub async fn prefetch_assets(
 /// [`MAX_DRAIN_BODY`]. Failures are swallowed: this is a warm-up.
 async fn warm(client: Client, url: Url) {
     let shown = url.to_string();
-    let Ok(mut response) = client.get(url).timeout(Duration::from_secs(30)).send().await else {
+    let Ok(mut response) = client
+        .get(url)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+    else {
         debug!("prefetchAssets: {shown} could not be fetched");
         return;
     };

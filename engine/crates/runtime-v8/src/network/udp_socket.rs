@@ -208,11 +208,7 @@ pub async fn op_udp_next_event(
     #[smi] rid: ResourceId,
 ) -> Result<UdpEvent, JsErrorBox> {
     let (resources, id) = socket(&state, rid)?;
-    let backgrounded = state
-        .borrow()
-        .borrow::<HostOpState>()
-        .backgrounded
-        .clone();
+    let backgrounded = state.borrow().borrow::<HostOpState>().backgrounded.clone();
     service_udp::next_event(&resources, id, &backgrounded)
         .await
         .map(UdpEvent::from)

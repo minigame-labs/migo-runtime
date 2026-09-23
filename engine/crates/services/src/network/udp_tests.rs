@@ -79,7 +79,11 @@ async fn a_destination_the_policy_refuses_is_never_sent_to() {
     let error = connect(&policy, &resources, bound.rid, "blocked.example", 9000)
         .await
         .expect_err("the allow list refuses it");
-    assert!(error.message.contains("blocked.example"), "{}", error.message);
+    assert!(
+        error.message.contains("blocked.example"),
+        "{}",
+        error.message
+    );
 
     let error = send(
         &policy,
@@ -95,7 +99,11 @@ async fn a_destination_the_policy_refuses_is_never_sent_to() {
     )
     .await
     .expect_err("the allow list refuses it");
-    assert!(error.message.contains("blocked.example"), "{}", error.message);
+    assert!(
+        error.message.contains("blocked.example"),
+        "{}",
+        error.message
+    );
 }
 
 /// Broadcast has no legitimate target once the address filter is on, so the

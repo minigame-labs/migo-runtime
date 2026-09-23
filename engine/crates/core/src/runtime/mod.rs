@@ -38,9 +38,9 @@ mod service_args;
 #[cfg(feature = "external-frames")]
 mod service_audio;
 #[cfg(feature = "external-frames")]
-mod service_network;
-#[cfg(feature = "external-frames")]
 mod service_fs;
+#[cfg(feature = "external-frames")]
+mod service_network;
 #[cfg(feature = "external-frames")]
 mod service_ops;
 

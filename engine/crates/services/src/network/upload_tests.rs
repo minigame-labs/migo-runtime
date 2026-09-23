@@ -147,7 +147,9 @@ async fn a_path_outside_the_sandbox_is_refused() {
     .await
     .expect_err("only the sandbox is readable");
     assert!(
-        error.message.starts_with("uploadFile:fail path not allowed: /etc/passwd"),
+        error
+            .message
+            .starts_with("uploadFile:fail path not allowed: /etc/passwd"),
         "{}",
         error.message
     );
@@ -174,8 +176,7 @@ async fn an_upload_with_no_sandbox_is_refused_by_path() {
 /// content gave rather than the engine's own.
 #[test]
 fn a_packaged_file_cannot_be_streamed() {
-    let error = resolve_upload_path(None, None, "/user/save.png")
-        .expect_err("no VFS, no path");
+    let error = resolve_upload_path(None, None, "/user/save.png").expect_err("no VFS, no path");
     assert_eq!(error.message, "uploadFile:fail VFS not initialised");
 }
 

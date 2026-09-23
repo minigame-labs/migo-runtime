@@ -67,11 +67,7 @@ fn repository() -> PathBuf {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_resource_records_decode_to_the_commands_the_ops_build() {
-    compare_fixture(
-        "MIGO_RESOURCE_PARITY_DIR",
-        "webgl-resource-calls.js",
-        60,
-    );
+    compare_fixture("MIGO_RESOURCE_PARITY_DIR", "webgl-resource-calls.js", 60);
 }
 
 /// The same question for the raw path: the calls the facade cannot encode.
@@ -88,12 +84,14 @@ fn the_producer_s_raw_records_decode_to_the_commands_the_ops_build() {
 }
 
 fn compare_fixture(directory_var: &str, fixture: &str, least_commands: usize) {
-    let directory = PathBuf::from(
-        std::env::var(directory_var)
-            .unwrap_or_else(|_| panic!("{directory_var} names engine-resource-parity.mjs's output")),
-    );
+    let directory =
+        PathBuf::from(std::env::var(directory_var).unwrap_or_else(|_| {
+            panic!("{directory_var} names engine-resource-parity.mjs's output")
+        }));
     let script = std::fs::read_to_string(
-        repository().join("platforms/apple/WebContent/PerformancePlus/test/fixtures").join(fixture),
+        repository()
+            .join("platforms/apple/WebContent/PerformancePlus/test/fixtures")
+            .join(fixture),
     )
     .expect("the fixture script");
 

@@ -17,6 +17,6 @@ pub mod prefetch;
 pub mod resources;
 pub mod sockets;
 pub mod tcp;
-pub mod upload;
 pub mod udp;
+pub mod upload;
 pub mod websocket;

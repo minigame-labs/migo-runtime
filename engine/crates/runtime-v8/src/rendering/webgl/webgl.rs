@@ -3714,7 +3714,6 @@ pub(super) mod tests {
         ));
     }
 
-
     /// The colour strings both parsers are held to.
     ///
     /// Shared by the test above and by the fixture the producer's port is checked
@@ -3737,7 +3736,7 @@ pub(super) mod tests {
         }
         corpus.push("transparent".to_string());
         corpus.push("chartreuseish".to_string());
-    
+
         // Every channel value, so the u8-to-f32 conversion is checked at each of
         // its 256 inputs rather than at a handful.
         for channel in 0..=255u32 {
@@ -3806,7 +3805,7 @@ pub(super) mod tests {
         ] {
             corpus.push(odd.to_string());
         }
-    
+
         // Adjacent duplicates would be swallowed by the setter's own dedup, and
         // then the sequence below would not line up with the corpus.
         corpus.dedup();
@@ -3819,7 +3818,7 @@ pub(super) mod tests {
         let corpus = deduped;
         corpus
     }
-    
+
     /// The corpus and the colour the Rust parser reads for each, for
     /// `test/canvas2d-color.test.mjs` -- which requires the producer's port to
     /// answer the same for every one.

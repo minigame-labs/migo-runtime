@@ -364,7 +364,9 @@ fn resolve_upload_path(
                 VfsError::PermissionDenied => format!("uploadFile:fail permission denied: {path}"),
                 VfsError::PathTraversal => format!("uploadFile:fail path traversal: {path}"),
                 VfsError::SymlinkEscape => format!("uploadFile:fail symlink escape: {path}"),
-                VfsError::SymlinkNotAllowed => format!("uploadFile:fail symlinks not allowed: {path}"),
+                VfsError::SymlinkNotAllowed => {
+                    format!("uploadFile:fail symlinks not allowed: {path}")
+                }
                 VfsError::InvalidPath => format!("uploadFile:fail invalid path: {path}"),
             })
         })

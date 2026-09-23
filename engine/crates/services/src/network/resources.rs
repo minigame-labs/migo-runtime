@@ -148,7 +148,10 @@ impl ResourceTable {
         self.add(Entry::FetchResponse(body))
     }
 
-    pub(crate) fn add_web_socket(&self, connection: Arc<super::websocket::WebSocketConn>) -> ResourceId {
+    pub(crate) fn add_web_socket(
+        &self,
+        connection: Arc<super::websocket::WebSocketConn>,
+    ) -> ResourceId {
         self.add(Entry::WebSocket(connection))
     }
 

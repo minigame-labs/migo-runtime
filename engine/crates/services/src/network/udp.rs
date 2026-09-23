@@ -108,8 +108,8 @@ pub fn bind(
     socket
         .set_nonblocking(true)
         .map_err(|error| generic(format!("bind:fail set_nonblocking: {error}")))?;
-    let socket =
-        UdpSocket::from_std(socket).map_err(|error| generic(format!("bind:fail from_std: {error}")))?;
+    let socket = UdpSocket::from_std(socket)
+        .map_err(|error| generic(format!("bind:fail from_std: {error}")))?;
     let local_addr = socket
         .local_addr()
         .map_err(|error| generic(format!("bind:fail {error}")))?;
@@ -140,7 +140,8 @@ pub async fn connect(
     port: u32,
 ) -> Result<(), ServiceError> {
     let port = checked_port(port)?;
-    gate::enforce_host(address, port, policy, GateKind::UdpSocket).map_err(ServiceError::generic)?;
+    gate::enforce_host(address, port, policy, GateKind::UdpSocket)
+        .map_err(ServiceError::generic)?;
     let socket = resources.udp(rid)?;
 
     let target = join_host_port(address, port);
@@ -177,7 +178,8 @@ pub async fn send(
             "send:fail broadcast is not permitted by the runtime policy",
         ));
     }
-    gate::enforce_host(address, port, policy, GateKind::UdpSocket).map_err(ServiceError::generic)?;
+    gate::enforce_host(address, port, policy, GateKind::UdpSocket)
+        .map_err(ServiceError::generic)?;
     let socket = resources.udp(rid)?;
 
     let target = join_host_port(address, port);

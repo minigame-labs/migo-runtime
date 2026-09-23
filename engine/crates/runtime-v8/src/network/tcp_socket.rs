@@ -155,11 +155,7 @@ pub async fn op_tcp_next_event(
     #[smi] rid: ResourceId,
 ) -> Result<TcpEvent, JsErrorBox> {
     let (resources, id) = socket(&state, rid)?;
-    let backgrounded = state
-        .borrow()
-        .borrow::<HostOpState>()
-        .backgrounded
-        .clone();
+    let backgrounded = state.borrow().borrow::<HostOpState>().backgrounded.clone();
     service_tcp::next_event(&resources, id, &backgrounded)
         .await
         .map(TcpEvent::from)
@@ -174,7 +170,12 @@ pub async fn op_tcp_write(
     #[buffer] data_buf: Option<JsBuffer>,
 ) -> Result<(), JsErrorBox> {
     let (resources, id) = socket(&state, rid)?;
-    let pools = state.borrow().borrow::<IoSchedulerState>().0.pools().clone();
+    let pools = state
+        .borrow()
+        .borrow::<IoSchedulerState>()
+        .0
+        .pools()
+        .clone();
     let bytes = data_buf.map(|buffer| buffer.to_vec());
     service_tcp::write(&resources, &pools, id, data_str, bytes)
         .await

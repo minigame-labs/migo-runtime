@@ -684,9 +684,9 @@ impl ServiceContext {
             }
             id::op_get_mount_generation => {
                 let [] = exactly(op, args)?;
-                Ok(OwnedValue::U64(migo_services::subpackage::mount_generation(
-                    self.mount_table().as_deref(),
-                )))
+                Ok(OwnedValue::U64(
+                    migo_services::subpackage::mount_generation(self.mount_table().as_deref()),
+                ))
             }
             id::op_get_subpackage_identity => {
                 let [root] = exactly(op, args)?;
@@ -722,9 +722,12 @@ impl ServiceContext {
             audio if service_audio::is_sync(audio) => {
                 service_audio::call_sync(self.audio()?, audio, args)
             }
-            network if service_network::is_sync(network) => {
-                service_network::call_sync(self.network()?, self.scheduler()?.as_ref(), network, args)
-            }
+            network if service_network::is_sync(network) => service_network::call_sync(
+                self.network()?,
+                self.scheduler()?.as_ref(),
+                network,
+                args,
+            ),
             other => Err(not_a(other, "synchronous")),
         }
     }
@@ -2103,8 +2106,10 @@ mod tests {
         )
         .expect("the calls are JSON");
 
-        let root =
-            std::env::temp_dir().join(format!("migo-external-network-calls-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "migo-external-network-calls-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         let context = Arc::new(ServiceContext::new(root.join("files"), root.join("cache")));
         context.bind_session(1);
@@ -2181,11 +2186,9 @@ mod tests {
                 let OwnedValue::U32(recorded) = args[0] else {
                     panic!("{name} names a handle");
                 };
-                args[0] = OwnedValue::U32(
-                    *host_of
-                        .get(&recorded)
-                        .unwrap_or_else(|| panic!("{name} names handle {recorded}, which no answer gave out")),
-                );
+                args[0] = OwnedValue::U32(*host_of.get(&recorded).unwrap_or_else(|| {
+                    panic!("{name} names handle {recorded}, which no answer gave out")
+                }));
             }
             let outcome = match call["shape"].as_str() {
                 Some("sync") => context.call_sync(op, args),
@@ -2193,7 +2196,9 @@ mod tests {
                     Ok(future) => runtime.block_on(future),
                     Err(error) => Err(error),
                 },
-                Some("command") => context.command(op, args, &render).map(|()| OwnedValue::Null),
+                Some("command") => context
+                    .command(op, args, &render)
+                    .map(|()| OwnedValue::Null),
                 other => panic!("{name}: shape {other:?}"),
             };
             if let Ok(value) = &outcome

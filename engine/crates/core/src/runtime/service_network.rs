@@ -93,7 +93,11 @@ impl NetworkBinding {
 
     /// The client for `enable_http2`, built once.
     fn client(&self, enable_http2: bool) -> Result<PolicyHttpClient, ServiceError> {
-        let slot = if enable_http2 { &self.http2 } else { &self.http1 };
+        let slot = if enable_http2 {
+            &self.http2
+        } else {
+            &self.http1
+        };
         let mut slot = slot.lock();
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
@@ -113,9 +117,7 @@ impl NetworkBinding {
     /// This session's policy and the client it configured, for a fetch that is
     /// not an op: an `http(s)://` image source, which is held to exactly what
     /// `fetch()` is.
-    pub(crate) fn image_client(
-        &self,
-    ) -> Result<(NetworkPolicy, PolicyHttpClient), ServiceError> {
+    pub(crate) fn image_client(&self) -> Result<(NetworkPolicy, PolicyHttpClient), ServiceError> {
         let _in_the_session_s_runtime = self.runtime.enter();
         Ok((self.policy.clone(), self.client(false)?))
     }
@@ -186,8 +188,18 @@ pub(crate) fn call_sync(
     let _in_the_session_s_runtime = network.runtime.enter();
     match op {
         id::op_fetch => {
-            let [method, url, headers, client_rid, has_body, data, resource, timeout, enable_http2, enable_cache] =
-                exactly(op, args)?;
+            let [
+                method,
+                url,
+                headers,
+                client_rid,
+                has_body,
+                data,
+                resource,
+                timeout,
+                enable_http2,
+                enable_cache,
+            ] = exactly(op, args)?;
             // The engine's JavaScript passes neither: it builds no
             // `HttpClient` of its own, and a request body is bytes it has in
             // hand rather than a stream resource. A producer that started
@@ -410,8 +422,16 @@ pub(crate) fn call_async(
             })
         }
         id::op_udp_send => {
-            let [rid, address, port, text, bytes, offset, length, set_broadcast] =
-                exactly(op, args)?;
+            let [
+                rid,
+                address,
+                port,
+                text,
+                bytes,
+                offset,
+                length,
+                set_broadcast,
+            ] = exactly(op, args)?;
             let rid: ResourceId = u32_of(op, 0, rid)?;
             let address = string(op, 1, address)?;
             let port = u32_of(op, 2, port)?;
@@ -449,8 +469,17 @@ pub(crate) fn call_async(
             })
         }
         id::op_fetch_upload => {
-            let [cancel_rid, url, file_path, name, filename, headers, form_data, timeout, _enable_http2] =
-                exactly(op, args)?;
+            let [
+                cancel_rid,
+                url,
+                file_path,
+                name,
+                filename,
+                headers,
+                form_data,
+                timeout,
+                _enable_http2,
+            ] = exactly(op, args)?;
             let request = UploadRequest {
                 cancel_rid: u32_of(op, 0, cancel_rid)?,
                 url: string(op, 1, url)?,
@@ -534,11 +563,7 @@ pub(crate) fn command(
         }
         id::op_udp_set_ttl => {
             let [rid, ttl] = exactly(op, args)?;
-            udp::set_ttl(
-                &network.resources,
-                u32_of(op, 0, rid)?,
-                u32_of(op, 1, ttl)?,
-            )
+            udp::set_ttl(&network.resources, u32_of(op, 0, rid)?, u32_of(op, 1, ttl)?)
         }
         other => Err(not_a(other, "network command")),
     }
@@ -736,7 +761,10 @@ fn header_pairs(
                 let [name, value]: [OwnedValue; 2] = pair
                     .try_into()
                     .map_err(|_| wrong_type(op, index, "header pair", &OwnedValue::Null))?;
-                Ok((header_bytes(op, index, name)?, header_bytes(op, index, value)?))
+                Ok((
+                    header_bytes(op, index, name)?,
+                    header_bytes(op, index, value)?,
+                ))
             }
             other => Err(wrong_type(op, index, "header pair", &other)),
         })

@@ -910,7 +910,10 @@ mod tests {
     /// refused at a packet's worth.
     #[test]
     fn validate_matrix_uniform_payload_is_bounded_by_a_packet_not_by_the_encoder() {
-        for (payload, ok) in [(513u32, true), (crate::gl::MAX_STREAM_UNIFORM_WORDS + 1, false)] {
+        for (payload, ok) in [
+            (513u32, true),
+            (crate::gl::MAX_STREAM_UNIFORM_WORDS + 1, false),
+        ] {
             // The frame validator, for the reason the vector test gives.
             let total = 4 + payload;
             let h = pack_header(OP_UNIFORM_MATRIX4FV, total);
@@ -920,7 +923,11 @@ mod tests {
             words[2] = h;
             words[5] = 0;
             let used = 2 + total;
-            assert_eq!(validate_frame_stream(&words, used).is_ok(), ok, "{payload} words");
+            assert_eq!(
+                validate_frame_stream(&words, used).is_ok(),
+                ok,
+                "{payload} words"
+            );
         }
     }
 
