@@ -269,6 +269,13 @@ export const OPR_TEX_SUB_IMAGE_3D = 201;
 export const OPR_DRAW_BUFFERS = 202;
 export const OPR_INVALIDATE_FRAMEBUFFER = 203;
 export const OPR_TRANSFORM_FEEDBACK_VARYINGS = 204;
+
+// Uploads whose pixels the host already holds: a snapshot of a 2D canvas, or
+// the canvas itself. No pixel crosses on either lane.
+export const OPR_TEX_IMAGE_2D_FROM_SNAPSHOT = 171;
+export const OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT = 172;
+export const OPR_TEX_IMAGE_2D_FROM_CANVAS2D = 173;
+export const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D = 174;
 export const MAX_RESOURCE_WORD_LIST = 64;
 // The most payload words one variable-uniform record carries
 // (`frame_wire::gl::MAX_STREAM_UNIFORM_WORDS`), which is not the engine

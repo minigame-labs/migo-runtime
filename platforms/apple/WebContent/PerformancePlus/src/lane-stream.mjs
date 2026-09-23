@@ -767,6 +767,71 @@ export function op_set_text_direction(canvasId, direction) {
  * The op takes the segments as bytes -- a `Float32Array`'s bytes, which is what
  * the facade passes -- and the record carries them as the words they are.
  */
+// ---- Uploads whose pixels the host already holds ----------------------------
+//
+// A texture filled from a snapshot of a 2D canvas, or from the canvas itself.
+// No pixel crosses: the renderer copies GPU to GPU, which is what makes the
+// engine's `fillText` into a texture cost nothing but these records. Each op's
+// own early return is kept, because a record the host would drop is one this
+// side should not have written.
+
+export function op_tex_image_2d_from_snapshot(canvasId, target, level, internalformat, format, type_, snapshotId) {
+  const snapshot = smiU32(snapshotId, "snapshot_id");
+  const canvas = smiU32(canvasId, "canvas_id");
+  const t = smiU32(target, "target");
+  const lvl = toI32(level, "level");
+  const internal = toI32(internalformat, "internalformat");
+  const fmt = smiU32(format, "format");
+  const ty = smiU32(type_, "type_");
+  // `getImageData` fell back to a real CPU buffer, so there is no snapshot to
+  // upload; the op drops it rather than warning, and so does this.
+  if (snapshot === 0) return;
+  emit(R.OPR_TEX_IMAGE_2D_FROM_SNAPSHOT, canvas, t, lvl >>> 0, internal >>> 0, fmt, ty, snapshot);
+}
+
+export function op_tex_sub_image_2d_from_snapshot(canvasId, target, level, xoffset, yoffset, format, type_, snapshotId) {
+  const snapshot = smiU32(snapshotId, "snapshot_id");
+  const canvas = smiU32(canvasId, "canvas_id");
+  const t = smiU32(target, "target");
+  const lvl = toI32(level, "level");
+  const x = toI32(xoffset, "xoffset");
+  const y = toI32(yoffset, "yoffset");
+  const fmt = smiU32(format, "format");
+  const ty = smiU32(type_, "type_");
+  if (snapshot === 0) return;
+  emit(R.OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT, canvas, t, lvl >>> 0, x >>> 0, y >>> 0, fmt, ty, snapshot);
+}
+
+export function op_tex_image_2d_from_canvas2d(canvasId, target, level, internalformat, canvas2dId, x, y, width, height) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const t = smiU32(target, "target");
+  const lvl = toI32(level, "level");
+  const internal = toI32(internalformat, "internalformat");
+  const source = smiU32(canvas2dId, "canvas_2d_id");
+  const left = toI32(x, "x");
+  const top = toI32(y, "y");
+  const w = smiU32(width, "width");
+  const h = smiU32(height, "height");
+  // A zero-area source is nothing to copy, which is where the op returns.
+  if (w === 0 || h === 0) return;
+  emit(R.OPR_TEX_IMAGE_2D_FROM_CANVAS2D, canvas, t, lvl >>> 0, internal >>> 0, source, left >>> 0, top >>> 0, w, h);
+}
+
+export function op_tex_sub_image_2d_from_canvas2d(canvasId, target, level, xoffset, yoffset, canvas2dId, x, y, width, height) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const t = smiU32(target, "target");
+  const lvl = toI32(level, "level");
+  const xo = toI32(xoffset, "xoffset");
+  const yo = toI32(yoffset, "yoffset");
+  const source = smiU32(canvas2dId, "canvas_2d_id");
+  const left = toI32(x, "x");
+  const top = toI32(y, "y");
+  const w = smiU32(width, "width");
+  const h = smiU32(height, "height");
+  if (w === 0 || h === 0) return;
+  emit(R.OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D, canvas, t, lvl >>> 0, xo >>> 0, yo >>> 0, source, left >>> 0, top >>> 0, w, h);
+}
+
 // ---- Canvas2D snapshots -----------------------------------------------------
 
 /// The size each live snapshot was captured at, by id.
