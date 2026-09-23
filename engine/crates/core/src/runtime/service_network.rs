@@ -109,6 +109,16 @@ impl NetworkBinding {
         Ok(client)
     }
 
+    /// This session's policy and the client it configured, for a fetch that is
+    /// not an op: an `http(s)://` image source, which is held to exactly what
+    /// `fetch()` is.
+    pub(crate) fn image_client(
+        &self,
+    ) -> Result<(NetworkPolicy, PolicyHttpClient), ServiceError> {
+        let _in_the_session_s_runtime = self.runtime.enter();
+        Ok((self.policy.clone(), self.client(false)?))
+    }
+
     /// The table content's ids name. Public for the session's teardown, which
     /// is the only other thing that touches it.
     pub(crate) fn resources(&self) -> &Arc<ResourceTable> {

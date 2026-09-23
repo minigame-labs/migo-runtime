@@ -378,6 +378,39 @@ fn a_tcp_connect_is_held_to_the_policy() {
     );
 }
 
+/// An `http(s)://` image source is fetched by the session's own client, under
+/// the policy every other request is held to -- and a host the policy refuses
+/// is refused here as it is for `fetch`.
+#[tokio::test]
+async fn an_image_source_is_held_to_the_policy_fetch_is_held_to() {
+    let executor = tokio::runtime::Handle::current();
+    let network = NetworkBinding::new(
+        policy(&["allowed.example"], true),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        executor,
+    );
+    let (policy, client) = network.image_client().expect("the session has a client");
+    let error =
+        migo_services::network::image_source::fetch_http_image(&policy, &client, "https://blocked.example/a.png")
+            .await
+            .expect_err("the allow list refuses it");
+    assert_eq!(error.code, shared::error::ErrorCode::PermissionDenied);
+    assert!(
+        error
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("blocked.example"),
+        "{error:?}"
+    );
+
+    // And a URL that is not one never reaches the client.
+    let error = migo_services::network::image_source::fetch_http_image(&policy, &client, "not a url")
+        .await
+        .expect_err("a URL is a URL");
+    assert_eq!(error.code, shared::error::ErrorCode::InvalidArgument);
+}
+
 /// The socket events, as the host writes them and the producer rebuilds them.
 ///
 /// A socket cannot ride the record-and-replay harness the fetch calls do: the

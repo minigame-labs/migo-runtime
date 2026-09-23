@@ -440,6 +440,26 @@ impl ServiceContext {
             .set(NetworkBinding::new(policy, backgrounded, runtime));
     }
 
+    /// What an `http(s)://` image source is fetched with, or why there is
+    /// nothing to fetch it with: the same policy and client `fetch()` uses.
+    fn image_fetch(
+        &self,
+    ) -> Result<
+        (
+            shared::op_state::NetworkPolicy,
+            migo_services::network::client::PolicyHttpClient,
+        ),
+        EngineError,
+    > {
+        self.network()
+            .and_then(|network| network.image_client())
+            .map_err(|error| {
+                EngineError::new(ErrorCode::Unsupported)
+                    .with_msg("image fetch unavailable")
+                    .with_detail(error.message)
+            })
+    }
+
     fn network(&self) -> Result<&NetworkBinding, ServiceError> {
         self.network
             .get()
@@ -642,6 +662,9 @@ impl ServiceContext {
                 let (image_id, src) = (u32_of(op, 0, image_id)?, string(op, 1, src)?);
                 let (tw, th) = (u32_of(op, 2, tw)?, u32_of(op, 3, th)?);
                 let env = self.image_env(render)?;
+                // An `http(s)://` source is fetched by this session's network
+                // service, under the policy every other request is held to.
+                let fetch = self.image_fetch();
                 Box::pin(async move {
                     migo_services::image::load_image(
                         &env,
@@ -649,7 +672,13 @@ impl ServiceContext {
                         src,
                         (tw > 0).then_some(tw),
                         (th > 0).then_some(th),
-                        |url| async move { Err(http_images_unavailable(&url)) },
+                        |url| async move {
+                            let (policy, client) = fetch?;
+                            migo_services::network::image_source::fetch_http_image(
+                                &policy, &client, &url,
+                            )
+                            .await
+                        },
                     )
                     .await
                     .map(loaded_image)
@@ -831,17 +860,6 @@ fn image_error(error: EngineError) -> ServiceError {
         Some(detail) => format!("[{:?}] {} ({})", error.code, error.msg, detail),
         None => format!("[{:?}] {}", error.code, error.msg),
     })
-}
-
-/// An `http(s)://` image source, before the network service exists on this
-/// lane: refused with the reason, as the embedded runtime refuses a source its
-/// network policy blocks.
-fn http_images_unavailable(url: &str) -> EngineError {
-    EngineError::new(ErrorCode::Unsupported)
-        .with_msg("image fetch unavailable")
-        .with_detail(format!(
-            "{url}: this session has no network service to fetch it with"
-        ))
 }
 
 // ---------------------------------------------------------------------------
