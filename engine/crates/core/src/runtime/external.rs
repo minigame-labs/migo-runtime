@@ -603,7 +603,8 @@ impl SyncPath {
                 now_nanos,
             ),
             frame_wire::sync::SYNC_OP_CANVAS2D_METRICS
-            | frame_wire::sync::SYNC_OP_CANVAS2D_NUMBER => self.canvas2d_query(
+            | frame_wire::sync::SYNC_OP_CANVAS2D_NUMBER
+            | frame_wire::sync::SYNC_OP_CANVAS2D_FONT => self.canvas2d_query(
                 operation,
                 params,
                 max_reply_bytes,
@@ -1080,8 +1081,8 @@ impl SyncPath {
         now_nanos: u64,
     ) -> Result<Vec<u8>, SyncError> {
         use frame_wire::sync::{
-            Canvas2DQueryParams, SYNC_OP_CANVAS2D_METRICS, SYNC_OP_CANVAS2D_NUMBER,
-            TEXT_METRICS_BYTES, canvas2d_query,
+            Canvas2DQueryParams, MAX_FONT_FAMILY_REPLY_BYTES, SYNC_OP_CANVAS2D_FONT,
+            SYNC_OP_CANVAS2D_METRICS, SYNC_OP_CANVAS2D_NUMBER, TEXT_METRICS_BYTES, canvas2d_query,
         };
         use shared::protocol::render_cmd::{Canvas2DCmd, RenderCmdResp, RenderCommand};
 
@@ -1131,6 +1132,70 @@ impl SyncPath {
                     }
                 };
                 Ok(frame_decode::canvas2d::encode_text_metrics(&metrics))
+            }
+            // `loadFont(path, family)`: the file is the game's, the registration
+            // is the renderer's, and the answer is the family key content will
+            // name the face by. Every step the in-process op takes, in its
+            // order -- the two decisions before the file is even read are
+            // `shared::font_registration`'s, so a font named one thing here and
+            // another there is not possible.
+            SYNC_OP_CANVAS2D_FONT => {
+                if max_reply_bytes > MAX_FONT_FAMILY_REPLY_BYTES {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                let path = query.text_str().into_owned();
+                let requested = query.font_str().into_owned();
+                let Some(services) = &self.services else {
+                    return Err(SyncError::SessionEnded);
+                };
+                let sources = services.context.local_sources();
+                let Ok(resolved) = shared::font_registration::resolve_font_src_path(
+                    sources.code_dir.as_deref().unwrap_or(""),
+                    sources.vfs.as_deref(),
+                    &path,
+                ) else {
+                    // The op logs and answers an empty family for a path it
+                    // cannot resolve; so does this, because content reads the
+                    // answer rather than an error.
+                    return Ok(Vec::new());
+                };
+                let Ok(bytes) = std::fs::read(&resolved) else {
+                    return Ok(Vec::new());
+                };
+                if bytes.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let request = shared::font_registration::build_font_registration_request(
+                    &path,
+                    (!requested.is_empty()).then_some(requested.as_str()),
+                );
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let command = RenderCommand::LoadFont {
+                    family: request.family.clone(),
+                    aliases: std::sync::Arc::new(request.aliases.clone()),
+                    bytes: std::sync::Arc::new(bytes),
+                    resp: RenderCmdResp::from_sync(tx),
+                };
+                if sender.send_blocking_bounded(command).is_err() {
+                    return Err(SyncError::SessionEnded);
+                }
+                let family = match rx.recv_timeout(deadline) {
+                    // A renderer that refused the face answers the empty family
+                    // the op answers, not a failure: `loadFont` reports itself
+                    // through its return value.
+                    Ok(Ok(family)) => family,
+                    Ok(Err(_)) => String::new(),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        return Err(SyncError::TimedOut);
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        return Err(SyncError::SessionEnded);
+                    }
+                };
+                if family.len() > max_reply_bytes as usize {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                Ok(family.into_bytes())
             }
             SYNC_OP_CANVAS2D_NUMBER => {
                 if (max_reply_bytes as usize) < 8 {
@@ -4148,6 +4213,124 @@ mod sync_tests {
             assert!(out.iter().all(|byte| *byte == 0xab), "{kind}: the rows");
             drop(sender);
         }
+    }
+
+    /// `loadFont` reads the game's own file and registers what the renderer
+    /// answers, and a path it cannot read is the empty family the op answers.
+    ///
+    /// Every step here is one the producer cannot take: the sandbox, the file,
+    /// the family the two shared helpers derive from the path, and the renderer.
+    /// What the answer is for content is the key it will name the face by -- so
+    /// an empty one has to reach it as an answer rather than as a failure, which
+    /// is what the in-process op does with the same outcome.
+    #[test]
+    fn load_font_reads_the_games_file_and_answers_the_family_the_renderer_registered() {
+        use shared::protocol::render_cmd::RenderCommand;
+
+        let root =
+            std::env::temp_dir().join(format!("migo-external-load-font-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).expect("paths");
+        std::fs::create_dir_all(installed.code_dir().join("fonts")).expect("the font directory");
+        std::fs::write(
+            installed.code_dir().join("fonts/MyFont.ttf"),
+            b"not really a font",
+        )
+        .expect("the font file");
+        std::fs::write(installed.code_dir().join("fonts/Empty.ttf"), b"").expect("the empty file");
+
+        let (services, _work) = ServiceHost::new(
+            INITIAL_RUNTIME_GENERATION,
+            files,
+            cache,
+            Arc::new(crate::runtime::external_services::WakerSlot::default()),
+        );
+        services.context.bind_session(1);
+        services
+            .context
+            .load_content("g")
+            .expect("installed content mounts");
+
+        let (sender, commands) = new_render_channel();
+        let renderer = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            while let Ok(command) = commands.recv_timeout(std::time::Duration::from_secs(5)) {
+                if let RenderCommand::LoadFont {
+                    family,
+                    aliases,
+                    bytes,
+                    resp,
+                } = command
+                {
+                    seen.push((family.clone(), aliases.to_vec(), bytes.len()));
+                    // The renderer's own canonical key, which is what content
+                    // gets back rather than what the caller asked for.
+                    resp.send(Ok(format!("{family}-registered")));
+                }
+            }
+            seen
+        });
+
+        let ask = |path: &str, family: &str, reply_bytes: u32| {
+            let path_owned = path.to_string();
+            let params = frame_wire::sync::Canvas2DQueryParams {
+                kind: frame_wire::sync::canvas2d_query::LOAD_FONT,
+                canvas_id: 1,
+                number: 0,
+                flags: 0,
+                text: path_owned.as_bytes(),
+                font: family.as_bytes(),
+            }
+            .encode();
+            let path = path_with_dispatch(&sender).with_services(Arc::clone(&services));
+            let mut request = request(frame_wire::sync::SYNC_OP_CANVAS2D_FONT, reply_bytes);
+            request.deadline_nanos = NOW + 30_000_000_000;
+            request.triggering_sequence = 0;
+            post(&path, request, &params, NOW).expect("posted");
+            let snapshot = path.snapshot(NOW);
+            let mut out = vec![0u8; snapshot.reply_bytes as usize];
+            if !out.is_empty() {
+                assert_eq!(path.take_reply(&mut out), Ok(out.len()));
+            }
+            (
+                snapshot.state,
+                String::from_utf8(out).expect("a family is text"),
+            )
+        };
+
+        assert_eq!(
+            ask("fonts/MyFont.ttf", "Brand Sans", 4096),
+            (SyncState::Ready, "Brand Sans-registered".to_string()),
+            "the family content asked for is the one the renderer was given"
+        );
+        assert_eq!(
+            ask("fonts/Missing.ttf", "", 4096),
+            (SyncState::Ready, String::new()),
+            "a font the game does not ship answers the empty family, not a failure"
+        );
+        assert_eq!(
+            ask("fonts/Empty.ttf", "", 4096),
+            (SyncState::Ready, String::new()),
+            "an empty file is not a face"
+        );
+
+        drop(sender);
+        let seen = renderer.join().expect("the stand-in renderer");
+        assert_eq!(
+            seen.len(),
+            1,
+            "only the font that could be read reached the renderer"
+        );
+        assert_eq!(seen[0].0, "Brand Sans");
+        assert!(
+            seen[0].1.iter().any(|alias| alias == "MyFont"),
+            "the file's own name stays an alias: {:?}",
+            seen[0].1
+        );
+        assert_eq!(seen[0].2, b"not really a font".len());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A renderer that answers a different number of bytes than the rectangle

@@ -246,6 +246,16 @@ pub const SYNC_OP_CANVAS2D_IMAGE_DATA: u32 = 9;
 /// texture never crosses back at all.
 pub const SYNC_OP_CANVAS2D_SNAPSHOT: u32 = 10;
 
+/// A Canvas2D query whose answer is a string: the family key `loadFont`
+/// registered a font under, empty when it did not load.
+pub const SYNC_OP_CANVAS2D_FONT: u32 = 11;
+
+/// The most a [`SYNC_OP_CANVAS2D_FONT`] answer may be.
+///
+/// A family name, which is a label on a typeface rather than a document; this is
+/// far above any real one and far below the barrier's own ceiling.
+pub const MAX_FONT_FAMILY_REPLY_BYTES: u32 = 4096;
+
 /// Serialised size of [`Canvas2DPixelsParams`].
 pub const CANVAS2D_PIXELS_PARAMS_BYTES: usize = 24;
 
@@ -356,14 +366,21 @@ pub mod canvas2d_query {
     /// The line height of a family at a size: `font` is the family, `number`
     /// the size in pixels, and the flags carry bold and italic.
     pub const TEXT_LINE_HEIGHT: u32 = 2;
-    // `loadFont` is not here. It reads a font file, which this host cannot do
-    // until the file lane exists -- and a query that answered "could not load"
-    // would be a custom font silently replaced by a fallback. The op stays
-    // unimplemented, which names itself.
+    /// `loadFont(path, family)`: `text` is the path in the game's sandbox and
+    /// `font` the family content asked for, which may be empty. The answer is
+    /// the family key the renderer registered it under, and an empty answer is
+    /// the failure the op reports the same way -- a custom font that did not
+    /// load is a fallback face, and content checks the key it got back.
+    ///
+    /// It was not here while this host had no file lane, because a query that
+    /// answered "could not load" would have been a custom font silently
+    /// replaced. The file lane exists now, and the host reads the font where it
+    /// reads everything else the game ships.
+    pub const LOAD_FONT: u32 = 3;
 
     /// Whether a kind is one this build knows.
     pub fn is_known(kind: u32) -> bool {
-        (MEASURE_TEXT..=TEXT_LINE_HEIGHT).contains(&kind)
+        (MEASURE_TEXT..=LOAD_FONT).contains(&kind)
     }
 
     /// `bold`, in the flags word.
@@ -494,6 +511,7 @@ impl<'a> Canvas2DQueryParams<'a> {
     pub fn operation(kind: u32) -> u32 {
         match kind {
             canvas2d_query::MEASURE_TEXT => SYNC_OP_CANVAS2D_METRICS,
+            canvas2d_query::LOAD_FONT => SYNC_OP_CANVAS2D_FONT,
             _ => SYNC_OP_CANVAS2D_NUMBER,
         }
     }

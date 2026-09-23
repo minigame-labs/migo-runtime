@@ -58,6 +58,7 @@ import {
   ACTIVE_VARIABLE_HEADER_BYTES,
   CANVAS2D_FLAG_BOLD,
   CANVAS2D_FLAG_ITALIC,
+  CANVAS2D_QUERY_LOAD_FONT,
   CANVAS2D_QUERY_MEASURE_TEXT,
   CANVAS2D_QUERY_TEXT_LINE_HEIGHT,
   GL_QUERY_ACTIVE_ATTRIB,
@@ -75,6 +76,8 @@ import {
   GL_QUERY_TRANSFORM_FEEDBACK_VARYING,
   GL_QUERY_UNIFORM_BLOCK_INDEX,
   GL_QUERY_UNIFORM_LOCATION,
+  MAX_FONT_FAMILY_REPLY_BYTES,
+  SYNC_OP_CANVAS2D_FONT,
   SYNC_OP_CANVAS2D_METRICS,
   SYNC_OP_CANVAS2D_NUMBER,
   SYNC_OP_GL_QUERY_ACTIVE,
@@ -331,6 +334,33 @@ export function op_get_text_line_height(fontFamily, fontSize, bold, italic) {
     }),
   );
   return decodeNumberReply(reply);
+}
+
+/**
+ * `loadFont(path, family)`: the family key the host registered the face under.
+ *
+ * Every step is the host's -- resolving the path in the game's sandbox, reading
+ * the file, deriving the family and its aliases, registering with the renderer
+ * -- because every one of them needs something this side does not have. What
+ * crosses is the path and the family content asked for, and what comes back is
+ * the key content will name the face by.
+ *
+ * An empty answer is the failure the op reports the same way: a font that did
+ * not load leaves content with the fallback face, and content checks the key.
+ */
+export function op_load_font(path, family) {
+  const source = stringOf(path, "path");
+  const requested = optionalStringOf(family, "family");
+  const reply = ask(
+    SYNC_OP_CANVAS2D_FONT,
+    MAX_FONT_FAMILY_REPLY_BYTES,
+    encodeCanvas2DQueryParams({
+      kind: CANVAS2D_QUERY_LOAD_FONT,
+      text: source,
+      font: requested ?? "",
+    }),
+  );
+  return decodeTextReply(reply);
 }
 
 // ---- service ops called synchronously ---------------------------------------
