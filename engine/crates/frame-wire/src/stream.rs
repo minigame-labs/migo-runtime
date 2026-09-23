@@ -843,9 +843,18 @@ mod tests {
         assert!(validate_stream(&words, used).is_ok());
     }
 
+    /// A uniform past the engine encoder's inline bound still travels.
+    ///
+    /// 512 words is where the encoder stops writing into its own stream buffer
+    /// and calls the op instead; it is not what a record carries. A skinned
+    /// mesh's bone matrices are thousands of words and the embedded execution
+    /// sets them, so a record bounded at the encoder's number would drop the
+    /// character rather than the optimisation.
+    ///
+    /// The external lane is where such a record appears: in process the raw op
+    /// never touches the stream, and an embedded batch is 8192 words anyway.
     #[test]
-    fn validate_uniform_vector_payload_513_returns_payload_too_large() {
-        // 513 payload words → UniformPayloadTooLarge
+    fn validate_uniform_vector_payload_past_the_encoders_inline_bound_is_carried() {
         let total = 3 + 513;
         let h = pack_header(OP_UNIFORM1FV, total);
         let mut words = vec![0u32; 2 + total as usize];
@@ -853,10 +862,33 @@ mod tests {
         words[1] = STREAM_VERSION;
         words[2] = h;
         let used = 2 + total;
+        assert!(validate_stream(&words, used).is_ok());
+    }
+
+    /// A payload past the record's own ceiling is refused before the decoder
+    /// is asked to copy it -- on the lane where a record that large can be
+    /// written at all.
+    #[test]
+    fn validate_uniform_vector_payload_past_the_records_ceiling_is_refused() {
+        let payload = crate::gl::MAX_STREAM_UNIFORM_WORDS + 1;
+        let total = 3 + payload;
+        let h = pack_header(OP_UNIFORM1FV, total);
+        let mut words = vec![0u32; 2 + total as usize];
+        words[0] = MAGIC;
+        words[1] = STREAM_VERSION;
+        words[2] = h;
+        let used = 2 + total;
         assert_eq!(
-            validate_stream(&words, used),
+            validate_frame_stream(&words, used),
             Err(StreamError::UniformPayloadTooLarge)
         );
+        // One word under the ceiling is carried.
+        let total = 3 + crate::gl::MAX_STREAM_UNIFORM_WORDS;
+        let mut words = vec![0u32; 2 + total as usize];
+        words[0] = MAGIC;
+        words[1] = STREAM_VERSION;
+        words[2] = pack_header(OP_UNIFORM1FV, total);
+        assert!(validate_frame_stream(&words, 2 + total).is_ok());
     }
 
     #[test]
@@ -874,20 +906,22 @@ mod tests {
         assert!(validate_stream(&words, used).is_ok());
     }
 
+    /// The matrix form carries past the encoder's inline bound too, and is
+    /// refused at a packet's worth.
     #[test]
-    fn validate_matrix_uniform_payload_513_returns_payload_too_large() {
-        let total = 4 + 513;
-        let h = pack_header(OP_UNIFORM_MATRIX4FV, total);
-        let mut words = vec![0u32; 2 + total as usize];
-        words[0] = MAGIC;
-        words[1] = STREAM_VERSION;
-        words[2] = h;
-        words[5] = 0;
-        let used = 2 + total;
-        assert_eq!(
-            validate_stream(&words, used),
-            Err(StreamError::UniformPayloadTooLarge)
-        );
+    fn validate_matrix_uniform_payload_is_bounded_by_a_packet_not_by_the_encoder() {
+        for (payload, ok) in [(513u32, true), (crate::gl::MAX_STREAM_UNIFORM_WORDS + 1, false)] {
+            // The frame validator, for the reason the vector test gives.
+            let total = 4 + payload;
+            let h = pack_header(OP_UNIFORM_MATRIX4FV, total);
+            let mut words = vec![0u32; 2 + total as usize];
+            words[0] = MAGIC;
+            words[1] = STREAM_VERSION;
+            words[2] = h;
+            words[5] = 0;
+            let used = 2 + total;
+            assert_eq!(validate_frame_stream(&words, used).is_ok(), ok, "{payload} words");
+        }
     }
 
     #[test]

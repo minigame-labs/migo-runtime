@@ -10,8 +10,24 @@
 
 use crate::stream::{RecordSpec, UniformElementKind};
 
-/// Maximum payload words for any single variable-uniform record.
-pub const MAX_STREAM_UNIFORM_WORDS: u32 = 512;
+/// The most payload words one variable-uniform record carries.
+///
+/// A packet already bounds the stream, so this is the record's own bound: a
+/// header that claims more than a packet could have held is refused before the
+/// decoder is asked to copy it.
+///
+/// It is deliberately NOT the engine encoder's inline bound (512 words, in
+/// `00_render_command_stream.js`). That one decides when the engine stops
+/// writing a uniform into its own stream buffer and calls the op instead --
+/// and a uniform past it still has to reach the host, because the embedded
+/// execution sets it: a skinned mesh's bone matrices are thousands of words,
+/// and a lane bounded at the encoder's number would drop the character rather
+/// than the optimisation. The two numbers answer different questions.
+///
+/// 64 Ki words is 256 KiB: four thousand `mat4`s, past any uniform array a
+/// device will hold, and far enough below a packet that a header claiming more
+/// is refused by this one comparison rather than by arithmetic over the stream.
+pub const MAX_STREAM_UNIFORM_WORDS: u32 = 64 * 1024;
 
 // ─── Fixed opcode constants (1..=58) ─────────────────────────────────────────
 
