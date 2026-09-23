@@ -10,7 +10,6 @@ use crate::network::udp_socket::{
 };
 use crate::network::websocket::{op_ws_close, op_ws_create, op_ws_next_event, op_ws_send};
 
-mod common;
 pub(crate) mod fetch;
 pub(crate) mod gate;
 mod prefetch;

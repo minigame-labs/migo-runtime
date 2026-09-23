@@ -261,8 +261,8 @@ fn every_claimed_op_is_answered_in_exactly_one_shape() {
         .collect();
     assert_eq!(
         claimed.len(),
-        10,
-        "fetch's three, the three core members and the socket's four"
+        20,
+        "fetch's three, the three core members, the socket's four and the ten raw-socket ops"
     );
     for op in claimed {
         let shapes = u8::from(is_sync(op)) + u8::from(is_async(op)) + u8::from(is_command(op));
@@ -289,13 +289,102 @@ fn prefetch_dns_refuses_a_list_that_is_not_json() {
     );
 }
 
+/// A UDP socket binds, is refused a destination the policy does not allow, and
+/// is closed -- the three shapes that need no peer.
+#[test]
+fn a_udp_socket_binds_and_is_held_to_the_policy() {
+    let session = Session::new(policy(&["allowed.example"], false));
+    let bound = call_sync(
+        &session.network,
+        &session.scheduler,
+        id::op_udp_bind,
+        vec![OwnedValue::U32(0), OwnedValue::Str("udp4".to_string())],
+    )
+    .expect("a system-assigned port");
+    let fields = array(&bound);
+    assert_eq!(fields.len(), 4, "UdpBindResult has four fields");
+    assert_ne!(u32_at(&bound, 1), 0, "the system assigned a port");
+    assert_eq!(fields[3], OwnedValue::Str("IPv4".to_string()));
+    let rid = u32_at(&bound, 0);
+
+    let error = session
+        .call_async(
+            id::op_udp_send,
+            vec![
+                OwnedValue::U32(rid),
+                OwnedValue::Str("blocked.example".to_string()),
+                OwnedValue::U32(9000),
+                OwnedValue::Str("hi".to_string()),
+                OwnedValue::Null,
+                OwnedValue::U32(0),
+                OwnedValue::U32(0),
+                OwnedValue::Bool(false),
+            ],
+        )
+        .expect_err("the allow list refuses it");
+    assert!(
+        error.message.contains("blocked.example"),
+        "{}",
+        error.message
+    );
+
+    command(&session.network, id::op_udp_set_ttl, vec![OwnedValue::U32(rid), OwnedValue::U32(8)])
+        .expect("the TTL is the socket's to set");
+    command(&session.network, id::op_udp_close, vec![OwnedValue::U32(rid)])
+        .expect("closing an open socket");
+    let error = command(&session.network, id::op_udp_close, vec![OwnedValue::U32(rid)])
+        .expect_err("a closed socket names nothing");
+    assert!(error.message.contains("is not open"), "{}", error.message);
+}
+
+/// A TCP connect is held to the same policy, and a handle that is not a socket
+/// is refused by name rather than misread.
+#[test]
+fn a_tcp_connect_is_held_to_the_policy() {
+    let session = Session::new(policy(&["allowed.example"], false));
+    let error = session
+        .call_async(
+            id::op_tcp_connect,
+            vec![
+                OwnedValue::Str("blocked.example".to_string()),
+                OwnedValue::U32(443),
+                OwnedValue::U32(1),
+            ],
+        )
+        .expect_err("the allow list refuses it");
+    assert!(
+        error.message.contains("blocked.example"),
+        "{}",
+        error.message
+    );
+
+    let bound = call_sync(
+        &session.network,
+        &session.scheduler,
+        id::op_udp_bind,
+        vec![OwnedValue::U32(0), OwnedValue::Str("udp4".to_string())],
+    )
+    .expect("a UDP socket");
+    let error = command(
+        &session.network,
+        id::op_tcp_close,
+        vec![OwnedValue::U32(u32_at(&bound, 0))],
+    )
+    .expect_err("a UDP socket is not a TCP one");
+    assert!(
+        error.message.contains("not a TCP socket"),
+        "{}",
+        error.message
+    );
+}
+
 /// The socket events, as the host writes them and the producer rebuilds them.
 ///
 /// A socket cannot ride the record-and-replay harness the fetch calls do: the
 /// replay would need a server, and every address a test server could listen on
 /// is one the address filter refuses -- which is the filter working. So the one
 /// thing the two halves must agree about, the event's shape, is pinned by a
-/// fixture this writes and `test/ws-events.test.mjs` reads.
+/// fixture this writes and `test/socket-events.test.mjs` reads.
 ///
 /// Regenerate with `MIGO_WS_EVENTS_BLESS=1 cargo test -p migo-core
 /// --no-default-features --features external-frames the_producer_s_socket_events`.
@@ -326,7 +415,62 @@ fn the_producer_s_socket_events_are_the_ones_this_writes() {
             serde_json::json!({ "name": name, "wire": json_of(&ws_event(event)) })
         })
         .collect();
-    let answers = serde_json::json!({ "events": written });
+
+    let peer = AddrMeta {
+        address: std::sync::Arc::from("93.184.216.34"),
+        family: "IPv4",
+        port: 9000,
+    };
+    let here = AddrMeta {
+        address: std::sync::Arc::from("10.0.0.2"),
+        family: "IPv4",
+        port: 51000,
+    };
+    let endpoints = migo_services::network::tcp::TcpEndpoints {
+        local: here.clone(),
+        remote: peer.clone(),
+    };
+    let tcp_cases = [
+        (
+            "message",
+            TcpEvent::Message {
+                data: Box::from(&b"pong"[..]),
+                endpoints: endpoints.clone(),
+            },
+        ),
+        ("error", TcpEvent::Error("connection reset".to_string())),
+        ("close", TcpEvent::Close),
+    ];
+    let tcp_written: Vec<serde_json::Value> = tcp_cases
+        .into_iter()
+        .map(|(name, event)| {
+            serde_json::json!({ "name": name, "wire": json_of(&tcp_event(event)) })
+        })
+        .collect();
+
+    let udp_cases = [
+        (
+            "message",
+            UdpEvent::Message {
+                data: Box::from(&b"ping"[..]),
+                remote: peer,
+                local: here,
+            },
+        ),
+        ("error", UdpEvent::Error("no route to host".to_string())),
+    ];
+    let udp_written: Vec<serde_json::Value> = udp_cases
+        .into_iter()
+        .map(|(name, event)| {
+            serde_json::json!({ "name": name, "wire": json_of(&udp_event(event)) })
+        })
+        .collect();
+
+    let answers = serde_json::json!({
+        "events": written,
+        "tcp": tcp_written,
+        "udp": udp_written,
+    });
 
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../platforms/apple/WebContent/PerformancePlus/test/fixtures/ws-event-answers.json");

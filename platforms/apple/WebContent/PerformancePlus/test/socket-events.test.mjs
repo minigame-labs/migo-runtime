@@ -1,4 +1,5 @@
-// A socket event, as the host writes it and this producer rebuilds it.
+// A socket event, as the host writes it and this producer rebuilds it: the
+// WebSocket's four and the raw sockets' five.
 //
 // A WebSocket cannot ride the record-and-replay harness the fetch calls do: the
 // replay would need a server, and every address a test server could listen on
@@ -14,15 +15,15 @@
 // and never both, an error carries `errMsg`, a close carries its code and
 // reason.
 //
-// Run:  node test/ws-events.test.mjs
+// Run:  node test/socket-events.test.mjs
 // Gate: scripts/test-frame-wire-js-encoder.sh
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { wsEvent } from "../src/network.mjs";
+import { tcpEvent, udpEvent, wsEvent } from "../src/network.mjs";
 
-const { events } = JSON.parse(
+const { events, tcp, udp } = JSON.parse(
   readFileSync(new URL("./fixtures/ws-event-answers.json", import.meta.url), "utf8"),
 );
 
@@ -54,4 +55,39 @@ for (const { name, wire } of events) {
   }
 }
 
-console.log(`ws events: ${events.length} shapes agree with service_network.rs`);
+// The raw sockets' events, in the same tagged shape.
+const endpoint = {
+  remoteAddress: "93.184.216.34",
+  remoteFamily: "IPv4",
+  remotePort: 9000,
+  localAddress: "10.0.0.2",
+  localFamily: "IPv4",
+  localPort: 51000,
+};
+const tcpExpected = {
+  message: { type: "message", data: Uint8Array.from([112, 111, 110, 103]), ...endpoint },
+  error: { type: "error", errMsg: "connection reset" },
+  close: { type: "close" },
+};
+const udpExpected = {
+  message: { type: "message", data: Uint8Array.from([112, 105, 110, 103]), size: 4, ...endpoint },
+  error: { type: "error", errMsg: "no route to host" },
+};
+
+for (const [kind, rows, rebuild, wanted] of [
+  ["tcp", tcp, tcpEvent, tcpExpected],
+  ["udp", udp, udpEvent, udpExpected],
+]) {
+  assert.deepEqual(
+    rows.map((row) => row.name).sort(),
+    Object.keys(wanted).sort(),
+    `${kind}: the fixture and this test cover the same events`,
+  );
+  for (const { name, wire } of rows) {
+    assert.deepEqual(rebuild(asWire(wire)), wanted[name], `${kind} ${name}: the facade's object`);
+  }
+}
+
+console.log(
+  `socket events: ${events.length + tcp.length + udp.length} shapes agree with service_network.rs`,
+);

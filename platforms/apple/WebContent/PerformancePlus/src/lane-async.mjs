@@ -19,6 +19,9 @@ import {
 import { engineHost } from "./engine-host.mjs";
 import {
   fetchResponse,
+  tcpConnected,
+  tcpEvent,
+  udpEvent,
   wsEvent,
   wsHandshake,
   writeStringPairs,
@@ -597,4 +600,89 @@ export function op_ws_close(rid, code, reason) {
       w.str(why);
     })
     .then(nothing);
+}
+
+// ---- raw sockets ---------------------------------------------------------------
+
+/// Connect a TCP socket. The policy a raw socket is held to is the one `fetch`
+/// is held to, and it is the host's: a game cannot reach by socket what it
+/// cannot reach by request.
+export function op_tcp_connect(address, port, timeoutSecs) {
+  const host = stringOf(address, "address");
+  const target = smiU32(port, "port");
+  const timeout = smiU32(timeoutSecs, "timeout_secs");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_tcp_connect, (w) => {
+      w.str(host);
+      w.u32(target);
+      w.u32(timeout);
+    })
+    .then(tcpConnected);
+}
+
+export function op_tcp_next_event(rid) {
+  const socket = smiU32(rid, "rid");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_tcp_next_event, (w) => w.u32(socket))
+    .then(tcpEvent);
+}
+
+export function op_tcp_write(rid, dataStr, dataBuf) {
+  const socket = smiU32(rid, "rid");
+  const text = optionalStringOf(dataStr, "data_str");
+  const bytes = optionalBytesOf(dataBuf, "data_buf");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_tcp_write, (w) => {
+      w.u32(socket);
+      if (text === null) w.null();
+      else w.str(text);
+      if (bytes === null) w.null();
+      else w.bytes(bytes);
+    })
+    .then(nothing);
+}
+
+export function op_udp_connect(rid, address, port) {
+  const socket = smiU32(rid, "rid");
+  const host = stringOf(address, "address");
+  const target = smiU32(port, "port");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_udp_connect, (w) => {
+      w.u32(socket);
+      w.str(host);
+      w.u32(target);
+    })
+    .then(nothing);
+}
+
+export function op_udp_send(rid, address, port, dataStr, dataBuf, offset, length, setBroadcast) {
+  const socket = smiU32(rid, "rid");
+  const host = stringOf(address, "address");
+  const target = smiU32(port, "port");
+  const text = optionalStringOf(dataStr, "data_str");
+  const bytes = optionalBytesOf(dataBuf, "data_buf");
+  const from = smiU32(offset, "offset");
+  const count = smiU32(length, "length");
+  const broadcast = toBool(setBroadcast, "set_broadcast");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_udp_send, (w) => {
+      w.u32(socket);
+      w.str(host);
+      w.u32(target);
+      if (text === null) w.null();
+      else w.str(text);
+      if (bytes === null) w.null();
+      else w.bytes(bytes);
+      w.u32(from);
+      w.u32(count);
+      w.bool(broadcast);
+    })
+    .then(nothing);
+}
+
+export function op_udp_next_event(rid) {
+  const socket = smiU32(rid, "rid");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_udp_next_event, (w) => w.u32(socket))
+    .then(udpEvent);
 }

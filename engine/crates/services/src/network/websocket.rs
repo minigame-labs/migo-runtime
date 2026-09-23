@@ -36,6 +36,7 @@ use crate::ServiceError;
 
 use super::gate::{self, GateKind};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
+use super::sockets::{BACKGROUND_THROTTLE, join_host_port};
 
 type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -54,10 +55,6 @@ const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The connect deadline when content named none.
 const DEFAULT_CONNECT_TIMEOUT_MS: u32 = 60_000;
-
-/// Delay before each poll while the app is in the background: the socket stays
-/// connected and delivery is deferred, rather than spinning a backgrounded game.
-pub const BACKGROUND_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn ws_config() -> WebSocketConfig {
     WebSocketConfig::default()
@@ -279,16 +276,6 @@ async fn connect(
         }
     }
     Err(generic(format!("WebSocket TCP connect failed: {last}")))
-}
-
-/// `host:port` for a resolver, with a bare IPv6 literal bracketed: without the
-/// brackets its own colons make the string ambiguous and it never resolves.
-fn join_host_port(host: &str, port: u16) -> String {
-    if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    }
 }
 
 /// The next event content has not seen yet.

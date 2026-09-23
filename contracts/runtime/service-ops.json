@@ -167,6 +167,16 @@
     "op_ws_create": 143,
     "op_ws_next_event": 144,
     "op_ws_send": 145,
-    "op_ws_close": 146
+    "op_ws_close": 146,
+    "op_tcp_connect": 147,
+    "op_tcp_next_event": 148,
+    "op_tcp_write": 149,
+    "op_tcp_close": 150,
+    "op_udp_bind": 151,
+    "op_udp_connect": 152,
+    "op_udp_send": 153,
+    "op_udp_next_event": 154,
+    "op_udp_close": 155,
+    "op_udp_set_ttl": 156
   }
 }

@@ -31,6 +31,8 @@ pub enum ResourceKind {
     FetchCancel,
     FetchResponse,
     WebSocket,
+    TcpSocket,
+    UdpSocket,
 }
 
 impl ResourceKind {
@@ -40,6 +42,8 @@ impl ResourceKind {
             Self::FetchCancel => "fetch cancel handle",
             Self::FetchResponse => "fetch response",
             Self::WebSocket => "web socket",
+            Self::TcpSocket => "TCP socket",
+            Self::UdpSocket => "UDP socket",
         }
     }
 }
@@ -101,6 +105,8 @@ enum Entry {
     FetchCancel(Arc<CancelFlag>),
     FetchResponse(Arc<super::fetch::ResponseBody>),
     WebSocket(Arc<super::websocket::WebSocketConn>),
+    TcpSocket(Arc<super::tcp::TcpConn>),
+    UdpSocket(Arc<super::udp::UdpSock>),
 }
 
 impl Entry {
@@ -110,6 +116,8 @@ impl Entry {
             Self::FetchCancel(_) => ResourceKind::FetchCancel,
             Self::FetchResponse(_) => ResourceKind::FetchResponse,
             Self::WebSocket(_) => ResourceKind::WebSocket,
+            Self::TcpSocket(_) => ResourceKind::TcpSocket,
+            Self::UdpSocket(_) => ResourceKind::UdpSocket,
         }
     }
 }
@@ -152,6 +160,32 @@ impl ResourceTable {
         match self.entries.lock().get(&id) {
             Some(Entry::WebSocket(connection)) => Ok(Arc::clone(connection)),
             Some(other) => Err(wrong_kind(id, other.kind(), ResourceKind::WebSocket)),
+            None => Err(no_such(id)),
+        }
+    }
+
+    pub(crate) fn add_tcp(&self, connection: Arc<super::tcp::TcpConn>) -> ResourceId {
+        self.add(Entry::TcpSocket(connection))
+    }
+
+    /// The TCP connection `id` names.
+    pub fn tcp(&self, id: ResourceId) -> Result<Arc<super::tcp::TcpConn>, ServiceError> {
+        match self.entries.lock().get(&id) {
+            Some(Entry::TcpSocket(connection)) => Ok(Arc::clone(connection)),
+            Some(other) => Err(wrong_kind(id, other.kind(), ResourceKind::TcpSocket)),
+            None => Err(no_such(id)),
+        }
+    }
+
+    pub(crate) fn add_udp(&self, socket: Arc<super::udp::UdpSock>) -> ResourceId {
+        self.add(Entry::UdpSocket(socket))
+    }
+
+    /// The UDP socket `id` names.
+    pub fn udp(&self, id: ResourceId) -> Result<Arc<super::udp::UdpSock>, ServiceError> {
+        match self.entries.lock().get(&id) {
+            Some(Entry::UdpSocket(socket)) => Ok(Arc::clone(socket)),
+            Some(other) => Err(wrong_kind(id, other.kind(), ResourceKind::UdpSocket)),
             None => Err(no_such(id)),
         }
     }
@@ -208,6 +242,14 @@ impl ResourceTable {
                 // the read parked on the server's next message, a send -- is
                 // cancelled, and the connection's halves drop with the entry.
                 connection.cancel();
+                true
+            }
+            Some(Entry::TcpSocket(connection)) => {
+                connection.cancel();
+                true
+            }
+            Some(Entry::UdpSocket(socket)) => {
+                socket.cancel();
                 true
             }
             Some(Entry::FetchRequest(_)) => true,

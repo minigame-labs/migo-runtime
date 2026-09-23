@@ -46,7 +46,7 @@ import {
   toU64,
 } from "./op-args.mjs";
 import { arrayBufferAnswer } from "./audio.mjs";
-import { byteStringOf, fetchHandles, writeHeaders } from "./network.mjs";
+import { byteStringOf, fetchHandles, udpBound, writeHeaders } from "./network.mjs";
 import { flushToHost } from "./engine-frames.mjs";
 import { decodeServiceOutcome, encodeServiceCall } from "./service.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
@@ -716,6 +716,19 @@ export function op_fetch(
       w.u32(deadline);
       w.bool(http2);
       w.bool(cache);
+    }),
+  );
+}
+
+/// Bind a UDP socket. Synchronous, as the facade's `bind` is: a port already
+/// taken is a throw content catches rather than a promise it never awaited.
+export function op_udp_bind(port, socketType) {
+  const local = smiU32(port, "port");
+  const kind = stringOf(socketType, "socket_type");
+  return udpBound(
+    callService(SERVICE_OP.op_udp_bind, (w) => {
+      w.u32(local);
+      w.str(kind);
     }),
   );
 }

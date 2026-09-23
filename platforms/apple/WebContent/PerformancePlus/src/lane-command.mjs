@@ -544,3 +544,25 @@ export function op_prefetch_dns(hostsJson) {
   const hosts = stringOf(hostsJson, "hosts_json");
   servicesOf(engineHost()).command(SERVICE_OP.op_prefetch_dns, (w) => w.str(hosts));
 }
+
+/// Close a TCP socket. The read in flight is cancelled on the host and the
+/// connection is shut down; nothing answers, as nothing answers the embedded
+/// op either.
+export function op_tcp_close(rid) {
+  const socket = smiU32(rid, "rid");
+  servicesOf(engineHost()).command(SERVICE_OP.op_tcp_close, (w) => w.u32(socket));
+}
+
+export function op_udp_close(rid) {
+  const socket = smiU32(rid, "rid");
+  servicesOf(engineHost()).command(SERVICE_OP.op_udp_close, (w) => w.u32(socket));
+}
+
+export function op_udp_set_ttl(rid, ttl) {
+  const socket = smiU32(rid, "rid");
+  const hops = smiU32(ttl, "ttl");
+  servicesOf(engineHost()).command(SERVICE_OP.op_udp_set_ttl, (w) => {
+    w.u32(socket);
+    w.u32(hops);
+  });
+}

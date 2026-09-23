@@ -184,3 +184,40 @@ export function wsEvent([tag, ...fields]) {
       return { type: "close", code: fields[0], reason: fields[1] };
   }
 }
+
+// ---- raw sockets ---------------------------------------------------------------
+//
+// The tags a raw socket's event travels under, as `service_network.rs` writes
+// them, and the three fields every endpoint carries: address, family, port.
+
+const SOCKET_EVENT_MESSAGE = 0;
+const SOCKET_EVENT_ERROR = 1;
+
+/** `TcpConnectResult`: the handle, then the remote endpoint and the local one. */
+export function tcpConnected([rid, remoteAddress, remoteFamily, remotePort, localAddress, localFamily, localPort]) {
+  return { rid, remoteAddress, remoteFamily, remotePort, localAddress, localFamily, localPort };
+}
+
+/** One TCP event, in the shape the engine's `TCPSocket` facade reads. */
+export function tcpEvent([tag, ...fields]) {
+  if (tag === SOCKET_EVENT_MESSAGE) {
+    const [data, remoteAddress, remoteFamily, remotePort, localAddress, localFamily, localPort] = fields;
+    return { type: "message", data, remoteAddress, remoteFamily, remotePort, localAddress, localFamily, localPort };
+  }
+  if (tag === SOCKET_EVENT_ERROR) return { type: "error", errMsg: fields[0] };
+  return { type: "close" };
+}
+
+/** `UdpBindResult`: the handle and the endpoint it bound to. */
+export function udpBound([rid, port, address, family]) {
+  return { rid, port, address, family };
+}
+
+/** One UDP event. A datagram reports its size beside its bytes, as the op does. */
+export function udpEvent([tag, ...fields]) {
+  if (tag === SOCKET_EVENT_MESSAGE) {
+    const [data, size, remoteAddress, remoteFamily, remotePort, localAddress, localFamily, localPort] = fields;
+    return { type: "message", data, size, remoteAddress, remoteFamily, remotePort, localAddress, localFamily, localPort };
+  }
+  return { type: "error", errMsg: fields[0] };
+}

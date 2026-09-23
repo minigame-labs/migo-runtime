@@ -31,6 +31,9 @@ use migo_services::network::client::{PolicyHttpClient, create_policy_http_client
 use migo_services::network::fetch::{self as fetch_service, FetchEnv, RequestBody};
 use migo_services::network::gate::GateKind;
 use migo_services::network::resources::{ResourceId, ResourceTable};
+use migo_services::network::sockets::AddrMeta;
+use migo_services::network::tcp::{self as tcp, TcpEvent};
+use migo_services::network::udp::{self as udp, UdpEvent};
 use migo_services::network::websocket::{self as websocket, WsEvent};
 use parking_lot::Mutex;
 use shared::op_state::NetworkPolicy;
@@ -115,7 +118,7 @@ impl NetworkBinding {
 
 /// Whether `op` is a synchronous network op this module answers.
 pub(crate) fn is_sync(op: u32) -> bool {
-    matches!(op, id::op_fetch)
+    matches!(op, id::op_fetch | id::op_udp_bind)
 }
 
 /// Whether `op` is an awaited network op this module answers.
@@ -128,12 +131,26 @@ pub(crate) fn is_async(op: u32) -> bool {
             | id::op_ws_next_event
             | id::op_ws_send
             | id::op_ws_close
+            | id::op_tcp_connect
+            | id::op_tcp_next_event
+            | id::op_tcp_write
+            | id::op_udp_connect
+            | id::op_udp_send
+            | id::op_udp_next_event
     )
 }
 
 /// Whether `op` is a network command this module answers.
 pub(crate) fn is_command(op: u32) -> bool {
-    matches!(op, id::core_close | id::core_try_close | id::op_prefetch_dns)
+    matches!(
+        op,
+        id::core_close
+            | id::core_try_close
+            | id::op_prefetch_dns
+            | id::op_tcp_close
+            | id::op_udp_close
+            | id::op_udp_set_ttl
+    )
 }
 
 /// Run a synchronous network op.
@@ -205,6 +222,20 @@ pub(crate) fn call_sync(
                     None => OwnedValue::Null,
                 },
             ]))
+        }
+        id::op_udp_bind => {
+            let [port, socket_type] = exactly(op, args)?;
+            let port = u32_of(op, 0, port)?;
+            let socket_type = string(op, 1, socket_type)?;
+            // `UdpBindResult`, in its field order: rid, port, address, family.
+            udp::bind(&network.resources, port, &socket_type).map(|bound| {
+                OwnedValue::Array(vec![
+                    OwnedValue::U32(bound.rid),
+                    OwnedValue::U32(u32::from(bound.local.port)),
+                    OwnedValue::Str(bound.local.address.to_string()),
+                    OwnedValue::Str(bound.local.family.to_string()),
+                ])
+            })
         }
         other => Err(not_a(other, "synchronous network")),
     }
@@ -296,6 +327,97 @@ pub(crate) fn call_async(
                     .map(|()| OwnedValue::Null)
             })
         }
+        id::op_tcp_connect => {
+            let [address, port, timeout_secs] = exactly(op, args)?;
+            let address = string(op, 0, address)?;
+            let port = u32_of(op, 1, port)?;
+            let timeout_secs = u32_of(op, 2, timeout_secs)?;
+            let policy = network.policy.clone();
+            Box::pin(async move {
+                tcp::connect(&policy, &resources, &address, port, timeout_secs)
+                    .await
+                    // `TcpConnectResult`, in its field order.
+                    .map(|connected| {
+                        let mut fields = vec![OwnedValue::U32(connected.rid)];
+                        fields.extend(endpoint(&connected.endpoints.remote));
+                        fields.extend(endpoint(&connected.endpoints.local));
+                        OwnedValue::Array(fields)
+                    })
+            })
+        }
+        id::op_tcp_next_event => {
+            let [rid] = exactly(op, args)?;
+            let rid: ResourceId = u32_of(op, 0, rid)?;
+            let backgrounded = Arc::clone(&network.backgrounded);
+            Box::pin(async move {
+                tcp::next_event(&resources, rid, &backgrounded)
+                    .await
+                    .map(tcp_event)
+            })
+        }
+        id::op_tcp_write => {
+            let [rid, text, bytes] = exactly(op, args)?;
+            let rid: ResourceId = u32_of(op, 0, rid)?;
+            let text = optional_string(op, 1, text)?;
+            let bytes = optional_bytes(op, 2, bytes)?;
+            let pools = scheduler.pools().clone();
+            Box::pin(async move {
+                tcp::write(&resources, &pools, rid, text, bytes)
+                    .await
+                    .map(|()| OwnedValue::Null)
+            })
+        }
+        id::op_udp_connect => {
+            let [rid, address, port] = exactly(op, args)?;
+            let rid: ResourceId = u32_of(op, 0, rid)?;
+            let address = string(op, 1, address)?;
+            let port = u32_of(op, 2, port)?;
+            let policy = network.policy.clone();
+            Box::pin(async move {
+                udp::connect(&policy, &resources, rid, &address, port)
+                    .await
+                    .map(|()| OwnedValue::Null)
+            })
+        }
+        id::op_udp_send => {
+            let [rid, address, port, text, bytes, offset, length, set_broadcast] =
+                exactly(op, args)?;
+            let rid: ResourceId = u32_of(op, 0, rid)?;
+            let address = string(op, 1, address)?;
+            let port = u32_of(op, 2, port)?;
+            let text = optional_string(op, 3, text)?;
+            let bytes = optional_bytes(op, 4, bytes)?;
+            let offset = u32_of(op, 5, offset)?;
+            let length = u32_of(op, 6, length)?;
+            let set_broadcast = boolean(op, 7, set_broadcast)?;
+            let policy = network.policy.clone();
+            Box::pin(async move {
+                udp::send(
+                    &policy,
+                    &resources,
+                    rid,
+                    &address,
+                    port,
+                    text,
+                    bytes,
+                    offset,
+                    length,
+                    set_broadcast,
+                )
+                .await
+                .map(|()| OwnedValue::Null)
+            })
+        }
+        id::op_udp_next_event => {
+            let [rid] = exactly(op, args)?;
+            let rid: ResourceId = u32_of(op, 0, rid)?;
+            let backgrounded = Arc::clone(&network.backgrounded);
+            Box::pin(async move {
+                udp::next_event(&resources, rid, &backgrounded)
+                    .await
+                    .map(udp_event)
+            })
+        }
         other => return Err(not_a(other, "awaited network")),
     })
 }
@@ -324,6 +446,22 @@ pub(crate) fn command(
             migo_services::network::dns_cache::prefetch_dns(
                 &network.policy,
                 &string(op, 0, hosts_json)?,
+            )
+        }
+        id::op_tcp_close => {
+            let [rid] = exactly(op, args)?;
+            tcp::close(&network.resources, u32_of(op, 0, rid)?)
+        }
+        id::op_udp_close => {
+            let [rid] = exactly(op, args)?;
+            udp::close(&network.resources, u32_of(op, 0, rid)?)
+        }
+        id::op_udp_set_ttl => {
+            let [rid, ttl] = exactly(op, args)?;
+            udp::set_ttl(
+                &network.resources,
+                u32_of(op, 0, rid)?,
+                u32_of(op, 1, ttl)?,
             )
         }
         other => Err(not_a(other, "network command")),
@@ -382,6 +520,68 @@ fn ws_event(event: WsEvent) -> OwnedValue {
         ),
     }
 }
+
+/// One end of a socket, in the order every socket answer carries it: address,
+/// family, port.
+fn endpoint(meta: &AddrMeta) -> [OwnedValue; 3] {
+    [
+        OwnedValue::Str(meta.address.to_string()),
+        OwnedValue::Str(meta.family.to_string()),
+        OwnedValue::U32(u32::from(meta.port)),
+    ]
+}
+
+/// A TCP event, tagged as a socket event is: the kind, then its fields.
+fn tcp_event(event: TcpEvent) -> OwnedValue {
+    match event {
+        TcpEvent::Message { data, endpoints } => {
+            let mut fields = vec![
+                OwnedValue::U32(SOCKET_EVENT_MESSAGE),
+                OwnedValue::Bytes(data.into_vec()),
+            ];
+            fields.extend(endpoint(&endpoints.remote));
+            fields.extend(endpoint(&endpoints.local));
+            OwnedValue::Array(fields)
+        }
+        TcpEvent::Error(message) => OwnedValue::Array(vec![
+            OwnedValue::U32(SOCKET_EVENT_ERROR),
+            OwnedValue::Str(message),
+        ]),
+        TcpEvent::Close => OwnedValue::Array(vec![OwnedValue::U32(SOCKET_EVENT_CLOSE)]),
+    }
+}
+
+/// A UDP event. A datagram carries its size beside its bytes because the
+/// facade reports it, and a socket has no close event of its own: closing is
+/// content's own call.
+fn udp_event(event: UdpEvent) -> OwnedValue {
+    match event {
+        UdpEvent::Message {
+            data,
+            remote,
+            local,
+        } => {
+            let size = data.len() as u32;
+            let mut fields = vec![
+                OwnedValue::U32(SOCKET_EVENT_MESSAGE),
+                OwnedValue::Bytes(data.into_vec()),
+                OwnedValue::U32(size),
+            ];
+            fields.extend(endpoint(&remote));
+            fields.extend(endpoint(&local));
+            OwnedValue::Array(fields)
+        }
+        UdpEvent::Error(message) => OwnedValue::Array(vec![
+            OwnedValue::U32(SOCKET_EVENT_ERROR),
+            OwnedValue::Str(message),
+        ]),
+    }
+}
+
+/// The tags a raw socket's event travels under, shared by TCP and UDP.
+const SOCKET_EVENT_MESSAGE: u32 = 0;
+const SOCKET_EVENT_ERROR: u32 = 1;
+const SOCKET_EVENT_CLOSE: u32 = 2;
 
 /// The tags a socket event travels under. The producer's `network.mjs` has the
 /// same four; they are a wire detail of this op, not a contract number.
