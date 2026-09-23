@@ -547,7 +547,15 @@ for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
     # Through a pipe rather than a process substitution: the pipeline has
     # finished -- and the log is whole -- before the next line reads it.
     cargo_log="$STAGE/libs/cargo-$target.log"
-    cargo rustc -p migo-capi --lib --target "$target" --locked \
+    # Colour pinned off, as build-android-sdk.sh, build-linux-sdk.sh and
+    # build-windows-sdk-native.sh already do at their own capture: this note is
+    # parsed, not read, and CI's toolchain setup forces colour on, which puts two
+    # escape sequences between the note and its colon and a reset against the last
+    # `-l` token. Every Apple row failed here -- "rustc reported no native link
+    # dependencies" against a log holding the note -- because this was the one
+    # producer written without the pin. The parser strips SGR too; the pin keeps
+    # the log a person reads identical to the one the packager parses.
+    CARGO_TERM_COLOR=never cargo rustc -p migo-capi --lib --target "$target" --locked \
         ${cargo_feature_flags[@]+"${cargo_feature_flags[@]}"} \
         ${cargo_profile_flag[@]+"${cargo_profile_flag[@]}"} \
         -- --print=native-static-libs 2>&1 | tee "$cargo_log"

@@ -459,6 +459,21 @@ class NativeLinkAccount(unittest.TestCase):
             [("library", "objc"), ("framework", "UIKit"), ("library", "m")],
         )
 
+    def test_a_coloured_note_is_read_as_the_note_it_is(self):
+        # The exact bytes a CI row produced: `dtolnay/rust-toolchain` exports
+        # CARGO_TERM_COLOR=always, so `note` and its colon arrive with two SGR
+        # sequences between them and the last flag carries a reset. Every Apple
+        # build failed with "printed no native-static-libs note" against a log
+        # that contained one.
+        log = (
+            "\x1b[1m\x1b[92mnote\x1b[0m\x1b[1m: native-static-libs: "
+            "-lobjc -framework UIKit -lm\x1b[0m\n"
+        )
+        self.assertEqual(
+            self.package.parse_native_libs(log),
+            [("library", "objc"), ("framework", "UIKit"), ("library", "m")],
+        )
+
     def test_the_last_note_is_the_archive_s(self):
         log = "note: native-static-libs: -lold\nnote: native-static-libs: -lnew\n"
         self.assertEqual(self.package.parse_native_libs(log), [("library", "new")])

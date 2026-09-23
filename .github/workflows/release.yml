@@ -501,6 +501,16 @@ jobs:
       - name: Apple SDK assembly preserves slices and runtime dependencies
         run: bash scripts/test-apple-sdk-packaging.sh
 
+      # The five build scripts that derive a package's native link line from
+      # `cargo rustc -- --print native-static-libs` must capture it with colour
+      # pinned off. Forced colour -- which CI's toolchain setup exports -- splits
+      # `note` from its colon and glues a reset onto the last flag, so the parse
+      # either finds no note or reads one named `-lm<esc>[0m`. Four captures
+      # pinned it, the Apple one did not, and every Apple row of this workflow
+      # failed for days against logs that held the note.
+      - name: Parsed cargo notes are captured without colour
+        run: bash scripts/test-parsed-cargo-note-contract.sh
+
       # ANGLE-Metal is what fills the hole apple-sdk.yml measured: there is no GL
       # framework on iOS, so the renderer has no GL to link. Building it is a
       # 12 GB checkout and half an hour on a macOS runner (.github/workflows/apple-angle.yml),
