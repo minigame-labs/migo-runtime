@@ -62,7 +62,7 @@ use migo_services::content::MountedContent;
 use migo_services::image::cache::{ImageCache, SharedImageCache};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
-use super::service_args::{bytes, exactly, i32_of, not_a, string, strings, u32_of};
+use super::service_args::{bytes, exactly, f64_of, i32_of, not_a, string, strings, u32_of};
 use super::service_audio::{self, AudioBinding, LocalSources};
 use super::service_network::{self, NetworkBinding, UploadSources};
 use super::service_ops::id;
@@ -289,6 +289,10 @@ pub(crate) struct ServiceContext {
     /// The session's network: the policy content's requests are held to, and
     /// the handles a `fetch` hands out. Read on both threads, as audio is.
     network: OnceLock<NetworkBinding>,
+    /// The session's own command channel, for the two calls content makes about
+    /// the session itself: `exitMiniProgram` and `restartMiniProgram`. The
+    /// embedded ops send the same commands through the same channel.
+    lifecycle: OnceLock<shared::host_channel::HostCommandSender>,
 }
 
 impl ServiceContext {
@@ -302,6 +306,7 @@ impl ServiceContext {
             aliases: Arc::new(parking_lot::Mutex::new(ImageCache::new())),
             audio: OnceLock::new(),
             network: OnceLock::new(),
+            lifecycle: OnceLock::new(),
         }
     }
 
@@ -471,6 +476,18 @@ impl ServiceContext {
         }
     }
 
+    /// Give the services the session's own command channel. Once, on the
+    /// session thread, before the first service work is dispatched.
+    pub(crate) fn bind_lifecycle(&self, host_tx: shared::host_channel::HostCommandSender) {
+        let _ = self.lifecycle.set(host_tx);
+    }
+
+    fn lifecycle(&self) -> Result<&shared::host_channel::HostCommandSender, ServiceError> {
+        self.lifecycle
+            .get()
+            .ok_or_else(|| ServiceError::generic("the session's command channel is not bound"))
+    }
+
     fn network(&self) -> Result<&NetworkBinding, ServiceError> {
         self.network
             .get()
@@ -532,6 +549,14 @@ impl ServiceContext {
                 OwnedValue::Str(module.dir),
             ])
         })
+    }
+
+    /// The session's mount table, once content is mounted.
+    fn mount_table(&self) -> Option<Arc<shared::vfs::MountTable>> {
+        self.content
+            .read()
+            .as_ref()
+            .map(|content| Arc::clone(&content.mount_table))
     }
 
     fn game_paths(&self) -> Option<Arc<shared::vfs::GamePaths>> {
@@ -645,15 +670,64 @@ impl ServiceContext {
                 let [specifier, referrer_dir] = exactly(op, args)?;
                 self.require(&string(op, 0, specifier)?, &string(op, 1, referrer_dir)?)
             }
+            // What a game asks about its subpackages: the session's mount
+            // table and the game's package store, read by the same service code
+            // the embedded ops call.
+            id::op_get_sub_packages => {
+                let [] = exactly(op, args)?;
+                // A session on this lane is started with the package it mounts
+                // and no separate subpackage list; what is installed is what the
+                // mount table shows.
+                Ok(OwnedValue::Str(
+                    migo_services::subpackage::sub_packages_json(&[]),
+                ))
+            }
+            id::op_get_mount_generation => {
+                let [] = exactly(op, args)?;
+                Ok(OwnedValue::U64(
+                    migo_services::subpackage::mount_generation(self.mount_table().as_deref()),
+                ))
+            }
+            id::op_get_subpackage_identity => {
+                let [root] = exactly(op, args)?;
+                Ok(OwnedValue::Str(migo_services::subpackage::identity(
+                    self.mount_table().as_deref(),
+                    &string(op, 0, root)?,
+                )))
+            }
+            id::op_is_subpackage_installed => {
+                let [root] = exactly(op, args)?;
+                Ok(OwnedValue::Bool(migo_services::subpackage::is_installed(
+                    self.mount_table().as_deref(),
+                    &string(op, 0, root)?,
+                )))
+            }
+            id::op_is_subpackage_persisted => {
+                let [name, root] = exactly(op, args)?;
+                Ok(OwnedValue::Bool(migo_services::subpackage::is_persisted(
+                    self.game_paths().as_deref(),
+                    &string(op, 0, name)?,
+                    &string(op, 1, root)?,
+                )))
+            }
+            id::op_get_workers_path => {
+                let [] = exactly(op, args)?;
+                // A Worker's engine is staged beside the producer's, which is
+                // the producer's own path to resolve; the host has none to give.
+                Ok(OwnedValue::Str(String::new()))
+            }
             file if super::service_fs::is_sync(file) => {
                 super::service_fs::call_sync(&self.fs_env()?, file, args)
             }
             audio if service_audio::is_sync(audio) => {
                 service_audio::call_sync(self.audio()?, audio, args)
             }
-            network if service_network::is_sync(network) => {
-                service_network::call_sync(self.network()?, self.scheduler()?.as_ref(), network, args)
-            }
+            network if service_network::is_sync(network) => service_network::call_sync(
+                self.network()?,
+                self.scheduler()?.as_ref(),
+                network,
+                args,
+            ),
             other => Err(not_a(other, "synchronous")),
         }
     }
@@ -839,6 +913,39 @@ impl ServiceContext {
             }
             network if service_network::is_command(network) => {
                 service_network::command(self.network()?, network, args)
+            }
+            // The session, as content asks about itself. The same commands the
+            // embedded ops send, on the same channel: what ends or restarts a
+            // session is the host's, not the renderer's.
+            id::op_exit_mini_program | id::op_restart_mini_program => {
+                let [] = exactly(op, args)?;
+                let command = if op == id::op_exit_mini_program {
+                    shared::protocol::host_cmd::HostCommand::Shutdown
+                } else {
+                    shared::protocol::host_cmd::HostCommand::Restart
+                };
+                let what = if op == id::op_exit_mini_program {
+                    "exitMiniProgram"
+                } else {
+                    "restartMiniProgram"
+                };
+                self.lifecycle()?
+                    .try_send(command)
+                    .map_err(|error| ServiceError::generic(format!("{what}:fail {error}")))
+            }
+            id::op_set_preferred_fps => {
+                let [fps] = exactly(op, args)?;
+                // The same filter the embedded op applies: a rate is rounded
+                // and clamped into the range the engine offers, and one that is
+                // not a number at all is ignored rather than clamped to the
+                // bottom of it.
+                if let Some(fps) = shared::frame_rate::requested_fps(f64_of(op, 0, fps)?) {
+                    let _ = render
+                        .canvas
+                        .tx
+                        .send(shared::protocol::render_cmd::RenderCommand::FrameRate(fps));
+                }
+                Ok(())
             }
             other => Err(not_a(other, "command")),
         }
@@ -1908,6 +2015,73 @@ mod tests {
         println!("ran {} producer file calls on the host", answers.len());
     }
 
+    /// The two calls content makes about the session itself reach the host's
+    /// own command channel -- the one the embedded ops send on -- and a frame
+    /// rate is filtered as the embedded op filters it: rounded into range, and
+    /// dropped when it is not a number.
+    #[test]
+    fn the_session_s_own_commands_reach_the_host_s_channel() {
+        let root = std::env::temp_dir().join(format!("migo-lifecycle-{}", std::process::id()));
+        let context = Arc::new(ServiceContext::new(root.join("files"), root.join("cache")));
+        context.bind_session(1);
+        let (host_tx, _critical, mut host_rx) = shared::host_channel::channel(4);
+        context.bind_lifecycle(host_tx);
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+
+        context
+            .command(id::op_restart_mini_program, Vec::new(), &render)
+            .expect("the channel takes it");
+        context
+            .command(id::op_exit_mini_program, Vec::new(), &render)
+            .expect("the channel takes it");
+        assert!(matches!(
+            host_rx.try_recv(),
+            Ok(shared::protocol::host_cmd::HostCommand::Restart)
+        ));
+        assert!(matches!(
+            host_rx.try_recv(),
+            Ok(shared::protocol::host_cmd::HostCommand::Shutdown)
+        ));
+
+        context
+            .command(
+                id::op_set_preferred_fps,
+                vec![OwnedValue::F64(30.0)],
+                &render,
+            )
+            .expect("a rate the engine offers");
+        context
+            .command(
+                id::op_set_preferred_fps,
+                vec![OwnedValue::F64(1000.0)],
+                &render,
+            )
+            .expect("a rate past the range is clamped into it");
+        context
+            .command(
+                id::op_set_preferred_fps,
+                vec![OwnedValue::F64(f64::NAN)],
+                &render,
+            )
+            .expect("a rate that is not a number is dropped");
+        let rates: Vec<u32> = std::iter::from_fn(|| commands.try_recv().ok())
+            .filter_map(|command| match command {
+                shared::protocol::render_cmd::RenderCommand::FrameRate(fps) => Some(fps),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rates,
+            vec![30, shared::frame_rate::MAX_FPS],
+            "the rate is clamped, and a rate that is not a number sends nothing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The producer's network calls, as its lanes and `core-stream.mjs` encode
     /// them, run through this host's dispatch in the order content made them.
     ///
@@ -1932,8 +2106,10 @@ mod tests {
         )
         .expect("the calls are JSON");
 
-        let root =
-            std::env::temp_dir().join(format!("migo-external-network-calls-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "migo-external-network-calls-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         let context = Arc::new(ServiceContext::new(root.join("files"), root.join("cache")));
         context.bind_session(1);
@@ -2010,11 +2186,9 @@ mod tests {
                 let OwnedValue::U32(recorded) = args[0] else {
                     panic!("{name} names a handle");
                 };
-                args[0] = OwnedValue::U32(
-                    *host_of
-                        .get(&recorded)
-                        .unwrap_or_else(|| panic!("{name} names handle {recorded}, which no answer gave out")),
-                );
+                args[0] = OwnedValue::U32(*host_of.get(&recorded).unwrap_or_else(|| {
+                    panic!("{name} names handle {recorded}, which no answer gave out")
+                }));
             }
             let outcome = match call["shape"].as_str() {
                 Some("sync") => context.call_sync(op, args),
@@ -2022,7 +2196,9 @@ mod tests {
                     Ok(future) => runtime.block_on(future),
                     Err(error) => Err(error),
                 },
-                Some("command") => context.command(op, args, &render).map(|()| OwnedValue::Null),
+                Some("command") => context
+                    .command(op, args, &render)
+                    .map(|()| OwnedValue::Null),
                 other => panic!("{name}: shape {other:?}"),
             };
             if let Ok(value) = &outcome

@@ -27,8 +27,9 @@ use crate::ServiceError;
 
 use super::gate::{self, GateKind};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
-use super::sockets::{AddrMeta, BACKGROUND_THROTTLE, ReceiveScratch, checked_port, join_host_port,
-    resolve_first};
+use super::sockets::{
+    AddrMeta, BACKGROUND_THROTTLE, ReceiveScratch, checked_port, join_host_port, resolve_first,
+};
 
 /// The largest single read. 64 KiB balances the syscall against the scratch
 /// each socket retains; not changed without measuring on a device.

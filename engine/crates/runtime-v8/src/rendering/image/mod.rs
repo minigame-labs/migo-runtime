@@ -95,7 +95,10 @@ pub async fn op_load_image(
     // what `fetch()` is.
     let (policy, client) = {
         let mut st = state.borrow_mut();
-        let policy = st.borrow::<shared::op_state::HostOpState>().network_policy.clone();
+        let policy = st
+            .borrow::<shared::op_state::HostOpState>()
+            .network_policy
+            .clone();
         let client = crate::network::fetch::get_or_create_client_from_state(&mut st, false);
         (policy, client)
     };

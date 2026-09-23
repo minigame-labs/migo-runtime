@@ -25,9 +25,15 @@ async fn a_host_the_policy_refuses_is_never_connected_to() {
 #[tokio::test]
 async fn a_port_out_of_range_is_refused_before_the_gate() {
     let resources = ResourceTable::new();
-    let error = connect(&NetworkPolicy::default(), &resources, "example.com", 70_000, 1)
-        .await
-        .expect_err("a port is sixteen bits");
+    let error = connect(
+        &NetworkPolicy::default(),
+        &resources,
+        "example.com",
+        70_000,
+        1,
+    )
+    .await
+    .expect_err("a port is sixteen bits");
     assert_eq!(error.class, "TypeError");
     assert_eq!(error.message, "port 70000 out of range (0-65535)");
 }

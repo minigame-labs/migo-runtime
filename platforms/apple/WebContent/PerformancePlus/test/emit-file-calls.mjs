@@ -325,6 +325,30 @@ async function script() {
     assert.match(gone.message, /^\[NotFound\]/);
   });
   s.op_rmdir_sync("/user/saves", true);
+
+  // What a game asks about its subpackages, answered from the mount table and
+  // the package store the host really has.
+  const packages = s.op_get_sub_packages();
+  check("getSubPackages is JSON", () => assert.equal(packages, "[]"));
+  const generation = s.op_get_mount_generation();
+  // `u64`, which crosses as a BigInt: a generation is a counter content only
+  // compares, and narrowing it to a double would lose the comparison it is for.
+  check("the mount generation is the table's", () => {
+    assert.equal(typeof generation, "bigint");
+    assert.ok(generation >= 1n);
+  });
+  const installed = s.op_is_subpackage_installed("js");
+  check("a directory in the package counts as installed", () => assert.equal(installed, true));
+  const absent = s.op_is_subpackage_installed("sub/never");
+  check("a root that is not there is not installed", () => assert.equal(absent, false));
+  const persisted = s.op_is_subpackage_persisted("stage1", "sub/stage1");
+  check("nothing was installed durably", () => assert.equal(persisted, false));
+  const identity = s.op_get_subpackage_identity("js");
+  // The base package is an overlay of its own, named by its generation: a cache
+  // keyed on this is invalidated when the package is replaced and not before.
+  check("what covers the path is named", () => assert.match(identity, /^base@\d+$/));
+  const workers = s.op_get_workers_path();
+  check("a Worker's engine is the producer's to find", () => assert.equal(workers, ""));
 }
 
 // ---- run ----------------------------------------------------------------------------
@@ -342,6 +366,9 @@ if (mode === "write") {
   const fileOps = Object.keys(SERVICE_OP).filter(
     (name) => SERVICE_OP[name] >= SERVICE_OP.op_access && SERVICE_OP[name] <= SERVICE_OP.op_require_resolve_and_read,
   );
+  // The subpackage reads ride this harness because they are answered from the
+  // same mounted sandbox; they are numbered after the file ops, so the
+  // completeness check below stays about the file ops.
   const missing = fileOps.filter((name) => !ops.has(name));
   assert.deepEqual(missing, [], "the script leaves ops uncalled");
   console.log(`wrote ${calls.length} file calls covering ${ops.size} ops to ${dir}`);

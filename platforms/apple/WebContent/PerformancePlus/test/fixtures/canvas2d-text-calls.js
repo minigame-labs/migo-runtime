@@ -54,3 +54,15 @@ ctx.drawImageBatch([
   { image, dx: 1, dy: 2 },
   { image: other, sx: 0, sy: 0, sw: 8, sh: 8, dx: 3, dy: 4, dw: 16, dh: 16 },
 ]);
+
+// Colours the engine's own parser abstains from, which reach the op: spaces
+// around the channels, a name neither table knows, and a hex length that is not
+// one. The host reads each as `parse_color_string` does, and the producer's
+// port has to arrive at the same four floats.
+ctx.fillStyle = "rgb( 1 , 2 , 3 )";
+ctx.fillRect(0, 0, 1, 1);
+ctx.strokeStyle = "rgba( 10 , 20 , 30 , .5 )";
+ctx.strokeRect(0, 0, 1, 1);
+ctx.shadowColor = "not-a-colour";
+ctx.fillStyle = "#12345";
+ctx.fillRect(1, 1, 1, 1);

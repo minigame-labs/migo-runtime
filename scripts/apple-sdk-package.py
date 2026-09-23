@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -240,6 +241,18 @@ def embed_angle(args):
 
 NATIVE_NOTE = "note: native-static-libs:"
 
+# Colour is not content. `dtolnay/rust-toolchain` exports CARGO_TERM_COLOR=always,
+# so on every CI row rustc writes the note as
+# `\e[1m\e[92mnote\e[0m\e[1m: native-static-libs: ... -lm\e[0m`: two escape
+# sequences BETWEEN `note` and its colon, and a reset after the last flag. The
+# note above is then not a substring of the line, so packaging refused every
+# Apple build with "rustc printed no native-static-libs note" while the note sat
+# in the log it was reading -- and no developer saw it, because a pipe turns
+# cargo's colour off unless something forces it on. Stripping SGR sequences
+# fixes both ends: the trailing reset would otherwise arrive as a flag named
+# `-lm\e[0m`.
+SGR = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def parse_native_libs(log_text):
     """The link flags rustc reported for the static archive, in order, once each.
@@ -247,7 +260,8 @@ def parse_native_libs(log_text):
     rustc prints them as one note (`--print=native-static-libs`); cargo replays
     it for an up-to-date crate. `-framework X` is one flag of two words.
     """
-    notes = [line.split(NATIVE_NOTE, 1)[1] for line in log_text.splitlines() if NATIVE_NOTE in line]
+    lines = [SGR.sub("", line) for line in log_text.splitlines()]
+    notes = [line.split(NATIVE_NOTE, 1)[1] for line in lines if NATIVE_NOTE in line]
     if not notes:
         raise ValueError("rustc printed no native-static-libs note")
     words = notes[-1].split()

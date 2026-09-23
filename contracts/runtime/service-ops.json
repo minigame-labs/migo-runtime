@@ -179,6 +179,16 @@
     "op_udp_close": 155,
     "op_udp_set_ttl": 156,
     "op_fetch_upload_cancel_handle": 157,
-    "op_fetch_upload": 158
+    "op_fetch_upload": 158,
+    "op_prefetch_assets": 159,
+    "op_exit_mini_program": 160,
+    "op_restart_mini_program": 161,
+    "op_set_preferred_fps": 162,
+    "op_get_sub_packages": 163,
+    "op_get_mount_generation": 164,
+    "op_get_subpackage_identity": 165,
+    "op_is_subpackage_installed": 166,
+    "op_is_subpackage_persisted": 167,
+    "op_get_workers_path": 168
   }
 }

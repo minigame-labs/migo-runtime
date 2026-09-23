@@ -32,9 +32,13 @@ pub const MAX_PREFETCH_DNS_HOSTS: usize = 32;
 /// must not leak a hostname the session would refuse to connect to: the
 /// question this answers is "may content reach it at all", and the answer is
 /// the same one `fetch` gets.
-pub fn prefetch_dns(policy: &shared::op_state::NetworkPolicy, hosts_json: &str) -> Result<(), ServiceError> {
-    let hosts: Vec<String> = serde_json::from_str(hosts_json)
-        .map_err(|error| ServiceError::classed("TypeError", format!("prefetchDns: invalid JSON: {error}")))?;
+pub fn prefetch_dns(
+    policy: &shared::op_state::NetworkPolicy,
+    hosts_json: &str,
+) -> Result<(), ServiceError> {
+    let hosts: Vec<String> = serde_json::from_str(hosts_json).map_err(|error| {
+        ServiceError::classed("TypeError", format!("prefetchDns: invalid JSON: {error}"))
+    })?;
     let mut allowed: Vec<String> = hosts
         .into_iter()
         .filter(|host| super::gate::is_host_whitelisted(host, policy))

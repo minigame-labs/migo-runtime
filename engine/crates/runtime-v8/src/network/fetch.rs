@@ -152,7 +152,9 @@ fn fetch_env<'a>(
     allow_host: bool,
 ) -> service_net::fetch::FetchEnv<'a> {
     service_net::fetch::FetchEnv {
-        policy: &state.borrow::<shared::op_state::HostOpState>().network_policy,
+        policy: &state
+            .borrow::<shared::op_state::HostOpState>()
+            .network_policy,
         client,
         resources,
         pools: state.borrow::<IoSchedulerState>().0.pools(),
@@ -272,11 +274,7 @@ pub async fn op_fetch_send(
             .get::<ServiceHandle>(rid)
             .map_err(|_| JsErrorBox::generic("Failed to take fetch request resource"))?;
         let pools = state.borrow::<IoSchedulerState>().0.pools().clone();
-        (
-            std::sync::Arc::clone(&handle.resources),
-            handle.id,
-            pools,
-        )
+        (std::sync::Arc::clone(&handle.resources), handle.id, pools)
     };
     // The request is consumed by the send, so its handle is too: a second send
     // then finds nothing, as it did when the resource itself was taken.
@@ -339,7 +337,6 @@ pub fn create_audio_http_client(
     )
     .map_err(|error| AnyError::from(std::io::Error::other(error.to_string())))
 }
-
 
 // -- Upload --
 //
@@ -441,7 +438,11 @@ pub async fn op_fetch_upload(
     let cancel_rid = if cancel_rid == 0 {
         0
     } else {
-        match state.borrow().resource_table.get::<ServiceHandle>(cancel_rid) {
+        match state
+            .borrow()
+            .resource_table
+            .get::<ServiceHandle>(cancel_rid)
+        {
             Ok(handle) => handle.id,
             Err(_) => return Ok(service_net::upload::UploadAnswer::aborted_answer().into()),
         }

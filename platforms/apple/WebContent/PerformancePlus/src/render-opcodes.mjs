@@ -246,3 +246,11 @@ export const OPR_DRAW_BUFFERS = 202;
 export const OPR_INVALIDATE_FRAMEBUFFER = 203;
 export const OPR_TRANSFORM_FEEDBACK_VARYINGS = 204;
 export const MAX_RESOURCE_WORD_LIST = 64;
+// The most payload words one variable-uniform record carries
+// (`frame_wire::gl::MAX_STREAM_UNIFORM_WORDS`), which is not the engine
+// encoder's 512-word inline bound: that one only decides when the engine stops
+// inlining and calls the op, and the op's record still has to carry it. The
+// host's stream validator refuses a record past this, and refuses the frame
+// with it, so the producer refuses the call instead of building one that
+// cannot land.
+export const MAX_STREAM_UNIFORM_WORDS = 64 * 1024;

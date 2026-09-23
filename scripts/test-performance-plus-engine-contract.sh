@@ -98,7 +98,7 @@ node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs 
     || fail "the resource calls did not run on the producer"
 status=0
 parity="$(cd engine && MIGO_RESOURCE_PARITY_DIR="$PARITY" cargo test -p migo-runtime-v8 --lib \
-    resource_parity -- --ignored --nocapture 2>&1)" || status=$?
+    the_producer_s_resource_records -- --ignored --nocapture 2>&1)" || status=$?
 if (( status != 0 )); then
     printf '%s\n' "$parity" >&2
     fail "the producer's resource records do not decode to the commands the in-process ops build"
@@ -106,6 +106,25 @@ fi
 printf '%s\n' "$parity" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
     || { printf '%s\n' "$parity" >&2; fail "the resource parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$parity" | grep -E 'commands and [0-9]+ errors agree'
+
+# And the calls the facade cannot encode: a BigInt argument or a uniform past
+# the encoder's inline bound sends it through the op instead, which on this lane
+# is a record this producer writes. That path had no implementation at all, so
+# the same harness runs a fixture that takes it for every one of those calls.
+RAW_PARITY="$WORK/raw-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$RAW_PARITY" \
+    fixtures/webgl-raw-path-calls.js \
+    || fail "the raw-path calls did not run on the producer"
+status=0
+raw="$(cd engine && MIGO_RAW_PARITY_DIR="$RAW_PARITY" cargo test -p migo-runtime-v8 --lib \
+    the_producer_s_raw_records -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$raw" >&2
+    fail "the producer's raw records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$raw" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
+    || { printf '%s\n' "$raw" >&2; fail "the raw parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$raw" | grep -E 'commands and [0-9]+ errors agree'
 
 # The same question for the Canvas2D text records, which is where the two
 # implementations are most likely to drift: a font shorthand parsed on both

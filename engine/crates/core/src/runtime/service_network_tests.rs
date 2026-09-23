@@ -142,8 +142,12 @@ fn a_data_url_is_built_sent_and_read_through_the_service() {
     }
     assert_eq!(body, b"hello world");
 
-    command(&session.network, id::core_close, vec![OwnedValue::U32(response_rid)])
-        .expect("closing an open handle");
+    command(
+        &session.network,
+        id::core_close,
+        vec![OwnedValue::U32(response_rid)],
+    )
+    .expect("closing an open handle");
     let error = session
         .call_async(
             id::core_read,
@@ -182,8 +186,12 @@ fn closing_the_cancel_handle_stops_the_send() {
     let request_rid = u32_at(&handles, 0);
     let cancel_rid = u32_at(&handles, 1);
 
-    command(&session.network, id::core_try_close, vec![OwnedValue::U32(cancel_rid)])
-        .expect("abort() closes the cancel handle");
+    command(
+        &session.network,
+        id::core_try_close,
+        vec![OwnedValue::U32(cancel_rid)],
+    )
+    .expect("abort() closes the cancel handle");
     let error = session
         .call_async(id::op_fetch_send, vec![OwnedValue::U32(request_rid)])
         .expect_err("an aborted request is not sent");
@@ -195,11 +203,19 @@ fn closing_the_cancel_handle_stops_the_send() {
 #[test]
 fn the_two_closes_differ_on_a_handle_that_names_nothing() {
     let session = Session::new(policy(&[], false));
-    let error = command(&session.network, id::core_close, vec![OwnedValue::U32(4242)])
-        .expect_err("close names a handle that must be open");
+    let error = command(
+        &session.network,
+        id::core_close,
+        vec![OwnedValue::U32(4242)],
+    )
+    .expect_err("close names a handle that must be open");
     assert!(error.message.contains("4242"), "{}", error.message);
-    command(&session.network, id::core_try_close, vec![OwnedValue::U32(4242)])
-        .expect("tryClose says nothing about a handle that is gone");
+    command(
+        &session.network,
+        id::core_try_close,
+        vec![OwnedValue::U32(4242)],
+    )
+    .expect("tryClose says nothing about a handle that is gone");
 }
 
 /// The two arguments the engine's JavaScript never passes: a client of its own
@@ -224,7 +240,11 @@ fn a_client_or_a_body_resource_is_refused_rather_than_ignored() {
         args[index] = OwnedValue::U32(1);
         let error = call_sync(&session.network, &session.scheduler, id::op_fetch, args)
             .expect_err("this lane has neither");
-        assert!(error.message.contains("op_fetch takes no"), "{}", error.message);
+        assert!(
+            error.message.contains("op_fetch takes no"),
+            "{}",
+            error.message
+        );
     }
 }
 
@@ -245,8 +265,13 @@ fn a_header_list_that_is_not_pairs_is_a_type_error() {
         OwnedValue::Bool(false),
         OwnedValue::Bool(false),
     ];
-    let error = call_sync(&session.network, &session.scheduler, id::op_fetch, args.clone())
-        .expect_err("a header is a pair of byte strings");
+    let error = call_sync(
+        &session.network,
+        &session.scheduler,
+        id::op_fetch,
+        args.clone(),
+    )
+    .expect_err("a header is a pair of byte strings");
     assert_eq!(error.class, "TypeError");
     assert!(error.message.contains("op_fetch"), "{}", error.message);
 
@@ -270,9 +295,9 @@ fn every_claimed_op_is_answered_in_exactly_one_shape() {
         .collect();
     assert_eq!(
         claimed.len(),
-        22,
-        "fetch's three, the upload's two, the three core members, the socket's four \
-         and the ten raw-socket ops"
+        23,
+        "fetch's three, the upload's two, both prefetches, the three core members, \
+         the socket's four and the ten raw-socket ops"
     );
     for op in claimed {
         let shapes = u8::from(is_sync(op)) + u8::from(is_async(op)) + u8::from(is_command(op));
@@ -338,12 +363,24 @@ fn a_udp_socket_binds_and_is_held_to_the_policy() {
         error.message
     );
 
-    command(&session.network, id::op_udp_set_ttl, vec![OwnedValue::U32(rid), OwnedValue::U32(8)])
-        .expect("the TTL is the socket's to set");
-    command(&session.network, id::op_udp_close, vec![OwnedValue::U32(rid)])
-        .expect("closing an open socket");
-    let error = command(&session.network, id::op_udp_close, vec![OwnedValue::U32(rid)])
-        .expect_err("a closed socket names nothing");
+    command(
+        &session.network,
+        id::op_udp_set_ttl,
+        vec![OwnedValue::U32(rid), OwnedValue::U32(8)],
+    )
+    .expect("the TTL is the socket's to set");
+    command(
+        &session.network,
+        id::op_udp_close,
+        vec![OwnedValue::U32(rid)],
+    )
+    .expect("closing an open socket");
+    let error = command(
+        &session.network,
+        id::op_udp_close,
+        vec![OwnedValue::U32(rid)],
+    )
+    .expect_err("a closed socket names nothing");
     assert!(error.message.contains("is not open"), "{}", error.message);
 }
 
@@ -440,10 +477,13 @@ async fn an_image_source_is_held_to_the_policy_fetch_is_held_to() {
         executor,
     );
     let (policy, client) = network.image_client().expect("the session has a client");
-    let error =
-        migo_services::network::image_source::fetch_http_image(&policy, &client, "https://blocked.example/a.png")
-            .await
-            .expect_err("the allow list refuses it");
+    let error = migo_services::network::image_source::fetch_http_image(
+        &policy,
+        &client,
+        "https://blocked.example/a.png",
+    )
+    .await
+    .expect_err("the allow list refuses it");
     assert_eq!(error.code, shared::error::ErrorCode::PermissionDenied);
     assert!(
         error
@@ -455,9 +495,10 @@ async fn an_image_source_is_held_to_the_policy_fetch_is_held_to() {
     );
 
     // And a URL that is not one never reaches the client.
-    let error = migo_services::network::image_source::fetch_http_image(&policy, &client, "not a url")
-        .await
-        .expect_err("a URL is a URL");
+    let error =
+        migo_services::network::image_source::fetch_http_image(&policy, &client, "not a url")
+            .await
+            .expect_err("a URL is a URL");
     assert_eq!(error.code, shared::error::ErrorCode::InvalidArgument);
 }
 
@@ -494,9 +535,7 @@ fn the_producer_s_socket_events_are_the_ones_this_writes() {
     ];
     let written: Vec<serde_json::Value> = cases
         .into_iter()
-        .map(|(name, event)| {
-            serde_json::json!({ "name": name, "wire": json_of(&ws_event(event)) })
-        })
+        .map(|(name, event)| serde_json::json!({ "name": name, "wire": json_of(&ws_event(event)) }))
         .collect();
 
     let peer = AddrMeta {
@@ -526,9 +565,9 @@ fn the_producer_s_socket_events_are_the_ones_this_writes() {
     ];
     let tcp_written: Vec<serde_json::Value> = tcp_cases
         .into_iter()
-        .map(|(name, event)| {
-            serde_json::json!({ "name": name, "wire": json_of(&tcp_event(event)) })
-        })
+        .map(
+            |(name, event)| serde_json::json!({ "name": name, "wire": json_of(&tcp_event(event)) }),
+        )
         .collect();
 
     let udp_cases = [
@@ -544,9 +583,9 @@ fn the_producer_s_socket_events_are_the_ones_this_writes() {
     ];
     let udp_written: Vec<serde_json::Value> = udp_cases
         .into_iter()
-        .map(|(name, event)| {
-            serde_json::json!({ "name": name, "wire": json_of(&udp_event(event)) })
-        })
+        .map(
+            |(name, event)| serde_json::json!({ "name": name, "wire": json_of(&udp_event(event)) }),
+        )
         .collect();
 
     let answers = serde_json::json!({
@@ -555,8 +594,9 @@ fn the_producer_s_socket_events_are_the_ones_this_writes() {
         "udp": udp_written,
     });
 
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../platforms/apple/WebContent/PerformancePlus/test/fixtures/ws-event-answers.json");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../../platforms/apple/WebContent/PerformancePlus/test/fixtures/ws-event-answers.json",
+    );
     let rendered = serde_json::to_string_pretty(&answers).expect("JSON") + "\n";
     if std::env::var_os("MIGO_WS_EVENTS_BLESS").is_some() {
         std::fs::write(&path, &rendered).expect("write the fixture");
@@ -575,9 +615,7 @@ fn json_of(value: &OwnedValue) -> serde_json::Value {
         OwnedValue::U32(number) => serde_json::json!(number),
         OwnedValue::Str(text) => serde_json::json!(text),
         OwnedValue::Bytes(bytes) => serde_json::json!(bytes),
-        OwnedValue::Array(items) => {
-            serde_json::Value::Array(items.iter().map(json_of).collect())
-        }
+        OwnedValue::Array(items) => serde_json::Value::Array(items.iter().map(json_of).collect()),
         other => panic!("a socket event carries no {other:?}"),
     }
 }

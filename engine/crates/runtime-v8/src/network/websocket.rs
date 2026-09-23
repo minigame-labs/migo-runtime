@@ -109,16 +109,9 @@ pub async fn op_ws_create(
     #[smi] timeout_ms: Option<u32>,
 ) -> Result<WsCreateResult, JsErrorBox> {
     let (resources, policy) = session(&state);
-    let handshake = service_ws::create(
-        &policy,
-        &resources,
-        &url,
-        &protocols,
-        &headers,
-        timeout_ms,
-    )
-    .await
-    .map_err(service_error)?;
+    let handshake = service_ws::create(&policy, &resources, &url, &protocols, &headers, timeout_ms)
+        .await
+        .map_err(service_error)?;
 
     // The id content holds is this runtime's, naming the service's.
     let rid = state.borrow_mut().resource_table.add(ServiceHandle::new(
@@ -159,11 +152,7 @@ pub async fn op_ws_next_event(
     #[smi] rid: ResourceId,
 ) -> Result<WsEvent, JsErrorBox> {
     let (resources, id) = connection(&state, rid)?;
-    let backgrounded = state
-        .borrow()
-        .borrow::<HostOpState>()
-        .backgrounded
-        .clone();
+    let backgrounded = state.borrow().borrow::<HostOpState>().backgrounded.clone();
     service_ws::next_event(&resources, id, &backgrounded)
         .await
         .map(WsEvent::from)

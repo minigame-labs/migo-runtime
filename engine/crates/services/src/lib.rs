@@ -12,5 +12,6 @@ pub mod image;
 pub mod network;
 pub mod require;
 pub mod storage;
+pub mod subpackage;
 
 pub use error::ServiceError;

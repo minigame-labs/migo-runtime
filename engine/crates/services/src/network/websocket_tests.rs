@@ -65,7 +65,11 @@ async fn a_host_the_policy_refuses_is_never_connected_to() {
     )
     .await
     .expect_err("the allow list refuses it");
-    assert!(error.message.contains("blocked.example"), "{}", error.message);
+    assert!(
+        error.message.contains("blocked.example"),
+        "{}",
+        error.message
+    );
     assert!(resources.is_empty());
 
     // And `ws://` where the policy enforces HTTPS.

@@ -558,6 +558,16 @@ RAN_TESTS+=("$TEST_DIR/files.test.mjs")
 node "$TEST_DIR/audio-checks.test.mjs"
 RAN_TESTS+=("$TEST_DIR/audio-checks.test.mjs")
 
+# --- the colours the engine's own parser abstains from ----------------------
+#
+# `fillStyle` is encoded by the engine for the forms it is sure of and handed to
+# an op otherwise, and that op's Rust body is the authority. On this lane the op
+# is the producer's, so its port has to answer the same -- including for
+# `rgb( 1 , 2 , 3 )`, which the engine's strict reader abstains from and Rust
+# reads as an ordinary colour. The corpus is the one both Rust checks use.
+node "$TEST_DIR/canvas2d-color.test.mjs"
+RAN_TESTS+=("$TEST_DIR/canvas2d-color.test.mjs")
+
 # --- what a socket event is on both sides -----------------------------------
 #
 # A socket cannot ride the record-and-replay harness the fetch calls do: a
