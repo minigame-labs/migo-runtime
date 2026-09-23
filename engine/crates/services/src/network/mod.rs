@@ -13,3 +13,4 @@ pub mod dns_cache;
 pub mod fetch;
 pub mod gate;
 pub mod resources;
+pub mod websocket;

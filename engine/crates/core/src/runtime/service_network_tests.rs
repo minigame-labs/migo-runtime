@@ -27,7 +27,11 @@ impl Session {
             .build()
             .expect("current-thread executor");
         Self {
-            network: NetworkBinding::new(policy, executor.handle().clone()),
+            network: NetworkBinding::new(
+                policy,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                executor.handle().clone(),
+            ),
             scheduler: IoScheduler::new(7301),
             executor,
         }
@@ -257,8 +261,8 @@ fn every_claimed_op_is_answered_in_exactly_one_shape() {
         .collect();
     assert_eq!(
         claimed.len(),
-        6,
-        "op_fetch, op_fetch_send, op_prefetch_dns and the three core members"
+        10,
+        "fetch's three, the three core members and the socket's four"
     );
     for op in claimed {
         let shapes = u8::from(is_sync(op)) + u8::from(is_async(op)) + u8::from(is_command(op));
@@ -283,4 +287,70 @@ fn prefetch_dns_refuses_a_list_that_is_not_json() {
         "{}",
         error.message
     );
+}
+
+/// The socket events, as the host writes them and the producer rebuilds them.
+///
+/// A socket cannot ride the record-and-replay harness the fetch calls do: the
+/// replay would need a server, and every address a test server could listen on
+/// is one the address filter refuses -- which is the filter working. So the one
+/// thing the two halves must agree about, the event's shape, is pinned by a
+/// fixture this writes and `test/ws-events.test.mjs` reads.
+///
+/// Regenerate with `MIGO_WS_EVENTS_BLESS=1 cargo test -p migo-core
+/// --no-default-features --features external-frames the_producer_s_socket_events`.
+#[test]
+fn the_producer_s_socket_events_are_the_ones_this_writes() {
+    let cases = [
+        ("text", WsEvent::Text("hello".to_string())),
+        ("binary", WsEvent::Binary(vec![0, 127, 255])),
+        ("error", WsEvent::Error("connection reset".to_string())),
+        (
+            "close",
+            WsEvent::Close {
+                code: 1006,
+                reason: String::new(),
+            },
+        ),
+        (
+            "close with a reason",
+            WsEvent::Close {
+                code: 1000,
+                reason: "bye".to_string(),
+            },
+        ),
+    ];
+    let written: Vec<serde_json::Value> = cases
+        .into_iter()
+        .map(|(name, event)| {
+            serde_json::json!({ "name": name, "wire": json_of(&ws_event(event)) })
+        })
+        .collect();
+    let answers = serde_json::json!({ "events": written });
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../platforms/apple/WebContent/PerformancePlus/test/fixtures/ws-event-answers.json");
+    let rendered = serde_json::to_string_pretty(&answers).expect("JSON") + "\n";
+    if std::env::var_os("MIGO_WS_EVENTS_BLESS").is_some() {
+        std::fs::write(&path, &rendered).expect("write the fixture");
+        return;
+    }
+    let checked_in = std::fs::read_to_string(&path).expect("the fixture is checked in");
+    assert_eq!(
+        checked_in, rendered,
+        "the socket events changed; regenerate with MIGO_WS_EVENTS_BLESS=1"
+    );
+}
+
+/// An `OwnedValue` as JSON, for the fixture: the shapes a socket event uses.
+fn json_of(value: &OwnedValue) -> serde_json::Value {
+    match value {
+        OwnedValue::U32(number) => serde_json::json!(number),
+        OwnedValue::Str(text) => serde_json::json!(text),
+        OwnedValue::Bytes(bytes) => serde_json::json!(bytes),
+        OwnedValue::Array(items) => {
+            serde_json::Value::Array(items.iter().map(json_of).collect())
+        }
+        other => panic!("a socket event carries no {other:?}"),
+    }
 }

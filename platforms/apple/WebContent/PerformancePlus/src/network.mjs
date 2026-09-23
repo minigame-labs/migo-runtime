@@ -115,3 +115,72 @@ function latin1(bytes) {
   for (let index = 0; index < bytes.length; index += 1) text += String.fromCharCode(bytes[index]);
   return text;
 }
+
+// ---- WebSocket ----------------------------------------------------------------
+
+/**
+ * `#[serde] Vec<String>`: the subprotocols, as a plain array of strings. serde
+ * reads a JS array of strings and refuses anything else, and so does this --
+ * before the call is sent, because the host would answer the same refusal a
+ * round trip later.
+ */
+export function writeStrings(writer, values) {
+  if (!Array.isArray(values)) {
+    throw new TypeError(`serde_v8 error: invalid type; expected: array, got: ${typeRepr(values)}`);
+  }
+  writer.array(values.length);
+  for (const value of values) {
+    if (typeof value !== "string") {
+      throw new TypeError(`serde_v8 error: invalid type; expected: string, got: ${typeRepr(value)}`);
+    }
+    writer.str(value);
+  }
+}
+
+/** `#[serde] Vec<(String, String)>`: a socket's extra headers. */
+export function writeStringPairs(writer, pairs) {
+  if (!Array.isArray(pairs)) {
+    throw new TypeError(`serde_v8 error: invalid type; expected: array, got: ${typeRepr(pairs)}`);
+  }
+  writer.array(pairs.length);
+  for (const pair of pairs) {
+    if (!Array.isArray(pair) || pair.length !== 2) {
+      throw new TypeError(`serde_v8 error: invalid type; expected: array, got: ${typeRepr(pair)}`);
+    }
+    writer.array(2);
+    for (const part of pair) {
+      if (typeof part !== "string") {
+        throw new TypeError(`serde_v8 error: invalid type; expected: string, got: ${typeRepr(part)}`);
+      }
+      writer.str(part);
+    }
+  }
+}
+
+/** `WsCreateResult`: `[rid, protocol, extensions]`. */
+export function wsHandshake([rid, protocol, extensions]) {
+  return { rid, protocol, extensions };
+}
+
+// The tags a socket event travels under, as `service_network.rs` writes them.
+const WS_EVENT_TEXT = 0;
+const WS_EVENT_BINARY = 1;
+const WS_EVENT_ERROR = 2;
+
+/**
+ * One socket event, in the tagged shape the host sends: the kind, then what
+ * that kind carries. Rebuilt into the object the engine's `WebSocket` facade
+ * reads, where a message has `dataStr` or `dataBin` and never both.
+ */
+export function wsEvent([tag, ...fields]) {
+  switch (tag) {
+    case WS_EVENT_TEXT:
+      return { type: "message", dataStr: fields[0], isBinary: false };
+    case WS_EVENT_BINARY:
+      return { type: "message", dataBin: fields[0], isBinary: true };
+    case WS_EVENT_ERROR:
+      return { type: "error", errMsg: fields[0] };
+    default:
+      return { type: "close", code: fields[0], reason: fields[1] };
+  }
+}

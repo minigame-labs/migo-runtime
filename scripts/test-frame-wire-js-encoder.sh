@@ -558,6 +558,17 @@ RAN_TESTS+=("$TEST_DIR/files.test.mjs")
 node "$TEST_DIR/audio-checks.test.mjs"
 RAN_TESTS+=("$TEST_DIR/audio-checks.test.mjs")
 
+# --- what a socket event is on both sides -----------------------------------
+#
+# A WebSocket cannot ride the record-and-replay harness the fetch calls do: a
+# replay would need a server, and every address one could listen on is one the
+# address filter refuses. So the shape the two halves must agree about -- the
+# tagged event -- is pinned by a fixture the host writes
+# (`the_producer_s_socket_events_are_the_ones_this_writes`) and the producer
+# rebuilds the facade's object from here.
+node "$TEST_DIR/ws-events.test.mjs"
+RAN_TESTS+=("$TEST_DIR/ws-events.test.mjs")
+
 # --- a frame larger than one packet, and what the host will decode ----------
 #
 # The host refuses a packet whose decoded storage is over its budget, and on the

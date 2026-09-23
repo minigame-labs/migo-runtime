@@ -30,6 +30,7 @@ pub enum ResourceKind {
     FetchRequest,
     FetchCancel,
     FetchResponse,
+    WebSocket,
 }
 
 impl ResourceKind {
@@ -38,6 +39,7 @@ impl ResourceKind {
             Self::FetchRequest => "fetch request",
             Self::FetchCancel => "fetch cancel handle",
             Self::FetchResponse => "fetch response",
+            Self::WebSocket => "web socket",
         }
     }
 }
@@ -98,6 +100,7 @@ enum Entry {
     FetchRequest(Box<super::fetch::PendingRequest>),
     FetchCancel(Arc<CancelFlag>),
     FetchResponse(Arc<super::fetch::ResponseBody>),
+    WebSocket(Arc<super::websocket::WebSocketConn>),
 }
 
 impl Entry {
@@ -106,6 +109,7 @@ impl Entry {
             Self::FetchRequest(_) => ResourceKind::FetchRequest,
             Self::FetchCancel(_) => ResourceKind::FetchCancel,
             Self::FetchResponse(_) => ResourceKind::FetchResponse,
+            Self::WebSocket(_) => ResourceKind::WebSocket,
         }
     }
 }
@@ -134,6 +138,22 @@ impl ResourceTable {
 
     pub(crate) fn add_response(&self, body: Arc<super::fetch::ResponseBody>) -> ResourceId {
         self.add(Entry::FetchResponse(body))
+    }
+
+    pub(crate) fn add_web_socket(&self, connection: Arc<super::websocket::WebSocketConn>) -> ResourceId {
+        self.add(Entry::WebSocket(connection))
+    }
+
+    /// The connection `id` names.
+    pub fn web_socket(
+        &self,
+        id: ResourceId,
+    ) -> Result<Arc<super::websocket::WebSocketConn>, ServiceError> {
+        match self.entries.lock().get(&id) {
+            Some(Entry::WebSocket(connection)) => Ok(Arc::clone(connection)),
+            Some(other) => Err(wrong_kind(id, other.kind(), ResourceKind::WebSocket)),
+            None => Err(no_such(id)),
+        }
     }
 
     /// Take the request out: a send consumes it, so a second send on the same
@@ -181,6 +201,13 @@ impl ResourceTable {
             }
             Some(Entry::FetchResponse(body)) => {
                 body.cancel();
+                true
+            }
+            Some(Entry::WebSocket(connection)) => {
+                // Closing is how content hangs up: whatever is in flight --
+                // the read parked on the server's next message, a send -- is
+                // cancelled, and the connection's halves drop with the entry.
+                connection.cancel();
                 true
             }
             Some(Entry::FetchRequest(_)) => true,

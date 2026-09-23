@@ -49,6 +49,9 @@ data-url.workspace = true
 url = "2.5"
 tracing = { workspace = true }
 parking_lot = { workspace = true }
+# Content's WebSocket: the connection, its limits and its handshake, held here
+# so both executions open the same socket under the same policy.
+tokio-tungstenite.workspace = true
 # `prefetchDns` takes its hostnames as a JSON array, which is the shape the
 # engine's JavaScript has always passed; parsed here so both executions refuse
 # a malformed list with the same words.

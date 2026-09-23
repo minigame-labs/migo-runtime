@@ -102,6 +102,14 @@ export function optionalSmiU32(value, name) {
 }
 
 /**
+ * `#[smi] u16`: `to_i32_option`, then `as u16`.
+ * @kind smi_u16
+ */
+export function smiU16(value, name) {
+  return toI32(value, name) & 0xffff;
+}
+
+/**
  * `#[smi] u8`: `to_i32_option`, then `as u8`.
  * @kind smi_u8
  */

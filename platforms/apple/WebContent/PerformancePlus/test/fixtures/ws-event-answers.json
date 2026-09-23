@@ -1,0 +1,45 @@
+{
+  "events": [
+    {
+      "name": "text",
+      "wire": [
+        0,
+        "hello"
+      ]
+    },
+    {
+      "name": "binary",
+      "wire": [
+        1,
+        [
+          0,
+          127,
+          255
+        ]
+      ]
+    },
+    {
+      "name": "error",
+      "wire": [
+        2,
+        "connection reset"
+      ]
+    },
+    {
+      "name": "close",
+      "wire": [
+        3,
+        1006,
+        ""
+      ]
+    },
+    {
+      "name": "close with a reason",
+      "wire": [
+        3,
+        1000,
+        "bye"
+      ]
+    }
+  ]
+}

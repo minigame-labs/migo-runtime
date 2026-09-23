@@ -17,7 +17,13 @@ import {
   transferOut,
 } from "./audio.mjs";
 import { engineHost } from "./engine-host.mjs";
-import { fetchResponse } from "./network.mjs";
+import {
+  fetchResponse,
+  wsEvent,
+  wsHandshake,
+  writeStringPairs,
+  writeStrings,
+} from "./network.mjs";
 import { drained } from "./engine-frames.mjs";
 import {
   fileBuffer,
@@ -32,6 +38,8 @@ import {
 import {
   bytesOf,
   optionalBytesOf,
+  optionalSmiU32,
+  smiU16,
   optionalStringOf,
   optionalU64,
   smiU32,
@@ -534,4 +542,59 @@ export function op_fetch_send(rid) {
   return servicesOf(engineHost())
     .request(SERVICE_OP.op_fetch_send, (w) => w.u32(request))
     .then(fetchResponse);
+}
+
+/// Connect, and answer the handle the facade drives the socket with.
+///
+/// `protocols` and `headers` are `#[serde]`, which the conversion gate exempts;
+/// network.mjs restates serde's rule for them.
+export function op_ws_create(url, protocols, headers, timeoutMs) {
+  const target = stringOf(url, "url");
+  const timeout = optionalSmiU32(timeoutMs, "timeout_ms");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_ws_create, (w) => {
+      w.str(target);
+      writeStrings(w, protocols);
+      writeStringPairs(w, headers);
+      if (timeout === null) w.null();
+      else w.u32(timeout);
+    })
+    .then(wsHandshake);
+}
+
+/// The next event content has not seen. One request per event, as the embedded
+/// op is one promise per event: a game that stops asking stops being sent them.
+export function op_ws_next_event(rid) {
+  const socket = smiU32(rid, "rid");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_ws_next_event, (w) => w.u32(socket))
+    .then(wsEvent);
+}
+
+export function op_ws_send(rid, dataStr, dataBuf) {
+  const socket = smiU32(rid, "rid");
+  const text = optionalStringOf(dataStr, "data_str");
+  const bytes = optionalBytesOf(dataBuf, "data_buf");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_ws_send, (w) => {
+      w.u32(socket);
+      if (text === null) w.null();
+      else w.str(text);
+      if (bytes === null) w.null();
+      else w.bytes(bytes);
+    })
+    .then(nothing);
+}
+
+export function op_ws_close(rid, code, reason) {
+  const socket = smiU32(rid, "rid");
+  const status = smiU16(code, "code");
+  const why = stringOf(reason, "reason");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_ws_close, (w) => {
+      w.u32(socket);
+      w.u32(status);
+      w.str(why);
+    })
+    .then(nothing);
 }

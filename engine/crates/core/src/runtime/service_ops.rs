@@ -163,6 +163,10 @@ service_ops! {
     core_read = 140,
     core_close = 141,
     core_try_close = 142,
+    op_ws_create = 143,
+    op_ws_next_event = 144,
+    op_ws_send = 145,
+    op_ws_close = 146,
 }
 
 /// The op's name, for a refusal a person will read.

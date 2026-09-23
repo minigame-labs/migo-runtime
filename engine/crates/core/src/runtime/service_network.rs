@@ -31,10 +31,13 @@ use migo_services::network::client::{PolicyHttpClient, create_policy_http_client
 use migo_services::network::fetch::{self as fetch_service, FetchEnv, RequestBody};
 use migo_services::network::gate::GateKind;
 use migo_services::network::resources::{ResourceId, ResourceTable};
+use migo_services::network::websocket::{self as websocket, WsEvent};
 use parking_lot::Mutex;
 use shared::op_state::NetworkPolicy;
 
-use super::service_args::{boolean, exactly, not_a, optional_bytes, string, u32_of, wrong_type};
+use super::service_args::{
+    boolean, exactly, not_a, optional_bytes, optional_string, string, strings, u32_of, wrong_type,
+};
 use super::service_ops::id;
 
 /// The user agent every request this session makes carries. The embedded
@@ -46,6 +49,10 @@ const USER_AGENT: &str = "migo";
 /// policy configured, and the resources content holds ids into.
 pub(crate) struct NetworkBinding {
     policy: NetworkPolicy,
+    /// Whether the app is in the background, which is what a socket's read
+    /// throttles on: the connection stays up and delivery is deferred, rather
+    /// than a backgrounded game spinning on messages nobody will see.
+    backgrounded: Arc<std::sync::atomic::AtomicBool>,
     resources: Arc<ResourceTable>,
     /// The session's Tokio runtime.
     ///
@@ -65,9 +72,14 @@ pub(crate) struct NetworkBinding {
 }
 
 impl NetworkBinding {
-    pub(crate) fn new(policy: NetworkPolicy, runtime: tokio::runtime::Handle) -> Self {
+    pub(crate) fn new(
+        policy: NetworkPolicy,
+        backgrounded: Arc<std::sync::atomic::AtomicBool>,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
         Self {
             policy,
+            backgrounded,
             resources: Arc::new(ResourceTable::new()),
             runtime,
             http1: Mutex::new(None),
@@ -108,7 +120,15 @@ pub(crate) fn is_sync(op: u32) -> bool {
 
 /// Whether `op` is an awaited network op this module answers.
 pub(crate) fn is_async(op: u32) -> bool {
-    matches!(op, id::op_fetch_send | id::core_read)
+    matches!(
+        op,
+        id::op_fetch_send
+            | id::core_read
+            | id::op_ws_create
+            | id::op_ws_next_event
+            | id::op_ws_send
+            | id::op_ws_close
+    )
 }
 
 /// Whether `op` is a network command this module answers.
@@ -219,6 +239,63 @@ pub(crate) fn call_async(
                     .map(|bytes| OwnedValue::Bytes(bytes.to_vec()))
             })
         }
+        id::op_ws_create => {
+            let [url, protocols, headers, timeout_ms] = exactly(op, args)?;
+            let url = string(op, 0, url)?;
+            let protocols = strings(op, 1, protocols)?;
+            let headers = header_strings(op, 2, headers)?;
+            let timeout_ms = match timeout_ms {
+                OwnedValue::Null => None,
+                other => Some(u32_of(op, 3, other)?),
+            };
+            let policy = network.policy.clone();
+            Box::pin(async move {
+                websocket::create(&policy, &resources, &url, &protocols, &headers, timeout_ms)
+                    .await
+                    // `WsCreateResult`, in its field order: rid, protocol,
+                    // extensions.
+                    .map(|handshake| {
+                        OwnedValue::Array(vec![
+                            OwnedValue::U32(handshake.rid),
+                            OwnedValue::Str(handshake.protocol),
+                            OwnedValue::Str(handshake.extensions),
+                        ])
+                    })
+            })
+        }
+        id::op_ws_next_event => {
+            let [rid] = exactly(op, args)?;
+            let rid: ResourceId = u32_of(op, 0, rid)?;
+            let backgrounded = Arc::clone(&network.backgrounded);
+            Box::pin(async move {
+                websocket::next_event(&resources, rid, &backgrounded)
+                    .await
+                    .map(ws_event)
+            })
+        }
+        id::op_ws_send => {
+            let [rid, text, bytes] = exactly(op, args)?;
+            let rid: ResourceId = u32_of(op, 0, rid)?;
+            let text = optional_string(op, 1, text)?;
+            let bytes = optional_bytes(op, 2, bytes)?;
+            Box::pin(async move {
+                websocket::send(&resources, rid, text, bytes)
+                    .await
+                    .map(|()| OwnedValue::Null)
+            })
+        }
+        id::op_ws_close => {
+            let [rid, code, reason] = exactly(op, args)?;
+            let rid: ResourceId = u32_of(op, 0, rid)?;
+            // `#[smi] u16`: the low sixteen bits, as deno_core narrows it.
+            let code = u32_of(op, 1, code)? as u16;
+            let reason = string(op, 2, reason)?;
+            Box::pin(async move {
+                websocket::close(&resources, rid, code, reason)
+                    .await
+                    .map(|()| OwnedValue::Null)
+            })
+        }
         other => return Err(not_a(other, "awaited network")),
     })
 }
@@ -284,6 +361,56 @@ fn fetch_response(answer: fetch_service::FetchAnswer) -> OwnedValue {
             None => OwnedValue::Null,
         },
     ])
+}
+
+/// A socket event, tagged as the engine's facade reads it: the kind, then the
+/// fields that kind carries. The producer rebuilds the object from this rather
+/// than being sent the absent fields as nulls.
+fn ws_event(event: WsEvent) -> OwnedValue {
+    let tagged = |tag: u32, fields: Vec<OwnedValue>| {
+        let mut all = vec![OwnedValue::U32(tag)];
+        all.extend(fields);
+        OwnedValue::Array(all)
+    };
+    match event {
+        WsEvent::Text(text) => tagged(WS_EVENT_TEXT, vec![OwnedValue::Str(text)]),
+        WsEvent::Binary(data) => tagged(WS_EVENT_BINARY, vec![OwnedValue::Bytes(data)]),
+        WsEvent::Error(message) => tagged(WS_EVENT_ERROR, vec![OwnedValue::Str(message)]),
+        WsEvent::Close { code, reason } => tagged(
+            WS_EVENT_CLOSE,
+            vec![OwnedValue::U32(u32::from(code)), OwnedValue::Str(reason)],
+        ),
+    }
+}
+
+/// The tags a socket event travels under. The producer's `network.mjs` has the
+/// same four; they are a wire detail of this op, not a contract number.
+const WS_EVENT_TEXT: u32 = 0;
+const WS_EVENT_BINARY: u32 = 1;
+const WS_EVENT_ERROR: u32 = 2;
+const WS_EVENT_CLOSE: u32 = 3;
+
+/// `Vec<(String, String)>`: a socket's extra headers, as pairs of strings.
+fn header_strings(
+    op: u32,
+    index: usize,
+    value: OwnedValue,
+) -> Result<Vec<(String, String)>, ServiceError> {
+    let list = match value {
+        OwnedValue::Array(list) => list,
+        other => return Err(wrong_type(op, index, "header array", &other)),
+    };
+    list.into_iter()
+        .map(|pair| match pair {
+            OwnedValue::Array(pair) => {
+                let [name, value]: [OwnedValue; 2] = pair
+                    .try_into()
+                    .map_err(|_| wrong_type(op, index, "header pair", &OwnedValue::Null))?;
+                Ok((string(op, index, name)?, string(op, index, value)?))
+            }
+            other => Err(wrong_type(op, index, "header pair", &other)),
+        })
+        .collect()
 }
 
 /// `Option<u64>` as serde_v8 gives it: a Number, or null.

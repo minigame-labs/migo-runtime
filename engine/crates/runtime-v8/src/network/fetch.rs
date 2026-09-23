@@ -124,14 +124,14 @@ pub fn get_or_create_client_from_state(
 pub(crate) struct NetworkResources(pub(crate) std::sync::Arc<ResourceTable>);
 
 /// A service resource, as deno's table holds it.
-struct ServiceHandle {
-    resources: std::sync::Arc<ResourceTable>,
-    id: service_net::resources::ResourceId,
+pub(crate) struct ServiceHandle {
+    pub(crate) resources: std::sync::Arc<ResourceTable>,
+    pub(crate) id: service_net::resources::ResourceId,
     kind: &'static str,
 }
 
 impl ServiceHandle {
-    fn new(
+    pub(crate) fn new(
         resources: std::sync::Arc<ResourceTable>,
         id: service_net::resources::ResourceId,
         kind: &'static str,

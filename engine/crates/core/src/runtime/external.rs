@@ -2324,7 +2324,11 @@ fn run_external_session(
     // exists, because a synchronous request is built on the calling thread and
     // needs the session's reactor to build it -- and before any service work
     // can be dispatched, which is below.
-    service_context.bind_network(network_policy.clone(), runtime.handle().clone());
+    service_context.bind_network(
+        network_policy.clone(),
+        Arc::clone(&backgrounded),
+        runtime.handle().clone(),
+    );
 
     let mut last_context_epoch = 0u64;
     let mut last_swap_report: Option<std::time::Instant> = None;

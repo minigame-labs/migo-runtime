@@ -432,9 +432,12 @@ impl ServiceContext {
     pub(crate) fn bind_network(
         &self,
         policy: shared::op_state::NetworkPolicy,
+        backgrounded: Arc<AtomicBool>,
         runtime: tokio::runtime::Handle,
     ) {
-        let _ = self.network.set(NetworkBinding::new(policy, runtime));
+        let _ = self
+            .network
+            .set(NetworkBinding::new(policy, backgrounded, runtime));
     }
 
     fn network(&self) -> Result<&NetworkBinding, ServiceError> {
@@ -1913,6 +1916,7 @@ mod tests {
                 domain_whitelist: vec!["allowed.example".to_string()],
                 enforce_https: true,
             },
+            Arc::new(AtomicBool::new(false)),
             runtime.handle().clone(),
         );
         let (sender, _commands) = shared::render_command_sender::CommandSender::new();
