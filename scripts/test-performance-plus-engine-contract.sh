@@ -146,6 +146,25 @@ printf '%s\n' "$files" | grep -qE 'ran [0-9]+ producer file calls on the host' \
 node platforms/apple/WebContent/PerformancePlus/test/emit-file-calls.mjs read "$FILE_CALLS" \
     || fail "the producer misread the host's answers to its file calls"
 
+# The network: the calls a `fetch` makes -- built, aborted, sent, its body read
+# through `core.read` and closed -- run by the host's own dispatch, and the
+# producer's reading of the host's real answers. Same shape as the file calls
+# above; a `data:` URL carries the whole path without a connection.
+NETWORK_CALLS="$WORK/network-calls"
+node platforms/apple/WebContent/PerformancePlus/test/emit-network-calls.mjs write "$NETWORK_CALLS" \
+    || fail "the producer's network calls could not be recorded"
+status=0
+network="$(cd engine && MIGO_NETWORK_CALLS_DIR="$NETWORK_CALLS" cargo test -p migo-core --no-default-features \
+    --features external-frames --lib the_producer_s_network_calls -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$network" >&2
+    fail "the host refused or failed the producer's network calls"
+fi
+printf '%s\n' "$network" | grep -qE 'ran [0-9]+ producer network calls on the host' \
+    || { printf '%s\n' "$network" >&2; fail "the network-call replay did not report running; it may not have run"; }
+node platforms/apple/WebContent/PerformancePlus/test/emit-network-calls.mjs read "$NETWORK_CALLS" \
+    || fail "the producer misread the host's answers to its network calls"
+
 # The host's input: HostCommands routed by the routing both executions share
 # and encoded by the external session's sink, then delivered to the staged
 # engine's own host bridge -- and what content's listeners hear checked,

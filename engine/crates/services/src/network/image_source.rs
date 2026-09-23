@@ -1,15 +1,19 @@
-//! Fetching an `http(s)://` image source under this execution's network
-//! policy. Decoding what comes back is `migo_services::image::inline`'s.
+//! Fetching an `http(s)://` image source under a session's network policy.
+//! Decoding what comes back is `image::inline`'s.
+//!
+//! The fetch is here rather than in an op because both executions make it: the
+//! embedded runtime passes its own client, and the external session passes the
+//! one its network service built from the same policy.
 
-use std::rc::Rc;
 use std::time::Duration;
 
-use deno_core::OpState;
-use deno_core::url::Url;
-use migo_services::image::inline::MAX_HTTP_IMAGE_BYTES;
+use reqwest::Client;
 use shared::error::{EngineError, EngineResult, ErrorCode};
+use shared::op_state::NetworkPolicy;
+use url::Url;
 
-use crate::network::gate::{GateKind, enforce_from_state};
+use super::gate::{self, GateKind};
+use crate::image::inline::MAX_HTTP_IMAGE_BYTES;
 
 /// TCP connect timeout for HTTP image fetches.
 const HTTP_IMAGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -17,15 +21,15 @@ const HTTP_IMAGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Total request timeout for HTTP image fetches (connect + body).
 const HTTP_IMAGE_TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Fetch an HTTP/HTTPS image and return its body bytes.
+/// Fetch an `http(s)://` image and answer its body bytes.
 ///
-/// **Security**: this path now runs the same preflight as `fetch()`
-/// via [`crate::network::gate::enforce_from_state`]. Previously the
-/// op short-circuited the shared reqwest client pool, which made the
-/// domain whitelist / HTTPS enforcement / IP-literal block
-/// effectively optional for `Image.src = "http(s)://..."`.
+/// The preflight is `fetch()`'s: the same gate, under `ImageInlineSrc`. An
+/// image source that skipped it would make the domain allow list, the HTTPS
+/// rule and the IP-literal block optional for anything content can write into
+/// `Image.src` -- which is the whole policy, by another name.
 pub async fn fetch_http_image(
-    state: Rc<std::cell::RefCell<OpState>>,
+    policy: &NetworkPolicy,
+    client: &Client,
     url: &str,
 ) -> EngineResult<Vec<u8>> {
     let parsed = Url::parse(url).map_err(|e| {
@@ -34,22 +38,14 @@ pub async fn fetch_http_image(
             .with_detail(e.to_string())
     })?;
 
-    let client = {
-        let mut st = state.borrow_mut();
-        // Enforce *before* we touch the shared client, because the
-        // resolver-level SSRF guard doesn't cover IP-literal hosts
-        // and does nothing for scheme/whitelist/HTTPS policy.
-        enforce_from_state(&parsed, &st, GateKind::ImageInlineSrc).map_err(|e| {
-            EngineError::new(ErrorCode::PermissionDenied)
-                .with_msg("image fetch blocked by network policy")
-                .with_detail(e.to_string())
-        })?;
-        crate::network::fetch::get_or_create_client_from_state(&mut st, false).map_err(|e| {
-            EngineError::new(ErrorCode::IoError)
-                .with_msg("http client not available")
-                .with_detail(e.to_string())
-        })?
-    };
+    // Enforced before the client is touched: the resolver's SSRF guard does not
+    // cover an IP-literal host and says nothing about scheme, allow list or
+    // HTTPS.
+    gate::enforce(&parsed, policy, GateKind::ImageInlineSrc).map_err(|e| {
+        EngineError::new(ErrorCode::PermissionDenied)
+            .with_msg("image fetch blocked by network policy")
+            .with_detail(e)
+    })?;
     let send_fut = client
         .get(parsed.clone())
         .timeout(HTTP_IMAGE_TOTAL_TIMEOUT)

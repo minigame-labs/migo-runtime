@@ -52,7 +52,10 @@ external-frames = ["dep:migo-frame-wire", "dep:frame-decode", "dep:migo-services
 # embedded execution reaches it through its ops (`api-media`); the external one
 # through the service stream -- on iOS Performance+ PCM never crosses to
 # WebContent, so the audio has to play here.
-host-audio = ["dep:audio"]
+# `migo-services` comes with it: the streamed-audio client is the engine's one
+# policy-checked HTTP client, which lives there so both executions build the
+# same one (see `services/audio.rs`).
+host-audio = ["dep:audio", "dep:migo-services"]
 
 profile-full = ["embedded-v8", "runtime-v8?/profile-full", "v8-limits", "code-signing", "api-sensors", "api-media", "api-connectivity", "api-commerce", "api-system", "graphics/profile-full"]
 profile-slim = ["embedded-v8", "runtime-v8?/profile-slim", "v8-limits", "code-signing", "graphics/profile-slim"]

@@ -281,15 +281,12 @@
       }
     },
     "host_v8_network": {
-      "reason": "Requests are made by the host, not by WebContent's fetch: the engine's network API has no CORS, carries the host's TLS and domain policy, and has sockets the web platform does not. Starts and reads are awaited; closes and cancels are commands.",
+      "reason": "Requests are made by the host, not by WebContent's fetch: the engine's network API has no CORS, carries the host's TLS and domain policy, and has sockets the web platform does not. Starts and reads are awaited; closes and cancels are commands. The handle an upload is aborted through is synchronous because it names a host resource -- the upload streams a file the host opened -- and content is given it before it awaits the upload.",
       "ops": {
         "op_fetch": "sync",
         "op_fetch_send": "async",
         "op_fetch_upload": "async",
-        "op_fetch_upload_cancel_handle": {
-          "lane": "command",
-          "local_answer": "the handle, which the producer allocates and names the upload by"
-        },
+        "op_fetch_upload_cancel_handle": "sync",
         "op_prefetch_assets": "async",
         "op_prefetch_dns": "command",
         "op_tcp_close": "command",
@@ -640,6 +637,27 @@
         "op_worker_inner_post_message": "unsupported",
         "op_worker_inner_recv_message": "unsupported"
       }
+    }
+  },
+  "core_members": {
+    "$comment": [
+      "The members of deno_core's `core` object that the engine's JavaScript calls and that are",
+      "not ops: `core.read`, `core.close` and `core.tryClose` act on deno's resource table, which",
+      "the external execution has no equivalent of. The handles they name are the network",
+      "service's (migo_services::network::resources), so on that lane these are answered by the",
+      "host exactly as the ops beside them are, and the engine's `ReadableStream` pulls a response",
+      "body the same way in both executions.",
+      "",
+      "They are classified here rather than under an extension because the op table is derived",
+      "from `deno_core::extension!` registrations and `ext:core/ops` imports, and a core member is",
+      "neither. A member on a crossing lane carries a number in service-ops.json; a `local` one is",
+      "built in the producer out of the members that do."
+    ],
+    "members": {
+      "close": "command",
+      "read": "async",
+      "readAll": "local",
+      "tryClose": "command"
     }
   }
 }

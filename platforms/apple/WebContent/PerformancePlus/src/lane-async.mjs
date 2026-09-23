@@ -17,6 +17,19 @@ import {
   transferOut,
 } from "./audio.mjs";
 import { engineHost } from "./engine-host.mjs";
+import {
+  fetchResponse,
+  uploadAnswer,
+  uploadOpts,
+  writeHeaders,
+  writeStringPairs,
+  tcpConnected,
+  tcpEvent,
+  udpEvent,
+  wsEvent,
+  wsHandshake,
+  writeStrings,
+} from "./network.mjs";
 import { drained } from "./engine-frames.mjs";
 import {
   fileBuffer,
@@ -31,6 +44,8 @@ import {
 import {
   bytesOf,
   optionalBytesOf,
+  optionalSmiU32,
+  smiU16,
   optionalStringOf,
   optionalU64,
   smiU32,
@@ -519,4 +534,186 @@ export function op_inner_audio_load_url(id, src) {
 export function op_inner_audio_get_state(id) {
   const inner = smiU32(id, "id");
   return audioRequest(SERVICE_OP.op_inner_audio_get_state, (w) => w.u32(inner)).then(innerAudioState);
+}
+
+// ---- network ------------------------------------------------------------------
+
+/// Send the request `rid` names and answer its head, with the id its body is
+/// read from (`core.read`).
+///
+/// The request is consumed by the send, as it is in the embedded runtime: a
+/// second send on the same id finds nothing.
+export function op_fetch_send(rid) {
+  const request = smiU32(rid, "rid");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_fetch_send, (w) => w.u32(request))
+    .then(fetchResponse);
+}
+
+/// Connect, and answer the handle the facade drives the socket with.
+///
+/// `protocols` and `headers` are `#[serde]`, which the conversion gate exempts;
+/// network.mjs restates serde's rule for them.
+export function op_ws_create(url, protocols, headers, timeoutMs) {
+  const target = stringOf(url, "url");
+  const timeout = optionalSmiU32(timeoutMs, "timeout_ms");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_ws_create, (w) => {
+      w.str(target);
+      writeStrings(w, protocols);
+      writeStringPairs(w, headers);
+      if (timeout === null) w.null();
+      else w.u32(timeout);
+    })
+    .then(wsHandshake);
+}
+
+/// The next event content has not seen. One request per event, as the embedded
+/// op is one promise per event: a game that stops asking stops being sent them.
+export function op_ws_next_event(rid) {
+  const socket = smiU32(rid, "rid");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_ws_next_event, (w) => w.u32(socket))
+    .then(wsEvent);
+}
+
+export function op_ws_send(rid, dataStr, dataBuf) {
+  const socket = smiU32(rid, "rid");
+  const text = optionalStringOf(dataStr, "data_str");
+  const bytes = optionalBytesOf(dataBuf, "data_buf");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_ws_send, (w) => {
+      w.u32(socket);
+      if (text === null) w.null();
+      else w.str(text);
+      if (bytes === null) w.null();
+      else w.bytes(bytes);
+    })
+    .then(nothing);
+}
+
+export function op_ws_close(rid, code, reason) {
+  const socket = smiU32(rid, "rid");
+  const status = smiU16(code, "code");
+  const why = stringOf(reason, "reason");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_ws_close, (w) => {
+      w.u32(socket);
+      w.u32(status);
+      w.str(why);
+    })
+    .then(nothing);
+}
+
+// ---- raw sockets ---------------------------------------------------------------
+
+/// Connect a TCP socket. The policy a raw socket is held to is the one `fetch`
+/// is held to, and it is the host's: a game cannot reach by socket what it
+/// cannot reach by request.
+export function op_tcp_connect(address, port, timeoutSecs) {
+  const host = stringOf(address, "address");
+  const target = smiU32(port, "port");
+  const timeout = smiU32(timeoutSecs, "timeout_secs");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_tcp_connect, (w) => {
+      w.str(host);
+      w.u32(target);
+      w.u32(timeout);
+    })
+    .then(tcpConnected);
+}
+
+export function op_tcp_next_event(rid) {
+  const socket = smiU32(rid, "rid");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_tcp_next_event, (w) => w.u32(socket))
+    .then(tcpEvent);
+}
+
+export function op_tcp_write(rid, dataStr, dataBuf) {
+  const socket = smiU32(rid, "rid");
+  const text = optionalStringOf(dataStr, "data_str");
+  const bytes = optionalBytesOf(dataBuf, "data_buf");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_tcp_write, (w) => {
+      w.u32(socket);
+      if (text === null) w.null();
+      else w.str(text);
+      if (bytes === null) w.null();
+      else w.bytes(bytes);
+    })
+    .then(nothing);
+}
+
+export function op_udp_connect(rid, address, port) {
+  const socket = smiU32(rid, "rid");
+  const host = stringOf(address, "address");
+  const target = smiU32(port, "port");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_udp_connect, (w) => {
+      w.u32(socket);
+      w.str(host);
+      w.u32(target);
+    })
+    .then(nothing);
+}
+
+export function op_udp_send(rid, address, port, dataStr, dataBuf, offset, length, setBroadcast) {
+  const socket = smiU32(rid, "rid");
+  const host = stringOf(address, "address");
+  const target = smiU32(port, "port");
+  const text = optionalStringOf(dataStr, "data_str");
+  const bytes = optionalBytesOf(dataBuf, "data_buf");
+  const from = smiU32(offset, "offset");
+  const count = smiU32(length, "length");
+  const broadcast = toBool(setBroadcast, "set_broadcast");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_udp_send, (w) => {
+      w.u32(socket);
+      w.str(host);
+      w.u32(target);
+      if (text === null) w.null();
+      else w.str(text);
+      if (bytes === null) w.null();
+      else w.bytes(bytes);
+      w.u32(from);
+      w.u32(count);
+      w.bool(broadcast);
+    })
+    .then(nothing);
+}
+
+export function op_udp_next_event(rid) {
+  const socket = smiU32(rid, "rid");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_udp_next_event, (w) => w.u32(socket))
+    .then(udpEvent);
+}
+
+/// Stream a file from the sandbox to `url` as one multipart part.
+///
+/// The bytes never cross: the host opens the file content named and feeds it
+/// into the request, which is why the path is virtual and the answer carries
+/// how much was sent. A failure is reported through the answer's `error`, as
+/// the embedded op reports it, rather than thrown.
+export function op_fetch_upload(cancelRid, url, filePath, name, filename, headers, formData, opts) {
+  const cancel = smiU32(cancelRid, "cancel_rid");
+  const target = stringOf(url, "url");
+  const path = stringOf(filePath, "file_path");
+  const field = stringOf(name, "name");
+  const asName = stringOf(filename, "filename");
+  const { timeout, enableHttp2 } = uploadOpts(opts);
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_fetch_upload, (w) => {
+      w.u32(cancel);
+      w.str(target);
+      w.str(path);
+      w.str(field);
+      w.str(asName);
+      writeHeaders(w, headers);
+      writeStringPairs(w, formData);
+      w.u32(timeout);
+      w.bool(enableHttp2);
+    })
+    .then(uploadAnswer);
 }

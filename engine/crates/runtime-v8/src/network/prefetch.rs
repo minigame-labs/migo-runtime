@@ -21,16 +21,11 @@ use deno_core::url::Url;
 use deno_error::JsErrorBox;
 use tracing::debug;
 
-use super::dns_cache;
 use super::fetch::get_or_create_client_from_state;
+use migo_services::network::dns_cache;
 
 /// Maximum number of concurrent prefetch requests.
 const MAX_CONCURRENT_PREFETCH: usize = 6;
-
-/// Maximum hostnames a single `prefetchDns` call will act on, so a game
-/// passing thousands of names can't translate into an unbounded pile of
-/// background DNS work.
-const MAX_PREFETCH_DNS_HOSTS: usize = 32;
 
 /// Largest response body we will drain during a prefetch. Draining a
 /// small body lets the HTTP/1.1 connection return to the pool warm;
@@ -47,42 +42,21 @@ const MAX_DRAIN_BODY: usize = 1024 * 1024;
 ///
 /// Accepts a JSON-encoded string array: `["api.example.com", "cdn.example.com"]`
 ///
-/// Resolution happens in background Tokio tasks. This op returns immediately.
-/// Invalid or private/loopback addresses are silently skipped.
+/// The work is the service's (`migo_services::network::dns_cache`), which both
+/// executions call: the policy filter, the cap and the background resolve are
+/// one set of rules. Resolution happens in background Tokio tasks; this op
+/// returns immediately.
 #[op2(fast)]
 pub fn op_prefetch_dns(
     state: &mut OpState,
     #[string] hosts_json: String,
 ) -> Result<(), JsErrorBox> {
-    let hosts: Vec<String> = serde_json::from_str(&hosts_json)
-        .map_err(|e| JsErrorBox::type_error(format!("prefetchDns: invalid JSON: {}", e)))?;
-
-    if hosts.is_empty() {
-        return Ok(());
-    }
-
-    // Apply the same domain whitelist as fetch/WebSocket: prefetch must
-    // not warm the resolver (or leak hostnames to the DNS server) for
-    // hosts the policy would refuse to connect to. Empty whitelist =
-    // allow all, matching the gate.
     let policy = state
         .borrow::<shared::op_state::HostOpState>()
         .network_policy
         .clone();
-    let mut allowed: Vec<String> = hosts
-        .into_iter()
-        .filter(|h| super::gate::is_host_whitelisted(h, &policy))
-        .collect();
-
-    if allowed.is_empty() {
-        return Ok(());
-    }
-    // Bound the fan-out so one call can't schedule unbounded background work.
-    allowed.truncate(MAX_PREFETCH_DNS_HOSTS);
-
-    debug!("prefetchDns: pre-resolving {} hosts", allowed.len());
-    dns_cache::pre_resolve(allowed);
-    Ok(())
+    dns_cache::prefetch_dns(&policy, &hosts_json)
+        .map_err(|error| JsErrorBox::type_error(error.message))
 }
 
 /// Partition `items` into sequential batches, each at most

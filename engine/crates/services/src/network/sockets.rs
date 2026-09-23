@@ -1,25 +1,34 @@
+//! What every socket needs: ports, addresses and the scratch a read fills.
+//!
+//! These are the parts of a raw socket that have nothing to do with a script
+//! runtime -- narrowing a port, bracketing an IPv6 literal, refusing an address
+//! the policy will not reach, and the per-socket buffer a receive reuses. They
+//! live here because both executions open the same sockets: the embedded ops
+//! and the external session's dispatcher call the same code beneath them.
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use deno_error::JsErrorBox;
+use crate::ServiceError;
 
 /// Delay inserted before each poll iteration when the app is backgrounded.
-pub(super) const BACKGROUND_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
+pub const BACKGROUND_THROTTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Narrow a JS-supplied port (arrives as `u32`) to `u16`, rejecting
 /// out-of-range values instead of silently wrapping. `70000 as u16`
 /// is `4464` — a *different* port — so raw sockets must reject rather
 /// than connect somewhere the caller never asked for.
-pub(super) fn checked_port(port: u32) -> Result<u16, JsErrorBox> {
-    u16::try_from(port)
-        .map_err(|_| JsErrorBox::type_error(format!("port {} out of range (0-65535)", port)))
+pub fn checked_port(port: u32) -> Result<u16, ServiceError> {
+    u16::try_from(port).map_err(|_| {
+        ServiceError::classed("TypeError", format!("port {port} out of range (0-65535)"))
+    })
 }
 
 /// Build a `host:port` string for `tokio::net::lookup_host`, bracketing
 /// bare IPv6 literals (`::1` -> `[::1]:port`). Without the brackets the
 /// literal's own colons make the string ambiguous and resolution fails,
 /// so raw IPv6-literal connect/send targets would never work.
-pub(super) fn join_host_port(host: &str, port: u16) -> String {
+pub fn join_host_port(host: &str, port: u16) -> String {
     if host.contains(':') && !host.starts_with('[') {
         format!("[{}]:{}", host, port)
     } else {
@@ -32,7 +41,7 @@ pub(super) fn join_host_port(host: &str, port: u16) -> String {
 /// Rejects addresses in private/loopback/link-local ranges to prevent SSRF.
 /// Checks ALL resolved addresses — if any points to a blocked range the
 /// entire resolution is rejected (prevents mixed public/private DNS responses).
-pub(super) async fn resolve_first(addr: &str) -> Result<SocketAddr, std::io::Error> {
+pub async fn resolve_first(addr: &str) -> Result<SocketAddr, std::io::Error> {
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr).await?.collect();
     let first = *addrs.first().ok_or_else(|| {
         std::io::Error::new(
@@ -56,7 +65,7 @@ pub(super) async fn resolve_first(addr: &str) -> Result<SocketAddr, std::io::Err
 
 /// Return "IPv4" or "IPv6" for a SocketAddr as a `&'static str`, so callers
 /// cache/copy it instead of allocating a `String` per event.
-pub(super) fn addr_family(addr: &SocketAddr) -> &'static str {
+pub fn addr_family(addr: &SocketAddr) -> &'static str {
     match addr {
         SocketAddr::V4(_) => "IPv4",
         SocketAddr::V6(_) => "IPv6",
@@ -66,15 +75,15 @@ pub(super) fn addr_family(addr: &SocketAddr) -> &'static str {
 /// Cached, cheaply-clonable address metadata for one socket endpoint. Built
 /// once at connect/bind so the hot receive path clones an `Arc<str>` and copies
 /// two scalars instead of re-formatting a `SocketAddr` (heap `String`) per event.
-#[derive(Clone)]
-pub(super) struct AddrMeta {
+#[derive(Clone, Debug)]
+pub struct AddrMeta {
     pub address: Arc<str>,
     pub family: &'static str,
     pub port: u16,
 }
 
 impl AddrMeta {
-    pub(super) fn new(addr: &SocketAddr) -> Self {
+    pub fn new(addr: &SocketAddr) -> Self {
         Self {
             address: Arc::from(addr.ip().to_string()),
             family: addr_family(addr),
@@ -88,26 +97,26 @@ impl AddrMeta {
 /// a fresh exact-length `Box<[u8]>` for `ToJsBuffer`. No `unsafe` /
 /// uninitialized memory. This is one exact n-byte alloc+copy per event, not
 /// end-to-end zero-copy — it removes the repeated 64 KiB allocate+zero.
-pub(super) struct ReceiveScratch {
+pub struct ReceiveScratch {
     buf: Box<[u8]>,
 }
 
 impl ReceiveScratch {
-    pub(super) fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             buf: vec![0u8; capacity].into_boxed_slice(),
         }
     }
 
     /// Mutable view of the whole scratch for a single `read` / `recv_from`.
-    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.buf
     }
 
     /// Copy exactly the first `n` filled bytes into a fresh exact-length
     /// `Box<[u8]>`. `n` is clamped to the scratch length so a malformed
     /// internal length can never read out of bounds or panic.
-    pub(super) fn copy_filled(&self, n: usize) -> Box<[u8]> {
+    pub fn copy_filled(&self, n: usize) -> Box<[u8]> {
         let end = n.min(self.buf.len());
         self.buf[..end].to_vec().into_boxed_slice()
     }

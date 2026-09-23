@@ -48,6 +48,8 @@ OP_DEF = re.compile(
 MACRO_OP = re.compile(r"\b(?P<macro>[a-z_][a-z0-9_]*)!\s*\(\s*(?P<name>op_[A-Za-z0-9_]+)\b")
 IMPORT_OPS = re.compile(r"import\s*\{(?P<names>[^}]*)\}\s*from\s*[\"']ext:core/ops[\"']", re.S)
 CORE_OPS_REF = re.compile(r"\b(?:core\.)?ops\.(op_[A-Za-z0-9_]+)")
+# A member of deno's `core` object other than `ops`: `core.read`, `core.encode`.
+CORE_MEMBER_REF = re.compile(r"\bcore\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 
 
 @dataclass
@@ -358,6 +360,26 @@ def imported_ops(root: pathlib.Path) -> dict[str, list[str]]:
         for name in names:
             imports.setdefault(name, []).append(relative)
     return imports
+
+
+def core_members(root: pathlib.Path) -> dict[str, list[str]]:
+    """The members of deno's `core` object the engine's JavaScript reaches for,
+    other than `ops`, and which file reaches for each.
+
+    `core.read` and `core.tryClose` are calls that cross on the Performance+
+    lane and are not ops, so the boundary contract classifies them separately
+    (its `core_members` table) and this is what that table is compared against.
+    """
+    members: dict[str, set[str]] = {}
+    for path in sorted((root / RUNTIME_SRC).rglob("*.js")):
+        text = strip_js_comments(path.read_text(encoding="utf-8"))
+        relative = str(path.relative_to(root))
+        for match in CORE_MEMBER_REF.finditer(text):
+            name = match.group("name")
+            if name == "ops":
+                continue
+            members.setdefault(name, set()).add(relative)
+    return {name: sorted(files) for name, files in sorted(members.items())}
 
 
 def surface(root: pathlib.Path) -> tuple[dict[str, Op], dict[str, list[str]]]:

@@ -18,7 +18,6 @@ use crate::io_state::IoSchedulerState;
 /// The alias table and its registry live in `migo_services`; re-exported under
 /// the path the rest of this crate names them by.
 pub(crate) use migo_services::image::cache;
-mod inline_src;
 
 /// This isolate's handle on its Session's image alias table.
 ///
@@ -91,9 +90,22 @@ pub async fn op_load_image(
     let th = (target_height > 0).then_some(target_height);
     let started_at = std::time::Instant::now();
     let env = image_env(&state.borrow());
-    let fetch_state = state.clone();
+    // The fetch is the service's, under this session's policy and this
+    // runtime's shared client: `Image.src = "https://..."` is held to exactly
+    // what `fetch()` is.
+    let (policy, client) = {
+        let mut st = state.borrow_mut();
+        let policy = st.borrow::<shared::op_state::HostOpState>().network_policy.clone();
+        let client = crate::network::fetch::get_or_create_client_from_state(&mut st, false);
+        (policy, client)
+    };
     let result = images::load_image(&env, image_id, src.clone(), tw, th, move |url| async move {
-        inline_src::fetch_http_image(fetch_state, &url).await
+        let client = client.map_err(|error| {
+            shared::error::EngineError::new(shared::error::ErrorCode::IoError)
+                .with_msg("http client not available")
+                .with_detail(error.to_string())
+        })?;
+        migo_services::network::image_source::fetch_http_image(&policy, &client, &url).await
     })
     .await
     .map_err(js_err_from_engine);

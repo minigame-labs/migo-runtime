@@ -1,0 +1,106 @@
+{
+  "events": [
+    {
+      "name": "text",
+      "wire": [
+        0,
+        "hello"
+      ]
+    },
+    {
+      "name": "binary",
+      "wire": [
+        1,
+        [
+          0,
+          127,
+          255
+        ]
+      ]
+    },
+    {
+      "name": "error",
+      "wire": [
+        2,
+        "connection reset"
+      ]
+    },
+    {
+      "name": "close",
+      "wire": [
+        3,
+        1006,
+        ""
+      ]
+    },
+    {
+      "name": "close with a reason",
+      "wire": [
+        3,
+        1000,
+        "bye"
+      ]
+    }
+  ],
+  "tcp": [
+    {
+      "name": "message",
+      "wire": [
+        0,
+        [
+          112,
+          111,
+          110,
+          103
+        ],
+        "93.184.216.34",
+        "IPv4",
+        9000,
+        "10.0.0.2",
+        "IPv4",
+        51000
+      ]
+    },
+    {
+      "name": "error",
+      "wire": [
+        1,
+        "connection reset"
+      ]
+    },
+    {
+      "name": "close",
+      "wire": [
+        2
+      ]
+    }
+  ],
+  "udp": [
+    {
+      "name": "message",
+      "wire": [
+        0,
+        [
+          112,
+          105,
+          110,
+          103
+        ],
+        4,
+        "93.184.216.34",
+        "IPv4",
+        9000,
+        "10.0.0.2",
+        "IPv4",
+        51000
+      ]
+    },
+    {
+      "name": "error",
+      "wire": [
+        1,
+        "no route to host"
+      ]
+    }
+  ]
+}

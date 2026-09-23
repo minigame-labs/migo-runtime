@@ -155,6 +155,30 @@ service_ops! {
     op_inner_audio_set_playback_rate = 134,
     op_inner_audio_set_autoplay = 135,
     op_inner_audio_get_state = 136,
+    op_fetch = 137,
+    op_fetch_send = 138,
+    op_prefetch_dns = 139,
+    // Not ops but members of deno's `core`, which this host answers because the
+    // handles they name are the network service's; see `service_network`.
+    core_read = 140,
+    core_close = 141,
+    core_try_close = 142,
+    op_ws_create = 143,
+    op_ws_next_event = 144,
+    op_ws_send = 145,
+    op_ws_close = 146,
+    op_tcp_connect = 147,
+    op_tcp_next_event = 148,
+    op_tcp_write = 149,
+    op_tcp_close = 150,
+    op_udp_bind = 151,
+    op_udp_connect = 152,
+    op_udp_send = 153,
+    op_udp_next_event = 154,
+    op_udp_close = 155,
+    op_udp_set_ttl = 156,
+    op_fetch_upload_cancel_handle = 157,
+    op_fetch_upload = 158,
 }
 
 /// The op's name, for a refusal a person will read.

@@ -48,7 +48,10 @@ PRODUCER_SRC = pathlib.Path("platforms/apple/WebContent/PerformancePlus/src")
 CONTRACT = pathlib.Path("contracts/runtime/op-boundary.json")
 SERVICE_OPS_CONTRACT = pathlib.Path("contracts/runtime/service-ops.json")
 SERVICE_OPS_MODULE = PRODUCER_SRC / "service-ops.mjs"
-SERVICE_OP_ENTRY = re.compile(r"^\s*(op_[A-Za-z0-9_]+):\s*(\d+),\s*$", re.M)
+SERVICE_OP_ENTRY = re.compile(r"^\s*((?:op|core)_[A-Za-z0-9_]+):\s*(\d+),\s*$", re.M)
+ENGINE_CORE_MODULE = PRODUCER_SRC / "engine-core.mjs"
+# A member of the producer's `core` left as the stub that throws: `read: resourceStreams("read"),`.
+CORE_STUB = re.compile(r"^\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*):\s*resourceStreams\(", re.M)
 HOST_EVENTS_CONTRACT = pathlib.Path("contracts/runtime/host-events.json")
 HOST_EVENTS_MODULE = PRODUCER_SRC / "host-events.mjs"
 HOST_EVENT_ENTRY = re.compile(r"^\s*(_internal[A-Za-z0-9_]+):\s*(\d+),\s*$", re.M)
@@ -330,6 +333,33 @@ def check_service_ops(root: pathlib.Path, lanes: dict[str, str]) -> dict[str, in
     return contract
 
 
+def wire_name(member: str) -> str:
+    """The name a `core` member's service number is filed under: `tryClose` is
+    `core_try_close`, as every other op name is snake case."""
+    return "core_" + "".join(f"_{c.lower()}" if c.isupper() else c for c in member)
+
+
+def check_core_members(root: pathlib.Path, contract: dict) -> None:
+    """The producer implements every core member the contract says crosses.
+
+    `makeCore` hands out a throwing stub for the members it does not implement
+    (`resourceStreams`), which is the right answer for a member no lane has
+    decided -- and the wrong one for a member the contract says the host
+    answers: content would see a thrown LaneNotImplemented where the engine
+    expects a body. So a member with a crossing lane must not be a stub, and
+    one the contract leaves out must still be.
+    """
+    members = (contract.get("core_members") or {}).get("members", {})
+    source = (root / ENGINE_CORE_MODULE).read_text(encoding="utf-8")
+    stubs = {match.group("name") for match in CORE_STUB.finditer(source)}
+    for name, lane in sorted(members.items()):
+        if lane in ("sync", "async", "command", "local") and name in stubs:
+            raise BuildError(
+                f"{ENGINE_CORE_MODULE.name} leaves core.{name} as the stub that throws, "
+                f"and the contract says it is {lane}"
+            )
+
+
 def check_host_events(root: pathlib.Path) -> dict[str, int]:
     """The producer's host-event table against the contract, entry for entry:
     a number that differs is the host sending a touch and the producer calling
@@ -359,10 +389,16 @@ def build(root: pathlib.Path, out: pathlib.Path, with_producer: bool) -> dict:
         for name, value in entry["ops"].items():
             lanes[name] = value if isinstance(value, str) else value["lane"]
             extension_of[name] = extension
+    # The core members travel under `core_<snake case>`; their lanes join the
+    # ops' so one table answers "where is this answered" for both.
+    core_lanes = {wire_name(name): lane
+                  for name, lane in (contract.get("core_members") or {}).get("members", {}).items()}
+    lanes.update(core_lanes)
 
     entries, reachable, modules, _ = runtime_modules.graph(root)
     implemented = lane_implementations(root, lanes)
     service_ops = check_service_ops(root, lanes)
+    check_core_members(root, contract)
     host_events = check_host_events(root)
     conversions = check_conversions(root, implemented)
 
@@ -429,9 +465,10 @@ def build(root: pathlib.Path, out: pathlib.Path, with_producer: bool) -> dict:
     (engine / "core" / "mod.mjs").write_text(
         GENERATED
         + 'import * as ops from "./ops.mjs";\n'
+        + 'import * as coreStream from "../../core-stream.mjs";\n'
         + 'import { makeCore, makePrimordials } from "../../engine-core.mjs";\n'
         + f"export const primordials = makePrimordials({json.dumps(sorted(primordials))});\n"
-        + "export const core = makeCore(ops);\n"
+        + "export const core = makeCore(ops, coreStream);\n"
         + "export const internals = { __proto__: null };\n",
         encoding="utf-8",
     )

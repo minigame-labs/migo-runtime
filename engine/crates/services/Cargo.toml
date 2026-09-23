@@ -26,7 +26,22 @@ shared = { package = "migo-shared", path = "../shared", default-features = false
 # `zip-extract` because `unzip` and `readZipEntry` are file-system calls every
 # execution offers; the embedded runtime has always enabled it.
 migo-io = { path = "../io", default-features = false, features = ["zip-extract"] }
-tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util", "net"] }
+# `join_all` for the DNS warm-up, which resolves a capped batch at a time
+# rather than spawning one task per host.
+futures.workspace = true
+# The HTTP client every outbound request is made with (see network::client):
+# one builder, so the resolver and the redirect gate cannot be forgotten by a
+# second one.
+reqwest.workspace = true
+http.workspace = true
+# A response body arrives as `Bytes`, and a chunk handed to content is a
+# window into the one the connection produced rather than a copy of it.
+bytes.workspace = true
+# `data:` URLs, which `fetch` answers without a connection.
+data-url.workspace = true
+# Also the network policy's URL rules, which is the same parser the engine's
+# own `fetch` uses.
 # Classifies an InnerAudioContext `src` exactly as the embedded runtime always
 # has -- WHATWG parsing, so " HTTP://x" is remote -- and names the URL a
 # caller's network policy admits. Already in the build through `deno_core`
@@ -34,6 +49,13 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util"] }
 url = "2.5"
 tracing = { workspace = true }
 parking_lot = { workspace = true }
+# Content's WebSocket: the connection, its limits and its handshake, held here
+# so both executions open the same socket under the same policy.
+tokio-tungstenite.workspace = true
+# `prefetchDns` takes its hostnames as a JSON array, which is the shape the
+# engine's JavaScript has always passed; parsed here so both executions refuse
+# a malformed list with the same words.
+serde_json = { workspace = true }
 # Data URLs carry base64 or percent-encoded payloads, and are cache-keyed by
 # their SHA-256 (the same digest the package integrity check uses, taken here
 # directly because that check is a code-signing feature this crate must not
@@ -44,7 +66,6 @@ sha2 = "0.10"
 hex = "0.4"
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }
 # Section 7.3's contention gate, for the image alias registry.
 migo-contention-probe = { path = "../../testing/contention-probe", default-features = false }

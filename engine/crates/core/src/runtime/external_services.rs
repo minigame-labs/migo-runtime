@@ -64,6 +64,7 @@ use shared::error::{EngineError, EngineResult, ErrorCode};
 
 use super::service_args::{bytes, exactly, i32_of, not_a, string, strings, u32_of};
 use super::service_audio::{self, AudioBinding, LocalSources};
+use super::service_network::{self, NetworkBinding, UploadSources};
 use super::service_ops::id;
 
 /// The most messages held ahead of a predecessor that has not arrived.
@@ -285,6 +286,9 @@ pub(crate) struct ServiceContext {
     /// session thread and on the synchronous endpoint's: the sender is the one
     /// every audio command goes through, in the order it is dispatched.
     audio: OnceLock<AudioBinding>,
+    /// The session's network: the policy content's requests are held to, and
+    /// the handles a `fetch` hands out. Read on both threads, as audio is.
+    network: OnceLock<NetworkBinding>,
 }
 
 impl ServiceContext {
@@ -297,6 +301,7 @@ impl ServiceContext {
             content: RwLock::new(None),
             aliases: Arc::new(parking_lot::Mutex::new(ImageCache::new())),
             audio: OnceLock::new(),
+            network: OnceLock::new(),
         }
     }
 
@@ -411,12 +416,65 @@ impl ServiceContext {
         &self,
         sender: shared::op_state::AudioSender,
         runtime_generation: i64,
+        network_policy: shared::op_state::NetworkPolicy,
     ) {
         let _ = self.audio.set(AudioBinding {
             sender,
             runtime_generation,
             platform: crate::services::audio::platform_audio_service(),
+            network_policy,
         });
+    }
+
+    /// Give the services this session's network policy: what content's
+    /// requests are held to, and what the clients it builds are configured
+    /// from. Once, before the first service work is dispatched.
+    pub(crate) fn bind_network(
+        &self,
+        policy: shared::op_state::NetworkPolicy,
+        backgrounded: Arc<AtomicBool>,
+        runtime: tokio::runtime::Handle,
+    ) {
+        let _ = self
+            .network
+            .set(NetworkBinding::new(policy, backgrounded, runtime));
+    }
+
+    /// What an `http(s)://` image source is fetched with, or why there is
+    /// nothing to fetch it with: the same policy and client `fetch()` uses.
+    fn image_fetch(
+        &self,
+    ) -> Result<
+        (
+            shared::op_state::NetworkPolicy,
+            migo_services::network::client::PolicyHttpClient,
+        ),
+        EngineError,
+    > {
+        self.network()
+            .and_then(|network| network.image_client())
+            .map_err(|error| {
+                EngineError::new(ErrorCode::Unsupported)
+                    .with_msg("image fetch unavailable")
+                    .with_detail(error.message)
+            })
+    }
+
+    /// Where an upload reads from: the mounted package's sandbox.
+    fn upload_sources(&self) -> UploadSources {
+        let content = self.content.read();
+        UploadSources {
+            vfs: content.as_ref().map(|content| Arc::clone(&content.vfs)),
+            mount_table: content
+                .as_ref()
+                .map(|content| Arc::clone(&content.mount_table)),
+        }
+    }
+
+    fn network(&self) -> Result<&NetworkBinding, ServiceError> {
+        self.network
+            .get()
+            .ok_or_else(|| ServiceError::generic("the session's network is not started"))
     }
 
     fn audio(&self) -> Result<&AudioBinding, ServiceError> {
@@ -593,6 +651,9 @@ impl ServiceContext {
             audio if service_audio::is_sync(audio) => {
                 service_audio::call_sync(self.audio()?, audio, args)
             }
+            network if service_network::is_sync(network) => {
+                service_network::call_sync(self.network()?, self.scheduler()?.as_ref(), network, args)
+            }
             other => Err(not_a(other, "synchronous")),
         }
     }
@@ -612,6 +673,9 @@ impl ServiceContext {
                 let (image_id, src) = (u32_of(op, 0, image_id)?, string(op, 1, src)?);
                 let (tw, th) = (u32_of(op, 2, tw)?, u32_of(op, 3, th)?);
                 let env = self.image_env(render)?;
+                // An `http(s)://` source is fetched by this session's network
+                // service, under the policy every other request is held to.
+                let fetch = self.image_fetch();
                 Box::pin(async move {
                     migo_services::image::load_image(
                         &env,
@@ -619,7 +683,13 @@ impl ServiceContext {
                         src,
                         (tw > 0).then_some(tw),
                         (th > 0).then_some(th),
-                        |url| async move { Err(http_images_unavailable(&url)) },
+                        |url| async move {
+                            let (policy, client) = fetch?;
+                            migo_services::network::image_source::fetch_http_image(
+                                &policy, &client, &url,
+                            )
+                            .await
+                        },
                     )
                     .await
                     .map(loaded_image)
@@ -720,6 +790,15 @@ impl ServiceContext {
             audio if service_audio::is_async(audio) => {
                 return service_audio::call_async(self.audio()?, self.audio_sources(), audio, args);
             }
+            network if service_network::is_async(network) => {
+                return service_network::call_async(
+                    self.network()?,
+                    self.scheduler()?.as_ref(),
+                    self.upload_sources(),
+                    network,
+                    args,
+                );
+            }
             other => return Err(not_a(other, "awaited")),
         })
     }
@@ -758,6 +837,9 @@ impl ServiceContext {
             audio if service_audio::is_command(audio) => {
                 service_audio::command(self.audio()?, audio, args)
             }
+            network if service_network::is_command(network) => {
+                service_network::command(self.network()?, network, args)
+            }
             other => Err(not_a(other, "command")),
         }
     }
@@ -790,17 +872,6 @@ fn image_error(error: EngineError) -> ServiceError {
         Some(detail) => format!("[{:?}] {} ({})", error.code, error.msg, detail),
         None => format!("[{:?}] {}", error.code, error.msg),
     })
-}
-
-/// An `http(s)://` image source, before the network service exists on this
-/// lane: refused with the reason, as the embedded runtime refuses a source its
-/// network policy blocks.
-fn http_images_unavailable(url: &str) -> EngineError {
-    EngineError::new(ErrorCode::Unsupported)
-        .with_msg("image fetch unavailable")
-        .with_detail(format!(
-            "{url}: this session has no network service to fetch it with"
-        ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1835,6 +1906,161 @@ mod tests {
             type_errors.join("\n  ")
         );
         println!("ran {} producer file calls on the host", answers.len());
+    }
+
+    /// The producer's network calls, as its lanes and `core-stream.mjs` encode
+    /// them, run through this host's dispatch in the order content made them.
+    ///
+    /// `test/emit-network-calls.mjs write` records a script that builds a
+    /// request and aborts it, then carries a `data:` URL the whole way --
+    /// built, sent, read through `core.read` in the caller's chunks, closed --
+    /// and `read` checks what the producer makes of the answers this writes.
+    ///
+    /// The handles are the host's. The producer was answered canned ones while
+    /// recording, so each answer's canned form is read beside it and every rid
+    /// the producer names is mapped onto the handle this host actually issued:
+    /// a call that named a handle the host never gave out would name nothing.
+    #[test]
+    #[ignore = "needs the producer's calls from node; run through scripts/test-performance-plus-engine-contract.sh"]
+    fn the_producer_s_network_calls_run_on_the_host() {
+        let dir = PathBuf::from(
+            std::env::var("MIGO_NETWORK_CALLS_DIR")
+                .expect("MIGO_NETWORK_CALLS_DIR names emit-network-calls.mjs's output"),
+        );
+        let calls: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("calls.json")).expect("calls.json"),
+        )
+        .expect("the calls are JSON");
+
+        let root =
+            std::env::temp_dir().join(format!("migo-external-network-calls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let context = Arc::new(ServiceContext::new(root.join("files"), root.join("cache")));
+        context.bind_session(1);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        context.bind_network(
+            shared::op_state::NetworkPolicy {
+                domain_whitelist: vec!["allowed.example".to_string()],
+                enforce_https: true,
+            },
+            Arc::new(AtomicBool::new(false)),
+            runtime.handle().clone(),
+        );
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+
+        /// The handles an answer hands out, in the order the value carries
+        /// them: `op_fetch` gives the request and what aborts it, and
+        /// `op_fetch_send` gives the body's.
+        fn handles_of(name: &str, value: &OwnedValue) -> Vec<u32> {
+            let OwnedValue::Array(fields) = value else {
+                return Vec::new();
+            };
+            let taken: &[usize] = match name {
+                "op_fetch" => &[0, 1],
+                "op_fetch_send" => &[4],
+                _ => return Vec::new(),
+            };
+            taken
+                .iter()
+                .filter_map(|at| match fields.get(*at) {
+                    Some(OwnedValue::U32(id)) => Some(*id),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The value a recorded canned answer carried, for the handles it gave.
+        fn canned_value(call: &serde_json::Value) -> Option<OwnedValue> {
+            let text = call["canned"].as_str()?;
+            let bytes = hex_bytes(text);
+            let values = read_values(&bytes[4..]).ok()?;
+            values.iter().next().map(|value| value.to_owned_value())
+        }
+
+        let names_a_handle = |name: &str| {
+            matches!(
+                name,
+                "op_fetch_send" | "core_read" | "core_close" | "core_try_close"
+            )
+        };
+
+        let mut host_of: HashMap<u32, u32> = HashMap::new();
+        let mut answers = Vec::new();
+        let mut refusals = Vec::new();
+        for call in calls.as_array().expect("a list") {
+            let name = call["op"].as_str().expect("an op name");
+            let op = crate::runtime::service_ops::ALL
+                .iter()
+                .find(|(known, _)| *known == name)
+                .map(|(_, id)| *id)
+                .unwrap_or_else(|| panic!("{name} has no number"));
+            let mut args = read_values(&hex_bytes(call["args"].as_str().expect("args")))
+                .unwrap_or_else(|error| panic!("{name}: the arguments do not read: {error:?}"))
+                .iter()
+                .map(|value| value.to_owned_value())
+                .collect::<Vec<_>>();
+            if names_a_handle(name) {
+                let OwnedValue::U32(recorded) = args[0] else {
+                    panic!("{name} names a handle");
+                };
+                args[0] = OwnedValue::U32(
+                    *host_of
+                        .get(&recorded)
+                        .unwrap_or_else(|| panic!("{name} names handle {recorded}, which no answer gave out")),
+                );
+            }
+            let outcome = match call["shape"].as_str() {
+                Some("sync") => context.call_sync(op, args),
+                Some("async") => match context.call_async(op, args, &render) {
+                    Ok(future) => runtime.block_on(future),
+                    Err(error) => Err(error),
+                },
+                Some("command") => context.command(op, args, &render).map(|()| OwnedValue::Null),
+                other => panic!("{name}: shape {other:?}"),
+            };
+            if let Ok(value) = &outcome
+                && let Some(recorded) = canned_value(call)
+            {
+                let given = handles_of(name, &recorded);
+                let issued = handles_of(name, value);
+                assert_eq!(
+                    given.len(),
+                    issued.len(),
+                    "{name} answered {issued:?} where the producer was given {given:?}"
+                );
+                for (recorded, issued) in given.into_iter().zip(issued) {
+                    host_of.insert(recorded, issued);
+                }
+            }
+            if let Err(error) = &outcome
+                && error.class == CLASS_TYPE_ERROR
+            {
+                refusals.push(format!("{name}: {}", error.message));
+            }
+            answers.push(serde_json::json!({
+                "op": name,
+                "outcome": hex_text(&encode_outcome(outcome)),
+            }));
+        }
+        std::fs::write(
+            dir.join("answers.json"),
+            serde_json::to_string(&answers).expect("JSON"),
+        )
+        .expect("write the answers");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            refusals.is_empty(),
+            "the host refused the producer's arguments:\n  {}",
+            refusals.join("\n  ")
+        );
+        println!("ran {} producer network calls on the host", answers.len());
     }
 
     fn sync_params(op: u32, values: &[OwnedValue]) -> Vec<u8> {

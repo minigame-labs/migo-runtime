@@ -15,8 +15,38 @@ use std::net::SocketAddr;
 
 use tracing::debug;
 
+use crate::ServiceError;
+
 /// Max concurrent DNS resolutions run by the background supervisor.
 const MAX_CONCURRENT_RESOLVES: usize = 6;
+
+/// The most hostnames one `prefetchDns` call acts on, so a game passing
+/// thousands of names cannot translate into an unbounded pile of background
+/// DNS work.
+pub const MAX_PREFETCH_DNS_HOSTS: usize = 32;
+
+/// `op_prefetch_dns`'s body: the JSON array content passed, filtered by this
+/// session's policy and bounded, warmed in the background.
+///
+/// The policy is applied here rather than at the resolver because a prefetch
+/// must not leak a hostname the session would refuse to connect to: the
+/// question this answers is "may content reach it at all", and the answer is
+/// the same one `fetch` gets.
+pub fn prefetch_dns(policy: &shared::op_state::NetworkPolicy, hosts_json: &str) -> Result<(), ServiceError> {
+    let hosts: Vec<String> = serde_json::from_str(hosts_json)
+        .map_err(|error| ServiceError::classed("TypeError", format!("prefetchDns: invalid JSON: {error}")))?;
+    let mut allowed: Vec<String> = hosts
+        .into_iter()
+        .filter(|host| super::gate::is_host_whitelisted(host, policy))
+        .collect();
+    if allowed.is_empty() {
+        return Ok(());
+    }
+    allowed.truncate(MAX_PREFETCH_DNS_HOSTS);
+    debug!("prefetchDns: pre-resolving {} hosts", allowed.len());
+    pre_resolve(allowed);
+    Ok(())
+}
 
 /// Pre-resolve a list of hostnames in the background, warming the OS
 /// resolver cache so later connects are faster.
@@ -31,7 +61,7 @@ const MAX_CONCURRENT_RESOLVES: usize = 6;
 /// could fan out into an unbounded number of background tasks. Callers
 /// (`op_prefetch_dns`) have already applied the domain whitelist and
 /// capped the list length.
-pub(crate) fn pre_resolve(hosts: Vec<String>) {
+pub fn pre_resolve(hosts: Vec<String>) {
     tokio::spawn(async move {
         for batch in hosts.chunks(MAX_CONCURRENT_RESOLVES) {
             let resolves = batch.iter().cloned().map(resolve_one);
