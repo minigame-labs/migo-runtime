@@ -214,7 +214,7 @@ pub async fn op_ws_create(
             HeaderValue::from_str(value),
         ) {
             if name.as_str() == "host"
-                || crate::network::fetch::is_blocked_header(&name)
+                || migo_services::network::fetch::is_blocked_header(&name)
                 || is_reserved_ws_header(&name)
             {
                 continue;

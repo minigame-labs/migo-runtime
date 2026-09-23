@@ -147,7 +147,10 @@ impl ResourceTable {
         }
     }
 
-    pub(crate) fn response(
+    /// The body `id` names. Public because the embedded runtime's handle
+    /// answers deno's `size_hint` from it, which is how `ReadableStream`
+    /// sizes a download it is about to read.
+    pub fn response(
         &self,
         id: ResourceId,
     ) -> Result<Arc<super::fetch::ResponseBody>, ServiceError> {

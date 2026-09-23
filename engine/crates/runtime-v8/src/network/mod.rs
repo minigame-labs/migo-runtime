@@ -59,6 +59,12 @@ extension!(host_v8_network,
   },
   state = |state, options| {
     state.put::<Options>(options.options);
+    // This runtime's network resources live in the service, one table per
+    // runtime, so a request, its cancel handle and its response body are the
+    // same objects both executions hold (see `fetch::NetworkResources`).
+    state.put::<fetch::NetworkResources>(fetch::NetworkResources(std::sync::Arc::new(
+        migo_services::network::resources::ResourceTable::new(),
+    )));
   },
 );
 

@@ -274,3 +274,43 @@ fn a_header_that_is_not_one_is_refused_by_name() {
         .expect_err("the value is not a header value");
     assert_eq!(error.message, "Invalid Header Value");
 }
+
+/// A body larger than the session's whole byte budget is refused before the
+/// response resource exists, so nothing is allocated and no reader is handed
+/// out; and the credit a response holds comes back when it is dropped.
+#[test]
+fn a_declared_body_is_admitted_before_its_reader_exists() {
+    let pools = IoPools::new(9501);
+    let error = match reserve_response_bytes(&pools, Some(256 * 1024 * 1024 + 1)) {
+        Ok(_) => panic!("an oversized response must be refused before its resource"),
+        Err(error) => error,
+    };
+    assert!(
+        error.message.contains("byte limit") && error.message.contains("requested"),
+        "{}",
+        error.message
+    );
+
+    let pools = IoPools::new(9502);
+    let ticket = reserve_response_bytes(&pools, Some(4096)).unwrap();
+    let response = Response::from(
+        http::Response::builder()
+            .status(http::StatusCode::OK)
+            .body(reqwest::Body::from("body"))
+            .unwrap(),
+    );
+    let body = ResponseBody::new(response, Some(4096), Some(ticket));
+    assert_eq!(body.size(), Some(4096));
+    drop(body);
+    reserve_response_bytes(&pools, Some(4096))
+        .expect("dropping the response returns its byte credit");
+}
+
+/// A body with no declared length is admitted against the buffered ceiling the
+/// engine's JavaScript enforces, not against nothing.
+#[test]
+fn a_body_that_declares_no_length_is_charged_the_buffered_ceiling() {
+    let pools = IoPools::new(9503);
+    let _held = reserve_response_bytes(&pools, None).expect("the first fits");
+    assert_eq!(MAX_BUFFERED_BODY_BYTES, 32 * 1024 * 1024);
+}
