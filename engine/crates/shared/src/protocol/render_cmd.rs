@@ -2181,6 +2181,58 @@ pub struct GradientStop {
     pub color: Color,
 }
 
+/// The gradient stops of `fillStyle = gradient`, as the engine's 2D facade
+/// writes them.
+///
+/// The facade builds a `CanvasGradient` in JavaScript and hands the stops over
+/// as `JSON.stringify([{offset, r, g, b, a}, ...])` -- so this is not a general
+/// JSON reader and must not be used as one. It reads exactly that shape,
+/// numbers only, and takes a missing or unreadable field as its default rather
+/// than failing: a gradient with one odd stop still draws, which is what the
+/// specification says for a style the browser could not fully honour.
+///
+/// It lives here rather than beside either caller because both executions parse
+/// the same text: in process `op_set_fill_style_gradient` gets the string as an
+/// op argument, and on the external lane the producer's record carries the same
+/// bytes and the decoder reads them here. One parser rather than a port and a
+/// corpus to hold the port to it -- the stops are the engine's own numbers, so
+/// there is nothing for a second implementation to be right about.
+pub fn parse_gradient_stops(json: &str) -> Vec<GradientStop> {
+    let mut stops = Vec::new();
+    let trimmed = json.trim().trim_start_matches('[').trim_end_matches(']');
+    if trimmed.is_empty() {
+        return stops;
+    }
+    for entry in trimmed.split("},{") {
+        let entry = entry.trim().trim_start_matches('{').trim_end_matches('}');
+        let mut offset = 0.0f32;
+        let mut r = 0u8;
+        let mut g = 0u8;
+        let mut b = 0u8;
+        let mut a = 255u8;
+        for pair in entry.split(',') {
+            let pair = pair.trim().trim_matches('"');
+            if let Some((key, value)) = pair.split_once(':') {
+                let key = key.trim().trim_matches('"');
+                let value = value.trim().trim_matches('"');
+                match key {
+                    "offset" => offset = value.parse().unwrap_or(0.0),
+                    "r" => r = value.parse().unwrap_or(0),
+                    "g" => g = value.parse().unwrap_or(0),
+                    "b" => b = value.parse().unwrap_or(0),
+                    "a" => a = value.parse().unwrap_or(255),
+                    _ => {}
+                }
+            }
+        }
+        stops.push(GradientStop {
+            offset,
+            color: Color::rgbai(r, g, b, a),
+        });
+    }
+    stops
+}
+
 /// Single draw image entry for batch drawing
 #[derive(Debug, Clone, Copy)]
 pub struct DrawImageEntry {
@@ -3613,5 +3665,69 @@ mod draw_image_run_tests {
         let left = draws.iter().map(|d| d.dx).fold(f32::MAX, f32::min);
         let right = draws.iter().map(|d| d.dx + d.dw).fold(f32::MIN, f32::max);
         assert_eq!((left, right), (-50.0, 116.0));
+    }
+}
+
+#[cfg(test)]
+mod gradient_stop_tests {
+    use super::*;
+
+    /// The gradient stops both executions read, from the text the engine's own
+    /// facade writes.
+    ///
+    /// It became shared when the external lane's record started carrying the
+    /// same string: one reading rather than a producer-side port, and this is
+    /// what that reading is. The cases are the ones a second implementation
+    /// would get wrong -- an offset that is not a round number, an alpha the
+    /// facade leaves out, a colour of 255s, and text that is not what the facade
+    /// writes at all, which must still leave a drawable gradient rather than a
+    /// panic.
+    #[test]
+    fn gradient_stops_are_read_as_the_facade_writes_them() {
+        let stops = parse_gradient_stops(
+            r#"[{"offset":0,"r":255,"g":0,"b":0,"a":255},{"offset":0.35,"r":0,"g":128,"b":255,"a":128},{"offset":1,"r":0,"g":255,"b":0,"a":255}]"#,
+        );
+        let read: Vec<(f32, [u8; 4])> = stops
+            .iter()
+            .map(|stop| {
+                (
+                    stop.offset,
+                    [
+                        (stop.color.r * 255.0).round() as u8,
+                        (stop.color.g * 255.0).round() as u8,
+                        (stop.color.b * 255.0).round() as u8,
+                        (stop.color.a * 255.0).round() as u8,
+                    ],
+                )
+            })
+            .collect();
+        assert_eq!(
+            read,
+            vec![
+                (0.0, [255, 0, 0, 255]),
+                (0.35, [0, 128, 255, 128]),
+                (1.0, [0, 255, 0, 255]),
+            ]
+        );
+
+        // A field the facade did not write takes its default: alpha opaque, the
+        // rest zero. The specification's behaviour for a stop a browser cannot
+        // fully honour is to draw it, not to drop the gradient.
+        let partial = parse_gradient_stops(r#"[{"offset":0.5,"g":10}]"#);
+        assert_eq!(partial.len(), 1);
+        assert_eq!(partial[0].offset, 0.5);
+        assert_eq!((partial[0].color.a * 255.0).round() as u8, 255);
+
+        // Neither empty text nor an empty array is a stop, and neither is a
+        // failure: `[]` is what a gradient with no stops serialises to.
+        assert!(parse_gradient_stops("").is_empty());
+        assert!(parse_gradient_stops("[]").is_empty());
+        assert!(parse_gradient_stops("   ").is_empty());
+
+        // Not the facade's output at all. This runs on bytes another process
+        // wrote, so what matters is that it returns rather than what it returns.
+        let _ = parse_gradient_stops("[{{{,,,:::}}}]");
+        let _ = parse_gradient_stops(r#"[{"offset":"NaN","r":"-1"}]"#);
+        let _ = parse_gradient_stops(&"{".repeat(1024));
     }
 }

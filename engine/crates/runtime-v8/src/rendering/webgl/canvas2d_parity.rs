@@ -79,20 +79,42 @@ fn batch_commands(batch: &CanvasBatchPayload) -> Vec<String> {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_text_records_decode_to_the_commands_the_ops_build() {
-    let directory = PathBuf::from(
-        std::env::var("MIGO_CANVAS2D_PARITY_DIR")
-            .expect("MIGO_CANVAS2D_PARITY_DIR names engine-resource-parity.mjs's output"),
+    compare_fixture("MIGO_CANVAS2D_PARITY_DIR", "canvas2d-text-calls.js", 17);
+}
+
+/// The same question for the two styles a colour cannot express.
+///
+/// A gradient carries the stops as the string the facade serialised, read on the
+/// host by `parse_gradient_stops` -- the function the in-process op calls -- so
+/// what this establishes is that the record reaches it with the same six
+/// numbers, the same kind and the same bytes. A pattern names an image the host
+/// already holds and the repetition the facade resolved.
+#[test]
+#[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
+fn the_producer_s_style_records_decode_to_the_commands_the_ops_build() {
+    compare_fixture(
+        "MIGO_CANVAS2D_STYLE_PARITY_DIR",
+        "canvas2d-style-calls.js",
+        8,
     );
-    let script =
-        std::fs::read_to_string(repository().join(
-            "platforms/apple/WebContent/PerformancePlus/test/fixtures/canvas2d-text-calls.js",
-        ))
-        .expect("the fixture script");
+}
+
+fn compare_fixture(directory_var: &str, fixture: &str, least_commands: usize) {
+    let directory =
+        PathBuf::from(std::env::var(directory_var).unwrap_or_else(|_| {
+            panic!("{directory_var} names engine-resource-parity.mjs's output")
+        }));
+    let script = std::fs::read_to_string(
+        repository()
+            .join("platforms/apple/WebContent/PerformancePlus/test/fixtures")
+            .join(fixture),
+    )
+    .expect("the fixture script");
 
     // In process.
     let (mut runtime, render_rx) = new_webgl_runtime();
     runtime
-        .exec_script_owned("canvas2d-text-calls.js".to_string(), &script)
+        .exec_script_owned(fixture.to_string(), &script)
         .expect("the fixture runs in the embedded runtime");
     end_test_frame(&mut runtime);
     let mut embedded = Vec::new();
@@ -162,7 +184,7 @@ fn the_producer_s_text_records_decode_to_the_commands_the_ops_build() {
         );
     }
     assert!(
-        embedded.len() >= 17,
+        embedded.len() >= least_commands,
         "the fixture built only {} commands; it covers more than that",
         embedded.len()
     );

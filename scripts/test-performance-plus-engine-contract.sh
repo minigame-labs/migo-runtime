@@ -136,7 +136,7 @@ node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs 
     || fail "the Canvas2D text calls did not run on the producer"
 status=0
 text="$(cd engine && MIGO_CANVAS2D_PARITY_DIR="$TEXT_PARITY" cargo test -p migo-runtime-v8 --lib \
-    canvas2d_parity -- --ignored --nocapture 2>&1)" || status=$?
+    the_producer_s_text_records -- --ignored --nocapture 2>&1)" || status=$?
 if (( status != 0 )); then
     printf '%s\n' "$text" >&2
     fail "the producer's text records do not decode to the commands the in-process ops build"
@@ -144,6 +144,25 @@ fi
 printf '%s\n' "$text" | grep -qE '[0-9]+ Canvas2D commands agree' \
     || { printf '%s\n' "$text" >&2; fail "the text parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$text" | grep -E '[0-9]+ Canvas2D commands agree'
+
+# The two styles a colour cannot express. A gradient's stops cross as the string
+# the facade serialised and are read on the host by the parser the in-process op
+# calls, so what this establishes is the record reaching it with the same six
+# numbers and the same kind; a pattern names an image the host already holds.
+STYLE_PARITY="$WORK/style-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$STYLE_PARITY" \
+    fixtures/canvas2d-style-calls.js \
+    || fail "the Canvas2D style calls did not run on the producer"
+status=0
+styles="$(cd engine && MIGO_CANVAS2D_STYLE_PARITY_DIR="$STYLE_PARITY" cargo test -p migo-runtime-v8 --lib \
+    the_producer_s_style_records -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$styles" >&2
+    fail "the producer's style records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$styles" | grep -qE '[0-9]+ Canvas2D commands agree' \
+    || { printf '%s\n' "$styles" >&2; fail "the style parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$styles" | grep -E '[0-9]+ Canvas2D commands agree'
 
 # The canvas itself: created, resized and destroyed. Every other fixture draws
 # on a canvas the host already had, so the one ordering this lane has to carry

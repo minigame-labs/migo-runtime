@@ -219,8 +219,41 @@ pub const RESIZE_CANVAS_WIDTH: u32 = 1;
 /// The height bit of the same word.
 pub const RESIZE_CANVAS_HEIGHT: u32 = 2;
 
+// ─── Gradients and patterns (562..=565) ──────────────────────────────────────
+//
+// The two styles a colour cannot express. Both are set rarely -- once per style
+// change, not per draw -- and both name something the host already holds or can
+// build from what the record carries.
+
+/// `fillStyle = gradient`: `H type x0 y0 r0 x1 y1 r1 byte_length | utf8`.
+///
+/// `type` is 0 linear, 1 radial, 2 conic, as the op takes it. The six floats are
+/// the two circles the facade's `CanvasGradient` was built from, in the op's
+/// order; a linear gradient carries zero radii and a conic one carries its start
+/// angle where `x1` is, both of which the facade already decided.
+///
+/// The payload is the stops as the facade serialises them:
+/// `JSON.stringify([{offset, r, g, b, a}, ...])`, the same string the in-process
+/// op receives, read by the same
+/// `shared::protocol::render_cmd::parse_gradient_stops` on both lanes. Text
+/// rather than words deliberately -- it makes the two executions parse one
+/// thing, on the host, instead of holding a producer-side port to a corpus.
+pub const OP2D_SET_FILL_STYLE_GRADIENT: u32 = 562;
+/// `strokeStyle = gradient`, the same shape.
+pub const OP2D_SET_STROKE_STYLE_GRADIENT: u32 = 563;
+
+/// `fillStyle = pattern`: `H image_id repeat_x:B repeat_y:B`.
+///
+/// The image is the host's already -- loaded and uploaded under its shared id,
+/// as `drawImage` names one -- so no pixel crosses. The two bools are the
+/// repetition the facade resolved: `repeat-x` is x without y, `no-repeat` is
+/// neither.
+pub const OP2D_SET_FILL_STYLE_PATTERN: u32 = 564;
+/// `strokeStyle = pattern`, the same shape.
+pub const OP2D_SET_STROKE_STYLE_PATTERN: u32 = 565;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 562;
+pub const OP2D_END: u32 = 566;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -283,6 +316,9 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
 
         OP2D_SET_TEXT_ALIGN | OP2D_SET_TEXT_BASELINE | OP2D_SET_TEXT_DIRECTION => (2, &[]),
 
+        // image_id, repeat_x, repeat_y
+        OP2D_SET_FILL_STYLE_PATTERN | OP2D_SET_STROKE_STYLE_PATTERN => (4, &[2, 3]),
+
         OP2D_DRAW_IMAGE => (10, &[]),
         OP2D_DRAW_IMAGE_BATCH => {
             return Some(RecordSpec::Words {
@@ -312,6 +348,13 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
             return Some(RecordSpec::Words {
                 prefix_words: 1,
                 max_count: MAX_LINE_DASH_SEGMENTS,
+            });
+        }
+        OP2D_SET_FILL_STYLE_GRADIENT | OP2D_SET_STROKE_STYLE_GRADIENT => {
+            return Some(RecordSpec::Bytes {
+                prefix_words: 8,
+                presence_word: None,
+                text: true,
             });
         }
 

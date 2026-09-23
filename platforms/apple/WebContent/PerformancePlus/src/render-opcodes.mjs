@@ -166,6 +166,14 @@ export const OP2D_REGISTER_CANVAS = 559;
 export const OP2D_RESIZE_CANVAS = 560;
 export const OP2D_DESTROY_CANVAS = 561;
 
+// The two styles a colour cannot express. The gradient's stops travel as the
+// string the facade serialised, read on the host by the parser the in-process op
+// uses; a pattern names an image the host already holds.
+export const OP2D_SET_FILL_STYLE_GRADIENT = 562;
+export const OP2D_SET_STROKE_STYLE_GRADIENT = 563;
+export const OP2D_SET_FILL_STYLE_PATTERN = 564;
+export const OP2D_SET_STROKE_STYLE_PATTERN = 565;
+
 // The flags word of OP2D_RESIZE_CANVAS: content assigns width and height
 // separately, and the op this stands for takes each as an option.
 export const RESIZE_CANVAS_WIDTH = 1;

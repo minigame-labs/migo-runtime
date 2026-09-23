@@ -1382,8 +1382,7 @@ pub fn op_set_fill_style_gradient(
     #[string] stops_json: String,
 ) {
     with_collector(state, |collector| {
-        // Parse stops from JSON: [{"offset":0,"r":255,"g":0,"b":0,"a":255}, ...]
-        let stops = parse_gradient_stops(&stops_json);
+        let stops = shared::protocol::render_cmd::parse_gradient_stops(&stops_json);
         let gradient_type = match gradient_type {
             1 => GradientType::Radial,
             2 => GradientType::Conic,
@@ -1407,7 +1406,7 @@ pub fn op_set_stroke_style_gradient(
     #[string] stops_json: String,
 ) {
     with_collector(state, |collector| {
-        let stops = parse_gradient_stops(&stops_json);
+        let stops = shared::protocol::render_cmd::parse_gradient_stops(&stops_json);
         let gradient_type = match gradient_type {
             1 => GradientType::Radial,
             2 => GradientType::Conic,
@@ -1425,45 +1424,6 @@ pub fn op_set_stroke_style_gradient(
             stops,
         );
     });
-}
-
-fn parse_gradient_stops(json: &str) -> Vec<shared::protocol::render_cmd::GradientStop> {
-    // Minimal JSON array parser for gradient stops to avoid serde dependency.
-    // Format: [{"offset":0.0,"r":255,"g":0,"b":0,"a":255}, ...]
-    let mut stops = Vec::new();
-    // Simple approach: split by "},{" boundaries
-    let trimmed = json.trim().trim_start_matches('[').trim_end_matches(']');
-    if trimmed.is_empty() {
-        return stops;
-    }
-    for entry in trimmed.split("},{") {
-        let s = entry.trim().trim_start_matches('{').trim_end_matches('}');
-        let mut offset = 0.0f32;
-        let mut r = 0u8;
-        let mut g = 0u8;
-        let mut b = 0u8;
-        let mut a = 255u8;
-        for pair in s.split(',') {
-            let pair = pair.trim().trim_matches('"');
-            if let Some((key, val)) = pair.split_once(':') {
-                let key = key.trim().trim_matches('"');
-                let val = val.trim().trim_matches('"');
-                match key {
-                    "offset" => offset = val.parse().unwrap_or(0.0),
-                    "r" => r = val.parse().unwrap_or(0),
-                    "g" => g = val.parse().unwrap_or(0),
-                    "b" => b = val.parse().unwrap_or(0),
-                    "a" => a = val.parse().unwrap_or(255),
-                    _ => {}
-                }
-            }
-        }
-        stops.push(shared::protocol::render_cmd::GradientStop {
-            offset,
-            color: shared::protocol::color::Color::rgbai(r, g, b, a),
-        });
-    }
-    stops
 }
 
 #[op2(fast)]

@@ -763,6 +763,61 @@ export function op_set_text_direction(canvasId, direction) {
  * The op takes the segments as bytes -- a `Float32Array`'s bytes, which is what
  * the facade passes -- and the record carries them as the words they are.
  */
+// ---- Canvas2D gradients and patterns ----------------------------------------
+//
+// The two styles a colour cannot express. A gradient's stops are the string the
+// engine's own facade serialised (`JSON.stringify([{offset, r, g, b, a}, ...])`)
+// and the record carries it unread: the host parses it with the same function
+// the in-process op calls, so there is no second reading of it to keep right. A
+// pattern names an image the host already holds.
+
+/** `fillStyle = gradient`. */
+export function op_set_fill_style_gradient(canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson) {
+  emitGradient(R.OP2D_SET_FILL_STYLE_GRADIENT, canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson);
+}
+
+/** `strokeStyle = gradient`. */
+export function op_set_stroke_style_gradient(canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson) {
+  emitGradient(R.OP2D_SET_STROKE_STYLE_GRADIENT, canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson);
+}
+
+function emitGradient(opcode, canvasId, type, x0, y0, r0, x1, y1, r1, stopsJson) {
+  emit2DText(
+    smiU32(canvasId, "canvas_id"),
+    opcode,
+    stringOf(stopsJson, "stops_json"),
+    smiU8(type, "gradient_type"),
+    f32BitsOf(x0, "x0"),
+    f32BitsOf(y0, "y0"),
+    f32BitsOf(r0, "r0"),
+    f32BitsOf(x1, "x1"),
+    f32BitsOf(y1, "y1"),
+    f32BitsOf(r1, "r1"),
+  );
+}
+
+/** `fillStyle = pattern`. */
+export function op_set_fill_style_pattern(canvasId, imageId, repeatX, repeatY) {
+  emit2D(
+    smiU32(canvasId, "canvas_id"),
+    R.OP2D_SET_FILL_STYLE_PATTERN,
+    smiU32(imageId, "image_id"),
+    toBool(repeatX, "repeat_x") ? 1 : 0,
+    toBool(repeatY, "repeat_y") ? 1 : 0,
+  );
+}
+
+/** `strokeStyle = pattern`. */
+export function op_set_stroke_style_pattern(canvasId, imageId, repeatX, repeatY) {
+  emit2D(
+    smiU32(canvasId, "canvas_id"),
+    R.OP2D_SET_STROKE_STYLE_PATTERN,
+    smiU32(imageId, "image_id"),
+    toBool(repeatX, "repeat_x") ? 1 : 0,
+    toBool(repeatY, "repeat_y") ? 1 : 0,
+  );
+}
+
 export function op_set_line_dash(canvasId, segments) {
   const canvas = smiU32(canvasId, "canvas_id");
   const bytes = bytesOf(segments, "segments");

@@ -14,7 +14,9 @@
 //! that belong here are the ones the *specification* names, and they live with
 //! the renderer that has the state to judge them.
 
-use shared::protocol::render_cmd::{Canvas2DCmd, TextAlign, TextBaseline, TextDirection};
+use shared::protocol::render_cmd::{
+    Canvas2DCmd, GradientType, TextAlign, TextBaseline, TextDirection,
+};
 
 use frame_wire::canvas2d::*;
 
@@ -226,6 +228,40 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             y: f(record[2]),
             max_width: f(record[3]),
         },
+        // The stops are read by the same parser the in-process op uses, from
+        // the same string the facade serialised: one reading of the engine's own
+        // JSON rather than two that have to be held equal.
+        OP2D_SET_FILL_STYLE_GRADIENT => Canvas2DCmd::SetFillStyleGradient {
+            gradient_type: gradient_type_of(record[1]),
+            x0: f(record[2]),
+            y0: f(record[3]),
+            r0: f(record[4]),
+            x1: f(record[5]),
+            y1: f(record[6]),
+            r1: f(record[7]),
+            stops: shared::protocol::render_cmd::parse_gradient_stops(&text_of(record, 8)?),
+        },
+        OP2D_SET_STROKE_STYLE_GRADIENT => Canvas2DCmd::SetStrokeStyleGradient {
+            gradient_type: gradient_type_of(record[1]),
+            x0: f(record[2]),
+            y0: f(record[3]),
+            r0: f(record[4]),
+            x1: f(record[5]),
+            y1: f(record[6]),
+            r1: f(record[7]),
+            stops: shared::protocol::render_cmd::parse_gradient_stops(&text_of(record, 8)?),
+        },
+        OP2D_SET_FILL_STYLE_PATTERN => Canvas2DCmd::SetFillStylePattern {
+            image_id: record[1],
+            repeat_x: record[2] != 0,
+            repeat_y: record[3] != 0,
+        },
+        OP2D_SET_STROKE_STYLE_PATTERN => Canvas2DCmd::SetStrokeStylePattern {
+            image_id: record[1],
+            repeat_x: record[2] != 0,
+            repeat_y: record[3] != 0,
+        },
+
         OP2D_SET_TEXT_ALIGN => Canvas2DCmd::SetTextAlign {
             align: text_align_of(record[1] as u8),
         },
@@ -296,6 +332,16 @@ pub fn text_direction_of(value: u8) -> TextDirection {
         1 => TextDirection::Ltr,
         2 => TextDirection::Rtl,
         _ => TextDirection::Inherit,
+    }
+}
+
+/// The gradient kind the op takes as a number: anything but radial or conic is
+/// linear, which is the op's own `match` and the browser's default.
+fn gradient_type_of(word: u32) -> GradientType {
+    match word as u8 {
+        1 => GradientType::Radial,
+        2 => GradientType::Conic,
+        _ => GradientType::Linear,
     }
 }
 
