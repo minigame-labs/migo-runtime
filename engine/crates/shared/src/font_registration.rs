@@ -8,8 +8,6 @@
 //! command. One implementation, because a family name derived two ways is a
 //! custom font that content can name on one platform and not the other.
 
-use crate::vfs::FileOp;
-
 #[derive(Debug, PartialEq, Eq)]
 pub struct FontRegistrationRequest {
     pub family: String,
@@ -71,6 +69,7 @@ pub fn build_font_registration_request(
     FontRegistrationRequest { family, aliases }
 }
 
+#[cfg(feature = "vfs")]
 pub fn resolve_font_src_path(
     code_dir: &str,
     vfs: Option<&crate::vfs::VirtualFS>,
@@ -80,7 +79,7 @@ pub fn resolve_font_src_path(
         if !src.starts_with('/') {
             let vpath = format!("/code/{src}");
             return vfs
-                .resolve(&vpath, FileOp::Read)
+                .resolve(&vpath, crate::vfs::FileOp::Read)
                 .map(|p| p.to_string_lossy().into_owned())
                 .map_err(|e| format!("resolve vpath {} failed: {}", vpath, e));
         }
@@ -96,7 +95,7 @@ pub fn resolve_font_src_path(
 
         if is_virtual {
             return vfs
-                .resolve(src, FileOp::Read)
+                .resolve(src, crate::vfs::FileOp::Read)
                 .map(|p| p.to_string_lossy().into_owned())
                 .map_err(|e| format!("resolve vpath {} failed: {}", src, e));
         }
@@ -116,7 +115,7 @@ pub fn resolve_font_src_path(
         .into_owned())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vfs"))]
 mod tests {
     use super::{build_font_registration_request, resolve_font_src_path};
     use crate::vfs::VirtualFS;
