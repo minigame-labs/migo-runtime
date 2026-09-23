@@ -49,6 +49,10 @@ data-url.workspace = true
 url = "2.5"
 tracing = { workspace = true }
 parking_lot = { workspace = true }
+# `prefetchDns` takes its hostnames as a JSON array, which is the shape the
+# engine's JavaScript has always passed; parsed here so both executions refuse
+# a malformed list with the same words.
+serde_json = { workspace = true }
 # Data URLs carry base64 or percent-encoded payloads, and are cache-keyed by
 # their SHA-256 (the same digest the package integrity check uses, taken here
 # directly because that check is a code-signing feature this crate must not
@@ -59,7 +63,6 @@ sha2 = "0.10"
 hex = "0.4"
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }
 # Section 7.3's contention gate, for the image alias registry.
 migo-contention-probe = { path = "../../testing/contention-probe", default-features = false }

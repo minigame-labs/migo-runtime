@@ -12,7 +12,7 @@ use deno_error::JsErrorBox;
 
 // Re-exported so this runtime's call sites name one gate: the rules and their
 // vocabulary are the service's, and only the two adaptors below are here.
-pub(crate) use migo_services::network::gate::{GateKind, is_host_whitelisted};
+pub(crate) use migo_services::network::gate::GateKind;
 use shared::op_state::HostOpState;
 
 /// Enforce the policy for a raw socket's host and port.

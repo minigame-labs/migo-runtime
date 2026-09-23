@@ -65,17 +65,24 @@ impl CancelFlag {
     }
 
     /// Run `work` until it finishes or this is cancelled.
+    ///
+    /// The wake-up is registered before the flag is read, so a cancel that
+    /// lands between the two is seen rather than slept through: `cancel` sets
+    /// the flag first and notifies second, so either the read sees it or the
+    /// registration catches the notification.
     pub async fn until_cancelled<T>(
         &self,
         work: impl std::future::Future<Output = T>,
     ) -> Option<T> {
+        let mut woken = std::pin::pin!(self.woken.notified());
+        woken.as_mut().enable();
         if self.is_cancelled() {
             return None;
         }
-        tokio::select! {
-            biased;
-            result = work => Some(result),
-            () = self.woken.notified() => None,
+        let work = std::pin::pin!(work);
+        match futures::future::select(work, woken).await {
+            futures::future::Either::Left((result, _)) => Some(result),
+            futures::future::Either::Right(((), _)) => None,
         }
     }
 }

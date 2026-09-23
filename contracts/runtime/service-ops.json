@@ -14,7 +14,12 @@
     "RULES. Append only. A number is never reused and never renumbered, because a producer and a host",
     "that disagree about one op's number call a different op with the right-looking arguments. An op",
     "listed here must be classified async, command or sync in op-boundary.json; which of the three it",
-    "is decides whether it travels as a request, a command or a synchronous SERVICE call."
+    "is decides whether it travels as a request, a command or a synchronous SERVICE call.",
+    "",
+    "An entry named `core_*` is not an op but a member of deno's `core` object -- `core.read`,",
+    "`core.close`, `core.tryClose` -- which the external execution answers on the host because the",
+    "handles they name are the network service's. Those are classified in op-boundary.json's",
+    "core_members table instead of under an extension."
   ],
   "ops": {
     "op_storage_get": 1,
@@ -152,6 +157,12 @@
     "op_inner_audio_set_loop": 133,
     "op_inner_audio_set_playback_rate": 134,
     "op_inner_audio_set_autoplay": 135,
-    "op_inner_audio_get_state": 136
+    "op_inner_audio_get_state": 136,
+    "op_fetch": 137,
+    "op_fetch_send": 138,
+    "op_prefetch_dns": 139,
+    "core_read": 140,
+    "core_close": 141,
+    "core_try_close": 142
   }
 }

@@ -534,3 +534,13 @@ export function op_inner_audio_set_autoplay(id, autoplay) {
   const enabled = toBool(autoplay, "autoplay");
   inner(SERVICE_OP.op_inner_audio_set_autoplay, id, (w) => w.bool(enabled));
 }
+
+// ---- network ------------------------------------------------------------------
+
+/// Warm the OS resolver for the hosts content named. Nothing answers it: the
+/// op returns as soon as the work is handed over in the embedded runtime too,
+/// and a host the policy refuses is skipped rather than reported.
+export function op_prefetch_dns(hostsJson) {
+  const hosts = stringOf(hostsJson, "hosts_json");
+  servicesOf(engineHost()).command(SERVICE_OP.op_prefetch_dns, (w) => w.str(hosts));
+}

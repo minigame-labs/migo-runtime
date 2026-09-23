@@ -142,4 +142,12 @@ export const SERVICE_OP = Object.freeze({
   op_inner_audio_set_playback_rate: 134,
   op_inner_audio_set_autoplay: 135,
   op_inner_audio_get_state: 136,
+  op_fetch: 137,
+  op_fetch_send: 138,
+  op_prefetch_dns: 139,
+  // Not ops but members of deno's `core`, answered by the host because the
+  // handles they name are the network service's; see core-stream.mjs.
+  core_read: 140,
+  core_close: 141,
+  core_try_close: 142,
 });

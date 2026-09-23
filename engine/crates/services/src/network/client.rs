@@ -62,6 +62,11 @@ impl reqwest::dns::Resolve for SsrfCheckingResolver {
     }
 }
 
+/// The client a policy configured. Re-exported so a caller can hold one
+/// without depending on the HTTP crate itself: which client library the engine
+/// makes requests with is this module's business.
+pub type PolicyHttpClient = Client;
+
 /// Build a client that carries `net_policy`: its resolver refuses blocked
 /// addresses, its redirect policy re-runs the gate under `redirect_kind`, and
 /// `operation` names the caller in both refusals.

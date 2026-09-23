@@ -641,5 +641,26 @@
         "op_worker_inner_recv_message": "unsupported"
       }
     }
+  },
+  "core_members": {
+    "$comment": [
+      "The members of deno_core's `core` object that the engine's JavaScript calls and that are",
+      "not ops: `core.read`, `core.close` and `core.tryClose` act on deno's resource table, which",
+      "the external execution has no equivalent of. The handles they name are the network",
+      "service's (migo_services::network::resources), so on that lane these are answered by the",
+      "host exactly as the ops beside them are, and the engine's `ReadableStream` pulls a response",
+      "body the same way in both executions.",
+      "",
+      "They are classified here rather than under an extension because the op table is derived",
+      "from `deno_core::extension!` registrations and `ext:core/ops` imports, and a core member is",
+      "neither. A member on a crossing lane carries a number in service-ops.json; a `local` one is",
+      "built in the producer out of the members that do."
+    ],
+    "members": {
+      "close": "command",
+      "read": "async",
+      "readAll": "local",
+      "tryClose": "command"
+    }
   }
 }

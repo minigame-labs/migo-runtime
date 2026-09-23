@@ -17,6 +17,7 @@ import {
   transferOut,
 } from "./audio.mjs";
 import { engineHost } from "./engine-host.mjs";
+import { fetchResponse } from "./network.mjs";
 import { drained } from "./engine-frames.mjs";
 import {
   fileBuffer,
@@ -519,4 +520,18 @@ export function op_inner_audio_load_url(id, src) {
 export function op_inner_audio_get_state(id) {
   const inner = smiU32(id, "id");
   return audioRequest(SERVICE_OP.op_inner_audio_get_state, (w) => w.u32(inner)).then(innerAudioState);
+}
+
+// ---- network ------------------------------------------------------------------
+
+/// Send the request `rid` names and answer its head, with the id its body is
+/// read from (`core.read`).
+///
+/// The request is consumed by the send, as it is in the embedded runtime: a
+/// second send on the same id finds nothing.
+export function op_fetch_send(rid) {
+  const request = smiU32(rid, "rid");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_fetch_send, (w) => w.u32(request))
+    .then(fetchResponse);
 }

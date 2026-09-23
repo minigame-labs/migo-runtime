@@ -93,6 +93,15 @@ export function smiU32(value, name) {
 }
 
 /**
+ * `#[smi] Option<u32>`: null and undefined are None, anything else is
+ * `#[smi] u32`.
+ * @kind option_smi_u32
+ */
+export function optionalSmiU32(value, name) {
+  return value === null || value === undefined ? null : smiU32(value, name);
+}
+
+/**
  * `#[smi] u8`: `to_i32_option`, then `as u8`.
  * @kind smi_u8
  */

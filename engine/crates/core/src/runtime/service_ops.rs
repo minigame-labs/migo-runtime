@@ -155,6 +155,14 @@ service_ops! {
     op_inner_audio_set_playback_rate = 134,
     op_inner_audio_set_autoplay = 135,
     op_inner_audio_get_state = 136,
+    op_fetch = 137,
+    op_fetch_send = 138,
+    op_prefetch_dns = 139,
+    // Not ops but members of deno's `core`, which this host answers because the
+    // handles they name are the network service's; see `service_network`.
+    core_read = 140,
+    core_close = 141,
+    core_try_close = 142,
 }
 
 /// The op's name, for a refusal a person will read.

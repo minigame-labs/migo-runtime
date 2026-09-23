@@ -2256,6 +2256,9 @@ fn run_external_session(
         network_policy.clone(),
     );
     let audio_signal = audio.start_signal();
+    // The services' context, kept before the dispatcher shadows `services`:
+    // the network is bound to it once the runtime exists, below.
+    let service_context = Arc::clone(&services.context);
     // The services that hand the renderer work -- image uploads -- reach it
     // through these, owned by this thread's dispatcher so the sender goes when
     // the session does.
@@ -2316,6 +2319,12 @@ fn run_external_session(
         }
     };
     startup_guard.disarm();
+    // Content's requests are made by this host, under the same policy: one
+    // session, one allow list, one set of clients. Bound once the runtime
+    // exists, because a synchronous request is built on the calling thread and
+    // needs the session's reactor to build it -- and before any service work
+    // can be dispatched, which is below.
+    service_context.bind_network(network_policy.clone(), runtime.handle().clone());
 
     let mut last_context_epoch = 0u64;
     let mut last_swap_report: Option<std::time::Instant> = None;

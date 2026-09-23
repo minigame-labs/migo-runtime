@@ -302,7 +302,11 @@ export function constructOpError(className, message) {
 }
 
 /// deno_core's `core`, for the members the engine uses.
-export function makeCore(ops) {
+///
+/// `coreStream` carries the resource-table members (`core-stream.mjs`),
+/// passed in rather than imported so this module keeps importing nothing:
+/// it is what every other producer module bottoms out at.
+export function makeCore(ops, coreStream) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const timers = new Map();
@@ -314,9 +318,6 @@ export function makeCore(ops) {
   // and nothing in it sets a context otherwise, so a slot is the same behaviour.
   let asyncContext;
 
-  const resourceStreams = (name) => () => {
-    throw new LaneNotImplementedError(`core.${name}`, "async");
-  };
 
   return ObjectFreeze({
     ops,
@@ -379,10 +380,13 @@ export function makeCore(ops) {
       });
     },
 
-    read: resourceStreams("read"),
-    readAll: resourceStreams("readAll"),
-    close: resourceStreams("close"),
-    tryClose: resourceStreams("tryClose"),
+    // The resource-table members. The handles they name are the network
+    // service's, so the host answers them; `readAll` is built here out of
+    // `read`. See core-stream.mjs and op-boundary.json's core_members.
+    read: coreStream.read,
+    readAll: coreStream.readAll,
+    close: coreStream.close,
+    tryClose: coreStream.tryClose,
   });
 }
 

@@ -1,0 +1,286 @@
+//! The network ops as the producer calls them: arguments in wire shape,
+//! answers in the shape `network.mjs` rebuilds the op's object from.
+//!
+//! A `data:` URL is the whole path without a connection -- build, send, read,
+//! close -- so it is what these run, beside the refusals that must happen
+//! before anything is built.
+
+use super::*;
+
+fn policy(whitelist: &[&str], enforce_https: bool) -> NetworkPolicy {
+    NetworkPolicy {
+        domain_whitelist: whitelist.iter().map(|host| (*host).to_string()).collect(),
+        enforce_https,
+    }
+}
+
+struct Session {
+    network: NetworkBinding,
+    scheduler: IoScheduler,
+    executor: tokio::runtime::Runtime,
+}
+
+impl Session {
+    fn new(policy: NetworkPolicy) -> Self {
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread executor");
+        Self {
+            network: NetworkBinding::new(policy, executor.handle().clone()),
+            scheduler: IoScheduler::new(7301),
+            executor,
+        }
+    }
+
+    /// `op_fetch`'s ten arguments, as the producer writes them for a GET with
+    /// no body and no client of its own.
+    fn fetch(&self, url: &str) -> Result<OwnedValue, ServiceError> {
+        call_sync(
+            &self.network,
+            &self.scheduler,
+            id::op_fetch,
+            vec![
+                OwnedValue::Bytes(b"GET".to_vec()),
+                OwnedValue::Str(url.to_string()),
+                OwnedValue::Array(Vec::new()),
+                OwnedValue::Null,
+                OwnedValue::Bool(false),
+                OwnedValue::Null,
+                OwnedValue::Null,
+                OwnedValue::U32(30_000),
+                OwnedValue::Bool(false),
+                OwnedValue::Bool(false),
+            ],
+        )
+    }
+
+    fn call_async(&self, op: u32, args: Vec<OwnedValue>) -> Result<OwnedValue, ServiceError> {
+        let future = call_async(&self.network, &self.scheduler, op, args)?;
+        self.executor.block_on(future)
+    }
+}
+
+fn array(value: &OwnedValue) -> &[OwnedValue] {
+    match value {
+        OwnedValue::Array(items) => items,
+        other => panic!("expected an array, not {other:?}"),
+    }
+}
+
+fn u32_at(value: &OwnedValue, index: usize) -> u32 {
+    match &array(value)[index] {
+        OwnedValue::U32(number) => *number,
+        other => panic!("expected a u32 at {index}, not {other:?}"),
+    }
+}
+
+/// The whole path: the handles, the head, the body in the chunks the caller
+/// asked for, and the end of the body as an empty answer.
+#[test]
+fn a_data_url_is_built_sent_and_read_through_the_service() {
+    let session = Session::new(policy(&["allowed.example"], true));
+    let handles = session
+        .fetch("data:text/plain;base64,aGVsbG8gd29ybGQ=")
+        .expect("a data: URL needs no connection and no allow list");
+    // `FetchReturn`: the request, and nothing to abort.
+    assert_eq!(array(&handles).len(), 2);
+    assert_eq!(array(&handles)[1], OwnedValue::Null);
+    let request_rid = u32_at(&handles, 0);
+
+    let answer = session
+        .call_async(id::op_fetch_send, vec![OwnedValue::U32(request_rid)])
+        .expect("the send answers");
+    let fields = array(&answer);
+    assert_eq!(fields.len(), 9, "FetchResponse has nine fields");
+    assert_eq!(fields[0], OwnedValue::U32(200));
+    assert_eq!(fields[1], OwnedValue::Str("OK".to_string()));
+    assert_eq!(
+        array(&fields[2])[0],
+        OwnedValue::Array(vec![
+            OwnedValue::Bytes(b"content-type".to_vec()),
+            OwnedValue::Bytes(b"text/plain".to_vec()),
+        ]),
+        "a header crosses as the bytes ByteString would have made of it"
+    );
+    assert_eq!(fields[8], OwnedValue::Null, "no error");
+    let response_rid = u32_at(&answer, 4);
+
+    // Read as the engine's `ReadableStream` does: a bounded buffer, until the
+    // answer is empty.
+    let mut body = Vec::new();
+    loop {
+        let chunk = session
+            .call_async(
+                id::core_read,
+                vec![OwnedValue::U32(response_rid), OwnedValue::U32(4)],
+            )
+            .expect("a read answers");
+        match chunk {
+            OwnedValue::Bytes(bytes) => {
+                assert!(bytes.len() <= 4, "a read answers at most what was asked");
+                if bytes.is_empty() {
+                    break;
+                }
+                body.extend_from_slice(&bytes);
+            }
+            other => panic!("a read answers bytes, not {other:?}"),
+        }
+    }
+    assert_eq!(body, b"hello world");
+
+    command(&session.network, id::core_close, vec![OwnedValue::U32(response_rid)])
+        .expect("closing an open handle");
+    let error = session
+        .call_async(
+            id::core_read,
+            vec![OwnedValue::U32(response_rid), OwnedValue::U32(4)],
+        )
+        .expect_err("a closed body is not readable");
+    assert!(error.message.contains("is not open"), "{}", error.message);
+}
+
+/// The policy refuses before anything is built, and the producer's `fetch`
+/// facade turns that throw into the failure content sees.
+#[test]
+fn a_host_the_policy_refuses_is_never_built() {
+    let session = Session::new(policy(&["allowed.example"], true));
+    let error = session
+        .fetch("https://blocked.example/a")
+        .expect_err("the allow list refuses it");
+    assert_eq!(error.class, "Error");
+    assert!(
+        error.message.contains("blocked.example") && error.message.contains("allowed list"),
+        "{}",
+        error.message
+    );
+    assert!(
+        session.network.resources().is_empty(),
+        "a refused request leaves no handle behind"
+    );
+}
+
+/// Aborting is a close of the cancel handle, and the send after it answers
+/// that rather than connecting.
+#[test]
+fn closing_the_cancel_handle_stops_the_send() {
+    let session = Session::new(policy(&[], false));
+    let handles = session.fetch("https://allowed.example/slow").unwrap();
+    let request_rid = u32_at(&handles, 0);
+    let cancel_rid = u32_at(&handles, 1);
+
+    command(&session.network, id::core_try_close, vec![OwnedValue::U32(cancel_rid)])
+        .expect("abort() closes the cancel handle");
+    let error = session
+        .call_async(id::op_fetch_send, vec![OwnedValue::U32(request_rid)])
+        .expect_err("an aborted request is not sent");
+    assert_eq!(error.message, "request was cancelled");
+}
+
+/// `close` refuses a handle that names nothing, as deno's does; `tryClose` is
+/// the form content calls when it does not care.
+#[test]
+fn the_two_closes_differ_on_a_handle_that_names_nothing() {
+    let session = Session::new(policy(&[], false));
+    let error = command(&session.network, id::core_close, vec![OwnedValue::U32(4242)])
+        .expect_err("close names a handle that must be open");
+    assert!(error.message.contains("4242"), "{}", error.message);
+    command(&session.network, id::core_try_close, vec![OwnedValue::U32(4242)])
+        .expect("tryClose says nothing about a handle that is gone");
+}
+
+/// The two arguments the engine's JavaScript never passes: a client of its own
+/// and a body resource. Refused rather than ignored, so a producer that starts
+/// passing one is told.
+#[test]
+fn a_client_or_a_body_resource_is_refused_rather_than_ignored() {
+    let session = Session::new(policy(&[], false));
+    for index in [3usize, 6] {
+        let mut args = vec![
+            OwnedValue::Bytes(b"GET".to_vec()),
+            OwnedValue::Str("https://allowed.example/a".to_string()),
+            OwnedValue::Array(Vec::new()),
+            OwnedValue::Null,
+            OwnedValue::Bool(false),
+            OwnedValue::Null,
+            OwnedValue::Null,
+            OwnedValue::U32(30_000),
+            OwnedValue::Bool(false),
+            OwnedValue::Bool(false),
+        ];
+        args[index] = OwnedValue::U32(1);
+        let error = call_sync(&session.network, &session.scheduler, id::op_fetch, args)
+            .expect_err("this lane has neither");
+        assert!(error.message.contains("op_fetch takes no"), "{}", error.message);
+    }
+}
+
+/// A header list the producer could not have written is a `TypeError` naming
+/// the op, as every other malformed call is.
+#[test]
+fn a_header_list_that_is_not_pairs_is_a_type_error() {
+    let session = Session::new(policy(&[], false));
+    let mut args = vec![
+        OwnedValue::Bytes(b"GET".to_vec()),
+        OwnedValue::Str("https://allowed.example/a".to_string()),
+        OwnedValue::Array(vec![OwnedValue::Str("not-a-pair".to_string())]),
+        OwnedValue::Null,
+        OwnedValue::Bool(false),
+        OwnedValue::Null,
+        OwnedValue::Null,
+        OwnedValue::U32(30_000),
+        OwnedValue::Bool(false),
+        OwnedValue::Bool(false),
+    ];
+    let error = call_sync(&session.network, &session.scheduler, id::op_fetch, args.clone())
+        .expect_err("a header is a pair of byte strings");
+    assert_eq!(error.class, "TypeError");
+    assert!(error.message.contains("op_fetch"), "{}", error.message);
+
+    args[2] = OwnedValue::Array(vec![OwnedValue::Array(vec![
+        OwnedValue::Bytes(b"x-game".to_vec()),
+        OwnedValue::Bytes(b"mine".to_vec()),
+    ])]);
+    call_sync(&session.network, &session.scheduler, id::op_fetch, args)
+        .expect("a pair of byte strings is a header");
+}
+
+/// Every op this module claims is one it answers, and no op is claimed by two
+/// of the three shapes -- the dispatch reads them in order, so an op in two
+/// sets would be answered by whichever came first.
+#[test]
+fn every_claimed_op_is_answered_in_exactly_one_shape() {
+    let claimed: Vec<u32> = super::super::service_ops::ALL
+        .iter()
+        .map(|(_, id)| *id)
+        .filter(|op| is_sync(*op) || is_async(*op) || is_command(*op))
+        .collect();
+    assert_eq!(
+        claimed.len(),
+        6,
+        "op_fetch, op_fetch_send, op_prefetch_dns and the three core members"
+    );
+    for op in claimed {
+        let shapes = u8::from(is_sync(op)) + u8::from(is_async(op)) + u8::from(is_command(op));
+        assert_eq!(shapes, 1, "op {op} is claimed by {shapes} shapes");
+    }
+}
+
+/// `prefetchDns` takes its hostnames as JSON, and a list that is not JSON is
+/// the `TypeError` the embedded op throws.
+#[test]
+fn prefetch_dns_refuses_a_list_that_is_not_json() {
+    let session = Session::new(policy(&["allowed.example"], true));
+    let error = command(
+        &session.network,
+        id::op_prefetch_dns,
+        vec![OwnedValue::Str("not json".to_string())],
+    )
+    .expect_err("the hostnames are a JSON array");
+    assert_eq!(error.class, "TypeError");
+    assert!(
+        error.message.starts_with("prefetchDns: invalid JSON"),
+        "{}",
+        error.message
+    );
+}

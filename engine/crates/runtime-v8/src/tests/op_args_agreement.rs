@@ -83,6 +83,14 @@ fn op_probe_bigint_option_u64(#[bigint] value: Option<u64>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 
+/// `#[smi] Option<u32>`: what `op_fetch` takes for the client and the body
+/// resource it may be given instead of bytes.
+#[op2]
+#[string]
+fn op_probe_smi_option_u32(#[smi] value: Option<u32>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
 #[op2]
 #[string]
 fn op_probe_bool(value: bool) -> String {
@@ -150,6 +158,7 @@ deno_core::extension!(
         op_probe_smi_u64,
         op_probe_bigint_u64,
         op_probe_bigint_option_u64,
+        op_probe_smi_option_u32,
         op_probe_bool,
         op_probe_f32,
         op_probe_f64,
@@ -198,6 +207,7 @@ fn deno_answers() -> serde_json::Value {
                     smi_u64: ops.op_probe_smi_u64,
                     bigint_u64: ops.op_probe_bigint_u64,
                     option_bigint_u64: ops.op_probe_bigint_option_u64,
+                    option_smi_u32: ops.op_probe_smi_option_u32,
                     bool: ops.op_probe_bool,
                     f32: ops.op_probe_f32,
                     f64: ops.op_probe_f64,

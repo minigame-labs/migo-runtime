@@ -35,6 +35,7 @@ import {
 import {
   bytesOf,
   optionalBytesOf,
+  optionalSmiU32,
   optionalStringOf,
   optionalU64,
   smiU32,
@@ -45,6 +46,7 @@ import {
   toU64,
 } from "./op-args.mjs";
 import { arrayBufferAnswer } from "./audio.mjs";
+import { byteStringOf, fetchHandles, writeHeaders } from "./network.mjs";
 import { flushToHost } from "./engine-frames.mjs";
 import { decodeServiceOutcome, encodeServiceCall } from "./service.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
@@ -663,4 +665,57 @@ export function op_media_audio_player_create(playerId) {
 export function op_inner_audio_create(id) {
   const inner = smiU32(id, "id");
   callService(SERVICE_OP.op_inner_audio_create, (w) => w.u32(inner));
+}
+
+// ---- network ------------------------------------------------------------------
+
+/// Build a request and answer its handles. Nothing is sent yet: the send is
+/// `op_fetch_send`, which is awaited.
+///
+/// Synchronous because the engine's `fetch` reports a refusal by throwing here
+/// -- a host the policy does not allow, a URL that is not one -- before there
+/// is a promise for it to reject. The work is the host's
+/// (`migo_services::network::fetch`), so the refusal is the same one every
+/// other platform gives.
+///
+/// `method` and `headers` are `#[serde] ByteString`, which the conversion gate
+/// exempts; network.mjs restates serde_v8's rule for them.
+export function op_fetch(
+  method,
+  url,
+  headers,
+  clientRid,
+  hasBody,
+  data,
+  resource,
+  timeout,
+  enableHttp2,
+  enableCache,
+) {
+  const verb = byteStringOf(method);
+  const target = stringOf(url, "url");
+  const client = optionalSmiU32(clientRid, "client_rid");
+  const withBody = toBool(hasBody, "has_body");
+  const body = optionalBytesOf(data, "data");
+  const bodyResource = optionalSmiU32(resource, "resource");
+  const deadline = smiU32(timeout, "timeout");
+  const http2 = toBool(enableHttp2, "enable_http2");
+  const cache = toBool(enableCache, "enable_cache");
+  return fetchHandles(
+    callService(SERVICE_OP.op_fetch, (w) => {
+      w.bytes(verb);
+      w.str(target);
+      writeHeaders(w, headers);
+      if (client === null) w.null();
+      else w.u32(client);
+      w.bool(withBody);
+      if (body === null) w.null();
+      else w.bytes(body);
+      if (bodyResource === null) w.null();
+      else w.u32(bodyResource);
+      w.u32(deadline);
+      w.bool(http2);
+      w.bool(cache);
+    }),
+  );
 }
