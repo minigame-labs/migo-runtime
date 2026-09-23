@@ -177,6 +177,8 @@ service_ops! {
     op_udp_next_event = 154,
     op_udp_close = 155,
     op_udp_set_ttl = 156,
+    op_fetch_upload_cancel_handle = 157,
+    op_fetch_upload = 158,
 }
 
 /// The op's name, for a refusal a person will read.

@@ -16,5 +16,6 @@ pub mod image_source;
 pub mod resources;
 pub mod sockets;
 pub mod tcp;
+pub mod upload;
 pub mod udp;
 pub mod websocket;

@@ -732,3 +732,12 @@ export function op_udp_bind(port, socketType) {
     }),
   );
 }
+
+/// The handle an in-flight `uploadFile` is aborted through.
+///
+/// Synchronous because it names a host resource -- the upload streams a file
+/// the host opened -- and content holds it before it awaits the upload, so
+/// `abort()` can close it at any point after that.
+export function op_fetch_upload_cancel_handle() {
+  return callService(SERVICE_OP.op_fetch_upload_cancel_handle);
+}

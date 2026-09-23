@@ -34,6 +34,7 @@ use migo_services::network::resources::{ResourceId, ResourceTable};
 use migo_services::network::sockets::AddrMeta;
 use migo_services::network::tcp::{self as tcp, TcpEvent};
 use migo_services::network::udp::{self as udp, UdpEvent};
+use migo_services::network::upload::{self as upload, UploadEnv, UploadRequest};
 use migo_services::network::websocket::{self as websocket, WsEvent};
 use parking_lot::Mutex;
 use shared::op_state::NetworkPolicy;
@@ -126,9 +127,19 @@ impl NetworkBinding {
     }
 }
 
+/// Where an upload reads the file content named: the mounted package's
+/// sandbox, or -- before content is mounted -- nowhere.
+pub(crate) struct UploadSources {
+    pub(crate) vfs: Option<Arc<shared::vfs::VirtualFS>>,
+    pub(crate) mount_table: Option<Arc<shared::vfs::MountTable>>,
+}
+
 /// Whether `op` is a synchronous network op this module answers.
 pub(crate) fn is_sync(op: u32) -> bool {
-    matches!(op, id::op_fetch | id::op_udp_bind)
+    matches!(
+        op,
+        id::op_fetch | id::op_udp_bind | id::op_fetch_upload_cancel_handle
+    )
 }
 
 /// Whether `op` is an awaited network op this module answers.
@@ -147,6 +158,7 @@ pub(crate) fn is_async(op: u32) -> bool {
             | id::op_udp_connect
             | id::op_udp_send
             | id::op_udp_next_event
+            | id::op_fetch_upload
     )
 }
 
@@ -247,6 +259,12 @@ pub(crate) fn call_sync(
                 ])
             })
         }
+        id::op_fetch_upload_cancel_handle => {
+            let [] = exactly(op, args)?;
+            // Synchronous because the handle names a host resource and content
+            // is given it before it awaits the upload.
+            Ok(OwnedValue::U32(upload::cancel_handle(&network.resources)))
+        }
         other => Err(not_a(other, "synchronous network")),
     }
 }
@@ -255,6 +273,7 @@ pub(crate) fn call_sync(
 pub(crate) fn call_async(
     network: &NetworkBinding,
     scheduler: &IoScheduler,
+    sources: UploadSources,
     op: u32,
     args: Vec<OwnedValue>,
 ) -> Result<BoxFuture<'static, Result<OwnedValue, ServiceError>>, ServiceError> {
@@ -428,6 +447,39 @@ pub(crate) fn call_async(
                     .map(udp_event)
             })
         }
+        id::op_fetch_upload => {
+            let [cancel_rid, url, file_path, name, filename, headers, form_data, timeout, _enable_http2] =
+                exactly(op, args)?;
+            let request = UploadRequest {
+                cancel_rid: u32_of(op, 0, cancel_rid)?,
+                url: string(op, 1, url)?,
+                file_path: string(op, 2, file_path)?,
+                name: string(op, 3, name)?,
+                filename: string(op, 4, filename)?,
+                headers: header_pairs(op, 5, headers)?,
+                form_data: header_strings(op, 6, form_data)?,
+                timeout_ms: u32_of(op, 7, timeout)?,
+            };
+            // HTTP/2 is the client's, and this lane has one client per version;
+            // an upload takes the 1.1 one, as a multipart POST always has.
+            let client = network.client(false)?;
+            let policy = network.policy.clone();
+            let content = sources;
+            Box::pin(async move {
+                upload::upload(
+                    UploadEnv {
+                        policy: &policy,
+                        client: &client,
+                        resources: &resources,
+                        vfs: content.vfs.as_deref(),
+                        mount_table: content.mount_table.as_deref(),
+                    },
+                    request,
+                )
+                .await
+                .map(upload_answer)
+            })
+        }
         other => return Err(not_a(other, "awaited network")),
     })
 }
@@ -529,6 +581,29 @@ fn ws_event(event: WsEvent) -> OwnedValue {
             vec![OwnedValue::U32(u32::from(code)), OwnedValue::Str(reason)],
         ),
     }
+}
+
+/// `FetchUploadResult`, in its field order: data, statusCode, headers,
+/// totalBytesSent, error.
+fn upload_answer(answer: upload::UploadAnswer) -> OwnedValue {
+    OwnedValue::Array(vec![
+        OwnedValue::Str(answer.data),
+        OwnedValue::U32(u32::from(answer.status_code)),
+        OwnedValue::Array(
+            answer
+                .headers
+                .into_iter()
+                .map(|(name, value)| {
+                    OwnedValue::Array(vec![OwnedValue::Bytes(name), OwnedValue::Bytes(value)])
+                })
+                .collect(),
+        ),
+        OwnedValue::U64(answer.total_bytes_sent),
+        match answer.error {
+            Some(error) => OwnedValue::Str(error),
+            None => OwnedValue::Null,
+        },
+    ])
 }
 
 /// One end of a socket, in the order every socket answer carries it: address,

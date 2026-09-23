@@ -1,57 +1,25 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
 
-use bytes::Bytes;
 use deno_core::AsyncResult;
 use deno_core::BufView;
 use deno_core::ByteString;
-use deno_core::CancelFuture;
-use deno_core::CancelHandle;
 use deno_core::JsBuffer;
 use deno_core::OpState;
 use deno_core::Resource;
 use deno_core::ResourceId;
 use deno_core::error::AnyError;
-use deno_core::futures::Stream;
-use deno_core::futures::StreamExt;
 use deno_core::op2;
 use deno_error::JsErrorBox;
-use http::HeaderMap;
-use http::HeaderName;
-use http::HeaderValue;
-use http::header::{CONTENT_LENGTH, HOST};
 use migo_services::network as service_net;
-use migo_services::network::fetch::is_blocked_header;
 use migo_services::network::resources::ResourceTable;
-use reqwest::Body;
 use reqwest::Client;
-use reqwest::Url;
 use serde::Deserialize;
 use serde::Serialize;
-use tracing::debug;
 
 use crate::io_state::IoSchedulerState;
 use crate::network::Options;
-
-/// The cancel handle `uploadFile` aborts through.
-///
-/// A runtime-local resource for a runtime-local op: the upload streams a file
-/// this process opened, so it is this process's future that is cancelled. A
-/// `fetch` cancels through the service's own handle instead, because its send
-/// belongs to the service.
-pub struct FetchCancelHandle(pub Rc<CancelHandle>);
-
-impl Resource for FetchCancelHandle {
-    fn name(&'_ self) -> Cow<'_, str> {
-        "fetchCancelHandle".into()
-    }
-
-    fn close(self: Rc<Self>) {
-        self.0.cancel()
-    }
-}
 
 /// What `op_fetch` answers, in the shape `04_request.js` reads.
 #[derive(Serialize)]
@@ -373,88 +341,13 @@ pub fn create_audio_http_client(
 }
 
 
-// ── Upload ──
-
-/// Resolve a JS-visible virtual path into a real filesystem path for
-/// upload. We deliberately reuse neither `op_read_file`'s private
-/// resolver nor the VFS error variants — upload only cares whether
-/// the path is readable, and the error prefix stays consistent with
-/// other `uploadFile:*` failure messages.
-fn resolve_upload_path(
-    vfs: Option<&shared::vfs::VirtualFS>,
-    mount_table: Option<&shared::vfs::MountTable>,
-    path: &str,
-) -> Result<std::path::PathBuf, JsErrorBox> {
-    use shared::vfs::VfsError;
-
-    let virtual_path = if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/code/{}", path)
-    };
-
-    // `/code` is preferred via the mount table because it may be
-    // package-backed; other prefixes go through the normal VFS.
-    if virtual_path == "/code" || virtual_path.starts_with("/code/") {
-        if let Some(mt) = mount_table {
-            if let Some(res) = mt.resolve_code_path(&virtual_path) {
-                if let Some(real) = res.real_path {
-                    return Ok(real);
-                }
-                return Err(JsErrorBox::generic(format!(
-                    "uploadFile:fail {} is inside a package and cannot be streamed",
-                    path
-                )));
-            }
-        }
-    }
-
-    let vfs = vfs.ok_or_else(|| JsErrorBox::generic("uploadFile:fail VFS not initialised"))?;
-    vfs.resolve(&virtual_path, shared::vfs::FileOp::Read)
-        .map_err(|e| {
-            JsErrorBox::generic(match e {
-                VfsError::PathNotAllowed => format!(
-                    "uploadFile:fail path not allowed: {} (use /user, /cache, /code, /tmp)",
-                    path
-                ),
-                VfsError::PermissionDenied => {
-                    format!("uploadFile:fail permission denied: {}", path)
-                }
-                VfsError::PathTraversal => {
-                    format!("uploadFile:fail path traversal: {}", path)
-                }
-                VfsError::SymlinkEscape => {
-                    format!("uploadFile:fail symlink escape: {}", path)
-                }
-                VfsError::SymlinkNotAllowed => {
-                    format!("uploadFile:fail symlinks not allowed: {}", path)
-                }
-                VfsError::InvalidPath => format!("uploadFile:fail invalid path: {}", path),
-            })
-        })
-}
-
-/// Convert a `tokio::fs::File` into a stream of `Bytes` chunks that
-/// `reqwest::Body::wrap_stream` accepts. 64 KiB is large enough to
-/// keep syscall overhead low but small enough that a paused upload
-/// (backpressure) doesn't pin down megabytes of RAM per connection.
-fn file_to_byte_stream(file: tokio::fs::File) -> impl Stream<Item = std::io::Result<Bytes>> {
-    use tokio::io::AsyncReadExt;
-    deno_core::futures::stream::unfold((file, false), |(mut f, done)| async move {
-        if done {
-            return None;
-        }
-        let mut buf = vec![0u8; 64 * 1024];
-        match f.read(&mut buf).await {
-            Ok(0) => None,
-            Ok(n) => {
-                buf.truncate(n);
-                Some((Ok(Bytes::from(buf)), (f, false)))
-            }
-            Err(e) => Some((Err(e), (f, true))),
-        }
-    })
-}
+// -- Upload --
+//
+// The upload itself is the service's (`migo_services::network::upload`): the
+// VFS resolution, the streamed multipart body, the policy and the bound on the
+// answer. What is here is the two things only an op can do -- take the
+// arguments out of V8 and name the service's cancel handle through deno's
+// table.
 
 #[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -466,38 +359,43 @@ pub struct FetchUploadResult {
     pub error: Option<String>,
 }
 
-/// Create a cancel handle for an in-flight `uploadFile`.
+impl From<service_net::upload::UploadAnswer> for FetchUploadResult {
+    fn from(answer: service_net::upload::UploadAnswer) -> Self {
+        Self {
+            data: answer.data,
+            status_code: answer.status_code,
+            headers: answer
+                .headers
+                .into_iter()
+                .map(|(name, value)| (name.into(), value.into()))
+                .collect(),
+            total_bytes_sent: answer.total_bytes_sent,
+            error: answer.error,
+        }
+    }
+}
+
+/// The handle an in-flight `uploadFile` is aborted with.
 ///
-/// The JS layer gets the rid back immediately (before it awaits
-/// `op_fetch_upload`), stores it on the upload task, and `abort()` closes
-/// it — closing the resource cancels the upload future via
-/// [`FetchCancelHandle::close`]. Mirrors the cancel handle `op_fetch`
-/// hands back for `downloadFile`, which previously had no analogue for
-/// uploads (so `UploadTask.abort()` could not stop an in-flight request).
+/// Content is given the rid before it awaits the upload, keeps it on the task,
+/// and `abort()` closes it -- which cancels the upload. The mirror of the
+/// cancel handle `op_fetch` hands back for a download.
 #[op2(fast)]
 #[smi]
 pub fn op_fetch_upload_cancel_handle(state: &mut OpState) -> ResourceId {
+    let resources = std::sync::Arc::clone(&state.borrow::<NetworkResources>().0);
+    let id = service_net::upload::cancel_handle(&resources);
     state
         .resource_table
-        .add(FetchCancelHandle(CancelHandle::new_rc()))
+        .add(ServiceHandle::new(resources, id, "fetchCancelHandle"))
 }
 
-/// Streaming multipart upload.
+/// Scalar options, bundled into one `#[serde]` argument.
 ///
-/// The JS caller passes the **virtual path** of the file to upload
-/// (e.g. `/user/foo.png`). The op resolves it through the host's VFS
-/// and feeds a `tokio::fs::File` straight into `reqwest::Body::wrap_stream`,
-/// so the process never materialises a second copy of the file in
-/// user-space. For a 50 MiB upload this removes ~100 MiB of peak
-/// allocation compared with the old `buffer -> Vec<u8> -> clone`
-/// pipeline.
-/// Scalar options for `op_fetch_upload`, bundled into one `#[serde]` arg.
-///
-/// deno_core's `setUpAsyncStub` only codegens async-op arities up to 10
-/// (`arg_count` = js args + 2). With every scalar passed separately this op
-/// hit `arg_count = 11`, tripping the "Too many arguments for async op codegen"
-/// throw and aborting V8 snapshot creation. Folding the trailing scalars into
-/// one serde struct keeps the op under the limit.
+/// deno_core's `setUpAsyncStub` codegens async ops up to ten arguments
+/// (`arg_count` = the JavaScript arguments plus two). With every scalar passed
+/// separately this op reached eleven, which throws "Too many arguments for
+/// async op codegen" and aborts snapshot creation.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FetchUploadOpts {
@@ -507,6 +405,7 @@ struct FetchUploadOpts {
 
 #[op2(async(lazy))]
 #[serde]
+#[allow(clippy::too_many_arguments)]
 pub async fn op_fetch_upload(
     state: Rc<RefCell<OpState>>,
     #[smi] cancel_rid: ResourceId,
@@ -522,234 +421,58 @@ pub async fn op_fetch_upload(
         timeout,
         enable_http2,
     } = opts;
-    let client = {
+    let (resources, client, policy, content) = {
         let mut st = state.borrow_mut();
-        get_or_create_client_from_state(&mut st, enable_http2)
-            .map_err(|e| JsErrorBox::generic(e.to_string()))?
-    };
-
-    // Resolve the JS-visible virtual path before entering asynchronous file
-    // operations, using the same VFS boundary as the file API.
-    let real_path = {
-        let st = state.borrow();
+        let client = get_or_create_client_from_state(&mut st, enable_http2)
+            .map_err(|error| JsErrorBox::generic(error.to_string()))?;
+        let resources = std::sync::Arc::clone(&st.borrow::<NetworkResources>().0);
         let host = st.borrow::<shared::op_state::HostOpState>();
-        let vfs = host.vfs.as_ref().map(|arc| arc.as_ref());
-        let mount_table = host.mount_table.as_ref().map(|arc| arc.as_ref());
-        resolve_upload_path(vfs, mount_table, &file_path)?
-    };
-    // Capture the strong cancel owner before the first file-system await.
-    // JS abort() closes/removes this rid synchronously; a supplied rid that
-    // is already absent therefore means "cancelled", never "uncancellable".
-    let cancel_handle = if cancel_rid == 0 {
-        None
-    } else {
-        let st = state.borrow();
-        st.resource_table
-            .get::<FetchCancelHandle>(cancel_rid)
-            .ok()
-            .map(|h| h.0.clone())
-    };
-    if cancel_rid != 0 && cancel_handle.is_none() {
-        return Ok(FetchUploadResult {
-            error: Some("uploadFile:fail aborted".to_string()),
-            ..Default::default()
-        });
-    }
-
-    let file_open = tokio::fs::File::open(&real_path);
-    let file = match cancel_handle.clone() {
-        Some(cancel) => match file_open.or_cancel(cancel).await {
-            Ok(result) => result.map_err(|e| {
-                JsErrorBox::generic(format!("uploadFile:fail open {}: {}", file_path, e))
-            })?,
-            Err(_) => {
-                return Ok(FetchUploadResult {
-                    error: Some("uploadFile:fail aborted".to_string()),
-                    ..Default::default()
-                });
-            }
-        },
-        None => file_open.await.map_err(|e| {
-            JsErrorBox::generic(format!("uploadFile:fail open {}: {}", file_path, e))
-        })?,
-    };
-    let file_size = match cancel_handle.clone() {
-        Some(cancel) => match file.metadata().or_cancel(cancel).await {
-            Ok(metadata) => metadata.map(|m| m.len()).unwrap_or(0),
-            Err(_) => {
-                return Ok(FetchUploadResult {
-                    error: Some("uploadFile:fail aborted".to_string()),
-                    ..Default::default()
-                });
-            }
-        },
-        None => file.metadata().await.map(|m| m.len()).unwrap_or(0),
-    };
-
-    // Guess MIME type from filename extension
-    let mime = match filename.rsplit('.').next().map(|e| e.to_lowercase()) {
-        Some(ext) => match ext.as_str() {
-            "jpg" | "jpeg" => "image/jpeg",
-            "png" => "image/png",
-            "gif" => "image/gif",
-            "webp" => "image/webp",
-            "mp3" => "audio/mpeg",
-            "mp4" => "video/mp4",
-            "wav" => "audio/wav",
-            "ogg" => "audio/ogg",
-            "json" => "application/json",
-            "xml" => "application/xml",
-            "txt" => "text/plain",
-            "zip" => "application/zip",
-            _ => "application/octet-stream",
-        },
-        None => "application/octet-stream",
-    };
-
-    // Streaming body: pull 64 KiB at a time from the file and emit
-    // `Bytes` chunks to the multipart encoder. `reqwest::Body::wrap_stream`
-    // owns the stream and drives it as the HTTP layer asks for data,
-    // so peak user-space memory per upload is one chunk, not the
-    // whole file.
-    //
-    // One `file_name` call for both bodies, because two of them is how the
-    // branches came to disagree: the zero-length branch named the part
-    // `file_path` -- the engine's internal VFS path -- instead of the display
-    // name the caller gave, so every file whose metadata reported no length
-    // leaked the internal path layout to the server.
-    let file_part = if file_size == 0 {
-        // No length from metadata, so fall back to chunked encoding; reqwest
-        // picks that for a part with no declared length.
-        let reopened = tokio::fs::File::open(&real_path);
-        let reopened = match cancel_handle.clone() {
-            Some(cancel) => match reopened.or_cancel(cancel).await {
-                Ok(result) => result
-                    .map_err(|e| JsErrorBox::generic(format!("uploadFile:fail reopen: {e}")))?,
-                Err(_) => {
-                    return Ok(FetchUploadResult {
-                        error: Some("uploadFile:fail aborted".to_string()),
-                        ..Default::default()
-                    });
-                }
-            },
-            None => reopened
-                .await
-                .map_err(|e| JsErrorBox::generic(format!("uploadFile:fail reopen: {e}")))?,
-        };
-        reqwest::multipart::Part::stream(Body::wrap_stream(file_to_byte_stream(reopened)))
-    } else {
-        reqwest::multipart::Part::stream_with_length(
-            Body::wrap_stream(file_to_byte_stream(file)),
-            file_size,
+        (
+            resources,
+            client,
+            host.network_policy.clone(),
+            (host.vfs.clone(), host.mount_table.clone()),
         )
-    }
-    .file_name(filename)
-    .mime_str(mime)
-    .map_err(|e| JsErrorBox::generic(e.to_string()))?;
-
-    let mut form = reqwest::multipart::Form::new().part(name, file_part);
-
-    for (key, value) in form_data {
-        form = form.text(key, value);
-    }
-
-    // Parse URL
-    let parsed_url = Url::parse(&url).map_err(|_| JsErrorBox::type_error("Invalid URL"))?;
-
-    // Security: SSRF + domain whitelist + HTTPS enforcement via the
-    // shared gate. See `op_fetch` for rationale.
-    {
-        let st = state.borrow();
-        super::gate::enforce_from_state(&parsed_url, &*st, super::gate::GateKind::FetchUpload)?;
-    }
-
-    debug!("Upload request: POST {}", parsed_url);
-
-    // Build request
-    let mut request = client
-        .post(parsed_url)
-        .timeout(Duration::from_millis(timeout as u64))
-        .multipart(form);
-
-    // Apply custom headers — same security filtering as op_fetch.
-    let mut header_map = HeaderMap::new();
-    for (key, value) in headers {
-        let hname =
-            HeaderName::from_bytes(&key).map_err(|_| JsErrorBox::type_error("Invalid Header"))?;
-        let hval = HeaderValue::from_bytes(&value)
-            .map_err(|_| JsErrorBox::type_error("Invalid Header Value"))?;
-        // Skip Content-Type and Content-Length (reqwest manages these for multipart),
-        // HOST (prevent host-header attacks), and proxy-related headers (SSRF hardening).
-        if hname != http::header::CONTENT_TYPE
-            && hname != CONTENT_LENGTH
-            && hname != HOST
-            && !is_blocked_header(&hname)
-        {
-            header_map.append(hname, hval);
+    };
+    // Zero is "no handle"; anything else names the service resource this
+    // runtime's rid stands for. A rid content already closed is gone from the
+    // table, which the service reads as aborted -- the same answer it gave
+    // when the handle itself lived here.
+    let cancel_rid = if cancel_rid == 0 {
+        0
+    } else {
+        match state.borrow().resource_table.get::<ServiceHandle>(cancel_rid) {
+            Ok(handle) => handle.id,
+            Err(_) => return Ok(service_net::upload::UploadAnswer::aborted_answer().into()),
         }
-    }
-    request = request.headers(header_map);
-
-    // Upload responses are buffered for UploadResponse.data, so bound the
-    // response independently of the streamed request body. Content-Length is
-    // not sufficient: chunked responses are checked while bytes arrive.
-    const MAX_BUFFERED_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
-
-    // Drive send + response read as one cancellable unit.
-    let exchange = async move {
-        let res = request.send().await.map_err(|e| e.to_string())?;
-        let status = res.status().as_u16();
-        let mut res_headers = Vec::new();
-        for (key, val) in res.headers().iter() {
-            res_headers.push((key.as_str().into(), val.as_bytes().into()));
-        }
-        let mut stream = res.bytes_stream();
-        let mut body = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| e.to_string())?;
-            let next_len = body.len().saturating_add(chunk.len());
-            if next_len > MAX_BUFFERED_RESPONSE_BYTES {
-                return Ok::<FetchUploadResult, String>(FetchUploadResult {
-                    status_code: status,
-                    headers: res_headers,
-                    total_bytes_sent: file_size,
-                    error: Some("uploadFile:fail response body exceeds limit".to_string()),
-                    ..Default::default()
-                });
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok::<FetchUploadResult, String>(FetchUploadResult {
-            data: String::from_utf8_lossy(&body).into_owned(),
-            status_code: status,
-            headers: res_headers,
-            total_bytes_sent: file_size,
-            error: None,
-        })
     };
 
-    let outcome = match cancel_handle {
-        Some(c) => match exchange.or_cancel(c).await {
-            Ok(inner) => inner,
-            Err(_canceled) => {
-                return Ok(FetchUploadResult {
-                    error: Some("uploadFile:fail aborted".to_string()),
-                    ..Default::default()
-                });
-            }
+    let (vfs, mount_table) = content;
+    service_net::upload::upload(
+        service_net::upload::UploadEnv {
+            policy: &policy,
+            client: &client,
+            resources: &resources,
+            vfs: vfs.as_deref(),
+            mount_table: mount_table.as_deref(),
         },
-        None => exchange.await,
-    };
-
-    // Network / decode errors surface through the result's `error` field
-    // (same contract as the send-error path) rather than throwing.
-    match outcome {
-        Ok(result) => Ok(result),
-        Err(err) => Ok(FetchUploadResult {
-            error: Some(err.to_string()),
-            ..Default::default()
-        }),
-    }
+        service_net::upload::UploadRequest {
+            cancel_rid,
+            url,
+            file_path,
+            name,
+            filename,
+            headers: headers
+                .into_iter()
+                .map(|(name, value)| (name.to_vec(), value.to_vec()))
+                .collect(),
+            form_data,
+            timeout_ms: timeout,
+        },
+    )
+    .await
+    .map(FetchUploadResult::from)
+    .map_err(service_error)
 }
 
 #[cfg(test)]

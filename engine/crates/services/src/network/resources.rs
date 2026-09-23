@@ -140,7 +140,7 @@ impl ResourceTable {
         self.add(Entry::FetchRequest(Box::new(request)))
     }
 
-    pub(crate) fn add_cancel(&self, cancel: Arc<CancelFlag>) -> ResourceId {
+    pub fn add_cancel(&self, cancel: Arc<CancelFlag>) -> ResourceId {
         self.add(Entry::FetchCancel(cancel))
     }
 
@@ -150,6 +150,16 @@ impl ResourceTable {
 
     pub(crate) fn add_web_socket(&self, connection: Arc<super::websocket::WebSocketConn>) -> ResourceId {
         self.add(Entry::WebSocket(connection))
+    }
+
+    /// The cancel flag `id` names, if it is one: an upload asks before it
+    /// starts, because a handle content has already closed means it was
+    /// aborted rather than that it cannot be.
+    pub fn cancel_flag(&self, id: ResourceId) -> Option<Arc<CancelFlag>> {
+        match self.entries.lock().get(&id) {
+            Some(Entry::FetchCancel(flag)) => Some(Arc::clone(flag)),
+            _ => None,
+        }
     }
 
     /// The connection `id` names.

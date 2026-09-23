@@ -221,3 +221,34 @@ export function udpEvent([tag, ...fields]) {
   }
   return { type: "error", errMsg: fields[0] };
 }
+
+// ---- upload ---------------------------------------------------------------------
+
+/**
+ * `FetchUploadOpts`: the two scalars the op takes as one `#[serde]` argument.
+ *
+ * They are written as the values themselves rather than an object, because the
+ * host reads them positionally -- the bundling exists only to keep the op under
+ * deno's async-argument limit, which the service call does not have.
+ */
+export function uploadOpts(opts) {
+  if (opts === null || typeof opts !== "object") {
+    throw new TypeError(`serde_v8 error: invalid type; expected: map, got: ${typeRepr(opts)}`);
+  }
+  const { timeout, enableHttp2 } = opts;
+  if (!Number.isFinite(timeout)) {
+    throw new TypeError("serde_v8 error: invalid type; expected: number, got: " + typeRepr(timeout));
+  }
+  return { timeout: timeout >>> 0, enableHttp2: enableHttp2 === true };
+}
+
+/** `FetchUploadResult`, in its field order. */
+export function uploadAnswer([data, statusCode, headers, totalBytesSent, error]) {
+  return {
+    data,
+    statusCode,
+    headers: headers.map(([name, value]) => [latin1(name), latin1(value)]),
+    totalBytesSent,
+    error,
+  };
+}

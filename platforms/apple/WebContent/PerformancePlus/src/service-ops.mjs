@@ -164,4 +164,6 @@ export const SERVICE_OP = Object.freeze({
   op_udp_next_event: 154,
   op_udp_close: 155,
   op_udp_set_ttl: 156,
+  op_fetch_upload_cancel_handle: 157,
+  op_fetch_upload: 158,
 });

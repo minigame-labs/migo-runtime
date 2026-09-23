@@ -64,7 +64,7 @@ use shared::error::{EngineError, EngineResult, ErrorCode};
 
 use super::service_args::{bytes, exactly, i32_of, not_a, string, strings, u32_of};
 use super::service_audio::{self, AudioBinding, LocalSources};
-use super::service_network::{self, NetworkBinding};
+use super::service_network::{self, NetworkBinding, UploadSources};
 use super::service_ops::id;
 
 /// The most messages held ahead of a predecessor that has not arrived.
@@ -460,6 +460,17 @@ impl ServiceContext {
             })
     }
 
+    /// Where an upload reads from: the mounted package's sandbox.
+    fn upload_sources(&self) -> UploadSources {
+        let content = self.content.read();
+        UploadSources {
+            vfs: content.as_ref().map(|content| Arc::clone(&content.vfs)),
+            mount_table: content
+                .as_ref()
+                .map(|content| Arc::clone(&content.mount_table)),
+        }
+    }
+
     fn network(&self) -> Result<&NetworkBinding, ServiceError> {
         self.network
             .get()
@@ -783,6 +794,7 @@ impl ServiceContext {
                 return service_network::call_async(
                     self.network()?,
                     self.scheduler()?.as_ref(),
+                    self.upload_sources(),
                     network,
                     args,
                 );

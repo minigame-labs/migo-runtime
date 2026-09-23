@@ -60,7 +60,16 @@ impl Session {
     }
 
     fn call_async(&self, op: u32, args: Vec<OwnedValue>) -> Result<OwnedValue, ServiceError> {
-        let future = call_async(&self.network, &self.scheduler, op, args)?;
+        let future = call_async(
+            &self.network,
+            &self.scheduler,
+            UploadSources {
+                vfs: None,
+                mount_table: None,
+            },
+            op,
+            args,
+        )?;
         self.executor.block_on(future)
     }
 }
@@ -261,8 +270,9 @@ fn every_claimed_op_is_answered_in_exactly_one_shape() {
         .collect();
     assert_eq!(
         claimed.len(),
-        20,
-        "fetch's three, the three core members, the socket's four and the ten raw-socket ops"
+        22,
+        "fetch's three, the upload's two, the three core members, the socket's four \
+         and the ten raw-socket ops"
     );
     for op in claimed {
         let shapes = u8::from(is_sync(op)) + u8::from(is_async(op)) + u8::from(is_command(op));
@@ -376,6 +386,46 @@ fn a_tcp_connect_is_held_to_the_policy() {
         "{}",
         error.message
     );
+}
+
+/// The handle an upload is aborted through is the session's, answered
+/// synchronously because content holds it before it awaits the upload -- and
+/// an upload naming a handle that was already closed is answered as aborted.
+#[test]
+fn an_upload_is_given_a_handle_and_a_closed_one_means_aborted() {
+    let session = Session::new(policy(&[], false));
+    let handle = call_sync(
+        &session.network,
+        &session.scheduler,
+        id::op_fetch_upload_cancel_handle,
+        Vec::new(),
+    )
+    .expect("a cancel handle");
+    let OwnedValue::U32(rid) = handle else {
+        panic!("a handle is a u32, not {handle:?}");
+    };
+    command(&session.network, id::core_close, vec![OwnedValue::U32(rid)])
+        .expect("abort() closes it");
+
+    // No content is mounted here, so the path is refused before the handle is
+    // read -- the order the embedded op has too.
+    let error = session
+        .call_async(
+            id::op_fetch_upload,
+            vec![
+                OwnedValue::U32(rid),
+                OwnedValue::Str("https://allowed.example/upload".to_string()),
+                OwnedValue::Str("/user/save.png".to_string()),
+                OwnedValue::Str("file".to_string()),
+                OwnedValue::Str("save.png".to_string()),
+                OwnedValue::Array(Vec::new()),
+                OwnedValue::Array(Vec::new()),
+                OwnedValue::U32(30_000),
+                OwnedValue::Bool(false),
+            ],
+        )
+        .expect_err("there is no sandbox to read from");
+    assert_eq!(error.message, "uploadFile:fail VFS not initialised");
 }
 
 /// An `http(s)://` image source is fetched by the session's own client, under

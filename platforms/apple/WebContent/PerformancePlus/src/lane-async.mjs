@@ -19,12 +19,15 @@ import {
 import { engineHost } from "./engine-host.mjs";
 import {
   fetchResponse,
+  uploadAnswer,
+  uploadOpts,
+  writeHeaders,
+  writeStringPairs,
   tcpConnected,
   tcpEvent,
   udpEvent,
   wsEvent,
   wsHandshake,
-  writeStringPairs,
   writeStrings,
 } from "./network.mjs";
 import { drained } from "./engine-frames.mjs";
@@ -685,4 +688,32 @@ export function op_udp_next_event(rid) {
   return servicesOf(engineHost())
     .request(SERVICE_OP.op_udp_next_event, (w) => w.u32(socket))
     .then(udpEvent);
+}
+
+/// Stream a file from the sandbox to `url` as one multipart part.
+///
+/// The bytes never cross: the host opens the file content named and feeds it
+/// into the request, which is why the path is virtual and the answer carries
+/// how much was sent. A failure is reported through the answer's `error`, as
+/// the embedded op reports it, rather than thrown.
+export function op_fetch_upload(cancelRid, url, filePath, name, filename, headers, formData, opts) {
+  const cancel = smiU32(cancelRid, "cancel_rid");
+  const target = stringOf(url, "url");
+  const path = stringOf(filePath, "file_path");
+  const field = stringOf(name, "name");
+  const asName = stringOf(filename, "filename");
+  const { timeout, enableHttp2 } = uploadOpts(opts);
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_fetch_upload, (w) => {
+      w.u32(cancel);
+      w.str(target);
+      w.str(path);
+      w.str(field);
+      w.str(asName);
+      writeHeaders(w, headers);
+      writeStringPairs(w, formData);
+      w.u32(timeout);
+      w.bool(enableHttp2);
+    })
+    .then(uploadAnswer);
 }

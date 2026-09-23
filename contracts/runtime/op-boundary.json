@@ -281,15 +281,12 @@
       }
     },
     "host_v8_network": {
-      "reason": "Requests are made by the host, not by WebContent's fetch: the engine's network API has no CORS, carries the host's TLS and domain policy, and has sockets the web platform does not. Starts and reads are awaited; closes and cancels are commands.",
+      "reason": "Requests are made by the host, not by WebContent's fetch: the engine's network API has no CORS, carries the host's TLS and domain policy, and has sockets the web platform does not. Starts and reads are awaited; closes and cancels are commands. The handle an upload is aborted through is synchronous because it names a host resource -- the upload streams a file the host opened -- and content is given it before it awaits the upload.",
       "ops": {
         "op_fetch": "sync",
         "op_fetch_send": "async",
         "op_fetch_upload": "async",
-        "op_fetch_upload_cancel_handle": {
-          "lane": "command",
-          "local_answer": "the handle, which the producer allocates and names the upload by"
-        },
+        "op_fetch_upload_cancel_handle": "sync",
         "op_prefetch_assets": "async",
         "op_prefetch_dns": "command",
         "op_tcp_close": "command",
