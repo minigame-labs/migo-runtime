@@ -741,3 +741,41 @@ export function op_udp_bind(port, socketType) {
 export function op_fetch_upload_cancel_handle() {
   return callService(SERVICE_OP.op_fetch_upload_cancel_handle);
 }
+
+// ---- subpackages -----------------------------------------------------------------
+//
+// What a game asks before it loads one: is it here already, what is covering it,
+// and has the mount view changed since it last resolved a path. The host reads
+// its own mount table and the game's package store, which is where the answer
+// is on every platform.
+
+export function op_get_sub_packages() {
+  return callService(SERVICE_OP.op_get_sub_packages);
+}
+
+export function op_get_mount_generation() {
+  return callService(SERVICE_OP.op_get_mount_generation);
+}
+
+export function op_get_subpackage_identity(root) {
+  const path = stringOf(root, "root");
+  return callService(SERVICE_OP.op_get_subpackage_identity, (w) => w.str(path));
+}
+
+export function op_is_subpackage_installed(root) {
+  const path = stringOf(root, "root");
+  return callService(SERVICE_OP.op_is_subpackage_installed, (w) => w.str(path));
+}
+
+export function op_is_subpackage_persisted(name, root) {
+  const which = stringOf(name, "name");
+  const path = stringOf(root, "root");
+  return callService(SERVICE_OP.op_is_subpackage_persisted, (w) => {
+    w.str(which);
+    w.str(path);
+  });
+}
+
+export function op_get_workers_path() {
+  return callService(SERVICE_OP.op_get_workers_path);
+}

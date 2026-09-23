@@ -183,6 +183,12 @@ service_ops! {
     op_exit_mini_program = 160,
     op_restart_mini_program = 161,
     op_set_preferred_fps = 162,
+    op_get_sub_packages = 163,
+    op_get_mount_generation = 164,
+    op_get_subpackage_identity = 165,
+    op_is_subpackage_installed = 166,
+    op_is_subpackage_persisted = 167,
+    op_get_workers_path = 168,
 }
 
 /// The op's name, for a refusal a person will read.

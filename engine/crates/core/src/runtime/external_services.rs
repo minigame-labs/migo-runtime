@@ -551,6 +551,14 @@ impl ServiceContext {
         })
     }
 
+    /// The session's mount table, once content is mounted.
+    fn mount_table(&self) -> Option<Arc<shared::vfs::MountTable>> {
+        self.content
+            .read()
+            .as_ref()
+            .map(|content| Arc::clone(&content.mount_table))
+    }
+
     fn game_paths(&self) -> Option<Arc<shared::vfs::GamePaths>> {
         self.content
             .read()
@@ -661,6 +669,52 @@ impl ServiceContext {
             id::op_require_resolve_and_read => {
                 let [specifier, referrer_dir] = exactly(op, args)?;
                 self.require(&string(op, 0, specifier)?, &string(op, 1, referrer_dir)?)
+            }
+            // What a game asks about its subpackages: the session's mount
+            // table and the game's package store, read by the same service code
+            // the embedded ops call.
+            id::op_get_sub_packages => {
+                let [] = exactly(op, args)?;
+                // A session on this lane is started with the package it mounts
+                // and no separate subpackage list; what is installed is what the
+                // mount table shows.
+                Ok(OwnedValue::Str(
+                    migo_services::subpackage::sub_packages_json(&[]),
+                ))
+            }
+            id::op_get_mount_generation => {
+                let [] = exactly(op, args)?;
+                Ok(OwnedValue::U64(migo_services::subpackage::mount_generation(
+                    self.mount_table().as_deref(),
+                )))
+            }
+            id::op_get_subpackage_identity => {
+                let [root] = exactly(op, args)?;
+                Ok(OwnedValue::Str(migo_services::subpackage::identity(
+                    self.mount_table().as_deref(),
+                    &string(op, 0, root)?,
+                )))
+            }
+            id::op_is_subpackage_installed => {
+                let [root] = exactly(op, args)?;
+                Ok(OwnedValue::Bool(migo_services::subpackage::is_installed(
+                    self.mount_table().as_deref(),
+                    &string(op, 0, root)?,
+                )))
+            }
+            id::op_is_subpackage_persisted => {
+                let [name, root] = exactly(op, args)?;
+                Ok(OwnedValue::Bool(migo_services::subpackage::is_persisted(
+                    self.game_paths().as_deref(),
+                    &string(op, 0, name)?,
+                    &string(op, 1, root)?,
+                )))
+            }
+            id::op_get_workers_path => {
+                let [] = exactly(op, args)?;
+                // A Worker's engine is staged beside the producer's, which is
+                // the producer's own path to resolve; the host has none to give.
+                Ok(OwnedValue::Str(String::new()))
             }
             file if super::service_fs::is_sync(file) => {
                 super::service_fs::call_sync(&self.fs_env()?, file, args)

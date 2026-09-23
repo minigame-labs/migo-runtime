@@ -106,28 +106,7 @@ async fn install_subpackage_with_scheduler(
 /// Derive a collision-free filesystem-safe key from a package name.
 /// Uses percent-encoding: every byte that isn't [a-zA-Z0-9._-] is
 /// encoded as %XX.  Validates length, traversal, and control chars.
-fn safe_package_key(name: &str) -> Result<String, String> {
-    let trimmed = name.trim_matches('/');
-    if trimmed.is_empty() || trimmed.len() > 256 {
-        return Err(format!("invalid name: empty or too long ({})", name.len()));
-    }
-    if trimmed.contains("..") || trimmed.bytes().any(|b| b < 0x20) {
-        return Err(format!("invalid characters in name: {name}"));
-    }
-    let mut key = String::with_capacity(trimmed.len());
-    for b in trimmed.bytes() {
-        match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' => {
-                key.push(b as char);
-            }
-            _ => {
-                key.push('%');
-                key.push_str(&format!("{:02X}", b));
-            }
-        }
-    }
-    Ok(key)
-}
+use migo_services::subpackage::package_key as safe_package_key;
 
 #[derive(Debug, thiserror::Error, deno_error::JsError)]
 enum RequireError {
@@ -224,16 +203,7 @@ struct RequireResult {
 #[op2]
 #[string]
 fn op_get_sub_packages(state: &mut OpState) -> String {
-    let host = state.borrow::<HostOpState>();
-    if host.sub_packages.is_empty() {
-        return "[]".to_string();
-    }
-    let arr: Vec<serde_json::Value> = host
-        .sub_packages
-        .iter()
-        .map(|(name, root)| serde_json::json!({"name": name, "root": root}))
-        .collect();
-    serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
+    migo_services::subpackage::sub_packages_json(&state.borrow::<HostOpState>().sub_packages)
 }
 
 /// Returns the workers directory path, or empty string if not configured.
@@ -546,11 +516,9 @@ async fn op_install_subpackage(
 #[op2(fast)]
 #[bigint]
 fn op_get_mount_generation(state: &mut OpState) -> u64 {
-    let host = state.borrow::<HostOpState>();
-    host.mount_table
-        .as_ref()
-        .map(|mt| mt.generation())
-        .unwrap_or(0)
+    migo_services::subpackage::mount_generation(
+        state.borrow::<HostOpState>().mount_table.as_deref(),
+    )
 }
 
 /// Get the identity of the overlay covering a subpackage root.
@@ -560,11 +528,7 @@ fn op_get_mount_generation(state: &mut OpState) -> u64 {
 #[op2]
 #[string]
 fn op_get_subpackage_identity(state: &mut OpState, #[string] root: &str) -> String {
-    let host = state.borrow::<HostOpState>();
-    match &host.mount_table {
-        Some(mt) => mt.overlay_identity_for(root),
-        None => String::new(),
-    }
+    migo_services::subpackage::identity(state.borrow::<HostOpState>().mount_table.as_deref(), root)
 }
 
 /// Check if a subpackage is durably installed in the per-game package store.
@@ -578,27 +542,11 @@ fn op_is_subpackage_persisted(
     #[string] name: &str,
     #[string] root: &str,
 ) -> bool {
-    let host = state.borrow::<HostOpState>();
-    let Some(game_paths) = &host.game_paths else {
-        return false;
-    };
-    let store = shared::vfs::mount::package_store_dir(game_paths.cache_dir());
-    let manifest = shared::vfs::mount::PackageManifest::load(&store);
-
-    // Derive the same package key that install would use.
-    let pkg_key = match safe_package_key(name) {
-        Ok(k) => k,
-        Err(_) => return false,
-    };
-
-    // Look up by derived key.
-    if let Some(entry) = manifest.packages.get(&pkg_key) {
-        if entry.prefix == root {
-            let pkg_path = store.join(format!("{pkg_key}.mpkg"));
-            return pkg_path.exists();
-        }
-    }
-    false
+    migo_services::subpackage::is_persisted(
+        state.borrow::<HostOpState>().game_paths.as_deref(),
+        name,
+        root,
+    )
 }
 
 /// Check if a subpackage is already available locally.
@@ -608,24 +556,10 @@ fn op_is_subpackage_persisted(
 /// Used by JS to skip download when the subpackage is already present.
 #[op2(fast)]
 fn op_is_subpackage_installed(state: &mut OpState, #[string] root: &str) -> bool {
-    let host = state.borrow::<HostOpState>();
-    let Some(mt) = &host.mount_table else {
-        return false;
-    };
-
-    // Check if any entry point candidate exists in the mount view.
-    let candidates = [
-        format!("{root}/game.js"),
-        format!("{root}/index.js"),
-        format!("{root}/main.js"),
-    ];
-    for candidate in &candidates {
-        if mt.exists(candidate) || mt.exists_or_is_dir(candidate) {
-            return true;
-        }
-    }
-    // Also check if the root itself is a visible directory with content.
-    !mt.list_dir(root).is_empty()
+    migo_services::subpackage::is_installed(
+        state.borrow::<HostOpState>().mount_table.as_deref(),
+        root,
+    )
 }
 
 /// Take the next host-callback id from the Host's one allocator.
