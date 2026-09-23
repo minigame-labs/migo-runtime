@@ -46,6 +46,7 @@ import {
   toBool,
   toF64,
   toI32,
+  toI64,
   toU32,
   toU64,
 } from "./op-args.mjs";
@@ -98,7 +99,10 @@ import {
   SYNC_OP_CANVAS2D_IMAGE_DATA,
   SYNC_OP_CANVAS2D_SNAPSHOT,
   SYNC_OP_READ_PIXELS,
+  SYNC_OP_READ_PIXELS_TO_BUFFER,
+  READ_PIXELS_TO_BUFFER_REPLY_BYTES,
   encodeCanvas2DPixelsParams,
+  encodeReadPixelsToBufferParams,
   decodeReadPixelsLayout,
   encodeReadPixelsParams,
   readPixelsReplyBytes,
@@ -1045,6 +1049,79 @@ export function op_read_pixels(canvasId, x, y, width, height, format, type_, pix
     rowStride: layout.rowStride,
     height: layout.height,
   };
+}
+
+/**
+ * `readPixels` into the bound `PIXEL_PACK_BUFFER`.
+ *
+ * Nothing comes back but the verdict: the pixels go into a buffer the host
+ * holds. The refusals before the call are the op's own, in its order -- an
+ * unrecognised pixel pair, a rectangle that is negative or too large, and a
+ * negative offset, which `GLintptr` can carry and the specification refuses.
+ * The renderer decides the rest, because the rest depends on the live pack
+ * binding and the buffer's size, and its verdict comes back as the error to
+ * record.
+ */
+export function op_read_pixels_to_buffer(canvasId, x, y, width, height, format, type_, offset) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const left = toI32(x, "x");
+  const bottom = toI32(y, "y");
+  const columns = toI32(width, "width");
+  const rows = toI32(height, "height");
+  const glFormat = smiU32(format, "format");
+  const glType = smiU32(type_, "type_");
+  const into = toI64(offset, "offset");
+
+  const bytesPerPixel = readbackBytesPerPixel(glFormat, glType);
+  if (bytesPerPixel === null) {
+    recordProducerError(canvas, GL_INVALID_ENUM);
+    return;
+  }
+  if (columns < 0 || rows < 0) {
+    recordProducerError(canvas, GL_INVALID_VALUE);
+    return;
+  }
+  const pixelBytes = columns * rows * bytesPerPixel;
+  if (!Number.isSafeInteger(pixelBytes) || pixelBytes > MAX_SYNC_READBACK_BYTES) {
+    recordProducerError(canvas, GL_OUT_OF_MEMORY);
+    return;
+  }
+  if (into < 0n) {
+    recordProducerError(canvas, GL_INVALID_VALUE);
+    return;
+  }
+  // An empty rectangle reads nothing. In process the renderer is still asked
+  // and answers without touching the buffer; the host refuses the record
+  // instead, and the outcome content sees -- no pixels, no error -- is the same.
+  if (columns === 0 || rows === 0) return;
+
+  let reply;
+  try {
+    reply = ask(
+      SYNC_OP_READ_PIXELS_TO_BUFFER,
+      READ_PIXELS_TO_BUFFER_REPLY_BYTES,
+      encodeReadPixelsToBufferParams({
+        canvasId: canvas,
+        x: left,
+        y: bottom,
+        width: columns,
+        height: rows,
+        format: glFormat,
+        type: glType,
+        offset: into,
+      }),
+    );
+  } catch (error) {
+    // The host tried it and could not: the op's own fallback code for a
+    // failure it cannot name more precisely.
+    if (error && error.code === SYNC_ERROR_OPERATION_FAILED) {
+      recordProducerError(canvas, GL_INVALID_OPERATION);
+      return;
+    }
+    throw error;
+  }
+  const code = new DataView(reply.buffer, reply.byteOffset, reply.byteLength).getUint32(0, true);
+  if (code !== 0) recordProducerError(canvas, code);
 }
 
 // ---- Canvas2D pixels --------------------------------------------------------

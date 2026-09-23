@@ -595,6 +595,13 @@ impl SyncPath {
                 deadline_nanos,
                 now_nanos,
             ),
+            frame_wire::sync::SYNC_OP_READ_PIXELS_TO_BUFFER => self.read_pixels_to_buffer(
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
             SYNC_OP_AWAIT_WINDOW => self.await_window(
                 params,
                 max_reply_bytes,
@@ -1346,6 +1353,84 @@ impl SyncPath {
         let mut pixels = pixels;
         pixels.splice(0..0, header);
         Ok(pixels)
+    }
+
+    /// `SYNC_OP_READ_PIXELS_TO_BUFFER`: `readPixels` into the bound
+    /// `PIXEL_PACK_BUFFER`, answered with the WebGL error it raised or zero.
+    ///
+    /// Nothing is transferred back -- the pixels go into a buffer the host
+    /// holds -- so the only thing the caller needs is the verdict, and the
+    /// verdict is what the in-process op turns into a pushed error. The mapping
+    /// from the renderer's failure to a WebGL code is that op's, copied here
+    /// rather than invented: a framebuffer that cannot be read has its own code
+    /// and content uses it to tell that apart from a bad argument.
+    fn read_pixels_to_buffer(
+        &self,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        use frame_wire::sync::{READ_PIXELS_TO_BUFFER_REPLY_BYTES, ReadPixelsToBufferParams};
+
+        let read = ReadPixelsToBufferParams::decode(params)?;
+        if max_reply_bytes < READ_PIXELS_TO_BUFFER_REPLY_BYTES {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        let Some(dispatch) = self.dispatch.get() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let command = shared::protocol::render_cmd::RenderCommand::GL(
+            shared::protocol::render_cmd::GLCmd::ReadPixelsToBuffer {
+                canvas_id: read.canvas_id,
+                x: read.x,
+                y: read.y,
+                width: read.width,
+                height: read.height,
+                format: read.format,
+                type_: read.type_,
+                offset: read.offset,
+                resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(tx),
+            },
+        );
+        if sender.send_blocking_bounded(command).is_err() {
+            return Err(SyncError::SessionEnded);
+        }
+
+        // `error_state::codes`, as the op names them.
+        const INVALID_VALUE: u32 = 0x0501;
+        const INVALID_OPERATION: u32 = 0x0502;
+        const OUT_OF_MEMORY: u32 = 0x0505;
+        const INVALID_FRAMEBUFFER_OPERATION: u32 = 0x0506;
+        let code = match rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(())) => 0u32,
+            Ok(Err(error)) => match error.code {
+                shared::error::ErrorCode::OutOfMemory => OUT_OF_MEMORY,
+                shared::error::ErrorCode::InvalidArgument => INVALID_VALUE,
+                shared::error::ErrorCode::RenderFramebufferIncomplete => {
+                    INVALID_FRAMEBUFFER_OPERATION
+                }
+                _ => INVALID_OPERATION,
+            },
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => return Err(SyncError::TimedOut),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                return Err(SyncError::SessionEnded);
+            }
+        };
+        Ok(code.to_le_bytes().to_vec())
     }
 
     fn snapshot(&self, now_nanos: u64) -> SyncSnapshot {
@@ -4212,6 +4297,124 @@ mod sync_tests {
             assert_eq!(path.take_reply(&mut out), Ok(24));
             assert!(out.iter().all(|byte| *byte == 0xab), "{kind}: the rows");
             drop(sender);
+        }
+    }
+
+    /// A pack-buffer readback reaches the renderer with what it was given, and
+    /// the renderer's verdict comes back as the WebGL code the op would push.
+    ///
+    /// Nothing is transferred back, so this reply IS the call's outcome: a
+    /// producer that got zero wrote pixels into its buffer, and one that got a
+    /// code has an error to record. Each mapping is the in-process op's --
+    /// `INVALID_FRAMEBUFFER_OPERATION` in particular, which content uses to tell
+    /// "the framebuffer is not readable" from "the arguments were wrong".
+    #[test]
+    fn a_pack_buffer_readback_answers_the_verdict_the_op_would_have_pushed() {
+        use shared::error::ErrorCode;
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+
+        for (failure, expected) in [
+            (None, 0u32),
+            (Some(ErrorCode::OutOfMemory), 0x0505),
+            (Some(ErrorCode::InvalidArgument), 0x0501),
+            (Some(ErrorCode::RenderFramebufferIncomplete), 0x0506),
+            (Some(ErrorCode::Internal), 0x0502),
+        ] {
+            let (sender, commands) = new_render_channel();
+            let path = path_with_dispatch(&sender);
+            let renderer = std::thread::spawn(move || {
+                let Ok(RenderCommand::GL(GLCmd::ReadPixelsToBuffer { offset, resp, .. })) =
+                    commands.recv()
+                else {
+                    panic!("the barrier sent something other than a pack-buffer readback");
+                };
+                match failure {
+                    None => resp.send(Ok(())),
+                    Some(code) => resp.err_code(code),
+                }
+                offset
+            });
+
+            let params = frame_wire::sync::ReadPixelsToBufferParams {
+                canvas_id: 1,
+                x: 2,
+                y: 3,
+                width: 4,
+                height: 5,
+                format: frame_wire::sync::GL_RGBA,
+                type_: frame_wire::sync::GL_UNSIGNED_BYTE,
+                offset: 1_024,
+            };
+            let mut request = request(
+                frame_wire::sync::SYNC_OP_READ_PIXELS_TO_BUFFER,
+                frame_wire::sync::READ_PIXELS_TO_BUFFER_REPLY_BYTES,
+            );
+            request.deadline_nanos = NOW + 30_000_000_000;
+            request.triggering_sequence = 0;
+            post(&path, request, &params.encode(), NOW).expect("posted");
+            let offset = renderer.join().expect("the stand-in renderer answered");
+            assert_eq!(
+                offset, 1_024,
+                "the offset reached the renderer as it was given"
+            );
+
+            let snapshot = path.snapshot(NOW);
+            assert_eq!((snapshot.state, snapshot.error), (SyncState::Ready, None));
+            let mut out = [0u8; 4];
+            assert_eq!(path.take_reply(&mut out), Ok(4));
+            assert_eq!(
+                u32::from_le_bytes(out),
+                expected,
+                "a {failure:?} renderer answer must be the op's own code"
+            );
+            drop(sender);
+        }
+    }
+
+    /// The arguments a pack-buffer readback cannot carry are refused before the
+    /// renderer is asked: an empty rectangle, a negative offset, a reserved word
+    /// a producer set.
+    #[test]
+    fn a_pack_buffer_readback_with_arguments_this_host_cannot_read_is_refused() {
+        let ok = frame_wire::sync::ReadPixelsToBufferParams {
+            canvas_id: 1,
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            format: frame_wire::sync::GL_RGBA,
+            type_: frame_wire::sync::GL_UNSIGNED_BYTE,
+            offset: 0,
+        };
+        let mut reserved_set = ok.encode();
+        reserved_set[36] = 1;
+        for params in [
+            Vec::new(),
+            frame_wire::sync::ReadPixelsToBufferParams { width: 0, ..ok }
+                .encode()
+                .to_vec(),
+            frame_wire::sync::ReadPixelsToBufferParams { offset: -1, ..ok }
+                .encode()
+                .to_vec(),
+            reserved_set.to_vec(),
+            ok.encode()[..39].to_vec(),
+        ] {
+            let path = path();
+            post(
+                &path,
+                request(
+                    frame_wire::sync::SYNC_OP_READ_PIXELS_TO_BUFFER,
+                    frame_wire::sync::READ_PIXELS_TO_BUFFER_REPLY_BYTES,
+                ),
+                &params,
+                NOW,
+            )
+            .expect("posted");
+            let snapshot = path.snapshot(NOW);
+            assert_eq!(
+                (snapshot.state, snapshot.error),
+                (SyncState::Failed, Some(SyncError::UnsupportedOperation))
+            );
         }
     }
 

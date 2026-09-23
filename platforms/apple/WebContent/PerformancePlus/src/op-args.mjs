@@ -102,6 +102,28 @@ export function optionalSmiU32(value, name) {
 }
 
 /**
+ * `#[bigint] i64`: `to_i64_option`. A Number goes through `as i64`, which
+ * truncates toward zero and SATURATES rather than wrapping -- 2^63 is
+ * `i64::MAX`, `-Infinity` is `i64::MIN`, `NaN` is 0 -- and a BigInt keeps its
+ * low 64 bits, signed. A BigInt, always.
+ *
+ * The saturation is the half a second implementation gets wrong: wrapping a
+ * `GLintptr` of 2^63 would turn an offset past the buffer into a negative one,
+ * which the op refuses for a different reason than the host would.
+ * @kind bigint_i64
+ */
+export function toI64(value, name) {
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return 0n;
+    if (value >= TWO_63) return 0x7fffffffffffffffn;
+    if (value <= -TWO_63) return -0x8000000000000000n;
+    return BigInt(Math.trunc(value));
+  }
+  if (typeof value === "bigint") return BigInt.asIntN(64, value);
+  throw expected("i64");
+}
+
+/**
  * `Option<u32>`: null and undefined are None, anything else is `u32`.
  * @kind option_u32
  */

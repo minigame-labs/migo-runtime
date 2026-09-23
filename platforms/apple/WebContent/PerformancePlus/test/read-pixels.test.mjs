@@ -21,7 +21,7 @@ import { DOWN_FRAME_VERDICT, encodeBytes } from "../src/downlink.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "../src/engine-host.mjs";
 import { FrameSession } from "../src/frame-session.mjs";
 import { drainProducerError } from "../src/lane-local.mjs";
-import { op_read_pixels } from "../src/lane-sync.mjs";
+import { op_read_pixels, op_read_pixels_to_buffer } from "../src/lane-sync.mjs";
 import {
   READ_PIXELS_LAYOUT_BYTES,
   SYNC_ERROR_OPERATION_FAILED,
@@ -272,6 +272,68 @@ try {
   threw = error.name;
 }
 check(threw === "SyncRequestError", "a timeout or a dead session reaches the caller");
+
+// ---- readPixels into the bound PIXEL_PACK_BUFFER ----------------------------
+//
+// Nothing comes back but the verdict: the pixels go into a buffer the host
+// holds. So what this side owns is the refusals before the call and the reading
+// of the code that comes back.
+
+asked = null;
+let recorded = [];
+const packReply = (code) => {
+  const reply = new Uint8Array(4);
+  new DataView(reply.buffer).setUint32(0, code, true);
+  return reply;
+};
+
+sync.call = (request) => {
+  asked = request;
+  if (failWith !== null) {
+    const error = failWith;
+    failWith = null;
+    throw error;
+  }
+  return packReply(packCode);
+};
+let packCode = 0;
+
+op_read_pixels_to_buffer(1, 2, 3, 4, 5, GL_RGBA, GL_UNSIGNED_BYTE, 1024n);
+check(
+  asked.operation === 12 && asked.maxReplyBytes === 4 && asked.params.byteLength === 40,
+  "the request is the pack-buffer readback, reserving only its verdict",
+);
+check(
+  new DataView(asked.params.buffer).getBigInt64(28, true) === 1024n &&
+    new DataView(asked.params.buffer).getUint32(36, true) === 0,
+  "the offset crosses as the i64 it is, and the reserved word is zero",
+);
+check(errorsOf(1).length === 0, "a readback that worked records nothing");
+
+packCode = 0x0506;
+op_read_pixels_to_buffer(1, 0, 0, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, 0n);
+check(
+  JSON.stringify(errorsOf(1)) === JSON.stringify([0x0506]),
+  "the code the host answered is the error content will read",
+);
+
+packCode = 0;
+asked = null;
+op_read_pixels_to_buffer(1, 0, 0, 2, 2, 0x1234, GL_UNSIGNED_BYTE, 0n);
+check(
+  JSON.stringify(errorsOf(1)) === JSON.stringify([GL_INVALID_ENUM]) && asked === null,
+  "an unrecognised pixel pair is refused before anything is asked",
+);
+op_read_pixels_to_buffer(1, 0, 0, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, -1n);
+check(
+  JSON.stringify(errorsOf(1)) === JSON.stringify([GL_INVALID_VALUE]) && asked === null,
+  "a negative GLintptr is the specification's INVALID_VALUE, not a huge offset",
+);
+op_read_pixels_to_buffer(1, 0, 0, 0, 4, GL_RGBA, GL_UNSIGNED_BYTE, 0n);
+check(
+  errorsOf(1).length === 0 && asked === null,
+  "an empty rectangle reads nothing and records nothing",
+);
 
 console.log(failures === 0 ? "PASS (readPixels)" : `FAIL (${failures})`);
 process.exit(failures === 0 ? 0 : 1);

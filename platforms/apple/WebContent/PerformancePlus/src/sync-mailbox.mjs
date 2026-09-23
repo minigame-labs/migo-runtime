@@ -287,6 +287,31 @@ export const CANVAS2D_QUERY_LOAD_FONT = 3;
 /// The most a family key may be, as the host bounds it.
 export const MAX_FONT_FAMILY_REPLY_BYTES = 4096;
 
+/// `readPixels` into the bound `PIXEL_PACK_BUFFER`
+/// (`frame_wire::sync::SYNC_OP_READ_PIXELS_TO_BUFFER`). Nothing comes back but
+/// the WebGL error it raised, or zero.
+export const SYNC_OP_READ_PIXELS_TO_BUFFER = 12;
+
+/// Serialised size of its arguments, and of its answer.
+export const READ_PIXELS_TO_BUFFER_PARAM_BYTES = 40;
+export const READ_PIXELS_TO_BUFFER_REPLY_BYTES = 4;
+
+/** Encode a pack-buffer readback's arguments: seven words, then an i64. */
+export function encodeReadPixelsToBufferParams({ canvasId, x, y, width, height, format, type, offset }) {
+  const bytes = new Uint8Array(READ_PIXELS_TO_BUFFER_PARAM_BYTES);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, canvasId, true);
+  view.setInt32(4, x, true);
+  view.setInt32(8, y, true);
+  view.setInt32(12, width, true);
+  view.setInt32(16, height, true);
+  view.setUint32(20, format, true);
+  view.setUint32(24, type, true);
+  view.setBigInt64(28, offset, true);
+  view.setUint32(36, 0, true);
+  return bytes;
+}
+
 export const SYNC_OP_CANVAS2D_IMAGE_DATA = 9;
 
 /// The pixels of a snapshot the host captured

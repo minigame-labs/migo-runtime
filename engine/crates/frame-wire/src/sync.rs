@@ -256,6 +256,98 @@ pub const SYNC_OP_CANVAS2D_FONT: u32 = 11;
 /// far above any real one and far below the barrier's own ceiling.
 pub const MAX_FONT_FAMILY_REPLY_BYTES: u32 = 4096;
 
+/// `readPixels` into the bound `PIXEL_PACK_BUFFER`, whose answer is only
+/// whether it worked: `H canvas x y width height format type offset:I64`,
+/// answered with one `u32` -- the WebGL error the call raised, or zero.
+///
+/// It is a synchronous operation rather than a record because the op it stands
+/// for is synchronous in process: it blocks on the renderer and pushes the
+/// error the renderer decided, which depends on the live `PIXEL_PACK_BUFFER`
+/// binding and the buffer's size. A record would have had nowhere to put that
+/// error -- the renderer has no queue a producer reads -- so the call that
+/// blocks keeps blocking, and what comes back is the verdict.
+pub const SYNC_OP_READ_PIXELS_TO_BUFFER: u32 = 12;
+
+/// Serialised size of [`ReadPixelsToBufferParams`].
+pub const READ_PIXELS_TO_BUFFER_PARAMS_BYTES: usize = 40;
+
+/// Bytes of its reply: the WebGL error code, or zero.
+pub const READ_PIXELS_TO_BUFFER_REPLY_BYTES: u32 = 4;
+
+/// What a pack-buffer readback names: the rectangle, the pixel pair, and the
+/// offset into the bound buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadPixelsToBufferParams {
+    pub canvas_id: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub format: u32,
+    pub type_: u32,
+    /// A `GLintptr`, which is signed; a negative one is refused by the caller
+    /// before it asks, as the op refuses it.
+    pub offset: i64,
+}
+
+impl ReadPixelsToBufferParams {
+    pub fn encode(&self) -> [u8; READ_PIXELS_TO_BUFFER_PARAMS_BYTES] {
+        let mut out = [0u8; READ_PIXELS_TO_BUFFER_PARAMS_BYTES];
+        for (index, word) in [
+            self.canvas_id,
+            self.x as u32,
+            self.y as u32,
+            self.width as u32,
+            self.height as u32,
+            self.format,
+            self.type_,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            out[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        out[28..36].copy_from_slice(&self.offset.to_le_bytes());
+        out
+    }
+
+    /// Decode and validate: the length, the reserved word, and a rectangle with
+    /// pixels in it. The pixel pair is not checked here -- the renderer decides
+    /// what it can read, as it does in process.
+    pub fn decode(bytes: &[u8]) -> Result<Self, SyncError> {
+        if bytes.len() != READ_PIXELS_TO_BUFFER_PARAMS_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |offset: usize| -> u32 {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        if word(36) != 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let mut offset = [0u8; 8];
+        offset.copy_from_slice(&bytes[28..36]);
+        let params = Self {
+            canvas_id: word(0),
+            x: word(4) as i32,
+            y: word(8) as i32,
+            width: word(12) as i32,
+            height: word(16) as i32,
+            format: word(20),
+            type_: word(24),
+            offset: i64::from_le_bytes(offset),
+        };
+        if params.width <= 0 || params.height <= 0 || params.offset < 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(params)
+    }
+}
+
 /// Serialised size of [`Canvas2DPixelsParams`].
 pub const CANVAS2D_PIXELS_PARAMS_BYTES: usize = 24;
 
