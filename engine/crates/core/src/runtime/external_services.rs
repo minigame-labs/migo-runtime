@@ -62,7 +62,7 @@ use migo_services::content::MountedContent;
 use migo_services::image::cache::{ImageCache, SharedImageCache};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
-use super::service_args::{bytes, exactly, i32_of, not_a, string, strings, u32_of};
+use super::service_args::{bytes, exactly, f64_of, i32_of, not_a, string, strings, u32_of};
 use super::service_audio::{self, AudioBinding, LocalSources};
 use super::service_network::{self, NetworkBinding, UploadSources};
 use super::service_ops::id;
@@ -289,6 +289,10 @@ pub(crate) struct ServiceContext {
     /// The session's network: the policy content's requests are held to, and
     /// the handles a `fetch` hands out. Read on both threads, as audio is.
     network: OnceLock<NetworkBinding>,
+    /// The session's own command channel, for the two calls content makes about
+    /// the session itself: `exitMiniProgram` and `restartMiniProgram`. The
+    /// embedded ops send the same commands through the same channel.
+    lifecycle: OnceLock<shared::host_channel::HostCommandSender>,
 }
 
 impl ServiceContext {
@@ -302,6 +306,7 @@ impl ServiceContext {
             aliases: Arc::new(parking_lot::Mutex::new(ImageCache::new())),
             audio: OnceLock::new(),
             network: OnceLock::new(),
+            lifecycle: OnceLock::new(),
         }
     }
 
@@ -469,6 +474,18 @@ impl ServiceContext {
                 .as_ref()
                 .map(|content| Arc::clone(&content.mount_table)),
         }
+    }
+
+    /// Give the services the session's own command channel. Once, on the
+    /// session thread, before the first service work is dispatched.
+    pub(crate) fn bind_lifecycle(&self, host_tx: shared::host_channel::HostCommandSender) {
+        let _ = self.lifecycle.set(host_tx);
+    }
+
+    fn lifecycle(&self) -> Result<&shared::host_channel::HostCommandSender, ServiceError> {
+        self.lifecycle
+            .get()
+            .ok_or_else(|| ServiceError::generic("the session's command channel is not bound"))
     }
 
     fn network(&self) -> Result<&NetworkBinding, ServiceError> {
@@ -839,6 +856,39 @@ impl ServiceContext {
             }
             network if service_network::is_command(network) => {
                 service_network::command(self.network()?, network, args)
+            }
+            // The session, as content asks about itself. The same commands the
+            // embedded ops send, on the same channel: what ends or restarts a
+            // session is the host's, not the renderer's.
+            id::op_exit_mini_program | id::op_restart_mini_program => {
+                let [] = exactly(op, args)?;
+                let command = if op == id::op_exit_mini_program {
+                    shared::protocol::host_cmd::HostCommand::Shutdown
+                } else {
+                    shared::protocol::host_cmd::HostCommand::Restart
+                };
+                let what = if op == id::op_exit_mini_program {
+                    "exitMiniProgram"
+                } else {
+                    "restartMiniProgram"
+                };
+                self.lifecycle()?
+                    .try_send(command)
+                    .map_err(|error| ServiceError::generic(format!("{what}:fail {error}")))
+            }
+            id::op_set_preferred_fps => {
+                let [fps] = exactly(op, args)?;
+                // The same filter the embedded op applies: a rate is rounded
+                // and clamped into the range the engine offers, and one that is
+                // not a number at all is ignored rather than clamped to the
+                // bottom of it.
+                if let Some(fps) = shared::frame_rate::requested_fps(f64_of(op, 0, fps)?) {
+                    let _ = render
+                        .canvas
+                        .tx
+                        .send(shared::protocol::render_cmd::RenderCommand::FrameRate(fps));
+                }
+                Ok(())
             }
             other => Err(not_a(other, "command")),
         }
@@ -1906,6 +1956,73 @@ mod tests {
             type_errors.join("\n  ")
         );
         println!("ran {} producer file calls on the host", answers.len());
+    }
+
+    /// The two calls content makes about the session itself reach the host's
+    /// own command channel -- the one the embedded ops send on -- and a frame
+    /// rate is filtered as the embedded op filters it: rounded into range, and
+    /// dropped when it is not a number.
+    #[test]
+    fn the_session_s_own_commands_reach_the_host_s_channel() {
+        let root = std::env::temp_dir().join(format!("migo-lifecycle-{}", std::process::id()));
+        let context = Arc::new(ServiceContext::new(root.join("files"), root.join("cache")));
+        context.bind_session(1);
+        let (host_tx, _critical, mut host_rx) = shared::host_channel::channel(4);
+        context.bind_lifecycle(host_tx);
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+
+        context
+            .command(id::op_restart_mini_program, Vec::new(), &render)
+            .expect("the channel takes it");
+        context
+            .command(id::op_exit_mini_program, Vec::new(), &render)
+            .expect("the channel takes it");
+        assert!(matches!(
+            host_rx.try_recv(),
+            Ok(shared::protocol::host_cmd::HostCommand::Restart)
+        ));
+        assert!(matches!(
+            host_rx.try_recv(),
+            Ok(shared::protocol::host_cmd::HostCommand::Shutdown)
+        ));
+
+        context
+            .command(
+                id::op_set_preferred_fps,
+                vec![OwnedValue::F64(30.0)],
+                &render,
+            )
+            .expect("a rate the engine offers");
+        context
+            .command(
+                id::op_set_preferred_fps,
+                vec![OwnedValue::F64(1000.0)],
+                &render,
+            )
+            .expect("a rate past the range is clamped into it");
+        context
+            .command(
+                id::op_set_preferred_fps,
+                vec![OwnedValue::F64(f64::NAN)],
+                &render,
+            )
+            .expect("a rate that is not a number is dropped");
+        let rates: Vec<u32> = std::iter::from_fn(|| commands.try_recv().ok())
+            .filter_map(|command| match command {
+                shared::protocol::render_cmd::RenderCommand::FrameRate(fps) => Some(fps),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rates,
+            vec![30, shared::frame_rate::MAX_FPS],
+            "the rate is clamped, and a rate that is not a number sends nothing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The producer's network calls, as its lanes and `core-stream.mjs` encode

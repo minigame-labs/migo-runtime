@@ -566,3 +566,27 @@ export function op_udp_set_ttl(rid, ttl) {
     w.u32(hops);
   });
 }
+
+// ---- the session, as content asks about itself -----------------------------------
+
+/// End the session. The host stops it as it stops one the embedded runtime
+/// asked to end: the same command on the same channel, so the shutdown path is
+/// one path.
+export function op_exit_mini_program() {
+  servicesOf(engineHost()).command(SERVICE_OP.op_exit_mini_program);
+}
+
+/// Restart the session, which is how a game recovers from a state it cannot
+/// leave. The generation the producer stamps its packets with changes with it,
+/// which is what stops a frame built for the old one from landing in the new.
+export function op_restart_mini_program() {
+  servicesOf(engineHost()).command(SERVICE_OP.op_restart_mini_program);
+}
+
+/// Ask for a frame rate. The host rounds it into the range the engine offers
+/// and ignores one that is not a number, as the embedded op does -- the filter
+/// is the host's so both executions answer the same request the same way.
+export function op_set_preferred_fps(fps) {
+  const rate = toF64(fps, "fps");
+  servicesOf(engineHost()).command(SERVICE_OP.op_set_preferred_fps, (w) => w.f64(rate));
+}

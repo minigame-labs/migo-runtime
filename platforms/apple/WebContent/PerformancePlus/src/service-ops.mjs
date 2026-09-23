@@ -167,4 +167,7 @@ export const SERVICE_OP = Object.freeze({
   op_fetch_upload_cancel_handle: 157,
   op_fetch_upload: 158,
   op_prefetch_assets: 159,
+  op_exit_mini_program: 160,
+  op_restart_mini_program: 161,
+  op_set_preferred_fps: 162,
 });

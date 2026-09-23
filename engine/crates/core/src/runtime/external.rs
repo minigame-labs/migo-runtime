@@ -2259,6 +2259,9 @@ fn run_external_session(
     // The services' context, kept before the dispatcher shadows `services`:
     // the network is bound to it once the runtime exists, below.
     let service_context = Arc::clone(&services.context);
+    // What `exitMiniProgram` and `restartMiniProgram` send, which is this
+    // session's own command channel -- the one the embedded ops send on.
+    service_context.bind_lifecycle(host_tx.clone());
     // The services that hand the renderer work -- image uploads -- reach it
     // through these, owned by this thread's dispatcher so the sender goes when
     // the session does.
