@@ -303,9 +303,31 @@ export function encodeReadPixelsParams({
   return bytes;
 }
 
-/** How many bytes `readPixels` over this rectangle answers with. */
+/**
+ * Bytes of the layout header a `readPixels` reply begins with.
+ *
+ * `frame_wire::sync::READ_PIXELS_LAYOUT_BYTES`: four little-endian `u32`s --
+ * first byte, row bytes, row stride, rows -- saying where the rows go in the
+ * caller's view. The `PACK_*` state that decides that is the host's, and this
+ * side never sees `pixelStorei`: the engine's own encoder writes it into the
+ * command stream this producer forwards unread.
+ */
+export const READ_PIXELS_LAYOUT_BYTES = 16;
+
+/** How many bytes `readPixels` over this rectangle answers with, header included. */
 export function readPixelsReplyBytes(width, height) {
-  return width * height * 4;
+  return READ_PIXELS_LAYOUT_BYTES + width * height * 4;
+}
+
+/** Read the layout header a reply begins with. */
+export function decodeReadPixelsLayout(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return {
+    firstByte: view.getUint32(0, true),
+    rowBytes: view.getUint32(4, true),
+    rowStride: view.getUint32(8, true),
+    height: view.getUint32(12, true),
+  };
 }
 
 /**

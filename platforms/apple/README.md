@@ -17,60 +17,37 @@ comments here.
 ## Status
 
 Not a skeleton any more, and not a product either. What separates the two halves
-is whether a compiler has seen it, so that is what this section reports.
+is what has run, so that is what this section reports -- per target, with where
+the running happens.
 
-| | Where it is checked |
+| | What has run, and where |
 |---|---|
-| `core/` (`MigoAppleCore`) | built, tested and cross-compiled for `aarch64-apple-ios` on every pull request, on an Apple silicon runner |
-| `Sources/MigoAppleRenderer` | the Apple SDK workflow builds iOS/simulator shipping slices and an isolated macOS external-frame diagnostic package; the macOS diagnostic is not a V8 product test |
-| `Sources/MigoAppleWebKit`, `Sources/MigoMacV8` | placeholders; they compile, and they do nothing |
-| `WebContent/PerformancePlus` | its encoder runs against the same golden corpus as the Rust one, under node, on every pull request |
-| `ProbeApp/` | a README. No sources exist, and none should until there is a device to run them on |
+| `core/` (`MigoAppleCore`) | built, tested and cross-compiled for `aarch64-apple-ios` on every pull request |
+| `Sources/MigoAppleRenderer` | iOS and simulator shipping slices and an isolated macOS external-frame diagnostic package, built by the Apple SDK workflow; its sync-barrier ABI tests run on the simulator |
+| `Sources/MigoApplePerformancePlus` | its acceptance suite runs a real WebContent producer against a real renderer on the iOS simulator: content drawing through the engine's own WebGL and 2D facades, textures, text, images, touches, a frame larger than one packet, a synchronous readback of the frame content submitted, and a game playing its packaged sounds |
+| `Sources/MigoAppleWebKit`, `Sources/MigoMacV8` | a session and an availability check; neither is a product, and neither has run content |
+| `WebContent/PerformancePlus` | every op it answers is checked against the engine's own ops -- the same facade calls run in both runtimes and the commands compared -- on every pull request, under node and Rust |
+| `ProbeApp/` | sources exist; it answers G0 questions and is never linked into a product |
+| a real iPhone | one acceptance test so far: a game playing its packaged sounds through the host's audio, on an iPhone XS Max, 2026-09-23. The simulator cannot answer that one -- it has no audio output there |
 
-Nothing here has run on an iPhone. The Performance+ topology -- agent,
-transport, frame clock, host shape -- is unselected, and the G0 probe evidence
-selects it; see the table below.
+What that leaves unproven is the part a release makes: there is no Apple
+release, so the claim that a *shipped* Performance+ artifact links no JavaScript
+engine is still the Cargo-graph and symbol-table check on a build, not on a
+published binary.
 
-The product baseline also does not prove that Performance+ is V8-free. The
-Cargo half of that claim is checked on Linux every pull request and the archive
-half now reads a real symbol table produced by Apple's toolchain, but the claim
-that belongs to a *release* is about a shipped artifact, and there is no Apple
-release yet.
-
-The first Mac task is the G0 probe contract. It must measure the unresolved
-topology axes below on the current minimum OS and representative devices;
-ProbeApp evidence, not this skeleton, selects the product choices.
-
-| G0 axis | Candidates that must be measured |
-|---|---|
-| JavaScript agent | Window vs Dedicated Worker |
-| WebKit-to-app transport | custom scheme vs loopback WebSocket vs hybrid; hybrid only after directional-bottleneck evidence |
-| frame clock | Worker `requestAnimationFrame` when feature-detected vs Window rAF relay vs `CADisplayLink` relay |
-| `WKWebView` host shape | attached visible vs transparent overlay vs 1×1 vs off-screen vs occluded |
-
-Correctness and isolation precede measurements of input-to-present latency, p99
-jitter, missed-vsync rate, CPU, memory, cancellation, backpressure, lifecycle,
-and background/occlusion behavior. No candidate may be called a winner in
-advance.
-
-WebKit bug [191362](https://bugs.webkit.org/show_bug.cgi?id=191362) is
-officially **RESOLVED FIXED** and is not a pre-written custom-scheme failure.
-Probe the actual payload/API/body type on each target OS/device for
-secure-context/isolation, CORS, copy count, POST body delivery, cancellation,
-streaming, and backpressure.
-
-If G0 selects a Dedicated Worker, `SharedArrayBuffer` is only a small
-same-WebContent-process Worker↔Window synchronization mailbox; it never carries
-frame bytes. Frame bytes first use a bounded transferable `ArrayBuffer`
-ping-pong/pool to Window and then the selected app transport. If G0 selects
-Window, there is no Worker relay.
+The Performance+ topology is selected, and the G0 probes that selected it are in
+`ProbeApp`: content JavaScript runs in a Dedicated Worker, frames cross on a
+custom scheme with a socket for small ones, and `SharedArrayBuffer` is not
+available on that origin -- so the synchronous calls a blocked `readPixels`
+needs travel as a request body instead, which is what `src/sync-call.mjs` and
+the host's sync endpoint are.
 
 ## Three products, three JavaScript execution models
 
 | Product | Where content JS runs | Renderer | Ships in v1 |
 |---|---|---|---|
 | `MigoAppleWebKit` | WebContent, full web platform | WebKit | yes |
-| `MigoApplePerformancePlus` | WebContent, Window or Dedicated Worker selected by G0 | this process: Skia + ANGLE/Metal | conditional |
+| `MigoApplePerformancePlus` | WebContent, in a Dedicated Worker | this process: Skia + ANGLE/Metal | conditional |
 | `MigoMacV8` | this process, V8 with JIT | this process: Skia + ANGLE/Metal | yes, macOS only |
 
 `MigoAppleRenderer` is shared by the two native-rendering lanes and is
@@ -137,8 +114,8 @@ adapter, so it does not live in `adapter/`: it depends on WebKit bootstrap
 order, on the topology and transport selected by G0, and on the Apple release
 receipt.
 
-`ProbeApp` never enters a release target. It exists to answer G0 and to keep
-answering it when a new iOS version ships.
+`ProbeApp` never enters a release target. It answered G0 and stays to answer it
+again when a new iOS version ships.
 
 ## Building
 
@@ -152,8 +129,9 @@ The shipping matrix has one native product per platform group:
 
 These groups share the `MigoEngine` C module and XCFramework because their
 platforms are disjoint. A macOS Performance+ shipping build is rejected. The
-Swift product placeholders do not yet implement application sessions; compiling
-them does not establish that the corresponding runtime product is complete.
+WebKit and macOS V8 products do not yet implement application sessions;
+compiling them does not establish that the corresponding runtime product is
+complete.
 
 Build on macOS with Xcode, Python 3.9 or newer, and the Rust targets reported by
 `build-apple-sdk.sh --print-slices <platform>`. First install the pinned ANGLE

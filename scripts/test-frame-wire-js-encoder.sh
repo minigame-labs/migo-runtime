@@ -568,6 +568,18 @@ RAN_TESTS+=("$TEST_DIR/audio-checks.test.mjs")
 node "$TEST_DIR/canvas2d-color.test.mjs"
 RAN_TESTS+=("$TEST_DIR/canvas2d-color.test.mjs")
 
+# --- readPixels, whose answer has to be placed rather than returned ---------
+#
+# The one query that writes into a view the caller already holds, at positions
+# the renderer's PACK state decides -- state this side cannot see, because the
+# engine's encoder writes `pixelStorei` into the command stream this producer
+# forwards unread. So the host answers with the layout in front of the rows, and
+# this suite checks the half that is this side's: which calls are refused before
+# anything is asked, what the request reserves and carries, and that the rows
+# land where the layout says while the gaps between them are left alone.
+node "$TEST_DIR/read-pixels.test.mjs"
+RAN_TESTS+=("$TEST_DIR/read-pixels.test.mjs")
+
 # --- the canvas the frame creates, resizes and destroys ---------------------
 #
 # The parity fixture drives these through the engine's own facade in both

@@ -1073,10 +1073,11 @@ impl SyncPath {
         now_nanos: u64,
     ) -> Result<Vec<u8>, SyncError> {
         let params = ReadPixelsParams::decode(params)?;
-        let wanted = params.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
+        let wanted = params.pixel_bytes().ok_or(SyncError::ReplyTooLarge)?;
+        let reply_bytes = params.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
         // Checked here as well as by the mailbox, because refusing before the
         // renderer is asked saves a full-screen readback nobody may have.
-        if wanted > max_reply_bytes {
+        if reply_bytes > max_reply_bytes {
             return Err(SyncError::ReplyTooLarge);
         }
 
@@ -1119,7 +1120,8 @@ impl SyncPath {
                 // producer's view has room for whenever PACK_ALIGNMENT pads a row
                 // or PACK_SKIP_* is set -- a false INVALID_OPERATION for a
                 // footprint only the producer can check, against a view only it
-                // holds.
+                // holds. The footprint it checks against is the layout below,
+                // which is why that is answered rather than dropped.
                 destination_byte_length: usize::MAX,
                 resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(resp_tx),
             },
@@ -1131,10 +1133,13 @@ impl SyncPath {
             return Err(SyncError::SessionEnded);
         }
 
-        // The layout is dropped on purpose: it places rows in a destination view,
-        // and the producer derives the same placement from the PACK state it set.
-        let pixels = match resp_rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
-            Ok(Ok(readback)) => readback.pixels,
+        // The layout is answered, not dropped. It places rows in a destination
+        // view from `PACK_*` state that only this side holds: the producer never
+        // sees `pixelStorei`, because the engine's own encoder writes it into the
+        // command stream the producer forwards unread. An earlier version of this
+        // said the producer derives the placement itself, which it cannot.
+        let (pixels, layout) = match resp_rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(readback)) => (readback.pixels, readback.layout),
             // The renderer answered and the answer was an error: a canvas that
             // does not exist, a GL failure, a surface that went away mid-read.
             // Not "unsupported" -- that is permanent and would stop the
@@ -1158,12 +1163,20 @@ impl SyncPath {
             return Err(SyncError::OperationFailed);
         }
 
-        // Moved, not copied into a reused buffer. The renderer allocated this
-        // vector to answer with and hands it over owned, so taking it costs
-        // nothing and copying it costs a memcpy of the whole readback -- up to
-        // 14 MiB for a full-screen phone at 4x, on the path a producer is
-        // blocked on. Reusing a buffer here would save no allocation either,
-        // because the renderer's one is made whether or not we keep it.
+        // The layout in front of the rows a producer is waiting for. The vector
+        // the renderer allocated is kept rather than copied -- up to 14 MiB for a
+        // full-screen phone at 4x, on the path a producer is blocked on -- and
+        // the sixteen-byte header is spliced in front of it, which is one move of
+        // the tail rather than a second allocation of the whole readback.
+        let header = frame_wire::sync::ReadPixelsLayout {
+            first_byte: u32::try_from(layout.first_byte).map_err(|_| SyncError::ReplyTooLarge)?,
+            row_bytes: u32::try_from(layout.row_bytes).map_err(|_| SyncError::ReplyTooLarge)?,
+            row_stride: u32::try_from(layout.row_stride).map_err(|_| SyncError::ReplyTooLarge)?,
+            height: u32::try_from(layout.height).map_err(|_| SyncError::ReplyTooLarge)?,
+        }
+        .encode();
+        let mut pixels = pixels;
+        pixels.splice(0..0, header);
         Ok(pixels)
     }
 
@@ -4026,6 +4039,7 @@ mod sync_tests {
     #[test]
     fn a_readback_the_renderer_answers_reaches_the_reply_slot_under_padded_pack_state() {
         use shared::protocol::pixel_pack::PixelPackLayout;
+        const LAYOUT: usize = frame_wire::sync::READ_PIXELS_LAYOUT_BYTES;
         use shared::protocol::render_cmd::{GLCmd, ReadPixelsData, RenderCommand};
 
         let (sender, commands) = shared::render_command_sender::CommandSender::new();
@@ -4074,7 +4088,7 @@ mod sync_tests {
 
         // A generous deadline: the stand-in is a thread that has to be
         // scheduled, and this asserts what it answers, not how fast.
-        let mut read = request(SYNC_OP_READ_PIXELS, 24);
+        let mut read = request(SYNC_OP_READ_PIXELS, 24 + LAYOUT as u32);
         read.deadline_nanos = NOW + 30_000_000_000;
         // No frame has been submitted to this path, so there is nothing for the
         // read to wait for; the wait itself is covered by the tests below.
@@ -4096,11 +4110,25 @@ mod sync_tests {
             (SyncState::Ready, None),
             "the renderer answered and the barrier did not accept its reply"
         );
-        assert_eq!(snapshot.reply_bytes, 24);
-        let mut out = [0u8; 24];
-        assert_eq!(path.take_reply(&mut out), Ok(24));
+        assert_eq!(snapshot.reply_bytes, (24 + LAYOUT) as u32);
+        let mut out = [0u8; 24 + LAYOUT];
+        assert_eq!(path.take_reply(&mut out), Ok(24 + LAYOUT));
+        // The layout the renderer used, in front of the rows: 3x2 RGBA8 under
+        // `PACK_ALIGNMENT` 8 with one skipped row is a 12-byte row on a 16-byte
+        // stride, starting 16 bytes in. The producer cannot derive any of that
+        // -- it never sees `pixelStorei` -- so a reply that dropped it would
+        // place every row of a padded read in the wrong place.
+        assert_eq!(
+            frame_wire::sync::ReadPixelsLayout::decode(&out),
+            Some(frame_wire::sync::ReadPixelsLayout {
+                first_byte: 16,
+                row_bytes: 12,
+                row_stride: 16,
+                height: 2,
+            })
+        );
         let expected: Vec<u8> = (1..=24).collect();
-        assert_eq!(out.as_slice(), expected.as_slice());
+        assert_eq!(&out[LAYOUT..], expected.as_slice());
         drop(sender);
     }
 
@@ -4524,20 +4552,32 @@ mod sync_answer_tests {
 
     #[test]
     fn an_answered_call_carries_its_own_id_and_bytes_and_frees_the_slot() {
+        const LAYOUT: u32 = frame_wire::sync::READ_PIXELS_LAYOUT_BYTES as u32;
         let (sender, dispatch, renderer) = renderer();
         let path = path_with(dispatch);
-        let body = call(3, 2, 24, 30_000);
+        let body = call(3, 2, 24 + LAYOUT, 30_000);
         let answered = answer_of(&path, &body);
         renderer.join().expect("renderer");
 
         let answer = answered.answer;
         assert_eq!(
             (answer.state, answer.error, answer.reply_bytes),
-            (SyncState::Ready, None, 24)
+            (SyncState::Ready, None, 24 + LAYOUT)
         );
         assert_ne!(answer.request_id, 0, "an answered call was given an id");
+        // The rows, behind the layout that says where they go: 3x2 RGBA8 with
+        // no pack state is compact, which is what the producer places straight.
+        assert_eq!(
+            frame_wire::sync::ReadPixelsLayout::decode(&answered.reply),
+            Some(frame_wire::sync::ReadPixelsLayout {
+                first_byte: 0,
+                row_bytes: 12,
+                row_stride: 12,
+                height: 2,
+            })
+        );
         let expected: Vec<u8> = (1..=24).collect();
-        assert_eq!(answered.reply, expected);
+        assert_eq!(&answered.reply[LAYOUT as usize..], expected.as_slice());
         // Freed as it was written: the producer holding the response has the
         // bytes, and a slot left READY would refuse nothing but would let a
         // later take hand these pixels to someone else.
@@ -4549,7 +4589,14 @@ mod sync_answer_tests {
     fn a_call_that_cannot_be_answered_is_answered_failed_and_the_next_one_is_not_blocked() {
         // No renderer: the session thread has not brought one up.
         let path = path_with(Arc::new(OnceLock::new()));
-        let body = call(2, 2, 16, 250);
+        // 2x2 RGBA8 and the layout in front of it, so the reservation is not
+        // what this call fails on.
+        let body = call(
+            2,
+            2,
+            16 + frame_wire::sync::READ_PIXELS_LAYOUT_BYTES as u32,
+            250,
+        );
 
         let first = answer_of(&path, &body).answer;
         assert_eq!(
@@ -4704,7 +4751,8 @@ mod sync_fence_tests {
             resource_epoch: 0,
             triggering_sequence,
             operation: SYNC_OP_READ_PIXELS,
-            max_reply_bytes: 4,
+            // One RGBA8 pixel and the layout that says where it goes.
+            max_reply_bytes: 4 + frame_wire::sync::READ_PIXELS_LAYOUT_BYTES as u32,
             deadline_nanos,
         }
     }

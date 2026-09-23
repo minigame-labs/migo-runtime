@@ -23,6 +23,7 @@
 
 import { constructOpError } from "./engine-core.mjs";
 import { engineHost } from "./engine-host.mjs";
+import { recordProducerError } from "./lane-local.mjs";
 import {
   fileBuffer,
   fileStat,
@@ -43,6 +44,7 @@ import {
   stringOf,
   toBool,
   toF64,
+  toI32,
   toU64,
 } from "./op-args.mjs";
 import { arrayBufferAnswer } from "./audio.mjs";
@@ -86,6 +88,12 @@ import {
   decodeScalarReply,
   decodeTextReply,
   encodeGlQueryParams,
+  READ_PIXELS_LAYOUT_BYTES,
+  SYNC_ERROR_OPERATION_FAILED,
+  SYNC_OP_READ_PIXELS,
+  decodeReadPixelsLayout,
+  encodeReadPixelsParams,
+  readPixelsReplyBytes,
 } from "./sync-mailbox.mjs";
 
 /// How long a query waits before the frame channel is treated as stalled. The
@@ -778,4 +786,228 @@ export function op_is_subpackage_persisted(name, root) {
 
 export function op_get_workers_path() {
   return callService(SERVICE_OP.op_get_workers_path);
+}
+
+// ---- readPixels -------------------------------------------------------------
+//
+// The one query whose answer is pixels rather than a number, and the one whose
+// answer has to be placed rather than returned: `readPixels` writes into a view
+// the caller already holds, at positions the renderer's `PACK_*` state decides.
+//
+// The split between the two sides is what the ops' own comments state. This
+// side owns the view -- its kind, its length, the caller's offset into it -- and
+// nothing here can see `PACK_*`, because the engine's encoder writes
+// `pixelStorei` straight into the command stream this producer forwards unread.
+// The host owns the state and the framebuffer, and answers with the layout in
+// front of the rows (`frame_wire::sync::ReadPixelsLayout`).
+//
+// TWO DIFFERENCES FROM THE IN-PROCESS OP, both stated rather than hidden:
+//
+//   * The pair. This lane's synchronous operation carries `RGBA`/`UNSIGNED_BYTE`,
+//     which is the pair WebGL 1 guarantees for every framebuffer and what
+//     content overwhelmingly reads. Another pair is refused here with
+//     `INVALID_OPERATION` -- which is what the specification says for a pair an
+//     implementation does not offer -- where the embedded runtime would ask the
+//     renderer and might answer it.
+//   * When the destination is measured. In process the renderer refuses a
+//     footprint that overruns the view before the read; here the footprint is
+//     not known until the layout arrives, so the refusal is after. Content sees
+//     the same error and the same untouched view either way: the difference is
+//     a readback the host did and this side dropped, in a case that is a
+//     content bug.
+
+/// WebGL error codes, as `error_state::codes` names them.
+const GL_INVALID_ENUM = 0x0500;
+const GL_INVALID_VALUE = 0x0501;
+const GL_INVALID_OPERATION = 0x0502;
+const GL_OUT_OF_MEMORY = 0x0505;
+
+/// The pair the host's synchronous readback carries.
+const READ_PIXELS_FORMAT = 0x1908;
+const READ_PIXELS_TYPE = 0x1401;
+
+/// `shared::protocol::render_cmd::MAX_SYNC_READBACK_BYTES`.
+const MAX_SYNC_READBACK_BYTES = 64 * 1024 * 1024;
+
+/**
+ * `webgl_readback_bytes_per_pixel`: the byte width of a recognised GL pixel
+ * representation, or null for an enum with no inferred width.
+ *
+ * A storage-size calculation, not validation -- a known representation need not
+ * be a legal `readPixels` pair, which is what the refusal below is for.
+ */
+function readbackBytesPerPixel(format, type) {
+  let components;
+  switch (format) {
+    case 0x1908: case 0x8D99: case 0x80E1: components = 4; break;
+    case 0x1907: case 0x8D98: components = 3; break;
+    case 0x8227: case 0x8228: case 0x190A: case 0x84F9: components = 2; break;
+    case 0x1903: case 0x8D94: case 0x1909: case 0x1906: case 0x1902: case 0x1901:
+      components = 1; break;
+    default: return null;
+  }
+  switch (type) {
+    case 0x1400: case 0x1401: return components;
+    case 0x1402: case 0x1403: case 0x140B: case 0x8D61: return components * 2;
+    case 0x1404: case 0x1405: case 0x1406: return components * 4;
+    case 0x8363: case 0x8033: case 0x8034: case 0x8365: case 0x8366: return 2;
+    case 0x8368: case 0x8C3B: case 0x8C3E: case 0x84FA: return 4;
+    case 0x8DAD: return 8;
+    default: return null;
+  }
+}
+
+/**
+ * `read_pixels_view_layout`: the destination's byte length and element size, or
+ * null when the view is not one this pixel type may be read into.
+ *
+ * The type decides the kind: `UNSIGNED_BYTE` into a `Uint8Array` or a clamped
+ * one, the packed shorts into a `Uint16Array`, and so on. A view of another kind
+ * is the specification's `INVALID_OPERATION`, and no view at all its
+ * `INVALID_VALUE` -- which is why this answers null for both and the caller
+ * tells them apart.
+ */
+function readPixelsViewLayout(pixels, type) {
+  const is = (constructor) => pixels instanceof constructor;
+  let elementBytes;
+  switch (type) {
+    case 0x1400: elementBytes = is(Int8Array) ? 1 : 0; break;
+    case 0x1401: elementBytes = is(Uint8Array) || is(Uint8ClampedArray) ? 1 : 0; break;
+    case 0x1402: elementBytes = is(Int16Array) ? 2 : 0; break;
+    case 0x1403: case 0x140B: case 0x8D61: case 0x8363: case 0x8033: case 0x8034:
+    case 0x8365: case 0x8366:
+      elementBytes = is(Uint16Array) ? 2 : 0; break;
+    case 0x1404: elementBytes = is(Int32Array) ? 4 : 0; break;
+    case 0x1405: case 0x8368: case 0x8C3B: case 0x8C3E: case 0x84FA: case 0x8DAD:
+      elementBytes = is(Uint32Array) ? 4 : 0; break;
+    case 0x1406: elementBytes = is(Float32Array) ? 4 : 0; break;
+    default: return null;
+  }
+  if (elementBytes === 0 || !ArrayBuffer.isView(pixels)) return null;
+  return { byteLength: pixels.byteLength, elementBytes };
+}
+
+/**
+ * `read_pixels_element_offset`: WebIDL's unsigned long long after ToNumber.
+ *
+ * A negative offset wraps rather than rounding to zero, so the bounds check
+ * below refuses it instead of reading from the start of the view.
+ */
+function readPixelsElementOffset(value) {
+  const MODULUS = 18446744073709551616;
+  if (!Number.isFinite(value)) return 0;
+  if (value >= 0 && value < MODULUS) return value;
+  const remainder = Math.trunc(value) % MODULUS;
+  return remainder < 0 ? MODULUS + remainder : remainder;
+}
+
+/**
+ * `readPixels(x, y, width, height, format, type, view, dstOffset)`.
+ *
+ * Answers `{data, firstByte, rowBytes, rowStride, height}` -- the rows and where
+ * they go -- which is what the engine's facade copies into the caller's view, or
+ * null when the call was refused, with the error recorded for `getError` exactly
+ * as the op records it.
+ */
+export function op_read_pixels(canvasId, x, y, width, height, format, type_, pixels, dst_offset) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const left = toI32(x, "x");
+  const bottom = toI32(y, "y");
+  const columns = toI32(width, "width");
+  const rows = toI32(height, "height");
+  const glFormat = smiU32(format, "format");
+  const glType = smiU32(type_, "type_");
+  const offsetElements = toF64(dst_offset, "dst_offset");
+
+  const bytesPerPixel = readbackBytesPerPixel(glFormat, glType);
+  if (bytesPerPixel === null) {
+    recordProducerError(canvas, GL_INVALID_ENUM);
+    return null;
+  }
+  if (columns < 0 || rows < 0) {
+    recordProducerError(canvas, GL_INVALID_VALUE);
+    return null;
+  }
+  const pixelBytes = columns * rows * bytesPerPixel;
+  if (!Number.isSafeInteger(pixelBytes) || pixelBytes > MAX_SYNC_READBACK_BYTES) {
+    recordProducerError(canvas, GL_OUT_OF_MEMORY);
+    return null;
+  }
+
+  const view = readPixelsViewLayout(pixels, glType);
+  if (view === null) {
+    recordProducerError(
+      canvas,
+      pixels === null || pixels === undefined ? GL_INVALID_VALUE : GL_INVALID_OPERATION,
+    );
+    return null;
+  }
+  const destinationByteOffset = readPixelsElementOffset(offsetElements) * view.elementBytes;
+  if (!Number.isSafeInteger(destinationByteOffset) || destinationByteOffset > view.byteLength) {
+    recordProducerError(canvas, GL_INVALID_OPERATION);
+    return null;
+  }
+  if (pixelBytes > view.byteLength - destinationByteOffset) {
+    recordProducerError(canvas, GL_INVALID_OPERATION);
+    return null;
+  }
+
+  // An empty rectangle reads nothing. In process the renderer answers it with a
+  // canonical empty layout and the facade returns without touching the view;
+  // answering null here is the same nothing, and it keeps a request the host
+  // refuses off the wire.
+  if (columns === 0 || rows === 0) return null;
+
+  if (glFormat !== READ_PIXELS_FORMAT || glType !== READ_PIXELS_TYPE) {
+    recordProducerError(canvas, GL_INVALID_OPERATION);
+    return null;
+  }
+
+  let reply;
+  try {
+    reply = ask(
+      SYNC_OP_READ_PIXELS,
+      readPixelsReplyBytes(columns, rows),
+      encodeReadPixelsParams({
+        canvasId: canvas,
+        x: left,
+        y: bottom,
+        width: columns,
+        height: rows,
+        format: glFormat,
+        type: glType,
+      }),
+    );
+  } catch (error) {
+    // The host tried the read and it failed -- a canvas that is gone, an
+    // incomplete framebuffer, a GL error. That is the op's `INVALID_OPERATION`
+    // rather than an exception: `readPixels` does not throw. Anything else (the
+    // deadline, the session ending) is not a WebGL outcome and is left to
+    // propagate, as every other synchronous query on this lane leaves it.
+    if (error && error.code === SYNC_ERROR_OPERATION_FAILED) {
+      recordProducerError(canvas, GL_INVALID_OPERATION);
+      return null;
+    }
+    throw error;
+  }
+
+  const layout = decodeReadPixelsLayout(reply.subarray(0, READ_PIXELS_LAYOUT_BYTES));
+  const data = reply.subarray(READ_PIXELS_LAYOUT_BYTES);
+  // The footprint the host's PACK state puts in this view: the skips, then a
+  // stride per row but only the pixels of the last one.
+  const footprint =
+    layout.height === 0
+      ? 0
+      : layout.firstByte + (layout.height - 1) * layout.rowStride + layout.rowBytes;
+  if (destinationByteOffset + footprint > view.byteLength) {
+    recordProducerError(canvas, GL_INVALID_OPERATION);
+    return null;
+  }
+  return {
+    data,
+    firstByte: destinationByteOffset + layout.firstByte,
+    rowBytes: layout.rowBytes,
+    rowStride: layout.rowStride,
+    height: layout.height,
+  };
 }
