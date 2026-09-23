@@ -25,6 +25,7 @@ import {
   toI32,
   u32ArrayOf,
 } from "./op-args.mjs";
+import { colorRecordWords } from "./canvas2d-color.mjs";
 import { parseFontShorthand } from "./css-font.mjs";
 import * as R from "./render-opcodes.mjs";
 
@@ -1042,4 +1043,31 @@ export function op_vertex_attrib_pointer(canvasId, index, size, type, normalized
 }
 export function op_viewport(canvasId, x, y, width, height) {
   emit(R.OP_VIEWPORT, smiU32(canvasId, "canvas_id"), toI32(x, "x"), toI32(y, "y"), smiU32(width, "width"), smiU32(height, "height"));
+}
+
+// ---- the colours the engine's own parser abstains from ---------------------------
+//
+// The engine parses hex, strict `rgb()`/`rgba()` and every name in its table
+// itself and encodes those; anything else it hands here as the string content
+// wrote. `canvas2d-color.mjs` is the host parser's rule, restated, so the four
+// floats this record carries are the ones the op would have set -- including
+// for `rgb( 1 , 2 , 3 )`, which is an ordinary colour the engine's strict
+// reader will not guess at.
+
+/** Append a colour record: the canvas, then r, g, b, a as floats. */
+function emit2DColor(canvasId, opcode, colorStr) {
+  const [r, g, b, a] = colorRecordWords(colorStr);
+  emit2D(canvasId, opcode, r, g, b, a);
+}
+
+export function op_set_fill_style(canvasId, colorStr) {
+  emit2DColor(smiU32(canvasId, "canvas_id"), R.OP2D_SET_FILL_STYLE, stringOf(colorStr, "color_str"));
+}
+
+export function op_set_stroke_style(canvasId, colorStr) {
+  emit2DColor(smiU32(canvasId, "canvas_id"), R.OP2D_SET_STROKE_STYLE, stringOf(colorStr, "color_str"));
+}
+
+export function op_set_shadow_color(canvasId, colorStr) {
+  emit2DColor(smiU32(canvasId, "canvas_id"), R.OP2D_SET_SHADOW_COLOR, stringOf(colorStr, "color_str"));
 }

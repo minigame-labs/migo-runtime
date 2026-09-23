@@ -3714,33 +3714,30 @@ pub(super) mod tests {
         ));
     }
 
-    /// The JavaScript colour parser may abstain. It may not disagree.
-    ///
-    /// `fillStyle` is assigned on the hot path — a scene that changes colour per
-    /// shape assigns it as often as it draws — so leaving every assignment on
-    /// the op path would have left the barrier firing between every two records
-    /// and the batching with nothing to batch. So the encoder answers the forms
-    /// it is certain of, and hands the rest to the Rust parser, which stays the
-    /// authority.
-    ///
-    /// That split is only safe while the two agree, and "these two parsers agree"
-    /// is exactly the claim this repository has already watched go wrong once:
-    /// the CSS *font* parser existed in both languages, drifted, and produced a
-    /// `measureText` that disagreed with `fillText`. So the corpus runs through
-    /// the whole path — the JavaScript parser, the wire encoding, the decoder,
-    /// and the op fallback — and requires a bit-identical `Color` either way.
-    #[test]
-    fn the_javascript_colour_parser_never_disagrees_with_the_rust_one() {
-        let mut corpus: Vec<String> = Vec::new();
 
+    /// The colour strings both parsers are held to.
+    ///
+    /// Shared by the test above and by the fixture the producer's port is checked
+    /// against (`the_producer_s_colour_parser_answers_as_the_rust_one_does`): one
+    /// corpus, so a string added for one execution is answered by all of them.
+    fn colour_corpus() -> Vec<String> {
+        let mut corpus: Vec<String> = Vec::new();
         // Every named colour the Rust table knows, in the spellings content uses.
-        for name in crate::rendering::webgl::context2d::NAMED_COLORS.keys() {
-            corpus.push((*name).to_string());
+        //
+        // Sorted, because the table is a `HashMap` and its order is the run's:
+        // the fixture this corpus is written to would differ run to run.
+        let mut names: Vec<&str> = crate::rendering::webgl::context2d::NAMED_COLORS
+            .keys()
+            .copied()
+            .collect();
+        names.sort_unstable();
+        for name in names {
+            corpus.push(name.to_string());
             corpus.push(name.to_uppercase());
         }
         corpus.push("transparent".to_string());
         corpus.push("chartreuseish".to_string());
-
+    
         // Every channel value, so the u8-to-f32 conversion is checked at each of
         // its 256 inputs rather than at a handful.
         for channel in 0..=255u32 {
@@ -3809,7 +3806,7 @@ pub(super) mod tests {
         ] {
             corpus.push(odd.to_string());
         }
-
+    
         // Adjacent duplicates would be swallowed by the setter's own dedup, and
         // then the sequence below would not line up with the corpus.
         corpus.dedup();
@@ -3820,6 +3817,75 @@ pub(super) mod tests {
             }
         }
         let corpus = deduped;
+        corpus
+    }
+    
+    /// The corpus and the colour the Rust parser reads for each, for
+    /// `test/canvas2d-color.test.mjs` -- which requires the producer's port to
+    /// answer the same for every one.
+    ///
+    /// Regenerate with `MIGO_COLOUR_ANSWERS_BLESS=1 cargo test -p migo-runtime-v8
+    /// --lib the_producer_s_colour_parser`.
+    #[test]
+    fn the_producer_s_colour_parser_answers_as_the_rust_one_does() {
+        use deno_core::serde_json;
+        let answers: Vec<serde_json::Value> = colour_corpus()
+            .into_iter()
+            .map(|entry| {
+                let colour = crate::rendering::webgl::context2d::parse_color_string(&entry);
+                serde_json::json!({
+                    "text": entry,
+                    // A name the engine's own table answers never reaches the
+                    // op: the producer runs that same JavaScript. Recorded
+                    // rather than dropped, so the corpus stays one corpus.
+                    "named": crate::rendering::webgl::context2d::NAMED_COLORS
+                        .contains_key(entry.to_lowercase().as_str()),
+                    // The bytes the op's record carries, which is what the producer
+                    // has to arrive at: the parser's floats are k/255 exactly.
+                    "rgba": [
+                        (colour.r * 255.0).round() as u32,
+                        (colour.g * 255.0).round() as u32,
+                        (colour.b * 255.0).round() as u32,
+                        (colour.a * 255.0).round() as u32,
+                    ],
+                })
+            })
+            .collect();
+        let rendered = serde_json::to_string_pretty(&serde_json::json!({ "colours": answers }))
+            .expect("JSON")
+            + "\n";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../platforms/apple/WebContent/PerformancePlus/test/fixtures/canvas2d-color-answers.json",
+        );
+        if std::env::var_os("MIGO_COLOUR_ANSWERS_BLESS").is_some() {
+            std::fs::write(&path, &rendered).expect("write the fixture");
+            return;
+        }
+        let checked_in = std::fs::read_to_string(&path).expect("the fixture is checked in");
+        assert_eq!(
+            checked_in, rendered,
+            "the colour corpus or its answers changed; regenerate with MIGO_COLOUR_ANSWERS_BLESS=1"
+        );
+    }
+
+    /// The JavaScript colour parser may abstain. It may not disagree.
+    ///
+    /// `fillStyle` is assigned on the hot path — a scene that changes colour per
+    /// shape assigns it as often as it draws — so leaving every assignment on
+    /// the op path would have left the barrier firing between every two records
+    /// and the batching with nothing to batch. So the encoder answers the forms
+    /// it is certain of, and hands the rest to the Rust parser, which stays the
+    /// authority.
+    ///
+    /// That split is only safe while the two agree, and "these two parsers agree"
+    /// is exactly the claim this repository has already watched go wrong once:
+    /// the CSS *font* parser existed in both languages, drifted, and produced a
+    /// `measureText` that disagreed with `fillText`. So the corpus runs through
+    /// the whole path — the JavaScript parser, the wire encoding, the decoder,
+    /// and the op fallback — and requires a bit-identical `Color` either way.
+    #[test]
+    fn the_javascript_colour_parser_never_disagrees_with_the_rust_one() {
+        let corpus = colour_corpus();
 
         let script = {
             let mut script = String::from("const ctx = createCanvas(64, 64).getContext('2d');\n");
