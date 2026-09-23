@@ -98,6 +98,16 @@ fn op_probe_smi_option_u32(#[smi] value: Option<u32>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 
+/// `#[bigint] i64`: what `op_read_pixels_to_buffer` takes for its offset into
+/// the bound `PIXEL_PACK_BUFFER`. A `GLintptr` is signed, and the negative it
+/// can carry is what the op refuses -- so the conversion has to keep the sign
+/// rather than wrap it into a large positive one.
+#[op2]
+#[string]
+fn op_probe_bigint_i64(#[bigint] value: i64) -> String {
+    value.to_string()
+}
+
 /// `Option<u32>` with no attribute: what `op_resize_canvas` takes for each
 /// dimension, because content assigns `canvas.width` and `canvas.height`
 /// separately and either may be absent. A different conversion from the `#[smi]`
@@ -178,6 +188,7 @@ deno_core::extension!(
         op_probe_bigint_option_u64,
         op_probe_smi_option_u32,
         op_probe_option_u32,
+        op_probe_bigint_i64,
         op_probe_smi_u16,
         op_probe_bool,
         op_probe_f32,
@@ -229,6 +240,7 @@ fn deno_answers() -> serde_json::Value {
                     option_bigint_u64: ops.op_probe_bigint_option_u64,
                     option_smi_u32: ops.op_probe_smi_option_u32,
                     option_u32: ops.op_probe_option_u32,
+                    bigint_i64: ops.op_probe_bigint_i64,
                     smi_u16: ops.op_probe_smi_u16,
                     bool: ops.op_probe_bool,
                     f32: ops.op_probe_f32,
