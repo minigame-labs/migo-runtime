@@ -155,6 +155,81 @@ import XCTest
             view.stop()
         }
 
+        /// The soft keyboard, round trip: content opens it with its options, the
+        /// player types and presses Return, and content hears the whole text as
+        /// input, then confirm, then complete -- the three events the mini-game
+        /// API promises, carried by the host's keyboard and not by a test double.
+        func testContentOpensTheKeyboardAndHearsWhatThePlayerTypes() throws {
+            let game = try package(
+                named: "keyboard",
+                game: """
+                    const say = (kind, res) => console.log("kb " + JSON.stringify({ kind, value: res.value }));
+                    migo.onKeyboardInput((res) => say("input", res));
+                    migo.onKeyboardConfirm((res) => say("confirm", res));
+                    migo.onKeyboardComplete((res) => say("complete", res));
+                    migo.showKeyboard({ defaultValue: "hi", maxLength: 8, confirmType: "send",
+                      success() { console.log("kb-open"); },
+                      fail(error) { console.log("kb-fail " + error.errMsg); } });
+                    """)
+            try MigoGameInstaller.install(package: game, id: "keyboard", into: directories)
+            let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
+            let opened = expectation(description: "the keyboard opened")
+            let completed = expectation(description: "content heard complete")
+            var heard: [[String: String]] = []
+            var failure: String?
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    if message == "kb-open" { opened.fulfill() }
+                    if message.hasPrefix("kb-fail ") {
+                        failure = message
+                        opened.fulfill()
+                    }
+                    if message.hasPrefix("kb "),
+                        let entry = (try? JSONSerialization.jsonObject(with: Data(message.dropFirst(3).utf8)))
+                            as? [String: String]
+                    {
+                        heard.append(entry)
+                        if entry["kind"] == "complete" { completed.fulfill() }
+                    }
+                case .failed(let reason):
+                    failure = reason
+                    opened.fulfill()
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: "keyboard")
+            wait(for: [opened], timeout: 240)
+            XCTAssertNil(failure)
+
+            // The field content asked for, reached as the system reaches it: the
+            // first responder that accepts text.
+            let deadline = Date().addingTimeInterval(10)
+            var responder: UITextView?
+            while responder == nil, Date() < deadline {
+                responder = view.subviews.compactMap { $0 as? UITextView }.first { $0.isFirstResponder }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+            let field = try XCTUnwrap(responder, "showKeyboard made nothing first responder")
+            XCTAssertEqual(field.text, "hi", "the default value")
+            XCTAssertEqual(field.returnKeyType, .send)
+            field.insertText("!")
+            field.insertText("0123456789")  // past maxLength 8: truncated
+            field.insertText("\n")
+            wait(for: [completed], timeout: 30)
+            view.stop()
+
+            XCTAssertEqual(
+                heard,
+                [
+                    ["kind": "input", "value": "hi!"],
+                    ["kind": "input", "value": "hi!01234"],
+                    ["kind": "confirm", "value": "hi!01234"],
+                    ["kind": "complete", "value": "hi!01234"],
+                ])
+        }
+
         /// A game that is not installed is reported, not a black screen.
         func testAGameThatIsNotInstalledIsReportedFailed() throws {
             let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))

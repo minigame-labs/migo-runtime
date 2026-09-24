@@ -142,6 +142,9 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
         private var host: MigoPerformancePlusHost?
         private var recovery: MigoWebContentRecovery
         private var touches = TouchIdentities()
+        /// The system keyboard's responder: zero-sized and never drawn -- the
+        /// game draws its own field, as it does on every platform.
+        private lazy var keyboard = KeyboardResponder(owner: self)
         private var observers: [NSObjectProtocol] = []
         private var pausedByApp = false
         private var pausedByAudio = false
@@ -283,6 +286,7 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
         /// a session being destroyed is submitting into freed memory.
         private func tearDown(then next: (() -> Void)?) {
             isRunning = false
+            keyboard.hide(reportingTo: nil)
             touches.removeAll()
             if let host {
                 host.stop()
@@ -339,6 +343,12 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 // The layer is this view's and it is still here; a lost surface
                 // on iOS is the GPU going away, which a restart is the answer to.
                 restart()
+            case .showKeyboard(let request):
+                keyboard.show(request)
+            case .hideKeyboard:
+                keyboard.hide()
+            case .updateKeyboard(let text):
+                keyboard.replaceText(text)
             }
         }
 
@@ -481,6 +491,12 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             engine.sendTouch(type, points: points, timestampMilliseconds: Int64(timestamp * 1000))
         }
 
+        // MARK: - keyboard
+
+        fileprivate func keyboardInput(_ input: MigoEngineSession.KeyboardInput) {
+            engine?.sendKeyboard(input)
+        }
+
         // MARK: - helpers
 
         private static func contentRoot(of session: OpaquePointer) throws -> URL {
@@ -500,6 +516,126 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             uname(&info)
             return withUnsafeBytes(of: &info.machine) { raw in
                 String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+            }
+        }
+    }
+
+    /// Drives the system keyboard for content's `migo.showKeyboard`.
+    ///
+    /// A text view rather than a field because it serves both shapes: a
+    /// single-line request turns Return into confirm, a multi-line one keeps
+    /// it. It is zero-sized and transparent -- the system only needs a first
+    /// responder that accepts text; what the player sees is the game's field.
+    private final class KeyboardResponder: NSObject, UITextViewDelegate {
+        private weak var owner: MigoGameView?
+        private let field = UITextView(frame: .zero)
+        private var request: MigoEngineSession.KeyboardRequest?
+        /// The text content last heard, so a change that ends where it began
+        /// (a stripped newline, a truncated paste) is not reported twice.
+        private var reported = ""
+        private var observers: [NSObjectProtocol] = []
+
+        init(owner: MigoGameView) {
+            self.owner = owner
+            super.init()
+            field.delegate = self
+            field.autocorrectionType = .no
+            field.spellCheckingType = .no
+            field.backgroundColor = .clear
+            field.textColor = .clear
+            field.tintColor = .clear
+            owner.addSubview(field)
+            let center = NotificationCenter.default
+            observers.append(
+                center.addObserver(
+                    forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main
+                ) { [weak self] note in self?.keyboardFrameChanged(note) })
+            observers.append(
+                center.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) {
+                    [weak self] _ in
+                    guard self?.request != nil else { return }
+                    self?.owner?.keyboardInput(.heightChange(0))
+                })
+        }
+
+        deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+
+        func show(_ request: MigoEngineSession.KeyboardRequest) {
+            self.request = request
+            field.keyboardType = request.numeric ? .numberPad : .default
+            field.returnKeyType = Self.returnKey(request.confirmType)
+            field.text = request.defaultValue
+            reported = request.defaultValue
+            if field.isFirstResponder {
+                field.reloadInputViews()
+            } else {
+                field.becomeFirstResponder()
+            }
+        }
+
+        func hide() { hide(reportingTo: owner) }
+
+        /// Closing reports `complete` with the final text, as a player closing
+        /// it does -- unless the view is going away and there is no one to tell.
+        func hide(reportingTo target: MigoGameView?) {
+            guard request != nil else { return }
+            let text = field.text ?? ""
+            request = nil
+            field.resignFirstResponder()
+            target?.keyboardInput(.complete(text))
+        }
+
+        func replaceText(_ text: String) {
+            guard request != nil else { return }
+            field.text = text
+            reported = text
+        }
+
+        /// Every edit lands here -- typed, pasted, dictated or inserted -- which
+        /// is why the rules live here and not in `shouldChangeTextIn`, which
+        /// only some of those paths consult. A single-line field turns its
+        /// newline into confirm; a limit truncates, as the macOS field does.
+        func textViewDidChange(_ textView: UITextView) {
+            guard let request else { return }
+            var text = textView.text ?? ""
+            let confirmed = !request.multiline && text.contains("\n")
+            if confirmed { text = text.replacingOccurrences(of: "\n", with: "") }
+            if request.maxLength > 0, text.count > request.maxLength {
+                text = String(text.prefix(request.maxLength))
+            }
+            if text != textView.text { textView.text = text }
+            if text != reported {
+                reported = text
+                owner?.keyboardInput(.input(text))
+            }
+            if confirmed {
+                owner?.keyboardInput(.confirm(text))
+                if !request.confirmHold { hide() }
+            }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            // The player dismissed it (a swipe, another responder).
+            hide()
+        }
+
+        private func keyboardFrameChanged(_ note: Notification) {
+            guard request != nil, let owner, let window = owner.window,
+                let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+            else { return }
+            // Points are CSS pixels here; the overlap with this view is what
+            // content lays itself out around.
+            let overlap = owner.convert(owner.bounds, to: window).intersection(window.convert(frame, from: nil))
+            owner.keyboardInput(.heightChange(overlap.isNull ? 0 : Double(overlap.height)))
+        }
+
+        private static func returnKey(_ type: MigoKeyboardConfirmType) -> UIReturnKeyType {
+            switch type {
+            case MIGO_KEYBOARD_CONFIRM_NEXT: return .next
+            case MIGO_KEYBOARD_CONFIRM_SEARCH: return .search
+            case MIGO_KEYBOARD_CONFIRM_GO: return .go
+            case MIGO_KEYBOARD_CONFIRM_SEND: return .send
+            default: return .done
             }
         }
     }

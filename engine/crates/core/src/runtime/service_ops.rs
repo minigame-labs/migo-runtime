@@ -189,6 +189,9 @@ service_ops! {
     op_is_subpackage_installed = 166,
     op_is_subpackage_persisted = 167,
     op_get_workers_path = 168,
+    op_show_keyboard = 169,
+    op_hide_keyboard = 170,
+    op_update_keyboard = 171,
 }
 
 /// The op's name, for a refusal a person will read.

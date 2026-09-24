@@ -583,6 +583,25 @@ export function op_restart_mini_program() {
   servicesOf(engineHost()).command(SERVICE_OP.op_restart_mini_program);
 }
 
+// ---- the soft keyboard ----------------------------------------------------------
+
+/// Open the host's keyboard. The options stay the JSON the engine's
+/// `02_keyboard.js` made, because the host reads that same JSON in process.
+export function op_show_keyboard(optionsJson) {
+  const options = stringOf(optionsJson, "options_json");
+  servicesOf(engineHost()).command(SERVICE_OP.op_show_keyboard, (w) => w.str(options));
+}
+
+export function op_hide_keyboard() {
+  servicesOf(engineHost()).command(SERVICE_OP.op_hide_keyboard);
+}
+
+/// Content correcting the field: the whole current text, not a keystroke.
+export function op_update_keyboard(value) {
+  const text = stringOf(value, "value");
+  servicesOf(engineHost()).command(SERVICE_OP.op_update_keyboard, (w) => w.str(text));
+}
+
 /// Ask for a frame rate. The host rounds it into the range the engine offers
 /// and ignores one that is not a number, as the embedded op does -- the filter
 /// is the host's so both executions answer the same request the same way.
