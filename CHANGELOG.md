@@ -86,6 +86,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hundred 2D calls now crosses once.
 
 ### Fixed
+- iOS: signed content was not verified. The Performance+ lane mounted the
+  installed package as it was, so a host that configured a signing key got no
+  verification at all. It now runs the embedded execution's launch sequence
+  before anything is mounted -- sealed-receipt check, else a full manifest and
+  file-hash verification that seals the tree -- and refuses the load on any
+  mismatch, or on signing with no key.
+- `MigoGameInstaller` could not update a game that had run under signing: the
+  engine seals a verified tree read-only, and the installer replaced it in
+  place. An update now renames the sealed tree aside, renames the new one in
+  and removes the old one as a trusted uninstall.
 - iOS: a game that called `migo.exitMiniProgram()` stopped drawing and the app
   was never told. The external-frame session ended on the request without the
   exit notification the in-process runtime sends; it now sends it.

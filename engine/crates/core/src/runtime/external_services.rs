@@ -296,6 +296,10 @@ pub(crate) struct ServiceContext {
     /// The host's soft keyboard, when it supplies one: the same service the
     /// embedded `op_show_keyboard` calls, so both executions open the same UI.
     keyboard: OnceLock<Option<Arc<dyn shared::services::KeyboardService>>>,
+    /// Whether the content this session mounts must be signed, resolved from
+    /// the session's options when it starts. Unbound is unverified -- which is
+    /// what a session started with signing off binds anyway.
+    signing: OnceLock<migo_services::content::ContentSigning>,
 }
 
 /// The keyboard service's refusal in the words the embedded op shows: its
@@ -317,6 +321,7 @@ impl ServiceContext {
             network: OnceLock::new(),
             lifecycle: OnceLock::new(),
             keyboard: OnceLock::new(),
+            signing: OnceLock::new(),
         }
     }
 
@@ -492,6 +497,11 @@ impl ServiceContext {
         let _ = self.lifecycle.set(host_tx);
     }
 
+    /// How this session's content is verified. Once, before content is loaded.
+    pub(crate) fn bind_signing(&self, signing: migo_services::content::ContentSigning) {
+        let _ = self.signing.set(signing);
+    }
+
     /// Give the services the host's keyboard, or say it has none. Once, on the
     /// session thread, before the first service work is dispatched.
     pub(crate) fn bind_keyboard(
@@ -606,7 +616,11 @@ impl ServiceContext {
 
     /// Mount the content the host named: `/code` from the installed package,
     /// and the game's `/user`, `/cache` and `/tmp`. Once per session.
-    pub(crate) fn load_content(&self, game_id: &str) -> EngineResult<PathBuf> {
+    ///
+    /// Under code signing the package is verified against `entry` first, as
+    /// the embedded execution verifies before it evaluates: the producer is
+    /// served from this mount, so nothing reaches it before this returns.
+    pub(crate) fn load_content(&self, game_id: &str, entry: &str) -> EngineResult<PathBuf> {
         let session_id = *self.session_id.get().ok_or_else(|| {
             EngineError::new(ErrorCode::InvalidOperation).with_msg("the session is not started")
         })?;
@@ -618,12 +632,16 @@ impl ServiceContext {
             return Err(EngineError::new(ErrorCode::InvalidOperation)
                 .with_msg("content is already loaded in this session"));
         }
-        let mounted = MountedContent::mount(
+        let mounted = MountedContent::mount_signed(
             &self.files_dir,
             &self.cache_dir,
             game_id,
+            entry,
             session_id,
             &scheduler,
+            self.signing
+                .get()
+                .unwrap_or(&migo_services::content::ContentSigning::Disabled),
         )?;
         let root = mounted.game_paths.code_dir().to_path_buf();
         info!(
@@ -1739,9 +1757,14 @@ mod tests {
                 .is_err(),
             "nothing to read before content is loaded"
         );
-        let code = context.load_content("g").expect("installed content mounts");
+        let code = context
+            .load_content("g", "game.js")
+            .expect("installed content mounts");
         assert_eq!(code, installed.code_dir());
-        assert!(context.load_content("g").is_err(), "once per session");
+        assert!(
+            context.load_content("g", "game.js").is_err(),
+            "once per session"
+        );
 
         context
             .call_sync(
@@ -1807,7 +1830,9 @@ mod tests {
             context.content_module("/game.js").is_none(),
             "no module is served before content is loaded"
         );
-        context.load_content("g").expect("installed content mounts");
+        context
+            .load_content("g", "game.js")
+            .expect("installed content mounts");
         assert_eq!(
             context
                 .content_module("/game.js")
@@ -1986,7 +2011,9 @@ mod tests {
         .unwrap();
         let context = Arc::new(ServiceContext::new(files, cache));
         context.bind_session(1);
-        context.load_content("g").expect("installed content mounts");
+        context
+            .load_content("g", "game.js")
+            .expect("installed content mounts");
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
