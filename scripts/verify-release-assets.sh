@@ -150,7 +150,7 @@ if uncovered:
 platforms = sorted({
     part
     for name in by_sums + by_sidecar
-    for part in ("android", "linux", "windows", "ohos")
+    for part in ("android", "linux", "windows", "ohos", "apple")
     if f"-{part}-" in name or name.endswith(f"-{part}.aar")
 })
 print(

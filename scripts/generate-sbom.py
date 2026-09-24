@@ -73,10 +73,80 @@ def source_revision(explicit: str | None, workspace_root: pathlib.Path) -> str:
         raise PolicyError("cannot determine source revision; pass --source-revision")
 
 
+def merged_metadata(paths: list[pathlib.Path]) -> dict[str, Any]:
+    """One graph out of several resolutions of the same workspace.
+
+    An artifact that carries more than one build of the root -- the Apple SDK
+    ships an iOS slice built without V8 and a macOS slice built with it -- has
+    a component set that is the union of those builds' graphs. Package ids are
+    cargo's own (name, version, source), so the same crate resolved twice is
+    one record; its dependency edges are the union of what each build gave it.
+    """
+    if len(paths) == 1:
+        return read_json(paths[0])
+    packages: dict[str, dict[str, Any]] = {}
+    edges: dict[str, set[str]] = {}
+    members: set[str] = set()
+    first: dict[str, Any] = {}
+    for path in paths:
+        metadata = read_json(path)
+        first = first or metadata
+        members.update(str(item) for item in metadata.get("workspace_members", []))
+        for package in metadata.get("packages", []):
+            if isinstance(package, dict):
+                packages.setdefault(str(package.get("id", "")), package)
+        resolve = metadata.get("resolve")
+        for node in resolve.get("nodes", []) if isinstance(resolve, dict) else []:
+            if isinstance(node, dict):
+                edges.setdefault(str(node.get("id", "")), set()).update(
+                    str(item) for item in node.get("dependencies", []))
+    return {
+        **{key: value for key, value in first.items() if key not in ("packages", "resolve")},
+        "workspace_members": sorted(members),
+        "packages": list(packages.values()),
+        "resolve": {"nodes": [
+            {"id": node, "dependencies": sorted(targets)} for node, targets in sorted(edges.items())
+        ]},
+    }
+
+
+def compiled_subset(
+    metadata: dict[str, Any], root_id: str, reached: set[str], trees: list[pathlib.Path]
+) -> set[str]:
+    """Keep only what the artifact's builds compile.
+
+    `cargo metadata` resolves features for the whole workspace at once, so a
+    crate one member enables is an edge for every member -- the iOS SDK, which
+    is built without V8 precisely so it links no JavaScript engine, would list
+    `v8` because the V8 runtime crate sits in the same workspace. `cargo tree`
+    resolves the features of the one package being built. Each tree file is
+    that command's `--prefix none --format {p}` output for one build; a package
+    stays when some build compiles it, identified by name and version.
+    """
+    compiled: set[tuple[str, str]] = set()
+    for tree in trees:
+        for line in tree.read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].startswith("v"):
+                compiled.add((parts[0], parts[1][1:]))
+    if not compiled:
+        raise PolicyError("the compiled-package lists are empty; cargo tree resolved nothing")
+    packages = {str(item.get("id", "")): item for item in metadata.get("packages", []) if isinstance(item, dict)}
+    kept = {
+        package_id
+        for package_id in reached
+        if package_id == root_id
+        or (str(packages[package_id].get("name")), str(packages[package_id].get("version"))) in compiled
+    }
+    return kept
+
+
 def build(args: argparse.Namespace) -> dict[str, Any]:
-    metadata = read_json(args.metadata)
+    metadata = merged_metadata(args.metadata)
     policy = load_policy(args.policy.resolve())
     root_id, reached, edges = reachable_ids(metadata, args.root_package)
+    if args.compiled:
+        reached = compiled_subset(metadata, root_id, reached, args.compiled)
     licenses, errors = validate_metadata(
         metadata, policy, args.workspace_root.resolve(), reached
     )
@@ -169,7 +239,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--metadata", type=pathlib.Path, required=True)
+    # Repeated for an artifact that carries several builds; see merged_metadata.
+    result.add_argument("--metadata", type=pathlib.Path, required=True, action="append")
+    # `cargo tree --prefix none --format {p}` of each build; see compiled_subset.
+    result.add_argument("--compiled", type=pathlib.Path, action="append", default=[])
     result.add_argument("--artifact", type=pathlib.Path, required=True)
     result.add_argument("--artifact-kind", required=True)
     result.add_argument("--target", required=True)

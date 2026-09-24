@@ -449,6 +449,14 @@ jobs:
       - name: Apple deployment floor contract
         run: bash scripts/test-apple-deployment-floor-contract.sh
 
+      # An app that links an SDK using a required-reason API without declaring
+      # it is rejected at review -- in the integrator's app, weeks after the
+      # change that caused it. So the manifests both products ship are checked
+      # against the sources in both directions: every category used is
+      # declared, and every declaration is still true.
+      - name: Apple privacy manifest declares what the engine does
+        run: bash scripts/test-apple-privacy-manifest-contract.sh
+
       # The lane a Session gets, and why. Checks the Swift reason-code mirror
       # against the policy from both directions -- a case with no policy entry
       # is a value nobody can read in a report, and a policy entry with no case

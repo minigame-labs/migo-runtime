@@ -2606,6 +2606,10 @@ fn run_external_session(
     // What content has been told about being shown and hidden.
     let mut lifecycle = Lifecycle::default();
     runtime.block_on(async move {
+        // Whether the session ended because it was asked to -- by content's
+        // `exitMiniProgram`, which reaches here as `Shutdown` -- as opposed to
+        // its channel closing or its renderer failing, which report themselves.
+        let mut shut_down = false;
         loop {
             tokio::select! {
                 command = host_rx.recv() => {
@@ -2632,6 +2636,7 @@ fn run_external_session(
                         id, command, &mut render, &mut audio, &backgrounded, &ingress,
                         &platform_for_error, &sink, &mut lifecycle,
                     ) {
+                        shut_down = true;
                         break;
                     }
                 }
@@ -2727,6 +2732,13 @@ fn run_external_session(
         render.shutdown();
         drop(lifecycle_sender);
         info!("[Host {id}] external-frame session exited");
+        // Told last, as the embedded host thread tells it (`runtime/thread.rs`):
+        // when content called `exitMiniProgram` this is the only way the host
+        // learns the game ended, and a host that asked for the shutdown itself
+        // ignores it. Without it an iOS game that exits simply stops drawing.
+        if shut_down {
+            platform_for_error.notify_exit(id);
+        }
     });
 }
 

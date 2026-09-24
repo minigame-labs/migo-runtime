@@ -48,9 +48,11 @@ NEEDS_ARTIFACT=(
     test-android-nojni-aar-contract.sh
     test-android-sdk-contract.sh
     test-android-snapshot-embedding-contract.sh
+    test-apple-sdk-release-asset.sh
     test-capi-snapshot-embedding-contract.sh
     test-linux-sdk-contract.sh
     test-macos-archive-runs-js.sh
+    test-macos-game-view.sh
     test-ohos-sdk-contract.sh
     test-ohos-symbol-floor.sh
     test-release-asset-naming-contract.sh

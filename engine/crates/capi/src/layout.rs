@@ -165,7 +165,8 @@ const _: () = assert!(offset_of!(MigoWheelEvent, timestamp_ms) == 40);
 mod lp64 {
     use super::*;
 
-    const _: () = assert!(size_of::<MigoEngineConfig>() == 48);
+    const _: () = assert!(size_of::<MigoEngineConfig>() == 80);
+    const _: () = assert!(offset_of!(MigoEngineConfig, code_signing_public_key) == 48);
     const _: () = assert!(offset_of!(MigoEngineConfig, flags) == 8);
     const _: () = assert!(offset_of!(MigoEngineConfig, reserved0) == 16);
     // A four-byte hole follows `reserved0`; the first pointer is aligned to 24.

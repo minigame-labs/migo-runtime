@@ -180,7 +180,9 @@ let package = Package(
             // emits the bundle into this directory. SwiftPM refuses resource
             // paths outside the target, and reaching outside is also what
             // would let the shipped bundle drift from the tested one.
-            resources: [.copy("Resources")]
+            // The privacy manifest travels in the product's resource bundle,
+            // which is where Xcode's privacy report looks for an SDK's.
+            resources: [.copy("Resources"), .process("PrivacyInfo.xcprivacy")]
         ),
 
         // The frame channel, against a real WebSocket client rather than a
@@ -220,7 +222,8 @@ let package = Package(
         .target(
             name: "MigoMacV8",
             dependencies: [.product(name: "MigoAppleCore", package: "core"), "MigoAppleRenderer"],
-            path: "Sources/MigoMacV8"
+            path: "Sources/MigoMacV8",
+            resources: [.process("PrivacyInfo.xcprivacy")]
         ),
     ]
 )

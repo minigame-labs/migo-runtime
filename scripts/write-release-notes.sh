@@ -71,6 +71,8 @@ for path in sorted(staging.iterdir(), key=lambda p: p.name.lower()):
     size = f"{path.stat().st_size / 1048576:.0f} MB"
     if name.endswith(".aar"):
         what = "Android library for Java/Kotlin, `arm64-v8a` + `x86_64`"
+    elif name.endswith("-apple-sdk.zip"):
+        what = "Swift package for iOS (Performance+) and macOS (V8) -- unzip and add as a local package"
     elif "-capi-" in name:
         platform = name.split("-capi-")[1].rsplit(".tar.gz", 1)[0]
         what = f"C ABI SDK for `{platform}` -- headers, library, CMake package"
@@ -82,7 +84,7 @@ PY
 )"
 
 cat > "$OUTPUT" <<NOTES
-Runtime SDKs for Android, Linux, OpenHarmony and Windows.
+Runtime SDKs for Android, Linux, OpenHarmony, Windows, iOS and macOS.
 
 ## What changed in v$VERSION
 
@@ -99,6 +101,16 @@ One AAR is published, carrying both ABIs. A shipped app carries one: add
 library is about half the size, or publish an App Bundle and Play delivers per device.
 There is no separate slim build -- the product profile is an internal build axis, not
 a choice an integrator can make.
+
+## iOS and macOS
+
+\`migo-$VERSION-apple-sdk.zip\` unpacks to \`MigoApple/\`, a Swift package: add it in
+Xcode with *File > Add Package Dependencies > Add Local*, then link
+\`MigoApplePerformancePlus\` (iOS) or \`MigoMacV8\` (macOS) and put a \`MigoGameView\`
+on screen. \`MigoApple/README.md\` has the integration steps. On macOS the app must be
+signed with the hardened runtime and \`com.apple.security.cs.allow-jit\`, and embed ANGLE
+with \`Frameworks/Scripts/embed-apple-angle.sh\`; the view refuses to start without the
+entitlement and says why.
 
 ## Verifying a download
 

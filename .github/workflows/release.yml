@@ -425,6 +425,14 @@ jobs:
       - name: Apple deployment floor contract
         run: bash scripts/test-apple-deployment-floor-contract.sh
 
+      # An app that links an SDK using a required-reason API without declaring
+      # it is rejected at review -- in the integrator's app, weeks after the
+      # change that caused it. So the manifests both products ship are checked
+      # against the sources in both directions: every category used is
+      # declared, and every declaration is still true.
+      - name: Apple privacy manifest declares what the engine does
+        run: bash scripts/test-apple-privacy-manifest-contract.sh
+
       # The lane a Session gets, and why. Checks the Swift reason-code mirror
       # against the policy from both directions -- a case with no policy entry
       # is a value nobody can read in a report, and a policy entry with no case
@@ -1674,6 +1682,156 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # ── Apple SDK ────────────────────────────────────────────────────────────
+  # One SwiftPM package for iOS and macOS, published as migo-<version>-apple-sdk.zip
+  # (see scripts/package-apple-sdk.sh for why a zip of the package and not a
+  # remote SwiftPM URL). Its engine xcframework holds three groups built by two
+  # products: the iOS device and simulator groups are Performance+, which links
+  # no JavaScript engine, and the macOS group is V8 with JIT.
+  #
+  # Built as one group per job, because each is a cold Rust + Skia build and
+  # three of them in one job is the whole timeout; assembled in a second job,
+  # from the staged groups those three uploaded, with --require-all-slices so a
+  # release can never ship a partial SDK. Everything that proves the SDK works
+  # is asked of the ZIP in that second job -- the thing published, not the tree
+  # it was packed from.
+  release-apple:
+    needs: [quality-gate]
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: ios
+            product: performance-plus
+            targets: aarch64-apple-ios
+          - platform: ios-simulator
+            product: performance-plus
+            targets: aarch64-apple-ios-sim,x86_64-apple-ios
+          - platform: macos
+            product: macos-v8
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+    env:
+      MIGO_APPLE_BUILD_ROOT: ${{ github.workspace }}/build/apple
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+        with:
+          targets: ${{ matrix.targets }}
+
+      # All three: SwiftPM validates every declared binary path, and the build
+      # checks the runtime pair of the platform it assembles.
+      - name: Install the pinned ANGLE runtime dependencies
+        run: |
+          bash scripts/fetch-apple-angle.sh ios
+          bash scripts/fetch-apple-angle.sh ios-simulator
+          bash scripts/fetch-apple-angle.sh macos
+
+      - name: Build the ${{ matrix.platform }} group (${{ matrix.product }}, Release)
+        run: >-
+          bash scripts/build-apple-sdk.sh
+          --platform ${{ matrix.platform }}
+          --product ${{ matrix.product }}
+          --configuration Release
+          --code-signing off
+
+      # The iOS product claim, on the bytes that ship: no JavaScript engine.
+      - name: The iOS archive contains no engine symbols
+        if: matrix.product == 'performance-plus'
+        run: >-
+          bash scripts/test-apple-performance-rust-closure.sh
+          --artifact "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Release/${{ matrix.platform }}/libmigo.a"
+
+      # The macOS product claim, on the bytes that ship, in the configuration
+      # they ship in: a hardened runtime with allow-jit runs a game, with a JIT.
+      - name: The macOS archive runs a game under a hardened runtime with allow-jit
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Release/${{ matrix.platform }}/libmigo.a"
+          --harden with-jit
+
+      - name: Keep the staged group for assembly
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: apple-group-${{ matrix.platform }}
+          path: ${{ env.MIGO_APPLE_BUILD_ROOT }}/${{ matrix.product }}/Release/${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 1
+
+  release-apple-package:
+    needs: [release-apple]
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      MIGO_APPLE_BUILD_ROOT: ${{ github.workspace }}/build/apple
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download the iOS device group
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: apple-group-ios
+          path: ${{ env.MIGO_APPLE_BUILD_ROOT }}/performance-plus/Release/ios
+
+      - name: Download the iOS simulator group
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: apple-group-ios-simulator
+          path: ${{ env.MIGO_APPLE_BUILD_ROOT }}/performance-plus/Release/ios-simulator
+
+      - name: Download the macOS group
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: apple-group-macos
+          path: ${{ env.MIGO_APPLE_BUILD_ROOT }}/macos-v8/Release/macos
+
+      - name: Install the pinned ANGLE runtime dependencies
+        run: |
+          bash scripts/fetch-apple-angle.sh ios
+          bash scripts/fetch-apple-angle.sh ios-simulator
+          bash scripts/fetch-apple-angle.sh macos
+
+      # The receipt of every group is checked against its archive and headers
+      # before anything is assembled; a group from another commit is refused.
+      - name: Assemble the complete shipping SDK
+        run: >-
+          bash scripts/build-apple-sdk.sh --platform macos --configuration Release
+          --assemble-only --require-all-slices
+
+      - name: The assembled engine honours the deployment floor
+        run: >-
+          bash scripts/test-apple-deployment-floor-contract.sh
+          --artifacts platforms/apple/Frameworks/MigoEngine.xcframework
+
+      # Packaged twice and compared: a release asset whose bytes depend on when
+      # it was packed cannot be rebuilt and checked by anyone else.
+      - name: Package the SDK, reproducibly
+        run: |
+          mkdir -p dist/release "$RUNNER_TEMP/again"
+          bash scripts/package-apple-sdk.sh --output-dir dist/release
+          bash scripts/package-apple-sdk.sh --output-dir "$RUNNER_TEMP/again"
+          VERSION="$(cat release/VERSION)"
+          cmp "dist/release/migo-$VERSION-apple-sdk.zip" "$RUNNER_TEMP/again/migo-$VERSION-apple-sdk.zip"
+
+      - name: The published asset is a complete SDK that builds and runs a game
+        run: bash scripts/test-apple-sdk-release-asset.sh "dist/release/migo-$(cat release/VERSION)-apple-sdk.zip"
+
+      - name: Upload the staged Apple asset
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-assets-apple
+          path: dist/release
+          if-no-files-found: error
+          retention-days: 1
+
   # ── The only publisher ──────────────────────────────────────────────────
   # Publishing lived inside release-android, so no point in the graph saw every
   # platform's output. That is what made a whole-release checksum manifest impossible
@@ -1687,7 +1845,7 @@ jobs:
     # release-android-device-evidence is intentionally absent: it is opt-in (see
     # its own comment) and cannot run until its runner and suite exist. Add it
     # back here the moment MIGO_DEVICE_EVIDENCE is set.
-    needs: [release-android, release-linux, release-ohos, release-windows, release-windows-arm64]
+    needs: [release-android, release-linux, release-ohos, release-windows, release-windows-arm64, release-apple-package]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -1765,6 +1923,21 @@ jobs:
                 "$triple" migo-capi engine/crates/capi/Cargo.toml
             done
           done
+
+          # One SBOM for the Apple SDK, over both builds it carries: the iOS
+          # groups are migo-capi without V8 (external-frames), the macOS group is
+          # the full V8 profile. Each graph is the build's own, not the
+          # workspace's -- see compiled_subset in scripts/generate-sbom.py.
+          bash scripts/generate-sbom.sh \
+            --artifact "dist/release/migo-$VERSION-apple-sdk.zip" \
+            --artifact-kind apple-sdk \
+            --target apple-ios+macos \
+            --graph aarch64-apple-ios=external-frames \
+            --graph aarch64-apple-darwin=profile-full \
+            --profile full \
+            --root-package migo-capi \
+            --manifest engine/crates/capi/Cargo.toml \
+            --out "dist/release/migo-$VERSION-apple-sdk.zip.sbom.cdx.json"
 
       # Release-level, so it belongs here rather than in whichever platform job
       # happened to run first.

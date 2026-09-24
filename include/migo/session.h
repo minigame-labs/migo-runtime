@@ -10,22 +10,17 @@ typedef uint64_t MigoEngineFlags;
  * than a default because silently accepting unsigned content is exactly the
  * failure a signing check exists to prevent.
  *
- * Leaving it clear enables signature enforcement, and today that is not a
- * configuration a C ABI host can complete: verification needs an Ed25519 public
- * key, this ABI has nowhere to put one, and enforcement is fail-closed. Every
- * module load then stops with MIGO_ERROR_INTERNAL and a logged
+ * Leaving it clear enables signature enforcement, which needs the Ed25519 key
+ * content is signed with: MigoEngineConfig.code_signing_public_key. Signed
+ * content is a package whose manifest.json lists every file's SHA-256 and whose
+ * manifest.sig is the raw 64-byte Ed25519 signature of manifest.json's exact
+ * bytes; the engine verifies the package in full the first time it launches and
+ * seals the result, so later launches do not re-hash it.
  *
- *     code signing enabled but public key is missing
- *     (set InitOptions.code_signing_pubkey (hex Ed25519 public key))
- *
- * naming a setting only the Android binding reaches
- * (RuntimeConfig.Builder.setCodeSigningPubkey). So a host built on this header
- * has one configuration that loads content, and it is this flag.
- *
- * Stated here rather than left to be discovered: the fail-closed behaviour is
- * correct and is not what is missing. What is missing is the key, and until the
- * ABI carries one, "leave this clear in production" would be advice to ship
- * something that cannot start.
+ * Enforcement is fail-closed. With neither this flag nor a key, every module
+ * load stops with MIGO_ERROR_INTERNAL and a logged "code signing enabled but
+ * public key is missing". Setting both is a contradiction and migo_engine_create
+ * refuses it with MIGO_ERROR_INVALID_ARGUMENT.
  */
 #define MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT (1ULL << 0)
 
@@ -74,7 +69,24 @@ typedef struct MigoEngineConfig {
     const char *files_dir_utf8;
     const char *cache_dir_utf8;
     const char *code_cache_dir_utf8;
+    /*
+     * The raw 32-byte Ed25519 public key content must be signed with; all zero
+     * means none (see MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT above).
+     *
+     * Appended after v1, which is why it is last: the library zero-extends a
+     * caller that passes the shorter record, and zero is "no key" -- what a
+     * host built before this field had.
+     */
+    uint8_t code_signing_public_key[32];
 } MigoEngineConfig;
+
+MIGO_STATIC_ASSERT(offsetof(MigoEngineConfig, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+#if MIGO_LP64
+MIGO_STATIC_ASSERT(sizeof(MigoEngineConfig) == 80, "MigoEngineConfig LP64 size changed");
+MIGO_STATIC_ASSERT(offsetof(MigoEngineConfig, code_signing_public_key) == 48,
+                   "MigoEngineConfig.code_signing_public_key moved");
+#endif
 
 typedef struct MigoSessionConfig {
     uint32_t struct_size;
