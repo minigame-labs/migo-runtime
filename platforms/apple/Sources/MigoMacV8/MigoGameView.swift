@@ -112,6 +112,9 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
         private var observers: [NSObjectProtocol] = []
         private var mouseDown = false
         private var trackingArea: NSTrackingArea?
+        /// Content's `migo.showKeyboard` on a machine with no soft keyboard: a
+        /// text field along the game's bottom edge while content asks for one.
+        private lazy var keyboard = KeyboardField(owner: self)
 
         public init(configuration: Configuration) {
             self.configuration = configuration
@@ -236,6 +239,7 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
 
         private func tearDown() {
             isRunning = false
+            keyboard.hide(reportingTo: nil)
             mouseDown = false
             guard let engine else { return }
             self.engine = nil
@@ -274,6 +278,12 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 guard let game else { return }
                 tearDown()
                 self.game = game
+            case .showKeyboard(let request):
+                keyboard.show(request)
+            case .hideKeyboard:
+                keyboard.hide()
+            case .updateKeyboard(let text):
+                keyboard.replaceText(text)
             }
         }
 
@@ -401,6 +411,10 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 timestampMilliseconds: milliseconds(event))
         }
 
+        fileprivate func keyboardInput(_ input: MigoEngineSession.KeyboardInput) {
+            engine?.sendKeyboard(input)
+        }
+
         // MARK: - keys
 
         public override func keyDown(with event: NSEvent) {
@@ -436,6 +450,82 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             engine.sendKey(
                 down ? MIGO_KEY_EVENT_DOWN : MIGO_KEY_EVENT_UP, key: key, code: code, modifiers: modifiers,
                 isRepeat: isRepeat, timestampMilliseconds: milliseconds(event))
+        }
+    }
+
+    /// The desktop's answer to `migo.showKeyboard`: a real field, because a
+    /// Mac has a keyboard and no soft one, pinned along the game's bottom edge
+    /// and reported to content as the keyboard's height.
+    private final class KeyboardField: NSObject, NSTextFieldDelegate {
+        private weak var owner: MigoGameView?
+        private let field = NSTextField()
+        private var request: MigoEngineSession.KeyboardRequest?
+        private static let height: CGFloat = 28
+
+        init(owner: MigoGameView) {
+            self.owner = owner
+            super.init()
+            field.delegate = self
+            field.isHidden = true
+            field.translatesAutoresizingMaskIntoConstraints = false
+            owner.addSubview(field)
+            NSLayoutConstraint.activate([
+                field.leadingAnchor.constraint(equalTo: owner.leadingAnchor),
+                field.trailingAnchor.constraint(equalTo: owner.trailingAnchor),
+                field.bottomAnchor.constraint(equalTo: owner.bottomAnchor),
+                field.heightAnchor.constraint(equalToConstant: Self.height),
+            ])
+        }
+
+        func show(_ request: MigoEngineSession.KeyboardRequest) {
+            self.request = request
+            field.stringValue = request.defaultValue
+            field.usesSingleLineMode = !request.multiline
+            field.isHidden = false
+            owner?.window?.makeFirstResponder(field)
+            owner?.keyboardInput(.heightChange(Double(Self.height)))
+        }
+
+        func hide() { hide(reportingTo: owner) }
+
+        func hide(reportingTo target: MigoGameView?) {
+            guard request != nil else { return }
+            request = nil
+            let text = field.stringValue
+            field.isHidden = true
+            if let owner, owner.window?.firstResponder === field.currentEditor() {
+                owner.window?.makeFirstResponder(owner)
+            }
+            target?.keyboardInput(.heightChange(0))
+            target?.keyboardInput(.complete(text))
+        }
+
+        func replaceText(_ text: String) {
+            guard request != nil else { return }
+            field.stringValue = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let request else { return }
+            var text = field.stringValue
+            if request.maxLength > 0, text.count > request.maxLength {
+                text = String(text.prefix(request.maxLength))
+                field.stringValue = text
+            }
+            owner?.keyboardInput(.input(text))
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard let request, selector == #selector(NSResponder.insertNewline(_:)), !request.multiline else {
+                return false
+            }
+            owner?.keyboardInput(.confirm(field.stringValue))
+            if !request.confirmHold { hide() }
+            return true
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            hide()
         }
     }
 #endif

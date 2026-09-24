@@ -2528,6 +2528,13 @@ fn run_external_session(
     // What `exitMiniProgram` and `restartMiniProgram` send, which is this
     // session's own command channel -- the one the embedded ops send on.
     service_context.bind_lifecycle(host_tx.clone());
+    // The host's keyboard, which the C ABI host kit backs with the session's
+    // keyboard callbacks when the host installed them.
+    service_context.bind_keyboard(
+        platform
+            .create_device_services(id)
+            .and_then(|services| services.keyboard()),
+    );
     // The services that hand the renderer work -- image uploads -- reach it
     // through these, owned by this thread's dispatcher so the sender goes when
     // the session does.

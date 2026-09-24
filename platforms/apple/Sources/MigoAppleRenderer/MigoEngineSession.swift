@@ -79,6 +79,34 @@ public final class MigoEngineSession {
         case exitRequested
         /// The surface of this generation stopped being presentable.
         case surfaceLost(generation: UInt64, reason: MigoSurfaceLossReason)
+        /// Content opened the soft keyboard (`migo.showKeyboard`).
+        case showKeyboard(KeyboardRequest)
+        /// Content closed it.
+        case hideKeyboard
+        /// Content replaced the field's whole text.
+        case updateKeyboard(String)
+    }
+
+    /// What content asked for when it opened the keyboard.
+    public struct KeyboardRequest: Equatable, Sendable {
+        public var defaultValue: String
+        /// 0 is no limit.
+        public var maxLength: Int
+        public var multiline: Bool
+        /// Keep the keyboard up after confirm.
+        public var confirmHold: Bool
+        public var confirmType: MigoKeyboardConfirmType
+        public var numeric: Bool
+    }
+
+    /// What the player did in the keyboard, sent back to content.
+    public enum KeyboardInput: Equatable, Sendable {
+        /// The field's whole current text, not the keystroke.
+        case input(String)
+        case confirm(String)
+        case complete(String)
+        /// Keyboard height in CSS pixels; 0 when it is gone.
+        case heightChange(Double)
     }
 
     /// Where the engine keeps what it writes.
@@ -272,6 +300,11 @@ public final class MigoEngineSession {
         callbacks.on_surface_lost = migoOnSurfaceLost
         callbacks.on_request_frame = migoOnRequestFrame
         callbacks.on_surface_released = migoOnSurfaceReleased
+        // All three or none, as the ABI requires: a lane that could open a
+        // keyboard and not close it would strand it on screen.
+        callbacks.on_show_keyboard = migoOnShowKeyboard
+        callbacks.on_hide_keyboard = migoOnHideKeyboard
+        callbacks.on_update_keyboard = migoOnUpdateKeyboard
         let installed = migo_session_set_host_callbacks(session, &callbacks)
         guard installed == MIGO_OK else {
             _ = migo_session_destroy(session)
@@ -503,6 +536,34 @@ public final class MigoEngineSession {
         }
     }
 
+    /// Tell content what the player did in the keyboard.
+    @discardableResult
+    public func sendKeyboard(_ input: KeyboardInput) -> MigoResult {
+        guard !isClosed else { return MIGO_ERROR_INVALID_STATE }
+        var event = MigoKeyboardEvent()
+        event.struct_size = UInt32(MemoryLayout<MigoKeyboardEvent>.size)
+        event.abi_version = MIGO_ABI_VERSION_CURRENT
+        let text: String
+        switch input {
+        case .input(let value): event.event_type = MIGO_KEYBOARD_EVENT_INPUT; text = value
+        case .confirm(let value): event.event_type = MIGO_KEYBOARD_EVENT_CONFIRM; text = value
+        case .complete(let value): event.event_type = MIGO_KEYBOARD_EVENT_COMPLETE; text = value
+        case .heightChange(let height):
+            event.event_type = MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE
+            event.height_css_px = height
+            text = ""
+        }
+        var bytes = Array(text.utf8)
+        // A non-null pointer even for empty text: zero length is the field
+        // being cleared, which the ABI distinguishes from no value.
+        bytes.append(0)
+        return bytes.withUnsafeBufferPointer { buffer -> MigoResult in
+            event.value_utf8 = UnsafeRawPointer(buffer.baseAddress!).assumingMemoryBound(to: CChar.self)
+            event.value_length = UInt32(buffer.count - 1)
+            return migo_session_send_keyboard_event(session, &event)
+        }
+    }
+
     // MARK: - teardown
 
     /// Retire the surface, wait for the renderer to release it, then destroy the
@@ -667,6 +728,37 @@ private let migoOnSurfaceLost: MigoOnSurfaceLostFn = { userData, _, generation, 
 
 private let migoOnRequestFrame: MigoOnRequestFrameFn = { userData, _ in
     relay(userData)?.clock?.requestFrame()
+}
+
+private let migoOnShowKeyboard: MigoOnShowKeyboardFn = { userData, _, options in
+    guard let options else { return }
+    let record = options.pointee
+    var defaultValue = ""
+    if let text = record.default_value_utf8, record.default_value_length > 0 {
+        defaultValue = String(
+            decoding: UnsafeRawBufferPointer(start: text, count: Int(record.default_value_length)),
+            as: UTF8.self)
+    }
+    relay(userData)?.owner?.deliver(
+        .showKeyboard(
+            MigoEngineSession.KeyboardRequest(
+                defaultValue: defaultValue, maxLength: Int(record.max_length),
+                multiline: record.flags & MIGO_KEYBOARD_FLAG_MULTIPLE != 0,
+                confirmHold: record.flags & MIGO_KEYBOARD_FLAG_CONFIRM_HOLD != 0,
+                confirmType: record.confirm_type,
+                numeric: record.keyboard_type == MIGO_KEYBOARD_TYPE_NUMBER)))
+}
+
+private let migoOnHideKeyboard: MigoOnHideKeyboardFn = { userData, _ in
+    relay(userData)?.owner?.deliver(.hideKeyboard)
+}
+
+private let migoOnUpdateKeyboard: MigoOnUpdateKeyboardFn = { userData, _, value, length in
+    var text = ""
+    if let value, length > 0 {
+        text = String(decoding: UnsafeRawBufferPointer(start: value, count: Int(length)), as: UTF8.self)
+    }
+    relay(userData)?.owner?.deliver(.updateKeyboard(text))
 }
 
 private let migoOnSurfaceReleased: MigoOnSurfaceReleasedFn = { userData, _, _ in

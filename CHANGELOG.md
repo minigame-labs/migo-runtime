@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MigoGameInstaller` installs a package atomically and skips a version that is
   already there. Both products ship a privacy manifest that a gate checks
   against the engine's sources in both directions.
+- iOS and macOS: the soft keyboard. `migo.showKeyboard` opens the system
+  keyboard on iOS and a text field along the game's bottom edge on macOS; the
+  player's text comes back as `onKeyboardInput`/`Confirm`/`Complete`. On the
+  iOS lane the three keyboard ops became host commands to the same keyboard
+  service the embedded runtime calls, so a host with no keyboard refuses them
+  in the same words.
 - C ABI: `MigoEngineConfig.code_signing_public_key`, the Ed25519 key signed
   content is verified against. Until now a C ABI host could not supply one, so
   its only configuration that loaded content was
@@ -80,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hundred 2D calls now crosses once.
 
 ### Fixed
+- iOS: a game that called `migo.exitMiniProgram()` stopped drawing and the app
+  was never told. The external-frame session ended on the request without the
+  exit notification the in-process runtime sends; it now sends it.
 - The Apple SDK could not put its iOS and macOS engines in one xcframework:
   assembly required byte-identical header directories, and each group's module
   map lists the frameworks its own archive links. Only the C headers are now

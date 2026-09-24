@@ -293,6 +293,15 @@ pub(crate) struct ServiceContext {
     /// the session itself: `exitMiniProgram` and `restartMiniProgram`. The
     /// embedded ops send the same commands through the same channel.
     lifecycle: OnceLock<shared::host_channel::HostCommandSender>,
+    /// The host's soft keyboard, when it supplies one: the same service the
+    /// embedded `op_show_keyboard` calls, so both executions open the same UI.
+    keyboard: OnceLock<Option<Arc<dyn shared::services::KeyboardService>>>,
+}
+
+/// The keyboard service's refusal in the words the embedded op shows: its
+/// message, which is what `JsErrorBox::generic` renders there.
+fn keyboard_error(error: shared::services::ServiceError) -> ServiceError {
+    ServiceError::generic(error.message)
 }
 
 impl ServiceContext {
@@ -307,6 +316,7 @@ impl ServiceContext {
             audio: OnceLock::new(),
             network: OnceLock::new(),
             lifecycle: OnceLock::new(),
+            keyboard: OnceLock::new(),
         }
     }
 
@@ -480,6 +490,26 @@ impl ServiceContext {
     /// session thread, before the first service work is dispatched.
     pub(crate) fn bind_lifecycle(&self, host_tx: shared::host_channel::HostCommandSender) {
         let _ = self.lifecycle.set(host_tx);
+    }
+
+    /// Give the services the host's keyboard, or say it has none. Once, on the
+    /// session thread, before the first service work is dispatched.
+    pub(crate) fn bind_keyboard(
+        &self,
+        keyboard: Option<Arc<dyn shared::services::KeyboardService>>,
+    ) {
+        let _ = self.keyboard.set(keyboard);
+    }
+
+    /// The keyboard, or the embedded op's own refusal when the host has none.
+    fn keyboard(
+        &self,
+        what: &str,
+    ) -> Result<&Arc<dyn shared::services::KeyboardService>, ServiceError> {
+        self.keyboard
+            .get()
+            .and_then(Option::as_ref)
+            .ok_or_else(|| ServiceError::generic(format!("{what}:fail not supported")))
     }
 
     fn lifecycle(&self) -> Result<&shared::host_channel::HostCommandSender, ServiceError> {
@@ -940,6 +970,26 @@ impl ServiceContext {
                 self.lifecycle()?
                     .try_send(command)
                     .map_err(|error| ServiceError::generic(format!("{what}:fail {error}")))
+            }
+            // The soft keyboard is host UI: opened, closed and corrected by
+            // command, with what the player types coming back as input events.
+            id::op_show_keyboard => {
+                let [options] = exactly(op, args)?;
+                self.keyboard("showKeyboard")?
+                    .show(&string(op, 0, options)?)
+                    .map_err(keyboard_error)
+            }
+            id::op_hide_keyboard => {
+                let [] = exactly(op, args)?;
+                self.keyboard("hideKeyboard")?
+                    .hide()
+                    .map_err(keyboard_error)
+            }
+            id::op_update_keyboard => {
+                let [value] = exactly(op, args)?;
+                self.keyboard("updateKeyboard")?
+                    .update(&string(op, 0, value)?)
+                    .map_err(keyboard_error)
             }
             id::op_set_preferred_fps => {
                 let [fps] = exactly(op, args)?;
@@ -2087,6 +2137,90 @@ mod tests {
             vec![30, shared::frame_rate::MAX_FPS],
             "the rate is clamped, and a rate that is not a number sends nothing"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The soft keyboard reaches the host's keyboard service with content's own
+    /// arguments, and a host that supplies none is refused in the embedded op's
+    /// words -- which is what `migo.showKeyboard`'s `fail` sees on both lanes.
+    #[test]
+    fn keyboard_commands_reach_the_host_s_keyboard_or_are_refused_as_in_process() {
+        #[derive(Default)]
+        struct Recorded(parking_lot::Mutex<Vec<String>>);
+        impl shared::services::KeyboardService for Recorded {
+            fn show(&self, options: &str) -> Result<(), shared::services::ServiceError> {
+                self.0.lock().push(format!("show {options}"));
+                Ok(())
+            }
+            fn hide(&self) -> Result<(), shared::services::ServiceError> {
+                self.0.lock().push("hide".into());
+                Ok(())
+            }
+            fn update(&self, value: &str) -> Result<(), shared::services::ServiceError> {
+                self.0.lock().push(format!("update {value}"));
+                Err(shared::services::ServiceError::not_supported(
+                    "updateKeyboard:fail busy",
+                ))
+            }
+        }
+        let root = std::env::temp_dir().join(format!("migo-keyboard-{}", std::process::id()));
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        let keyboard = Arc::new(Recorded::default());
+        context.bind_keyboard(Some(
+            Arc::clone(&keyboard) as Arc<dyn shared::services::KeyboardService>
+        ));
+        let options = r#"{"defaultValue":"hi","maxLength":8}"#;
+        context
+            .command(
+                id::op_show_keyboard,
+                vec![OwnedValue::Str(options.into())],
+                &render,
+            )
+            .expect("shown");
+        context
+            .command(id::op_hide_keyboard, Vec::new(), &render)
+            .expect("hidden");
+        let refused = context
+            .command(
+                id::op_update_keyboard,
+                vec![OwnedValue::Str("hello".into())],
+                &render,
+            )
+            .expect_err("the service's own refusal comes back");
+        assert_eq!(refused.message, "updateKeyboard:fail busy");
+        assert_eq!(
+            *keyboard.0.lock(),
+            vec![
+                format!("show {options}"),
+                "hide".to_string(),
+                "update hello".to_string()
+            ]
+        );
+
+        let none = ServiceContext::new(root.join("files"), root.join("cache"));
+        none.bind_keyboard(None);
+        for (op, args, what) in [
+            (
+                id::op_show_keyboard,
+                vec![OwnedValue::Str("{}".into())],
+                "showKeyboard",
+            ),
+            (id::op_hide_keyboard, Vec::new(), "hideKeyboard"),
+            (
+                id::op_update_keyboard,
+                vec![OwnedValue::Str(String::new())],
+                "updateKeyboard",
+            ),
+        ] {
+            let error = none.command(op, args, &render).expect_err("no keyboard");
+            assert_eq!(error.message, format!("{what}:fail not supported"));
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
