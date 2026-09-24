@@ -32,6 +32,10 @@
 #                                                    take an arch segment -- same reason the
 #                                                    capi packages do
 #   migo-<version>-capi-<platform>-<arch>.tar.gz     C ABI
+#   migo-<version>-apple-sdk.zip                     the Swift package for iOS and macOS.
+#                                                    One asset, no arch segment, for the
+#                                                    AAR's reason: the xcframework inside
+#                                                    already carries every slice
 #   <payload>.sbom.cdx.json                        artifact-bound dependency inventory
 #   <payload>.attestation.json                     provenance sidecar
 #
@@ -73,6 +77,7 @@ version = (root / "release/VERSION").read_text(encoding="utf-8").strip()
 AAR = re.compile(rf"^migo-{re.escape(version)}-android\.aar$")
 NOJNI_AAR = re.compile(rf"^migo-{re.escape(version)}-android-nojni\.aar$")
 JNI = re.compile(rf"^migo-{re.escape(version)}-jni-android-({'|'.join(ARCHES)})\.tar\.gz$")
+APPLE = re.compile(rf"^migo-{re.escape(version)}-apple-sdk\.zip$")
 CAPI = re.compile(
     rf"^migo-{re.escape(version)}-capi-({'|'.join(PLATFORMS)})-({'|'.join(ARCHES)})\.tar\.gz$"
 )
@@ -84,6 +89,7 @@ def payload_ok(name: str) -> bool:
         or NOJNI_AAR.match(name)
         or JNI.match(name)
         or CAPI.match(name)
+        or APPLE.match(name)
     )
 
 
@@ -113,7 +119,7 @@ def why_rejected(name: str) -> str:
     # Shape is right but the version is not: the failure a shape-only check would miss,
     # and the one a copied-forward asset from the previous release produces.
     loose = re.match(
-        rf"^migo-(\d+\.\d+\.\d+[^-]*)-(capi-|jni-)?({'|'.join(PLATFORMS)}|android)",
+        rf"^migo-(\d+\.\d+\.\d+[^-]*)-(capi-|jni-)?({'|'.join(PLATFORMS)}|android|apple)",
         name,
     )
     if loose and loose.group(1) != version:
@@ -127,6 +133,11 @@ def why_rejected(name: str) -> str:
             f"is neither `migo-{version}-android.aar` nor `migo-{version}-android-nojni.aar`. "
             "Exactly two AARs are published -- the multi-ABI one and the same build with "
             "`jni/**` deleted -- and neither takes an arch segment"
+        )
+    if name.endswith(".zip"):
+        return (
+            f"is not `migo-{version}-apple-sdk.zip`. Exactly one Apple asset is published: "
+            "the Swift package, whose xcframework carries every iOS and macOS slice"
         )
     if name.endswith(".tar.gz"):
         return (

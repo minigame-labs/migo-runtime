@@ -81,6 +81,8 @@ on:
       # The gate that runs a game through the shipping macOS archive, and the
       # fixture it runs. Both are macOS-only and neither was here.
       - 'scripts/test-macos-archive-runs-js.sh'
+      - 'scripts/test-macos-game-view.sh'
+      - 'tests/swift_host/macos-game-view/**'
       - 'scripts/fixtures/headless-js-probe/**'
       - 'scripts/apple-sdk-package.py'
       - 'scripts/embed-apple-angle.sh'
@@ -305,6 +307,14 @@ jobs:
       # COMPLETES with the entitlement withheld is that silent fallback, whatever
       # produced it -- and on iOS the measured cost of jitless is 750M
       # iterations/s falling to 17M, with WebAssembly going undefined.
+      # The archive gates above drive the engine through the C ABI, from a host
+      # written against the headers. An integrator links MigoGameView instead;
+      # this builds a small app on it, signs it the way the lane ships, and
+      # runs a game -- then withholds allow-jit and requires the view to refuse.
+      - name: MigoGameView runs a game with JIT and refuses to start without it
+        if: matrix.product == 'macos-v8'
+        run: bash scripts/test-macos-game-view.sh
+
       - name: Withholding allow-jit does not silently produce a jitless V8
         if: matrix.product == 'macos-v8'
         run: >-

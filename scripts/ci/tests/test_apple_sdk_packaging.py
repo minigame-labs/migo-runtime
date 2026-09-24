@@ -40,7 +40,12 @@ elif tool == "cargo":
         # prints it -- unless a test is asking what happens when it does not.
         if "--print=native-static-libs" in args and not os.environ.get("NO_NATIVE_NOTE"):
             print("warning: an unrelated warning", file=sys.stderr)
-            print("note: native-static-libs: -lobjc -lc++ -framework CoreText -framework AudioToolbox -framework CoreFoundation -lobjc -lSystem", file=sys.stderr)
+            # Per platform, as rustc really reports it: the macOS archive links
+            # AppKit-side frameworks iOS has no copy of. A fixture that printed
+            # one list for every target is how a packager that could never put
+            # iOS and macOS in one xcframework passed this suite.
+            extra = " -framework ApplicationServices" if "darwin" in target else " -framework UIKit"
+            print("note: native-static-libs: -lobjc -lc++ -framework CoreText -framework AudioToolbox -framework CoreFoundation -lobjc -lSystem" + extra, file=sys.stderr)
 elif tool == "lipo":
     output = pathlib.Path(args[args.index("-output") + 1])
     output.write_bytes(b"\n".join(pathlib.Path(p).read_bytes() for p in args[1:args.index("-output")]))
@@ -183,7 +188,8 @@ class SDKPackaging(unittest.TestCase):
         self.assertEqual(
             [line.strip() for line in modulemap.splitlines() if line.strip().startswith("link")],
             ['link "objc"', 'link "c++"', 'link framework "CoreText"',
-             'link framework "AudioToolbox"', 'link framework "CoreFoundation"', 'link "System"'],
+             'link framework "AudioToolbox"', 'link framework "CoreFoundation"', 'link "System"',
+             'link framework "UIKit"'],
         )
 
     def test_a_build_with_no_native_link_account_is_refused(self):
@@ -222,6 +228,25 @@ class SDKPackaging(unittest.TestCase):
         result = subprocess.run(["bash", str(helper), "--frameworks-dir", str(self.framework.parent), "--destination", str(self.root/"Host.app/Contents/Frameworks"), "--architectures", "arm64 x86_64"], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.root/"Host.app/Contents/Frameworks/libGLESv2.dylib").is_file())
+
+    def test_each_platform_keeps_the_module_map_its_own_archive_needs(self):
+        # The C ABI is one; the link lines are per platform. Each slice of an
+        # xcframework carries its own Headers, so each keeps its own map.
+        for platform in ("ios-simulator", "macos"):
+            self.build(platform)
+        maps = {entry["LibraryIdentifier"]: (self.framework/entry["LibraryIdentifier"]/"Headers/module.modulemap").read_text()
+                for entry in self.slices()}
+        self.assertIn('link framework "UIKit"', maps["ios-arm64_x86_64-simulator"])
+        self.assertNotIn("ApplicationServices", maps["ios-arm64_x86_64-simulator"])
+        self.assertIn('link framework "ApplicationServices"', maps["macos-arm64_x86_64"])
+        self.assertNotIn("UIKit", maps["macos-arm64_x86_64"])
+
+    def test_groups_built_from_different_c_headers_are_refused(self):
+        self.build("ios-simulator")
+        with (self.root/"include/migo/types.h").open("a") as header:
+            header.write("/* a later ABI */\n")
+        result = self.build("macos", success=False)
+        self.assertIn("different C ABI headers", result.stdout + result.stderr)
 
     def test_macos_build_refuses_skia_archives_the_lock_does_not_name(self):
         # A published asset replaced under its tag, or a lock edited without the

@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- iOS and macOS SDK: `migo-<version>-apple-sdk.zip`, a Swift package with one
+  view per platform. `MigoGameView` (`MigoApplePerformancePlus` on iOS,
+  `MigoMacV8` on macOS) takes an installed game and owns everything between it
+  and pixels -- engine session, `CAMetalLayer`, display clock, input, app
+  lifecycle, and on iOS the audio session and WebContent crash recovery.
+  `MigoGameInstaller` installs a package atomically and skips a version that is
+  already there. Both products ship a privacy manifest that a gate checks
+  against the engine's sources in both directions.
+- C ABI: `MigoEngineConfig.code_signing_public_key`, the Ed25519 key signed
+  content is verified against. Until now a C ABI host could not supply one, so
+  its only configuration that loaded content was
+  `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT`. Appended to the record: a host
+  passing the old size is zero-extended to "no key" and behaves as before.
+  Setting the key and the unsigned flag together is refused.
+
 - macOS: a host-owned `CAMetalLayer` can be attached through the C ABI.
   `MIGO_PLATFORM_MACOS_CA_METAL_LAYER` now appears in the library's advertised
   attachable kinds, and it appears because an attach ran, not because a backend
@@ -65,6 +80,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hundred 2D calls now crosses once.
 
 ### Fixed
+- The Apple SDK could not put its iOS and macOS engines in one xcframework:
+  assembly required byte-identical header directories, and each group's module
+  map lists the frameworks its own archive links. Only the C headers are now
+  compared across groups.
+- SBOMs listed crates the shipped build never compiles. `cargo metadata`
+  resolves features for the whole workspace, so a crate any member enabled was
+  in every artifact's graph -- the iOS SDK, built without a JavaScript engine,
+  would have listed `v8`. Each SBOM is now cut to its build's own `cargo tree`.
 - ASTC 8x8 textures upload again. The engine mapped
   `VK_FORMAT_ASTC_8x8_UNORM_BLOCK` to `0x93B9`, which is the token for a 10x6
   block, so `glCompressedTexImage2D` rejected every such texture with

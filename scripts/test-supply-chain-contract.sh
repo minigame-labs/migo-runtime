@@ -359,6 +359,65 @@ PY
             fail "SBOM artifact binding or path-redaction assertion"
         fi
     fi
+
+    # Feature unification. `cargo metadata` resolves the whole workspace's
+    # features at once, so a crate another member enables is an edge here too
+    # -- which is how the iOS SDK, built without V8 so it links no JavaScript
+    # engine, would have listed `v8`. The build's own `cargo tree` is what
+    # decides, and a second build's graph (the Apple SDK carries two) is a
+    # union, not a replacement.
+    python3 - "$WORK/metadata.json" "$WORK/metadata-unified.json" "$WORK/metadata-second.json" <<'PY'
+import copy, json, pathlib, sys
+base = json.loads(pathlib.Path(sys.argv[1]).read_text())
+def with_dep(name):
+    data = copy.deepcopy(base)
+    dep = copy.deepcopy(data["packages"][1])
+    dep["id"] = dep["id"].replace("fixture-dep@2.0.0", f"{name}@1.0.0")
+    dep["name"], dep["version"] = name, "1.0.0"
+    data["packages"].append(dep)
+    data["resolve"]["nodes"][0]["dependencies"].append(dep["id"])
+    data["resolve"]["nodes"].append({"id": dep["id"], "dependencies": [], "deps": []})
+    return data
+pathlib.Path(sys.argv[2]).write_text(json.dumps(with_dep("fixture-unified")))
+# The second build does not compile fixture-dep at all, so only a union of
+# the two graphs can still list it.
+second = with_dep("fixture-second")
+dep_id = second["packages"][1]["id"]
+second["packages"] = [p for p in second["packages"] if p["id"] != dep_id]
+second["resolve"]["nodes"] = [n for n in second["resolve"]["nodes"] if n["id"] != dep_id]
+second["resolve"]["nodes"][0]["dependencies"].remove(dep_id)
+pathlib.Path(sys.argv[3]).write_text(json.dumps(second))
+PY
+    printf 'fixture-root v1.0.0 (%s)\nfixture-dep v2.0.0\n' "$WORK" > "$WORK/tree-first.txt"
+    printf 'fixture-root v1.0.0 (%s)\nfixture-second v1.0.0\n' "$WORK" > "$WORK/tree-second.txt"
+    : > "$WORK/tree-empty.txt"
+    sbom_names() {
+        python3 -c 'import json,sys; print(",".join(sorted(c["name"] for c in json.load(open(sys.argv[1]))["components"])))' "$1"
+    }
+    sbom_run() {
+        local out="$1"; shift
+        python3 "$SBOM" "$@" --artifact "$WORK/artifact.bin" --artifact-kind apple-sdk \
+            --target apple --profile full --root-package fixture-root --policy "$WORK/policy.toml" \
+            --workspace-root "$WORK" --source-revision 0123456789abcdef --out "$out" >/dev/null
+    }
+    if sbom_run "$WORK/sbom-unified.json" --metadata "$WORK/metadata-unified.json" \
+        --compiled "$WORK/tree-first.txt" \
+        && [[ "$(sbom_names "$WORK/sbom-unified.json")" == "fixture-dep" ]]; then
+        pass "SBOM drops a crate the workspace resolves and this build does not compile"
+    else
+        fail "SBOM listed a crate only feature unification put in the graph"
+    fi
+    if sbom_run "$WORK/sbom-union.json" --metadata "$WORK/metadata-unified.json" \
+        --metadata "$WORK/metadata-second.json" \
+        --compiled "$WORK/tree-first.txt" --compiled "$WORK/tree-second.txt" \
+        && [[ "$(sbom_names "$WORK/sbom-union.json")" == "fixture-dep,fixture-second" ]]; then
+        pass "SBOM of an artifact carrying two builds lists the union of what each compiles"
+    else
+        fail "SBOM of a two-build artifact is not the union of the builds"
+    fi
+    expect_fail "SBOM refuses an empty compiled-package list rather than listing nothing" \
+        sbom_run "$WORK/sbom-empty.json" --metadata "$WORK/metadata.json" \
+        --compiled "$WORK/tree-empty.txt"
 fi
 
 mkdir -p "$WORK/gradle/gradle/wrapper" "$WORK/gradle/gradle"

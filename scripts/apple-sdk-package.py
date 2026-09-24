@@ -36,6 +36,18 @@ def header_digest(stage):
     return {str(path.relative_to(stage / "headers")): digest(path) for path in files if path.is_file()}
 
 
+def abi_headers(headers):
+    """The C ABI part of a group's header digest: everything but the module map.
+
+    The headers under `migo/` are the ABI and must be byte-identical in every
+    group, because the xcframework presents one `MigoEngine` module to Swift. The
+    module map is not ABI: its `link` lines are what that platform's archive
+    needs (UIKit on iOS, ApplicationServices on macOS), and each xcframework
+    slice carries its own Headers directory precisely so they can differ.
+    """
+    return {path: value for path, value in headers.items() if path != "module.modulemap"}
+
+
 def check_runtime(root, platform):
     script = root / "scripts/build-angle-apple.sh"
     layout = subprocess.check_output(["bash", str(script), "--print-loader-layout", platform], text=True)
@@ -110,7 +122,7 @@ def assemble(args):
             raise ValueError(f"staged archive changed after build: {stage}")
         if not receipt["headers"] or receipt["headers"] != header_digest(stage):
             raise ValueError(f"staged headers changed after build: {stage}")
-        if stages and receipt["headers"] != stages[0][1]["headers"]:
+        if stages and abi_headers(receipt["headers"]) != abi_headers(stages[0][1]["headers"]):
             raise ValueError("staged groups have different C ABI headers; rebuild the older groups")
         check_runtime(args.repo_root, platform)
         stages.append((stage, receipt))

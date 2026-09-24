@@ -31,6 +31,7 @@ pub(crate) fn callback_session_pin() -> Arc<MigoSession> {
             cache_dir: PathBuf::new(),
             code_cache_dir: PathBuf::new(),
             allow_unsigned_content: false,
+            code_signing_public_key: None,
             live_sessions: Mutex::new(0),
             retired_hosts: crate::retirement::RetirementSet::new(),
         }),
@@ -59,6 +60,7 @@ pub(crate) fn engine_config(
         files_dir_utf8: dirs.0.as_ptr(),
         cache_dir_utf8: dirs.1.as_ptr(),
         code_cache_dir_utf8: dirs.2.as_ptr(),
+        code_signing_public_key: [0; 32],
     }
 }
 

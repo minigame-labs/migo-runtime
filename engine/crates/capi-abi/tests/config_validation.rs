@@ -69,9 +69,14 @@ fn engine_config_accepts_only_known_flags_and_zero_reserved_storage() {
         files_dir_utf8: files.as_ptr(),
         cache_dir_utf8: cache.as_ptr(),
         code_cache_dir_utf8: code_cache.as_ptr(),
+        code_signing_public_key: [0; 32],
     };
 
     let validated = unsafe { raw.validate() }.expect("known engine config");
+    assert_eq!(
+        validated.code_signing_public_key, None,
+        "all zero is no key"
+    );
     assert!(validated.allow_unsigned_content);
     assert_eq!(validated.files_dir, "files");
     assert_eq!(validated.cache_dir, "cache");
@@ -87,6 +92,63 @@ fn engine_config_accepts_only_known_flags_and_zero_reserved_storage() {
     assert_eq!(
         unsafe { raw.validate() }.unwrap_err(),
         MIGO_ERROR_INVALID_ARGUMENT,
+    );
+}
+
+#[test]
+fn engine_config_carries_a_signing_key_and_refuses_it_beside_the_unsigned_flag() {
+    let files = CString::new("files").unwrap();
+    let cache = CString::new("cache").unwrap();
+    let code_cache = CString::new("code-cache").unwrap();
+    let mut key = [0u8; 32];
+    key[0] = 0xa5;
+    key[31] = 0x5a;
+    let mut raw = MigoEngineConfig {
+        header: header::<MigoEngineConfig>(),
+        flags: 0,
+        reserved0: 0,
+        files_dir_utf8: files.as_ptr(),
+        cache_dir_utf8: cache.as_ptr(),
+        code_cache_dir_utf8: code_cache.as_ptr(),
+        code_signing_public_key: key,
+    };
+    let validated = unsafe { raw.validate() }.expect("a key alone");
+    assert_eq!(validated.code_signing_public_key, Some(key));
+    assert!(!validated.allow_unsigned_content);
+
+    // "Verify with this key" and "do not verify" at once is refused, not resolved.
+    raw.flags = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT;
+    assert_eq!(
+        unsafe { raw.validate() }.unwrap_err(),
+        MIGO_ERROR_INVALID_ARGUMENT
+    );
+}
+
+#[test]
+fn a_v1_engine_config_without_the_key_is_zero_extended() {
+    let files = CString::new("files").unwrap();
+    let cache = CString::new("cache").unwrap();
+    let code_cache = CString::new("code-cache").unwrap();
+    let v1_size = std::mem::offset_of!(MigoEngineConfig, code_signing_public_key);
+    let mut raw = MigoEngineConfig {
+        header: header::<MigoEngineConfig>(),
+        flags: MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT,
+        reserved0: 0,
+        files_dir_utf8: files.as_ptr(),
+        cache_dir_utf8: cache.as_ptr(),
+        code_cache_dir_utf8: code_cache.as_ptr(),
+        // Garbage past the announced size must never be read.
+        code_signing_public_key: [0xff; 32],
+    };
+    raw.header.struct_size = v1_size as u32;
+    let validated = unsafe { MigoEngineConfig::parse(&raw) }.expect("the v1 record");
+    assert_eq!(validated.code_signing_public_key, None);
+    assert!(validated.allow_unsigned_content);
+
+    raw.header.struct_size = (v1_size - 8) as u32;
+    assert_eq!(
+        unsafe { MigoEngineConfig::parse(&raw) }.unwrap_err(),
+        MIGO_ERROR_INVALID_ARGUMENT
     );
 }
 

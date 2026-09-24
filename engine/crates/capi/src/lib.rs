@@ -129,6 +129,10 @@ struct EngineInner {
     code_cache_dir: PathBuf,
     /// `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT`: opt-in, never a default.
     allow_unsigned_content: bool,
+    /// The Ed25519 key content is verified against, hex-encoded for
+    /// `InitOptions`. `None` with signing enforced is the fail-closed
+    /// configuration: every load refuses, and says the key is missing.
+    code_signing_public_key: Option<String>,
     live_sessions: Mutex<usize>,
     retired_hosts: retirement::RetirementSet,
 }
@@ -151,7 +155,8 @@ impl EngineInner {
             .with_cache_dir(self.cache_dir.clone())
             .with_code_cache_dir(self.code_cache_dir.clone())
             .with_pixel_ratio(pixel_ratio)
-            .with_code_signing_enabled(!self.allow_unsigned_content);
+            .with_code_signing_enabled(!self.allow_unsigned_content)
+            .with_code_signing_pubkey(self.code_signing_public_key.clone());
         // The session's level, not just the process default, because a session
         // binds its own level to its host thread and publishes it for the render
         // thread -- deliberately, so one session cannot silence another. Setting
@@ -493,6 +498,9 @@ pub unsafe extern "C" fn migo_engine_create(
                 cache_dir: PathBuf::from(config.cache_dir),
                 code_cache_dir: PathBuf::from(config.code_cache_dir),
                 allow_unsigned_content: config.allow_unsigned_content,
+                code_signing_public_key: config
+                    .code_signing_public_key
+                    .map(|key| key.iter().map(|byte| format!("{byte:02x}")).collect()),
                 live_sessions: Mutex::new(0),
                 retired_hosts: retirement::RetirementSet::new(),
             }),
@@ -1171,6 +1179,26 @@ mod tests {
         let mut engine: *mut MigoEngine = std::ptr::null_mut();
         assert_eq!(unsafe { migo_engine_create(&config, &mut engine) }, MIGO_OK);
         assert!(unsafe { &*engine }.inner.allow_unsigned_content);
+        assert_eq!(unsafe { migo_engine_destroy(engine) }, MIGO_OK);
+    }
+
+    #[test]
+    fn a_signing_key_reaches_every_session_as_the_hex_init_options_read() {
+        let dirs = scratch_dirs("signing-key");
+        let mut config = engine_config(
+            &dirs,
+            size_of::<MigoEngineConfig>() as u32,
+            MIGO_ABI_VERSION_CURRENT,
+        );
+        config.code_signing_public_key = [0xab; 32];
+        let mut engine: *mut MigoEngine = std::ptr::null_mut();
+        assert_eq!(unsafe { migo_engine_create(&config, &mut engine) }, MIGO_OK);
+        let options = unsafe { &*engine }.inner.session_init_options(1.0);
+        assert!(options.code_signing_enabled());
+        assert_eq!(
+            options.code_signing_pubkey(),
+            Some("ab".repeat(32).as_str())
+        );
         assert_eq!(unsafe { migo_engine_destroy(engine) }, MIGO_OK);
     }
 

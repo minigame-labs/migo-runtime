@@ -23,16 +23,26 @@ pub struct MigoEngineConfig {
     pub files_dir_utf8: *const c_char,
     pub cache_dir_utf8: *const c_char,
     pub code_cache_dir_utf8: *const c_char,
+    /// The Ed25519 public key content is verified against, or all zero for
+    /// none.
+    ///
+    /// Appended: `copy_versioned` zero-extends a caller that passes the v1
+    /// record, and zero is "no key", which is what that caller had.
+    pub code_signing_public_key: [u8; 32],
 }
 
-// SAFETY: the raw ABI record contains only zero-valid scalar and pointer
-// fields. Every field is part of the v1 contract, so the full record is the
+// SAFETY: the raw ABI record contains only zero-valid scalar, pointer and byte
+// fields. The v1 record -- everything before the appended key -- is the
 // minimum accepted prefix.
-unsafe impl AbiStruct for MigoEngineConfig {}
+unsafe impl AbiStruct for MigoEngineConfig {
+    const MINIMUM_SIZE: usize = offset_of!(MigoEngineConfig, code_signing_public_key);
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedEngineConfig {
     pub allow_unsigned_content: bool,
+    /// `None` when the caller supplied no key.
+    pub code_signing_public_key: Option<[u8; 32]>,
     pub files_dir: String,
     pub cache_dir: String,
     pub code_cache_dir: String,
@@ -69,6 +79,15 @@ impl MigoEngineConfig {
     unsafe fn validate_fields(self) -> Result<ValidatedEngineConfig, MigoResult> {
         validate_flags(self.flags, MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT)?;
         validate_reserved(self.reserved0.into())?;
+        let allow_unsigned_content = self.flags & MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT != 0;
+        let code_signing_public_key =
+            (self.code_signing_public_key != [0; 32]).then_some(self.code_signing_public_key);
+        // Both is a contradiction, not a preference: a key says "verify", the
+        // flag says "do not". Refused rather than resolved either way, because
+        // either resolution is a host shipping the configuration it did not mean.
+        if allow_unsigned_content && code_signing_public_key.is_some() {
+            return Err(crate::MIGO_ERROR_INVALID_ARGUMENT);
+        }
 
         // SAFETY: the parser/validator contract requires each pointer to be a
         // readable NUL-terminated string for this call.
@@ -77,7 +96,8 @@ impl MigoEngineConfig {
         let code_cache_dir = unsafe { copy_utf8(self.code_cache_dir_utf8) }?;
 
         Ok(ValidatedEngineConfig {
-            allow_unsigned_content: self.flags & MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT != 0,
+            allow_unsigned_content,
+            code_signing_public_key,
             files_dir,
             cache_dir,
             code_cache_dir,
@@ -214,7 +234,9 @@ const _: () = assert!(offset_of!(MigoContentDescriptor, flags) == 8);
 const _: () = assert!(offset_of!(MigoContentDescriptor, reserved0) == 12);
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<MigoEngineConfig>() == 48);
+const _: () = assert!(size_of::<MigoEngineConfig>() == 80);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoEngineConfig, code_signing_public_key) == 48);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoEngineConfig, files_dir_utf8) == 24);
 #[cfg(target_pointer_width = "64")]
