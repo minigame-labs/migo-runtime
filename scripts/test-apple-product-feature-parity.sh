@@ -89,6 +89,12 @@ EXEMPT=(
     "core-foundation-sys=coreaudio-sys's, for the CoreFoundation types its API takes"
     "mach2=coreaudio-rs's, for the Mach timebase its render callbacks are timed against"
     "bitflags=the CoreAudio crates take it with its default feature; the Linux graph has it without"
+    # Content signing. The Performance+ session verifies signed packages before
+    # it mounts them (migo-services' code-signing), so ed25519-dalek is in both
+    # graphs; curve25519-dalek then takes this proc macro only on x86_64, where
+    # it generates the AVX2 field-arithmetic backend. arm64 has no such backend
+    # and uses the portable one -- an architecture's choice, not a drift.
+    "curve25519-dalek-derive=curve25519-dalek's AVX2 backend generator, compiled only for x86_64; arm64 uses the portable backend"
 )
 
 problems=()
