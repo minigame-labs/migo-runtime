@@ -44,6 +44,9 @@ let directories = MigoGameDirectories(
 func signedCopy(of package: URL, tamper: Bool) throws -> (URL, Data) {
     let copy = work.appendingPathComponent("signed-package", isDirectory: true)
     try? FileManager.default.removeItem(at: copy)
+    // copyItem needs the destination's parent, and says the SOURCE is missing
+    // when it is not there -- which is how the first CI run reported it.
+    try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
     try FileManager.default.copyItem(at: package, to: copy)
     var files: [String: String] = [:]
     let walker = FileManager.default.enumerator(at: copy, includingPropertiesForKeys: [.isRegularFileKey])!
