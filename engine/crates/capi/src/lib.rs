@@ -712,7 +712,7 @@ pub unsafe extern "C" fn migo_session_load_content(
             let Some(engine) = state.host.as_ref() else {
                 return MIGO_ERROR_INVALID_STATE;
             };
-            return match engine.load_content(&content.content_id) {
+            return match engine.load_content(&content.content_id, &content.entry) {
                 Ok(root) => {
                     tracing::info!(
                         "migo_session_load_content: '{}' mounted at {}; entry '{}' is the producer's to import",

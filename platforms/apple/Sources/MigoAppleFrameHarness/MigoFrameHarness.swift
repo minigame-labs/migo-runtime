@@ -77,6 +77,9 @@ public final class MigoFrameHarness {
                     config.files_dir_utf8 = files
                     config.cache_dir_utf8 = cache
                     config.code_cache_dir_utf8 = codeCache
+                    // The fixtures are written unsigned, and the lane verifies
+                    // content unless told otherwise -- so it is told.
+                    config.flags = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT
                     engineResult = migo_engine_create(&config, &created)
                 }
             }

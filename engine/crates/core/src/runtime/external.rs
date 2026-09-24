@@ -2202,8 +2202,8 @@ impl ExternalFrameSession {
     /// execution does next -- evaluate the entry module -- happens in another
     /// process here, and that process's host needs this directory before it can
     /// serve the module at all.
-    pub fn load_content(&self, game_id: &str) -> EngineResult<std::path::PathBuf> {
-        self.services.context.load_content(game_id)
+    pub fn load_content(&self, game_id: &str, entry: &str) -> EngineResult<std::path::PathBuf> {
+        self.services.context.load_content(game_id, entry)
     }
 
     /// Where the loaded content's code is, or `None` before any is loaded.
@@ -2363,6 +2363,14 @@ pub fn spawn_external_frame_session(
         waker,
     );
     let thread_services = Arc::clone(&services);
+    // The decision the embedded execution makes from the same two options,
+    // made before the options move to the session thread.
+    services
+        .context
+        .bind_signing(migo_services::content::ContentSigning::from_options(
+            opt.code_signing_enabled(),
+            opt.code_signing_pubkey(),
+        ));
     let errors = Arc::new(ExternalGlErrors::default());
     let dispatch: Arc<OnceLock<RenderDispatch>> = Arc::new(OnceLock::new());
     let thread_dispatch = Arc::clone(&dispatch);
@@ -4472,7 +4480,7 @@ mod sync_tests {
         services.context.bind_session(1);
         services
             .context
-            .load_content("g")
+            .load_content("g", "game.js")
             .expect("installed content mounts");
 
         let (sender, commands) = new_render_channel();

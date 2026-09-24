@@ -69,3 +69,13 @@ hex = "0.4"
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }
 # Section 7.3's contention gate, for the image alias registry.
 migo-contention-probe = { path = "../../testing/contention-probe", default-features = false }
+# The same dependency, with the fixture signer the signed-mount tests use.
+# A feature on an existing edge, so the lockfile -- and every V8 snapshot
+# fingerprint that includes it -- does not move.
+shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs", "codec", "signed-fixtures"] }
+
+[features]
+# Verify signed content before it is mounted (`content::MountedContent::mount_signed`).
+# The execution that loads modules in-process verifies in its own loader; the
+# external one, whose loader is another process, verifies here.
+code-signing = ["shared/code-signing"]

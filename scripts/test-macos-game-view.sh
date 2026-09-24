@@ -66,7 +66,14 @@ EMBED="$PACKAGE/Frameworks/Scripts/embed-apple-angle.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/migo-game-view.XXXXXX")"
 cleanup() {
-  if ((KEEP == 0)); then rm -rf "$WORK"; else echo "kept: $WORK"; fi
+  if ((KEEP == 0)); then
+    # The engine seals a verified package read-only; owner write comes back
+    # first, as any installer's trusted uninstall does.
+    chmod -R u+w "$WORK" 2>/dev/null
+    rm -rf "$WORK"
+  else
+    echo "kept: $WORK"
+  fi
   return 0
 }
 trap cleanup EXIT

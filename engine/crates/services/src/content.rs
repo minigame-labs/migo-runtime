@@ -109,6 +109,90 @@ impl MountedContent {
     }
 }
 
+/// How a session treats the signature on the content it mounts: the choice
+/// `InitOptions` makes, resolved once when the session starts.
+#[cfg(feature = "code-signing")]
+#[derive(Clone, Debug)]
+pub enum ContentSigning {
+    /// Content is not verified.
+    Disabled,
+    /// Every package is verified against this key before anything is served.
+    Verify(shared::vfs::integrity::IntegrityVerifier),
+    /// Verification was asked for and cannot be done -- no key, or a key that
+    /// does not parse. Fail closed: every load is refused with this error, as
+    /// the embedded execution refuses every module.
+    Misconfigured(EngineError),
+}
+
+#[cfg(feature = "code-signing")]
+impl ContentSigning {
+    /// The same decision, and the same errors, as the embedded execution's
+    /// `HostJsRuntime` makes from the same options.
+    pub fn from_options(enabled: bool, public_key_hex: Option<&str>) -> Self {
+        if !enabled {
+            return Self::Disabled;
+        }
+        match public_key_hex {
+            Some(key) if !key.is_empty() => {
+                match shared::vfs::integrity::IntegrityVerifier::from_hex_pubkey(key) {
+                    Ok(verifier) => Self::Verify(verifier),
+                    Err(error) => Self::Misconfigured(error),
+                }
+            }
+            _ => Self::Misconfigured(
+                EngineError::new(ErrorCode::CodeSignatureInvalid)
+                    .with_msg("code signing enabled but public key is missing")
+                    .with_detail("set InitOptions.code_signing_pubkey (hex Ed25519 public key)"),
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "code-signing")]
+impl MountedContent {
+    /// Verify, then mount -- the embedded execution's launch sequence, for an
+    /// execution whose module loader is in another process.
+    ///
+    /// Verification happens before anything is mounted, so no byte of an
+    /// unverified package can be served. A sealed launch receipt answers a
+    /// relaunch without re-hashing; a miss verifies every file and seals the
+    /// tree. Subpackages are not restored under signing: downloaded packages
+    /// carry no signature.
+    pub fn mount_signed(
+        files_dir: &Path,
+        cache_dir: &Path,
+        game_id: &str,
+        entry: &str,
+        session_id: i32,
+        scheduler: &IoScheduler,
+        signing: &ContentSigning,
+    ) -> EngineResult<Self> {
+        let verifier = match signing {
+            ContentSigning::Disabled => {
+                return Self::mount(files_dir, cache_dir, game_id, session_id, scheduler);
+            }
+            ContentSigning::Misconfigured(error) => return Err(error.clone()),
+            ContentSigning::Verify(verifier) => verifier,
+        };
+        let PreparedContent { game_paths, vfs } =
+            prepare_content(files_dir, cache_dir, game_id, session_id)?;
+        let code_dir = game_paths.code_dir().to_path_buf();
+        let receipt = game_paths.integrity_receipt_path();
+        if verifier
+            .verify_launch_receipt(&code_dir, &receipt, entry)?
+            .is_none()
+        {
+            verifier.verify_and_promote_for_launch(&code_dir, &receipt, entry)?;
+        }
+        let mount_table = mount_code(&game_paths, true, scheduler);
+        Ok(Self {
+            game_paths: Arc::new(game_paths),
+            vfs: Arc::new(vfs),
+            mount_table,
+        })
+    }
+}
+
 /// Why a content module could not be served.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ModuleError {
@@ -212,6 +296,113 @@ mod tests {
         assert!(mounted.game_paths.code_dir().starts_with(&files));
         assert!(mounted.game_paths.code_dir().ends_with("code"));
         assert!(mounted.game_paths.user_data_dir().is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An installed package, signed as a publisher signs one. Answers the key
+    /// it verifies against, hex-encoded as `InitOptions` carries it.
+    #[cfg(feature = "code-signing")]
+    fn install_signed(code: &Path, files: &[(&str, &str)], seed: u8) -> String {
+        std::fs::create_dir_all(code).unwrap();
+        for (name, text) in files {
+            std::fs::write(code.join(name), text).unwrap();
+        }
+        let key = shared::vfs::integrity::sign_package_fixture(code, "game.js", [seed; 32]);
+        key.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// Restore owner write on a sealed tree so the test can delete it -- the
+    /// trusted uninstall every installer performs.
+    #[cfg(all(feature = "code-signing", unix))]
+    fn unseal(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
+            let child = entry.path();
+            if child.is_dir() && !child.is_symlink() {
+                let _ = std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o755));
+                unseal(&child);
+            }
+        }
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+    }
+
+    /// The external execution's launch sequence under signing: what verifies is
+    /// mounted and sealed; what does not is refused before anything is mounted;
+    /// a misconfigured session refuses every load, as the embedded one does.
+    #[cfg(all(feature = "code-signing", unix))]
+    #[test]
+    fn signed_content_is_verified_and_sealed_before_it_is_mounted() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("migo-services-signed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let scheduler = IoScheduler::new(1);
+        let code_of = |id: &str| {
+            GamePaths::new(&files, &cache, id, 1)
+                .unwrap()
+                .code_dir()
+                .to_path_buf()
+        };
+        let hex = install_signed(&code_of("good"), &[("game.js", "console.log(1)")], 7);
+        let signing = ContentSigning::from_options(true, Some(&hex));
+        assert!(matches!(signing, ContentSigning::Verify(_)));
+
+        let mounted = MountedContent::mount_signed(
+            &files, &cache, "good", "game.js", 1, &scheduler, &signing,
+        )
+        .expect("a package signed with the session's key mounts");
+        let mode = std::fs::metadata(mounted.game_paths.code_dir())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o222, 0, "the verified tree is sealed read-only");
+        // A relaunch is answered by the sealed receipt, and mounts again.
+        MountedContent::mount_signed(&files, &cache, "good", "game.js", 2, &scheduler, &signing)
+            .expect("a sealed package relaunches");
+
+        install_signed(&code_of("tampered"), &[("game.js", "console.log(1)")], 7);
+        std::fs::write(code_of("tampered").join("game.js"), "console.log(2)").unwrap();
+        let error = MountedContent::mount_signed(
+            &files, &cache, "tampered", "game.js", 1, &scheduler, &signing,
+        )
+        .err()
+        .expect("a file changed after signing is refused");
+        assert!(error.to_string().contains("hash"), "{error}");
+
+        std::fs::create_dir_all(code_of("unsigned")).unwrap();
+        std::fs::write(code_of("unsigned").join("game.js"), "console.log(1)").unwrap();
+        assert!(
+            MountedContent::mount_signed(
+                &files, &cache, "unsigned", "game.js", 1, &scheduler, &signing
+            )
+            .is_err(),
+            "a package with no signature is refused when the session verifies"
+        );
+        MountedContent::mount_signed(
+            &files,
+            &cache,
+            "unsigned",
+            "game.js",
+            1,
+            &scheduler,
+            &ContentSigning::Disabled,
+        )
+        .expect("and mounts when it does not");
+
+        let missing = ContentSigning::from_options(true, None);
+        let error = MountedContent::mount_signed(
+            &files, &cache, "good", "game.js", 3, &scheduler, &missing,
+        )
+        .err()
+        .expect("signing on and no key is fail-closed");
+        assert!(
+            error.to_string().contains("public key is missing"),
+            "{error}"
+        );
+
+        unseal(&root);
         let _ = std::fs::remove_dir_all(&root);
     }
 

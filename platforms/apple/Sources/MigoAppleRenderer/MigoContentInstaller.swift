@@ -53,6 +53,9 @@ public enum MigoContentInstaller {
     /// number, a content hash -- and makes a relaunch free: a package that is
     /// already there is not copied again. `nil` always installs.
     ///
+    /// Not while a session runs this game: an update swaps the whole tree,
+    /// and the running session is reading the old one. Stop the view first.
+    ///
     /// Returns the installed code directory.
     @discardableResult
     public static func install(
@@ -82,24 +85,79 @@ public enum MigoContentInstaller {
         }
 
         try manager.createDirectory(at: gameRoot, withIntermediateDirectories: true)
-        // Staged on the same volume so the swap below is a rename, not a copy.
+        removeLeftovers(in: gameRoot)
+        // Staged on the same volume so each swap below is a rename, not a copy.
         let staging = gameRoot.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         try manager.copyItem(at: package, to: staging)
-        do {
-            if manager.fileExists(atPath: code.path) {
-                _ = try manager.replaceItemAt(code, withItemAt: staging)
-            } else {
+        guard manager.fileExists(atPath: code.path) else {
+            do {
                 try manager.moveItem(at: staging, to: code)
+            } catch {
+                removeTrusted(staging)
+                throw error
             }
+            return try finish(code: code, marker: marker, version: version)
+        }
+        // A package that was launched under code signing has been verified and
+        // sealed read-only by the engine, and a sealed tree is never modified
+        // in place. So the old tree is renamed aside -- a rename needs only
+        // the parent, which is not sealed -- the new one renamed in, and only
+        // then is the old one removed, as a trusted uninstall that restores the
+        // owner's permissions first.
+        let retired = gameRoot.appendingPathComponent(".retired-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try manager.moveItem(at: code, to: retired)
         } catch {
-            try? manager.removeItem(at: staging)
+            removeTrusted(staging)
             throw error
         }
+        do {
+            try manager.moveItem(at: staging, to: code)
+        } catch {
+            try? manager.moveItem(at: retired, to: code)
+            removeTrusted(staging)
+            throw error
+        }
+        removeTrusted(retired)
+        return try finish(code: code, marker: marker, version: version)
+    }
+
+    private static func finish(code: URL, marker: URL, version: String?) throws -> URL {
         if let version {
             try Data(version.utf8).write(to: marker, options: .atomic)
         } else {
-            try? manager.removeItem(at: marker)
+            try? FileManager.default.removeItem(at: marker)
         }
         return code
+    }
+
+    /// What an interrupted install left beside the code: a staging copy that
+    /// never became the package, or a retired package never removed.
+    private static func removeLeftovers(in gameRoot: URL) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: gameRoot.path)) ?? []
+        for name in names where name.hasPrefix(".staging-") || name.hasPrefix(".retired-") {
+            removeTrusted(gameRoot.appendingPathComponent(name, isDirectory: true))
+        }
+    }
+
+    /// Remove a tree this installer owns, sealed or not: give every directory
+    /// back its owner's write and search bits (unlinking needs the parent's),
+    /// then remove it. Best effort -- a leftover is swept by the next install,
+    /// and failing an install that already succeeded over it would be worse.
+    private static func removeTrusted(_ tree: URL) {
+        let manager = FileManager.default
+        var directories = [tree]
+        if let walker = manager.enumerator(
+            at: tree, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [])
+        {
+            for case let url as URL in walker {
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                if values?.isDirectory == true && values?.isSymbolicLink != true { directories.append(url) }
+            }
+        }
+        for directory in directories {
+            try? manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+        try? manager.removeItem(at: tree)
     }
 }

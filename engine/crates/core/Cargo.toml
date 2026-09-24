@@ -46,7 +46,7 @@ embedded-v8 = ["dep:runtime-v8"]
 # is between the neutral bring-up above line ~150 and the runtime assembly
 # below it -- not the 49 `self.js.*` call sites, which belong to the embedded
 # execution either way and do not move.
-external-frames = ["dep:migo-frame-wire", "dep:frame-decode", "dep:migo-services", "host-audio"]
+external-frames = ["dep:migo-frame-wire", "dep:frame-decode", "dep:migo-services", "migo-services/code-signing", "host-audio"]
 # The host's audio thread: the WebAudio graph, InnerAudioContext and the device
 # output, with no opinion about where the JavaScript that drives it runs. The
 # embedded execution reaches it through its ops (`api-media`); the external one

@@ -1,3 +1,4 @@
+import CryptoKit
 import MigoAppleRenderer
 import XCTest
 
@@ -228,6 +229,81 @@ import XCTest
                     ["kind": "confirm", "value": "hi!01234"],
                     ["kind": "complete", "value": "hi!01234"],
                 ])
+        }
+
+        /// A copy of `package`, signed: every file's SHA-256 in manifest.json and
+        /// the raw Ed25519 signature of its bytes in manifest.sig.
+        private func signed(_ package: URL, with key: Curve25519.Signing.PrivateKey, tamper: Bool = false) throws -> URL {
+            let copy = root.appendingPathComponent("signed-\(UUID().uuidString)")
+            try FileManager.default.copyItem(at: package, to: copy)
+            var files: [String: String] = [:]
+            for name in try FileManager.default.contentsOfDirectory(atPath: copy.path) {
+                let bytes = try Data(contentsOf: copy.appendingPathComponent(name))
+                files[name] = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            }
+            let manifest = try JSONSerialization.data(
+                withJSONObject: ["version": 1, "entry": "game.js", "timestamp": 1_700_000_000, "files": files],
+                options: [.sortedKeys])
+            try manifest.write(to: copy.appendingPathComponent("manifest.json"))
+            try key.signature(for: manifest).write(to: copy.appendingPathComponent("manifest.sig"))
+            if tamper {
+                try Data("console.log('changed');".utf8).write(to: copy.appendingPathComponent("game.js"))
+            }
+            return copy
+        }
+
+        /// Run `id` once in a fresh view and answer with its first console line,
+        /// or the failure it reported.
+        private func firstLine(of id: String, signing: MigoContentSigning) -> String {
+            let view = MigoGameView(configuration: .init(directories: directories, contentSigning: signing))
+            let said = expectation(description: "\(id) said something")
+            var line = ""
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message) where line.isEmpty:
+                    line = message
+                    said.fulfill()
+                case .failed(let reason) where line.isEmpty:
+                    line = "failed: " + reason
+                    said.fulfill()
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: id)
+            wait(for: [said], timeout: 240)
+            // Each run has its own view and layer; stop() retires this one's
+            // surface and the view waits for the release itself.
+            view.stop()
+            return line
+        }
+
+        /// Signed content on this lane: verified before the producer is served a
+        /// byte, sealed once verified, updated by a new install without touching
+        /// the sealed tree, and refused when a file changed after signing.
+        func testSignedContentIsVerifiedSealedUpdatedAndRefusedWhenTampered() throws {
+            let key = Curve25519.Signing.PrivateKey()
+            let signing = MigoContentSigning.verified(publicKey: key.publicKey.rawRepresentation)
+            let v1 = try signed(try package(named: "v1", game: "console.log('v1');"), with: key)
+            try MigoGameInstaller.install(package: v1, id: "signed", version: "1", into: directories)
+            XCTAssertEqual(firstLine(of: "signed", signing: signing), "v1")
+
+            let code = directories.installedCode(contentID: "signed")
+            let mode = try FileManager.default.attributesOfItem(atPath: code.path)[.posixPermissions] as? Int
+            XCTAssertEqual((mode ?? 0o777) & 0o222, 0, "the verified tree is sealed read-only")
+
+            let v2 = try signed(try package(named: "v2", game: "console.log('v2');"), with: key)
+            try MigoGameInstaller.install(package: v2, id: "signed", version: "2", into: directories)
+            XCTAssertEqual(firstLine(of: "signed", signing: signing), "v2", "the update replaced the sealed tree")
+            let leftovers = try FileManager.default.contentsOfDirectory(atPath: code.deletingLastPathComponent().path)
+                .filter { $0.hasPrefix(".staging") || $0.hasPrefix(".retired") }
+            XCTAssertEqual(leftovers, [], "the retired tree was removed")
+
+            let bad = try signed(try package(named: "bad", game: "console.log('bad');"), with: key, tamper: true)
+            try MigoGameInstaller.install(package: bad, id: "tampered", into: directories)
+            let refused = firstLine(of: "tampered", signing: signing)
+            XCTAssertTrue(refused.hasPrefix("failed: "), "a package changed after signing ran: \(refused)")
+            XCTAssertTrue(refused.contains("migo_session_load_content"), refused)
         }
 
         /// A game that is not installed is reported, not a black screen.

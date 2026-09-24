@@ -47,6 +47,9 @@ v8-limits = []
 # Signature verification lives in `vfs::integrity`, so asking for it asks for the
 # module that hosts it rather than silently compiling nothing.
 code-signing = ["vfs", "dep:ed25519-dalek"]
+# `vfs::integrity::sign_package_fixture`: signs a package the way a publisher
+# does, for tests in other crates that verify one. Never in a shipped build.
+signed-fixtures = ["code-signing"]
 # Hands the process-wide stats registry's lock to a cross-session contention gate in
 # another crate. Enabled only through `[dev-dependencies]`, so resolver 2 keeps it out
 # of every shipped build.
