@@ -1793,6 +1793,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # tools/artifact-manifest writes the zip's attestation.
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+
       - name: Download the iOS device group
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1837,7 +1841,9 @@ jobs:
           bash scripts/package-apple-sdk.sh --output-dir dist/release
           bash scripts/package-apple-sdk.sh --output-dir "$RUNNER_TEMP/again"
           VERSION="$(cat release/VERSION)"
-          cmp "dist/release/migo-$VERSION-apple-sdk.zip" "$RUNNER_TEMP/again/migo-$VERSION-apple-sdk.zip"
+          for file in "migo-$VERSION-apple-sdk.zip" "migo-$VERSION-apple-sdk.zip.attestation.json"; do
+            cmp "dist/release/$file" "$RUNNER_TEMP/again/$file"
+          done
 
       - name: The published asset is a complete SDK that builds and runs a game
         run: bash scripts/test-apple-sdk-release-asset.sh "dist/release/migo-$(cat release/VERSION)-apple-sdk.zip"
