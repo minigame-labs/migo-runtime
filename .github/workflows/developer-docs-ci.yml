@@ -40,15 +40,10 @@ jobs:
       - name: 构建并检查静态产物
         run: npm run docs:build
 
-      - name: 起静态服务
-        run: |
-          npm run docs:serve &
-          for i in $(seq 1 40); do
-            curl -sf -o /dev/null http://127.0.0.1:8097/docs/ && break
-            sleep 0.5
-          done
-          curl -sf -o /dev/null http://127.0.0.1:8097/docs/
-
+      # No server is started here: Playwright's webServer (playwright.config.ts)
+      # starts `docs:serve`, waits for it, and stops it, and under CI it refuses
+      # to reuse one already on the port -- which a server started here was,
+      # failing every run with "127.0.0.1:8097/docs/ is already used".
       - name: 浏览器冒烟测试
         env:
           CI: 'true'
