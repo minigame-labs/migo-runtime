@@ -754,6 +754,13 @@ jobs:
           bash scripts/test-ohos-host-contract.sh
           bash scripts/test-ohos-package-metadata-contract.sh
 
+      # Every SDK's export list -- the Windows .def, the Linux -u list, the
+      # Linux and Android export checks -- comes from one derivation; this pins
+      # its two rules (external_frames.h is the external-frames product's alone;
+      # a name in a comment is not an entry point).
+      - name: C ABI entry points per product
+        run: bash scripts/test-c-abi-entry-points-contract.sh
+
       - name: Linux SDK packaging tooling
         # Unit tests only. The packaging gate itself
         # (scripts/test-linux-sdk-contract.sh) needs the Debian bullseye

@@ -29,8 +29,8 @@ windows_sdk_generate_def() {
     local header_dir="$1" out_file="$2"
     {
         echo "EXPORTS"
-        grep -ohE '\bmigo_[a-z0-9_]+[[:space:]]*\(' "$header_dir"/*.h \
-            | tr -d '( \t' | sort -u | sed 's/^/    /'
+        "$(python_cmd)" "$MIGO_LIB_DIR/../c-abi-entry-points.py" embedded "$header_dir" \
+            | sed 's/^/    /'
     } > "$out_file"
     local def_count=$(( $(wc -l < "$out_file") - 1 ))
     info "generated export allowlist: $def_count migo_* symbols"
