@@ -35,7 +35,7 @@
 | **Linux**（x86_64、aarch64） | 已发布 | 静态库与共享库、pkg-config 与 CMake 包;Qt 6 / X11 host kit 在仓库内 |
 | **Windows**（x86_64、aarch64） | 已发布 | `migo.dll` 及其导入库、头文件、CMake 包,以及它按名加载的 ANGLE 与 V8 运行时 DLL |
 | **OpenHarmony / HarmonyOS NEXT**（aarch64、x86_64） | 已发布 | 按架构产出的 C ABI 包(头文件、静态库、CMake 包、manifest) |
-| iOS、macOS | 计划中 | — |
+| **iOS**（arm64；模拟器 arm64、x86_64）、**macOS**（arm64、x86_64） | 已发布 | `migo-<version>-apple-sdk.zip`：每个平台一个视图 `MigoGameView` 的 Swift 包——iOS 上内容 JavaScript 跑在 WebKit 的进程里，由引擎在 App 内绘制其帧；macOS 上引擎在进程内运行 V8 |
 
 已发布产物见 [releases 页面](https://github.com/minigame-labs/migo/releases)。每个 release 都带一份
 `SHA256SUMS.txt`（用 `sha256sum -c SHA256SUMS.txt` 校验下载），每个归档还带 `.attestation.json`,
@@ -149,7 +149,7 @@ migo/
 
 ## 许可证
 
-Migo 采用 **source-available** 的 [Business Source License 1.1](LICENSE)（BSL 1.1）。**每个发布版本在其发布满四年时转为 Apache 2.0** —— 具体日期就写在该版本随附的 `LICENSE` 里（当前为 2030-08-30）。
+Migo 采用 **source-available** 的 [Business Source License 1.1](LICENSE)（BSL 1.1）。**每个发布版本在其发布满四年时转为 Apache 2.0** —— 具体日期就写在该版本随附的 `LICENSE` 里（当前为 2030-09-26）。
 
 - **阅读、审计、构建、测试、评测、修改、移植** —— 任何规模、任何主体，无条件授予。
 - **把 Migo 嵌进你自己的 App 上线** —— 年营收 ≤ USD 1,000,000 且月活 ≤ 3,000,000 时免费。

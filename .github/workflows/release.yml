@@ -2038,6 +2038,10 @@ jobs:
           fail_on_unmatched_files: true
           body_path: ${{ runner.temp }}/release-notes.md
           generate_release_notes: true
+          # A version with a pre-release suffix (`0.9.7-rc.2`) is one, by SemVer.
+          # Published as a full release, v0.9.7-rc.2 became "Latest" and was what
+          # a reader of the releases page downloaded.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   # ── What was actually published ─────────────────────────────────────────
   # Separate from `publish` on purpose, and the reason is the threat model. For the

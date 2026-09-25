@@ -35,7 +35,7 @@ Reproducible benchmarks against the system WebView — same game, same device, s
 | **Linux** (x86_64, aarch64) | Released | Static and shared library, pkg-config and CMake packages; Qt 6 / X11 host kit in-tree |
 | **Windows** (x86_64, aarch64) | Released | `migo.dll` with its import library, headers, a CMake package, and the ANGLE and V8 runtime DLLs it loads by name |
 | **OpenHarmony / HarmonyOS NEXT** (aarch64, x86_64) | Released | A C ABI package per architecture (headers, static library, CMake package, manifest) |
-| iOS, macOS | Planned | — |
+| **iOS** (arm64; simulator arm64, x86_64), **macOS** (arm64, x86_64) | Released | `migo-<version>-apple-sdk.zip`: a Swift package with one view per platform, `MigoGameView` -- on iOS content JavaScript runs in WebKit's process and the engine draws its frames in the app; on macOS the engine runs V8 in process |
 
 Released artifacts are on the [releases page](https://github.com/minigame-labs/migo/releases). Every release carries a `SHA256SUMS.txt` — check a download with `sha256sum -c SHA256SUMS.txt` — and each archive also has an `.attestation.json` recording its name, size and sha256, whose `package_sha256` you can reproduce from source ([BUILD.md](BUILD.md)).
 
@@ -152,7 +152,7 @@ migo/
 
 ## License
 
-Migo is **source-available** under the [Business Source License 1.1](LICENSE). **Each released version converts to Apache 2.0 four years after that version is published** — the date is stamped in the `LICENSE` each release ships with (currently 2030-08-30).
+Migo is **source-available** under the [Business Source License 1.1](LICENSE). **Each released version converts to Apache 2.0 four years after that version is published** — the date is stamped in the `LICENSE` each release ships with (currently 2030-09-26).
 
 - **Read, audit, build, test, benchmark, modify and port** — granted to everyone, at any scale, unconditionally.
 - **Ship Migo inside your own app** — free while under USD 1,000,000 annual revenue and 3,000,000 MAU.

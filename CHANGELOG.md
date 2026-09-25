@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## v0.9.7-rc.2 (2026-09-26)
+## v0.9.7 (2026-09-26)
 
 ### Added
 - iOS and macOS SDK: `migo-<version>-apple-sdk.zip`, a Swift package with one
@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lifecycle, and on iOS the audio session and WebContent crash recovery.
   `MigoGameInstaller` installs a package atomically and skips a version that is
   already there. Both products ship a privacy manifest that a gate checks
-  against the engine's sources in both directions.
+  against the engine's sources in both directions. The zip carries its own
+  `.attestation.json`, like every other SDK archive, and a runnable app for
+  each platform is `apple-swift/` in migo-examples.
 - iOS and macOS: the soft keyboard. `migo.showKeyboard` opens the system
   keyboard on iOS and a text field along the game's bottom edge on macOS; the
   player's text comes back as `onKeyboardInput`/`Confirm`/`Complete`. On the
