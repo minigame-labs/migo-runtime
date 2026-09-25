@@ -60,7 +60,7 @@ default-members = [
 # two are held equal by `scripts/test-release-version-contract.sh` rather than by
 # the format. Every member inherits it with `version.workspace = true`.
 [workspace.package]
-version = "0.9.7-rc.1"
+version = "0.9.7-rc.2"
 license = "BSL-1.1"
 
 [workspace.dependencies]
