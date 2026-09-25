@@ -2226,6 +2226,11 @@ impl ExternalFrameSession {
         self.host.is_current_thread()
     }
 
+    /// Whether the session's thread has returned, so joining it would not block.
+    pub fn is_finished(&self) -> bool {
+        self.host.is_finished()
+    }
+
     pub fn request_shutdown(&self) -> Result<(), String> {
         // Before the thread is asked to stop, not after it has: a producer
         // inside `Atomics.wait` is woken by the mailbox being settled, and a
