@@ -152,7 +152,7 @@ migo/
 
 ## License
 
-Migo is **source-available** under the [Business Source License 1.1](LICENSE). **Each released version converts to Apache 2.0 four years after that version is published** — the date is stamped in the `LICENSE` each release ships with (currently 2030-09-26).
+Migo is **source-available** under the [Business Source License 1.1](LICENSE). **Each released version converts to Apache 2.0 four years after that version is published** — the date is stamped in the `LICENSE` each release ships with (currently 2030-09-25).
 
 - **Read, audit, build, test, benchmark, modify and port** — granted to everyone, at any scale, unconditionally.
 - **Ship Migo inside your own app** — free while under USD 1,000,000 annual revenue and 3,000,000 MAU.

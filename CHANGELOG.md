@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## v0.9.7 (2026-09-26)
+## v0.9.7 (2026-09-25)
 
 ### Added
 - iOS and macOS SDK: `migo-<version>-apple-sdk.zip`, a Swift package with one
