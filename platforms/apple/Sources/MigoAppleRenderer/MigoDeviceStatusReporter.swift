@@ -21,6 +21,9 @@ import Network
 public final class MigoDeviceStatusReporter {
     private weak var session: MigoEngineSession?
     private let monitor = NWPathMonitor()
+    /// The monitor's own queue: its first path is waited for from the main
+    /// thread (see `start()`), which a main-queue handler could never deliver.
+    private let monitorQueue = DispatchQueue(label: "dev.migo.device-status")
     private var observers: [NSObjectProtocol] = []
     #if os(iOS)
         /// The app's own setting, put back on `stop()`: battery monitoring is
@@ -29,6 +32,14 @@ public final class MigoDeviceStatusReporter {
         private var batteryMonitoringWasEnabled = false
     #endif
     private var running = false
+
+    /// What `start()` and the monitor's handler share while `start()` waits
+    /// for the first path. Touched only on `monitorQueue` once the monitor runs.
+    private final class Startup {
+        var waiting = true
+        var path: NWPath?
+        let arrived = DispatchSemaphore(value: 0)
+    }
 
     public init(session: MigoEngineSession) {
         self.session = session
@@ -45,10 +56,33 @@ public final class MigoDeviceStatusReporter {
         precondition(Thread.isMainThread, "MigoDeviceStatusReporter is main-thread only")
         guard !running else { return }
         running = true
-        monitor.pathUpdateHandler = { [weak self] path in self?.report(path) }
-        // The main queue, so each report reaches the session on the thread
-        // the session is used from. The first update is the current path.
-        monitor.start(queue: .main)
+        // The first path is reported before this returns, so it is in the
+        // engine before content can ask: the V8 lane evaluates content within
+        // milliseconds of `loadContent`, and a report still queued behind it
+        // would answer the game's first `getNetworkType` "not supported". The
+        // monitor answers its first path at once -- the wait is a bound, not a
+        // cost. Later changes hop to the main thread, where the session lives.
+        let startup = Startup()
+        monitor.pathUpdateHandler = { [weak self] path in
+            // On `monitorQueue`, as is every access to `startup`.
+            if startup.waiting {
+                startup.path = path
+                startup.arrived.signal()
+            } else {
+                DispatchQueue.main.async { self?.report(path) }
+            }
+        }
+        monitor.start(queue: monitorQueue)
+        if startup.arrived.wait(timeout: .now() + .milliseconds(250)) == .timedOut {
+            NSLog("MigoDeviceStatusReporter: no network path within 250 ms; content reads it once one arrives")
+        }
+        // Closed on the monitor's queue, so a path is either taken here or
+        // reported by the handler -- never both, never neither.
+        let path: NWPath? = monitorQueue.sync {
+            startup.waiting = false
+            return startup.path
+        }
+        if let path { report(path) }
         #if os(iOS)
             let device = UIDevice.current
             batteryMonitoringWasEnabled = device.isBatteryMonitoringEnabled

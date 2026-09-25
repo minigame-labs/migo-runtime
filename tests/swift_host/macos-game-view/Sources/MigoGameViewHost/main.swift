@@ -113,6 +113,8 @@ view.onEvent = { event in
     case .error(let code, let message, let recoverable):
         say("error \(code) recoverable=\(recoverable): \(message)")
         if !recoverable { exit(4) }
+    case .gameLog(let entry):
+        say("game log: \(entry)")
     }
 }
 // Sampled on the main queue, where the view lives; the last sample before
