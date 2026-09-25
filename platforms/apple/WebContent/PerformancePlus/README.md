@@ -2,7 +2,7 @@
 
 Source for the bundle that runs inside WebKit's WebContent process. Bundled
 and minified by `scripts/build-apple-sdk.sh` into
-`../../Sources/MigoApplePerformancePlus/Resources/`.
+`../../Sources/MigoApplePerformancePlus/ProducerBundle/`.
 
 🏁 **G0 has run (2026-09-10).** This file used to say it had not, while
 `../../Sources/MigoApplePerformancePlus/README.md` said the topology was decided;

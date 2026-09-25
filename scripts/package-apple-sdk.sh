@@ -23,6 +23,11 @@
 # projects for this repository's own measurements, and WebContent/ is the
 # source the producer bundle in Sources/ is generated from.
 #
+# Attested like every other SDK archive: `<asset>.attestation.json` records the
+# zip's name, size and sha256 against the engine's build receipt
+# (`MigoEngine.xcframework/migo-build.json`, which names every slice and is in the
+# zip), written and verified by tools/artifact-manifest as package-sdk.sh does.
+#
 # Reproducible: entries sorted, every timestamp SOURCE_DATE_EPOCH (default:
 # HEAD's commit time), permissions reduced to 0644/0755, no owner, no extra
 # fields -- two packagings of one build are byte-identical. Symbolic links are
@@ -88,8 +93,8 @@ if receipt.get("diagnostic") or not receipt.get("complete") or groups != expecte
         f"groups={groups}; expected {expected}")
 if receipt.get("configuration") != "Release":
     die(f"the assembled engine is a {receipt.get('configuration')} build; a release ships Release")
-if not (package / "Sources/MigoApplePerformancePlus/Resources/producer-page.html").is_file():
-    die("the WebContent producer bundle is not in Sources/MigoApplePerformancePlus/Resources")
+if not (package / "Sources/MigoApplePerformancePlus/ProducerBundle/producer-page.html").is_file():
+    die("the WebContent producer bundle is not in Sources/MigoApplePerformancePlus/ProducerBundle")
 
 INCLUDE = ["Package.swift", "README.md", "core", "Sources", "Tests", "Frameworks"]
 SKIP_DIRS = {".build", ".swiftpm", "xcuserdata"}
@@ -139,3 +144,19 @@ temporary.replace(asset)
 print(f"package-apple-sdk: {asset.name}: {len(entries)} entries, "
       f"{asset.stat().st_size / 1048576:.1f} MiB (SOURCE_DATE_EPOCH={epoch})")
 PY
+
+MANIFEST_TOOL="${MIGO_ARTIFACT_MANIFEST_TOOL:-}"
+if [[ -z "$MANIFEST_TOOL" ]]; then
+  MANIFEST_TOOL_TARGET="${MIGO_ARTIFACT_MANIFEST_TARGET_DIR:-$ROOT/tools/artifact-manifest/target}"
+  CARGO_TARGET_DIR="$MANIFEST_TOOL_TARGET" cargo build --quiet \
+    --manifest-path "$ROOT/tools/artifact-manifest/Cargo.toml" --locked --release \
+    || fail "could not build tools/artifact-manifest"
+  MANIFEST_TOOL="$MANIFEST_TOOL_TARGET/release/migo-artifact-manifest"
+fi
+[[ -x "$MANIFEST_TOOL" ]] || fail "artifact manifest tool is not executable: $MANIFEST_TOOL"
+RECEIPT="$PACKAGE/Frameworks/MigoEngine.xcframework/migo-build.json"
+"$MANIFEST_TOOL" attest "$ASSET" "$RECEIPT" "$ASSET.attestation.json" >/dev/null \
+  || fail "could not attest $(basename "$ASSET")"
+"$MANIFEST_TOOL" verify-attestation "$ASSET.attestation.json" "$ASSET" "$RECEIPT" >/dev/null \
+  || fail "the attestation just written does not verify"
+echo "package-apple-sdk: $(basename "$ASSET").attestation.json"

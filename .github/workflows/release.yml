@@ -12,7 +12,10 @@ jobs:
   # ── Job 1: Quality gate (same as PR CI, ensures tag is clean) ───────
   quality-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Warm, the gate took 24 minutes on 2026-09-18; cold -- which every release
+    # bump makes it, the version being in Cargo.lock -- it passed 30 inside its
+    # Performance+ builds. The ceiling bounds a hang, not the gate's real work.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -60,9 +63,10 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        # No cache-on-failure: a run that failed half way saved its half-built
+        # target under the full key, and a full match is never saved again.
         with:
           workspaces: engine -> target
-          cache-on-failure: true
 
       - name: Check Rust formatting
         working-directory: engine
@@ -612,6 +616,27 @@ jobs:
       # `migo-runtime-v8`, could never have compiled at all.
       - name: Apple and Linux Performance+ products resolve alike
         run: bash scripts/test-apple-product-feature-parity.sh
+
+      # The Performance+ steps below build migo-core for this host, and the
+      # link asks for what the Linux engine links, read from the build scripts'
+      # `rustc-link-lib` output: skia-bindings' GL, EGL, fontconfig and
+      # freetype, and alsa-sys' asound (external-frames carries `host-audio`).
+      # Missing, the build fails in a way that reads like a code error; they
+      # sat hidden behind an earlier red step for a week.
+      - name: Install the libraries the host engine links
+        run: |
+          install_libs() {
+            timeout 90 sudo apt-get update -qq || return 1
+            timeout 150 sudo apt-get install -y -qq \
+              libgl-dev libegl-dev libfontconfig1-dev libfreetype-dev \
+              libasound2-dev || return 1
+          }
+          if ! pkg-config --exists gl egl fontconfig freetype2 alsa; then
+            install_libs || {
+              echo "host library install stalled or failed; retrying once" >&2
+              install_libs
+            }
+          fi
 
       # The same claim, asked of the bytes rather than the dependency graph.
       # A closure that resolves clean is necessary and not sufficient: what
@@ -1775,6 +1800,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # tools/artifact-manifest writes the zip's attestation.
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+
       - name: Download the iOS device group
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1819,7 +1848,9 @@ jobs:
           bash scripts/package-apple-sdk.sh --output-dir dist/release
           bash scripts/package-apple-sdk.sh --output-dir "$RUNNER_TEMP/again"
           VERSION="$(cat release/VERSION)"
-          cmp "dist/release/migo-$VERSION-apple-sdk.zip" "$RUNNER_TEMP/again/migo-$VERSION-apple-sdk.zip"
+          for file in "migo-$VERSION-apple-sdk.zip" "migo-$VERSION-apple-sdk.zip.attestation.json"; do
+            cmp "dist/release/$file" "$RUNNER_TEMP/again/$file"
+          done
 
       - name: The published asset is a complete SDK that builds and runs a game
         run: bash scripts/test-apple-sdk-release-asset.sh "dist/release/migo-$(cat release/VERSION)-apple-sdk.zip"

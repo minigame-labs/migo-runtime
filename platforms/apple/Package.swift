@@ -182,7 +182,7 @@ let package = Package(
             // would let the shipped bundle drift from the tested one.
             // The privacy manifest travels in the product's resource bundle,
             // which is where Xcode's privacy report looks for an SDK's.
-            resources: [.copy("Resources"), .process("PrivacyInfo.xcprivacy")]
+            resources: [.copy("ProducerBundle"), .process("PrivacyInfo.xcprivacy")]
         ),
 
         // The frame channel, against a real WebSocket client rather than a

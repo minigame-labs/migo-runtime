@@ -135,7 +135,7 @@ impl frame_decode::RenderSink for Host {
         }
     }
     fn gl_batch(&mut self, commands: PooledVec<GLCmd>, _approx_bytes: usize) {
-        for command in commands.iter() {
+        if let Some(command) = commands.first() {
             panic!("the canvas-lifetime fixture produced a GL command: {command:?}");
         }
     }

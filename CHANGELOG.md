@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.7-rc.1 (2026-09-25)
+
 ### Added
 - iOS and macOS SDK: `migo-<version>-apple-sdk.zip`, a Swift package with one
   view per platform. `MigoGameView` (`MigoApplePerformancePlus` on iOS,

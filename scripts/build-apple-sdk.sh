@@ -30,7 +30,7 @@ source "$SCRIPT_DIR/lib/v8-materialise.sh"
 ENGINE_DIR="$REPO_ROOT/engine"
 CONTRACT="$REPO_ROOT/contracts/apple/deployment-floor.json"
 WEBCONTENT_SRC="$REPO_ROOT/platforms/apple/WebContent/PerformancePlus"
-WEBCONTENT_DEST="$REPO_ROOT/platforms/apple/Sources/MigoApplePerformancePlus/Resources"
+WEBCONTENT_DEST="$REPO_ROOT/platforms/apple/Sources/MigoApplePerformancePlus/ProducerBundle"
 FRAMEWORKS_DIR="$REPO_ROOT/platforms/apple/Frameworks"
 
 BUILD_ROOT="${MIGO_APPLE_BUILD_ROOT:-/tmp/migo-apple-build}"
@@ -624,7 +624,7 @@ fi
 if [ "$PRODUCT" = "external-frames-diagnostic" ]; then
     PACKAGE_DIR="$BUILD_ROOT/diagnostics/$CONFIGURATION/package"
     FRAMEWORKS_DIR="$PACKAGE_DIR/Frameworks"
-    WEBCONTENT_DEST="$PACKAGE_DIR/Sources/MigoApplePerformancePlus/Resources"
+    WEBCONTENT_DEST="$PACKAGE_DIR/Sources/MigoApplePerformancePlus/ProducerBundle"
 fi
 
 XCFRAMEWORK="$FRAMEWORKS_DIR/MigoEngine.xcframework"
