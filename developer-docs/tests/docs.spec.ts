@@ -10,10 +10,20 @@ async function openDocsPage(page: Page, path: string) {
 }
 
 test.describe('routing', () => {
-  test('serves the docs root with a heading', async ({page}) => {
+  test('serves the docs root with a heading', async ({page}, testInfo) => {
     await openDocsPage(page, '/');
     await expect(page.locator('h1')).toContainText('Migo 开发者文档');
-    await expect(page.locator('.portal-links a', {hasText: 'SDK 下载'})).toBeVisible();
+    const links = page.locator('.portal-links a');
+    await expect(links.filter({hasText: '首页'})).toBeVisible();
+    await expect(links.filter({hasText: '开发者文档'})).toBeVisible();
+    // A phone's header keeps only the first two links: five do not fit at 390
+    // px without colliding with the search icon (Header.astro, max-width 50rem).
+    const download = links.filter({hasText: 'SDK 下载'});
+    if (testInfo.project.name === 'mobile') {
+      await expect(download).toBeHidden();
+    } else {
+      await expect(download).toBeVisible();
+    }
   });
 
   test('routes to the Android guide', async ({page}) => {
