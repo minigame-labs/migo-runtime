@@ -2502,7 +2502,7 @@ fn run_external_session(
         gpu_caps,
         context_lost: _context_lost,
         timer_backgrounded: _timer_backgrounded,
-        gpu_init_started: _gpu_init_started,
+        gpu_init_started,
         // Why the render worker stopped, read at the one place this session
         // observes it stopping. `gpu_caps` cannot answer it: a panic after the
         // first frame leaves that level saying Ready.
@@ -2536,13 +2536,10 @@ fn run_external_session(
     // What `exitMiniProgram` and `restartMiniProgram` send, which is this
     // session's own command channel -- the one the embedded ops send on.
     service_context.bind_lifecycle(host_tx.clone());
-    // The host's keyboard, which the C ABI host kit backs with the session's
-    // keyboard callbacks when the host installed them.
-    service_context.bind_keyboard(
-        platform
-            .create_device_services(id)
-            .and_then(|services| services.keyboard()),
-    );
+    // The platform's device services, which the C ABI host kit backs with the
+    // callbacks the host installed and the device state it reports.
+    service_context.bind_device(platform.create_device_services(id));
+    service_context.bind_gpu(Arc::clone(&gpu_caps), gpu_init_started);
     // The services that hand the renderer work -- image uploads -- reach it
     // through these, owned by this thread's dispatcher so the sender goes when
     // the session does.
@@ -2970,6 +2967,16 @@ fn handle_command(
 
         HostCommand::OnUserCaptureScreen { .. } => {
             sink.host_hook("_internalTriggerUserCaptureScreen", HOOK_ARGS_NONE);
+        }
+
+        // Sent only while content listens (the host kit's rule), and to the
+        // hook the embedded runtime calls with the same two arguments.
+        HostCommand::OnNetworkStatusChange {
+            is_connected,
+            network_type,
+        } => {
+            let args = serde_json::json!([is_connected, network_type]).to_string();
+            sink.host_hook("_internalTriggerNetworkStatusChange", &args);
         }
 
         // Input was routed to the producer before this match. What is left is

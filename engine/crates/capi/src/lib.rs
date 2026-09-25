@@ -31,6 +31,7 @@ mod callbacks;
 mod capabilities;
 #[cfg(test)]
 mod concurrent_sessions;
+mod device;
 mod gamepad;
 mod host_kit;
 mod input;
@@ -318,6 +319,9 @@ pub struct MigoSession {
     /// Suppress repeated host notifications while bounded input ingress stays
     /// saturated. The next successful input enqueue opens a new episode.
     input_saturation_reported: AtomicBool,
+    /// What the host last reported about the device -- its network and battery.
+    /// The Session's, not a Host's: a report survives attaching and restarting.
+    pub(crate) device: Arc<device::DeviceState>,
 }
 
 impl MigoSession {
@@ -589,6 +593,7 @@ pub unsafe extern "C" fn migo_session_create(
             active_surface_generation: AtomicU64::new(0),
             gamepad_topology: gamepad::GamepadTopology::new(),
             input_saturation_reported: AtomicBool::new(false),
+            device: Default::default(),
         });
         *out_session = Arc::into_raw(session).cast_mut();
         MIGO_OK
@@ -1113,6 +1118,9 @@ mod tests {
             on_hide_keyboard: None,
             on_update_keyboard: None,
             on_surface_released: None,
+            on_vibrate: None,
+            on_keep_screen_on: None,
+            on_game_log: None,
         };
         session.state.lock().unwrap().notifier = Some(Arc::new(callbacks::Notifier::new(
             host_callbacks,
@@ -1760,6 +1768,9 @@ mod tests {
                 on_hide_keyboard: None,
                 on_update_keyboard: None,
                 on_surface_released: None,
+                on_vibrate: None,
+                on_keep_screen_on: None,
+                on_game_log: None,
             };
             assert_eq!(
                 unsafe { migo_session_set_host_callbacks(session, &host_callbacks) },

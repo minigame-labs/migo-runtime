@@ -42,6 +42,7 @@ pub(crate) fn callback_session_pin() -> Arc<MigoSession> {
         active_surface_generation: AtomicU64::new(0),
         gamepad_topology: crate::gamepad::GamepadTopology::new(),
         input_saturation_reported: AtomicBool::new(false),
+        device: Default::default(),
     })
 }
 

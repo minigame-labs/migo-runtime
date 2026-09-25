@@ -1,5 +1,6 @@
 import CryptoKit
 import MigoAppleRenderer
+import MigoEngine
 import XCTest
 
 @testable import MigoApplePerformancePlus
@@ -229,6 +230,82 @@ import XCTest
                     ["kind": "confirm", "value": "hi!01234"],
                     ["kind": "complete", "value": "hi!01234"],
                 ])
+        }
+
+        /// The device, both ways: content's requests reach the host -- the display
+        /// held awake and given back, a log entry handed to the app, a vibration
+        /// accepted -- and what the host reports reaches content: the network it
+        /// reads, and a change it hears while it listens. Orientation is not
+        /// offered on this lane (the session's size is fixed), and content hears
+        /// that as a failure rather than a silent success.
+        func testContentReachesTheDeviceAndHearsTheNetworkChange() throws {
+            let game = try package(
+                named: "device",
+                game: """
+                    const say = (line) => console.log(line);
+                    migo.onNetworkStatusChange((res) => say("changed " + res.networkType + " " + res.isConnected));
+                    migo.getNetworkType({
+                      success(res) { say("network " + res.networkType + " " + res.isConnected); },
+                      fail(error) { say("network-fail " + error.errMsg); } });
+                    migo.setKeepScreenOn({ keepScreenOn: true, success() { say("kept"); } });
+                    migo.getGameLogManager({}).log({ level: "info", key: "k", value: "v" });
+                    migo.vibrateShort({ type: "heavy",
+                      success() { say("vibrated"); }, fail(error) { say("vibrate-fail " + error.errMsg); } });
+                    migo.setDeviceOrientation({ value: "landscape",
+                      success() { say("oriented"); }, fail() { say("orientation-refused"); } });
+                    """)
+            try MigoGameInstaller.install(package: game, id: "device", into: directories)
+            let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
+            let idleTimerBefore = UIApplication.shared.isIdleTimerDisabled
+            UIApplication.shared.isIdleTimerDisabled = false
+            defer { UIApplication.shared.isIdleTimerDisabled = idleTimerBefore }
+
+            var lines: [String] = []
+            var logged: [String] = []
+            var failure: String?
+            let answered = expectation(description: "content heard every answer")
+            answered.expectedFulfillmentCount = 5  // network, kept, vibrated, orientation, the log entry
+            let changed = expectation(description: "content heard the network change")
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    lines.append(message)
+                    if message.hasPrefix("changed ") {
+                        changed.fulfill()
+                    } else {
+                        answered.fulfill()
+                    }
+                case .gameLog(let entry):
+                    logged.append(entry)
+                    answered.fulfill()
+                case .failed(let reason):
+                    failure = reason
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: "device")
+            wait(for: [answered], timeout: 240)
+            XCTAssertNil(failure)
+            XCTAssertTrue(lines.contains("kept"), "\(lines)")
+            XCTAssertTrue(lines.contains("vibrated"), "\(lines)")
+            XCTAssertTrue(lines.contains("orientation-refused"), "\(lines)")
+            let network = try XCTUnwrap(lines.first { $0.hasPrefix("network") }, "\(lines)")
+            XCTAssertTrue(network.hasPrefix("network ") && network.hasSuffix(" true"), "a connected lab: \(network)")
+            XCTAssertTrue(UIApplication.shared.isIdleTimerDisabled, "the display is held awake")
+            let entry = try XCTUnwrap(logged.first)
+            let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(entry.utf8)) as? [String: Any])
+            XCTAssertEqual(object["level"] as? String, "info")
+            XCTAssertEqual(object["key"] as? String, "k")
+            XCTAssertEqual(object["value"] as? String, "v")
+
+            // Content is listening, so a change the host reports reaches it.
+            try XCTUnwrap(view.engine).setNetworkStatus(MigoNetworkType(MIGO_NETWORK_NONE), connected: false)
+            wait(for: [changed], timeout: 30)
+            XCTAssertTrue(lines.contains("changed none false"), "\(lines)")
+
+            view.stop()
+            XCTAssertFalse(UIApplication.shared.isIdleTimerDisabled, "the app's setting is given back when the game ends")
         }
 
         /// A copy of `package`, signed: every file's SHA-256 in manifest.json and

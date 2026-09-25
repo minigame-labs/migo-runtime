@@ -192,6 +192,15 @@ service_ops! {
     op_show_keyboard = 169,
     op_hide_keyboard = 170,
     op_update_keyboard = 171,
+    op_vibrate_short = 172,
+    op_vibrate_long = 173,
+    op_set_keep_screen_on = 174,
+    op_start_network_monitoring = 175,
+    op_stop_network_monitoring = 176,
+    op_game_log_report = 177,
+    op_get_battery_info = 178,
+    op_get_network_type = 179,
+    op_webgl_query_compressed_caps = 180,
 }
 
 /// The op's name, for a refusal a person will read.

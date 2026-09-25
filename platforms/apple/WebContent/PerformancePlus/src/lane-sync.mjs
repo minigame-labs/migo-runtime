@@ -827,6 +827,32 @@ export function op_get_workers_path() {
   return callService(SERVICE_OP.op_get_workers_path);
 }
 
+// ---- compressed textures ------------------------------------------------------
+//
+// Which compressed formats the renderer takes -- bit 0 ETC2/EAC, bit 1 ASTC --
+// is the host's GPU's to say, and it says so only once its renderer is up; the
+// host waits for that within the budget the embedded execution waits before it
+// runs content. The engine's WebGL layer asks once per context and caches it.
+
+export function op_webgl_query_compressed_caps() {
+  return callService(SERVICE_OP.op_webgl_query_compressed_caps);
+}
+
+// ---- the device ---------------------------------------------------------------
+//
+// The battery and the network as the host last reported them, read by the same
+// service the embedded op reads. The network is asked for rather than kept in
+// the startup snapshot because it changes during a session, and the host's copy
+// is the one that is current.
+
+export function op_get_battery_info() {
+  return callService(SERVICE_OP.op_get_battery_info);
+}
+
+export function op_get_network_type() {
+  return callService(SERVICE_OP.op_get_network_type);
+}
+
 // ---- readPixels -------------------------------------------------------------
 //
 // The one query whose answer is pixels rather than a number, and the one whose

@@ -44,7 +44,9 @@ pub fn set_current_thread_priority(priority: Priority) {
     #[cfg(target_vendor = "apple")]
     {
         let class = match priority {
-            Priority::Display | Priority::Foreground => libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE,
+            Priority::Display | Priority::Foreground => {
+                libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE
+            }
             Priority::Default => libc::qos_class_t::QOS_CLASS_DEFAULT,
             // Not QOS_CLASS_BACKGROUND: that class is throttled hard enough to
             // starve a decode something is about to play or draw.

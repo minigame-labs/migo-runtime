@@ -7,8 +7,9 @@
 //! supplied directly by the versioned Surface descriptor.
 
 use migo_core::services::{
-    CommerceServices, ConnectivityServices, KeyboardService, MediaServices, SensorServices,
-    SystemInfoService, SystemUtilServices,
+    BatteryService, CommerceServices, ConnectivityServices, GameLogService, KeyboardService,
+    MediaServices, NetworkService, ScreenService, SensorServices, SystemInfoService,
+    SystemUtilServices, VibrationService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
@@ -23,6 +24,7 @@ use crate::{
         MIGO_KEYBOARD_FLAG_MULTIPLE, MIGO_KEYBOARD_FLAG_NONE, MIGO_KEYBOARD_TYPE_NUMBER,
         MIGO_KEYBOARD_TYPE_TEXT, Notifier, ShowOptions,
     },
+    device::{CapiDevice, DeviceState},
 };
 use migo_capi_abi::MIGO_ERROR_INTERNAL;
 
@@ -90,6 +92,7 @@ impl CapiHostKit {
         notifier: Option<Arc<Notifier>>,
         session: Weak<MigoSession>,
         window: Arc<HostWindowState>,
+        device: Arc<DeviceState>,
     ) -> Self {
         // Offered exactly when the host installed the callbacks -- never
         // because the platform claims a keyboard. On Android the platform's own
@@ -105,12 +108,13 @@ impl CapiHostKit {
                 }) as Arc<dyn KeyboardService>
             });
         Self {
-            notifier,
-            session,
             device_services: Arc::new(CapiDeviceServices {
                 keyboard: host_keyboard,
                 window,
+                device: CapiDevice::new(notifier.clone(), device),
             }),
+            notifier,
+            session,
         }
     }
 }
@@ -118,12 +122,36 @@ impl CapiHostKit {
 struct CapiDeviceServices {
     keyboard: Option<Arc<dyn KeyboardService>>,
     window: Arc<HostWindowState>,
+    device: Arc<CapiDevice>,
 }
 
-impl SensorServices for CapiDeviceServices {}
+impl SensorServices for CapiDeviceServices {
+    fn battery(&self) -> Option<Arc<dyn BatteryService>> {
+        Some(self.device.battery())
+    }
+
+    fn vibration(&self) -> Option<Arc<dyn VibrationService>> {
+        self.device.vibration()
+    }
+
+    fn screen(&self) -> Option<Arc<dyn ScreenService>> {
+        self.device.screen()
+    }
+}
+
 impl MediaServices for CapiDeviceServices {}
-impl ConnectivityServices for CapiDeviceServices {}
-impl CommerceServices for CapiDeviceServices {}
+
+impl ConnectivityServices for CapiDeviceServices {
+    fn network(&self) -> Option<Arc<dyn NetworkService>> {
+        Some(self.device.network())
+    }
+}
+
+impl CommerceServices for CapiDeviceServices {
+    fn game_log(&self) -> Option<Arc<dyn GameLogService>> {
+        self.device.game_log()
+    }
+}
 
 impl SystemUtilServices for CapiDeviceServices {
     fn keyboard(&self) -> Option<Arc<dyn KeyboardService>> {
@@ -304,7 +332,12 @@ mod tests {
     #[test]
     fn without_host_callbacks_no_keyboard_is_offered() {
         let session = session();
-        let kit = CapiHostKit::new(None, Arc::downgrade(&session), window(640, 480, 2.0));
+        let kit = CapiHostKit::new(
+            None,
+            Arc::downgrade(&session),
+            window(640, 480, 2.0),
+            Arc::clone(&session.device),
+        );
         assert!(
             kit.create_device_services(1)
                 .and_then(|services| services.keyboard())
@@ -369,6 +402,9 @@ mod tests {
             on_hide_keyboard: Some(hide),
             on_update_keyboard: Some(update),
             on_surface_released: None,
+            on_vibrate: None,
+            on_keep_screen_on: None,
+            on_game_log: None,
         };
         let session = callback_session_pin();
         let notifier = Arc::new(Notifier::new(
@@ -383,6 +419,7 @@ mod tests {
             Some(notifier),
             Arc::downgrade(&session),
             window(640, 480, 2.0),
+            Arc::clone(&session.device),
         );
         let keyboard = kit
             .create_device_services(1)
@@ -454,7 +491,12 @@ mod tests {
     fn window_info_is_logical_and_tracks_the_latest_surface_metrics() {
         let state = window(1200, 800, 2.0);
         let session = session();
-        let kit = CapiHostKit::new(None, Arc::downgrade(&session), Arc::clone(&state));
+        let kit = CapiHostKit::new(
+            None,
+            Arc::downgrade(&session),
+            Arc::clone(&state),
+            Arc::clone(&session.device),
+        );
         let system = kit
             .create_device_services(1)
             .and_then(|services| services.system_info())

@@ -85,6 +85,16 @@ public final class MigoEngineSession {
         case hideKeyboard
         /// Content replaced the field's whole text.
         case updateKeyboard(String)
+        /// Content asked for a vibration (`migo.vibrateShort` / `vibrateLong`).
+        /// Installed on iOS only: a Mac has nothing to vibrate, and content
+        /// there hears "not supported", as on a phone without a motor.
+        case vibrate(MigoVibration)
+        /// Content wants the display kept awake (`migo.setKeepScreenOn`), or no
+        /// longer does. Whoever acts on it lets go when the session ends.
+        case keepScreenOn(Bool)
+        /// One game-log entry (`migo.getGameLogManager().log`), as the JSON
+        /// object the engine merged: level, key, value, commonInfo.
+        case gameLog(String)
     }
 
     /// What content asked for when it opened the keyboard.
@@ -305,6 +315,11 @@ public final class MigoEngineSession {
         callbacks.on_show_keyboard = migoOnShowKeyboard
         callbacks.on_hide_keyboard = migoOnHideKeyboard
         callbacks.on_update_keyboard = migoOnUpdateKeyboard
+        #if os(iOS)
+            callbacks.on_vibrate = migoOnVibrate
+        #endif
+        callbacks.on_keep_screen_on = migoOnKeepScreenOn
+        callbacks.on_game_log = migoOnGameLog
         let installed = migo_session_set_host_callbacks(session, &callbacks)
         guard installed == MIGO_OK else {
             _ = migo_session_destroy(session)
@@ -448,6 +463,25 @@ public final class MigoEngineSession {
     public func setFocused(_ focused: Bool) {
         guard !isClosed else { return }
         _ = migo_session_set_focus(session, focused ? 1 : 0)
+    }
+
+    /// The network the device is on, reported now and at each change; content
+    /// reads the last report (`getNetworkType`) and hears changes while it
+    /// listens (`onNetworkStatusChange`). See `MigoDeviceStatusReporter`.
+    public func setNetworkStatus(_ type: MigoNetworkType, connected: Bool) {
+        guard !isClosed else { return }
+        let result = migo_session_set_network_status(session, type, connected ? 1 : 0)
+        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_network_status returned \(result)") }
+    }
+
+    /// The battery, reported now and at each change (`getBatteryInfo`).
+    public func setBatteryStatus(levelPercent: UInt32, charging: Bool, lowPowerMode: Bool) {
+        guard !isClosed else { return }
+        var flags = MigoBatteryFlags(MIGO_BATTERY_FLAG_NONE)
+        if charging { flags |= MigoBatteryFlags(MIGO_BATTERY_FLAG_CHARGING) }
+        if lowPowerMode { flags |= MigoBatteryFlags(MIGO_BATTERY_FLAG_LOW_POWER_MODE) }
+        let result = migo_session_set_battery_status(session, min(levelPercent, 100), flags)
+        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_battery_status returned \(result)") }
     }
 
     // MARK: - input
@@ -759,6 +793,22 @@ private let migoOnUpdateKeyboard: MigoOnUpdateKeyboardFn = { userData, _, value,
         text = String(decoding: UnsafeRawBufferPointer(start: value, count: Int(length)), as: UTF8.self)
     }
     relay(userData)?.owner?.deliver(.updateKeyboard(text))
+}
+
+#if os(iOS)
+    private let migoOnVibrate: MigoOnVibrateFn = { userData, _, vibration in
+        relay(userData)?.owner?.deliver(.vibrate(vibration))
+    }
+#endif
+
+private let migoOnKeepScreenOn: MigoOnKeepScreenOnFn = { userData, _, keepOn in
+    relay(userData)?.owner?.deliver(.keepScreenOn(keepOn != 0))
+}
+
+private let migoOnGameLog: MigoOnGameLogFn = { userData, _, entry, length in
+    guard let entry, length > 0 else { return }
+    let json = String(decoding: UnsafeRawBufferPointer(start: entry, count: Int(length)), as: UTF8.self)
+    relay(userData)?.owner?.deliver(.gameLog(json))
 }
 
 private let migoOnSurfaceReleased: MigoOnSurfaceReleasedFn = { userData, _, _ in

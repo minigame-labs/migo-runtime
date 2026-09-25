@@ -39,6 +39,11 @@ use shared::{
 use crate::runtime::HostId;
 use crate::services::{AudioService, PlatformServices, RenderService};
 
+/// How long a session waits, from the renderer's launch, for the GPU's
+/// capabilities before content may ask about them. The embedded execution waits
+/// before it runs content; the external one when content first asks.
+pub(crate) const GPU_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Cleans process-global registrations if `Host::new` exits before ownership
 /// transfers to the fully assembled `Host` and its normal `Drop` path.
 pub(crate) struct HostStartupGuard {

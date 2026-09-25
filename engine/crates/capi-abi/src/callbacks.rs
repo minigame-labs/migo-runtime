@@ -24,6 +24,14 @@ pub type MigoOnShowKeyboardFn =
 pub type MigoOnHideKeyboardFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
 pub type MigoOnUpdateKeyboardFn =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char, u32);
+pub type MigoOnVibrateFn = unsafe extern "C" fn(*mut c_void, *mut c_void, u32);
+pub type MigoOnKeepScreenOnFn = unsafe extern "C" fn(*mut c_void, *mut c_void, u8);
+pub type MigoOnGameLogFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char, u32);
+
+pub const MIGO_VIBRATION_SHORT_LIGHT: u32 = 0;
+pub const MIGO_VIBRATION_SHORT_MEDIUM: u32 = 1;
+pub const MIGO_VIBRATION_SHORT_HEAVY: u32 = 2;
+pub const MIGO_VIBRATION_LONG: u32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +75,10 @@ pub struct MigoHostCallbacks {
     /// Appended after the ABI v1 keyboard prefix. It is a wakeup edge only;
     /// release queries remain authoritative.
     pub on_surface_released: Option<MigoOnSurfaceReleasedFn>,
+    /// Appended device capabilities, each optional and independent.
+    pub on_vibrate: Option<MigoOnVibrateFn>,
+    pub on_keep_screen_on: Option<MigoOnKeepScreenOnFn>,
+    pub on_game_log: Option<MigoOnGameLogFn>,
 }
 
 // SAFETY: the record consists only of integers, raw pointers and nullable C
@@ -108,6 +120,9 @@ pub struct ValidatedHostCallbacks {
     pub on_hide_keyboard: Option<MigoOnHideKeyboardFn>,
     pub on_update_keyboard: Option<MigoOnUpdateKeyboardFn>,
     pub on_surface_released: Option<MigoOnSurfaceReleasedFn>,
+    pub on_vibrate: Option<MigoOnVibrateFn>,
+    pub on_keep_screen_on: Option<MigoOnKeepScreenOnFn>,
+    pub on_game_log: Option<MigoOnGameLogFn>,
 }
 
 // SAFETY: both pointers are opaque host tokens. Migo never dereferences them;
@@ -150,6 +165,9 @@ impl MigoHostCallbacks {
             on_hide_keyboard: None,
             on_update_keyboard: None,
             on_surface_released: None,
+            on_vibrate: None,
+            on_keep_screen_on: None,
+            on_game_log: None,
         }
     }
 
@@ -190,7 +208,11 @@ impl MigoHostCallbacks {
             || self.on_show_keyboard.is_some()
             || self.on_hide_keyboard.is_some()
             || self.on_update_keyboard.is_some();
-        let has_callback = has_callback || self.on_surface_released.is_some();
+        let has_callback = has_callback
+            || self.on_surface_released.is_some()
+            || self.on_vibrate.is_some()
+            || self.on_keep_screen_on.is_some()
+            || self.on_game_log.is_some();
         let Some(dispatch) = self.dispatch else {
             return if has_callback {
                 Err(MIGO_ERROR_INVALID_ARGUMENT)
@@ -212,6 +234,9 @@ impl MigoHostCallbacks {
             on_hide_keyboard: self.on_hide_keyboard,
             on_update_keyboard: self.on_update_keyboard,
             on_surface_released: self.on_surface_released,
+            on_vibrate: self.on_vibrate,
+            on_keep_screen_on: self.on_keep_screen_on,
+            on_game_log: self.on_game_log,
         }))
     }
 }
@@ -227,7 +252,7 @@ const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 40);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoKeyboardShowOptions, default_value_utf8) == 24);
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<MigoHostCallbacks>() == 104);
+const _: () = assert!(size_of::<MigoHostCallbacks>() == 128);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 24);
 #[cfg(target_pointer_width = "64")]
@@ -236,6 +261,8 @@ const _: () = assert!(offset_of!(MigoHostCallbacks, on_request_frame) == 64);
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_update_keyboard) == 88);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_surface_released) == 96);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, on_game_log) == 120);
 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(size_of::<MigoError>() == 28);
@@ -244,7 +271,7 @@ const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 36);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoKeyboardShowOptions, default_value_utf8) == 24);
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(size_of::<MigoHostCallbacks>() == 56);
+const _: () = assert!(size_of::<MigoHostCallbacks>() == 68);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 16);
 #[cfg(target_pointer_width = "32")]
@@ -253,3 +280,5 @@ const _: () = assert!(offset_of!(MigoHostCallbacks, on_request_frame) == 36);
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_update_keyboard) == 48);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_surface_released) == 52);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, on_game_log) == 64);

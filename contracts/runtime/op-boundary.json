@@ -130,11 +130,11 @@
       }
     },
     "host_v8_base": {
-      "reason": "Package loading reads the host's mounted code, synchronously where `require` is synchronous; callback ids are the producer's.",
+      "reason": "Package loading reads the host's mounted code, synchronously where `require` is synchronous; callback ids are the producer's. Heap statistics are V8's, and content here runs in WebKit's JavaScriptCore, which exposes none to a page: a number the host made up would read as a measurement, so the call is refused.",
       "ops": {
         "op_alloc_host_callback_id": "local",
         "op_download_subpackage": "command",
-        "op_get_heap_statistics": "sync",
+        "op_get_heap_statistics": "unsupported",
         "op_get_mount_generation": "sync",
         "op_get_sub_packages": "sync",
         "op_get_subpackage_identity": "sync",
@@ -153,19 +153,19 @@
       }
     },
     "host_v8_device": {
-      "reason": "Orientation, wake lock, vibration and network monitoring are host commands; the network type is part of the environment snapshot. Clipboard, location, sensors, code scanning and screen capture are off by the profile (D18) and need the host app's own review position.",
+      "reason": "Vibration, the display wake lock and network monitoring are host commands. The battery and the network type are the host's last report, read synchronously: the network changes during a session, so the host's one copy is the answer rather than a snapshot the producer would have to keep in step. Orientation is fixed when the session starts (its size is), and there is no debug panel to enable. Clipboard, location, sensors, code scanning and screen capture are off by the profile (D18) and need the host app's own review position.",
       "ops": {
         "op_get_battery_info": "sync",
         "op_get_clipboard_data": "unsupported",
         "op_get_fuzzy_location": "unsupported",
         "op_get_local_ip_address": "unsupported",
         "op_get_location": "unsupported",
-        "op_get_network_type": "local",
+        "op_get_network_type": "sync",
         "op_get_screen_brightness": "unsupported",
         "op_scan_code": "unsupported",
         "op_set_clipboard_data": "unsupported",
-        "op_set_device_orientation": "command",
-        "op_set_enable_debug": "command",
+        "op_set_device_orientation": "unsupported",
+        "op_set_enable_debug": "unsupported",
         "op_set_keep_screen_on": "command",
         "op_set_screen_brightness": "unsupported",
         "op_start_accelerometer": "unsupported",
@@ -423,7 +423,7 @@
       }
     },
     "host_v8_webgl": {
-      "reason": "Rendering. The engine's WebGL and Canvas2D facades already encode state, draws and uniforms into the frame command stream; on Performance+ every call that has no answer the producer lacks joins them there -- resource creation with producer-allocated ids, shader source, uploads, attachments -- so a frame's GL work crosses once, in order, inside its packet. Queries whose answer is the driver's cross the synchronous barrier; attributes, capabilities and id allocation are the producer's own. requestAnimationFrame is the frame clock's request and tick.",
+      "reason": "Rendering. The engine's WebGL and Canvas2D facades already encode state, draws and uniforms into the frame command stream; on Performance+ every call that has no answer the producer lacks joins them there -- resource creation with producer-allocated ids, shader source, uploads, attachments -- so a frame's GL work crosses once, in order, inside its packet. Queries whose answer is the driver's cross the synchronous barrier -- the compressed-texture formats among them, which only the host's renderer knows and knows only once it is up; attributes, the remaining capabilities and id allocation are the producer's own. requestAnimationFrame is the frame clock's request and tick.",
       "ops": {
         "op_active_texture": "stream",
         "op_alloc_gl_resource_id": "local",
@@ -615,7 +615,7 @@
         "op_viewport": "stream",
         "op_webgl_get_context_attributes": "local",
         "op_webgl_get_error": "sync",
-        "op_webgl_query_compressed_caps": "local",
+        "op_webgl_query_compressed_caps": "sync",
         "op_webgl_record_attributes": "local",
         "op_webgl_record_error": "local",
         "op_webgl_record_out_of_memory": "local"

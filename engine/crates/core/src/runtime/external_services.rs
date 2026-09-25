@@ -62,7 +62,9 @@ use migo_services::content::MountedContent;
 use migo_services::image::cache::{ImageCache, SharedImageCache};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
-use super::service_args::{bytes, exactly, f64_of, i32_of, not_a, string, strings, u32_of};
+use super::service_args::{
+    boolean, bytes, exactly, f64_of, i32_of, not_a, string, strings, u32_of,
+};
 use super::service_audio::{self, AudioBinding, LocalSources};
 use super::service_network::{self, NetworkBinding, UploadSources};
 use super::service_ops::id;
@@ -293,18 +295,23 @@ pub(crate) struct ServiceContext {
     /// the session itself: `exitMiniProgram` and `restartMiniProgram`. The
     /// embedded ops send the same commands through the same channel.
     lifecycle: OnceLock<shared::host_channel::HostCommandSender>,
-    /// The host's soft keyboard, when it supplies one: the same service the
-    /// embedded `op_show_keyboard` calls, so both executions open the same UI.
-    keyboard: OnceLock<Option<Arc<dyn shared::services::KeyboardService>>>,
+    /// The platform's device services -- the keyboard, vibration, the display
+    /// wake lock, the game log, the battery and the network: the same object
+    /// the embedded ops call, so both executions reach the same host.
+    device: OnceLock<Option<Arc<dyn shared::services::DeviceServices>>>,
+    /// The renderer's capabilities and when its launch began: what content's
+    /// compressed-texture query waits on, within the same budget the embedded
+    /// execution gives it.
+    gpu: OnceLock<(Arc<shared::device::gpu_caps::GpuCaps>, Instant)>,
     /// Whether the content this session mounts must be signed, resolved from
     /// the session's options when it starts. Unbound is unverified -- which is
     /// what a session started with signing off binds anyway.
     signing: OnceLock<migo_services::content::ContentSigning>,
 }
 
-/// The keyboard service's refusal in the words the embedded op shows: its
+/// A device service's refusal in the words the embedded op shows: its
 /// message, which is what `JsErrorBox::generic` renders there.
-fn keyboard_error(error: shared::services::ServiceError) -> ServiceError {
+fn device_error(error: shared::services::ServiceError) -> ServiceError {
     ServiceError::generic(error.message)
 }
 
@@ -320,7 +327,8 @@ impl ServiceContext {
             audio: OnceLock::new(),
             network: OnceLock::new(),
             lifecycle: OnceLock::new(),
-            keyboard: OnceLock::new(),
+            device: OnceLock::new(),
+            gpu: OnceLock::new(),
             signing: OnceLock::new(),
         }
     }
@@ -502,24 +510,58 @@ impl ServiceContext {
         let _ = self.signing.set(signing);
     }
 
-    /// Give the services the host's keyboard, or say it has none. Once, on the
-    /// session thread, before the first service work is dispatched.
-    pub(crate) fn bind_keyboard(
-        &self,
-        keyboard: Option<Arc<dyn shared::services::KeyboardService>>,
-    ) {
-        let _ = self.keyboard.set(keyboard);
+    /// Give the services the platform's device services, or say there are
+    /// none. Once, on the session thread, before the first service work is
+    /// dispatched.
+    pub(crate) fn bind_device(&self, device: Option<Arc<dyn shared::services::DeviceServices>>) {
+        let _ = self.device.set(device);
     }
 
-    /// The keyboard, or the embedded op's own refusal when the host has none.
+    /// Give the services the renderer's capabilities. Once, on the session
+    /// thread, before the session is ready.
+    pub(crate) fn bind_gpu(&self, caps: Arc<shared::device::gpu_caps::GpuCaps>, launched: Instant) {
+        let _ = self.gpu.set((caps, launched));
+    }
+
+    /// `op_webgl_query_compressed_caps`: bit 0 ETC2/EAC, bit 1 ASTC LDR -- the
+    /// embedded op's bits (`runtime-v8`'s `error_state.rs`). Waits for the
+    /// renderer to publish them, as the embedded execution does before it runs
+    /// content; a renderer that failed or never answered has none, which is
+    /// the embedded op's answer before caps are set.
+    fn compressed_texture_caps(&self) -> u32 {
+        let Some((caps, launched)) = self.gpu.get() else {
+            return 0;
+        };
+        if !matches!(
+            caps.wait_ready_until(*launched, super::shell::GPU_INIT_TIMEOUT),
+            shared::device::gpu_caps::GpuCapsReadyState::Ready
+        ) {
+            return 0;
+        }
+        let snapshot = caps.snapshot();
+        u32::from(snapshot.etc2) | (u32::from(snapshot.astc) << 1)
+    }
+
+    /// One device service, or the embedded op's own refusal when the platform
+    /// has none -- the words it raises when `device_services` or the service
+    /// is absent.
+    fn device<T: ?Sized>(
+        &self,
+        what: &str,
+        pick: impl FnOnce(&dyn shared::services::DeviceServices) -> Option<Arc<T>>,
+    ) -> Result<Arc<T>, ServiceError> {
+        self.device
+            .get()
+            .and_then(Option::as_deref)
+            .and_then(pick)
+            .ok_or_else(|| ServiceError::generic(format!("{what}:fail not supported")))
+    }
+
     fn keyboard(
         &self,
         what: &str,
-    ) -> Result<&Arc<dyn shared::services::KeyboardService>, ServiceError> {
-        self.keyboard
-            .get()
-            .and_then(Option::as_ref)
-            .ok_or_else(|| ServiceError::generic(format!("{what}:fail not supported")))
+    ) -> Result<Arc<dyn shared::services::KeyboardService>, ServiceError> {
+        self.device(what, |device| device.keyboard())
     }
 
     fn lifecycle(&self) -> Result<&shared::host_channel::HostCommandSender, ServiceError> {
@@ -721,6 +763,26 @@ impl ServiceContext {
                 let [url] = exactly(op, args)?;
                 migo_services::storage::revoke_buffer_url(paths, &string(op, 0, url)?)
                     .map(|()| OwnedValue::Null)
+            }
+            // What content reads about the device: the host's last report,
+            // through the same services the embedded ops read.
+            id::op_webgl_query_compressed_caps => {
+                let [] = exactly(op, args)?;
+                Ok(OwnedValue::U32(self.compressed_texture_caps()))
+            }
+            id::op_get_battery_info => {
+                let [] = exactly(op, args)?;
+                self.device("getBatteryInfo", |device| device.battery())?
+                    .get_info_json()
+                    .map(OwnedValue::Str)
+                    .map_err(device_error)
+            }
+            id::op_get_network_type => {
+                let [] = exactly(op, args)?;
+                self.device("getNetworkType", |device| device.network())?
+                    .get_network_type_json()
+                    .map(OwnedValue::Str)
+                    .map_err(device_error)
             }
             id::op_require_resolve_and_read => {
                 let [specifier, referrer_dir] = exactly(op, args)?;
@@ -995,19 +1057,54 @@ impl ServiceContext {
                 let [options] = exactly(op, args)?;
                 self.keyboard("showKeyboard")?
                     .show(&string(op, 0, options)?)
-                    .map_err(keyboard_error)
+                    .map_err(device_error)
             }
             id::op_hide_keyboard => {
                 let [] = exactly(op, args)?;
-                self.keyboard("hideKeyboard")?
-                    .hide()
-                    .map_err(keyboard_error)
+                self.keyboard("hideKeyboard")?.hide().map_err(device_error)
             }
             id::op_update_keyboard => {
                 let [value] = exactly(op, args)?;
                 self.keyboard("updateKeyboard")?
                     .update(&string(op, 0, value)?)
-                    .map_err(keyboard_error)
+                    .map_err(device_error)
+            }
+            // The device, as content asks the host to act on it.
+            id::op_vibrate_short => {
+                let [vibrate_type] = exactly(op, args)?;
+                self.device("vibrateShort", |device| device.vibration())?
+                    .vibrate_short(&string(op, 0, vibrate_type)?)
+                    .map_err(device_error)
+            }
+            id::op_vibrate_long => {
+                let [] = exactly(op, args)?;
+                self.device("vibrateLong", |device| device.vibration())?
+                    .vibrate_long()
+                    .map_err(device_error)
+            }
+            id::op_set_keep_screen_on => {
+                let [keep_on] = exactly(op, args)?;
+                self.device("setKeepScreenOn", |device| device.screen())?
+                    .set_keep_screen_on(boolean(op, 0, keep_on)?)
+                    .map_err(device_error)
+            }
+            id::op_start_network_monitoring => {
+                let [] = exactly(op, args)?;
+                self.device("onNetworkStatusChange", |device| device.network())?
+                    .start_monitoring()
+                    .map_err(device_error)
+            }
+            id::op_stop_network_monitoring => {
+                let [] = exactly(op, args)?;
+                self.device("offNetworkStatusChange", |device| device.network())?
+                    .stop_monitoring()
+                    .map_err(device_error)
+            }
+            id::op_game_log_report => {
+                let [entry] = exactly(op, args)?;
+                self.device("gameLog.log", |device| device.game_log())?
+                    .report_log(&string(op, 0, entry)?)
+                    .map_err(device_error)
             }
             id::op_set_preferred_fps => {
                 let [fps] = exactly(op, args)?;
@@ -2199,9 +2296,18 @@ mod tests {
 
         let context = ServiceContext::new(root.join("files"), root.join("cache"));
         let keyboard = Arc::new(Recorded::default());
-        context.bind_keyboard(Some(
-            Arc::clone(&keyboard) as Arc<dyn shared::services::KeyboardService>
-        ));
+        // A platform whose only device service is this keyboard.
+        struct Platform(Arc<Recorded>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::MediaServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {
+            fn keyboard(&self) -> Option<Arc<dyn shared::services::KeyboardService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn shared::services::KeyboardService>)
+            }
+        }
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&keyboard)))));
         let options = r#"{"defaultValue":"hi","maxLength":8}"#;
         context
             .command(
@@ -2231,7 +2337,7 @@ mod tests {
         );
 
         let none = ServiceContext::new(root.join("files"), root.join("cache"));
-        none.bind_keyboard(None);
+        none.bind_device(None);
         for (op, args, what) in [
             (
                 id::op_show_keyboard,
@@ -2248,6 +2354,188 @@ mod tests {
             let error = none.command(op, args, &render).expect_err("no keyboard");
             assert_eq!(error.message, format!("{what}:fail not supported"));
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The compressed-texture query answers the renderer's formats in the
+    /// embedded op's bits once the renderer publishes them, and none when the
+    /// renderer failed -- the embedded op's answer before caps are set.
+    #[test]
+    fn compressed_texture_caps_are_the_renderer_s_in_the_embedded_bits() {
+        let root = std::env::temp_dir().join(format!("migo-gpu-caps-{}", std::process::id()));
+        let answer = |context: &ServiceContext| match context
+            .call_sync(id::op_webgl_query_compressed_caps, Vec::new())
+        {
+            Ok(OwnedValue::U32(bits)) => bits,
+            other => panic!("a u32, not {other:?}"),
+        };
+        for (etc2, astc, bits) in [(true, true, 0b11), (true, false, 0b01), (false, true, 0b10)] {
+            let context = ServiceContext::new(root.join("files"), root.join("cache"));
+            let caps = shared::device::gpu_caps::GpuCaps::new();
+            context.bind_gpu(Arc::clone(&caps), Instant::now());
+            // Published after the call begins waiting: the answer waits for it.
+            let publisher = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                caps.set(etc2, astc, false);
+            });
+            assert_eq!(answer(&context), bits, "etc2 {etc2} astc {astc}");
+            publisher.join().unwrap();
+        }
+        let failed = ServiceContext::new(root.join("files"), root.join("cache"));
+        let caps = shared::device::gpu_caps::GpuCaps::new();
+        caps.set_failed("no GL");
+        failed.bind_gpu(caps, Instant::now());
+        assert_eq!(answer(&failed), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The device commands and reads reach the platform's device services with
+    /// content's own arguments, and a platform without one is refused in the
+    /// embedded op's words -- so `vibrateShort`'s `fail` and `getBatteryInfo`'s
+    /// answer are the same on both lanes.
+    #[test]
+    fn device_calls_reach_the_platform_s_services_or_are_refused_as_in_process() {
+        use shared::services::{
+            BatteryService, GameLogService, NetworkService, ScreenService, ServiceError,
+            VibrationService,
+        };
+        #[derive(Default)]
+        struct Recorded(parking_lot::Mutex<Vec<String>>);
+        impl Recorded {
+            fn push(&self, what: String) -> Result<(), ServiceError> {
+                self.0.lock().push(what);
+                Ok(())
+            }
+        }
+        impl VibrationService for Recorded {
+            fn vibrate_short(&self, type_: &str) -> Result<(), ServiceError> {
+                self.push(format!("short {type_}"))
+            }
+            fn vibrate_long(&self) -> Result<(), ServiceError> {
+                self.push("long".into())
+            }
+        }
+        impl ScreenService for Recorded {
+            fn set_keep_screen_on(&self, keep_on: bool) -> Result<(), ServiceError> {
+                self.push(format!("keep {keep_on}"))
+            }
+        }
+        impl GameLogService for Recorded {
+            fn report_log(&self, log_json: &str) -> Result<(), ServiceError> {
+                self.push(format!("log {log_json}"))
+            }
+        }
+        impl NetworkService for Recorded {
+            fn start_monitoring(&self) -> Result<(), ServiceError> {
+                self.push("monitor".into())
+            }
+            fn stop_monitoring(&self) -> Result<(), ServiceError> {
+                self.push("unmonitor".into())
+            }
+            fn get_network_type_json(&self) -> Result<String, ServiceError> {
+                Ok(r#"{"networkType":"wifi","isConnected":true}"#.into())
+            }
+        }
+        impl BatteryService for Recorded {
+            fn get_info_json(&self) -> Result<String, ServiceError> {
+                Ok(r#"{"level":"80"}"#.into())
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!("migo-device-{}", std::process::id()));
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+        let device = Arc::new(Recorded::default());
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        // A platform whose device services are all this one recorder.
+        struct Platform(Arc<Recorded>);
+        impl shared::services::SensorServices for Platform {
+            fn battery(&self) -> Option<Arc<dyn BatteryService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn BatteryService>)
+            }
+            fn vibration(&self) -> Option<Arc<dyn VibrationService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn VibrationService>)
+            }
+            fn screen(&self) -> Option<Arc<dyn ScreenService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn ScreenService>)
+            }
+        }
+        impl shared::services::ConnectivityServices for Platform {
+            fn network(&self) -> Option<Arc<dyn NetworkService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn NetworkService>)
+            }
+        }
+        impl shared::services::CommerceServices for Platform {
+            fn game_log(&self) -> Option<Arc<dyn GameLogService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn GameLogService>)
+            }
+        }
+        impl shared::services::MediaServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {}
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&device)))));
+        let commands = [
+            (id::op_vibrate_short, vec![OwnedValue::Str("heavy".into())]),
+            (id::op_vibrate_long, Vec::new()),
+            (id::op_set_keep_screen_on, vec![OwnedValue::Bool(true)]),
+            (id::op_start_network_monitoring, Vec::new()),
+            (id::op_stop_network_monitoring, Vec::new()),
+            (id::op_game_log_report, vec![OwnedValue::Str("{}".into())]),
+        ];
+        for (op, args) in commands.clone() {
+            context.command(op, args, &render).expect("applied");
+        }
+        assert_eq!(
+            *device.0.lock(),
+            [
+                "short heavy",
+                "long",
+                "keep true",
+                "monitor",
+                "unmonitor",
+                "log {}"
+            ]
+        );
+        let answer = |context: &ServiceContext, op| match context.call_sync(op, Vec::new()) {
+            Ok(OwnedValue::Str(json)) => Ok(json),
+            Ok(other) => panic!("a JSON string, not {other:?}"),
+            Err(error) => Err(error.message),
+        };
+        assert_eq!(
+            answer(&context, id::op_get_battery_info).as_deref(),
+            Ok(r#"{"level":"80"}"#)
+        );
+        assert_eq!(
+            answer(&context, id::op_get_network_type).as_deref(),
+            Ok(r#"{"networkType":"wifi","isConnected":true}"#)
+        );
+
+        let none = ServiceContext::new(root.join("files"), root.join("cache"));
+        none.bind_device(None);
+        let words = [
+            "vibrateShort",
+            "vibrateLong",
+            "setKeepScreenOn",
+            "onNetworkStatusChange",
+            "offNetworkStatusChange",
+            "gameLog.log",
+        ];
+        for ((op, args), what) in commands.into_iter().zip(words) {
+            let error = none
+                .command(op, args, &render)
+                .expect_err("no device services");
+            assert_eq!(error.message, format!("{what}:fail not supported"));
+        }
+        assert_eq!(
+            answer(&none, id::op_get_battery_info),
+            Err("getBatteryInfo:fail not supported".to_string())
+        );
+        assert_eq!(
+            answer(&none, id::op_get_network_type),
+            Err("getNetworkType:fail not supported".to_string())
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
