@@ -92,9 +92,8 @@ if [[ -f "$STATIC_LIB" ]] && command -v nm >/dev/null 2>&1; then
     # tree above). Every other platform header declares only types, so widening
     # this glob does not pull in a symbol the other SDKs' contract scripts don't
     # already agree on.
-    DECLARED="$(grep -ohE '\bmigo_[a-z0-9_]+[[:space:]]*\(' "$REPO_ROOT"/include/migo/*.h \
-            "$REPO_ROOT"/include/migo/platform/android.h \
-        | tr -d '( \t' | sort -u)"
+    DECLARED="$(python3 "$REPO_ROOT/scripts/c-abi-entry-points.py" embedded "$REPO_ROOT/include/migo" \
+            "$REPO_ROOT/include/migo/platform/android.h")"
     # `|| true`: grep exits non-zero when a broken archive defines no migo_
     # symbol, which must surface as an empty set the comparison below rejects,
     # not as the whole gate aborting under `set -e`.

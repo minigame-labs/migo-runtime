@@ -261,8 +261,7 @@ python3 "$SCRIPT_DIR/write-linux-build-metadata.py" \
 
 info "linking libmigo.so (linker: $LLD_BIN)"
 SO_MAP="$ENGINE_DIR/crates/capi/migo.map"
-ENTRY_POINTS=$(grep -ohE '\bmigo_[a-z0-9_]+[[:space:]]*\(' "$REPO_ROOT"/include/migo/*.h \
-    | tr -d '( \t' | sort -u)
+ENTRY_POINTS=$(python3 "$SCRIPT_DIR/c-abi-entry-points.py" embedded "$REPO_ROOT/include/migo")
 UNDEF_ARGS=()
 for entry in $ENTRY_POINTS; do
     UNDEF_ARGS+=("-Wl,-u,$entry")

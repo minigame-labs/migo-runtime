@@ -82,8 +82,7 @@ fi
 # Rust, V8, Skia or ICU symbol would let a host bind to it, turning an internal
 # change into an ABI break.
 if [[ -f "$SHARED_LIB" ]]; then
-    DECLARED="$(grep -ohE '\bmigo_[a-z0-9_]+[[:space:]]*\(' "$REPO_ROOT"/include/migo/*.h \
-        | tr -d '( \t' | sort -u)"
+    DECLARED="$(python3 "$REPO_ROOT/scripts/c-abi-entry-points.py" embedded "$REPO_ROOT/include/migo")"
     EXPORTED="$(python3 "$AUDIT" exports "$SHARED_LIB" | sort -u)"
     if [[ "$DECLARED" == "$EXPORTED" ]]; then
         pass "export surface is exactly the declared migo_* set"
