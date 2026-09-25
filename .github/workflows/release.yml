@@ -12,7 +12,10 @@ jobs:
   # ── Job 1: Quality gate (same as PR CI, ensures tag is clean) ───────
   quality-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Warm, the gate took 24 minutes on 2026-09-18; cold -- which every release
+    # bump makes it, the version being in Cargo.lock -- it passed 30 inside its
+    # Performance+ builds. The ceiling bounds a hang, not the gate's real work.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -60,9 +63,10 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        # No cache-on-failure: a run that failed half way saved its half-built
+        # target under the full key, and a full match is never saved again.
         with:
           workspaces: engine -> target
-          cache-on-failure: true
 
       - name: Check Rust formatting
         working-directory: engine
