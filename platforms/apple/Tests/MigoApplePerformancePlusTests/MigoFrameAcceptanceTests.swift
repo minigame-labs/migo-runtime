@@ -1865,9 +1865,14 @@ import XCTest
                 answered["events"] as? String, "canplay,play,ended",
                 "the audio thread's events reached the game's listeners")
             XCTAssertEqual(answered["innerDuration"] as? Double ?? 0, 0.25, accuracy: 0.02)
-            XCTAssertEqual(
-                (answered["refused"] as? String)?.contains("no network service"), true,
-                "a streamed source says why it cannot be fetched yet, rather than failing silently")
+            // A streamed source is fetched by the host, with the client and
+            // policy `fetch()` uses, as the embedded runtime fetches it. The
+            // `.example` domain never resolves (RFC 2606), so the fetch fails on
+            // every host and content must hear it through onError rather than
+            // waiting on a sound that will never play.
+            XCTAssertFalse(
+                (answered["refused"] as? String ?? "").isEmpty,
+                "a streamed source that cannot be fetched is reported to content")
         }
 
         /// A quarter second of 440 Hz at 0.8 amplitude: 16-bit mono PCM in a
