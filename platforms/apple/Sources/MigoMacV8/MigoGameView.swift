@@ -16,6 +16,7 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
 
 #if os(macOS)
     import AppKit
+    import IOKit.pwr_mgt
     import QuartzCore
 
     /// A view that runs one mini-game: the macOS product surface of Migo.
@@ -82,6 +83,10 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             case exitRequested
             case failed(String)
             case error(code: Int32, message: String, recoverable: Bool)
+            /// An entry from the game's log (`getGameLogManager().log`), as the
+            /// JSON object the engine merged -- level, key, value, commonInfo --
+            /// for the app to keep or upload.
+            case gameLog(String)
         }
 
         public var onEvent: ((Event) -> Void)?
@@ -106,6 +111,10 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
         private let configuration: Configuration
         private var game: (id: String, entry: String)?
         private var engine: MigoEngineSession?
+        private var deviceStatus: MigoDeviceStatusReporter?
+        /// The power assertion that keeps the display awake while the game
+        /// asks for it (`setKeepScreenOn`); 0 while none is held.
+        private var displayAwake: IOPMAssertionID = 0
         private var metalLayer: CAMetalLayer
         private var abandonedLayers: [CAMetalLayer] = []
         private var closing = 0
@@ -225,6 +234,10 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                     preferredFramesPerSecond: configuration.preferredFramesPerSecond)
                 self.engine = engine
                 engine.onEvent = { [weak self] event in self?.engineEvent(event) }
+                // Before content runs, so its first `getNetworkType` has a report.
+                let deviceStatus = MigoDeviceStatusReporter(session: engine)
+                self.deviceStatus = deviceStatus
+                deviceStatus.start()
                 try engine.attach(layer: metalLayer, size: size)
                 try engine.loadContent(id: game.id, entry: game.entry)
                 isRunning = true
@@ -241,6 +254,9 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             isRunning = false
             keyboard.hide(reportingTo: nil)
             mouseDown = false
+            deviceStatus?.stop()
+            deviceStatus = nil
+            keepDisplayAwake(false)
             guard let engine else { return }
             self.engine = nil
             closing += 1
@@ -284,6 +300,33 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 keyboard.hide()
             case .updateKeyboard(let text):
                 keyboard.replaceText(text)
+            case .vibrate:
+                break  // Not installed on macOS: content hears "not supported".
+            case .keepScreenOn(let on):
+                keepDisplayAwake(on)
+            case .gameLog(let entry):
+                onEvent?(.gameLog(entry))
+            }
+        }
+
+        /// What `caffeinate -d` does: a power assertion against idle display
+        /// sleep, held while the game asks and released when it stops asking
+        /// or ends.
+        private func keepDisplayAwake(_ on: Bool) {
+            if on, displayAwake == 0 {
+                var assertion: IOPMAssertionID = 0
+                let result = IOPMAssertionCreateWithName(
+                    kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                    IOPMAssertionLevel(kIOPMAssertionLevelOn), "A game asked to keep the display on" as CFString,
+                    &assertion)
+                if result == kIOReturnSuccess {
+                    displayAwake = assertion
+                } else {
+                    NSLog("MigoGameView: IOPMAssertionCreateWithName returned \(result)")
+                }
+            } else if !on, displayAwake != 0 {
+                IOPMAssertionRelease(displayAwake)
+                displayAwake = 0
             }
         }
 

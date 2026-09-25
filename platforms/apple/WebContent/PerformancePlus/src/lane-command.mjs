@@ -602,6 +602,44 @@ export function op_update_keyboard(value) {
   servicesOf(engineHost()).command(SERVICE_OP.op_update_keyboard, (w) => w.str(text));
 }
 
+// ---- the device ---------------------------------------------------------------
+//
+// Requests the host carries out -- a vibration, the display held awake, a log
+// entry kept -- and the switch for hearing about network changes. The host
+// applies each with the same device service the embedded op calls; a host
+// without one logs the op's own refusal.
+
+/// A short vibration: `"heavy"`, `"medium"` or `"light"`, as content named it.
+export function op_vibrate_short(vibrateType) {
+  const type = stringOf(vibrateType, "vibrate_type");
+  servicesOf(engineHost()).command(SERVICE_OP.op_vibrate_short, (w) => w.str(type));
+}
+
+export function op_vibrate_long() {
+  servicesOf(engineHost()).command(SERVICE_OP.op_vibrate_long);
+}
+
+export function op_set_keep_screen_on(keepOn) {
+  const on = toBool(keepOn, "keep_on");
+  servicesOf(engineHost()).command(SERVICE_OP.op_set_keep_screen_on, (w) => w.bool(on));
+}
+
+/// Start or stop hearing about network changes: the host sends one only while
+/// content listens, as `_internalTriggerNetworkStatusChange`.
+export function op_start_network_monitoring() {
+  servicesOf(engineHost()).command(SERVICE_OP.op_start_network_monitoring);
+}
+
+export function op_stop_network_monitoring() {
+  servicesOf(engineHost()).command(SERVICE_OP.op_stop_network_monitoring);
+}
+
+/// One game-log entry, the JSON the engine's log manager merged.
+export function op_game_log_report(logJson) {
+  const entry = stringOf(logJson, "log_json");
+  servicesOf(engineHost()).command(SERVICE_OP.op_game_log_report, (w) => w.str(entry));
+}
+
 /// Ask for a frame rate. The host rounds it into the range the engine offers
 /// and ignores one that is not a number, as the embedded op does -- the filter
 /// is the host's so both executions answer the same request the same way.

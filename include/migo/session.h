@@ -297,6 +297,40 @@ typedef void(MIGO_CALL *MigoOnUpdateKeyboardFn)(void *user_data, MigoSession *se
                                                 const char *value_utf8, uint32_t value_length);
 
 /*
+ * Device capabilities content asks the host to act on. Each is optional and
+ * independent: a host installs the ones its platform has, and content's call
+ * for one it left NULL fails with the platform's "not supported" answer, as it
+ * would on a device without that hardware. Like every callback they arrive
+ * through the dispatcher, so each is a request the host carries out, not one it
+ * answers.
+ */
+typedef uint32_t MigoVibration;
+/* vibrateShort, by the strength content named. About 15 ms on a phone. */
+#define MIGO_VIBRATION_SHORT_LIGHT 0U
+#define MIGO_VIBRATION_SHORT_MEDIUM 1U
+#define MIGO_VIBRATION_SHORT_HEAVY 2U
+/* vibrateLong: about 400 ms. */
+#define MIGO_VIBRATION_LONG 3U
+
+typedef void(MIGO_CALL *MigoOnVibrateFn)(void *user_data, MigoSession *session,
+                                         MigoVibration vibration);
+/*
+ * keep_on is 1 while content wants the display kept awake and 0 when it no
+ * longer does. The request is content's for as long as its Session runs; a host
+ * holding the display awake for it lets go when the Session ends, whatever the
+ * last call said.
+ */
+typedef void(MIGO_CALL *MigoOnKeepScreenOnFn)(void *user_data, MigoSession *session,
+                                              uint8_t keep_on);
+/*
+ * One entry from content's game log, for the host to keep or upload: a JSON
+ * object with level, key, value and commonInfo, length-delimited UTF-8 borrowed
+ * for the call. It stays JSON because value is whatever content logged.
+ */
+typedef void(MIGO_CALL *MigoOnGameLogFn)(void *user_data, MigoSession *session,
+                                         const char *entry_json_utf8, uint32_t entry_length);
+
+/*
  * The implementation copies known fields covered by struct_size. A non-null
  * callback requires a non-null dispatcher. User callbacks run without Migo
  * engine/session/attachment locks and may re-enter detach or destroy. Callback
@@ -326,12 +360,17 @@ typedef struct MigoHostCallbacks {
     /* Appended: optional event-loop wakeup for asynchronous Surface release.
      * Older hosts continue to poll the release observer. */
     MigoOnSurfaceReleasedFn on_surface_released;
+    /* Appended: device capabilities, each optional (see above). A host built
+     * before them has none of the three, which is the pre-existing behaviour. */
+    MigoOnVibrateFn on_vibrate;
+    MigoOnKeepScreenOnFn on_keep_screen_on;
+    MigoOnGameLogFn on_game_log;
 } MigoHostCallbacks;
 
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 #if MIGO_LP64
-MIGO_STATIC_ASSERT(sizeof(MigoHostCallbacks) == 104, "MigoHostCallbacks LP64 size changed");
+MIGO_STATIC_ASSERT(sizeof(MigoHostCallbacks) == 128, "MigoHostCallbacks LP64 size changed");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, dispatch) == 24, "MigoHostCallbacks.dispatch moved");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_request_frame) == 64,
                    "MigoHostCallbacks.on_request_frame moved");
@@ -339,6 +378,8 @@ MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_update_keyboard) == 88,
                    "MigoHostCallbacks.on_update_keyboard moved");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_surface_released) == 96,
                    "MigoHostCallbacks.on_surface_released moved");
+MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_game_log) == 120,
+                   "MigoHostCallbacks.on_game_log moved");
 #endif
 
 /*
@@ -475,6 +516,54 @@ migo_session_set_visibility(MigoSession *session, uint8_t visible);
  */
 MIGO_API MigoResult MIGO_CALL
 migo_session_set_focus(MigoSession *session, uint8_t focused);
+
+/*
+ * The device's network, as content's getNetworkType and onNetworkStatusChange
+ * describe it. A host reports the network the device is on now and again each
+ * time it changes; Migo keeps the last report and tells content about a change
+ * only while content is listening. Before the first report, content's network
+ * calls fail with "not supported".
+ *
+ * A cellular connection is MIGO_NETWORK_UNKNOWN unless the host knows its
+ * generation: on some platforms that takes a phone-state permission a game
+ * should not need. A wired connection is MIGO_NETWORK_WIFI, the nearest thing
+ * the API has.
+ */
+typedef uint32_t MigoNetworkType;
+#define MIGO_NETWORK_NONE 0U
+#define MIGO_NETWORK_WIFI 1U
+#define MIGO_NETWORK_UNKNOWN 2U
+#define MIGO_NETWORK_2G 3U
+#define MIGO_NETWORK_3G 4U
+#define MIGO_NETWORK_4G 5U
+#define MIGO_NETWORK_5G 6U
+
+/*
+ * connected is 1 when the network reaches the internet. Returns
+ * MIGO_ERROR_INVALID_ARGUMENT for a type above MIGO_NETWORK_5G, a connected
+ * value other than 0 or 1, or MIGO_NETWORK_NONE reported as connected. May be
+ * called before a Surface is attached; the report is kept.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *session,
+                                                              MigoNetworkType type,
+                                                              uint8_t connected);
+
+typedef uint32_t MigoBatteryFlags;
+#define MIGO_BATTERY_FLAG_NONE 0U
+#define MIGO_BATTERY_FLAG_CHARGING (1U << 0)
+#define MIGO_BATTERY_FLAG_LOW_POWER_MODE (1U << 1)
+
+/*
+ * The battery, as content's getBatteryInfo describes it: level_percent from 0
+ * to 100. A host reports it when it changes; before the first report content's
+ * call fails with "not supported", which is also the right answer for a device
+ * with no battery. Returns MIGO_ERROR_INVALID_ARGUMENT for a level above 100 or
+ * a flag this header does not define. May be called before a Surface is
+ * attached; the report is kept.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_set_battery_status(MigoSession *session,
+                                                              uint32_t level_percent,
+                                                              MigoBatteryFlags flags);
 
 /*
  * Report that a frame boundary arrived, in response to on_request_frame.

@@ -16,6 +16,7 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
 
 #if os(iOS)
     import AVFoundation
+    import AudioToolbox
     import Metal
     import QuartzCore
     import UIKit
@@ -103,6 +104,10 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             /// A line the game wrote to `console`: the engine's level (1 info,
             /// 2 warn, 3 error, anything else debug) and the text.
             case console(level: Int, message: String)
+            /// An entry from the game's log (`getGameLogManager().log`), as the
+            /// JSON object the engine merged -- level, key, value, commonInfo --
+            /// for the app to keep or upload.
+            case gameLog(String)
         }
 
         /// Called on the main queue.
@@ -138,8 +143,14 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
         /// Layers a session never released. Kept, never reused: see `tearDown`.
         private var abandonedLayers: [MetalView] = []
         private var game: (id: String, entry: String)?
-        private var engine: MigoEngineSession?
+        // Readable by `@testable` tests, which report device changes through it.
+        private(set) var engine: MigoEngineSession?
         private var host: MigoPerformancePlusHost?
+        private var deviceStatus: MigoDeviceStatusReporter?
+        /// The app's own idle-timer setting while the game holds the display
+        /// awake, `nil` while it does not; put back when the game lets go or
+        /// ends.
+        private var idleTimerBeforeGame: Bool?
         private var recovery: MigoWebContentRecovery
         private var touches = TouchIdentities()
         /// The system keyboard's responder: zero-sized and never drawn -- the
@@ -239,6 +250,10 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 preferredFramesPerSecond: configuration.preferredFramesPerSecond)
             self.engine = engine
             engine.onEvent = { [weak self] event in self?.engineEvent(event) }
+            // Before content runs, so its first `getNetworkType` has a report.
+            let deviceStatus = MigoDeviceStatusReporter(session: engine)
+            self.deviceStatus = deviceStatus
+            deviceStatus.start()
             try engine.attach(layer: metalView.metalLayer, size: size)
             try engine.loadContent(id: id, entry: entry)
             let root = try Self.contentRoot(of: engine.session)
@@ -288,6 +303,9 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             isRunning = false
             keyboard.hide(reportingTo: nil)
             touches.removeAll()
+            deviceStatus?.stop()
+            deviceStatus = nil
+            keepScreenOn(false)
             if let host {
                 host.stop()
                 host.view.removeFromSuperview()
@@ -349,6 +367,41 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 keyboard.hide()
             case .updateKeyboard(let text):
                 keyboard.replaceText(text)
+            case .vibrate(let vibration):
+                Self.vibrate(vibration)
+            case .keepScreenOn(let on):
+                keepScreenOn(on)
+            case .gameLog(let entry):
+                onEvent?(.gameLog(entry))
+            }
+        }
+
+        /// A short vibration is the Taptic Engine's impact at the strength
+        /// content named; a long one is the system vibration, about the 400 ms
+        /// the API describes.
+        private static func vibrate(_ vibration: MigoVibration) {
+            switch vibration {
+            case MigoVibration(MIGO_VIBRATION_LONG):
+                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+            case MigoVibration(MIGO_VIBRATION_SHORT_LIGHT):
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            case MigoVibration(MIGO_VIBRATION_SHORT_HEAVY):
+                UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+            default:
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+        }
+
+        /// The idle timer is the app's; the game borrows it and gives back
+        /// whatever the app had set.
+        private func keepScreenOn(_ on: Bool) {
+            let application = UIApplication.shared
+            if on {
+                if idleTimerBeforeGame == nil { idleTimerBeforeGame = application.isIdleTimerDisabled }
+                application.isIdleTimerDisabled = true
+            } else if let before = idleTimerBeforeGame {
+                application.isIdleTimerDisabled = before
+                idleTimerBeforeGame = nil
             }
         }
 

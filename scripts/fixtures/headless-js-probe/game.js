@@ -127,6 +127,26 @@ function probeCanvas2D() {
 
 console.error("migo-headless-probe: " + probeCanvas2D());
 
+// The device, a fourth question, and one only a host with device services can
+// answer: the network it reported, the display held awake, a log entry handed
+// to the app. Reported as one line whatever happens -- a host without the
+// services (the C hosts that also run this file) gets "fail(...)" words, and
+// the gate that runs MigoGameView holds each one to "ok". Settled, not awaited
+// in order, and every rejection handled: a refused call must not become an
+// uncaught rejection that ends the script before the frame loop starts.
+Promise.allSettled([
+  migo.getNetworkType(),
+  migo.setKeepScreenOn({ keepScreenOn: true }),
+  migo.getGameLogManager({}).log({ level: "info", key: "probe", value: sum }),
+]).then(([network, keep, log]) => {
+  const word = (settled) =>
+    settled.status === "fulfilled" ? "ok" : "fail(" + (settled.reason && settled.reason.errMsg) + ")";
+  const net = network.status === "fulfilled"
+    ? network.value.networkType + "/" + network.value.isConnected
+    : word(network);
+  console.error("migo-headless-probe: device network=" + net + " keep=" + word(keep) + " log=" + word(log));
+});
+
 // Then the render loop, which is the second question and a strictly harder one.
 // Evaluating a module needs V8 and a thread; turning frames needs the surface to
 // have been installed, the EGL context to be current and the presenter to be

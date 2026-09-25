@@ -96,6 +96,9 @@ typedef struct MigoHostCallbacks {
     MigoOnHideKeyboardFn    on_hide_keyboard;
     MigoOnUpdateKeyboardFn  on_update_keyboard;
     MigoOnSurfaceReleasedFn on_surface_released;   /* optional: surface release notification */
+    MigoOnVibrateFn         on_vibrate;            /* optional: device capabilities */
+    MigoOnKeepScreenOnFn    on_keep_screen_on;
+    MigoOnGameLogFn         on_game_log;
 } MigoHostCallbacks;
 ```
 
@@ -117,6 +120,9 @@ Fields:
 | `on_hide_keyboard` | `MigoOnHideKeyboardFn` | Same | Content requested the soft keyboard be closed |
 | `on_update_keyboard` | `MigoOnUpdateKeyboardFn` | Same | Content corrected the input field's complete current value |
 | `on_surface_released` | `MigoOnSurfaceReleasedFn` | — | Edge notification that a retired Surface finished releasing |
+| `on_vibrate` | `MigoOnVibrateFn` | — | Content asks for a vibration; absent means content hears "not supported" |
+| `on_keep_screen_on` | `MigoOnKeepScreenOnFn` | — | Content wants the display kept awake, or no longer does |
+| `on_game_log` | `MigoOnGameLogFn` | — | One entry of content's game log, for the host to keep or upload |
 
 ### MigoDispatchFn
 
@@ -223,6 +229,34 @@ typedef void (MIGO_CALL *MigoOnUpdateKeyboardFn)(
 ```
 
 Content corrected the input field's complete current text. `value_utf8` is bounded by `value_length` bytes and is not guaranteed to be NUL-terminated; it is borrowed only during the call. Install it together with the other two keyboard callbacks.
+
+### Device capability callbacks
+
+```c
+typedef uint32_t MigoVibration;   /* MIGO_VIBRATION_SHORT_LIGHT / _MEDIUM / _HEAVY, MIGO_VIBRATION_LONG */
+typedef void (MIGO_CALL *MigoOnVibrateFn)(void *user_data, MigoSession *session,
+                                          MigoVibration vibration);
+typedef void (MIGO_CALL *MigoOnKeepScreenOnFn)(void *user_data, MigoSession *session,
+                                               uint8_t keep_on);
+typedef void (MIGO_CALL *MigoOnGameLogFn)(void *user_data, MigoSession *session,
+                                          const char *entry_json_utf8, uint32_t entry_length);
+```
+
+Device actions content asks the host to carry out. Each is optional and
+independent: a host installs the ones its platform has, and content calling the
+API behind one it left NULL (`vibrateShort`/`vibrateLong`, `setKeepScreenOn`,
+`getGameLogManager().log`) gets the platform's "not supported" failure, as on a
+device without that hardware. Like every callback they arrive through
+`dispatch`, so each is a request the host carries out, not a query it answers.
+
+- `on_vibrate`: a short vibration at the strength content named (about 15 ms);
+  `MIGO_VIBRATION_LONG` is about 400 ms.
+- `on_keep_screen_on`: `keep_on` is `1` while content wants the display kept
+  awake and `0` when it no longer does. The host lets go when the Session ends,
+  whatever the last call said.
+- `on_game_log`: one entry from content's game log, a JSON object (`level`,
+  `key`, `value`, `commonInfo`), length-delimited UTF-8 borrowed for the call.
+  It stays JSON because `value` is whatever content logged.
 
 ## MigoKeyboardShowOptions
 
@@ -491,6 +525,61 @@ Returns:
 - `MIGO_OK` — Focus state updated.
 - `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL, or `focused` is not `0` or `1`.
 - `MIGO_ERROR_INVALID_STATE` — The Session was destroyed.
+
+## migo_session_set_network_status
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MIGO_API MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *session,
+                                                              MigoNetworkType type,
+                                                              uint8_t connected);
+```
+
+The device's network, as content's `getNetworkType` and `onNetworkStatusChange`
+describe it. The host reports the network the device is on now and again each
+time it changes; Migo keeps the last report and tells content about a change
+only while content is listening. Before the first report, content's network
+calls fail with "not supported". May be called before a Surface is attached;
+the report is kept.
+
+A cellular connection is `MIGO_NETWORK_UNKNOWN` unless the host knows its
+generation: on some platforms that takes a phone-state permission a game should
+not need. A wired connection is `MIGO_NETWORK_WIFI`, the nearest thing the API
+has.
+
+`MigoNetworkType`: `MIGO_NETWORK_NONE`, `_WIFI`, `_UNKNOWN`, `_2G`, `_3G`,
+`_4G`, `_5G`.
+
+Returns:
+
+- `MIGO_OK` — kept (and forwarded, when content listens and the value changed)
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL; `type` is above
+  `MIGO_NETWORK_5G`; `connected` is neither `0` nor `1`; `MIGO_NETWORK_NONE`
+  reported as connected
+- `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
+
+## migo_session_set_battery_status
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MIGO_API MigoResult MIGO_CALL migo_session_set_battery_status(MigoSession *session,
+                                                              uint32_t level_percent,
+                                                              MigoBatteryFlags flags);
+```
+
+The battery, as content's `getBatteryInfo` describes it: `level_percent` from 0
+to 100, `flags` any of `MIGO_BATTERY_FLAG_CHARGING` and
+`MIGO_BATTERY_FLAG_LOW_POWER_MODE`. The host reports it when it changes; before
+the first report content's call fails with "not supported", which is also the
+right answer for a device with no battery. May be called before a Surface is
+attached.
+
+Returns:
+
+- `MIGO_OK` — kept
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL; `level_percent` is above
+  100; `flags` has a bit this header does not define
+- `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
 
 ## migo_session_notify_vsync
 

@@ -104,8 +104,20 @@ public enum MigoContentInstaller {
         // the parent, which is not sealed -- the new one renamed in, and only
         // then is the old one removed, as a trusted uninstall that restores the
         // owner's permissions first.
+        //
+        // The rename does need one write bit inside the sealed tree: Darwin
+        // refuses to rename a directory the caller cannot write, because the
+        // move rewrites its `..` entry. The simulator's host file system let it
+        // through; an iPhone refused it (EACCES, "you don't have permission").
+        // So the root alone gets its owner's write bit back first. If the swap
+        // is rolled back, the root's mode no longer matches the engine's seal
+        // receipt, and the next launch verifies the tree in full and seals it
+        // again -- the safe direction.
         let retired = gameRoot.appendingPathComponent(".retired-\(UUID().uuidString)", isDirectory: true)
         do {
+            let mode = (try manager.attributesOfItem(atPath: code.path)[.posixPermissions] as? NSNumber)?
+                .uint16Value ?? 0o500
+            try manager.setAttributes([.posixPermissions: NSNumber(value: mode | 0o700)], ofItemAtPath: code.path)
             try manager.moveItem(at: code, to: retired)
         } catch {
             removeTrusted(staging)

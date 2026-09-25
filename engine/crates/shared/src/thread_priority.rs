@@ -41,7 +41,29 @@ pub fn set_current_thread_priority(priority: Priority) {
         }
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_vendor = "apple")]
+    {
+        let class = match priority {
+            Priority::Display | Priority::Foreground => {
+                libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE
+            }
+            Priority::Default => libc::qos_class_t::QOS_CLASS_DEFAULT,
+            // Not QOS_CLASS_BACKGROUND: that class is throttled hard enough to
+            // starve a decode something is about to play or draw.
+            Priority::Background => libc::qos_class_t::QOS_CLASS_UTILITY,
+        };
+        // SAFETY: sets the calling thread's own class; no pointers involved.
+        let result = unsafe { libc::pthread_set_qos_class_self_np(class, 0) };
+        if result != 0 {
+            tracing::debug!(
+                "pthread_set_qos_class_self_np({name}, {:?}) failed: {result} -- continuing with default",
+                priority
+            );
+            return;
+        }
+    }
+
+    #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
     {
         let _ = priority; // suppress unused warning
     }

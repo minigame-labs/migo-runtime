@@ -215,9 +215,15 @@ import XCTest
         /// Each tick sends a pair: a frame above the socket ceiling, then an
         /// ordinary one, as a texture-heavy frame and the next would go. When the
         /// window says two, both leave together on different uplinks and the
-        /// small one can arrive first. Ingress holds it and runs it second; the
-        /// test requires that to have happened at least once, and that nothing was
-        /// refused and the last frame drawn is the last one sent.
+        /// small one can arrive first. Ingress holds it and runs it second. Whether
+        /// it does arrive first is a race between two uplinks, so this requires
+        /// what must hold whichever way each race goes -- nothing refused, every
+        /// frame run, the last frame drawn the last one sent -- and prints how
+        /// many overtook. On an iPhone XS Max one run of 38 pairs had two overtake
+        /// and the next had none; a test demanding one would be measuring the
+        /// device's speed. The held path itself is proven deterministically by
+        /// `a_frame_that_overtakes_its_predecessor_runs_after_it_and_is_answered_after_it`
+        /// (engine/crates/core/src/runtime/external.rs).
         func testContentRunsItsOwnFrameLoopAndFramesThatOvertakeAreRunInOrder() throws {
             let harness = try MigoFrameHarness()
             self.harness = harness
@@ -330,9 +336,6 @@ import XCTest
                 "a frame was refused: a producer that follows the window is never told to wait,"
                     + " and a gap ends the content")
             XCTAssertEqual(statistics.framesAccepted + statistics.framesDeferred, sent)
-            XCTAssertGreaterThan(
-                statistics.framesDeferred, 0,
-                "no frame overtook its predecessor, so the held-frame path went unexercised")
             XCTAssertGreaterThanOrEqual(statistics.controlMessagesReceived, ticks)
             XCTAssertEqual(statistics.controlMessagesRefused, 0)
             XCTAssertGreaterThan(statistics.downlinkWakes, 0, "ticks reached the producer by being woken")
@@ -1865,9 +1868,14 @@ import XCTest
                 answered["events"] as? String, "canplay,play,ended",
                 "the audio thread's events reached the game's listeners")
             XCTAssertEqual(answered["innerDuration"] as? Double ?? 0, 0.25, accuracy: 0.02)
-            XCTAssertEqual(
-                (answered["refused"] as? String)?.contains("no network service"), true,
-                "a streamed source says why it cannot be fetched yet, rather than failing silently")
+            // A streamed source is fetched by the host, with the client and
+            // policy `fetch()` uses, as the embedded runtime fetches it. The
+            // `.example` domain never resolves (RFC 2606), so the fetch fails on
+            // every host and content must hear it through onError rather than
+            // waiting on a sound that will never play.
+            XCTAssertFalse(
+                (answered["refused"] as? String ?? "").isEmpty,
+                "a streamed source that cannot be fetched is reported to content")
         }
 
         /// A quarter second of 440 Hz at 0.8 amplitude: 16-bit mono PCM in a

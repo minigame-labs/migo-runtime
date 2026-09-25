@@ -9,9 +9,11 @@ finishes, both failure kinds, content-process terminations), and
 delivered against what it promised. What is not done is the half that needs a
 paid Apple developer account: getting 4.7.2 through review.
 
-Most of this lane already exists outside this directory. The content-facing
-surface is `migo-web-adapter`, which maps `migo.*` onto a DOM canvas and is
-already shipped for the web. What is left here is the host side: the
+What does not exist anywhere yet is the content-facing surface: `migo.*`
+implemented on the web platform -- a DOM canvas, Web Audio, `fetch`, storage --
+so a game written against `migo.*` runs in this WebView. (`migo-web-adapter` is
+the opposite direction: browser globals layered on top of `migo.*`.) Beside it,
+the host side: the
 `migo.*` low-frequency bridge for platform capability, permissions, payment and
 files; the WebView lifecycle; per-game origin, CSP, navigation
 policy, permission allowlist and storage quota; and recovery from

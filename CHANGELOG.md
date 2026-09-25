@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   iOS lane the three keyboard ops became host commands to the same keyboard
   service the embedded runtime calls, so a host with no keyboard refuses them
   in the same words.
+- iOS and macOS: the device. `vibrateShort`/`vibrateLong` drive the Taptic
+  Engine on iOS; `setKeepScreenOn` holds the display awake (the idle timer on
+  iOS, a power assertion on macOS) and gives it back when the game ends;
+  `getGameLogManager().log` entries reach the app as `MigoGameView.Event.gameLog`;
+  `getNetworkType`/`onNetworkStatusChange` follow `NWPathMonitor`, and on iOS
+  `getBatteryInfo` reports the battery and Low Power Mode. A Mac has nothing to
+  vibrate and no battery API a game should need, so those answer "not
+  supported" there, as on a device without the hardware.
+- C ABI: device capabilities. Three optional, independent callbacks appended to
+  `MigoHostCallbacks` -- `on_vibrate`, `on_keep_screen_on`, `on_game_log` -- each
+  offered to content exactly when installed, and two report functions,
+  `migo_session_set_network_status` and `migo_session_set_battery_status`,
+  whose last report the engine answers content's synchronous reads from and
+  forwards a network change while content listens. An older host is
+  zero-extended to none of them, which is the previous behaviour.
 - C ABI: `MigoEngineConfig.code_signing_public_key`, the Ed25519 key signed
   content is verified against. Until now a C ABI host could not supply one, so
   its only configuration that loaded content was
@@ -86,6 +101,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hundred 2D calls now crosses once.
 
 ### Fixed
+- iOS: installing an update over a game that had already run under code
+  signing failed on an iPhone ("you don't have permission"): Darwin refuses to
+  rename a directory its caller cannot write, and the engine seals the package
+  read-only. The installer now restores the owner's write bit on the sealed
+  root alone before moving it aside. The simulator's host file system had let
+  the rename through.
+- iOS and macOS: the engine's render and session threads ran at the default
+  quality-of-service class, so the main thread waiting on the session's
+  startup was a priority inversion and the frame work could land on efficiency
+  cores. They are now user-interactive; decode and IO threads are utility.
+
 - iOS: signed content was not verified. The Performance+ lane mounted the
   installed package as it was, so a host that configured a signing key got no
   verification at all. It now runs the embedded execution's launch sequence

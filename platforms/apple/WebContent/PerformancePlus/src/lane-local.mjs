@@ -293,10 +293,6 @@ export function op_get_menu_button_rect() {
   return described("menuButtonRect", "getMenuButtonBoundingClientRect");
 }
 
-export function op_get_network_type() {
-  return described("networkType", "getNetworkType");
-}
-
 // ---- counters and hints -------------------------------------------------------
 
 /**

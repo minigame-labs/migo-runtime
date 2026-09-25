@@ -152,6 +152,13 @@ mips="${probe##*mips=}"
 awk -v m="$mips" 'BEGIN { exit !(m >= 100) }' || fail "V8 ran interpreted ($mips M it/s): $probe"
 canvas="$(grep -o 'migo-headless-probe: canvas2d .*' "$LAST_LOG" | tail -1)"
 [[ "$canvas" == *"rgba=0,128,255,255"* ]] || fail "Canvas2D did not draw what the fixture filled: ${canvas:-no report}"
+# The device, through the view: the network NWPathMonitor reported (a runner
+# is connected), the display wake lock taken, and the game's log entry handed
+# to the app as an event.
+device="$(grep -o 'migo-headless-probe: device .*' "$LAST_LOG" | tail -1)"
+[[ "$device" == *"/true keep=ok log=ok"* ]] || fail "the device did not answer through MigoGameView: ${device:-no report}"
+grep -q '\[game-view-host\] game log: .*"key":"probe"' "$LAST_LOG" \
+  || fail "the game's log entry did not reach the app"
 
 echo "[3/4] signed content: verified with its key runs, tampered is refused"
 status=0

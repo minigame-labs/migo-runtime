@@ -43,7 +43,7 @@ use runtime_v8::V8LimitsConfig;
 #[cfg(feature = "v8-limits")]
 use runtime_v8::watchdog::DeadlineWatchdogConfig;
 
-const GPU_INIT_TIMEOUT: Duration = Duration::from_secs(2);
+use super::shell::GPU_INIT_TIMEOUT;
 
 /// Wrapper around `Option<HostJsRuntime>` with `Deref`/`DerefMut`.
 ///

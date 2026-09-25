@@ -70,7 +70,7 @@ function deviceProfile(described) {
   // JSON the engine's JavaScript parses, and parsing it here to stringify it
   // again would be work per call for the same bytes.
   const profile = {};
-  for (const key of ["windowInfo", "deviceInfo", "systemSettings", "menuButtonRect", "networkType"]) {
+  for (const key of ["windowInfo", "deviceInfo", "systemSettings", "menuButtonRect"]) {
     const value = described[key];
     if (value === undefined || value === null) continue;
     if (typeof value !== "string") {

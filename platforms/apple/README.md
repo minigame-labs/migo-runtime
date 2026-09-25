@@ -25,10 +25,10 @@ section reports -- per target, with where the running happens.
 | `Sources/MigoAppleRenderer` | iOS and simulator shipping slices and an isolated macOS external-frame diagnostic package, built by the Apple SDK workflow; its sync-barrier ABI tests run on the simulator |
 | `Sources/MigoApplePerformancePlus` | its acceptance suite runs a real WebContent producer against a real renderer on the iOS simulator: content drawing through the engine's own WebGL and 2D facades, textures, text, images, touches, a frame larger than one packet, a synchronous readback of the frame content submitted, and a game playing its packaged sounds. `MigoGameView` -- the product surface -- runs an installed game there with nothing supplied by the test: its own session, layer and display clock turn the frames, the game's exit reaches the app, and the next game starts on the same layer |
 | `Sources/MigoMacV8` | `MigoGameView` runs a game in an app signed with the hardened runtime and allow-jit (`scripts/test-macos-game-view.sh`, on the macOS CI leg): V8 with a JIT and WebAssembly, Canvas2D on ANGLE, frames on the display clock, signed content verified with its key and tampered content refused, and the view refusing to start without the entitlement |
-| `Sources/MigoAppleWebKit` | a session; not a product, and it has not run content |
+| `Sources/MigoAppleWebKit` | a session with no content surface; not in the SDK (see below) |
 | `WebContent/PerformancePlus` | every op it answers is checked against the engine's own ops -- the same facade calls run in both runtimes and the commands compared -- on every pull request, under node and Rust |
 | `ProbeApp/` | sources exist; it answers G0 questions and is never linked into a product |
-| a real iPhone | one acceptance test so far: a game playing its packaged sounds through the host's audio, on an iPhone XS Max, 2026-09-23. The simulator cannot answer that one -- it has no audio output there |
+| a real iPhone | `MigoGameView` on an iPhone XS Max (iOS 18.7), 2026-09-25: a game installed, loaded, turning frames on the display clock, exiting to the app and the next game running on the same layer; the soft keyboard; signed content verified, updated and refused when tampered. And a game playing its packaged sounds through the host's audio (2026-09-23) -- which the simulator cannot answer, having no audio output there |
 
 A release builds the three engine groups in Release, checks the iOS archives
 contain no JavaScript engine and the macOS archive runs a game with a JIT,
@@ -81,8 +81,26 @@ Ed25519 public key; every package must then carry `manifest.json` (`{"version":
 `manifest.json`'s exact bytes. The engine verifies a package in full on its
 first launch and refuses one that does not match.
 The view owns everything else -- engine session, `CAMetalLayer`, display
-clock, touches (and on macOS the mouse, wheel and keys), app lifecycle, and on
-iOS the audio session and recovery from a WebContent crash.
+clock, touches (and on macOS the mouse, wheel and keys), app lifecycle, the
+soft keyboard, and on iOS the audio session and recovery from a WebContent
+crash.
+
+It also answers what content asks of the device. `setKeepScreenOn` holds the
+display awake -- the idle timer on iOS, a power assertion on macOS -- and gives
+the app's own setting back when the game ends. `getNetworkType` and
+`onNetworkStatusChange` follow `NWPathMonitor` (a wired connection is `wifi`, a
+cellular one `unknown`, as on Android). On iOS `vibrateShort`/`vibrateLong`
+drive the Taptic Engine and `getBatteryInfo` reports the battery and Low Power
+Mode; a Mac answers those two "not supported", as a device without the
+hardware does. Entries a game writes with `getGameLogManager().log` arrive as
+`onEvent(.gameLog(json))`, for the app to keep or upload.
+
+Not offered on these lanes, and refused rather than faked:
+`setDeviceOrientation` (the size is fixed at start), `setEnableDebug` (there is
+no debug panel), `getHeapStatistics` on iOS (content runs in WebKit's
+JavaScriptCore, which exposes no heap figures), and downloaded subpackages --
+the engine refuses a dynamic install whenever signing is enforced, because a
+downloaded subpackage carries no signature; subpackages inside the package work.
 
 **iOS.** The game's size is fixed when it starts (a mini-game lays itself out
 once), so lock the hosting controller to the game's orientation.
@@ -102,11 +120,18 @@ content, the default), as mouse events (PC content) or both.
 
 ## Three products, three JavaScript execution models
 
-| Product | Where content JS runs | Renderer | Ships in v1 |
+| Product | Where content JS runs | Renderer | In the SDK |
 |---|---|---|---|
-| `MigoAppleWebKit` | WebContent, full web platform | WebKit | yes |
-| `MigoApplePerformancePlus` | WebContent, in a Dedicated Worker | this process: Skia + ANGLE/Metal | conditional |
-| `MigoMacV8` | this process, V8 with JIT | this process: Skia + ANGLE/Metal | yes, macOS only |
+| `MigoApplePerformancePlus` | WebContent, in a Dedicated Worker | this process: Skia + ANGLE/Metal | yes, iOS: `MigoGameView` |
+| `MigoMacV8` | this process, V8 with JIT | this process: Skia + ANGLE/Metal | yes, macOS: `MigoGameView` |
+| `MigoAppleWebKit` | WebContent, full web platform | WebKit | no: a session with no content surface |
+
+`MigoAppleWebKit` has its WebView session and per-game origin, and nothing for
+content to call: running a game there needs `migo.*` implemented on the web
+platform itself, which no repository has yet (`migo-web-adapter` goes the other
+way, browser globals on top of `migo.*`). It is the lane for a device with no
+JIT -- Lockdown Mode takes WebContent's -- and for a first App Review
+submission, and it is built when one of those has a customer behind it.
 
 `MigoAppleRenderer` is shared by the two native-rendering lanes and is
 deliberately **not** a product. `MigoAppleWebKit` deliberately does not depend

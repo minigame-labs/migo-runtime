@@ -339,6 +339,12 @@ where
             // other live session asked for. The thread ends with the session, so
             // there is nothing to unbind.
             shared::log_level::bind_thread_level(log_level);
+            // The session thread runs content and turns its frames: it is on
+            // the display's deadline as much as the render thread is, and the
+            // host's UI thread waits on its startup.
+            shared::thread_priority::set_current_thread_priority(
+                shared::thread_priority::Priority::Foreground,
+            );
             let run = || {
                 body(SessionThreadContext {
                     id,

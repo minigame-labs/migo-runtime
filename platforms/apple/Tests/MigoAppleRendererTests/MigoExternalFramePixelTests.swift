@@ -239,6 +239,40 @@ final class MigoExternalFramePixelTests: XCTestCase {
         return ingress
     }
 
+    /// Bytes of the layout the host puts in front of a readback's rows: where
+    /// the first row goes, bytes per row, the stride, and the row count, four
+    /// little-endian u32s (`frame_wire::sync::ReadPixelsLayout`). The host owns
+    /// the `PACK_*` state and the producer owns the view, so the placement
+    /// crosses with the pixels.
+    private static let layoutBytes = 16
+
+    /// Take a readback reply of `width` x `height` RGBA8 pixels and answer the
+    /// rows, after checking the layout says they are compact rows of that size
+    /// -- the default pack state, which is all these frames set.
+    private func takePixels(width: Int, height: Int, label: String) throws -> [UInt8] {
+        let session = try XCTUnwrap(self.session)
+        let pixelBytes = width * height * 4
+        // Sized from the request, not from the outcome. A readback that failed
+        // reports zero bytes, and an array sized from that is one the caller
+        // then indexes past -- which is how the first simulator failure ended:
+        // three legible assertion messages followed by "Array index is out of
+        // range", where the crash is the least informative line and the only
+        // one that stops the run.
+        var reply = [UInt8](repeating: 0, count: Self.layoutBytes + pixelBytes)
+        var written = 0
+        let taken = reply.withUnsafeMutableBufferPointer { out in
+            migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
+        }
+        XCTAssertEqual(taken, MIGO_OK, "\(label): take")
+        XCTAssertEqual(written, reply.count, "\(label): the layout and \(width * height) RGBA8 pixels")
+        let word = { (index: Int) -> UInt32 in
+            reply[(index * 4)..<(index * 4 + 4)].reversed().reduce(0) { $0 << 8 | UInt32($1) }
+        }
+        XCTAssertEqual(word(1), UInt32(width * 4), "\(label): bytes per row")
+        XCTAssertEqual(word(3), UInt32(height), "\(label): rows")
+        return Array(reply[Self.layoutBytes...])
+    }
+
     /// Submit one frame and read the pixels it drew.
     private func submitAndRead(_ name: String, sequence: UInt64) throws -> [UInt8] {
         let session = try XCTUnwrap(self.session)
@@ -255,7 +289,7 @@ final class MigoExternalFramePixelTests: XCTestCase {
         request.operation = MIGO_SYNC_OP_READ_PIXELS
         // Two by two: enough that a wrong row stride shows up, small enough that
         // a mismatch prints legibly.
-        request.max_reply_bytes = 2 * 2 * 4
+        request.max_reply_bytes = UInt32(Self.layoutBytes + 2 * 2 * 4)
 
         var outcome = MigoSyncOutcome()
         outcome.struct_size = UInt32(MemoryLayout<MigoSyncOutcome>.size)
@@ -270,22 +304,9 @@ final class MigoExternalFramePixelTests: XCTestCase {
         XCTAssertEqual(
             outcome.state, MIGO_SYNC_STATE_READY,
             "\(name): the readback failed with error \(outcome.error)")
-        XCTAssertEqual(outcome.reply_bytes, 2 * 2 * 4, "\(name): four RGBA8 pixels")
-
-        // Sized from the request, not from the outcome. A readback that failed
-        // reports zero bytes, and an array sized from that is one the caller
-        // then indexes past -- which is how the first simulator failure ended:
-        // three legible assertion messages followed by "Array index is out of
-        // range", where the crash is the least informative line and the only one
-        // that stops the run.
-        var pixels = [UInt8](repeating: 0, count: 2 * 2 * 4)
-        var written = 0
-        let taken = pixels.withUnsafeMutableBufferPointer { out in
-            migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
-        }
-        XCTAssertEqual(taken, MIGO_OK, "\(name): take")
-        XCTAssertEqual(written, pixels.count, "\(name): written")
-        return pixels
+        XCTAssertEqual(
+            outcome.reply_bytes, UInt32(Self.layoutBytes + 2 * 2 * 4), "\(name): the layout and four RGBA8 pixels")
+        return try takePixels(width: 2, height: 2, label: name)
     }
 
     /// Read one pixel at a named point, through the barrier.
@@ -300,7 +321,7 @@ final class MigoExternalFramePixelTests: XCTestCase {
         request.triggering_sequence = 3
         request.deadline_nanos = deadline
         request.operation = MIGO_SYNC_OP_READ_PIXELS
-        request.max_reply_bytes = 4
+        request.max_reply_bytes = UInt32(Self.layoutBytes + 4)
 
         var outcome = MigoSyncOutcome()
         outcome.struct_size = UInt32(MemoryLayout<MigoSyncOutcome>.size)
@@ -316,14 +337,7 @@ final class MigoExternalFramePixelTests: XCTestCase {
             outcome.state, MIGO_SYNC_STATE_READY,
             "\(label): the readback failed with error \(outcome.error)")
 
-        var pixel = [UInt8](repeating: 0, count: 4)
-        var written = 0
-        let taken = pixel.withUnsafeMutableBufferPointer { out in
-            migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
-        }
-        XCTAssertEqual(taken, MIGO_OK, "\(label): take")
-        XCTAssertEqual(written, 4, "\(label): one RGBA8 pixel")
-        return pixel
+        return try takePixels(width: 1, height: 1, label: label)
     }
 
     /// The readback's rectangle is honoured, not just its size.
