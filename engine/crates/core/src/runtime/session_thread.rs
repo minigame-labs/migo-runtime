@@ -89,6 +89,13 @@ impl HostThread {
             .is_some_and(|join| join.thread().id() == thread::current().id())
     }
 
+    /// Whether the thread has returned, so joining it would not block. `true`
+    /// once joined.
+    #[inline]
+    pub fn is_finished(&self) -> bool {
+        self.join.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
     pub fn request_shutdown(&self) -> Result<(), String> {
         registry::shutdown_host(self.host_id)
     }

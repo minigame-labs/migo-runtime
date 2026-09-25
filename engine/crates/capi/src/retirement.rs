@@ -1,27 +1,23 @@
 //! The Hosts an Engine has retired and must join before it may die.
 //!
-//! A retired Host remains owned by this set until a completion monitor observes
-//! that its registry entry is gone. The monitor owns no Host, so a callback on a
-//! Host thread can call `migo_engine_destroy`: `take` still checks the original
-//! Host handle and refuses a self-join. All joins and drops happen after the
-//! mutex guard is released.
+//! A retired Host remains owned by this set until its thread has returned, which
+//! is asked of the thread itself (`is_finished`): a join then cannot block, so
+//! reaping never waits on a Host. Asking a registry instead -- whether the Host's
+//! entry is gone -- answered "done" for a Host that had never registered, and a
+//! reap then joined a thread that was still running. `take` checks the Host
+//! handle and refuses a self-join, so a callback on a Host thread can call
+//! `migo_engine_destroy`. All joins and drops happen after the mutex guard is
+//! released.
 
-use std::sync::{
-    Arc, Mutex, MutexGuard, PoisonError,
-    atomic::{AtomicBool, Ordering},
-};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::session_engine::SessionEngine;
+
 pub(crate) struct RetiredHost {
-    /// The Host remains owned here until its registry entry disappears.
     host: SessionEngine,
-    completed: Arc<AtomicBool>,
-    monitor: Option<JoinHandle<()>>,
 }
 
-/// Retired Hosts, owned until their completion monitor and Host are joined.
+/// Retired Hosts, owned until they are joined.
 #[derive(Default)]
 pub(crate) struct RetirementSet {
     hosts: Mutex<Vec<RetiredHost>>,
@@ -32,58 +28,36 @@ impl RetirementSet {
         Self::default()
     }
 
-    /// Ask `host` to stop and retain it while a monitor waits for unregister.
+    /// Ask `host` to stop and retain it until its thread returns.
     ///
     /// External-frame transport storage is released before ownership enters the
     /// set; late packets then fail against a fresh ingress while the Host finishes
     /// its normal teardown. The Host itself is never moved to an untracked thread.
-    pub(crate) fn retire(&self, mut host: SessionEngine) {
+    pub(crate) fn retire(&self, host: SessionEngine) {
         #[cfg(feature = "external-frames")]
-        host.release_submit_resources();
+        let host = {
+            let mut host = host;
+            host.release_submit_resources();
+            host
+        };
 
         if let Err(error) = host.request_shutdown() {
             tracing::error!("failed to request shutdown for Host {}: {error}", host.id());
         }
-        let id = host.id();
-        let completed = Arc::new(AtomicBool::new(false));
-        let completed_for_monitor = Arc::clone(&completed);
-        let monitor = thread::Builder::new()
-            .name(format!("Migo-Retirement-{id}"))
-            .spawn(move || {
-                let started = std::time::Instant::now();
-                loop {
-                    if migo_core::host_ingress(id).is_err() {
-                        completed_for_monitor.store(true, Ordering::Release);
-                        return;
-                    }
-                    if started.elapsed() >= Duration::from_secs(5) {
-                        tracing::warn!(
-                            "retired Host {id} has not exited after {:.1}s",
-                            started.elapsed().as_secs_f64()
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(5));
-                }
-            })
-            .ok();
-        self.locked().push(RetiredHost {
-            host,
-            completed,
-            monitor,
-        });
+        self.locked().push(RetiredHost { host });
     }
 
-    /// Remove and join Hosts whose registry entries have disappeared.
+    /// Remove and join the Hosts whose threads have returned.
     ///
-    /// Completion is only a readiness hint. The monitor and Host handles are
-    /// extracted first; both are joined outside the RetirementSet mutex.
+    /// Only finished threads are taken, so no join here waits; they are joined
+    /// outside the RetirementSet mutex.
     pub(crate) fn reap_completed(&self) {
         let completed = {
             let mut hosts = self.locked();
             let mut completed = Vec::new();
             let mut pending = Vec::with_capacity(hosts.len());
             for host in hosts.drain(..) {
-                if host.completed.load(Ordering::Acquire) {
+                if host.host.is_finished() {
                     completed.push(host);
                 } else {
                     pending.push(host);
@@ -123,9 +97,6 @@ impl RetirementSet {
 
 impl RetiredHost {
     pub(crate) fn join(mut self) -> Result<(), ()> {
-        if let Some(monitor) = self.monitor.take() {
-            monitor.join().map_err(|_| ())?;
-        }
         self.host.join().map_err(|_| ())
     }
 }
@@ -165,6 +136,30 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
         panic!("completed retired Host was not reaped");
+    }
+
+    #[test]
+    fn a_host_still_running_is_never_reaped_even_one_that_never_registered() {
+        // A registry would read this Host as gone -- it never registered -- and
+        // a reap that believed it would join a thread parked on `release`.
+        let set = RetirementSet::new();
+        let (host, release) = parked_host(9_004);
+        set.retire(host);
+        for _ in 0..20 {
+            set.reap_completed();
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(set.len(), 1, "a running Host was reaped");
+
+        release.send(()).expect("release retired Host");
+        for _ in 0..100 {
+            set.reap_completed();
+            if set.len() == 0 {
+                return;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        panic!("the Host returned and was not reaped");
     }
 
     #[test]
