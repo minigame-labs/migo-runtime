@@ -8,12 +8,14 @@ on:
       - 'include/migo/**'
       - 'release/VERSION'
       - 'scripts/test-developer-docs-phase1-contract.sh'
+      - '.github/workflows/developer-docs-ci.yml'
   pull_request:
     paths:
       - 'developer-docs/**'
       - 'include/migo/**'
       - 'release/VERSION'
       - 'scripts/test-developer-docs-phase1-contract.sh'
+      - '.github/workflows/developer-docs-ci.yml'
 
 jobs:
   docs:
