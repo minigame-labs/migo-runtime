@@ -33,9 +33,13 @@ impl RetirementSet {
     /// External-frame transport storage is released before ownership enters the
     /// set; late packets then fail against a fresh ingress while the Host finishes
     /// its normal teardown. The Host itself is never moved to an untracked thread.
-    pub(crate) fn retire(&self, mut host: SessionEngine) {
+    pub(crate) fn retire(&self, host: SessionEngine) {
         #[cfg(feature = "external-frames")]
-        host.release_submit_resources();
+        let host = {
+            let mut host = host;
+            host.release_submit_resources();
+            host
+        };
 
         if let Err(error) = host.request_shutdown() {
             tracing::error!("failed to request shutdown for Host {}: {error}", host.id());
