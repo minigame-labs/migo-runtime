@@ -651,6 +651,25 @@ jobs:
       - name: Apple and Linux Performance+ products resolve alike
         run: bash scripts/test-apple-product-feature-parity.sh
 
+      # The Performance+ steps below build migo-core for this host, and the
+      # link asks for what the Linux engine links: ALSA (external-frames
+      # carries `host-audio`, and cpal -> alsa-sys) and Skia's fontconfig and
+      # freetype. Missing, the build fails in a way that reads like a code
+      # error; both sat hidden behind an earlier red step for a week.
+      - name: Install the libraries the host engine links
+        run: |
+          install_libs() {
+            timeout 90 sudo apt-get update -qq || return 1
+            timeout 150 sudo apt-get install -y -qq \
+              libasound2-dev libfontconfig1-dev libfreetype-dev || return 1
+          }
+          if ! pkg-config --exists alsa fontconfig freetype2; then
+            install_libs || {
+              echo "host library install stalled or failed; retrying once" >&2
+              install_libs
+            }
+          fi
+
       # The artefact half of the same claim. A clean dependency graph is
       # necessary and not sufficient: a vendored object or a linker script could
       # put engine symbols in an archive whose Cargo graph is spotless. This
@@ -660,22 +679,8 @@ jobs:
       # about Cargo features rather than about the target: the same features
       # produce the same closure whichever triple they are built for, and
       # finding a violation here is finding it without a Mac.
-      # external-frames carries `host-audio` (iOS Performance+ plays its PCM on
-      # the host), and on Linux that is cpal -> alsa-sys, whose build script
-      # needs the ALSA headers. Missing, the build fails in a way that reads
-      # like a code error; it sat hidden behind an earlier red step for a week.
       - name: Apple Performance+ archive contains no engine symbols
         run: |
-          install_alsa() {
-            timeout 90 sudo apt-get update -qq || return 1
-            timeout 150 sudo apt-get install -y -qq libasound2-dev || return 1
-          }
-          if ! pkg-config --exists alsa; then
-            install_alsa || {
-              echo "ALSA headers install stalled or failed; retrying once" >&2
-              install_alsa
-            }
-          fi
           cd engine
           cargo build -p migo-capi --no-default-features --features external-frames
           cd ..
