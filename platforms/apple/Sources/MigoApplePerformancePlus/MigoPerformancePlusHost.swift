@@ -334,23 +334,17 @@ import os
         /// `nil` when the resource bundle carries none, which is a build that did not
         /// run the packaging step rather than a state the product can be in.
         ///
-        /// Derived from where the producer page actually is rather than from a path
-        /// built out of the target's resource declaration, because those two are not
-        /// the same thing and the difference is silent. `resources: [.copy("Resources")]`
-        /// names a directory in the SOURCE tree; where its contents land in the built
-        /// bundle is the bundle format's business, and on iOS a bundle's resource root
-        /// is itself called `Resources`, so the obvious
-        /// `resourceURL.appendingPathComponent("Resources")` asks for `Resources/Resources`
-        /// and finds nothing. Measured on the simulator, where it threw
-        /// `engineModulesMissing` with exactly that doubled path.
-        ///
-        /// Both lookups are tried because the two bundle layouts differ and this type
-        /// must not care which one it is in.
+        /// `resources: [.copy("ProducerBundle")]` puts the directory, by that name,
+        /// in the bundle's resource root -- the bundle itself on iOS,
+        /// `Contents/Resources` on macOS -- and `Bundle` resolves either. The
+        /// directory must not be called `Resources`: at the root of a flat iOS
+        /// bundle that name makes codesign read the bundle as a macOS one and
+        /// refuse it ("bundle format unrecognized"), which fails every signed app
+        /// build that links this product.
         public static var bundledEngineRoot: URL? {
-            let page = Bundle.module.url(forResource: "producer-page", withExtension: "html")
-                ?? Bundle.module.url(
-                    forResource: "producer-page", withExtension: "html", subdirectory: "Resources")
-            return page?.deletingLastPathComponent()
+            Bundle.module.url(
+                forResource: "producer-page", withExtension: "html", subdirectory: "ProducerBundle"
+            )?.deletingLastPathComponent()
         }
 
         /// The document the lane loads. Under the reserved prefix, so it is the

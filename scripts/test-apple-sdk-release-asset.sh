@@ -12,7 +12,11 @@
 #      bundle, both privacy manifests, the ANGLE helper, LICENSE and NOTICE are
 #      there -- and nothing that belongs to this repository and not to an app
 #      is (ProbeApp, DeviceTestHost, WebContent sources, build directories).
-#   2. Does each product build from it, for its platform? (macOS host only.)
+#   2. Does each product build from it, for its platform, and can an app sign
+#      what it builds? Every resource bundle the build produces is signed ad
+#      hoc, as an app's build signs it; the producer bundle once shipped in a
+#      directory named `Resources`, which a flat iOS bundle cannot hold and
+#      codesign refuses. (macOS host only.)
 #   3. Does a game run from it? The macOS game-view gate, pointed at the
 #      unpacked package: MigoGameView under a hardened runtime with allow-jit,
 #      ANGLE installed by the SDK's own helper. (macOS host only.)
@@ -52,8 +56,8 @@ required = [
     "Frameworks/ANGLELibGLESv2-macos.xcframework/Info.plist",
     "Frameworks/Scripts/embed-apple-angle.sh",
     "Frameworks/Scripts/apple-sdk-package.py",
-    "Sources/MigoApplePerformancePlus/Resources/producer-page.html",
-    "Sources/MigoApplePerformancePlus/Resources/engine/boot.mjs",
+    "Sources/MigoApplePerformancePlus/ProducerBundle/producer-page.html",
+    "Sources/MigoApplePerformancePlus/ProducerBundle/engine/boot.mjs",
     "Sources/MigoApplePerformancePlus/PrivacyInfo.xcprivacy",
     "Sources/MigoMacV8/PrivacyInfo.xcprivacy",
     "Sources/MigoApplePerformancePlus/MigoGameView.swift",
@@ -101,6 +105,17 @@ build_product() {
 build_product MigoApplePerformancePlus "generic/platform=iOS"
 build_product MigoApplePerformancePlus "generic/platform=iOS Simulator"
 build_product MigoMacV8 "platform=macOS"
+signed=0
+while IFS= read -r -d '' bundle; do
+  copy="$WORK/signing/$(basename "$(dirname "$bundle")")/$(basename "$bundle")"
+  mkdir -p "$(dirname "$copy")"
+  cp -R "$bundle" "$copy"
+  codesign --force --sign - "$copy" > "$WORK/codesign.log" 2>&1 \
+    || { cat "$WORK/codesign.log"; fail "an app cannot sign $(basename "$bundle") as built for $(basename "$(dirname "$bundle")")"; }
+  signed=$((signed + 1))
+done < <(find "$WORK"/dd-*/Build/Products -maxdepth 2 -name '*.bundle' -type d -print0)
+((signed > 0)) || fail "the builds produced no resource bundle; the producer bundle is missing"
+echo "  $signed resource bundle(s) sign as an app's build signs them"
 
 echo "[3/3] a game runs from the asset"
 bash "$ROOT/scripts/test-macos-game-view.sh" --package "$PACKAGE"

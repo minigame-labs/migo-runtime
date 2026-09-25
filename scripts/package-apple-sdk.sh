@@ -93,8 +93,8 @@ if receipt.get("diagnostic") or not receipt.get("complete") or groups != expecte
         f"groups={groups}; expected {expected}")
 if receipt.get("configuration") != "Release":
     die(f"the assembled engine is a {receipt.get('configuration')} build; a release ships Release")
-if not (package / "Sources/MigoApplePerformancePlus/Resources/producer-page.html").is_file():
-    die("the WebContent producer bundle is not in Sources/MigoApplePerformancePlus/Resources")
+if not (package / "Sources/MigoApplePerformancePlus/ProducerBundle/producer-page.html").is_file():
+    die("the WebContent producer bundle is not in Sources/MigoApplePerformancePlus/ProducerBundle")
 
 INCLUDE = ["Package.swift", "README.md", "core", "Sources", "Tests", "Frameworks"]
 SKIP_DIRS = {".build", ".swiftpm", "xcuserdata"}

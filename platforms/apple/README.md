@@ -175,7 +175,7 @@ platforms/apple/
     MigoAppleRenderer/       internal: CAMetalLayer, display link, surface attach
     MigoAppleWebKit/         lane 1
     MigoApplePerformancePlus/ lane 2: transport, FrameIngress bridge, host view
-      Resources/               generated: the WebContent bundle (gitignored)
+      ProducerBundle/          generated: the WebContent bundle (gitignored)
     MigoMacV8/               lane 3
   Tests/
   WebContent/PerformancePlus/ source of the bundle that runs inside WebContent

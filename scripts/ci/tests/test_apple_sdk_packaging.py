@@ -282,13 +282,13 @@ class SDKPackaging(unittest.TestCase):
 
     def installed_package_bytes(self):
         package = self.root/"platforms/apple"
-        generated = (package/"Frameworks", package/"Sources/MigoApplePerformancePlus/Resources")
+        generated = (package/"Frameworks", package/"Sources/MigoApplePerformancePlus/ProducerBundle")
         return {str(path.relative_to(package)): path.read_bytes()
                 for directory in generated for path in directory.rglob("*") if path.is_file()}
 
     def test_the_producer_bundle_carries_the_engine_api_layer(self):
         self.build("ios")
-        resources = self.root/"platforms/apple/Sources/MigoApplePerformancePlus/Resources"
+        resources = self.root/"platforms/apple/Sources/MigoApplePerformancePlus/ProducerBundle"
         for relative in ("producer-worker.mjs", "engine-core.mjs", "engine/boot.mjs",
                          "engine/core/ops.mjs", "engine/core/mod.mjs",
                          "engine/host_v8_webgl/02_webgl_context.js", "engine/runtime/99_main.js"):
