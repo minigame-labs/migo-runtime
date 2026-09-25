@@ -31,6 +31,7 @@ mod callbacks;
 mod capabilities;
 #[cfg(test)]
 mod concurrent_sessions;
+mod device;
 mod gamepad;
 mod host_kit;
 mod input;
@@ -87,6 +88,9 @@ use migo_capi_abi::{
     MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_ERROR_INVALID_STATE,
     MIGO_ERROR_WOULD_BLOCK, MIGO_OK, MigoResult,
 };
+// The embedded execution evaluates content on its host thread; the external one
+// mounts it at the call (see `migo_session_load_content`).
+#[cfg(not(feature = "external-frames"))]
 use migo_core::send_command_to_host;
 
 use crate::session_engine::SessionEngine;
@@ -126,6 +130,10 @@ struct EngineInner {
     code_cache_dir: PathBuf,
     /// `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT`: opt-in, never a default.
     allow_unsigned_content: bool,
+    /// The Ed25519 key content is verified against, hex-encoded for
+    /// `InitOptions`. `None` with signing enforced is the fail-closed
+    /// configuration: every load refuses, and says the key is missing.
+    code_signing_public_key: Option<String>,
     live_sessions: Mutex<usize>,
     retired_hosts: retirement::RetirementSet,
 }
@@ -148,7 +156,8 @@ impl EngineInner {
             .with_cache_dir(self.cache_dir.clone())
             .with_code_cache_dir(self.code_cache_dir.clone())
             .with_pixel_ratio(pixel_ratio)
-            .with_code_signing_enabled(!self.allow_unsigned_content);
+            .with_code_signing_enabled(!self.allow_unsigned_content)
+            .with_code_signing_pubkey(self.code_signing_public_key.clone());
         // The session's level, not just the process default, because a session
         // binds its own level to its host thread and publishes it for the render
         // thread -- deliberately, so one session cannot silence another. Setting
@@ -310,6 +319,9 @@ pub struct MigoSession {
     /// Suppress repeated host notifications while bounded input ingress stays
     /// saturated. The next successful input enqueue opens a new episode.
     input_saturation_reported: AtomicBool,
+    /// What the host last reported about the device -- its network and battery.
+    /// The Session's, not a Host's: a report survives attaching and restarting.
+    pub(crate) device: Arc<device::DeviceState>,
 }
 
 impl MigoSession {
@@ -490,6 +502,9 @@ pub unsafe extern "C" fn migo_engine_create(
                 cache_dir: PathBuf::from(config.cache_dir),
                 code_cache_dir: PathBuf::from(config.code_cache_dir),
                 allow_unsigned_content: config.allow_unsigned_content,
+                code_signing_public_key: config
+                    .code_signing_public_key
+                    .map(|key| key.iter().map(|byte| format!("{byte:02x}")).collect()),
                 live_sessions: Mutex::new(0),
                 retired_hosts: retirement::RetirementSet::new(),
             }),
@@ -578,6 +593,7 @@ pub unsafe extern "C" fn migo_session_create(
             active_surface_generation: AtomicU64::new(0),
             gamepad_topology: gamepad::GamepadTopology::new(),
             input_saturation_reported: AtomicBool::new(false),
+            device: Default::default(),
         });
         *out_session = Arc::into_raw(session).cast_mut();
         MIGO_OK
@@ -691,6 +707,39 @@ pub unsafe extern "C" fn migo_session_load_content(
             return MIGO_ERROR_INVALID_STATE;
         }
 
+        // The external execution mounts content here, synchronously: its entry
+        // module is evaluated by WebKit in another process, and that process's
+        // host needs the mounted code directory before it can serve it. See
+        // `migo_session_copy_content_root`.
+        #[cfg(feature = "external-frames")]
+        {
+            let _ = host;
+            let Some(engine) = state.host.as_ref() else {
+                return MIGO_ERROR_INVALID_STATE;
+            };
+            return match engine.load_content(&content.content_id, &content.entry) {
+                Ok(root) => {
+                    tracing::info!(
+                        "migo_session_load_content: '{}' mounted at {}; entry '{}' is the producer's to import",
+                        content.content_id,
+                        root.display(),
+                        content.entry
+                    );
+                    state.content_loaded = true;
+                    MIGO_OK
+                }
+                Err(error) => {
+                    tracing::error!("migo_session_load_content: {error}");
+                    if error.code == shared::error::ErrorCode::InvalidArgument {
+                        MIGO_ERROR_INVALID_ARGUMENT
+                    } else {
+                        MIGO_ERROR_INTERNAL
+                    }
+                }
+            };
+        }
+
+        #[cfg(not(feature = "external-frames"))]
         match send_command_to_host(
             host,
             HostCommand::EvaluateModule {
@@ -1069,6 +1118,9 @@ mod tests {
             on_hide_keyboard: None,
             on_update_keyboard: None,
             on_surface_released: None,
+            on_vibrate: None,
+            on_keep_screen_on: None,
+            on_game_log: None,
         };
         session.state.lock().unwrap().notifier = Some(Arc::new(callbacks::Notifier::new(
             host_callbacks,
@@ -1135,6 +1187,26 @@ mod tests {
         let mut engine: *mut MigoEngine = std::ptr::null_mut();
         assert_eq!(unsafe { migo_engine_create(&config, &mut engine) }, MIGO_OK);
         assert!(unsafe { &*engine }.inner.allow_unsigned_content);
+        assert_eq!(unsafe { migo_engine_destroy(engine) }, MIGO_OK);
+    }
+
+    #[test]
+    fn a_signing_key_reaches_every_session_as_the_hex_init_options_read() {
+        let dirs = scratch_dirs("signing-key");
+        let mut config = engine_config(
+            &dirs,
+            size_of::<MigoEngineConfig>() as u32,
+            MIGO_ABI_VERSION_CURRENT,
+        );
+        config.code_signing_public_key = [0xab; 32];
+        let mut engine: *mut MigoEngine = std::ptr::null_mut();
+        assert_eq!(unsafe { migo_engine_create(&config, &mut engine) }, MIGO_OK);
+        let options = unsafe { &*engine }.inner.session_init_options(1.0);
+        assert!(options.code_signing_enabled());
+        assert_eq!(
+            options.code_signing_pubkey(),
+            Some("ab".repeat(32).as_str())
+        );
         assert_eq!(unsafe { migo_engine_destroy(engine) }, MIGO_OK);
     }
 
@@ -1696,6 +1768,9 @@ mod tests {
                 on_hide_keyboard: None,
                 on_update_keyboard: None,
                 on_surface_released: None,
+                on_vibrate: None,
+                on_keep_screen_on: None,
+                on_game_log: None,
             };
             assert_eq!(
                 unsafe { migo_session_set_host_callbacks(session, &host_callbacks) },

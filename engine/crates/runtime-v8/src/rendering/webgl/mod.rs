@@ -14,6 +14,12 @@ pub(crate) mod frame_collector;
 /// an unused import in every shipped build.
 pub(crate) use frame_wire::stream;
 
+/// Test-only: the same, for the Canvas2D text records.
+#[cfg(test)]
+mod canvas2d_parity;
+/// Test-only: the same, for the canvas a frame creates, resizes and destroys.
+#[cfg(test)]
+mod canvas_lifetime_parity;
 mod raf;
 /// Test-only: the cases asserting this crate's JavaScript encoder agrees with
 /// the shared wire-format table.

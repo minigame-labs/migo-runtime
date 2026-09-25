@@ -80,10 +80,16 @@ import os
             public var resourceEpoch: UInt64
             public var surfaceWidthPixels: Int
             public var surfaceHeightPixels: Int
+            /// What `migo.getWindowInfo()` and `getSystemInfoSync()` answer
+            /// with; see `MigoPerformancePlusHost.DeviceProfile`. `nil` leaves
+            /// those calls failing as they do on a platform with no device
+            /// services.
+            public var device: DeviceProfile?
 
             public init(
                 launchNonce: [UInt8], runtimeGeneration: UInt64 = 1, surfaceGeneration: UInt64,
-                resourceEpoch: UInt64 = 0, surfaceWidthPixels: Int, surfaceHeightPixels: Int
+                resourceEpoch: UInt64 = 0, surfaceWidthPixels: Int, surfaceHeightPixels: Int,
+                device: DeviceProfile? = nil
             ) {
                 self.launchNonce = launchNonce
                 self.runtimeGeneration = runtimeGeneration
@@ -91,6 +97,7 @@ import os
                 self.resourceEpoch = resourceEpoch
                 self.surfaceWidthPixels = surfaceWidthPixels
                 self.surfaceHeightPixels = surfaceHeightPixels
+                self.device = device
             }
 
             /// What the page is handed. The 64- and 128-bit fields are strings,
@@ -99,7 +106,7 @@ import os
             var injected: [String: Any] {
                 // The nonce is little-endian bytes; the string is the number.
                 let hex = launchNonce.reversed().map { String(format: "%02x", $0) }.joined()
-                return [
+                var fields: [String: Any] = [
                     "launchNonce": "0x" + hex,
                     "runtimeGeneration": String(runtimeGeneration),
                     "surfaceGeneration": String(surfaceGeneration),
@@ -107,6 +114,8 @@ import os
                     "surfaceWidth": surfaceWidthPixels,
                     "surfaceHeight": surfaceHeightPixels,
                 ]
+                if let device { fields["device"] = device.injected }
+                return fields
             }
 
             /// Why this description cannot be handed to a producer, or nil.
@@ -120,14 +129,140 @@ import os
             }
         }
 
+        /// What the host knows about the device, for the `migo.*` calls a game
+        /// makes before its first frame.
+        ///
+        /// `migo.getWindowInfo()` and `getSystemInfoSync()` are synchronous and
+        /// a game reads them to lay itself out. None of it changes during a
+        /// session, so it is handed to the producer at startup and answered
+        /// there without crossing -- which is what the op boundary calls the
+        /// `local` lane.
+        ///
+        /// Absent, those calls fail with the message the engine raises on a
+        /// platform with no device services. That is deliberate: a screen size
+        /// nobody measured is worse than a failure, because a game lays itself
+        /// out to it.
+        public struct DeviceProfile: Equatable, Sendable {
+            /// Points, as the mini-game API reports them: the physical pixels
+            /// divided by `pixelRatio`.
+            public var screenWidth: Double
+            public var screenHeight: Double
+            /// The drawable area, which on a phone is the screen minus nothing
+            /// and in a split window is less.
+            public var windowWidth: Double
+            public var windowHeight: Double
+            public var pixelRatio: Double
+            public var statusBarHeight: Double
+            /// Insets from each edge, which is the shape the engine converts
+            /// into absolute positions.
+            public var safeAreaInsets: SafeAreaInsets
+            public var brand: String
+            public var model: String
+            public var system: String
+            /// `"ios"` or `"macos"`; the engine passes it through to content.
+            public var platform: String
+
+            public struct SafeAreaInsets: Equatable, Sendable {
+                public var left: Double
+                public var top: Double
+                public var right: Double
+                public var bottom: Double
+
+                public init(left: Double = 0, top: Double = 0, right: Double = 0, bottom: Double = 0) {
+                    self.left = left
+                    self.top = top
+                    self.right = right
+                    self.bottom = bottom
+                }
+            }
+
+            public init(
+                screenWidth: Double, screenHeight: Double, windowWidth: Double,
+                windowHeight: Double, pixelRatio: Double, statusBarHeight: Double = 0,
+                safeAreaInsets: SafeAreaInsets = SafeAreaInsets(), brand: String = "Apple",
+                model: String = "unknown", system: String = "", platform: String = "ios"
+            ) {
+                self.screenWidth = screenWidth
+                self.screenHeight = screenHeight
+                self.windowWidth = windowWidth
+                self.windowHeight = windowHeight
+                self.pixelRatio = pixelRatio
+                self.statusBarHeight = statusBarHeight
+                self.safeAreaInsets = safeAreaInsets
+                self.brand = brand
+                self.model = model
+                self.system = system
+                self.platform = platform
+            }
+
+            /// The JSON each op answers with, as the engine's JavaScript parses
+            /// it: snake_case for the window, camelCase for the device, because
+            /// that is what `system/03_window_info.js` and `10_system_info.js`
+            /// read. One shape, not a translation on either side.
+            var injected: [String: Any] {
+                let window: [String: Any] = [
+                    "pixel_ratio": pixelRatio,
+                    "screen_width": screenWidth,
+                    "screen_height": screenHeight,
+                    "window_width": windowWidth,
+                    "window_height": windowHeight,
+                    "status_bar_height": statusBarHeight,
+                    "screen_top": 0,
+                    "safe_area": [
+                        "left": safeAreaInsets.left,
+                        "top": safeAreaInsets.top,
+                        "right": safeAreaInsets.right,
+                        "bottom": safeAreaInsets.bottom,
+                    ],
+                ]
+                let device: [String: Any] = [
+                    "brand": brand,
+                    "model": model,
+                    "system": system,
+                    "platform": platform,
+                    // -1 is what the API reports for "not benchmarked", which is
+                    // the truth here: nothing has measured this device.
+                    "benchmarkLevel": -1,
+                ]
+                return [
+                    "windowInfo": Self.json(window),
+                    "deviceInfo": Self.json(device),
+                ]
+            }
+
+            private static func json(_ value: [String: Any]) -> String {
+                guard let data = try? JSONSerialization.data(withJSONObject: value),
+                    let text = String(data: data, encoding: .utf8)
+                else {
+                    // Unreachable for the value types above; an empty object is
+                    // still valid JSON, so content sees defaults rather than a
+                    // parse error it cannot act on.
+                    return "{}"
+                }
+                return text
+            }
+        }
+
         /// Everything the page needs that is not in its own bundle.
         public struct Configuration {
-            /// Where the game's package is. Served at `/`.
+            /// Where the game's package is. Served at `/`. For a game, the
+            /// directory `migo_session_copy_content_root` answers after
+            /// `migo_session_load_content`: the package the engine mounted.
             public var contentRoot: URL
-            /// The content module the producer imports, as a path on this origin --
-            /// `"/game/main.mjs"`. `nil` runs the producer with no content, which is
-            /// what a lane bring-up test wants and what a product build never does.
-            public var contentEntry: String?
+            /// The game's entry file in its package -- `"/game.js"` -- evaluated
+            /// after the engine's API layer the way the embedded runtime
+            /// evaluates one: as a module whose source, and every script it
+            /// imports, the engine serves with its own module rules, so a
+            /// CommonJS entry runs wrapped and `require` resolves inside the
+            /// package. Needs `engineSession`, and content loaded into the
+            /// engine's session.
+            public var gameEntry: String?
+            /// A harness module, imported after the engine if there is one, whose
+            /// `start({ session, sync, report })` is called with the producer's
+            /// own session: how a lane test drives frames and calls below the
+            /// engine's API. Served as its file. Not a game entry -- a product
+            /// build names `gameEntry`.
+            public var harnessEntry: String?
             /// Where the engine's own modules are. Defaults to the ones this package
             /// ships.
             public var engineRoot: URL?
@@ -143,11 +278,13 @@ import os
             public var engineSession: EngineSession?
 
             public init(
-                contentRoot: URL, contentEntry: String? = nil, engineRoot: URL? = nil,
-                reportVerdicts: Bool = false, engineSession: EngineSession? = nil
+                contentRoot: URL, gameEntry: String? = nil, harnessEntry: String? = nil,
+                engineRoot: URL? = nil, reportVerdicts: Bool = false,
+                engineSession: EngineSession? = nil
             ) {
                 self.contentRoot = contentRoot
-                self.contentEntry = contentEntry
+                self.gameEntry = gameEntry
+                self.harnessEntry = harnessEntry
                 self.engineRoot = engineRoot
                 self.reportVerdicts = reportVerdicts
                 self.engineSession = engineSession
@@ -168,6 +305,9 @@ import os
             /// named. Refused here because a producer given it would have every
             /// packet refused by ingress, which reads as a black screen.
             case invalidEngineSession(String)
+            /// A game entry was named without the engine session its API layer
+            /// answers for: the game's first call would have nothing to call.
+            case gameWithoutEngine
 
             public var description: String {
                 switch self {
@@ -181,6 +321,10 @@ import os
                     return "the frame channel could not start: \(error)"
                 case .invalidEngineSession(let reason):
                     return "the engine session cannot be used: \(reason)"
+                case .gameWithoutEngine:
+                    return
+                        "a game entry was named without an engine session; the game runs on the"
+                        + " engine's API layer, which answers for one"
                 }
             }
         }
@@ -239,6 +383,13 @@ import os
         /// Called on the main queue for every report the producer makes.
         public var onReport: ((Report) -> Void)?
 
+        /// Called on the main queue for every line content writes to its
+        /// `console`, after it is written to the platform log: the engine's
+        /// `op_console` level (1 info, 2 warn, 3 error, anything else debug) and
+        /// the text. For an app that keeps its own log, and for a test that
+        /// watches a game the way a game reports -- through `console`.
+        public var onConsole: ((_ level: Int, _ message: String) -> Void)?
+
         private let configuration: Configuration
         private let origin: MigoPerformancePlusOrigin
         private let engineRoot: URL
@@ -263,6 +414,9 @@ import os
             else {
                 throw StartFailure.engineModulesMissing(engineRoot)
             }
+            if configuration.gameEntry != nil && configuration.engineSession == nil {
+                throw StartFailure.gameWithoutEngine
+            }
             if let session = configuration.engineSession {
                 if let problem = session.problem { throw StartFailure.invalidEngineSession(problem) }
                 // The engine's own modules are generated into the bundle by the SDK
@@ -281,14 +435,33 @@ import os
             // The frame endpoint in front, content serving behind: one handler per
             // scheme is all a `WKWebViewConfiguration` accepts, and the producer's
             // large frames have to arrive on the origin the page was loaded from.
+            // A game's scripts are the engine's to serve: it resolves them
+            // through the package it mounted and evaluates them with its module
+            // rules. Weak for the reason `deliver` is.
+            let moduleSource: MigoWebKitContentOrigin.ModuleSource? =
+                configuration.gameEntry == nil
+                ? nil
+                : { [weak channel] path in
+                    channel?.contentModule(path: path)
+                        ?? .unavailable("the frame channel has gone")
+                }
             self.origin = MigoPerformancePlusOrigin(
                 content: MigoWebKitContentOrigin(
-                    root: configuration.contentRoot, engineRoot: engineRoot),
+                    root: configuration.contentRoot, engineRoot: engineRoot,
+                    moduleSource: moduleSource),
                 deliver: { [weak channel] packet in channel?.submitFromOrigin(packet) },
                 // Weak for the reason `deliver` is, and `nil` once the channel is
                 // gone: the origin answers that as "no answer", which the
                 // producer reports rather than reading as a verdict.
-                answer: { [weak channel] call in channel?.answerSyncCall(call) })
+                answer: { [weak channel] call in channel?.answerSyncCall(call) },
+                // A service message too large for the socket, and an answer too
+                // large for it: the same channel, reached through the origin.
+                submitService: { [weak channel] message in
+                    channel?.submitServiceFromOrigin(message) ?? .unavailable
+                },
+                takeParked: { [weak channel] generation, requestId in
+                    channel?.takeParkedReply(generation: generation, requestId: requestId)
+                })
             self.onReport = onReport
             self.view = UIView(frame: .zero)
             super.init()
@@ -366,6 +539,12 @@ import os
                 // Where a synchronous call goes. Same origin as the page, so a
                 // Worker's blocking request needs no CORS and no second listener.
                 "syncCallUrl": MigoPerformancePlusOrigin.syncURL.absoluteString,
+                // The service stream's two scheme endpoints: a message too large
+                // for the socket goes to the first, an answer too large for it
+                // is taken from the second. Same origin, for the reason the
+                // sync endpoint is.
+                "serviceUrl": MigoPerformancePlusOrigin.serviceURL.absoluteString,
+                "replyUrl": MigoPerformancePlusOrigin.replyURL.absoluteString,
                 // From `MigoFrameChannelPolicy`, so the producer has no copy of a
                 // measured number. A constant in both languages would drift the
                 // first time the measurement is redone on new hardware --
@@ -373,7 +552,8 @@ import os
                 "socketCeilingBytes": MigoFrameChannelPolicy.socketCeilingBytes,
                 "reportVerdicts": configuration.reportVerdicts,
             ]
-            if let entry = configuration.contentEntry { fields["contentEntry"] = entry }
+            if let entry = configuration.gameEntry { fields["gameEntry"] = entry }
+            if let entry = configuration.harnessEntry { fields["harnessEntry"] = entry }
             if let session = configuration.engineSession { fields["engineSession"] = session.injected }
             guard let data = try? JSONSerialization.data(withJSONObject: fields),
                 let json = String(data: data, encoding: .utf8)
@@ -401,6 +581,7 @@ import os
             guard let body = message.body as? Report else { return }
             if body["type"] as? String == "console" {
                 Self.log(consoleLine: body)
+                onConsole?(body["level"] as? Int ?? 0, body["message"] as? String ?? "")
                 return
             }
             onReport?(body)

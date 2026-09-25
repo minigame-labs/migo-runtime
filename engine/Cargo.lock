@@ -1719,6 +1719,7 @@ dependencies = [
  "migo-graphics",
  "migo-io",
  "migo-runtime-v8",
+ "migo-services",
  "migo-shared",
  "parking_lot",
  "serde",
@@ -1862,6 +1863,7 @@ dependencies = [
  "migo-frame-decode",
  "migo-frame-wire",
  "migo-io",
+ "migo-services",
  "migo-shared",
  "parking_lot",
  "percent-encoding",
@@ -1875,6 +1877,30 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "zip",
+]
+
+[[package]]
+name = "migo-services"
+version = "0.9.6"
+dependencies = [
+ "base64",
+ "bytes",
+ "data-url",
+ "futures",
+ "hex",
+ "http",
+ "migo-contention-probe",
+ "migo-io",
+ "migo-shared",
+ "parking_lot",
+ "percent-encoding",
+ "reqwest",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2592,9 +2618,9 @@ dependencies = [
 
 [[package]]
 name = "ringbuf"
-version = "0.4.8"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe47b720588c8702e34b5979cb3271a8b1842c7cb6f57408efa70c779363488c"
+checksum = "0b123165531e325df9079f56c036f2da4103a5d5abfef9e2fda4b9c34d1ef7aa"
 dependencies = [
  "crossbeam-utils",
  "portable-atomic",

@@ -14,7 +14,9 @@
 //! that belong here are the ones the *specification* names, and they live with
 //! the renderer that has the state to judge them.
 
-use shared::protocol::render_cmd::Canvas2DCmd;
+use shared::protocol::render_cmd::{
+    Canvas2DCmd, GradientType, TextAlign, TextBaseline, TextDirection,
+};
 
 use frame_wire::canvas2d::*;
 
@@ -172,6 +174,30 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
         // Everything else in this block needs the context this makes.
         OP2D_CREATE_CONTEXT => Canvas2DCmd::CreateContext2D,
 
+        OP2D_REGISTER_CANVAS => Canvas2DCmd::RegisterCanvas {
+            width: record[1],
+            height: record[2],
+        },
+        OP2D_DESTROY_CANVAS => Canvas2DCmd::DestroyCanvas,
+        // The one record in this block whose words the envelope cannot check.
+        // A word count says how many numbers arrived, and `bool_words` says
+        // which are 0 or 1; neither can say that a flags word names at least one
+        // dimension. So this is the reading, and a flags word that names none --
+        // or a bit this build does not know -- is a producer that encoded
+        // something this reader would have to guess at, which is what `None`
+        // means here: a stream the host does not execute rather than a resize
+        // applied to whichever dimension seemed likely.
+        OP2D_RESIZE_CANVAS => {
+            let flags = record[1];
+            if flags == 0 || flags & !(RESIZE_CANVAS_WIDTH | RESIZE_CANVAS_HEIGHT) != 0 {
+                return None;
+            }
+            Canvas2DCmd::ResizeCanvas {
+                w: (flags & RESIZE_CANVAS_WIDTH != 0).then_some(record[2]),
+                h: (flags & RESIZE_CANVAS_HEIGHT != 0).then_some(record[3]),
+            }
+        }
+
         OP2D_SET_COMPOSITE_OPERATION => Canvas2DCmd::SetCompositeOperation {
             op: record[1] as u8,
         },
@@ -186,8 +212,212 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             color: color_of(record),
         },
 
+        // ── Text ────────────────────────────────────────────────────────────
+        OP2D_SET_FONT => Canvas2DCmd::SetFont {
+            font: text_of(record, 1)?,
+        },
+        OP2D_FILL_TEXT => Canvas2DCmd::FillText {
+            text: text_of(record, 4)?,
+            x: f(record[1]),
+            y: f(record[2]),
+            max_width: f(record[3]),
+        },
+        OP2D_STROKE_TEXT => Canvas2DCmd::StrokeText {
+            text: text_of(record, 4)?,
+            x: f(record[1]),
+            y: f(record[2]),
+            max_width: f(record[3]),
+        },
+        // The stops are read by the same parser the in-process op uses, from
+        // the same string the facade serialised: one reading of the engine's own
+        // JSON rather than two that have to be held equal.
+        OP2D_SET_FILL_STYLE_GRADIENT => Canvas2DCmd::SetFillStyleGradient {
+            gradient_type: gradient_type_of(record[1]),
+            x0: f(record[2]),
+            y0: f(record[3]),
+            r0: f(record[4]),
+            x1: f(record[5]),
+            y1: f(record[6]),
+            r1: f(record[7]),
+            stops: shared::protocol::render_cmd::parse_gradient_stops(&text_of(record, 8)?),
+        },
+        OP2D_SET_STROKE_STYLE_GRADIENT => Canvas2DCmd::SetStrokeStyleGradient {
+            gradient_type: gradient_type_of(record[1]),
+            x0: f(record[2]),
+            y0: f(record[3]),
+            r0: f(record[4]),
+            x1: f(record[5]),
+            y1: f(record[6]),
+            r1: f(record[7]),
+            stops: shared::protocol::render_cmd::parse_gradient_stops(&text_of(record, 8)?),
+        },
+        OP2D_SET_FILL_STYLE_PATTERN => Canvas2DCmd::SetFillStylePattern {
+            image_id: record[1],
+            repeat_x: record[2] != 0,
+            repeat_y: record[3] != 0,
+        },
+        OP2D_SET_STROKE_STYLE_PATTERN => Canvas2DCmd::SetStrokeStylePattern {
+            image_id: record[1],
+            repeat_x: record[2] != 0,
+            repeat_y: record[3] != 0,
+        },
+
+        // The capture the engine's `getImageData` makes: the pixels stay on the
+        // host, in its snapshot pool, and what crosses back is whatever the
+        // content actually asks for -- the bytes, or a texture upload that never
+        // brings them to JavaScript at all.
+        OP2D_CAPTURE_SNAPSHOT => Canvas2DCmd::CaptureSnapshot {
+            x: record[1] as i32,
+            y: record[2] as i32,
+            width: record[3],
+            height: record[4],
+            snapshot_id: record[5],
+            cache_key: None,
+        },
+
+        OP2D_SET_TEXT_ALIGN => Canvas2DCmd::SetTextAlign {
+            align: text_align_of(record[1] as u8),
+        },
+        OP2D_SET_TEXT_BASELINE => Canvas2DCmd::SetTextBaseline {
+            baseline: text_baseline_of(record[1] as u8),
+        },
+        OP2D_SET_TEXT_DIRECTION => Canvas2DCmd::SetTextDirection {
+            direction: text_direction_of(record[1] as u8),
+        },
+        OP2D_SET_LINE_DASH => Canvas2DCmd::SetLineDash {
+            segments: floats_of(record, 1)?,
+        },
+
+        // ── Images ──────────────────────────────────────────────────────────
+        OP2D_DRAW_IMAGE => Canvas2DCmd::DrawImage {
+            image_id: record[1],
+            sx: f(record[2]),
+            sy: f(record[3]),
+            sw: f(record[4]),
+            sh: f(record[5]),
+            dx: f(record[6]),
+            dy: f(record[7]),
+            dw: f(record[8]),
+            dh: f(record[9]),
+        },
+        OP2D_DRAW_IMAGE_BATCH => Canvas2DCmd::DrawImageBatch {
+            draws: draw_image_entries(record)?,
+        },
+
         _ => return None,
     })
+}
+
+/// The `u8` a text-state call carries, as the enum it names.
+///
+/// One body per call, the resource block's rule: `op_set_text_align` and the
+/// record that stands in for it must agree on which number is `Center`, and the
+/// only way to guarantee that is for both to call this. An unknown value is the
+/// initial state rather than a refusal, which is what a browser does with a
+/// `textAlign` it does not know.
+pub fn text_align_of(value: u8) -> TextAlign {
+    match value {
+        0 => TextAlign::Start,
+        1 => TextAlign::End,
+        2 => TextAlign::Left,
+        3 => TextAlign::Right,
+        4 => TextAlign::Center,
+        _ => TextAlign::Start,
+    }
+}
+
+/// See [`text_align_of`].
+pub fn text_baseline_of(value: u8) -> TextBaseline {
+    match value {
+        0 => TextBaseline::Top,
+        1 => TextBaseline::Hanging,
+        2 => TextBaseline::Middle,
+        3 => TextBaseline::Alphabetic,
+        4 => TextBaseline::Ideographic,
+        5 => TextBaseline::Bottom,
+        _ => TextBaseline::Alphabetic,
+    }
+}
+
+/// See [`text_align_of`].
+pub fn text_direction_of(value: u8) -> TextDirection {
+    match value {
+        1 => TextDirection::Ltr,
+        2 => TextDirection::Rtl,
+        _ => TextDirection::Inherit,
+    }
+}
+
+/// The gradient kind the op takes as a number: anything but radial or conic is
+/// linear, which is the op's own `match` and the browser's default.
+fn gradient_type_of(word: u32) -> GradientType {
+    match word as u8 {
+        1 => GradientType::Radial,
+        2 => GradientType::Conic,
+        _ => GradientType::Linear,
+    }
+}
+
+/// A record's text payload: the length word at `prefix_words`, then the bytes.
+///
+/// Pass 1 checked that they are UTF-8 and that the padding is zero, so this is
+/// a copy rather than a parse. `None` only when the allocation fails, which
+/// drops the one command rather than the frame.
+fn text_of(record: &[u32], prefix_words: usize) -> Option<String> {
+    let len = record[prefix_words] as usize;
+    let words = &record[prefix_words + 1..];
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).ok()?;
+    let whole = len / 4;
+    for word in &words[..whole] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    if len % 4 != 0 {
+        bytes.extend_from_slice(&words[whole].to_le_bytes()[..len % 4]);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// A record's `f32` list: the count word at `prefix_words`, then the bits.
+///
+/// A reinterpretation, like every other float in this block.
+fn floats_of(record: &[u32], prefix_words: usize) -> Option<Vec<f32>> {
+    let count = record[prefix_words] as usize;
+    let mut values = Vec::new();
+    values.try_reserve_exact(count).ok()?;
+    values.extend(
+        record[prefix_words + 1..prefix_words + 1 + count]
+            .iter()
+            .map(|word| f(*word)),
+    );
+    Some(values)
+}
+
+/// A `drawImageBatch` record's entries: nine words each, the id then the eight
+/// rectangle floats. `None` for a word count that is not whole entries, which
+/// drops the one command -- what the op does with a buffer that is not.
+fn draw_image_entries(record: &[u32]) -> Option<Vec<shared::protocol::render_cmd::DrawImageEntry>> {
+    let words = &record[2..2 + record[1] as usize];
+    let per = frame_wire::canvas2d::DRAW_IMAGE_BATCH_ENTRY_WORDS as usize;
+    if words.is_empty() || !words.len().is_multiple_of(per) {
+        return None;
+    }
+    let mut draws = Vec::new();
+    draws.try_reserve_exact(words.len() / per).ok()?;
+    draws.extend(words.chunks_exact(per).map(|entry| {
+        shared::protocol::render_cmd::DrawImageEntry {
+            image_id: entry[0],
+            sx: f(entry[1]),
+            sy: f(entry[2]),
+            sw: f(entry[3]),
+            sh: f(entry[4]),
+            dx: f(entry[5]),
+            dy: f(entry[6]),
+            dw: f(entry[7]),
+            dh: f(entry[8]),
+        }
+    }));
+    Some(draws)
 }
 
 /// Four floats, in the order the destination's `Color` declares them.
@@ -198,4 +428,34 @@ fn color_of(record: &[u32]) -> shared::protocol::color::Color {
         b: f(record[3]),
         a: f(record[4]),
     }
+}
+
+/// The twelve `f32` a `measureText` answer is, in the order the flat op writes
+/// them.
+///
+/// One layout, not two: `op_measure_text_flat` answers with these bytes in
+/// process, the Canvas2D metrics query answers with them across the boundary,
+/// and the engine's facade reads a `TextMetrics` back from exactly this order.
+/// A field swapped here is a label laid out against another field's number,
+/// which lays the text out wrong rather than failing.
+pub fn encode_text_metrics(metrics: &shared::protocol::render_cmd::TextMetrics) -> Vec<u8> {
+    let fields: [f32; 12] = [
+        metrics.width,
+        metrics.actual_bounding_box_left,
+        metrics.actual_bounding_box_right,
+        metrics.em_height_ascent,
+        metrics.em_height_descent,
+        metrics.alphabetic_baseline,
+        metrics.font_bounding_box_descent,
+        metrics.actual_bounding_box_ascent,
+        metrics.actual_bounding_box_descent,
+        metrics.font_bounding_box_ascent,
+        metrics.hanging_baseline,
+        metrics.ideographic_baseline,
+    ];
+    let mut out = Vec::with_capacity(fields.len() * 4);
+    for field in fields {
+        out.extend_from_slice(&field.to_le_bytes());
+    }
+    out
 }

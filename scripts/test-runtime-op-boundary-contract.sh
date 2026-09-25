@@ -19,6 +19,13 @@
 # op for op and extension for extension. A registered op nothing imports needs no
 # lane -- no engine JavaScript can call it -- and is reported rather than failed.
 #
+# AND THE CORE MEMBERS. `core.read`, `core.close` and `core.tryClose` are calls the
+# engine's JavaScript makes on deno's `core` object rather than ops, so they are in
+# neither set above and are classified in the contract's `core_members` table. Each
+# one there must be a member the engine's JavaScript actually calls, and a member on
+# a crossing lane must carry a number in service-ops.json (a `local` one must not,
+# because nothing crosses for it).
+#
 # AND THE SHAPE. A lane is a claim about who answers, and the op's Rust signature
 # says whether an answer exists:
 #   - an async op (or one returning a future) is awaited, so its lane is `async`
@@ -149,6 +156,36 @@ for name in sorted(set(classified) & set(imported)):
     if local_answer is not None and not (lane in ANSWERLESS and returns_value(op)):
         error(f"{name} has a local_answer, but a {lane} op that returns nothing needs none")
 
+# The core members: classified against what the engine's JavaScript calls, and
+# against the numbers the service stream carries them under.
+SERVICE_OPS = root / "contracts/runtime/service-ops.json"
+try:
+    numbered = json.loads(SERVICE_OPS.read_text(encoding="utf-8"))["ops"]
+except (OSError, KeyError, json.JSONDecodeError) as exc:
+    numbered = {}
+    error(f"{SERVICE_OPS.relative_to(root)} cannot be read: {exc}")
+
+core = contract.get("core_members") or {}
+if not isinstance(core.get("$comment"), (str, list)) or not core.get("$comment"):
+    error("core_members gives no reason for its lanes")
+members = core.get("members") or {}
+if not members:
+    error("core_members classifies no members")
+used = runtime_ops.core_members(root)
+for name, lane in sorted(members.items()):
+    if name not in used:
+        error(f"core.{name} is classified and no engine JavaScript calls it; remove its entry")
+    if lane not in LANES:
+        error(f"core.{name} has lane {lane!r}, which is not one of {list(LANES)}")
+        continue
+    # `core_<snake case of the member>` is the name its number is filed under.
+    wire = "core_" + "".join(f"_{c.lower()}" if c.isupper() else c for c in name)
+    if lane in ("sync", "async", "command"):
+        if wire not in numbered:
+            error(f"core.{name} is {lane} and has no number in {SERVICE_OPS.name} (expected {wire})")
+    elif wire in numbered:
+        error(f"core.{name} is {lane} and needs no service number, but {wire} has one")
+
 if errors:
     print("op-boundary contract FAILED:", file=sys.stderr)
     for message in errors:
@@ -163,6 +200,7 @@ unimported = sorted(name for name, op in ops.items() if not op.imported_by)
 print(
     f"op-boundary contract: PASS -- {len(classified)} imported ops classified "
     f"({', '.join(f'{lane} {counts.get(lane, 0)}' for lane in LANES)}); "
-    f"{len(unimported)} registered ops are imported by no engine JavaScript"
+    f"{len(unimported)} registered ops are imported by no engine JavaScript; "
+    f"{len(members)} core members classified"
 )
 PY

@@ -277,11 +277,38 @@ const isTypedArray = (value) =>
 const isSharedArrayBuffer = (value) =>
   sharedArrayBufferByteLength !== null && hasSlot(sharedArrayBufferByteLength, value);
 
+/// The error classes the engine registers (`core.registerErrorClass`), by name.
+///
+/// Module scope rather than one map per `core`, because an op's error is built
+/// where the host's answer arrives -- the service channel -- which has no `core`
+/// of its own; a Worker has exactly one engine, so there is one registry.
+const errorClasses = new Map();
+
+/// The standard classes an op may name that the engine never registers.
+const STANDARD_ERRORS = { Error, TypeError, RangeError, SyntaxError, ReferenceError, URIError, EvalError };
+
+/**
+ * An error of the class an op names, as deno_core builds one for a Rust op
+ * that failed: the registered constructor for that name, a standard class, or
+ * -- for a name nothing registered -- an `Error` carrying the name, so content
+ * that reads `error.name` still sees it.
+ */
+export function constructOpError(className, message) {
+  const Registered = errorClasses.get(className) ?? STANDARD_ERRORS[className];
+  if (Registered !== undefined) return new Registered(message);
+  const error = new Error(message);
+  error.name = className;
+  return error;
+}
+
 /// deno_core's `core`, for the members the engine uses.
-export function makeCore(ops) {
+///
+/// `coreStream` carries the resource-table members (`core-stream.mjs`),
+/// passed in rather than imported so this module keeps importing nothing:
+/// it is what every other producer module bottoms out at.
+export function makeCore(ops, coreStream) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const errorClasses = new Map();
   const timers = new Map();
   let nextTimerId = 1;
   let timerDepth = 0;
@@ -291,9 +318,6 @@ export function makeCore(ops) {
   // and nothing in it sets a context otherwise, so a slot is the same behaviour.
   let asyncContext;
 
-  const resourceStreams = (name) => () => {
-    throw new LaneNotImplementedError(`core.${name}`, "async");
-  };
 
   return ObjectFreeze({
     ops,
@@ -356,10 +380,13 @@ export function makeCore(ops) {
       });
     },
 
-    read: resourceStreams("read"),
-    readAll: resourceStreams("readAll"),
-    close: resourceStreams("close"),
-    tryClose: resourceStreams("tryClose"),
+    // The resource-table members. The handles they name are the network
+    // service's, so the host answers them; `readAll` is built here out of
+    // `read`. See core-stream.mjs and op-boundary.json's core_members.
+    read: coreStream.read,
+    readAll: coreStream.readAll,
+    close: coreStream.close,
+    tryClose: coreStream.tryClose,
   });
 }
 

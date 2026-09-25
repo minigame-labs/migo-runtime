@@ -70,6 +70,9 @@ enum Event {
     ShowKeyboard { options: ShowOptions },
     HideKeyboard,
     UpdateKeyboard { value: String },
+    Vibrate { vibration: u32 },
+    KeepScreenOn { keep_on: bool },
+    GameLog { entry_json: String },
 }
 
 /// Payload owned by a dispatched task until it runs.
@@ -185,6 +188,29 @@ fn invoke_task(task: &Task) {
                 };
             }
         }
+        Event::Vibrate { vibration } => {
+            if let Some(on_vibrate) = task.callbacks.on_vibrate {
+                unsafe { on_vibrate(user_data, session, *vibration) };
+            }
+        }
+        Event::KeepScreenOn { keep_on } => {
+            if let Some(on_keep_screen_on) = task.callbacks.on_keep_screen_on {
+                unsafe { on_keep_screen_on(user_data, session, u8::from(*keep_on)) };
+            }
+        }
+        Event::GameLog { entry_json } => {
+            if let Some(on_game_log) = task.callbacks.on_game_log {
+                let bytes = entry_json.as_bytes();
+                unsafe {
+                    on_game_log(
+                        user_data,
+                        session,
+                        bytes.as_ptr() as *const c_char,
+                        bytes.len() as u32,
+                    )
+                };
+            }
+        }
     }
 }
 
@@ -290,6 +316,35 @@ impl Notifier {
 
     pub fn update_keyboard(&self, value: String) -> bool {
         self.post(Event::UpdateKeyboard { value })
+    }
+
+    /// Ask the host to vibrate, hold the display awake, or keep a log entry.
+    /// Like the keyboard verbs, the flag is the dispatcher's acceptance.
+    pub fn vibrate(&self, vibration: u32) -> bool {
+        self.post(Event::Vibrate { vibration })
+    }
+
+    pub fn keep_screen_on(&self, keep_on: bool) -> bool {
+        self.post(Event::KeepScreenOn { keep_on })
+    }
+
+    pub fn game_log(&self, entry_json: String) -> bool {
+        self.post(Event::GameLog { entry_json })
+    }
+
+    #[inline]
+    pub fn supplies_vibration(&self) -> bool {
+        self.callbacks.on_vibrate.is_some()
+    }
+
+    #[inline]
+    pub fn supplies_keep_screen_on(&self) -> bool {
+        self.callbacks.on_keep_screen_on.is_some()
+    }
+
+    #[inline]
+    pub fn supplies_game_log(&self) -> bool {
+        self.callbacks.on_game_log.is_some()
     }
 
     /// Whether the host offered to service the soft keyboard, which is what
@@ -497,6 +552,9 @@ mod tests {
             on_hide_keyboard: None,
             on_update_keyboard: None,
             on_surface_released: None,
+            on_vibrate: None,
+            on_keep_screen_on: None,
+            on_game_log: None,
         }
     }
 
@@ -557,6 +615,9 @@ mod tests {
             on_hide_keyboard: None,
             on_update_keyboard: None,
             on_surface_released: None,
+            on_vibrate: None,
+            on_keep_screen_on: None,
+            on_game_log: None,
         }
     }
 
@@ -577,6 +638,9 @@ mod tests {
             on_hide_keyboard: Some(noop_hide_keyboard),
             on_update_keyboard: Some(noop_update_keyboard),
             on_surface_released: None,
+            on_vibrate: None,
+            on_keep_screen_on: None,
+            on_game_log: None,
         };
         test_notifier(callbacks)
     }

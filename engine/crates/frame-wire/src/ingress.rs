@@ -237,6 +237,12 @@ impl WindowSource {
         }
     }
 
+    /// Be told when a credit comes back. See
+    /// [`CreditWindow::on_release`], and the record it exists to send.
+    pub fn on_credit_returned(&self, listener: Box<dyn Fn() + Send + Sync>) {
+        self.credits.on_release(listener);
+    }
+
     /// Block until a credit is free or `until` passes; whether one is. See
     /// [`CreditWindow::wait_for_credit`].
     pub fn wait_for_credit(&self, until: std::time::Instant) -> bool {
@@ -406,6 +412,12 @@ impl FrameIngress {
     ///
     /// Take it after the builder calls: [`Self::with_max_credits`] replaces the
     /// credit window, and a source taken before would advertise the old one.
+    /// The credit window itself, for a host that wants to hear when a credit
+    /// comes back. See [`crate::pool::CreditWindow::on_release`].
+    pub fn credits(&self) -> &std::sync::Arc<CreditWindow> {
+        &self.credits
+    }
+
     pub fn window_source(&self) -> WindowSource {
         WindowSource {
             accepted: Arc::clone(&self.accepted),

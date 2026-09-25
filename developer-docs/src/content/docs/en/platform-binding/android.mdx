@@ -14,8 +14,8 @@ sourcePaths:
 
 This page covers only the Android-specific integration delta. The general attach / detach / release
 contract (generation semantics, error codes, `MigoSurfaceDescriptor` field rules) is described in
-[Surface Interface](/docs/reference/surface/); for Session lifecycle see
-[Lifecycle Concepts](/docs/concepts/lifecycle/).
+[Surface Interface](/docs/en/reference/surface/); for Session lifecycle see
+[Lifecycle Concepts](/docs/en/concepts/lifecycle/).
 
 **Availability:** Released in 0.9 for `arm64-v8a` and `x86_64` (emulator). Java/Kotlin hosts
 operate through the AAR (`com.migo.runtime`); pure C hosts use the C ABI described below directly.
@@ -32,7 +32,7 @@ typedef struct MigoAndroidNativeWindowDescriptor {
     uint32_t             struct_size;
     uint32_t             abi_version;
     MigoPlatformKind     platform_kind;   /* MIGO_PLATFORM_ANDROID_NATIVE_WINDOW */
-    MigoPlatformDescriptorFlags flags;    /* 须为 0 */
+    MigoPlatformDescriptorFlags flags;    /* must be 0 */
     void                *native_window;   /* ANativeWindow* */
 } MigoAndroidNativeWindowDescriptor;
 ```
@@ -72,7 +72,7 @@ returns to the foreground. Each `surfaceCreated` / `surfaceChanged` callback del
 `generation` must **strictly increment** and must never be hard-coded to the constant `1`.
 
 ```c
-/* 宿主维护的计数器，跨 surfaceCreated/surfaceChanged 递增 */
+/* host-owned counter, incremented across surfaceCreated/surfaceChanged */
 static uint64_t g_surface_gen = 0;
 ```
 
@@ -85,13 +85,13 @@ returns `MIGO_ERROR_INVALID_ARGUMENT` (generation must be ≥ 1).
 static MigoSurfaceAttachment *s_attachment = NULL;
 
 void on_surface_created(void *window, int32_t w, int32_t h, float density) {
-    /* 可用性检查（可选，但建议在首次 attach 前做一次） */
+    /* availability check (optional, but recommended once before the first attach) */
     MigoCapabilities caps;
     caps.struct_size = (uint32_t)sizeof caps;
     caps.abi_version = MIGO_ABI_VERSION_CURRENT;
     if (migo_query_capabilities(&caps) != MIGO_OK ||
         (caps.platform_kinds & (1ULL << MIGO_PLATFORM_ANDROID_NATIVE_WINDOW)) == 0)
-        return; /* 当前构建不能 attach Android surface */
+        return; /* this build cannot attach an Android surface */
 
     MigoAndroidNativeWindowDescriptor plat;
     memset(&plat, 0, sizeof plat);
@@ -104,7 +104,7 @@ void on_surface_created(void *window, int32_t w, int32_t h, float density) {
     memset(&desc, 0, sizeof desc);
     desc.struct_size              = (uint32_t)sizeof desc;
     desc.abi_version              = MIGO_ABI_VERSION_CURRENT;
-    desc.generation               = ++g_surface_gen;   /* 递增，不得为常量 */
+    desc.generation               = ++g_surface_gen;   /* incremented; never a constant */
     desc.platform_kind            = MIGO_PLATFORM_ANDROID_NATIVE_WINDOW;
     desc.width_pixels             = (uint32_t)w;
     desc.height_pixels            = (uint32_t)h;
@@ -112,7 +112,7 @@ void on_surface_created(void *window, int32_t w, int32_t h, float density) {
     desc.color_space              = MIGO_COLOR_SPACE_SRGB;
     desc.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
     desc.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
-    desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;  /* 0.9 须置 0 */
+    desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;  /* must be 0 in 0.9 */
     desc.platform_descriptor_size = (uint32_t)sizeof plat;
     desc.platform_descriptor      = &plat;
 
@@ -131,7 +131,7 @@ void on_surface_destroyed(void) {
     migo_surface_begin_detach(s_attachment, &rel);
     s_attachment = NULL;
 
-    /* 轮询，直到 RELEASED；实际项目可用 on_surface_released 回调替代 */
+    /* poll until RELEASED; a real host can use the on_surface_released callback instead */
     MigoSurfaceReleaseStatus status;
     do {
         status.struct_size = (uint32_t)sizeof status;
@@ -140,7 +140,7 @@ void on_surface_destroyed(void) {
     } while (status.state != MIGO_SURFACE_RELEASE_RELEASED);
 
     migo_surface_release_destroy(rel);
-    /* 现在才安全销毁 ANativeWindow */
+    /* only now is it safe to destroy the ANativeWindow */
 }
 ```
 

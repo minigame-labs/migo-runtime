@@ -30,6 +30,7 @@ use tracing::{debug, error, info, warn};
 use shared::{
     config::InitOptions,
     error::{EngineResult, ErrorCode},
+    js_escape::{HOOK_ARGS_NONE, hook_args_one},
     protocol::host_cmd::HostCommand,
     render_event::RenderEvent,
     surface::SurfaceRef,
@@ -44,6 +45,14 @@ use frame_wire::sync::{
 use frame_wire::{FrameIngress, IngressOutcome, PooledFrame, stream};
 use frame_wire::{IngressDecision, WindowSource};
 
+use crate::runtime::external_services::{
+    RenderHandles, ServiceAdmission, ServiceContext, ServiceDispatcher, ServiceHandle, ServiceHost,
+    ServiceSubmitError, ServiceWork, WakerSlot,
+};
+use crate::runtime::host_events::ServiceEventSink;
+use crate::runtime::input_route;
+use crate::runtime::input_state::InputState;
+use crate::runtime::restart_boundary::is_retired_callback;
 use crate::runtime::session_thread::{
     HostThread, SessionThreadContext, StartedHost, create_basic_runtime,
     create_runtime_before_ready, spawn_session_thread,
@@ -73,6 +82,9 @@ pub struct ExternalFrameSession {
     /// them, not here -- the clock and the submit path each carry their own
     /// copy so neither has to reach for the ingress lock to answer.
     downlink: Arc<Mutex<DownlinkQueue>>,
+    /// The service stream: files, storage, images, audio, network. Shared with
+    /// the transports that admit into it and the session thread that runs it.
+    services: Arc<ServiceHost>,
 }
 
 /// A started external session and, when it was given a Surface, the lease for
@@ -190,6 +202,9 @@ impl ExternalGlErrors {
 /// The decoder's view of an external session.
 struct ExternalDecodeContext<'a> {
     errors: &'a ExternalGlErrors,
+    /// The session's services, whose image table resolves `texImage2D(…,
+    /// image)`. `None` on a submit path built without them.
+    services: Option<&'a ServiceContext>,
     builder: shared::FramePacketBuilder,
 }
 
@@ -208,6 +223,13 @@ impl frame_decode::GlDecodeContext for ExternalDecodeContext<'_> {
         phase: frame_decode::TransformFeedbackPhase,
     ) {
         self.errors.set_transform_feedback(canvas_id, phase);
+    }
+
+    fn image_upload(
+        &mut self,
+        upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        self.services?.image_upload(upload)
     }
 }
 
@@ -336,6 +358,10 @@ impl Admission {
 
 struct SyncPath {
     mailbox: Mutex<SyncMailbox>,
+    /// The errors this producer's own records made while being decoded, which
+    /// is what `getError` answers from: the queue is the host's, so there is no
+    /// renderer round trip to make.
+    errors: Arc<ExternalGlErrors>,
     /// Holds the vector the renderer answered with, moved rather than copied
     /// into. Its capacity is whatever the last reply needed and is released
     /// when the next one replaces it, so a session that reads a full screen
@@ -343,6 +369,9 @@ struct SyncPath {
     reply: Mutex<Vec<u8>>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
     admission: Admission,
+    /// The service stream, for `SYNC_OP_SERVICE`. Absent on a path built
+    /// without one, which answers that operation as unsupported.
+    services: Option<Arc<ServiceHost>>,
 }
 
 impl SyncPath {
@@ -350,13 +379,22 @@ impl SyncPath {
         runtime_generation: u64,
         dispatch: Arc<OnceLock<RenderDispatch>>,
         admission: Admission,
+        errors: Arc<ExternalGlErrors>,
     ) -> Self {
         Self {
             mailbox: Mutex::new(SyncMailbox::new(runtime_generation)),
+            errors,
             reply: Mutex::new(Vec::new()),
             dispatch,
             admission,
+            services: None,
         }
+    }
+
+    /// Answer `SYNC_OP_SERVICE` through `services`.
+    fn with_services(mut self, services: Arc<ServiceHost>) -> Self {
+        self.services = Some(services);
+        self
     }
 
     /// Post a request and answer it.
@@ -416,6 +454,9 @@ impl SyncPath {
             params,
             max_reply_bytes,
             triggering_sequence,
+            // The shared record has no field for it: a producer on that path
+            // orders its service calls itself.
+            0,
             deadline_nanos,
             now_nanos,
         );
@@ -465,6 +506,7 @@ impl SyncPath {
             call.params,
             request.max_reply_bytes,
             request.triggering_sequence,
+            call.service_sequence,
             request.deadline_nanos,
             now_nanos,
         );
@@ -527,17 +569,33 @@ impl SyncPath {
     /// whether they still answer anything: this runs without that lock, for as
     /// long as the readback takes, and the request it was for can be settled
     /// and replaced in the meantime.
+    #[allow(clippy::too_many_arguments)]
     fn execute(
         &self,
         operation: u32,
         params: &[u8],
         max_reply_bytes: u32,
         triggering_sequence: u64,
+        service_sequence: u64,
         deadline_nanos: u64,
         now_nanos: u64,
     ) -> Result<Vec<u8>, SyncError> {
         match operation {
+            frame_wire::sync::SYNC_OP_SERVICE => self.service_call(
+                params,
+                max_reply_bytes,
+                service_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
             SYNC_OP_READ_PIXELS => self.read_pixels(
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
+            frame_wire::sync::SYNC_OP_READ_PIXELS_TO_BUFFER => self.read_pixels_to_buffer(
                 params,
                 max_reply_bytes,
                 triggering_sequence,
@@ -551,8 +609,69 @@ impl SyncPath {
                 deadline_nanos,
                 now_nanos,
             ),
+            frame_wire::sync::SYNC_OP_CANVAS2D_METRICS
+            | frame_wire::sync::SYNC_OP_CANVAS2D_NUMBER
+            | frame_wire::sync::SYNC_OP_CANVAS2D_FONT => self.canvas2d_query(
+                operation,
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
+            frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA
+            | frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT => self.canvas2d_pixels(
+                operation,
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
+            frame_wire::sync::SYNC_OP_GL_QUERY_SCALAR
+            | frame_wire::sync::SYNC_OP_GL_QUERY_TEXT
+            | frame_wire::sync::SYNC_OP_GL_QUERY_ACTIVE => self.gl_query(
+                operation,
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
             _ => Err(SyncError::UnsupportedOperation),
         }
+    }
+
+    /// `SYNC_OP_SERVICE`: a service op whose return value is the answer --
+    /// `readFileSync`, `getStorageSync`.
+    ///
+    /// Waits for the service message the producer sent before it, then runs in
+    /// order behind everything admitted (see `external_services`). The op's own
+    /// failure is part of the reply; only the barrier failing is an error here.
+    fn service_call(
+        &self,
+        params: &[u8],
+        max_reply_bytes: u32,
+        service_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        let Some(services) = &self.services else {
+            return Err(SyncError::UnsupportedOperation);
+        };
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_nanos(budget);
+        services.wait_admitted(service_sequence, until)?;
+        let reply = services.call_sync(params, until)?;
+        if reply.len() > max_reply_bytes as usize {
+            // Refused rather than cut: a truncated file is a wrong answer that
+            // looks like a right one.
+            return Err(SyncError::ReplyTooLarge);
+        }
+        Ok(reply)
     }
 
     /// Wait until ingress has admitted `triggering_sequence`, within `budget`.
@@ -632,6 +751,493 @@ impl SyncPath {
         .to_vec())
     }
 
+    /// `SYNC_OP_GL_QUERY_*`: one WebGL query, answered after the frame it names.
+    ///
+    /// Every one of these is a call whose return value IS the answer -- a link
+    /// status, a uniform location, an info log -- so there is no default to
+    /// return and no way to defer. The producer records its work, sends a
+    /// barrier so the host executes it, and blocks here naming that barrier's
+    /// sequence; this waits for it to be admitted and then asks the renderer.
+    ///
+    /// `getError` is the exception that proves the shape: the error queue is the
+    /// host's, filled while decoding this producer's own records, so it is
+    /// answered here without a round trip -- after the same wait, because an
+    /// error recorded by the frame the producer is asking about has to be in the
+    /// queue before it is read.
+    fn gl_query(
+        &self,
+        operation: u32,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        use frame_wire::sync::{
+            ACTIVE_VARIABLE_HEADER_BYTES, GlQueryParams, SYNC_OP_GL_QUERY_ACTIVE,
+            SYNC_OP_GL_QUERY_SCALAR, SYNC_OP_GL_QUERY_TEXT, gl_query,
+        };
+        use shared::protocol::render_cmd::{GLCmd, RenderCmdResp, RenderCommand};
+
+        let query = GlQueryParams::decode(params)?;
+        // The operation sizes the reply, so a kind sent under the wrong one
+        // would be answered in a shape the producer is not reading.
+        if GlQueryParams::operation(query.kind) != operation {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        if (max_reply_bytes as usize) < 4 {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        if query.kind == gl_query::GET_ERROR {
+            let code = self.errors.take(query.canvas_id).unwrap_or(0);
+            return Ok(code.to_le_bytes().to_vec());
+        }
+
+        let Some(dispatch) = self.dispatch.get() else {
+            // The renderer is not up yet. Not "unsupported": this host does
+            // implement the query, and a producer told otherwise stops asking.
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let deadline = std::time::Duration::from_nanos(budget);
+
+        /// Send a command carrying a reply channel, and wait for the answer.
+        macro_rules! ask {
+            ($build:expr) => {{
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                if sender
+                    .send_blocking_bounded(RenderCommand::GL($build(RenderCmdResp::from_sync(tx))))
+                    .is_err()
+                {
+                    return Err(SyncError::SessionEnded);
+                }
+                match rx.recv_timeout(deadline) {
+                    Ok(Ok(answer)) => answer,
+                    // The renderer answered and the answer was an error: an
+                    // object that does not exist, a context that went away. Not
+                    // "unsupported", which is permanent and would stop the
+                    // producer asking for the rest of the session.
+                    Ok(Err(_)) => return Err(SyncError::OperationFailed),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        return Err(SyncError::TimedOut);
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        return Err(SyncError::SessionEnded);
+                    }
+                }
+            }};
+        }
+
+        let name = query.name_str().into_owned();
+        match operation {
+            SYNC_OP_GL_QUERY_SCALAR => {
+                let value: i32 = match query.kind {
+                    gl_query::PROGRAM_PARAMETER => ask!(|resp| GLCmd::GetProgramParameter {
+                        program_id: query.object,
+                        pname: query.pname,
+                        resp,
+                    }),
+                    gl_query::SHADER_PARAMETER => ask!(|resp| GLCmd::GetShaderParameter {
+                        shader_id: query.object,
+                        pname: query.pname,
+                        resp,
+                    }),
+                    gl_query::QUERY_PARAMETER => {
+                        let value: u32 = ask!(|resp| GLCmd::GetQueryParameter {
+                            query: query.object,
+                            pname: query.pname,
+                            resp,
+                        });
+                        value as i32
+                    }
+                    gl_query::CHECK_FRAMEBUFFER_STATUS => {
+                        let value: u32 = ask!(|resp| GLCmd::CheckFramebufferStatus {
+                            canvas_id: query.canvas_id,
+                            target: query.pname,
+                            resp,
+                        });
+                        value as i32
+                    }
+                    gl_query::CLIENT_WAIT_SYNC => {
+                        let value: u32 = ask!(|resp| GLCmd::ClientWaitSync {
+                            sync: query.object,
+                            flags: query.pname,
+                            resp,
+                        });
+                        value as i32
+                    }
+                    gl_query::UNIFORM_LOCATION => {
+                        // `null` is -1, the value WebGL's own location type is
+                        // compared against; the producer hands it straight back.
+                        let found: Option<u32> = ask!(|resp| GLCmd::GetUniformLocation {
+                            canvas_id: query.canvas_id,
+                            program_id: query.object,
+                            name: name.clone(),
+                            resp,
+                        });
+                        found.map_or(-1, |location| location as i32)
+                    }
+                    gl_query::ATTRIB_LOCATION => {
+                        let found: Option<u32> = ask!(|resp| GLCmd::GetAttribLocation {
+                            canvas_id: query.canvas_id,
+                            program_id: query.object,
+                            name: name.clone(),
+                            resp,
+                        });
+                        found.map_or(-1, |location| location as i32)
+                    }
+                    gl_query::UNIFORM_BLOCK_INDEX => {
+                        let index: u32 = ask!(|resp| GLCmd::GetUniformBlockIndex {
+                            program_id: query.object,
+                            name: name.clone(),
+                            resp,
+                        });
+                        index as i32
+                    }
+                    _ => return Err(SyncError::UnsupportedOperation),
+                };
+                Ok(value.to_le_bytes().to_vec())
+            }
+            SYNC_OP_GL_QUERY_TEXT => {
+                let text: String = match query.kind {
+                    gl_query::PROGRAM_INFO_LOG => {
+                        let log: Option<String> = ask!(|resp| GLCmd::GetProgramInfoLog {
+                            program_id: query.object,
+                            resp,
+                        });
+                        log.unwrap_or_default()
+                    }
+                    gl_query::SHADER_INFO_LOG => {
+                        let log: Option<String> = ask!(|resp| GLCmd::GetShaderInfoLog {
+                            shader_id: query.object,
+                            resp,
+                        });
+                        log.unwrap_or_default()
+                    }
+                    gl_query::PARAMETER => ask!(|resp| GLCmd::GetParameter {
+                        canvas_id: query.canvas_id,
+                        pname: query.pname,
+                        resp,
+                    }),
+                    _ => return Err(SyncError::UnsupportedOperation),
+                };
+                // Truncating an info log would be a wrong answer that looks
+                // like a right one, which is what this whole barrier refuses.
+                if text.len() > max_reply_bytes as usize {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                Ok(text.into_bytes())
+            }
+            SYNC_OP_GL_QUERY_ACTIVE => {
+                let found: Option<(String, i32, u32)> = match query.kind {
+                    gl_query::ACTIVE_ATTRIB => ask!(|resp| GLCmd::GetActiveAttrib {
+                        canvas_id: query.canvas_id,
+                        program_id: query.object,
+                        index: query.pname,
+                        resp,
+                    }),
+                    gl_query::ACTIVE_UNIFORM => ask!(|resp| GLCmd::GetActiveUniform {
+                        canvas_id: query.canvas_id,
+                        program_id: query.object,
+                        index: query.pname,
+                        resp,
+                    }),
+                    gl_query::TRANSFORM_FEEDBACK_VARYING => {
+                        ask!(|resp| GLCmd::GetTransformFeedbackVarying {
+                            program: query.object,
+                            index: query.pname,
+                            resp,
+                        })
+                    }
+                    _ => return Err(SyncError::UnsupportedOperation),
+                };
+                // No such index is `null` in WebGL, and here a reply with a zero
+                // type and no name: every real variable has a type.
+                let (name, size, type_) = found.unwrap_or_default();
+                if ACTIVE_VARIABLE_HEADER_BYTES + name.len() > max_reply_bytes as usize {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                let mut reply = Vec::with_capacity(ACTIVE_VARIABLE_HEADER_BYTES + name.len());
+                reply.extend_from_slice(&size.to_le_bytes());
+                reply.extend_from_slice(&type_.to_le_bytes());
+                reply.extend_from_slice(name.as_bytes());
+                Ok(reply)
+            }
+            _ => Err(SyncError::UnsupportedOperation),
+        }
+    }
+
+    /// `SYNC_OP_CANVAS2D_IMAGE_DATA` / `SYNC_OP_CANVAS2D_SNAPSHOT`: the pixels
+    /// of a 2D canvas, answered after the frame that drew them.
+    ///
+    /// Two operations, one shape. `getImageData` in the engine's own facade
+    /// captures into the host's snapshot pool and reads the bytes only if
+    /// content asks for them -- so the snapshot read is the common one, and the
+    /// direct rectangle read is the fallback the facade takes for a read it
+    /// cannot capture (zero area, out of bounds).
+    ///
+    /// The barrier matters for the same reason it does for `measureText`: the
+    /// capture is a record in the frame being built, so a read that overtook it
+    /// would find an empty pool and answer zeros -- which is a blank texture in
+    /// a game rather than an error anyone sees.
+    fn canvas2d_pixels(
+        &self,
+        operation: u32,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        use frame_wire::sync::{Canvas2DPixelsParams, SYNC_OP_CANVAS2D_SNAPSHOT};
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCmdResp, RenderCommand};
+
+        let read = Canvas2DPixelsParams::decode(params)?;
+        let wanted = read.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
+        // Refused before the renderer is asked, as the readback is: a rectangle
+        // the producer did not reserve for is one nobody can answer.
+        if wanted > max_reply_bytes {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        let Some(dispatch) = self.dispatch.get() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let command = if operation == SYNC_OP_CANVAS2D_SNAPSHOT {
+            RenderCommand::Canvas2D {
+                // The snapshot pool is the renderer's own and the canvas it was
+                // taken from is already recorded in it, so the id is what names
+                // the pixels; the embedded op passes 1 here for the same reason.
+                canvas_id: 1,
+                cmd: Canvas2DCmd::ReadSnapshotPixels {
+                    snapshot_id: read.target,
+                    resp: RenderCmdResp::from_sync(tx),
+                },
+            }
+        } else {
+            RenderCommand::Canvas2D {
+                canvas_id: read.target,
+                cmd: Canvas2DCmd::GetImageData {
+                    x: read.x,
+                    y: read.y,
+                    width: read.width,
+                    height: read.height,
+                    resp: RenderCmdResp::from_sync(tx),
+                },
+            }
+        };
+        // Blocking-bounded, as the readback is: this command carries a reply
+        // channel a producer is waiting on.
+        if sender.send_blocking_bounded(command).is_err() {
+            return Err(SyncError::SessionEnded);
+        }
+
+        let pixels = match rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(pixels)) => pixels,
+            Ok(Err(_)) => return Err(SyncError::OperationFailed),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => return Err(SyncError::TimedOut),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                return Err(SyncError::SessionEnded);
+            }
+        };
+        // The rectangle said one size and the renderer produced another: a
+        // snapshot that had been dropped answers empty, and copying that as if
+        // it were the picture is how a game draws a blank label and nothing
+        // says why. The producer sized its buffer from the same rectangle.
+        if u32::try_from(pixels.len()).map_err(|_| SyncError::OperationFailed)? != wanted {
+            return Err(SyncError::OperationFailed);
+        }
+        Ok(pixels)
+    }
+
+    /// `SYNC_OP_CANVAS2D_*`: one Canvas2D query, answered after the frame it
+    /// names.
+    ///
+    /// `measureText` is the one every game with a label calls, and it asks
+    /// about state the frame being built set: the font two records ago. So it
+    /// takes the same route as a WebGL query -- a barrier, then a blocked call
+    /// naming its sequence -- and the renderer measures with the canvas's own
+    /// font, which the barrier has by then applied.
+    fn canvas2d_query(
+        &self,
+        operation: u32,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        use frame_wire::sync::{
+            Canvas2DQueryParams, MAX_FONT_FAMILY_REPLY_BYTES, SYNC_OP_CANVAS2D_FONT,
+            SYNC_OP_CANVAS2D_METRICS, SYNC_OP_CANVAS2D_NUMBER, TEXT_METRICS_BYTES, canvas2d_query,
+        };
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCmdResp, RenderCommand};
+
+        let query = Canvas2DQueryParams::decode(params)?;
+        if Canvas2DQueryParams::operation(query.kind) != operation {
+            return Err(SyncError::UnsupportedOperation);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        let Some(dispatch) = self.dispatch.get() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let deadline = std::time::Duration::from_nanos(budget);
+
+        match operation {
+            SYNC_OP_CANVAS2D_METRICS => {
+                if (max_reply_bytes as usize) < TEXT_METRICS_BYTES {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let command = RenderCommand::Canvas2D {
+                    canvas_id: query.canvas_id,
+                    cmd: Canvas2DCmd::MeasureText {
+                        text: query.text_str().into_owned(),
+                        resp: RenderCmdResp::from_sync(tx),
+                    },
+                };
+                if sender.send_blocking_bounded(command).is_err() {
+                    return Err(SyncError::SessionEnded);
+                }
+                let metrics = match rx.recv_timeout(deadline) {
+                    Ok(Ok(metrics)) => metrics,
+                    Ok(Err(_)) => return Err(SyncError::OperationFailed),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        return Err(SyncError::TimedOut);
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        return Err(SyncError::SessionEnded);
+                    }
+                };
+                Ok(frame_decode::canvas2d::encode_text_metrics(&metrics))
+            }
+            // `loadFont(path, family)`: the file is the game's, the registration
+            // is the renderer's, and the answer is the family key content will
+            // name the face by. Every step the in-process op takes, in its
+            // order -- the two decisions before the file is even read are
+            // `shared::font_registration`'s, so a font named one thing here and
+            // another there is not possible.
+            SYNC_OP_CANVAS2D_FONT => {
+                if max_reply_bytes > MAX_FONT_FAMILY_REPLY_BYTES {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                let path = query.text_str().into_owned();
+                let requested = query.font_str().into_owned();
+                let Some(services) = &self.services else {
+                    return Err(SyncError::SessionEnded);
+                };
+                let sources = services.context.local_sources();
+                let Ok(resolved) = shared::font_registration::resolve_font_src_path(
+                    sources.code_dir.as_deref().unwrap_or(""),
+                    sources.vfs.as_deref(),
+                    &path,
+                ) else {
+                    // The op logs and answers an empty family for a path it
+                    // cannot resolve; so does this, because content reads the
+                    // answer rather than an error.
+                    return Ok(Vec::new());
+                };
+                let Ok(bytes) = std::fs::read(&resolved) else {
+                    return Ok(Vec::new());
+                };
+                if bytes.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let request = shared::font_registration::build_font_registration_request(
+                    &path,
+                    (!requested.is_empty()).then_some(requested.as_str()),
+                );
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let command = RenderCommand::LoadFont {
+                    family: request.family.clone(),
+                    aliases: std::sync::Arc::new(request.aliases.clone()),
+                    bytes: std::sync::Arc::new(bytes),
+                    resp: RenderCmdResp::from_sync(tx),
+                };
+                if sender.send_blocking_bounded(command).is_err() {
+                    return Err(SyncError::SessionEnded);
+                }
+                let family = match rx.recv_timeout(deadline) {
+                    // A renderer that refused the face answers the empty family
+                    // the op answers, not a failure: `loadFont` reports itself
+                    // through its return value.
+                    Ok(Ok(family)) => family,
+                    Ok(Err(_)) => String::new(),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        return Err(SyncError::TimedOut);
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        return Err(SyncError::SessionEnded);
+                    }
+                };
+                if family.len() > max_reply_bytes as usize {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                Ok(family.into_bytes())
+            }
+            SYNC_OP_CANVAS2D_NUMBER => {
+                if (max_reply_bytes as usize) < 8 {
+                    return Err(SyncError::ReplyTooLarge);
+                }
+                if query.kind != canvas2d_query::TEXT_LINE_HEIGHT {
+                    return Err(SyncError::UnsupportedOperation);
+                }
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let command = RenderCommand::GetTextLineHeight {
+                    font_family: query.font_str().into_owned(),
+                    font_size: query.number_f32(),
+                    bold: query.flags & canvas2d_query::FLAG_BOLD != 0,
+                    italic: query.flags & canvas2d_query::FLAG_ITALIC != 0,
+                    resp: RenderCmdResp::from_sync(tx),
+                };
+                if sender.send_blocking_bounded(command).is_err() {
+                    return Err(SyncError::SessionEnded);
+                }
+                let height = match rx.recv_timeout(deadline) {
+                    Ok(Ok(height)) => height,
+                    Ok(Err(_)) => return Err(SyncError::OperationFailed),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        return Err(SyncError::TimedOut);
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        return Err(SyncError::SessionEnded);
+                    }
+                };
+                Ok(f64::from(height).to_le_bytes().to_vec())
+            }
+            _ => Err(SyncError::UnsupportedOperation),
+        }
+    }
+
     /// `SYNC_OP_READ_PIXELS`.
     fn read_pixels(
         &self,
@@ -642,10 +1248,11 @@ impl SyncPath {
         now_nanos: u64,
     ) -> Result<Vec<u8>, SyncError> {
         let params = ReadPixelsParams::decode(params)?;
-        let wanted = params.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
+        let wanted = params.pixel_bytes().ok_or(SyncError::ReplyTooLarge)?;
+        let reply_bytes = params.reply_bytes().ok_or(SyncError::ReplyTooLarge)?;
         // Checked here as well as by the mailbox, because refusing before the
         // renderer is asked saves a full-screen readback nobody may have.
-        if wanted > max_reply_bytes {
+        if reply_bytes > max_reply_bytes {
             return Err(SyncError::ReplyTooLarge);
         }
 
@@ -688,7 +1295,8 @@ impl SyncPath {
                 // producer's view has room for whenever PACK_ALIGNMENT pads a row
                 // or PACK_SKIP_* is set -- a false INVALID_OPERATION for a
                 // footprint only the producer can check, against a view only it
-                // holds.
+                // holds. The footprint it checks against is the layout below,
+                // which is why that is answered rather than dropped.
                 destination_byte_length: usize::MAX,
                 resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(resp_tx),
             },
@@ -700,10 +1308,13 @@ impl SyncPath {
             return Err(SyncError::SessionEnded);
         }
 
-        // The layout is dropped on purpose: it places rows in a destination view,
-        // and the producer derives the same placement from the PACK state it set.
-        let pixels = match resp_rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
-            Ok(Ok(readback)) => readback.pixels,
+        // The layout is answered, not dropped. It places rows in a destination
+        // view from `PACK_*` state that only this side holds: the producer never
+        // sees `pixelStorei`, because the engine's own encoder writes it into the
+        // command stream the producer forwards unread. An earlier version of this
+        // said the producer derives the placement itself, which it cannot.
+        let (pixels, layout) = match resp_rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(readback)) => (readback.pixels, readback.layout),
             // The renderer answered and the answer was an error: a canvas that
             // does not exist, a GL failure, a surface that went away mid-read.
             // Not "unsupported" -- that is permanent and would stop the
@@ -727,13 +1338,99 @@ impl SyncPath {
             return Err(SyncError::OperationFailed);
         }
 
-        // Moved, not copied into a reused buffer. The renderer allocated this
-        // vector to answer with and hands it over owned, so taking it costs
-        // nothing and copying it costs a memcpy of the whole readback -- up to
-        // 14 MiB for a full-screen phone at 4x, on the path a producer is
-        // blocked on. Reusing a buffer here would save no allocation either,
-        // because the renderer's one is made whether or not we keep it.
+        // The layout in front of the rows a producer is waiting for. The vector
+        // the renderer allocated is kept rather than copied -- up to 14 MiB for a
+        // full-screen phone at 4x, on the path a producer is blocked on -- and
+        // the sixteen-byte header is spliced in front of it, which is one move of
+        // the tail rather than a second allocation of the whole readback.
+        let header = frame_wire::sync::ReadPixelsLayout {
+            first_byte: u32::try_from(layout.first_byte).map_err(|_| SyncError::ReplyTooLarge)?,
+            row_bytes: u32::try_from(layout.row_bytes).map_err(|_| SyncError::ReplyTooLarge)?,
+            row_stride: u32::try_from(layout.row_stride).map_err(|_| SyncError::ReplyTooLarge)?,
+            height: u32::try_from(layout.height).map_err(|_| SyncError::ReplyTooLarge)?,
+        }
+        .encode();
+        let mut pixels = pixels;
+        pixels.splice(0..0, header);
         Ok(pixels)
+    }
+
+    /// `SYNC_OP_READ_PIXELS_TO_BUFFER`: `readPixels` into the bound
+    /// `PIXEL_PACK_BUFFER`, answered with the WebGL error it raised or zero.
+    ///
+    /// Nothing is transferred back -- the pixels go into a buffer the host
+    /// holds -- so the only thing the caller needs is the verdict, and the
+    /// verdict is what the in-process op turns into a pushed error. The mapping
+    /// from the renderer's failure to a WebGL code is that op's, copied here
+    /// rather than invented: a framebuffer that cannot be read has its own code
+    /// and content uses it to tell that apart from a bad argument.
+    fn read_pixels_to_buffer(
+        &self,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        use frame_wire::sync::{READ_PIXELS_TO_BUFFER_REPLY_BYTES, ReadPixelsToBufferParams};
+
+        let read = ReadPixelsToBufferParams::decode(params)?;
+        if max_reply_bytes < READ_PIXELS_TO_BUFFER_REPLY_BYTES {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        let Some(dispatch) = self.dispatch.get() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let command = shared::protocol::render_cmd::RenderCommand::GL(
+            shared::protocol::render_cmd::GLCmd::ReadPixelsToBuffer {
+                canvas_id: read.canvas_id,
+                x: read.x,
+                y: read.y,
+                width: read.width,
+                height: read.height,
+                format: read.format,
+                type_: read.type_,
+                offset: read.offset,
+                resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(tx),
+            },
+        );
+        if sender.send_blocking_bounded(command).is_err() {
+            return Err(SyncError::SessionEnded);
+        }
+
+        // `error_state::codes`, as the op names them.
+        const INVALID_VALUE: u32 = 0x0501;
+        const INVALID_OPERATION: u32 = 0x0502;
+        const OUT_OF_MEMORY: u32 = 0x0505;
+        const INVALID_FRAMEBUFFER_OPERATION: u32 = 0x0506;
+        let code = match rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(())) => 0u32,
+            Ok(Err(error)) => match error.code {
+                shared::error::ErrorCode::OutOfMemory => OUT_OF_MEMORY,
+                shared::error::ErrorCode::InvalidArgument => INVALID_VALUE,
+                shared::error::ErrorCode::RenderFramebufferIncomplete => {
+                    INVALID_FRAMEBUFFER_OPERATION
+                }
+                _ => INVALID_OPERATION,
+            },
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => return Err(SyncError::TimedOut),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                return Err(SyncError::SessionEnded);
+            }
+        };
+        Ok(code.to_le_bytes().to_vec())
     }
 
     fn snapshot(&self, now_nanos: u64) -> SyncSnapshot {
@@ -911,7 +1608,7 @@ pub struct ExternalFrameClock {
     /// nothing. Held under its lock for the call, so clearing it returns only
     /// once no call is in progress, which is what lets a host free whatever the
     /// waker points at.
-    waker: Mutex<Option<DownlinkWaker>>,
+    waker: Arc<WakerSlot>,
 }
 
 /// Called on the session thread whenever a record the transport did not cause
@@ -955,10 +1652,23 @@ pub struct ControlOutcome {
 }
 
 impl ExternalFrameClock {
+    /// A clock with a waker slot of its own, for the tests that drive one alone.
+    #[cfg(test)]
     fn new(
         downlink: Arc<Mutex<DownlinkQueue>>,
         window: WindowSource,
         runtime_generation: u64,
+    ) -> Self {
+        Self::new_with(downlink, window, runtime_generation, Arc::default())
+    }
+
+    /// With the waker slot the session's service outbox shares, so one
+    /// installed waker drains both.
+    fn new_with(
+        downlink: Arc<Mutex<DownlinkQueue>>,
+        window: WindowSource,
+        runtime_generation: u64,
+        waker: Arc<WakerSlot>,
     ) -> Self {
         Self {
             inner: OnceLock::new(),
@@ -968,7 +1678,75 @@ impl ExternalFrameClock {
             downlink,
             runtime_generation,
             window,
-            waker: Mutex::new(None),
+            waker,
+        }
+    }
+
+    /// The clock as the session holds it: shared, and listening to the credit
+    /// window.
+    ///
+    /// The listener is installed here rather than by the caller because
+    /// forgetting it is not a compile error and not a test failure -- it is a
+    /// session that stops drawing with its last frame unsent, once, under load.
+    /// `Weak`, so the clock and the window that calls it do not own each other.
+    #[cfg(any(test, feature = "test-support"))]
+    fn shared(
+        downlink: Arc<Mutex<DownlinkQueue>>,
+        window: WindowSource,
+        runtime_generation: u64,
+    ) -> Arc<Self> {
+        Self::shared_with(downlink, window, runtime_generation, Arc::default())
+    }
+
+    fn shared_with(
+        downlink: Arc<Mutex<DownlinkQueue>>,
+        window: WindowSource,
+        runtime_generation: u64,
+        waker: Arc<WakerSlot>,
+    ) -> Arc<Self> {
+        let clock = Arc::new(Self::new_with(downlink, window, runtime_generation, waker));
+        let weak = Arc::downgrade(&clock);
+        clock.window.on_credit_returned(Box::new(move || {
+            if let Some(clock) = weak.upgrade() {
+                clock.window_opened();
+            }
+        }));
+        clock
+    }
+
+    /// A credit came back on the render thread. Tell the producer, if that is
+    /// news to it.
+    ///
+    /// News exactly when the last window it was given was zero: it holds a
+    /// packet only then, and a held packet is why it is not asking for the next
+    /// frame -- the tick that would otherwise carry this. While it is drawing
+    /// normally the queue's own rule makes this a load and a return.
+    ///
+    /// Installed on the credit window by [`Self::watch_credits`], and called
+    /// from wherever the renderer finished with a frame.
+    fn window_opened(&self) {
+        let queued = {
+            let mut downlink = self.downlink.lock();
+            if downlink.last_advertised_credits() != Some(0) {
+                return;
+            }
+            let window = self.window.read();
+            if window.remaining_credits == 0 {
+                // Another packet took the credit between the release and this
+                // read. Nothing to tell, and the producer will hear from the
+                // verdict for that packet.
+                return;
+            }
+            downlink.push_window_open(DownlinkRecord::WindowOpen {
+                generation: self.runtime_generation as u32,
+                remaining_credits: window.remaining_credits,
+                accepted_sequence: window.accepted_sequence,
+            })
+        };
+        // Outside the queue lock, and only when something was queued: the waker
+        // schedules a drain, and a drain takes this lock.
+        if queued {
+            self.waker.wake();
         }
     }
 
@@ -1033,7 +1811,7 @@ impl ExternalFrameClock {
     /// Clearing returns only after any call in progress has returned. Must not
     /// be called from inside the waker, which holds the same lock.
     pub fn set_downlink_waker(&self, waker: Option<DownlinkWaker>) {
-        *self.waker.lock() = waker;
+        self.waker.set(waker);
     }
 
     /// How many frame signals the renderer has delivered to this session.
@@ -1079,9 +1857,7 @@ impl ExternalFrameClock {
         }
         // After the queue lock is released, so a transport that drains from
         // inside its wake-up does not find the lock still held by this thread.
-        if let Some(wake) = self.waker.lock().as_ref() {
-            wake();
-        }
+        self.waker.wake();
     }
 }
 
@@ -1101,6 +1877,9 @@ struct SubmitPath {
     /// be queued while the ingress lock is still held -- see `submit_frame`.
     downlink: Arc<Mutex<DownlinkQueue>>,
     runtime_generation: u64,
+    /// The session's services, for the records whose answer is the host's:
+    /// an upload from an image it loaded.
+    services: Option<Arc<ServiceContext>>,
 }
 
 impl SubmitPath {
@@ -1207,6 +1986,7 @@ impl SubmitPath {
             .map_err(|_| EXTERNAL_ERROR_BAD_COMMAND_STREAM)?;
         let mut sink = ExternalDecodeContext {
             errors: &self.errors,
+            services: self.services.as_deref(),
             builder: shared::FramePacketBuilder::with_op_capacity(
                 u64::from(parsed.frame_id()),
                 0.0,
@@ -1391,6 +2171,46 @@ impl ExternalFrameSession {
         self.clock.handle_control(bytes)
     }
 
+    /// Admit one service message (`MUS1`), or hold it until the one before it
+    /// arrives -- the socket and a scheme request reorder. Blocks while the
+    /// session's work queue is full. Must not be called from inside a Tokio
+    /// runtime.
+    pub fn submit_service(&self, bytes: &[u8]) -> Result<ServiceAdmission, ServiceSubmitError> {
+        self.services.submit(bytes)
+    }
+
+    /// The service stream, to use without holding whatever lock guards this
+    /// session; see [`ServiceHandle`].
+    pub fn service_handle(&self) -> ServiceHandle {
+        ServiceHandle(Arc::clone(&self.services))
+    }
+
+    /// One `MDS1` message of queued answers and events, or `None`.
+    pub fn take_service_message(&self) -> Option<Vec<u8>> {
+        self.services.outbox.take_message()
+    }
+
+    /// A parked answer, taken once.
+    pub fn take_parked_reply(&self, generation: u32, request_id: u32) -> Option<Vec<u8>> {
+        self.services.outbox.take_parked(generation, request_id)
+    }
+
+    /// Mount the content the host names -- `migo_session_load_content` on this
+    /// execution -- and answer with the directory its code is served from.
+    ///
+    /// Synchronous, unlike the embedded execution's, because what the embedded
+    /// execution does next -- evaluate the entry module -- happens in another
+    /// process here, and that process's host needs this directory before it can
+    /// serve the module at all.
+    pub fn load_content(&self, game_id: &str, entry: &str) -> EngineResult<std::path::PathBuf> {
+        self.services.context.load_content(game_id, entry)
+    }
+
+    /// Where the loaded content's code is, or `None` before any is loaded.
+    pub fn content_root(&self) -> Option<std::path::PathBuf> {
+        self.services.context.content_root()
+    }
+
     /// Install or clear what is called when a tick is queued. See
     /// [`ExternalFrameClock::set_downlink_waker`].
     pub fn set_downlink_waker(&self, waker: Option<DownlinkWaker>) {
@@ -1413,6 +2233,7 @@ impl ExternalFrameSession {
         // until WebKit reclaims its process. Which is a game that stopped
         // drawing and never said why.
         self.end_sync();
+        self.services.end();
         self.host.request_shutdown()
     }
 
@@ -1425,6 +2246,7 @@ impl ExternalFrameSession {
         // waking the producer is not something to do only on the path somebody
         // happened to test.
         self.end_sync();
+        self.services.end();
         self.host.shutdown_and_join()
     }
 
@@ -1453,26 +2275,36 @@ impl ExternalFrameSession {
             INITIAL_RUNTIME_GENERATION,
         ))));
         let window = admission.ingress.lock().window_source();
+        let errors = Arc::new(ExternalGlErrors::default());
         Self {
             host: HostThread::from_join_handle_for_test(host_id, join),
             submit: SubmitPath {
                 ingress: Arc::clone(&admission.ingress),
                 admitted: Arc::clone(&admission.admitted),
-                errors: Arc::new(ExternalGlErrors::default()),
+                errors: Arc::clone(&errors),
                 dispatch: Arc::clone(&dispatch),
                 downlink: Arc::clone(&downlink),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
+                services: None,
             },
             sync: Arc::new(SyncPath::new(
                 INITIAL_RUNTIME_GENERATION,
                 dispatch,
                 admission,
+                errors,
             )),
-            clock: Arc::new(ExternalFrameClock::new(
+            clock: ExternalFrameClock::shared(
                 Arc::clone(&downlink),
                 window,
                 INITIAL_RUNTIME_GENERATION,
-            )),
+            ),
+            services: ServiceHost::new(
+                INITIAL_RUNTIME_GENERATION,
+                std::path::PathBuf::new(),
+                std::path::PathBuf::new(),
+                Arc::default(),
+            )
+            .0,
             downlink,
         }
     }
@@ -1515,12 +2347,30 @@ pub fn spawn_external_frame_session(
     let thread_ingress = Arc::clone(&ingress);
     let admission = Admission::new(Arc::clone(&ingress));
     let downlink = Arc::new(Mutex::new(DownlinkQueue::new()));
-    let clock = Arc::new(ExternalFrameClock::new(
+    // One slot for the one drain: frame records and service answers both wake it.
+    let waker = Arc::new(WakerSlot::default());
+    let clock = ExternalFrameClock::shared_with(
         Arc::clone(&downlink),
         ingress.lock().window_source(),
         INITIAL_RUNTIME_GENERATION,
-    ));
+        Arc::clone(&waker),
+    );
     let thread_clock = Arc::clone(&clock);
+    let (services, service_work) = ServiceHost::new(
+        INITIAL_RUNTIME_GENERATION,
+        opt.files_dir().to_path_buf(),
+        opt.cache_dir().to_path_buf(),
+        waker,
+    );
+    let thread_services = Arc::clone(&services);
+    // The decision the embedded execution makes from the same two options,
+    // made before the options move to the session thread.
+    services
+        .context
+        .bind_signing(migo_services::content::ContentSigning::from_options(
+            opt.code_signing_enabled(),
+            opt.code_signing_pubkey(),
+        ));
     let errors = Arc::new(ExternalGlErrors::default());
     let dispatch: Arc<OnceLock<RenderDispatch>> = Arc::new(OnceLock::new());
     let thread_dispatch = Arc::clone(&dispatch);
@@ -1531,17 +2381,33 @@ pub fn spawn_external_frame_session(
         platform,
         opt,
         public_generation,
-        move |ctx| run_external_session(ctx, thread_ingress, thread_clock, thread_dispatch),
+        move |ctx| {
+            run_external_session(
+                ctx,
+                thread_ingress,
+                thread_clock,
+                thread_dispatch,
+                thread_services,
+                service_work,
+            )
+        },
     )?;
+    // Before the session is handed out, so nothing that can reach the services
+    // -- only the session handle can -- finds them without their scheduler.
+    services.context.bind_session(started.host.id());
 
     Ok(SpawnedExternalSession {
         session: ExternalFrameSession {
             host: started.host,
-            sync: Arc::new(SyncPath::new(
-                INITIAL_RUNTIME_GENERATION,
-                Arc::clone(&dispatch),
-                admission.clone(),
-            )),
+            sync: Arc::new(
+                SyncPath::new(
+                    INITIAL_RUNTIME_GENERATION,
+                    Arc::clone(&dispatch),
+                    admission.clone(),
+                    Arc::clone(&errors),
+                )
+                .with_services(Arc::clone(&services)),
+            ),
             submit: SubmitPath {
                 ingress,
                 admitted: Arc::clone(&admission.admitted),
@@ -1549,9 +2415,11 @@ pub fn spawn_external_frame_session(
                 dispatch,
                 downlink: Arc::clone(&downlink),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
+                services: Some(Arc::clone(&services.context)),
             },
             clock,
             downlink,
+            services,
         },
         resource: started.resource,
         ingress: started.ingress,
@@ -1564,6 +2432,8 @@ fn run_external_session(
     ingress: Arc<Mutex<FrameIngress>>,
     clock: Arc<ExternalFrameClock>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
+    services: Arc<ServiceHost>,
+    mut service_work: tokio::sync::mpsc::Receiver<ServiceWork>,
 ) {
     let SessionThreadContext {
         id,
@@ -1626,12 +2496,13 @@ fn run_external_session(
         mut audio,
         // The network policy and capability snapshot are what the control
         // channel answers a producer's synchronous queries from; both land
-        // with it.
-        network_policy: _network_policy,
-        gpu_caps: _gpu_caps,
+        // with it -- and the policy is also what a streamed audio source is
+        // held to, as it is in the embedded execution.
+        network_policy,
+        gpu_caps,
         context_lost: _context_lost,
         timer_backgrounded: _timer_backgrounded,
-        gpu_init_started: _gpu_init_started,
+        gpu_init_started,
         // Why the render worker stopped, read at the one place this session
         // observes it stopping. `gpu_caps` cannot answer it: a panic after the
         // first frame leaves that level saying Ready.
@@ -1649,6 +2520,36 @@ fn run_external_session(
     // submitted before the renderer existed would be told the renderer is not
     // ready, which is the truthful answer.
     let lifecycle_sender = Arc::new(render.sender());
+    // Audio plays here, driven by the service stream: its commands go through
+    // the audio service's own sender, and buffer ids are scoped to the one
+    // runtime generation this session has. Bound before the first service
+    // work can be dispatched, which is below.
+    services.context.bind_audio(
+        audio.sender(),
+        restart_boundary.current(),
+        network_policy.clone(),
+    );
+    let audio_signal = audio.start_signal();
+    // The services' context, kept before the dispatcher shadows `services`:
+    // the network is bound to it once the runtime exists, below.
+    let service_context = Arc::clone(&services.context);
+    // What `exitMiniProgram` and `restartMiniProgram` send, which is this
+    // session's own command channel -- the one the embedded ops send on.
+    service_context.bind_lifecycle(host_tx.clone());
+    // The platform's device services, which the C ABI host kit backs with the
+    // callbacks the host installed and the device state it reports.
+    service_context.bind_device(platform.create_device_services(id));
+    service_context.bind_gpu(Arc::clone(&gpu_caps), gpu_init_started);
+    // The services that hand the renderer work -- image uploads -- reach it
+    // through these, owned by this thread's dispatcher so the sender goes when
+    // the session does.
+    let services = ServiceDispatcher::new(
+        &services,
+        RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(render.sender(), id),
+            gpu_caps: Arc::clone(&gpu_caps),
+        },
+    );
     let _ = dispatch.set(RenderDispatch {
         sender: Arc::downgrade(&lifecycle_sender),
         words: Mutex::new(Vec::new()),
@@ -1699,10 +2600,28 @@ fn run_external_session(
         }
     };
     startup_guard.disarm();
+    // Content's requests are made by this host, under the same policy: one
+    // session, one allow list, one set of clients. Bound once the runtime
+    // exists, because a synchronous request is built on the calling thread and
+    // needs the session's reactor to build it -- and before any service work
+    // can be dispatched, which is below.
+    service_context.bind_network(
+        network_policy.clone(),
+        Arc::clone(&backgrounded),
+        runtime.handle().clone(),
+    );
 
     let mut last_context_epoch = 0u64;
     let mut last_swap_report: Option<std::time::Instant> = None;
+    // What content has been told is held down, so losing focus can release it.
+    let mut input = InputState::default();
+    // What content has been told about being shown and hidden.
+    let mut lifecycle = Lifecycle::default();
     runtime.block_on(async move {
+        // Whether the session ended because it was asked to -- by content's
+        // `exitMiniProgram`, which reaches here as `Shutdown` -- as opposed to
+        // its channel closing or its renderer failing, which report themselves.
+        let mut shut_down = false;
         loop {
             tokio::select! {
                 command = host_rx.recv() => {
@@ -1710,11 +2629,43 @@ fn run_external_session(
                         info!("[Host {id}] command channel closed");
                         break;
                     };
+                    // A callback for a runtime that has since been replaced is
+                    // dropped before it reaches content, as in the embedded
+                    // execution; then input goes to the producer, by the routing
+                    // both executions share.
+                    if is_retired_callback(&command, restart_boundary.current()) {
+                        debug!("[Host {id}] dropping a retired generation's callback");
+                        continue;
+                    }
+                    let mut sink = ServiceEventSink { outbox: services.outbox() };
+                    let Some(command) = input_route::route(&mut input, &mut sink, command) else {
+                        continue;
+                    };
+                    let Some(command) = route_audio_event(&sink, command) else {
+                        continue;
+                    };
                     if !handle_command(
                         id, command, &mut render, &mut audio, &backgrounded, &ingress,
-                        &platform_for_error,
+                        &platform_for_error, &sink, &mut lifecycle,
                     ) {
+                        shut_down = true;
                         break;
+                    }
+                }
+                // Admitted service work, in admission order. The branch is
+                // disabled once every sender is gone, which is the session's
+                // service host being dropped -- teardown, not an error.
+                Some(work) = service_work.recv() => {
+                    services.dispatch(work);
+                }
+                // Content's first audio command: start the audio thread it is
+                // waiting in the queue for. The signal disables itself once the
+                // thread is installed, so this stops firing.
+                () = audio_signal.notified() => {
+                    if let Err(error) = audio.check_and_start() {
+                        // Not fatal: the game runs without sound, as it does
+                        // in process when the device will not open.
+                        error!("[Host {id}] failed to start the audio thread: {error}");
                     }
                 }
                 () = render_notify.notified() => {
@@ -1793,7 +2744,100 @@ fn run_external_session(
         render.shutdown();
         drop(lifecycle_sender);
         info!("[Host {id}] external-frame session exited");
+        // Told last, as the embedded host thread tells it (`runtime/thread.rs`):
+        // when content called `exitMiniProgram` this is the only way the host
+        // learns the game ended, and a host that asked for the shutdown itself
+        // ignores it. Without it an iOS game that exits simply stops drawing.
+        if shut_down {
+            platform_for_error.notify_exit(id);
+        }
     });
+}
+
+/// What the host's lifecycle tells content, and when.
+///
+/// The hooks are the embedded execution's, in its order and with its arguments
+/// (`Host::handle_command`, `enter_foreground`): `onHide` as the app goes away,
+/// `onShow` when it comes back -- but only once there is a surface to come back
+/// to, because a host that shows before its surface exists (Android's
+/// `onResume` before `surfaceCreated`) would otherwise tell content it is
+/// visible while nothing can be presented. A foreground with a live surface
+/// also restarts the frame loop content stopped while hidden and re-measures
+/// the window, which is what the embedded execution does there.
+#[derive(Default)]
+struct Lifecycle {
+    /// `onShow`'s arguments, waiting for a surface.
+    pending_show: Option<String>,
+}
+
+impl Lifecycle {
+    /// The host says the app is visible. The arguments are its options object,
+    /// as JSON, in the array `_internalDispatch` applies -- the embedded
+    /// execution's `build_on_show_args`, including its fallbacks.
+    fn show(&mut self, options_json: Option<&str>) {
+        self.pending_show = Some(on_show_args(options_json));
+    }
+
+    /// A surface is live and the app is not hidden.
+    fn entered_foreground(&mut self, sink: &ServiceEventSink<'_>) {
+        // The frame loop self-stops after a few idle frames while hidden, and
+        // the window may have changed size behind the app's back.
+        sink.host_hook("_internalRestartRafLoop", HOOK_ARGS_NONE);
+        sink.host_hook("_internalTriggerWindowResize", HOOK_ARGS_NONE);
+        if let Some(args) = self.pending_show.take() {
+            sink.host_hook("_internalTriggerOnShow", &args);
+        }
+    }
+
+    fn hide(&mut self, sink: &ServiceEventSink<'_>) {
+        // A show that never reached content is not delivered late, after the
+        // hide that overtook it.
+        self.pending_show = None;
+        sink.host_hook("_internalTriggerOnHide", HOOK_ARGS_NONE);
+    }
+}
+
+/// `onShow`'s options as the hook takes them: one argument, or none when the
+/// host named none and when what it named is not an object -- the embedded
+/// execution's rule, so a host's malformed options are ignored the same way
+/// rather than passed to content on one lane only.
+fn on_show_args(options_json: Option<&str>) -> String {
+    let Some(options_json) = options_json.map(str::trim).filter(|json| !json.is_empty()) else {
+        return HOOK_ARGS_NONE.to_string();
+    };
+    match serde_json::from_str::<serde_json::Value>(options_json) {
+        Ok(value) if value.is_object() => hook_args_one(value).into_owned(),
+        Ok(_) => HOOK_ARGS_NONE.to_string(),
+        Err(error) => {
+            warn!("an onShow options JSON the host sent is not JSON: {error}");
+            HOOK_ARGS_NONE.to_string()
+        }
+    }
+}
+
+/// The audio thread's events and the host's audio interruptions, delivered to
+/// content as the embedded runtime delivers them: an InnerAudioContext event
+/// to its enqueue hook, an interruption to the engine's interruption hooks
+/// through the bridge's dispatch entry point. Neither pauses anything here --
+/// in process an interruption is the game's to act on (`03_audio_interruption.js`),
+/// and a lane that paused natively besides would play the same game
+/// differently. Anything else is returned for [`handle_command`].
+fn route_audio_event(sink: &ServiceEventSink<'_>, command: HostCommand) -> Option<HostCommand> {
+    match command {
+        HostCommand::InnerAudioEvent {
+            id,
+            event_type,
+            current_time,
+        } => sink.inner_audio_event(id, event_type.as_str(), current_time),
+        HostCommand::OnAudioInterruptionBegin => {
+            sink.host_hook("_internalTriggerAudioInterruptionBegin", HOOK_ARGS_NONE)
+        }
+        HostCommand::OnAudioInterruptionEnd => {
+            sink.host_hook("_internalTriggerAudioInterruptionEnd", HOOK_ARGS_NONE)
+        }
+        other => return Some(other),
+    }
+    None
 }
 
 /// Returns `false` when the session should stop.
@@ -1805,6 +2849,8 @@ fn handle_command(
     backgrounded: &Arc<std::sync::atomic::AtomicBool>,
     ingress: &Arc<Mutex<FrameIngress>>,
     platform: &Arc<dyn PlatformServices>,
+    sink: &ServiceEventSink<'_>,
+    lifecycle: &mut Lifecycle,
 ) -> bool {
     use std::sync::atomic::Ordering;
 
@@ -1876,6 +2922,7 @@ fn handle_command(
             if render.confirm_install(revision) && !backgrounded.load(Ordering::Relaxed) {
                 render.resume();
                 audio.resume();
+                lifecycle.entered_foreground(sink);
             }
         }
 
@@ -1893,16 +2940,19 @@ fn handle_command(
             render.pause();
         }
 
-        HostCommand::OnShow { .. } => {
+        HostCommand::OnShow { options_json } => {
             backgrounded.store(false, Ordering::Relaxed);
+            lifecycle.show(options_json.as_deref());
             // Only resume against a surface that is actually live. Android
             // fires `onResume` before `surfaceCreated`, so on that path the old
             // surface is already gone and the resume belongs to the
             // `UpdateSurface` that follows; resuming here would run a renderer
-            // with nothing to present into.
+            // with nothing to present into -- and content is told it is shown
+            // when that surface arrives, not before.
             if render.has_live_surface() {
                 render.resume();
                 audio.resume();
+                lifecycle.entered_foreground(sink);
             } else {
                 debug!("[Host {id}] OnShow with no live surface; resume waits for UpdateSurface");
             }
@@ -1912,21 +2962,29 @@ fn handle_command(
             backgrounded.store(true, Ordering::Relaxed);
             render.pause();
             audio.pause();
+            lifecycle.hide(sink);
         }
 
-        HostCommand::OnAudioInterruptionBegin => audio.pause(),
-        HostCommand::OnAudioInterruptionEnd => audio.resume(),
+        HostCommand::OnUserCaptureScreen { .. } => {
+            sink.host_hook("_internalTriggerUserCaptureScreen", HOOK_ARGS_NONE);
+        }
 
-        // Everything else is addressed to a script runtime this session does
-        // not have. Logged rather than silently dropped: the two that will
-        // arrive in production -- input and the frame clock -- belong to the
-        // control channel that carries them to the producer, and until that
-        // exists a host sending them is a host expecting something to happen.
+        // Sent only while content listens (the host kit's rule), and to the
+        // hook the embedded runtime calls with the same two arguments.
+        HostCommand::OnNetworkStatusChange {
+            is_connected,
+            network_type,
+        } => {
+            let args = serde_json::json!([is_connected, network_type]).to_string();
+            sink.host_hook("_internalTriggerNetworkStatusChange", &args);
+        }
+
+        // Input was routed to the producer before this match. What is left is
+        // addressed to a capability this lane does not carry yet -- sensors,
+        // camera, Bluetooth -- and is logged rather than silently dropped: a
+        // host sending it is a host expecting something to happen.
         other => {
-            debug!(
-                "[Host {id}] {other:?} has no consumer in an external-frame session; \
-                 input and clock delivery arrive with the control channel"
-            );
+            debug!("[Host {id}] {other:?} has no consumer in an external-frame session");
         }
     }
     true
@@ -2049,6 +3107,104 @@ mod tests {
             .find("#[cfg(test)]")
             .expect("this module has a test section");
         &SOURCE_WITH_TESTS[..end]
+    }
+
+    /// The lifecycle content is told about, in the calls the embedded
+    /// execution makes: the hooks, their order, and the arguments.
+    #[test]
+    fn a_show_reaches_content_when_its_surface_does_and_a_hide_cancels_it() {
+        let (host, _work) = ServiceHost::new(
+            1,
+            std::path::PathBuf::new(),
+            std::path::PathBuf::new(),
+            Arc::new(WakerSlot::default()),
+        );
+        let sink = ServiceEventSink {
+            outbox: &host.outbox,
+        };
+        let hooks = |sink: &ServiceEventSink<'_>| {
+            let mut called = Vec::new();
+            while let Some(message) = sink.outbox.take_message() {
+                let (_, records) =
+                    frame_wire::service::read_down_message(&message).expect("a down message");
+                for record in records {
+                    let frame_wire::service::ServiceDownRecord::Event { event, values } = record
+                    else {
+                        panic!("a lifecycle hook is an event");
+                    };
+                    assert_eq!(event, crate::runtime::host_events::event::_internalDispatch);
+                    let [
+                        frame_wire::value::OwnedValue::Str(hook),
+                        frame_wire::value::OwnedValue::Str(args),
+                    ] = values.as_slice()
+                    else {
+                        panic!("a hook call is its name and its arguments");
+                    };
+                    called.push((hook.clone(), args.clone()));
+                }
+            }
+            called
+        };
+
+        let mut lifecycle = Lifecycle::default();
+        // Shown before there is a surface: content hears nothing yet, as it
+        // hears nothing in the embedded execution until the surface arrives.
+        lifecycle.show(Some(r#"{"scene": 1001}"#));
+        assert!(hooks(&sink).is_empty());
+
+        lifecycle.entered_foreground(&sink);
+        assert_eq!(
+            hooks(&sink),
+            vec![
+                ("_internalRestartRafLoop".to_string(), "[]".to_string()),
+                ("_internalTriggerWindowResize".to_string(), "[]".to_string()),
+                (
+                    "_internalTriggerOnShow".to_string(),
+                    r#"[{"scene":1001}]"#.to_string()
+                ),
+            ]
+        );
+
+        // A second foreground without a show does not repeat it.
+        lifecycle.entered_foreground(&sink);
+        assert_eq!(
+            hooks(&sink),
+            vec![
+                ("_internalRestartRafLoop".to_string(), "[]".to_string()),
+                ("_internalTriggerWindowResize".to_string(), "[]".to_string()),
+            ]
+        );
+
+        lifecycle.hide(&sink);
+        assert_eq!(
+            hooks(&sink),
+            vec![("_internalTriggerOnHide".to_string(), "[]".to_string())]
+        );
+
+        // A show the surface never arrived for is dropped by the hide that
+        // overtook it, rather than delivered late.
+        lifecycle.show(None);
+        lifecycle.hide(&sink);
+        lifecycle.entered_foreground(&sink);
+        assert_eq!(
+            hooks(&sink),
+            vec![
+                ("_internalTriggerOnHide".to_string(), "[]".to_string()),
+                ("_internalRestartRafLoop".to_string(), "[]".to_string()),
+                ("_internalTriggerWindowResize".to_string(), "[]".to_string()),
+            ]
+        );
+    }
+
+    /// The embedded execution's rule for a host's `onShow` options, including
+    /// what it does with options that are not an object.
+    #[test]
+    fn on_show_options_are_one_argument_or_none() {
+        assert_eq!(on_show_args(None), "[]");
+        assert_eq!(on_show_args(Some("   ")), "[]");
+        assert_eq!(on_show_args(Some("[1]")), "[]");
+        assert_eq!(on_show_args(Some("not json")), "[]");
+        assert_eq!(on_show_args(Some(r#"{"a":1}"#)), r#"[{"a":1}]"#);
     }
 
     #[test]
@@ -2199,6 +3355,7 @@ mod tests {
             dispatch: Arc::new(OnceLock::new()),
             downlink: Arc::clone(&downlink),
             runtime_generation: INITIAL_RUNTIME_GENERATION,
+            services: None,
         };
 
         let outcome = submit.submit_frame(&packet(1));
@@ -2281,6 +3438,70 @@ mod tests {
             queue.lock().dropped(),
             0,
             "coalescing is not dropping: nothing was lost that the newest tick does not carry"
+        );
+    }
+
+    /// The deadlock this exists to break.
+    ///
+    /// A frame whose last packet the window would not admit is held by the
+    /// producer; the producer's next frame request waits for that packet to go;
+    /// the tick that would carry the returned credit waits for that request. So
+    /// a credit coming back has to reach a producer that is asking for nothing,
+    /// and this is the record that does it.
+    #[test]
+    fn a_credit_that_comes_back_reaches_a_producer_that_asked_for_nothing() {
+        let queue = Arc::new(Mutex::new(DownlinkQueue::new()));
+        let ingress = Arc::new(Mutex::new(FrameIngress::new(
+            NONCE,
+            INITIAL_RUNTIME_GENERATION,
+        )));
+        let clock = ExternalFrameClock::shared(
+            Arc::clone(&queue),
+            ingress.lock().window_source(),
+            INITIAL_RUNTIME_GENERATION,
+        );
+        // Kept alive: the window holds only a `Weak` to it.
+        let _clock = Arc::clone(&clock);
+
+        // Fill the window and tell the producer it is shut, which is the state a
+        // producer is in when it holds a packet it could not send.
+        let mut frames = Vec::new();
+        let capacity = ingress.lock().credits().max() as u64;
+        for sequence in 1..=capacity {
+            let (outcome, frame) = ingress.lock().submit(&packet(sequence));
+            assert_eq!(outcome.decision, IngressDecision::Accepted);
+            frames.push(frame);
+        }
+        queue.lock().push_verdict(DownlinkRecord::FrameVerdict {
+            generation: INITIAL_RUNTIME_GENERATION as u32,
+            decision: 0,
+            wire_error_code: 0,
+            remaining_credits: 0,
+            accepted_sequence: capacity,
+        });
+        drain_records(&queue);
+
+        // The renderer finishes with one frame. No tick, no verdict, nothing the
+        // producer did -- and it still hears about it.
+        drop(frames.pop().expect("a frame in flight"));
+        assert!(
+            matches!(
+                drain_records(&queue)[..],
+                [DownlinkRecord::WindowOpen {
+                    remaining_credits: 1,
+                    ..
+                }]
+            ),
+            "a returned credit is advertised when the producer was last told zero"
+        );
+
+        // And a second return says nothing: the producer already knows the
+        // window is open, and a message per returned credit is what this avoids.
+        drop(frames.pop().expect("another frame in flight"));
+        assert_eq!(
+            queue.lock().len(),
+            0,
+            "the advertisement is sent when it is news, not on every credit"
         );
     }
 
@@ -2475,6 +3696,7 @@ mod tests {
             dispatch: Arc::new(OnceLock::new()),
             downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
             runtime_generation: INITIAL_RUNTIME_GENERATION,
+            services: None,
         };
 
         let bytes = packet(1);
@@ -2533,6 +3755,7 @@ mod tests {
                 dispatch: Arc::new(dispatch),
                 downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
+                services: None,
             },
             receiver,
             lifecycle_sender,
@@ -2911,6 +4134,7 @@ mod sync_tests {
                 0,
                 INITIAL_RUNTIME_GENERATION,
             )))),
+            Arc::new(ExternalGlErrors::default()),
         )
     }
 
@@ -3010,6 +4234,403 @@ mod sync_tests {
         assert_eq!(snapshot.error, Some(SyncError::SessionEnded));
     }
 
+    /// The two 2D reads reach the renderer as the commands the ops send, and
+    /// their answers reach the reply slot whole.
+    ///
+    /// The stand-in renderer answers each with the rectangle it was asked for.
+    /// What that pins is the pairing: an image-data read is a `GetImageData` on
+    /// the canvas the params name, a snapshot read is a `ReadSnapshotPixels` on
+    /// the id -- swapping them would answer a picture of the wrong thing, at the
+    /// right size, which nothing downstream can tell apart from the right one.
+    #[test]
+    fn the_two_canvas2d_reads_reach_the_renderer_as_their_own_commands() {
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCommand};
+
+        for (operation, target) in [
+            (frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA, 9u32),
+            (frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT, 77u32),
+        ] {
+            let (sender, commands) = shared::render_command_sender::CommandSender::new();
+            let sender = Arc::new(sender);
+            let dispatch = Arc::new(OnceLock::new());
+            assert!(
+                dispatch
+                    .set(RenderDispatch {
+                        sender: Arc::downgrade(&sender),
+                        words: Mutex::new(Vec::new()),
+                    })
+                    .is_ok()
+            );
+            let path = SyncPath::new(
+                INITIAL_RUNTIME_GENERATION,
+                dispatch,
+                Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                    0,
+                    INITIAL_RUNTIME_GENERATION,
+                )))),
+                Arc::new(ExternalGlErrors::default()),
+            );
+
+            let renderer = std::thread::spawn(move || {
+                let Ok(RenderCommand::Canvas2D { canvas_id, cmd }) = commands.recv() else {
+                    panic!("the barrier sent something other than a Canvas2D command");
+                };
+                match cmd {
+                    Canvas2DCmd::GetImageData {
+                        x,
+                        y,
+                        width,
+                        height,
+                        resp,
+                    } => {
+                        let answer = ((canvas_id, x, y), width, height);
+                        resp.send(Ok(vec![0xab; (width * height * 4) as usize]));
+                        ("image data", answer)
+                    }
+                    Canvas2DCmd::ReadSnapshotPixels { snapshot_id, resp } => {
+                        resp.send(Ok(vec![0xab; 3 * 2 * 4]));
+                        ("snapshot", ((snapshot_id, 0, 0), 3, 2))
+                    }
+                    other => panic!("the barrier sent {other:?}"),
+                }
+            });
+
+            let params = frame_wire::sync::Canvas2DPixelsParams {
+                target,
+                x: 5,
+                y: -6,
+                width: 3,
+                height: 2,
+            };
+            let mut read = request(operation, 3 * 2 * 4);
+            read.deadline_nanos = NOW + 30_000_000_000;
+            read.triggering_sequence = 0;
+            post(&path, read, &params.encode(), NOW).expect("posted");
+            let (kind, seen) = renderer.join().expect("the stand-in renderer answered");
+
+            let snapshot = path.snapshot(NOW);
+            assert_eq!(
+                (snapshot.state, snapshot.error),
+                (SyncState::Ready, None),
+                "{kind}: the renderer answered and the barrier did not accept its reply"
+            );
+            assert_eq!(snapshot.reply_bytes, 3 * 2 * 4);
+            if operation == frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA {
+                assert_eq!(
+                    seen,
+                    ((target, 5, -6), 3, 2),
+                    "an image-data read names its canvas and its rectangle"
+                );
+            } else {
+                assert_eq!(
+                    seen.0.0, target,
+                    "a snapshot read names the snapshot, not a canvas"
+                );
+            }
+            let mut out = [0u8; 24];
+            assert_eq!(path.take_reply(&mut out), Ok(24));
+            assert!(out.iter().all(|byte| *byte == 0xab), "{kind}: the rows");
+            drop(sender);
+        }
+    }
+
+    /// A pack-buffer readback reaches the renderer with what it was given, and
+    /// the renderer's verdict comes back as the WebGL code the op would push.
+    ///
+    /// Nothing is transferred back, so this reply IS the call's outcome: a
+    /// producer that got zero wrote pixels into its buffer, and one that got a
+    /// code has an error to record. Each mapping is the in-process op's --
+    /// `INVALID_FRAMEBUFFER_OPERATION` in particular, which content uses to tell
+    /// "the framebuffer is not readable" from "the arguments were wrong".
+    #[test]
+    fn a_pack_buffer_readback_answers_the_verdict_the_op_would_have_pushed() {
+        use shared::error::ErrorCode;
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+
+        for (failure, expected) in [
+            (None, 0u32),
+            (Some(ErrorCode::OutOfMemory), 0x0505),
+            (Some(ErrorCode::InvalidArgument), 0x0501),
+            (Some(ErrorCode::RenderFramebufferIncomplete), 0x0506),
+            (Some(ErrorCode::Internal), 0x0502),
+        ] {
+            let (sender, commands) = new_render_channel();
+            let path = path_with_dispatch(&sender);
+            let renderer = std::thread::spawn(move || {
+                let Ok(RenderCommand::GL(GLCmd::ReadPixelsToBuffer { offset, resp, .. })) =
+                    commands.recv()
+                else {
+                    panic!("the barrier sent something other than a pack-buffer readback");
+                };
+                match failure {
+                    None => resp.send(Ok(())),
+                    Some(code) => resp.err_code(code),
+                }
+                offset
+            });
+
+            let params = frame_wire::sync::ReadPixelsToBufferParams {
+                canvas_id: 1,
+                x: 2,
+                y: 3,
+                width: 4,
+                height: 5,
+                format: frame_wire::sync::GL_RGBA,
+                type_: frame_wire::sync::GL_UNSIGNED_BYTE,
+                offset: 1_024,
+            };
+            let mut request = request(
+                frame_wire::sync::SYNC_OP_READ_PIXELS_TO_BUFFER,
+                frame_wire::sync::READ_PIXELS_TO_BUFFER_REPLY_BYTES,
+            );
+            request.deadline_nanos = NOW + 30_000_000_000;
+            request.triggering_sequence = 0;
+            post(&path, request, &params.encode(), NOW).expect("posted");
+            let offset = renderer.join().expect("the stand-in renderer answered");
+            assert_eq!(
+                offset, 1_024,
+                "the offset reached the renderer as it was given"
+            );
+
+            let snapshot = path.snapshot(NOW);
+            assert_eq!((snapshot.state, snapshot.error), (SyncState::Ready, None));
+            let mut out = [0u8; 4];
+            assert_eq!(path.take_reply(&mut out), Ok(4));
+            assert_eq!(
+                u32::from_le_bytes(out),
+                expected,
+                "a {failure:?} renderer answer must be the op's own code"
+            );
+            drop(sender);
+        }
+    }
+
+    /// The arguments a pack-buffer readback cannot carry are refused before the
+    /// renderer is asked: an empty rectangle, a negative offset, a reserved word
+    /// a producer set.
+    #[test]
+    fn a_pack_buffer_readback_with_arguments_this_host_cannot_read_is_refused() {
+        let ok = frame_wire::sync::ReadPixelsToBufferParams {
+            canvas_id: 1,
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            format: frame_wire::sync::GL_RGBA,
+            type_: frame_wire::sync::GL_UNSIGNED_BYTE,
+            offset: 0,
+        };
+        let mut reserved_set = ok.encode();
+        reserved_set[36] = 1;
+        for params in [
+            Vec::new(),
+            frame_wire::sync::ReadPixelsToBufferParams { width: 0, ..ok }
+                .encode()
+                .to_vec(),
+            frame_wire::sync::ReadPixelsToBufferParams { offset: -1, ..ok }
+                .encode()
+                .to_vec(),
+            reserved_set.to_vec(),
+            ok.encode()[..39].to_vec(),
+        ] {
+            let path = path();
+            post(
+                &path,
+                request(
+                    frame_wire::sync::SYNC_OP_READ_PIXELS_TO_BUFFER,
+                    frame_wire::sync::READ_PIXELS_TO_BUFFER_REPLY_BYTES,
+                ),
+                &params,
+                NOW,
+            )
+            .expect("posted");
+            let snapshot = path.snapshot(NOW);
+            assert_eq!(
+                (snapshot.state, snapshot.error),
+                (SyncState::Failed, Some(SyncError::UnsupportedOperation))
+            );
+        }
+    }
+
+    /// `loadFont` reads the game's own file and registers what the renderer
+    /// answers, and a path it cannot read is the empty family the op answers.
+    ///
+    /// Every step here is one the producer cannot take: the sandbox, the file,
+    /// the family the two shared helpers derive from the path, and the renderer.
+    /// What the answer is for content is the key it will name the face by -- so
+    /// an empty one has to reach it as an answer rather than as a failure, which
+    /// is what the in-process op does with the same outcome.
+    #[test]
+    fn load_font_reads_the_games_file_and_answers_the_family_the_renderer_registered() {
+        use shared::protocol::render_cmd::RenderCommand;
+
+        let root =
+            std::env::temp_dir().join(format!("migo-external-load-font-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).expect("paths");
+        std::fs::create_dir_all(installed.code_dir().join("fonts")).expect("the font directory");
+        std::fs::write(
+            installed.code_dir().join("fonts/MyFont.ttf"),
+            b"not really a font",
+        )
+        .expect("the font file");
+        std::fs::write(installed.code_dir().join("fonts/Empty.ttf"), b"").expect("the empty file");
+
+        let (services, _work) = ServiceHost::new(
+            INITIAL_RUNTIME_GENERATION,
+            files,
+            cache,
+            Arc::new(crate::runtime::external_services::WakerSlot::default()),
+        );
+        services.context.bind_session(1);
+        services
+            .context
+            .load_content("g", "game.js")
+            .expect("installed content mounts");
+
+        let (sender, commands) = new_render_channel();
+        let renderer = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            while let Ok(command) = commands.recv_timeout(std::time::Duration::from_secs(5)) {
+                if let RenderCommand::LoadFont {
+                    family,
+                    aliases,
+                    bytes,
+                    resp,
+                } = command
+                {
+                    seen.push((family.clone(), aliases.to_vec(), bytes.len()));
+                    // The renderer's own canonical key, which is what content
+                    // gets back rather than what the caller asked for.
+                    resp.send(Ok(format!("{family}-registered")));
+                }
+            }
+            seen
+        });
+
+        let ask = |path: &str, family: &str, reply_bytes: u32| {
+            let path_owned = path.to_string();
+            let params = frame_wire::sync::Canvas2DQueryParams {
+                kind: frame_wire::sync::canvas2d_query::LOAD_FONT,
+                canvas_id: 1,
+                number: 0,
+                flags: 0,
+                text: path_owned.as_bytes(),
+                font: family.as_bytes(),
+            }
+            .encode();
+            let path = path_with_dispatch(&sender).with_services(Arc::clone(&services));
+            let mut request = request(frame_wire::sync::SYNC_OP_CANVAS2D_FONT, reply_bytes);
+            request.deadline_nanos = NOW + 30_000_000_000;
+            request.triggering_sequence = 0;
+            post(&path, request, &params, NOW).expect("posted");
+            let snapshot = path.snapshot(NOW);
+            let mut out = vec![0u8; snapshot.reply_bytes as usize];
+            if !out.is_empty() {
+                assert_eq!(path.take_reply(&mut out), Ok(out.len()));
+            }
+            (
+                snapshot.state,
+                String::from_utf8(out).expect("a family is text"),
+            )
+        };
+
+        assert_eq!(
+            ask("fonts/MyFont.ttf", "Brand Sans", 4096),
+            (SyncState::Ready, "Brand Sans-registered".to_string()),
+            "the family content asked for is the one the renderer was given"
+        );
+        assert_eq!(
+            ask("fonts/Missing.ttf", "", 4096),
+            (SyncState::Ready, String::new()),
+            "a font the game does not ship answers the empty family, not a failure"
+        );
+        assert_eq!(
+            ask("fonts/Empty.ttf", "", 4096),
+            (SyncState::Ready, String::new()),
+            "an empty file is not a face"
+        );
+
+        drop(sender);
+        let seen = renderer.join().expect("the stand-in renderer");
+        assert_eq!(
+            seen.len(),
+            1,
+            "only the font that could be read reached the renderer"
+        );
+        assert_eq!(seen[0].0, "Brand Sans");
+        assert!(
+            seen[0].1.iter().any(|alias| alias == "MyFont"),
+            "the file's own name stays an alias: {:?}",
+            seen[0].1
+        );
+        assert_eq!(seen[0].2, b"not really a font".len());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A renderer that answers a different number of bytes than the rectangle
+    /// implies is refused rather than copied: a snapshot the pool has dropped
+    /// answers empty, and passing that on is a blank picture with nothing said.
+    #[test]
+    fn a_canvas2d_read_answered_at_the_wrong_size_is_refused() {
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCommand};
+
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        let sender = Arc::new(sender);
+        let dispatch = Arc::new(OnceLock::new());
+        assert!(
+            dispatch
+                .set(RenderDispatch {
+                    sender: Arc::downgrade(&sender),
+                    words: Mutex::new(Vec::new()),
+                })
+                .is_ok()
+        );
+        let path = SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            dispatch,
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+            Arc::new(ExternalGlErrors::default()),
+        );
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::Canvas2D {
+                cmd: Canvas2DCmd::ReadSnapshotPixels { resp, .. },
+                ..
+            }) = commands.recv()
+            else {
+                panic!("the barrier sent something other than a snapshot read");
+            };
+            // What the pool answers for a snapshot it no longer holds.
+            resp.send(Ok(Vec::new()));
+        });
+
+        let params = frame_wire::sync::Canvas2DPixelsParams {
+            target: 3,
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        };
+        let mut read = request(frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT, 4 * 4 * 4);
+        read.deadline_nanos = NOW + 30_000_000_000;
+        read.triggering_sequence = 0;
+        post(&path, read, &params.encode(), NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+
+        let snapshot = path.snapshot(NOW);
+        assert_eq!(
+            (snapshot.state, snapshot.error),
+            (SyncState::Failed, Some(SyncError::OperationFailed)),
+            "an answer of the wrong size was accepted"
+        );
+        drop(sender);
+    }
+
     #[test]
     fn malformed_arguments_are_refused_and_never_reach_the_renderer() {
         // A fresh path per case, because a mailbox that has already settled one
@@ -3102,6 +4723,7 @@ mod sync_tests {
     #[test]
     fn a_readback_the_renderer_answers_reaches_the_reply_slot_under_padded_pack_state() {
         use shared::protocol::pixel_pack::PixelPackLayout;
+        const LAYOUT: usize = frame_wire::sync::READ_PIXELS_LAYOUT_BYTES;
         use shared::protocol::render_cmd::{GLCmd, ReadPixelsData, RenderCommand};
 
         let (sender, commands) = shared::render_command_sender::CommandSender::new();
@@ -3122,6 +4744,7 @@ mod sync_tests {
                 0,
                 INITIAL_RUNTIME_GENERATION,
             )))),
+            Arc::new(ExternalGlErrors::default()),
         );
 
         let renderer = std::thread::spawn(move || {
@@ -3149,7 +4772,7 @@ mod sync_tests {
 
         // A generous deadline: the stand-in is a thread that has to be
         // scheduled, and this asserts what it answers, not how fast.
-        let mut read = request(SYNC_OP_READ_PIXELS, 24);
+        let mut read = request(SYNC_OP_READ_PIXELS, 24 + LAYOUT as u32);
         read.deadline_nanos = NOW + 30_000_000_000;
         // No frame has been submitted to this path, so there is nothing for the
         // read to wait for; the wait itself is covered by the tests below.
@@ -3171,12 +4794,322 @@ mod sync_tests {
             (SyncState::Ready, None),
             "the renderer answered and the barrier did not accept its reply"
         );
-        assert_eq!(snapshot.reply_bytes, 24);
-        let mut out = [0u8; 24];
-        assert_eq!(path.take_reply(&mut out), Ok(24));
+        assert_eq!(snapshot.reply_bytes, (24 + LAYOUT) as u32);
+        let mut out = [0u8; 24 + LAYOUT];
+        assert_eq!(path.take_reply(&mut out), Ok(24 + LAYOUT));
+        // The layout the renderer used, in front of the rows: 3x2 RGBA8 under
+        // `PACK_ALIGNMENT` 8 with one skipped row is a 12-byte row on a 16-byte
+        // stride, starting 16 bytes in. The producer cannot derive any of that
+        // -- it never sees `pixelStorei` -- so a reply that dropped it would
+        // place every row of a padded read in the wrong place.
+        assert_eq!(
+            frame_wire::sync::ReadPixelsLayout::decode(&out),
+            Some(frame_wire::sync::ReadPixelsLayout {
+                first_byte: 16,
+                row_bytes: 12,
+                row_stride: 16,
+                height: 2,
+            })
+        );
         let expected: Vec<u8> = (1..=24).collect();
-        assert_eq!(out.as_slice(), expected.as_slice());
+        assert_eq!(&out[LAYOUT..], expected.as_slice());
         drop(sender);
+    }
+
+    /// A command channel and a dispatch that points at it: what a query needs
+    /// to reach a stand-in renderer.
+    fn new_render_channel() -> (
+        Arc<shared::render_command_sender::CommandSender>,
+        crossbeam_channel::Receiver<shared::protocol::render_cmd::RenderCommand>,
+    ) {
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        (Arc::new(sender), commands)
+    }
+
+    fn path_with_dispatch(sender: &Arc<shared::render_command_sender::CommandSender>) -> SyncPath {
+        let dispatch = Arc::new(OnceLock::new());
+        assert!(
+            dispatch
+                .set(RenderDispatch {
+                    sender: Arc::downgrade(sender),
+                    words: Mutex::new(Vec::new()),
+                })
+                .is_ok()
+        );
+        SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            dispatch,
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+            Arc::new(ExternalGlErrors::default()),
+        )
+    }
+
+    /// A scalar query: the producer asks, the renderer answers, and the four
+    /// bytes that come back are the number it gave.
+    #[test]
+    fn a_scalar_query_is_answered_with_the_renderers_number() {
+        use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+
+        let (sender, commands) = new_render_channel();
+        let path = path_with_dispatch(&sender);
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::GL(GLCmd::GetUniformLocation { name, resp, .. })) =
+                commands.recv()
+            else {
+                panic!("the barrier sent something other than a uniform location query");
+            };
+            // The name has to arrive whole: a location looked up under a
+            // truncated name is answered, not refused, with `None`.
+            assert_eq!(name, "uColor");
+            resp.ok(Some(7));
+        });
+
+        let params = GlQueryParams {
+            kind: gl_query::UNIFORM_LOCATION,
+            canvas_id: 1,
+            object: 4,
+            pname: 0,
+            extra: 0,
+            name: b"uColor",
+        }
+        .encode();
+        let mut call = request(SYNC_OP_GL_QUERY_SCALAR, 4);
+        call.deadline_nanos = NOW + 30_000_000_000;
+        call.triggering_sequence = 0;
+        post(&path, call, &params, NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+
+        let snapshot = path.snapshot(NOW);
+        assert_eq!((snapshot.state, snapshot.error), (SyncState::Ready, None));
+        let mut out = [0u8; 4];
+        assert_eq!(path.take_reply(&mut out), Ok(4));
+        assert_eq!(i32::from_le_bytes(out), 7);
+        drop(sender);
+    }
+
+    /// A location nothing has is -1, which is what WebGL compares against --
+    /// not a refusal, and not zero, which is a real location.
+    #[test]
+    fn a_location_that_does_not_exist_is_minus_one() {
+        use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+
+        let (sender, commands) = new_render_channel();
+        let path = path_with_dispatch(&sender);
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::GL(GLCmd::GetAttribLocation { resp, .. })) = commands.recv()
+            else {
+                panic!("the barrier sent something other than an attribute location query");
+            };
+            resp.ok(None);
+        });
+
+        let params = GlQueryParams {
+            kind: gl_query::ATTRIB_LOCATION,
+            canvas_id: 1,
+            object: 4,
+            pname: 0,
+            extra: 0,
+            name: b"missing",
+        }
+        .encode();
+        let mut call = request(SYNC_OP_GL_QUERY_SCALAR, 4);
+        call.deadline_nanos = NOW + 30_000_000_000;
+        call.triggering_sequence = 0;
+        post(&path, call, &params, NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+        let mut out = [0u8; 4];
+        assert_eq!(path.take_reply(&mut out), Ok(4));
+        assert_eq!(i32::from_le_bytes(out), -1);
+        drop(sender);
+    }
+
+    /// An active variable: a size, a type and a name, in one reply the producer
+    /// turns back into the object the engine's facade parses.
+    #[test]
+    fn an_active_variable_answers_with_its_size_type_and_name() {
+        use frame_wire::sync::{
+            ACTIVE_VARIABLE_HEADER_BYTES, GlQueryParams, SYNC_OP_GL_QUERY_ACTIVE, gl_query,
+        };
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+
+        let (sender, commands) = new_render_channel();
+        let path = path_with_dispatch(&sender);
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::GL(GLCmd::GetActiveUniform { index, resp, .. })) =
+                commands.recv()
+            else {
+                panic!("the barrier sent something other than an active uniform query");
+            };
+            assert_eq!(index, 2);
+            resp.ok(Some(("uColor".to_owned(), 1, 0x8B52)));
+        });
+
+        let params = GlQueryParams {
+            kind: gl_query::ACTIVE_UNIFORM,
+            canvas_id: 1,
+            object: 4,
+            pname: 2,
+            extra: 0,
+            name: &[],
+        }
+        .encode();
+        let mut call = request(SYNC_OP_GL_QUERY_ACTIVE, 128);
+        call.deadline_nanos = NOW + 30_000_000_000;
+        call.triggering_sequence = 0;
+        post(&path, call, &params, NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+
+        let mut out = [0u8; 128];
+        let written = path.take_reply(&mut out).expect("a reply");
+        assert_eq!(written, ACTIVE_VARIABLE_HEADER_BYTES + "uColor".len());
+        assert_eq!(i32::from_le_bytes(out[0..4].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), 0x8B52);
+        assert_eq!(&out[8..written], b"uColor");
+        drop(sender);
+    }
+
+    /// `getError` is answered from the host's own queue -- the errors its
+    /// decoder recorded for this producer's records -- without asking the
+    /// renderer anything, and it drains one per call.
+    #[test]
+    fn get_error_drains_the_queue_the_host_filled_while_decoding() {
+        use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+
+        let errors = Arc::new(ExternalGlErrors::default());
+        errors.push(1, frame_decode::codes::INVALID_VALUE);
+        let path = SyncPath::new(
+            INITIAL_RUNTIME_GENERATION,
+            // No renderer at all: a query that needed one would fail here, and
+            // that is the point -- this one must not need one.
+            Arc::new(OnceLock::new()),
+            Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                0,
+                INITIAL_RUNTIME_GENERATION,
+            )))),
+            Arc::clone(&errors),
+        );
+
+        let ask = |path: &SyncPath| {
+            let params = GlQueryParams {
+                kind: gl_query::GET_ERROR,
+                canvas_id: 1,
+                object: 0,
+                pname: 0,
+                extra: 0,
+                name: &[],
+            }
+            .encode();
+            let mut call = request(SYNC_OP_GL_QUERY_SCALAR, 4);
+            call.deadline_nanos = NOW + 1_000_000_000;
+            call.triggering_sequence = 0;
+            post(path, call, &params, NOW).expect("posted");
+            let mut out = [0u8; 4];
+            assert_eq!(path.take_reply(&mut out), Ok(4));
+            u32::from_le_bytes(out)
+        };
+
+        assert_eq!(ask(&path), frame_decode::codes::INVALID_VALUE);
+        assert_eq!(ask(&path), 0, "the queue drains one error per call");
+    }
+
+    /// `measureText` asks the renderer and answers with the twelve numbers the
+    /// engine's facade reads a `TextMetrics` back from.
+    #[test]
+    fn a_text_measurement_is_answered_with_the_metrics_the_renderer_gave() {
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCommand, TextMetrics};
+
+        use frame_wire::sync::{
+            Canvas2DQueryParams, SYNC_OP_CANVAS2D_METRICS, TEXT_METRICS_BYTES, canvas2d_query,
+        };
+
+        let (sender, commands) = new_render_channel();
+        let path = path_with_dispatch(&sender);
+        let renderer = std::thread::spawn(move || {
+            let Ok(RenderCommand::Canvas2D {
+                canvas_id,
+                cmd: Canvas2DCmd::MeasureText { text, resp },
+            }) = commands.recv()
+            else {
+                panic!("the barrier sent something other than a text measurement");
+            };
+            assert_eq!(canvas_id, 1);
+            // The text has to arrive whole: a measurement of a truncated string
+            // is a number, not a failure, and it lays the label out wrong.
+            assert_eq!(text, "score: 120");
+            resp.ok(TextMetrics {
+                width: 64.5,
+                actual_bounding_box_left: 0.0,
+                actual_bounding_box_right: 0.0,
+                actual_bounding_box_ascent: 12.0,
+                actual_bounding_box_descent: 0.0,
+                font_bounding_box_ascent: 0.0,
+                font_bounding_box_descent: 0.0,
+                em_height_ascent: 0.0,
+                em_height_descent: 0.0,
+                hanging_baseline: 0.0,
+                alphabetic_baseline: 0.0,
+                ideographic_baseline: 0.0,
+            });
+        });
+
+        let params = Canvas2DQueryParams {
+            kind: canvas2d_query::MEASURE_TEXT,
+            canvas_id: 1,
+            number: 0,
+            flags: 0,
+            text: b"score: 120",
+            font: b"16px sans-serif",
+        }
+        .encode();
+        let mut call = request(SYNC_OP_CANVAS2D_METRICS, TEXT_METRICS_BYTES as u32);
+        call.deadline_nanos = NOW + 30_000_000_000;
+        call.triggering_sequence = 0;
+        post(&path, call, &params, NOW).expect("posted");
+        renderer.join().expect("the stand-in renderer answered");
+
+        let mut out = [0u8; TEXT_METRICS_BYTES];
+        assert_eq!(path.take_reply(&mut out), Ok(TEXT_METRICS_BYTES));
+        let width = f32::from_le_bytes(out[0..4].try_into().unwrap());
+        assert_eq!(width, 64.5, "the first field is the advance width");
+        // The ascent is the eighth field, which is where a layout that restated
+        // the order rather than sharing it would put something else.
+        let ascent = f32::from_le_bytes(out[28..32].try_into().unwrap());
+        assert_eq!(ascent, 12.0);
+        drop(sender);
+    }
+
+    /// A kind sent under the wrong operation is refused rather than answered:
+    /// the operation is what sizes the reply, so an info log answered as a
+    /// scalar would be four bytes of a string.
+    #[test]
+    fn a_query_under_the_wrong_operation_is_refused() {
+        use frame_wire::sync::{GlQueryParams, SYNC_OP_GL_QUERY_SCALAR, gl_query};
+
+        let path = path();
+        let params = GlQueryParams {
+            kind: gl_query::PROGRAM_INFO_LOG,
+            canvas_id: 1,
+            object: 4,
+            pname: 0,
+            extra: 0,
+            name: &[],
+        }
+        .encode();
+        let mut call = request(SYNC_OP_GL_QUERY_SCALAR, 4);
+        call.deadline_nanos = NOW + 1_000_000_000;
+        call.triggering_sequence = 0;
+        let snapshot = post(&path, call, &params, NOW).expect("the request is posted");
+        assert_eq!(
+            (snapshot.state, snapshot.error),
+            (SyncState::Failed, Some(SyncError::UnsupportedOperation)),
+            "the call is answered as failed, not answered with four bytes of something else"
+        );
+        assert_eq!(snapshot.reply_bytes, 0);
     }
 
     #[test]
@@ -3213,6 +5146,7 @@ mod sync_answer_tests {
                 0,
                 INITIAL_RUNTIME_GENERATION,
             )))),
+            Arc::new(ExternalGlErrors::default()),
         )
     }
 
@@ -3226,6 +5160,8 @@ mod sync_answer_tests {
         for word in [SYNC_OP_READ_PIXELS, max_reply_bytes, timeout_millis, 0] {
             body.extend_from_slice(&word.to_le_bytes());
         }
+        // service_sequence: nothing sent on the service stream.
+        body.extend_from_slice(&0u64.to_le_bytes());
         for word in [
             1u32,
             0,
@@ -3300,20 +5236,32 @@ mod sync_answer_tests {
 
     #[test]
     fn an_answered_call_carries_its_own_id_and_bytes_and_frees_the_slot() {
+        const LAYOUT: u32 = frame_wire::sync::READ_PIXELS_LAYOUT_BYTES as u32;
         let (sender, dispatch, renderer) = renderer();
         let path = path_with(dispatch);
-        let body = call(3, 2, 24, 30_000);
+        let body = call(3, 2, 24 + LAYOUT, 30_000);
         let answered = answer_of(&path, &body);
         renderer.join().expect("renderer");
 
         let answer = answered.answer;
         assert_eq!(
             (answer.state, answer.error, answer.reply_bytes),
-            (SyncState::Ready, None, 24)
+            (SyncState::Ready, None, 24 + LAYOUT)
         );
         assert_ne!(answer.request_id, 0, "an answered call was given an id");
+        // The rows, behind the layout that says where they go: 3x2 RGBA8 with
+        // no pack state is compact, which is what the producer places straight.
+        assert_eq!(
+            frame_wire::sync::ReadPixelsLayout::decode(&answered.reply),
+            Some(frame_wire::sync::ReadPixelsLayout {
+                first_byte: 0,
+                row_bytes: 12,
+                row_stride: 12,
+                height: 2,
+            })
+        );
         let expected: Vec<u8> = (1..=24).collect();
-        assert_eq!(answered.reply, expected);
+        assert_eq!(&answered.reply[LAYOUT as usize..], expected.as_slice());
         // Freed as it was written: the producer holding the response has the
         // bytes, and a slot left READY would refuse nothing but would let a
         // later take hand these pixels to someone else.
@@ -3325,7 +5273,14 @@ mod sync_answer_tests {
     fn a_call_that_cannot_be_answered_is_answered_failed_and_the_next_one_is_not_blocked() {
         // No renderer: the session thread has not brought one up.
         let path = path_with(Arc::new(OnceLock::new()));
-        let body = call(2, 2, 16, 250);
+        // 2x2 RGBA8 and the layout in front of it, so the reservation is not
+        // what this call fails on.
+        let body = call(
+            2,
+            2,
+            16 + frame_wire::sync::READ_PIXELS_LAYOUT_BYTES as u32,
+            250,
+        );
 
         let first = answer_of(&path, &body).answer;
         assert_eq!(
@@ -3480,7 +5435,8 @@ mod sync_fence_tests {
             resource_epoch: 0,
             triggering_sequence,
             operation: SYNC_OP_READ_PIXELS,
-            max_reply_bytes: 4,
+            // One RGBA8 pixel and the layout that says where it goes.
+            max_reply_bytes: 4 + frame_wire::sync::READ_PIXELS_LAYOUT_BYTES as u32,
             deadline_nanos,
         }
     }
@@ -3512,6 +5468,7 @@ mod sync_fence_tests {
             INITIAL_RUNTIME_GENERATION,
             dispatch,
             admission.clone(),
+            Arc::new(ExternalGlErrors::default()),
         ));
         (path, admission, sender, commands)
     }
@@ -3638,6 +5595,7 @@ mod sync_teardown_tests {
                 0,
                 INITIAL_RUNTIME_GENERATION,
             )))),
+            Arc::new(ExternalGlErrors::default()),
         );
         // The state the wiring has to reach. `request_shutdown` needs a running
         // thread, so this asserts the same call the two entry points make.
@@ -3724,6 +5682,7 @@ mod await_window_tests {
             INITIAL_RUNTIME_GENERATION,
             Arc::new(OnceLock::new()),
             admission.clone(),
+            Arc::new(ExternalGlErrors::default()),
         ));
         (path, admission)
     }

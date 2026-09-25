@@ -66,9 +66,19 @@ require(
     "core Cargo.toml must declare serde_json directly",
 )
 
+# What the code says, not what its comments say. The rule is that no core
+# source *uses* the V8 backend's crates; the files that describe the boundary
+# name them to say what the other side does -- "arguments converted by
+# deno_core's rule for its parameter" is the sentence a reader of
+# `service_args.rs` needs, and blanking it would cost more than it protects.
+# Comments and string bodies are masked exactly as the op-surface reader masks
+# them, so a `deno_core::` that is code still fails here.
+sys.path.insert(0, str(root / "scripts/lib"))
+import runtime_ops  # noqa: E402
+
 core_root = root / "engine/crates/core"
 for source_path in sorted(core_root.rglob("*.rs")):
-    source = source_path.read_text(encoding="utf-8")
+    source = runtime_ops.mask_rust(source_path.read_text(encoding="utf-8"))
     relative = source_path.relative_to(root)
     require(
         "deno_core" not in source,

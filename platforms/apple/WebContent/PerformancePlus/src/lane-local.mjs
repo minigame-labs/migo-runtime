@@ -7,14 +7,17 @@
 // implements only ops the contract gives this lane is checked by
 // scripts/gen-performance-plus-engine.py.
 
+import { bytesOf, f32BitsOf, smiU32, smiU8, stringOf, toBool } from "./op-args.mjs";
 import { platform } from "./engine-core.mjs";
+import { decodeBytes, encodeString } from "./text-codec.mjs";
 import { engineHost } from "./engine-host.mjs";
 
 // ---- time -------------------------------------------------------------------
 
 /// Elapsed time since the session was bound, as the Rust op writes it: u32
 /// seconds then u32 nanoseconds, little-endian, into the caller's 8 bytes.
-export function op_now(buffer) {
+export function op_now(buf) {
+  const buffer = bytesOf(buf, "buf");
   if (buffer.byteLength < 8) return;
   const elapsedMs = platform.now() - engineHost().startedAt;
   const seconds = Math.floor(elapsedMs / 1000);
@@ -36,14 +39,60 @@ export function op_timer_is_backgrounded() {
 
 // ---- canvases ---------------------------------------------------------------
 
+/// The sizes of the canvases this producer created, by id.
+///
+/// The host has the real ones -- it allocated the surfaces -- but asking it
+/// would be a synchronous round trip on the one call every canvas makes in its
+/// constructor, and the answer is one this side already knows: the producer
+/// chose the size in `op_create_offscreen_canvas` and changes it in
+/// `op_resize_canvas`, which is exactly what `canvas.width` means. Contract
+/// `local_answer`, and the reason the op is on the local lane.
+const canvasSizes = new Map();
+
+/// The next canvas id this producer hands out.
+///
+/// From `shared::protocol::render_cmd::PRODUCER_CANVAS_ID_BASE`, which is where
+/// the in-process runtime's own counter starts, and below which the renderer
+/// refuses a registration: the renderer allocates its ids from 2 upwards, so a
+/// caller that allocated from 2 as well would name a canvas the renderer is
+/// about to create.
+const PRODUCER_CANVAS_ID_BASE = 1 << 24;
+let nextCanvasId = PRODUCER_CANVAS_ID_BASE;
+
+/// Take an id for a canvas the stream lane is about to register, and record the
+/// size it is being created at.
+export function allocateCanvas(width, height) {
+  const id = nextCanvasId >>> 0;
+  nextCanvasId += 1;
+  canvasSizes.set(id, [width, height]);
+  return id;
+}
+
+/// A resize this producer sent, as `canvas.width`/`height` will read it back.
+export function recordCanvasSize(id, width, height) {
+  const size = canvasSizes.get(id);
+  if (size === undefined) return;
+  if (width !== null) size[0] = width;
+  if (height !== null) size[1] = height;
+}
+
+/// A canvas the content threw away; a later `op_get_canvas_info` for it is the
+/// "not found" the in-process op answers once the render thread has dropped it.
+export function forgetCanvas(id) {
+  canvasSizes.delete(id);
+}
+
 /// The main canvas (id 1) is the surface; its size is the one the host
-/// described. Offscreen canvases are created on the stream lane, which has not
-/// landed, so no other id can exist yet -- and the Rust op refuses an unknown id
-/// the same way.
+/// described. Every other id is one this producer allocated, and the size is
+/// the one it chose -- an id from neither is refused, as the Rust op refuses an
+/// id the render thread does not hold.
 export function op_get_canvas_info(id) {
+  const canvasId = smiU32(id, "id");
   const { state } = engineHost();
-  if (id === 1) return [state.surfaceWidth, state.surfaceHeight];
-  throw new Error(`canvas ${id} not found`);
+  if (canvasId === 1) return [state.surfaceWidth, state.surfaceHeight];
+  const size = canvasSizes.get(canvasId);
+  if (size !== undefined) return [size[0], size[1]];
+  throw new Error(`canvas ${canvasId} not found`);
 }
 
 // ---- WebGL ------------------------------------------------------------------
@@ -75,24 +124,24 @@ export function op_webgl_record_attributes(
   desynchronized,
   xrCompatible,
 ) {
-  contextAttributes.set(canvasId >>> 0, {
-    alpha: !!alpha,
-    antialias: !!antialias,
-    depth: !!depth,
-    stencil: !!stencil,
-    premultipliedAlpha: !!premultipliedAlpha,
-    preserveDrawingBuffer: !!preserveDrawingBuffer,
-    powerPreference: POWER_PREFERENCE[powerPreference] ?? "default",
-    failIfMajorPerformanceCaveat: !!failIfMajorPerformanceCaveat,
-    desynchronized: !!desynchronized,
-    xrCompatible: !!xrCompatible,
+  contextAttributes.set(smiU32(canvasId, "canvas_id"), {
+    alpha: toBool(alpha, "alpha"),
+    antialias: toBool(antialias, "antialias"),
+    depth: toBool(depth, "depth"),
+    stencil: toBool(stencil, "stencil"),
+    premultipliedAlpha: toBool(premultipliedAlpha, "premultiplied_alpha"),
+    preserveDrawingBuffer: toBool(preserveDrawingBuffer, "preserve_drawing_buffer"),
+    powerPreference: POWER_PREFERENCE[smiU8(powerPreference, "power_preference")] ?? "default",
+    failIfMajorPerformanceCaveat: toBool(failIfMajorPerformanceCaveat, "fail_if_major_performance_caveat"),
+    desynchronized: toBool(desynchronized, "desynchronized"),
+    xrCompatible: toBool(xrCompatible, "xr_compatible"),
   });
 }
 
 /// The recorded attributes, or WebGL 1.0's defaults (section 5.2.1) with the
 /// stencil the backend always has -- `ContextAttributes::default()` in Rust.
 export function op_webgl_get_context_attributes(canvasId) {
-  const recorded = contextAttributes.get(canvasId >>> 0);
+  const recorded = contextAttributes.get(smiU32(canvasId, "canvas_id"));
   if (recorded) return { ...recorded };
   return {
     alpha: true,
@@ -144,15 +193,173 @@ export function drainProducerError(canvasId) {
 
 /// Only the four codes content may record; anything else is INVALID_OPERATION.
 export function op_webgl_record_error(canvasId, code) {
-  const valid = code === INVALID_ENUM || code === INVALID_VALUE || code === INVALID_OPERATION || code === OUT_OF_MEMORY;
-  pushError(canvasId >>> 0, valid ? code : INVALID_OPERATION);
+  const canvas = smiU32(canvasId, "canvas_id");
+  const error = smiU32(code, "code");
+  const valid =
+    error === INVALID_ENUM || error === INVALID_VALUE || error === INVALID_OPERATION || error === OUT_OF_MEMORY;
+  pushError(canvas, valid ? error : INVALID_OPERATION);
 }
 
 export function op_webgl_record_out_of_memory(canvasId) {
-  pushError(canvasId >>> 0, OUT_OF_MEMORY);
+  pushError(smiU32(canvasId, "canvas_id"), OUT_OF_MEMORY);
 }
 
 /// Whether the host reported the GL context lost and not yet restored.
 export function op_gl_is_context_lost() {
   return engineHost().state.contextLost;
+}
+
+// ---- the text-texture cache ---------------------------------------------------
+
+/**
+ * `op_text_cache_peek_pin`: a miss, always, and that is the truth rather than a
+ * placeholder.
+ *
+ * The cache it asks about is a host-side optimisation for one pattern -- a 2D
+ * canvas whose whole contents are a single label, re-rendered and re-uploaded
+ * every frame, which is what Cocos does for score text. A host that keeps such
+ * a cache can answer "hit" and skip the paint; this host keeps none, so nothing
+ * is cached and the text is painted. The engine's facade takes 0 as "render
+ * normally", which is exactly right.
+ *
+ * Answered here rather than on the synchronous lane because a round trip would
+ * block the Worker once per `fillText` to be told something that cannot change
+ * until the cache exists. When it does, this moves back to the sync lane (see
+ * contracts/runtime/op-boundary.json).
+ *
+ * The arguments are converted all the same: deno_core converts them before the
+ * Rust body runs, so one it refuses is a TypeError there whatever the answer.
+ */
+export function op_text_cache_peek_pin(
+  text,
+  fontRequest,
+  fontSize,
+  fontWeight,
+  italic,
+  fillColor,
+  textAlign,
+  textBaseline,
+  canvasW,
+  canvasH,
+) {
+  stringOf(text, "text");
+  stringOf(fontRequest, "font_request");
+  f32BitsOf(fontSize, "font_size");
+  smiU32(fontWeight, "font_weight");
+  toBool(italic, "italic");
+  smiU32(fillColor, "fill_color");
+  smiU8(textAlign, "text_align");
+  smiU8(textBaseline, "text_baseline");
+  smiU32(canvasW, "canvas_w");
+  smiU32(canvasH, "canvas_h");
+  return 0;
+}
+
+// ---- what the host knows about the device -----------------------------------
+//
+// A game reads these before its first frame -- `migo.getWindowInfo()` to lay
+// itself out, `getSystemInfoSync()` for the model and the safe area -- and each
+// is synchronous. None of it changes during a session, so the host hands the
+// JSON over at startup (see `engine-host.mjs`) and these answer from it without
+// crossing. That is what the contract means by the `local` lane for them.
+//
+// When the host described nothing, they fail the way they do on a platform with
+// no device services: the op's own message. A plausible screen size nobody
+// measured would be worse than a failure -- a game would lay itself out to it.
+
+function described(key, call) {
+  const profile = engineHost().device;
+  const json = profile === null ? undefined : profile[key];
+  if (json === undefined) {
+    // The message the Rust op raises, so content sees one failure, not two.
+    throw new Error(`${call}:fail not supported`);
+  }
+  return json;
+}
+
+export function op_get_window_info() {
+  return described("windowInfo", "getWindowInfo");
+}
+
+export function op_get_device_info() {
+  return described("deviceInfo", "getDeviceInfo");
+}
+
+export function op_get_system_settings() {
+  return described("systemSettings", "getSystemSetting");
+}
+
+export function op_get_menu_button_rect() {
+  return described("menuButtonRect", "getMenuButtonBoundingClientRect");
+}
+
+// ---- counters and hints -------------------------------------------------------
+
+/**
+ * `op_alloc_host_callback_id`: the next id a host callback registers under.
+ *
+ * The embedded op takes it from a per-session allocator that refuses to wrap --
+ * a caller must fail to register rather than register under someone else's id --
+ * and the ids are only ever compared, never sent anywhere that assigns meaning
+ * to their value. So the producer keeps the same allocator here: its own
+ * counter, exhausted rather than wrapped.
+ */
+export function op_alloc_host_callback_id() {
+  if (nextCallbackId > MAX_CALLBACK_ID) {
+    throw new RangeError("host callback ids are exhausted");
+  }
+  const id = nextCallbackId;
+  nextCallbackId += 1;
+  return id;
+}
+
+let nextCallbackId = 1;
+// The op returns an `i32`, and a callback id that wrapped would be one handler
+// answering for another's events.
+const MAX_CALLBACK_ID = 0x7fff_ffff;
+
+/**
+ * `op_trigger_gc`: nothing, and that is the honest answer here.
+ *
+ * The embedded op asks V8 for a full collection through
+ * `low_memory_notification`, which is an engine-private call. The JavaScript
+ * engine this content runs in is WebKit's, in this process, and it exposes no
+ * such call to a Worker -- there is nothing to forward the hint to, and a round
+ * trip to the host would ask the wrong engine. Content's `triggerGC()` is a
+ * hint in its own API too, so a hint nobody can act on is a hint dropped.
+ */
+export function op_trigger_gc() {}
+
+/**
+ * `op_create_image`: the id a new `Image` gets.
+ *
+ * A counter bump in process too -- the embedded op stopped asking the render
+ * thread for one because a busy renderer blocked `new Image()` for hundreds of
+ * milliseconds -- and the id means nothing until the image is loaded. The
+ * producer allocates from its own range for the same reason it allocates GL
+ * resource ids: the host binds whatever it is told.
+ */
+export function op_create_image() {
+  const id = nextImageId;
+  nextImageId += 1;
+  return id >>> 0;
+}
+
+let nextImageId = 1;
+
+// ---- text codecs ---------------------------------------------------------------
+//
+// A string into bytes and back takes no host resource, which is why the op
+// boundary answers these here. The conversions are `text-codec.mjs`, a port of
+// `shared::codec` held to it by `scripts/test-text-codec-agreement.sh` -- a game
+// that writes a save file on one platform has to be able to read it on another.
+
+/// `migo.encodeMultiFormats(text, coding)`.
+export function op_encode_multi_formats(original, coding) {
+  return encodeString(stringOf(original, "original"), stringOf(coding, "coding"));
+}
+
+/// `migo.decodeMultiFormats(bytes, coding)`.
+export function op_decode_multi_formats(buffer, coding) {
+  return decodeBytes(bytesOf(buffer, "buf"), stringOf(coding, "coding"));
 }

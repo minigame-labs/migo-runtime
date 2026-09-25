@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Migo's privacy manifest (no double hyphen may appear in this comment). Required of third-party SDKs since 2024, and each
+  entry is what the engine actually does, checked against its source by
+  scripts/test-apple-privacy-manifest-contract.sh:
+
+  - No tracking and no collected data. The engine sends nothing anywhere; a
+    game's own network requests are the game's and the app's to declare.
+  - File timestamps (C617.1): the game file system reports mtime/atime through
+    stat, and the image and code caches revalidate by mtime, all inside the
+    app container.
+  - System boot time (35F9.1): monotonic clocks for frame timing and timers,
+    used only to measure elapsed time inside the app.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

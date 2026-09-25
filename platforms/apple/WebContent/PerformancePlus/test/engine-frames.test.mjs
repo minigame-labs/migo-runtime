@@ -27,13 +27,16 @@ import { join } from "node:path";
 import { DecodeBudget, MAX_DECODED_FRAME_BYTES } from "../src/decode-budget.mjs";
 import { DOWN_FRAME_VERDICT, encodeBytes } from "../src/downlink.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "../src/engine-host.mjs";
-import { appendStream, endFrame, flushToHost } from "../src/engine-frames.mjs";
+import { appendCanvas2DRecord, appendStream, endFrame, flushToHost } from "../src/engine-frames.mjs";
 import { FrameSession } from "../src/frame-session.mjs";
 import {
   MAGIC,
+  OP2D_DRAW_IMAGE_BATCH,
   OP2D_FILL_RECT,
+  OP2D_FILL_TEXT,
   OP2D_SAVE,
   OP2D_SELECT_CANVAS,
+  OP2D_SET_LINE_DASH,
   OP_CLEAR,
   OP_UNIFORM4FV,
   OP_UNIFORM_MATRIX4FV,
@@ -60,6 +63,15 @@ function check(condition, message) {
 
 const header = (opcode, words) => ((words << 12) | opcode) >>> 0;
 
+/** A packet's command-stream words, header and version included. */
+function wordsOf(packet) {
+  const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+  const headerBytes = view.getUint32(8, true);
+  const offset = view.getUint32(headerBytes + 4, true);
+  const count = view.getUint32(headerBytes + 12, true);
+  return new Uint32Array(packet.buffer.slice(packet.byteOffset + offset, packet.byteOffset + offset + count * 4));
+}
+
 // xorshift32: the same streams every run, so a disagreement is reproducible.
 let state = 0x2545f491;
 function next() {
@@ -85,7 +97,19 @@ const ascii = (length) => Array.from({ length }, () => 0x20 + pick(0x5f));
 
 /** One random record, as words. */
 function randomRecord(selected) {
-  switch (pick(selected ? 12 : 10)) {
+  switch (pick(selected ? 15 : 10)) {
+    // The 2D payload records, which own what they carry: a text, a dash list,
+    // an image batch of whole nine-word entries.
+    case 12:
+      return payloadRecord(OP2D_FILL_TEXT, [next(), next(), next()], ascii(pick(80)));
+    case 13: {
+      const count = pick(12);
+      return [header(OP2D_SET_LINE_DASH, 2 + count), count, ...Array.from({ length: count }, next)];
+    }
+    case 14: {
+      const words = 9 * (1 + pick(4));
+      return [header(OP2D_DRAW_IMAGE_BATCH, 2 + words), words, ...Array.from({ length: words }, next)];
+    }
     case 5:
       return [header(OPR_CREATE_BUFFER, 3), 1, next()];
     case 6:
@@ -323,6 +347,73 @@ check(sent.length === afterBarriers + 1, "a frame end with nothing recorded afte
     "and the host's log says why",
   );
   check(sent.length === before, "and nothing was sent for it");
+}
+
+// ---- 3. a 2D record after a barrier ----------------------------------------
+//
+// A selection holds inside the packet that carries it and nowhere else, so a
+// `fillText` after a `measureText` -- which sends a barrier -- is in a packet
+// whose canvas nothing selected. The host drops a 2D record with no selection:
+// an accepted frame that draws no text, which is how this was found, on a
+// simulator, by a test that counted green pixels.
+
+console.log("A 2D record after a barrier");
+answerVerdicts = true;
+const beforeText = sent.length;
+const textRecord = Uint32Array.of(
+  // OP2D_SET_TEXT_ALIGN, two words: the smallest 2D record with an argument.
+  ((2 << 12) | 553) >>> 0,
+  2,
+);
+check(appendCanvas2DRecord(7, textRecord, 2, null), "the first 2D record was appended");
+flushToHost();
+check(appendCanvas2DRecord(7, textRecord, 2, null), "and one more after the barrier");
+endFrame();
+const afterBarrier = sent.slice(beforeText);
+check(afterBarrier.length >= 2, `the barrier and the frame both went (${afterBarrier.length})`);
+const lastPacket = afterBarrier.at(-1);
+const lastWords = wordsOf(lastPacket);
+check(
+  lastWords[2] === (((2 << 12) | 512) >>> 0) && lastWords[3] === 7,
+  "the packet after a barrier selects its canvas again before the 2D record",
+);
+
+// ---- 4. adjacent drawImage calls fold into one batch -------------------------
+//
+// Games draw a sprite per `drawImage`. Adjacent draws on one canvas leave as one
+// DRAW_IMAGE_BATCH record; a canvas switch, anything else that reaches the
+// stream, or a frame end ends the run -- but the facade's empty flush before
+// each draw must not.
+
+console.log("drawImage runs");
+{
+  const { op_draw_image } = await import("../src/lane-stream.mjs");
+  const EMPTY = Uint32Array.of(MAGIC, STREAM_VERSION);
+  const drawn = (id) => op_draw_image(7, id, 0, 0, 8, 8, 0, 0, 8, 8);
+  const before = sent.length;
+  drawn(0x40000001);
+  appendStream(EMPTY, 2); // the facade's barrier before the next draw
+  drawn(0x40000002);
+  drawn(0x40000003);
+  op_draw_image(8, 0x40000004, 0, 0, 8, 8, 0, 0, 8, 8); // another canvas
+  appendStream(Uint32Array.of(MAGIC, STREAM_VERSION, header(OP2D_SELECT_CANVAS, 2), 8, header(OP2D_SAVE, 1)), 5);
+  drawn(0x40000005);
+  endFrame();
+  const records = sent.slice(before).flatMap(recordsOf);
+  const shapes = records.map((record) => record[0] & 0xfff);
+  const batches = records.filter((record) => (record[0] & 0xfff) === 558);
+  const singles = records.filter((record) => (record[0] & 0xfff) === 557);
+  check(batches.length === 1 && batches[0][1] === 27, "three adjacent draws on canvas 7 left as one batch of three entries");
+  check(
+    batches.length === 1 && [batches[0][2], batches[0][11], batches[0][20]].join() === [0x40000001, 0x40000002, 0x40000003].join(),
+    "with their ids exact and in order",
+  );
+  check(singles.length === 2, "a draw on another canvas and a draw after other work each left alone");
+  const order = shapes.filter((opcode) => opcode === 557 || opcode === 558 || opcode === OP2D_SAVE);
+  check(
+    order.join() === [558, 557, OP2D_SAVE, 557].join(),
+    `in the order they were made (${order.join()})`,
+  );
 }
 
 if (outputDirectory) {

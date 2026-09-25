@@ -78,6 +78,10 @@ PACKAGE_SWIFT="$REPO_ROOT/platforms/apple/Package.swift"
 # manifests mean two places the floor can be wrong, which is why both are checked
 # rather than only the shipping one.
 CORE_PACKAGE_SWIFT="$REPO_ROOT/platforms/apple/core/Package.swift"
+# The macOS app scripts/test-macos-game-view.sh builds. It depends on the
+# shipping package, so SwiftPM refuses it below the package's own macOS floor;
+# checked here so that refusal is not the first place a floor change is noticed.
+GAME_VIEW_HOST_PACKAGE_SWIFT="$REPO_ROOT/tests/swift_host/macos-game-view/Package.swift"
 FLOOR_SWIFT="$REPO_ROOT/platforms/apple/core/Sources/MigoAppleCore/MigoDeploymentFloor.swift"
 BUILD_SCRIPT="$REPO_ROOT/scripts/build-apple-sdk.sh"
 # The Xcode projects, each of which carries the floor as a build setting because
@@ -233,6 +237,8 @@ check_literal "$CORE_PACKAGE_SWIFT" "$ios_swiftpm" \
     "engine-free SwiftPM iOS platform must match the contract"
 check_literal "$CORE_PACKAGE_SWIFT" "$macos_swiftpm" \
     "engine-free SwiftPM macOS platform must match the contract"
+check_literal "$GAME_VIEW_HOST_PACKAGE_SWIFT" "$macos_swiftpm" \
+    "the macOS game-view host's platform must match the contract"
 
 swift_tuple() {
     printf '(major: %s, minor: %s)' "${1%%.*}" "${1##*.}"
@@ -366,6 +372,7 @@ allowed_to_declare() {
         contracts/apple/deployment-floor.json) return 0 ;;
         platforms/apple/Package.swift) return 0 ;;
         platforms/apple/core/Package.swift) return 0 ;;
+        tests/swift_host/macos-game-view/Package.swift) return 0 ;;
         platforms/apple/core/Sources/MigoAppleCore/MigoDeploymentFloor.swift) return 0 ;;
         scripts/build-apple-sdk.sh) return 0 ;;
         scripts/build-v8-apple.sh) return 0 ;;

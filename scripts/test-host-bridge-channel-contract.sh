@@ -134,6 +134,30 @@ elif not re.search(r"configurable:\s*true", holder_block.group("body")):
         "which makes retiring its name a silent no-op"
     )
 
+# --- 5. The Performance+ producer retires the name too ----------------------
+#
+# On iOS Performance+ the same engine JavaScript installs the same holder in a
+# Worker in WebKit, and the producer is what stands where `js_bindings` stands:
+# it must take what it needs and delete the name after the engine loads and
+# before the game is imported. It did not, until 2026-09-19: content on that
+# lane could reach every hook.
+producer = root / "platforms/apple/WebContent/PerformancePlus/src/producer-worker.mjs"
+worker = strip_comments(producer.read_text(encoding="utf-8"))
+boot = worker.find('import("./engine/boot.mjs")')
+retire = re.search(r"delete\s+globalThis\[\s*bridgeName\s*\]", worker)
+named = re.search(r"const\s+bridgeName\s*=\s*Symbol\.for\(\s*\"Migo\.hostBridge\"\s*\)", worker)
+game = worker.find("config.gameEntry")
+if boot < 0 or retire is None or named is None:
+    failures.append(
+        f"{producer.relative_to(root)}: the producer does not delete the host-bridge name "
+        "after loading the engine, so content in WebKit can reach every hook"
+    )
+elif not (boot < retire.start() and (game < 0 or retire.start() < game)):
+    failures.append(
+        f"{producer.relative_to(root)}: the host-bridge name is deleted outside the window "
+        "between loading the engine and importing the game"
+    )
+
 if failures:
     print("FAIL: host-bridge channel contract", file=sys.stderr)
     for failure in failures:

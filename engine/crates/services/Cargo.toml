@@ -1,0 +1,81 @@
+[package]
+name = "migo-services"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+[lib]
+name = "migo_services"
+
+# The engine's host services, callable without a script runtime.
+#
+# An op is two things: the adapter that takes arguments out of V8 and puts an
+# answer back, and the work -- resolve a path, read a file, charge a quota,
+# decode an image. The embedded runtime used to hold both in one function, which
+# was fine while V8 was the only caller. On iOS Performance+ the caller is a
+# producer in another process, and the work has to run where no V8 is linked.
+# So the work lives here, once, and both executions call it: the embedded ops
+# as thin adapters, the external session's service dispatcher directly. Two
+# copies of the same rules would be two behaviours for the same game.
+#
+# No JavaScript engine is reachable from this crate, and
+# scripts/test-apple-performance-rust-closure.sh measures that through the
+# external session that depends on it.
+[dependencies]
+shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs", "codec"] }
+# `zip-extract` because `unzip` and `readZipEntry` are file-system calls every
+# execution offers; the embedded runtime has always enabled it.
+migo-io = { path = "../io", default-features = false, features = ["zip-extract"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util", "net"] }
+# `join_all` for the DNS warm-up, which resolves a capped batch at a time
+# rather than spawning one task per host.
+futures.workspace = true
+# The HTTP client every outbound request is made with (see network::client):
+# one builder, so the resolver and the redirect gate cannot be forgotten by a
+# second one.
+reqwest.workspace = true
+http.workspace = true
+# A response body arrives as `Bytes`, and a chunk handed to content is a
+# window into the one the connection produced rather than a copy of it.
+bytes.workspace = true
+# `data:` URLs, which `fetch` answers without a connection.
+data-url.workspace = true
+# Also the network policy's URL rules, which is the same parser the engine's
+# own `fetch` uses.
+# Classifies an InnerAudioContext `src` exactly as the embedded runtime always
+# has -- WHATWG parsing, so " HTTP://x" is remote -- and names the URL a
+# caller's network policy admits. Already in the build through `deno_core`
+# and the network stack; this is the same version, not a second copy.
+url = "2.5"
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+# Content's WebSocket: the connection, its limits and its handshake, held here
+# so both executions open the same socket under the same policy.
+tokio-tungstenite.workspace = true
+# `prefetchDns` takes its hostnames as a JSON array, which is the shape the
+# engine's JavaScript has always passed; parsed here so both executions refuse
+# a malformed list with the same words.
+serde_json = { workspace = true }
+# Data URLs carry base64 or percent-encoded payloads, and are cache-keyed by
+# their SHA-256 (the same digest the package integrity check uses, taken here
+# directly because that check is a code-signing feature this crate must not
+# require).
+base64 = "0.22"
+percent-encoding = "2.3"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }
+# Section 7.3's contention gate, for the image alias registry.
+migo-contention-probe = { path = "../../testing/contention-probe", default-features = false }
+# The same dependency, with the fixture signer the signed-mount tests use.
+# A feature on an existing edge, so the lockfile -- and every V8 snapshot
+# fingerprint that includes it -- does not move.
+shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs", "codec", "signed-fixtures"] }
+
+[features]
+# Verify signed content before it is mounted (`content::MountedContent::mount_signed`).
+# The execution that loads modules in-process verifies in its own loader; the
+# external one, whose loader is another process, verifies here.
+code-signing = ["shared/code-signing"]

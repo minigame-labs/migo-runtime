@@ -16,62 +16,122 @@ comments here.
 
 ## Status
 
-Not a skeleton any more, and not a product either. What separates the two halves
-is whether a compiler has seen it, so that is what this section reports.
+What separates a product from a skeleton is what has run, so that is what this
+section reports -- per target, with where the running happens.
 
-| | Where it is checked |
+| | What has run, and where |
 |---|---|
-| `core/` (`MigoAppleCore`) | built, tested and cross-compiled for `aarch64-apple-ios` on every pull request, on an Apple silicon runner |
-| `Sources/MigoAppleRenderer` | the Apple SDK workflow builds iOS/simulator shipping slices and an isolated macOS external-frame diagnostic package; the macOS diagnostic is not a V8 product test |
-| `Sources/MigoAppleWebKit`, `Sources/MigoMacV8` | placeholders; they compile, and they do nothing |
-| `WebContent/PerformancePlus` | its encoder runs against the same golden corpus as the Rust one, under node, on every pull request |
-| `ProbeApp/` | a README. No sources exist, and none should until there is a device to run them on |
+| `core/` (`MigoAppleCore`) | built, tested and cross-compiled for `aarch64-apple-ios` on every pull request |
+| `Sources/MigoAppleRenderer` | iOS and simulator shipping slices and an isolated macOS external-frame diagnostic package, built by the Apple SDK workflow; its sync-barrier ABI tests run on the simulator |
+| `Sources/MigoApplePerformancePlus` | its acceptance suite runs a real WebContent producer against a real renderer on the iOS simulator: content drawing through the engine's own WebGL and 2D facades, textures, text, images, touches, a frame larger than one packet, a synchronous readback of the frame content submitted, and a game playing its packaged sounds. `MigoGameView` -- the product surface -- runs an installed game there with nothing supplied by the test: its own session, layer and display clock turn the frames, the game's exit reaches the app, and the next game starts on the same layer |
+| `Sources/MigoMacV8` | `MigoGameView` runs a game in an app signed with the hardened runtime and allow-jit (`scripts/test-macos-game-view.sh`, on the macOS CI leg): V8 with a JIT and WebAssembly, Canvas2D on ANGLE, frames on the display clock, signed content verified with its key and tampered content refused, and the view refusing to start without the entitlement |
+| `Sources/MigoAppleWebKit` | a session with no content surface; not in the SDK (see below) |
+| `WebContent/PerformancePlus` | every op it answers is checked against the engine's own ops -- the same facade calls run in both runtimes and the commands compared -- on every pull request, under node and Rust |
+| `ProbeApp/` | sources exist; it answers G0 questions and is never linked into a product |
+| a real iPhone | `MigoGameView` on an iPhone XS Max (iOS 18.7), 2026-09-25: a game installed, loaded, turning frames on the display clock, exiting to the app and the next game running on the same layer; the soft keyboard; signed content verified, updated and refused when tampered. And a game playing its packaged sounds through the host's audio (2026-09-23) -- which the simulator cannot answer, having no audio output there |
 
-Nothing here has run on an iPhone. The Performance+ topology -- agent,
-transport, frame clock, host shape -- is unselected, and the G0 probe evidence
-selects it; see the table below.
+A release builds the three engine groups in Release, checks the iOS archives
+contain no JavaScript engine and the macOS archive runs a game with a JIT,
+assembles them, and publishes `migo-<version>-apple-sdk.zip` only after the
+asset itself has been unpacked, built for iOS and macOS, and has run a game
+(`scripts/test-apple-sdk-release-asset.sh`).
 
-The product baseline also does not prove that Performance+ is V8-free. The
-Cargo half of that claim is checked on Linux every pull request and the archive
-half now reads a real symbol table produced by Apple's toolchain, but the claim
-that belongs to a *release* is about a shipped artifact, and there is no Apple
-release yet.
+The Performance+ topology is selected, and the G0 probes that selected it are in
+`ProbeApp`: content JavaScript runs in a Dedicated Worker, frames cross on a
+custom scheme with a socket for small ones, and `SharedArrayBuffer` is not
+available on that origin -- so the synchronous calls a blocked `readPixels`
+needs travel as a request body instead, which is what `src/sync-call.mjs` and
+the host's sync endpoint are.
 
-The first Mac task is the G0 probe contract. It must measure the unresolved
-topology axes below on the current minimum OS and representative devices;
-ProbeApp evidence, not this skeleton, selects the product choices.
+## Integrating
 
-| G0 axis | Candidates that must be measured |
-|---|---|
-| JavaScript agent | Window vs Dedicated Worker |
-| WebKit-to-app transport | custom scheme vs loopback WebSocket vs hybrid; hybrid only after directional-bottleneck evidence |
-| frame clock | Worker `requestAnimationFrame` when feature-detected vs Window rAF relay vs `CADisplayLink` relay |
-| `WKWebView` host shape | attached visible vs transparent overlay vs 1×1 vs off-screen vs occluded |
+A release publishes this package as `migo-<version>-apple-sdk.zip`. It unpacks
+to `MigoApple/`; add that directory to Xcode with *File > Add Package
+Dependencies > Add Local*, and link one product:
 
-Correctness and isolation precede measurements of input-to-present latency, p99
-jitter, missed-vsync rate, CPU, memory, cancellation, backpressure, lifecycle,
-and background/occlusion behavior. No candidate may be called a winner in
-advance.
+| App | Product | Import |
+|---|---|---|
+| iOS 15.2+ | `MigoApplePerformancePlus` | `import MigoApplePerformancePlus` |
+| macOS 11+ | `MigoMacV8` | `import MigoMacV8` |
 
-WebKit bug [191362](https://bugs.webkit.org/show_bug.cgi?id=191362) is
-officially **RESOLVED FIXED** and is not a pre-written custom-scheme failure.
-Probe the actual payload/API/body type on each target OS/device for
-secure-context/isolation, CORS, copy count, POST body delivery, cancellation,
-streaming, and backpressure.
+Both products have the same two calls. Install the game package that ships in
+your app bundle (a directory with `game.js` at its root), then load it into a
+`MigoGameView`:
 
-If G0 selects a Dedicated Worker, `SharedArrayBuffer` is only a small
-same-WebContent-process Worker↔Window synchronization mailbox; it never carries
-frame bytes. Frame bytes first use a bounded transferable `ArrayBuffer`
-ping-pong/pool to Window and then the selected app transport. If G0 selects
-Window, there is no Worker relay.
+```swift
+// .unsigned for a package inside your own (already signed) app bundle;
+// .verified(publicKey:) for packages you download -- see below.
+let configuration = try MigoGameView.Configuration.standard(contentSigning: .unsigned)
+try MigoGameInstaller.install(
+    package: Bundle.main.url(forResource: "my-game", withExtension: nil)!,
+    id: "my-game", version: appBuildNumber, into: configuration.directories)
+
+let gameView = MigoGameView(configuration: configuration)
+gameView.onEvent = { event in /* .ready, .exitRequested, .failed(reason), ... */ }
+view.addSubview(gameView)          // any size; the game gets it at first layout
+gameView.loadGame(id: "my-game")   // entry defaults to game.js
+```
+
+`version` makes relaunches free: the same version is not copied again.
+
+`contentSigning` has no default. `.verified(publicKey:)` takes a 32-byte raw
+Ed25519 public key; every package must then carry `manifest.json` (`{"version":
+1, "entry": "game.js", "timestamp": <unix seconds>, "files": {"<path>":
+"<sha256 hex>", ...}}`) and `manifest.sig`, the raw 64-byte signature of
+`manifest.json`'s exact bytes. The engine verifies a package in full on its
+first launch and refuses one that does not match.
+The view owns everything else -- engine session, `CAMetalLayer`, display
+clock, touches (and on macOS the mouse, wheel and keys), app lifecycle, the
+soft keyboard, and on iOS the audio session and recovery from a WebContent
+crash.
+
+It also answers what content asks of the device. `setKeepScreenOn` holds the
+display awake -- the idle timer on iOS, a power assertion on macOS -- and gives
+the app's own setting back when the game ends. `getNetworkType` and
+`onNetworkStatusChange` follow `NWPathMonitor` (a wired connection is `wifi`, a
+cellular one `unknown`, as on Android). On iOS `vibrateShort`/`vibrateLong`
+drive the Taptic Engine and `getBatteryInfo` reports the battery and Low Power
+Mode; a Mac answers those two "not supported", as a device without the
+hardware does. Entries a game writes with `getGameLogManager().log` arrive as
+`onEvent(.gameLog(json))`, for the app to keep or upload.
+
+Not offered on these lanes, and refused rather than faked:
+`setDeviceOrientation` (the size is fixed at start), `setEnableDebug` (there is
+no debug panel), `getHeapStatistics` on iOS (content runs in WebKit's
+JavaScriptCore, which exposes no heap figures), and downloaded subpackages --
+the engine refuses a dynamic install whenever signing is enforced, because a
+downloaded subpackage carries no signature; subpackages inside the package work.
+
+**iOS.** The game's size is fixed when it starts (a mini-game lays itself out
+once), so lock the hosting controller to the game's orientation.
+`MigoGameView.unavailabilityReason` says whether the device can run the lane.
+
+**macOS.** Sign the app with the hardened runtime and
+`com.apple.security.cs.allow-jit`; without it the view refuses to start and
+`onEvent` says why (V8 would die at its first compile, and a jitless V8 has no
+WebAssembly). Embed ANGLE in a Run Script build phase before signing -- see
+*ANGLE dependencies and embedding* below -- and add
+`@executable_path/../Frameworks` to the runtime search paths.
+`Configuration.mouse` chooses whether the mouse is sent as a touch (phone
+content, the default), as mouse events (PC content) or both.
+
+`scripts/test-macos-game-view.sh` builds exactly this -- a sixty-line app in
+`tests/swift_host/macos-game-view` -- signs it both ways and runs it.
 
 ## Three products, three JavaScript execution models
 
-| Product | Where content JS runs | Renderer | Ships in v1 |
+| Product | Where content JS runs | Renderer | In the SDK |
 |---|---|---|---|
-| `MigoAppleWebKit` | WebContent, full web platform | WebKit | yes |
-| `MigoApplePerformancePlus` | WebContent, Window or Dedicated Worker selected by G0 | this process: Skia + ANGLE/Metal | conditional |
-| `MigoMacV8` | this process, V8 with JIT | this process: Skia + ANGLE/Metal | yes, macOS only |
+| `MigoApplePerformancePlus` | WebContent, in a Dedicated Worker | this process: Skia + ANGLE/Metal | yes, iOS: `MigoGameView` |
+| `MigoMacV8` | this process, V8 with JIT | this process: Skia + ANGLE/Metal | yes, macOS: `MigoGameView` |
+| `MigoAppleWebKit` | WebContent, full web platform | WebKit | no: a session with no content surface |
+
+`MigoAppleWebKit` has its WebView session and per-game origin, and nothing for
+content to call: running a game there needs `migo.*` implemented on the web
+platform itself, which no repository has yet (`migo-web-adapter` goes the other
+way, browser globals on top of `migo.*`). It is the lane for a device with no
+JIT -- Lockdown Mode takes WebContent's -- and for a first App Review
+submission, and it is built when one of those has a customer behind it.
 
 `MigoAppleRenderer` is shared by the two native-rendering lanes and is
 deliberately **not** a product. `MigoAppleWebKit` deliberately does not depend
@@ -137,8 +197,8 @@ adapter, so it does not live in `adapter/`: it depends on WebKit bootstrap
 order, on the topology and transport selected by G0, and on the Apple release
 receipt.
 
-`ProbeApp` never enters a release target. It exists to answer G0 and to keep
-answering it when a new iOS version ships.
+`ProbeApp` never enters a release target. It answered G0 and stays to answer it
+again when a new iOS version ships.
 
 ## Building
 
@@ -152,8 +212,9 @@ The shipping matrix has one native product per platform group:
 
 These groups share the `MigoEngine` C module and XCFramework because their
 platforms are disjoint. A macOS Performance+ shipping build is rejected. The
-Swift product placeholders do not yet implement application sessions; compiling
-them does not establish that the corresponding runtime product is complete.
+WebKit and macOS V8 products do not yet implement application sessions;
+compiling them does not establish that the corresponding runtime product is
+complete.
 
 Build on macOS with Xcode, Python 3.9 or newer, and the Rust targets reported by
 `build-apple-sdk.sh --print-slices <platform>`. First install the pinned ANGLE

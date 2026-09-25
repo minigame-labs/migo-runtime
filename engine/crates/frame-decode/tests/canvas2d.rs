@@ -18,6 +18,13 @@ struct RecordingContext {
 }
 
 impl GlDecodeContext for RecordingContext {
+    fn image_upload(
+        &mut self,
+
+        _upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        None
+    }
     fn push_error(&mut self, canvas_id: u32, code: u32) {
         self.errors.push((canvas_id, code));
     }
@@ -266,4 +273,86 @@ fn the_block_is_contiguous_and_fully_specified() {
         frame_wire::stream::record_spec(OP2D_MOVE_TO).is_some(),
         "the shared validator dispatches 2D opcodes to the 2D table"
     );
+}
+
+/// The canvas's own lifetime, which only this lane carries: in process the
+/// engine's facade reaches three ops on the render thread's FIFO, and here the
+/// create has to be *in* the run that draws, or the draws arrive for a canvas
+/// that does not exist and are dropped with nothing red.
+#[test]
+fn a_canvas_is_created_resized_and_destroyed_inside_the_run_that_draws_on_it() {
+    let canvas = 1 << 24;
+    let (ops, context) = decode(&stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[canvas]),
+        record(OP2D_REGISTER_CANVAS, &[64, 32]),
+        record(OP2D_CREATE_CONTEXT, &[]),
+        record(OP2D_FILL_RECT, &[0, 0, 0, 0]),
+        record(OP2D_RESIZE_CANVAS, &[RESIZE_CANVAS_WIDTH, 128, 0]),
+        record(OP2D_DESTROY_CANVAS, &[]),
+    ]));
+    assert!(context.errors.is_empty(), "no WebGL error belongs here");
+    // The trailing materialize is the decoder's standing rule for 2D work a
+    // frame ends with, not anything these records ask for.
+    assert_eq!(
+        shape(&ops),
+        vec![
+            format!("CanvasBatch({canvas}, 5)"),
+            format!("Materialize({canvas})")
+        ]
+    );
+    let FrameOp::CanvasBatch(batch) = &ops[0] else {
+        panic!("the run is one batch");
+    };
+    let commands: Vec<String> = batch
+        .commands
+        .iter()
+        .map(|command| format!("{command:?}"))
+        .collect();
+    assert_eq!(
+        commands,
+        vec![
+            "RegisterCanvas { width: 64, height: 32 }".to_string(),
+            "CreateContext2D".to_string(),
+            "FillRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }".to_string(),
+            "ResizeCanvas { w: Some(128), h: None }".to_string(),
+            "DestroyCanvas".to_string(),
+        ],
+        "the lifetime records decode in place, between the draws they bracket"
+    );
+}
+
+/// A resize names width, height or both. The envelope cannot check that -- a
+/// word count says how many numbers arrived and a bool position says which are
+/// 0 or 1 -- so the reader does, and a record naming nothing is a stream it does
+/// not execute rather than a resize applied to a guess.
+#[test]
+fn a_resize_that_names_no_dimension_or_an_unknown_one_is_refused() {
+    for flags in [0, 4, RESIZE_CANVAS_WIDTH | 8, u32::MAX] {
+        assert!(
+            frame_decode::canvas2d::decode_record(
+                OP2D_RESIZE_CANVAS,
+                &[pack_header(OP2D_RESIZE_CANVAS, 4), flags, 16, 16]
+            )
+            .is_none(),
+            "a resize with flags {flags} names a dimension this reader does not have"
+        );
+    }
+    for (flags, expected) in [
+        (RESIZE_CANVAS_WIDTH, (Some(16u32), None)),
+        (RESIZE_CANVAS_HEIGHT, (None, Some(9u32))),
+        (
+            RESIZE_CANVAS_WIDTH | RESIZE_CANVAS_HEIGHT,
+            (Some(16), Some(9)),
+        ),
+    ] {
+        let decoded = frame_decode::canvas2d::decode_record(
+            OP2D_RESIZE_CANVAS,
+            &[pack_header(OP2D_RESIZE_CANVAS, 4), flags, 16, 9],
+        )
+        .expect("a resize naming a dimension this reader has");
+        assert!(
+            matches!(decoded, Canvas2DCmd::ResizeCanvas { w, h } if (w, h) == expected),
+            "flags {flags} decoded as {decoded:?}"
+        );
+    }
 }

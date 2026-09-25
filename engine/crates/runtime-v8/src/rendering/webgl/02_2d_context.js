@@ -1143,10 +1143,14 @@ class CanvasRenderingContext2D {
         if (validDraws.length === 0) return;
 
         const buffer = new Float32Array(validDraws.length * 9);
+        // The id's own bits, not a float: shared image ids live above 2^30,
+        // where consecutive f32 values are 128 apart, so a float would name
+        // another image -- or none.
+        const ids = new Uint32Array(buffer.buffer);
         let offset = 0;
 
         for (const d of validDraws) {
-            buffer[offset++] = d.image.rid;
+            ids[offset++] = d.image.rid;
             buffer[offset++] = d.sx ?? -1;
             buffer[offset++] = d.sy ?? -1;
             buffer[offset++] = d.sw ?? -1;

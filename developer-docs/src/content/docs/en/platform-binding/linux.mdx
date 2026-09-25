@@ -16,7 +16,7 @@ sourcePaths:
 
 This page covers only the two native surface shapes for Linux. The common ABI fields, generation
 semantics, and asynchronous release contract are described in
-[Surface Interface](/docs/reference/surface/). The goal here is to clarify what each X11 or Wayland
+[Surface Interface](/docs/en/reference/surface/). The goal here is to clarify what each X11 or Wayland
 host must hand to the engine and which objects must remain alive during that time.
 
 **Availability:** The X11 C ABI and Qt Widgets Host Kit are verified in 0.9. The
@@ -38,11 +38,11 @@ MigoCapabilities caps;
 caps.struct_size = (uint32_t)sizeof caps;
 caps.abi_version = MIGO_ABI_VERSION_CURRENT;
 if (migo_query_capabilities(&caps) != MIGO_OK)
-    return; /* 查询失败时不要猜测平台能力。 */
+    return; /* if the query fails, do not guess the platform's capabilities. */
 
 int can_x11 = (caps.platform_kinds & (1ULL << MIGO_PLATFORM_X11_WINDOW)) != 0;
 int can_wayland = (caps.platform_kinds & (1ULL << MIGO_PLATFORM_WAYLAND_SURFACE)) != 0;
-/* 按宿主实际窗口类型选择 can_x11 或 can_wayland。 */
+/* pick can_x11 or can_wayland by the host's actual window type. */
 ```
 
 ## Wayland: `wl_display` + `wl_surface`
@@ -56,7 +56,7 @@ typedef struct MigoWaylandSurfaceDescriptor {
     uint32_t             struct_size;
     uint32_t             abi_version;
     MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_WAYLAND_SURFACE */
-    MigoPlatformDescriptorFlags flags; /* 须为 0 */
+    MigoPlatformDescriptorFlags flags; /* must be 0 */
     void                *display;       /* wl_display* */
     void                *surface;       /* wl_surface* */
 } MigoWaylandSurfaceDescriptor;
@@ -113,11 +113,11 @@ typedef struct MigoX11WindowDescriptor {
     uint32_t             struct_size;
     uint32_t             abi_version;
     MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_X11_WINDOW */
-    MigoPlatformDescriptorFlags flags; /* 须为 0 */
-    void                *display;      /* Display*，仅用于 attach 识别 server */
+    MigoPlatformDescriptorFlags flags; /* must be 0 */
+    void                *display;      /* Display*, used only to identify the server at attach */
     uintptr_t             window;      /* X11 Window / XID */
     int32_t               screen;
-    uint32_t              reserved0;   /* 须为 0 */
+    uint32_t              reserved0;   /* must be 0 */
 } MigoX11WindowDescriptor;
 ```
 

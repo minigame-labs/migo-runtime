@@ -7,8 +7,8 @@
 //! that stopped drawing and never said why.
 
 use frame_wire::sync::{
-    MAX_IN_FLIGHT, MAX_REPLY_BYTES, SYNC_LAYOUT, SYNC_RECORD_BYTES, SyncError, SyncMailbox,
-    SyncRequest, SyncState,
+    MAX_IN_FLIGHT, MAX_REPLY_BYTES, READ_PIXELS_LAYOUT_BYTES, ReadPixelsLayout, SYNC_LAYOUT,
+    SYNC_RECORD_BYTES, SyncError, SyncMailbox, SyncRequest, SyncState,
 };
 
 const GENERATION: u64 = 7;
@@ -308,7 +308,9 @@ fn read_pixels_params_decode_round_trips_a_well_formed_record() {
         .expect("a well-formed record decodes");
     assert_eq!(params.canvas_id, 1);
     assert_eq!((params.width, params.height), (4, 3));
-    assert_eq!(params.reply_bytes(), Some(4 * 3 * 4));
+    assert_eq!(params.pixel_bytes(), Some(4 * 3 * 4));
+    // The rows plus the layout that says where they go.
+    assert_eq!(params.reply_bytes(), Some(4 * 3 * 4 + 16));
     assert_eq!(SYNC_OP_READ_PIXELS, OP_READ_PIXELS);
 }
 
@@ -440,4 +442,30 @@ fn window_reply_matches_the_committed_bytes() {
     reserved[5] = 1;
     assert_eq!(WindowReply::decode(&reserved), None);
     assert_eq!(WindowReply::decode(&FIXTURE[..15]), None);
+}
+
+/// The layout in front of a readback's rows, which is how the placement crosses.
+///
+/// It exists because the two halves of `readPixels` are on opposite sides of the
+/// boundary: the `PACK_*` state is the host's and the destination view is the
+/// producer's, and the producer never sees `pixelStorei` -- the engine's encoder
+/// writes it into the command stream the producer forwards unread.
+#[test]
+fn a_readback_layout_round_trips_and_a_short_one_is_refused() {
+    let layout = ReadPixelsLayout {
+        first_byte: 4,
+        row_bytes: 8,
+        row_stride: 12,
+        height: 2,
+    };
+    let bytes = layout.encode();
+    assert_eq!(bytes.len(), READ_PIXELS_LAYOUT_BYTES);
+    assert_eq!(ReadPixelsLayout::decode(&bytes), Some(layout));
+    // Little-endian words in the order the producer reads them.
+    assert_eq!(&bytes[..4], &4u32.to_le_bytes());
+    assert_eq!(&bytes[12..], &2u32.to_le_bytes());
+
+    // A reply too short to hold a layout is not one to guess the rest of.
+    assert_eq!(ReadPixelsLayout::decode(&bytes[..15]), None);
+    assert_eq!(ReadPixelsLayout::decode(&[]), None);
 }

@@ -536,26 +536,12 @@ pub fn op_measure_text_flat(
 /// Field order matches the layout table on [`op_measure_text_flat`]
 /// so the JS side can use a zero-copy `Float32Array` view.
 #[inline]
+/// See [`frame_decode::canvas2d::encode_text_metrics`], which is where the
+/// layout lives: the Performance+ lane answers `measureText` with these bytes
+/// too, and two copies of a field order is how a label ends up laid out against
+/// the wrong number.
 fn encode_text_metrics(m: &TextMetrics) -> Vec<u8> {
-    let fields: [f32; 12] = [
-        m.width,
-        m.actual_bounding_box_left,
-        m.actual_bounding_box_right,
-        m.em_height_ascent,
-        m.em_height_descent,
-        m.alphabetic_baseline,
-        m.font_bounding_box_descent,
-        m.actual_bounding_box_ascent,
-        m.actual_bounding_box_descent,
-        m.font_bounding_box_ascent,
-        m.hanging_baseline,
-        m.ideographic_baseline,
-    ];
-    let mut out = Vec::with_capacity(fields.len() * 4);
-    for f in fields {
-        out.extend_from_slice(&f.to_le_bytes());
-    }
-    out
+    frame_decode::canvas2d::encode_text_metrics(m)
 }
 
 const OP_GET_IMAGE_DATA: &str = "canvas2d get_image_data";
@@ -1396,8 +1382,7 @@ pub fn op_set_fill_style_gradient(
     #[string] stops_json: String,
 ) {
     with_collector(state, |collector| {
-        // Parse stops from JSON: [{"offset":0,"r":255,"g":0,"b":0,"a":255}, ...]
-        let stops = parse_gradient_stops(&stops_json);
+        let stops = shared::protocol::render_cmd::parse_gradient_stops(&stops_json);
         let gradient_type = match gradient_type {
             1 => GradientType::Radial,
             2 => GradientType::Conic,
@@ -1421,7 +1406,7 @@ pub fn op_set_stroke_style_gradient(
     #[string] stops_json: String,
 ) {
     with_collector(state, |collector| {
-        let stops = parse_gradient_stops(&stops_json);
+        let stops = shared::protocol::render_cmd::parse_gradient_stops(&stops_json);
         let gradient_type = match gradient_type {
             1 => GradientType::Radial,
             2 => GradientType::Conic,
@@ -1439,45 +1424,6 @@ pub fn op_set_stroke_style_gradient(
             stops,
         );
     });
-}
-
-fn parse_gradient_stops(json: &str) -> Vec<shared::protocol::render_cmd::GradientStop> {
-    // Minimal JSON array parser for gradient stops to avoid serde dependency.
-    // Format: [{"offset":0.0,"r":255,"g":0,"b":0,"a":255}, ...]
-    let mut stops = Vec::new();
-    // Simple approach: split by "},{" boundaries
-    let trimmed = json.trim().trim_start_matches('[').trim_end_matches(']');
-    if trimmed.is_empty() {
-        return stops;
-    }
-    for entry in trimmed.split("},{") {
-        let s = entry.trim().trim_start_matches('{').trim_end_matches('}');
-        let mut offset = 0.0f32;
-        let mut r = 0u8;
-        let mut g = 0u8;
-        let mut b = 0u8;
-        let mut a = 255u8;
-        for pair in s.split(',') {
-            let pair = pair.trim().trim_matches('"');
-            if let Some((key, val)) = pair.split_once(':') {
-                let key = key.trim().trim_matches('"');
-                let val = val.trim().trim_matches('"');
-                match key {
-                    "offset" => offset = val.parse().unwrap_or(0.0),
-                    "r" => r = val.parse().unwrap_or(0),
-                    "g" => g = val.parse().unwrap_or(0),
-                    "b" => b = val.parse().unwrap_or(0),
-                    "a" => a = val.parse().unwrap_or(255),
-                    _ => {}
-                }
-            }
-        }
-        stops.push(shared::protocol::render_cmd::GradientStop {
-            offset,
-            color: shared::protocol::color::Color::rgbai(r, g, b, a),
-        });
-    }
-    stops
 }
 
 #[op2(fast)]
@@ -1533,31 +1479,17 @@ pub fn op_set_font(state: &mut OpState, #[smi] canvas_id: u32, #[string] font: S
 #[op2(fast)]
 pub fn op_set_text_align(state: &mut OpState, #[smi] canvas_id: u32, #[smi] align: u8) {
     with_collector(state, |collector| {
-        let align = match align {
-            0 => TextAlign::Start,
-            1 => TextAlign::End,
-            2 => TextAlign::Left,
-            3 => TextAlign::Right,
-            4 => TextAlign::Center,
-            _ => TextAlign::Start,
-        };
-        collector.set_text_align(canvas_id, align);
+        collector.set_text_align(canvas_id, frame_decode::canvas2d::text_align_of(align));
     });
 }
 
 #[op2(fast)]
 pub fn op_set_text_baseline(state: &mut OpState, #[smi] canvas_id: u32, #[smi] baseline: u8) {
     with_collector(state, |collector| {
-        let baseline = match baseline {
-            0 => TextBaseline::Top,
-            1 => TextBaseline::Hanging,
-            2 => TextBaseline::Middle,
-            3 => TextBaseline::Alphabetic,
-            4 => TextBaseline::Ideographic,
-            5 => TextBaseline::Bottom,
-            _ => TextBaseline::Alphabetic,
-        };
-        collector.set_text_baseline(canvas_id, baseline);
+        collector.set_text_baseline(
+            canvas_id,
+            frame_decode::canvas2d::text_baseline_of(baseline),
+        );
     });
 }
 
@@ -1568,12 +1500,12 @@ pub fn op_set_text_baseline(state: &mut OpState, #[smi] canvas_id: u32, #[smi] b
 #[op2(fast)]
 pub fn op_set_text_direction(state: &mut OpState, #[smi] canvas_id: u32, #[smi] direction: u8) {
     with_collector(state, |collector| {
-        let direction = match direction {
-            1 => shared::protocol::render_cmd::TextDirection::Ltr,
-            2 => shared::protocol::render_cmd::TextDirection::Rtl,
-            _ => shared::protocol::render_cmd::TextDirection::Inherit,
-        };
-        collector.push(canvas_id, Canvas2DCmd::SetTextDirection { direction });
+        collector.push(
+            canvas_id,
+            Canvas2DCmd::SetTextDirection {
+                direction: frame_decode::canvas2d::text_direction_of(direction),
+            },
+        );
     });
 }
 
@@ -1647,54 +1579,87 @@ pub fn op_draw_image(
 
 #[op2(fast)]
 pub fn op_draw_image_batch(state: &mut OpState, #[smi] canvas_id: u32, #[buffer] data: &[u8]) {
+    match draw_image_batch_entries(data) {
+        Ok(Some(draws)) => queue_canvas2d(state, canvas_id, Canvas2DCmd::DrawImageBatch { draws }),
+        Ok(None) => {}
+        Err(reason) => error!("op_draw_image_batch: {reason}"),
+    }
+}
+
+/// A `drawImageBatch` buffer as entries: nine 32-bit words each, the image id's
+/// own bits then the eight rectangle floats. `Ok(None)` for an empty batch.
+///
+/// The id is read as bits, not converted from a float: shared image ids live
+/// above 2^30, where an `f32` cannot tell consecutive ids apart, and the facade
+/// writes the id through a `Uint32Array` over the same buffer.
+fn draw_image_batch_entries(
+    data: &[u8],
+) -> Result<Option<Vec<shared::protocol::render_cmd::DrawImageEntry>>, String> {
     use shared::protocol::render_cmd::DrawImageEntry;
 
     const ENTRY_SIZE: usize = 9 * 4;
 
     if data.len() % ENTRY_SIZE != 0 {
-        error!("op_draw_image_batch: invalid buffer size");
-        return;
+        return Err("invalid buffer size".to_string());
     }
-
     let entry_count = data.len() / ENTRY_SIZE;
     if entry_count == 0 {
-        return;
+        return Ok(None);
     }
     if entry_count > MAX_DRAW_IMAGE_BATCH_ENTRIES {
-        error!("op_draw_image_batch: entry count exceeds {MAX_DRAW_IMAGE_BATCH_ENTRIES}");
-        return;
+        return Err(format!(
+            "entry count exceeds {MAX_DRAW_IMAGE_BATCH_ENTRIES}"
+        ));
     }
-
     let mut draws = Vec::new();
     if draws.try_reserve_exact(entry_count).is_err() {
-        error!("op_draw_image_batch: allocation failed for {entry_count} entries");
-        return;
+        return Err(format!("allocation failed for {entry_count} entries"));
     }
-
+    let word = |at: usize| u32::from_ne_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
     for i in 0..entry_count {
-        let offset = i * ENTRY_SIZE;
-        let floats: &[f32] = bytemuck::cast_slice(&data[offset..offset + ENTRY_SIZE]);
-
+        let at = i * ENTRY_SIZE;
+        let float = |n: usize| f32::from_bits(word(at + n * 4));
         draws.push(DrawImageEntry {
-            image_id: floats[0] as u32,
-            sx: floats[1],
-            sy: floats[2],
-            sw: floats[3],
-            sh: floats[4],
-            dx: floats[5],
-            dy: floats[6],
-            dw: floats[7],
-            dh: floats[8],
+            image_id: word(at),
+            sx: float(1),
+            sy: float(2),
+            sw: float(3),
+            sh: float(4),
+            dx: float(5),
+            dy: float(6),
+            dw: float(7),
+            dh: float(8),
         });
     }
-
-    queue_canvas2d(state, canvas_id, Canvas2DCmd::DrawImageBatch { draws });
+    Ok(Some(draws))
 }
 
 // Tests for the unified frame collector are in frame_collector.rs.
 
 #[cfg(test)]
 mod tests {
+    /// A batch entry names the image the facade meant. Shared ids start at
+    /// 2^30, where consecutive `f32` values are 128 apart: an id converted
+    /// through a float named another image -- the defect this replaced.
+    #[test]
+    fn a_batch_entry_keeps_its_exact_image_id() {
+        let mut data = Vec::new();
+        for id in [0x4000_0001u32, 0x4000_0002] {
+            data.extend_from_slice(&id.to_ne_bytes());
+            for value in [0.0f32, 0.0, 8.0, 8.0, 16.0, 16.0, 8.0, 8.0] {
+                data.extend_from_slice(&value.to_ne_bytes());
+            }
+        }
+        let draws = super::draw_image_batch_entries(&data)
+            .expect("a whole batch")
+            .expect("not empty");
+        let ids: Vec<u32> = draws.iter().map(|draw| draw.image_id).collect();
+        assert_eq!(ids, vec![0x4000_0001, 0x4000_0002]);
+        assert_eq!(draws[1].dx, 16.0);
+        assert!(super::draw_image_batch_entries(&data[..35]).is_err());
+        assert!(super::draw_image_batch_entries(&[]).unwrap().is_none());
+    }
+
     use super::super::font::{OP_GET_TEXT_LINE_HEIGHT, OP_LOAD_FONT};
     use super::{OP_FORCE_READBACK_SNAPSHOT, OP_GET_IMAGE_DATA, OP_MEASURE_TEXT};
     use shared::protocol::{SyncOpClass, class_for_op};

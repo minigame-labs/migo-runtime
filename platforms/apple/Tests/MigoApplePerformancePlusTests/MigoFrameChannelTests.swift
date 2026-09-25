@@ -298,6 +298,75 @@ final class MigoFrameChannelTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(channel.currentStatistics.downlinkWakes, 1)
     }
 
+    /// Input the engine queued with a tick reaches the producer before the
+    /// tick: one wake drains both, the service stream first, so the frame the
+    /// tick starts is drawn against that input and not the input before it.
+    func testInputQueuedWithATickIsSentAheadOfIt() throws {
+        let queueLock = NSLock()
+        var queued = false
+        var eventQueued = false
+        var waker: (() -> Void)?
+        let event = Data([0x31, 0x53, 0x44, 0x4D, 1, 0, 0, 0])
+        let channel = MigoFrameChannel(
+            submit: { _ in .accepted },
+            takeDownlink: { buffer in
+                queueLock.lock()
+                defer { queueLock.unlock() }
+                guard queued else { return 0 }
+                queued = false
+                _ = buffer.update(fromContentsOf: Self.verdictMessage)
+                return Self.verdictMessage.count
+            },
+            setDownlinkWaker: { wake in
+                waker = wake
+                return true
+            },
+            takeServiceMessage: {
+                queueLock.lock()
+                defer { queueLock.unlock() }
+                guard eventQueued else { return nil }
+                eventQueued = false
+                return event
+            })
+        let endpoint = try channel.start()
+        defer { channel.stop() }
+
+        let producer = client(for: endpoint)
+        defer { producer.cancel(with: .goingAway, reason: nil) }
+        let connected = expectation(description: "the producer is connected")
+        let deadline = Date().addingTimeInterval(10)
+        DispatchQueue.global().async {
+            while !channel.isConnected, Date() < deadline { usleep(1_000) }
+            connected.fulfill()
+        }
+        wait(for: [connected], timeout: 11)
+
+        var received: [Data] = []
+        let both = expectation(description: "the event and the tick arrive")
+        func receive() {
+            producer.receive { result in
+                guard case .success(.data(let data)) = result else {
+                    XCTFail("expected a message, got \(result)")
+                    both.fulfill()
+                    return
+                }
+                received.append(data)
+                if received.count == 2 { both.fulfill() } else { receive() }
+            }
+        }
+        receive()
+        DispatchQueue.global().async {
+            queueLock.lock()
+            queued = true
+            eventQueued = true
+            queueLock.unlock()
+            waker?()
+        }
+        wait(for: [both], timeout: 10)
+        XCTAssertEqual(received.first, event, "the event goes first")
+        XCTAssertEqual(received.last.map(Array.init), Self.verdictMessage, "the tick follows it")
+    }
+
     func testStoppingClearsTheWakerAndARefusedWakerStopsTheStart() throws {
         var installs: [Bool] = []
         let channel = MigoFrameChannel(

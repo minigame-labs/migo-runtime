@@ -19,12 +19,20 @@ export const DOWNLINK_VERSION = 1;
 
 export const DOWN_FRAME_VERDICT = 1;
 export const DOWN_CLOCK_TICK = 2;
+// The window opened again, sent when a credit came back and the last thing this
+// producer was told was that the window was shut. It is the one advertisement
+// nothing this producer does can ask for: a frame whose last packet the window
+// refused is held, the frame clock will not ask for another frame until it goes,
+// and so no tick and no verdict is coming. See `DOWN_WINDOW_OPEN` in the host's
+// half for the session that would otherwise stop with its last frame unsent.
+export const DOWN_WINDOW_OPEN = 3;
 
 export const FRAME_VERDICT_WORDS = 7;
 // The tick carries the credit window after its timestamp, in the verdict's own
 // field order: a verdict is only sent for a packet, so a producer whose last one
 // said zero hears that a credit came back from the tick it asked for.
 export const CLOCK_TICK_WORDS = 8;
+export const WINDOW_OPEN_WORDS = 5;
 
 export const ENVELOPE_WORDS = 2;
 
@@ -128,6 +136,18 @@ export function decodeMessage(words) {
         remainingCredits: words[body + 4],
         acceptedSequence: readU64(words, body + 5),
       });
+    } else if (kind === DOWN_WINDOW_OPEN) {
+      if (count !== WINDOW_OPEN_WORDS) {
+        throw new DownlinkFormatError(
+          `a window advertisement is ${WINDOW_OPEN_WORDS} words and this one claims ${count}`,
+        );
+      }
+      records.push({
+        kind: DOWN_WINDOW_OPEN,
+        generation: words[body],
+        remainingCredits: words[body + 1],
+        acceptedSequence: readU64(words, body + 2),
+      });
     } else {
       throw new DownlinkFormatError(`downlink record kind ${kind} is not one this build reads`);
     }
@@ -156,6 +176,11 @@ export function encodeMessage(records) {
       out.push(record.generation >>> 0);
       out.push(record.frameId >>> 0);
       writeU64(out, record.timestampNs);
+      out.push(record.remainingCredits >>> 0);
+      writeU64(out, record.acceptedSequence);
+    } else if (record.kind === DOWN_WINDOW_OPEN) {
+      out.push(packHeader(DOWN_WINDOW_OPEN, WINDOW_OPEN_WORDS));
+      out.push(record.generation >>> 0);
       out.push(record.remainingCredits >>> 0);
       writeU64(out, record.acceptedSequence);
     } else {

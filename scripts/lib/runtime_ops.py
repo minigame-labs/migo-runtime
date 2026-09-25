@@ -48,6 +48,8 @@ OP_DEF = re.compile(
 MACRO_OP = re.compile(r"\b(?P<macro>[a-z_][a-z0-9_]*)!\s*\(\s*(?P<name>op_[A-Za-z0-9_]+)\b")
 IMPORT_OPS = re.compile(r"import\s*\{(?P<names>[^}]*)\}\s*from\s*[\"']ext:core/ops[\"']", re.S)
 CORE_OPS_REF = re.compile(r"\b(?:core\.)?ops\.(op_[A-Za-z0-9_]+)")
+# A member of deno's `core` object other than `ops`: `core.read`, `core.encode`.
+CORE_MEMBER_REF = re.compile(r"\bcore\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 
 
 @dataclass
@@ -63,6 +65,12 @@ class Op:
     # Whether a parameter is a mutable slice the op writes its answer into --
     # an answer JavaScript waits for as surely as a return value.
     writes_buffer: bool = False
+    # The arguments JavaScript passes, in order, as `[name, kind]`: the kind is
+    # how deno_core converts the value before the body sees it (see
+    # `param_kind`). Parameters JavaScript does not pass -- op state, a scope --
+    # are left out. None for a macro-stamped op, whose signature is not written
+    # at the definition.
+    params: list[list[str]] | None = None
     imported_by: list[str] = field(default_factory=list)
 
 
@@ -206,6 +214,94 @@ def registered_ops(root: pathlib.Path) -> dict[str, Op]:
     return ops
 
 
+# Integer aliases op signatures use, resolved to the type deno_core converts
+# to. A new alias in a signature is an unknown kind until it is listed here.
+INTEGER_ALIASES = {
+    "AudioBufferId": "u32",
+    "AudioContextId": "u32",
+    "AudioNodeId": "u32",
+    "FileId": "u32",
+    "InnerAudioId": "u32",
+    "ResourceId": "u32",
+}
+INTEGERS = {"u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"}
+# What an op body is handed that JavaScript does not pass.
+NOT_AN_ARGUMENT = re.compile(r"OpState\b|PinScope|HandleScope|\bIsolate\b")
+
+
+def split_params(params: str) -> list[str]:
+    """The parameters of a signature, split on the commas between them."""
+    parts, depth, current = [], 0, []
+    for char in params:
+        if char in "<([":
+            depth += 1
+        elif char in ">)]":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if "".join(current).strip():
+        parts.append("".join(current))
+    return [" ".join(part.split()) for part in parts if part.strip()]
+
+
+def param_kind(attributes: list[str], ty: str) -> str:
+    """How deno_core converts a JavaScript value for this parameter.
+
+    The kinds are the conversion rules, not the Rust types: `#[smi] u32` goes
+    through `to_i32_option` and a plain `u32` through `to_u32_option`, so they
+    are different kinds even though the body sees the same type. What each
+    kind does is pinned against V8 by the op-argument agreement gate
+    (engine/crates/runtime-v8/src/tests/op_args_agreement.rs).
+    """
+    ty = ty.replace(" ", "")
+    optional = ty.startswith("Option<") and ty.endswith(">")
+    inner = ty[len("Option<") : -1] if optional else ty
+    inner = INTEGER_ALIASES.get(inner, inner)
+    prefix = "option_" if optional else ""
+    attribute = attributes[0] if attributes else ""
+    if attribute == "smi" and inner in INTEGERS:
+        return f"{prefix}smi_{inner}"
+    if attribute == "bigint" and inner in ("u64", "usize", "i64", "isize"):
+        return f"{prefix}bigint_{inner}"
+    if attribute == "number" and inner in ("u64", "usize", "i64", "isize"):
+        return f"{prefix}number_{inner}"
+    if attribute == "string":
+        return f"{prefix}string"
+    if attribute in ("buffer", "buffer(copy)", "buffer(detach)"):
+        element = re.search(r"\[(u8|u32|f32|f64|i32)\]|Vec<(u8|u32|f32|f64|i32)>", inner)
+        if element:
+            return f"{prefix}{element.group(1) or element.group(2)}_buffer"
+        if inner in ("JsBuffer", "Box<[u8]>", "bytes::Bytes"):
+            return f"{prefix}u8_buffer"
+    if attribute == "serde":
+        return "serde"
+    if not attribute:
+        if inner in ("bool", "f32", "f64") or inner in INTEGERS:
+            return f"{prefix}{inner}"
+        if inner.startswith("v8::Local<"):
+            return f"{prefix}v8_value"
+    return f"unknown:{'#[' + attribute + '] ' if attribute else ''}{ty}"
+
+
+def signature_params(params: str) -> list[list[str]]:
+    out = []
+    for part in split_params(params):
+        attributes = re.findall(r"#\[([^\]]*)\]", part)
+        rest = re.sub(r"#\[[^\]]*\]\s*", "", part)
+        match = re.match(r"(?:mut\s+)?(\w+)\s*:\s*(.*)$", rest)
+        if not match:
+            out.append([part, "unknown:" + part])
+            continue
+        name, ty = match.group(1), match.group(2)
+        if NOT_AN_ARGUMENT.search(ty) or "state" in attributes:
+            continue
+        out.append([name, param_kind([a.replace(" ", "") for a in attributes], ty)])
+    return out
+
+
 def attach_definitions(root: pathlib.Path, ops: dict[str, Op]) -> None:
     for path in sorted((root / RUNTIME_SRC).rglob("*.rs")):
         text = mask_rust(path.read_text(encoding="utf-8"))
@@ -220,6 +316,7 @@ def attach_definitions(root: pathlib.Path, ops: dict[str, Op]) -> None:
             paren = text.index("(", match.end())
             params = balanced(text, paren)
             op.writes_buffer = bool(re.search(r"&\s*mut\s*\[", params))
+            op.params = signature_params(params)
             after = text[paren + len(params) + 2 :]
             arrow = re.match(r"\s*->\s*", after)
             if arrow:
@@ -263,6 +360,26 @@ def imported_ops(root: pathlib.Path) -> dict[str, list[str]]:
         for name in names:
             imports.setdefault(name, []).append(relative)
     return imports
+
+
+def core_members(root: pathlib.Path) -> dict[str, list[str]]:
+    """The members of deno's `core` object the engine's JavaScript reaches for,
+    other than `ops`, and which file reaches for each.
+
+    `core.read` and `core.tryClose` are calls that cross on the Performance+
+    lane and are not ops, so the boundary contract classifies them separately
+    (its `core_members` table) and this is what that table is compared against.
+    """
+    members: dict[str, set[str]] = {}
+    for path in sorted((root / RUNTIME_SRC).rglob("*.js")):
+        text = strip_js_comments(path.read_text(encoding="utf-8"))
+        relative = str(path.relative_to(root))
+        for match in CORE_MEMBER_REF.finditer(text):
+            name = match.group("name")
+            if name == "ops":
+                continue
+            members.setdefault(name, set()).add(relative)
+    return {name: sorted(files) for name, files in sorted(members.items())}
 
 
 def surface(root: pathlib.Path) -> tuple[dict[str, Op], dict[str, list[str]]]:

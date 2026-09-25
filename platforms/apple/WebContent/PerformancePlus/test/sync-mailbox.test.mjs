@@ -54,6 +54,8 @@ import {
   GL_UNSIGNED_BYTE,
   encodeReadPixelsParams,
   readPixelsReplyBytes,
+  READ_PIXELS_LAYOUT_BYTES,
+  decodeReadPixelsLayout,
 } from "../src/sync-mailbox.mjs";
 
 // ---------------------------------------------------------------------------
@@ -236,7 +238,18 @@ check("readPixels' arguments encode as eight little-endian words", () => {
   assertEqual(view.getUint32(20, true), GL_RGBA, "format");
   assertEqual(view.getUint32(24, true), GL_UNSIGNED_BYTE, "type");
   assertEqual(view.getUint32(28, true), 0, "reserved");
-  assertEqual(readPixelsReplyBytes(11, 13), 11 * 13 * 4, "reply size");
+  // The rows plus the layout in front of them: the host answers where the rows
+  // go, because the `PACK_*` state that decides it is the host's and this side
+  // never sees `pixelStorei`.
+  assertEqual(READ_PIXELS_LAYOUT_BYTES, 16, "layout header size");
+  assertEqual(readPixelsReplyBytes(11, 13), 16 + 11 * 13 * 4, "reply size");
+  const layout = decodeReadPixelsLayout(
+    Uint8Array.from([4, 0, 0, 0, 8, 0, 0, 0, 12, 0, 0, 0, 2, 0, 0, 0]),
+  );
+  assertEqual(layout.firstByte, 4, "first byte");
+  assertEqual(layout.rowBytes, 8, "row bytes");
+  assertEqual(layout.rowStride, 12, "row stride");
+  assertEqual(layout.height, 2, "rows");
 });
 
 // The same sixteen bytes `window_reply_matches_the_committed_bytes` in

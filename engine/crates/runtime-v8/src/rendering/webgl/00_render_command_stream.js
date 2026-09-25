@@ -1149,6 +1149,61 @@ const OP2D_SET_SHADOW_COLOR = 548;
 // batched, and silently dropped.
 const OP2D_CREATE_CONTEXT = 549;
 
+// --- 2D text ---
+//
+// Like OP2D_CREATE_CONTEXT above: this encoder does not write these. The
+// engine's 2D context calls `op_set_font`, `op_fill_text` and the rest as ops,
+// which is what a runtime whose JavaScript sits beside its ops should do -- the
+// call is one crossing either way, and a record would add an encode. The lane
+// that needs them is the external producer, where there is no op to call, and
+// they are in this table because the table is one of three that must agree.
+const OP2D_SET_FONT = 550;
+const OP2D_FILL_TEXT = 551;
+const OP2D_STROKE_TEXT = 552;
+const OP2D_SET_TEXT_ALIGN = 553;
+const OP2D_SET_TEXT_BASELINE = 554;
+const OP2D_SET_TEXT_DIRECTION = 555;
+const OP2D_SET_LINE_DASH = 556;
+
+// --- 2D images ---
+//
+// Also the external producer's alone: `drawImage` here is an op, for the
+// reason the text records above are. They are listed because the three tables
+// must agree.
+const OP2D_DRAW_IMAGE = 557;
+const OP2D_DRAW_IMAGE_BATCH = 558;
+
+// --- 2D canvas lifetime ---
+//
+// The external producer's alone as well, and for a sharper reason than the
+// records above: in process a canvas is created, resized and destroyed by ops
+// that reach the renderer on the same FIFO this stream travels, so ordering is
+// already the order they were called in. The producer has no such FIFO -- its
+// only path is this stream -- so "create it, then draw on it" has to be two
+// records in one run. Listed here because the three tables must agree.
+const OP2D_REGISTER_CANVAS = 559;
+const OP2D_RESIZE_CANVAS = 560;
+const OP2D_DESTROY_CANVAS = 561;
+
+// --- 2D gradients and patterns ---
+//
+// The producer's alone, like the text records: in process `fillStyle = gradient`
+// calls `op_set_fill_style_gradient` with the stops the facade serialised, and a
+// record here would add an encode to a call that is already one crossing. The
+// producer has no op, so its record carries the same string to the same parser.
+const OP2D_SET_FILL_STYLE_GRADIENT = 562;
+const OP2D_SET_STROKE_STYLE_GRADIENT = 563;
+const OP2D_SET_FILL_STYLE_PATTERN = 564;
+const OP2D_SET_STROKE_STYLE_PATTERN = 565;
+
+// --- 2D snapshots ---
+//
+// The producer's alone as well: in process `getImageData` calls
+// `op_capture_canvas2d_snapshot`, which queues the capture into the frame
+// collector beside the draws it follows. The producer has no collector and no
+// op, so the capture is a record in the same run.
+const OP2D_CAPTURE_SNAPSHOT = 566;
+
 // --- 2D canvas selection ---
 //
 // `Canvas2DCmd` carries no canvas id -- the id lives on the batch -- so the

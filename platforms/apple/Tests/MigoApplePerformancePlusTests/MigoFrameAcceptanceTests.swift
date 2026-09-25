@@ -1,6 +1,7 @@
 import MigoAppleFrameHarness
 import enum MigoAppleCore.MigoFrameChannelPolicy
 import MigoEngine
+import ImageIO
 import XCTest
 
 @testable import MigoApplePerformancePlus
@@ -156,7 +157,7 @@ import XCTest
             var submittedBytes: Int?
             var outcome: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
             host.onReport = { report in
@@ -214,9 +215,15 @@ import XCTest
         /// Each tick sends a pair: a frame above the socket ceiling, then an
         /// ordinary one, as a texture-heavy frame and the next would go. When the
         /// window says two, both leave together on different uplinks and the
-        /// small one can arrive first. Ingress holds it and runs it second; the
-        /// test requires that to have happened at least once, and that nothing was
-        /// refused and the last frame drawn is the last one sent.
+        /// small one can arrive first. Ingress holds it and runs it second. Whether
+        /// it does arrive first is a race between two uplinks, so this requires
+        /// what must hold whichever way each race goes -- nothing refused, every
+        /// frame run, the last frame drawn the last one sent -- and prints how
+        /// many overtook. On an iPhone XS Max one run of 38 pairs had two overtake
+        /// and the next had none; a test demanding one would be measuring the
+        /// device's speed. The held path itself is proven deterministically by
+        /// `a_frame_that_overtakes_its_predecessor_runs_after_it_and_is_answered_after_it`
+        /// (engine/crates/core/src/runtime/external.rs).
         func testContentRunsItsOwnFrameLoopAndFramesThatOvertakeAreRunInOrder() throws {
             let harness = try MigoFrameHarness()
             self.harness = harness
@@ -278,7 +285,7 @@ import XCTest
             var report: MigoPerformancePlusHost.Report?
             var failure: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
             host.onReport = { message in
@@ -329,9 +336,6 @@ import XCTest
                 "a frame was refused: a producer that follows the window is never told to wait,"
                     + " and a gap ends the content")
             XCTAssertEqual(statistics.framesAccepted + statistics.framesDeferred, sent)
-            XCTAssertGreaterThan(
-                statistics.framesDeferred, 0,
-                "no frame overtook its predecessor, so the held-frame path went unexercised")
             XCTAssertGreaterThanOrEqual(statistics.controlMessagesReceived, ticks)
             XCTAssertEqual(statistics.controlMessagesRefused, 0)
             XCTAssertGreaterThan(statistics.downlinkWakes, 0, "ticks reached the producer by being woken")
@@ -387,7 +391,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -493,7 +497,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -534,6 +538,821 @@ import XCTest
             XCTAssertEqual(right, [255, 0, 255, 255], "the right half samples the magenta texel")
         }
 
+        /// The queries: a compile status, a link status, a uniform location, an
+        /// error code -- each answered after the frame it is about.
+        ///
+        /// The acceptance for D15.3c. Every one of these is a call whose return
+        /// value IS the answer, and each asks about work that is *records in the
+        /// frame being built*: the shader whose `COMPILE_STATUS` content wants
+        /// was given its source three records ago. So the producer sends what it
+        /// has recorded as a barrier -- executed, not presented, or the half
+        /// frame would flash onto the screen -- and blocks until the host has
+        /// run it. Three.js does exactly this the first time it uses a material.
+        ///
+        /// The pixels are what prove the location is right: the fragment shader
+        /// has one uniform and nothing else decides its colour, so a location
+        /// that came back wrong draws black.
+        func testContentQueriesTheEngineAndDrawsWithWhatItLearns() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                export function start({ report }) {
+                  const gl = migo.createCanvas().getContext("webgl");
+                  const stage = (name, run) => {
+                    try { return run(); }
+                    catch (error) { report({ type: "failed", stage: name, detail: `${error.name}: ${error.message}` }); throw error; }
+                  };
+
+                  const answers = stage("program", () => {
+                    const vertex = gl.createShader(gl.VERTEX_SHADER);
+                    gl.shaderSource(vertex, "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }");
+                    gl.compileShader(vertex);
+                    const fragment = gl.createShader(gl.FRAGMENT_SHADER);
+                    gl.shaderSource(fragment, "precision mediump float; uniform vec4 uColor; " +
+                      "void main() { gl_FragColor = uColor; }");
+                    gl.compileShader(fragment);
+                    const program = gl.createProgram();
+                    gl.attachShader(program, vertex);
+                    gl.attachShader(program, fragment);
+                    gl.bindAttribLocation(program, 0, "p");
+                    gl.linkProgram(program);
+                    return {
+                      // Each of these crosses as a barrier and a blocking call.
+                      vertexCompiled: gl.getShaderParameter(vertex, gl.COMPILE_STATUS) === true,
+                      fragmentCompiled: gl.getShaderParameter(fragment, gl.COMPILE_STATUS) === true,
+                      linked: gl.getProgramParameter(program, gl.LINK_STATUS) === true,
+                      // An empty log is the normal answer for a program that
+                      // linked; what matters is that it came back as a string.
+                      logIsText: typeof gl.getProgramInfoLog(program) === "string",
+                      attributes: gl.getProgramParameter(program, gl.ACTIVE_ATTRIBUTES),
+                      activeUniform: (gl.getActiveUniform(program, 0) || {}).name,
+                      program,
+                    };
+                  });
+
+                  stage("draw", () => {
+                    const buffer = gl.createBuffer();
+                    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+                    gl.useProgram(answers.program);
+                    // The location content asks for, used to colour the frame.
+                    const location = gl.getUniformLocation(answers.program, "uColor");
+                    answers.locationFound = location !== null && location !== -1;
+                    gl.uniform4f(location, 0, 1, 0, 1);
+                    gl.enableVertexAttribArray(0);
+                    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+                    gl.viewport(0, 0, 64, 64);
+                    gl.clearColor(0, 0, 1, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.drawArrays(gl.TRIANGLES, 0, 3);
+                  });
+
+                  // The error queue is the host's, filled while it decoded this
+                  // producer's own records: a negative offset is INVALID_VALUE
+                  // there, and this is how content reads it back.
+                  stage("error", () => {
+                    answers.errorBeforeMistake = gl.getError();
+                    gl.bufferSubData(gl.ARRAY_BUFFER, -4, new Float32Array([1, 2]));
+                    answers.errorAfterMistake = gl.getError();
+                    answers.errorDrained = gl.getError();
+                  });
+
+                  requestAnimationFrame(() => {
+                    setTimeout(() => report({ type: "queried", ...answers, program: undefined }), 0);
+                  });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let queried = expectation(description: "content asked the engine and drew")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "queried":
+                    report = message
+                    queried.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    queried.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [queried], timeout: 240)
+            XCTAssertNil(failure)
+
+            XCTAssertEqual(report?["vertexCompiled"] as? Bool, true, "the vertex shader compiled")
+            XCTAssertEqual(report?["fragmentCompiled"] as? Bool, true, "the fragment shader compiled")
+            XCTAssertEqual(report?["linked"] as? Bool, true, "the program linked")
+            XCTAssertEqual(report?["logIsText"] as? Bool, true, "the info log came back as text")
+            XCTAssertEqual(report?["attributes"] as? Int, 1, "the program has one active attribute")
+            XCTAssertEqual(report?["activeUniform"] as? String, "uColor", "and one active uniform, by name")
+            XCTAssertEqual(report?["locationFound"] as? Bool, true, "the uniform's location came back")
+            XCTAssertEqual(report?["errorBeforeMistake"] as? Int, 0, "no error before the mistake")
+            XCTAssertEqual(
+                report?["errorAfterMistake"] as? Int, 0x0501,
+                "a negative bufferSubData offset is INVALID_VALUE, recorded where the record was decoded")
+            XCTAssertEqual(report?["errorDrained"] as? Int, 0, "and the queue drains, one error per call")
+
+            let pixel = try readPixel(session: harness.session, x: 0, y: 0, triggeringSequence: 1)
+            print("queries: pixel=\(pixel) attributes=\(report?["attributes"] as? Int ?? -1)")
+            XCTAssertEqual(pixel, [0, 255, 0, 255], "the frame is the colour the located uniform was set to")
+        }
+
+        /// Text, drawn by the engine's own 2D context.
+        ///
+        /// The acceptance for D15.4a. `ctx.font = "..."` is answered by the
+        /// producer -- it parses the shorthand itself, because the assignment
+        /// returns whether it parsed and the host's answer is a frame away --
+        /// and the string, the coordinates and the alignment cross as records
+        /// the host decodes into the commands its own ops build.
+        ///
+        /// WHAT THE PIXELS PROVE. Not which pixels a glyph fills: that is the
+        /// font's business, and a test that named them would be a test of the
+        /// rasteriser. The canvas is cleared to blue and the text is drawn in
+        /// green, so what is asserted is that green ink arrived inside the box
+        /// the call named, that none arrived outside it, and that a shorthand
+        /// the parser refuses draws nothing at all.
+        func testContentDrawsTextThroughTheEngines2DContext() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                export function start({ report }) {
+                  const canvas = migo.createCanvas();
+                  const ctx = canvas.getContext("2d");
+                  const answers = {};
+                  const stage = (name, run) => {
+                    try { return run(); }
+                    catch (error) { report({ type: "failed", stage: name, detail: `${error.name}: ${error.message}` }); throw error; }
+                  };
+
+                  stage("draw", () => {
+                    ctx.fillStyle = "#0000ff";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                    // A shorthand with no size: refused by the parser here, and
+                    // the font stays what it was -- which is what the assignment
+                    // answers, and the only thing content can observe about it.
+                    answers.refusedFont = ctx.font;
+                    ctx.font = "not-a-font";
+                    answers.fontAfterRefusal = ctx.font;
+
+                    ctx.font = "48px sans-serif";
+                    answers.fontApplied = ctx.font;
+                    ctx.textAlign = "left";
+                    ctx.textBaseline = "top";
+                    ctx.fillStyle = "#00ff00";
+                    // The measurement crosses as a barrier and a blocked call,
+                    // and it is of the font two records ago: a host that
+                    // answered before applying it would measure at the default
+                    // size, which is half of this.
+                    const measured = ctx.measureText("ABC");
+                    answers.measuredWidth = measured.width;
+                    answers.measuredNarrower = ctx.measureText("A").width;
+                    // Large enough that any face puts ink in the top-left
+                    // quadrant, and placed so the bottom rows stay untouched.
+                    ctx.fillText("ABC", 0, 0);
+                  });
+
+                  requestAnimationFrame(() => {
+                    setTimeout(() => report({ type: "drew", ...answers,
+                      width: canvas.width, height: canvas.height }), 0);
+                  });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let drew = expectation(description: "content drew text")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "drew":
+                    report = message
+                    drew.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    drew.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [drew], timeout: 240)
+            XCTAssertNil(failure)
+
+            // The refused shorthand left the font alone, which is the whole of
+            // what `ctx.font =` answers.
+            XCTAssertEqual(
+                report?["fontAfterRefusal"] as? String, report?["refusedFont"] as? String,
+                "a shorthand with no size is a no-op, as it is in a browser")
+            XCTAssertEqual(report?["fontApplied"] as? String, "48px sans-serif")
+
+            // The measurement is the renderer's, of the font the barrier
+            // applied. Its exact value is the face's business; that it is a
+            // plausible width for three glyphs at 48 px, and that one glyph
+            // measures narrower than three, is the query working.
+            let width = report?["measuredWidth"] as? Double ?? 0
+            let narrower = report?["measuredNarrower"] as? Double ?? 0
+            print("2D measure: ABC=\(width) A=\(narrower)")
+            XCTAssertGreaterThan(width, 24, "three glyphs at 48px are wider than that")
+            XCTAssertLessThan(width, 400)
+            XCTAssertLessThan(narrower, width, "one glyph is narrower than three")
+            XCTAssertGreaterThan(narrower, 0)
+
+            let size = harness.sizePixels
+            let inked = try readPixels(
+                session: harness.session, x: 0, y: 0, width: Int32(size), height: Int32(size))
+            var green = 0
+            var blue = 0
+            var other = 0
+            for index in stride(from: 0, to: inked.count, by: 4) {
+                let pixel = Array(inked[index..<index + 4])
+                if pixel == [0, 255, 0, 255] { green += 1 } else if pixel == [0, 0, 255, 255] {
+                    blue += 1
+                } else {
+                    // Antialiased edges: between the two colours, alpha opaque.
+                    other += 1
+                }
+            }
+            print("2D text: green=\(green) blue=\(blue) other=\(other) of \(size * size)")
+            XCTAssertGreaterThan(green, 20, "the text put ink on the canvas")
+            XCTAssertGreaterThan(blue, 200, "and did not cover the whole of it")
+        }
+
+        /// What a game reads before it draws: the screen, the pixel ratio, the
+        /// safe area, the model.
+        ///
+        /// Every one of these is synchronous and none of it changes during a
+        /// session, so the host hands the JSON to the producer at startup and
+        /// the calls are answered there without crossing. What this checks is
+        /// that the numbers content reads are the ones the host described --
+        /// through the engine's own `migo.*` layer, which parses them and
+        /// converts the safe area from insets to positions.
+        func testContentReadsTheDeviceTheHostDescribed() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                export function start({ report }) {
+                  try {
+                    const window = migo.getWindowInfo();
+                    const system = migo.getSystemInfoSync();
+                    report({ type: "described",
+                      screenWidth: window.screenWidth, screenHeight: window.screenHeight,
+                      pixelRatio: window.pixelRatio, statusBarHeight: window.statusBarHeight,
+                      safeTop: window.safeArea.top, safeBottom: window.safeArea.bottom,
+                      model: system.model, platform: system.platform });
+                  } catch (error) {
+                    report({ type: "failed", stage: "device", detail: `${error.name}: ${error.message}` });
+                  }
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let described = expectation(description: "content read the device")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            typealias Profile = MigoPerformancePlusHost.DeviceProfile
+            let profile = Profile(
+                screenWidth: 390, screenHeight: 844, windowWidth: 390, windowHeight: 844,
+                pixelRatio: 3, statusBarHeight: 47,
+                safeAreaInsets: Profile.SafeAreaInsets(left: 0, top: 47, right: 0, bottom: 34),
+                brand: "Apple", model: "iPhone14,5", system: "iOS 26.0", platform: "ios")
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels,
+                        device: profile)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "described":
+                    report = message
+                    described.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    described.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [described], timeout: 240)
+            XCTAssertNil(failure)
+
+            XCTAssertEqual(report?["screenWidth"] as? Double, 390)
+            XCTAssertEqual(report?["screenHeight"] as? Double, 844)
+            XCTAssertEqual(report?["pixelRatio"] as? Double, 3)
+            XCTAssertEqual(report?["statusBarHeight"] as? Double, 47)
+            // Insets in, positions out: the engine's own conversion, which is
+            // the reason these cross as insets rather than as positions.
+            XCTAssertEqual(report?["safeTop"] as? Double, 47)
+            XCTAssertEqual(report?["safeBottom"] as? Double, 844 - 34)
+            XCTAssertEqual(report?["model"] as? String, "iPhone14,5")
+            XCTAssertEqual(report?["platform"] as? String, "ios")
+        }
+
+        /// The engine's storage API, answered by the host's storage service.
+        ///
+        /// The whole service stream in one test: content is installed and
+        /// loaded through the C ABI, the host serves the directory the engine
+        /// mounted, and `migo.*Storage*` -- synchronous and awaited -- reaches the
+        /// same SQLite store and the same rules the embedded runtime uses; an
+        /// oversized value is refused with the message games match on.
+        func testContentReachesTheHostsStorageThroughTheServiceStream() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let content = Data(
+                """
+                export async function start({ report }) {
+                  try {
+                    migo.setStorageSync("sync-key", { n: 1, s: "h\\u00e9llo" });
+                    const syncBack = migo.getStorageSync("sync-key");
+                    await migo.setStorage({ key: "async-key", data: 42 });
+                    const syncOfAsync = migo.getStorageSync("async-key");
+                    const asyncBack = (await migo.getStorage({ key: "async-key" })).data;
+                    const info = migo.getStorageInfoSync();
+                    let refused = null;
+                    try {
+                      migo.setStorageSync("big", "x".repeat(1024 * 1024 + 1));
+                    } catch (error) {
+                      refused = `${error.name}: ${error.message}`;
+                    }
+                    report({ type: "stored", syncBack: JSON.stringify(syncBack), syncOfAsync, asyncBack,
+                      keys: info.keys.slice().sort().join(","), refused });
+                  } catch (error) {
+                    // An awaited mini-game API rejects with `{errMsg}`, not an Error.
+                    const detail = error instanceof Error ? `${error.name}: ${error.message}` : JSON.stringify(error);
+                    report({ type: "failed", stage: "storage", detail });
+                  }
+                }
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "storage-game", entry: "game/main.mjs", files: ["game/main.mjs": content])
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let stored = expectation(description: "content used storage")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, harnessEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "stored":
+                    report = message
+                    stored.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    stored.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [stored], timeout: 240)
+            XCTAssertNil(failure)
+            XCTAssertEqual(report?["syncBack"] as? String, #"{"n":1,"s":"héllo"}"#)
+            XCTAssertEqual(report?["syncOfAsync"] as? Double, 42, "one store behind both kinds of call")
+            XCTAssertEqual(report?["asyncBack"] as? Double, 42)
+            XCTAssertEqual(report?["keys"] as? String, "async-key,sync-key")
+            XCTAssertEqual(
+                report?["refused"] as? String, "Error: setStorage:fail data exceeds max size",
+                "refused by the host's rule, with the message the embedded op throws")
+        }
+
+        /// A game as games are written: a CommonJS `game.js` that `require`s its
+        /// own modules and keeps its saves with the file system.
+        ///
+        /// The acceptance for D15.5b. The host names the entry (`gameEntry`) and
+        /// nothing else: the producer imports it after the engine, the content
+        /// origin serves it -- and every script it pulls in -- through the
+        /// engine's module rules, so it runs wrapped exactly as the embedded
+        /// loader wraps it (as a module); `require` resolves in the
+        /// package through the synchronous service call; and
+        /// `migo.getFileSystemManager()` reads and writes the game's sandbox on
+        /// the host, sync and awaited, with a relative path meaning the package.
+        /// The game reports through `console`, the one channel a game has.
+        func testAGameWrittenAsCommonJSRunsFromItsEntryAndKeepsItsFiles() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let game = Data(
+                """
+                const lib = require("./js/lib");
+                const entryStrict = (function () { return this === undefined; })();
+                const fs = migo.getFileSystemManager();
+                function done(result) { console.log("game-result " + JSON.stringify(result)); }
+                try {
+                  fs.writeFileSync("/user/save.json", JSON.stringify({ level: lib.level }), "utf8");
+                  const back = JSON.parse(fs.readFileSync("/user/save.json", "utf8"));
+                  const size = fs.statSync("/user/save.json").size;
+                  const listed = fs.readdirSync("/user").filter((name) => name.endsWith(".json"));
+                  const packaged = fs.readFileSync("js/data.txt", "utf8");
+                  let readOnly = null;
+                  try { fs.writeFileSync("js/data.txt", "x", "utf8"); } catch (error) { readOnly = error.errMsg; }
+                  fs.writeFile({
+                    filePath: "/user/async.txt", data: "hi", encoding: "utf8",
+                    success() {
+                      fs.readFile({
+                        filePath: "/user/async.txt", encoding: "utf8",
+                        success(res) {
+                          done({ back, size, listed, packaged, readOnly, asyncRead: res.data,
+                            entryStrict, libStrict: lib.strict, sameModule: require("./js/lib") === lib });
+                        },
+                        fail(error) { done({ error: error.errMsg }); },
+                      });
+                    },
+                    fail(error) { done({ error: error.errMsg }); },
+                  });
+                } catch (error) {
+                  done({ error: String(error && (error.errMsg || error.stack || error)) });
+                }
+                """.utf8)
+            let lib = Data(
+                """
+                // CommonJS, required by the entry: evaluated by the engine's shim,
+                // which the package serves through the synchronous service call.
+                module.exports = { level: 3, strict: (function () { return this === undefined; })() };
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "cjs-game", entry: "game.js",
+                files: [
+                    "game.js": game, "js/lib.js": lib, "js/data.txt": Data("shipped".utf8),
+                ])
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let finished = expectation(description: "the game reported")
+            var result: [String: Any]?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, gameEntry: "/game.js",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            // A game reports the way games do: through `console`.
+            host.onConsole = { _, text in
+                guard text.hasPrefix("game-result ") else { return }
+                let json = Data(text.dropFirst("game-result ".count).utf8)
+                result = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
+                finished.fulfill()
+            }
+            host.onReport = { message in
+                if message["type"] as? String == "failed" {
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    finished.fulfill()
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [finished], timeout: 240)
+            XCTAssertNil(failure)
+            let answered = try XCTUnwrap(result, "the game's report was not JSON")
+            XCTAssertNil(answered["error"], "\(answered["error"] ?? "")")
+            XCTAssertEqual((answered["back"] as? [String: Any])?["level"] as? Int, 3)
+            XCTAssertEqual(answered["size"] as? Int, 11, #"{"level":3} is eleven bytes"#)
+            XCTAssertEqual(answered["listed"] as? [String], ["save.json"])
+            XCTAssertEqual(answered["packaged"] as? String, "shipped", "a relative path is the package")
+            XCTAssertEqual(
+                answered["readOnly"] as? String,
+                "writeFileSync:fail Permission denied: js/data.txt",
+                "the package is read-only, in the embedded op's words")
+            XCTAssertEqual(answered["asyncRead"] as? String, "hi")
+            // The embedded runtime's semantics, both halves: the entry is a module
+            // (strict), and a required module is the shim's `new Function` body
+            // (sloppy) -- the same shim runs on the producer.
+            XCTAssertEqual(answered["entryStrict"] as? Bool, true, "the entry runs as a module")
+            XCTAssertEqual(answered["libStrict"] as? Bool, false, "a required module runs as the shim runs it")
+            XCTAssertEqual(answered["sameModule"] as? Bool, true, "require caches by module")
+        }
+
+        /// A game hears the touches the host sends.
+        ///
+        /// The acceptance for input on this lane: the host's touches enter
+        /// through the C ABI (`migo_session_send_touch`) exactly as on every
+        /// platform, the external session routes them by the routing the
+        /// embedded runtime uses and sends them as service events, and the
+        /// producer calls the engine's own touch hook -- so `migo.onTouchStart`
+        /// hears the point in CSS pixels, and `onTouchEnd` the lifted finger.
+        func testAGameHearsTheTouchesTheHostSends() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let game = Data(
+                """
+                migo.onTouchStart((event) => {
+                  const touch = event.touches[0];
+                  console.log("touch-start " + JSON.stringify({
+                    id: touch.identifier, x: touch.clientX, y: touch.clientY, count: event.touches.length }));
+                });
+                migo.onTouchEnd((event) => {
+                  console.log("touch-end " + JSON.stringify({
+                    changed: event.changedTouches.length, remaining: event.touches.length,
+                    id: event.changedTouches[0].identifier }));
+                });
+                console.log("listening");
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "touch-game", entry: "game.js", files: ["game.js": game])
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let listening = expectation(description: "the game is listening")
+            let heard = expectation(description: "the game heard a start and an end")
+            heard.expectedFulfillmentCount = 2
+            var lines: [String: [String: Any]] = [:]
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, gameEntry: "/game.js",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onConsole = { _, text in
+                if text == "listening" {
+                    listening.fulfill()
+                    return
+                }
+                for prefix in ["touch-start ", "touch-end "] where text.hasPrefix(prefix) {
+                    lines[String(prefix.dropLast())] =
+                        (try? JSONSerialization.jsonObject(with: Data(text.dropFirst(prefix.count).utf8)))
+                        as? [String: Any]
+                    heard.fulfill()
+                }
+            }
+            host.onReport = { message in
+                if message["type"] as? String == "failed" {
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    listening.fulfill()
+                }
+            }
+            mount(host)
+            try host.start()
+            // Touches sent before the game listens have no hook to reach, as in
+            // process; so a game that never started is a failure here, not a
+            // lost touch later.
+            guard XCTWaiter().wait(for: [listening], timeout: 240) == .completed, failure == nil else {
+                return XCTFail(failure ?? "the game never reported that it is listening")
+            }
+
+            let down = MigoTouchPoint(
+                id: 3, x: 12.5, y: 20, pressure: 0.5, flags: MIGO_TOUCH_FLAG_CHANGED)
+            try harness.sendTouch(MIGO_TOUCH_START, points: [down], timestampMilliseconds: 1000)
+            var up = down
+            up.flags = MIGO_TOUCH_FLAG_CHANGED | MIGO_TOUCH_FLAG_REMOVED
+            try harness.sendTouch(MIGO_TOUCH_END, points: [up], timestampMilliseconds: 1016)
+            wait(for: [heard], timeout: 60)
+
+            let start = try XCTUnwrap(lines["touch-start"])
+            XCTAssertEqual(start["id"] as? Int, 3)
+            XCTAssertEqual(start["x"] as? Double, 12.5, "CSS pixels, as the host sent them")
+            XCTAssertEqual(start["y"] as? Double, 20)
+            XCTAssertEqual(start["count"] as? Int, 1)
+            let end = try XCTUnwrap(lines["touch-end"])
+            XCTAssertEqual(end["changed"] as? Int, 1)
+            XCTAssertEqual(end["remaining"] as? Int, 0, "the lifted finger is no longer on the surface")
+            XCTAssertEqual(end["id"] as? Int, 3)
+        }
+
+        /// An image the game ships, loaded and drawn in 2D.
+        ///
+        /// The acceptance for D15.4c's 2D half: `Image.src` names a file in the
+        /// installed package, the host resolves it in the game's sandbox and
+        /// decodes it with the engine's own decoders, uploads it where the
+        /// texture lives, and answers with a shared id and the size -- no pixel
+        /// crosses. `drawImage` then names that id. Two adjacent draws exercise
+        /// the producer folding them into one batch record.
+        func testContentDrawsAnImageItShipsThroughThe2DContext() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let script = Data(
+                """
+                import { lastSequence } from "/__migo/engine-frames.mjs";
+
+                export function start({ report }) {
+                  const canvas = migo.createCanvas();
+                  const ctx = canvas.getContext("2d");
+                  const image = createImage();
+                  image.onerror = (event) => report({ type: "failed", stage: "load",
+                    detail: String(event && event.error && (event.error.message || event.error)) });
+                  image.onload = () => {
+                    try {
+                      ctx.fillStyle = "#0000ff";
+                      ctx.fillRect(0, 0, canvas.width, canvas.height);
+                      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                      // The right half again, over itself: adjacent to the draw
+                      // above, so the two leave as one batch.
+                      ctx.drawImage(image, image.width / 2, 0, image.width / 2, image.height,
+                        canvas.width / 2, 0, canvas.width / 2, canvas.height);
+                    } catch (error) {
+                      report({ type: "failed", stage: "draw", detail: `${error.name}: ${error.message}` });
+                      return;
+                    }
+                    requestAnimationFrame(() => setTimeout(() =>
+                      report({ type: "drew", width: image.width, height: image.height,
+                        sequence: lastSequence() }), 0));
+                  };
+                  image.src = "img/split.png";
+                }
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "image-game", entry: "game/main.mjs",
+                files: ["game/main.mjs": script, "img/split.png": Self.splitPNG(width: 16, height: 16)])
+            let report = try runEngineContent(harness: harness, root: root, until: "drew")
+            XCTAssertEqual(report["width"] as? Double, 16, "the host answered the decoded size")
+            XCTAssertEqual(report["height"] as? Double, 16)
+            let sequence = UInt64(report["sequence"] as? Int ?? 1)
+
+            let quarter = Int32(harness.sizePixels / 4)
+            let middle = Int32(harness.sizePixels / 2)
+            let left = try readPixel(
+                session: harness.session, x: quarter, y: middle, triggeringSequence: sequence)
+            let right = try readPixel(
+                session: harness.session, x: 3 * quarter, y: middle, triggeringSequence: sequence)
+            print("2D image: left=\(left) right=\(right)")
+            XCTAssertEqual(left, [0, 255, 0, 255], "the image's left half is green")
+            XCTAssertEqual(right, [255, 0, 0, 255], "and its right half red, the right way round")
+        }
+
+        /// The same image, uploaded into a WebGL texture and drawn.
+        ///
+        /// `texImage2D(…, image)` names an image the host holds: the host's
+        /// frame decoder resolves the id against the images this session loaded
+        /// and builds the upload the embedded op builds.
+        func testContentUploadsAnImageItShipsIntoAWebGLTexture() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let script = Data(
+                """
+                import { lastSequence } from "/__migo/engine-frames.mjs";
+
+                export function start({ report }) {
+                  const gl = migo.createCanvas().getContext("webgl");
+                  const vertex = gl.createShader(gl.VERTEX_SHADER);
+                  gl.shaderSource(vertex, "attribute vec2 p; varying vec2 uv; " +
+                    "void main() { uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }");
+                  gl.compileShader(vertex);
+                  const fragment = gl.createShader(gl.FRAGMENT_SHADER);
+                  gl.shaderSource(fragment, "precision mediump float; varying vec2 uv; " +
+                    "uniform sampler2D t; void main() { gl_FragColor = texture2D(t, uv); }");
+                  gl.compileShader(fragment);
+                  const program = gl.createProgram();
+                  gl.attachShader(program, vertex);
+                  gl.attachShader(program, fragment);
+                  gl.bindAttribLocation(program, 0, "p");
+                  gl.linkProgram(program);
+                  const buffer = gl.createBuffer();
+                  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+                  const image = createImage();
+                  image.onerror = (event) => report({ type: "failed", stage: "load",
+                    detail: String(event && event.error && (event.error.message || event.error)) });
+                  image.onload = () => {
+                    const texture = gl.createTexture();
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                    requestAnimationFrame(() => {
+                      gl.clearColor(0, 0, 1, 1);
+                      gl.clear(gl.COLOR_BUFFER_BIT);
+                      gl.useProgram(program);
+                      gl.enableVertexAttribArray(0);
+                      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+                      gl.drawArrays(gl.TRIANGLES, 0, 3);
+                      setTimeout(() => report({ type: "drawn", sequence: lastSequence() }), 0);
+                    });
+                  };
+                  image.src = "img/split.png";
+                }
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "texture-game", entry: "game/main.mjs",
+                files: ["game/main.mjs": script, "img/split.png": Self.splitPNG(width: 16, height: 16)])
+            let report = try runEngineContent(harness: harness, root: root, until: "drawn")
+            let sequence = UInt64(report["sequence"] as? Int ?? 1)
+
+            let quarter = Int32(harness.sizePixels / 4)
+            let middle = Int32(harness.sizePixels / 2)
+            let left = try readPixel(
+                session: harness.session, x: quarter, y: middle, triggeringSequence: sequence)
+            let right = try readPixel(
+                session: harness.session, x: 3 * quarter, y: middle, triggeringSequence: sequence)
+            print("WebGL image texture: left=\(left) right=\(right)")
+            XCTAssertEqual(left, [0, 255, 0, 255], "the left half samples the image's green")
+            XCTAssertEqual(right, [255, 0, 0, 255], "the right half samples its red")
+        }
+
+        /// A PNG, `width` by `height`: the left half opaque green, the right half
+        /// opaque red. Encoded by ImageIO, which is what a game's asset pipeline
+        /// hands the engine -- the decode is the engine's.
+        private static func splitPNG(width: Int, height: Int) -> Data {
+            let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.setFillColor(red: 0, green: 1, blue: 0, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: width / 2, height: height))
+            context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+            context.fill(CGRect(x: width / 2, y: 0, width: width - width / 2, height: height))
+            let encoded = NSMutableData()
+            let destination = CGImageDestinationCreateWithData(
+                encoded, "public.png" as CFString, 1, nil)!
+            CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+            CGImageDestinationFinalize(destination)
+            return encoded as Data
+        }
+
+        /// Run installed content with the engine's API layer, and answer with the
+        /// first report of `type` -- or fail with the one that says why not.
+        private func runEngineContent(
+            harness: MigoFrameHarness, root: URL, until type: String
+        ) throws -> MigoPerformancePlusHost.Report {
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let done = expectation(description: "content reported \(type)")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, harnessEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case type:
+                    report = message
+                    done.fulfill()
+                case "failed":
+                    failure =
+                        "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    done.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [done], timeout: 240)
+            if let failure { XCTFail(failure) }
+            let answered = try XCTUnwrap(report)
+            // The frame the report followed has to have been admitted before its
+            // pixels are read: the readback names its sequence, and the channel's
+            // own count says when it arrived.
+            let sequence = answered["sequence"] as? Int ?? 0
+            let deadline = Date().addingTimeInterval(60)
+            while host.channel.currentStatistics.framesAccepted < sequence, Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            XCTAssertEqual(host.channel.currentStatistics.framesRefused, 0)
+            return answered
+        }
+
         /// A frame too large for one packet crosses as barriers and one present.
         ///
         /// Sixty thousand clears in one `requestAnimationFrame` is 256 KiB of
@@ -570,7 +1389,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -648,10 +1467,11 @@ import XCTest
                     const pixel = sync.call({
                       runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
                       triggeringSequence: BigInt(sequence), operation: SYNC_OP_READ_PIXELS,
-                      maxReplyBytes: 4, timeoutMillis: 30000,
+                      // The layout (sixteen bytes) and then the one pixel.
+                      maxReplyBytes: 20, timeoutMillis: 30000,
                       params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
-                    }, new Uint8Array(4));
-                    detail = Array.from(pixel).join(",");
+                    }, new Uint8Array(20));
+                    detail = Array.from(pixel.subarray(16)).join(",");
                   } catch (error) {
                     detail = `${error.name}: ${error.message}`;
                   }
@@ -668,7 +1488,7 @@ import XCTest
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, contentEntry: "/game/main.mjs",
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
@@ -745,18 +1565,21 @@ import XCTest
                     sections: [{ kind: SECTION_KIND_COMMAND_STREAM, payload: stream }] });
                   const submitted = session.submit(packet);
 
-                  const into = new Uint8Array(4);
+                  // The reply is the layout and then the rows: sixteen bytes of
+                  // placement (`frame_wire::sync::READ_PIXELS_LAYOUT_BYTES`) in
+                  // front of the one pixel this reads.
+                  const into = new Uint8Array(20);
                   let detail;
                   try {
                     const pixel = sync.call({
                       runtimeGeneration: 1n, surfaceGeneration: 1n, resourceEpoch: 0n,
-                      triggeringSequence: 1n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 4,
+                      triggeringSequence: 1n, operation: SYNC_OP_READ_PIXELS, maxReplyBytes: 20,
                       // A minute, for the reason the Swift reads in this file give:
                       // the first readback in a process pays ANGLE's bring-up.
                       timeoutMillis: 60000,
                       params: encodeReadPixelsParams({ canvasId: 1, x: 0, y: 0, width: 1, height: 1 }),
                     }, into);
-                    detail = Array.from(pixel).join(",");
+                    detail = Array.from(pixel.subarray(16)).join(",");
                   } catch (error) {
                     detail = `${error.name}: ${error.message}`;
                   }
@@ -770,7 +1593,7 @@ import XCTest
             var submitted: String?
             var bytes: Int?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
             host.onReport = { report in
@@ -831,7 +1654,7 @@ import XCTest
             var submittedBytes: Int?
             var submitOutcome: String?
             let host = try MigoPerformancePlusHost(
-                configuration: .init(contentRoot: contentRoot, contentEntry: "/game/main.mjs"),
+                configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
             host.onReport = { report in
@@ -888,6 +1711,212 @@ import XCTest
 
         /// Attached and off-screen: an unattached web view is killed since iOS 16
         /// and an occluded one stops executing JavaScript.
+        /// A game hears its own sounds: both audio APIs, on the host's audio
+        /// thread, driven from WebContent.
+        ///
+        /// The acceptance for D15.5c. `decodeAudioData` sends the packaged
+        /// bytes and gets back a buffer whose PCM never crossed -- the host
+        /// adopted it -- which is why `getChannelData` is what brings the
+        /// samples over, and why the graph can play the buffer with nothing but
+        /// its id. What the analyser hears is the proof that the graph the
+        /// producer built (source -> gain -> analyser -> destination) is the one
+        /// the host's audio thread rendered. `InnerAudioContext` takes the same
+        /// file by path, read and decoded inside the game's sandbox, and its
+        /// events come back the other way -- through the service stream as host
+        /// events -- to the listeners the game registered.
+        func testAGamePlaysItsPackagedSoundsThroughTheHostsAudio() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            let content = Data(
+                """
+                export async function start({ report }) {
+                  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                  const step = (name) => console.log("audio-step " + name);
+                  try {
+                    const fs = migo.getFileSystemManager();
+                    const encoded = fs.readFileSync("sounds/beep.wav");
+                    step("read " + encoded.byteLength);
+                    const ctx = new AudioContext();
+                    step("context " + ctx.sampleRate);
+                    const buffer = await ctx.decodeAudioData(encoded);
+                    step("decoded " + buffer.length + " frames");
+                    let peak = 0;
+                    const samples = buffer.getChannelData(0);
+                    for (let index = 0; index < samples.length; index += 1) {
+                      peak = Math.max(peak, Math.abs(samples[index]));
+                    }
+                    const source = ctx.createBufferSource();
+                    source.buffer = buffer;
+                    source.loop = true;
+                    const gain = ctx.createGain();
+                    gain.gain.value = 0.5;
+                    const analyser = ctx.createAnalyser();
+                    analyser.fftSize = 2048;
+                    source.connect(gain);
+                    gain.connect(analyser);
+                    analyser.connect(ctx.destination);
+                    source.start();
+                    step("started");
+                    let heard = 0;
+                    const wave = new Uint8Array(analyser.frequencyBinCount);
+                    for (let attempt = 0; attempt < 100 && heard === 0; attempt += 1) {
+                      await wait(50);
+                      await analyser.getByteTimeDomainData(wave);
+                      for (const sample of wave) heard = Math.max(heard, Math.abs(sample - 128));
+                    }
+                    source.stop();
+                    step("heard " + heard);
+
+                    const inner = migo.createInnerAudioContext();
+                    const events = [];
+                    inner.onCanplay(() => events.push("canplay"));
+                    inner.onPlay(() => events.push("play"));
+                    inner.onEnded(() => events.push("ended"));
+                    inner.onError((error) => events.push("error:" + JSON.stringify(error)));
+                    inner.src = "sounds/beep.wav";
+                    inner.play();
+                    for (let attempt = 0; attempt < 200 && !events.includes("ended"); attempt += 1) {
+                      await wait(50);
+                    }
+                    step("inner " + events.join(","));
+                    const refused = await new Promise((resolve) => {
+                      const streamed = migo.createInnerAudioContext();
+                      streamed.onError((error) => resolve(error.errMsg || "error"));
+                      streamed.src = "https://media.example/clip.mp3";
+                      streamed.play();
+                    });
+                    report({
+                      type: "audio",
+                      channels: buffer.numberOfChannels,
+                      rate: buffer.sampleRate,
+                      duration: buffer.duration,
+                      peak,
+                      heard,
+                      events: events.join(","),
+                      innerDuration: inner.duration,
+                      refused,
+                    });
+                  } catch (error) {
+                    const detail = error instanceof Error ? `${error.name}: ${error.message}` : JSON.stringify(error);
+                    report({ type: "failed", stage: "audio", detail });
+                  }
+                }
+                """.utf8)
+            let root = try harness.installAndLoadContent(
+                id: "audio-game", entry: "game/main.mjs",
+                files: ["game/main.mjs": content, "sounds/beep.wav": Self.beepWav])
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let played = expectation(description: "content played its sounds")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: root, harnessEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            // Printed, because a game that stops halfway through its sounds
+            // says where it stopped and the test otherwise reports only that
+            // nothing arrived.
+            host.onConsole = { _, text in print("[content] \(text)") }
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "audio":
+                    report = message
+                    played.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    played.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [played], timeout: 240)
+            // A host with no audio output -- this simulator, driven from a
+            // remote shell, where even `AVAudioEngine.start()` answers 35 --
+            // cannot answer the question this test asks. The engine says so
+            // rather than hanging (the queue is abandoned when the device will
+            // not open), and saying "not measured here" is the honest report:
+            // a pass would claim audio that never played.
+            if let failure, failure.contains("Response channel closed")
+                || failure.contains("audio thread disconnected")
+            {
+                throw XCTSkip(
+                    "this host has no audio output, so the engine's audio thread never started "
+                        + "(\(failure)). Run this on a device, or on a Mac whose audio session "
+                        + "the simulator can reach.")
+            }
+            XCTAssertNil(failure)
+            let answered = try XCTUnwrap(report)
+            XCTAssertEqual(answered["channels"] as? Double, 1, "the clip is mono")
+            // Decoded at the context's rate, so the duration is the clip's and
+            // the rate is the graph's.
+            XCTAssertEqual(answered["duration"] as? Double ?? 0, 0.25, accuracy: 0.02)
+            XCTAssertGreaterThan(answered["rate"] as? Double ?? 0, 8000)
+            XCTAssertEqual(
+                answered["peak"] as? Double ?? 0, 0.8, accuracy: 0.05,
+                "getChannelData is what brings the decoded samples across")
+            XCTAssertGreaterThan(
+                answered["heard"] as? Double ?? 0, 4,
+                "the analyser heard the buffer the graph is playing")
+            XCTAssertEqual(
+                answered["events"] as? String, "canplay,play,ended",
+                "the audio thread's events reached the game's listeners")
+            XCTAssertEqual(answered["innerDuration"] as? Double ?? 0, 0.25, accuracy: 0.02)
+            // A streamed source is fetched by the host, with the client and
+            // policy `fetch()` uses, as the embedded runtime fetches it. The
+            // `.example` domain never resolves (RFC 2606), so the fetch fails on
+            // every host and content must hear it through onError rather than
+            // waiting on a sound that will never play.
+            XCTAssertFalse(
+                (answered["refused"] as? String ?? "").isEmpty,
+                "a streamed source that cannot be fetched is reported to content")
+        }
+
+        /// A quarter second of 440 Hz at 0.8 amplitude: 16-bit mono PCM in a
+        /// WAV container, built here so the fixture is the one the assertions
+        /// describe.
+        private static let beepWav: Data = {
+            let rate = 8000
+            let frames = rate / 4
+            var samples = Data(capacity: frames * 2)
+            for frame in 0..<frames {
+                let value = Int16(
+                    (0.8 * sin(2 * Double.pi * 440 * Double(frame) / Double(rate)) * 32767)
+                        .rounded())
+                samples.append(UInt8(truncatingIfNeeded: value))
+                samples.append(UInt8(truncatingIfNeeded: value >> 8))
+            }
+            func word(_ value: UInt32) -> Data {
+                Data([
+                    UInt8(value & 0xff), UInt8((value >> 8) & 0xff),
+                    UInt8((value >> 16) & 0xff), UInt8((value >> 24) & 0xff),
+                ])
+            }
+            func half(_ value: UInt16) -> Data {
+                Data([UInt8(value & 0xff), UInt8((value >> 8) & 0xff)])
+            }
+            var wav = Data("RIFF".utf8)
+            wav += word(UInt32(36 + samples.count))
+            wav += Data("WAVEfmt ".utf8)
+            wav += word(16)  // PCM header size
+            wav += half(1)  // PCM
+            wav += half(1)  // mono
+            wav += word(UInt32(rate))
+            wav += word(UInt32(rate * 2))  // bytes per second
+            wav += half(2)  // block align
+            wav += half(16)  // bits per sample
+            wav += Data("data".utf8)
+            wav += word(UInt32(samples.count))
+            wav += samples
+            return wav
+        }()
+
         private func mount(_ host: MigoPerformancePlusHost) {
             let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
             let controller = UIViewController()
@@ -901,6 +1930,83 @@ import XCTest
 
         /// One pixel, through the synchronous barrier, once the frame numbered
         /// `triggeringSequence` has been admitted.
+        /// A rectangle of pixels, for a test whose question is "did anything get
+        /// painted here" rather than "what colour is this pixel".
+        ///
+        /// Glyph coverage is the font's business: which pixels an `M` fills at
+        /// 48 px depends on the face, the hinting and the rasteriser, and a test
+        /// that named one of them would be a test of the font. What text drawing
+        /// owes its caller is that the ink arrives, in the fill colour, inside
+        /// the box the call named.
+        private func readPixels(
+            session: OpaquePointer, x: Int32, y: Int32, width: Int32, height: Int32,
+            triggeringSequence: UInt64 = 1
+        ) throws -> [UInt8] {
+            var request = MigoSyncRequestDescriptor()
+            request.struct_size = UInt32(MemoryLayout<MigoSyncRequestDescriptor>.size)
+            request.abi_version = MIGO_ABI_VERSION_CURRENT
+            request.runtime_generation = 1
+            request.surface_generation = MigoFrameHarness.fixtureGeneration
+            request.resource_epoch = 0
+            request.triggering_sequence = triggeringSequence
+            request.deadline_nanos = deadline
+            request.operation = MIGO_SYNC_OP_READ_PIXELS
+            let expected = Int(width) * Int(height) * 4
+            request.max_reply_bytes = UInt32(Self.readPixelsLayoutBytes + expected)
+
+            var outcome = MigoSyncOutcome()
+            outcome.struct_size = UInt32(MemoryLayout<MigoSyncOutcome>.size)
+            outcome.abi_version = MIGO_ABI_VERSION_CURRENT
+
+            let params = MigoFrameHarness.readPixelsParameters(
+                x: x, y: y, width: width, height: height)
+            let posted = params.withUnsafeBufferPointer { buffer in
+                migo_session_post_sync_request(
+                    session, &request, buffer.baseAddress, buffer.count, now, &outcome)
+            }
+            XCTAssertEqual(posted, MIGO_OK, "post")
+            XCTAssertEqual(
+                outcome.state, MIGO_SYNC_STATE_READY,
+                "the readback failed with error \(outcome.error)")
+
+            var reply = [UInt8](repeating: 0, count: Self.readPixelsLayoutBytes + expected)
+            var written = 0
+            let taken = reply.withUnsafeMutableBufferPointer { out in
+                migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
+            }
+            XCTAssertEqual(taken, MIGO_OK, "take")
+            XCTAssertEqual(
+                written, Self.readPixelsLayoutBytes + expected,
+                "the layout and then the rectangle's RGBA8 rows")
+            return try Self.rowsOf(reply, width: width, height: height)
+        }
+
+        /// Bytes of the layout header a `readPixels` reply begins with
+        /// (`frame_wire::sync::READ_PIXELS_LAYOUT_BYTES`).
+        private static let readPixelsLayoutBytes = 16
+
+        /// The rows of a reply, after checking the layout in front of them.
+        ///
+        /// The layout is where the rows go in the caller's view, which the host
+        /// reads from its own `PACK_*` state -- the producer never sees
+        /// `pixelStorei`, so it cannot derive it. These reads set no pack state,
+        /// so the answer must be the compact one: no skip, a stride of exactly a
+        /// row, and as many rows as were asked for. A host that answered
+        /// something else would place a producer's rows wrongly in a view this
+        /// test does not have, and nothing else here would notice.
+        private static func rowsOf(_ reply: [UInt8], width: Int32, height: Int32) throws -> [UInt8] {
+            func word(_ index: Int) -> UInt32 {
+                let base = index * 4
+                return UInt32(reply[base]) | UInt32(reply[base + 1]) << 8
+                    | UInt32(reply[base + 2]) << 16 | UInt32(reply[base + 3]) << 24
+            }
+            XCTAssertEqual(word(0), 0, "a read with no PACK_SKIP_* starts at the first byte")
+            XCTAssertEqual(word(1), UInt32(width) * 4, "row bytes are the rectangle's width in RGBA8")
+            XCTAssertEqual(word(2), UInt32(width) * 4, "with no PACK_ALIGNMENT padding, the stride is the row")
+            XCTAssertEqual(word(3), UInt32(height), "one row per row asked for")
+            return Array(reply[readPixelsLayoutBytes...])
+        }
+
         private func readPixel(
             session: OpaquePointer, x: Int32, y: Int32, triggeringSequence: UInt64 = 1
         ) throws -> [UInt8] {
@@ -913,7 +2019,7 @@ import XCTest
             request.triggering_sequence = triggeringSequence
             request.deadline_nanos = deadline
             request.operation = MIGO_SYNC_OP_READ_PIXELS
-            request.max_reply_bytes = 4
+            request.max_reply_bytes = UInt32(Self.readPixelsLayoutBytes + 4)
 
             var outcome = MigoSyncOutcome()
             outcome.struct_size = UInt32(MemoryLayout<MigoSyncOutcome>.size)
@@ -932,14 +2038,15 @@ import XCTest
             // Sized from the request rather than the outcome: a failed readback
             // reports zero bytes, and an array sized from that is one the caller
             // indexes past -- a crash where an assertion should have been.
-            var pixel = [UInt8](repeating: 0, count: 4)
+            var reply = [UInt8](repeating: 0, count: Self.readPixelsLayoutBytes + 4)
             var written = 0
-            let taken = pixel.withUnsafeMutableBufferPointer { out in
+            let taken = reply.withUnsafeMutableBufferPointer { out in
                 migo_session_take_sync_reply(session, out.baseAddress, out.count, &written)
             }
             XCTAssertEqual(taken, MIGO_OK, "take")
-            XCTAssertEqual(written, 4, "one RGBA8 pixel")
-            return pixel
+            XCTAssertEqual(
+                written, Self.readPixelsLayoutBytes + 4, "the layout and one RGBA8 pixel")
+            return try Self.rowsOf(reply, width: 1, height: 1)
         }
     }
 #endif

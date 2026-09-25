@@ -105,6 +105,14 @@ pub const OPR_TEX_STORAGE_3D: u32 = 166;
 pub const OPR_UNIFORM_BLOCK_BINDING: u32 = 167;
 // H C
 pub const OPR_LOSE_CONTEXT: u32 = 168;
+/// `texImage2D(target, level, internalformat, format, type, image)`:
+/// `H C target level internalformat format type image_id`. The image is one the
+/// host decoded and holds; which pixels it names is the host's to resolve, so
+/// none cross.
+pub const OPR_TEX_IMAGE_2D_FROM_IMAGE: u32 = 169;
+/// `texSubImage2D(target, level, x, y, format, type, image)`:
+/// `H C target level xoffset yoffset format type image_id`.
+pub const OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE: u32 = 170;
 
 // ─── Payload records ─────────────────────────────────────────────────────────
 
@@ -136,6 +144,25 @@ pub const OPR_DRAW_BUFFERS: u32 = 202;
 pub const OPR_INVALIDATE_FRAMEBUFFER: u32 = 203;
 // H C program buffer_mode | len names(UTF-8, joined by U+001F)
 pub const OPR_TRANSFORM_FEEDBACK_VARYINGS: u32 = 204;
+
+// ─── Uploads whose pixels are already the host's (171..=174) ─────────────────
+//
+// A texture filled from something the host already holds: a snapshot of a 2D
+// canvas, or the canvas itself. No pixel crosses on either lane -- in process
+// because the renderer copies GPU to GPU, and here for the same reason, which is
+// what makes `fillText` into a texture cost nothing but the record.
+//
+// The canvas-source pair takes the source's rectangle; the snapshot pair does
+// not, because a snapshot is the rectangle it was captured with.
+
+// H C target level internalformat format type snapshot_id
+pub const OPR_TEX_IMAGE_2D_FROM_SNAPSHOT: u32 = 171;
+// H C target level xoffset yoffset format type snapshot_id
+pub const OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT: u32 = 172;
+// H C target level internalformat canvas_2d_id x y width height
+pub const OPR_TEX_IMAGE_2D_FROM_CANVAS2D: u32 = 173;
+// H C target level xoffset yoffset canvas_2d_id x y width height
+pub const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D: u32 = 174;
 
 /// The shape of one record in this block.
 pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
@@ -193,6 +220,8 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_TEX_STORAGE_3D => fixed(8),
         OPR_UNIFORM_BLOCK_BINDING => fixed(4),
         OPR_LOSE_CONTEXT => fixed(2),
+        OPR_TEX_IMAGE_2D_FROM_IMAGE => fixed(8),
+        OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE => fixed(9),
 
         OPR_SHADER_SOURCE => bytes(3, None, true),
         OPR_BIND_ATTRIB_LOCATION => bytes(3, None, true),
@@ -213,6 +242,13 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
             max_count: MAX_RESOURCE_WORD_LIST,
         },
         OPR_TRANSFORM_FEEDBACK_VARYINGS => bytes(4, None, true),
+
+        // The sub forms carry one more word than the full ones: an offset pair
+        // in place of an internal format.
+        OPR_TEX_IMAGE_2D_FROM_SNAPSHOT => fixed(8),
+        OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT => fixed(9),
+        OPR_TEX_IMAGE_2D_FROM_CANVAS2D => fixed(10),
+        OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D => fixed(11),
         _ => return None,
     })
 }

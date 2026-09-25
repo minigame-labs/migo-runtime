@@ -115,4 +115,4 @@ The `on_surface_released` callback is only an optional **edge wake-up**: rejecti
 - **Treating 'callback not yet received' as state**: surface release is level-triggered, not edge-triggered; a cancelled `load_content` may produce no `on_error` — consult the authoritative source in the table, not the callback.
 - **Calling the same Session's entry points concurrently from multiple threads**: the Session row in the table is serialized; relying on the OS to schedule two threads calling it simultaneously is a host bug.
 
-After reading this page, if you want to walk through the state machine, continue with the destroy section of [Session Lifecycle](/docs/concepts/lifecycle/); for function-level C ABI signatures, see the [Session](/docs/reference/session/) and [Surface](/docs/reference/surface/) reference pages.
+After reading this page, if you want to walk through the state machine, continue with the destroy section of [Session Lifecycle](/docs/en/concepts/lifecycle/); for function-level C ABI signatures, see the [Session](/docs/en/reference/session/) and [Surface](/docs/en/reference/surface/) reference pages.

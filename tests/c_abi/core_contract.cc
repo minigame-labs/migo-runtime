@@ -68,13 +68,17 @@ MIGO_CHECK_CXX_RECORD(MigoSurfaceDescriptor);
 MIGO_CHECK_CXX_RECORD(MigoHostCallbacks);
 
 #if UINTPTR_MAX == UINT64_MAX
-static_assert(sizeof(MigoHostCallbacks) == 104, "LP64/LLP64 callback layout");
+static_assert(sizeof(MigoHostCallbacks) == 128, "LP64/LLP64 callback layout");
 static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 96,
-              "release wakeup must remain the append-only tail field");
+              "release wakeup stays where it was appended");
+static_assert(offsetof(MigoHostCallbacks, on_game_log) == 120,
+              "the device callbacks are the append-only tail");
 #elif UINTPTR_MAX == UINT32_MAX
-static_assert(sizeof(MigoHostCallbacks) == 56, "ILP32 callback layout");
+static_assert(sizeof(MigoHostCallbacks) == 68, "ILP32 callback layout");
 static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 52,
-              "ILP32 release wakeup tail offset");
+              "ILP32 release wakeup offset");
+static_assert(offsetof(MigoHostCallbacks, on_game_log) == 64,
+              "ILP32 device callbacks tail offset");
 #else
 #error "unsupported pointer width"
 #endif

@@ -44,7 +44,7 @@ SOURCES = {
     # The envelope, which owns the magic and the version and neither block.
     "rust envelope": (Path("engine/crates/frame-wire/src/stream.rs"), set()),
     "rust": (Path("engine/crates/frame-wire/src/gl.rs"), {"gl"}),
-    "rust 2d": (Path("engine/crates/frame-wire/src/canvas2d.rs"), {"2d"}),
+    "rust 2d": (Path("engine/crates/frame-wire/src/canvas2d.rs"), {"2d", "2d flags"}),
     # The resource block has two encoders, not three: the in-process runtime
     # makes these calls as ops, so its encoder declares only gl and 2d below.
     "rust resource": (Path("engine/crates/frame-wire/src/gl_resource.rs"), {"res"}),
@@ -54,7 +54,7 @@ SOURCES = {
     ),
     "webcontent js": (
         Path("platforms/apple/WebContent/PerformancePlus/src/render-opcodes.mjs"),
-        {"gl", "2d", "res"},
+        {"gl", "2d", "res", "2d flags"},
     ),
 }
 
@@ -72,6 +72,16 @@ PATTERNS = {
         "rust 2d": re.compile(r"^pub const (OP2D_[A-Z0-9_]+): u32 = (\d+);", re.M),
         "in-process js": re.compile(r"^\s*const (OP2D_[A-Z0-9_]+) = (\d+);", re.M),
         "webcontent js": re.compile(r"^export const (OP2D_[A-Z0-9_]+) = (\d+);", re.M),
+    },
+    # Not opcodes: the bits inside one record's word. A resize names width,
+    # height or both, because content assigns them separately -- so the meaning
+    # of that word is as much a cross-process agreement as the opcode that
+    # introduces it, and it is the half a reader cannot detect getting wrong. A
+    # producer that swapped the two bits would resize the other dimension, in
+    # silence, on a device.
+    "2d flags": {
+        "rust 2d": re.compile(r"^pub const (RESIZE_CANVAS_[A-Z0-9_]+): u32 = (\d+);", re.M),
+        "webcontent js": re.compile(r"^export const (RESIZE_CANVAS_[A-Z0-9_]+) = (\d+);", re.M),
     },
 }
 # Range markers, not opcodes: they name where the block starts and ends.
@@ -197,6 +207,14 @@ for block, patterns in PATTERNS.items():
             problems.append("res: an opcode is outside the block's 128..=255")
         print(f"    {len(fixed)} fixed (128..={fixed[-1] if fixed else 0}), "
               f"{len(payload)} payload (192..={payload[-1] if payload else 0})")
+    elif block == "2d flags":
+        # Distinct single bits, so a record can name any combination and the
+        # reader can refuse the combinations that mean nothing.
+        if any(v == 0 or v & (v - 1) for v in values):
+            problems.append(f"2d flags: {values} are not all single bits")
+        if len(set(values)) != len(values):
+            problems.append(f"2d flags: two flags share a bit: {values}")
+        print(f"    {len(values)} flag bits ({', '.join(hex(v) for v in values)})")
     else:
         if values != list(range(512, 512 + len(values))):
             gaps = [n for n in range(512, values[-1] + 1) if n not in set(values)]

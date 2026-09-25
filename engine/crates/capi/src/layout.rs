@@ -165,7 +165,8 @@ const _: () = assert!(offset_of!(MigoWheelEvent, timestamp_ms) == 40);
 mod lp64 {
     use super::*;
 
-    const _: () = assert!(size_of::<MigoEngineConfig>() == 48);
+    const _: () = assert!(size_of::<MigoEngineConfig>() == 80);
+    const _: () = assert!(offset_of!(MigoEngineConfig, code_signing_public_key) == 48);
     const _: () = assert!(offset_of!(MigoEngineConfig, flags) == 8);
     const _: () = assert!(offset_of!(MigoEngineConfig, reserved0) == 16);
     // A four-byte hole follows `reserved0`; the first pointer is aligned to 24.
@@ -191,7 +192,7 @@ mod lp64 {
     // Function pointers are `Option<fn>` on the Rust side, which is a plain
     // nullable pointer with no discriminant. Pinning the offsets is what keeps
     // that niche optimisation from being an assumption.
-    const _: () = assert!(size_of::<MigoHostCallbacks>() == 104);
+    const _: () = assert!(size_of::<MigoHostCallbacks>() == 128);
     const _: () = assert!(offset_of!(MigoHostCallbacks, user_data) == 8);
     const _: () = assert!(offset_of!(MigoHostCallbacks, dispatcher_data) == 16);
     const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 24);
@@ -204,6 +205,9 @@ mod lp64 {
     const _: () = assert!(offset_of!(MigoHostCallbacks, on_hide_keyboard) == 80);
     const _: () = assert!(offset_of!(MigoHostCallbacks, on_update_keyboard) == 88);
     const _: () = assert!(offset_of!(MigoHostCallbacks, on_surface_released) == 96);
+    const _: () = assert!(offset_of!(MigoHostCallbacks, on_vibrate) == 104);
+    const _: () = assert!(offset_of!(MigoHostCallbacks, on_keep_screen_on) == 112);
+    const _: () = assert!(offset_of!(MigoHostCallbacks, on_game_log) == 120);
 
     const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 40);
     const _: () = assert!(offset_of!(MigoKeyboardShowOptions, flags) == 8);

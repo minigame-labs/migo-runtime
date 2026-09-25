@@ -79,6 +79,7 @@ const CALL = {
   operation: SYNC_OP_READ_PIXELS,
   maxReplyBytes: 0x0a0b0c,
   timeoutMillis: 45_678,
+  serviceSequence: 0x0102_0304_0506_0708n,
 };
 
 test("every call field sits where the document puts it", () => {
@@ -94,6 +95,7 @@ test("every call field sits where the document puts it", () => {
     max_reply_bytes: CALL.maxReplyBytes,
     timeout_millis: CALL.timeoutMillis,
     reserved: 0,
+    service_sequence: CALL.serviceSequence,
   };
   const rows = table("### A request as one body");
   assert.deepEqual(

@@ -111,8 +111,13 @@ require_literal "$CAPI/gamepad.rs" "ingress.try_send_gamepad_state(state)" \
 require_literal "$CAPI/lib.rs" "input_saturation_reported" \
     "C sessions do not rate-limit saturation callbacks"
 
-require_multiline_regex "$HOST" \
-    'HostCommand::OnFocusChanged[[:space:]]*\{[[:space:]]*focused[[:space:]]*\}[[:space:]]*=>[[:space:]]*\{[[:space:]]*if[[:space:]]*!focused[[:space:]]*\{[[:space:]]*self\.retract_input_for_focus_loss\(\);[[:space:]]*\}[[:space:]]*self\.js\.dispatch_focus_changed\(focused\);' \
+# Asserted in the routing, not in the embedded host: both executions deliver
+# input through `input_route::route`, so the retraction lives there and an
+# external session gets it too. Held to the ORDER, which is the property --
+# every release reaches content before `focusChanged(false)` does, or a game
+# hears the loss with a finger still down.
+require_multiline_regex "$CRATES/core/src/runtime/input_route.rs" \
+    'HostCommand::OnFocusChanged[[:space:]]*\{[[:space:]]*focused[[:space:]]*\}[[:space:]]*=>[[:space:]]*\{[[:space:]]*if[[:space:]]*!focused[[:space:]]*\{[[:space:]]*state\.retract_for_focus_loss\([\s\S]*?\}[[:space:]]*sink\.focus_changed\(focused\);' \
     "focus loss no longer retracts accepted input before the content callback"
 
 require_literal "$ANDROID_JNI/profile_contract.rs" \

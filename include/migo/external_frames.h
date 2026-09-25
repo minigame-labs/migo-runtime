@@ -265,13 +265,25 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_sync_request(
     MigoSyncOutcome *out_outcome);
 
 /*
- * The largest body migo_session_call_sync accepts, arguments included.
+ * The largest body migo_session_call_sync accepts, arguments included, for
+ * every operation but MIGO_SYNC_OP_SERVICE (see MIGO_SERVICE_CALL_MAX_BYTES).
  *
  * A constant of the wire format (contracts/frame-wire/wire-v1.md, "A request as
  * one body"), published here so a transport can refuse a larger body before it
  * reads it rather than after.
  */
 #define MIGO_SYNC_CALL_MAX_BYTES 4096U
+
+/*
+ * A service call made synchronously -- readFileSync, getStorageSync. Its body
+ * and its reply are bounded by the service stream's own limits below rather
+ * than by the barrier's: a synchronous read answers with the file, and a
+ * synchronous write sends one. A transport reading call bodies bounds them by
+ * MIGO_SERVICE_CALL_MAX_BYTES and lets the library refuse a non-service call
+ * above MIGO_SYNC_CALL_MAX_BYTES.
+ */
+#define MIGO_SYNC_OP_SERVICE 8U
+#define MIGO_SERVICE_CALL_MAX_BYTES 67108920U
 
 /*
  * How many bytes of answer header migo_session_call_sync writes.
@@ -424,6 +436,8 @@ typedef uint32_t MigoUplinkMessageKind;
 #define MIGO_UPLINK_MESSAGE_FRAME   1U
 /* Offer it to migo_session_submit_uplink_control. */
 #define MIGO_UPLINK_MESSAGE_CONTROL 2U
+/* Offer it to migo_session_submit_service. */
+#define MIGO_UPLINK_MESSAGE_SERVICE 3U
 
 /*
  * Which door a message that arrived on the producer's socket goes through.
@@ -517,6 +531,127 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_downlink_waker(
 MIGO_API MigoResult MIGO_CALL migo_session_take_downlink(
     MigoSession *session, uint8_t *buffer, size_t capacity,
     size_t *out_written);
+
+/* ---------------------------------------------------------------------------
+ * The service stream
+ *
+ * Everything content asks the host to do that is not drawing: read a file,
+ * write a save, load an image, play a sound, open a socket. Its messages are
+ * sequenced, admitted strictly in order and answered on a return stream of
+ * their own. The contract is contracts/frame-wire/wire-v1.md, "The service
+ * stream"; a transport parses none of it.
+ *
+ * TRANSPORT. A message of at most 65536 bytes arrives on the producer's socket
+ * (MIGO_UPLINK_MESSAGE_SERVICE); a larger one as a POST to the content origin's
+ * service endpoint. Answers are drained with migo_session_take_service_message
+ * and sent on the socket; an answer too large to send inline is parked, and the
+ * producer fetches it from the content origin, which takes it with
+ * migo_session_take_parked_reply.
+ * ------------------------------------------------------------------------- */
+
+/* The largest service message, in bytes. A transport reading a POSTed message
+ * refuses a larger one before reading it. */
+#define MIGO_SERVICE_MESSAGE_MAX_BYTES 67108864U
+
+/* Bytes the library owns until migo_owned_bytes_release. Handed over rather
+ * than copied: an answer can be a whole file. */
+typedef struct MigoOwnedBytes MigoOwnedBytes;
+
+/*
+ * Where the bytes are, and how many. Valid until they are released.
+ * *out_bytes and *out_length receive NULL and zero on failure.
+ */
+MIGO_API MigoResult MIGO_CALL migo_owned_bytes_view(
+    const MigoOwnedBytes *owned, const uint8_t **out_bytes, size_t *out_length);
+
+/* Free the bytes. The handle is invalid afterwards. NULL is refused. */
+MIGO_API MigoResult MIGO_CALL migo_owned_bytes_release(MigoOwnedBytes *owned);
+
+/*
+ * Admit one service message, from the socket or from a POST to the content
+ * origin alike.
+ *
+ * `bytes` is borrowed for the call. The two paths reorder, so a message that
+ * arrives ahead of the one before it is held -- up to 256 messages and
+ * MIGO_SERVICE_MESSAGE_MAX_BYTES -- and admitted when that one arrives; either
+ * way the call returns at once and a POST can be answered straight away.
+ *
+ * *out_refusal_code receives 0 when the message was admitted or held, or
+ * ignored as belonging to another runtime generation; otherwise a code from
+ * 4001 up (see "Service refusals" in the wire contract). A refusal is also
+ * reported to the producer on the return stream: the stream is broken from
+ * there.
+ *
+ * Blocks while the session's queue of admitted work is full, which pushes back
+ * on the socket; call it on a thread that may block. Returns
+ * MIGO_ERROR_INVALID_STATE when the session has no attached surface yet or has
+ * ended.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_submit_service(
+    MigoSession *session, const uint8_t *bytes, size_t byte_count,
+    uint32_t *out_refusal_code);
+
+/*
+ * Take the next message of answers and events the host owes the producer.
+ *
+ * *out_message receives NULL when nothing is queued -- the normal answer, not
+ * an error. Otherwise send the bytes on the socket unread and release them.
+ * Call it wherever migo_session_take_downlink is called: the downlink waker
+ * fires for both.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_take_service_message(
+    MigoSession *session, MigoOwnedBytes **out_message);
+
+/*
+ * Take a parked answer: the producer asked for it by generation and request
+ * id. Taken once -- the library releases its copy as it hands this one over.
+ * *out_reply receives NULL when there is no such answer, which is a producer
+ * asking twice or asking for another generation's; answer that request with a
+ * 404.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_take_parked_reply(
+    MigoSession *session, uint32_t generation, uint32_t request_id, MigoOwnedBytes **out_reply);
+
+/*
+ * Where the loaded content's code is: the directory the host serves at the
+ * content origin's root. Written as NUL-terminated UTF-8.
+ *
+ * On this execution migo_session_load_content mounts the content before it
+ * returns -- the entry module is evaluated by WebKit in another process, and
+ * that process's host needs this directory to serve it -- so the root is known
+ * as soon as that call succeeds.
+ *
+ * *out_length receives the length without the NUL. Returns
+ * MIGO_ERROR_INVALID_ARGUMENT when capacity is too small, with *out_length set
+ * so the caller can retry; MIGO_ERROR_INVALID_STATE before content is loaded.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_copy_content_root(
+    MigoSession *session, char *buffer, size_t capacity, size_t *out_length);
+
+/* What migo_session_read_content_module handed over. */
+#define MIGO_CONTENT_MODULE_SERVED 0U     /* the bytes are the module's source */
+#define MIGO_CONTENT_MODULE_NOT_FOUND 1U  /* the bytes are why: answer 404 */
+#define MIGO_CONTENT_MODULE_REFUSED 2U    /* the bytes are why: answer 403 */
+#define MIGO_CONTENT_MODULE_UNREADABLE 3U /* the bytes are why: answer 500 */
+
+/*
+ * The source of the content module at `path` -- a path on the content origin,
+ * "/game.js" -- as the engine evaluates it: resolved through the mounted
+ * package (subpackage overlays and pack-backed packages included), contained
+ * in it, UTF-8, and with the module loader's one rewrite applied, so a
+ * CommonJS entry runs wrapped exactly as it does in the embedded runtime. The
+ * content origin answers every script request of a game with this rather than
+ * with the file.
+ *
+ * `path` is borrowed UTF-8 of `path_length` bytes. *out_module receives the
+ * bytes -- the source, or the reason it was not served, as *out_status says --
+ * which the caller releases with migo_owned_bytes_release. Reads the file on
+ * the calling thread. Returns MIGO_ERROR_INVALID_STATE before content is
+ * loaded.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_read_content_module(
+    MigoSession *session, const char *path, size_t path_length, MigoOwnedBytes **out_module,
+    uint32_t *out_status);
 
 /* ---------------------------------------------------------------------------
  * The resource lane

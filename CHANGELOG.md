@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- iOS and macOS SDK: `migo-<version>-apple-sdk.zip`, a Swift package with one
+  view per platform. `MigoGameView` (`MigoApplePerformancePlus` on iOS,
+  `MigoMacV8` on macOS) takes an installed game and owns everything between it
+  and pixels -- engine session, `CAMetalLayer`, display clock, input, app
+  lifecycle, and on iOS the audio session and WebContent crash recovery.
+  `MigoGameInstaller` installs a package atomically and skips a version that is
+  already there. Both products ship a privacy manifest that a gate checks
+  against the engine's sources in both directions.
+- iOS and macOS: the soft keyboard. `migo.showKeyboard` opens the system
+  keyboard on iOS and a text field along the game's bottom edge on macOS; the
+  player's text comes back as `onKeyboardInput`/`Confirm`/`Complete`. On the
+  iOS lane the three keyboard ops became host commands to the same keyboard
+  service the embedded runtime calls, so a host with no keyboard refuses them
+  in the same words.
+- iOS and macOS: the device. `vibrateShort`/`vibrateLong` drive the Taptic
+  Engine on iOS; `setKeepScreenOn` holds the display awake (the idle timer on
+  iOS, a power assertion on macOS) and gives it back when the game ends;
+  `getGameLogManager().log` entries reach the app as `MigoGameView.Event.gameLog`;
+  `getNetworkType`/`onNetworkStatusChange` follow `NWPathMonitor`, and on iOS
+  `getBatteryInfo` reports the battery and Low Power Mode. A Mac has nothing to
+  vibrate and no battery API a game should need, so those answer "not
+  supported" there, as on a device without the hardware.
+- C ABI: device capabilities. Three optional, independent callbacks appended to
+  `MigoHostCallbacks` -- `on_vibrate`, `on_keep_screen_on`, `on_game_log` -- each
+  offered to content exactly when installed, and two report functions,
+  `migo_session_set_network_status` and `migo_session_set_battery_status`,
+  whose last report the engine answers content's synchronous reads from and
+  forwards a network change while content listens. An older host is
+  zero-extended to none of them, which is the previous behaviour.
+- C ABI: `MigoEngineConfig.code_signing_public_key`, the Ed25519 key signed
+  content is verified against. Until now a C ABI host could not supply one, so
+  its only configuration that loaded content was
+  `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT`. Appended to the record: a host
+  passing the old size is zero-extended to "no key" and behaves as before.
+  Setting the key and the unsigned flag together is refused.
+
 - macOS: a host-owned `CAMetalLayer` can be attached through the C ABI.
   `MIGO_PLATFORM_MACOS_CA_METAL_LAYER` now appears in the library's advertised
   attachable kinds, and it appears because an attach ran, not because a backend
@@ -65,6 +101,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hundred 2D calls now crosses once.
 
 ### Fixed
+- iOS: installing an update over a game that had already run under code
+  signing failed on an iPhone ("you don't have permission"): Darwin refuses to
+  rename a directory its caller cannot write, and the engine seals the package
+  read-only. The installer now restores the owner's write bit on the sealed
+  root alone before moving it aside. The simulator's host file system had let
+  the rename through.
+- iOS and macOS: the engine's render and session threads ran at the default
+  quality-of-service class, so the main thread waiting on the session's
+  startup was a priority inversion and the frame work could land on efficiency
+  cores. They are now user-interactive; decode and IO threads are utility.
+
+- iOS: signed content was not verified. The Performance+ lane mounted the
+  installed package as it was, so a host that configured a signing key got no
+  verification at all. It now runs the embedded execution's launch sequence
+  before anything is mounted -- sealed-receipt check, else a full manifest and
+  file-hash verification that seals the tree -- and refuses the load on any
+  mismatch, or on signing with no key.
+- `MigoGameInstaller` could not update a game that had run under signing: the
+  engine seals a verified tree read-only, and the installer replaced it in
+  place. An update now renames the sealed tree aside, renames the new one in
+  and removes the old one as a trusted uninstall.
+- iOS: a game that called `migo.exitMiniProgram()` stopped drawing and the app
+  was never told. The external-frame session ended on the request without the
+  exit notification the in-process runtime sends; it now sends it.
+- The Apple SDK could not put its iOS and macOS engines in one xcframework:
+  assembly required byte-identical header directories, and each group's module
+  map lists the frameworks its own archive links. Only the C headers are now
+  compared across groups.
+- SBOMs listed crates the shipped build never compiles. `cargo metadata`
+  resolves features for the whole workspace, so a crate any member enabled was
+  in every artifact's graph -- the iOS SDK, built without a JavaScript engine,
+  would have listed `v8`. Each SBOM is now cut to its build's own `cargo tree`.
 - ASTC 8x8 textures upload again. The engine mapped
   `VK_FORMAT_ASTC_8x8_UNORM_BLOCK` to `0x93B9`, which is the token for a 10x6
   block, so `glCompressedTexImage2D` rejected every such texture with

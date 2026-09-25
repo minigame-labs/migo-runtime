@@ -1,18 +1,29 @@
 import {test, expect, type Page} from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
-// Starlight routes: latest stable at the /docs/ root (no version prefix),
-// zh primary, en TranslationPending stubs under /docs/en/.
+// Starlight routes: the current docs at the /docs/ root (no version prefix),
+// zh primary, the English translation under /docs/en/, and the frozen 0.9
+// archive under /docs/0.9/ (zh) and /docs/en/0.9/ (TranslationPending stubs).
 
 async function openDocsPage(page: Page, path: string) {
   return page.goto(`/docs${path}`, {waitUntil: 'networkidle'});
 }
 
 test.describe('routing', () => {
-  test('serves the docs root with a heading', async ({page}) => {
+  test('serves the docs root with a heading', async ({page}, testInfo) => {
     await openDocsPage(page, '/');
     await expect(page.locator('h1')).toContainText('Migo 开发者文档');
-    await expect(page.locator('.portal-links a', {hasText: 'SDK 下载'})).toBeVisible();
+    const links = page.locator('.portal-links a');
+    await expect(links.filter({hasText: '首页'})).toBeVisible();
+    await expect(links.filter({hasText: '开发者文档'})).toBeVisible();
+    // A phone's header keeps only the first two links: five do not fit at 390
+    // px without colliding with the search icon (Header.astro, max-width 50rem).
+    const download = links.filter({hasText: 'SDK 下载'});
+    if (testInfo.project.name === 'mobile') {
+      await expect(download).toBeHidden();
+    } else {
+      await expect(download).toBeVisible();
+    }
   });
 
   test('routes to the Android guide', async ({page}) => {
@@ -41,10 +52,23 @@ test.describe('routing', () => {
   });
 
   test('marks English stub pages as noindex and links back to zh', async ({page}) => {
-    await openDocsPage(page, '/en/');
+    await openDocsPage(page, '/en/0.9/');
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/i);
     await expect(page.locator('.sl-markdown-content')).toContainText('Translation pending');
-    await expect(page.locator('a', {hasText: '中文版本'})).toHaveAttribute('href', '/docs/');
+    await expect(page.locator('a', {hasText: '中文版本'})).toHaveAttribute('href', '/docs/0.9/');
+  });
+
+  test('serves the English translation indexable, linking within English', async ({page}) => {
+    await openDocsPage(page, '/en/');
+    await expect(page.locator('meta[name="robots"][content*="noindex"]')).toHaveCount(0);
+    await expect(page.locator('.sl-markdown-content')).not.toContainText('Translation pending');
+    // A translated page that links into the zh tree drops an English reader
+    // into Chinese on the first click.
+    const hrefs = await page.locator('.sl-markdown-content a[href^="/docs/"]').evaluateAll(
+      (links) => links.map((link) => link.getAttribute('href')),
+    );
+    expect(hrefs.length).toBeGreaterThan(0);
+    expect(hrefs.filter((href) => !href?.startsWith('/docs/en/'))).toEqual([]);
   });
 });
 

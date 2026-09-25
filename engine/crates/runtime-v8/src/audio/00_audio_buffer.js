@@ -66,7 +66,9 @@ class AudioBuffer {
       if (internal.token !== DECODED_BUFFER_TOKEN) {
         throw new TypeError("AudioBuffer internal construction is not public");
       }
-      this.#initialize(internal.id, numberOfChannels, length, sampleRate, internal.backing);
+      // A decode: its PCM is the native entry's, frozen, and this object has
+      // no backing until a channel is read.
+      this.#initialize(internal.id, numberOfChannels, length, sampleRate, null);
       return;
     }
     // Admission happens before the one large contiguous JS allocation. If V8
@@ -90,7 +92,12 @@ class AudioBuffer {
     this.#sampleRate = sampleRate;
     this.#numberOfChannels = numberOfChannels;
     this.#length = length;
-    this.#installBacking(backing);
+    if (backing === null) {
+      this.#backing = null;
+      this.#channelData = null;
+    } else {
+      this.#installBacking(backing);
+    }
     AUDIO_BUFFER_FINALIZER.register(this, id, this.#finalizerToken);
   }
 
@@ -173,17 +180,11 @@ class AudioBuffer {
 
 // Only sibling host modules import this factory. The unforgeable module token
 // prevents public `new AudioBuffer(options, payload)` from bypassing reserve.
-function createDecodedAudioBuffer(id, info, flat) {
-  const channels = info.channels;
-  const length = info.length || Math.floor(info.duration * info.sample_rate);
-  const bytes = checkedPcmBytes(channels, length);
-  if (!(flat instanceof ArrayBuffer) || flat.byteLength !== bytes) {
-    throw new RangeError("decoded AudioBuffer backing has an invalid length");
-  }
-  const backing = flat;
+// `id` is the native entry the decode was adopted as; its PCM stays there.
+function createDecodedAudioBuffer(id, info) {
   return new AudioBuffer(
-    { numberOfChannels: channels, length, sampleRate: info.sample_rate },
-    { token: DECODED_BUFFER_TOKEN, id, backing },
+    { numberOfChannels: info.channels, length: info.length, sampleRate: info.sample_rate },
+    { token: DECODED_BUFFER_TOKEN, id },
   );
 }
 

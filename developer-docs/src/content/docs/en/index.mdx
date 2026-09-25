@@ -8,8 +8,8 @@ description: Integration, architecture, and C ABI reference for the Migo native 
     An embeddable Canvas/WebGL mini-game runtime with a single C ABI across Android, Linux, Windows, and OpenHarmony
   </p>
   <div class="home-hero-actions">
-    <a class="hh-btn hh-btn-primary" href="/docs/getting-started/android/">Quick Start →</a>
-    <a class="hh-btn hh-btn-secondary" href="/docs/reference/overview/">C ABI Reference</a>
+    <a class="hh-btn hh-btn-primary" href="/docs/en/getting-started/android/">Quick Start →</a>
+    <a class="hh-btn hh-btn-secondary" href="/docs/en/reference/overview/">C ABI Reference</a>
   </div>
 </div>
 
@@ -94,26 +94,26 @@ negotiated via `abi_version`. One page per header:
 
 | Page | Summary |
 | --- | --- |
-| [C ABI Overview](/docs/reference/overview/) | Header relationships, call ordering, handle model, error codes, and compile-time selection |
-| [Base Types and Export Macros](/docs/reference/types/) | Handles / error codes / export macros, `MIGO_ABI_*` constants, and `struct_size` evolution rules |
-| [Engine Initialization](/docs/reference/engine/) | `migo_engine_*` lifecycle: creation, ICU data, and the destruction thread-completion barrier |
-| [Session](/docs/reference/session/) | Session handle, `MigoHostCallbacks`, the host dispatcher, and shutdown ordering |
-| [Surface Interface](/docs/reference/surface/) | `migo_surface_attach`, platform descriptors, `frame_info`, and back-pressure |
-| [Input Events](/docs/reference/input/) | The `migo_session_send_*` family: validation, FIFO, coordinate units, and per-event payloads |
-| [External Frame Injection](/docs/reference/external-frames/) | readPixels/getImageData-compatible path — ingress, sync-barrier, and resource lanes |
-| [Runtime Capability Query](/docs/reference/capabilities/) | `migo_query_capabilities`: runtime query of ABI version range and platform bitmask |
+| [C ABI Overview](/docs/en/reference/overview/) | Header relationships, call ordering, handle model, error codes, and compile-time selection |
+| [Base Types and Export Macros](/docs/en/reference/types/) | Handles / error codes / export macros, `MIGO_ABI_*` constants, and `struct_size` evolution rules |
+| [Engine Initialization](/docs/en/reference/engine/) | `migo_engine_*` lifecycle: creation, ICU data, and the destruction thread-completion barrier |
+| [Session](/docs/en/reference/session/) | Session handle, `MigoHostCallbacks`, the host dispatcher, and shutdown ordering |
+| [Surface Interface](/docs/en/reference/surface/) | `migo_surface_attach`, platform descriptors, `frame_info`, and back-pressure |
+| [Input Events](/docs/en/reference/input/) | The `migo_session_send_*` family: validation, FIFO, coordinate units, and per-event payloads |
+| [External Frame Injection](/docs/en/reference/external-frames/) | readPixels/getImageData-compatible path — ingress, sync-barrier, and resource lanes |
+| [Runtime Capability Query](/docs/en/reference/capabilities/) | `migo_query_capabilities`: runtime query of ABI version range and platform bitmask |
 
 Semantic details (architecture, lifecycle, threading model) are in the
-[Core Concepts](/docs/concepts/sdk-architecture/) section.
+[Core Concepts](/docs/en/concepts/sdk-architecture/) section.
 
 ## Quick Start
 
 :::note[Getting started]
 
-1. **[Android Quick Start](/docs/getting-started/android/)** — 9 steps from downloading the AAR
+1. **[Android Quick Start](/docs/en/getting-started/android/)** — 9 steps from downloading the AAR
    to lighting up a bundle (guides for other platforms will be added as platform artifacts mature,
    one page per platform).
-2. [Download and Verify](/docs/release/download-verification/) — obtaining release artifacts,
+2. [Download and Verify](/docs/en/release/download-verification/) — obtaining release artifacts,
    fingerprint verification, and the minimum validation set before first deployment.
 
 :::

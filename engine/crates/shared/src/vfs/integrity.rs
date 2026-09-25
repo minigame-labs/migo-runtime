@@ -1310,6 +1310,35 @@ fn normalize_textual_path(path: &Path) -> PathBuf {
 // Standalone hash utilities
 // ---------------------------------------------------------------------------
 
+/// Sign the package in `code_dir` as a publisher does: every regular file's
+/// SHA-256 in `manifest.json`, and the raw Ed25519 signature of those exact
+/// bytes in `manifest.sig`. Answers the raw public key the package verifies
+/// against. A fixture for tests in other crates -- the format is this module's,
+/// so this is the one place that writes it.
+#[cfg(feature = "signed-fixtures")]
+pub fn sign_package_fixture(code_dir: &Path, entry: &str, seed: [u8; 32]) -> [u8; 32] {
+    use ed25519_dalek::{Signer, SigningKey};
+    let mut files = HashMap::new();
+    for item in fs::read_dir(code_dir).expect("the package directory") {
+        let path = item.expect("a directory entry").path();
+        if path.is_file() {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            files.insert(name, sha256_file(&path).expect("a readable file"));
+        }
+    }
+    let manifest = Manifest {
+        version: 1,
+        entry: entry.to_string(),
+        timestamp: 1_700_000_000,
+        files,
+    };
+    let bytes = serde_json::to_vec(&manifest).expect("a manifest");
+    let key = SigningKey::from_bytes(&seed);
+    fs::write(code_dir.join("manifest.json"), &bytes).expect("manifest.json");
+    fs::write(code_dir.join("manifest.sig"), key.sign(&bytes).to_bytes()).expect("manifest.sig");
+    key.verifying_key().to_bytes()
+}
+
 /// Compute the SHA256 hex digest of a file using streaming reads
 /// to avoid loading the entire file into memory at once.
 pub fn sha256_file(path: &Path) -> EngineResult<String> {

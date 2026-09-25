@@ -10,9 +10,6 @@ use crate::network::udp_socket::{
 };
 use crate::network::websocket::{op_ws_close, op_ws_create, op_ws_next_event, op_ws_send};
 
-mod address_filter;
-mod common;
-pub(crate) mod dns_cache;
 pub(crate) mod fetch;
 pub(crate) mod gate;
 mod prefetch;
@@ -61,6 +58,12 @@ extension!(host_v8_network,
   },
   state = |state, options| {
     state.put::<Options>(options.options);
+    // This runtime's network resources live in the service, one table per
+    // runtime, so a request, its cancel handle and its response body are the
+    // same objects both executions hold (see `fetch::NetworkResources`).
+    state.put::<fetch::NetworkResources>(fetch::NetworkResources(std::sync::Arc::new(
+        migo_services::network::resources::ResourceTable::new(),
+    )));
   },
 );
 

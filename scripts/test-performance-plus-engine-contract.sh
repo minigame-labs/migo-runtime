@@ -11,8 +11,11 @@
 #
 #   1. The staging. A module the engine adds, an `ext:` specifier left
 #      unrewritten, a primordials name or `core` member the producer cannot
-#      supply, a lane module implementing an op on the wrong lane: the generator
-#      refuses each, and the staged modules are then actually loaded.
+#      supply, a lane module implementing an op on the wrong lane, an argument a
+#      lane converts by a rule other than the one deno_core applies to that
+#      parameter -- or leaves unconverted: the generator refuses each, and the
+#      staged modules are then actually loaded. (The rules themselves are pinned
+#      to V8 by op_args_agreement.rs and test/op-args.test.mjs.)
 #   2. The frames. Content calls `migo.createCanvas().getContext("webgl")` and
 #      draws two frames through a fake host; the packets that leave must carry the
 #      session's identity and exactly the command words the facade encodes.
@@ -31,6 +34,12 @@
 #      The producer's records must decode to exactly the commands the in-process
 #      ops build, and record the same errors
 #      (engine/crates/runtime-v8/src/rendering/webgl/resource_parity.rs).
+#   6. The file system. Every file call and `require` the producer makes is run
+#      by the host's own dispatch on a real game sandbox, and the producer's
+#      reading of the real answers is checked (test/emit-file-calls.mjs).
+#   7. Input. The host's HostCommands, routed and encoded by the external
+#      session, reach the engine's own listeners with the values the embedded
+#      runtime delivers (test/host-events.test.mjs).
 #
 # Host-only: python3, node, cargo (with the host V8 the runtime's own tests use).
 # No Apple toolchain.
@@ -89,7 +98,7 @@ node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs 
     || fail "the resource calls did not run on the producer"
 status=0
 parity="$(cd engine && MIGO_RESOURCE_PARITY_DIR="$PARITY" cargo test -p migo-runtime-v8 --lib \
-    resource_parity -- --ignored --nocapture 2>&1)" || status=$?
+    the_producer_s_resource_records -- --ignored --nocapture 2>&1)" || status=$?
 if (( status != 0 )); then
     printf '%s\n' "$parity" >&2
     fail "the producer's resource records do not decode to the commands the in-process ops build"
@@ -97,6 +106,174 @@ fi
 printf '%s\n' "$parity" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
     || { printf '%s\n' "$parity" >&2; fail "the resource parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$parity" | grep -E 'commands and [0-9]+ errors agree'
+
+# And the calls the facade cannot encode: a BigInt argument or a uniform past
+# the encoder's inline bound sends it through the op instead, which on this lane
+# is a record this producer writes. That path had no implementation at all, so
+# the same harness runs a fixture that takes it for every one of those calls.
+RAW_PARITY="$WORK/raw-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$RAW_PARITY" \
+    fixtures/webgl-raw-path-calls.js \
+    || fail "the raw-path calls did not run on the producer"
+status=0
+raw="$(cd engine && MIGO_RAW_PARITY_DIR="$RAW_PARITY" cargo test -p migo-runtime-v8 --lib \
+    the_producer_s_raw_records -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$raw" >&2
+    fail "the producer's raw records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$raw" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
+    || { printf '%s\n' "$raw" >&2; fail "the raw parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$raw" | grep -E 'commands and [0-9]+ errors agree'
+
+# The same question for the Canvas2D text records, which is where the two
+# implementations are most likely to drift: a font shorthand parsed on both
+# sides, a `maxWidth` that is usually infinite, and alignment keywords that are
+# numbers on the wire.
+TEXT_PARITY="$WORK/text-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$TEXT_PARITY" \
+    fixtures/canvas2d-text-calls.js \
+    || fail "the Canvas2D text calls did not run on the producer"
+status=0
+text="$(cd engine && MIGO_CANVAS2D_PARITY_DIR="$TEXT_PARITY" cargo test -p migo-runtime-v8 --lib \
+    the_producer_s_text_records -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$text" >&2
+    fail "the producer's text records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$text" | grep -qE '[0-9]+ Canvas2D commands agree' \
+    || { printf '%s\n' "$text" >&2; fail "the text parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$text" | grep -E '[0-9]+ Canvas2D commands agree'
+
+# The two styles a colour cannot express. A gradient's stops cross as the string
+# the facade serialised and are read on the host by the parser the in-process op
+# calls, so what this establishes is the record reaching it with the same six
+# numbers and the same kind; a pattern names an image the host already holds.
+STYLE_PARITY="$WORK/style-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$STYLE_PARITY" \
+    fixtures/canvas2d-style-calls.js \
+    || fail "the Canvas2D style calls did not run on the producer"
+status=0
+styles="$(cd engine && MIGO_CANVAS2D_STYLE_PARITY_DIR="$STYLE_PARITY" cargo test -p migo-runtime-v8 --lib \
+    the_producer_s_style_records -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$styles" >&2
+    fail "the producer's style records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$styles" | grep -qE '[0-9]+ Canvas2D commands agree' \
+    || { printf '%s\n' "$styles" >&2; fail "the style parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$styles" | grep -E '[0-9]+ Canvas2D commands agree'
+
+# The uploads whose pixels the host already holds: a snapshot of a 2D canvas, or
+# the canvas itself. Which one a `texImage2D` becomes is decided in JavaScript
+# from the shape of the source, so both lanes have to decide the same way.
+CANVAS_SOURCE_PARITY="$WORK/canvas-source-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$CANVAS_SOURCE_PARITY" \
+    fixtures/webgl-canvas-source-calls.js \
+    || fail "the canvas-source uploads did not run on the producer"
+status=0
+sources="$(cd engine && MIGO_CANVAS_SOURCE_PARITY_DIR="$CANVAS_SOURCE_PARITY" cargo test -p migo-runtime-v8 --lib \
+    the_producer_s_canvas_source_uploads -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$sources" >&2
+    fail "the producer's canvas-source uploads do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$sources" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
+    || { printf '%s\n' "$sources" >&2; fail "the canvas-source parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$sources" | grep -E 'commands and [0-9]+ errors agree'
+
+# `getImageData`, which is a capture: the pixels stay in the host's snapshot pool
+# and only a content read of the bytes brings them back, so what this compares is
+# the capture's rectangle, its id and its place in the run of draws it follows.
+SNAPSHOT_PARITY="$WORK/snapshot-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$SNAPSHOT_PARITY" \
+    fixtures/canvas2d-snapshot-calls.js \
+    || fail "the Canvas2D snapshot calls did not run on the producer"
+status=0
+snapshots="$(cd engine && MIGO_CANVAS2D_SNAPSHOT_PARITY_DIR="$SNAPSHOT_PARITY" cargo test -p migo-runtime-v8 --lib \
+    the_producer_s_snapshot_records -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$snapshots" >&2
+    fail "the producer's snapshot records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$snapshots" | grep -qE '[0-9]+ Canvas2D commands agree' \
+    || { printf '%s\n' "$snapshots" >&2; fail "the snapshot parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$snapshots" | grep -E '[0-9]+ Canvas2D commands agree'
+
+# The canvas itself: created, resized and destroyed. Every other fixture draws
+# on a canvas the host already had, so the one ordering this lane has to carry
+# in its own stream -- create it, then draw on it -- was never exercised.
+LIFETIME_PARITY="$WORK/canvas-lifetime-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$LIFETIME_PARITY" \
+    fixtures/canvas-lifetime-calls.js \
+    || fail "the canvas lifetime calls did not run on the producer"
+status=0
+lifetime="$(cd engine && MIGO_CANVAS_LIFETIME_PARITY_DIR="$LIFETIME_PARITY" cargo test -p migo-runtime-v8 --lib \
+    canvas_lifetime_parity -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$lifetime" >&2
+    fail "the producer's canvas lifetime records do not have the effect the in-process ops have"
+fi
+printf '%s\n' "$lifetime" | grep -qE '[0-9]+ canvas lifetime effects agree' \
+    || { printf '%s\n' "$lifetime" >&2; fail "the canvas lifetime parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$lifetime" | grep -E '[0-9]+ canvas lifetime effects agree'
+
+# The file system and `require`: every call the producer's lanes make, run by
+# the host's own dispatch on a real game sandbox, and the producer's reading of
+# the host's real answers. emit-file-calls.mjs records the calls, the Rust test
+# replays them in order and writes each answer, and the same script then runs
+# again against those answers and checks what content would see.
+FILE_CALLS="$WORK/file-calls"
+node platforms/apple/WebContent/PerformancePlus/test/emit-file-calls.mjs write "$FILE_CALLS" \
+    || fail "the producer's file calls could not be recorded"
+status=0
+files="$(cd engine && MIGO_FILE_CALLS_DIR="$FILE_CALLS" cargo test -p migo-core --no-default-features \
+    --features external-frames --lib the_producer_s_file_calls -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$files" >&2
+    fail "the host refused or failed the producer's file calls"
+fi
+printf '%s\n' "$files" | grep -qE 'ran [0-9]+ producer file calls on the host' \
+    || { printf '%s\n' "$files" >&2; fail "the file-call replay did not report running; it may not have run"; }
+node platforms/apple/WebContent/PerformancePlus/test/emit-file-calls.mjs read "$FILE_CALLS" \
+    || fail "the producer misread the host's answers to its file calls"
+
+# The network: the calls a `fetch` makes -- built, aborted, sent, its body read
+# through `core.read` and closed -- run by the host's own dispatch, and the
+# producer's reading of the host's real answers. Same shape as the file calls
+# above; a `data:` URL carries the whole path without a connection.
+NETWORK_CALLS="$WORK/network-calls"
+node platforms/apple/WebContent/PerformancePlus/test/emit-network-calls.mjs write "$NETWORK_CALLS" \
+    || fail "the producer's network calls could not be recorded"
+status=0
+network="$(cd engine && MIGO_NETWORK_CALLS_DIR="$NETWORK_CALLS" cargo test -p migo-core --no-default-features \
+    --features external-frames --lib the_producer_s_network_calls -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$network" >&2
+    fail "the host refused or failed the producer's network calls"
+fi
+printf '%s\n' "$network" | grep -qE 'ran [0-9]+ producer network calls on the host' \
+    || { printf '%s\n' "$network" >&2; fail "the network-call replay did not report running; it may not have run"; }
+node platforms/apple/WebContent/PerformancePlus/test/emit-network-calls.mjs read "$NETWORK_CALLS" \
+    || fail "the producer misread the host's answers to its network calls"
+
+# The host's input: HostCommands routed by the routing both executions share
+# and encoded by the external session's sink, then delivered to the staged
+# engine's own host bridge -- and what content's listeners hear checked,
+# including the releases a focus loss synthesizes.
+HOST_EVENTS="$WORK/host-events"
+status=0
+events="$(cd engine && MIGO_HOST_EVENTS_DIR="$HOST_EVENTS" cargo test -p migo-core --no-default-features \
+    --features external-frames --lib the_host_s_input_as_the_producer_receives_it -- --ignored --nocapture 2>&1)" \
+    || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$events" >&2
+    fail "the host could not encode its input as events"
+fi
+printf '%s\n' "$events" | grep -qE 'wrote [1-9][0-9]* host-event messages' \
+    || { printf '%s\n' "$events" >&2; fail "the host-event corpus was not written; the Rust side may not have run"; }
+node platforms/apple/WebContent/PerformancePlus/test/host-events.test.mjs "$STAGED" "$HOST_EVENTS" \
+    || fail "content did not hear the host's input as the embedded runtime delivers it"
 
 python3 - "$STAGED/engine/manifest.json" <<'PY'
 import json, sys

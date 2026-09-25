@@ -144,6 +144,48 @@ export const OP2D_SET_SHADOW_COLOR = 548;
 // with no error anywhere.
 export const OP2D_CREATE_CONTEXT = 549;
 
+// ─── 2D text (550..=556) ─────────────────────────────────────────────────────
+//
+// The block's first payload records: a font shorthand and a string to draw are
+// bytes, and a dash pattern is a list of floats. The in-process encoder does not
+// write these -- there the calls are ops -- which is why this lane has them.
+export const OP2D_SET_FONT = 550;
+export const OP2D_FILL_TEXT = 551;
+export const OP2D_STROKE_TEXT = 552;
+export const OP2D_SET_TEXT_ALIGN = 553;
+export const OP2D_SET_TEXT_BASELINE = 554;
+export const OP2D_SET_TEXT_DIRECTION = 555;
+export const OP2D_SET_LINE_DASH = 556;
+export const OP2D_DRAW_IMAGE = 557;
+export const OP2D_DRAW_IMAGE_BATCH = 558;
+
+// The canvas itself: created, resized and destroyed inside the run that draws
+// on it. In process these are ops on the same FIFO as the stream; here the
+// stream is the only path, so they are records.
+export const OP2D_REGISTER_CANVAS = 559;
+export const OP2D_RESIZE_CANVAS = 560;
+export const OP2D_DESTROY_CANVAS = 561;
+
+// The two styles a colour cannot express. The gradient's stops travel as the
+// string the facade serialised, read on the host by the parser the in-process op
+// uses; a pattern names an image the host already holds.
+export const OP2D_SET_FILL_STYLE_GRADIENT = 562;
+export const OP2D_SET_STROKE_STYLE_GRADIENT = 563;
+export const OP2D_SET_FILL_STYLE_PATTERN = 564;
+export const OP2D_SET_STROKE_STYLE_PATTERN = 565;
+
+// `getImageData`'s capture: the pixels stay in the host's snapshot pool, and
+// only a content read of the `ImageData`'s bytes brings them back.
+export const OP2D_CAPTURE_SNAPSHOT = 566;
+
+// The flags word of OP2D_RESIZE_CANVAS: content assigns width and height
+// separately, and the op this stands for takes each as an option.
+export const RESIZE_CANVAS_WIDTH = 1;
+export const RESIZE_CANVAS_HEIGHT = 2;
+export const DRAW_IMAGE_BATCH_ENTRY_WORDS = 9;
+/** The host's cap on a dash pattern; a longer one is a record it refuses. */
+export const MAX_LINE_DASH_SEGMENTS = 256;
+
 /// Pack a record header: low twelve bits opcode, high twenty word count.
 ///
 /// `wordCount` counts the header word itself. A fixture written from the opcode
@@ -212,6 +254,8 @@ export const OPR_TEX_STORAGE_2D = 165;
 export const OPR_TEX_STORAGE_3D = 166;
 export const OPR_UNIFORM_BLOCK_BINDING = 167;
 export const OPR_LOSE_CONTEXT = 168;
+export const OPR_TEX_IMAGE_2D_FROM_IMAGE = 169;
+export const OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE = 170;
 export const OPR_SHADER_SOURCE = 192;
 export const OPR_BIND_ATTRIB_LOCATION = 193;
 export const OPR_BUFFER_DATA = 194;
@@ -225,4 +269,19 @@ export const OPR_TEX_SUB_IMAGE_3D = 201;
 export const OPR_DRAW_BUFFERS = 202;
 export const OPR_INVALIDATE_FRAMEBUFFER = 203;
 export const OPR_TRANSFORM_FEEDBACK_VARYINGS = 204;
+
+// Uploads whose pixels the host already holds: a snapshot of a 2D canvas, or
+// the canvas itself. No pixel crosses on either lane.
+export const OPR_TEX_IMAGE_2D_FROM_SNAPSHOT = 171;
+export const OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT = 172;
+export const OPR_TEX_IMAGE_2D_FROM_CANVAS2D = 173;
+export const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D = 174;
 export const MAX_RESOURCE_WORD_LIST = 64;
+// The most payload words one variable-uniform record carries
+// (`frame_wire::gl::MAX_STREAM_UNIFORM_WORDS`), which is not the engine
+// encoder's 512-word inline bound: that one only decides when the engine stops
+// inlining and calls the op, and the op's record still has to carry it. The
+// host's stream validator refuses a record past this, and refuses the frame
+// with it, so the producer refuses the call instead of building one that
+// cannot land.
+export const MAX_STREAM_UNIFORM_WORDS = 64 * 1024;

@@ -101,6 +101,13 @@ struct Counting {
 }
 
 impl GlDecodeContext for Counting {
+    fn image_upload(
+        &mut self,
+
+        _upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        None
+    }
     fn push_error(&mut self, _canvas_id: u32, _code: u32) {
         self.errors += 1;
     }

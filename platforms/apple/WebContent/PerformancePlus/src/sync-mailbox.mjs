@@ -51,6 +51,174 @@ export const SYNC_OP_READ_PIXELS = 1;
 export const SYNC_OP_AWAIT_WINDOW = 2;
 export const WINDOW_REPLY_BYTES = 16;
 
+// One WebGL query, answered after the frame the producer names. Three
+// operations, one per reply shape, because the operation is what sizes the
+// reply: a scalar is four bytes, text is the bytes themselves, and an active
+// variable is a size, a type and a name. Which query is in the parameters.
+export const SYNC_OP_GL_QUERY_SCALAR = 3;
+export const SYNC_OP_GL_QUERY_TEXT = 4;
+export const SYNC_OP_GL_QUERY_ACTIVE = 5;
+
+// The Canvas2D queries: a measurement and a line height, whose answers come
+// back in shapes of their own. Two operations rather than one, for the reason
+// the WebGL queries have three: the operation is what sizes the reply.
+export const SYNC_OP_CANVAS2D_METRICS = 6;
+export const SYNC_OP_CANVAS2D_NUMBER = 7;
+/// A service op called synchronously -- `readFileSync`, `getStorageSync`. Its
+/// body and reply have the service stream's bounds, not the barrier's; see
+/// `frame_wire::sync::SYNC_OP_SERVICE`.
+export const SYNC_OP_SERVICE = 8;
+/// What a SERVICE call may be answered with: a whole file and its framing.
+export const MAX_SERVICE_REPLY_BYTES = 128 * 1024 * 1024;
+
+export const CANVAS2D_QUERY_MEASURE_TEXT = 1;
+export const CANVAS2D_QUERY_TEXT_LINE_HEIGHT = 2;
+
+/** The four fields and the two lengths before a 2D query's strings. */
+export const CANVAS2D_QUERY_HEADER_BYTES = 24;
+/** Twelve `f32`: the `TextMetrics` fields, in the order the host writes them. */
+export const TEXT_METRICS_BYTES = 48;
+/** The host's cap on either string a 2D query carries. */
+export const CANVAS2D_QUERY_MAX_TEXT_BYTES = 2048;
+
+export const CANVAS2D_FLAG_BOLD = 1;
+export const CANVAS2D_FLAG_ITALIC = 2;
+
+/**
+ * Encode a Canvas2D query's arguments: four words, two lengths, then the two
+ * strings, each padded to a word with zeros.
+ *
+ * Two strings rather than one joined pair, because a text that contained the
+ * separator would otherwise be a different query.
+ */
+export function encodeCanvas2DQueryParams({ kind, canvasId = 0, number = 0, flags = 0, text = "", font = "" }) {
+  const textBytes = queryNameEncoder.encode(text);
+  const fontBytes = queryNameEncoder.encode(font);
+  for (const bytes of [textBytes, fontBytes]) {
+    if (bytes.byteLength > CANVAS2D_QUERY_MAX_TEXT_BYTES) {
+      throw new RangeError(
+        `a 2D query string of ${bytes.byteLength} bytes is past the ${CANVAS2D_QUERY_MAX_TEXT_BYTES}-byte limit`,
+      );
+    }
+  }
+  const textPadded = (textBytes.byteLength + 3) & ~3;
+  const fontPadded = (fontBytes.byteLength + 3) & ~3;
+  const out = new Uint8Array(CANVAS2D_QUERY_HEADER_BYTES + textPadded + fontPadded);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, kind, true);
+  view.setUint32(4, canvasId, true);
+  // The size crosses as an `f32`'s bits, which is the width the op takes.
+  view.setFloat32(8, number, true);
+  view.setUint32(12, flags, true);
+  view.setUint32(16, textBytes.byteLength, true);
+  view.setUint32(20, fontBytes.byteLength, true);
+  out.set(textBytes, CANVAS2D_QUERY_HEADER_BYTES);
+  out.set(fontBytes, CANVAS2D_QUERY_HEADER_BYTES + textPadded);
+  return out;
+}
+
+/** The twelve `f32` of a `measureText` answer, as the facade reads them. */
+export function decodeMetricsReply(reply) {
+  if (reply.byteLength !== TEXT_METRICS_BYTES) {
+    throw new RangeError(`text metrics are ${TEXT_METRICS_BYTES} bytes, not ${reply.byteLength}`);
+  }
+  // Copied rather than viewed: the reply may be a view over a buffer the next
+  // call reuses, and the facade keeps these numbers.
+  return new Float32Array(reply.slice().buffer);
+}
+
+/** The `f64` of a number answer. */
+export function decodeNumberReply(reply) {
+  if (reply.byteLength !== 8) {
+    throw new RangeError(`a number answer is eight bytes, not ${reply.byteLength}`);
+  }
+  return new DataView(reply.buffer, reply.byteOffset, 8).getFloat64(0, true);
+}
+
+// Which query. The host's table is `frame_wire::sync::gl_query`, and the
+// interop gate holds the two together.
+export const GL_QUERY_PROGRAM_PARAMETER = 1;
+export const GL_QUERY_SHADER_PARAMETER = 2;
+export const GL_QUERY_QUERY_PARAMETER = 3;
+export const GL_QUERY_CHECK_FRAMEBUFFER_STATUS = 4;
+export const GL_QUERY_CLIENT_WAIT_SYNC = 5;
+export const GL_QUERY_GET_ERROR = 6;
+export const GL_QUERY_UNIFORM_LOCATION = 7;
+export const GL_QUERY_ATTRIB_LOCATION = 8;
+export const GL_QUERY_UNIFORM_BLOCK_INDEX = 9;
+export const GL_QUERY_PROGRAM_INFO_LOG = 10;
+export const GL_QUERY_SHADER_INFO_LOG = 11;
+export const GL_QUERY_PARAMETER = 12;
+export const GL_QUERY_ACTIVE_ATTRIB = 13;
+export const GL_QUERY_ACTIVE_UNIFORM = 14;
+export const GL_QUERY_TRANSFORM_FEEDBACK_VARYING = 15;
+
+/** Words before a query's name: five fields and the name's byte length. */
+export const GL_QUERY_HEADER_BYTES = 24;
+/** `size` and `type` before an active variable's name. */
+export const ACTIVE_VARIABLE_HEADER_BYTES = 8;
+/** The longest name a query may carry, as the host bounds it. */
+export const GL_QUERY_MAX_NAME_BYTES = 1024;
+
+const queryNameEncoder = new TextEncoder();
+const queryReplyDecoder = new TextDecoder();
+
+/**
+ * Encode a WebGL query's arguments: five words, the name's length, then the
+ * name's UTF-8 bytes padded to a word with zeros -- the frame stream's payload
+ * rule, and the host refuses padding that is not zero.
+ */
+export function encodeGlQueryParams({ kind, canvasId = 0, object = 0, pname = 0, extra = 0, name = "" }) {
+  const encoded = name.length === 0 ? EMPTY_NAME : queryNameEncoder.encode(name);
+  if (encoded.byteLength > GL_QUERY_MAX_NAME_BYTES) {
+    throw new RangeError(`a query name of ${encoded.byteLength} bytes is past the ${GL_QUERY_MAX_NAME_BYTES}-byte limit`);
+  }
+  const padded = (encoded.byteLength + 3) & ~3;
+  const bytes = new Uint8Array(GL_QUERY_HEADER_BYTES + padded);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, kind, true);
+  view.setUint32(4, canvasId, true);
+  view.setUint32(8, object, true);
+  view.setUint32(12, pname, true);
+  view.setUint32(16, extra, true);
+  view.setUint32(20, encoded.byteLength, true);
+  bytes.set(encoded, GL_QUERY_HEADER_BYTES);
+  return bytes;
+}
+
+const EMPTY_NAME = new Uint8Array(0);
+
+/** The four bytes of a scalar answer, as a signed integer. */
+export function decodeScalarReply(reply) {
+  if (reply.byteLength !== 4) {
+    throw new RangeError(`a scalar query answers with four bytes, not ${reply.byteLength}`);
+  }
+  return new DataView(reply.buffer, reply.byteOffset, 4).getInt32(0, true);
+}
+
+/** A text answer: the reply's bytes are the whole of it. */
+export function decodeTextReply(reply) {
+  return queryReplyDecoder.decode(reply);
+}
+
+/**
+ * An active variable's answer. A zero type is the index the program does not
+ * have, which WebGL reports as `null`.
+ */
+export function decodeActiveReply(reply) {
+  if (reply.byteLength < ACTIVE_VARIABLE_HEADER_BYTES) {
+    throw new RangeError(`an active variable answers with at least ${ACTIVE_VARIABLE_HEADER_BYTES} bytes, not ${reply.byteLength}`);
+  }
+  const view = new DataView(reply.buffer, reply.byteOffset, ACTIVE_VARIABLE_HEADER_BYTES);
+  const type = view.getUint32(4, true);
+  if (type === 0) return null;
+  return {
+    size: view.getInt32(0, true),
+    type,
+    name: queryReplyDecoder.decode(reply.subarray(ACTIVE_VARIABLE_HEADER_BYTES)),
+  };
+}
+
 /**
  * Read an AWAIT_WINDOW reply. Refuses what the host would never send: a reply
  * of the wrong length, or a reserved word that is not zero.
@@ -106,6 +274,73 @@ export const SYNC_ERROR_TEXT = {
   [SYNC_ERROR_OPERATION_FAILED]: "the host tried the operation and it failed",
 };
 
+/// A rectangle of a 2D canvas, as `getImageData` reads one when the facade
+/// cannot capture it (`frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA`).
+/// `loadFont(path, family)`, answered with the family key the renderer
+/// registered the face under -- empty when it did not load
+/// (`frame_wire::sync::SYNC_OP_CANVAS2D_FONT`).
+export const SYNC_OP_CANVAS2D_FONT = 11;
+
+/// The query kind that asks it (`frame_wire::sync::canvas2d_query::LOAD_FONT`).
+export const CANVAS2D_QUERY_LOAD_FONT = 3;
+
+/// The most a family key may be, as the host bounds it.
+export const MAX_FONT_FAMILY_REPLY_BYTES = 4096;
+
+/// `readPixels` into the bound `PIXEL_PACK_BUFFER`
+/// (`frame_wire::sync::SYNC_OP_READ_PIXELS_TO_BUFFER`). Nothing comes back but
+/// the WebGL error it raised, or zero.
+export const SYNC_OP_READ_PIXELS_TO_BUFFER = 12;
+
+/// Serialised size of its arguments, and of its answer.
+export const READ_PIXELS_TO_BUFFER_PARAM_BYTES = 40;
+export const READ_PIXELS_TO_BUFFER_REPLY_BYTES = 4;
+
+/** Encode a pack-buffer readback's arguments: seven words, then an i64. */
+export function encodeReadPixelsToBufferParams({ canvasId, x, y, width, height, format, type, offset }) {
+  const bytes = new Uint8Array(READ_PIXELS_TO_BUFFER_PARAM_BYTES);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, canvasId, true);
+  view.setInt32(4, x, true);
+  view.setInt32(8, y, true);
+  view.setInt32(12, width, true);
+  view.setInt32(16, height, true);
+  view.setUint32(20, format, true);
+  view.setUint32(24, type, true);
+  view.setBigInt64(28, offset, true);
+  view.setUint32(36, 0, true);
+  return bytes;
+}
+
+export const SYNC_OP_CANVAS2D_IMAGE_DATA = 9;
+
+/// The pixels of a snapshot the host captured
+/// (`frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT`).
+export const SYNC_OP_CANVAS2D_SNAPSHOT = 10;
+
+/// Serialised size of the arguments both of those take.
+export const CANVAS2D_PIXELS_PARAM_BYTES = 24;
+
+/**
+ * Encode a 2D pixel read's arguments: six little-endian 32-bit words.
+ *
+ * `target` is the canvas for an image-data read and the snapshot for a snapshot
+ * read; the size travels for both, so the producer's reservation and the host's
+ * expectation are one number. The last word is reserved and must be zero -- the
+ * host refuses a record that sets it rather than ignoring it.
+ */
+export function encodeCanvas2DPixelsParams({ target, x = 0, y = 0, width, height }) {
+  const bytes = new Uint8Array(CANVAS2D_PIXELS_PARAM_BYTES);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, target, true);
+  view.setInt32(4, x, true);
+  view.setInt32(8, y, true);
+  view.setUint32(12, width, true);
+  view.setUint32(16, height, true);
+  view.setUint32(20, 0, true);
+  return bytes;
+}
+
 /**
  * Encode `readPixels`' arguments.
  *
@@ -135,9 +370,31 @@ export function encodeReadPixelsParams({
   return bytes;
 }
 
-/** How many bytes `readPixels` over this rectangle answers with. */
+/**
+ * Bytes of the layout header a `readPixels` reply begins with.
+ *
+ * `frame_wire::sync::READ_PIXELS_LAYOUT_BYTES`: four little-endian `u32`s --
+ * first byte, row bytes, row stride, rows -- saying where the rows go in the
+ * caller's view. The `PACK_*` state that decides that is the host's, and this
+ * side never sees `pixelStorei`: the engine's own encoder writes it into the
+ * command stream this producer forwards unread.
+ */
+export const READ_PIXELS_LAYOUT_BYTES = 16;
+
+/** How many bytes `readPixels` over this rectangle answers with, header included. */
 export function readPixelsReplyBytes(width, height) {
-  return width * height * 4;
+  return READ_PIXELS_LAYOUT_BYTES + width * height * 4;
+}
+
+/** Read the layout header a reply begins with. */
+export function decodeReadPixelsLayout(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return {
+    firstByte: view.getUint32(0, true),
+    rowBytes: view.getUint32(4, true),
+    rowStride: view.getUint32(8, true),
+    height: view.getUint32(12, true),
+  };
 }
 
 /**

@@ -36,6 +36,16 @@ elif tool == "cargo":
         dest = pathlib.Path("target") / target / profile / "libmigo_capi.a"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text("fixture archive " + target + " " + " ".join(args) + " SKIA_BINARIES_URL=" + os.environ.get("SKIA_BINARIES_URL", ""))
+        # What rustc says the archive links, as `--print=native-static-libs`
+        # prints it -- unless a test is asking what happens when it does not.
+        if "--print=native-static-libs" in args and not os.environ.get("NO_NATIVE_NOTE"):
+            print("warning: an unrelated warning", file=sys.stderr)
+            # Per platform, as rustc really reports it: the macOS archive links
+            # AppKit-side frameworks iOS has no copy of. A fixture that printed
+            # one list for every target is how a packager that could never put
+            # iOS and macOS in one xcframework passed this suite.
+            extra = " -framework ApplicationServices" if "darwin" in target else " -framework UIKit"
+            print("note: native-static-libs: -lobjc -lc++ -framework CoreText -framework AudioToolbox -framework CoreFoundation -lobjc -lSystem" + extra, file=sys.stderr)
 elif tool == "lipo":
     output = pathlib.Path(args[args.index("-output") + 1])
     output.write_bytes(b"\n".join(pathlib.Path(p).read_bytes() for p in args[1:args.index("-output")]))
@@ -169,6 +179,24 @@ class SDKPackaging(unittest.TestCase):
     def slices(self):
         return plistlib.loads((self.framework/"Info.plist").read_bytes())["AvailableLibraries"]
 
+    def test_the_module_map_links_what_rustc_says_the_archive_needs(self):
+        self.build("ios-simulator")
+        slice_dir = next(p for p in self.framework.iterdir() if p.name.endswith("simulator"))
+        modulemap = (slice_dir/"Headers"/"module.modulemap").read_text()
+        self.assertIn('umbrella "migo"', modulemap)
+        # Each dependency once, in rustc's order, whatever repeats the note had.
+        self.assertEqual(
+            [line.strip() for line in modulemap.splitlines() if line.strip().startswith("link")],
+            ['link "objc"', 'link "c++"', 'link framework "CoreText"',
+             'link framework "AudioToolbox"', 'link framework "CoreFoundation"', 'link "System"',
+             'link framework "UIKit"'],
+        )
+
+    def test_a_build_with_no_native_link_account_is_refused(self):
+        result = self.build("ios-simulator", success=False, NO_NATIVE_NOTE="1")
+        self.assertIn("reported no native link dependencies", result.stdout + result.stderr)
+        self.assertFalse(self.framework.exists(), "nothing was packaged with a guessed link list")
+
     def test_sequential_builds_preserve_device_simulator_and_native_macos(self):
         for platform in ("ios", "ios-simulator", "macos"):
             self.build(platform)
@@ -200,6 +228,25 @@ class SDKPackaging(unittest.TestCase):
         result = subprocess.run(["bash", str(helper), "--frameworks-dir", str(self.framework.parent), "--destination", str(self.root/"Host.app/Contents/Frameworks"), "--architectures", "arm64 x86_64"], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.root/"Host.app/Contents/Frameworks/libGLESv2.dylib").is_file())
+
+    def test_each_platform_keeps_the_module_map_its_own_archive_needs(self):
+        # The C ABI is one; the link lines are per platform. Each slice of an
+        # xcframework carries its own Headers, so each keeps its own map.
+        for platform in ("ios-simulator", "macos"):
+            self.build(platform)
+        maps = {entry["LibraryIdentifier"]: (self.framework/entry["LibraryIdentifier"]/"Headers/module.modulemap").read_text()
+                for entry in self.slices()}
+        self.assertIn('link framework "UIKit"', maps["ios-arm64_x86_64-simulator"])
+        self.assertNotIn("ApplicationServices", maps["ios-arm64_x86_64-simulator"])
+        self.assertIn('link framework "ApplicationServices"', maps["macos-arm64_x86_64"])
+        self.assertNotIn("UIKit", maps["macos-arm64_x86_64"])
+
+    def test_groups_built_from_different_c_headers_are_refused(self):
+        self.build("ios-simulator")
+        with (self.root/"include/migo/types.h").open("a") as header:
+            header.write("/* a later ABI */\n")
+        result = self.build("macos", success=False)
+        self.assertIn("different C ABI headers", result.stdout + result.stderr)
 
     def test_macos_build_refuses_skia_archives_the_lock_does_not_name(self):
         # A published asset replaced under its tag, or a lock edited without the
@@ -422,3 +469,55 @@ class PackagePublication(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NativeLinkAccount(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("apple_sdk_package", ROOT/"scripts/apple-sdk-package.py")
+        self.package = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.package)
+
+    def test_frameworks_and_libraries_are_read_in_order_once_each(self):
+        log = "Compiling x\nnote: native-static-libs: -lobjc -framework UIKit -lobjc -framework UIKit -lm\n"
+        self.assertEqual(
+            self.package.parse_native_libs(log),
+            [("library", "objc"), ("framework", "UIKit"), ("library", "m")],
+        )
+
+    def test_a_coloured_note_is_read_as_the_note_it_is(self):
+        # The exact bytes a CI row produced: `dtolnay/rust-toolchain` exports
+        # CARGO_TERM_COLOR=always, so `note` and its colon arrive with two SGR
+        # sequences between them and the last flag carries a reset. Every Apple
+        # build failed with "printed no native-static-libs note" against a log
+        # that contained one.
+        log = (
+            "\x1b[1m\x1b[92mnote\x1b[0m\x1b[1m: native-static-libs: "
+            "-lobjc -framework UIKit -lm\x1b[0m\n"
+        )
+        self.assertEqual(
+            self.package.parse_native_libs(log),
+            [("library", "objc"), ("framework", "UIKit"), ("library", "m")],
+        )
+
+    def test_the_last_note_is_the_archive_s(self):
+        log = "note: native-static-libs: -lold\nnote: native-static-libs: -lnew\n"
+        self.assertEqual(self.package.parse_native_libs(log), [("library", "new")])
+
+    def test_a_flag_it_cannot_read_is_refused_rather_than_dropped(self):
+        for note in ("-framework", "-Wl,-foo", "-l"):
+            with self.assertRaises(ValueError, msg=note):
+                self.package.parse_native_libs(f"note: native-static-libs: {note}\n")
+        with self.assertRaises(ValueError):
+            self.package.parse_native_libs("no note at all\n")
+
+    def test_the_module_map_is_the_union_over_slices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp)/"a.txt", Path(tmp)/"b.txt"
+            first.write_text("library objc\nframework UIKit\n")
+            second.write_text("framework UIKit\nframework AudioToolbox\n")
+            text = self.package.render_modulemap([first, second])
+        self.assertEqual(
+            text,
+            'module MigoEngine {\n    umbrella "migo"\n    export *\n'
+            '    link "objc"\n    link framework "UIKit"\n    link framework "AudioToolbox"\n}\n',
+        )

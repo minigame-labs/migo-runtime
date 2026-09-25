@@ -268,6 +268,58 @@ if ! printf '%s\n' "$output" | grep -qE 'decoded 64 JavaScript-encoded readPixel
     exit 1
 fi
 
+# --- the WebGL queries' arguments -------------------------------------------
+#
+# A query is three numbers and a name, and every one of them is a way to ask
+# about the wrong thing: an object id taken from the wrong word asks about
+# another program, and a name length read as characters rather than bytes
+# truncates a uniform's name into one nothing has. Both are ANSWERED rather than
+# refused -- `getUniformLocation` returns -1 for a name that does not exist --
+# so the failure is a uniform that silently does nothing in a frame that draws.
+GL_QUERIES="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$GL_QUERIES"' EXIT
+
+node platforms/apple/WebContent/PerformancePlus/test/emit-gl-query-params.mjs "$GL_QUERIES" 60
+emitted_queries="$(find "$GL_QUERIES" -name 'query-*.bin' | wc -l)"
+if (( emitted_queries < 60 )); then
+    echo "FAIL: the emitter wrote $emitted_queries query records, expected 60." >&2
+    exit 1
+fi
+
+output="$(cd engine && MIGO_JS_GL_QUERY_DIR="$GL_QUERIES" \
+    cargo test -p migo-frame-wire --test sync_js_interop -- --ignored --nocapture \
+    gl_query_arguments_from_the_javascript_producer 2>&1)"
+status=$?
+printf '%s\n' "$output" | grep -E 'read [0-9]+ JavaScript-encoded query records|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust decoder rejected query records built by the JavaScript producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'read 15 JavaScript-encoded query records'; then
+    echo "FAIL: the query interop did not report every kind; it may not have run." >&2
+    exit 1
+fi
+
+# The Canvas2D queries' arguments, whose two strings are where a pair of
+# payloads goes wrong: a second length read from the first's unpadded end takes
+# the font out of the middle of the text, and `measureText` then measures a
+# string nobody passed -- answered, not refused.
+output="$(cd engine && MIGO_JS_GL_QUERY_DIR="$GL_QUERIES" \
+    cargo test -p migo-frame-wire --test sync_js_interop -- --ignored --nocapture \
+    canvas2d_query_arguments_from_the_javascript_producer 2>&1)"
+status=$?
+printf '%s\n' "$output" | grep -E 'read [0-9]+ JavaScript-encoded Canvas2D query records|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust decoder rejected Canvas2D query records built by the producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'read [1-9][0-9]* JavaScript-encoded Canvas2D query records'; then
+    echo "FAIL: the Canvas2D query interop reported nothing; it may not have run." >&2
+    exit 1
+fi
+
 # --- the synchronous call as one body, in both directions --------------------
 #
 # The Apple lane's content origin has no SharedArrayBuffer, so a readback there
@@ -429,6 +481,52 @@ if (( status != 0 )); then
 fi
 node "$TEST_DIR/emit-control.mjs" read "$CONTROL_FROM_RUST"
 
+# --- the service stream, in both directions ----------------------------------
+#
+# Everything content asks the host to do that is not drawing -- a file read, a
+# storage write, an image load -- travels as `MUS1` and is answered as `MDS1`.
+# The producer writes one and reads the other, and a disagreement reaches a user
+# as a write the host reads under another key or a read answered with another
+# request's bytes. The node suite covers what only the producer has (batching
+# per task, the hybrid send, parked answers, a refusal breaking the stream); the
+# corpus is checked byte for byte against the Rust writer, and the Rust answers
+# are read back by the producer's reader.
+SERVICE_TEST="$TEST_DIR/service.test.mjs"
+node "$SERVICE_TEST"
+RAN_TESTS+=("$SERVICE_TEST")
+
+SERVICE_FROM_JS="$(mktemp -d)"
+SERVICE_FROM_RUST="$(mktemp -d)"
+trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$SYNC_CALLS" "$SYNC_ANSWERS" "$DOWN_FROM_JS" "$DOWN_FROM_RUST" "$CONTROL_FROM_JS" "$CONTROL_FROM_RUST" "$SERVICE_FROM_JS" "$SERVICE_FROM_RUST"' EXIT
+
+node "$TEST_DIR/emit-service.mjs" write "$SERVICE_FROM_JS"
+status=0
+output="$(cd engine && MIGO_SERVICE_IN_DIR="$SERVICE_FROM_JS" \
+    cargo test -p migo-frame-wire --test service_js_interop -- \
+    --ignored --nocapture service_messages_from 2>&1)" || status=$?
+printf '%s\n' "$output" | grep -E 'read [0-9]+ JavaScript-encoded service messages|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust reader refused service messages written by the JavaScript producer." >&2
+    exit 1
+fi
+if ! printf '%s\n' "$output" | grep -qE 'read [1-9][0-9]* JavaScript-encoded service messages'; then
+    echo "FAIL: the service interop test did not report reading anything; it may not have run." >&2
+    exit 1
+fi
+
+status=0
+output="$(cd engine && MIGO_SERVICE_OUT_DIR="$SERVICE_FROM_RUST" \
+    cargo test -p migo-frame-wire --test service_js_interop -- \
+    --ignored --nocapture the_rust_writer 2>&1)" || status=$?
+printf '%s\n' "$output" | grep -E 'wrote [0-9]+ service answer messages|test result' || true
+if (( status != 0 )); then
+    printf '%s\n' "$output" >&2
+    echo "FAIL: the Rust writer could not produce the service answer corpus." >&2
+    exit 1
+fi
+node "$TEST_DIR/emit-service.mjs" read "$SERVICE_FROM_RUST"
+
 # --- an op's arguments, as deno_core converts them --------------------------
 #
 # The stream lane answers ops whose Rust bodies see arguments deno_core has
@@ -438,6 +536,86 @@ node "$TEST_DIR/emit-control.mjs" read "$CONTROL_FROM_RUST"
 # call in the other, and nothing downstream could tell.
 node "$TEST_DIR/op-args.test.mjs"
 RAN_TESTS+=("$TEST_DIR/op-args.test.mjs")
+
+# --- a read larger than one service answer ----------------------------------
+#
+# The file lanes read into a caller's buffer in pieces, so no answer approaches
+# the synchronous reply ceiling or the host's outbox bound. The pieces have to
+# be the embedded op's one read: continuing by position or by cursor, stopping
+# at end of file, and asking once even for nothing.
+node "$TEST_DIR/files.test.mjs"
+RAN_TESTS+=("$TEST_DIR/files.test.mjs")
+
+# --- what an audio command refuses before it is sent ------------------------
+#
+# Audio plays on the host, and almost every audio op is a command: nothing
+# answers it, so an argument the embedded op throws for has to be refused by
+# the producer, before it leaves, with the same class and words. The answers
+# are generated from `migo_services::audio`'s own checks (the Rust test
+# `the_producer_s_command_checks_answer_as_these_do` fails when they drift), and
+# the strings are measured three ways, because the Rust check reads UTF-8 bytes
+# and a producer that counted UTF-16 units would pass every ASCII case.
+node "$TEST_DIR/audio-checks.test.mjs"
+RAN_TESTS+=("$TEST_DIR/audio-checks.test.mjs")
+
+# --- the colours the engine's own parser abstains from ----------------------
+#
+# `fillStyle` is encoded by the engine for the forms it is sure of and handed to
+# an op otherwise, and that op's Rust body is the authority. On this lane the op
+# is the producer's, so its port has to answer the same -- including for
+# `rgb( 1 , 2 , 3 )`, which the engine's strict reader abstains from and Rust
+# reads as an ordinary colour. The corpus is the one both Rust checks use.
+node "$TEST_DIR/canvas2d-color.test.mjs"
+RAN_TESTS+=("$TEST_DIR/canvas2d-color.test.mjs")
+
+# --- the two 2D reads whose answer is pixels --------------------------------
+#
+# `getImageData` is a capture in this engine: the pixels stay in the host's
+# snapshot pool and only a content read of the bytes brings them back. The
+# capture is compared against the op by the parity fixture; what that fixture
+# cannot reach is the asking, because a synchronous call needs a host endpoint.
+# This suite gives it one and checks the arguments, the sizing -- a snapshot read
+# is sized from its capture, which is the only place that size exists on this
+# side -- and the empty answer both reads give where the op gives an empty Vec.
+node "$TEST_DIR/canvas2d-pixels.test.mjs"
+RAN_TESTS+=("$TEST_DIR/canvas2d-pixels.test.mjs")
+
+# --- readPixels, whose answer has to be placed rather than returned ---------
+#
+# The one query that writes into a view the caller already holds, at positions
+# the renderer's PACK state decides -- state this side cannot see, because the
+# engine's encoder writes `pixelStorei` into the command stream this producer
+# forwards unread. So the host answers with the layout in front of the rows, and
+# this suite checks the half that is this side's: which calls are refused before
+# anything is asked, what the request reserves and carries, and that the rows
+# land where the layout says while the gaps between them are left alone.
+node "$TEST_DIR/read-pixels.test.mjs"
+RAN_TESTS+=("$TEST_DIR/read-pixels.test.mjs")
+
+# --- the canvas the frame creates, resizes and destroys ---------------------
+#
+# The parity fixture drives these through the engine's own facade in both
+# runtimes and compares the effects, which covers creation and resizing. It
+# cannot reach two calls, because no facade call reaches them: `op_destroy_canvas`,
+# which the engine calls from a `FinalizationRegistry` that no test can schedule,
+# and a resize naming neither dimension, which the width and height setters
+# cannot produce. Those two, and the refusals the ops make before writing
+# anything -- the surface pixel cap, and the onscreen canvas, which neither lane
+# may destroy -- are checked here against the records the reader expects.
+node "$TEST_DIR/canvas-lifetime.test.mjs"
+RAN_TESTS+=("$TEST_DIR/canvas-lifetime.test.mjs")
+
+# --- what a socket event is on both sides -----------------------------------
+#
+# A socket cannot ride the record-and-replay harness the fetch calls do: a
+# replay would need a peer, and every address one could listen on is one the
+# address filter refuses -- which is that filter working. So the shape the two
+# halves must agree about, for the WebSocket and for raw TCP and UDP -- the
+# tagged event -- is pinned by a fixture the host writes
+# (`the_producer_s_socket_events_are_the_ones_this_writes`) and the producer
+# rebuilds the facade's object from here.
+node "$TEST_DIR/socket-events.test.mjs"
+RAN_TESTS+=("$TEST_DIR/socket-events.test.mjs")
 
 # --- a frame larger than one packet, and what the host will decode ----------
 #
@@ -483,6 +661,9 @@ fi
 # both. Named here so the coverage check below does not run it a second time
 # without the half that reads its output.
 RAN_TESTS+=("$TEST_DIR/engine-bundle.test.mjs")
+# The same for `host-events.test.mjs`: it delivers events the Rust host encodes
+# to the staged engine's bridge, so the engine contract runs it with both.
+RAN_TESTS+=("$TEST_DIR/host-events.test.mjs")
 
 # --- the producer's own suites: run the named ones, then prove that was all ---
 #

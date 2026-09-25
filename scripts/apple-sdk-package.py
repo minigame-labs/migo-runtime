@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,18 @@ def digest(path):
 def header_digest(stage):
     files = sorted((stage / "headers").rglob("*"))
     return {str(path.relative_to(stage / "headers")): digest(path) for path in files if path.is_file()}
+
+
+def abi_headers(headers):
+    """The C ABI part of a group's header digest: everything but the module map.
+
+    The headers under `migo/` are the ABI and must be byte-identical in every
+    group, because the xcframework presents one `MigoEngine` module to Swift. The
+    module map is not ABI: its `link` lines are what that platform's archive
+    needs (UIKit on iOS, ApplicationServices on macOS), and each xcframework
+    slice carries its own Headers directory precisely so they can differ.
+    """
+    return {path: value for path, value in headers.items() if path != "module.modulemap"}
 
 
 def check_runtime(root, platform):
@@ -109,7 +122,7 @@ def assemble(args):
             raise ValueError(f"staged archive changed after build: {stage}")
         if not receipt["headers"] or receipt["headers"] != header_digest(stage):
             raise ValueError(f"staged headers changed after build: {stage}")
-        if stages and receipt["headers"] != stages[0][1]["headers"]:
+        if stages and abi_headers(receipt["headers"]) != abi_headers(stages[0][1]["headers"]):
             raise ValueError("staged groups have different C ABI headers; rebuild the older groups")
         check_runtime(args.repo_root, platform)
         stages.append((stage, receipt))
@@ -238,6 +251,78 @@ def embed_angle(args):
     print(f"embedded ANGLE macOS pair in {args.destination}")
 
 
+NATIVE_NOTE = "note: native-static-libs:"
+
+# Colour is not content. `dtolnay/rust-toolchain` exports CARGO_TERM_COLOR=always,
+# so on every CI row rustc writes the note as
+# `\e[1m\e[92mnote\e[0m\e[1m: native-static-libs: ... -lm\e[0m`: two escape
+# sequences BETWEEN `note` and its colon, and a reset after the last flag. The
+# note above is then not a substring of the line, so packaging refused every
+# Apple build with "rustc printed no native-static-libs note" while the note sat
+# in the log it was reading -- and no developer saw it, because a pipe turns
+# cargo's colour off unless something forces it on. Stripping SGR sequences
+# fixes both ends: the trailing reset would otherwise arrive as a flag named
+# `-lm\e[0m`.
+SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def parse_native_libs(log_text):
+    """The link flags rustc reported for the static archive, in order, once each.
+
+    rustc prints them as one note (`--print=native-static-libs`); cargo replays
+    it for an up-to-date crate. `-framework X` is one flag of two words.
+    """
+    lines = [SGR.sub("", line) for line in log_text.splitlines()]
+    notes = [line.split(NATIVE_NOTE, 1)[1] for line in lines if NATIVE_NOTE in line]
+    if not notes:
+        raise ValueError("rustc printed no native-static-libs note")
+    words = notes[-1].split()
+    flags, index = [], 0
+    while index < len(words):
+        word = words[index]
+        if word == "-framework":
+            if index + 1 == len(words):
+                raise ValueError("a -framework flag names no framework")
+            flag = ("framework", words[index + 1])
+            index += 2
+        elif word.startswith("-l") and len(word) > 2:
+            flag = ("library", word[2:])
+            index += 1
+        else:
+            raise ValueError(f"unrecognised native link flag {word!r}")
+        if flag not in flags:
+            flags.append(flag)
+    return flags
+
+
+def native_libs(args):
+    flags = parse_native_libs(args.cargo_log.read_text(errors="replace"))
+    args.output.write_text("".join(f"{kind} {name}\n" for kind, name in flags))
+
+
+def render_modulemap(flag_files):
+    """The engine's module map: every header under `migo`, and a `link` line per
+    native dependency any slice's archive has, so Clang autolinks them for each
+    target that imports the module."""
+    flags = []
+    for path in flag_files:
+        for line in path.read_text().splitlines():
+            kind, name = line.split(" ", 1)
+            if (kind, name) not in flags:
+                flags.append((kind, name))
+    if not flags:
+        raise ValueError("no native link dependencies were recorded for any slice")
+    links = "".join(
+        f'    link framework "{name}"\n' if kind == "framework" else f'    link "{name}"\n'
+        for kind, name in flags
+    )
+    return "module MigoEngine {\n    umbrella \"migo\"\n    export *\n" + links + "}\n"
+
+
+def modulemap(args):
+    args.output.write_text(render_modulemap(args.flag_files))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -258,6 +343,12 @@ def main():
         embed.add_argument("--" + field, type=Path, required=True)
     embed.add_argument("--architectures", required=True)
     embed.add_argument("--sign", default="")
+    natives = commands.add_parser("native-libs")
+    natives.add_argument("--cargo-log", type=Path, required=True)
+    natives.add_argument("--output", type=Path, required=True)
+    module = commands.add_parser("modulemap")
+    module.add_argument("--output", type=Path, required=True)
+    module.add_argument("flag_files", type=Path, nargs="+")
     args = parser.parse_args()
     try:
         if args.command == "record":
@@ -266,6 +357,10 @@ def main():
             assemble(args)
         elif args.command == "embed-angle":
             embed_angle(args)
+        elif args.command == "native-libs":
+            native_libs(args)
+        elif args.command == "modulemap":
+            modulemap(args)
         else:
             check_runtime(args.repo_root, args.platform)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:

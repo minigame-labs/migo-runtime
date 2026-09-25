@@ -161,6 +161,611 @@ pub const SYNC_OP_READ_PIXELS: u32 = 1;
 /// a producer blocked for good.
 pub const SYNC_OP_AWAIT_WINDOW: u32 = 2;
 
+/// A WebGL query whose answer is one number.
+///
+/// `getProgramParameter`, `getShaderParameter`, `getUniformLocation`,
+/// `checkFramebufferStatus`, `getError` and the rest: the calls a WebGL program
+/// makes between recording work and drawing with it, whose return value is the
+/// answer and for which there is no safe default. Which query is in the
+/// parameters ([`GlQuery`]), not the operation, because the operation is what
+/// sizes the reply -- a host that answered a location and an info log through
+/// one code would have to guess a reply size for both.
+///
+/// Reply: four bytes, little-endian, read as `i32` or `u32` by the query.
+pub const SYNC_OP_GL_QUERY_SCALAR: u32 = 3;
+
+/// A WebGL query whose answer is text: the info logs, and `getParameter` for
+/// the strings a context reports about itself.
+///
+/// Reply: the UTF-8 bytes, and nothing else -- the request already carries how
+/// many there are.
+pub const SYNC_OP_GL_QUERY_TEXT: u32 = 4;
+
+/// A WebGL query whose answer describes an active variable:
+/// `getActiveAttrib`, `getActiveUniform`, `getTransformFeedbackVarying`.
+///
+/// Reply: `size:i32`, `type:u32`, then the name's UTF-8 bytes. A reply of
+/// exactly [`ACTIVE_VARIABLE_HEADER_BYTES`] with an empty name is the answer for
+/// an index the program does not have, which WebGL returns as `null`; the
+/// producer distinguishes the two by the `type` being zero.
+pub const SYNC_OP_GL_QUERY_ACTIVE: u32 = 5;
+
+/// `size` and `type` before an active variable's name.
+pub const ACTIVE_VARIABLE_HEADER_BYTES: usize = 8;
+
+/// A Canvas2D query whose answer is a run of `f32`: `measureText`'s metrics.
+///
+/// Reply: [`TEXT_METRICS_BYTES`], twelve little-endian `f32` in the order
+/// `context2d.rs` writes them, which is the order the engine's facade reads a
+/// `TextMetrics` back in. One layout, not a second one to keep in step.
+pub const SYNC_OP_CANVAS2D_METRICS: u32 = 6;
+
+/// A Canvas2D query whose answer is one number: the line height of a font.
+///
+/// Reply: eight bytes, a little-endian `f64`, because the op it stands in for
+/// returns one and rounding it here would be a different answer.
+pub const SYNC_OP_CANVAS2D_NUMBER: u32 = 7;
+
+/// A service call made synchronously: `readFileSync`, `getStorageSync`, the
+/// calls on the service stream whose return value is the answer.
+///
+/// Parameters: `op u32`, then the op's arguments as a run of values (see
+/// [`crate::value`]). Reply: `outcome u32`, then one value when it is
+/// [`crate::service::OUTCOME_OK`], or a class string and a message string when
+/// it is [`crate::service::OUTCOME_ERROR`] -- the body of a service reply
+/// without its request id, because the response already belongs to its request.
+///
+/// A service call's own failure (a missing file, a quota) is an answer, READY
+/// with an error outcome; the barrier's FAILED is kept for the barrier failing
+/// (a timeout, a session that ended). The two mean different things to a
+/// producer: one is thrown into content as the op's error, the other says the
+/// host did not answer at all.
+///
+/// Its body and reply are bounded by [`SERVICE_CALL_MAX_BYTES`] and
+/// [`MAX_SERVICE_REPLY_BYTES`] rather than by the barrier's own bounds: a
+/// synchronous file read answers with the file, and a synchronous write sends
+/// one.
+pub const SYNC_OP_SERVICE: u32 = 8;
+
+/// A rectangle of a 2D canvas, as `getImageData` reads one when it cannot
+/// capture: `H canvas_id x y width height`, answered with tightly packed RGBA8.
+///
+/// The engine's facade captures into the host's snapshot pool for a read it can
+/// (see [`SYNC_OP_CANVAS2D_SNAPSHOT`]); this is the path it falls back to for a
+/// zero-area or out-of-bounds read, and it is the op's own fallback in process
+/// too. No layout travels with it, unlike `readPixels`: a 2D readback is the
+/// rectangle's rows and nothing else decides where they go.
+pub const SYNC_OP_CANVAS2D_IMAGE_DATA: u32 = 9;
+
+/// The pixels of a snapshot the host captured: `H snapshot_id width height`,
+/// answered with tightly packed RGBA8.
+///
+/// The capture is a record in the frame (`OP2D_CAPTURE_SNAPSHOT`), so this is
+/// only asked when content actually reads the `ImageData`'s bytes -- which is
+/// what makes the capture worth having: a snapshot that goes straight into a
+/// texture never crosses back at all.
+pub const SYNC_OP_CANVAS2D_SNAPSHOT: u32 = 10;
+
+/// A Canvas2D query whose answer is a string: the family key `loadFont`
+/// registered a font under, empty when it did not load.
+pub const SYNC_OP_CANVAS2D_FONT: u32 = 11;
+
+/// The most a [`SYNC_OP_CANVAS2D_FONT`] answer may be.
+///
+/// A family name, which is a label on a typeface rather than a document; this is
+/// far above any real one and far below the barrier's own ceiling.
+pub const MAX_FONT_FAMILY_REPLY_BYTES: u32 = 4096;
+
+/// `readPixels` into the bound `PIXEL_PACK_BUFFER`, whose answer is only
+/// whether it worked: `H canvas x y width height format type offset:I64`,
+/// answered with one `u32` -- the WebGL error the call raised, or zero.
+///
+/// It is a synchronous operation rather than a record because the op it stands
+/// for is synchronous in process: it blocks on the renderer and pushes the
+/// error the renderer decided, which depends on the live `PIXEL_PACK_BUFFER`
+/// binding and the buffer's size. A record would have had nowhere to put that
+/// error -- the renderer has no queue a producer reads -- so the call that
+/// blocks keeps blocking, and what comes back is the verdict.
+pub const SYNC_OP_READ_PIXELS_TO_BUFFER: u32 = 12;
+
+/// Serialised size of [`ReadPixelsToBufferParams`].
+pub const READ_PIXELS_TO_BUFFER_PARAMS_BYTES: usize = 40;
+
+/// Bytes of its reply: the WebGL error code, or zero.
+pub const READ_PIXELS_TO_BUFFER_REPLY_BYTES: u32 = 4;
+
+/// What a pack-buffer readback names: the rectangle, the pixel pair, and the
+/// offset into the bound buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadPixelsToBufferParams {
+    pub canvas_id: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub format: u32,
+    pub type_: u32,
+    /// A `GLintptr`, which is signed; a negative one is refused by the caller
+    /// before it asks, as the op refuses it.
+    pub offset: i64,
+}
+
+impl ReadPixelsToBufferParams {
+    pub fn encode(&self) -> [u8; READ_PIXELS_TO_BUFFER_PARAMS_BYTES] {
+        let mut out = [0u8; READ_PIXELS_TO_BUFFER_PARAMS_BYTES];
+        for (index, word) in [
+            self.canvas_id,
+            self.x as u32,
+            self.y as u32,
+            self.width as u32,
+            self.height as u32,
+            self.format,
+            self.type_,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            out[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        out[28..36].copy_from_slice(&self.offset.to_le_bytes());
+        out
+    }
+
+    /// Decode and validate: the length, the reserved word, and a rectangle with
+    /// pixels in it. The pixel pair is not checked here -- the renderer decides
+    /// what it can read, as it does in process.
+    pub fn decode(bytes: &[u8]) -> Result<Self, SyncError> {
+        if bytes.len() != READ_PIXELS_TO_BUFFER_PARAMS_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |offset: usize| -> u32 {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        if word(36) != 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let mut offset = [0u8; 8];
+        offset.copy_from_slice(&bytes[28..36]);
+        let params = Self {
+            canvas_id: word(0),
+            x: word(4) as i32,
+            y: word(8) as i32,
+            width: word(12) as i32,
+            height: word(16) as i32,
+            format: word(20),
+            type_: word(24),
+            offset: i64::from_le_bytes(offset),
+        };
+        if params.width <= 0 || params.height <= 0 || params.offset < 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(params)
+    }
+}
+
+/// Serialised size of [`Canvas2DPixelsParams`].
+pub const CANVAS2D_PIXELS_PARAMS_BYTES: usize = 24;
+
+/// What a 2D pixel read names: a canvas and a rectangle, or a snapshot and the
+/// size it was captured at.
+///
+/// One record for both, because the two answers are the same shape and the
+/// operation says which is being asked. The size is carried for a snapshot as
+/// well so the producer's reservation and the host's expectation are one
+/// number: a snapshot pool that answered a different rectangle than the capture
+/// asked for would be a picture nobody could tell was wrong.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Canvas2DPixelsParams {
+    /// The canvas for an image-data read, the snapshot for a snapshot read.
+    pub target: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Canvas2DPixelsParams {
+    pub fn encode(&self) -> [u8; CANVAS2D_PIXELS_PARAMS_BYTES] {
+        let mut out = [0u8; CANVAS2D_PIXELS_PARAMS_BYTES];
+        for (index, word) in [
+            self.target,
+            self.x as u32,
+            self.y as u32,
+            self.width,
+            self.height,
+            0,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            out[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        out
+    }
+
+    /// Decode and validate. Refuses rather than clamps, for the reason
+    /// [`ReadPixelsParams::decode`] does: a read answered over a rectangle the
+    /// producer did not ask for is a wrong answer that looks like a right one.
+    pub fn decode(bytes: &[u8]) -> Result<Self, SyncError> {
+        if bytes.len() != CANVAS2D_PIXELS_PARAMS_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |offset: usize| -> u32 {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        let params = Self {
+            target: word(0),
+            x: word(4) as i32,
+            y: word(8) as i32,
+            width: word(12),
+            height: word(16),
+        };
+        // A zero-area read has no pixels to answer with, and the reserved word
+        // is reserved: a producer that set it is one this host does not know.
+        if params.width == 0 || params.height == 0 || word(20) != 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(params)
+    }
+
+    /// How many bytes the answer will be: the rectangle in RGBA8, or `None`
+    /// when that does not fit in a `u32`.
+    pub fn reply_bytes(&self) -> Option<u32> {
+        self.width.checked_mul(self.height)?.checked_mul(4)
+    }
+}
+
+/// The most a [`SYNC_OP_SERVICE`] call may be answered with.
+///
+/// The embedded runtime reads up to 100 MiB in one call
+/// (`shared::protocol::io_cmd::MAX_READ_LENGTH`); this is that and the reply's
+/// own framing, rounded up. The answer is produced into memory the host owns
+/// and handed to the transport without a copy, so the bound is on what a call
+/// may make the host hold, not on a buffer anyone preallocates.
+pub const MAX_SERVICE_REPLY_BYTES: u32 = 128 * 1024 * 1024;
+
+/// The most a [`SYNC_OP_SERVICE`] call body may be, header included.
+pub const SERVICE_CALL_MAX_BYTES: usize =
+    SYNC_CALL_HEADER_BYTES + crate::service::MAX_SERVICE_MESSAGE_BYTES;
+
+/// The reservation ceiling for `operation`.
+pub const fn reply_ceiling(operation: u32) -> u32 {
+    if operation == SYNC_OP_SERVICE {
+        MAX_SERVICE_REPLY_BYTES
+    } else {
+        MAX_REPLY_BYTES
+    }
+}
+
+/// Twelve `f32`: the `TextMetrics` fields, in `encode_text_metrics`' order.
+pub const TEXT_METRICS_BYTES: usize = 48;
+
+/// Which Canvas2D query a [`Canvas2DQueryParams`] asks.
+pub mod canvas2d_query {
+    /// `measureText(text)` against a CSS font shorthand: `text` is the string,
+    /// `font` the shorthand.
+    pub const MEASURE_TEXT: u32 = 1;
+    /// The line height of a family at a size: `font` is the family, `number`
+    /// the size in pixels, and the flags carry bold and italic.
+    pub const TEXT_LINE_HEIGHT: u32 = 2;
+    /// `loadFont(path, family)`: `text` is the path in the game's sandbox and
+    /// `font` the family content asked for, which may be empty. The answer is
+    /// the family key the renderer registered it under, and an empty answer is
+    /// the failure the op reports the same way -- a custom font that did not
+    /// load is a fallback face, and content checks the key it got back.
+    ///
+    /// It was not here while this host had no file lane, because a query that
+    /// answered "could not load" would have been a custom font silently
+    /// replaced. The file lane exists now, and the host reads the font where it
+    /// reads everything else the game ships.
+    pub const LOAD_FONT: u32 = 3;
+
+    /// Whether a kind is one this build knows.
+    pub fn is_known(kind: u32) -> bool {
+        (MEASURE_TEXT..=LOAD_FONT).contains(&kind)
+    }
+
+    /// `bold`, in the flags word.
+    pub const FLAG_BOLD: u32 = 1 << 0;
+    /// `italic`, in the flags word.
+    pub const FLAG_ITALIC: u32 = 1 << 1;
+    /// Every bit this build reads; a flags word with another set is refused
+    /// rather than masked, because a bit nobody reads is a second channel.
+    pub const FLAG_MASK: u32 = FLAG_BOLD | FLAG_ITALIC;
+}
+
+/// The arguments of a Canvas2D query: two strings and two numbers.
+///
+/// Two strings because every one of these takes a pair -- a text and a font, a
+/// path and a family -- and joining them with a separator would make a text
+/// that contains that separator a different query. Each is UTF-8, its length is
+/// a byte count, and each is padded to a word with zeros: the frame stream's
+/// payload rule, for the reason that rule exists.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Canvas2DQueryParams<'a> {
+    pub kind: u32,
+    pub canvas_id: u32,
+    /// A `f32`'s bits: the font size, where the query takes one.
+    pub number: u32,
+    pub flags: u32,
+    pub text: &'a [u8],
+    pub font: &'a [u8],
+}
+
+/// The words before a [`Canvas2DQueryParams`]'s payloads: the four fields above
+/// and the two lengths.
+pub const CANVAS2D_QUERY_HEADER_BYTES: usize = 24;
+
+/// The longest string a Canvas2D query may carry.
+///
+/// A label is a line of text and a path is a path; this is far above either and
+/// far below the body ceiling, so a string that reaches it is a producer bug.
+pub const CANVAS2D_QUERY_MAX_TEXT_BYTES: usize = 2048;
+
+impl<'a> Canvas2DQueryParams<'a> {
+    pub fn encode(&self) -> Vec<u8> {
+        let text_padded = self.text.len().div_ceil(4) * 4;
+        let font_padded = self.font.len().div_ceil(4) * 4;
+        let mut out = Vec::with_capacity(CANVAS2D_QUERY_HEADER_BYTES + text_padded + font_padded);
+        for word in [
+            self.kind,
+            self.canvas_id,
+            self.number,
+            self.flags,
+            self.text.len() as u32,
+            self.font.len() as u32,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        out.extend_from_slice(self.text);
+        out.resize(CANVAS2D_QUERY_HEADER_BYTES + text_padded, 0);
+        out.extend_from_slice(self.font);
+        out.resize(CANVAS2D_QUERY_HEADER_BYTES + text_padded + font_padded, 0);
+        out
+    }
+
+    /// Decode and validate: a known kind, lengths that agree with the body,
+    /// flags this build reads, and zero padding.
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, SyncError> {
+        if bytes.len() < CANVAS2D_QUERY_HEADER_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |offset: usize| -> u32 {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        let kind = word(0);
+        if !canvas2d_query::is_known(kind) {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let flags = word(12);
+        if flags & !canvas2d_query::FLAG_MASK != 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let text_len = word(16) as usize;
+        let font_len = word(20) as usize;
+        if text_len > CANVAS2D_QUERY_MAX_TEXT_BYTES || font_len > CANVAS2D_QUERY_MAX_TEXT_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let text_padded = text_len.div_ceil(4) * 4;
+        let font_padded = font_len.div_ceil(4) * 4;
+        if bytes.len() != CANVAS2D_QUERY_HEADER_BYTES + text_padded + font_padded {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let text_at = CANVAS2D_QUERY_HEADER_BYTES;
+        let font_at = text_at + text_padded;
+        if bytes[text_at + text_len..font_at].iter().any(|b| *b != 0)
+            || bytes[font_at + font_len..].iter().any(|b| *b != 0)
+        {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(Self {
+            kind,
+            canvas_id: word(4),
+            number: word(8),
+            flags,
+            text: &bytes[text_at..text_at + text_len],
+            font: &bytes[font_at..font_at + font_len],
+        })
+    }
+
+    /// The text, with lone surrogates replaced -- V8's conversion for a
+    /// `#[string]` argument.
+    pub fn text_str(&self) -> std::borrow::Cow<'a, str> {
+        String::from_utf8_lossy(self.text)
+    }
+
+    /// The font or family, likewise.
+    pub fn font_str(&self) -> std::borrow::Cow<'a, str> {
+        String::from_utf8_lossy(self.font)
+    }
+
+    /// The `f32` the `number` word carries.
+    pub fn number_f32(&self) -> f32 {
+        f32::from_bits(self.number)
+    }
+
+    /// Which operation answers this kind, and therefore what its reply is.
+    pub fn operation(kind: u32) -> u32 {
+        match kind {
+            canvas2d_query::MEASURE_TEXT => SYNC_OP_CANVAS2D_METRICS,
+            canvas2d_query::LOAD_FONT => SYNC_OP_CANVAS2D_FONT,
+            _ => SYNC_OP_CANVAS2D_NUMBER,
+        }
+    }
+}
+
+/// Which WebGL query a [`GlQueryParams`] asks.
+///
+/// Numbered and stable, like an opcode: the producer writes one of these and
+/// the host dispatches on it, and nothing between them is typed.
+pub mod gl_query {
+    /// `getProgramParameter(program, pname)` -- `object` is the program.
+    pub const PROGRAM_PARAMETER: u32 = 1;
+    /// `getShaderParameter(shader, pname)` -- `object` is the shader.
+    pub const SHADER_PARAMETER: u32 = 2;
+    /// `getQueryParameter(query, pname)` -- `object` is the query object.
+    pub const QUERY_PARAMETER: u32 = 3;
+    /// `checkFramebufferStatus(target)` -- `pname` is the target.
+    pub const CHECK_FRAMEBUFFER_STATUS: u32 = 4;
+    /// `clientWaitSync(sync, flags, timeout)` -- `object` is the sync object,
+    /// `pname` the flags, `extra` the timeout in milliseconds.
+    pub const CLIENT_WAIT_SYNC: u32 = 5;
+    /// `getError()`, answered from the errors the host recorded while decoding
+    /// this producer's records -- there is no round trip to the renderer,
+    /// because the error queue is the host's.
+    pub const GET_ERROR: u32 = 6;
+    /// `getUniformLocation(program, name)`; -1 when there is none.
+    pub const UNIFORM_LOCATION: u32 = 7;
+    /// `getAttribLocation(program, name)`; -1 when there is none.
+    pub const ATTRIB_LOCATION: u32 = 8;
+    /// `getUniformBlockIndex(program, name)`; `INVALID_INDEX` when there is none.
+    pub const UNIFORM_BLOCK_INDEX: u32 = 9;
+    /// `getProgramInfoLog(program)`.
+    pub const PROGRAM_INFO_LOG: u32 = 10;
+    /// `getShaderInfoLog(shader)`.
+    pub const SHADER_INFO_LOG: u32 = 11;
+    /// `getParameter(pname)`, whose answer this host renders as text.
+    pub const PARAMETER: u32 = 12;
+    /// `getActiveAttrib(program, index)` -- `pname` is the index.
+    pub const ACTIVE_ATTRIB: u32 = 13;
+    /// `getActiveUniform(program, index)`.
+    pub const ACTIVE_UNIFORM: u32 = 14;
+    /// `getTransformFeedbackVarying(program, index)`.
+    pub const TRANSFORM_FEEDBACK_VARYING: u32 = 15;
+
+    /// Whether a kind is one this build knows. A query nobody implements is
+    /// [`super::SyncError::UnsupportedOperation`], never an answer of zero.
+    pub fn is_known(kind: u32) -> bool {
+        (PROGRAM_PARAMETER..=TRANSFORM_FEEDBACK_VARYING).contains(&kind)
+    }
+}
+
+/// The arguments of every WebGL query, in one shape.
+///
+/// Six words and a name, because that is the union of what fifteen queries
+/// take: an object id, a `pname` or an index, one more number for
+/// `clientWaitSync`'s timeout, and a name for the three that look one up. The
+/// name is UTF-8, its length is a byte count, and the bytes are padded to a word
+/// with zeros -- the frame stream's payload rule, for the same reason: one
+/// encoding of a given request rather than four.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GlQueryParams<'a> {
+    pub kind: u32,
+    pub canvas_id: u32,
+    pub object: u32,
+    pub pname: u32,
+    pub extra: u32,
+    pub name: &'a [u8],
+}
+
+/// Words before a [`GlQueryParams`]'s name: the five fields above and the
+/// name's byte length.
+pub const GL_QUERY_HEADER_BYTES: usize = 24;
+
+/// The longest name a query may carry. A GLSL identifier is bounded by the
+/// shader it came from; this is far above any real one and far below the body
+/// ceiling, so a name that reaches it is a producer bug rather than a program.
+pub const GL_QUERY_MAX_NAME_BYTES: usize = 1024;
+
+impl<'a> GlQueryParams<'a> {
+    /// Encode into a fresh buffer, which is what a test or a host-side producer
+    /// needs; the producer proper writes these bytes in JavaScript.
+    pub fn encode(&self) -> Vec<u8> {
+        let padded = self.name.len().div_ceil(4) * 4;
+        let mut out = Vec::with_capacity(GL_QUERY_HEADER_BYTES + padded);
+        for word in [
+            self.kind,
+            self.canvas_id,
+            self.object,
+            self.pname,
+            self.extra,
+            self.name.len() as u32,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        out.extend_from_slice(self.name);
+        out.resize(GL_QUERY_HEADER_BYTES + padded, 0);
+        out
+    }
+
+    /// Decode and validate. Refuses a kind it does not know, a length that
+    /// disagrees with the body, and padding that is not zero.
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, SyncError> {
+        if bytes.len() < GL_QUERY_HEADER_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |offset: usize| -> u32 {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        let kind = word(0);
+        if !gl_query::is_known(kind) {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let name_len = word(20) as usize;
+        if name_len > GL_QUERY_MAX_NAME_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let padded = name_len.div_ceil(4) * 4;
+        if bytes.len() != GL_QUERY_HEADER_BYTES + padded {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        if bytes[GL_QUERY_HEADER_BYTES + name_len..]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(Self {
+            kind,
+            canvas_id: word(4),
+            object: word(8),
+            pname: word(12),
+            extra: word(16),
+            name: &bytes[GL_QUERY_HEADER_BYTES..GL_QUERY_HEADER_BYTES + name_len],
+        })
+    }
+
+    /// The name as text, with lone surrogates replaced -- the conversion V8
+    /// makes for a `#[string]` argument, so a name that crossed as a query and
+    /// one that crossed as an op name the same variable.
+    pub fn name_str(&self) -> std::borrow::Cow<'a, str> {
+        String::from_utf8_lossy(self.name)
+    }
+
+    /// Which operation answers this kind, and therefore what shape its reply is.
+    pub fn operation(kind: u32) -> u32 {
+        match kind {
+            gl_query::PROGRAM_INFO_LOG | gl_query::SHADER_INFO_LOG | gl_query::PARAMETER => {
+                SYNC_OP_GL_QUERY_TEXT
+            }
+            gl_query::ACTIVE_ATTRIB
+            | gl_query::ACTIVE_UNIFORM
+            | gl_query::TRANSFORM_FEEDBACK_VARYING => SYNC_OP_GL_QUERY_ACTIVE,
+            _ => SYNC_OP_GL_QUERY_SCALAR,
+        }
+    }
+}
+
 /// Serialised size of [`WindowReply`].
 pub const WINDOW_REPLY_BYTES: usize = 16;
 
@@ -269,12 +874,83 @@ impl ReadPixelsParams {
 
     /// How many bytes the answer will be, or `None` if that does not fit in a
     /// `u32` -- which is itself a refusal, not a number to truncate.
+    ///
+    /// The rows plus [`READ_PIXELS_LAYOUT_BYTES`]: the answer is the pixels and
+    /// where they go, because only the host knows the second part.
     pub fn reply_bytes(&self) -> Option<u32> {
+        self.pixel_bytes()?
+            .checked_add(READ_PIXELS_LAYOUT_BYTES as u32)
+    }
+
+    /// The pixels alone, without the layout that precedes them.
+    pub fn pixel_bytes(&self) -> Option<u32> {
         let width = u32::try_from(self.width).ok()?;
         let height = u32::try_from(self.height).ok()?;
         // RGBA8: four bytes per pixel. Checked, because width*height*4 for a
         // rectangle a producer named can overflow before it is ever refused.
         width.checked_mul(height)?.checked_mul(4)
+    }
+}
+
+/// Bytes of [`ReadPixelsLayout`] at the front of a `SYNC_OP_READ_PIXELS` reply.
+pub const READ_PIXELS_LAYOUT_BYTES: usize = 16;
+
+/// Where the rows of a readback go in the caller's view.
+///
+/// `readPixels` answers into a view the *caller* holds, at positions the GL
+/// `PACK_*` state decides: an alignment pads each row, `PACK_SKIP_ROWS` and
+/// `PACK_SKIP_PIXELS` move the first one, and `PACK_ROW_LENGTH` widens the
+/// stride. In process the op reads that state back from the renderer with the
+/// pixels and the engine's own facade places the rows.
+///
+/// On this lane the state is the host's and the view is the producer's, and
+/// neither can see the other's: the producer never sees `pixelStorei` at all,
+/// because the engine's encoder writes it straight into the command stream the
+/// producer forwards unread. So the placement crosses with the pixels. Four
+/// little-endian `u32`s, then the rows, compact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub struct ReadPixelsLayout {
+    /// Where the first row starts in the caller's view.
+    pub first_byte: u32,
+    /// Bytes of pixel data in each row.
+    pub row_bytes: u32,
+    /// Bytes from one row's start to the next, padding included.
+    pub row_stride: u32,
+    /// How many rows the reply carries.
+    pub height: u32,
+}
+
+impl ReadPixelsLayout {
+    /// The header, as it goes in front of the rows.
+    pub fn encode(&self) -> [u8; READ_PIXELS_LAYOUT_BYTES] {
+        let mut out = [0u8; READ_PIXELS_LAYOUT_BYTES];
+        out[0..4].copy_from_slice(&self.first_byte.to_le_bytes());
+        out[4..8].copy_from_slice(&self.row_bytes.to_le_bytes());
+        out[8..12].copy_from_slice(&self.row_stride.to_le_bytes());
+        out[12..16].copy_from_slice(&self.height.to_le_bytes());
+        out
+    }
+
+    /// Read a header a host wrote. `None` for a short one, which is a reply
+    /// that does not answer this operation rather than one to guess at.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < READ_PIXELS_LAYOUT_BYTES {
+            return None;
+        }
+        let word = |offset: usize| {
+            u32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        };
+        Some(Self {
+            first_byte: word(0),
+            row_bytes: word(4),
+            row_stride: word(8),
+            height: word(12),
+        })
     }
 }
 
@@ -303,13 +979,20 @@ pub struct SyncCall<'a> {
     pub operation: u32,
     pub max_reply_bytes: u32,
     pub timeout_millis: u32,
+    /// The last service message the producer had sent when it blocked; the
+    /// host answers only once that message is admitted, so a synchronous call
+    /// never overtakes a command content made before it. Zero when it had sent
+    /// none. See [`crate::service`].
+    pub service_sequence: u64,
     pub params: &'a [u8],
 }
 
 /// Bytes before a [`SyncCall`]'s arguments.
-pub const SYNC_CALL_HEADER_BYTES: usize = 48;
+pub const SYNC_CALL_HEADER_BYTES: usize = 56;
 
-/// The largest body a [`SyncCall`] may be, arguments included.
+/// The largest body a [`SyncCall`] may be, arguments included, for every
+/// operation but [`SYNC_OP_SERVICE`] (which is bounded by
+/// [`SERVICE_CALL_MAX_BYTES`]).
 ///
 /// Arguments are small by construction -- `readPixels` takes 32 bytes, and
 /// anything bulky travels as a frame -- so this is a bound on what a producer
@@ -331,6 +1014,7 @@ const SYNC_CALL_OFF_OPERATION: usize = 32;
 const SYNC_CALL_OFF_MAX_REPLY_BYTES: usize = 36;
 const SYNC_CALL_OFF_TIMEOUT_MILLIS: usize = 40;
 const SYNC_CALL_OFF_RESERVED: usize = 44;
+const SYNC_CALL_OFF_SERVICE_SEQUENCE: usize = 48;
 
 /// The call body's fixed part, in order, with no gaps.
 pub const SYNC_CALL_LAYOUT: &[crate::HeaderField] = &[
@@ -374,6 +1058,11 @@ pub const SYNC_CALL_LAYOUT: &[crate::HeaderField] = &[
         size: 4,
         name: "reserved",
     },
+    crate::HeaderField {
+        offset: SYNC_CALL_OFF_SERVICE_SEQUENCE as u32,
+        size: 8,
+        name: "service_sequence",
+    },
 ];
 
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {
@@ -396,7 +1085,13 @@ impl<'a> SyncCall<'a> {
     /// malformed argument record gets: neither is something the producer can
     /// fix by asking again, and neither is a transient failure of the host.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, SyncError> {
-        if bytes.len() < SYNC_CALL_HEADER_BYTES || bytes.len() > SYNC_CALL_MAX_BYTES {
+        // The absolute bound first, before anything is read; the operation's
+        // own bound once the operation is known.
+        if bytes.len() < SYNC_CALL_HEADER_BYTES || bytes.len() > SERVICE_CALL_MAX_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let operation = u32_at(bytes, SYNC_CALL_OFF_OPERATION);
+        if operation != SYNC_OP_SERVICE && bytes.len() > SYNC_CALL_MAX_BYTES {
             return Err(SyncError::UnsupportedOperation);
         }
         // Zero now so a later version can give the word a meaning without an
@@ -413,9 +1108,10 @@ impl<'a> SyncCall<'a> {
             surface_generation: u64_at(bytes, SYNC_CALL_OFF_SURFACE_GENERATION),
             resource_epoch: u64_at(bytes, SYNC_CALL_OFF_RESOURCE_EPOCH),
             triggering_sequence: u64_at(bytes, SYNC_CALL_OFF_TRIGGERING_SEQUENCE),
-            operation: u32_at(bytes, SYNC_CALL_OFF_OPERATION),
+            operation,
             max_reply_bytes: u32_at(bytes, SYNC_CALL_OFF_MAX_REPLY_BYTES),
             timeout_millis,
+            service_sequence: u64_at(bytes, SYNC_CALL_OFF_SERVICE_SEQUENCE),
             params: &bytes[SYNC_CALL_HEADER_BYTES..],
         })
     }
@@ -771,7 +1467,9 @@ impl SyncMailbox {
         if request.runtime_generation != self.runtime_generation {
             return Err(SyncError::StaleGeneration);
         }
-        if request.max_reply_bytes == 0 || request.max_reply_bytes > MAX_REPLY_BYTES {
+        if request.max_reply_bytes == 0
+            || request.max_reply_bytes > reply_ceiling(request.operation)
+        {
             return Err(SyncError::BadReplyReservation);
         }
         if request.deadline_nanos <= now_nanos {
@@ -917,18 +1615,31 @@ mod sync_call_tests {
     use super::*;
 
     fn body(max_reply_bytes: u32, timeout_millis: u32, reserved: u32, params: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        for word in [1u64, 2, 3, 4] {
-            bytes.extend_from_slice(&word.to_le_bytes());
-        }
-        for word in [
+        body_for(
             SYNC_OP_READ_PIXELS,
             max_reply_bytes,
             timeout_millis,
             reserved,
-        ] {
+            params,
+        )
+    }
+
+    fn body_for(
+        operation: u32,
+        max_reply_bytes: u32,
+        timeout_millis: u32,
+        reserved: u32,
+        params: &[u8],
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for word in [1u64, 2, 3, 4] {
             bytes.extend_from_slice(&word.to_le_bytes());
         }
+        for word in [operation, max_reply_bytes, timeout_millis, reserved] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        // Past 32 bits: the producer writes it from a BigInt.
+        bytes.extend_from_slice(&((1u64 << 40) + 9).to_le_bytes());
         bytes.extend_from_slice(params);
         bytes
     }
@@ -946,9 +1657,20 @@ mod sync_call_tests {
                 call.operation,
                 call.max_reply_bytes,
                 call.timeout_millis,
+                call.service_sequence,
                 call.params,
             ),
-            (1, 2, 3, 4, SYNC_OP_READ_PIXELS, 16, 250, &[9u8, 8, 7][..])
+            (
+                1,
+                2,
+                3,
+                4,
+                SYNC_OP_READ_PIXELS,
+                16,
+                250,
+                (1u64 << 40) + 9,
+                &[9u8, 8, 7][..]
+            )
         );
         let request = call.request(1_000);
         assert_eq!(request.deadline_nanos, 1_000 + 250_000_000);
@@ -1000,6 +1722,40 @@ mod sync_call_tests {
             SyncCall::decode(&past_bound),
             Err(SyncError::UnsupportedOperation)
         );
+    }
+
+    #[test]
+    fn a_service_call_may_carry_more_than_the_barrier_bound_and_no_other_may() {
+        let large = vec![0; SYNC_CALL_MAX_BYTES];
+        assert!(
+            SyncCall::decode(&body_for(SYNC_OP_SERVICE, 16, 250, 0, &large)).is_ok(),
+            "a synchronous file write carries the file"
+        );
+        assert_eq!(
+            SyncCall::decode(&body_for(SYNC_OP_READ_PIXELS, 16, 250, 0, &large)),
+            Err(SyncError::UnsupportedOperation),
+            "the barrier's own operations keep their bound"
+        );
+    }
+
+    #[test]
+    fn a_service_call_may_reserve_a_whole_file_and_no_other_may() {
+        let mut mailbox = SyncMailbox::new(1);
+        let request = |operation| SyncRequest {
+            request_id: 0,
+            runtime_generation: 1,
+            surface_generation: 0,
+            resource_epoch: 0,
+            triggering_sequence: 0,
+            operation,
+            max_reply_bytes: MAX_REPLY_BYTES + 1,
+            deadline_nanos: 10,
+        };
+        assert_eq!(
+            mailbox.post(request(SYNC_OP_READ_PIXELS), 1),
+            Err(SyncError::BadReplyReservation)
+        );
+        assert!(mailbox.post(request(SYNC_OP_SERVICE), 1).is_ok());
     }
 
     #[test]

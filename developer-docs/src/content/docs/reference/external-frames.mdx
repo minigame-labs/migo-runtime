@@ -21,6 +21,8 @@ Migo 通常在自己的脚本运行时内执行 JavaScript 并直接渲染；外
 | **帧注入通道**（Ingress） | 将跨进程帧包提交给 session，并获取接受/拒绝决策与背压信号 |
 | **同步屏障通道**（Sync barrier） | 为 `readPixels`、`getImageData`、`toDataURL` 等必须阻塞等待结果的调用提供请求/回复邮箱 |
 | **资源通道**（Resource lane） | 在帧包之外预留并分块上传纹理图集等大型资产；验证通过后帧才可引用 |
+| **服务流**（Service stream） | 绘制以外的一切请求——读文件、写存档、加载图片、播放声音——按序准入，在自己的返回流上应答 |
+| **内容源**（Content origin） | 宿主以引擎自己的模块加载规则提供游戏脚本，使 WebKit 求值的源码与内嵌运行时一致 |
 
 ---
 
@@ -407,10 +409,11 @@ MigoResult migo_uplink_message_kind(
     MigoUplinkMessageKind  *out_kind);
 ```
 
-生产方的 socket 上有两种消息：帧包，和控制消息（目前只有"请求下一帧"）。传输层**问库**这条消息该进哪扇门，而不是自己比较 magic——宿主自己编码这条规则，就是 wire 格式又多一份会漂移的实现。
+生产方的 socket 上有三种消息：帧包、控制消息（目前只有"请求下一帧"）和服务消息。传输层**问库**这条消息该进哪扇门，而不是自己比较 magic——宿主自己编码这条规则，就是 wire 格式又多一份会漂移的实现。
 
 - `MIGO_UPLINK_MESSAGE_CONTROL`：交给 `migo_session_submit_uplink_control`。
-- `MIGO_UPLINK_MESSAGE_FRAME`：交给 `migo_session_submit_external_frame`。**凡不是控制消息的都是这个**，包括连帧也不是的字节——由帧 ingress 以生产方看得到的判决拒绝它。
+- `MIGO_UPLINK_MESSAGE_SERVICE`：交给 `migo_session_submit_service`。
+- `MIGO_UPLINK_MESSAGE_FRAME`：交给 `migo_session_submit_external_frame`。**凡不是控制消息或服务消息的都是这个**，包括连帧也不是的字节——由帧 ingress 以生产方看得到的判决拒绝它。多一个"未知"答案就需要多一个上报它的地方。
 
 不需要 session，最多读前 4 个字节。`byte_count` 为 0 时 `bytes` 可为 `NULL`。走内容源（custom scheme）上行的消息一律是帧，无需询问。
 
@@ -696,6 +699,189 @@ MigoResult migo_session_set_downlink_waker(
 
 ---
 
+## migo_owned_bytes_view
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+typedef struct MigoOwnedBytes MigoOwnedBytes;
+
+MigoResult migo_owned_bytes_view(
+    const MigoOwnedBytes  *owned,
+    const uint8_t        **out_bytes,
+    size_t                *out_length);
+```
+
+`MigoOwnedBytes` 是库交给调用方、在 `migo_owned_bytes_release` 之前一直由库持有的字节。服务应答可能是一整个文件，所以是**移交**而不是拷贝进调用方缓冲区。本函数给出字节的位置和长度，在释放之前有效。
+
+返回：
+
+- `MIGO_OK`：`*out_bytes`、`*out_length` 已写入。
+- `MIGO_ERROR_INVALID_ARGUMENT`：任一指针为空；此时两个输出（若可写）分别被置为 `NULL` 和 0。
+
+线程模型：无状态，任意线程；同一句柄不得与 `migo_owned_bytes_release` 并发。
+
+---
+
+## migo_owned_bytes_release
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_owned_bytes_release(MigoOwnedBytes *owned);
+```
+
+释放字节，句柄随即失效。每个句柄恰好释放一次。
+
+返回：`owned` 为空返回 `MIGO_ERROR_INVALID_ARGUMENT`；否则 `MIGO_OK`。
+
+线程模型：任意线程。
+
+---
+
+## migo_session_submit_service
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+#define MIGO_SERVICE_MESSAGE_MAX_BYTES 67108864U
+
+MigoResult migo_session_submit_service(
+    MigoSession    *session,
+    const uint8_t  *bytes,
+    size_t          byte_count,
+    uint32_t       *out_refusal_code);
+```
+
+准入一条服务消息。服务流承载内容请求宿主做的、绘制以外的一切：读文件、写存档、加载图片、播放声音、打开 socket。消息带序号、**严格按序准入**，应答走自己的返回流。格式见 `contracts/frame-wire/wire-v1.md` 的 *The service stream*；传输层不解析其中任何内容。
+
+传输：
+
+- 不超过 65536 字节的消息走生产方 socket（`migo_uplink_message_kind` 答 `MIGO_UPLINK_MESSAGE_SERVICE`）；更大的消息以 POST 发到内容源的服务端点。读取 POST 的传输层应在读之前拒绝超过 `MIGO_SERVICE_MESSAGE_MAX_BYTES` 的消息。
+- 两条路径互相乱序：先到的后续消息被**暂存**（至多 256 条、合计不超过 `MIGO_SERVICE_MESSAGE_MAX_BYTES`），等前一条到达后一起准入。无论哪种情况调用都立即返回，POST 可以马上应答。
+
+规则：
+
+- `bytes` 仅在调用期间借用；被准入的记录在返回前已拷贝。
+- `*out_refusal_code` 为 0 表示已准入、已暂存，或因属于别的运行时代际而被忽略；否则为 4001 起的拒绝码（见 wire 契约的 *Service refusals*）。拒绝同时经返回流告知生产方：**服务流从此中断**。
+- 会话已准入工作的队列满时**阻塞**，以此对 socket 施加背压；请在允许阻塞的线程上调用。
+
+返回：
+
+- `MIGO_OK`：`*out_refusal_code` 已写入。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`session`、`bytes` 或 `out_refusal_code` 为空，或 `byte_count` 为 0。
+- `MIGO_ERROR_INVALID_STATE`：尚未 attach surface，或 session 已结束。
+
+线程模型：传输线程（socket 读线程或内容源的请求线程）；可能阻塞。
+
+---
+
+## migo_session_take_service_message
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_take_service_message(
+    MigoSession      *session,
+    MigoOwnedBytes  **out_message);
+```
+
+取宿主欠生产方的下一条应答与事件消息。`*out_message` 为 `NULL` 表示没有排队的消息——这是正常答案，不是错误。否则把字节**原样**发到 socket，然后用 `migo_owned_bytes_release` 释放。
+
+在所有调用 `migo_session_take_downlink` 的地方也调用它：下行唤醒回调对两者都会触发。
+
+返回：
+
+- `MIGO_OK`：`*out_message` 已写入（可能为 `NULL`）。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`session` 或 `out_message` 为空。
+- `MIGO_ERROR_INVALID_STATE`：尚未 attach surface。
+
+线程模型：与 `migo_session_take_downlink` 相同，适合放在传输发送线程上。
+
+---
+
+## migo_session_take_parked_reply
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_take_parked_reply(
+    MigoSession      *session,
+    uint32_t          generation,
+    uint32_t          request_id,
+    MigoOwnedBytes  **out_reply);
+```
+
+取一条停放的应答。大到不能随返回流内联发送的应答会被停放，生产方按代际和请求 id 向内容源索取，内容源用本函数取出。**只能取一次**：库在交出这份时释放自己的副本。
+
+`*out_reply` 为 `NULL` 表示没有这条应答——生产方重复索取，或索取别的代际的应答；请以 404 回应该请求。
+
+返回：
+
+- `MIGO_OK`：`*out_reply` 已写入（可能为 `NULL`）。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`session` 或 `out_reply` 为空。
+- `MIGO_ERROR_INVALID_STATE`：尚未 attach surface。
+
+线程模型：内容源的请求线程；不阻塞。
+
+---
+
+## migo_session_copy_content_root
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MigoResult migo_session_copy_content_root(
+    MigoSession  *session,
+    char         *buffer,
+    size_t        capacity,
+    size_t       *out_length);
+```
+
+已加载内容的代码所在目录，即宿主在内容源根路径上提供的目录，以 NUL 结尾的 UTF-8 写出。
+
+在外部帧执行中，`migo_session_load_content` 返回前就已挂载内容——入口模块由另一个进程里的 WebKit 求值，那个进程的宿主需要这个目录来提供它——所以该调用成功后即可取得根目录。
+
+返回：
+
+- `MIGO_OK`：已写入；`*out_length` 为不含 NUL 的长度。
+- `MIGO_ERROR_INVALID_ARGUMENT`：`out_length` 为空、`buffer` 为空而 `capacity` 非 0，或 `capacity` 装不下路径加 NUL。容量不足时 `*out_length` 仍被写入，调用方可按它重试。
+- `MIGO_ERROR_INVALID_STATE`：尚未加载内容。
+- `MIGO_ERROR_INTERNAL`：路径无法以 UTF-8 表示（拒绝而不是有损改写）。
+
+线程模型：任意线程。
+
+---
+
+## migo_session_read_content_module
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+#define MIGO_CONTENT_MODULE_SERVED     0U  /* 字节是模块源码 */
+#define MIGO_CONTENT_MODULE_NOT_FOUND  1U  /* 字节是原因：回 404 */
+#define MIGO_CONTENT_MODULE_REFUSED    2U  /* 字节是原因：回 403 */
+#define MIGO_CONTENT_MODULE_UNREADABLE 3U  /* 字节是原因：回 500 */
+
+MigoResult migo_session_read_content_module(
+    MigoSession      *session,
+    const char       *path,
+    size_t            path_length,
+    MigoOwnedBytes  **out_module,
+    uint32_t         *out_status);
+```
+
+内容源上 `path`（如 `"/game.js"`）处内容模块的源码，**与引擎求值的完全相同**：经挂载的包解析（含分包覆盖层与打包格式的包）、限定在包内、必须是 UTF-8，并施加模块加载器唯一的一次改写——CommonJS 入口因此与内嵌运行时一样被包装后运行。内容源对游戏的每个脚本请求都用它应答，而不是直接回文件。
+
+规则：
+
+- `path` 是借用的 `path_length` 字节 UTF-8。
+- `*out_module` 收到字节——源码，或未提供的原因，由 `*out_status` 区分——调用方用 `migo_owned_bytes_release` 释放。
+- 在调用线程上读文件。
+
+返回：
+
+- `MIGO_OK`：`*out_module` 与 `*out_status` 已写入。
+- `MIGO_ERROR_INVALID_ARGUMENT`：指针为空、`path_length` 为 0，或 `path` 不是 UTF-8。
+- `MIGO_ERROR_INVALID_STATE`：尚未加载内容。
+
+线程模型：内容源的请求线程；会做文件 IO，不要在主线程调用。
+
+---
+
 ## 结构体初始化约定
 
 所有描述符结构体在填写前必须清零，然后设置 `struct_size` 和 `abi_version`：
@@ -736,6 +922,7 @@ while (has_frame()) {
 - `MigoFrameIngressOutcome`、`MigoSyncOutcome`、`MigoResourceOutcome` 由调用方分配，库只写入，不持有。
 - `MigoSyncRequestDescriptor`、`MigoResourceReservationDescriptor`、`MigoExternalSessionDescriptor` 由调用方填写并在调用期间借用，调用返回后可释放。
 - `migo_session_submit_external_frame` 的 `bytes` 指针仅在调用期间借用，返回前库已完成拷贝。
+- `MigoOwnedBytes` 由库分配并移交给调用方，调用方恰好用 `migo_owned_bytes_release` 释放一次。
 
 ## 参见
 

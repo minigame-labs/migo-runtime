@@ -111,8 +111,176 @@ pub const OP2D_SET_SHADOW_COLOR: u32 = 548;
 /// every other record in this block takes its canvas.
 pub const OP2D_CREATE_CONTEXT: u32 = 549;
 
+// ─── Text (550..=556) ────────────────────────────────────────────────────────
+//
+// Everything above is numbers. Text is the block's first payload: a font
+// shorthand and a string to draw, which is why the two payload record shapes
+// the resource block introduced are used here rather than restated.
+
+/// The font shorthand, as CSS writes it: `italic bold 16px "Noto Sans", sans`.
+///
+/// `H byte_length | utf8`. The producer answers `setFont` locally -- the op it
+/// stands in for returns whether the shorthand parses -- so a record only ever
+/// carries a shorthand the producer already parsed. The host parses it again,
+/// because it is the one that has to turn it into a typeface, and because a
+/// record is not trusted for being well-formed.
+pub const OP2D_SET_FONT: u32 = 550;
+
+/// `fillText(text, x, y, maxWidth)`: `H x:F y:F max_width:F byte_length | utf8`.
+///
+/// `max_width` is `+inf` when content passed none, which is what the facade
+/// already does and what the renderer reads as "no limit".
+pub const OP2D_FILL_TEXT: u32 = 551;
+/// `strokeText`, the same shape.
+pub const OP2D_STROKE_TEXT: u32 = 552;
+
+/// `textAlign`, as the op's `u8`: start, end, left, right, center.
+pub const OP2D_SET_TEXT_ALIGN: u32 = 553;
+/// `textBaseline`: top, hanging, middle, alphabetic, ideographic, bottom.
+pub const OP2D_SET_TEXT_BASELINE: u32 = 554;
+/// `direction`: ltr, rtl, inherit.
+pub const OP2D_SET_TEXT_DIRECTION: u32 = 555;
+
+/// `setLineDash([...])`: `H count | f32 bits`.
+///
+/// A word list rather than a byte payload, because the segments are `f32` and
+/// the bits are what crosses -- the same reinterpretation the uniform records
+/// make, for the same reason.
+pub const OP2D_SET_LINE_DASH: u32 = 556;
+
+// ─── Images (557..=558) ──────────────────────────────────────────────────────
+//
+// A loaded image is a texture the host already holds under its shared id --
+// `Image.src` decoded and uploaded it there -- so drawing one names the id and
+// the rectangles, and no pixel crosses.
+
+/// `drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh)`:
+/// `H image_id:U sx sy sw sh dx dy dw dh:F`. The facade has already expanded
+/// the two- and four-argument forms, so every record carries all eight.
+pub const OP2D_DRAW_IMAGE: u32 = 557;
+
+/// `drawImageBatch(draws)`: `H count | entries`, nine words per entry --
+/// `image_id:U` then the eight rectangle `f32`s -- so `count` is a multiple of
+/// nine. The id is an exact word: shared image ids live above 2^30, where an
+/// `f32` cannot tell two consecutive ids apart.
+pub const OP2D_DRAW_IMAGE_BATCH: u32 = 558;
+
+/// Words per `drawImageBatch` entry.
+pub const DRAW_IMAGE_BATCH_ENTRY_WORDS: u32 = 9;
+
+/// The most entries a batch record may carry: the engine's own bound on
+/// `drawImageBatch` (`shared::protocol::render_cmd::MAX_DRAW_IMAGE_BATCH_ENTRIES`).
+pub const MAX_DRAW_IMAGE_BATCH_ENTRIES: u32 = 65_536;
+
+// ─── Canvas lifetime (559..=561) ─────────────────────────────────────────────
+//
+// A canvas is not a drawing command, but every one of these names the canvas
+// the block already selected, applies in the order the rest of the run applies,
+// and has to be *in* that run: "create it, draw on it, hand the pixels to a
+// texture" is one ordered sequence, and a lifetime change arriving beside the
+// run rather than inside it is the race `Canvas2DCmd::ResizeCanvas` was added
+// to close in process -- a resize that overtook its own fillText left cocos's
+// pooled label canvas at the wrong size and the label blank.
+//
+// The in-process runtime reaches the same renderer calls through
+// `CanvasCmd::RegisterOffscreen` and a synchronous `CanvasCmd::DestroyCanvas`,
+// because there the ops and the renderer share a FIFO. The external producer
+// has neither an op nor that FIFO, so these are its only path.
+
+/// Bring the selected canvas into existence: `H width height`.
+///
+/// The id is the selected canvas's, allocated by the producer out of
+/// `shared::protocol::render_cmd::PRODUCER_CANVAS_ID_BASE` exactly as the
+/// in-process runtime allocates it, and the renderer refuses a registration
+/// below that base -- which is what stops a producer in another process from
+/// naming a canvas the renderer is about to allocate, or the onscreen one.
+pub const OP2D_REGISTER_CANVAS: u32 = 559;
+
+/// Resize the selected canvas: `H flags width height`.
+///
+/// `flags` is bit 0 for width and bit 1 for height, because content assigns
+/// `canvas.width` and `canvas.height` separately and the op this stands for
+/// takes each as an option. A pair arrives as one record rather than two, so
+/// the renderer validates the final size the way the op does instead of
+/// allocating an intermediate surface no frame ever drew to. Neither bit set is
+/// a producer that encoded nothing; the decoder refuses it rather than applying
+/// a resize to nothing.
+pub const OP2D_RESIZE_CANVAS: u32 = 560;
+
+/// Destroy the selected canvas: `H`.
+///
+/// The onscreen canvas is refused by the renderer, on this path and the
+/// in-process one, so a producer cannot destroy the window's canvas by naming
+/// it.
+pub const OP2D_DESTROY_CANVAS: u32 = 561;
+
+/// The bits `OP2D_RESIZE_CANVAS`'s flags word may set.
+pub const RESIZE_CANVAS_WIDTH: u32 = 1;
+/// The height bit of the same word.
+pub const RESIZE_CANVAS_HEIGHT: u32 = 2;
+
+// ─── Gradients and patterns (562..=565) ──────────────────────────────────────
+//
+// The two styles a colour cannot express. Both are set rarely -- once per style
+// change, not per draw -- and both name something the host already holds or can
+// build from what the record carries.
+
+/// `fillStyle = gradient`: `H type x0 y0 r0 x1 y1 r1 byte_length | utf8`.
+///
+/// `type` is 0 linear, 1 radial, 2 conic, as the op takes it. The six floats are
+/// the two circles the facade's `CanvasGradient` was built from, in the op's
+/// order; a linear gradient carries zero radii and a conic one carries its start
+/// angle where `x1` is, both of which the facade already decided.
+///
+/// The payload is the stops as the facade serialises them:
+/// `JSON.stringify([{offset, r, g, b, a}, ...])`, the same string the in-process
+/// op receives, read by the same
+/// `shared::protocol::render_cmd::parse_gradient_stops` on both lanes. Text
+/// rather than words deliberately -- it makes the two executions parse one
+/// thing, on the host, instead of holding a producer-side port to a corpus.
+pub const OP2D_SET_FILL_STYLE_GRADIENT: u32 = 562;
+/// `strokeStyle = gradient`, the same shape.
+pub const OP2D_SET_STROKE_STYLE_GRADIENT: u32 = 563;
+
+/// `fillStyle = pattern`: `H image_id repeat_x:B repeat_y:B`.
+///
+/// The image is the host's already -- loaded and uploaded under its shared id,
+/// as `drawImage` names one -- so no pixel crosses. The two bools are the
+/// repetition the facade resolved: `repeat-x` is x without y, `no-repeat` is
+/// neither.
+pub const OP2D_SET_FILL_STYLE_PATTERN: u32 = 564;
+/// `strokeStyle = pattern`, the same shape.
+pub const OP2D_SET_STROKE_STYLE_PATTERN: u32 = 565;
+
+// ─── Snapshots (566) ─────────────────────────────────────────────────────────
+
+/// Capture a rectangle of the selected canvas into the host's snapshot pool:
+/// `H x:I y:I width:U height:U snapshot_id:U`.
+///
+/// `getImageData` is this in both executions: the engine's 2D facade captures
+/// rather than reading back, because the pixels usually go straight into a
+/// texture and never need to cross to JavaScript at all. The id is the engine's
+/// own counter's, allocated in the same JavaScript on both lanes, and a capture
+/// with id 0 or a rectangle past the surface cap is one the op drops before it
+/// queues anything -- so the producer drops it too, rather than writing a record
+/// the host would refuse.
+///
+/// The cache-keyed form (`op_capture_canvas2d_snapshot_for_cache`) is not here:
+/// it carries a text, a font and a colour, and the text-texture cache it feeds
+/// is a piece of its own.
+pub const OP2D_CAPTURE_SNAPSHOT: u32 = 566;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 550;
+pub const OP2D_END: u32 = 567;
+
+/// The longest dash pattern a record may carry.
+///
+/// A dash array is a handful of numbers -- `[5, 5]`, `[10, 3, 2, 3]` -- and the
+/// specification lets content pass any array at all. The cap is far above any
+/// pattern that draws differently from a shorter one and far below a record
+/// that would cost a frame anything, so a producer that reaches it has a bug
+/// rather than a dashed line.
+pub const MAX_LINE_DASH_SEGMENTS: u32 = 256;
 
 /// The shape of one 2D record, or `None` for an opcode this reader does not
 /// know.
@@ -127,7 +295,9 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
     let (word_count, bool_words): (u32, &'static [u8]) = match opcode {
         OP2D_SELECT_CANVAS => (2, &[]),
 
-        OP2D_CREATE_CONTEXT | OP2D_BEGIN_PATH | OP2D_CLOSE_PATH => (1, &[]),
+        OP2D_CREATE_CONTEXT | OP2D_BEGIN_PATH | OP2D_CLOSE_PATH | OP2D_DESTROY_CANVAS => (1, &[]),
+        OP2D_REGISTER_CANVAS => (3, &[]),
+        OP2D_RESIZE_CANVAS => (4, &[]),
         OP2D_MOVE_TO | OP2D_LINE_TO => (3, &[]),
         OP2D_QUADRATIC_CURVE_TO => (5, &[]),
         OP2D_BEZIER_CURVE_TO => (7, &[]),
@@ -161,6 +331,52 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         // destination, and packing to 8-bit channels here would quantise a
         // value the renderer keeps at full precision.
         OP2D_SET_FILL_STYLE | OP2D_SET_STROKE_STYLE | OP2D_SET_SHADOW_COLOR => (5, &[]),
+
+        OP2D_SET_TEXT_ALIGN | OP2D_SET_TEXT_BASELINE | OP2D_SET_TEXT_DIRECTION => (2, &[]),
+
+        // image_id, repeat_x, repeat_y
+        OP2D_SET_FILL_STYLE_PATTERN | OP2D_SET_STROKE_STYLE_PATTERN => (4, &[2, 3]),
+
+        OP2D_DRAW_IMAGE => (10, &[]),
+        // x, y, width, height, snapshot_id
+        OP2D_CAPTURE_SNAPSHOT => (6, &[]),
+        OP2D_DRAW_IMAGE_BATCH => {
+            return Some(RecordSpec::Words {
+                prefix_words: 1,
+                max_count: MAX_DRAW_IMAGE_BATCH_ENTRIES * DRAW_IMAGE_BATCH_ENTRY_WORDS,
+            });
+        }
+
+        // The payload records: their length is a word of their own rather than
+        // their word count. Both shapes are the ones the resource block
+        // introduced; see `RecordSpec::Bytes` and `Words`.
+        OP2D_SET_FONT => {
+            return Some(RecordSpec::Bytes {
+                prefix_words: 1,
+                presence_word: None,
+                text: true,
+            });
+        }
+        OP2D_FILL_TEXT | OP2D_STROKE_TEXT => {
+            return Some(RecordSpec::Bytes {
+                prefix_words: 4,
+                presence_word: None,
+                text: true,
+            });
+        }
+        OP2D_SET_LINE_DASH => {
+            return Some(RecordSpec::Words {
+                prefix_words: 1,
+                max_count: MAX_LINE_DASH_SEGMENTS,
+            });
+        }
+        OP2D_SET_FILL_STYLE_GRADIENT | OP2D_SET_STROKE_STYLE_GRADIENT => {
+            return Some(RecordSpec::Bytes {
+                prefix_words: 8,
+                presence_word: None,
+                text: true,
+            });
+        }
 
         _ => return None,
     };

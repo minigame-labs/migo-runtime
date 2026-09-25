@@ -33,6 +33,12 @@ pub struct AudioOutput {
 impl AudioOutput {
     /// Create a new audio output
     pub fn new() -> EngineResult<Self> {
+        // iOS plays through the process's audio session, and a unit opened
+        // before it has a category and is active is silent or refuses to
+        // start. Nothing else on this lane sets it up.
+        #[cfg(target_os = "ios")]
+        crate::apple_session::ensure_configured();
+
         let host = cpal::default_host();
 
         let device = host.default_output_device().ok_or_else(|| {

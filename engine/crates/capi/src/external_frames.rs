@@ -23,9 +23,9 @@ use migo_capi_abi::{
         MIGO_SYNC_ERROR_SESSION_ENDED, MIGO_SYNC_ERROR_STALE_GENERATION, MIGO_SYNC_ERROR_TIMED_OUT,
         MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION, MIGO_SYNC_STATE_CANCELLED, MIGO_SYNC_STATE_FAILED,
         MIGO_SYNC_STATE_FREE, MIGO_SYNC_STATE_PENDING, MIGO_SYNC_STATE_READY,
-        MIGO_UPLINK_MESSAGE_CONTROL, MIGO_UPLINK_MESSAGE_FRAME, MigoDownlinkWakerFn,
-        MigoFrameIngressOutcome, MigoSyncOutcome, MigoSyncRequestDescriptor, MigoUplinkMessageKind,
-        write_frame_ingress_outcome, write_sync_outcome,
+        MIGO_UPLINK_MESSAGE_CONTROL, MIGO_UPLINK_MESSAGE_FRAME, MIGO_UPLINK_MESSAGE_SERVICE,
+        MigoDownlinkWakerFn, MigoFrameIngressOutcome, MigoSyncOutcome, MigoSyncRequestDescriptor,
+        MigoUplinkMessageKind, write_frame_ingress_outcome, write_sync_outcome,
     },
 };
 use migo_core::IngressDecision;
@@ -34,6 +34,11 @@ use migo_core::IngressDecision;
 // compile time: a renumbering on either side is a build failure rather than a
 // producer blocked on an operation the library dispatches as another.
 const _: () = {
+    assert!(migo_capi_abi::external_frames::MIGO_SYNC_OP_SERVICE == migo_core::SYNC_OP_SERVICE);
+    assert!(
+        migo_capi_abi::external_frames::MIGO_SERVICE_CALL_MAX_BYTES as usize
+            == migo_core::SERVICE_CALL_MAX_BYTES
+    );
     assert!(
         migo_capi_abi::external_frames::MIGO_SYNC_OP_READ_PIXELS == migo_core::SYNC_OP_READ_PIXELS
     );
@@ -191,6 +196,8 @@ pub unsafe extern "C" fn migo_uplink_message_kind(
         };
         let kind = if migo_core::is_control_message(message) {
             MIGO_UPLINK_MESSAGE_CONTROL
+        } else if migo_core::is_service_message(message) {
+            MIGO_UPLINK_MESSAGE_SERVICE
         } else {
             MIGO_UPLINK_MESSAGE_FRAME
         };
@@ -1397,4 +1404,311 @@ unsafe fn write_sync_snapshot(
             snapshot.error.map(sync_error_code).unwrap_or(0),
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// The service stream
+// ---------------------------------------------------------------------------
+
+/// Bytes handed to the host by ownership: a service message, a parked answer.
+///
+/// Kept as the `Vec` it was built in, not shrunk into a boxed slice: a shrink
+/// that cannot happen in place is a reallocation and a copy, which is what #250
+/// measured on macOS.
+#[cfg(feature = "external-frames")]
+pub struct MigoOwnedBytes(Vec<u8>);
+
+#[cfg(feature = "external-frames")]
+fn hand_over(bytes: Option<Vec<u8>>, out: &mut *mut MigoOwnedBytes) {
+    *out = match bytes {
+        Some(bytes) => Box::into_raw(Box::new(MigoOwnedBytes(bytes))),
+        None => std::ptr::null_mut(),
+    };
+}
+
+/// Where owned bytes are, and how many.
+///
+/// # Safety
+/// `owned` must be a live handle from this library. `out_bytes` and
+/// `out_length` must be writable. The bytes are valid until the handle is
+/// released.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_owned_bytes_view(
+    owned: *const MigoOwnedBytes,
+    out_bytes: *mut *const u8,
+    out_length: *mut usize,
+) -> MigoResult {
+    guard("migo_owned_bytes_view", || {
+        let (Some(out_bytes), Some(out_length)) = (unsafe { out_bytes.as_mut() }, unsafe {
+            out_length.as_mut()
+        }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_bytes = std::ptr::null();
+        *out_length = 0;
+        let Some(owned) = (unsafe { owned.as_ref() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_bytes = owned.0.as_ptr();
+        *out_length = owned.0.len();
+        MIGO_OK
+    })
+}
+
+/// Free owned bytes.
+///
+/// # Safety
+/// `owned` must be a unique live handle from this library, or null. It is
+/// invalid afterwards.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_owned_bytes_release(owned: *mut MigoOwnedBytes) -> MigoResult {
+    guard("migo_owned_bytes_release", || {
+        if owned.is_null() {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        // SAFETY: the caller hands back the unique handle this library boxed.
+        drop(unsafe { Box::from_raw(owned) });
+        MIGO_OK
+    })
+}
+
+/// The session's service stream, taken under its lock and used outside it: a
+/// POSTed message may wait for a socket message that arrives through this same
+/// boundary on another thread.
+#[cfg(feature = "external-frames")]
+fn service_handle(session: &MigoSession) -> Result<migo_core::ServiceHandle, MigoResult> {
+    let Ok(state) = session.state.lock() else {
+        return Err(MIGO_ERROR_INTERNAL);
+    };
+    match state.host.as_ref() {
+        Some(engine) => Ok(engine.service_handle()),
+        None => Err(MIGO_ERROR_INVALID_STATE),
+    }
+}
+
+/// Admit one service message.
+///
+/// # Safety
+/// `session` must be a live session handle. `bytes` must be readable for
+/// `byte_count` bytes. `out_refusal_code` must be writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_submit_service(
+    session: *mut MigoSession,
+    bytes: *const u8,
+    byte_count: usize,
+    out_refusal_code: *mut u32,
+) -> MigoResult {
+    guard("migo_session_submit_service", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let Some(out_refusal_code) = (unsafe { out_refusal_code.as_mut() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        if bytes.is_null() || byte_count == 0 || byte_count > isize::MAX as usize {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let services = match service_handle(&session) {
+            Ok(services) => services,
+            Err(error) => return error,
+        };
+        // SAFETY: null and length were checked above; nothing derived from the
+        // slice outlives this call -- admitted records are copied.
+        let message = unsafe { std::slice::from_raw_parts(bytes, byte_count) };
+        match services.submit(message) {
+            Ok(_) => {
+                *out_refusal_code = 0;
+                MIGO_OK
+            }
+            Err(migo_core::ServiceSubmitError::Refused(refusal)) => {
+                *out_refusal_code = refusal.code();
+                MIGO_OK
+            }
+            Err(migo_core::ServiceSubmitError::SessionEnded) => MIGO_ERROR_INVALID_STATE,
+        }
+    })
+}
+
+/// Take the next message of answers and events.
+///
+/// # Safety
+/// `session` must be a live session handle. `out_message` must be writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_take_service_message(
+    session: *mut MigoSession,
+    out_message: *mut *mut MigoOwnedBytes,
+) -> MigoResult {
+    guard("migo_session_take_service_message", || {
+        let Some(out_message) = (unsafe { out_message.as_mut() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_message = std::ptr::null_mut();
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let services = match service_handle(&session) {
+            Ok(services) => services,
+            Err(error) => return error,
+        };
+        hand_over(services.take_message(), out_message);
+        MIGO_OK
+    })
+}
+
+/// Take a parked answer.
+///
+/// # Safety
+/// `session` must be a live session handle. `out_reply` must be writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_take_parked_reply(
+    session: *mut MigoSession,
+    generation: u32,
+    request_id: u32,
+    out_reply: *mut *mut MigoOwnedBytes,
+) -> MigoResult {
+    guard("migo_session_take_parked_reply", || {
+        let Some(out_reply) = (unsafe { out_reply.as_mut() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_reply = std::ptr::null_mut();
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let services = match service_handle(&session) {
+            Ok(services) => services,
+            Err(error) => return error,
+        };
+        hand_over(services.take_parked(generation, request_id), out_reply);
+        MIGO_OK
+    })
+}
+
+/// `migo_session_read_content_module`'s statuses; see the header.
+#[cfg(feature = "external-frames")]
+pub const MIGO_CONTENT_MODULE_SERVED: u32 = 0;
+#[cfg(feature = "external-frames")]
+pub const MIGO_CONTENT_MODULE_NOT_FOUND: u32 = 1;
+#[cfg(feature = "external-frames")]
+pub const MIGO_CONTENT_MODULE_REFUSED: u32 = 2;
+#[cfg(feature = "external-frames")]
+pub const MIGO_CONTENT_MODULE_UNREADABLE: u32 = 3;
+
+/// The source of a content module, as the engine evaluates it.
+///
+/// # Safety
+/// `session` must be a live session handle. `path` must be readable for
+/// `path_length` bytes. `out_module` and `out_status` must be writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_read_content_module(
+    session: *mut MigoSession,
+    path: *const std::ffi::c_char,
+    path_length: usize,
+    out_module: *mut *mut MigoOwnedBytes,
+    out_status: *mut u32,
+) -> MigoResult {
+    guard("migo_session_read_content_module", || {
+        let (Some(out_module), Some(out_status)) = (unsafe { out_module.as_mut() }, unsafe {
+            out_status.as_mut()
+        }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_module = std::ptr::null_mut();
+        *out_status = MIGO_CONTENT_MODULE_NOT_FOUND;
+        if path.is_null() || path_length == 0 || path_length > isize::MAX as usize {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        // SAFETY: null and length checked above; nothing derived outlives the call.
+        let path = unsafe { std::slice::from_raw_parts(path.cast::<u8>(), path_length) };
+        let Ok(path) = std::str::from_utf8(path) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        // The handle is taken under the session's lock and read through
+        // outside it: a module is file IO.
+        let services = match service_handle(&session) {
+            Ok(services) => services,
+            Err(error) => return error,
+        };
+        let Some(outcome) = services.content_module(path) else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        use migo_core::ModuleError;
+        let (status, bytes) = match outcome {
+            Ok(source) => (MIGO_CONTENT_MODULE_SERVED, source),
+            Err(ModuleError::NotFound(why)) => (MIGO_CONTENT_MODULE_NOT_FOUND, why.into_bytes()),
+            Err(ModuleError::Refused(why)) => (MIGO_CONTENT_MODULE_REFUSED, why.into_bytes()),
+            Err(ModuleError::Unreadable(why)) => (MIGO_CONTENT_MODULE_UNREADABLE, why.into_bytes()),
+        };
+        *out_status = status;
+        hand_over(Some(bytes), out_module);
+        MIGO_OK
+    })
+}
+
+/// Copy where the loaded content's code is.
+///
+/// # Safety
+/// `session` must be a live session handle. `buffer` must be writable for
+/// `capacity` bytes, or null when `capacity` is zero. `out_length` must be
+/// writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_copy_content_root(
+    session: *mut MigoSession,
+    buffer: *mut std::ffi::c_char,
+    capacity: usize,
+    out_length: *mut usize,
+) -> MigoResult {
+    guard("migo_session_copy_content_root", || {
+        let Some(out_length) = (unsafe { out_length.as_mut() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_length = 0;
+        if buffer.is_null() && capacity != 0 {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let root = {
+            let Ok(state) = session.state.lock() else {
+                return MIGO_ERROR_INTERNAL;
+            };
+            let Some(engine) = state.host.as_ref() else {
+                return MIGO_ERROR_INVALID_STATE;
+            };
+            engine.content_root()
+        };
+        let Some(root) = root else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        // A path the platform cannot spell in UTF-8 is not one a host can open
+        // from this answer either; refused rather than lossily rewritten.
+        let Some(text) = root.to_str() else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        *out_length = text.len();
+        if capacity < text.len() + 1 {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        // SAFETY: non-null and at least `text.len() + 1` bytes, checked above.
+        unsafe {
+            std::ptr::copy_nonoverlapping(text.as_ptr(), buffer.cast::<u8>(), text.len());
+            buffer.add(text.len()).write(0);
+        }
+        MIGO_OK
+    })
 }

@@ -45,7 +45,7 @@
       }
     },
     "host_v8_audio": {
-      "reason": "Audio plays on the host (profile D18: PCM never crosses the process boundary; control messages do). Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous. Recording needs the microphone, which the profile does not grant.",
+      "reason": "Audio plays on the host (profile D18: PCM never crosses the process boundary; control messages do). A decode is adopted on the host as the AudioBuffer's PCM, so its samples cross only when content reads its channels (materialize, synchronous) or starts a buffer it wrote. Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous, and so is setInnerAudioOption, whose refusal is what its facade reports as fail. Recording needs the microphone, which the profile does not grant.",
       "ops": {
         "op_audio_abort_buffer": "command",
         "op_audio_analyser_byte_frequency": "async",
@@ -89,7 +89,7 @@
         "op_audio_set_biquad_filter_type": "command",
         "op_audio_set_distance_model": "command",
         "op_audio_set_gain_value": "command",
-        "op_audio_set_inner_audio_option": "command",
+        "op_audio_set_inner_audio_option": "sync",
         "op_audio_set_loop": "command",
         "op_audio_set_node_param": "command",
         "op_audio_set_oscillator_type": "command",
@@ -105,7 +105,6 @@
         "op_audio_stop_constant_source": "command",
         "op_audio_stop_oscillator": "command",
         "op_audio_suspend_context": "async",
-        "op_audio_take_decoded_buffer_data": "async",
         "op_inner_audio_create": "sync",
         "op_inner_audio_destroy": "command",
         "op_inner_audio_get_state": "async",
@@ -131,11 +130,11 @@
       }
     },
     "host_v8_base": {
-      "reason": "Package loading reads the host's mounted code, synchronously where `require` is synchronous; callback ids are the producer's.",
+      "reason": "Package loading reads the host's mounted code, synchronously where `require` is synchronous; callback ids are the producer's. Heap statistics are V8's, and content here runs in WebKit's JavaScriptCore, which exposes none to a page: a number the host made up would read as a measurement, so the call is refused.",
       "ops": {
         "op_alloc_host_callback_id": "local",
         "op_download_subpackage": "command",
-        "op_get_heap_statistics": "sync",
+        "op_get_heap_statistics": "unsupported",
         "op_get_mount_generation": "sync",
         "op_get_sub_packages": "sync",
         "op_get_subpackage_identity": "sync",
@@ -154,19 +153,19 @@
       }
     },
     "host_v8_device": {
-      "reason": "Orientation, wake lock, vibration and network monitoring are host commands; the network type is part of the environment snapshot. Clipboard, location, sensors, code scanning and screen capture are off by the profile (D18) and need the host app's own review position.",
+      "reason": "Vibration, the display wake lock and network monitoring are host commands. The battery and the network type are the host's last report, read synchronously: the network changes during a session, so the host's one copy is the answer rather than a snapshot the producer would have to keep in step. Orientation is fixed when the session starts (its size is), and there is no debug panel to enable. Clipboard, location, sensors, code scanning and screen capture are off by the profile (D18) and need the host app's own review position.",
       "ops": {
         "op_get_battery_info": "sync",
         "op_get_clipboard_data": "unsupported",
         "op_get_fuzzy_location": "unsupported",
         "op_get_local_ip_address": "unsupported",
         "op_get_location": "unsupported",
-        "op_get_network_type": "local",
+        "op_get_network_type": "sync",
         "op_get_screen_brightness": "unsupported",
         "op_scan_code": "unsupported",
         "op_set_clipboard_data": "unsupported",
-        "op_set_device_orientation": "command",
-        "op_set_enable_debug": "command",
+        "op_set_device_orientation": "unsupported",
+        "op_set_enable_debug": "unsupported",
         "op_set_keep_screen_on": "command",
         "op_set_screen_brightness": "unsupported",
         "op_start_accelerometer": "unsupported",
@@ -282,15 +281,12 @@
       }
     },
     "host_v8_network": {
-      "reason": "Requests are made by the host, not by WebContent's fetch: the engine's network API has no CORS, carries the host's TLS and domain policy, and has sockets the web platform does not. Starts and reads are awaited; closes and cancels are commands.",
+      "reason": "Requests are made by the host, not by WebContent's fetch: the engine's network API has no CORS, carries the host's TLS and domain policy, and has sockets the web platform does not. Starts and reads are awaited; closes and cancels are commands. The handle an upload is aborted through is synchronous because it names a host resource -- the upload streams a file the host opened -- and content is given it before it awaits the upload.",
       "ops": {
         "op_fetch": "sync",
         "op_fetch_send": "async",
         "op_fetch_upload": "async",
-        "op_fetch_upload_cancel_handle": {
-          "lane": "command",
-          "local_answer": "the handle, which the producer allocates and names the upload by"
-        },
+        "op_fetch_upload_cancel_handle": "sync",
         "op_prefetch_assets": "async",
         "op_prefetch_dns": "command",
         "op_tcp_close": "command",
@@ -427,7 +423,7 @@
       }
     },
     "host_v8_webgl": {
-      "reason": "Rendering. The engine's WebGL and Canvas2D facades already encode state, draws and uniforms into the frame command stream; on Performance+ every call that has no answer the producer lacks joins them there -- resource creation with producer-allocated ids, shader source, uploads, attachments -- so a frame's GL work crosses once, in order, inside its packet. Queries whose answer is the driver's cross the synchronous barrier; attributes, capabilities and id allocation are the producer's own. requestAnimationFrame is the frame clock's request and tick.",
+      "reason": "Rendering. The engine's WebGL and Canvas2D facades already encode state, draws and uniforms into the frame command stream; on Performance+ every call that has no answer the producer lacks joins them there -- resource creation with producer-allocated ids, shader source, uploads, attachments -- so a frame's GL work crosses once, in order, inside its packet. Queries whose answer is the driver's cross the synchronous barrier -- the compressed-texture formats among them, which only the host's renderer knows and knows only once it is up; attributes, the remaining capabilities and id allocation are the producer's own. requestAnimationFrame is the frame clock's request and tick.",
       "ops": {
         "op_active_texture": "stream",
         "op_alloc_gl_resource_id": "local",
@@ -543,7 +539,7 @@
         "op_polygon_offset": "stream",
         "op_read_buffer": "stream",
         "op_read_pixels": "sync",
-        "op_read_pixels_to_buffer": "stream",
+        "op_read_pixels_to_buffer": "sync",
         "op_renderbuffer_storage": "stream",
         "op_renderbuffer_storage_multisample": "stream",
         "op_resume_transform_feedback": "stream",
@@ -593,7 +589,7 @@
         "op_tex_sub_image_2d_from_image": "stream",
         "op_tex_sub_image_2d_from_snapshot": "stream",
         "op_tex_sub_image_3d": "stream",
-        "op_text_cache_peek_pin": "sync",
+        "op_text_cache_peek_pin": "local",
         "op_text_cache_unpin": "stream",
         "op_transform_feedback_varyings": "stream",
         "op_uniform1f": "stream",
@@ -619,7 +615,7 @@
         "op_viewport": "stream",
         "op_webgl_get_context_attributes": "local",
         "op_webgl_get_error": "sync",
-        "op_webgl_query_compressed_caps": "local",
+        "op_webgl_query_compressed_caps": "sync",
         "op_webgl_record_attributes": "local",
         "op_webgl_record_error": "local",
         "op_webgl_record_out_of_memory": "local"
@@ -641,6 +637,27 @@
         "op_worker_inner_post_message": "unsupported",
         "op_worker_inner_recv_message": "unsupported"
       }
+    }
+  },
+  "core_members": {
+    "$comment": [
+      "The members of deno_core's `core` object that the engine's JavaScript calls and that are",
+      "not ops: `core.read`, `core.close` and `core.tryClose` act on deno's resource table, which",
+      "the external execution has no equivalent of. The handles they name are the network",
+      "service's (migo_services::network::resources), so on that lane these are answered by the",
+      "host exactly as the ops beside them are, and the engine's `ReadableStream` pulls a response",
+      "body the same way in both executions.",
+      "",
+      "They are classified here rather than under an extension because the op table is derived",
+      "from `deno_core::extension!` registrations and `ext:core/ops` imports, and a core member is",
+      "neither. A member on a crossing lane carries a number in service-ops.json; a `local` one is",
+      "built in the producer out of the members that do."
+    ],
+    "members": {
+      "close": "command",
+      "read": "async",
+      "readAll": "local",
+      "tryClose": "command"
     }
   }
 }

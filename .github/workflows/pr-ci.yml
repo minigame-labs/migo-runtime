@@ -449,6 +449,14 @@ jobs:
       - name: Apple deployment floor contract
         run: bash scripts/test-apple-deployment-floor-contract.sh
 
+      # An app that links an SDK using a required-reason API without declaring
+      # it is rejected at review -- in the integrator's app, weeks after the
+      # change that caused it. So the manifests both products ship are checked
+      # against the sources in both directions: every category used is
+      # declared, and every declaration is still true.
+      - name: Apple privacy manifest declares what the engine does
+        run: bash scripts/test-apple-privacy-manifest-contract.sh
+
       # The lane a Session gets, and why. Checks the Swift reason-code mirror
       # against the policy from both directions -- a case with no policy entry
       # is a value nobody can read in a report, and a policy entry with no case
@@ -524,6 +532,16 @@ jobs:
 
       - name: Apple SDK assembly preserves slices and runtime dependencies
         run: bash scripts/test-apple-sdk-packaging.sh
+
+      # The five build scripts that derive a package's native link line from
+      # `cargo rustc -- --print native-static-libs` must capture it with colour
+      # pinned off. Forced colour -- which CI's toolchain setup exports -- splits
+      # `note` from its colon and glues a reset onto the last flag, so the parse
+      # either finds no note or reads one named `-lm<esc>[0m`. Four captures
+      # pinned it, the Apple one did not, and every Apple row of this workflow
+      # failed for days against logs that held the note.
+      - name: Parsed cargo notes are captured without colour
+        run: bash scripts/test-parsed-cargo-note-contract.sh
 
       # ANGLE-Metal is what fills the hole apple-sdk.yml measured: there is no GL
       # framework on iOS, so the renderer has no GL to link. Building it is a
@@ -654,6 +672,15 @@ jobs:
       # for every value written by hand and wrong for a real session's identity.
       - name: Frame wire JavaScript encoder against the golden corpus
         run: bash scripts/test-frame-wire-js-encoder.sh
+
+      # Two parsers for `ctx.font`, and two text codecs, each held to one
+      # corpus: the op boundary answers both on the producer, so the conversion
+      # exists twice in this repository and a difference is a font that never
+      # applies or a save file one platform cannot read.
+      - name: Producer-local parsers agree with the engine's
+        run: |
+          bash scripts/test-css-font-agreement.sh
+          bash scripts/test-text-codec-agreement.sh
 
       # The engine's own JavaScript API layer, staged for the Performance+
       # producer and run: content draws through migo.createCanvas() and the
@@ -1016,7 +1043,7 @@ jobs:
       # a reliable uncached build beats a cache that fails every other run.
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
         with:
           # Named, because the action's default is `tools platform-tools` and
           # `tools` -- the SDK Tools package cmdline-tools replaced -- is gone from
@@ -1144,18 +1171,19 @@ jobs:
   # does not fit that job's 20-minute budget. Runs in parallel with the Android
   # job, so the wall clock is unchanged.
   #
-  # This job DOES cache, unlike the Android and snapshot jobs, because the hazard
-  # those two avoid does not reach it. There, the V8 archive is fetched by
-  # scripts/fetch-v8-archives.sh into engine/third_party/rusty_v8/<triple>/ --
-  # outside the `engine -> target` workspace the cache covers. A warm run restores
-  # the build script's fingerprint but not the archive it refers to, cargo skips
-  # the script that would have copied it, and the link fails with "could not find
-  # native static library rusty_v8" on the second run rather than the first.
+  # NO Rust cache, for the reason scripts/lib/v8-materialise.sh's header states:
+  # this job links V8, and Swatinem/rust-cache keeps the v8 build script's
+  # fingerprint while pruning the archive that script copied into
+  # `target/<profile>/gn_out/obj`, so a warm run replays a recorded link-search
+  # path with nothing behind it.
   #
-  # Here there is no fetch step: the `v8` crate resolves its own archive under
-  # target/, which the cache stores and restores with everything else. Observed
-  # rather than assumed -- warm runs report `full match: true` and go green in
-  # ~2.5 min against ~45 cold, with all 827 tests running and no link failure.
+  # This job did cache, on a comment saying the hazard did not reach it because
+  # "there is no fetch step: the v8 crate resolves its own archive under target/".
+  # A later commit added the verified fetch above -- taking the archive out of
+  # target/ and pointing RUSTY_V8_ARCHIVE at it -- and the justification stopped
+  # being true without anyone reading it again. The gate then failed on every run
+  # from 2026-09-18 with "could not find native static library `rusty_v8`",
+  # including on master, which is exactly the shape the header predicts.
   # What content drew has to reach the window. `scripts/verify-bypass-present.sh`
   # runs the host player headless over seven fixtures and reads the presented
   # frame back, and it had never run on CI -- so #225 merged with bypass-probe
@@ -1180,12 +1208,6 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: engine -> target
-          cache-on-failure: true
 
       - name: Install the host player's build and EGL dependencies
         run: |
@@ -1247,17 +1269,22 @@ jobs:
       # The last three are needed at link time even though the finished binaries do
       # not end up depending on them: `-l` has to resolve before `--as-needed` can
       # drop it.
-      # This job compiles Skia from source, which fetches a large tarball from
-      # codeload.github.com on every run. Uncached that is both the slowest step
-      # here and a recurring flake: a 429 from that host failed this job outright
-      # on an unrelated PR. quality-gate and build already cache the same
-      # workspace; this job was the one longest-pole job left without it.
-      - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: engine -> target
-          cache-on-failure: true
-
+      # NO Rust cache, for the reason scripts/lib/v8-materialise.sh's header
+      # states: `cargo test -p migo-core` links V8, and Swatinem/rust-cache keeps
+      # the v8 build script's fingerprint while pruning the archive that script
+      # copied into `target/<profile>/gn_out/obj`. A warm run then replays a
+      # recorded link-search path with nothing behind it and fails with "could
+      # not find native static library `rusty_v8`" -- which is what this job did
+      # on every run, including on master, from the commit that added the cache
+      # here on 2026-09-18 until this one.
+      #
+      # The cache was added for a real cost, and removing it restores that cost:
+      # Skia is compiled from source, whose tarball fetch from codeload.github.com
+      # is both the slowest step here and an occasional 429. That buys a correct
+      # job over a fast one. The third option -- keeping the cache and deleting
+      # `target/*/.fingerprint/v8-*` after the restore so the copy re-runs -- is
+      # not taken here because nothing in this repository has measured it, and
+      # this job is not the place to find out.
       - name: Install the engine's host build dependencies
         # Bounded and retried for the reason the ILP32 lane already is: a
         # stalled mirror hung this exact step for 90 minutes, producing no

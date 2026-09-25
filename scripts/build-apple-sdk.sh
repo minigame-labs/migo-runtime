@@ -530,10 +530,42 @@ for target in ${RUST_TARGETS[@]+"${RUST_TARGETS[@]}"}; do
     # macos-v8 product -- so two of the three documented ways to call this script
     # died here on the only OS that can run it. Nothing caught it because the
     # script had never run at all, and on Linux's bash 5 the plain form is fine.
-    if ! cargo build -p migo-capi --target "$target" --locked \
+    #
+    # `cargo rustc ... -- --print=native-static-libs` rather than `cargo build`:
+    # the same compile, plus rustc's account of what the archive needs from the
+    # system -- the frameworks and libraries its dependencies link (cpal's
+    # AudioToolbox, Skia's CoreText). A static archive cannot carry those, and
+    # the consumer's link is where they were missing: the host-audio feature put
+    # cpal into the Performance+ archive, and every Swift target linking it
+    # failed on `_AudioComponentFindNext` because nothing in the package imports
+    # AudioToolbox. The list goes into the module map below as `link`
+    # directives, so importing MigoEngine links exactly what the archive was
+    # built against -- derived per build, never transcribed. Cargo replays the
+    # note for an up-to-date crate, so a no-op build still produces it; a build
+    # that does not is refused rather than packaged with a guessed list.
+    #
+    # Through a pipe rather than a process substitution: the pipeline has
+    # finished -- and the log is whole -- before the next line reads it.
+    cargo_log="$STAGE/libs/cargo-$target.log"
+    # Colour pinned off, as build-android-sdk.sh, build-linux-sdk.sh and
+    # build-windows-sdk-native.sh already do at their own capture: this note is
+    # parsed, not read, and CI's toolchain setup forces colour on, which puts two
+    # escape sequences between the note and its colon and a reset against the last
+    # `-l` token. Every Apple row failed here -- "rustc reported no native link
+    # dependencies" against a log holding the note -- because this was the one
+    # producer written without the pin. The parser strips SGR too; the pin keeps
+    # the log a person reads identical to the one the packager parses.
+    CARGO_TERM_COLOR=never cargo rustc -p migo-capi --lib --target "$target" --locked \
         ${cargo_feature_flags[@]+"${cargo_feature_flags[@]}"} \
-        ${cargo_profile_flag[@]+"${cargo_profile_flag[@]}"}; then
+        ${cargo_profile_flag[@]+"${cargo_profile_flag[@]}"} \
+        -- --print=native-static-libs 2>&1 | tee "$cargo_log"
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
         err "cargo build failed for $target"
+        exit 1
+    fi
+    if ! python3 "$SCRIPT_DIR/apple-sdk-package.py" native-libs \
+        --cargo-log "$cargo_log" --output "$STAGE/libs/native-libs-$target.txt"; then
+        err "rustc reported no native link dependencies for $target"
         exit 1
     fi
     cp "target/$target/$profile_dir/$CAPI_STATICLIB" "$STAGE/libs/libmigo-$target.a" || exit 1
@@ -572,12 +604,13 @@ cp "$REPO_ROOT"/include/migo/platform/*.h "$STAGE/headers/migo/platform/" || exi
 # a seventh. Every header here is self-contained -- each includes only
 # <migo/surface.h> -- so the directory form covers all of them, stays correct
 # when one is added, and is derived rather than transcribed.
-cat > "$STAGE/headers/module.modulemap" <<'MODULEMAP'
-module MigoEngine {
-    umbrella "migo"
-    export *
-}
-MODULEMAP
+#
+# The `link` lines are the archive's native dependencies, the union over this
+# group's slices (see the cargo step above): Clang autolinks them for every
+# target that imports the module, which is the only way a binary target can say
+# what it links.
+python3 "$SCRIPT_DIR/apple-sdk-package.py" modulemap \
+    --output "$STAGE/headers/module.modulemap" "$STAGE"/libs/native-libs-*.txt || exit 1
 
 python3 "$SCRIPT_DIR/apple-sdk-package.py" record \
     --stage "$STAGE" --platform "$PLATFORM" --product "$PRODUCT" \

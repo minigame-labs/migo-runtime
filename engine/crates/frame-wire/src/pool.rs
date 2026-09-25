@@ -32,7 +32,7 @@
 //! paths one path.
 
 use std::sync::{
-    Arc, Condvar, Mutex, MutexGuard,
+    Arc, Condvar, Mutex, MutexGuard, OnceLock,
     atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 use std::time::Instant;
@@ -42,7 +42,6 @@ use std::time::Instant;
 /// Separate from [`crate::FrameIngress`] because a completion token has to
 /// return its credit from wherever the renderer finished, which is not where
 /// the ingress lives and not necessarily the same thread.
-#[derive(Debug)]
 pub struct CreditWindow {
     max: u32,
     in_flight: AtomicU32,
@@ -54,6 +53,29 @@ pub struct CreditWindow {
     /// is what makes a return between the two impossible to miss.
     wake_lock: Mutex<()>,
     returned: Condvar,
+    /// Told that a credit came back, for a producer that is not blocked here.
+    ///
+    /// A blocked producer waits in [`Self::wait_for_credit`]; a running one
+    /// learns the window from an advertisement, and the host only sends those
+    /// on a verdict or a frame-clock tick. A producer holding a packet it could
+    /// not send asks for neither: its next frame request waits for that packet
+    /// to go, and the packet waits for a credit. This is how the host gets to
+    /// break that circle -- see `runtime::external`, which installs the listener
+    /// that queues the advertisement.
+    released: OnceLock<Box<dyn Fn() + Send + Sync>>,
+}
+
+// Hand-written because a listener is not `Debug`, and printing one would say
+// nothing anyway; the counts are what a reader of a log wants.
+impl std::fmt::Debug for CreditWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreditWindow")
+            .field("max", &self.max)
+            .field("in_flight", &self.in_flight())
+            .field("waiters", &self.waiters.load(Ordering::SeqCst))
+            .field("has_release_listener", &self.released.get().is_some())
+            .finish()
+    }
 }
 
 impl CreditWindow {
@@ -64,7 +86,16 @@ impl CreditWindow {
             waiters: AtomicU32::new(0),
             wake_lock: Mutex::new(()),
             returned: Condvar::new(),
+            released: OnceLock::new(),
         }
+    }
+
+    /// Install the listener called after each credit comes back. Once per
+    /// window: the session that owns it installs it at startup, and a second
+    /// caller is a bug rather than a second subscriber.
+    pub fn on_release(&self, listener: Box<dyn Fn() + Send + Sync>) {
+        let installed = self.released.set(listener).is_ok();
+        debug_assert!(installed, "a credit window has one release listener");
     }
 
     #[inline]
@@ -139,6 +170,13 @@ impl CreditWindow {
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
             );
             self.returned.notify_all();
+        }
+        // After the count moved, so a listener that reads the window sees this
+        // credit. Outside the wake lock, because a listener queues a message and
+        // wakes a transport, which is not work to do under a lock the render
+        // thread takes on every frame.
+        if let Some(listener) = self.released.get() {
+            listener();
         }
     }
 

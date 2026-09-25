@@ -16,19 +16,19 @@ sourcePaths:
 ## MIGO_API
 
 ```c
-/* Windows — 构建共享库时 */
+/* Windows — building the shared library */
 #define MIGO_API __declspec(dllexport)
 
-/* Windows — 使用共享库时 */
+/* Windows — using the shared library */
 #define MIGO_API __declspec(dllimport)
 
-/* Windows — 使用静态库时（无 MIGO_BUILD_SHARED / MIGO_USE_SHARED）*/
+/* Windows — using the static library (no MIGO_BUILD_SHARED / MIGO_USE_SHARED) */
 #define MIGO_API
 
-/* GCC / Clang（含 Android NDK、OpenHarmony 工具链）*/
+/* GCC / Clang (including the Android NDK and OpenHarmony toolchains) */
 #define MIGO_API __attribute__((visibility("default")))
 
-/* 其余编译器 */
+/* other compilers */
 #define MIGO_API
 ```
 
@@ -49,14 +49,14 @@ sourcePaths:
 /* Windows */
 #define MIGO_CALL __cdecl
 
-/* 其他所有平台 */
+/* every other platform */
 #define MIGO_CALL
 ```
 
 `MIGO_CALL` marks the function calling convention. Windows explicitly uses `__cdecl` to avoid differences in compiler defaults; on other platforms it expands to nothing and uses the platform-default ABI. Host callback implementations (such as `MigoTaskFn` and `on_error`) **must** include `MIGO_CALL`; otherwise Windows can end up with a mismatched stack.
 
 ```c
-/* 宿主回调函数必须带 MIGO_CALL */
+/* host callbacks must carry MIGO_CALL */
 static MigoResult MIGO_CALL my_dispatch(
     void *ctx, MigoTaskFn task, void *task_ctx) {
     task(task_ctx);
@@ -67,11 +67,11 @@ static MigoResult MIGO_CALL my_dispatch(
 ## MIGO_BEGIN_DECLS / MIGO_END_DECLS
 
 ```c
-/* C++ 编译器 */
+/* C++ compilers */
 #define MIGO_BEGIN_DECLS extern "C" {
 #define MIGO_END_DECLS   }
 
-/* C 编译器 */
+/* C compilers */
 #define MIGO_BEGIN_DECLS
 #define MIGO_END_DECLS
 ```
@@ -89,26 +89,26 @@ This macro is always `1`, indicating that the C ABI described by the current hea
 ## MIGO_C_ABI_HAS_RUNTIME
 
 ```c
-/* 当前在 Android / Desktop Linux / Windows / OpenHarmony 上为 1 */
-#define MIGO_C_ABI_HAS_RUNTIME 1  /* 或 0 */
+/* currently 1 on Android / desktop Linux / Windows / OpenHarmony */
+#define MIGO_C_ABI_HAS_RUNTIME 1  /* or 0 */
 ```
 
-Indicates that a linkable migo runtime exists for the current compilation target. This macro describes the platform of the headers, not the library that was actually linked—it is a preprocessor macro and cannot observe the linked artifact at compile time. To query the capabilities of the linked runtime, call `migo_query_capabilities` (see [capabilities.mdx](/docs/reference/capabilities/)).
+Indicates that a linkable migo runtime exists for the current compilation target. This macro describes the platform of the headers, not the library that was actually linked—it is a preprocessor macro and cannot observe the linked artifact at compile time. To query the capabilities of the linked runtime, call `migo_query_capabilities` (see [capabilities.mdx](/docs/en/reference/capabilities/)).
 
 ## Platform-detection macros
 
 ```c
-/* Android（NDK 注入 __ANDROID__）*/
-#define MIGO_PLATFORM_IS_ANDROID      0  /* 或 1 */
+/* Android (the NDK defines __ANDROID__) */
+#define MIGO_PLATFORM_IS_ANDROID      0  /* or 1 */
 
-/* OpenHarmony（工具链注入 __OHOS__ 或 __OHOS_FAMILY__）*/
-#define MIGO_PLATFORM_IS_OPENHARMONY  0  /* 或 1 */
+/* OpenHarmony (the toolchain defines __OHOS__ or __OHOS_FAMILY__) */
+#define MIGO_PLATFORM_IS_OPENHARMONY  0  /* or 1 */
 
 /* Desktop Linux with glibc（__linux__ && !Android && !OpenHarmony && __GLIBC__）*/
-#define MIGO_PLATFORM_IS_LINUX_GNU    0  /* 或 1 */
+#define MIGO_PLATFORM_IS_LINUX_GNU    0  /* or 1 */
 
 /* Windows（_WIN32 && !Cygwin）*/
-#define MIGO_PLATFORM_IS_WINDOWS      0  /* 或 1 */
+#define MIGO_PLATFORM_IS_WINDOWS      0  /* or 1 */
 ```
 
 The platform macros in the headers are defined from **specific to general** for a reason: Android and OpenHarmony both use a Linux kernel and therefore both define `__linux__`; testing only `__linux__` would misclassify all three platforms as one ABI. `MIGO_PLATFORM_IS_LINUX_GNU` specifically means desktop Linux with glibc, explicitly excluding Android (Bionic), OpenHarmony (musl), and Cygwin.
@@ -118,10 +118,10 @@ The platform macros in the headers are defined from **specific to general** for 
 ## MIGO_STATIC_ASSERT
 
 ```c
-/* C++ 编译器 */
+/* C++ compilers */
 #define MIGO_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
 
-/* C 编译器（C11+）*/
+/* C compilers (C11+) */
 #define MIGO_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 ```
 
@@ -130,10 +130,10 @@ Used for compile-time layout assertions inside the headers, this macro works wit
 ## MIGO_LP64
 
 ```c
-/* 指针宽度为 64 位时 */
+/* when pointers are 64-bit */
 #define MIGO_LP64 1
 
-/* 指针宽度为 32 位时 */
+/* when pointers are 32-bit */
 #define MIGO_LP64 0
 ```
 
@@ -317,7 +317,7 @@ The three core handles are opaque types (forward-declared structs). The host hol
 | `MigoSession *` | Belongs to the Engine and represents one content session | `migo_session_destroy` |
 | `MigoSurfaceAttachment *` | Belongs to a Session and represents an attached rendering Surface | Begin asynchronous detach with `migo_surface_begin_detach` |
 
-Sessions must be destroyed before their Engine; a Surface attachment must complete the detach/release flow before its Session can be destroyed. See [engine.mdx](/docs/reference/engine/), [session.mdx](/docs/reference/session/), and [surface.mdx](/docs/reference/surface/).
+Sessions must be destroyed before their Engine; a Surface attachment must complete the detach/release flow before its Session can be destroyed. See [engine.mdx](/docs/en/reference/engine/), [session.mdx](/docs/en/reference/session/), and [surface.mdx](/docs/en/reference/surface/).
 
 ## MigoError
 
@@ -359,11 +359,11 @@ The first two fields of every config, descriptor, and status type are `struct_si
 4. Fill in the remaining fields required by this version; leave every other field zero.
 
 ```c
-/* 典型初始化模式（来自 tests/c_host/linux/main.c）*/
+/* the usual initialization (from tests/c_host/linux/main.c) */
 MigoEngineConfig engine_config = {0};
 engine_config.struct_size = (uint32_t)sizeof(engine_config);
 engine_config.abi_version = MIGO_ABI_VERSION_CURRENT;
-/* ... 填写其余字段 ... */
+/* ... fill in the remaining fields ... */
 
 MigoEngine *engine = NULL;
 MigoResult result = migo_engine_create(&engine_config, &engine);

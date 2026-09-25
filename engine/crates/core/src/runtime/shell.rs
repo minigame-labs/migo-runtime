@@ -39,6 +39,11 @@ use shared::{
 use crate::runtime::HostId;
 use crate::services::{AudioService, PlatformServices, RenderService};
 
+/// How long a session waits, from the renderer's launch, for the GPU's
+/// capabilities before content may ask about them. The embedded execution waits
+/// before it runs content; the external one when content first asks.
+pub(crate) const GPU_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Cleans process-global registrations if `Host::new` exits before ownership
 /// transfers to the fully assembled `Host` and its normal `Drop` path.
 pub(crate) struct HostStartupGuard {
@@ -213,6 +218,12 @@ impl SessionShell {
         // ---- Services ----
         // AudioService is lazy — no thread spawned until the first
         // real audio command.  Saves ~80 ms on cold start.
+        #[cfg(feature = "host-audio")]
+        let audio = AudioService::new(
+            host_tx.clone(),
+            crate::services::audio::streaming_http_client_factory(network_policy.clone()),
+        );
+        #[cfg(not(feature = "host-audio"))]
         let audio = AudioService::new(host_tx.clone(), network_policy.clone());
         let gpu_caps = shared::device::gpu_caps::GpuCaps::new();
 

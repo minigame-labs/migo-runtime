@@ -17,6 +17,7 @@ import { join } from "node:path";
 
 import {
   DOWN_CLOCK_TICK,
+  DOWN_WINDOW_OPEN,
   DOWN_FRAME_VERDICT,
   decodeBytes,
   encodeBytes,
@@ -28,6 +29,13 @@ const verdict = (acceptedSequence, decision) => ({
   decision,
   wireErrorCode: decision === 3 ? 0x2001 : 0,
   remainingCredits: 3,
+  acceptedSequence,
+});
+
+const windowOpen = (acceptedSequence, remainingCredits) => ({
+  kind: DOWN_WINDOW_OPEN,
+  generation: 0x12345678,
+  remainingCredits,
   acceptedSequence,
 });
 
@@ -49,6 +57,8 @@ const CORPUS = [
   [tick(16_666_667, 1)],
   [tick(0xff_ffff_ffff, 2), verdict(0x100_0000_0001, 1)],
   [verdict(0x7_ffff_ffff_ffff, 3)],
+  [windowOpen(0x3_0000_0007, 2)],
+  [tick(16_666_667, 3), windowOpen(0x5_0000_0009, 1), verdict(0x5_0000_0009, 1)],
   Array.from({ length: 64 }, (_, i) =>
     i % 2 === 0 ? verdict(i + 0x1_0000_0000, 1) : tick(i * 16_666_667 + 0x2_0000_0000, i),
   ),

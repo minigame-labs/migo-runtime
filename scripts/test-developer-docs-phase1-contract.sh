@@ -5,8 +5,11 @@
 #   * the docs toolchain (Astro/Starlight) deps pinned against the lockfile
 #   * release/VERSION gating via developer-docs/docs.config.mjs
 #   * the zh route skeleton and its 4 sidebar groups
-#   * explicit en TranslationPending stubs — one per zh route, meta-noindexed,
-#     linking back to the zh page, never silently serving untranslated content
+#   * en pages that are either a full translation or an explicit
+#     TranslationPending stub (meta-noindexed, linking back to the zh page) --
+#     never half of each; a translation links within the en tree
+#   * the C ABI reference: one section per public header entry point, in zh and
+#     in the en translation alike
 #   * no Docusaurus remnants
 set -euo pipefail
 
@@ -204,6 +207,24 @@ for rel in ZH_ROUTES:
         if mermaid_blocks(body):
             error(f"src/content/docs/{en_rel} contains translated Mermaid content")
 
+# -- 5b. 英文实译页只链向英文页 --------------------------------------------------
+#
+# Starlight 不改写正文里的绝对链接。英文页写 `/docs/reference/types/` 就把读者
+# 第一次点击送进中文页 —— 2026-09-19 审查时 latest 英文页的 90 处站内链接全是
+# 这样。占位页(Translation pending)的回链指向中文是设计,不在此列。
+
+en_link = re.compile(r'(?:href="|\]\()(/docs/[^"\)#\s]*)')
+for page in sorted((docs_root / "en").rglob("*.mdx")):
+    rel = page.relative_to(docs_root).as_posix()
+    if rel.startswith("en/0.9/"):
+        continue
+    text = page.read_text(encoding="utf-8")
+    if ":::note[Translation pending]" in text:
+        continue
+    for href in en_link.findall(text):
+        if not href.startswith("/docs/en/"):
+            error(f"src/content/docs/{rel} 链向中文路由 {href}(英文页应链 /docs/en/…)")
+
 # -- 6. Docusaurus remains -----------------------------------------------------
 
 remnants = {
@@ -243,6 +264,22 @@ for page in ref_pages:
         sections[heading] = page.name
 for name in sorted(duplicate_sections):
     error(f"C ABI 函数节重复:{name} 同时在 {sections[name]} 与另一页")
+
+# 英文实译的参考页与中文逐页同一组函数节:上面的 header 对照只读中文页,
+# 新入口只补中文时,英文读者看不到它,且没有任何检查会说。
+for page in ref_pages:
+    en_page = docs_root / "en" / "reference" / page.name
+    if not en_page.is_file():
+        continue
+    en_text = en_page.read_text(encoding="utf-8")
+    if ":::note[Translation pending]" in en_text:
+        continue
+    zh_set = set(re.findall(r"^## (migo_[a-z0-9_]+)\s*$", page.read_text(encoding="utf-8"), flags=re.M))
+    en_set = set(re.findall(r"^## (migo_[a-z0-9_]+)\s*$", en_text, flags=re.M))
+    for name in sorted(zh_set - en_set):
+        error(f"en/reference/{page.name} 缺函数节 {name}(中文页有)")
+    for name in sorted(en_set - zh_set):
+        error(f"en/reference/{page.name} 多出函数节 {name}(中文页无)")
 
 headers_dir = root / "include" / "migo"
 header_symbols: set[str] = set()

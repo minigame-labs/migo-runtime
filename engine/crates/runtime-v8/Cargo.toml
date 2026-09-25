@@ -68,6 +68,8 @@ tracing = { workspace = true }
 # which is the shape where one of the two is silently green.
 shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs", "codec"] }
 migo-io = { path = "../io", default-features = false, features = ["zip-extract"] }
+# The work behind the ops that have been moved out of them; see its manifest.
+migo-services = { path = "../services", default-features = false }
 serde.workspace = true
 reqwest.workspace = true
 base64 = "0.22"

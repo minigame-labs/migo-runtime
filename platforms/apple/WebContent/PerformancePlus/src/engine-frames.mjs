@@ -26,7 +26,14 @@
 import { DecodeBudget } from "./decode-budget.mjs";
 import { engineHost } from "./engine-host.mjs";
 import { SUBMIT_CLOSED, SUBMIT_NO_CREDIT } from "./frame-session.mjs";
-import { MAGIC, OP2D_SELECT_CANVAS, STREAM_VERSION } from "./render-opcodes.mjs";
+import {
+  DRAW_IMAGE_BATCH_ENTRY_WORDS,
+  MAGIC,
+  OP2D_DRAW_IMAGE,
+  OP2D_DRAW_IMAGE_BATCH,
+  OP2D_SELECT_CANVAS,
+  STREAM_VERSION,
+} from "./render-opcodes.mjs";
 import { SYNC_OP_AWAIT_WINDOW, WINDOW_REPLY_BYTES, decodeWindowReply } from "./sync-mailbox.mjs";
 import { leavesOnScheme } from "./uplink.mjs";
 import { FramePacketWriter } from "./wire-frame-packet.mjs";
@@ -49,6 +56,13 @@ let frameId = 0;
 // repeat it: the host reads a 2D record before any selection as an error.
 const selectCanvas = new Uint32Array(SELECT_CANVAS_WORDS);
 let canvasSelected = false;
+// Whether THIS packet carries that selection. A packet is a unit of execution
+// and a selection only holds inside the one that carries it, so every packet
+// that ends -- a frame end, a split, or a barrier a synchronous call sent --
+// leaves the next one with nothing selected. Kept apart from `canvasSelected`,
+// which is the producer's stream state: after a barrier the producer still
+// knows which canvas is current, and it is the packet that has forgotten.
+let selectionInPacket = false;
 // Presenting packets finished but not yet admitted by the window, oldest first.
 // At most one in practice, because the frame clock waits on it; a queue so an
 // extra frame end outside the clock cannot overwrite a held one.
@@ -59,6 +73,24 @@ const statistics = { packets: 0, barriers: 0, windowWaits: 0 };
 // Resolvers for "nothing is held".
 let drainWaiters = [];
 let draining = false;
+
+// A run of `drawImage` calls on one canvas, not yet written.
+//
+// Games draw sprites one `drawImage` at a time, and adjacent draws on one
+// canvas run against the same 2D state -- every state change is itself a
+// record, and it ends the run -- so they are one `DRAW_IMAGE_BATCH`: nine words
+// a sprite instead of ten, one record, and one command on the host, where a
+// batch is what the atlas path draws in one go. Folded here rather than by the
+// host's decoder, because a record is charged against the decode budget
+// exactly while a batch the decoder grew by pushing would outgrow its estimate.
+//
+// Anything else that reaches the stream -- a record, a non-empty flushed
+// buffer, a frame end, a barrier -- writes the run first, so order holds.
+const MAX_IMAGE_RUN_ENTRIES = 65_536;
+let imageRun = new Uint32Array(DRAW_IMAGE_BATCH_ENTRY_WORDS * 64);
+let imageRunEntries = 0;
+let imageRunCanvas = 0;
+const imageRunRecord = new Uint32Array(DRAW_IMAGE_BATCH_ENTRY_WORDS + 1);
 
 function currentWriter() {
   if (writer === null) {
@@ -86,9 +118,14 @@ export function appendStream(words, usedWords) {
   if (usedWords < 2 || words[0] !== MAGIC || words[1] !== STREAM_VERSION) {
     throw new TypeError(`a flushed command buffer must start with the stream header; got ${usedWords} words`);
   }
+  // An empty buffer is the facade's barrier before a draw, and changes nothing:
+  // it must not end an image run.
+  if (usedWords === 2) return;
+  writeImageRun();
   const frame = currentWriter();
   // A new buffer starts with no canvas selected, whatever the last one chose.
   canvasSelected = false;
+  selectionInPacket = false;
   // Contiguous records that fit are appended as one range: one copy per range,
   // not per record, which is the common case of a buffer that fits entirely.
   let runStart = 2;
@@ -115,6 +152,7 @@ export function appendStream(words, usedWords) {
       if (canvasSelected) {
         frame.appendWords(selectCanvas, 0, SELECT_CANVAS_WORDS);
         budget.add(selectCanvas, 0);
+        selectionInPacket = true;
       }
       if (!budget.fits(words, cursor) || !frame.fits(wordCount)) {
         throw new RangeError(`a ${wordCount}-word record does not fit in one frame packet`);
@@ -123,6 +161,7 @@ export function appendStream(words, usedWords) {
     if (opcode === OP2D_SELECT_CANVAS) {
       selectCanvas.set(words.subarray(cursor, cursor + SELECT_CANVAS_WORDS));
       canvasSelected = true;
+      selectionInPacket = true;
     }
     budget.add(words, cursor);
     cursor += wordCount;
@@ -142,13 +181,55 @@ export function appendStream(words, usedWords) {
  * lane; the caller reports it the way GL reports an allocation it cannot make.
  */
 export function appendRecord(record, headerWords, payload) {
+  writeImageRun();
+  if (!fitRecord(record)) return false;
+  writeRecord(record, headerWords, payload);
+  // A resource record is GL work between the engine's flushed buffers, and the
+  // next buffer selects its own canvas.
+  canvasSelected = false;
+  selectionInPacket = false;
+  return true;
+}
+
+/**
+ * Append a Canvas2D record the producer writes itself: the same as above, with
+ * the canvas selected first.
+ *
+ * A 2D record carries no canvas -- the selection before it does, which is what
+ * makes a batch of them one canvas's work -- and the host reads a 2D record
+ * before any selection as an error. The engine's own flushed buffers select
+ * their canvas themselves; a record written between them has to say which
+ * canvas it is for, and has to say it again after a split.
+ */
+export function appendCanvas2DRecord(canvasId, record, headerWords, payload) {
+  writeImageRun();
+  return appendCanvas2DRecordNow(canvasId, record, headerWords, payload);
+}
+
+function appendCanvas2DRecordNow(canvasId, record, headerWords, payload) {
+  if (!fitRecord(record)) return false;
+  selectCanvasFor(canvasId);
+  writeRecord(record, headerWords, payload);
+  return true;
+}
+
+/** Make room for a record, splitting the packet when it does not fit. */
+function fitRecord(record) {
   const frame = currentWriter();
   const wordCount = record[0] >>> 12;
-  if (!budget.fits(record, 0) || !frame.fits(wordCount)) {
+  // Two words of headroom: a 2D record may have to repeat its canvas selection
+  // in the packet a split starts, and a record that fits only without it would
+  // be a selection the next packet has no room for.
+  if (!budget.fits(record, 0) || !frame.fits(wordCount + SELECT_CANVAS_WORDS)) {
     if (frame.wordCount === 0) return false;
     sendBarrier(frame);
-    if (!budget.fits(record, 0) || !frame.fits(wordCount)) return false;
+    if (!budget.fits(record, 0) || !frame.fits(wordCount + SELECT_CANVAS_WORDS)) return false;
   }
+  return true;
+}
+
+function writeRecord(record, headerWords, payload) {
+  const frame = currentWriter();
   frame.appendWords(record, 0, headerWords);
   if (payload instanceof Uint8Array) {
     frame.appendPayload(payload);
@@ -156,14 +237,62 @@ export function appendRecord(record, headerWords, payload) {
     frame.appendWords(payload, 0, payload.length);
   }
   budget.add(record, 0);
-  // A resource record is GL work between the engine's flushed buffers, and the
-  // next buffer selects its own canvas.
-  canvasSelected = false;
+}
+
+/** Select `canvasId` unless this packet already has it selected. */
+function selectCanvasFor(canvasId) {
+  if (selectionInPacket && selectCanvas[1] === canvasId) return;
+  const frame = currentWriter();
+  selectCanvas[0] = ((SELECT_CANVAS_WORDS << 12) | OP2D_SELECT_CANVAS) >>> 0;
+  selectCanvas[1] = canvasId >>> 0;
+  frame.appendWords(selectCanvas, 0, SELECT_CANVAS_WORDS);
+  budget.add(selectCanvas, 0);
+  canvasSelected = true;
+  selectionInPacket = true;
+}
+
+/**
+ * `drawImage` on `canvasId`: the image id and the eight rectangle floats, as
+ * the nine words of a batch entry. Joins the run, or starts one.
+ *
+ * Returns false when the run it ends could not be written -- a run is bounded
+ * by the engine's own batch limit, so that is a packet with no room at all.
+ */
+export function appendDrawImage(canvasId, entry) {
+  if (imageRunEntries !== 0 && (imageRunCanvas !== canvasId || imageRunEntries === MAX_IMAGE_RUN_ENTRIES)) {
+    if (!writeImageRun()) return false;
+  }
+  const at = imageRunEntries * DRAW_IMAGE_BATCH_ENTRY_WORDS;
+  if (at + DRAW_IMAGE_BATCH_ENTRY_WORDS > imageRun.length) {
+    const grown = new Uint32Array(imageRun.length * 2);
+    grown.set(imageRun.subarray(0, at));
+    imageRun = grown;
+  }
+  imageRun.set(entry, at);
+  imageRunCanvas = canvasId;
+  imageRunEntries += 1;
   return true;
+}
+
+/** Write the pending image run, as one draw or one batch. */
+function writeImageRun() {
+  const entries = imageRunEntries;
+  if (entries === 0) return true;
+  imageRunEntries = 0;
+  if (entries === 1) {
+    imageRunRecord[0] = (((DRAW_IMAGE_BATCH_ENTRY_WORDS + 1) << HEADER_WORD_SHIFT) | OP2D_DRAW_IMAGE) >>> 0;
+    imageRunRecord.set(imageRun.subarray(0, DRAW_IMAGE_BATCH_ENTRY_WORDS), 1);
+    return appendCanvas2DRecordNow(imageRunCanvas, imageRunRecord, DRAW_IMAGE_BATCH_ENTRY_WORDS + 1, null);
+  }
+  const words = entries * DRAW_IMAGE_BATCH_ENTRY_WORDS;
+  imageRunRecord[0] = (((words + 2) << HEADER_WORD_SHIFT) | OP2D_DRAW_IMAGE_BATCH) >>> 0;
+  imageRunRecord[1] = words;
+  return appendCanvas2DRecordNow(imageRunCanvas, imageRunRecord, 2, imageRun.subarray(0, words));
 }
 
 /** End the frame: send its packet, or hold it until the window opens. */
 export function endFrame() {
+  writeImageRun();
   const frame = currentWriter();
   if (frame.wordCount === 0) return;
   const host = engineHost();
@@ -185,6 +314,7 @@ export function endFrame() {
  * call names as its triggering sequence. 0 when nothing was ever sent.
  */
 export function flushToHost() {
+  writeImageRun();
   const frame = currentWriter();
   if (frame.wordCount !== 0) {
     sendBarrier(frame);
@@ -195,6 +325,12 @@ export function flushToHost() {
 }
 
 function finishPacket(frame, host, present) {
+  // The packet about to leave is the one that carried the selection; whatever
+  // goes into the next one has to select again. This is the line whose absence
+  // made a `fillText` after a `measureText` -- which sends a barrier -- land in
+  // a packet with no canvas selected, where the host drops it: an accepted
+  // frame that drew no text.
+  selectionInPacket = false;
   statistics.packets += 1;
   if (!present) statistics.barriers += 1;
   frame.surfaceGeneration = host.state.surfaceGeneration;

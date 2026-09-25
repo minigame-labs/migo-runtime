@@ -382,6 +382,7 @@ pub unsafe extern "C" fn migo_session_attach_surface(
                         notifier.clone(),
                         Arc::downgrade(&session),
                         Arc::clone(&window_state),
+                        Arc::clone(&session.device),
                     ));
                     let options = session
                         .engine

@@ -138,19 +138,25 @@ pub use runtime::{
 /// The uplink's control messages: routed by the transport, read by the session.
 #[cfg(feature = "external-frames")]
 pub use frame_wire::control::{ControlError, ControlRecord, encode_control, is_control_message};
+/// The service stream's wire vocabulary the C boundary names.
+#[cfg(feature = "external-frames")]
+pub use frame_wire::service::{ServiceError as ServiceRefusal, is_service_message};
 /// The synchronous barrier's vocabulary, re-exported for the same reason: the C
 /// boundary maps these onto stable numbers the producer reads, and it should
 /// not have to reach into the wire crate to name them.
 #[cfg(feature = "external-frames")]
 pub use frame_wire::sync::{
-    SYNC_ANSWER_HEADER_BYTES, SYNC_CALL_MAX_BYTES, SYNC_OP_AWAIT_WINDOW, SYNC_OP_READ_PIXELS,
-    SyncAnswer, SyncError, SyncRequest, SyncState, WINDOW_REPLY_BYTES,
+    SERVICE_CALL_MAX_BYTES, SYNC_ANSWER_HEADER_BYTES, SYNC_CALL_MAX_BYTES, SYNC_OP_AWAIT_WINDOW,
+    SYNC_OP_READ_PIXELS, SYNC_OP_SERVICE, SyncAnswer, SyncError, SyncRequest, SyncState,
+    WINDOW_REPLY_BYTES,
 };
 /// Re-exported so the C boundary can translate an outcome without depending on
 /// the wire crate directly: the boundary's job is to copy numbers across, not
 /// to know how a packet is parsed.
 #[cfg(feature = "external-frames")]
 pub use frame_wire::{IngressDecision, IngressOutcome};
+#[cfg(feature = "external-frames")]
+pub use migo_services::content::ModuleError;
 /// The external-frame execution. A session with no script runtime in this
 /// process, for the Apple Performance+ product.
 #[cfg(feature = "external-frames")]
@@ -158,6 +164,9 @@ pub use runtime::external::{
     AnsweredCall, ControlOutcome, DownlinkWaker, ExternalFrameClock, ExternalFrameSession,
     FrameRequest, SpawnedExternalSession, SyncHandle, SyncSnapshot, spawn_external_frame_session,
 };
+/// The service stream's admission outcomes, for the C boundary to report.
+#[cfg(feature = "external-frames")]
+pub use runtime::external_services::{ServiceAdmission, ServiceHandle, ServiceSubmitError};
 pub use runtime::{HostThread, SpawnedSurfaceHost};
 #[cfg(feature = "embedded-v8")]
 pub use runtime::{spawn_host_thread, spawn_host_thread_tracked};

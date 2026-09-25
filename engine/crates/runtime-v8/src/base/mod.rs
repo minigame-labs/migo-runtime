@@ -106,28 +106,7 @@ async fn install_subpackage_with_scheduler(
 /// Derive a collision-free filesystem-safe key from a package name.
 /// Uses percent-encoding: every byte that isn't [a-zA-Z0-9._-] is
 /// encoded as %XX.  Validates length, traversal, and control chars.
-fn safe_package_key(name: &str) -> Result<String, String> {
-    let trimmed = name.trim_matches('/');
-    if trimmed.is_empty() || trimmed.len() > 256 {
-        return Err(format!("invalid name: empty or too long ({})", name.len()));
-    }
-    if trimmed.contains("..") || trimmed.bytes().any(|b| b < 0x20) {
-        return Err(format!("invalid characters in name: {name}"));
-    }
-    let mut key = String::with_capacity(trimmed.len());
-    for b in trimmed.bytes() {
-        match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' => {
-                key.push(b as char);
-            }
-            _ => {
-                key.push('%');
-                key.push_str(&format!("{:02X}", b));
-            }
-        }
-    }
-    Ok(key)
-}
+use migo_services::subpackage::package_key as safe_package_key;
 
 #[derive(Debug, thiserror::Error, deno_error::JsError)]
 enum RequireError {
@@ -182,80 +161,12 @@ struct HeapStats {
     external_memory: usize,
 }
 
-/// Check whether `specifier` looks like an absolute filesystem path.
-///
-/// Matches Unix absolute paths (`/foo`) and Windows drive-letter paths (`C:\foo`).
-#[inline]
-fn is_absolute_path(specifier: &str) -> bool {
-    specifier.starts_with('/')
-        || (specifier.len() >= 3
-            && specifier.as_bytes()[0].is_ascii_alphabetic()
-            && specifier.as_bytes()[1] == b':'
-            && matches!(specifier.as_bytes()[2], b'/' | b'\\'))
-}
-
-/// Resolve `path` using the Node.js-style extension/index resolution order:
-///
-/// 1. exact path
-/// 2. path.js
-/// 3. path.json
-/// 4. path/index.js
-///
-/// Checks both filesystem AND MountTable (for pack-backed overlays where
-/// files don't exist on disk but are accessible via the mount).
-fn resolve_module_path(
-    path: std::path::PathBuf,
-    mount_table: Option<&shared::vfs::MountTable>,
-    code_dir: &str,
-) -> std::path::PathBuf {
-    let code_path = std::path::Path::new(code_dir);
-
-    // Helper: check if a candidate path exists on filesystem OR in mount table.
-    let exists = |p: &std::path::Path| -> bool {
-        if p.is_file() {
-            return true;
-        }
-        // Check mount table for pack-backed entries.
-        if let Some(mt) = mount_table {
-            if let Ok(rel) = p.strip_prefix(code_path) {
-                if let Some(rel_str) = rel.to_str() {
-                    return mt.is_file(rel_str);
-                }
-            }
-        }
-        false
-    };
-
-    if exists(&path) {
-        return path;
-    }
-
-    // Try appending .js
-    if !path.extension().map_or(false, |e| e == "js" || e == "json") {
-        let with_js = path.with_extension("js");
-        if exists(&with_js) {
-            return with_js;
-        }
-        let with_json = path.with_extension("json");
-        if exists(&with_json) {
-            return with_json;
-        }
-    }
-
-    // Try path/index.js (directory as module)
-    let index_js = path.join("index.js");
-    if exists(&index_js) {
-        return index_js;
-    }
-
-    // Fall back to original (will produce a clear "not found" error)
-    path
-}
-
 /// Synchronously read a file as UTF-8 text, used by the JS `require()` shim.
 ///
 /// Resolves `specifier` relative to `referrer_dir`. If `referrer_dir` is empty,
-/// falls back to `HostOpState::code_dir`.
+/// falls back to `HostOpState::code_dir`. The resolution is
+/// [`migo_services::require::resolve_and_read`], shared with the external
+/// session so both find the same module for the same `require`.
 #[op2]
 #[serde]
 fn op_require_resolve_and_read(
@@ -266,132 +177,18 @@ fn op_require_resolve_and_read(
     let host = state.borrow::<HostOpState>();
     let mount_table = host.mount_table.clone();
     let code_dir = host.code_dir.clone().unwrap_or_default();
-    let _ = host;
-
-    let base_dir = if referrer_dir.is_empty() {
-        code_dir.clone()
-    } else {
-        referrer_dir
-    };
-
-    // Reject absolute paths — they must go through /code resolution.
-    if is_absolute_path(&specifier) {
-        return Err(RequireError::Io(format!(
-            "require: absolute path not allowed: {specifier}"
-        )));
-    }
-
-    let raw_path = std::path::PathBuf::from(&base_dir).join(&specifier);
-    let resolved = resolve_module_path(raw_path, mount_table.as_deref(), &code_dir);
-
-    // Compute a normalized relative path for the canonical module key.
-    // This ensures ./foo and ./a/../foo produce the same cache key.
-    let code_path = std::path::Path::new(&code_dir);
-    let normalized_relative = resolved
-        .strip_prefix(code_path)
-        .ok()
-        .and_then(|r| r.to_str())
-        .map(|s| {
-            // Normalize .. and . textually.
-            let mut parts: Vec<&str> = Vec::new();
-            for c in s.split('/') {
-                match c {
-                    "" | "." => {}
-                    ".." => {
-                        parts.pop();
-                    }
-                    c => parts.push(c),
-                }
-            }
-            parts.join("/")
-        });
-
-    if let (Some(mt), Some(rel)) = (&mount_table, &normalized_relative) {
-        // Use resolve() as the single source of truth for overlay shadow semantics.
-        // resolve() returns:
-        //   Some(real_path=Some) → file on disk (dir-backed overlay or base)
-        //   Some(real_path=None) → file in pack-backed overlay
-        //   None + overlay matches → shadow: file missing in overlay, don't fall to base
-        //   None + no overlay → path not in any overlay, may fall to base filesystem
-        let resolved_info = mt.resolve(rel);
-        let overlay_claims_subtree = mt.has_overlay_for(rel);
-
-        match &resolved_info {
-            Some(info) => {
-                // MountTable found the file. Read it.
-                match mt.read(rel) {
-                    Ok(bytes) => {
-                        let content = String::from_utf8(bytes)
-                            .map_err(|e| RequireError::Io(format!("require: not UTF-8: {e}")))?;
-                        let is_pack = info.real_path.is_none();
-                        let abs_path = if is_pack {
-                            // Per-source mounted_at: only changes when THIS source
-                            // is replaced, not when other overlays change.
-                            format!(
-                                "{}#s{}",
-                                code_path.join(rel).display(),
-                                info.source_mounted_at
-                            )
-                        } else {
-                            code_path.join(rel).to_string_lossy().into_owned()
-                        };
-                        let parent = code_path
-                            .join(rel)
-                            .parent()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        return Ok(RequireResult {
-                            code: content,
-                            abs_path,
-                            dir: parent,
-                        });
-                    }
-                    Err(e) => {
-                        return Err(RequireError::Io(format!(
-                            "require: resolved but read failed: {rel}: {e}"
-                        )));
-                    }
-                }
-            }
-            None if overlay_claims_subtree => {
-                // An overlay covers this subtree but the file doesn't exist in it.
-                // Shadow: do NOT fall through to base.
-                return Err(RequireError::Io(format!(
-                    "require: module not found (shadowed by overlay): {rel}"
-                )));
-            }
-            None => {
-                // No overlay covers this path. Fall through to base filesystem.
-            }
-        }
-    }
-
-    // Fallback: base filesystem read (only for paths NOT shadowed by an overlay).
-    let path = std::fs::canonicalize(&resolved).unwrap_or(resolved);
-
-    // Sandbox: reject paths outside code_dir.
-    if !code_dir.is_empty() {
-        if !path.starts_with(code_path) {
-            return Err(RequireError::Io(format!(
-                "require: path escapes /code sandbox: {}",
-                path.display()
-            )));
-        }
-    }
-
-    let abs_path = path.to_string_lossy().into_owned();
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| RequireError::Io(format!("require: cannot read {}: {}", abs_path, e)))?;
-    let parent = path
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-
-    Ok(RequireResult {
-        code: content,
-        abs_path,
-        dir: parent,
+    migo_services::require::resolve_and_read(
+        mount_table.as_deref(),
+        &code_dir,
+        &specifier,
+        &referrer_dir,
+    )
+    .map(|module| RequireResult {
+        code: module.code,
+        abs_path: module.abs_path,
+        dir: module.dir,
     })
+    .map_err(|error| RequireError::Io(error.message))
 }
 
 #[derive(serde::Serialize)]
@@ -406,16 +203,7 @@ struct RequireResult {
 #[op2]
 #[string]
 fn op_get_sub_packages(state: &mut OpState) -> String {
-    let host = state.borrow::<HostOpState>();
-    if host.sub_packages.is_empty() {
-        return "[]".to_string();
-    }
-    let arr: Vec<serde_json::Value> = host
-        .sub_packages
-        .iter()
-        .map(|(name, root)| serde_json::json!({"name": name, "root": root}))
-        .collect();
-    serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
+    migo_services::subpackage::sub_packages_json(&state.borrow::<HostOpState>().sub_packages)
 }
 
 /// Returns the workers directory path, or empty string if not configured.
@@ -728,11 +516,9 @@ async fn op_install_subpackage(
 #[op2(fast)]
 #[bigint]
 fn op_get_mount_generation(state: &mut OpState) -> u64 {
-    let host = state.borrow::<HostOpState>();
-    host.mount_table
-        .as_ref()
-        .map(|mt| mt.generation())
-        .unwrap_or(0)
+    migo_services::subpackage::mount_generation(
+        state.borrow::<HostOpState>().mount_table.as_deref(),
+    )
 }
 
 /// Get the identity of the overlay covering a subpackage root.
@@ -742,11 +528,7 @@ fn op_get_mount_generation(state: &mut OpState) -> u64 {
 #[op2]
 #[string]
 fn op_get_subpackage_identity(state: &mut OpState, #[string] root: &str) -> String {
-    let host = state.borrow::<HostOpState>();
-    match &host.mount_table {
-        Some(mt) => mt.overlay_identity_for(root),
-        None => String::new(),
-    }
+    migo_services::subpackage::identity(state.borrow::<HostOpState>().mount_table.as_deref(), root)
 }
 
 /// Check if a subpackage is durably installed in the per-game package store.
@@ -760,27 +542,11 @@ fn op_is_subpackage_persisted(
     #[string] name: &str,
     #[string] root: &str,
 ) -> bool {
-    let host = state.borrow::<HostOpState>();
-    let Some(game_paths) = &host.game_paths else {
-        return false;
-    };
-    let store = shared::vfs::mount::package_store_dir(game_paths.cache_dir());
-    let manifest = shared::vfs::mount::PackageManifest::load(&store);
-
-    // Derive the same package key that install would use.
-    let pkg_key = match safe_package_key(name) {
-        Ok(k) => k,
-        Err(_) => return false,
-    };
-
-    // Look up by derived key.
-    if let Some(entry) = manifest.packages.get(&pkg_key) {
-        if entry.prefix == root {
-            let pkg_path = store.join(format!("{pkg_key}.mpkg"));
-            return pkg_path.exists();
-        }
-    }
-    false
+    migo_services::subpackage::is_persisted(
+        state.borrow::<HostOpState>().game_paths.as_deref(),
+        name,
+        root,
+    )
 }
 
 /// Check if a subpackage is already available locally.
@@ -790,24 +556,10 @@ fn op_is_subpackage_persisted(
 /// Used by JS to skip download when the subpackage is already present.
 #[op2(fast)]
 fn op_is_subpackage_installed(state: &mut OpState, #[string] root: &str) -> bool {
-    let host = state.borrow::<HostOpState>();
-    let Some(mt) = &host.mount_table else {
-        return false;
-    };
-
-    // Check if any entry point candidate exists in the mount view.
-    let candidates = [
-        format!("{root}/game.js"),
-        format!("{root}/index.js"),
-        format!("{root}/main.js"),
-    ];
-    for candidate in &candidates {
-        if mt.exists(candidate) || mt.exists_or_is_dir(candidate) {
-            return true;
-        }
-    }
-    // Also check if the root itself is a visible directory with content.
-    !mt.list_dir(root).is_empty()
+    migo_services::subpackage::is_installed(
+        state.borrow::<HostOpState>().mount_table.as_deref(),
+        root,
+    )
 }
 
 /// Take the next host-callback id from the Host's one allocator.

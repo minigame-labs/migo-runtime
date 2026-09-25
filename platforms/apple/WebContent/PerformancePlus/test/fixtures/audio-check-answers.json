@@ -1,0 +1,711 @@
+{
+  "class": "AudioError",
+  "control_string": [
+    {
+      "error": null,
+      "field": "AudioParam name",
+      "utf8_bytes": 0
+    },
+    {
+      "error": null,
+      "field": "AudioParam name",
+      "utf8_bytes": 1
+    },
+    {
+      "error": null,
+      "field": "AudioParam name",
+      "utf8_bytes": 4095
+    },
+    {
+      "error": null,
+      "field": "AudioParam name",
+      "utf8_bytes": 4096
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (AudioParam name is 4097 bytes; limit is 4096)",
+      "field": "AudioParam name",
+      "utf8_bytes": 4097
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (AudioParam name is 4098 bytes; limit is 4096)",
+      "field": "AudioParam name",
+      "utf8_bytes": 4098
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (AudioParam name is 4100 bytes; limit is 4096)",
+      "field": "AudioParam name",
+      "utf8_bytes": 4100
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (AudioParam name is 4101 bytes; limit is 4096)",
+      "field": "AudioParam name",
+      "utf8_bytes": 4101
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (AudioParam name is 12289 bytes; limit is 4096)",
+      "field": "AudioParam name",
+      "utf8_bytes": 12289
+    },
+    {
+      "error": null,
+      "field": "oscillator type",
+      "utf8_bytes": 0
+    },
+    {
+      "error": null,
+      "field": "oscillator type",
+      "utf8_bytes": 1
+    },
+    {
+      "error": null,
+      "field": "oscillator type",
+      "utf8_bytes": 4095
+    },
+    {
+      "error": null,
+      "field": "oscillator type",
+      "utf8_bytes": 4096
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (oscillator type is 4097 bytes; limit is 4096)",
+      "field": "oscillator type",
+      "utf8_bytes": 4097
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (oscillator type is 4098 bytes; limit is 4096)",
+      "field": "oscillator type",
+      "utf8_bytes": 4098
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (oscillator type is 4100 bytes; limit is 4096)",
+      "field": "oscillator type",
+      "utf8_bytes": 4100
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (oscillator type is 4101 bytes; limit is 4096)",
+      "field": "oscillator type",
+      "utf8_bytes": 4101
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (oscillator type is 12289 bytes; limit is 4096)",
+      "field": "oscillator type",
+      "utf8_bytes": 12289
+    },
+    {
+      "error": null,
+      "field": "biquad filter type",
+      "utf8_bytes": 0
+    },
+    {
+      "error": null,
+      "field": "biquad filter type",
+      "utf8_bytes": 1
+    },
+    {
+      "error": null,
+      "field": "biquad filter type",
+      "utf8_bytes": 4095
+    },
+    {
+      "error": null,
+      "field": "biquad filter type",
+      "utf8_bytes": 4096
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (biquad filter type is 4097 bytes; limit is 4096)",
+      "field": "biquad filter type",
+      "utf8_bytes": 4097
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (biquad filter type is 4098 bytes; limit is 4096)",
+      "field": "biquad filter type",
+      "utf8_bytes": 4098
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (biquad filter type is 4100 bytes; limit is 4096)",
+      "field": "biquad filter type",
+      "utf8_bytes": 4100
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (biquad filter type is 4101 bytes; limit is 4096)",
+      "field": "biquad filter type",
+      "utf8_bytes": 4101
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (biquad filter type is 12289 bytes; limit is 4096)",
+      "field": "biquad filter type",
+      "utf8_bytes": 12289
+    },
+    {
+      "error": null,
+      "field": "WaveShaper oversample",
+      "utf8_bytes": 0
+    },
+    {
+      "error": null,
+      "field": "WaveShaper oversample",
+      "utf8_bytes": 1
+    },
+    {
+      "error": null,
+      "field": "WaveShaper oversample",
+      "utf8_bytes": 4095
+    },
+    {
+      "error": null,
+      "field": "WaveShaper oversample",
+      "utf8_bytes": 4096
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (WaveShaper oversample is 4097 bytes; limit is 4096)",
+      "field": "WaveShaper oversample",
+      "utf8_bytes": 4097
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (WaveShaper oversample is 4098 bytes; limit is 4096)",
+      "field": "WaveShaper oversample",
+      "utf8_bytes": 4098
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (WaveShaper oversample is 4100 bytes; limit is 4096)",
+      "field": "WaveShaper oversample",
+      "utf8_bytes": 4100
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (WaveShaper oversample is 4101 bytes; limit is 4096)",
+      "field": "WaveShaper oversample",
+      "utf8_bytes": 4101
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (WaveShaper oversample is 12289 bytes; limit is 4096)",
+      "field": "WaveShaper oversample",
+      "utf8_bytes": 12289
+    },
+    {
+      "error": null,
+      "field": "panning model",
+      "utf8_bytes": 0
+    },
+    {
+      "error": null,
+      "field": "panning model",
+      "utf8_bytes": 1
+    },
+    {
+      "error": null,
+      "field": "panning model",
+      "utf8_bytes": 4095
+    },
+    {
+      "error": null,
+      "field": "panning model",
+      "utf8_bytes": 4096
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panning model is 4097 bytes; limit is 4096)",
+      "field": "panning model",
+      "utf8_bytes": 4097
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panning model is 4098 bytes; limit is 4096)",
+      "field": "panning model",
+      "utf8_bytes": 4098
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panning model is 4100 bytes; limit is 4096)",
+      "field": "panning model",
+      "utf8_bytes": 4100
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panning model is 4101 bytes; limit is 4096)",
+      "field": "panning model",
+      "utf8_bytes": 4101
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panning model is 12289 bytes; limit is 4096)",
+      "field": "panning model",
+      "utf8_bytes": 12289
+    },
+    {
+      "error": null,
+      "field": "distance model",
+      "utf8_bytes": 0
+    },
+    {
+      "error": null,
+      "field": "distance model",
+      "utf8_bytes": 1
+    },
+    {
+      "error": null,
+      "field": "distance model",
+      "utf8_bytes": 4095
+    },
+    {
+      "error": null,
+      "field": "distance model",
+      "utf8_bytes": 4096
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (distance model is 4097 bytes; limit is 4096)",
+      "field": "distance model",
+      "utf8_bytes": 4097
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (distance model is 4098 bytes; limit is 4096)",
+      "field": "distance model",
+      "utf8_bytes": 4098
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (distance model is 4100 bytes; limit is 4096)",
+      "field": "distance model",
+      "utf8_bytes": 4100
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (distance model is 4101 bytes; limit is 4096)",
+      "field": "distance model",
+      "utf8_bytes": 4101
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (distance model is 12289 bytes; limit is 4096)",
+      "field": "distance model",
+      "utf8_bytes": 12289
+    },
+    {
+      "error": null,
+      "field": "analyser property",
+      "utf8_bytes": 0
+    },
+    {
+      "error": null,
+      "field": "analyser property",
+      "utf8_bytes": 1
+    },
+    {
+      "error": null,
+      "field": "analyser property",
+      "utf8_bytes": 4095
+    },
+    {
+      "error": null,
+      "field": "analyser property",
+      "utf8_bytes": 4096
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (analyser property is 4097 bytes; limit is 4096)",
+      "field": "analyser property",
+      "utf8_bytes": 4097
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (analyser property is 4098 bytes; limit is 4096)",
+      "field": "analyser property",
+      "utf8_bytes": 4098
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (analyser property is 4100 bytes; limit is 4096)",
+      "field": "analyser property",
+      "utf8_bytes": 4100
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (analyser property is 4101 bytes; limit is 4096)",
+      "field": "analyser property",
+      "utf8_bytes": 4101
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (analyser property is 12289 bytes; limit is 4096)",
+      "field": "analyser property",
+      "utf8_bytes": 12289
+    },
+    {
+      "error": null,
+      "field": "panner property",
+      "utf8_bytes": 0
+    },
+    {
+      "error": null,
+      "field": "panner property",
+      "utf8_bytes": 1
+    },
+    {
+      "error": null,
+      "field": "panner property",
+      "utf8_bytes": 4095
+    },
+    {
+      "error": null,
+      "field": "panner property",
+      "utf8_bytes": 4096
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panner property is 4097 bytes; limit is 4096)",
+      "field": "panner property",
+      "utf8_bytes": 4097
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panner property is 4098 bytes; limit is 4096)",
+      "field": "panner property",
+      "utf8_bytes": 4098
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panner property is 4100 bytes; limit is 4096)",
+      "field": "panner property",
+      "utf8_bytes": 4100
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panner property is 4101 bytes; limit is 4096)",
+      "field": "panner property",
+      "utf8_bytes": 4101
+    },
+    {
+      "error": "[InputSaturated] input transport saturated (panner property is 12289 bytes; limit is 4096)",
+      "field": "panner property",
+      "utf8_bytes": 12289
+    }
+  ],
+  "control_string_limit": 4096,
+  "encoded_audio_bytes": [
+    {
+      "bytes": 0,
+      "error": null
+    },
+    {
+      "bytes": 16777216,
+      "error": null
+    },
+    {
+      "bytes": 16777217,
+      "error": "[InputSaturated] input transport saturated (encoded audio input is 16777217 bytes; limit is 16777216 bytes)"
+    }
+  ],
+  "iir_coefficients": [
+    {
+      "error": null,
+      "feedback": [
+        "1"
+      ],
+      "feedforward": [
+        "1"
+      ]
+    },
+    {
+      "error": "createIIRFilter: feedforward and feedback must be non-empty",
+      "feedback": [
+        "1"
+      ],
+      "feedforward": []
+    },
+    {
+      "error": "createIIRFilter: feedforward and feedback must be non-empty",
+      "feedback": [],
+      "feedforward": [
+        "1"
+      ]
+    },
+    {
+      "error": "createIIRFilter: coefficient arrays must have at most 20 elements",
+      "feedback": [
+        "1"
+      ],
+      "feedforward": [
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1"
+      ]
+    },
+    {
+      "error": "createIIRFilter: coefficient arrays must have at most 20 elements",
+      "feedback": [
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1",
+        "1"
+      ],
+      "feedforward": [
+        "1"
+      ]
+    },
+    {
+      "error": "createIIRFilter: feedback[0] must not be zero",
+      "feedback": [
+        "0",
+        "1"
+      ],
+      "feedforward": [
+        "1"
+      ]
+    },
+    {
+      "error": "createIIRFilter: coefficients must be finite",
+      "feedback": [
+        "1"
+      ],
+      "feedforward": [
+        "1",
+        "NaN"
+      ]
+    }
+  ],
+  "loop_points": [
+    {
+      "end": "0",
+      "error": null,
+      "start": "0"
+    },
+    {
+      "end": "2",
+      "error": null,
+      "start": "-1"
+    },
+    {
+      "end": "1",
+      "error": "loopStart and loopEnd must be finite numbers",
+      "start": "NaN"
+    },
+    {
+      "end": "Infinity",
+      "error": "loopStart and loopEnd must be finite numbers",
+      "start": "1"
+    },
+    {
+      "end": "0",
+      "error": "loopStart and loopEnd must be finite numbers",
+      "start": "-Infinity"
+    }
+  ],
+  "optional_duration": [
+    {
+      "error": null,
+      "value": "0"
+    },
+    {
+      "error": null,
+      "value": "-0"
+    },
+    {
+      "error": null,
+      "value": "1.25"
+    },
+    {
+      "error": null,
+      "value": "-1"
+    },
+    {
+      "error": "duration must be a finite, non-negative number",
+      "value": "-2"
+    },
+    {
+      "error": "duration must be a finite, non-negative number",
+      "value": "NaN"
+    },
+    {
+      "error": "duration must be a finite, non-negative number",
+      "value": "Infinity"
+    },
+    {
+      "error": "duration must be a finite, non-negative number",
+      "value": "-Infinity"
+    },
+    {
+      "error": null,
+      "value": "1e308"
+    }
+  ],
+  "scheduled_time": [
+    {
+      "error": null,
+      "name": "when",
+      "value": "0"
+    },
+    {
+      "error": null,
+      "name": "when",
+      "value": "-0"
+    },
+    {
+      "error": null,
+      "name": "when",
+      "value": "1.25"
+    },
+    {
+      "error": "when must be a finite, non-negative number",
+      "name": "when",
+      "value": "-1"
+    },
+    {
+      "error": "when must be a finite, non-negative number",
+      "name": "when",
+      "value": "-2"
+    },
+    {
+      "error": "when must be a finite, non-negative number",
+      "name": "when",
+      "value": "NaN"
+    },
+    {
+      "error": "when must be a finite, non-negative number",
+      "name": "when",
+      "value": "Infinity"
+    },
+    {
+      "error": "when must be a finite, non-negative number",
+      "name": "when",
+      "value": "-Infinity"
+    },
+    {
+      "error": null,
+      "name": "when",
+      "value": "1e308"
+    },
+    {
+      "error": null,
+      "name": "offset",
+      "value": "0"
+    },
+    {
+      "error": null,
+      "name": "offset",
+      "value": "-0"
+    },
+    {
+      "error": null,
+      "name": "offset",
+      "value": "1.25"
+    },
+    {
+      "error": "offset must be a finite, non-negative number",
+      "name": "offset",
+      "value": "-1"
+    },
+    {
+      "error": "offset must be a finite, non-negative number",
+      "name": "offset",
+      "value": "-2"
+    },
+    {
+      "error": "offset must be a finite, non-negative number",
+      "name": "offset",
+      "value": "NaN"
+    },
+    {
+      "error": "offset must be a finite, non-negative number",
+      "name": "offset",
+      "value": "Infinity"
+    },
+    {
+      "error": "offset must be a finite, non-negative number",
+      "name": "offset",
+      "value": "-Infinity"
+    },
+    {
+      "error": null,
+      "name": "offset",
+      "value": "1e308"
+    },
+    {
+      "error": null,
+      "name": "duration",
+      "value": "0"
+    },
+    {
+      "error": null,
+      "name": "duration",
+      "value": "-0"
+    },
+    {
+      "error": null,
+      "name": "duration",
+      "value": "1.25"
+    },
+    {
+      "error": "duration must be a finite, non-negative number",
+      "name": "duration",
+      "value": "-1"
+    },
+    {
+      "error": "duration must be a finite, non-negative number",
+      "name": "duration",
+      "value": "-2"
+    },
+    {
+      "error": "duration must be a finite, non-negative number",
+      "name": "duration",
+      "value": "NaN"
+    },
+    {
+      "error": "duration must be a finite, non-negative number",
+      "name": "duration",
+      "value": "Infinity"
+    },
+    {
+      "error": "duration must be a finite, non-negative number",
+      "name": "duration",
+      "value": "-Infinity"
+    },
+    {
+      "error": null,
+      "name": "duration",
+      "value": "1e308"
+    }
+  ],
+  "wave_shaper_curve_bytes": [
+    {
+      "bytes": 0,
+      "error": null
+    },
+    {
+      "bytes": 3,
+      "error": "[InvalidArgument] invalid argument (WaveShaper curve bytes must be f32 aligned)"
+    },
+    {
+      "bytes": 4,
+      "error": null
+    },
+    {
+      "bytes": 6,
+      "error": "[InvalidArgument] invalid argument (WaveShaper curve bytes must be f32 aligned)"
+    },
+    {
+      "bytes": 16777216,
+      "error": null
+    },
+    {
+      "bytes": 16777220,
+      "error": "[InputSaturated] input transport saturated (WaveShaper curve is 16777220 bytes; limit is 16777216)"
+    }
+  ]
+}

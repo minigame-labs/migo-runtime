@@ -34,6 +34,12 @@ struct Host {
 }
 
 impl frame_decode::GlDecodeContext for Host {
+    fn image_upload(
+        &mut self,
+        _upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        None
+    }
     fn push_error(&mut self, canvas_id: u32, code: u32) {
         self.errors.push((canvas_id, code));
     }
@@ -61,20 +67,56 @@ fn repository() -> PathBuf {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_resource_records_decode_to_the_commands_the_ops_build() {
-    let directory = PathBuf::from(
-        std::env::var("MIGO_RESOURCE_PARITY_DIR")
-            .expect("MIGO_RESOURCE_PARITY_DIR names engine-resource-parity.mjs's output"),
+    compare_fixture("MIGO_RESOURCE_PARITY_DIR", "webgl-resource-calls.js", 60);
+}
+
+/// The same question for the raw path: the calls the facade cannot encode.
+///
+/// The engine encodes its own stream for a call whose arguments are all
+/// numbers; anything else -- a BigInt, a uniform array past the stream's bound
+/// -- flushes and goes through the op. That path had no producer implementation
+/// at all, so this fixture makes each of those calls in a form that takes it,
+/// and requires the records to decode to the same commands the ops build.
+#[test]
+#[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
+fn the_producer_s_raw_records_decode_to_the_commands_the_ops_build() {
+    compare_fixture("MIGO_RAW_PARITY_DIR", "webgl-raw-path-calls.js", 40);
+}
+
+/// The same question for the uploads whose pixels the host already holds.
+///
+/// Which command a `texImage2D` becomes is decided in JavaScript, from the shape
+/// of the source: a snapshot-backed `ImageData` becomes the snapshot upload, a
+/// canvas element the canvas one, and anything else the ordinary byte upload. So
+/// the fixture hands the facade each shape and both lanes must build the same
+/// command -- a drift here is a texture filled from the wrong thing, or a full
+/// readback where a GPU copy was meant.
+#[test]
+#[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
+fn the_producer_s_canvas_source_uploads_decode_to_the_commands_the_ops_build() {
+    compare_fixture(
+        "MIGO_CANVAS_SOURCE_PARITY_DIR",
+        "webgl-canvas-source-calls.js",
+        6,
     );
-    let script =
-        std::fs::read_to_string(repository().join(
-            "platforms/apple/WebContent/PerformancePlus/test/fixtures/webgl-resource-calls.js",
-        ))
-        .expect("the fixture script");
+}
+
+fn compare_fixture(directory_var: &str, fixture: &str, least_commands: usize) {
+    let directory =
+        PathBuf::from(std::env::var(directory_var).unwrap_or_else(|_| {
+            panic!("{directory_var} names engine-resource-parity.mjs's output")
+        }));
+    let script = std::fs::read_to_string(
+        repository()
+            .join("platforms/apple/WebContent/PerformancePlus/test/fixtures")
+            .join(fixture),
+    )
+    .expect("the fixture script");
 
     // In process.
     let (mut runtime, render_rx) = new_webgl_runtime();
     runtime
-        .exec_script_owned("webgl-resource-calls.js".to_string(), &script)
+        .exec_script_owned(fixture.to_string(), &script)
         .expect("the fixture runs in the embedded runtime");
     end_test_frame(&mut runtime);
     let mut embedded = Vec::new();
@@ -160,7 +202,7 @@ fn the_producer_s_resource_records_decode_to_the_commands_the_ops_build() {
         "the recorded WebGL errors differ"
     );
     assert!(
-        embedded.len() >= 60,
+        embedded.len() >= least_commands,
         "the fixture built only {} commands; it covers more than that",
         embedded.len()
     );

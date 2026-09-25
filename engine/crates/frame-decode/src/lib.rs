@@ -61,7 +61,7 @@ pub use budget::{
     FrameDecodeBudget, FrameDecodeBudgetError, MAX_DECODED_FRAME_BYTES, producer_bounds,
     producer_estimated_bytes, validate_frame_budget,
 };
-pub use validate::{GlDecodeContext, TransformFeedbackPhase};
+pub use validate::{GlDecodeContext, ImageUpload, TransformFeedbackPhase};
 
 use validate::{
     validate_bind_buffer_base, validate_bind_buffer_range, validate_bind_buffer_target,
@@ -1101,6 +1101,11 @@ impl<C: GlDecodeContext> GlDecodeContext for FrameOpSink<'_, C> {
     fn set_transform_feedback(&mut self, canvas_id: u32, phase: TransformFeedbackPhase) {
         self.context.set_transform_feedback(canvas_id, phase);
     }
+
+    #[inline]
+    fn image_upload(&mut self, upload: ImageUpload) -> Option<GLCmd> {
+        self.context.image_upload(upload)
+    }
 }
 
 impl<C: GlDecodeContext> RenderSink for FrameOpSink<'_, C> {
@@ -1313,6 +1318,9 @@ mod tests {
                 false
             }
             fn set_transform_feedback(&mut self, _: u32, _: TransformFeedbackPhase) {}
+            fn image_upload(&mut self, _: ImageUpload) -> Option<GLCmd> {
+                None
+            }
         }
 
         let words = [
