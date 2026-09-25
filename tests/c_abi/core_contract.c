@@ -116,9 +116,11 @@ _Static_assert(MIGO_SURFACE_RELEASE_RELEASED == UINT32_C(1), "released state val
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(MigoError) == 32, "LP64 error layout");
 _Static_assert(sizeof(MigoSurfaceDescriptor) == 72, "LP64 Surface layout");
-_Static_assert(sizeof(MigoHostCallbacks) == 104, "LP64 callback layout");
+_Static_assert(sizeof(MigoHostCallbacks) == 128, "LP64 callback layout");
 _Static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 96,
-               "release wakeup must remain the append-only tail field");
+               "release wakeup stays where it was appended");
+_Static_assert(offsetof(MigoHostCallbacks, on_game_log) == 120,
+               "the device callbacks are the append-only tail");
 #elif UINTPTR_MAX == UINT32_MAX
 _Static_assert(sizeof(MigoError) == 28, "ILP32 error layout");
 _Static_assert(sizeof(MigoSurfaceDescriptor) ==
@@ -129,9 +131,11 @@ _Static_assert(sizeof(MigoSurfaceDescriptor) ==
  * this one was not, and the soft-keyboard callbacks were then added on top of
  * the wrong base. Nothing caught it because every lane ran on an LP64 host, so
  * this branch had never once been compiled. */
-_Static_assert(sizeof(MigoHostCallbacks) == 56, "ILP32 callback layout");
+_Static_assert(sizeof(MigoHostCallbacks) == 68, "ILP32 callback layout");
 _Static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 52,
-               "ILP32 release wakeup tail offset");
+               "ILP32 release wakeup offset");
+_Static_assert(offsetof(MigoHostCallbacks, on_game_log) == 64,
+               "ILP32 device callbacks tail offset");
 #else
 #error "unsupported pointer width"
 #endif
@@ -186,6 +190,10 @@ int migo_core_c_contract(void) {
     MigoResult(MIGO_CALL *set_focus_fn)(MigoSession *, uint8_t) =
         &migo_session_set_focus;
     MigoResult(MIGO_CALL *destroy_fn)(MigoSession *) = &migo_session_destroy;
+    MigoResult(MIGO_CALL *network_fn)(MigoSession *, MigoNetworkType, uint8_t) =
+        &migo_session_set_network_status;
+    MigoResult(MIGO_CALL *battery_fn)(MigoSession *, uint32_t, MigoBatteryFlags) =
+        &migo_session_set_battery_status;
 
     return (int)(engine_config.struct_size + session_config.struct_size +
                  surface.struct_size + callbacks.struct_size +
@@ -196,5 +204,6 @@ int migo_core_c_contract(void) {
                  (engine_create_fn != NULL) + (engine_destroy_fn != NULL) +
                  (session_create_fn != NULL) + (set_callbacks_fn != NULL) +
                  (set_lifecycle_fn != NULL) + (set_visibility_fn != NULL) +
-                 (set_focus_fn != NULL) + (destroy_fn != NULL));
+                 (set_focus_fn != NULL) + (destroy_fn != NULL) +
+                 (network_fn != NULL) + (battery_fn != NULL));
 }
