@@ -652,18 +652,20 @@ jobs:
         run: bash scripts/test-apple-product-feature-parity.sh
 
       # The Performance+ steps below build migo-core for this host, and the
-      # link asks for what the Linux engine links: ALSA (external-frames
-      # carries `host-audio`, and cpal -> alsa-sys) and Skia's fontconfig and
-      # freetype. Missing, the build fails in a way that reads like a code
-      # error; both sat hidden behind an earlier red step for a week.
+      # link asks for what the Linux engine links, read from the build scripts'
+      # `rustc-link-lib` output: skia-bindings' GL, EGL, fontconfig and
+      # freetype, and alsa-sys' asound (external-frames carries `host-audio`).
+      # Missing, the build fails in a way that reads like a code error; they
+      # sat hidden behind an earlier red step for a week.
       - name: Install the libraries the host engine links
         run: |
           install_libs() {
             timeout 90 sudo apt-get update -qq || return 1
             timeout 150 sudo apt-get install -y -qq \
-              libasound2-dev libfontconfig1-dev libfreetype-dev || return 1
+              libgl-dev libegl-dev libfontconfig1-dev libfreetype-dev \
+              libasound2-dev || return 1
           }
-          if ! pkg-config --exists alsa fontconfig freetype2; then
+          if ! pkg-config --exists gl egl fontconfig freetype2 alsa; then
             install_libs || {
               echo "host library install stalled or failed; retrying once" >&2
               install_libs
