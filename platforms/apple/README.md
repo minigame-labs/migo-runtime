@@ -73,6 +73,9 @@ gameView.loadGame(id: "my-game")   // entry defaults to game.js
 ```
 
 `version` makes relaunches free: the same version is not copied again.
+A complete app for each platform, resolving this asset and verifying its
+attestation, is `apple-swift/` in
+[migo-examples](https://github.com/minigame-labs/migo-examples).
 
 `contentSigning` has no default. `.verified(publicKey:)` takes a 32-byte raw
 Ed25519 public key; every package must then carry `manifest.json` (`{"version":
