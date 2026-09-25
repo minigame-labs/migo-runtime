@@ -656,8 +656,22 @@ jobs:
       # about Cargo features rather than about the target: the same features
       # produce the same closure whichever triple they are built for, and
       # finding a violation here is finding it without a Mac.
+      # external-frames carries `host-audio` (iOS Performance+ plays its PCM on
+      # the host), and on Linux that is cpal -> alsa-sys, whose build script
+      # needs the ALSA headers. Missing, the build fails in a way that reads
+      # like a code error; it sat hidden behind an earlier red step for a week.
       - name: Apple Performance+ archive contains no engine symbols
         run: |
+          install_alsa() {
+            timeout 90 sudo apt-get update -qq || return 1
+            timeout 150 sudo apt-get install -y -qq libasound2-dev || return 1
+          }
+          if ! pkg-config --exists alsa; then
+            install_alsa || {
+              echo "ALSA headers install stalled or failed; retrying once" >&2
+              install_alsa
+            }
+          fi
           cd engine
           cargo build -p migo-capi --no-default-features --features external-frames
           cd ..
