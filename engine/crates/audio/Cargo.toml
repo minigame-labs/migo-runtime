@@ -24,7 +24,7 @@ lewton = "0.10"      # OGG Vorbis, MIT/Apache-2.0
 hound = "3.5"        # WAV, Apache-2.0
 
 # Thread-safe audio buffer
-ringbuf = "0.4"
+ringbuf = "0.5"
 
 # Async
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
