@@ -1,0 +1,44 @@
+---
+title: Game Logging
+sidebar:
+  order: 7
+description: Android GameLogHandler contract — the JSON structure of JS game log
+  entries received by the host, forwarding boundaries, and the logcat fallback
+  when no handler is registered.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/GameLogHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+slug: en/0.9/capabilities/services/logging
+---
+
+:::caution[Platform scope]
+`GameLogHandler` is the Android Java facade contract. The C ABI and cross-platform layer have no public game-log entry point in `0.9`.
+:::
+
+## What the host must implement
+
+Registration point: `GameSession#setGameLogHandler(GameLogHandler)` (`GameSession.java:862`), registered once per session. The interface exposes a single entry point:
+
+```java
+void onLog(String logJson);
+```
+
+`logJson` is a raw JSON string; parsing is the host's responsibility. The fields documented in the javadoc are `level` (severity), `key` (event/metric name), `value` (value), and `commonInfo` (shared context) — do not assume a schema for fields beyond these four. `onLog` has no return value and no sink: it does not acknowledge back to content. Do not perform blocking I/O inside the callback; fan out to a backend asynchronously.
+
+## What happens without an implementation
+
+The interface header comment, verbatim: when not registered, **log entries are written to Android logcat**. This is the default destination, not an error state; implement this handler only if you need to route logs to your own analytics system.
+
+## What content sees
+
+The interface file describes the logs only as "JS-reported game log entries" and does not name a specific `migo.*` entry point — do not treat a concrete JS function name as part of the contract. Script-side behavior is unchanged regardless of whether a handler is registered.
+
+## Platform availability
+
+| Layer | Status |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

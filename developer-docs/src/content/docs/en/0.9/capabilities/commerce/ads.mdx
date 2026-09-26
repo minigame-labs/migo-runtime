@@ -1,0 +1,105 @@
+---
+title: Advertising
+audience: host-integrator
+platforms:
+  - android
+sidebar:
+  order: 1
+description: "The Android AdHandler contract: eight ad forms, adId handle
+  semantics, and why the isEnded=false close in fallback settle is a safety net
+  rather than a recommendation. This page covers only the Android Java layer."
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/AdHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/AdEventSink.java
+slug: en/0.9/capabilities/commerce/ads
+---
+
+:::caution[Platform scope]
+The advertising contract is currently defined **only** in the Android Java facade. The C ABI and cross-platform advertising surfaces have no public export in `0.9` — do not assume the `AdHandler` shape can be reused for iOS or desktop integrations.
+:::
+
+## Roles
+
+* **Content**: calls `migo.createAd({adType, adUnitId, …})` and receives handles for `load / show / hide / destroy`;
+* **Engine**: turns each call into an `AdHandler` method and treats an absent reply as a stalled ad request;
+* **Host**: implements `AdHandler` and bridges to its own advertising SDK (Pangle / GDT / Kuaishou Alliance / in-house) — the runtime does not link an advertising SDK, hold advertiser credentials, or decide whether an ad was fully watched.
+
+## Forms
+
+Type constants use `AdHandler.TYPE_*`:
+
+| Type | Scenario |
+| --- | --- |
+| `rewardedVideo` | Rewarded video |
+| `interstitial` | Interstitial |
+| `banner` | Banner |
+| `custom` | Custom (native style) |
+| `grid` | Grid ad |
+| `gameBanner` / `gameIcon` / `gamePortal` | Three cross-promotion container surfaces |
+
+The host does not need to implement every type — each `create*` has a default `not supported` settle (the reason this default is still active behavior is explained below).
+
+## adId Handles and Callback Threads
+
+* The `adId` in `createAd(adId, adType, adUnitId, optionsJson)` is a **runtime-assigned handle** and remains unchanged for its entire lifetime. Every event for this ad object must be reported with the same ID;
+* Every AdHandler method is called on the **runtime's host thread**. Do not block this thread with SDK work. Callbacks to content go through `AdEventSink` (safe from any thread), whose complete API has only seven methods: `emitLoad(int)` / `emitLoad(int, boolean)` (whether to fall back to a share-page-style alternative), `emitError`, `emitClose(adId, isEnded)`, `emitShowFailed` (= `emitError` + `emitClose(false)`), `emitResize`, and `emitHide`. There is no `emitShow`, `emitClick`, or `emitReward` — reward delivery is carried by `emitClose`'s `isEnded` value.
+
+Do not report events after destruction: after `destroyAd`, every `emit*` for that `adId` is discarded — the engine's memory discipline means content has already returned the handle. `AdEventSink` sends are safe from any thread, but have no retry semantics; do not expect terminal state to queue inside the SDK.
+
+`emitResize` is in **CSS px**, like soft-keyboard `HEIGHT_CHANGE`: it is a content-layout coordinate, and reporting physical pixels makes content size the ad slot by the wrong factor.
+
+## Fallback Contract: Not Implementing It Is Still a Working State
+
+When content calls an ad API without a handler, the request does **not stall**: every `AdHandler` method's default implementation settles through the only authoritative channel:
+
+| Call | Default behavior without a handler |
+| --- | --- |
+| `createAd` | `emitError(adId, -1, "createAd:fail not supported")` |
+| `loadAd` | `emitError(adId, -1, "loadAd:fail not supported")` |
+| `showAd` | `emitShowFailed(adId, -1, "showAd:fail not supported")` = `emitError` + `emitClose(adId, false)` |
+| `hideAd` | `emitHide(adId)` — a positioning ad's `onHide` tells content the space has been released; it is not an error |
+| `updateAdStyle` | No-op (the layout change is consumed without reporting an ad error) |
+| `destroyAd` | No-op |
+
+That `isEnded=false` is both a traffic-side safety net and a content-compatibility layer:
+
+* **Safety net**: issue rewards only for a genuinely completed view. Falsely reporting `true` grants phantom rewards — publisher money cannot be claimed before the view actually completes;
+* **Compatibility layer**: common mini-game content puts its "grant reward + resume game" logic in the `onClose` callback. If the fallback only reports an error and does not close, content remains stuck on its paused recording bar — worse than discovering that no ad opportunity exists.
+
+These are one rule: **a result content is waiting for must settle or the experience stalls; a result that could be misrepresented as paid must settle with a factual flag**. This is stated verbatim in the `AdHandler.java` header comment, not suggested by this page.
+
+## Minimal Implementation
+
+With one `createAd`, route on `adType`; report whether viewing completed through `isEnded` in `emitClose`:
+
+```java
+session.setAdHandler(new AdHandler() {
+    @Override
+    public void createAd(int adId, String adType, String adUnitId,
+                         String optionsJson, AdEventSink sink) {
+        if (!TYPE_REWARDED_VIDEO.equals(adType)) {
+            AdHandler.super.createAd(adId, adType, adUnitId, optionsJson, sink);
+            return;
+        }
+        RewardedAd ad = pangle.create(adUnitId);
+        ad.setListener(new RewardedAd.AdInteractionListener() {
+            @Override public void onAdReady() { sink.emitLoad(adId); }
+            @Override public void onError(int code, String msg) {
+                sink.emitError(adId, code, msg);
+            }
+            @Override public void onReward(RewardItem item, boolean verified) {
+                sink.emitClose(adId, verified); // completion means reward; interruption means no reward
+            }
+        });
+        // Async load failure also uses emitShowFailed: error + close(false), leaving no paused content
+    }
+});
+```
+
+`optionsJson` is the platform-style JSON object containing remaining creation parameters (`adIntervals / style / adTheme / gridCount / count / multiton`) — it may be `"{}"`, never `null`. Parse only the keys you support; safely ignore unsupported keys.
+
+## Common Pitfalls
+
+1. **Do not initialize the SDK on the runtime host thread** — creating an ad object is fine, but SDK initialization lasting tens of milliseconds makes the ad request stall, equivalent to not implementing the handler.
+2. **Validate `adUnitId` on the host side** — the runtime does not validate ad-unit IDs; report malformed requests through `emitError`.
+3. **Multiple creates for the same `adUnitId`** are normal content behavior (`multiton` option). If the host reuses an object instance, rebind its sink to the correct `adId` before reuse — the sink is tied to the ad ID, not the SDK object.

@@ -1,0 +1,83 @@
+---
+title: 权限
+sidebar:
+  order: 2
+description: Android PermissionHandler 合同:requestScope 的问答模型、PermissionSink 的
+  setScope/resolveRequest/failRequest 三条通道、无 handler 时全拒行为的设计原因。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/PermissionHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/PermissionSink.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+slug: 0.9/capabilities/services/permission
+---
+
+:::caution[平台范围]
+`PermissionHandler` 是 Android Java facade 的合同。C ABI 与跨平台层在 `0.9` 没有公开的权限出口。
+:::
+
+## 宿主要实现什么
+
+通过 `GameSession#setPermissionHandler(PermissionHandler)` 注册,对应 `GameSession.java` 第 **752** 行。
+
+`PermissionHandler` 只有一个方法,无默认实现:
+
+```java
+void requestScope(int requestId, String scope, String desc, PermissionSink sink);
+```
+
+* `requestId` — 本次请求的句柄,须原样传给 `sink.resolveRequest`
+* `scope` — 平台 scope 名,例如 `"scope.camera"`
+* `desc` — 游戏在 `game.json` 里声明的申请理由,可能为空串;展示给用户时缺少它就无法说明申请原因
+* `sink` — 答题通道;必须最终恰好调用一次 settle 方法
+
+`PermissionSink` 有三条通道:
+
+| 方法 | 语义 | 注意 |
+| --- | --- | --- |
+| `setScope(String scope, boolean granted)` | 写入持久决策 | 启动时用于预填,运行中用于变更(含撤销);runtime 读最新值而不缓存快照 |
+| `resolveRequest(int requestId, boolean granted)` | 结算一次 `migo.authorize()` | 不自动更新持久决策 — 须同时调 `setScope` |
+| `failRequest(int requestId, String errMsg)` | 结算为错误 | 用于「无法弹窗」等技术失败,区别于「拒绝」(`resolveRequest(id, false)`) |
+
+契约:调用到达宿主线程,sink 的所有方法在任意线程安全。会话结束后的 sink 调用被丢弃,无需与 teardown 竞速。
+
+## 不实现会怎样
+
+引自 `PermissionHandler.java` 头注释:
+
+> Every scope is denied. `migo.getSetting()` reports nothing granted and
+> capability calls fail with `auth deny`.
+
+设计意图:runtime 不持有用户关系,不能代替宿主做授权决定。和广告 handler 没接时返回失败同理 — 授权一个没人批准的能力,等同于不看完广告就发奖励。
+
+## 内容侧看到什么
+
+| migo API | 触发条件 |
+| --- | --- |
+| `migo.authorize({scope})` | 内容申请一个 scope;触发 `requestScope` |
+| `migo.getSetting()` | 读取当前所有 scope 的状态;直接读 `setScope` 写入的持久值,不触发 handler |
+
+scope 名遵循平台惯例:例如 `scope.camera`、`scope.userLocation`、`scope.userInfo`。游戏在 `game.json` 里声明所需 scope 列表;宿主可以在游戏启动前用 `setScope` 预填自己的历史记录。
+拒绝与错误应保持区分:用户明确不授予 scope 时调用 `resolveRequest(requestId, false)`,无法创建或展示询问 UI 时调用 `failRequest(requestId, errMsg)`。前者会把内容导向设置页,后者是可重试的技术错误。
+
+`setScope` 是 standing decision,不是单次请求的回包字段。用户在宿主系统设置里撤销权限时,游戏仍运行的情况下也要重新写入 `setScope`;runtime 下一次能力调用会读取最新答案。
+
+调用已结束会话的 sink 方法会被忽略,所以宿主可以把异步对话框回调直接接回 sink,但仍要保证每一个未结束请求有一个终态。
+`PermissionSink` 的 standing decision 与单次 request result 分开保存,是接口明确区分的两个问题;宿主实现时不要只调用其中一条通道。
+
+内容没有被授予的 scope 仍可被询问;未调用 `setScope` 的 scope 读取为 “not decided”,与 denied 不同。
+
+`desc` 来自 `game.json`,可为空;宿主若展示授权对话框,应把它作为解释游戏为何申请的输入。
+
+权限 handler 只负责把问题和答案在内容与宿主之间传递,不替宿主决定哪些系统权限记录属于哪个游戏。
+
+当用户决定改变时,更新 standing decision 后再让后续能力调用读取新状态,不要依赖启动时的快照。
+
+## 平台可用性
+
+| 层 | 状态 |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

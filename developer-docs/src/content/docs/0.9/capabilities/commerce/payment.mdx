@@ -1,0 +1,98 @@
+---
+title: 支付
+sidebar:
+  order: 2
+description: Android PaymentHandler 合同:两行请求形态、isMidasPaymentSupported
+  的同步回答、双签名的意义。默认行为「拒售」为什么是对内容最好的答案。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/PaymentHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/PaymentSink.java
+slug: 0.9/capabilities/commerce/payment
+---
+
+:::caution[平台范围]
+与广告同:`PaymentHandler` 是 Android Java facade 的合同,C ABI 与跨平台层在 `0.9` 没有公开的支付出口。
+:::
+
+## 两个接口的分工
+
+| 方法 | 内容调用 | 价格谁定的 |
+| --- | --- | --- |
+| `requestMidasPayment(PaymentRequest, PaymentSink)` | `migo.requestMidasPayment(...)` 平台风格充值 | 平台/宿主的 offerId 价目表 |
+| `requestMidasPaymentGameItem(GameItemPaymentRequest, PaymentSink)` | `migo.requestMidasPaymentGameItem(...)` 内容给出**已签名订单** | 内容自己的服务 |
+
+`requestMidasPaymentGameItem` 的双签名是关键防御:`signData` 是内容服务器签过名的订单本体,`paySig / signature` 是内容给的支付/会话签名。宿主不验签就照单扣款 = 信任内容自己选的价格 — 这条注释在源文件里大字写着,不是建议。
+
+## 兜底回答:`isMidasPaymentSupported`
+
+内容在造充值入口 UI 前先问 `migo.checkIsSupportMidasPayment()`。要求:
+
+* **同步回答** — 内容同步等结果才决定渲染不渲染,从内存里拿值,不要查询网络;
+* **默认 `false`** — 宿主不实现 = 不支持 = 内容得到一个诚实答案不再走后面的请求;
+* `true` + 两个 request 方法未实现 = 给内容了希望的默认路由但所有购买全失败 — 凑齐再出口。源文档的原话:「advertises a store that refuses every purchase」。
+
+## 结论语义:`settlePaid / fail`
+
+`PaymentSink` 只有两个终态:
+
+```java
+sink.settlePaid();          // 唯一算「付成了」;不调不构成支付事实
+sink.fail(errCode, errMsg); // 失败回包
+```
+
+* **必须恰好 settle 一次**,落 0 或多次都是 bug;
+* 两个 settle 方法都是任意线程可调用,可以把 SDK listener 直接转发过来;
+* 不要捏造成功:与广告侧 `AdEventSink#emitClose` 的 `isEnded` 语义同源 — 是同一设计原则的支付侧。
+
+## 实现形状
+
+```java
+session.setPaymentHandler(new PaymentHandler() {
+    @Override
+    public boolean isMidasPaymentSupported() {
+        return billing.ready;   // 本地初始化状态,不查网
+    }
+
+    @Override
+    public void requestMidasPayment(PaymentRequest req, PaymentSink sink) {
+        if (!billing.ready) {
+            sink.fail(-2, "not ready");
+            return;
+        }
+        billing.purchase(req.offerId, req.zoneId, req.outTradeNo,
+            new BillingCallback() {
+                @Override public void onSuccess() { sink.settlePaid(); }
+                @Override public void onError(int code, String msg) { sink.fail(code, msg); }
+            });
+    }
+
+    @Override
+    public void requestMidasPaymentGameItem(GameItemPaymentRequest req, PaymentSink sink) {
+        orderVerifier.verify(req.signData, req.paySig, req.signature, verified -> {
+            if (!verified) {
+                sink.fail(-11, "signature mismatch");
+                return;
+            }
+            // 按 signData 的完整订单执行,不再回补价格字段
+        });
+    }
+});
+```
+
+## PaymentRequest 字段参考(与 `requestMidasPayment` 协议一致)
+
+| 字段 | 意义 |
+| --- | --- |
+| mode | 支付模式,一般 `"game"` |
+| env | `0` 生产 / `1` 平台沙盒 |
+| offerId | 宿主/平台侧的商品位 ID |
+| currencyType | ISO 货币码,一般 `"CNY"` |
+| platform | 平台过选,内容不填为空串 |
+| buyQuantity | 内容希望购买的币量 |
+| zoneId | 游戏区服 ID |
+| outTradeNo | 内容自己的单号,供对账 |
+
+空值语义逐一固定在源文件注释里(如 `zoneId` 默认 `1`、`currencyType` 默认 `"CNY"`),统一规范化后再对接宿主侧业务系统。

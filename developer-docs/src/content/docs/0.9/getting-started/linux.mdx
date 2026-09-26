@@ -1,0 +1,188 @@
+---
+title: Linux 快速开始
+sidebar:
+  order: 4
+description: 在 Linux Qt 应用中集成 Migo host-kit，挂载 X11 surface 并管理 surface 生命周期。
+audience: host-integrator
+platforms:
+  - linux
+sourcePaths:
+  - platforms/linux/host-kit/README.md
+  - platforms/linux/host-kit/src/surface_host.cpp
+  - include/migo/platform/x11.h
+  - include/migo/platform/wayland.h
+slug: 0.9/getting-started/linux
+---
+
+Linux 在 0.9 版本中**不是独立的运行目标**，而是开发宿主工具链。
+`platforms/linux/host-kit/` 提供在应用拥有的 Linux UI 中嵌入 Migo 所需的源码级适配器；
+它不创建应用、顶层窗口或事件循环。
+
+本文的目标是驱动宿主创建的最小 C ABI 管线，验证 surface 挂载和生命周期；不是声称
+Linux 已有可发布的 runtime hosting，或 Host Kit 会替应用创建生产窗口和事件循环。
+
+当前已声明的三个 CMake 目标：
+
+* `migo::linux-surface-host` — 工具包中立的 C++17 生命周期控制器，接受宿主提供的 X11
+  或 Wayland 句柄。
+* `migo::qt6-x11-surface-view` — 基于 `xcb` 平台插件的 Qt 6.4+ Widgets 适配器，使用
+  原生子 `QWidget`，负责 surface 生命周期、输入、焦点、IME 合成和帧请求。
+* `migo::qt6-managed-session` — Managed 所有权形态：`MigoManagedSession` 拥有 Session、
+  回调表和 view。
+
+Qt Wayland、Qt Quick 和 GTK 4 **尚不支持**。公开 C ABI 仍标记为
+`MIGO_C_ABI_CANDIDATE`；在 ABI 冻结之前，此 Host Kit 为集成预览版本。
+
+## 1. 准备环境
+
+在 Ubuntu 24.04 上安装 Qt Widgets/X11 适配器及其合约测试所需的全部依赖：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  cmake ninja-build g++ ripgrep xvfb xauth \
+  qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
+  libx11-dev libxkbcommon-x11-dev libxcb-cursor0
+```
+
+若宿主只使用工具包中立的 `migo::linux-surface-host` 控制器（Wayland），还需：
+
+```bash
+sudo apt-get install -y libwayland-dev
+```
+
+不要安装 Qt 私有头文件包；Host Kit 不依赖任何私有 Qt API。
+
+## 2. 获取 Linux SDK
+
+Host Kit 依赖 Linux SDK（提供 `find_package(migo)` 所需的 CMake 包）。
+完整构建步骤见 [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md)
+"4. Linux x86\_64 SDK" 一节：
+
+```bash
+bash scripts/fetch-linux-sysroot.sh
+bash scripts/fetch-v8-archives.sh x86_64-linux-gnu
+bash scripts/build-linux-sdk.sh
+bash scripts/test-linux-sdk-contract.sh
+```
+
+SDK 构建完成后位于 `dist/migo-linux-x86_64/`。
+
+## 3. 将 host-kit 加入应用构建
+
+将 SDK 目录传给 `CMAKE_PREFIX_PATH` 后，作为子目录嵌入：
+
+```cmake
+find_package(migo CONFIG REQUIRED)
+add_subdirectory(path/to/migo/platforms/linux/host-kit migo-host-kit)
+
+target_link_libraries(my_app PRIVATE migo::qt6-x11-surface-view)
+```
+
+只需 `migo::linux-surface-host`（不引入 Qt）时，链接该目标即可：
+
+```cmake
+target_link_libraries(my_app PRIVATE migo::linux-surface-host)
+```
+
+Host Kit 也可单独构建并安装：
+
+```bash
+cmake -S platforms/linux/host-kit -B build/host-kit \
+  -DCMAKE_PREFIX_PATH=/path/to/migo-sdk \
+  -DCMAKE_INSTALL_PREFIX=/path/to/prefix \
+  -DMIGO_LINUX_HOST_KIT_ENABLE_INSTALL=ON
+cmake --build build/host-kit
+cmake --install build/host-kit
+```
+
+安装后消费者使用：
+
+```cmake
+find_package(migo-linux-host-kit CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE migo::qt6-x11-surface-view)
+```
+
+## 4. 最小集成
+
+应用创建 Session 后，构建一个包含 `SurfaceHost` 和 `MigoQtX11SurfaceView` 的 `QWidget`：
+
+```cpp
+class GamePane final : public QWidget {
+public:
+    GamePane(MigoSession *session, QWidget &parent)
+        : QWidget(&parent),
+          surface_host_(session),
+          game_view_(surface_host_, *this) {
+        layout_.addWidget(&game_view_);
+        setLayout(&layout_);
+    }
+
+private:
+    QVBoxLayout layout_;
+    migo::linux_host::SurfaceHost surface_host_;
+    migo::linux_host::qt6::MigoQtX11SurfaceView game_view_;
+};
+```
+
+应用（而非封装类）持有 `MigoSession`、`SurfaceHost`、父 widget 和原生窗口。
+必须保证两条依赖链同时有效：
+
+```text
+QApplication > parent QWidget > MigoQtX11SurfaceView
+MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
+```
+
+`QApplication` 必须在 Qt view 之前存在并在其最终 release 之后才销毁，因为 Qt
+拥有 X11 连接和 GUI 事件循环。
+
+## 5. 输入与帧
+
+* **坐标为 CSS 像素，无需转换**：Qt 的逻辑位置 = 物理像素 ÷ device pixel ratio，
+  与 view 报告的 `scale_factor` 相同；在此处再乘以它会在 HiDPI 屏幕上把每次点击
+  偏移到错误位置。
+* **鼠标默认同时驱动两个事件流**：`setPointerDelivery()` 可将其缩窄。
+* **`code` 来自硬件扫描码，`key` 来自布局**：WASD 移动对所有键盘布局均有效。
+* **帧跟随 Qt 的时钟**：宿主在 `on_request_frame` 回调中调用 `requestFrame()`，
+  view 触发 `QWindow::requestUpdate()`。
+
+## 6. 关闭顺序
+
+拆卸是 C ABI 的三个步骤，不能缩短：
+
+1. 调用 `close()` 开始 detach，立即返回。
+2. view 的 release observer 报告 `MIGO_SURFACE_RELEASE_RELEASED`。
+3. 只有在此之后才能销毁 Session。
+
+删除 view 或其任何拥有原生子窗口的祖先之前，必须先调用 `close()` 或
+`beginDetach()`，然后保持 widget 和 GUI 事件循环有效，直到 `surfaceReleased`
+信号触发。在 release 完成之前销毁窗口是 use-after-free；适配器会在此情况下
+快速失败而非隐藏此错误。
+
+## 7. 已知限制
+
+* **Qt Wayland**：Qt 6.4 没有通过受支持的公开 API 暴露适配器所需的 Wayland
+  display/surface 对；私有 Qt 头文件被明确禁止。
+* **GTK 4**：GTK 4 移除了 `GtkSocket`/`GtkPlug`，没有公开方式将原生目标放入
+  布局中。`scripts/test-gtk4-surface-capability.sh` 持续探测这一状态，用证据
+  而非文档陈述该限制。
+* **Qt Quick**：使用合成器拥有的场景图，子窗口覆盖层会破坏裁剪、变换和帧调度，
+  暂不支持。
+* **软键盘**：`MigoManagedSession` 明确拒绝软键盘能力；桌面宿主通过物理键盘传递输入，
+  `migo.showKeyboard` 在此正确报告失败。
+
+## 验证合约测试
+
+无需构建 V8 即可运行隔离合约：
+
+```bash
+bash scripts/test-linux-qt-host-kit.sh
+```
+
+需要 `cmake`、`ninja`、`c++`、`rg` 和 `xvfb-run` 以及带 xcb 支持的 Qt 6。
+
+## 从源码构建
+
+完整构建见仓库中的
+[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md) "4. Linux x86\_64 SDK"
+和 "Linux Qt 6 host kit" 节。

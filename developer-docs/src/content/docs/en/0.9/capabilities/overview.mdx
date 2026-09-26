@@ -1,0 +1,91 @@
+---
+title: Host Capabilities Overview
+sidebar:
+  order: 1
+description: "The three categories of capabilities that content (migo.*)
+  requests from the host: input events, soft keyboard, and Android handler
+  contracts. Lists the contract owner, fallback behavior, and platform
+  distribution for each."
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - include/migo/input.h
+  - include/migo/session.h
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/
+slug: en/0.9/capabilities/overview
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+A **capability** in Migo is the layer between **content calling `migo.*`** and the host's actual implementation. The engine never fabricates system capabilities the host does not provide — an unregistered capability returns an explicit "not supported" instead of pretending to succeed. Three categories:
+
+<CardGrid>
+  <LinkCard title="Commerce: Ads" href="/docs/en/0.9/capabilities/commerce/ads/" description="The SDK is already delivered to content; the host calls the other end. Rewarded video settled fallback and callback dispatch are all covered here." />
+
+  <LinkCard title="Commerce: Payment" href="/docs/en/0.9/capabilities/commerce/payment/" description="Midas/Android payment handler contract and fallback behavior when isMidasPaymentSupported defaults to false." />
+
+  <LinkCard title="Platform Services" href="/docs/en/0.9/capabilities/services/auth/" description="Login/auth, share, settings, permissions, subpackages, logging, mini-program navigation — contracts and fallbacks for seven platform handlers." />
+
+  <LinkCard title="Soft Keyboard and Key Events" href="/docs/en/0.9/capabilities/keyboard/" description="The only C-ABI-level capability: the on_show/hide/update_keyboard triad plus IME composition events." />
+</CardGrid>
+
+## 1. Input Events: Host Feeds the Engine
+
+Touch, pointer, scroll wheel, physical keys, IME composition, gamepad — all are **unidirectional pushes**: `migo_session_send_*` is non-blocking, and `MIGO_OK` only means "the event has been queued into the content input stream", not that content has consumed it. Callable from any thread.
+
+| Event family | Entry point | Typical host source |
+| --- | --- | --- |
+| Touch | `migo_session_send_touch` | `MotionEvent` (Android) / UIKit touch |
+| Pointer + Wheel | `migo_session_send_pointer_event` / `migo_session_send_wheel_event` | Desktop mouse |
+| Physical key | `migo_session_send_key_event` | `KeyEvent`, gamepad buttons (hat) |
+| IME composition | `migo_session_send_composition_event` | IME candidate / composition state |
+| Gamepad state | `migo_session_send_gamepad_state` | Gamepad polling or interrupt |
+
+Full structs and flags are on the [Input Events](/docs/en/0.9/reference/input/) page; that page is the data-plane reference. This page only answers "who is responsible for sending what to whom".
+
+## 2. Soft Keyboard: Provided by Host, Shown/Hidden by Content
+
+The mini-program-style soft keyboard is not an input event — it is a **capability bit the host reports to the engine**. The contract lives in three callbacks on `MigoHostCallbacks`; either all three are installed or none are (session.h):
+
+* Install all three (`on_show_keyboard` / `on_hide_keyboard` / `on_update_keyboard`) plus one dispatcher;
+* Install none = the host has no keyboard capability; content's `migo.showKeyboard` immediately receives a failure reply and no phantom keyboard is left on screen.
+
+When content opens the keyboard it receives `MigoKeyboardShowOptions`: `MIGO_KEYBOARD_FLAG_MULTIPLE` (multiline), `MIGO_KEYBOARD_FLAG_CONFIRM_HOLD` (confirm key does not auto-dismiss), confirm key shape (DONE/NEXT/SEARCH/GO/SEND), keyboard type (TEXT/NUMBER), initial value, and length limit.
+
+The host reports events back via `migo_session_send_keyboard_event` — four types: INPUT / CONFIRM / COMPLETE / HEIGHT\_CHANGE. Height events must be in **CSS px** (for the cost of getting the DPI conversion wrong, see the [Soft Keyboard page](/docs/en/0.9/capabilities/keyboard/)).
+
+See [Soft Keyboard and Key Events](/docs/en/0.9/capabilities/keyboard/) for details.
+
+## 3. Android Handler Contracts: Host Registers in the Java Layer
+
+Ten `set*Handler(...)` methods on `GameSession` plus `setListener(GameSessionListener)` — 11 registration points in total, all host-side capabilities. An unregistered handler falls back to a runtime-level default — each interface has a documented contract for "what content sees when not registered":
+
+| Handler | Content's `migo.*` call | Answer when unregistered |
+| --- | --- | --- |
+| MessageHandler | `migo.sendToHost(type, payload)` | Message is silently dropped, never delivered |
+| AuthHandler | `migo.login / checkSession / getUserInfo / getPhoneNumber` | All return a `no auth handler` failure reply |
+| PermissionHandler | `migo.getSetting` and authorization requests | Every scope is denied; capability calls receive `auth deny` |
+| AdHandler | `createAd / loadAd / showAd / hideAd` | All calls settle; `showAd` closes with `isEnded=false` |
+| SettingHandler | `migo.openSetting` | `-2 openSetting:fail not supported` (must still settle — content denied permission needs a path to the settings page) |
+| ShareHandler | `migo.shareAppMessage` | `-2 shareAppMessage:fail not supported` (the share wait-path never stalls) |
+| NavigationHandler | `navigateToMiniProgram / openCustomerServiceConversation` etc. | `-2 navigateToMiniProgram:fail not supported` |
+| PaymentHandler | `requestMidasPayment*` | `isMidasPaymentSupported=false`; every request returns `-2 not supported` |
+| SubpackageHandler | `loadSubpackage / preDownloadSubpackage` | Download failure receipt; `loadSubpackage()` falls back to any locally downloaded file |
+| GameLogHandler | Debug/stats logs from migo | Written to Android logcat |
+| GameSessionListener | Session state broadcasts | No broadcasts; all callbacks are no-ops |
+
+Two categories of "fake fallback" are explicitly rejected:
+
+* **Payment**: `isMidasPaymentSupported` defaults to `false` — content uses this value to decide whether to render a recharge UI. Reporting `true` amounts to advertising a store that refuses every purchase.
+* **Ads**: `showAd` accepts a silent settle, but `onClose` is the trigger for content to grant rewards. Even when no ad was actually shown, a close must be sent — and it must use `isEnded=false`. Otherwise the signal sent is "reward granted for an ad the user never watched".
+
+Details: [Ads](/docs/en/0.9/capabilities/commerce/ads/) / [Payment](/docs/en/0.9/capabilities/commerce/payment/).
+
+## Distinction: Symbol Missing vs Capability Missing
+
+* **Symbol missing**: `migo_engine_create` itself is absent from the library (`platform/oh.h` wrong-link class, platform header) — fails at compile/link time, never reaches the runtime.
+* **Capability missing**: `migo_query_capabilities` reports no such `platform_kinds` bit / the soft-keyboard triad is incomplete / `setAdHandler` is not registered — the runtime settles per the table above; content, including its fallback branches, is fully documented in the `migo.*` protocol.
+
+The fields and ABI-check protocol for runtime capability queries are covered in [Runtime Capability Queries](/docs/en/0.9/reference/capabilities/).

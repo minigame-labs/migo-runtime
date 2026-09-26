@@ -10,6 +10,8 @@ platforms:
   - linux
   - windows
   - openharmony
+  - ios
+  - macos
 sourcePaths:
   - include/migo/session.h
 slug: 0.9/reference/engine
@@ -26,6 +28,7 @@ typedef struct MigoEngineConfig {
     const char *files_dir_utf8;
     const char *cache_dir_utf8;
     const char *code_cache_dir_utf8;
+    uint8_t code_signing_public_key[32];
 } MigoEngineConfig;
 ```
 
@@ -41,6 +44,7 @@ typedef struct MigoEngineConfig {
 | `files_dir_utf8` | `const char *` | 持久文件根目录（NUL 结尾 UTF-8）；对应平台的应用文档目录（Android `getFilesDir()`、iOS `NSDocumentDirectory`）；目录不存在时由引擎自动创建 | borrowed，create 返回前复制 |
 | `cache_dir_utf8` | `const char *` | 可清除缓存根目录（NUL 结尾 UTF-8）；操作系统低存储时可能被回收；目录不存在时自动创建 | borrowed，create 返回前复制 |
 | `code_cache_dir_utf8` | `const char *` | 编译字节码缓存根目录（NUL 结尾 UTF-8）；同一 Engine 下的所有 Session 共享此目录，跨 Session LRU 淘汰；目录不存在时自动创建 | borrowed，create 返回前复制 |
+| `code_signing_public_key` | `uint8_t[32]` | 内容签名校验用的 Ed25519 公钥（32 字节原始值）；全零表示没有。v1 之后追加在末尾：传旧的较短 `struct_size` 的宿主会被零扩展，即"没有公钥" | 按值复制 |
 
 三个存储根均属于宿主：引擎只在这些目录内读写，从不自行选择路径。每个 Session 的实际数据位于 `<root>/migo/games/<content_id>/`，因此只要 `content_id` 不同，多个 Session 的数据天然隔离。
 
@@ -54,14 +58,16 @@ typedef uint64_t MigoEngineFlags;
 
 `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT` 允许加载没有签名收据的内容包。这是**显式 opt-in**，而非默认行为——签名检查存在的目的正是防止静默接受未签名内容，因此默认应为拒绝。
 
-清除此标志会启用签名强制，但当前 C ABI 没有传递 Ed25519 公钥的途径（该配置仅在 Android SDK 的 `RuntimeConfig.Builder.setCodeSigningPubkey` 可达）。在公钥缺失的情况下，强制签名为失败关闭（fail-closed）：每次模块加载都会以 `MIGO_ERROR_INTERNAL` 终止，并在日志中打印：
+清除此标志即启用签名强制，此时由 `code_signing_public_key` 提供校验公钥。签名的内容包带两个文件：`manifest.json`（`{"version": 1, "entry": "game.js", "timestamp": <Unix 秒>, "files": {"<路径>": "<sha256 十六进制>", ...}}`）与 `manifest.sig`（对 `manifest.json` 原始字节的 64 字节 Ed25519 签名）。引擎在内容首次启动时完整校验并封存结果，之后的启动不再重新哈希。
+
+强制签名是失败关闭（fail-closed）的：既没有设置此标志、也没有提供公钥时，每次模块加载都会以 `MIGO_ERROR_INTERNAL` 终止，并在日志中打印：
 
 ```text
 code signing enabled but public key is missing
 (set InitOptions.code_signing_pubkey (hex Ed25519 public key))
 ```
 
-因此，**使用本 C ABI 的宿主目前唯一可以正常加载内容的配置是设置此标志**。这是已知缺口而非设计决策，待 ABI 具备公钥传递能力后将提供不依赖此标志的生产路径。
+同时设置此标志与公钥是自相矛盾的配置，`migo_engine_create` 以 `MIGO_ERROR_INVALID_ARGUMENT` 拒绝。
 
 ## migo\_engine\_create
 
@@ -82,7 +88,7 @@ migo_engine_create(const MigoEngineConfig *config, MigoEngine **out_engine);
 返回：
 
 * `MIGO_OK`：Engine 创建成功，`*out_engine` 有效。
-* `MIGO_ERROR_INVALID_ARGUMENT`：`out_engine` 或 `config` 为 `NULL`；`config->struct_size` 小于最小合法记录大小；字符串字段为 `NULL`；`flags` 包含未识别的位。失败时 `*out_engine` 为 `NULL`。
+* `MIGO_ERROR_INVALID_ARGUMENT`：`out_engine` 或 `config` 为 `NULL`；`config->struct_size` 小于最小合法记录大小；字符串字段为 `NULL`；`flags` 包含未识别的位；同时设置了 `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT` 与非零的 `code_signing_public_key`。失败时 `*out_engine` 为 `NULL`。
 * `MIGO_ERROR_UNSUPPORTED_ABI`：`config->abi_version` 与当前库构建版本不匹配，或 `struct_size` 声明的记录大于本构建所了解的大小。失败时 `*out_engine` 为 `NULL`。
 * `MIGO_ERROR_INTERNAL`：某个存储根目录不存在且文件系统拒绝创建（权限不足、只读挂载点、路径组件非目录）——路径字符串本身格式正确，因此这不属于参数错误。失败时 `*out_engine` 为 `NULL`。
 
@@ -138,7 +144,7 @@ migo_session_destroy(session);
 migo_engine_destroy(engine);
 ```
 
-> 完整可运行示例：`tests/c_host/linux/main.c` 和 `tests/c_host/android/main.c`。
+> 完整可运行示例：`tests/c_host/linux/main.c` 和 `tests/c_host/android/src/main/cpp/main.c`。
 
 ## 多 Engine 实例
 

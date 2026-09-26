@@ -1,0 +1,49 @@
+---
+title: 支持与版本矩阵
+sidebar:
+  order: 2
+description: 当前 SDK 系列、semver 政策、文档版本化关系,以及各平台发布产物的形态与最低要求。
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - release/VERSION
+  - platforms/android/library/build.gradle
+slug: 0.9/release/support-matrix
+---
+
+本页回答供应商侧最实际的两个问题：**"我要集成的是哪个版本，它和我的平台什么关系"**。成熟度评估（"现在敢不敢投产"）不在这里，见 [平台选型](/docs/0.9/concepts/choose-platform/)。本页是机械事实：系列、产物形态、底线。
+
+## SDK 系列与 semver
+
+* 版本号遵循 [Semantic Versioning](https://semver.org/)，每个变更记 [CHANGELOG](https://github.com/minigame-labs/migo/blob/main/CHANGELOG.md)（Keep a Changelog 格式）；当前系列读仓库根的 `release/VERSION`——开发者文档的版本号也由它派生（major.minor 即 docsSeries，单一事实源）。
+* **文档版本 = SDK 版本**。starlight-versions 把已发布系列归档成已冻结路径（当前 latest 服务于 `/docs/`，无归档系列之前不存在 `/docs/0.9/`）。一个将来 series 出现时，前一系列作为归档放入版本切换器，不再手工改。
+* **ABI 状态**仍是 CANDIDATE：见 [ABI 兼容性](/docs/0.9/concepts/abi-compatibility/)——结构协商机制都在并已双线验证，但冻结公告没出之前别把二进制兼容当合同。
+
+## 平台 × 产物
+
+| 平台 | 交付物 | ABI 支持 | 最低线 |
+| --- | --- | --- | --- |
+| Android | 静态库 + CMake 包（`find_package(migo)`），Java AAR facade | arm64-v8a、x86\_64 | minSdk 26（详见 android-sdk 页与 `test-android-sdk-levels-contract.sh`）；真机多点触控仅 instrumentation APK 路径可用（ABI 冻结 blocker 之一） |
+| OpenHarmony | 静态库，DevEco 宿主工程 | aarch64、x86\_64 | 目标设备以 OHOS 目标清单为准；多点触控仅 API20 模拟器环境验过，真机回归待宿主自证 |
+| Windows | `migo.dll` + `rusty_v8.dll` + 头文件，CMake target | x64、arm64 | Windows（带 ANGLE/HWND）；WinUI 集成归宿主 |
+| Linux | host-kit 工具链 + wayland/x11 平台头 + pkg-config/CMake | x86\_64 | **仅 glibc**（musl/bionic 仅头文件无 runtime）；官方构建 sysroot 与 glibc 下限见发布 manifest |
+| Apple（iOS/macOS） | SwiftPM：`MigoAppleCore` / `MigoAppleRenderer`（CI 构建件） | arm64、x86\_64（macOS）/ arm64（iOS） | 占位车道，尚无设备运行记录；macOS 可附宿主自有 `CAMetalLayer` |
+
+详细行级集成逐项见各 quickstart；产品级取舍（"现在能否投产"）见 [平台选型](/docs/0.9/concepts/choose-platform/)。
+
+## 何时重读本页
+
+* **新 series 发布时**（例如 0.10):本页加一行，上一系列的文档进入归档；0.10 的具体升级手册见[版本升级](/docs/0.9/release/upgrading/)。
+* **ABI CANDIDATE 摘帽时**:ABI 段跟随 [ABI 兼容性](/docs/0.9/concepts/abi-compatibility/) 状态页一起改写。
+
+## 相关
+
+* [版本升级](/docs/0.9/release/upgrading/) — 换系列时具体做什么
+* [下载与校验](/docs/0.9/release/download-verification/) — 制品签名与完整性
+* [平台选型](/docs/0.9/concepts/choose-platform/) — 成熟度判断的发布面

@@ -45,6 +45,7 @@ slug: 0.9/reference/overview
 `abi_version`，之后填写字段——未知 reserved 字段必须保持为零。
 
 ```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
 /* ── 0. 可选：在创建任何句柄之前查询库能力 ── */
 MigoCapabilities caps = {0};
 caps.struct_size = (uint32_t)sizeof(caps);

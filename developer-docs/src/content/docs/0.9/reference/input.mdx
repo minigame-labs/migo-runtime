@@ -114,6 +114,7 @@ static void forward_touch(MigoSession *session, AInputEvent *ev, float density) 
 ## migo\_session\_send\_pointer\_event
 
 ```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
 MIGO_API MigoResult MIGO_CALL migo_session_send_pointer_event(
     MigoSession *session,
     const MigoPointerEvent *event);
@@ -145,6 +146,7 @@ MIGO_API MigoResult MIGO_CALL migo_session_send_pointer_event(
 ## migo\_session\_send\_wheel\_event
 
 ```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
 MIGO_API MigoResult MIGO_CALL migo_session_send_wheel_event(
     MigoSession *session,
     const MigoWheelEvent *event);
@@ -225,6 +227,7 @@ send_keyboard(session, MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, NULL,   0.0);
 ## migo\_session\_send\_key\_event
 
 ```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
 MIGO_API MigoResult MIGO_CALL migo_session_send_key_event(
     MigoSession *session,
     const MigoKeyEvent *event);

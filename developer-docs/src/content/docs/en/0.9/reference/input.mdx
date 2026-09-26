@@ -2,26 +2,515 @@
 title: Input Events
 sidebar:
   order: 6
-description: Touch, pointer, wheel, keyboard, physical key, IME composition and
-  gamepad input reference.
-head:
-  - tag: meta
-    attrs:
-      name: robots
-      content: noindex
+description: "Complete reference for the migo_session_send_* family: touch,
+  pointer, wheel, soft keyboard, physical keys, IME composition, and gamepad
+  input."
 audience: host-integrator
 platforms:
+  - android
   - linux
   - windows
-  - android
   - openharmony
 sourcePaths:
   - include/migo/input.h
 slug: en/0.9/reference/input
 ---
 
-:::note[Translation pending]
-This page is pending translation. The 中文版本 (link below) is the current source of truth.
-:::
+## Event stream overview
 
-[→ 中文版本](/docs/0.9/reference/input/)
+### Common validation and error codes
+
+Every `migo_session_send_*` call performs common validation before checking backpressure. The following three errors apply to every function on this page and are not repeated in each function's section:
+
+| Error code | Trigger |
+| --- | --- |
+| `MIGO_ERROR_INVALID_ARGUMENT` | `session` or the event pointer is NULL; `struct_size` is smaller than the minimum record for the current version; a field value is outside the range defined by the ABI. |
+| `MIGO_ERROR_UNSUPPORTED_ABI` | `abi_version` does not match the engine build, or the record declared by `struct_size` is larger than the engine knows. |
+| `MIGO_ERROR_INVALID_STATE` | The session has been destroyed, or no surface is currently attached to receive events. |
+
+An event is never partially delivered when validation fails — it enters the queue only after validation completes, and a failed call does not modify the input stream.
+
+### FIFO ordering and concurrency
+
+Every `migo_session_send_*` call is non-blocking. Even when called outside the dispatch thread, an accepted event enters the input stream and is applied in FIFO order. With a single producer sending from any thread, events are delivered in call order; if the host calls concurrently from two threads, the host must define the order. Each window system already serializes its own event loop, so **sending input from a single thread is always recommended**. Concurrent calls across threads that are not serialized by the host can produce logical errors such as a start arriving after its end.
+
+### WOULD\_BLOCK and re-arming
+
+`MIGO_ERROR_WOULD_BLOCK` means the event was not accepted at this time; the host may retry while the event remains valid.
+
+High-frequency motion/state samples (touch MOVE, pointer MOVE, and gamepad state) are coalesced: multiple calls in one stream may retain only the newest state. State transitions (DOWN, UP, touch START/END, key DOWN/UP, and so on) use a separate reliable reserve and can be delivered even when ordinary input is full, but that reserve is bounded too — a host that continually ignores backpressure will eventually exhaust it.
+
+The **first rejection** is reported through `MigoOnErrorFn`; any later successful input call re-arms the notification, so the next saturated event triggers the callback again.
+
+### Automatic retract on focus loss
+
+When `migo_session_set_focus(session, 0)` is called (see [`./session.mdx`](/docs/en/0.9/reference/session/)), before reporting focus loss to the content, the engine automatically retracts in FIFO order all previously accepted but unfinished touches, pointer buttons, physical keys, and IME compositions. Repeated focus-loss reports do not produce duplicate retracts; the host does not need to resend these events manually on focus loss.
+
+### Coordinate units
+
+`x`, `y`, and keyboard height all use **CSS pixels (logical pixels)**, not physical pixels. The host supplies `scale_factor` in `attach_surface` and must use that same factor to convert every input coordinate from physical to logical pixels. Mixing units between touch and pointer input is the most common integration error: the game renders correctly, but click locations are offset.
+
+***
+
+## migo\_session\_send\_touch
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_touch(
+    MigoSession *session,
+    const MigoTouchEvent *event);
+```
+
+Delivers a touch event to the session's content. It is suitable for mobile multi-touch and desktop hosts driven by a touch model. Content listens for `touchstart`/`touchmove`/`touchend`; games that expose only the touch API do not listen for pointer events. A desktop host can therefore map the mouse to a single touch with `id = 0` without sending a separate pointer event. The `points` array is borrowed only for the call; the engine copies it before returning, so the caller may immediately reuse or release the array.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `session` | Target session handle. |
+| `event->type` | `MIGO_TOUCH_START` / `MIGO_TOUCH_MOVE` / `MIGO_TOUCH_END` / `MIGO_TOUCH_CANCEL`. |
+| `event->point_count` | Between 1 and `MIGO_TOUCH_MAX_POINTS` (10), inclusive; values outside the range are rejected. |
+| `event->timestamp_ms` | Event timestamp in milliseconds, with a host-selected origin (usually system uptime). |
+| `event->points` | Pointer to a `MigoTouchPoint` array with length at least `point_count`. |
+
+`MigoTouchPoint` fields:
+
+| Field | Description |
+| --- | --- |
+| `id` | Pointer identifier that remains stable from start through the corresponding end. |
+| `x`, `y` | CSS-pixel logical coordinates, converted from physical pixels using `scale_factor`. |
+| `pressure` | `[0.0, 1.0]`, following the Web `Touch.force` convention; use `0.0` when the device reports no pressure. `AMotionEvent_getPressure` on Android may exceed 1.0 and must be clamped before passing it in. |
+| `flags` | `MIGO_TOUCH_FLAG_CHANGED`: this point changed in this event; `MIGO_TOUCH_FLAG_REMOVED`: this point leaves the surface with this event and is removed from `touches`. For pointer-specific DOWN/UP actions, set `CHANGED` only on the corresponding pointer; for MOVE, set it on every pointer. |
+
+Returns:
+
+* `MIGO_OK`: The event was queued or safely coalesced with pending state in the same stream.
+* `MIGO_ERROR_INVALID_STATE`: No surface is attached.
+* `MIGO_ERROR_WOULD_BLOCK`: The event was not accepted; retry while it remains valid.
+
+Threading:
+
+May be called from any thread, but the host must define the order of concurrent calls. Sending from the single thread containing the window-system event loop is recommended.
+
+Example: Android MotionEvent → migo\_session\_send\_touch:
+
+```c
+/* one finger; for more, fill the MigoTouchPoint array and raise point_count. */
+static void forward_touch(MigoSession *session, AInputEvent *ev, float density) {
+    int32_t action = AMotionEvent_getAction(ev);
+    int32_t masked = action & AMOTION_EVENT_ACTION_MASK;
+    MigoTouchType type = (masked == AMOTION_EVENT_ACTION_DOWN ||
+        masked == AMOTION_EVENT_ACTION_POINTER_DOWN) ? MIGO_TOUCH_START : (masked == AMOTION_EVENT_ACTION_MOVE) ? MIGO_TOUCH_MOVE :
+        (masked == AMOTION_EVENT_ACTION_UP || masked == AMOTION_EVENT_ACTION_POINTER_UP) ? MIGO_TOUCH_END : MIGO_TOUCH_CANCEL;
+    size_t i = (size_t)((action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
+    MigoTouchPoint point = {(uint32_t)AMotionEvent_getPointerId(ev, i), AMotionEvent_getX(ev, i) / density,
+        AMotionEvent_getY(ev, i) / density, fminf(fmaxf(AMotionEvent_getPressure(ev, i), 0.0f), 1.0f),
+        MIGO_TOUCH_FLAG_CHANGED | ((type >= MIGO_TOUCH_END) ? MIGO_TOUCH_FLAG_REMOVED : 0)};
+    MigoTouchEvent touch = {sizeof touch, MIGO_ABI_VERSION_CURRENT, type, 1,
+        (int64_t)(AMotionEvent_getEventTime(ev) / 1000000), &point};
+    (void)migo_session_send_touch(session, &touch);
+}
+```
+
+***
+
+## migo\_session\_send\_pointer\_event
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MIGO_API MigoResult MIGO_CALL migo_session_send_pointer_event(
+    MigoSession *session,
+    const MigoPointerEvent *event);
+```
+
+Delivers a desktop pointer event (mouse button or movement). Pointer and touch streams are independent; the engine does not synthesize one from the other. The host chooses which stream to send, or whether to send both, based on content and device. PC games listening for `mousedown`/`mouseup`/`mousemove` receive events through this interface; phone content that listens only for touch ignores them. Neither `MigoPointerEvent` nor `MigoWheelEvent` contains pointer fields, so their layouts are identical on LP64, LLP64, and ILP32.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `event->event_type` | `MIGO_POINTER_EVENT_DOWN` / `MIGO_POINTER_EVENT_MOVE` / `MIGO_POINTER_EVENT_UP`. |
+| `event->button` | Follows DOM `MouseEvent.button`: 0 primary, 1 middle, 2 secondary; for MOVE, set the button currently held; range 0–`MIGO_POINTER_BUTTON_MAX` (31). |
+| `event->x`, `event->y` | CSS-pixel logical coordinates; use the same `scale_factor` as touch coordinates, otherwise touch and pointer events report different coordinates for the same location. |
+| `event->timestamp_ms` | `double`, in milliseconds. |
+
+Returns:
+
+* `MIGO_OK`: The event was queued or safely coalesced.
+* `MIGO_ERROR_INVALID_STATE`: No surface is attached.
+* `MIGO_ERROR_WOULD_BLOCK`: The event was not accepted. DOWN and UP use the reliable reserve; MOVE may be coalesced.
+
+Threading:
+
+May be called from any thread; the host must define the order of concurrent calls.
+
+***
+
+## migo\_session\_send\_wheel\_event
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MIGO_API MigoResult MIGO_CALL migo_session_send_wheel_event(
+    MigoSession *session,
+    const MigoWheelEvent *event);
+```
+
+Delivers a wheel event. `delta` follows the DOM `WheelEvent` convention, and `delta_mode` is passed along with it instead of being normalized to pixels by the host, because converting line/page units to pixels requires the content's own line height. The engine rejects an unrecognized `delta_mode` rather than treating it as pixels — interpreting line values as pixels scrolls only a fraction of the amount the user expects, with no way to correct it later. Qt's `angleDelta` is in eighths of a degree; the host must convert it to one of the three units before passing it in.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `event->delta_mode` | `MIGO_WHEEL_DELTA_MODE_PIXEL` / `MIGO_WHEEL_DELTA_MODE_LINE` / `MIGO_WHEEL_DELTA_MODE_PAGE`. |
+| `event->delta_x` | Horizontal scroll amount; positive is right. |
+| `event->delta_y` | Vertical scroll amount; positive is down. |
+| `event->delta_z` | Depth scroll amount; use `0.0` when not reported. |
+| `event->timestamp_ms` | `double`, in milliseconds. |
+| `event->reserved0` | Must be 0. |
+
+Returns:
+
+* `MIGO_OK`: The event was queued.
+* `MIGO_ERROR_INVALID_STATE`: No surface is attached.
+* `MIGO_ERROR_WOULD_BLOCK`: The event was not accepted.
+
+Threading:
+
+May be called from any thread; the host must define the order of concurrent calls.
+
+***
+
+## migo\_session\_send\_keyboard\_event
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_keyboard_event(
+    MigoSession *session,
+    const MigoKeyboardEvent *event);
+```
+
+Delivers a soft-keyboard event. **`value_utf8` carries the complete current text of the input field, not only the newly typed character**; if the host sends only the new character, the content will see only the last character forever. Conversely, `MigoOnUpdateKeyboardFn` writes this field back from the content, with symmetric semantics. `MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE` reports the keyboard's height (CSS pixels), allowing content to adjust its layout; the height is `0.0` when the keyboard disappears.
+
+> **Common mistake:** sending only the last character instead of the full text, leaving the content's text box stuck on one character. Always pass the complete field value.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `event->event_type` | `MIGO_KEYBOARD_EVENT_INPUT`: text update; `MIGO_KEYBOARD_EVENT_CONFIRM`: user confirmation (Enter); `MIGO_KEYBOARD_EVENT_COMPLETE`: keyboard dismissed; `MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE`: height change. |
+| `event->value_utf8` | Pointer to the field's complete UTF-8 text; length-delimited, no NUL terminator required; borrowed only during the call. A length of 0 with a non-NULL pointer means the field was cleared. |
+| `event->value_length` | Byte count of `value_utf8`. |
+| `event->height_css_px` | Valid only for `HEIGHT_CHANGE`; use `0.0` for other types; unit is CSS pixels. |
+
+Returns:
+
+* `MIGO_OK`: The event was queued.
+* `MIGO_ERROR_INVALID_STATE`: No surface is attached.
+* `MIGO_ERROR_WOULD_BLOCK`: The event was not accepted. `COMPLETE` uses the reliable reserve and is not lost to backpressure.
+
+Threading:
+
+May be called from any thread; the host must define the order of concurrent calls.
+
+Example: complete soft-keyboard flow:
+
+```c
+/* once the host implements on_show_keyboard, send events in this order */
+send_keyboard(session, MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, NULL, 260.0f);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT,         "m",    0.0);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT,         "mi",   0.0);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT,         "migo", 0.0);
+/* the user confirms, then the keyboard hides */
+send_keyboard(session, MIGO_KEYBOARD_EVENT_CONFIRM,       "migo", 0.0);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_COMPLETE,      "migo", 0.0);
+send_keyboard(session, MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, NULL,   0.0);
+```
+
+***
+
+## migo\_session\_send\_key\_event
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MIGO_API MigoResult MIGO_CALL migo_session_send_key_event(
+    MigoSession *session,
+    const MigoKeyEvent *event);
+```
+
+Delivers a physical-key down or up event. This is a **completely separate capability** from the soft keyboard: the soft keyboard reports the complete field text after IME processing, while physical keys report discrete actions for particular keys. Content reads them through different listeners. Unlike touch, keys are not batched — one event per key at typing speed makes a batch API unnecessary.
+
+`key` and `code` follow the DOM specification and **must not be interchanged**:
+
+* `code`: identifies the physical key, independently of layout and modifiers, such as `"KeyA"` or `"ArrowLeft"`.
+* `key`: the value produced by that key under the current modifiers and layout, such as `"a"`, `"A"`, or `"ArrowLeft"`.
+
+The host must translate platform key codes (`AKEYCODE_A`, X11 keysym, and so on) into DOM values. That translation table belongs to the host; the engine accepts DOM format rather than platform codes to avoid embedding a mapping table for every platform. **Filling both fields with `code` is the most common mistake** and causes content to treat `"KeyA"` as input text.
+
+`modifiers` and `flags` are optional trailing fields added later. An older host declaring a smaller `struct_size` sees the omitted fields as 0, which correctly means no modifiers and not a repeat key.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `event->event_type` | `MIGO_KEY_EVENT_DOWN` / `MIGO_KEY_EVENT_UP`. |
+| `event->key_utf8` / `event->key_length` | DOM `key` value, length-delimited UTF-8, borrowed only during the call; an empty string from a dead key is valid. |
+| `event->code_utf8` / `event->code_length` | DOM `code` value; an empty code is rejected because code always identifies a key. |
+| `event->timestamp_ms` | `double`, in milliseconds (optional trailing field, defaults to 0 with an old `struct_size`). |
+| `event->modifiers` | Modifier-key mask: `MIGO_KEY_MODIFIER_CONTROL`, `MIGO_KEY_MODIFIER_SHIFT`, `MIGO_KEY_MODIFIER_ALT`, `MIGO_KEY_MODIFIER_META` (optional trailing field). |
+| `event->flags` | `MIGO_KEY_EVENT_FLAG_REPEAT`: key generated by platform auto-repeat, corresponding to DOM `KeyboardEvent.repeat` (optional trailing field). |
+
+Returns:
+
+* `MIGO_OK`: The event was queued.
+* `MIGO_ERROR_INVALID_STATE`: No surface is attached.
+* `MIGO_ERROR_WOULD_BLOCK`: The event was not accepted. KEY UP uses the reliable reserve and is not lost when ordinary input is full.
+
+Threading:
+
+May be called from any thread; the host must define the order of concurrent calls.
+
+***
+
+## migo\_session\_send\_composition\_event
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_composition_event(
+    MigoSession *session,
+    const MigoCompositionEvent *event);
+```
+
+Delivers an IME composition event corresponding to the DOM `CompositionEvent`. Composition represents the **in-progress state** (preedit) of IME input: while entering pinyin, candidate words are shown but not yet committed. This differs from the soft keyboard, which reports text already committed to the field. Games with custom-drawn text boxes need both: composition events display the current candidate text, while keyboard events store the committed value. The host should send a composition event alongside `MIGO_KEYBOARD_EVENT_INPUT`, not choose one or the other.
+
+**`data_utf8` always carries the complete current preedit text, never a delta**; for `MIGO_COMPOSITION_EVENT_END`, `data_utf8` is the final committed text, and an empty string means cancellation (the content still needs this event to clear the preedit display). A length that cuts through a multibyte character is rejected; incomplete data is not delivered.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `event->event_type` | `MIGO_COMPOSITION_EVENT_START`: composition begins; `MIGO_COMPOSITION_EVENT_UPDATE`: preedit update; `MIGO_COMPOSITION_EVENT_END`: commit or cancel. |
+| `event->data_utf8` / `event->data_length` | Complete preedit or committed text, length-delimited UTF-8, borrowed only during the call. |
+
+Returns:
+
+* `MIGO_OK`: The event was queued.
+* `MIGO_ERROR_INVALID_STATE`: No surface is attached.
+* `MIGO_ERROR_WOULD_BLOCK`: The event was not accepted. `UPDATE` may be coalesced; `START` and `END` use the reliable reserve.
+
+Threading:
+
+May be called from any thread; the host must define the order of concurrent calls.
+
+Example: IME pinyin input flow:
+
+```c
+/* composition with the soft keyboard: preedit grows, then commits; the committed text also goes out through the soft keyboard */
+send_composition(session, MIGO_COMPOSITION_EVENT_START,  "");
+send_composition(session, MIGO_COMPOSITION_EVENT_UPDATE, "ni");
+send_composition(session, MIGO_COMPOSITION_EVENT_UPDATE, "nihao");
+/* END's data is the committed text; empty means the user cancelled */
+send_composition(session, MIGO_COMPOSITION_EVENT_END,    "\u4f60\u597d");
+/* the soft keyboard sends the field's full text */
+send_keyboard(session, MIGO_KEYBOARD_EVENT_INPUT, "migo\u4f60\u597d", 0.0);
+```
+
+***
+
+## migo\_session\_set\_gamepad\_connected
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_gamepad_connected(
+    MigoSession *session,
+    const MigoGamepadInfo *info,
+    uint32_t connected);
+```
+
+Announces that a gamepad has connected (`connected = 1`) or disconnected (`connected = 0`). The engine emits the corresponding Web `gamepadconnected`/`gamepaddisconnected` event. On disconnect, the engine reads only `info->index`, so the host may pass the same struct used at connection. A disconnected slot remains empty; later gamepads are not shifted forward — content retains the `index`, and shifting would make it read the wrong gamepad.
+
+`axis_count` and `button_count` are declared at connection rather than inferred from the first sample because `getGamepads()` must return an array of the correct size immediately when a `gamepadconnected` listener fires; content commonly reads `buttons.length` there to determine the layout. Set `mapping_utf8` to `"standard"` when the host mapped the gamepad to the standard layout, or to `""` when it is unmapped; content uses this to decide whether it can trust button ordering.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `info->index` | Gamepad slot; remains unchanged while connected. |
+| `info->axis_count` | Number of axes, up to `MIGO_GAMEPAD_MAX_AXES` (8). |
+| `info->button_count` | Number of buttons, up to `MIGO_GAMEPAD_MAX_BUTTONS` (20); values above the limit are rejected rather than truncated (losing buttons is more dangerous than exceeding the limit). |
+| `info->id_utf8` | Device name shown to the player; NUL-terminated and borrowed only during the call. |
+| `info->mapping_utf8` | `"standard"` or `""`; NUL-terminated and borrowed only during the call. |
+| `connected` | `1` for connected, `0` for disconnected. |
+
+Returns:
+
+* `MIGO_OK`: The declaration was queued.
+* `MIGO_ERROR_INVALID_STATE`: No surface is attached.
+* `MIGO_ERROR_WOULD_BLOCK`: The event was not accepted.
+
+Threading:
+
+May be called from any thread; the host must define the order of concurrent calls.
+
+Example:
+
+```c
+MigoGamepadInfo info;
+memset(&info, 0, sizeof info);
+info.struct_size   = (uint32_t)sizeof info;
+info.abi_version   = MIGO_ABI_VERSION_CURRENT;
+info.index         = 0;
+info.axis_count    = 4;
+info.button_count  = 17;
+info.id_utf8       = "Xbox Wireless Controller (Vendor: 045e Product: 02fd)";
+info.mapping_utf8  = "standard";
+
+/* connect */
+migo_session_set_gamepad_connected(session, &info, 1);
+/* ... keep sending samples from the game loop ... */
+/* disconnect: only the index is needed; the same struct can be reused */
+migo_session_set_gamepad_connected(session, &info, 0);
+```
+
+***
+
+## migo\_session\_send\_gamepad\_state
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_send_gamepad_state(
+    MigoSession *session,
+    const MigoGamepadStateEvent *event);
+```
+
+Pushes one gamepad state sample. The Web gamepad API uses a **polling model**: content reads the current state from `navigator.getGamepads()` each frame instead of listening for events. The host therefore pushes samples continuously at its chosen rate. Samples are coalesced independently by `index` — dropping one frame is harmless because the next complete state replaces it. The `axes` and `buttons` arrays are borrowed only during the call; the engine copies them before returning.
+
+`MIGO_GAMEPAD_BUTTON_FLAG_PRESSED` and `value` are independent fields, not derived from `value`: the device decides its own activation threshold. A trigger resting at 0.25 may or may not be pressed depending on the controller's configuration. Deriving the flag in the engine would override the device's decision.
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `event->index` | Gamepad slot; must match the `index` declared by `migo_session_set_gamepad_connected`. |
+| `event->axis_count` | Number of axes; must match the `axis_count` declared at connection. |
+| `event->button_count` | Number of buttons; must match the `button_count` declared at connection. |
+| `event->axes` | Pointer to a `float` array, each value in `[-1.0, 1.0]` in standard mapping order; borrowed only during the call. |
+| `event->buttons` | Pointer to a `MigoGamepadButton` array; each element contains `flags` (`PRESSED`/`TOUCHED` bitmask) and `value` (`[0.0, 1.0]`); borrowed only during the call. |
+| `event->timestamp_ms` | `double`, in milliseconds. |
+
+Returns:
+
+* `MIGO_OK`: The sample was accepted, including safe coalescing.
+* `MIGO_ERROR_INVALID_STATE`: No surface is attached.
+* `MIGO_ERROR_WOULD_BLOCK`: The sample was not accepted; retry with the next frame.
+
+Threading:
+
+May be called from any thread. Samples are coalesced independently by `index`; the host must define the order of concurrent pushes to one slot.
+
+Example:
+
+```c
+float axes[4] = { phase, -phase, 0.0f, 0.0f };
+MigoGamepadButton buttons[17] = {0};
+buttons[0].flags = MIGO_GAMEPAD_BUTTON_FLAG_PRESSED | MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED;
+buttons[0].value = 1.0f;
+buttons[6].flags = MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED; /* 25% need not count as pressed */
+buttons[6].value = 0.25f;
+MigoGamepadStateEvent ev = {sizeof ev, MIGO_ABI_VERSION_CURRENT, 0, 4, 17, 0,
+    axes, buttons, (double)elapsed_ms};
+MigoResult r = migo_session_send_gamepad_state(session, &ev);
+if (r == MIGO_ERROR_WOULD_BLOCK) { /* retry next frame */ }
+```
+
+***
+
+## Type reference
+
+### MigoTouchType
+
+```c
+typedef uint32_t MigoTouchType;
+#define MIGO_TOUCH_START  0U  /* touchstart: a pointer touches the surface */
+#define MIGO_TOUCH_MOVE   1U  /* touchmove: the position changed */
+#define MIGO_TOUCH_END    2U  /* touchend: a pointer leaves the surface */
+#define MIGO_TOUCH_CANCEL 3U  /* touchcancel: interrupted by the system (a call, a dialog, ...) */
+```
+
+### MigoTouchPointFlags
+
+```c
+typedef uint32_t MigoTouchPointFlags;
+#define MIGO_TOUCH_FLAG_NONE    0U
+#define MIGO_TOUCH_FLAG_CHANGED (1U << 0)  /* this point changed in this event */
+#define MIGO_TOUCH_FLAG_REMOVED (1U << 1)  /* this point leaves with this event and is removed from touches */
+```
+
+### MigoPointerEventType
+
+```c
+typedef uint32_t MigoPointerEventType;
+#define MIGO_POINTER_EVENT_DOWN 0U  /* button down */
+#define MIGO_POINTER_EVENT_MOVE 1U  /* pointer moved */
+#define MIGO_POINTER_EVENT_UP   2U  /* button up */
+```
+
+The `button` field is `uint32_t` and follows DOM `MouseEvent.button`: 0 primary (left), 1 middle, and 2 secondary (right); the maximum allowed value is `MIGO_POINTER_BUTTON_MAX` (31).
+
+### MigoWheelDeltaMode
+
+```c
+typedef uint32_t MigoWheelDeltaMode;
+#define MIGO_WHEEL_DELTA_MODE_PIXEL 0U  /* delta in pixels */
+#define MIGO_WHEEL_DELTA_MODE_LINE  1U  /* delta in lines */
+#define MIGO_WHEEL_DELTA_MODE_PAGE  2U  /* delta in pages */
+```
+
+### MigoKeyboardEventType
+
+```c
+typedef uint32_t MigoKeyboardEventType;
+#define MIGO_KEYBOARD_EVENT_INPUT         0U  /* field text updated (full current value) */
+#define MIGO_KEYBOARD_EVENT_CONFIRM       1U  /* the user pressed confirm (Enter) */
+#define MIGO_KEYBOARD_EVENT_COMPLETE      2U  /* the keyboard finished hiding */
+#define MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE 3U  /* keyboard height changed (CSS pixels) */
+```
+
+### MigoKeyEventType
+
+```c
+typedef uint32_t MigoKeyEventType;
+#define MIGO_KEY_EVENT_DOWN 0U  /* button down */
+#define MIGO_KEY_EVENT_UP   1U  /* button up */
+```
+
+### MigoKeyModifiers (modifier-key mask)
+
+```c
+typedef uint32_t MigoKeyModifiers;
+#define MIGO_KEY_MODIFIER_NONE    0U
+#define MIGO_KEY_MODIFIER_CONTROL (1U << 0)  /* Ctrl */
+#define MIGO_KEY_MODIFIER_SHIFT   (1U << 1)  /* Shift */
+#define MIGO_KEY_MODIFIER_ALT     (1U << 2)  /* Alt / Option */
+#define MIGO_KEY_MODIFIER_META    (1U << 3)  /* Meta / Cmd / Win */
+```
+
+### MigoKeyEventFlags
+
+```c
+typedef uint32_t MigoKeyEventFlags;
+#define MIGO_KEY_EVENT_FLAG_NONE   0U
+#define MIGO_KEY_EVENT_FLAG_REPEAT (1U << 0)  /* platform auto-repeat, as DOM KeyboardEvent.repeat */
+```
+
+### MigoCompositionEventType
+
+```c
+typedef uint32_t MigoCompositionEventType;
+#define MIGO_COMPOSITION_EVENT_START  0U  /* composition started; data is the initial preedit (may be empty) */
+#define MIGO_COMPOSITION_EVENT_UPDATE 1U  /* preedit updated; data is the full current candidate text */
+#define MIGO_COMPOSITION_EVENT_END    2U  /* committed or cancelled; data is the committed text (empty when cancelled) */
+```
+
+### MigoGamepadButtonFlags
+
+```c
+typedef uint32_t MigoGamepadButtonFlags;
+#define MIGO_GAMEPAD_BUTTON_FLAG_NONE    0U
+#define MIGO_GAMEPAD_BUTTON_FLAG_PRESSED (1U << 0)  /* the device reports it pressed */
+#define MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED (1U << 1)  /* touched but not necessarily pressed (a trigger, say) */
+```

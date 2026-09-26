@@ -1,0 +1,37 @@
+---
+title: 版本升级
+sidebar:
+  order: 3
+description: SDK 换系列的定式流程：看变更、对版本对齐、验证文档随动；0.9 与 0.10 的具体迁移项在 0.10 定稿时填充。
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - release/VERSION
+  - CHANGELOG.md
+slug: 0.9/release/upgrading
+---
+
+换一个 SDK 版本系列不是"换 jar 重编"。这份页面订下升级任何一次系列跳跃（0.9 → 0.10、0.10 → 0.11……）时每一步该按什么顺序走，以及文档自动跟随的机制。具体某一次跳跃的迁移项表在该版本定稿时写进本页对应一节——**本页永不做未发布版本的占位**：
+
+## 定式步骤
+
+1. **先 SDK，后文档。** 发布的次序永远是 SDK 制品先行（含 `release/VERSION`)，文档跟进，最后发网站。你自己的代码同理：先把 SDK 依赖升上去跑绿，再回头读新文档页。
+2. **读 CHANGELOG 的当前系列节。** [Keep a Changelog](https://keepachangelog.com/) 格式，Added/Changed/Deprecated/Removed/Fixed 五段。
+3. **开发者文档跟随系列号。** 文档侧栏顶部的版本切换器读 `release/VERSION`；升级 SDK 后检查 `docs-version` 元标签或侧栏版本是否应切换（同一系列内的 patch 不切换）。
+4. **跑你的关键场景。** ABI 仍是 CANDIDATE 期间，尤其先跑：`surface` attach/retire 全流程、输入泵、自写 dispatcher。冻结前 minor 版对调用方结构也可能重排——唯一保证向上兼容的机制是 `struct_size`/`abi_version` 协商（见 [ABI 兼容性](/docs/0.9/concepts/abi-compatibility/))。
+5. **如果你复制了文档片段。** 文档有归档前缀（`/docs/0.9/`）出现时，把引用的链接改成归档形态或当前 latest——归档内容冻结，新系列的行为只在 latest 上。
+
+## 0.9 → 0.10（本节在 0.10 定稿当天填充）
+
+0.10 的 breaking-changes 清单、迁移步骤、最低工具链要求将在 `CHANGELOG.md` 的该版本节同时书写，并以本页作为过期横幅的落地页。**在那一刻之前,本节仅说明流程本身,不声明任何内容。**
+
+## 稳定版本线路
+
+* 已发布的 SDK 系列列表、产物形态与平台支持底线：见 [支持与版本矩阵](/docs/0.9/release/support-matrix/)。
+* ABI 何时摘帽冻结：[ABI 兼容性](/docs/0.9/concepts/abi-compatibility/) 的 blockers 小节是权威状态。

@@ -1,0 +1,88 @@
+---
+title: RuntimeConfig
+sidebar:
+  order: 2
+description: RuntimeConfig is the immutable session configuration — directories,
+  frame rate, orientation, immersive mode, debug level, ANR watchdog, and code
+  signing. Construction must go through Builder.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/RuntimeConfig.java
+slug: en/0.9/android-sdk/config
+---
+
+`RuntimeConfig` is the immutable session configuration: **created once, effective for the entire session**. Changing any field requires building a new config and re-creating the session. Construction must go through `Builder`.
+
+## Directories and displayDensity
+
+The Builder has two entry points:
+
+```java
+new RuntimeConfig.Builder(Context)                          // cacheDir/filesDir/displayDensity derived from the Context
+new RuntimeConfig.Builder(cacheDir, filesDir, density)      // fully caller-supplied, no Context
+```
+
+| Field | Description |
+| --- | --- |
+| `cacheDir` | Cache directory; the system may clear it |
+| `filesDir` | Persistent directory; the system will not clear it |
+| `codeCacheDir` | JS bytecode cache directory; derived from `cacheDir` by default (system-clearable), overridden by `setCodeCacheDir` |
+| `workersPath` | Worker script directory; may be `null` |
+| `displayDensity` | Pixel density, the CSS px conversion base; must be a real value when using the three-parameter Builder |
+
+If the host has its own game-package or cache directory conventions, use the three-parameter Builder — take the two root directories yourself and do not let the SDK pick them for you.
+
+## Rendering cadence
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `targetFps` | `60` | The ceiling the engine uses to drive `requestAnimationFrame` — a ceiling, not a guarantee |
+| `immersiveMode` | `true` | Full-screen immersive mode |
+| `startupOrientation` | `null` | Must be `"landscape"`, `"portrait"`, or `null`; any other value throws `IllegalArgumentException` immediately |
+
+## Debug and watchdog
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `debugEnabled` | `false` | Attaches DebugOverlay and Console log view |
+| `logLevel` | `WARN` | `TRACE / DEBUG / INFO / WARN / ERROR / OFF` |
+| `watchdogEnabled` | `true` | Reports heartbeat timeouts to the native side |
+| `watchdogTimeoutSecs` | `10` | Number of seconds tolerated without a heartbeat |
+
+Do not disable the watchdog in production builds — it is the only mechanism at the engine level that can raise a signal before the system ANR fires.
+
+## Code signing
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `codeSigningEnabled` | **`true`** | Signature verification is on by default; do not mistake this for a debug toggle |
+| `codeSigningPubkey` | `null` | Hex Ed25519 public key, 64 characters |
+
+A common mistake is assuming signature verification defaults to off in production builds — it is the opposite: it defaults to on, and without a pubkey the verification rejects content outright. Production configuration = set both fields. To skip verification during debugging = explicitly call `setCodeSigningEnabled(false)`, and treat it as a temporary measure only.
+
+## Content-side injection
+
+Two list fields that exist only on the Builder; both are passed to native over JNI as JSON:
+
+* **subPackages**: `List<String[]>`, each entry `{"name","root"}` — sub-package local mount plan;
+* **preludeScripts**: `List<String[]>`, each entry `{"name","source"}` — complete script source to run before `game.js`, used to inject polyfills; executed in list order.
+
+## Builder overview
+
+```java
+RuntimeConfig config = new RuntimeConfig.Builder(context)
+    .setCodeCacheDir(customCodeCache)
+    .setTargetFps(60)
+    .setStartupOrientation("landscape")
+    .setDebugEnabled(BuildConfig.DEBUG)
+    .setLogLevel(RuntimeConfig.LogLevel.WARN)
+    .setImmersiveMode(true)
+    .setWatchdogEnabled(true)
+    .setWatchdogTimeoutSecs(10)
+    .setCodeSigningEnabled(true)
+    .setCodeSigningPubkey(pubkeyHex)
+    .setWorkersPath(workersDir)
+    .build();
+```

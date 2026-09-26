@@ -1,25 +1,123 @@
 ---
-title: Welcome to Migo Developer Docs
-description: Migo is an embeddable Canvas/WebGL mini-game container for Android,
-  Linux, Windows, and OpenHarmony host apps.
-head:
-  - tag: meta
-    attrs:
-      name: robots
-      content: noindex
-audience: host-integrator
-platforms:
-  - android
-  - linux
-  - windows
-  - openharmony
-sourcePaths:
-  - include/migo/migo.h
+title: Migo Developer Docs
+description: Integration, architecture, and C ABI reference for the Migo native
+  mini-game runtime SDK. The home page is a dense index — positioning,
+  architecture diagram, API overview, and getting-started paths.
 slug: en/0.9
 ---
 
-:::note[Translation pending]
-This page is pending translation. The 中文版本 (link below) is the current source of truth.
-:::
+<div class="home-hero">
+  <p class="home-hero-tagline">
+    An embeddable Canvas/WebGL mini-game runtime with a single C ABI across Android, Linux, Windows, and OpenHarmony
+  </p>
 
-[→ 中文版本](/docs/0.9/)
+  <div class="home-hero-actions">
+    <a class="hh-btn hh-btn-primary" href="/docs/en/0.9/getting-started/android/">Quick Start →</a>
+    <a class="hh-btn hh-btn-secondary" href="/docs/en/0.9/reference/overview/">C ABI Reference</a>
+  </div>
+</div>
+
+<style>
+  {`
+    :global(h1#_top) {
+      font-size: clamp(2.5rem, 4.5vw, 4rem);
+      line-height: 1.2;
+      font-weight: 400;
+      color: var(--sl-color-white);
+    }
+    .home-hero-tagline {
+      font-size: 1.25rem;
+      line-height: 1.75;
+      color: var(--sl-color-gray-2);
+      max-width: 34rem;
+      margin-top: 1.25rem;
+    }
+    .home-hero {
+      margin-bottom: 1.25rem;
+    }
+    .home-hero-actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-top: 1.5rem;
+    }
+    .hh-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.4375rem 0.875rem;
+      border-radius: 999rem;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      text-decoration: none;
+      border: 1px solid transparent;
+    }
+    .hh-btn-primary {
+      background: var(--sl-color-text-accent);
+      color: var(--sl-color-black);
+    }
+    .hh-btn-secondary {
+      border-color: var(--sl-color-gray-1);
+      color: var(--sl-color-white);
+      background: transparent;
+    }
+    `}
+</style>
+
+Migo is an embeddable Canvas/WebGL mini-game container. The host app provides the surface, input,
+and storage; Migo provides a V8 JavaScript runtime and a Skia rendering pipeline, across Android,
+Linux, Windows, and OpenHarmony. There is no DOM or CSS — Migo is not a general-purpose WebView
+replacement.
+
+```mermaid
+flowchart TB
+  Bundle[mini-game bundle] --> Adapter[standalone adapter (optional)]
+  Adapter --> Boundary[migo.* capability boundary]
+  Boundary --> Core[Rust core]
+  Core --> V8[V8 JavaScript runtime]
+  Core --> Render[Skia / Canvas / WebGL]
+  Host[host app] <--> SDK[C ABI (language facade above Android)]
+  SDK <--> Core
+  Host --> Services[surface · input · storage · network · ads]
+```
+
+1. The mini-game bundle accesses runtime capabilities only through the `migo.*` capability
+   boundary; an optional standalone adapter sits outside the engine.
+2. The Rust core orchestrates the V8 JavaScript runtime and the Skia rendering backend, producing
+   Canvas/WebGL output.
+3. The host app creates and manages sessions through the C ABI — the single interface shared across
+   all four platforms. The Java facade (`MigoRuntime` / `MigoGameView`) used on Android is purely
+   a language wrapper above this ABI. Services such as surface, input, storage, network, and ads
+   are provided by the host.
+4. Migo provides no DOM, CSS, page layout, or browser document object model.
+
+## API Reference Overview
+
+The C ABI consists of 8 header files with a consistent interface across all four platforms,
+negotiated via `abi_version`. One page per header:
+
+| Page | Summary |
+| --- | --- |
+| [C ABI Overview](/docs/en/0.9/reference/overview/) | Header relationships, call ordering, handle model, error codes, and compile-time selection |
+| [Base Types and Export Macros](/docs/en/0.9/reference/types/) | Handles / error codes / export macros, `MIGO_ABI_*` constants, and `struct_size` evolution rules |
+| [Engine Initialization](/docs/en/0.9/reference/engine/) | `migo_engine_*` lifecycle: creation, ICU data, and the destruction thread-completion barrier |
+| [Session](/docs/en/0.9/reference/session/) | Session handle, `MigoHostCallbacks`, the host dispatcher, and shutdown ordering |
+| [Surface Interface](/docs/en/0.9/reference/surface/) | `migo_surface_attach`, platform descriptors, `frame_info`, and back-pressure |
+| [Input Events](/docs/en/0.9/reference/input/) | The `migo_session_send_*` family: validation, FIFO, coordinate units, and per-event payloads |
+| [External Frame Injection](/docs/en/0.9/reference/external-frames/) | readPixels/getImageData-compatible path — ingress, sync-barrier, and resource lanes |
+| [Runtime Capability Query](/docs/en/0.9/reference/capabilities/) | `migo_query_capabilities`: runtime query of ABI version range and platform bitmask |
+
+Semantic details (architecture, lifecycle, threading model) are in the
+[Core Concepts](/docs/en/0.9/concepts/sdk-architecture/) section.
+
+## Quick Start
+
+:::note[Getting started]
+
+1. **[Android Quick Start](/docs/en/0.9/getting-started/android/)** — 9 steps from downloading the AAR
+   to lighting up a bundle (guides for other platforms will be added as platform artifacts mature,
+   one page per platform).
+2. [Download and Verify](/docs/en/0.9/release/download-verification/) — obtaining release artifacts,
+   fingerprint verification, and the minimum validation set before first deployment.
+
+:::

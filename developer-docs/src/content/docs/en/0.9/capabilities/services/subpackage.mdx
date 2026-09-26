@@ -1,0 +1,84 @@
+---
+title: Subpackage Downloads
+sidebar:
+  order: 5
+description: Android SubpackageHandler contract — zip input and output of the
+  download method, atomic verification and mounting, and local-file fallback
+  with failure semantics when no handler is registered.
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/SubpackageHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+slug: en/0.9/capabilities/services/subpackage
+---
+
+:::caution[Platform scope]
+`SubpackageHandler` is the Android Java facade contract. The C ABI and cross-platform layer have no public subpackage-download entry point in `0.9`.
+:::
+
+## What the host must implement
+
+Register via `GameSession#setSubpackageHandler(SubpackageHandler)`, corresponding to line **881** of `GameSession.java`.
+
+Implement the single entry point:
+
+```java
+void download(SubpackageRequest request, DownloadCallback callback);
+```
+
+When a local file is unavailable and content triggers a download, the runtime hands subpackage information to the host. `SubpackageRequest` contains:
+
+| Field | Semantics |
+| --- | --- |
+| `name` | Subpackage name provided by `RuntimeConfig` |
+| `root` | Normalized root path relative to the code directory, e.g. `subpackages/stage1` |
+
+The host is responsible for downloading the subpackage as a zip to a temporary location, then calling `callback.onSuccess(zipPath)`. **The host does not need to unzip it**: the runtime ingests the zip into `.mpkg`, verifies it, and mounts it atomically. Call `callback.onFailure(reason)` on download failure.
+
+`callback.onProgress(progress, totalBytesWritten, totalBytesExpectedToWrite)` is optional but recommended; the progress percentage ranges from 0 to 100, and the callback may be called multiple times. The terminal callback (`onSuccess` or `onFailure`) must be called exactly once; all callback methods are safe to call from any thread.
+
+The absolute path in the success callback stays internal to the runtime and is never passed to the game. The game JS only names the download it belongs to and cannot use the path to read an arbitrary zip accessible by the app process.
+
+## What happens without an implementation
+
+From `SubpackageHandler.java`, the fallback verbatim:
+
+> When no handler is set, download requests fail and `loadSubpackage()` falls
+> back to executing local files if present.
+
+That is: when no handler is registered, download requests for which there is no local subpackage file fail; `loadSubpackage()` can still execute files that are already present locally. This is not a silent hang, nor a fabricated successful mount.
+
+## What content sees
+
+| migo API | Effect |
+| --- | --- |
+| `migo.loadSubpackage(options)` | Loads the specified subpackage when needed; triggers `download` when not present locally |
+| `migo.preDownloadSubpackage(options)` | Pre-downloads the specified subpackage; triggers `download` when the local file is missing |
+
+Content only knows which subpackage a download belongs to; it never touches the `zipPath` returned by the host. The subpackage name and root directory come from the runtime configuration and the call arguments; the host should use `request.name` / `request.root` to select its own download source.
+The terminal state of the download callback is the runtime ingesting the zip or reporting failure to content — it is not content reading the temporary file itself. The host must therefore keep the temporary file in place until `onSuccess(zipPath)` returns, and let the runtime complete verification and mounting.
+
+The three values in the progress callback are the percentage, bytes written, and total bytes expected. Progress is not a terminal state; even after 100 has been reported, `onSuccess` or `onFailure` must still be called.
+
+When a download source, network, or local temporary file fails, end the request with `onFailure(reason)`. The interface does not prescribe a fixed reason string; the host should pass a diagnosable description.
+
+Subpackage handling receives the name and root path from `RuntimeConfig`; do not let game-provided paths determine arbitrary file write locations. After success, the runtime is responsible for `.mpkg` verification and atomic mounting, preventing a partial package from being exposed to content.
+When a local file is already present, `loadSubpackage()` can execute it directly without invoking the host download handler.
+
+The host receives a `SubpackageRequest` only when an external download is needed and a handler is registered.
+
+The successfully downloaded zip is still parsed, verified, and mounted by the runtime; the host must not expose it as a content-accessible path.
+
+`preDownloadSubpackage()` is the pre-download entry point, but it shares the same `download` callback contract as `loadSubpackage()`.
+
+The host may omit `onProgress` calls if progress reporting is not needed; the terminal callback remains mandatory.
+The host therefore only needs to implement downloading and the callback — it does not need to replicate the runtime's mounting logic.
+
+## Platform availability
+
+| Layer | Status |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

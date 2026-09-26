@@ -1,0 +1,92 @@
+---
+title: GameSession
+sidebar:
+  order: 3
+description: GameSession 会话生命周期:startGame/pause/resume/close、Surface 三件套、触控转发、10
+  个 `set*Handler` setter + `setListener`(共 11 个注册点)、状态广播。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+slug: 0.9/android-sdk/session
+---
+
+`GameSession` 持有 native 会话(`sessionId`)并负责与活动 / 视图桥接:`Closeable`,必须显式 close。
+
+## 生命周期最小集
+
+```java
+// surfaceCreated 回调里
+session = runtime.createSession(activity, surface, config, gameId);
+session.startGame("game.js");        // game.js 在 session.getPaths().getCodeDir() 下
+
+// Activity
+@Override protected void onPause()  { if (session != null) session.pause();  }
+@Override protected void onResume() { if (session != null) session.resume(); }
+@Override protected void onDestroy(){
+    if (session != null) { session.close(); session = null; }
+}
+```
+
+`close()` 之后,带 `ensureNotDestroyed` 守卫的方法抛出 `MigoException`(code `-2000 ERR_SESSION_DESTROYED`,extends `RuntimeException`);`pause()`/`resume()` 安全 no-op,`dispatchTouchEvent` 返回 `false`。session 没 close 之前,native 内存、JS 上下文、平台通道都不会释放。
+
+## Surface 三件套
+
+对应 SurfaceHolder 三个回调:
+
+```java
+surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
+    public void surfaceCreated(SurfaceHolder h)  { /* createSession */ }
+    public void surfaceChanged(SurfaceHolder h, int fmt, int w, int h) {
+        session.updateSurface(h.getSurface(), w, h);
+    }
+    public void surfaceDestroyed(SurfaceHolder h) {
+        session.onSurfaceDestroyed();       // 引擎推进 surface 丢失路径;JS 的 onHide 在这里停
+    }
+});
+```
+
+忘 `onSurfaceDestroyed` 是最常见的死锁来源:引擎不知道 surface 没了,GPU 资源还挂在被销毁的对象上。
+
+## 触控与脚本通道
+
+```java
+surfaceView.setOnTouchListener((v, ev) -> session.dispatchTouchEvent(ev));
+
+// 宿主 → JS
+session.evaluateJavaScript("console.log('hello from host')");
+
+// JS → 宿主:migo.sendToHost(type, payload) 走这里
+session.setMessageHandler((type, payload) -> { /* JSON String,可能 null */ });
+```
+
+`evaluateJavaScript` 立即返回,脚本在 host 线程异步入队执行;想得到回执要用 `migo.sendToHost` 配合 MessageHandler。
+
+## 状态广播:`OnStateChangeListener`
+
+`setOnStateChangeListener(listener)` 拿引擎的 loading / running / error 状态跳变 — 用它驱动 loading UI,**不要**用 `SystemClock` 估算。`GameSessionListener`(另一接口)是更细的 loadingStart/loadingEnd 级钩子。
+
+## 扫雷:四个跟 native 直接相关的方法
+
+| 方法 | 语义 |
+| --- | --- |
+| `updateSurface(surface, w, h)` | surfaceChanged;w/h 是 **物理像素**(surface buffer 尺寸),直接把系统回调的原值传过来 |
+| `onSurfaceDestroyed()` | 不销毁 session,只标记 surface 失效,JS onHide 路径对应 |
+| `setDebugEnabled(boolean)` | 运行时切换 DebugOverlay |
+| `getPaths()` | `GamePaths.getCodeDir()` 等;放置 game.js 的位置 |
+
+## Handler setter(10 个域 + Listener)
+
+以下开包前就装;详细合同见 [宿主能力总览](/docs/0.9/capabilities/overview/):
+
+```java
+session.setMessageHandler(...);      setAuthHandler(...);
+session.setPermissionHandler(...);   setAdHandler(...);
+session.setSettingHandler(...);      setShareHandler(...);
+session.setNavigationHandler(...);   setPaymentHandler(...);
+session.setSubpackageHandler(...);   setGameLogHandler(...);
+session.setListener(GameSessionListener);   // loading 级钩子
+```
+
+不设置 = 按总览表降级;装了之后不要中途换 handler — 正在进行的请求已经握着旧 handler 的 sink。

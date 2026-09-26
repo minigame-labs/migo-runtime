@@ -225,6 +225,69 @@ for page in sorted((docs_root / "en").rglob("*.mdx")):
         if not href.startswith("/docs/en/"):
             error(f"src/content/docs/{rel} 链向中文路由 {href}(英文页应链 /docs/en/…)")
 
+# -- 5c. 0.9 archive is the complete 0.9.7 release baseline -------------------
+
+def mdx_routes(base: pathlib.Path, excluded_top_level: set[str] | None = None) -> set[str]:
+    excluded = excluded_top_level or set()
+    routes: set[str] = set()
+    for page in base.rglob("*.mdx"):
+        rel = page.relative_to(base)
+        if rel.parts and rel.parts[0] in excluded:
+            continue
+        routes.add(rel.as_posix())
+    return routes
+
+
+current_zh_routes = mdx_routes(docs_root, {"0.9", "en"})
+archive_zh_routes = mdx_routes(docs_root / "0.9")
+current_en_routes = mdx_routes(docs_root / "en", {"0.9"})
+archive_en_routes = mdx_routes(docs_root / "en" / "0.9")
+
+for rel in sorted(current_zh_routes - archive_zh_routes):
+    error(f"0.9 归档缺中文页面:{rel}")
+for rel in sorted(archive_zh_routes - current_zh_routes):
+    error(f"0.9 归档多出过期中文页面:{rel}")
+for rel in sorted(current_en_routes - archive_en_routes):
+    error(f"en/0.9 归档缺英文页面:{rel}")
+for rel in sorted(archive_en_routes - current_en_routes):
+    error(f"en/0.9 归档多出过期英文页面:{rel}")
+
+archive_link = re.compile(r'(?:href="|\]\()(/docs/[^"\)#\s]*)')
+for locale_dir, required_prefix in (
+    (docs_root / "0.9", "/docs/0.9/"),
+    (docs_root / "en" / "0.9", "/docs/en/0.9/"),
+):
+    for page in sorted(locale_dir.rglob("*.mdx")):
+        for href in archive_link.findall(page.read_text(encoding="utf-8")):
+            if not href.startswith(required_prefix):
+                rel = page.relative_to(docs_root).as_posix()
+                error(f"{rel} 链出版本归档 {href}(应链 {required_prefix}…)")
+
+for page in sorted((docs_root / "en" / "0.9").rglob("*.mdx")):
+    text = page.read_text(encoding="utf-8")
+    rel = page.relative_to(docs_root).as_posix()
+    if ":::note[Translation pending]" in text or "content: noindex" in text:
+        error(f"{rel} 仍是英文占位页,0.9.7 归档必须使用完整翻译")
+
+def api_sections(text: str) -> set[str]:
+    # starlight-versions escapes underscores in generated Markdown headings.
+    # Normalize only that Markdown escape before comparing symbol names.
+    return set(re.findall(r"^## (migo_[a-z0-9_]+)\s*$", text.replace(r"\_", "_"), flags=re.M))
+
+
+for page in sorted((docs_root / "reference").glob("*.mdx")):
+    current_sections = api_sections(page.read_text(encoding="utf-8"))
+    for archive_dir in (docs_root / "0.9" / "reference", docs_root / "en" / "0.9" / "reference"):
+        archived = archive_dir / page.name
+        if not archived.is_file():
+            continue
+        archived_sections = api_sections(archived.read_text(encoding="utf-8"))
+        rel = archived.relative_to(docs_root).as_posix()
+        for name in sorted(current_sections - archived_sections):
+            error(f"{rel} 缺函数节 {name}")
+        for name in sorted(archived_sections - current_sections):
+            error(f"{rel} 多出函数节 {name}")
+
 # -- 6. Docusaurus remains -----------------------------------------------------
 
 remnants = {

@@ -1,0 +1,119 @@
+---
+title: Windows 快速开始
+sidebar:
+  order: 5
+description: 从发布的 migo.dll 接入 Migo C ABI，挂载 Win32 子 HWND 并管理 surface 生命周期。
+audience: host-integrator
+platforms:
+  - windows
+sourcePaths:
+  - platforms/windows/README.md
+  - include/migo/platform/win32.h
+  - include/migo/platform/winui.h
+  - include/migo/surface.h
+  - include/migo/capabilities.h
+slug: 0.9/getting-started/windows
+---
+
+Windows 平台已发布 `migo.dll`（x86\_64 与 arm64），附带 `migo.lib` 导入库、公开头文件、
+CMake 包，以及它按名加载的 `rusty_v8.dll` 和 ANGLE 运行时 DLL（`libEGL.dll`、
+`libGLESv2.dll`、`d3dcompiler_47.dll`）。两种架构均在各自架构的原生 Windows runner 上
+构建，不做交叉编译。
+
+C ABI 挂载类型为 Win32 子 `HWND`（`MIGO_PLATFORM_WIN32_HWND`）；
+`migo_query_capabilities` 报告该类型为可用。
+
+**WinUI 集成（`ISwapChainPanelNative`）尚未实现**——`include/migo/platform/winui.h`
+中的 `MigoWinuiSwapChainPanelDescriptor` 类型注释标明为 "A future implementation"，
+目前不可用。
+
+## 1. 运行时文件
+
+从项目发布页获取与目标架构匹配的 Windows 压缩包。解压后的 `bin/` 目录包含：
+
+```text
+migo.dll
+rusty_v8.dll
+libEGL.dll
+libGLESv2.dll
+d3dcompiler_47.dll
+```
+
+运行时 DLL 应保持在发布包的 `bin/` 目录中，或复制到应用可执行文件旁边；生成的
+CMake 包也明确要求这些 DLL 在运行时位于 `PATH` 或可执行文件旁。`migo.dll` 按名加载
+`rusty_v8.dll` 和 ANGLE 运行时 DLL。
+
+## 2. 链接 migo.lib
+
+取得发布包中的 `lib/migo.lib`（MSVC 导入库）和 `include/` 下的公开头文件。
+在 CMake 项目中：
+
+```cmake
+find_package(migo CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE migo::migo)
+```
+
+或直接指定路径：
+
+```cmake
+target_include_directories(my_app PRIVATE path/to/migo/include)
+target_link_libraries(my_app PRIVATE path/to/migo/lib/migo.lib)
+```
+
+## 3. 挂载 Win32 HWND
+
+创建一个宿主拥有的子 `HWND`，先用 `MigoWin32HwndDescriptor` 描述它，再把这个平台
+描述符放入 `MigoSurfaceDescriptor`。结构体的 `abi_version` 使用公开头文件定义的
+`MIGO_ABI_VERSION_CURRENT`；`hwnd` 由宿主持有：
+
+```c
+#include <migo/platform/win32.h>
+
+MigoWin32HwndDescriptor platform = {
+    .struct_size   = sizeof(MigoWin32HwndDescriptor),
+    .abi_version   = MIGO_ABI_VERSION_CURRENT,
+    .platform_kind = MIGO_PLATFORM_WIN32_HWND,
+    .flags         = MIGO_PLATFORM_DESCRIPTOR_FLAG_NONE,
+    .hwnd          = child_hwnd,
+};
+```
+
+`MigoSurfaceDescriptor` 还必须提供递增的 `generation`、尺寸、缩放因子、
+`platform_descriptor_size = sizeof(platform)` 和 `platform_descriptor = &platform`，
+然后传给 `migo_session_attach_surface(session, &descriptor, &attachment)`。
+具体字段布局以 `include/migo/surface.h` 为准。
+
+`HWND` 必须保持有效，直到 release observer 报告 `MIGO_SURFACE_RELEASE_RELEASED`；
+宿主消息循环和窗口由宿主自行管理，Migo 不销毁也不调度它们。
+
+## 4. 查询可用挂载类型
+
+在挂载前可用 `migo_query_capabilities` 确认当前平台支持 `MIGO_PLATFORM_WIN32_HWND`：
+
+```c
+MigoCapabilities caps = {0};
+caps.struct_size = sizeof(MigoCapabilities);
+caps.abi_version = MIGO_ABI_VERSION_CURRENT;
+migo_query_capabilities(&caps);
+/* caps.platform_kinds 的 MIGO_PLATFORM_WIN32_HWND 位已设置 */
+```
+
+## 5. 当前范围与已知限制
+
+本阶段不包含：
+
+* **WinUI 集成**：`MigoWinuiSwapChainPanelDescriptor` 标注为 "A future implementation"，
+  目前不可用。
+* **Win32 host-kit 封装**：当前只到 C ABI 层，没有类似 Linux Qt host-kit 那样的
+  现成宿主封装（无应用窗口管理、无输入适配器）。
+* **`EglProvider` 实现**：尚未提供。
+
+## 从源码构建
+
+从源码构建 Windows SDK 见仓库中的
+[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md) "5. Windows SDK" 一节；
+契约门禁为 `scripts/test-windows-sdk-contract.sh`。
+
+WSL2 开发机工作流（源码在 WSL、工具链在 Windows）见
+`platforms/windows/spike/sync-worktree.sh` 和 `platforms/windows/spike/probe-layer.sh`；
+BUILD.md 的 Windows SDK 一节也引用了这些脚本。

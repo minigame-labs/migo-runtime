@@ -1,0 +1,101 @@
+---
+title: 软键盘与键事件
+sidebar:
+  order: 2
+description: 内容打开软键盘的三段式合同;宿主用 migo_session_send_keyboard_event 回报四类事件;物理按键 /
+  IME composition 与这条通道的边界。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - include/migo/session.h
+  - include/migo/input.h
+slug: 0.9/capabilities/keyboard
+---
+
+「软键盘」是三样东西的合成:内容的 `migo.showKeyboard` / `hideKeyboard` / `updateKeyboard` 接口、宿主的键盘 UI(IME)、引擎把这两者接起来的合同。这页从宿主视角写。
+
+## 安装:三分体 全同意或全不同意
+
+软键盘是宿主提供的能力位。通过 `migo_session_set_host_callbacks` 把**三个回调配齐**,少装任何一个都会 `MIGO_ERROR_INVALID_ARGUMENT` 拒掉 —— 一个能 show 不能 hide 的宿主会把键盘永久留在屏上:
+
+```c
+MigoHostCallbacks callbacks;
+memset(&callbacks, 0, sizeof(callbacks));
+callbacks.struct_size = sizeof(callbacks);
+callbacks.abi_version = MIGO_ABI_VERSION_CURRENT;
+callbacks.on_show_keyboard = host_show_keyboard;
+callbacks.on_hide_keyboard = host_hide_keyboard;
+callbacks.on_update_keyboard = host_update_keyboard;
+/* dispatcher 必填 — 所有回调都过它的任务通道 */
+callbacks.dispatch = host_dispatch;
+callbacks.dispatcher_data = ctx;
+migo_session_set_host_callbacks(session, &callbacks);
+```
+
+只有以下两种形态是合法的:
+
+| 安装 | `migo.showKeyboard` 的答案 |
+| --- | --- |
+| 三个加一个 dispatcher | 内容得到异步 `success` 回包后,`on_show_keyboard` 带 `MigoKeyboardShowOptions` 触发 |
+| 一个都不装(**自动放弃能力**) | 内容得到「not supported」失败回包,无任何屏幕副作用 |
+
+中间档不存在。
+
+回调可以配一次,且必须在首个 surface attach 或 RUNNING 状态迁移**之前**完成 — 这是 session.h 的时序约束而不是样式要求:一旦任务队列已经在跑,换函数指针会让队列里的任务观测到两套不同的宿主。
+
+## Show:内容与宿主各持什么
+
+宿主收到 `on_show_keyboard(session, options)`:
+
+* `flags`:`MIGO_KEYBOARD_FLAG_MULTIPLE`(字符段允许多行)、`MIGO_KEYBOARD_FLAG_CONFIRM_HOLD`(确认键后不自动收起);
+* `confirm_type`:`DONE / NEXT / SEARCH / GO / SEND` — 内容是拿这个给确认键起名的;`DONE` 在 `MULTIPLE` 里通常表示收键盘,`NEXT` 才是跳字段;
+* `keyboard_type`:`TEXT / NUMBER`;
+* `default_value_utf8` 长度界定的默认值,可能非 NUL 终止 — **借用**,离开回调要拷贝;
+* `max_length`:内容希望的上限,不一定能逐字 enforce(IME 有时会额外收下组合键),内容侧仍要做好真正的长度校验。
+
+`on_update_keyboard` 回身:内容要求宿主把当前文本改成 `value_utf8`(仍是借用 + 长度界定) — 发生在内容侧的程序性更新(不常是因为宿主已把文本改过)。
+
+## 回执:`migo_session_send_keyboard_event` 四类
+
+宿主拿到用户动作,用 `migo_session_send_keyboard_event` 推回:
+
+| 事件 | 什么时候发 | 带的值 |
+| --- | --- | --- |
+| `MIGO_KEYBOARD_EVENT_INPUT` | 文本变化(每次同步,不是逐键) | 当前完整 utf8 + 长度 |
+| `MIGO_KEYBOARD_EVENT_CONFIRM` | 用户按了确认键 | — |
+| `MIGO_KEYBOARD_EVENT_COMPLETE` | 宿主认为输入流结束(收起) | 最终文本 |
+| `MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE` | 键盘 UI 高度变了(布局锚点) | `height_css_px` |
+
+### HEIGHT\_CHANGE 的坑:CSS px 还是物理 px
+
+> `height_css_px` applies to `MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE` only and is CSS pixels. Sending physical pixels lays content out for a keyboard of the wrong size on every display whose scale factor is not 1.
+
+以 DPR=2.75 的设备为例:把 1020 物理像素当作 1020 CSS px 回,KPI 面板区的 UI 按内容所在 CSS 坐标把键盘当作实际高度的 ~36% — 区内场景元素嵌在键盘底下。只要你的 ViewTree 拿的是 View 高度,在把 px 送进 send 前除一下 `Resources.getDisplayMetrics().density`。
+
+## 物理键盘 / IME:不是这条通道
+
+两个常混在一起的东西:
+
+* **物理按键**(`KeyEvent`、手柄按钮)与**软键盘文本**是**两个能力**,即使名字里都有 key。物理走 `migo_session_send_key_event`(`MigoKeyEventType` DOWN/UP + modifiers + scancode/keyCode),没装软键盘的宿主仍然能发物理键 — 重力感应、Esc 退出的桌面小游戏路径就是这么搭载;
+* **IME composition**(中文/日文候选词在飞的状态)走 `migo_session_send_composition_event` — 能遇 IME 时就是桌面宿主。Android 的 `TextWatcher` 收到的是**组合完成后的文本**,直发 INPUT 事件就正确,不要伪造 composition。
+
+允许的合意级错误:`migo_session_send_key_event` 与 composition 有重叠的宿主(桌面端既有物理键又有 IME)可以同时用;容器居中的小游戏宿主(Android)只需 send\_touch + send\_keyboard\_event,composition 与 key\_event 可以恒不触发。
+
+## 降级样本
+
+```c
+/* 键盘 UI 存在的宿主,至少这样起步 */
+static void on_show_keyboard(void *user_data, MigoSession *session,
+                             const MigoKeyboardShowOptions *options) {
+    HostContext *ctx = user_data;
+    host_ui_show_soft_input(ctx->window,
+                            options->flags & MIGO_KEYBOARD_FLAG_MULTIPLE,
+                            options->confirm_type,
+                            options->default_value_utf8,
+                            options->default_value_length,
+                            options->max_length);
+}
+```
+
+装后宿主唯一责任是:接收 `on_hide_keyboard` 就收起;用户自己收起时发 `COMPLETE` 事件;高度变化上报 CSS px。装齐三分之前的行为不存在,不存在「半支持软键盘」的概念。

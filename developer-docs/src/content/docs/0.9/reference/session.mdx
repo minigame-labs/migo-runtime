@@ -115,6 +115,9 @@ typedef struct MigoHostCallbacks {
     MigoOnHideKeyboardFn    on_hide_keyboard;
     MigoOnUpdateKeyboardFn  on_update_keyboard;
     MigoOnSurfaceReleasedFn on_surface_released;   /* 可选：surface 释放通知 */
+    MigoOnVibrateFn         on_vibrate;            /* optional: device capabilities */
+    MigoOnKeepScreenOnFn    on_keep_screen_on;
+    MigoOnGameLogFn         on_game_log;
 } MigoHostCallbacks;
 ```
 
@@ -140,6 +143,9 @@ detach 或 destroy 调用。回调只能成功安装一次，且须在首次 sur
 | `on_hide_keyboard` | `MigoOnHideKeyboardFn` | 同上 | 内容请求关闭软键盘 |
 | `on_update_keyboard` | `MigoOnUpdateKeyboardFn` | 同上 | 内容更正输入框当前完整值 |
 | `on_surface_released` | `MigoOnSurfaceReleasedFn` | — | 退役 surface 完成释放的边沿通知 |
+| `on_vibrate` | `MigoOnVibrateFn` | — | 内容请求振动；未装则内容得到 not supported |
+| `on_keep_screen_on` | `MigoOnKeepScreenOnFn` | — | 内容请求（或不再请求）屏幕常亮 |
+| `on_game_log` | `MigoOnGameLogFn` | — | 内容游戏日志的一条，交给宿主保存或上传 |
 
 ### MigoDispatchFn
 
@@ -264,6 +270,29 @@ typedef void (MIGO_CALL *MigoOnUpdateKeyboardFn)(
 
 内容更正输入框的当前完整文本，`value_utf8` 以 `value_length` 字节界定，不保证
 NUL 结尾，仅在调用期间借用。须与另外两个键盘回调同时安装。
+
+### 设备能力回调
+
+```c
+typedef uint32_t MigoVibration;   /* MIGO_VIBRATION_SHORT_LIGHT / _MEDIUM / _HEAVY, MIGO_VIBRATION_LONG */
+typedef void (MIGO_CALL *MigoOnVibrateFn)(void *user_data, MigoSession *session,
+                                          MigoVibration vibration);
+typedef void (MIGO_CALL *MigoOnKeepScreenOnFn)(void *user_data, MigoSession *session,
+                                               uint8_t keep_on);
+typedef void (MIGO_CALL *MigoOnGameLogFn)(void *user_data, MigoSession *session,
+                                          const char *entry_json_utf8, uint32_t entry_length);
+```
+
+内容请求宿主去做的设备动作。三者各自可选、互相独立：宿主装上平台具备的那几个；没装的，
+内容调用对应 API（`vibrateShort`/`vibrateLong`、`setKeepScreenOn`、`getGameLogManager().log`）
+得到平台的"not supported"失败，就像在没有该硬件的设备上一样。与其他回调一样经 `dispatch` 投递，
+所以它们是宿主去执行的请求，而不是宿主作答的查询。
+
+* `on_vibrate`：短振按内容指定的强度（约 15 ms），`MIGO_VIBRATION_LONG` 约 400 ms。
+* `on_keep_screen_on`：`keep_on` 为 `1` 时内容要求屏幕常亮，`0` 时不再要求。宿主在 Session 结束时
+  无论最后一次调用是什么都要释放。
+* `on_game_log`：内容游戏日志的一条，JSON 对象（`level`、`key`、`value`、`commonInfo`），
+  按长度界定的 UTF-8，仅在调用期间借用。保留 JSON 是因为 `value` 是内容记录的任意值。
 
 ## MigoKeyboardShowOptions
 
@@ -466,6 +495,7 @@ if (r != MIGO_OK) return 1;
 ## migo\_session\_set\_lifecycle
 
 ```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
 MIGO_API MigoResult MIGO_CALL migo_session_set_lifecycle(
     MigoSession *session,
     MigoLifecycleState state);
@@ -491,6 +521,7 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_lifecycle(
 * `MIGO_ERROR_INVALID_STATE` — Session 已销毁；或 `state` 为 `MIGO_LIFECYCLE_CREATED`
 
 ```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
 /* Android NativeActivity on_cmd 生命周期映射示例 */
 switch (cmd) {
 case APP_CMD_RESUME:
@@ -550,6 +581,51 @@ migo_session_set_focus(MigoSession *session, uint8_t focused);
 
 * `MIGO_OK` — 焦点状态已更新
 * `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL；`focused` 不为 `0` 或 `1`
+* `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo\_session\_set\_network\_status
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MIGO_API MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *session,
+                                                              MigoNetworkType type,
+                                                              uint8_t connected);
+```
+
+设备当前所在的网络，按内容的 `getNetworkType`/`onNetworkStatusChange` 的口径。宿主现在报一次，
+之后每次变化再报；引擎保留最后一次报告，只在内容正在监听时把变化告诉内容。首次报告之前，
+内容的网络调用得到"not supported"。可以在 attach surface 之前调用，报告会被保留。
+
+蜂窝连接报 `MIGO_NETWORK_UNKNOWN`，除非宿主知道代际——有的平台要电话状态权限才能知道，
+而游戏不该需要这个权限。有线连接报 `MIGO_NETWORK_WIFI`，这是该 API 里最接近的取值。
+
+`MigoNetworkType`：`MIGO_NETWORK_NONE`、`_WIFI`、`_UNKNOWN`、`_2G`、`_3G`、`_4G`、`_5G`。
+
+返回：
+
+* `MIGO_OK` — 已保留（内容正在监听且值有变化时已转发）
+* `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL；`type` 超出 `MIGO_NETWORK_5G`；
+  `connected` 不为 `0` 或 `1`；`MIGO_NETWORK_NONE` 却报告已连接
+* `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo\_session\_set\_battery\_status
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MIGO_API MigoResult MIGO_CALL migo_session_set_battery_status(MigoSession *session,
+                                                              uint32_t level_percent,
+                                                              MigoBatteryFlags flags);
+```
+
+电池状态，按内容的 `getBatteryInfo` 的口径：`level_percent` 为 0 到 100，`flags` 为
+`MIGO_BATTERY_FLAG_CHARGING`、`MIGO_BATTERY_FLAG_LOW_POWER_MODE` 的组合。变化时报告；首次报告之前
+内容的调用得到"not supported"——对没有电池的设备，这也正是正确的回答。可以在 attach 之前调用。
+
+返回：
+
+* `MIGO_OK` — 已保留
+* `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL；`level_percent` 大于 100；`flags` 含本头文件
+  未定义的位
 * `MIGO_ERROR_INVALID_STATE` — Session 已销毁
 
 ## migo\_session\_notify\_vsync

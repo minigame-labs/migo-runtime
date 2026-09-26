@@ -1,0 +1,56 @@
+---
+title: 内容包与部署
+sidebar:
+  order: 5
+description: 小游戏 bundle 是什么、放在引擎文件树的哪一层、content_id 的隔离规则，以及装载/加载/更新各是谁的职责。
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - include/migo/session.h
+slug: 0.9/concepts/content-bundle
+---
+
+「bundle 部署」这四个字在快速开始、能力总览和错误页里各被解释过一遍——这是把它抽成单一事实源的那一页。其他页面从此只说"按本页放好内容"，不再自行复述。
+
+## bundle 是什么
+
+一个小游戏 bundle 就是一个**自含目录**：一个入口 JavaScript 文件加上它引用的一切（代码分包、图片、字体、WASM、配置文件）。引擎对它没有任何注册表或中央清单——**位置即身份**：它躺在哪，它是什么。
+
+## 放在哪：引擎文件树的纪律
+
+所有内容解析都从引擎的文件根开始，路径形状固定：
+
+```text
+<files_root>/migo/games/<content_id>/code/<entry>
+```
+
+三条不变量：
+
+1. **`content_id` 隔离一切。** 同 id 的两款游戏共享同一棵子树——存档、缓存、代码目录都在其中；所以宿主欠引擎的承诺就一条：**不同游戏绝不能用同一个 content\_id**。冲突的后果不是报错而是静默互相覆盖。
+2. **`code/` 是引擎会读的目录。** bundle 的入口与依赖放这里；放置动作是**宿主的职责**（复制 / 解压 / 下载），引擎不替你搬文件。
+3. **不要猜路径。** 目录从来都由引擎给出的 API 告诉你（Android: `session.getPaths().getCodeDir()`；C ABI 侧见 [Session](/docs/0.9/reference/session/) 的路径字段）。硬编码内部路径，一旦引擎改布局你的宿主就碎。
+
+## 装载 → 加载 → 更新
+
+| 阶段 | 谁做 | 规则 |
+| --- | --- | --- |
+| 装载（stage） | 宿主 | 把 bundle 完整写入 `code/`，再谈启动；半写状态启动的失败样式由你自己兜 |
+| 校验 | 引擎 | 内容可携带签名凭证；**无签名内容是显式 opt-in**——默认拒绝，因为默默接受未签名内容正是这条 ABI 要避免的 |
+| 加载 | 引擎 | `migo_session_load_content`（Android Java SDK 里是 `startGame()`），**每个会话只加一次**，二次调用返回 `MIGO_ERROR_INVALID_STATE` |
+| 更新 | 宿主 + 引擎约定 | 新内容=新会话：更新 bundle 后再起一个 Session，见 [会话生命周期](/docs/0.9/concepts/lifecycle/)；不要指望复用会话热替换 |
+
+## 平台差异只有一层
+
+「目录从哪来」是平台特定的（Android 的 `getCodeDir()`、桌面端的引擎 files 目录），规则本身跨平台同一份。平台页只写「在本平台如何拿到这个目录」，不重述本页不变量——长反方向是文档漂移的入口。
+
+## 相关
+
+* [会话生命周期](/docs/0.9/concepts/lifecycle/) — 会话与内容的搭配关系
+* [下载与校验](/docs/0.9/release/download-verification/) — SDK 制品本身的签名校验
+* [Android 快速开始 §5-§6](/docs/0.9/getting-started/android/) — 本平台落地步骤实例
