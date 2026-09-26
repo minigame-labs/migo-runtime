@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -40,18 +41,42 @@
  * embedder knows its content; this example has to be pointed at different
  * bundles during validation, and a file is the smallest thing that behaves the
  * way a host's own configuration would. */
-static void read_content_id(const char *files_dir, char *out, size_t cap) {
-    snprintf(out, cap, "%s", MIGO_DEFAULT_CONTENT_ID);
+/* Reads the first line of <files>/<name> into out; 0 when absent or empty. */
+static int read_host_setting(const char *files_dir, const char *name, char *out, size_t cap) {
     char path[512];
-    snprintf(path, sizeof path, "%s/content-id", files_dir);
+    snprintf(path, sizeof path, "%s/%s", files_dir, name);
     FILE *f = fopen(path, "r");
-    if (f == NULL) return;
+    if (f == NULL) return 0;
     char buf[128] = {0};
+    int found = 0;
     if (fgets(buf, sizeof buf, f) != NULL) {
         buf[strcspn(buf, "\r\n")] = 0;
-        if (buf[0] != 0) snprintf(out, cap, "%s", buf);
+        if (buf[0] != 0) {
+            snprintf(out, cap, "%s", buf);
+            found = 1;
+        }
     }
     fclose(f);
+    return found;
+}
+
+static void read_content_id(const char *files_dir, char *out, size_t cap) {
+    if (!read_host_setting(files_dir, "content-id", out, cap)) {
+        snprintf(out, cap, "%s", MIGO_DEFAULT_CONTENT_ID);
+    }
+}
+
+/* <files>/log-level, if present, becomes MIGO_CAPI_LOG before the engine is
+ * created -- the setenv the note on create_engine describes, made switchable
+ * without a rebuild because a NativeActivity cannot be handed an environment.
+ * migo-bench sets it to "warn": the Java SDK logs at WARN by default, so that is
+ * what puts content's console on logcat on both sides of a comparison. */
+static void apply_log_level(const char *files_dir) {
+    char level[32];
+    if (read_host_setting(files_dir, "log-level", level, sizeof level)) {
+        setenv("MIGO_CAPI_LOG", level, 1);
+        LOGI("MIGO_CAPI_LOG=%s", level);
+    }
 }
 
 struct dispatch_msg {
@@ -793,6 +818,7 @@ void android_main(struct android_app *app) {
          g_host.density);
     read_content_id(app->activity->internalDataPath, g_host.content_id,
                     sizeof g_host.content_id);
+    apply_log_level(app->activity->internalDataPath);
     if (!create_engine(&g_host, app->activity->internalDataPath)) return;
 
     while (1) {
