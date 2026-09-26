@@ -17,8 +17,8 @@
 //! `docs/archive/PROGRESS-apple-android.md` and the Android startup work: the render
 //! thread is launched before the JavaScript runtime is built so GPU bring-up
 //! and V8 construction overlap, and `gpu_init_started` is taken at the launch
-//! rather than at the wait so the two-second budget is not restarted by
-//! whatever happens in between.
+//! rather than at the wait so the `GPU_INIT_TIMEOUT` budget is not restarted
+//! by whatever happens in between.
 
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Instant;
@@ -42,7 +42,18 @@ use crate::services::{AudioService, PlatformServices, RenderService};
 /// How long a session waits, from the renderer's launch, for the GPU's
 /// capabilities before content may ask about them. The embedded execution waits
 /// before it runs content; the external one when content first asks.
-pub(crate) const GPU_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+///
+/// A watchdog for a renderer that is stuck, not a performance budget. A renderer
+/// that fails says so at once (`GpuCapsReadyState::Failed`), and one that comes
+/// up is waited for only as long as it takes, so the value is reached only by a
+/// bring-up that never finishes -- and whatever it is, a session that reaches it
+/// refuses its content for good. It was two seconds, which a slow-but-healthy
+/// first bring-up exceeds: a cold driver shader cache on a low-end device, or
+/// Mesa's llvmpipe in a debug build on a loaded CI runner, where the renderer
+/// published 1.4 s after the deadline had already failed the launch. Ten
+/// seconds is the scale GPU watchdogs use for the same question (Chromium's
+/// GPU watchdog is 10 s).
+pub(crate) const GPU_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Cleans process-global registrations if `Host::new` exits before ownership
 /// transfers to the fully assembled `Host` and its normal `Drop` path.
@@ -321,8 +332,9 @@ impl SessionShell {
             report_surface_installed,
             default_framebuffer_reads,
         )?;
-        // Preserve the old two-second render-startup budget. V8 construction
-        // below consumes this same deadline while the render thread initializes.
+        // The render-startup budget (`GPU_INIT_TIMEOUT`) starts here. V8
+        // construction below consumes this same deadline while the render
+        // thread initializes.
         let gpu_init_started = Instant::now();
         let render_events = render.events();
 
