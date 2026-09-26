@@ -145,16 +145,18 @@ fn open_final_file(path: &Path) -> Result<File, VfsOpenError> {
 }
 
 /// Convert a trusted absolute root-derived path into Win32's verbatim
-/// namespace before `CreateFileW` sees it. Besides preserving exact component
-/// spelling, this prevents DOS aliases such as `NUL` from being interpreted as
-/// devices if a future caller bypasses the portable component guard.
+/// namespace before `CreateFileW` sees it. A path that is not already verbatim
+/// is normalized exactly as Win32 would normalize it, then fixed in that
+/// spelling; this also prevents DOS aliases such as `NUL` from being
+/// interpreted as devices if a future caller bypasses the portable component
+/// guard.
 fn verbatim_path(path: &Path) -> Result<PathBuf, VfsOpenError> {
     const SEP: u16 = b'\\' as u16;
     const SLASH: u16 = b'/' as u16;
     const QUESTION: u16 = b'?' as u16;
     const COLON: u16 = b':' as u16;
 
-    let mut path: Vec<u16> = path
+    let path: Vec<u16> = path
         .as_os_str()
         .encode_wide()
         .map(|unit| if unit == SLASH { SEP } else { unit })
@@ -185,8 +187,37 @@ fn verbatim_path(path: &Path) -> Result<PathBuf, VfsOpenError> {
         return Ok(PathBuf::from(OsString::from_wide(&path)));
     }
 
+    // Relative and drive-relative roots cannot define a stable production
+    // sandbox, so they are refused here -- before the normalization below,
+    // which would otherwise quietly resolve them against the process's
+    // current directory.
+    let drive_absolute = path.len() >= 3
+        && path[0] <= u8::MAX as u16
+        && (path[0] as u8).is_ascii_alphabetic()
+        && path[1] == COLON
+        && path[2] == SEP;
+    if !drive_absolute && !path.starts_with(&[SEP, SEP]) {
+        return Err(VfsOpenError::UnsafePath);
+    }
+
+    // The verbatim prefix turns Win32 path normalization OFF: under `\\?\`,
+    // `..` and `.` are file names, and `CreateFileW` answers
+    // ERROR_INVALID_NAME for them. A host root such as `C:\app\files\..\cache`
+    // -- which every Win32 API reads as `C:\app\cache` -- therefore failed to
+    // pin, and every session refused to start. So the path is first given the
+    // meaning Win32 itself gives it (`GetFullPathNameW`, which is what
+    // `std::path::absolute` calls on Windows), and only then made verbatim.
+    // The result is classified again below: normalization can produce a
+    // device path (`C:\x\NUL` -> `\\.\NUL` on older Windows), which stays
+    // refused.
+    let mut path: Vec<u16> = std::path::absolute(PathBuf::from(OsString::from_wide(&path)))
+        .map_err(|_| VfsOpenError::UnsafePath)?
+        .as_os_str()
+        .encode_wide()
+        .collect();
+
     let mut verbatim = verbatim_prefix.to_vec();
-    if path.starts_with(&[SEP, SEP, b'.' as u16, SEP]) {
+    if path.starts_with(&[SEP, SEP, b'.' as u16, SEP]) || path.starts_with(&verbatim_prefix) {
         return Err(VfsOpenError::UnsafePath);
     } else if path.starts_with(&[SEP, SEP]) {
         // `\\server\share` -> `\\?\UNC\server\share`.
