@@ -13,6 +13,8 @@
 // -- silently, because both halves would still be internally consistent. A gate
 // comparing two constants was the alternative; one constant needs no gate.
 
+import { platform } from "./platform.mjs";
+
 export const CHANNEL_SOCKET = "loopback_websocket";
 export const CHANNEL_SCHEME = "scheme_request";
 
@@ -45,6 +47,9 @@ export function createHybridSender({
   schemeUrl,
   socketCeilingBytes,
   onSchemeFailure,
+  // The scheme transport: the platform's `fetch`, captured before content could
+  // replace the global. Injected by the test, as `SyncCaller` takes its `post`.
+  post = platform.fetch,
 } = {}) {
   if (typeof sendOverSocket !== "function") {
     throw new TypeError("the hybrid sender needs a socket to fall back to");
@@ -69,7 +74,7 @@ export function createHybridSender({
     // reads it before returning to the event loop; a producer that recycles
     // frame buffers must not recycle this one until the promise settles, which
     // is the same rule the socket's `send` already imposes.
-    fetch(schemeUrl, { method: "POST", body: bytes, cache: "no-store" })
+    post(schemeUrl, { method: "POST", body: bytes, cache: "no-store" })
       .then((response) => {
         if (!response.ok) {
           onSchemeFailure?.(

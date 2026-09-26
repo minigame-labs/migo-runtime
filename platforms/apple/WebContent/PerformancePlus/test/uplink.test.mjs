@@ -31,28 +31,25 @@ test("a packet at the ceiling goes over the socket", () => {
 test("one byte over the ceiling goes over the scheme", async () => {
   const socket = collector();
   const requests = [];
-  globalThis.fetch = (url, init) => {
+  const post = (url, init) => {
     requests.push({ url, method: init.method, length: init.body.byteLength });
     return Promise.resolve({ ok: true, status: 200 });
   };
-  try {
-    const send = createHybridSender({
-      sendOverSocket: socket.send,
-      schemeUrl: "migo-content://content/__migo/frame",
-      socketCeilingBytes: CEILING,
-    });
-    assert.equal(send(new Uint8Array(CEILING + 1)), CHANNEL_SCHEME);
-    assert.deepEqual(socket.sent, [], "the socket must not have seen it");
-    assert.deepEqual(requests, [
-      {
-        url: "migo-content://content/__migo/frame",
-        method: "POST",
-        length: CEILING + 1,
-      },
-    ]);
-  } finally {
-    delete globalThis.fetch;
-  }
+  const send = createHybridSender({
+    post,
+    sendOverSocket: socket.send,
+    schemeUrl: "migo-content://content/__migo/frame",
+    socketCeilingBytes: CEILING,
+  });
+  assert.equal(send(new Uint8Array(CEILING + 1)), CHANNEL_SCHEME);
+  assert.deepEqual(socket.sent, [], "the socket must not have seen it");
+  assert.deepEqual(requests, [
+    {
+      url: "migo-content://content/__migo/frame",
+      method: "POST",
+      length: CEILING + 1,
+    },
+  ]);
 });
 
 test("with no scheme URL everything goes over the socket", () => {
@@ -67,40 +64,34 @@ test("a scheme failure is reported rather than thrown", async () => {
   // frame has returned and there is nobody left to catch -- so a throw here
   // would become an unhandled rejection and the host would learn nothing.
   const failures = [];
-  globalThis.fetch = () => Promise.resolve({ ok: false, status: 507 });
-  try {
-    const send = createHybridSender({
-      sendOverSocket: () => assert.fail("the socket must not have been used"),
-      schemeUrl: "migo-content://content/__migo/frame",
-      socketCeilingBytes: CEILING,
-      onSchemeFailure: (error, byteCount) => failures.push([String(error), byteCount]),
-    });
-    send(new Uint8Array(CEILING + 1));
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(failures.length, 1);
-    assert.match(failures[0][0], /507/);
-    assert.equal(failures[0][1], CEILING + 1);
-  } finally {
-    delete globalThis.fetch;
-  }
+  const post = () => Promise.resolve({ ok: false, status: 507 });
+  const send = createHybridSender({
+    post,
+    sendOverSocket: () => assert.fail("the socket must not have been used"),
+    schemeUrl: "migo-content://content/__migo/frame",
+    socketCeilingBytes: CEILING,
+    onSchemeFailure: (error, byteCount) => failures.push([String(error), byteCount]),
+  });
+  send(new Uint8Array(CEILING + 1));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(failures.length, 1);
+  assert.match(failures[0][0], /507/);
+  assert.equal(failures[0][1], CEILING + 1);
 });
 
 test("a rejected request is reported too", async () => {
   const failures = [];
-  globalThis.fetch = () => Promise.reject(new Error("the handler went away"));
-  try {
-    const send = createHybridSender({
-      sendOverSocket: () => assert.fail("the socket must not have been used"),
-      schemeUrl: "migo-content://content/__migo/frame",
-      socketCeilingBytes: CEILING,
-      onSchemeFailure: (error) => failures.push(String(error)),
-    });
-    send(new Uint8Array(CEILING + 1));
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(failures, ["Error: the handler went away"]);
-  } finally {
-    delete globalThis.fetch;
-  }
+  const post = () => Promise.reject(new Error("the handler went away"));
+  const send = createHybridSender({
+    post,
+    sendOverSocket: () => assert.fail("the socket must not have been used"),
+    schemeUrl: "migo-content://content/__migo/frame",
+    socketCeilingBytes: CEILING,
+    onSchemeFailure: (error) => failures.push(String(error)),
+  });
+  send(new Uint8Array(CEILING + 1));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(failures, ["Error: the handler went away"]);
 });
 
 test("a scheme URL without the host's ceiling is refused, not defaulted", () => {

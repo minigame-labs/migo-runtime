@@ -10,6 +10,8 @@
 // below, so a name this file cannot produce fails the build rather than
 // arriving as `undefined` in the middle of a frame.
 
+import { platform } from "./platform.mjs";
+
 const { apply, bind, call } = Function.prototype;
 // deno's own construction: `uncurryThis(fn)(self, ...args)` is `fn.call(self,
 // ...args)`, bound once so a later change to Function.prototype.call cannot
@@ -38,25 +40,11 @@ for (const name of ObjectGetOwnPropertyNames(globalThis)) {
 INTRINSICS.set("TypedArray", TypedArray);
 const INTRINSIC_NAMES = [...INTRINSICS.keys()].sort((a, b) => b.length - a.length);
 
-// The Worker's own platform, captured before the engine installs its globals.
-// The engine replaces `setTimeout`, `performance`, `console` and more with its
-// own implementations -- built on ops -- so anything underneath those ops that
-// read the global at call time would call the engine's version of itself. Every
-// producer module that needs the platform takes it from here.
-const platformSetTimeout = globalThis.setTimeout;
-const platformClearTimeout = globalThis.clearTimeout;
-const platformSetInterval = globalThis.setInterval;
-const platformClearInterval = globalThis.clearInterval;
-const platformAddEventListener = globalThis.addEventListener?.bind(globalThis);
-const platformPerformance = globalThis.performance;
-const platformNow = platformPerformance.now.bind(platformPerformance);
-
-export const platform = Object.freeze({
-  now: platformNow,
-  timeOrigin: platformPerformance.timeOrigin,
-  setTimeout: platformSetTimeout,
-  clearTimeout: platformClearTimeout,
-});
+// The Worker's own platform -- timers, the clock, the event target -- lives in
+// `platform.mjs`, captured before this module installs the engine's globals and
+// before content installs its own. Re-exported for the modules that take it
+// from here.
+export { platform };
 
 const lowerFirst = (text) => text.charAt(0).toLowerCase() + text.slice(1);
 
@@ -349,15 +337,15 @@ export function makeCore(ops, coreStream) {
           if (!repeat) timers.delete(id);
         }
       };
-      timers.set(id, { repeat, handle: repeat ? platformSetInterval(run, timeout) : platformSetTimeout(run, timeout) });
+      timers.set(id, { repeat, handle: repeat ? platform.setInterval(run, timeout) : platform.setTimeout(run, timeout) });
       return id;
     },
     cancelTimer(id) {
       const timer = timers.get(id);
       if (!timer) return;
       timers.delete(id);
-      if (timer.repeat) platformClearInterval(timer.handle);
-      else platformClearTimeout(timer.handle);
+      if (timer.repeat) platform.clearInterval(timer.handle);
+      else platform.clearTimeout(timer.handle);
     },
     // A Worker has no event loop to keep alive or let exit: every timer is
     // "referenced" for as long as the Worker lives.
@@ -370,12 +358,12 @@ export function makeCore(ops, coreStream) {
     },
 
     setUnhandledPromiseRejectionHandler(handler) {
-      platformAddEventListener("unhandledrejection", (event) => {
+      platform.addEventListener("unhandledrejection", (event) => {
         if (handler(event.promise, event.reason)) event.preventDefault();
       });
     },
     setHandledPromiseRejectionHandler(handler) {
-      platformAddEventListener("rejectionhandled", (event) => {
+      platform.addEventListener("rejectionhandled", (event) => {
         handler(event.promise, event.reason);
       });
     },

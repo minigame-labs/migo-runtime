@@ -20,6 +20,7 @@
 // No imports beyond siblings, no DOM, no Node API: it runs in a Worker and in
 // `node` for its test.
 
+import { platform } from "./platform.mjs";
 import { ServiceValueError, ValueWriter, readValue, readValues } from "./service-value.mjs";
 
 // The Worker's own `queueMicrotask`, bound to the global it belongs to and
@@ -220,12 +221,12 @@ export function decodeServiceDownRecord(bytes) {
 
 /** A POST to the service endpoint, and the parked-reply fetch. The defaults. */
 async function defaultPost(url, body) {
-  const response = await fetch(url, { method: "POST", body, cache: "no-store" });
+  const response = await platform.fetch(url, { method: "POST", body, cache: "no-store" });
   if (!response.ok) throw new Error(`the host answered ${response.status} for a ${body.byteLength}-byte service message`);
 }
 
 async function defaultFetchParked(url) {
-  const response = await fetch(url, { cache: "no-store" });
+  const response = await platform.fetch(url, { cache: "no-store" });
   if (!response.ok) throw new Error(`the host answered ${response.status} for a parked reply`);
   return new Uint8Array(await response.arrayBuffer());
 }

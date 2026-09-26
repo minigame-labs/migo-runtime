@@ -17,6 +17,7 @@
 // No imports beyond siblings, no DOM, no Node API: it runs in a Worker and in
 // `node` for its test.
 
+import { platform } from "./platform.mjs";
 import {
   MAX_REPLY_BYTES,
   MAX_SERVICE_REPLY_BYTES,
@@ -183,7 +184,7 @@ export function decodeSyncAnswer(buffer) {
  * process it spawned.
  */
 export function blockingPost(url, body) {
-  const request = new XMLHttpRequest();
+  const request = new platform.XMLHttpRequest();
   request.open("POST", url, false);
   request.responseType = "arraybuffer";
   try {
