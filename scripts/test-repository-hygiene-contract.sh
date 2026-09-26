@@ -49,6 +49,26 @@ PY
     expect_fail "a tracked prefixed legacy identifier is rejected" "$fixture"
     git -C "$fixture" rm -q --cached brand-prefix.md
 
+    # The hostname rule matches the machine's name as a token. A word that
+    # merely contains its letters is not the name; the name followed by a
+    # domain or a suffix still is.
+    printf 'func testThePatternInternalsHold() {}\n' > "$fixture/Words.swift"
+    git -C "$fixture" add Words.swift
+    if MIGO_HYGIENE_MACHINE_NAME=tern run_gate "$fixture"; then
+        pass "a word containing the hostname's letters is not the hostname"
+    else
+        fail "a word containing the hostname's letters is not the hostname"
+    fi
+    git -C "$fixture" rm -q --cached Words.swift
+    printf 'ssh tern.local\n' > "$fixture/host.md"
+    git -C "$fixture" add host.md
+    if MIGO_HYGIENE_MACHINE_NAME=tern run_gate "$fixture"; then
+        fail "the hostname as a token is rejected"
+    else
+        pass "the hostname as a token is rejected"
+    fi
+    git -C "$fixture" rm -q --cached host.md
+
     # Two shapes carry the short brand's letters without being the brand: a
     # Subresource Integrity digest in a lockfile, and the exclusive-create flag
     # of the engine's file open op. Both must pass -- and the same two letters as

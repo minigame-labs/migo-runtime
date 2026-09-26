@@ -138,6 +138,9 @@ _LEGACY_BRAND_EXEMPT_PATHS = frozenset(
         "developer-docs/src/content/docs/concepts/sdk-architecture.mdx",
         "developer-docs/src/content/docs/0.9/concepts/sdk-architecture.mdx",
         "developer-docs/src/content/docs/en/concepts/sdk-architecture.mdx",
+        # The English 0.9 archive carries the same page since the 0.9.7 docs
+        # replaced its Translation-pending stub with the translation.
+        "developer-docs/src/content/docs/en/0.9/concepts/sdk-architecture.mdx",
         "scripts/dump-api-surface.sh",
         "scripts/prescreen-game.sh",
         "scripts/test-prescreen-scanner.sh",
@@ -239,11 +242,23 @@ def check(root: Path) -> tuple[list[Finding], int, int]:
     findings: list[Finding] = []
     text_files = 0
 
-    machine_name = socket.gethostname().strip()
+    # MIGO_HYGIENE_MACHINE_NAME stands in for the hostname so the contract test
+    # can exercise this rule; a real run leaves it unset.
+    machine_name = (os.environ.get("MIGO_HYGIENE_MACHINE_NAME") or socket.gethostname()).strip()
     machine_rule = None
     if len(machine_name) >= 4 and machine_name.lower() not in {"localhost", "localhost.localdomain"}:
+        # The name as a token, not as letters inside a word. A substring match
+        # made a short hostname a dictionary search: a four-letter hostname
+        # flagged four ordinary camel-case identifiers in tracked Swift and
+        # shell files, so the gate was red on that machine and green on CI's
+        # long random runner names. `<name>.local`, `<name>-mbp` and `@<name>`
+        # are still the name.
         machine_rule = TextRule(
-            "machine-specific hostname", re.compile(re.escape(machine_name), re.IGNORECASE)
+            "machine-specific hostname",
+            re.compile(
+                r"(?<![A-Za-z0-9])" + re.escape(machine_name) + r"(?![A-Za-z0-9])",
+                re.IGNORECASE,
+            ),
         )
 
     for relative in paths:
