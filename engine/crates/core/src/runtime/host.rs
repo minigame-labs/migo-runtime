@@ -1053,8 +1053,12 @@ impl Host {
                     .with_detail(detail),
             ),
             shared::device::gpu_caps::GpuCapsReadyState::Timeout => Err(
-                shared::error::EngineError::new(shared::error::ErrorCode::Timeout)
-                    .with_detail("render thread did not publish GPU caps within 2 seconds"),
+                shared::error::EngineError::new(shared::error::ErrorCode::Timeout).with_detail(
+                    format!(
+                        "render thread did not publish GPU caps within {} s",
+                        GPU_INIT_TIMEOUT.as_secs()
+                    ),
+                ),
             ),
         }
     }
