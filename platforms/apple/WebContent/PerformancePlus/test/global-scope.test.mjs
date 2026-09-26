@@ -1,0 +1,95 @@
+// Content sees the embedded runtime's global names, not a Worker's.
+//
+// Phaser 3 reads `typeof importScripts`, decides it is inside a Web Worker and
+// reports neither Canvas nor WebGL; on an iPhone the endless-runner bench game
+// threw "Cannot create Canvas context" and stayed black. What is checked here:
+// the retirement itself, that the list it keeps is the embedded runtime's
+// committed baseline (read by the generator, not written down again), and that
+// the producer's own lazy uses of a Worker name survive the retirement.
+//
+// Run:  node platforms/apple/WebContent/PerformancePlus/test/global-scope.test.mjs
+// Gate: scripts/test-frame-wire-js-encoder.sh
+
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import test from "node:test";
+import { pathToFileURL } from "node:url";
+
+import { retireUnpublishedGlobals } from "../src/global-scope.mjs";
+import { decodeBytes } from "../src/text-codec.mjs";
+
+const REPO = resolve(import.meta.dirname, "../../../../..");
+
+test("a name the embedded runtime does not publish is retired, and one it does is kept", () => {
+  const scope = { importScripts() {}, self: null, migo: {}, requestAnimationFrame() {} };
+  assert.deepEqual(retireUnpublishedGlobals(scope, ["migo", "requestAnimationFrame"], null), []);
+  assert.deepEqual(Object.keys(scope).sort(), ["migo", "requestAnimationFrame"]);
+});
+
+test("a Worker member on the global's interface prototypes is retired too, and EventTarget's is not", () => {
+  // The shape of a WebKit Worker global: own names, then DedicatedWorkerGlobalScope
+  // and WorkerGlobalScope prototypes, then EventTarget.prototype, shared with
+  // every event target.
+  const eventTarget = { addEventListener() {} };
+  const workerGlobalScope = Object.create(eventTarget, {
+    importScripts: { value() {}, configurable: true, writable: true },
+  });
+  const dedicated = Object.create(workerGlobalScope, {
+    postMessage: { value() {}, configurable: true, writable: true },
+  });
+  const scope = Object.create(dedicated, {
+    migo: { value: {}, configurable: true, writable: true },
+  });
+  assert.equal(typeof scope.importScripts, "function");
+  assert.deepEqual(retireUnpublishedGlobals(scope, ["migo"], eventTarget), []);
+  assert.equal(typeof scope.importScripts, "undefined", "what Phaser reads");
+  assert.equal(typeof scope.postMessage, "undefined");
+  assert.equal(typeof scope.addEventListener, "function", "EventTarget.prototype is shared, and left alone");
+  assert.equal(typeof scope.migo, "object");
+});
+
+test("Object.prototype is never touched, whatever the chain", () => {
+  const scope = Object.create(Object.prototype, { stray: { value: 1, configurable: true } });
+  assert.deepEqual(retireUnpublishedGlobals(scope, [], null), []);
+  assert.equal(typeof ({}).hasOwnProperty, "function");
+  assert.equal(Object.getOwnPropertyNames(scope).length, 0);
+});
+
+test("a global that cannot be deleted is named, not skipped", () => {
+  const scope = { kept: 1 };
+  Object.defineProperty(scope, "WorkerLocation", { value: 1, configurable: false });
+  assert.deepEqual(retireUnpublishedGlobals(scope, ["kept"], null), ["WorkerLocation"]);
+});
+
+test("the kept names are the embedded runtime's baseline, which has no Worker names", async () => {
+  const out = mkdtempSync(join(tmpdir(), "migo-pp-globals-"));
+  try {
+    execFileSync("python3", [join(REPO, "scripts/gen-performance-plus-engine.py"), "--root", REPO, "--out", out], {
+      stdio: "ignore",
+    });
+    const { PUBLISHED_GLOBALS } = await import(pathToFileURL(join(out, "engine/published-globals.mjs")).href);
+    for (const name of ["migo", "requestAnimationFrame", "WebGLRenderingContext", "CanvasRenderingContext2D"]) {
+      assert.ok(PUBLISHED_GLOBALS.includes(name), `${name} is published and must be kept`);
+    }
+    for (const name of ["importScripts", "self", "navigator", "location", "close", "WorkerGlobalScope"]) {
+      assert.ok(!PUBLISHED_GLOBALS.includes(name), `${name} is a Worker's, not the embedded runtime's`);
+    }
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("the producer decodes text after the Worker's TextDecoder is retired", () => {
+  // `TextDecoder` is not an embedded global, so it is retired with the rest; the
+  // codec constructs one per call and must take it from the platform record.
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "TextDecoder");
+  delete globalThis.TextDecoder;
+  try {
+    assert.equal(decodeBytes(new Uint8Array([0x68, 0x69]), "utf8"), "hi");
+  } finally {
+    Object.defineProperty(globalThis, "TextDecoder", descriptor);
+  }
+});

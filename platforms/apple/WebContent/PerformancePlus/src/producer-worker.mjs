@@ -3,7 +3,8 @@
 //
 // Why a Worker and not the Window is measured rather than stylistic -- a Worker
 // has no `document`/`window`, which is what makes this environment match the
-// five platforms that already ship, and its `[[CanBlock]]` is true, which every
+// five platforms that already ship (the names a Worker has and they do not are
+// retired before content: `global-scope.mjs`), and its `[[CanBlock]]` is true, which every
 // synchronous readback the engine supports needs. Both are recorded with their
 // evidence in `../../../Sources/MigoApplePerformancePlus/README.md`.
 //
@@ -13,7 +14,9 @@
 
 import { constructOpError } from "./engine-core.mjs";
 import { applyContextState, bindContextEvents, bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
+import { retireUnpublishedGlobals } from "./global-scope.mjs";
 import { bindHostEvents, dispatchHostEvent } from "./host-events.mjs";
+import { platform } from "./platform.mjs";
 import { ServiceChannel } from "./service.mjs";
 import { SyncCaller } from "./sync-call.mjs";
 import { connectFrameSession } from "./worker-bootstrap.mjs";
@@ -155,10 +158,27 @@ self.onmessage = async (event) => {
       report({ type: "failed", stage: "content", detail: "a game entry needs the engine session" });
       return;
     }
+    // Against the package root, not `location.origin`: a custom scheme's
+    // origin is opaque, and serialises as "null". Resolved before the Worker's
+    // names are retired, `location` among them.
+    const entry = new URL(config.gameEntry, new URL("/", self.location.href)).href;
     try {
-      // Against the package root, not `location.origin`: a custom scheme's
-      // origin is opaque, and serialises as "null".
-      await import(new URL(config.gameEntry, new URL("/", self.location.href)).href);
+      const { PUBLISHED_GLOBALS } = await import("./engine/published-globals.mjs");
+      const refused = retireUnpublishedGlobals(globalThis, PUBLISHED_GLOBALS, platform.eventTargetPrototype);
+      if (refused.length > 0) {
+        report({
+          type: "failed",
+          stage: "engine",
+          detail: `the Worker globals ${refused.join(", ")} cannot be retired; content would see a surface no other platform has`,
+        });
+        return;
+      }
+    } catch (error) {
+      report({ type: "failed", stage: "engine", detail: String(error && (error.stack || error)) });
+      return;
+    }
+    try {
+      await import(entry);
     } catch (error) {
       report({ type: "failed", stage: "content", detail: String(error && (error.stack || error)) });
       return;

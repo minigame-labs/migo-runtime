@@ -11,7 +11,8 @@
 // with status 0, because the adapter's `XMLHttpRequest` has no synchronous mode.
 //
 // So every producer module that needs a platform primitive takes it from here,
-// and nothing below may read one from `globalThis` when it is used. This module
+// and nothing below may read one from `globalThis` when it is used -- by then
+// the Worker's own names are retired as well (`global-scope.mjs`). This module
 // imports nothing, so it is evaluated before any module that could install a
 // global, and before the content, which runs after the whole graph.
 //
@@ -36,6 +37,12 @@ export const platform = Object.freeze({
   clearInterval: bound("clearInterval"),
   addEventListener: bound("addEventListener"),
   fetch: bound("fetch"),
-  // A constructor, not a function to bind: `new` supplies its own receiver.
+  // Constructors, not functions to bind: `new` supplies its own receiver.
   XMLHttpRequest: globalThis.XMLHttpRequest,
+  WebSocket: globalThis.WebSocket,
+  TextEncoder: globalThis.TextEncoder,
+  TextDecoder: globalThis.TextDecoder,
+  // The platform's, before the engine installs its own under that name: where
+  // retiring the Worker's globals stops (`global-scope.mjs`).
+  eventTargetPrototype: globalThis.EventTarget?.prototype ?? null,
 });
