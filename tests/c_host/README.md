@@ -11,6 +11,7 @@ the reason these exist.
 | `linux/` | An X11 host. Built with plain `cc` and `pkg-config`, or with CMake through `find_package(migo)`. |
 | `android/` | A NativeActivity host. No Java at all: the manifest declares `android:hasCode="false"` and names this library's `ANativeActivity_onCreate`. |
 | `touch-probe/` | Content shared by both, for verifying that input arrives. |
+| `android-multitouch/` | An instrumentation APK that injects a real two-finger gesture into `android/` running `touch-probe` and reads the pointer count back as pixels. Run it with `scripts/verify-android-c-host-multitouch.sh`; it needs a device, and nothing else here can produce a second finger. |
 | `keyboard-probe/` | Content shared by both, for verifying the soft-keyboard round trip. |
 | `surface-recreate-probe/` | Content shared by both, for verifying that the main canvas still describes the surface after the window was destroyed and recreated at a different size. |
 | `lifecycle-probe/` | Content shared by both, for verifying that the engine stops painting while the app is away and that content is told it went away. |

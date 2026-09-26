@@ -160,6 +160,7 @@ Snipaste_*.png
 
 # Android example build outputs
 tests/c_host/android/build/
+tests/c_host/android-multitouch/build/
 tests/c_host/android/.cxx/
 tests/c_host/android/src/main/jniLibs-static/
 tests/c_host/linux/c-host

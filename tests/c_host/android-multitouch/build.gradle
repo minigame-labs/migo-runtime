@@ -1,0 +1,26 @@
+plugins { id 'com.android.application' }
+
+// The multi-pointer check for tests/c_host/android, as an APK of its own.
+//
+// It cannot be that project's androidTest: AGP pins an androidTest's
+// instrumentation to the app under test, and the system refuses to instrument
+// com.migo.chost because it declares android:hasCode="false" -- the attribute
+// that makes its "no JVM code" claim checkable. This APK instruments itself
+// and drives the host through UiAutomation, which acts on the whole display.
+// Framework classes only, so every configuration in gradle.lockfile is empty.
+android {
+    namespace 'com.migo.chost.multitouch'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.migo.chost.multitouch'
+        minSdk 26          // project floor; do not raise
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        debug { debuggable true }
+    }
+}
