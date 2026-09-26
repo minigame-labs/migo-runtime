@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.10 (2026-09-26)
+
 ### Fixed
 - Android C ABI: JPEG images still failed to decode after v0.9.9's fix -- Skia,
   as this engine links it, decodes PNG but not JPEG, and the Java SDK's
