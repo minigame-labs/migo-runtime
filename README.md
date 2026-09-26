@@ -1,178 +1,171 @@
-# Migo — The Native Runtime for HTML5 & Mini-games
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/lockup-on-dark.svg">
+    <img src=".github/assets/lockup-on-light.svg" alt="Migo" width="240">
+  </picture>
+</p>
 
-[English](README.md) | [中文](README.zh-CN.md)
+<h3 align="center">Run HTML5 games and mini-games inside your native app.</h3>
 
-[![CI](https://github.com/minigame-labs/migo/actions/workflows/pr-ci.yml/badge.svg)](https://github.com/minigame-labs/migo/actions/workflows/pr-ci.yml)
-[![License](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
+<p align="center">
+  One embeddable engine for Android, iOS, HarmonyOS, Windows, Linux and macOS.
+</p>
 
-**A WebView replacement built for games.** Embed Migo in your app to run HTML5 and mini-game content natively — no browser, no DOM, no CSS, no compositor. Faster startup, lower memory, and a runtime version you pin yourself instead of one that drifts across OEMs and OS updates.
+<p align="center">
+  <a href="https://minigame-labs.com/en/"><b>Website</b></a> ·
+  <a href="https://minigame-labs.com/docs/en/"><b>Docs</b></a> ·
+  <a href="https://github.com/minigame-labs/migo-examples"><b>Examples</b></a> ·
+  <a href="https://github.com/minigame-labs/migo-bench"><b>Benchmarks</b></a>
+</p>
 
-`migo.*` is the one native capability surface this engine ever installs — nothing else, at any scale. This repository stays that: a pure runtime, no adapter code mixed in. Everything else existing content expects belongs in an independent, composable adapter published as its own package:
+<p align="center">
+  <a href="https://github.com/minigame-labs/migo/actions/workflows/pr-ci.yml"><img src="https://github.com/minigame-labs/migo/actions/workflows/pr-ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/minigame-labs/migo/releases"><img src="https://img.shields.io/github/v/release/minigame-labs/migo?include_prereleases" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-blue.svg" alt="License: BSL 1.1"></a>
+</p>
 
-- **[migo-web-adapter](https://github.com/minigame-labs/migo-web-adapter)** — a browser-style BOM/DOM surface (`window`, `document`, `Image`, `XMLHttpRequest`, ...) for engines built assuming a browser environment (Cocos, Egret, Laya, Pixi, raw Canvas/WebGL).
-- **[migo-wx-adapter](https://github.com/minigame-labs/migo-wx-adapter)** — aliases `globalThis.wx` onto the runtime's `migo.*` capabilities, so mainstream mini-game-shaped content runs unmodified.
+<p align="center">
+  English | <a href="README.zh-CN.md">中文</a>
+</p>
 
-Adapters install only their documented globals and compose freely — pick only what your content actually needs. A future platform (a quick-game-alliance member, etc.) follows the same recipe: a new adapter package, no engine changes.
+| **40–44%** | **1.9–2.9×** | **1–240 fps** | **6** |
+|:---:|:---:|:---:|:---:|
+| less memory than WebView | less CPU than WebView | set by the game or your app | platforms, one engine |
 
-**Wondering whether your own catalogue runs?** Don't take our word for it and don't send us anything — [PRESCREEN.md](PRESCREEN.md) is the tool we would run, for you to run yourself. It reports which APIs a bundle needs against what this build actually publishes, and whether it paints on a real device. Your content never leaves your machine.
+<p align="center"><sub>Memory and CPU measured on Android against the system WebView: same games, same device, both at ~60 fps. <a href="https://github.com/minigame-labs/migo-bench">Reproduce it yourself →</a></sub></p>
+
+> [!NOTE]
+> Migo is a game container, not a browser: no DOM, no CSS, no page layout.
 
 ## Why Migo
 
-| | Migo | Android System WebView |
-|---|---|---|
-| **Version consistency** | You package and pin the runtime; identical across OEMs and OS versions | Auto-updates with the user's system, outside your control |
-| **Auditability** | Source-available; the sandbox boundary is auditable line by line | Closed source |
-| **Startup / memory** | No DOM or layout, V8 snapshot warm-up — small footprint, fast start | Ships all of Chromium, heavy resident cost |
-| **Cross-engine** | One API across engines | — |
-
-Reproducible benchmarks against the system WebView — same game, same device, same session — live in [migo-bench](https://github.com/minigame-labs/migo-bench).
-
-## Platform support
-
-| Platform | Status | Released artifacts |
-|---|---|---|
-| **Android** (arm64-v8a, x86_64) | Released | AAR with the Java/Kotlin SDK; a C ABI package per ABI (headers, static library, CMake package) |
-| **Linux** (x86_64, aarch64) | Released | Static and shared library, pkg-config and CMake packages; Qt 6 / X11 host kit in-tree |
-| **Windows** (x86_64, aarch64) | Released | `migo.dll` with its import library, headers, a CMake package, and the ANGLE and V8 runtime DLLs it loads by name |
-| **OpenHarmony / HarmonyOS NEXT** (aarch64, x86_64) | Released | A C ABI package per architecture (headers, static library, CMake package, manifest) |
-| **iOS** (arm64; simulator arm64, x86_64), **macOS** (arm64, x86_64) | Released | `migo-<version>-apple-sdk.zip`: a Swift package with one view per platform, `MigoGameView` -- on iOS content JavaScript runs in WebKit's process and the engine draws its frames in the app; on macOS the engine runs V8 in process |
-
-Released artifacts are on the [releases page](https://github.com/minigame-labs/migo/releases). Every release carries a `SHA256SUMS.txt` — check a download with `sha256sum -c SHA256SUMS.txt` — and each archive also has an `.attestation.json` recording its name, size and sha256, whose `package_sha256` you can reproduce from source ([BUILD.md](BUILD.md)).
-
-The C ABI in [`include/migo/`](include/migo/) is a **candidate** — it has a working runtime on every platform above but is not frozen. Its own README tracks what remains before it can be.
-
-## Quick start
-
-**Integrating Migo into an app** — worked examples for each supported host, with build and run instructions, are in [migo-examples](https://github.com/minigame-labs/migo-examples). Start there rather than from this repository: it carries a runnable game and resolves the runtime artifact for you.
-
-**Building the runtime from source** — see [BUILD.md](BUILD.md) for prerequisites, per-platform setup and the build flow.
-
-```bash
-# Android AAR (Linux/macOS host)
-./scripts/build-aar.sh release arm64-v8a
-```
-
-Prebuilt V8 archives are fetched and verified against their component manifests rather than committed:
-
-```bash
-bash scripts/fetch-v8-archives.sh          # Android targets (the build default)
-bash scripts/fetch-v8-archives.sh --all    # every target that has a manifest
-```
-
-### Keeping the engine out of your first install (Android)
-
-`libmigo.so` is about 17 MB of store download and 45 MB installed, per ABI. If a
-mini-game is a secondary feature of your app, you can ship an APK without it and
-fetch it the first time a user opens a game — users who never do never pay for it.
-
-Depend on `migo-<version>-android-nojni.aar` instead of `migo-<version>-android.aar`,
-take the engine from `migo-<version>-jni-android-<arch>.tar.gz`, and hand it over:
-
-```java
-MigoNativeLoader.setProvider(context, abi -> {
-    File engine = new File(context.getNoBackupFilesDir(), abi + "/libmigo.so");
-    return engine.isFile() ? engine : null;   // null means "not downloaded yet"
-});
-```
-
-The file is verified against the artifact manifest embedded in the AAR before it
-is loaded, so a partial download or a mirror serving the previous release fails
-with a readable reason instead of crashing inside the engine.
-`MigoNativeLoader.requiredArtifact(context)` returns the digest to check against,
-and `MigoNativeLoader.prepare(context, file)` runs that check on the thread you
-call it from — so your download code learns about a bad file immediately rather
-than a user meeting it as a launch failure later.
-
-Where you may fetch it from depends on your store: on Google Play the only
-compliant source is [Play Feature Delivery](https://developer.android.com/guide/playcore/feature-delivery)
-(fetching executable code from anywhere else violates the Device and Network Abuse
-policy); stores without Feature Delivery expect you to host the file yourself,
-which [LEGAL.md](LEGAL.md) confirms is permitted. Migo never downloads anything
-itself, because one built-in downloader would be wrong for one of the two.
+- **Pinned** — you ship the engine, so it never drifts across phone brands or OS updates.
+- **Auditable** — full source, checksummed releases, builds reproducible from source.
+- **Compatible** — Cocos, Laya, Egret, Pixi, Phaser, raw Canvas/WebGL, and mini-game content.
+- **Yours to control** — your app decides login, payments, ads and downloads. Nothing is faked.
 
 ## Architecture
 
 ```text
-+------------------------------------------------------------------------------------+
-|                                      Your App                                      |
-+------------------------------------------------------------------------------------+
-|                                      Migo SDK                                      |
-+---------------------+--------------------+--------------------+--------------------+
-|       Graphics      |       Audio        |        I/O         |     JS Runtime     |
-|     (Skia / GL)     |     (WebAudio)     |     (File/Net)     |   (deno_core/V8)   |
-+---------------------+--------------------+--------------------+--------------------+
-|                                  Rust Core Engine                                  |
-+------------------------------------------------------------------------------------+
-|              Platform Layer (Android | Linux | Windows | OpenHarmony)              |
-+------------------------------------------------------------------------------------+
+┌──────────────────────────────────────────────────────────────────┐
+│  YOUR GAME     game.js + assets                                  │
+│                Cocos, Laya, Egret, Pixi, Phaser, Canvas/WebGL    │
+├──────────────────────────────────────────────────────────────────┤
+│  ADAPTERS      migo-wx-adapter, migo-web-adapter                 │
+│  (optional)    map wx.* and browser globals onto migo.*          │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  v  migo.*
+┌─────────────────────────────────┴────────────────────────────────┐
+│  MIGO RUNTIME                                                    │
+│  ┌──────────────────────────┐      ┌──────────────────────────┐  │
+│  │ JavaScript engine        │ <--> │ Rust core                │  │
+│  │ V8 (WebKit on iOS)       │      │ sessions, frame loop     │  │
+│  │ runs your game code      │      │ sandbox, scheduling      │  │
+│  └──────────────────────────┘      └──────────────────────────┘  │
+│  ┌──────────────────────────┐      ┌──────────────────────────┐  │
+│  │ Graphics                 │      │ Services                 │  │
+│  │ Canvas 2D, WebGL 1/2     │      │ audio, text, images      │  │
+│  │ Skia -> GPU              │      │ files, network           │  │
+│  └──────────────────────────┘      └──────────────────────────┘  │
+└────────────┬────────────────────────────┬────────────────────────┘
+             ^  view, frames, input       v  login, payments, ads
+┌────────────┴────────────────────────────┴────────────────────────┐
+│  YOUR APP      Migo SDK: Java/Kotlin, Swift, C ABI               │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-## Repository layout
+`migo.*` is the only API the engine installs; everything else comes from an adapter you choose. On iOS, game code runs in WebKit's JIT-enabled process and Migo renders each frame in your app.
 
-```text
-migo/
-├── engine/                 # Rust core engine
-│   ├── crates/
-│   │   ├── core/           # core runtime and session lifecycle
-│   │   ├── graphics/       # rendering (Canvas2D, WebGL)
-│   │   ├── audio/          # audio
-│   │   ├── io/             # file and network I/O
-│   │   ├── runtime-v8/     # JavaScript runtime (V8 via deno_core)
-│   │   ├── shared/         # shared types and protocol
-│   │   ├── platform/       # platform integration
-│   │   ├── capi/           # C ABI implementation
-│   │   ├── capi-abi/       # C ABI layout and versioning contract
-│   │   └── android-jni/    # JNI entry points (libmigo.so)
-│   ├── tools/              # snapshot-gen, headless player, C host example
-│   └── Cargo.toml
-├── include/migo/           # public C headers
-├── platforms/
-│   ├── android/            # Android SDK (AAR)
-│   ├── linux/              # Linux host kit (Qt 6 / X11)
-│   ├── openharmony/        # OpenHarmony host (ArkUI XComponent)
-│   └── windows/            # Windows
-├── tests/                  # conformance assets (C ABI lanes, C hosts, probes)
-├── contracts/              # artifact manifest schemas
-├── scripts/                # build and contract-gate scripts
-├── BUILD.md                # building from source
-├── LICENSE                 # licence (BSL 1.1)
-├── LEGAL.md                # legal notice (licence / trademark / test content)
-├── COMMERCIAL.md           # commercial licence: who needs one, who does not
-└── NOTICE                  # third-party notices
+## Platforms
+
+| Platform | Package | JavaScript |
+|---|---|---|
+| **Android** 8.0+ | AAR (Java/Kotlin) · C ABI for the NDK | V8, JIT |
+| **iOS** 15.2+ | Swift package | WebKit, JIT |
+| **macOS** 11+ | Swift package | V8, JIT |
+| **HarmonyOS NEXT / OpenHarmony** | C ABI for ArkUI `XComponent` | V8, interpreted¹ |
+| **Windows** | `migo.dll` + CMake | V8, JIT |
+| **Linux** | `.so` / `.a` + CMake, pkg-config · Qt 6 host kit | V8, JIT |
+
+<sub>arm64 and x86_64 on every platform. ¹ HarmonyOS NEXT reserves JIT for the system engine.</sub>
+
+## Quick start
+
+Complete, runnable host apps for every platform are in [**migo-examples**](https://github.com/minigame-labs/migo-examples).
+
+<details open>
+<summary><b>Android</b></summary>
+
+```groovy
+implementation files('libs/migo-<version>-android.aar')
 ```
 
-## Related repositories
+```java
+MigoGameView gameView = new MigoGameView(activity);
+gameView.setConfig(new RuntimeConfig.Builder(activity).build());
+container.addView(gameView);
+gameView.loadGame("my-game", "game.js");
+```
 
-| Repository | Purpose |
-|---|---|
-| [migo-examples](https://github.com/minigame-labs/migo-examples) | Host integration examples, one directory per platform |
-| [migo-bench](https://github.com/minigame-labs/migo-bench) | Reproducible Migo-vs-WebView benchmarks |
-| [migo-web-adapter](https://github.com/minigame-labs/migo-web-adapter) | Browser-style BOM/DOM compat adapter |
-| [migo-wx-adapter](https://github.com/minigame-labs/migo-wx-adapter) | `wx.*` compat adapter for mainstream mini-game content |
+[Android guide →](platforms/android/README.md)
+</details>
+
+<details>
+<summary><b>iOS / macOS</b></summary>
+
+```swift
+let config = try MigoGameView.Configuration.standard(contentSigning: .unsigned)
+try MigoGameInstaller.install(package: gameURL, id: "my-game",
+                              version: buildNumber, into: config.directories)
+
+let gameView = MigoGameView(configuration: config)
+view.addSubview(gameView)
+gameView.loadGame(id: "my-game")
+```
+
+[Apple guide →](platforms/apple/README.md)
+</details>
+
+<details>
+<summary><b>C / C++</b> — Windows, Linux, HarmonyOS, Android NDK</summary>
+
+```c
+migo_engine_create(...);                // once per process
+migo_session_create(...);               // once per game
+migo_session_set_host_callbacks(...);
+migo_session_attach_surface(...);       // HWND, X11/Wayland, OHNativeWindow, ANativeWindow
+migo_session_load_content(...);
+migo_session_notify_vsync(...);         // every display frame
+```
+
+[C ABI guide →](include/migo/README.md) · [Qt 6 host kit →](platforms/linux/host-kit/README.md)
+</details>
+
+## Download and build
+
+- **Releases** — [download](https://github.com/minigame-labs/migo/releases), then verify with `sha256sum -c SHA256SUMS.txt`.
+- **Smaller Android installs** — [download the engine on first use](platforms/android/README.md#shipping-the-engine-on-demand).
+- **From source** — see [BUILD.md](BUILD.md).
+
+## Related projects
+
+- [**migo-examples**](https://github.com/minigame-labs/migo-examples) — runnable host apps for every platform
+- [**migo-bench**](https://github.com/minigame-labs/migo-bench) — reproducible Migo vs. WebView benchmarks
+- [**migo-web-adapter**](https://github.com/minigame-labs/migo-web-adapter) — browser globals for engines that expect a browser
+- [**migo-wx-adapter**](https://github.com/minigame-labs/migo-wx-adapter) — the mini-game `wx.*` API on top of `migo.*`
 
 ## License
 
-Migo is **source-available** under the [Business Source License 1.1](LICENSE). **Each released version converts to Apache 2.0 four years after that version is published** — the date is stamped in the `LICENSE` each release ships with (currently 2030-09-26).
+[BSL 1.1](LICENSE), source-available. Each release becomes Apache 2.0 four years after publication; for the current release, **2030-09-26**.
 
-- **Read, audit, build, test, benchmark, modify and port** — granted to everyone, at any scale, unconditionally.
-- **Ship Migo inside your own app** — free while under USD 1,000,000 annual revenue and 3,000,000 MAU.
-- **Resell Migo as a standalone SDK, or run it as a hosted service** — needs a commercial licence.
+- **Read, build, test, benchmark, modify, port** — free, at any scale.
+- **Ship in your own app** — free up to USD 1M company revenue a year and 3M monthly active users.
+- **Resell as an SDK or hosted service** — needs a [commercial license](COMMERCIAL.md).
 
-See [LEGAL.md](LEGAL.md) for the full statement and [COMMERCIAL.md](COMMERCIAL.md) for commercial licensing.
+Details: [LEGAL.md](LEGAL.md). "Migo" and its logo are trademarks: fork the code, not the name.
 
-"Migo" and the Migo logo are trademarks of the Migo Authors. The licence grants rights in the **software**, not in the name: you may fork the code, but not the name.
+## Community
 
-## Contributing
+[Issues](https://github.com/minigame-labs/migo/issues) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · licensing@minigame-labs.com
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Before opening a pull request, check that the contract gates under `scripts/test-*-contract.sh` still pass; they encode invariants that ordinary tests do not cover.
-
-## Acknowledgements
-
-Migo builds on [Deno Core](https://github.com/denoland/deno_core), [V8](https://v8.dev/), [Tokio](https://tokio.rs/) and [Skia](https://skia.org/) (Ganesh GL backend + SkParagraph text layout). See [NOTICE](NOTICE) for the full dependency and licence list.
-
-## Support
-
-- Issues: https://github.com/minigame-labs/migo/issues
-- Integration guide: [migo-examples](https://github.com/minigame-labs/migo-examples) — a runnable game and per-host build/run instructions
-- Building from source: [BUILD.md](BUILD.md)
-- Commercial licensing: licensing@minigame-labs.com
+Built on [V8](https://v8.dev/), [deno_core](https://github.com/denoland/deno_core), [Skia](https://skia.org/) and [Tokio](https://tokio.rs/). Third-party notices: [NOTICE](NOTICE).
