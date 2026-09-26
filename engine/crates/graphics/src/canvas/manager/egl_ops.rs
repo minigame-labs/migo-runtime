@@ -313,12 +313,15 @@ pub(super) fn init_egl(provider: &dyn EglProvider) -> EngineResult<EglInitResult
     let egl = provider.load()?;
     let display = provider.display(&egl)?;
 
-    egl.initialize(display).map_err(|_| {
+    // The wrapper has already consumed eglGetError into `error`; asking again
+    // would report EGL_SUCCESS, which is how this read "0x0" for as long as it
+    // asked twice.
+    egl.initialize(display).map_err(|error| {
         ee(
             ErrorCode::RenderInitializeError,
             format!(
-                "initialize failed: 0x{:x}",
-                egl.get_error().map(|e| e as u32).unwrap_or(0)
+                "initialize failed: {error:?} (provider={})",
+                provider.label()
             ),
         )
     })?;
@@ -411,8 +414,9 @@ pub(super) fn init_egl(provider: &dyn EglProvider) -> EngineResult<EglInitResult
     let mut config = None;
     let mut gles_major = 2u32;
     let mut surfaceless = false;
+    let presenter_surface = provider.presenter_surface_type();
     for c in &candidates {
-        if let Some(cfg) = pick(egl::WINDOW_BIT | egl::PBUFFER_BIT, c) {
+        if let Some(cfg) = pick(presenter_surface | egl::PBUFFER_BIT, c) {
             config = Some(cfg);
             gles_major = c.gles_major;
             break;
@@ -430,7 +434,7 @@ pub(super) fn init_egl(provider: &dyn EglProvider) -> EngineResult<EglInitResult
             .unwrap_or_default();
         if extensions.contains("EGL_KHR_surfaceless_context") {
             for c in &candidates {
-                if let Some(cfg) = pick(egl::WINDOW_BIT, c) {
+                if let Some(cfg) = pick(presenter_surface, c) {
                     tracing::info!(
                         "no pbuffer-capable EGL config; offscreen contexts will be surfaceless"
                     );
@@ -443,8 +447,8 @@ pub(super) fn init_egl(provider: &dyn EglProvider) -> EngineResult<EglInitResult
         }
     }
     let config = config.ok_or_else(|| {
-        // Reached when no candidate offers a window config at all, or offers
-        // one without a pbuffer while the driver also lacks
+        // Reached when no candidate offers the presenter's surface type at all,
+        // or offers it without a pbuffer while the driver also lacks
         // EGL_KHR_surfaceless_context.
         //
         // Historical note, because the shape of the fallback above is otherwise

@@ -43,6 +43,8 @@ const LINUX_EGL_LIBRARY: &str = "libEGL.so.1";
 /// enums only.
 const EGL_PLATFORM_X11_EXT: egl::Enum = 0x31D5;
 const EGL_PLATFORM_WAYLAND_EXT: egl::Enum = 0x31D8;
+/// `EGL_MESA_platform_surfaceless`: a display that needs no window system.
+const EGL_PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
 
 /// The Wayland EGL glue, loaded at run time rather than linked.
 ///
@@ -249,7 +251,7 @@ struct LinuxWaylandEglDomain;
 /// caller-owned display under its separate public lifetime contract.
 #[derive(Debug, Clone)]
 enum LinuxDisplayTarget {
-    /// Headless: the default display, no window server involved.
+    /// Headless: no window server involved (see `offscreen_display`).
     Offscreen,
     /// Onscreen X11: Migo's private render connection.
     X11(Arc<X11RenderConnection>),
@@ -277,7 +279,8 @@ impl Default for LinuxEglProvider {
 }
 
 impl LinuxEglProvider {
-    /// Headless provider: EGL on the default display.
+    /// Headless provider: pbuffer presentation on a display that needs no
+    /// window server.
     pub fn offscreen() -> Self {
         Self::default()
     }
@@ -351,12 +354,7 @@ impl EglProvider for LinuxEglProvider {
 
     fn display(&self, egl: &EglInstance) -> EngineResult<egl::Display> {
         match &self.target {
-            LinuxDisplayTarget::Offscreen => unsafe { egl.get_display(egl::DEFAULT_DISPLAY) }
-                .ok_or_else(|| {
-                    EngineError::new(ErrorCode::RenderInitializeError)
-                        .with_msg("Linux eglGetDisplay failed")
-                        .with_detail(format!("provider={}", self.label()))
-                }),
+            LinuxDisplayTarget::Offscreen => offscreen_display(egl, self.label()),
             // Naming the platform explicitly beats letting the driver infer it
             // from the pointer. A non-null proc address can still be a loader
             // stub for an unsupported platform, so failure also falls through
@@ -372,6 +370,77 @@ impl EglProvider for LinuxEglProvider {
             }
         }
     }
+
+    fn presenter_surface_type(&self) -> egl::Int {
+        match &self.target {
+            // The offscreen presenter renders into a pbuffer; see
+            // `LinuxPreparedSurface::create_window_surface`.
+            LinuxDisplayTarget::Offscreen => egl::PBUFFER_BIT,
+            LinuxDisplayTarget::X11(_) | LinuxDisplayTarget::Wayland(_) => egl::WINDOW_BIT,
+        }
+    }
+}
+
+/// The display a headless target renders on.
+///
+/// `eglGetDisplay(EGL_DEFAULT_DISPLAY)` is not headless on Mesa: it resolves to
+/// the build's default window-system platform -- X11 on every distribution
+/// build -- and `eglInitialize` then fails with EGL_NOT_INITIALIZED wherever
+/// `DISPLAY` is unset, which is every CI runner and server. It only ever worked
+/// on machines that happened to run a window server.
+///
+/// Mesa's surfaceless platform is the display that exists without one, so it is
+/// taken whenever the client extensions advertise it. Its configs are all
+/// pbuffer-only, which `presenter_surface_type` accounts for. A driver without
+/// it keeps the default display, which is the only headless option EGL 1.4
+/// gives it. The same order as wgpu-hal's GLES backend (`gles/egl.rs`), which
+/// also asks surfaceless displays for pbuffer configs only.
+fn offscreen_display(egl: &EglInstance, label: &str) -> EngineResult<egl::Display> {
+    let surfaceless_advertised = egl
+        .query_string(None, egl::EXTENSIONS)
+        .is_ok_and(|extensions| {
+            extensions
+                .to_bytes()
+                .split(|byte| *byte == b' ')
+                .any(|name| name == b"EGL_MESA_platform_surfaceless")
+        });
+    let platform_entry = surfaceless_advertised
+        .then(|| unsafe {
+            platform_ext::first_entry_point::<platform_ext::GetPlatformDisplay>(
+                egl,
+                &GET_PLATFORM_DISPLAY_NAMES,
+            )
+        })
+        .flatten();
+
+    if let Some(get_platform_display) = platform_entry {
+        // SAFETY: signature per EGL 1.5 / EXT_platform_base. The surfaceless
+        // platform takes EGL_DEFAULT_DISPLAY as its native display, and a null
+        // attribute list is valid for both entry-point variants.
+        let raw = unsafe {
+            get_platform_display(
+                EGL_PLATFORM_SURFACELESS_MESA,
+                egl::DEFAULT_DISPLAY,
+                std::ptr::null(),
+            )
+        };
+        return NonNull::new(raw)
+            // SAFETY: non-null and produced by EGL itself.
+            .map(|raw| unsafe { egl::Display::from_ptr(raw.as_ptr()) })
+            .ok_or_else(|| {
+                EngineError::new(ErrorCode::RenderInitializeError)
+                    .with_msg("Linux surfaceless EGL display unavailable")
+                    .with_detail(format!("provider={label}, error={:?}", egl.get_error()))
+            });
+    }
+
+    unsafe { egl.get_display(egl::DEFAULT_DISPLAY) }.ok_or_else(|| {
+        EngineError::new(ErrorCode::RenderInitializeError)
+            .with_msg("Linux eglGetDisplay failed")
+            .with_detail(format!(
+                "provider={label}, surfaceless_advertised={surfaceless_advertised}"
+            ))
+    })
 }
 
 /// Offscreen render target for headless Linux (pbuffer-backed). Carries only
@@ -1209,6 +1278,26 @@ mod tests {
 
         assert!(wayland.as_any().downcast_ref::<LinuxX11Surface>().is_none());
         assert!(x11.as_any().downcast_ref::<LinuxWaylandSurface>().is_none());
+    }
+
+    /// The offscreen presenter's surface is a pbuffer, so its config must not
+    /// require a window: a surfaceless display publishes no window config, and
+    /// asking for one there fails every candidate.
+    #[test]
+    fn only_onscreen_providers_require_a_window_config() {
+        let display = NonNull::new(0xdead_beefusize as *mut c_void).expect("token");
+        assert_eq!(
+            LinuxEglProvider::offscreen().presenter_surface_type(),
+            egl::PBUFFER_BIT
+        );
+        assert_eq!(
+            LinuxEglProvider::wayland(display).presenter_surface_type(),
+            egl::WINDOW_BIT
+        );
+        assert_eq!(
+            LinuxEglProvider::x11(test_x11_context(display).connection).presenter_surface_type(),
+            egl::WINDOW_BIT
+        );
     }
 
     #[test]

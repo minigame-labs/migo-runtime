@@ -75,6 +75,17 @@ pub trait EglProvider: Debug + Send + Sync {
     fn label(&self) -> &str;
     fn load(&self) -> EngineResult<EglInstance>;
     fn display(&self, egl: &EglInstance) -> EngineResult<egl::Display>;
+
+    /// The `EGL_SURFACE_TYPE` bit the presenter's surface needs from the shared
+    /// config, on top of the pbuffer bit the offscreen contexts need.
+    ///
+    /// A window by default. A provider whose presenter renders into a pbuffer
+    /// returns `PBUFFER_BIT`: requiring a window bit there would reject every
+    /// config of a display that has no window system at all, such as Mesa's
+    /// surfaceless platform, whose configs are all pbuffer-only.
+    fn presenter_surface_type(&self) -> egl::Int {
+        egl::WINDOW_BIT
+    }
 }
 
 pub trait EglSurfaceFactory: Debug + Send + Sync {
