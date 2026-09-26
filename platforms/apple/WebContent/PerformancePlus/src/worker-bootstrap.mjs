@@ -50,6 +50,7 @@ export function connectFrameSession({
   onFrame,
   onVerdict,
   onGenerationLost,
+  onContextState,
   services,
 } = {}) {
   return new Promise((resolve, reject) => {
@@ -84,6 +85,7 @@ export function connectFrameSession({
       onFrame,
       onVerdict,
       onGenerationLost,
+      onContextState,
     });
 
     let settled = false;

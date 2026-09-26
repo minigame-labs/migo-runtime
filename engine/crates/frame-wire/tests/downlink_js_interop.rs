@@ -13,8 +13,8 @@
 use std::{fs, path::PathBuf};
 
 use frame_wire::downlink::{
-    DOWN_CLOCK_TICK, DOWN_FRAME_VERDICT, DOWN_WINDOW_OPEN, DownlinkRecord, decode_bytes,
-    encode_bytes,
+    DOWN_CLOCK_TICK, DOWN_CONTEXT_STATE, DOWN_FRAME_VERDICT, DOWN_WINDOW_OPEN, DownlinkRecord,
+    decode_bytes, encode_bytes,
 };
 
 /// The spread both sides are driven with.
@@ -42,6 +42,11 @@ fn corpus() -> Vec<Vec<DownlinkRecord>> {
         remaining_credits: credits,
         accepted_sequence: seq,
     };
+    let context_state = |lost: bool, epoch: u64| DownlinkRecord::ContextState {
+        generation: 0x1234_5678,
+        lost,
+        resource_epoch: epoch,
+    };
     vec![
         // An envelope with nothing in it is legal and has to survive: a host
         // with no news still answers, and a reader that mishandles the empty
@@ -63,6 +68,13 @@ fn corpus() -> Vec<Vec<DownlinkRecord>> {
             tick(16_666_667, 3),
             window_open(0x0000_0005_0000_0009, 1),
             verdict(0x0000_0005_0000_0009, 1),
+        ],
+        // The context lost and then back, each with the epoch packets must name,
+        // beside the tick whose frame has to name it.
+        vec![context_state(true, 0x0000_0002_0000_0001)],
+        vec![
+            tick(16_666_667, 4),
+            context_state(false, 0x0000_0002_0000_0001),
         ],
         // A long batch: the reader has to walk record lengths rather than
         // assume a count.
@@ -135,7 +147,7 @@ fn messages_from_the_javascript_writer_are_read_unchanged() {
         expected.len()
     );
 
-    let mut kinds_seen = (false, false, false);
+    let mut kinds_seen = (false, false, false, false);
     for (path, records) in entries.iter().zip(expected) {
         let bytes = fs::read(path).expect("reading an emitted message");
         let read = decode_bytes(&bytes)
@@ -151,15 +163,16 @@ fn messages_from_the_javascript_writer_are_read_unchanged() {
                 DownlinkRecord::FrameVerdict { .. } => kinds_seen.0 = true,
                 DownlinkRecord::ClockTick { .. } => kinds_seen.1 = true,
                 DownlinkRecord::WindowOpen { .. } => kinds_seen.2 = true,
+                DownlinkRecord::ContextState { .. } => kinds_seen.3 = true,
             }
         }
     }
     // Every kind, or the corpus has quietly stopped covering one of them --
     // which is how a format grows a field nothing checks.
     assert!(
-        kinds_seen.0 && kinds_seen.1 && kinds_seen.2,
-        "the corpus must exercise all of {DOWN_FRAME_VERDICT}, {DOWN_CLOCK_TICK} \
-         and {DOWN_WINDOW_OPEN}"
+        kinds_seen.0 && kinds_seen.1 && kinds_seen.2 && kinds_seen.3,
+        "the corpus must exercise all of {DOWN_FRAME_VERDICT}, {DOWN_CLOCK_TICK}, \
+         {DOWN_WINDOW_OPEN} and {DOWN_CONTEXT_STATE}"
     );
     println!(
         "read {} JavaScript-encoded downlink messages",

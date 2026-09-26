@@ -14,6 +14,7 @@
 import {
   DOWN_CLOCK_TICK,
   DOWN_FRAME_VERDICT,
+  DOWN_CONTEXT_STATE,
   DOWN_WINDOW_OPEN,
   decodeBytes,
 } from "./downlink.mjs";
@@ -45,8 +46,12 @@ export class FrameSession {
    * @param {(generation: number) => void} [options.onGenerationLost] the host
    *        replaced the runtime under us. Not an error on anyone's part and not
    *        something a retry fixes; the content has to be rebuilt.
+   * @param {(state: {lost: boolean, resourceEpoch: number}) => void} [options.onContextState]
+   *        the GL context was lost or came back, and the resource epoch
+   *        packets must now name. The producer adopts the epoch and tells
+   *        content (`DOWN_CONTEXT_STATE`).
    */
-  constructor({ send, sendControl, onFrame, onVerdict, onGenerationLost } = {}) {
+  constructor({ send, sendControl, onFrame, onVerdict, onGenerationLost, onContextState } = {}) {
     if (typeof send !== "function") {
       throw new TypeError("FrameSession needs a send function");
     }
@@ -58,6 +63,7 @@ export class FrameSession {
     this.#onFrame = onFrame;
     this.#onVerdict = onVerdict;
     this.#onGenerationLost = onGenerationLost;
+    this.#onContextState = onContextState;
   }
 
   #send;
@@ -65,6 +71,7 @@ export class FrameSession {
   #onFrame;
   #onVerdict;
   #onGenerationLost;
+  #onContextState;
 
   // The window, as "Having accepted every packet through `#accepted`, this many
   // credits were free" -- the latest advertisement the host sent, from an
@@ -181,6 +188,10 @@ export class FrameSession {
         // asking for nothing. Applying it is all that is needed: whoever is
         // waiting on a credit is woken by `#advertised`.
         this.#advertised(record.remainingCredits, record.acceptedSequence);
+      } else if (record.kind === DOWN_CONTEXT_STATE) {
+        // Before any tick after it in this message: the frame that tick builds
+        // has to name the epoch the host now expects.
+        this.#onContextState?.(record);
       } else if (record.kind === DOWN_CLOCK_TICK) {
         this.#advertised(record.remainingCredits, record.acceptedSequence);
         this.#lastFrameId = record.frameId;

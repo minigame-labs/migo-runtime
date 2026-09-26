@@ -65,6 +65,28 @@ additive; a producer of the previous version refuses an unknown kind rather than
 misreading it, and the two halves ship in one package -- the same audit the
 amendment above rests on.
 
+### Amendment, 2026-09-27: the context state
+
+`DOWN_CONTEXT_STATE` (kind 4, five words: header, `generation`, `lost` -- exactly
+0 or 1 -- and `resource_epoch` as two words, low first) joins the downlink. The
+*Timeline* rule below advances the resource epoch on a context loss and refuses
+packets naming the old one (`STALE_RESOURCE_EPOCH`), and nothing told the
+producer the new epoch: after its first loss every packet was refused, the frame
+clock stopped asking for frames, and the game stayed on its last frame. On an
+iPhone that was every Pixi game at startup, because Pixi probes WebGL with
+`WEBGL_lose_context.loseContext()`.
+
+The host sends it after each drain of render events, from the render thread's
+own record rather than from the events (the event channel drops when full). The
+record is a level: what is true now. A producer adopts `resource_epoch` for every
+packet after it, and tells content as the embedded runtime does --
+`webglcontextlost` when `lost` and content was not told, `webglcontextrestored`
+when not `lost` and it was, and both, in that order, when the epoch advanced but
+content was never told of the loss in between. It coalesces like a tick, and the
+queue never drops it: a producer that missed it would name a retired epoch
+forever. Downlink-only and additive, under the same audit as the amendment
+above.
+
 ### Amendment, 2026-09-18: the service stream
 
 `MUS1`/`MDS1` join the format (see *The service stream*), the synchronous call
@@ -394,7 +416,8 @@ them, because they depend on state the host owns.
   concurrent submissions are serialized through that decision.
 - **Timeline.** `surface_generation` and `resource_epoch` only ever advance. The
   host's setters refuse to move either backwards and say so, rather than
-  quietly accepting a value that would make a stale packet valid again.
+  quietly accepting a value that would make a stale packet valid again. The host
+  tells the producer each new `resource_epoch` with `DOWN_CONTEXT_STATE`.
 - **Resource admission.** A packet carrying `RESOURCE_REFERENCES` is rejected
   until the host has declared the current epoch's resources ready. Advancing the
   epoch clears that state, because an epoch advance means the resource table was

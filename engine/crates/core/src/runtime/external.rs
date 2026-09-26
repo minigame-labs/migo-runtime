@@ -1755,6 +1755,20 @@ impl ExternalFrameClock {
         }
     }
 
+    /// Tell the producer the GL context's state: lost or not, and the resource
+    /// epoch its packets must now name. See `frame_wire::downlink::DOWN_CONTEXT_STATE`.
+    pub fn push_context_state(&self, lost: bool, resource_epoch: u64) {
+        self.downlink
+            .lock()
+            .push_context_state(DownlinkRecord::ContextState {
+                generation: self.runtime_generation as u32,
+                lost,
+                resource_epoch,
+            });
+        // Outside the queue lock: the waker schedules a drain, which takes it.
+        self.waker.wake();
+    }
+
     /// Ask for one frame.
     ///
     /// Requests coalesce: one tick answers every request made before it. A
@@ -2511,7 +2525,7 @@ fn run_external_session(
         // held to, as it is in the embedded execution.
         network_policy,
         gpu_caps,
-        context_lost: _context_lost,
+        context_lost,
         timer_backgrounded: _timer_backgrounded,
         gpu_init_started,
         // Why the render worker stopped, read at the one place this session
@@ -2622,7 +2636,7 @@ fn run_external_session(
         runtime.handle().clone(),
     );
 
-    let mut last_context_epoch = 0u64;
+    let mut context = ContextReconciler::default();
     let mut last_swap_report: Option<std::time::Instant> = None;
     // What content has been told is held down, so losing focus can release it.
     let mut input = InputState::default();
@@ -2683,11 +2697,27 @@ fn run_external_session(
                     drain_render_events(
                         id,
                         &render_events,
-                        &ingress,
-                        &mut last_context_epoch,
                         &platform_for_error,
                         &mut last_swap_report,
                     );
+                    // After the drain, from the render thread's own record rather
+                    // than from the events: the event channel drops when full,
+                    // and a missed loss would leave the producer naming an epoch
+                    // the host has retired.
+                    if let Some(state) = context.reconcile(context_lost.snapshot()) {
+                        if state.epoch_advanced
+                            && !ingress.lock().set_resource_epoch(state.resource_epoch)
+                        {
+                            error!(
+                                "[Host {id}] refused a resource epoch that moves backwards: {}",
+                                state.resource_epoch
+                            );
+                        }
+                        if state.lost {
+                            warn!("[Host {id}] GL context lost; resource epoch is now {}", state.resource_epoch);
+                        }
+                        clock.push_context_state(state.lost, state.resource_epoch);
+                    }
                 }
                 timestamp = raf_rx.recv(raf_demand.session_ticket()) => {
                     match timestamp {
@@ -3011,28 +3041,75 @@ fn handle_command(
 /// suppressing a report that fires once would suppress the only one there was.
 const RENDER_ERROR_NOTIFY_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// What the producer has been told about the GL context, and what to tell it
+/// next -- the external session's form of the embedded host's
+/// `reconcile_context_lost`, with the same rule.
+///
+/// The render thread keeps the authoritative record: the lost level, and an
+/// epoch it advances on every edge. The host reads it after each drain rather
+/// than acting on the events, because the event channel drops when full. Every
+/// loss advances the resource epoch -- the rebuilt table reuses ids, and the
+/// epoch is what makes a packet naming the old ones fail loudly -- and a loss
+/// that began and ended between two reads is still a loss, which the edge count
+/// shows even though the level does not.
+#[derive(Debug, Default)]
+struct ContextReconciler {
+    /// The render thread's epoch and level as of the last reconcile.
+    render_epoch: u64,
+    lost: bool,
+    /// The resource epoch the producer was last told to name.
+    resource_epoch: u64,
+}
+
+/// What [`ContextReconciler::reconcile`] decided to tell the producer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ContextStateChange {
+    lost: bool,
+    resource_epoch: u64,
+    /// Whether a loss happened since the last change, so the resource epoch
+    /// advanced and the ingress must be told.
+    epoch_advanced: bool,
+}
+
+impl ContextReconciler {
+    /// The change to tell the producer, or `None` when nothing moved.
+    fn reconcile(&mut self, (lost, render_epoch): (bool, u64)) -> Option<ContextStateChange> {
+        if render_epoch == self.render_epoch && lost == self.lost {
+            return None;
+        }
+        // Edges alternate, starting from the level last seen: from "not lost"
+        // the first edge is a loss, from "lost" it is a recovery.
+        let edges = render_epoch.saturating_sub(self.render_epoch);
+        let losses = if self.lost {
+            edges / 2
+        } else {
+            edges.div_ceil(2)
+        };
+        let epoch_advanced = losses > 0;
+        if epoch_advanced {
+            self.resource_epoch += 1;
+        }
+        self.render_epoch = render_epoch;
+        self.lost = lost;
+        Some(ContextStateChange {
+            lost,
+            resource_epoch: self.resource_epoch,
+            epoch_advanced,
+        })
+    }
+}
+
 fn drain_render_events(
     id: crate::runtime::HostId,
     events: &shared::render_event::RenderEventReceiver,
-    ingress: &Arc<Mutex<FrameIngress>>,
-    last_context_epoch: &mut u64,
     platform: &Arc<dyn PlatformServices>,
     last_swap_report: &mut Option<std::time::Instant>,
 ) {
     while let Ok(event) = events.try_recv() {
         match event {
             RenderEvent::ContextLost => {
-                // Every resource id the producer holds now names nothing, or
-                // worse, names whatever the rebuilt table put in its place. The
-                // epoch advance is what makes those ids fail loudly, and it
-                // withdraws readiness in the same call so a frame cannot name a
-                // resource between the loss and the host re-verifying the table.
-                *last_context_epoch += 1;
-                let epoch = *last_context_epoch;
-                if !ingress.lock().set_resource_epoch(epoch) {
-                    error!("[Host {id}] refused a resource epoch that moves backwards: {epoch}");
-                }
-                warn!("[Host {id}] GL context lost; resource epoch is now {epoch}");
+                // Acted on after the drain, from the render thread's record:
+                // `ContextReconciler`.
             }
             RenderEvent::ContextRecovered { success } => {
                 info!("[Host {id}] GL context recovered: success={success}");
@@ -4059,6 +4136,37 @@ mod tests {
             batch_presents(&receiver).iter().all(|present| *present),
             "the Canvas2D work of the packet that ends the frame must be presented"
         );
+    }
+
+    /// The producer is told what the render thread's record says, and every
+    /// loss -- including one it never saw the level of -- advances the epoch.
+    #[test]
+    fn the_context_reconciler_follows_the_render_threads_record() {
+        let change = |lost, resource_epoch, epoch_advanced| {
+            Some(ContextStateChange {
+                lost,
+                resource_epoch,
+                epoch_advanced,
+            })
+        };
+        let mut context = ContextReconciler::default();
+        assert_eq!(context.reconcile((false, 0)), None, "nothing happened yet");
+
+        // A loss, then its recovery, each seen.
+        assert_eq!(context.reconcile((true, 1)), change(true, 1, true));
+        assert_eq!(context.reconcile((true, 1)), None, "the same level again");
+        assert_eq!(context.reconcile((false, 2)), change(false, 1, false));
+
+        // A whole loss and recovery between two reads: the level looks the same,
+        // the edges say otherwise.
+        assert_eq!(context.reconcile((false, 4)), change(false, 2, true));
+
+        // Several cycles between two reads, ending lost: one advance is enough,
+        // since what the producer needs is the epoch that is current.
+        assert_eq!(context.reconcile((true, 9)), change(true, 3, true));
+
+        // From lost, one edge is the recovery and not a new loss.
+        assert_eq!(context.reconcile((false, 10)), change(false, 3, false));
     }
 
     #[test]

@@ -26,6 +26,10 @@ export const DOWN_CLOCK_TICK = 2;
 // and so no tick and no verdict is coming. See `DOWN_WINDOW_OPEN` in the host's
 // half for the session that would otherwise stop with its last frame unsent.
 export const DOWN_WINDOW_OPEN = 3;
+// The GL context's state: whether it is lost, and the resource epoch packets
+// must now name. A level, not an edge -- see `DOWN_CONTEXT_STATE` in the host's
+// half for the session that stopped for good after its first context loss.
+export const DOWN_CONTEXT_STATE = 4;
 
 export const FRAME_VERDICT_WORDS = 7;
 // The tick carries the credit window after its timestamp, in the verdict's own
@@ -33,6 +37,7 @@ export const FRAME_VERDICT_WORDS = 7;
 // said zero hears that a credit came back from the tick it asked for.
 export const CLOCK_TICK_WORDS = 8;
 export const WINDOW_OPEN_WORDS = 5;
+export const CONTEXT_STATE_WORDS = 5;
 
 export const ENVELOPE_WORDS = 2;
 
@@ -148,6 +153,22 @@ export function decodeMessage(words) {
         remainingCredits: words[body + 1],
         acceptedSequence: readU64(words, body + 2),
       });
+    } else if (kind === DOWN_CONTEXT_STATE) {
+      if (count !== CONTEXT_STATE_WORDS) {
+        throw new DownlinkFormatError(
+          `a context state is ${CONTEXT_STATE_WORDS} words and this one claims ${count}`,
+        );
+      }
+      const lost = words[body + 1];
+      if (lost !== 0 && lost !== 1) {
+        throw new DownlinkFormatError(`a context state's lost flag is 0 or 1, not ${lost}`);
+      }
+      records.push({
+        kind: DOWN_CONTEXT_STATE,
+        generation: words[body],
+        lost: lost === 1,
+        resourceEpoch: readU64(words, body + 2),
+      });
     } else {
       throw new DownlinkFormatError(`downlink record kind ${kind} is not one this build reads`);
     }
@@ -183,6 +204,11 @@ export function encodeMessage(records) {
       out.push(record.generation >>> 0);
       out.push(record.remainingCredits >>> 0);
       writeU64(out, record.acceptedSequence);
+    } else if (record.kind === DOWN_CONTEXT_STATE) {
+      out.push(packHeader(DOWN_CONTEXT_STATE, CONTEXT_STATE_WORDS));
+      out.push(record.generation >>> 0);
+      out.push(record.lost ? 1 : 0);
+      writeU64(out, record.resourceEpoch);
     } else {
       throw new DownlinkFormatError(`cannot encode downlink record kind ${record.kind}`);
     }
