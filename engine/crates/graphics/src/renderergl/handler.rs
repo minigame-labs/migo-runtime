@@ -338,7 +338,7 @@ impl RendererGL {
             }
 
             GLCmd::DebugLoseContext { canvas_id: _ } => {
-                // Debug trigger (WEBGL_lose_context.loseContext): arm a one-shot
+                // Debug trigger (MIGO_debug_gpu_reset): arm a one-shot
                 // simulated reset; the next check_graphics_reset_status() poll
                 // drives the real loss -> recovery pipeline.
                 cm.request_simulated_reset();

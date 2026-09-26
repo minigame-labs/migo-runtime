@@ -624,8 +624,7 @@ impl Host {
                 // "all native fatal errors are non-recoverable"), so signalling it
                 // on every loss would tell a spec-compliant app to tear down the
                 // session even when recovery succeeds a few milliseconds later
-                // (e.g. a `WEBGL_lose_context.loseContext()` robustness probe or a
-                // transient GPU reset). The genuine unrecoverable case is surfaced
+                // (e.g. a transient GPU reset). The genuine unrecoverable case is surfaced
                 // from the `ContextRecovered { success: false }` arm below.
             }
             RenderEvent::ContextRecovered { success } => {
