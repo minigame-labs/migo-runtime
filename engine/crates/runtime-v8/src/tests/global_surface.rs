@@ -361,6 +361,38 @@ mod global_surface_tests {
         );
     }
 
+    /// What `console` writes is what the host log and DevTools buffer receive.
+    /// An Error is a game's usual `console.error` argument, and JSON wrote one
+    /// as `{}`: a failing game reported that it failed and nothing else.
+    #[test]
+    fn console_writes_an_error_as_its_message_and_stack() {
+        let host_id = 9_401;
+        let buffer = shared::console_log::register_console_log(host_id);
+        crate::console::bind_thread_console(host_id);
+        let mut rt = boot_runtime();
+        rt.execute_script(
+            "<test:console>",
+            FastString::from(
+                "function where() { return new TypeError('boom'); } \
+                 console.error(where()); \
+                 console.log(undefined, null, 1, { a: 1 }, 'text', Symbol('s'));"
+                    .to_string(),
+            ),
+        )
+        .expect("console script");
+        let (entries, _) = buffer.lock().unwrap().read_since(0);
+        shared::console_log::unregister_console_log(host_id);
+
+        let messages: Vec<&str> = entries.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(
+            messages[0].starts_with("TypeError: boom\n") && messages[0].contains("where"),
+            "the error lost its message or its stack: {:?}",
+            messages[0]
+        );
+        assert_eq!(messages[1], "undefined null 1 {\"a\":1} text Symbol(s)");
+    }
+
     /// GC APIs (03_gc.js) must work after switching off global `Deno.core`.
     #[test]
     fn gc_apis_work_without_global_deno() {
