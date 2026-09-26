@@ -19,7 +19,18 @@ android {
             // Skia and V8 are C++; the engine links libc++ dynamically rather
             // than statically because a static libc++ duplicates std::* symbols
             // across their two archives (see engine/.cargo/config.toml).
-            cmake { arguments '-DANDROID_STL=c++_shared' }
+            cmake {
+                arguments '-DANDROID_STL=c++_shared'
+                // A published C ABI package to link instead of this tree's
+                // engine (scripts/build-android-c-host.sh --package). Both
+                // search paths: the NDK toolchain confines find_package to
+                // CMAKE_FIND_ROOT_PATH when cross-compiling.
+                def pkg = project.findProperty('migoPackage')
+                if (pkg) {
+                    arguments "-DMIGO_PACKAGE_PREFIX=${pkg}", "-DCMAKE_PREFIX_PATH=${pkg}",
+                            "-DCMAKE_FIND_ROOT_PATH=${pkg}"
+                }
+            }
         }
     }
 

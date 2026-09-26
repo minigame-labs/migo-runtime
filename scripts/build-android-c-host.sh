@@ -3,6 +3,14 @@
 #
 # The APK is the acceptance vehicle for the Android C ABI: a host with no Java
 # of its own, embedding migo through the public headers only.
+#
+# Usage: build-android-c-host.sh [arm64-v8a|x86_64] [--package <prefix>]
+#
+# --package links a published C ABI package (an extracted
+# migo-<version>-capi-android-<arch>.tar.gz) through find_package(migo), the way
+# a third-party host would, instead of building the engine from this tree. It
+# is how the released bytes -- rather than a staticlib built from the same
+# source -- get onto a device.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,15 +23,37 @@ ENGINE_DIR="$REPO_ROOT/engine"
 # always reach is an emulator, and the emulator that runs at usable speed here
 # is x86_64 (KVM). A harness that only builds for the phone ABI is a harness
 # that cannot be run.
-ABI="${1:-arm64-v8a}"
+ABI="arm64-v8a"
+PACKAGE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --package) PACKAGE="${2:?--package needs a prefix}"; shift 2 ;;
+    arm64-v8a | x86_64) ABI="$1"; shift ;;
+    *) echo "usage: $0 [arm64-v8a|x86_64] [--package <prefix>]" >&2; exit 2 ;;
+    esac
+done
 case "$ABI" in
 arm64-v8a) TARGET="aarch64-linux-android" ;;
 x86_64) TARGET="x86_64-linux-android" ;;
-*) echo "usage: $0 [arm64-v8a|x86_64]" >&2; exit 2 ;;
 esac
 
 info() { echo -e "\033[0;36m[android-c-host] $*\033[0m"; }
 err() { echo -e "\033[0;31m[android-c-host] $*\033[0m" >&2; }
+
+if [[ -n "$PACKAGE" ]]; then
+    PACKAGE="$(cd "$PACKAGE" && pwd)"
+    [[ -f "$PACKAGE/lib/cmake/migo/migo-config.cmake" ]] || {
+        err "no C ABI package at $PACKAGE (expected lib/cmake/migo/migo-config.cmake)"
+        exit 2
+    }
+    info "linking the package at $PACKAGE"
+    cd "$REPO_ROOT/platforms/android"
+    ./gradlew --no-daemon "-PmigoAbis=$ABI" "-PmigoPackage=$PACKAGE" :c-host-example:assembleDebug
+    APK="$REPO_ROOT/tests/c_host/android/build/outputs/apk/debug/c-host-example-debug.apk"
+    [[ -f "$APK" ]] || { err "no APK produced"; exit 1; }
+    info "APK: $APK ($(stat -c %s "$APK") bytes)"
+    exit 0
+fi
 
 # shellcheck source=scripts/lib/android-ndk.sh
 source "$SCRIPT_DIR/lib/android-ndk.sh"

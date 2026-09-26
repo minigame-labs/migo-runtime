@@ -14,16 +14,29 @@ add_library(native_app_glue STATIC
 target_include_directories(native_app_glue PUBLIC
     ${ANDROID_NDK}/sources/android/native_app_glue)
 
-add_library(migo_capi STATIC IMPORTED)
-set_target_properties(migo_capi PROPERTIES IMPORTED_LOCATION
-    ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs-static/${ANDROID_ABI}/libmigo_capi.a)
-
 add_library(migo_c_host SHARED main.c api_level_compat.c)
 
-# The C side sees the public headers and nothing else. If this example ever
+# The engine comes from one of two places.
+#
+# A published package (MIGO_PACKAGE_PREFIX, set by
+# scripts/build-android-c-host.sh --package): found the way a third-party host
+# finds it, and its headers are the ones compiled against -- a released library
+# paired with this tree's headers would be a host no one ships.
+#
+# Otherwise this tree: the staticlib the build script staged, and the public
+# headers. The C side sees those headers and nothing else. If this example ever
 # needs something outside include/migo, the ABI is incomplete -- that feedback
 # is why the example exists.
-target_include_directories(migo_c_host PRIVATE ${MIGO_ROOT}/include)
+if(MIGO_PACKAGE_PREFIX)
+    find_package(migo REQUIRED)
+    set(MIGO_ENGINE migo::migo)
+else()
+    add_library(migo_capi STATIC IMPORTED)
+    set_target_properties(migo_capi PROPERTIES IMPORTED_LOCATION
+        ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs-static/${ANDROID_ABI}/libmigo_capi.a)
+    target_include_directories(migo_c_host PRIVATE ${MIGO_ROOT}/include)
+    set(MIGO_ENGINE migo_capi)
+endif()
 
 # -u ANativeActivity_onCreate: the glue's entry point is referenced only by the
 # Android framework, so without a root the linker collects it and the app dies
@@ -47,7 +60,7 @@ target_link_options(migo_c_host PRIVATE
 
 target_link_libraries(migo_c_host
     native_app_glue
-    migo_capi
+    ${MIGO_ENGINE}
     android log EGL GLESv3 OpenSLES)
 
 target_link_libraries(migo_c_host c++_shared)
