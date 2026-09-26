@@ -51,11 +51,23 @@ test.describe('routing', () => {
     expect(response?.status()).toBe(404);
   });
 
-  test('marks English stub pages as noindex and links back to zh', async ({page}) => {
+  // The English 0.9 archive was a tree of Translation-pending stubs until the
+  // 0.9.7 docs regenerated it as a full translation. This used to assert the
+  // stub on /en/0.9/, which is a temporary state, and it went red the moment
+  // the archive was completed. What holds now is that the archive is real
+  // English and stays inside its own version: a link out of it lands an
+  // archive reader in latest, or in Chinese.
+  test('serves the English 0.9 archive translated, linking within the archive', async ({page}) => {
     await openDocsPage(page, '/en/0.9/');
-    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/i);
-    await expect(page.locator('.sl-markdown-content')).toContainText('Translation pending');
-    await expect(page.locator('a', {hasText: '中文版本'})).toHaveAttribute('href', '/docs/0.9/');
+    await expect(page.locator('.sl-markdown-content')).not.toContainText('Translation pending');
+    const hrefs = await page.locator('.sl-markdown-content a[href^="/docs/"]').evaluateAll(
+      (links) => links.map((link) => link.getAttribute('href')),
+    );
+    expect(hrefs.length).toBeGreaterThan(0);
+    expect(hrefs.filter((href) => !href?.startsWith('/docs/en/0.9/'))).toEqual([]);
+    // The one link that is meant to leave the archive is the version notice,
+    // and an English reader is sent to English latest.
+    await expect(page.locator('main a', {hasText: 'latest version'})).toHaveAttribute('href', '/docs/en/');
   });
 
   test('serves the English translation indexable, linking within English', async ({page}) => {
