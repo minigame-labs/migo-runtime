@@ -12,6 +12,23 @@ pub fn install_logcat_diagnostics(level: shared::config::LogLevel) {
     logging::update_log_level(level);
 }
 
+/// Give the engine image decoders that need no Java.
+///
+/// Android builds leave the Rust decoders out, and the JNI path registers
+/// BitmapFactory plus the Skia AHB decoder in `jni::on_load`. A C host never
+/// runs that, so without this every image failed to decode -- and a WebGL game,
+/// whose images are all CPU-backed, got no pixels at all. Skia is already
+/// linked for rendering, so both decoders here come at no binary cost. Only the
+/// first call takes effect; an engine created again in the same process finds
+/// them registered.
+pub fn install_skia_image_decoders() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        migo_io::register_platform_ahb_decoder(graphics::image_decode_ahb::decode_image_to_ahb);
+        migo_io::register_platform_decoder(graphics::image_decode_ahb::decode_image_rgba);
+    });
+}
+
 /// Register this process's `JavaVM` and an Activity/Context `jobject` with
 /// `ndk-context`, which the Android audio backend (cpal's oboe/AAudio path)
 /// requires before it can open an output stream.
