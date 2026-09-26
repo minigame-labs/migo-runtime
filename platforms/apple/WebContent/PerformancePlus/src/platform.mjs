@@ -21,14 +21,21 @@
 
 const platformPerformance = globalThis.performance;
 
+// Bound to the global they came from: they are called as methods of this
+// record, and a WebKit Worker's timer functions throw "Illegal invocation" when
+// `this` is anything but the global scope. Node's do not care, so a test there
+// cannot tell -- which is how the unbound version reached a device.
+const bound = (name) => globalThis[name]?.bind(globalThis);
+
 export const platform = Object.freeze({
   now: platformPerformance.now.bind(platformPerformance),
   timeOrigin: platformPerformance.timeOrigin,
-  setTimeout: globalThis.setTimeout,
-  clearTimeout: globalThis.clearTimeout,
-  setInterval: globalThis.setInterval,
-  clearInterval: globalThis.clearInterval,
-  addEventListener: globalThis.addEventListener?.bind(globalThis),
+  setTimeout: bound("setTimeout"),
+  clearTimeout: bound("clearTimeout"),
+  setInterval: bound("setInterval"),
+  clearInterval: bound("clearInterval"),
+  addEventListener: bound("addEventListener"),
+  fetch: bound("fetch"),
+  // A constructor, not a function to bind: `new` supplies its own receiver.
   XMLHttpRequest: globalThis.XMLHttpRequest,
-  fetch: globalThis.fetch?.bind(globalThis),
 });
