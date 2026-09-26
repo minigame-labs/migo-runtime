@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.8 (2026-09-26)
+
+### Changed
+- The engine now waits up to ten seconds, not two, for the renderer to report
+  its GPU capabilities before it runs content. The wait only guards against a
+  renderer that has stopped: one that fails reports it immediately, and one
+  that comes up is waited for only as long as it takes. At two seconds, a
+  slow but healthy first start -- a cold driver shader cache on a low-end
+  device, or software rendering on a loaded machine -- was treated as a failure
+  and the session refused its content for good.
+
+### Fixed
+- Windows: no session could start when a host's files, cache or code-cache
+  directory was spelled with `..`, such as the examples' `<files>\..\cache`
+  ("initialize sandbox filesystem: failed to pin sandbox roots"). Sandbox roots
+  were opened in Win32's `\\?\` namespace, where `..` is a file name rather
+  than a step up. A root is now given the meaning Win32 itself gives it before
+  it is opened; relative roots are still refused. The Windows arms of the
+  sandbox filesystem and the atomic writer now run in CI, which they had never
+  done.
+- Linux: the offscreen (headless) target needed a window server after all.
+  It asked EGL for the default display, which Mesa resolves to X11, so it
+  failed to start wherever `DISPLAY` was unset -- every CI runner and server.
+  It now uses Mesa's surfaceless platform when the driver offers it, and asks
+  only for the pbuffer configuration a headless target renders into.
+- iOS and macOS: after `migo_surface_release_query` reported RELEASED, the
+  host's `CAMetalLayer` could still be alive for a moment, released on the
+  render thread just afterwards. Objects ANGLE autoreleased during the surface
+  teardown lived until the render loop's pool drained, which came after
+  RELEASED. Teardown now drains them before RELEASED is published, on detach,
+  on surface replacement and at shutdown.
+
 ## v0.9.7 (2026-09-25)
 
 ### Added
