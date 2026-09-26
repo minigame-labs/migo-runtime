@@ -1550,8 +1550,27 @@ jobs:
   # packaging/manifest logic the two share, and scripts/build-windows-sdk.sh's
   # own header comment for why WSL still gets its own entry point rather than
   # a branch inside this one.
+  # Same job as pr-ci.yml's; see the comment there. A Windows SDK is not
+  # published on the strength of a sandbox the runner never executed.
+  windows-unit-tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+
+      - name: Sandbox filesystem and atomic writer tests on Windows
+        working-directory: engine
+        run: cargo test -p migo-shared -p migo-io --lib --locked
+
   release-windows:
-    needs: [quality-gate, host-engine-tests]
+    needs: [quality-gate, host-engine-tests, windows-unit-tests]
     runs-on: windows-latest
     timeout-minutes: 90
 
@@ -1649,7 +1668,7 @@ jobs:
   # Skia build via ninja that release-windows treats as a defensive fallback
   # is the expected path here -- hence the longer timeout.
   release-windows-arm64:
-    needs: [quality-gate, host-engine-tests]
+    needs: [quality-gate, host-engine-tests, windows-unit-tests]
     runs-on: windows-11-arm
     timeout-minutes: 120
 
