@@ -797,7 +797,23 @@ pub fn release_retired_resource<T, E>(
         return Err(SurfaceReleaseTransactionError::GenerationStillLive);
     }
 
-    teardown().map_err(SurfaceReleaseTransactionError::Teardown)?;
+    // The teardown gets an autorelease pool of its own that is drained before
+    // the lease drops, because dropping the lease is what publishes RELEASED.
+    //
+    // On Apple the native teardown is ANGLE's `eglDestroySurface` and the
+    // context switches around it, and ANGLE's Metal backend hands out
+    // autoreleased objects (`nextDrawable`, `commandBuffer`) -- a drawable
+    // retains its CAMetalLayer. Left to the render loop's per-iteration pool,
+    // they outlived RELEASED: the pool drains only after this function returns,
+    // on the render thread, so a host that reads its layer in between still
+    // finds it alive. Measured on the iOS simulator under CPU load: the layer's
+    // last reference went on another thread microseconds after RELEASED, once
+    // in roughly 100-160 attach/detach cycles. Zero-sized off Apple.
+    {
+        let _teardown_pool = crate::objc_autorelease::autorelease_scope();
+        teardown()
+    }
+    .map_err(SurfaceReleaseTransactionError::Teardown)?;
     drop(current.take());
     Ok(SurfaceReleaseDisposition::Released)
 }

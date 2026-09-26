@@ -125,7 +125,15 @@ pub(crate) fn run_surface_recreate<T>(
         .begin_recreate(candidate)
         .map_err(SurfaceRecreateError::Binding)?;
     let kind = transaction.kind();
-    match install(kind, transaction.candidate()) {
+    // Drained before `commit` drops the previous generation's lease, for the
+    // reason `release_retired_resource` gives: whatever the native install and
+    // the previous surface's teardown autorelease must not outlive that
+    // generation's RELEASED.
+    let installed = {
+        let _install_pool = shared::objc_autorelease::autorelease_scope();
+        install(kind, transaction.candidate())
+    };
+    match installed {
         Ok(value) => {
             transaction.commit();
             Ok((kind, value))
@@ -953,9 +961,16 @@ mod tests {
     #[test]
     fn render_owner_releases_native_lease_only_with_teardown_proof() {
         let teardown = function_body(RENDER_THREAD, "fn destroy_render_owner");
+        let pool = teardown
+            .find("autorelease_scope()")
+            .expect("EGL teardown must drain its autoreleased objects before any lease drops");
         let proof = teardown
-            .find("if cm.destroy_all()")
+            .find("cm.destroy_all()")
             .expect("CanvasManager must supply the native-release proof");
+        assert!(pool < proof);
+        let proof = teardown
+            .find("if destroyed")
+            .expect("the release must branch on the teardown's proof");
         let release = teardown
             .find("render_binding.clear_after_egl_teardown()")
             .expect("the proven branch must release the render lease");
