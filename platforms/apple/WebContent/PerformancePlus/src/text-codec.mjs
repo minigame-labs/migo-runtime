@@ -19,7 +19,9 @@
 // legacy encoders. So decoding works and encoding refuses, saying why, rather
 // than shipping a 200 KB table or answering with mojibake.
 
-const utf8Encoder = new TextEncoder();
+import { platform } from "./platform.mjs";
+
+const utf8Encoder = new platform.TextEncoder();
 
 /** The host's `normalize_encoding`, with its exact spellings. */
 function normalize(encoding) {
@@ -160,7 +162,7 @@ export function decodeBytes(bytes, encoding) {
   switch (coding) {
     case "utf8": {
       try {
-        return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        return new platform.TextDecoder("utf-8", { fatal: true }).decode(bytes);
       } catch {
         throw new Error("UTF-8 decode error");
       }
@@ -202,7 +204,7 @@ export function decodeBytes(bytes, encoding) {
     }
     case "gbk": {
       try {
-        return new TextDecoder("gbk", { fatal: true }).decode(bytes);
+        return new platform.TextDecoder("gbk", { fatal: true }).decode(bytes);
       } catch {
         throw new Error("GBK decode error");
       }
