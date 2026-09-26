@@ -149,7 +149,7 @@ migo/
 
 ## 许可证
 
-Migo 采用 **source-available** 的 [Business Source License 1.1](LICENSE)（BSL 1.1）。**每个发布版本在其发布满四年时转为 Apache 2.0** —— 具体日期就写在该版本随附的 `LICENSE` 里（当前为 2030-09-25）。
+Migo 采用 **source-available** 的 [Business Source License 1.1](LICENSE)（BSL 1.1）。**每个发布版本在其发布满四年时转为 Apache 2.0** —— 具体日期就写在该版本随附的 `LICENSE` 里（当前为 2030-09-26）。
 
 - **阅读、审计、构建、测试、评测、修改、移植** —— 任何规模、任何主体，无条件授予。
 - **把 Migo 嵌进你自己的 App 上线** —— 年营收 ≤ USD 1,000,000 且月活 ≤ 3,000,000 时免费。
