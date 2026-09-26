@@ -20,3 +20,6 @@ include ':library'
 // the other examples rather than inside the product tree.
 include ':c-host-example'
 project(':c-host-example').projectDir = file('../../tests/c_host/android')
+// Its device-side multi-pointer check (scripts/verify-android-c-host-multitouch.sh).
+include ':c-host-multitouch'
+project(':c-host-multitouch').projectDir = file('../../tests/c_host/android-multitouch')

@@ -240,19 +240,22 @@ The candidate cannot be declared stable until all of the following exist:
   resolves a version disagreement. The kinds it reports are the same fact the attach path
   enforces, not a second copy;
 - Android and Linux implementations using this same contract — **Linux done, Android
-  substantially done**: `engine/crates/capi/platform/android.rs` implements the surface
+  done**: `engine/crates/capi/platform/android.rs` implements the surface
   backend and the NativeActivity host in `tests/c_host/android` renders and takes touch
-  on device, and rendering resumes after the app is backgrounded and returned to. Open:
-  multi-pointer delivery has never run on device, because a real two-finger gesture cannot
-  be synthesized there -- `sendevent` is refused by SELinux and `input motionevent` carries
-  one pointer. The ABI's batch conversion is covered by tests. That refusal is current,
-  not inherited: on a Mate 30 Pro (API 31, SELinux enforcing) the shell account *is* in the
-  `input` group and `sendevent /dev/input/event2` still returns `Permission denied`, so the
-  policy blocks it, not the group. **The one path that does work is instrumentation** --
-  `UiAutomation.injectInputEvent`, reached through UiAutomator's
-  `UiDevice.performMultiPointerGesture`, injects at the input dispatcher and therefore reaches
-  a NativeActivity window like any other. This item is open for want of an instrumentation
-  APK, not for want of hardware, which is a much cheaper thing to be blocked on. **Windows attaches an
+  on device, and rendering resumes after the app is backgrounded and returned to.
+  **Multi-pointer delivery has run on a device** (2026-09-26, Mate 30 Pro, API 31):
+  `scripts/verify-android-c-host-multitouch.sh` injects a real two-finger gesture and reads
+  the pointer count that reached JS back from `touch-probe`'s pixels -- two held, magenta;
+  the second lifted, green; both lifted, blue. A shell cannot produce that gesture
+  (`sendevent` is refused by SELinux even though the shell account is in the `input`
+  group, and `input motionevent` carries one pointer), so the check is an instrumentation
+  APK, `tests/c_host/android-multitouch`, injecting through `UiAutomation.injectInputEvent`
+  at the input dispatcher. It instruments itself rather than the host, because the host
+  declares `android:hasCode="false"` and the system will not instrument a package with no
+  code. It was shown to fail for a host that forwards one pointer (never magenta) and for
+  one that marks every pointer removed on `POINTER_UP` (blue where green is due). What it
+  cannot tell is *which* finger lifted, only how many remain; the ABI's batch conversion
+  tests cover the flags. **Windows attaches an
   `HWND`** through `engine/crates/capi/src/platform/windows.rs`. That file did not exist
   until 2026-07-29: `platform/win32.h` declared `MigoWin32HwndDescriptor` and the
   `tests/c_abi` lanes pinned its layout for both pointer widths, so every gate agreed with
