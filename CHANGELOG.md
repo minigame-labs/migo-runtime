@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.9 (2026-09-26)
+
 ### Fixed
 - Android C ABI: images never decoded, so every WebGL game rendered black while
   its frame loop kept running. Android builds leave the Rust image decoders out
