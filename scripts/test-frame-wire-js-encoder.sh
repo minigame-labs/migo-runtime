@@ -333,6 +333,13 @@ SYNC_CALL_TEST="$TEST_DIR/sync-call.test.mjs"
 node "$SYNC_CALL_TEST"
 RAN_TESTS+=("$SYNC_CALL_TEST")
 
+# The producer's platform primitives are captured before content can replace
+# them: a web adapter's XMLHttpRequest has no synchronous mode, and the bridge
+# posting through it failed every sync call a Pixi game made.
+PLATFORM_CAPTURE_TEST="$TEST_DIR/platform-capture.test.mjs"
+node "$PLATFORM_CAPTURE_TEST"
+RAN_TESTS+=("$PLATFORM_CAPTURE_TEST")
+
 SYNC_CALLS="$(mktemp -d)"
 SYNC_ANSWERS="$(mktemp -d)"
 trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$SYNC_CALLS" "$SYNC_ANSWERS"' EXIT
