@@ -265,7 +265,7 @@ The candidate cannot be declared stable until all of the following exist:
   check that does is asking the built library what it supports, which
   `scripts/test-windows-sdk-contract.sh` now does and `scripts/build-windows-sdk.sh`
   refuses to package without;
-- export lists, symbol/version tests, old-client/new-library tests, and per-target ILP32/LP64 layout lanes — **export list and symbol/version tests done** for `linux-x86_64` (`scripts/test-linux-sdk-contract.sh`); old-client/new-library lanes **done, inbound and outbound**; **layout lanes done for both pointer widths and both compiler families**. Every layout assertion in `tests/c_abi` is written twice, once per pointer width, but until 2026-07-21 only the LP64 half had ever been compiled — every lane ran on an LP64 host, so `#elif UINTPTR_MAX == UINT32_MAX` was dead source, and it had been wrong since the commit that appended `on_request_frame`: that commit updated the LP64 size and not the ILP32 one, and the soft-keyboard callbacks were then appended on top of the wrong base. `scripts/test-c-abi-surface-candidate.sh --ilp32` now compiles the lanes at `-m32` (freestanding, so it needs a multilib compiler but no 32-bit libc) and reports a skip loudly rather than passing silently when one is absent. `scripts/test-c-abi-msvc-lane.ps1` covers what no SysV compiler reaches: LLP64, MSVC's own C dialect under C11 with level-four warnings promoted to errors and strict conformance, `__cdecl` on x86, and the `__declspec(dllexport)`/`__declspec(dllimport)` branches of `MIGO_API`, which collapse to the GNU visibility attribute everywhere else. All four ABIs — LP64, LLP64, and ILP32 under both GCC and MSVC — agree. The append rule
+- export lists, symbol/version tests, old-client/new-library tests, and per-target ILP32/LP64 layout lanes — **export list and symbol/version tests done** on every shipped target: each platform's SDK contract checks the built library's export surface -- Linux and Android against the per-product entry list `scripts/c-abi-entry-points.py` derives (`scripts/test-c-abi-entry-points-contract.sh`), OpenHarmony against its manifest, Windows from the PE export table -- where it began with `linux-x86_64` alone (`scripts/test-linux-sdk-contract.sh`); old-client/new-library lanes **done, inbound and outbound**; **layout lanes done for both pointer widths and both compiler families**. Every layout assertion in `tests/c_abi` is written twice, once per pointer width, but until 2026-07-21 only the LP64 half had ever been compiled — every lane ran on an LP64 host, so `#elif UINTPTR_MAX == UINT32_MAX` was dead source, and it had been wrong since the commit that appended `on_request_frame`: that commit updated the LP64 size and not the ILP32 one, and the soft-keyboard callbacks were then appended on top of the wrong base. `scripts/test-c-abi-surface-candidate.sh --ilp32` now compiles the lanes at `-m32` (freestanding, so it needs a multilib compiler but no 32-bit libc) and reports a skip loudly rather than passing silently when one is absent. `scripts/test-c-abi-msvc-lane.ps1` covers what no SysV compiler reaches: LLP64, MSVC's own C dialect under C11 with level-four warnings promoted to errors and strict conformance, `__cdecl` on x86, and the `__declspec(dllexport)`/`__declspec(dllimport)` branches of `MIGO_API`, which collapse to the GNU visibility attribute everywhere else. All four ABIs — LP64, LLP64, and ILP32 under both GCC and MSVC — agree. The append rule
   `MigoHostCallbacks` documents is now real: a caller's struct is copied, not
   reinterpreted, so a client compiled against an earlier header is accepted at its
   own `struct_size` and the fields it never had read as absent rather than as its
@@ -291,19 +291,23 @@ The candidate cannot be declared stable until all of the following exist:
   yet, so the C lane's declared shape is the current one today; it becomes a true
   old-versus-new prefix check the moment one grows;
 - Android/Linux compatibility and performance gates with no material regression — **Linux compatibility gate done**, the rest open;
-- Android packaging for a third-party consumer — **the two-ABI mechanism is implemented;
-  current release bytes are blocked on artifact regeneration**.
-  `scripts/build-android-sdk.sh` stages a CMake package (headers, `libmigo_capi.a`,
+- Android packaging for a third-party consumer — **done**: every release since v0.9.3
+  publishes `migo-<version>-capi-android-{arm64,x86_64}.tar.gz`, built, gated and attested
+  by CI. `scripts/build-android-sdk.sh` stages a CMake package (headers, `libmigo_capi.a`,
   `find_package(migo)`, per-ABI manifest); `scripts/test-android-sdk-contract.sh` verifies the
   22-symbol export surface, the freshness-gated snapshot identity, the complete staged-file
   hashes, and that a real `find_package(migo)` consumer links with every `migo_*` resolved. A
   versioned shared object and pkg-config are deliberately not provided — an NDK host links a
-  static library through CMake, so those would be shape without a consumer. The snapshot
-  half of this is resolved: all eight `SNAPSHOT-<kind>-<profile>-android-<arch>.bin`
-  identities (host full/slim and Worker full, both ABIs) regenerated fresh and
-  `scripts/check-snapshot-freshness.sh` reports every one current. **Open before any
-  release**: regenerate verified V8 component manifests for both ABIs, then rebuild and
-  run the minimum/latest device gates. The `-DANDROID_STL` matrix is measured rather than open: `c++_shared` links as-is,
+  static library through CMake, so those would be shape without a consumer. The V8 archive
+  each ABI links is used only after `v8-materialise` has checked it against the committed
+  component manifest (`engine/third_party/rusty_v8/<triple>/component-manifest.json`), and
+  all eight snapshots are held current by `scripts/check-snapshot-freshness.sh`. On devices,
+  the C host built from source passes `scripts/verify-android-c-host-multitouch.sh` --
+  engine start, surface attach, content load, render and two-pointer input -- at the
+  minimum and the target API level and one between: API 26 and API 34 (x86_64 emulators)
+  and API 31 (Mate 30 Pro, arm64), 2026-09-26. That host links a staticlib built from the
+  same source the release packages; the published tarball's own bytes have not run on a
+  device. The `-DANDROID_STL` matrix is measured rather than open: `c++_shared` links as-is,
   `c++_static` links with `-Wl,--allow-multiple-definition` (without it exactly six
   `std::runtime_error`/`std::logic_error` symbols collide — this library carries
   Chromium's libc++ inside V8's archive while the consumer brings the NDK's), and `none`
