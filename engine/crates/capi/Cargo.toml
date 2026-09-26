@@ -45,6 +45,17 @@ tracing-subscriber = { workspace = true }
 # translates it into `MigoKeyboardShowOptions`.
 serde_json = { workspace = true }
 
+# Android builds leave the Rust image decoders out: the Java SDK decodes through
+# BitmapFactory, which a C host cannot reach. Skia, as linked here, decodes PNG
+# but not JPEG, so without these a C host on Android could not load a JPEG at all
+# -- found by migo-conformance's image-decode bundle on v0.9.9. Every other
+# platform's C ABI already carries them. Enabled through `platform` rather than a
+# direct `migo-io` dependency, which would change Cargo.lock and with it every
+# snapshot's fingerprint; the C ABI package is its own cargo build, so the Java
+# SDK's AAR is unaffected.
+[target.'cfg(target_os = "android")'.dependencies]
+platform = { package = "migo-platform", path = "../platform", default-features = false, features = ["rust-image-decode"] }
+
 [dev-dependencies]
 migo-core = { path = "../core", default-features = false, features = ["test-support"] }
 # The X11 arm of `build_target` decides whether a reattachment reuses the owned

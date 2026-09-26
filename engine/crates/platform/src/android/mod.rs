@@ -14,13 +14,15 @@ pub fn install_logcat_diagnostics(level: shared::config::LogLevel) {
 
 /// Give the engine image decoders that need no Java.
 ///
-/// Android builds leave the Rust decoders out, and the JNI path registers
-/// BitmapFactory plus the Skia AHB decoder in `jni::on_load`. A C host never
-/// runs that, so without this every image failed to decode -- and a WebGL game,
-/// whose images are all CPU-backed, got no pixels at all. Skia is already
-/// linked for rendering, so both decoders here come at no binary cost. Only the
-/// first call takes effect; an engine created again in the same process finds
-/// them registered.
+/// The JNI path registers BitmapFactory plus the Skia AHB decoder in
+/// `jni::on_load`. A C host never runs that, so without this every image failed
+/// to decode -- and a WebGL game, whose images are all CPU-backed, got no pixels
+/// at all. The C ABI build also carries the Rust decoders (the `rust-image-decode`
+/// feature), which `io::decode_image_fast` tries first; Skia, as linked, decodes
+/// PNG but not JPEG. So: Skia's AHB decoder gives PNG the zero-copy path the Java
+/// SDK has, and its RGBA decoder is the fallback for what the Rust decoders do
+/// not read. Only the first call takes effect; an engine created again in the
+/// same process finds them registered.
 pub fn install_skia_image_decoders() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {

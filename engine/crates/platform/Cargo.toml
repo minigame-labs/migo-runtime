@@ -31,6 +31,10 @@ profile-slim = ["v8-limits", "code-signing", "migo-core/profile-slim", "graphics
 # the whole distinction: same platform services, no engine.
 external-frames = ["migo-core/external-frames", "graphics/profile-slim"]
 worker-snapshot = ["migo-core/worker-snapshot"]
+# The Rust image decoders (zune-image, the image crate), which every non-Android
+# build already carries. The Java SDK's Android build leaves them out for
+# BitmapFactory; the C ABI, which has no Java, turns them on (engine/crates/capi).
+rust-image-decode = ["migo-io/rust-image-decode"]
 v8-jitless = ["migo-core/v8-jitless"]
 v8-limits = ["migo-core/v8-limits"]
 code-signing = ["migo-core/code-signing"]

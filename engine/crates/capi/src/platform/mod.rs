@@ -151,9 +151,9 @@ pub(crate) fn install_dev_logging(level: shared::config::LogLevel) {
 
 /// Make sure the engine can decode images on this platform.
 ///
-/// Every platform but Android compiles the Rust decoders in. Android leaves them
-/// out and expects the Java SDK's JNI setup to register decoders, which a C host
-/// never runs.
+/// Every platform's C ABI compiles the Rust decoders in, Android's included. On
+/// Android the engine also expects decoders registered at load time, which the
+/// Java SDK's JNI setup does and a C host never runs.
 #[cfg(target_os = "android")]
 pub(crate) fn install_image_decoders() {
     platform::android::install_skia_image_decoders();
