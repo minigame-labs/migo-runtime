@@ -12,7 +12,7 @@ if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(releaseVersion)) {
 }
 
 export const docsConfig = {
-  /** e.g. "0.9.6" — full SDK version from release/VERSION. */
+  /** e.g. "0.9.7" — full SDK version from release/VERSION. */
   releaseVersion,
   /** e.g. "0.9" — the docs series; latest stable is served at the /docs/ root. */
   docsSeries: releaseVersion.split('.').slice(0, 2).join('.'),

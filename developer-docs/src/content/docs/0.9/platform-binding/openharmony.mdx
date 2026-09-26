@@ -1,0 +1,103 @@
+---
+title: OpenHarmony
+sidebar:
+  order: 2
+description: 在 OpenHarmony 上把 ArkUI XComponent 的 OHNativeWindow 接到引擎 Surface，并正确管理异步释放。
+audience: host-integrator
+platforms:
+  - openharmony
+sourcePaths:
+  - include/migo/platform/openharmony.h
+  - include/migo/surface.h
+  - include/migo/capabilities.h
+  - platforms/openharmony/README.md
+slug: 0.9/platform-binding/openharmony
+---
+
+本页只写 OpenHarmony 的平台绑定差异。通用的 attach / detach / release 合同见 [Surface 接口](/docs/0.9/reference/surface/)；Session 的前后台状态见 [生命周期概念](/docs/0.9/concepts/lifecycle/)。
+**可用性：** 0.9 已在 API 20 Mate 70 Pro x86\_64 模拟器验证 surface attach、内容加载、渲染和触摸；README 尚未验证真实设备上的 `aarch64`。宿主始终须保留自己的 `OHNativeWindow` / XComponent 资源直到 release observer 报告 `RELEASED`；`openharmony.h` 将引擎自行取得 native-object 引用标为未来实现，因此不要把引擎引用当作宿主生命周期的替代。
+
+## 描述符
+
+ArkUI `XComponent` 的 `OnSurfaceCreated` 回调提供 `OHNativeWindow*`。把它原样放进 `native_window`，不需要转换成 HWND 或其他窗口类型：
+
+```c
+#include <migo/platform/openharmony.h>
+
+typedef struct MigoOpenHarmonyNativeWindowDescriptor {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW */
+    MigoPlatformDescriptorFlags flags; /* 须为 0 */
+    void                *native_window; /* OHNativeWindow* */
+} MigoOpenHarmonyNativeWindowDescriptor;
+```
+
+外层 `MigoSurfaceDescriptor.platform_kind` 与平台描述符中的值都必须是 `MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW`。`platform_descriptor_size` 填平台结构体的 `struct_size`（通常为 `sizeof`），而不是任意指针大小。
+
+## 在 XComponent 创建时 attach
+
+```c
+static MigoSurfaceAttachment *s_attachment;
+static uint64_t s_generation;
+
+void on_xcomponent_surface_created(void *oh_native_window,
+                                   uint32_t width, uint32_t height,
+                                   float scale) {
+    MigoOpenHarmonyNativeWindowDescriptor plat;
+    memset(&plat, 0, sizeof plat);
+    plat.struct_size   = (uint32_t)sizeof plat;
+    plat.abi_version   = MIGO_ABI_VERSION_CURRENT;
+    plat.platform_kind = MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW;
+    plat.native_window = oh_native_window;
+
+    MigoSurfaceDescriptor desc;
+    memset(&desc, 0, sizeof desc);
+    desc.struct_size              = (uint32_t)sizeof desc;
+    desc.abi_version              = MIGO_ABI_VERSION_CURRENT;
+    desc.generation               = ++s_generation;
+    desc.platform_kind            = MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW;
+    desc.width_pixels             = width;
+    desc.height_pixels            = height;
+    desc.scale_factor             = scale;
+    desc.color_space              = MIGO_COLOR_SPACE_SRGB;
+    desc.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+    desc.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+    desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;
+    desc.platform_descriptor_size = (uint32_t)sizeof plat;
+    desc.platform_descriptor      = &plat;
+
+    migo_session_attach_surface(session, &desc, &s_attachment);
+}
+```
+
+把 `width`、`height` 和 `scale` 换成 XComponent 回调提供的实际像素尺寸和缩放因子；这些值的范围及更新规则属于共用 ABI，不在此页重复。
+
+## XComponent 销毁与释放
+
+`OnSurfaceDestroyed` 不等于 GPU 已经停止访问窗口。开始退休后，继续保留 XComponent、`OHNativeWindow` 和宿主事件循环，直到 release observer 达到 `RELEASED`：
+
+```c
+void on_xcomponent_surface_destroyed(void) {
+    MigoSurfaceRelease *release = NULL;
+    if (migo_surface_begin_detach(s_attachment, &release) != MIGO_OK)
+        return;
+    s_attachment = NULL;
+
+    MigoSurfaceReleaseStatus status;
+    do {
+        status.struct_size = (uint32_t)sizeof status;
+        status.abi_version = MIGO_ABI_VERSION_CURRENT;
+        migo_surface_release_query(release, &status);
+    } while (status.state != MIGO_SURFACE_RELEASE_RELEASED);
+
+    migo_surface_release_destroy(release);
+    /* 现在才可释放宿主持有的 OHNativeWindow/XComponent 资源。 */
+}
+```
+
+不要在 `migo_surface_begin_detach` 返回 `MIGO_OK` 后继续使用 `MigoSurfaceAttachment`；它已被消费。无论当前引擎是否持有自己的 native-object 引用，宿主都必须等到 `RELEASED` 再销毁 XComponent 和 `OHNativeWindow`。
+
+## 能力查询
+
+定义了 `MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW` 不代表每个构建都能 attach。创建 Session 或窗口前，调用 `migo_query_capabilities`，仅在 `platform_kinds` 的第 8 位为 1 时选择此描述符；否则应选择构建支持的平台，而不是盲目 attach。

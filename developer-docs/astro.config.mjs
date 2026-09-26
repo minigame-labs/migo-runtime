@@ -42,9 +42,9 @@ export default defineConfig({
             // 跟随 release/VERSION 自动变(0.10 发布后自动叫 0.10.x)
             label: `${docsConfig.docsSeries}.x`,
           },
-          // 归档 = 0.9.6 发布时的文档快照,内容冻结。后续 0.10 发布守在
+          // 归档 = 0.9.7 发布时的文档快照,内容冻结。后续 0.10 发布时在
           // 数组头部新增 { slug: '0.10', label: '0.10.0' },0.9 这行至历史尾部。
-          versions: [{ slug: '0.9', label: '0.9.6' }],
+          versions: [{ slug: '0.9', label: '0.9.7' }],
         }),
         starlightLinksValidator(),
       ],

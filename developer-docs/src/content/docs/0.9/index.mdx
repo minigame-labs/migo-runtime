@@ -4,6 +4,64 @@ description: Migo 原生小游戏运行时 SDK 的集成、架构与 C ABI 参�
 slug: "0.9"
 ---
 
+<div class="home-hero">
+  <p class="home-hero-tagline">
+    可嵌入的 Canvas/WebGL 小游戏运行时,同一份 C ABI 跨 Android、Linux、Windows、OpenHarmony
+  </p>
+
+  <div class="home-hero-actions">
+    <a class="hh-btn hh-btn-primary" href="/docs/0.9/getting-started/android/">快速开始 →</a>
+    <a class="hh-btn hh-btn-secondary" href="/docs/0.9/reference/overview/">C ABI 参考</a>
+  </div>
+</div>
+
+<style>
+  {`
+    :global(h1#_top) {
+      font-size: clamp(2.5rem, 4.5vw, 4rem);
+      line-height: 1.2;
+      font-weight: 400;
+      color: var(--sl-color-white);
+    }
+    .home-hero-tagline {
+      font-size: 1.25rem;
+      line-height: 1.75;
+      color: var(--sl-color-gray-2);
+      max-width: 34rem;
+      margin-top: 1.25rem;
+    }
+    .home-hero {
+      margin-bottom: 1.25rem;
+    }
+    .home-hero-actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-top: 1.5rem;
+    }
+    .hh-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.4375rem 0.875rem;
+      border-radius: 999rem;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      text-decoration: none;
+      border: 1px solid transparent;
+    }
+    .hh-btn-primary {
+      background: var(--sl-color-text-accent);
+      color: var(--sl-color-black);
+    }
+    .hh-btn-secondary {
+      border-color: var(--sl-color-gray-1);
+      color: var(--sl-color-white);
+      background: transparent;
+    }
+    `}
+</style>
+
 Migo 是可嵌入的 Canvas/WebGL 小游戏运行容器。宿主 App 提供 surface、输入与存储,Migo 提供
 V8 JavaScript 运行时与 Skia 渲染管线,跨 Android、Linux、Windows 及 OpenHarmony 四个平台。没
 有 DOM 或 CSS——不是通用 WebView 替代品。
@@ -15,14 +73,14 @@ flowchart TB
   Boundary --> Core[Rust core]
   Core --> V8[V8 JavaScript runtime]
   Core --> Render[Skia / Canvas / WebGL]
-  Host[宿主 App] <--> SDK[Android facade / C ABI]
+  Host[宿主 App] <--> SDK[C ABI（Android 之上有语言 facade）]
   SDK <--> Core
   Host --> Services[surface · input · storage · network · ads]
 ```
 
 1. 小游戏 bundle 只通过 `migo.*` 能力边界访问运行时能力;可选的独立适配器位于引擎之外。
 2. Rust core 编排 V8 JavaScript runtime 与 Skia 渲染后端,输出 Canvas/WebGL 内容。
-3. 宿主 App 通过 Android facade 或 C ABI 创建和管理会话,并自行提供 surface、input、storage、network、ads 等服务。
+3. 宿主 App 通过 C ABI 创建和管理会话 — 四个平台唯一共有的事实接口;Android 侧惯用的 Java facade(MigoRuntime/MigoGameView)只是这层 ABI 之上的语言包装。surface、input、storage、network、ads 等服务由宿主自行提供。
 4. Migo 不提供 DOM、CSS、页面布局或浏览器文档对象模型。
 
 ## API 参考一览

@@ -3,12 +3,7 @@ title: Android Quickstart
 sidebar:
   order: 1
 description: Integrate Migo into an Android host app, create a GameSession, and
-  manage surface, lifecycle and touch input.
-head:
-  - tag: meta
-    attrs:
-      name: robots
-      content: noindex
+  manage surface, lifecycle, and touch input.
 audience: host-integrator
 platforms:
   - android
@@ -20,8 +15,176 @@ sourcePaths:
 slug: en/0.9/getting-started/android
 ---
 
-:::note[Translation pending]
-This page is pending translation. The 中文版本 (link below) is the current source of truth.
-:::
+Android is Migo's primary quickstart integration path. This page assumes the host app already has a
+`SurfaceView` or `SurfaceHolder` for rendering, and manages the mini-game bundle as an application
+asset or downloaded artifact.
 
-[→ 中文版本](/docs/0.9/getting-started/android/)
+## 1. Prerequisites
+
+* Android API 26 or higher.
+* An Android Gradle Plugin (AGP) version compatible with the project.
+* Android NDK installed according to the project's build configuration.
+* A Canvas/WebGL mini-game bundle to run.
+
+Migo is a Canvas/WebGL mini-game runtime container, not a general-purpose WebView replacement;
+content must not depend on the DOM or CSS.
+
+## 2. Add the AAR dependency
+
+Obtain the AAR matching the host ABI from the project release page and place it in the application's
+`libs/` directory or a private Maven repository. The filename format is:
+
+```text
+migo-<version>-android.aar
+```
+
+Do not hard-code a specific version number in build scripts or documentation examples. A dependency
+declaration example:
+
+```kotlin
+dependencies {
+    implementation(files("libs/migo-<version>-android.aar"))
+}
+```
+
+## 3. Create a RuntimeConfig
+
+Use `RuntimeConfig.Builder` in the host's initialization code to configure the runtime:
+
+```java
+RuntimeConfig config = new RuntimeConfig.Builder(context)
+    .setDebugEnabled(BuildConfig.DEBUG)
+    .setTargetFps(60)
+    .setLogLevel(LogLevel.INFO)
+    .build();
+```
+
+Obtain the process-singleton runtime via `MigoRuntime.getInstance()`, then create a session:
+
+```java
+MigoRuntime runtime = MigoRuntime.getInstance();
+GameSession session = runtime.createSession(activity, surface, config, gameId);
+```
+
+## 4. Create a session via SurfaceHolder.Callback
+
+Let the `SurfaceView`'s `SurfaceHolder.Callback` own the surface lifecycle. Create a `GameSession`
+once `surfaceCreated` delivers a usable surface; update it on size changes:
+
+```java
+@Override
+public void surfaceCreated(SurfaceHolder holder) {
+    Surface surface = holder.getSurface();
+    session = MigoRuntime.getInstance().createSession(
+        activity, surface, config, gameId);
+    session.setListener(listener);
+}
+
+@Override
+public void surfaceChanged(
+        SurfaceHolder holder, int format, int width, int height) {
+    if (session != null) {
+        session.updateSurface(holder.getSurface(), width, height);
+    }
+}
+
+@Override
+public void surfaceDestroyed(SurfaceHolder holder) {
+    if (session != null) {
+        session.onSurfaceDestroyed();
+    }
+}
+```
+
+Follow Android's main-thread requirements inside `surfaceCreated` and `surfaceChanged`, and do not
+start content before the surface is available.
+
+## 5. Deploy the bundle
+
+After the session is created, retrieve Migo's code directory via `session.getPaths().getCodeDir()`
+and copy or extract the mini-game bundle's entry file and its dependencies into that directory. Do
+not assume the APK's internal paths or any fixed absolute path on the device; `getCodeDir()` is the
+authoritative directory source the host should use.
+
+```java
+Path codeDir = session.getPaths().getCodeDir().toPath();
+// Copy the bundle files into codeDir safely, then start the entry.
+```
+
+## 6. Start the entry point
+
+Once the entry file is confirmed to be in `getCodeDir()`, call the following on the Android main
+thread:
+
+```java
+session.startGame(entryPoint);
+```
+
+`entryPoint` should be the relative path to the entry file within the bundle, or the entry
+identifier required by the API. On startup failure, log the error and surface it to the host via
+`GameSessionListener`; do not silently ignore return statuses or exceptions.
+
+A runnable host integration example is available at
+[migo-examples](https://github.com/minigame-labs/migo-examples).
+
+## 7. Wire the lifecycle
+
+Forward Activity or Fragment lifecycle events to the session:
+
+```java
+@Override
+protected void onPause() {
+    if (session != null) session.pause();
+    super.onPause();
+}
+
+@Override
+protected void onResume() {
+    super.onResume();
+    if (session != null) session.resume();
+}
+
+@Override
+protected void onDestroy() {
+    if (session != null) {
+        session.close();
+        session = null;
+    }
+    super.onDestroy();
+}
+```
+
+Projects with stricter Activity/Fragment state machines must ensure every `pause()` is paired with
+a corresponding `resume()`, and that `close()` is called when the final owner is destroyed.
+
+## 8. Forward touch events
+
+Pass every `MotionEvent` received by the `SurfaceView` or host input control to the current
+session:
+
+```java
+@Override
+public boolean onTouchEvent(MotionEvent event) {
+    return session != null && session.dispatchTouchEvent(event);
+}
+```
+
+Forward events only when the session is valid, and preserve the return-value semantics required by
+Android's event dispatch.
+
+## 9. Teardown order
+
+The recommended teardown sequence is:
+
+1. Stop delivering new input events to the session.
+2. Call `pause()` in the appropriate lifecycle callback.
+3. Call `onSurfaceDestroyed()` when the surface is destroyed; call
+   `updateSurface(surface, width, height)` when the surface is replaced.
+4. Call `close()` when the session is no longer needed to release session resources and clear the
+   host reference.
+5. Let the Activity or Fragment complete its own destruction.
+
+## Building from source
+
+To build your own Android artifacts, see
+[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md) in the repository.

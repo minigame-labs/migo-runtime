@@ -29,8 +29,8 @@ npm run docs:serve
 ```
 src/content/docs/            # 中文页面(当前版本,直接映射 /docs/ 路由)
   index.mdx                  # /docs/ 首页
-  0.9/**/*.mdx               # 0.9 冻结归档(starlight-versions 生成,禁止手改)
-  en/**/*.mdx                # 英文实译(latest);en/0.9/** 为 Translation pending 占位
+  0.9/**/*.mdx               # 0.9.7 完整中文冻结归档(starlight-versions 生成,禁止手改)
+  en/**/*.mdx                # 英文实译(latest);en/0.9/** 为完整英文冻结归档
 src/content/versions/        # 归档版本的侧栏快照(0.9.json)
 src/content/i18n/            # zh-CN 的 starlight-versions 文案
 src/components/              # Header/SiteTitle/ThemeProvider/ThemeSelect 覆盖件
@@ -61,9 +61,11 @@ tests/docs.spec.ts           # Playwright + axe
 
 Mermaid 图不能是唯一信息来源(客户端渲染,禁 JS 时不出现)。每幅图后必须紧跟 `### 文字说明`,用有序列表或表格说清节点、方向、分支和失败路径。phase1 契约强制检查这一条。
 
-## 6. i18n 与英文占位页
+## 6. i18n、英文页面与归档
 
 zh 是 root locale,内容在 `src/content/docs/`;en 页面在 `src/content/docs/en/`。latest 英文已于 2026-09-15 全量翻译并进 sitemap;sitemap filter 只排除两个归档树 `/docs/0.9/` 与 `/docs/en/0.9/`。
+
+0.9.7 的中英文归档各有 43 页,与 latest 保持同一套路由和 C ABI 函数节。归档是发布基线,不再作为日常编辑目标;phase1 契约会阻止缺页、英文占位、跨出归档的内部链接或 API 节不一致。
 
 **英文实译页的站内链接必须写 `/docs/en/…`**:Starlight 不改写正文里的绝对链接,写成中文路由就把英文读者第一次点击送进中文页。phase1 契约 §5b 拦截;参考页的 `## migo_*` 函数节还必须与中文页逐页一致(§7)。
 
@@ -94,25 +96,22 @@ This page is pending translation. The 中文版本 (link below) is the current s
 
 Portal 是纯深色,所以文档也是深色锁定(`ThemeProvider.astro` + `ThemeSelect.astro`,后者只渲染版本切换、不出主题切换)。跨站链接(`Header.astro` 顶栏:首页/开发者文档/性能数据/常见问题/SDK 下载)指向 `https://minigame-labs.com` 的绝对地址,改 Portal 导航时这里同步改。**文档面不放门户式 Footer**:页尾只留 starlight 默认的 pager —— 门户 footer 的法律/仓库信息在文档里没有读者收益(2026-09-15 删除 `Footer.astro` 覆盖件)。品牌色只允许 Migo 红 `#e5352c` 一个 accent(`custom.css` 的 `--sl-color-accent`)。品牌 lockup 是单一资产 `public/brand/lockup-on-dark.svg` —— 与 Portal `/brand/` 保持同步,两者来自同一个几何源。
 
-## 8. 发布新版本(0.10 时读这里)
+## 8. 版本归档与发布新系列
 
-当前只有 0.9 一个版本,`/docs/` 根路径直接服务 latest stable,URL 不含版本号。IA 见 `docs/IA.md`(链接待移入;当前 spec 于 `migo-all/migo-www/docs/superpowers/specs/2026-09-14-docs-ia.md`)。**0.10 发布时**按下面做:
+当前稳定 SDK 是 0.9.7。`/docs/` 与 `/docs/en/` 服务当前稳定内容;`/docs/0.9/` 与 `/docs/en/0.9/` 是同一发布基线的完整冻结快照,用于固定链接和后续升级对照。`starlight-versions`、版本切换器、版本搜索和 `versions` collection 均已启用。
 
-1. 确认 `release/VERSION` 已切到 `0.10.0` 且 SDK 已发布(文档永远后于 SDK,见 §10)。
-2. **先装回依赖**(已于 2026-09-14 从 deps 移除,与启用同 PR 才获得供应链审查):`npm i starlight-versions@^0.10.1`;在 `astro.config.mjs` 的 plugins 里启用:
-   ```js
-   starlightVersions({ versions: [{ slug: '0.9' }] }),
-   ```
-   并在 `src/content.config.ts` 加回 `versions` collection(见文件内注释)。
-3. 运行 `npx astro dev` 一次 —— 插件会把当前 `src/content/docs/` 的 0.9 状态归档到 `src/content/docs/0.9/` 和 `src/content/versions/0.9.json`;根目录继续承载 0.10 工作稿。
-4. 全量 `npm run docs:check && npm run docs:build`,确认 `/docs/0.9/` 可访问、根路径是新内容。
-5. 更新 `migo-all/migo-www/scripts/check-built-site.mjs` 的必出路由表(加 `docs/0.9/index.html`)。
-6. **版本组件会被覆盖件吞(必然现在已知):** `Search`(noWorker fork)与 `ThemeSelect`(dark-only)覆盖会让插件的版本组件只 warn 不接管 → 版本切换入口不出现 + Pagefind 的 `version:` 过滤失效。启用版本化必须在同一个 PR 里把手做:ThemeSelect 内部手动渲染 `VersionSelect.astro`;`Search.astro` fork 的 noWorker 逻辑合进 `VersionSearch.astro` 副本（三方合并)。
-7. sitemap/canonical/Caddy 与归档同一 PR:`/docs/0.9/**` 归档后出现就是明确的重复内容。以 IA spec §6.4 清单为准:sitemap filter 同步排除 `/docs/0.9/**`(en 排除是当前已有),Caddy `docsSearch`/`docs_astro` 规则按新的归档目录形状补(portal 端的部署资产算 IA spec 的正式配套)。
+0.9 归档于 2026-09-26 重新生成一次,以补齐此前缺失的页面和英文占位内容。此后禁止手工修订归档;需要勘误时先修 latest,再明确判断是否值得做带审计记录的历史勘误。
 
-**IA 定稿必须先于 0.10 归档**(spec §6.2):归档是冻结的且侧栏从当前 config 前缀化派生,归档之后做 IA 改造 = latest 与 0.9 永久分叉。也不要先在 `astro.config.mjs` 里全开「宿主能力」组再归档 - 未被验证( spec §6.5 )。
+发布下一系列(例如 0.10)时:
 
-旧版本归档是冻结的,禁止手工改 `src/content/docs/0.9/` 修字。
+1. 先发布 SDK,把 `release/VERSION` 更新为真实版本,再维护文档;不要让文档先宣告尚未发布的 API。
+2. 在 `astro.config.mjs` 的 `starlightVersions()` 配置中把新归档放到 `versions` 数组头部,保留 0.9 历史项及准确 label。插件只应生成缺失归档一次。
+3. 检查新归档的中英文路由集合、API 函数节和所有 `/docs/…` 内链都留在对应版本前缀;生成器可能不会改写 JSX 组件的 `href`,phase1 契约会对此失败。
+4. 同步更新 sitemap filter、`migo-www` 必出路由契约和必要的 Caddy 路由规则;归档继续从 sitemap 排除,latest 保持可索引。
+5. 运行 `npm run docs:check && npm run docs:build && npm run docs:smoke`,确认版本切换、版本搜索、中英文归档、404、无 JS 阅读和无障碍检查。
+6. 先提交并推送 `migo`,取得不可变 commit SHA;再更新 `migo-www/docs/migo-docs-source.json` 的 `ref` 和 `expectedVersion`,最后构建、部署网站。
+
+归档内容和侧栏由生成时的 latest 快照派生,因此信息架构调整必须在归档前完成。不要把分支名作为生产来源,也不要在归档生成后用批量替换继续“追平” latest。
 
 ## 9. `release/VERSION` 如何决定 `docsSeries`
 
@@ -142,7 +141,7 @@ npm run docs:serve &   # 另开终端
 npm run docs:smoke     # playwright(需要本机 Chrome,CHROME_PATH 可覆盖)
 ```
 
-Playwright 覆盖:路由矩阵、`/docs/next/` 必须 404、en 占位页 noindex + 回链、无 JS 可读性、搜索、移动端、axe 严重违规为零。
+Playwright 覆盖:路由矩阵、`/docs/next/` 必须 404、英文实译与未来占位页契约、完整 0.9 中英文归档、无 JS 可读性、搜索、移动端、axe 严重违规为零。
 
 ## 13. 常见失败
 
@@ -151,6 +150,6 @@ Playwright 覆盖:路由矩阵、`/docs/next/` 必须 404、en 占位页 noindex
 | links-validator 报 31+ 无效链接 | 写了 Docusaurus 式相对文件链接(`./foo.mdx`);改成 `/docs/foo/` 路由形式。 |
 | `npm run docs:dev` 字体/样式不变 | Vite 缓存了旧 `custom.css`;重启 dev server(Starlight 对 customCss 的 HMR 不可靠)。 |
 | 页面 h1 字体没变 | Starlight 的页面标题 h1 在 `.sl-markdown-content` 外,选择器要含 `h1[id='_top']`。 |
-| en 页在 sitemap 里出现 | sitemap `filter` 被改;恢复 `!page.includes('/docs/en/')` 并跑 `docs:build`。 |
+| 0.9 归档页出现在 sitemap | sitemap `filter` 被改;恢复仅排除 `/docs/0.9/` 与 `/docs/en/0.9/` 的规则并跑 `docs:build`;不要排除 latest 英文页。 |
 | `release/VERSION` 与期望不一致 | `migo-www/docs/migo-docs-source.json` 的 `expectedVersion` 未随 SDK 更新。 |
 | 出现 `docusaurus` 字样的报错或引用 | 清理不彻底;phase1 契约第 6 节列了全部禁留文件。 |

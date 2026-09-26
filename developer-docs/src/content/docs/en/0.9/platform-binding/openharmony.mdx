@@ -1,0 +1,124 @@
+---
+title: OpenHarmony
+sidebar:
+  order: 2
+description: Connecting the OHNativeWindow from an ArkUI XComponent to the
+  engine Surface on OpenHarmony, and correctly managing asynchronous release.
+audience: host-integrator
+platforms:
+  - openharmony
+sourcePaths:
+  - include/migo/platform/openharmony.h
+  - include/migo/surface.h
+  - include/migo/capabilities.h
+  - platforms/openharmony/README.md
+slug: en/0.9/platform-binding/openharmony
+---
+
+This page covers only the platform-binding delta for OpenHarmony. The general
+attach / detach / release contract is described in [Surface Interface](/docs/en/0.9/reference/surface/);
+for Session foreground/background state see [Lifecycle Concepts](/docs/en/0.9/concepts/lifecycle/).
+
+**Availability:** 0.9 has been validated on the API 20 Mate 70 Pro x86\_64 emulator for surface
+attach, content loading, rendering, and touch input. The `aarch64` path on real devices described
+in the README has not yet been validated. The host must always retain its own `OHNativeWindow` /
+XComponent resources until the release observer reports `RELEASED`. `openharmony.h` marks the
+engine acquiring its own native-object reference as a future implementation; do not treat an
+engine reference as a substitute for the host lifetime.
+
+## Descriptor
+
+The ArkUI `XComponent` `OnSurfaceCreated` callback provides an `OHNativeWindow*`. Pass it
+directly into `native_window` without converting it to an HWND or any other window type:
+
+```c
+#include <migo/platform/openharmony.h>
+
+typedef struct MigoOpenHarmonyNativeWindowDescriptor {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW */
+    MigoPlatformDescriptorFlags flags; /* must be 0 */
+    void                *native_window; /* OHNativeWindow* */
+} MigoOpenHarmonyNativeWindowDescriptor;
+```
+
+The outer `MigoSurfaceDescriptor.platform_kind` and the value inside the platform descriptor must
+both be `MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW`. Set `platform_descriptor_size` to the
+`struct_size` of the platform struct (typically `sizeof`), not an arbitrary pointer size.
+
+## Attach on XComponent Creation
+
+```c
+static MigoSurfaceAttachment *s_attachment;
+static uint64_t s_generation;
+
+void on_xcomponent_surface_created(void *oh_native_window,
+                                   uint32_t width, uint32_t height,
+                                   float scale) {
+    MigoOpenHarmonyNativeWindowDescriptor plat;
+    memset(&plat, 0, sizeof plat);
+    plat.struct_size   = (uint32_t)sizeof plat;
+    plat.abi_version   = MIGO_ABI_VERSION_CURRENT;
+    plat.platform_kind = MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW;
+    plat.native_window = oh_native_window;
+
+    MigoSurfaceDescriptor desc;
+    memset(&desc, 0, sizeof desc);
+    desc.struct_size              = (uint32_t)sizeof desc;
+    desc.abi_version              = MIGO_ABI_VERSION_CURRENT;
+    desc.generation               = ++s_generation;
+    desc.platform_kind            = MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW;
+    desc.width_pixels             = width;
+    desc.height_pixels            = height;
+    desc.scale_factor             = scale;
+    desc.color_space              = MIGO_COLOR_SPACE_SRGB;
+    desc.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+    desc.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+    desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;
+    desc.platform_descriptor_size = (uint32_t)sizeof plat;
+    desc.platform_descriptor      = &plat;
+
+    migo_session_attach_surface(session, &desc, &s_attachment);
+}
+```
+
+Substitute the actual pixel dimensions and scale factor provided by the XComponent callback for
+`width`, `height`, and `scale`. The valid range and update rules for these values are part of the
+shared ABI and are not repeated here.
+
+## XComponent Destruction and Release
+
+`OnSurfaceDestroyed` does not mean the GPU has stopped accessing the window. After beginning
+retirement, keep the XComponent, `OHNativeWindow`, and the host event loop alive until the release
+observer reaches `RELEASED`:
+
+```c
+void on_xcomponent_surface_destroyed(void) {
+    MigoSurfaceRelease *release = NULL;
+    if (migo_surface_begin_detach(s_attachment, &release) != MIGO_OK)
+        return;
+    s_attachment = NULL;
+
+    MigoSurfaceReleaseStatus status;
+    do {
+        status.struct_size = (uint32_t)sizeof status;
+        status.abi_version = MIGO_ABI_VERSION_CURRENT;
+        migo_surface_release_query(release, &status);
+    } while (status.state != MIGO_SURFACE_RELEASE_RELEASED);
+
+    migo_surface_release_destroy(release);
+    /* only now may the host release its OHNativeWindow/XComponent resources. */
+}
+```
+
+Do not use `MigoSurfaceAttachment` after `migo_surface_begin_detach` returns `MIGO_OK`; it has
+been consumed. Regardless of whether the engine currently holds its own native-object reference,
+the host must wait for `RELEASED` before destroying the XComponent and `OHNativeWindow`.
+
+## Capability Query
+
+Having `MIGO_PLATFORM_OPENHARMONY_NATIVE_WINDOW` defined does not guarantee that every build can
+attach it. Before creating a Session or a window, call `migo_query_capabilities` and select this
+descriptor only when bit 8 of `platform_kinds` is 1. Otherwise select a platform the build
+supports rather than blindly attempting an attach.

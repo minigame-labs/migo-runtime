@@ -1,0 +1,79 @@
+---
+title: 视图组件
+sidebar:
+  order: 5
+description: MigoGameView(自含生命周期)、MigoGameActivity、ConsoleLogView / DebugOverlayView 的职责与选用。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/MigoGameView.java
+  - platforms/android/library/src/main/java/com/migo/runtime/MigoGameActivity.java
+  - platforms/android/library/src/main/java/com/migo/runtime/ConsoleLogView.java
+  - platforms/android/library/src/main/java/com/migo/runtime/DebugOverlayView.java
+slug: 0.9/android-sdk/views
+---
+
+SDK 提供了**自含视图**与**手工编排**两条集成路线。选项在「谁管生命周期」。
+
+## 两条路线
+
+### `MigoGameView`(推荐嵌入式)
+
+`MigoGameView extends FrameLayout implements SurfaceHolder.Callback` — 自己处理:
+
+* Surface 创建 / 变更 / 销毁全套回调;
+* 触控派发;
+* Activity 生命周期(pause/resume/destroy)走 `ActivityLifecycleCallbacks`;
+* 内存警告转发;
+* Debug overlay(开了就加)。
+
+```java
+MigoGameView gameView = new MigoGameView(context);
+RuntimeConfig config = new RuntimeConfig.Builder(context)
+    .setImmersiveMode(false)   // 嵌入式场景通常 false
+    .build();
+gameView.setConfig(config);
+gameView.setGameListener(listener);
+layout.addView(gameView);
+gameView.loadGame("my-game", "game.js");
+```
+
+`getSession()` 在回调里拿到后可被外部功能面调(`setDebugEnabled` 等)。
+
+### 手工编排:你自己 `SurfaceView` + `GameSession`
+
+游戏页是全屏单游戏容器时,标准做法在 [MigoRuntime](/docs/0.9/android-sdk/runtime/) 与 [GameSession](/docs/0.9/android-sdk/session/) 页已经列全 — 表面三回调、pause/resume/close、触控转发,都自己接。你拿的是控制面;付出的是每一次项目模板同样的生命周期代码重写。
+
+### `MigoGameActivity`
+
+一个 **开箱即跑的示例 Activity**,里子就是手工编排,现成模板更好复制 — 如果你在开新项目,直接在这上面改比重写 SurfaceHolder 流程便宜。
+
+请选择原则:
+
+* 容器场景(聚合容器、多游戏切换、需要生命周期与你其他视图共舞)→ `MigoGameView` 嵌入;
+* 单一全屏游戏页 → 手工编排 or `MigoGameActivity` 模板。
+
+## 调试组件:ConsoleLogView / DebugOverlayView
+
+### `ConsoleLogView`
+
+会话 `setDebugEnabled(true)` 后,挂在 anchor 上的浮动日志视图,装下 JS console 按级别过滤 + 顶部可点开的面板。
+
+* 调用 `attachButton(anchor)`,从该 anchor 上弹;
+* `startPolling()` 等服务推流;
+* `detach()` 离开时拆走避免 leak。
+
+**发布包绝不能 attach** — view 会装住 content console 的所有日志,有性能与隐私双重后果。
+
+### `DebugOverlayView`
+
+帧率 / native 句柄状态微件。`config.isDebugEnabled()` 为真时 `GameSession` 自动创建它并以 `TYPE_APPLICATION_PANEL` 挂到宿主 Activity 的 decor 上(`attachToWindow`) — 浮在游戏 SurfaceView 之上,**不进入** `MigoGameView` 的视图树。宿主也可主动 `attachToWindow(anchor)` 提前挂载;发布包保持 `debugEnabled=false`。
+
+## 视图之间的禁地
+
+| 行为 | 为什么禁 |
+| --- | --- |
+| `MigoGameView.loadGame` 同一个 view 上第二次调 | 路径未定义 — 先 `removeView`,再新建实例 |
+| `createSession` 之后把同一个 surface 塞给别的 view | surface 生命周期跟 view holder 走,双 owner 是泄漏 |
+| 发布构建里 `setDebugEnabled(true)` | ConsoleLogView attach 之后展示内容 console,隐私影响 |

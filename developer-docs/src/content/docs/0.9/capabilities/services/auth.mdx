@@ -1,0 +1,83 @@
+---
+title: 登录与鉴权
+sidebar:
+  order: 1
+description: Android AuthHandler 合同:login/checkSession
+  两个必实现方法、getUserInfo/getPhoneNumber 的默认降级、无 handler 时 "no auth handler" 的语义。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/AuthHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+slug: 0.9/capabilities/services/auth
+---
+
+:::caution[平台范围]
+`AuthHandler` 是 Android Java facade 的合同。C ABI 与跨平台层在 `0.9` 没有公开的登录出口。
+:::
+
+## 宿主要实现什么
+
+通过 `GameSession#setAuthHandler(AuthHandler)` 注册,对应 `GameSession.java` 第 **732** 行。
+
+`AuthHandler` 有两个**必须**实现的方法(无默认):
+
+| 方法 | 触发 | 必须最终调用 |
+| --- | --- | --- |
+| `login(int timeoutMs, LoginCallback)` | `migo.login()` | `callback.onSuccess(code)` 或 `callback.onFailure(reason)` |
+| `checkSession(CheckSessionCallback)` | `migo.checkSession()` | `callback.onSuccess()` 或 `callback.onFailure(reason)` |
+
+另有两个带默认实现的可选方法:
+
+| 方法 | 触发 | 不覆盖时的行为 |
+| --- | --- | --- |
+| `getUserInfo(boolean withCredentials, String lang, UserInfoCallback)` | `migo.getUserInfo()` | `callback.onFailure("not supported")` |
+| `getPhoneNumber(boolean isRealtime, boolean phoneNumberNoQuotaToast, PhoneNumberCallback)` | `migo.getPhoneNumber()` | `callback.onFailure("not supported", null)` |
+
+契约:回调可在任意线程发起;每次调用必须恰好触发一次回调。`login` 的 `code` 是一次性 code,传回游戏服务器换取会话,不是 access token。
+
+## 不实现会怎样
+
+引自 `AuthHandler.java` 头注释:
+
+> Every call fails rather than stalling or reporting a signed-in user:
+> `migo.login()`, `migo.checkSession()`, `migo.getUserInfo()`
+> and `migo.getPhoneNumber()` all settle with `no auth handler`.
+
+设计意图:runtime 不持有账号系统,无法伪造已登录用户。不安装 handler 等价于「本宿主不支持登录」,失败是正确答案而不是异常情况。
+
+## 内容侧看到什么
+
+| migo API | 对应 handler 方法 |
+| --- | --- |
+| `migo.login(options)` | `login(timeoutMs, callback)` |
+| `migo.checkSession(options)` | `checkSession(callback)` |
+| `migo.getUserInfo(options)` | `getUserInfo(withCredentials, lang, callback)` |
+| `migo.getPhoneNumber(options)` | `getPhoneNumber(isRealtime, noQuotaToast, callback)` |
+
+`migo.login()` 成功后,内容侧持有 `code`;通常传给内容自己的服务器,服务器再凭它换取用户身份。runtime 不校验 code 格式,由宿主与平台定义其语义。
+`LoginCallback` 和 `CheckSessionCallback` 的 failure reason 不带 API 前缀;宿主只需传平台失败原因,由 runtime 负责把它放进内容侧结果。
+
+`withCredentials` 只表示内容是否请求敏感加密字段;`lang` 只接受接口注释列出的 `en`、`zh_CN`、`zh_TW` 语言偏好。宿主未覆盖用户资料或手机号方法时,应让默认失败继续向内容传播。
+
+`UserInfo` 默认字段包括 `nickName`、`avatarUrl`、`gender`、`country`、`province`、`city`、`language`;`UserInfoResult` 还承载 `cloudID`。这些字段均由接口中的数据类定义。
+
+不要把 `checkSession` 的成功当作重新登录:它只表示当前 session 有效;失效时调用 failure callback,由内容决定是否再次发起 `migo.login()`。
+两类结果都应由宿主平台的真实登录状态决定,不要用游戏本地状态伪造成功。
+
+`getUserInfo` 的 `UserInfoResult` 字段参考:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `userInfo.nickName` | `String` | 昵称 |
+| `userInfo.avatarUrl` | `String` | 头像 URL |
+| `userInfo.gender` | `int` | 0 未知 / 1 男 / 2 女 |
+| `rawData` / `signature` / `encryptedData` / `iv` | `String` | 平台鉴权字段,宿主自行填充 |
+
+## 平台可用性
+
+| 层 | 状态 |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

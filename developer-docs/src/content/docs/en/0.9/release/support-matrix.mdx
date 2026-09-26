@@ -1,0 +1,51 @@
+---
+title: Support and Version Matrix
+sidebar:
+  order: 2
+description: Current SDK series, semver policy, documentation versioning
+  relationship, and the shape and minimum requirements of release artifacts per
+  platform.
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - release/VERSION
+  - platforms/android/library/build.gradle
+slug: en/0.9/release/support-matrix
+---
+
+This page answers the two most practical questions on the vendor side: **"which version am I integrating, and how does it relate to my platform"**. Maturity assessment ("is it production-ready today") is out of scope here — see [Platform Selection](/docs/en/0.9/concepts/choose-platform/). This page covers mechanical facts: series, artifact shape, and minimum requirements.
+
+## SDK Series and Semver
+
+* Version numbers follow [Semantic Versioning](https://semver.org/); every change is recorded in the [CHANGELOG](https://github.com/minigame-labs/migo/blob/main/CHANGELOG.md) (Keep a Changelog format). The current series is read from `release/VERSION` at the repository root — the developer-documentation version number is also derived from it (`major.minor` becomes `docsSeries`, single source of truth).
+* **Documentation version = SDK version.** starlight-versions archives released series under frozen paths (the current latest is served at `/docs/`; `/docs/0.9/` does not exist until a subsequent series ships). When a future series appears, the previous series is placed in the version switcher as an archive — no manual edits required.
+* **ABI status** remains CANDIDATE: see [ABI Compatibility](/docs/en/0.9/concepts/abi-compatibility/) — the struct-negotiation mechanism is in place and has been validated on both paths, but binary compatibility is not a contractual guarantee until the freeze announcement is made.
+
+## Platform × Artifact
+
+| Platform | Deliverable | ABI Support | Minimum Requirement |
+| --- | --- | --- | --- |
+| Android | Static library + CMake package (`find_package(migo)`), Java AAR facade | arm64-v8a, x86\_64 | minSdk 26 (see the android-sdk page and `test-android-sdk-levels-contract.sh`); on-device multi-touch requires the instrumentation APK path (one of the ABI freeze blockers) |
+| OpenHarmony | Static library, DevEco host project | aarch64, x86\_64 | Target device per the OHOS target manifest; multi-touch validated only in the API 20 simulator — on-device regression is the host's job |
+| Windows | `migo.dll` + `rusty_v8.dll` + headers, CMake target | x64, arm64 | Windows (with ANGLE/HWND); WinUI integration is the host's responsibility |
+| Linux | host-kit toolchain + wayland/x11 platform headers + pkg-config/CMake | x86\_64 | **glibc only** (musl/bionic: headers only, no runtime); official build sysroot and glibc lower bound: see the release manifest |
+| Apple (iOS/macOS) | SwiftPM: `MigoAppleCore` / `MigoAppleRenderer` (CI build artifacts) | arm64, x86\_64 (macOS) / arm64 (iOS) | Placeholder lane; no on-device run records yet; macOS can attach the host's own `CAMetalLayer` |
+
+Per-platform integration details are covered step by step in each quickstart; product-level trade-offs ("is it production-ready") are covered in [Platform Selection](/docs/en/0.9/concepts/choose-platform/).
+
+## When to Re-read This Page
+
+* **When a new series ships** (e.g. 0.10): add a row to this page; the previous series' documentation enters the archive. The specific upgrade guide for 0.10 is in [Version Upgrades](/docs/en/0.9/release/upgrading/).
+* **When ABI CANDIDATE status is lifted**: the ABI section is rewritten in tandem with the [ABI Compatibility](/docs/en/0.9/concepts/abi-compatibility/) status page.
+
+## See Also
+
+* [Version Upgrades](/docs/en/0.9/release/upgrading/) — what to do when switching series
+* [Download and Verification](/docs/en/0.9/release/download-verification/) — artifact signing and integrity
+* [Platform Selection](/docs/en/0.9/concepts/choose-platform/) — maturity-based release surface judgment

@@ -1,0 +1,83 @@
+---
+title: 分享
+sidebar:
+  order: 4
+description: Android ShareHandler 合同:shareAppMessage 的请求字段、ShareSink 的 settle
+  语义、无 handler 时 "shareAppMessage:fail not supported" 的降级。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/ShareHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/ShareSink.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+slug: 0.9/capabilities/services/share
+---
+
+:::caution[平台范围]
+`ShareHandler` 是 Android Java facade 的合同。C ABI 与跨平台层在 `0.9` 没有公开的分享出口。
+:::
+
+## 宿主要实现什么
+
+通过 `GameSession#setShareHandler(ShareHandler)` 注册,对应 `GameSession.java` 第 **808** 行。
+
+`ShareHandler` 的入口是:
+
+```java
+default void shareAppMessage(ShareRequest request, ShareSink sink)
+```
+
+覆盖此方法,把请求桥接到宿主自己的分享面板:系统 chooser、应用内好友选择器或社交 SDK。runtime 不链接分享 SDK,也不持有社交关系。
+
+`ShareRequest` 字段由 runtime 填好:
+
+| 字段 | 语义 |
+| --- | --- |
+| `title` | 分享标题;内容未设置时为空串 |
+| `imageUrl` | 分享图片 URL;内容未设置时为空串 |
+| `query` | 目标游戏收到的查询串,如 `a=1&b=2`,不带前导 `?` |
+| `imageUrlId` | 平台图片 id;宿主不能按该平台解析时忽略 |
+
+分享面板结束后,通过 `ShareSink` 恰好 settle 一次:
+
+| 方法 | 语义 |
+| --- | --- |
+| `settleShared()` | 分享面板流程结束;不代表用户实际发送了消息 |
+| `fail(int errCode, String errMsg)` | 失败,`errMsg` 原样交给内容 |
+
+调用从 runtime 宿主线程到达,不要在其中阻塞;`ShareSink` 可从任意线程调用。内容侧的 `migo.onShareAppMessage` 监听器在 handler 调用前已经运行,请求是合并后的最终内容,不应重新推导默认值。
+
+## 不实现会怎样
+
+引自 `ShareHandler.java` 头注释:
+
+> `migo.shareAppMessage()` fails with
+> `shareAppMessage:fail not supported` and code `-2`. It settles
+> rather than staying silent: content commonly awaits the share before resuming,
+> so a dropped request is a paused game.
+
+默认实现逐字为:
+
+```java
+sink.fail(-2, "shareAppMessage:fail not supported");
+```
+
+## 内容侧看到什么
+
+| migo API | 对应 handler 方法 |
+| --- | --- |
+| `migo.shareAppMessage(options)` | `shareAppMessage(request, sink)` |
+| `migo.onShareAppMessage(listener)` | 在 handler 之前修改最终分享请求 |
+
+`migo.shareAppMessage()` 的成功只表示分享面板流程结束。`ShareSink` 与平台常见小游戏合同一样,不告诉内容用户是否真的发送消息;用它直接发奖励没有事实依据。
+`ShareRequest.query` 不含前导 `?`,因此宿主若把它拼到目标 URL,应按查询参数本体处理。`imageUrlId` 只有在宿主拥有对应平台图片解析能力时才有意义。
+
+`ShareSink` 同样是一次性通道:首个 `settleShared()` 或 `fail(...)` 生效,后续调用被忽略。宿主可在系统分享 Activity 的结果回调线程中 settle。
+
+## 平台可用性
+
+| 层 | 状态 |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

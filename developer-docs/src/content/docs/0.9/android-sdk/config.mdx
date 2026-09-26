@@ -1,0 +1,86 @@
+---
+title: RuntimeConfig
+sidebar:
+  order: 2
+description: RuntimeConfig 是不可变的会话配置:目录、帧率、方向、沉浸式、调试级别、ANR watchdog、代码签名。构造只能走 Builder。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/RuntimeConfig.java
+slug: 0.9/android-sdk/config
+---
+
+`RuntimeConfig` 是不可变的会话配置:**一次创建、全程生效**。改任何一项都得建一个新 Config 重建 session。构造只走 `Builder`。
+
+## 目录三兄弟与 displayDensity
+
+Builder 有两个入口:
+
+```java
+new RuntimeConfig.Builder(Context)                          // cacheDir/filesDir/displayDensity 从 Context 推
+new RuntimeConfig.Builder(cacheDir, filesDir, density)      // 完全自供,脱离 Context
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `cacheDir` | 缓存目录,系统可清 |
+| `filesDir` | 持久目录,系统不清 |
+| `codeCacheDir` | JS bytecode 缓存目录,默认推导自 `cacheDir`(即主缓存目录,系统可清),`setCodeCacheDir` 重写 |
+| `workersPath` | Worker 脚本目录,可为 `null` |
+| `displayDensity` | 像素密度,CSS px 换算基准;自供 Builder 时必须给真值 |
+
+宿主有自己的游戏包/缓存目录规范就用三参 Builder — 把两个根目录取走,不让 SDK 替你挑。
+
+## 渲染节奏
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `targetFps` | `60` | 引擎驱动 `requestAnimationFrame` 的上限 — 是上限不是保证 |
+| `immersiveMode` | `true` | 全屏沉浸 |
+| `startupOrientation` | `null` | 只能是 `"landscape"` / `"portrait"` / `null`;传其他值直接 `IllegalArgumentException` |
+
+## 调试与 watchdog
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `debugEnabled` | `false` | 挂上 DebugOverlay / Console 日志视图 |
+| `logLevel` | `WARN` | `TRACE / DEBUG / INFO / WARN / ERROR / OFF` |
+| `watchdogEnabled` | `true` | 心跳超时上报 native 侧 |
+| `watchdogTimeoutSecs` | `10` | 无心跳的容忍秒数 |
+
+发布包不要关 watchdog — 它是引擎层面唯一能在系统 ANR 之前先把信号抛出来的机制。
+
+## 代码签名
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `codeSigningEnabled` | **`true`** | 验签默认开,别误当成是 debug 开关 |
+| `codeSigningPubkey` | `null` | Hex Ed25519 公钥,64 字符 |
+
+常见错误是误以为发布包里签名验证默认关 — 恰恰相反:默认开,不开 pubkey 时签名验证直接拒收。生产配置 = 两个字段都设 · 调试想跳过 = 显式 `setCodeSigningEnabled(false)`,只当临时手段。
+
+## 内容侧注入
+
+两个仅存于 Builder 的列表字段,都以 JSON 走 JNI 传给 native:
+
+* **subPackages**:`List<String[]>`,每项 `{"name","root"}` — 子包本地挂载规划;
+* **preludeScripts**:`List<String[]>`,每项 `{"name","source"}` — `game.js` 之前先跑的完整脚本源码,注入 polyfill 用,按 list 序执行。
+
+## Builder 全景
+
+```java
+RuntimeConfig config = new RuntimeConfig.Builder(context)
+    .setCodeCacheDir(customCodeCache)
+    .setTargetFps(60)
+    .setStartupOrientation("landscape")
+    .setDebugEnabled(BuildConfig.DEBUG)
+    .setLogLevel(RuntimeConfig.LogLevel.WARN)
+    .setImmersiveMode(true)
+    .setWatchdogEnabled(true)
+    .setWatchdogTimeoutSecs(10)
+    .setCodeSigningEnabled(true)
+    .setCodeSigningPubkey(pubkeyHex)
+    .setWorkersPath(workersDir)
+    .build();
+```

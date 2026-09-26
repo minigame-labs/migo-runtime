@@ -1,0 +1,49 @@
+---
+title: 按宿主场景选集成面
+sidebar:
+  order: 2
+description: 0.9 每个平台实际交付什么、怎么接、坑在哪里 — 一张把「平台支持」翻译回证据的选型矩阵。
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - platforms/
+  - include/migo/
+  - BUILD.md
+slug: 0.9/concepts/choose-platform
+---
+
+「平台支持」这四个字在 0.9 不是均质的。这儿把每个平台**今天能拿去干什么**按证据摆开,选型先看矩阵再看对应 quickstart。
+
+## 成熟度矩阵
+
+| 平台层 | 0.9 交付物 | 集成面 | 缺口 |
+| --- | --- | --- | --- |
+| **Android** | AAR + Java facade(`MigoRuntime` / `GameSession`) | gradle `implementation` + `SurfaceView` 三部曲 | 无 — 主路径 |
+| **OpenHarmony** | 完整 DevEco 宿主项目(`entry/` + hvigor) | 打开工程,按项目 README 跑 | aarch64 真机多指仅在 API20 模拟器验过 |
+| **Windows** | 发布 `migo.dll`(x64/arm64) + `rusty_v8.dll` + C ABI 头 | CMake `migo::migo` target + `HWND` attach | WinUI 集成、Win32 host-kit 未包含;EGLProvider 实现归宿主 |
+| **Linux** | host-kit(工具链) + wayland/x11 平台头 | 供宿主集成的预览构建 | 不是 shipping runtime;定位为开发宿主 |
+| **Apple (iOS/macOS)** | SwiftPM package + `MigoAppleCore` / `MigoAppleRenderer`(CI 构) | SwiftPM dependency 接入 core/renderer 车道 | WebKit 兼容层、性能车道、MacV8 均 placeholder;真机未跑过 |
+
+行内「缺口」列是 rejected-promotion 的真相,不是下一个版本的承诺。
+
+## 快速决策
+
+* **今天要跑生产** → Android,没有第二选择;[Android quickstart](/docs/0.9/getting-started/android/) 就是主路径;
+* **鸿蒙上架** → OpenHarmony 工程是真的能跑的:克隆仓库、开 DevEco、对照 [OpenHarmony quickstart](/docs/0.9/getting-started/openharmony/);但买设备前先确认内容里的多指交互面在 API20 模拟器行为 — 真机多指回归你来做;
+* **桌面渠道(Windows)** → 已发布 DLL 可以直接集成 C ABI,宿主自己写 Win32 窗口/输入泵;[Windows quickstart](/docs/0.9/getting-started/windows/) 按发布包 + `test-windows-sdk-contract.sh` 钉住的 API 面起步;
+* **Apple 生态** → 按「当前集成面」而不是「quickstart」期待;[Apple doc](/docs/0.9/getting-started/apple/) 列出**真实存在**的 SwiftPM 车道与各自的缺口,不编造 AppStore-ready 流程;
+* **Linux 桌面宿主** → 定位为**开发宿主工具链**,不是玩家通道 — 它是你拿来跨平台验证游戏逻辑的表面,不是 0.9 的发布平面。
+
+## 共享的 C ABI 托盘
+
+跨平台共享的部分(`MigoEngine` / `MigoSession` / surface attach / `migo_session_send_*` / `migo_query_capabilities`)见 API 参考的 [C ABI 组](/docs/0.9/reference/overview/) — Android Java facade 也是 ABI 之上的翻译层。选型后,第二反应都相同:能力位查询 → surface 连 → 生命周期通道 → 输入泵,这套与平台无关。
+
+## 不存在的一行
+
+「如果 iOS 完整 ABI 和 OH 桌面端都齐了,为什么还要 Android facade」这是产品选型问题不是技术问题:Android 的 handler 体系(`AdHandler / PaymentHandler / ...`)是小游戏平台内容生态唯一稳定的接触面;跨平台 C ABI 层在 0.9 不提供这些 handler 的对应物。选了非 Android 面 = 选了暂时放弃内容方的支付/广告/分享合同,这是技术边界不是文档疏漏。

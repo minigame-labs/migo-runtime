@@ -29,7 +29,7 @@ flowchart TB
   Boundary --> Core[Rust core]
   Core --> V8[V8 JavaScript runtime]
   Core --> Render[Skia / Canvas / WebGL]
-  Host[宿主 App] <--> SDK[Android facade / C ABI]
+  Host[宿主 App] <--> SDK[C ABI（Android 之上有语言 facade）]
   SDK <--> Core
   Host --> Services[surface · input · storage · network · ads]
 ```
@@ -38,10 +38,14 @@ flowchart TB
 
 1. 小游戏 bundle 只通过 `migo.*` 能力边界访问运行时能力；可选的独立适配器位于引擎之外。
 2. Rust core 编排 V8 JavaScript runtime 与 Skia 渲染后端，输出 Canvas/WebGL 内容。
-3. 宿主 App 通过 Android facade 或 C ABI 创建和管理会话，并自行提供 surface、input、storage、network、ads 等服务。
+3. 宿主 App 通过 C ABI 创建和管理会话 — 这是四个平台唯一共有的事实接口;Android 侧惯用的 Java facade(`MigoRuntime`/`MigoGameView`)只是这层 ABI 之上的语言包装。surface、input、storage、network、ads 等服务由宿主自行提供。
 4. Migo 不提供 DOM、CSS、页面布局或浏览器文档对象模型。
 
 ## 会话生命周期
+
+图上只写函数名；完整签名按所属头文件去 [Session](/docs/0.9/reference/session/)、[Surface](/docs/0.9/reference/surface/) 各页查。
+
+### 初始化
 
 ```mermaid
 sequenceDiagram
@@ -49,42 +53,66 @@ sequenceDiagram
   participant ABI as Migo C ABI
   participant Engine as Engine
   participant Session as Session
-  participant Surface as Surface
   participant Content as Bundle
-
-  Host->>ABI: migo_engine_create(MigoEngineConfig*, MigoEngine**)
+  Host->>ABI: migo_engine_create
   ABI->>Engine: 创建引擎
-  Host->>ABI: migo_session_create(MigoEngine*, MigoSessionConfig*, MigoSession**)
+  Host->>ABI: migo_session_create
   ABI->>Session: 创建会话
-  Host->>ABI: migo_session_set_host_callbacks(MigoSession*, MigoHostCallbacks*)
-  Host->>ABI: migo_session_attach_surface(MigoSession*, MigoSurfaceDescriptor*, MigoSurfaceAttachment**)
-  ABI->>Surface: 附加 surface
-  Host->>ABI: migo_session_load_content(MigoSession*, MigoContentDescriptor*)
+  Host->>ABI: migo_session_set_host_callbacks
+  Host->>ABI: migo_session_attach_surface
+  Host->>ABI: migo_session_load_content
   ABI->>Content: 加载 bundle
-  loop 每帧
-    Host->>ABI: migo_session_notify_vsync(MigoSession*, int64_t)
-    ABI->>Session: 推进帧与渲染
-    Session-->>Host: host callbacks / frame output
-  end
-  Host->>ABI: migo_session_send_touch(MigoSession*, MigoTouchEvent*)
-  ABI->>Content: 转发输入
-  Host->>ABI: migo_surface_begin_detach(MigoSurfaceAttachment*, MigoSurfaceRelease**)
-  ABI->>Surface: 开始释放
-  Host->>ABI: migo_surface_release_query(MigoSurfaceRelease*, MigoSurfaceReleaseStatus*)
-  ABI-->>Host: 查询释放状态
-  Host->>ABI: migo_session_destroy(MigoSession*)
-  ABI->>Session: 销毁会话
-  Host->>ABI: migo_engine_destroy(MigoEngine*)
-  ABI->>Engine: 销毁引擎
 ```
 
 ### 文字说明
 
 1. 宿主先调用 `migo_engine_create`，再调用 `migo_session_create` 获取会话句柄。
 2. 会话建立后安装 `migo_session_set_host_callbacks`，再用 `migo_session_attach_surface` 提供渲染目标。
-3. `migo_session_load_content` 加载内容；宿主按显示系统节奏调用 `migo_session_notify_vsync` 推进帧。
-4. 触摸事件通过 `migo_session_send_touch` 进入内容输入流；其他输入类型使用 input.h 中对应的 `migo_session_send_*` 接口。
-5. surface 丢失时先调用 `migo_surface_begin_detach`，再用 `migo_surface_release_query` 等待释放状态，最后按拥有关系销毁会话和引擎。
+3. `migo_session_load_content` 加载内容 bundle，只此一次（二次调用返回 `MIGO_ERROR_INVALID_STATE`）。
+
+### 每帧与输入
+
+```mermaid
+sequenceDiagram
+  participant Host as 宿主 App
+  participant ABI as Migo C ABI
+  participant Session as Session
+  participant Content as Bundle
+  loop 每帧
+    Host->>ABI: migo_session_notify_vsync
+    ABI->>Session: 推进帧与渲染
+    Session-->>Host: host callbacks / frame output
+  end
+  Host->>ABI: migo_session_send_touch
+  ABI->>Content: 转发输入
+```
+
+### 文字说明
+
+1. 宿主按显示系统节奏调用 `migo_session_notify_vsync` 推进帧（仅在收到 `on_request_frame` 后）。
+2. 触摸事件通过 `migo_session_send_touch` 进入内容输入流；其他输入类型使用 input.h 中对应的 `migo_session_send_*` 接口。
+
+### 释放
+
+```mermaid
+sequenceDiagram
+  participant Host as 宿主 App
+  participant ABI as Migo C ABI
+  participant Engine as Engine
+  participant Session as Session
+  Host->>ABI: migo_surface_begin_detach
+  Host->>ABI: migo_surface_release_query
+  ABI-->>Host: 查询释放状态
+  Host->>ABI: migo_session_destroy
+  ABI->>Session: 销毁会话
+  Host->>ABI: migo_engine_destroy
+  ABI->>Engine: 销毁引擎
+```
+
+### 文字说明
+
+1. surface 丢失时先调用 `migo_surface_begin_detach`，再用 `migo_surface_release_query` 等待释放状态。
+2. 释放完成后按拥有关系销毁会话和引擎；销毁返回 `MIGO_OK` 后句柄立即失效。
 
 ## 平台边界
 

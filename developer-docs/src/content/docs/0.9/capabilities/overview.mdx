@@ -1,0 +1,88 @@
+---
+title: 宿主能力总览
+sidebar:
+  order: 1
+description: 内容(migo.*)向宿主要的三类能力:输入事件、软键盘、Android 端 handler 合同。列出每一项的合同方、降级行为和平台分布。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - include/migo/input.h
+  - include/migo/session.h
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/
+slug: 0.9/capabilities/overview
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+「能力」在 Migo 里是**内容调 `migo.*`、宿主实际实现**的那一层。引擎不伪造宿主已有的系统能力 — 没接的 capability 就返回明确的「不支持」,而不是假装成功。三类:
+
+<CardGrid>
+  <LinkCard title="商业化:广告" href="/docs/0.9/capabilities/commerce/ads/" description="SDK 已发给内容、宿主直接调用的是另一头;激励视频的 settled 降级和回调召集全在这里。" />
+
+  <LinkCard title="商业化:支付" href="/docs/0.9/capabilities/commerce/payment/" description="Midas/Android 支付 handler 合同,默认 isMidasPaymentSupported=false 时的降级行为。" />
+
+  <LinkCard title="平台服务" href="/docs/0.9/capabilities/services/auth/" description="登录鉴权、分享、设置、权限、发包、日志、跳转小程序 — 七个平台 handler 的合同与降级。" />
+
+  <LinkCard title="软键盘与键事件" href="/docs/0.9/capabilities/keyboard/" description="唯一 C ABI 级能力:on_show/hide/update_keyboard 三分体 + IME 组合事件。" />
+</CardGrid>
+
+## 1. 输入事件:宿主喂给引擎
+
+触摸、指针、滚轮、物理按键、IME 组合、手柄 — 都是**单向推入**:`migo_session_send_*` 非阻塞,`MIGO_OK` 只代表「事件已排进内容输入流」,不代表内容消费了它。任何线程可调用。
+
+| 事件族 | 入口 | 典型宿主源 |
+| --- | --- | --- |
+| 触摸 | `migo_session_send_touch` | `MotionEvent`(Android)/ UIKit touch |
+| 指针+滚轮 | `migo_session_send_pointer_event` / `migo_session_send_wheel_event` | 桌面鼠标 |
+| 物理按键 | `migo_session_send_key_event` | `KeyEvent`、手柄按键(hat) |
+| IME 组合 | `migo_session_send_composition_event` | 输入法候选/组字状态 |
+| 手柄状态 | `migo_session_send_gamepad_state` | Gamepad 轮询或中断 |
+
+完整结构与标志在 [输入事件](/docs/0.9/reference/input/) 页;那页是数据面参考,本页只回答「谁负责把谁的什么,发给谁」。
+
+## 2. 软键盘:宿主提供、内容显隐
+
+小程序式软键盘不是输入事件 — 它是**宿主报给引擎的能力位**。合同在 `MigoHostCallbacks` 的三个回调里,全装或全不装(session.h):
+
+* 装齐三个(`on_show_keyboard` / `on_hide_keyboard` / `on_update_keyboard`)+ 一个 dispatcher;
+* 一个都不装 = 宿主没有键盘能力,内容的 `migo.showKeyboard` 立即收到失败回包,不出现假键盘卡在屏上的状态。
+
+内容打开键盘时拿到 `MigoKeyboardShowOptions`:`MIGO_KEYBOARD_FLAG_MULTIPLE`(多行)、`MIGO_KEYBOARD_FLAG_CONFIRM_HOLD`(确认后不收起)、确认键形态(DONE/NEXT/SEARCH/GO/SEND)、键盘类型(TEXT/NUMBER)、初始值与上限。
+
+宿主回报事件走 `migo_session_send_keyboard_event` 四类(INPUT / CONFIRM / COMPLETE / HEIGHT\_CHANGE),高度事件必须是 **CSS px**(跨 DPI 字面换算的错误代价参见 [软键盘页](/docs/0.9/capabilities/keyboard/))。
+
+详见 [软键盘与键事件](/docs/0.9/capabilities/keyboard/)。
+
+## 3. Android 端 handler 合同:宿主在 Java 层接单
+
+GameSession 上 10 个 `set*Handler(...)` 外加 `setListener(GameSessionListener)` 共 11 个注册点,都是宿主侧能力,不接就走运行时级默认降级 —— 每个接口都自带「不接时内容看到什么」的文档契约:
+
+| Handler | 内容的 migo.\* 调用 | 未注册时的答案 |
+| --- | --- | --- |
+| MessageHandler | `migo.sendToHost(type, payload)` | 消息被丢弃不投递 |
+| AuthHandler | `migo.login / checkSession / getUserInfo / getPhoneNumber` | 全部以 `no auth handler` 失败回包 |
+| PermissionHandler | `migo.getSetting` 及请求授权类 | 每个 scope 都是 deny;能力调用带 `auth deny` |
+| AdHandler | `createAd / loadAd / showAd / hideAd` | 所有调用 settle;`showAd` 关时带 `isEnded=false` |
+| SettingHandler | `migo.openSetting` | `-2 openSetting:fail not supported`(但那句代码还要 settle,否则被拒绝授权的内容进不去设置页) |
+| ShareHandler | `migo.shareAppMessage` | `-2 shareAppMessage:fail not supported`(分享等待路径绝不空转) |
+| NavigationHandler | `navigateToMiniProgram / openCustomerServiceConversation` 等 | `-2 navigateToMiniProgram:fail not supported` |
+| PaymentHandler | `requestMidasPayment*` | `isMidasPaymentSupported=false`,任何请求 `-2 not supported` |
+| SubpackageHandler | `loadSubpackage / preDownloadSubpackage` | 下载失败回执;`loadSubpackage()` 退回本地已下载文件执行 |
+| GameLogHandler | `migo 上报的调试/统计日志` | 写到 Android logcat |
+| GameSessionListener | 会话状态广播 | 无广播(Listener 本身不传,所有回调 no-op) |
+
+两类「假的降级」被特意拒绝:
+
+* **支付**:`isMidasPaymentSupported` 默认 `false` — 内容是拿这个值决定要不要展示充值入口的,虚报 `true` 等于挂着拒绝所有购买的商店。
+* **广告**:`showAd` 收了 silent settle,但 `onClose` 是内容发奖励的触发点,所以即使没播任何画面也要 close 一次 — 必须用 `isEnded=false` 关,否则发出去的是「在用户没看广告的情况下给了奖励」。
+
+详细:[广告](/docs/0.9/capabilities/commerce/ads/) / [支付](/docs/0.9/capabilities/commerce/payment/)。
+
+## 分级:export 不存在 vs 能力不存在
+
+* **export 不存在**:`migo_engine_create` 本身在库里没有(`platform/oh.h` 链接错一类,平台头) — 编译/链接期失败,不进运行时。
+* **能力不存在**:`migo_query_capabilities` 报的 `platform_kinds` 位里没有那种 surface kind / 软键盘三分体没装齐 / `setAdHandler` 没注册 — 运行时按上表 settle,内容包括降级分支全在 migo.\* 协议里有文档。
+
+运行库能力查询本身的字段与 ABI 检查协议见 [运行库能力查询](/docs/0.9/reference/capabilities/)。

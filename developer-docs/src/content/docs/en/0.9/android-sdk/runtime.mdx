@@ -1,0 +1,85 @@
+---
+title: MigoRuntime
+sidebar:
+  order: 1
+description: "Android SDK entry point: singleton, version and status queries,
+  four createSession variants, and Safe-variant error-return semantics."
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/MigoRuntime.java
+slug: en/0.9/android-sdk/runtime
+---
+
+`MigoRuntime` is the entry point and singleton for the Migo Android SDK. The content side is **process-scoped**: one runtime instance per process, with multiple `GameSession` instances attached to it.
+
+## Singleton and fallback constants
+
+```java
+MigoRuntime runtime = MigoRuntime.getInstance();
+String version = MigoRuntime.SDK_VERSION;   // BuildInfo.VERSION, written at compile time
+```
+
+| Method | Description |
+| --- | --- |
+| `getVersion()` | Always `BuildInfo.VERSION` (= `SDK_VERSION`) |
+| `getNativeVersion()` | Version reported by the native library |
+| `isNativeLoaded()` | Whether native loading succeeded |
+| `getNativeLoadError()` | Original `Throwable` when loading fails (`null` on success) |
+| `getMinSdkVersion()` | Minimum API floor at native compile time |
+| `isDeviceSupported()` | Whether the current device meets native-side requirements |
+| `getActiveSessionCount()` | Number of active sessions |
+
+`getNativeLoadError()` is the only reliable first-hand evidence during diagnosis — much more reliable than searching a crash stack for `UnsatisfiedLinkError`.
+
+## Session creation: four variants
+
+```java
+GameSession createSession(Activity, Surface, RuntimeConfig, String gameId);      // creates the surface now
+GameSession createSession(Context, Surface, RuntimeConfig, String gameId);      // no Activity needed
+GameSession createSessionWarm(Activity, RuntimeConfig, String gameId);           // warm start; surface supplied later
+Result<GameSession> createSessionSafe(Activity, Surface, RuntimeConfig, String);  // does not throw
+Result<GameSession> createSessionWarmSafe(Activity, RuntimeConfig, String);
+```
+
+### Decision points
+
+* **Activity-bound** vs **Context-only**: the `Activity` variant must be called on the main thread (it configures UI) and reports a thread violation otherwise; the `Context` variant has no UI requirement. Use the Activity variant when you can run on the main thread to avoid an extra thread branch;
+* **Immediate** vs **warm**: use immediate creation when a Surface is available before game resources are unpacked; use warm creation when resources are downloaded first and the Surface is supplied later;
+* **Throwing** vs **`Result`**: `Safe` variants fold startup errors such as main-thread violations and native-not-loaded into `Result` instead of throwing. For UI control paths, `Safe` is the default — startup need not succeed, but failure must produce an error that can be shown.
+
+### Result shape
+
+```java
+Result<GameSession> r = runtime.createSessionSafe(activity, surface, config, gameId);
+if (r.isFailure()) {
+    showLaunchError(r.getErrorMessage());
+    return;
+}
+GameSession session = r.getValue();
+```
+
+## Device gate: reject unsupported devices
+
+`isDeviceSupported()` checks device requirements on the native side: support does not mean the game will run effortlessly, but lack of support is grounds under the SDK documentation to reject startup.
+
+```java
+if (!runtime.isNativeLoaded() || !runtime.isDeviceSupported()) {
+    // tell the user the minimum OS requirement; do not crash silently
+}
+```
+
+## ICU: optional
+
+Call `initIcuData(String path)` before a game requires ICU number or date formatting. If it is not called, native may locate `datadir` itself; on failure it returns `false`, which cannot be distinguished from native-load failure via `getNativeLoadError`, so check the logs.
+
+## Usage pattern
+
+**Startup**: `getInstance` → check `isNativeLoaded` (if not loaded, startup is impossible; show a prompt) → check `isDeviceSupported` (if unsupported, show a prompt) → create an Activity `SurfaceView` → call `createSession*` inside `surfaceCreated` after `addCallback` → `session.startGame("game.js")`.
+
+**Lifecycle**: `onPause` → `session.pause()`; `onResume` → `session.resume()`; `onDestroy` → `session.close()`.
+
+**Events**: `surfaceView.setOnTouchListener` → `session.dispatchTouchEvent(event)`.
+
+The above is the complete usage framework from the header Javadoc of `MigoRuntime.java`, consistent with the source documentation.

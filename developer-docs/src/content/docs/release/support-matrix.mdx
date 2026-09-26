@@ -21,7 +21,7 @@ sourcePaths:
 ## SDK 系列与 semver
 
 - 版本号遵循 [Semantic Versioning](https://semver.org/)，每个变更记 [CHANGELOG](https://github.com/minigame-labs/migo/blob/main/CHANGELOG.md)（Keep a Changelog 格式）；当前系列读仓库根的 `release/VERSION`——开发者文档的版本号也由它派生（major.minor 即 docsSeries，单一事实源）。
-- **文档版本 = SDK 版本**。starlight-versions 把已发布系列归档成已冻结路径（当前 latest 服务于 `/docs/`，无归档系列之前不存在 `/docs/0.9/`）。一个将来 series 出现时，前一系列作为归档放入版本切换器，不再手工改。
+- **文档版本 = SDK 版本**。当前稳定内容服务于 `/docs/`，0.9.7 发布基线同时完整冻结在 `/docs/0.9/`；英文对应 `/docs/en/` 与 `/docs/en/0.9/`。未来 series 发布时，上一系列由 starlight-versions 生成新归档并进入版本切换器，归档不再作为日常编辑目标。
 - **ABI 状态**仍是 CANDIDATE：见 [ABI 兼容性](/docs/concepts/abi-compatibility/)——结构协商机制都在并已双线验证，但冻结公告没出之前别把二进制兼容当合同。
 
 ## 平台 × 产物

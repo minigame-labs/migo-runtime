@@ -12,6 +12,7 @@
       "translations": {
         "en": "Getting started"
       },
+      "collapsed": true,
       "items": [
         {
           "autogenerate": {
@@ -25,6 +26,7 @@
       "translations": {
         "en": "Concepts"
       },
+      "collapsed": true,
       "items": [
         {
           "autogenerate": {
@@ -34,21 +36,93 @@
       ]
     },
     {
+      "label": "宿主能力",
+      "translations": {
+        "en": "Host capabilities"
+      },
+      "collapsed": true,
+      "items": [
+        {
+          "slug": "capabilities/overview"
+        },
+        {
+          "slug": "capabilities/keyboard"
+        },
+        {
+          "label": "商业化",
+          "translations": {
+            "en": "Monetization"
+          },
+          "collapsed": true,
+          "items": [
+            {
+              "autogenerate": {
+                "directory": "capabilities/commerce"
+              }
+            }
+          ]
+        },
+        {
+          "label": "平台服务",
+          "translations": {
+            "en": "Platform services"
+          },
+          "collapsed": true,
+          "items": [
+            {
+              "autogenerate": {
+                "directory": "capabilities/services"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "label": "API 参考",
       "translations": {
         "en": "API reference"
       },
+      "collapsed": true,
       "items": [
         {
           "label": "C ABI",
           "translations": {
             "en": "C ABI"
           },
-          "collapsed": false,
+          "collapsed": true,
           "items": [
             {
               "autogenerate": {
                 "directory": "reference"
+              }
+            }
+          ]
+        },
+        {
+          "label": "平台 surface 绑定",
+          "translations": {
+            "en": "Platform surface bindings"
+          },
+          "collapsed": true,
+          "items": [
+            {
+              "autogenerate": {
+                "directory": "platform-binding"
+              }
+            }
+          ]
+        },
+        {
+          "label": "Android SDK",
+          "translations": {
+            "en": "Android SDK"
+          },
+          "collapsed": true,
+          "items": [
+            {
+              "autogenerate": {
+                "directory": "android-sdk"
               }
             }
           ]
@@ -60,6 +134,7 @@
       "translations": {
         "en": "Release & operations"
       },
+      "collapsed": true,
       "items": [
         {
           "autogenerate": {

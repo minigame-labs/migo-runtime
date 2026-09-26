@@ -1,0 +1,39 @@
+---
+title: Version Upgrades
+sidebar:
+  order: 3
+description: "Standard procedure for switching SDK series: review changes, align
+  versions, and verify that documentation follows; migration items for 0.9 to
+  0.10 are filled in when 0.10 is finalized."
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - release/VERSION
+  - CHANGELOG.md
+slug: en/0.9/release/upgrading
+---
+
+Switching to a different SDK series is not "replace the jar and rebuild". This page sets the order for every step when making a series jump (0.9 → 0.10, 0.10 → 0.11, and so on), along with the mechanism that keeps the documentation in sync automatically. The migration-item table for each specific jump is added to the corresponding section when that version is finalized — **this page never contains placeholders for unreleased versions**:
+
+## Standard Procedure
+
+1. **SDK first, documentation second.** The release order is always SDK artifacts first (including `release/VERSION`), documentation next, and the website last. The same applies to your code: upgrade the SDK dependency and get the build green first, then return to the new documentation pages.
+2. **Read the current-series section of the CHANGELOG.** It follows the [Keep a Changelog](https://keepachangelog.com/) format with five sections: Added, Changed, Deprecated, Removed, and Fixed.
+3. **Let the developer documentation follow the series number.** The version switcher at the top of the documentation sidebar reads `release/VERSION`; after upgrading the SDK, check whether the `docs-version` meta tag or sidebar version should switch (a patch within the same series does not switch it).
+4. **Run your critical scenarios.** While ABI remains CANDIDATE, run the full `surface` attach/retire flow, the input pump, and your custom dispatcher first. Before the freeze, a minor release may also rearrange the caller-facing structures — the only mechanism guaranteed to provide forward compatibility is `struct_size`/`abi_version` negotiation (see [ABI Compatibility](/docs/en/0.9/concepts/abi-compatibility/)).
+5. **If you copied documentation snippets.** When the documentation's archive prefix (`/docs/0.9/`) appears, update referenced links to the archived form or to the current latest — archived content is frozen, and behavior for the new series appears only on latest.
+
+## 0.9 → 0.10 (This Section Is Filled In When 0.10 Is Finalized)
+
+The breaking-change list, migration steps, and minimum toolchain requirements for 0.10 will be written in the corresponding `CHANGELOG.md` version section at the same time, with this page serving as the landing page for the stale-version banner. **Until then, this section describes only the procedure itself and makes no content claims.**
+
+## Stable Release Line
+
+* For the list of released SDK series, artifact shapes, and minimum platform-support requirements, see [Support and Version Matrix](/docs/en/0.9/release/support-matrix/).
+* For when ABI will lose its cap and freeze, the blockers subsection of [ABI Compatibility](/docs/en/0.9/concepts/abi-compatibility/) is the authoritative status.

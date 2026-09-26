@@ -1,0 +1,58 @@
+---
+title: Content Bundle and Deployment
+sidebar:
+  order: 5
+description: What a mini-game bundle is, where it lives in the engine file tree,
+  the isolation rules for content_id, and who is responsible for staging,
+  loading, and updating.
+audience: host-integrator
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - openharmony
+  - windows
+sourcePaths:
+  - include/migo/session.h
+slug: en/0.9/concepts/content-bundle
+---
+
+"Bundle deployment" is a phrase that has been explained separately in the quick-start guide, the capabilities overview, and the error reference. This page is the single source of truth. Every other page from this point forward says only "stage the content as described here" and does not repeat the details.
+
+## What a Bundle Is
+
+A mini-game bundle is a **self-contained directory**: one entry JavaScript file plus everything it references (code splits, images, fonts, WASM, config files). The engine has no registry and no central manifest — **location is identity**: where the bundle lives is what it is.
+
+## Where It Lives: File-Tree Discipline
+
+All content resolution starts from the engine's file root, at a fixed path shape:
+
+```text
+<files_root>/migo/games/<content_id>/code/<entry>
+```
+
+Three invariants:
+
+1. **`content_id` isolates everything.** Two games with the same id share a single subtree — save data, caches, and the code directory all live under it. The host's one promise to the engine is therefore: **no two distinct games may share a `content_id`**. Collisions do not produce errors; they silently overwrite each other.
+2. **`code/` is the directory the engine reads.** The bundle's entry point and its dependencies go here. Placing them there is **the host's responsibility** (copy, unzip, or download); the engine does not move files for you.
+3. **Never guess the path.** The directory is always given to you by the engine's API (Android: `session.getPaths().getCodeDir()`; on the C ABI side see the path fields in [Session](/docs/en/0.9/reference/session/)). Hard-coding internal paths makes your host brittle to any future engine layout change.
+
+## Stage → Load → Update
+
+| Phase | Who | Rule |
+| --- | --- | --- |
+| Stage | Host | Write the complete bundle into `code/` before starting; any partial-write failure mode at startup is yours to own |
+| Verify | Engine | Content may carry a signature credential; **unsigned content is an explicit opt-in** — rejected by default, because silently accepting unsigned content is exactly what this ABI is designed to prevent |
+| Load | Engine | `migo_session_load_content` (`startGame()` in the Android Java SDK); **once per session only** — a second call returns `MIGO_ERROR_INVALID_STATE` |
+| Update | Host + engine contract | New content means a new session: after updating the bundle, start a fresh Session (see [Session Lifecycle](/docs/en/0.9/concepts/lifecycle/)). Do not expect to hot-swap content by reusing a session |
+
+## Platform Differences Are a Single Layer Deep
+
+"Where the directory comes from" is platform-specific (Android's `getCodeDir()`, the engine files directory on desktop). The rules themselves are the same across all platforms. Platform-specific pages document only "how to obtain this directory on this platform" — they do not restate the invariants on this page. Restating them is the entry point for documentation drift.
+
+## Related
+
+* [Session Lifecycle](/docs/en/0.9/concepts/lifecycle/) — how sessions and content relate to each other
+* [Download and Verification](/docs/en/0.9/release/download-verification/) — signature verification for SDK artifacts themselves
+* [Android Quick Start §5–§6](/docs/en/0.9/getting-started/android/) — platform-specific staging walkthrough

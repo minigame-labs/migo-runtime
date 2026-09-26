@@ -1,0 +1,84 @@
+---
+title: 导航
+sidebar:
+  order: 6
+description: Android NavigationHandler 合同:小程序跳转与客服入口的双形态回包、请求字段、无 handler 时两个
+  not supported 降级。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/NavigationHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/NavigationSink.java
+  - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+slug: 0.9/capabilities/services/navigation
+---
+
+:::caution[平台范围]
+`NavigationHandler` 是 Android Java facade 的合同。C ABI 与跨平台层在 `0.9` 没有公开的导航出口。
+:::
+
+## 宿主要实现什么
+
+通过 `GameSession#setNavigationHandler(NavigationHandler)` 注册,对应 `GameSession.java` 第 **826** 行。
+
+接口有两个入口:
+
+| 方法 | 内容 API | 结果通道 |
+| --- | --- | --- |
+| `navigateToMiniProgram(NavigateRequest, NavigationSink)` | `migo.navigateToMiniProgram()` | `sink.settleNavigated()` 或 `sink.fail(...)` |
+| `openCustomerServiceConversation(CustomerServiceRequest)` | `migo.openCustomerServiceConversation()` | 返回 `true` / `false` |
+
+`NavigateRequest` 字段:
+
+* `appId` — 内容提供的目标小程序 app id,不会为空;是否允许启动由宿主决定
+* `path` — 目标内部路径,内容未提供时为空串
+* `extraData` — `String`、`Boolean`、`Number`、`List`、`Map` 组成的不可变数据树
+* `envVersion` — `develop`、`trial` 或 `release`,默认 `release`
+
+`CustomerServiceRequest` 字段:
+
+* `sessionFrom` — 用户从游戏哪里进入客服,未设置时为空串
+* `showMessageCard` — 是否预填描述游戏的卡片
+* `sendMessageTitle` / `sendMessagePath` / `sendMessageImg` — 卡片标题、游戏路径和图片,未设置时为空串
+
+调用从 runtime 宿主线程到达;不要阻塞。`NavigationSink` 可从任意线程调用,但 `navigateToMiniProgram` 必须最终恰好 settle 一次。客服接口没有 sink:启动客服 UI 后立即返回 `true`,而不是等待 UI 关闭。
+
+## 不实现会怎样
+
+引自 `NavigationHandler.java` 头注释:
+
+> `migo.navigateToMiniProgram()` fails with
+> `navigateToMiniProgram:fail not supported` and code `-2`, and
+> `migo.openCustomerServiceConversation()` fails with
+> `openCustomerServiceConversation:fail not supported`.
+
+默认方法逐字实现:
+
+```java
+sink.fail(-2, "navigateToMiniProgram:fail not supported");
+```
+
+以及客服入口默认 `return false`;runtime 据此向内容结算上述 `openCustomerServiceConversation:fail not supported`。
+
+## 内容侧看到什么
+
+| migo API | 宿主侧行为 |
+| --- | --- |
+| `migo.navigateToMiniProgram(options)` | 启动目标后 `settleNavigated`,拒绝或失败时 `fail` |
+| `migo.openCustomerServiceConversation(options)` | 客服 UI 启动即成功;无法启动则返回 `false` 对应失败 |
+
+两者都把用户带出游戏、进入宿主拥有的目标。runtime 没有 app registry,也没有客服系统;宿主要自行决定允许哪些 `appId` 以及如何打开客服渠道。
+`NavigateRequest.extraData` 是不可变数据树,宿主应按 `Map` / `List` / 基础值读取,不要把它当作可执行或可变对象。`envVersion` 由内容请求决定,默认值是接口注释所列的 `release`。
+
+`navigateToMiniProgram` 的 sink 与客服方法的布尔返回不可混用:前者允许异步 Activity result,后者只报告客服 UI 是否已经启动。客服 UI 关闭时没有额外内容侧结果。
+宿主对未托管的 `appId` 应通过 `NavigationSink#fail` 拒绝,而不是启动一个并不存在的目标。
+
+客服方法成功的时点是 conversation UI started,不是用户关闭 UI 的时点。
+
+## 平台可用性
+
+| 层 | 状态 |
+| --- | --- |
+| Android Java facade | ✓ |
+| C ABI | none |

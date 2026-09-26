@@ -1,0 +1,169 @@
+---
+title: Linux
+sidebar:
+  order: 3
+description: Selecting an X11 or Wayland native surface descriptor on Linux,
+  binding the host window to the engine, and safely completing asynchronous
+  release.
+audience: host-integrator
+platforms:
+  - linux
+sourcePaths:
+  - include/migo/platform/x11.h
+  - include/migo/platform/wayland.h
+  - include/migo/surface.h
+  - include/migo/capabilities.h
+  - platforms/linux/host-kit/README.md
+slug: en/0.9/platform-binding/linux
+---
+
+This page covers only the two native surface shapes for Linux. The common ABI fields, generation
+semantics, and asynchronous release contract are described in
+[Surface Interface](/docs/en/0.9/reference/surface/). The goal here is to clarify what each X11 or Wayland
+host must hand to the engine and which objects must remain alive during that time.
+
+**Availability:** The X11 C ABI and Qt Widgets Host Kit are verified in 0.9. The
+toolkit-neutral `linux-surface-host` for Wayland is available to hosts, but Qt Wayland, Qt Quick,
+and GTK 4 are outside the current support statement. Always treat `migo_query_capabilities`
+`platform_kinds` as the authoritative source for a given build.
+
+## Check Build Capabilities First
+
+`platform_kinds` is a bitmap indexed by platform number: `MIGO_PLATFORM_X11_WINDOW` has value 6
+and `MIGO_PLATFORM_WAYLAND_SURFACE` has value 7. Pass a shape to attach only when its corresponding
+bit is 1. If the symbol is defined but the build does not implement it, attach returns
+`MIGO_ERROR_UNSUPPORTED_PLATFORM`.
+
+```c
+#include <migo/capabilities.h>
+
+MigoCapabilities caps;
+caps.struct_size = (uint32_t)sizeof caps;
+caps.abi_version = MIGO_ABI_VERSION_CURRENT;
+if (migo_query_capabilities(&caps) != MIGO_OK)
+    return; /* if the query fails, do not guess the platform's capabilities. */
+
+int can_x11 = (caps.platform_kinds & (1ULL << MIGO_PLATFORM_X11_WINDOW)) != 0;
+int can_wayland = (caps.platform_kinds & (1ULL << MIGO_PLATFORM_WAYLAND_SURFACE)) != 0;
+/* pick can_x11 or can_wayland by the host's actual window type. */
+```
+
+## Wayland: `wl_display` + `wl_surface`
+
+### Descriptor
+
+```c
+#include <migo/platform/wayland.h>
+
+typedef struct MigoWaylandSurfaceDescriptor {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_WAYLAND_SURFACE */
+    MigoPlatformDescriptorFlags flags; /* must be 0 */
+    void                *display;       /* wl_display* */
+    void                *surface;       /* wl_surface* */
+} MigoWaylandSurfaceDescriptor;
+```
+
+Both `display` and `surface` are host-owned objects. The host remains responsible for dispatch and
+the surface role; the engine does not take over the event loop. After the first successful attach,
+the Session's graphics identity is fixed to that `wl_display` — do not swap displays when
+replacing a surface.
+
+### Attach and Release
+
+```c
+MigoWaylandSurfaceDescriptor plat;
+memset(&plat, 0, sizeof plat);
+plat.struct_size   = (uint32_t)sizeof plat;
+plat.abi_version   = MIGO_ABI_VERSION_CURRENT;
+plat.platform_kind = MIGO_PLATFORM_WAYLAND_SURFACE;
+plat.display       = host_wl_display;
+plat.surface       = host_wl_surface;
+
+MigoSurfaceDescriptor desc;
+memset(&desc, 0, sizeof desc);
+desc.struct_size              = (uint32_t)sizeof desc;
+desc.abi_version              = MIGO_ABI_VERSION_CURRENT;
+desc.generation               = next_generation;
+desc.platform_kind            = MIGO_PLATFORM_WAYLAND_SURFACE;
+desc.width_pixels             = width;
+desc.height_pixels            = height;
+desc.scale_factor             = scale;
+desc.color_space              = MIGO_COLOR_SPACE_SRGB;
+desc.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+desc.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;
+desc.platform_descriptor_size = (uint32_t)sizeof plat;
+desc.platform_descriptor      = &plat;
+
+MigoSurfaceAttachment *attachment = NULL;
+MigoResult result = migo_session_attach_surface(session, &desc, &attachment);
+```
+
+After detach, `wl_display`, `wl_surface`, the host dispatcher, and the event loop must all remain
+valid until `migo_surface_release_query` reports `MIGO_SURFACE_RELEASE_RELEASED`. Only then call
+`migo_surface_release_destroy` and destroy the host objects.
+
+## X11: `Display*` + `Window`
+
+### Descriptor
+
+```c
+#include <migo/platform/x11.h>
+
+typedef struct MigoX11WindowDescriptor {
+    uint32_t             struct_size;
+    uint32_t             abi_version;
+    MigoPlatformKind     platform_kind; /* MIGO_PLATFORM_X11_WINDOW */
+    MigoPlatformDescriptorFlags flags; /* must be 0 */
+    void                *display;      /* Display*, used only to identify the server at attach */
+    uintptr_t             window;      /* X11 Window / XID */
+    int32_t               screen;
+    uint32_t              reserved0;   /* must be 0 */
+} MigoX11WindowDescriptor;
+```
+
+`display` is borrowed only until attach returns: the engine uses it to identify the X11 server and
+then opens its own render connection. The engine never closes the host connection and never
+dispatches events. `window` is created and destroyed by the host.
+
+The first attach fixes the X11 server, not a specific host `Display*` pointer. When replacing a
+window, use the same server; switching to a different server returns `MIGO_ERROR_INVALID_STATE`.
+The window must not be destroyed until the release reaches `RELEASED`; the host connection is
+managed by the host's own event-loop lifetime.
+
+```c
+MigoX11WindowDescriptor plat;
+memset(&plat, 0, sizeof plat);
+plat.struct_size   = (uint32_t)sizeof plat;
+plat.abi_version   = MIGO_ABI_VERSION_CURRENT;
+plat.platform_kind = MIGO_PLATFORM_X11_WINDOW;
+plat.display       = host_display;
+plat.window        = host_window;
+plat.screen        = host_screen;
+
+MigoSurfaceDescriptor desc;
+memset(&desc, 0, sizeof desc);
+desc.struct_size              = (uint32_t)sizeof desc;
+desc.abi_version              = MIGO_ABI_VERSION_CURRENT;
+desc.generation               = next_generation;
+desc.platform_kind            = MIGO_PLATFORM_X11_WINDOW;
+desc.width_pixels             = width;
+desc.height_pixels            = height;
+desc.scale_factor             = scale;
+desc.color_space              = MIGO_COLOR_SPACE_SRGB;
+desc.alpha_mode               = MIGO_ALPHA_MODE_OPAQUE;
+desc.preferred_presentation_mode = MIGO_PRESENTATION_MODE_DEFAULT;
+desc.capability_flags         = MIGO_SURFACE_CAPABILITY_NONE;
+desc.platform_descriptor_size = (uint32_t)sizeof plat;
+desc.platform_descriptor      = &plat;
+
+MigoSurfaceAttachment *attachment = NULL;
+migo_session_attach_surface(session, &desc, &attachment);
+```
+
+The X11 Host Kit's `qt6-x11-surface-view` uses a native child `QWidget`, but this does not change
+the C ABI ownership rules: the host still owns the Session, the view, the X11 `Display`, and the
+XID, and must wait for surface release before destroying them. Qt Wayland, Qt Quick, and GTK 4
+are not implemented alternatives to what is described on this page.

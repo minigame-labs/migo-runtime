@@ -1,0 +1,102 @@
+---
+title: Payment
+sidebar:
+  order: 2
+description: 'The Android PaymentHandler contract: two request forms, the
+  synchronous answer from isMidasPaymentSupported, and the meaning of dual
+  signatures. Why the default "refuse sales" behavior is the best answer for
+  content.'
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/PaymentHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/PaymentSink.java
+slug: en/0.9/capabilities/commerce/payment
+---
+
+:::caution[Platform scope]
+As with advertising, `PaymentHandler` is a contract for the Android Java facade. The C ABI and cross-platform layer expose no public payment surface in `0.9`.
+:::
+
+## Division of Responsibilities Between the Two Interfaces
+
+| Method | Content call | Who sets the price |
+| --- | --- | --- |
+| `requestMidasPayment(PaymentRequest, PaymentSink)` | `migo.requestMidasPayment(...)`, platform-style purchase | The platform/host's offerId price list |
+| `requestMidasPaymentGameItem(GameItemPaymentRequest, PaymentSink)` | `migo.requestMidasPaymentGameItem(...)`, with a **signed order supplied by content** | Content's own service |
+
+The dual signature on `requestMidasPaymentGameItem` is the key defense: `signData` is the order body signed by the content server; `paySig / signature` are the payment/session signatures supplied by content. Charging without verifying the signatures means trusting the price content chose for itself — the source file states this in a prominent comment; it is not a recommendation.
+
+## Fallback Answer: `isMidasPaymentSupported`
+
+Before rendering a purchase-entry UI, content asks `migo.checkIsSupportMidasPayment()`.
+
+Requirements:
+
+* **Synchronous answer** — content waits for the result before deciding whether to render, so read it from memory rather than querying the network;
+* **Default `false`** — an unimplemented host means unsupported, giving content an honest answer and preventing later requests;
+* Returning `true` while leaving both request methods unimplemented gives content a hopeful default route but makes every purchase fail — implement the full surface together. The source documentation calls this "advertises a store that refuses every purchase".
+
+## Terminal Semantics: `settlePaid / fail`
+
+`PaymentSink` has only two terminal methods:
+
+```java
+sink.settlePaid();          // The only state that counts as "paid"; without it, no payment fact exists
+sink.fail(errCode, errMsg); // Failure reply
+```
+
+* **Settle exactly once**; settling zero or more than once is a bug;
+* Both settle methods may be called from any thread, so an SDK listener can forward directly to them;
+* Do not fabricate success. This shares the same design principle as the advertising side's `AdEventSink#emitClose` `isEnded` semantics.
+
+## Implementation Shape
+
+```java
+session.setPaymentHandler(new PaymentHandler() {
+    @Override
+    public boolean isMidasPaymentSupported() {
+        return billing.ready;   // Local initialization state, no network lookup
+    }
+
+    @Override
+    public void requestMidasPayment(PaymentRequest req, PaymentSink sink) {
+        if (!billing.ready) {
+            sink.fail(-2, "not ready");
+            return;
+        }
+        billing.purchase(req.offerId, req.zoneId, req.outTradeNo,
+            new BillingCallback() {
+                @Override public void onSuccess() { sink.settlePaid(); }
+                @Override public void onError(int code, String msg) { sink.fail(code, msg); }
+            });
+    }
+
+    @Override
+    public void requestMidasPaymentGameItem(GameItemPaymentRequest req, PaymentSink sink) {
+        orderVerifier.verify(req.signData, req.paySig, req.signature, verified -> {
+            if (!verified) {
+                sink.fail(-11, "signature mismatch");
+                return;
+            }
+            // Execute the complete order in signData; do not fill price fields back in
+        });
+    }
+});
+```
+
+## PaymentRequest Field Reference (Matches the `requestMidasPayment` Protocol)
+
+| Field | Meaning |
+| --- | --- |
+| mode | Payment mode, generally `"game"` |
+| env | `0` production / `1` platform sandbox |
+| offerId | Product-slot ID on the host/platform side |
+| currencyType | ISO currency code, generally `"CNY"` |
+| platform | Platform selection; content leaves this as an empty string |
+| buyQuantity | Amount of currency content wants to purchase |
+| zoneId | Game server/zone ID |
+| outTradeNo | Content's own transaction number, for reconciliation |
+
+The source comments fix the meaning of empty values one by one (for example, `zoneId` defaults to `1` and `currencyType` defaults to `"CNY"`). Normalize these values consistently before integrating with the host-side business system.

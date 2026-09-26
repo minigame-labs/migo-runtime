@@ -1,0 +1,104 @@
+---
+title: 广告
+sidebar:
+  order: 1
+description: Android AdHandler 合同:8 种广告形态、adId 句柄语义、降级 settle 的「isEnded=false
+  关」为什么是安全网而不是建议。本页只覆盖 Android Java 层。
+audience: host-integrator
+platforms:
+  - android
+sourcePaths:
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/AdHandler.java
+  - platforms/android/library/src/main/java/com/migo/runtime/callback/AdEventSink.java
+slug: 0.9/capabilities/commerce/ads
+---
+
+:::caution[平台范围]
+广告合同目前**只**在 Android Java facade 定义。C ABI 与跨平台层的广告面在 `0.9` 没有公开出口 — 做 iOS/桌面接入时不要假定 `AdHandler` 形态在那里复用。
+:::
+
+## 角色
+
+* **内容**:调 `migo.createAd({adType, adUnitId, …})`,得到 ad 对象的 `load / show / hide / destroy` 句柄集;
+* **引擎**:把每次调用折成 `AdHandler` 上的方法,不回包时判广告请求 stall;
+* **宿主**:实现 `AdHandler`,桥接到自己的广告 SDK(Pangle / GDT优量汇 / 快手联盟 / 自营) — runtime 不链广告 SDK、不持有广商凭证、不判断广告看没看完。
+
+## 形态
+
+类型常量走 `AdHandler.TYPE_*`:
+
+| Type | 场景 |
+| --- | --- |
+| `rewardedVideo` | 奖励视频 |
+| `interstitial` | 插屏 |
+| `banner` | 横幅 |
+| `custom` | 自定义(原生样式) |
+| `grid` | 格状广告 |
+| `gameBanner` / `gameIcon` / `gamePortal` | 互推容器三种面 |
+
+宿主不必实现全部 — 每种 `create*` 都有「not supported」的默认 settle(下面解释为什么默认就有行为)。
+
+## adId 句柄与回调线程
+
+* `createAd(adId, adType, adUnitId, optionsJson)` 的 `adId` 是 **runtime 分配的句柄**,一生不变。这个 ad 对象的所有事件都必须用同一个 id 报回;
+* 所有 AdHandler 方法在 **runtime 的宿主线程**上调用,不要阻塞本线程做 SDK 工作。回调到内容侧走 `AdEventSink`(任意线程安全),全集只有 7 个方法:`emitLoad(int)` / `emitLoad(int, boolean)`(是否回落到分享页式兜底)、`emitError`、`emitClose(adId, isEnded)`、`emitShowFailed`(= `emitError` + `emitClose(false)`)、`emitResize`、`emitHide`。**没有** `emitShow` / `emitClick` / `emitReward` — 奖励发放由 `emitClose` 的 `isEnded` 承载。
+
+灭后不许再报:`destroyAd` 之后任何 `emit*` 对该 `adId` 都会被丢弃 — 引擎的内存纪律,内容侧已经把句柄还回去了。`AdEventSink` 的发送是**任意线程安全**,但没有重试语义,不要指望终态在 SDK 里排队。
+
+`emitResize` 是 **CSS px** — 和软键盘 `HEIGHT_CHANGE` 一样是内容布局坐标,报物理像素会让内容按错误的几倍尺寸切广告位。
+
+## 降级合同:不接也是工作态
+
+内容调没有 handler 的广告请求,**不挂起**: `AdHandler` 每个方法自带的默认实现就是 settle 唯一的事实通道:
+
+| 调用 | 无 handler(默认)行为 |
+| --- | --- |
+| `createAd` | `emitError(adId, -1, "createAd:fail not supported")` |
+| `loadAd` | `emitError(adId, -1, "loadAd:fail not supported")` |
+| `showAd` | `emitShowFailed(adId, -1, "showAd:fail not supported")` = `emitError` + `emitClose(adId, false)` |
+| `hideAd` | `emitHide(adId)` — 定位类广告的 `onHide` 让内容知空间释放出来,不是错误 |
+| `updateAdStyle` | 无操作(布局变化被吃下,不报 ad error) |
+| `destroyAd` | 无操作 |
+
+那个 `isEnded=false` 是流量方安全网也是内容兼容层:
+
+* **安全网**:真看过才发奖励,虚报 `true` 等于给凭空用户发奖励金 — publishing 侧的钱没出结果之前不能 claim;
+* **兼容层**:常见小游戏内容把「发放奖励 + 继续游戏」的逻辑放在 `onClose` 回调里。不接时如果只报错不 close,内容就停在被暂停的录制条上 — 玩家被卡,比「没广告发现没有机会奖励」更差。
+
+两个为什么是一个规则:**凡是内容在等的结果,不 settle 就是 stall;凡是能伪装 paid 的结果,settle 必须带事实标**。这是 `AdHandler.java` 头注释里逐字注出的设计,不是本文建议。
+
+## 实现样本(极简)
+
+只有一个 `createAd`,用 `adType` 分路;是否"看完成"经 `emitClose` 的 `isEnded` 上报:
+
+```java
+session.setAdHandler(new AdHandler() {
+    @Override
+    public void createAd(int adId, String adType, String adUnitId,
+                         String optionsJson, AdEventSink sink) {
+        if (!TYPE_REWARDED_VIDEO.equals(adType)) {
+            AdHandler.super.createAd(adId, adType, adUnitId, optionsJson, sink);
+            return;
+        }
+        RewardedAd ad = pangle.create(adUnitId);
+        ad.setListener(new RewardedAd.AdInteractionListener() {
+            @Override public void onAdReady() { sink.emitLoad(adId); }
+            @Override public void onError(int code, String msg) {
+                sink.emitError(adId, code, msg);
+            }
+            @Override public void onReward(RewardItem item, boolean verified) {
+                sink.emitClose(adId, verified); // 完成代表发奖;中断代表不发
+            }
+        });
+        // 异步加载失败也走 emitShowFailed:错误 + close(false),不遗留暂停内容
+    }
+});
+```
+
+`optionsJson` 是平台风格的剩余创建参数(`adIntervals / style / adTheme / gridCount / count / multiton`)的 JSON 对象 — 可以是 `"{}"`,不会是 `null`。按需解析你支持的键;不支持的键安全忽略。
+
+## 手列的坑
+
+1. **不要在 runtime 宿主线程里做 SDK init** — 创建广告对象可以,几十毫秒的 SDK init 全算广告请求 stall,跟没接一个效果。
+2. **adUnitId 验证在宿主侧做** — runtime 不验证广告位 id;做错号的请求要按 `emitError` 回。
+3. **同一 adUnitId 多次 create** 是内容的正常行为(`multiton` 选项),宿主若要复用对象实例,务必在复用前把 sink 关到正确的 adId 下 — 记住 sink 是绑 adId 的通道不是绑 SDK 对象。

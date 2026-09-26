@@ -1,0 +1,102 @@
+---
+title: OpenHarmony 快速开始
+sidebar:
+  order: 6
+description: 在鸿蒙宿主应用中集成 Migo C SDK，通过 ArkUI XComponent 挂载 OHNativeWindow 并验证触摸输入。
+audience: host-integrator
+platforms:
+  - openharmony
+sourcePaths:
+  - platforms/openharmony/README.md
+  - include/migo/platform/openharmony.h
+  - platforms/openharmony/entry/oh-package.json5
+  - platforms/openharmony/hvigorfile.ts
+slug: 0.9/getting-started/openharmony
+---
+
+`platforms/openharmony/` 是一个完整的 DevEco 项目，消费 Migo 的 C SDK：
+仅依赖 `include/migo/` 下的公开头文件，并将 `libmigo_capi.a` 链接进宿主自己的
+`libmigohost.so`。这与 Android NativeActivity 宿主对 Android C SDK 的关系相同，
+使本项目成为 SDK 的测试而非 SDK 的扩展。
+
+Surface 由 ArkUI `XComponent` 提供；其 `OnSurfaceCreated` 回调将 `OHNativeWindow*`
+交给 `MigoOpenHarmonyNativeWindowDescriptor`，无需转换，只需遵守所有权纪律：
+宿主保留自己的引用，引擎获取自己的引用，在 release observer 报告
+`MIGO_SURFACE_RELEASE_RELEASED` 之前宿主不得销毁窗口。
+
+## 1. 准备环境
+
+* OpenHarmony SDK 5.1.0-Release 或更高版本（约 3.2 GB）。安装说明在
+  `scripts/dev-setup-ohos.sh` 文件头部；设置 `OHOS_NDK_HOME` 指向包含 `native/`
+  的目录。
+* DevEco Studio（用于构建 HAP 和调试，运行在 Windows 侧）。
+* `hdc`（鸿蒙设备连接工具）——`hdc` 与 `adb` 是不同协议，`adb devices` 显示空结果
+  是正常现象，二者不能互换。
+
+验证 SDK 配置并打印所需导出：
+
+```bash
+bash scripts/dev-setup-ohos.sh --check
+```
+
+## 2. 构建 Migo OpenHarmony SDK
+
+在 Linux 上构建静态库包（`lib/libmigo_capi.a`、公开头文件、CMake 包）：
+
+```bash
+# x86_64（仿真器目标）：
+bash scripts/build-ohos-sdk.sh x86_64
+
+# aarch64（真机目标）：
+bash scripts/build-ohos-sdk.sh aarch64
+```
+
+产出目录为 `dist/migo-ohos-<arch>/`。
+
+## 3. 构建鸿蒙宿主 App（HAP）
+
+暂存 SDK 并构建 HAP（单条命令）：
+
+```bash
+bash scripts/build-ohos-host.sh --arch x86_64   # 仿真器
+```
+
+**注意**：hvigor 拒绝 UNC 项目路径（报告 `Invalid project path`），因此
+`build-ohos-host.sh` 会将项目复制到 `C:\migo-ohos-host`（可用环境变量
+`MIGO_OHOS_WIN_DIR` 覆盖）再在 Windows 侧构建。DevEco、hvigor、hdc 和仿真器
+均运行在 Windows 侧；`cmd.exe` 拒绝 UNC 工作目录，每次调用都从本地目录运行。
+
+## 4. 在仿真器或真机上运行
+
+```bash
+bash scripts/run-ohos-host.sh --shot /tmp/s.jpeg
+```
+
+此命令通过 `hdc` 安装 HAP、启动应用，并将截图保存到指定路径。
+
+## 5. 内置触摸探针内容
+
+HAP 在首次运行时将 `entry/src/main/resources/rawfile/content/` 下的内容解压到
+应用文件目录（沙箱路径仅对该进程可见，无法从外部通过 `hdc` 推入——`hdc` 以无特权
+`shell` 用户运行）。内置内容是**触摸探针**：
+
+* 整个屏幕为单一颜色——无触摸前为**红色**，有手指按下时为**绿色**，所有手指抬起后为**蓝色**。
+* 颜色变化确认输入穿越了 C ABI、引擎并到达 JS；不需要日志即可验证。
+
+## 6. 已验证内容
+
+在 API 20 仿真器（Mate 70 Pro 配置，1316×2598）上已验证：
+
+* surface attach（generation 1）、内容加载、`content is ready`
+* 渲染——探针红色铺满屏幕
+* 完整触摸生命周期：点击前红色，抬指后蓝色，通过采样渲染像素确认
+
+**尚未验证**：aarch64 真实 HarmonyOS NEXT 硬件，以及多指输入（`hdc` 无法合成
+第二个指针，与 `adb` 有相同限制）。OpenHarmony SDK 包从 v0.9.2 起已持续发布
+（`release-ohos` job），但设备侧验证仅在仿真器上完成。
+
+## 从源码构建
+
+SDK 构建详情见仓库中的
+[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md)
+"6. OpenHarmony SDK" 一节。

@@ -1,0 +1,130 @@
+---
+title: Apple 平台（iOS / macOS）
+sidebar:
+  order: 7
+description: Apple 平台集成状态：MigoAppleCore 已构建测试，MigoAppleRenderer 已构建，WebKit 与
+  MacV8 lane 为占位符，尚无设备运行记录。
+audience: host-integrator
+platforms:
+  - ios
+  - macos
+sourcePaths:
+  - platforms/apple/README.md
+  - include/migo/platform/ios.h
+  - include/migo/platform/macos.h
+  - platforms/apple/Package.swift
+  - platforms/apple/core/Package.swift
+  - platforms/apple/core/Sources/MigoAppleCore/MigoRuntimeProfile.swift
+  - platforms/apple/Sources/MigoAppleRenderer/MigoEngineCapabilities.swift
+slug: 0.9/getting-started/apple
+---
+
+本页记录 Apple 平台的**当前构建状态**，而非端到端集成步骤。
+Apple README 原文：「Not a skeleton any more, and not a product either.」
+区分两者的标准是编译器是否见过它——因此本节仅报告编译器见到了什么。
+
+**没有任何代码在 iPhone 上运行过。** G0 探测（`ProbeApp/`）是第一个 Mac 任务；
+产品选择由探测证据决定，不由本仓库中的任何文档预先给出。
+
+## 当前构建状态
+
+| 组件 | 状态 |
+| --- | --- |
+| `core/`（`MigoAppleCore`） | 在每次 PR 上于 Apple silicon runner 构建、测试并交叉编译为 `aarch64-apple-ios` |
+| `Sources/MigoAppleRenderer` | Apple SDK workflow 构建 iOS/simulator shipping slices 及独立 macOS external-frame 诊断包；macOS 诊断包不是 V8 产品测试 |
+| `Sources/MigoAppleWebKit` | 占位符；可编译，无行为 |
+| `Sources/MigoMacV8` | 占位符；可编译，无行为 |
+| `WebContent/PerformancePlus` | 编码器在每次 PR 上于 node 下对同一黄金语料库运行 |
+| `ProbeApp/` | 仅有 README；无源文件，在有真机可运行之前也不应有 |
+
+## 三条产品路线
+
+| 产品 | 内容 JS 运行位置 | 渲染器 | 进入 v1 |
+| --- | --- | --- | --- |
+| `MigoAppleWebKit` | WebContent，完整 Web 平台 | WebKit | 是 |
+| `MigoApplePerformancePlus` | WebContent，Worker 或 Window（由 G0 探测选择） | 本进程：Skia + ANGLE/Metal | 条件性 |
+| `MigoMacV8` | 本进程，V8 with JIT | 本进程：Skia + ANGLE/Metal | 是（仅 macOS） |
+
+`MigoAppleRenderer` 被 Performance+ 和 MacV8 两条 native 渲染 lane 共享；
+`MigoAppleWebKit` 有意不依赖它——请求了兼容性基线的宿主不应链接一个永远不会驱动的渲染器。
+
+## 两个 SwiftPM 包
+
+仓库包含两个包，拆分是有意义的负载：
+
+* **`platforms/apple/core/Package.swift`**（`MigoAppleCore`）：无引擎依赖，无需拉取
+  或构建任何内容即可解析和构建。包含 profile policy、部署底线、生命周期、权限、metrics。
+* **`platforms/apple/Package.swift`**（shipping package）：声明一个 binary target，
+  指向 `scripts/build-apple-sdk.sh` 生成的 xcframework；在 Mac 上运行该脚本之前
+  无法解析。这意味着在此 skeleton 存续期间，没有任何 Swift 文件被编译——包括那些
+  镜像 `contracts/apple/*.json` 并仅比较文本的文件。`core/` 是不需要引擎的那半部分，
+  因此在每次 PR 上构建和测试。
+
+## C ABI Surface 类型
+
+`include/migo/platform/ios.h` 声明两种 iOS surface 描述符：
+
+* `MigoIosUiViewDescriptor`：持有宿主拥有的 `UIView*`（便捷路径；Host Kit 创建并
+  拥有该 view 的唯一 `CAMetalLayer` backing）。
+* `MigoIosMetalLayerDescriptor`：持有宿主拥有的 `CAMetalLayer*`（Performance+ lane
+  需要宿主拥有的 Metal surface；这是权威路径）。
+
+`include/migo/platform/macos.h` 声明两种 macOS surface 描述符：
+
+* `MigoMacosNsViewDescriptor`：持有宿主拥有的 `NSView*`（注释标明为
+  "A future implementation"）。
+* `MigoMacosMetalLayerDescriptor`：持有宿主拥有的 `CAMetalLayer*`。macOS 上的
+  `CAMetalLayer` 挂载已在 CI 上运行（apple-sdk.yml run 34017950809），完成了完整的
+  retirement 握手：`begin_detach`、轮询至 `MIGO_SURFACE_RELEASE_RELEASED`、
+  `migo_surface_release_destroy`、`migo_session_destroy`、`migo_engine_destroy`。
+
+## 构建（需要 macOS + Xcode）
+
+`core/` 无引擎依赖，可独立解析、构建和测试：
+
+```bash
+bash scripts/test-apple-swift-core-engine-free.sh
+```
+
+shipping package 需要先安装 ANGLE 并构建 SDK，**仅限 macOS**：
+
+```bash
+bash scripts/fetch-apple-angle.sh ios
+bash scripts/fetch-apple-angle.sh ios-simulator
+export MIGO_APPLE_BUILD_ROOT=/tmp/migo-apple-build
+bash scripts/build-apple-sdk.sh --platform ios --configuration Release
+bash scripts/build-apple-sdk.sh --platform ios-simulator --configuration Release
+```
+
+产出 `platforms/apple/Frameworks/MigoEngine.xcframework`，包含 iOS device 和
+iOS simulator 两个 platform group。
+
+macOS external-frame 渲染器/ABI 诊断测试（不是 V8 产品测试）：
+
+```bash
+bash scripts/build-apple-sdk.sh --platform macos \
+  --product external-frames-diagnostic --configuration Debug
+```
+
+packaging 契约可在无 Xcode 的情况下验证：
+
+```bash
+bash scripts/test-apple-shipping-package-contract.sh
+bash scripts/test-apple-sdk-packaging.sh
+```
+
+## 目前不存在的内容
+
+以下内容**目前不可用**；不要依据本页尝试：
+
+* 在 iPhone 或 iPad 上运行 Migo 的步骤——`ProbeApp/` 无源文件，G0 探测尚未进行。
+* `MigoAppleWebKit` 或 `MigoMacV8` 的应用 session 实现——Swift 占位符可编译，但不
+  实现任何 session 逻辑。
+* macOS V8 shipping artifact 的可用性——README 明确说 SDK workflow 不发布
+  macOS V8 release，也不声称已经构建 macOS V8 archive；占位符可编译不等于产品完整。
+
+## 从源码构建
+
+构建细节见仓库中的
+[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md) 及
+[`platforms/apple/README.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/platforms/apple/README.md)。
