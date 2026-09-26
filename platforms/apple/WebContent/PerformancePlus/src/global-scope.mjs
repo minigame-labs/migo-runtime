@@ -11,23 +11,36 @@
 // baseline (`published_surface_full_v0.txt`, via `engine/published-globals.mjs`)
 // rather than a list of Worker names someone thought of.
 //
-// Inherited members stay reachable -- EventTarget's `addEventListener` among
-// them -- because a global object's prototype chain is immutable. Everything the
-// producer itself still needs from the Worker is captured in `platform.mjs`
-// before this runs.
+// A Worker's names are not all own properties: WebKit defines `importScripts`
+// and the rest of WorkerGlobalScope's members on the interface prototypes
+// between the global and EventTarget.prototype, and those are as visible to
+// `typeof importScripts` as an own property. They are retired there too. The
+// walk stops at EventTarget.prototype, which every event target shares -- the
+// producer's own WebSocket among them -- and whose members stay reachable from
+// the global because a global object's prototype chain cannot be changed.
+// Everything the producer itself still needs from the Worker is captured in
+// `platform.mjs` before this runs.
 
 /**
- * Delete every own string-named property of `scope` not in `published`.
- * Answers the names that could not be deleted; a non-configurable global is a
- * surface this producer cannot align, and the caller refuses to run content on
- * it rather than run it on a surface nobody has checked.
+ * Delete every string-named property not in `published` from `scope` and from
+ * each object on its prototype chain before `shared` -- and never from
+ * Object.prototype, whose members every object in the realm inherits. Answers the names that
+ * could not be deleted; a non-configurable global is a surface this producer
+ * cannot align, and the caller refuses to run content on it rather than run it
+ * on a surface nobody has checked.
  */
-export function retireUnpublishedGlobals(scope, published) {
+export function retireUnpublishedGlobals(scope, published, shared) {
   const keep = new Set(published);
   const refused = [];
-  for (const name of Object.getOwnPropertyNames(scope)) {
-    if (keep.has(name)) continue;
-    if (!Reflect.deleteProperty(scope, name)) refused.push(name);
+  for (
+    let holder = scope;
+    holder !== null && holder !== shared && holder !== Object.prototype;
+    holder = Object.getPrototypeOf(holder)
+  ) {
+    for (const name of Object.getOwnPropertyNames(holder)) {
+      if (keep.has(name)) continue;
+      if (!Reflect.deleteProperty(holder, name)) refused.push(name);
+    }
   }
   return refused;
 }
