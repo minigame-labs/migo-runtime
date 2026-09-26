@@ -388,7 +388,13 @@ fn retire_unexpected_surface(
 /// quarantined for process lifetime instead of risking a host-side use-after-
 /// free.
 fn destroy_render_owner(cm: &mut CanvasManager, render_binding: &mut RenderSurfaceBinding) {
-    if cm.destroy_all() {
+    // EGL teardown drains its own autoreleased objects before the leases drop
+    // and publish RELEASED; see `release_retired_resource`.
+    let destroyed = {
+        let _teardown_pool = shared::objc_autorelease::autorelease_scope();
+        cm.destroy_all()
+    };
+    if destroyed {
         render_binding.clear_after_egl_teardown();
     } else {
         render_binding.quarantine_after_failed_egl_teardown();
