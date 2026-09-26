@@ -11,9 +11,6 @@ use std::{
     time::Instant,
 };
 
-#[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
-
 #[cfg(feature = "zip-extract")]
 use shared::protocol::io_cmd::{ZipEntryData, ZipEntryResult};
 use shared::{
@@ -1198,10 +1195,15 @@ fn next_temp_id() -> u64 {
 /// not, which is why the old value was wrong on any filesystem.
 const MMAP_READ_THRESHOLD: u64 = 8 * 1024 * 1024;
 
+// Which path `read_file` took, per thread. `read_file` runs on its caller's
+// thread and the test harness runs each test on its own, so a test reads only
+// its own calls. They were process-wide statics, and a test asserting "no read
+// path taken" failed whenever another test read a file in parallel.
 #[cfg(test)]
-static MMAP_PATH_TAKEN: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-static READ_PATH_TAKEN: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    static MMAP_PATH_TAKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static READ_PATH_TAKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 /// Read a file (or a range within it). Enforces MAX_READ_LENGTH.
 ///
@@ -1272,7 +1274,7 @@ pub fn read_file(
                         &format!("size={}B mmap=1", data.len()),
                     );
                     #[cfg(test)]
-                    MMAP_PATH_TAKEN.fetch_add(1, Ordering::Relaxed);
+                    MMAP_PATH_TAKEN.set(MMAP_PATH_TAKEN.get() + 1);
                     return Ok(data);
                 }
                 Err(e) => {
@@ -1287,7 +1289,7 @@ pub fn read_file(
         // by MAX_READ_LENGTH, checked above) so we skip the `Vec` realloc
         // growth loop.
         #[cfg(test)]
-        READ_PATH_TAKEN.fetch_add(1, Ordering::Relaxed);
+        READ_PATH_TAKEN.set(READ_PATH_TAKEN.get() + 1);
         let mut buf = Vec::with_capacity(file_len as usize);
         (&mut file)
             .take(file_len)
@@ -1852,11 +1854,11 @@ mod tests {
 
             for _ in 0..5 {
                 std::hint::black_box(read_file(p, None, None, false).unwrap());
-                MMAP_PATH_TAKEN.store(0, Ordering::Relaxed);
+                MMAP_PATH_TAKEN.set(0);
                 std::hint::black_box(read_file(p, None, None, true).unwrap());
             }
             assert_eq!(
-                MMAP_PATH_TAKEN.load(Ordering::Relaxed),
+                MMAP_PATH_TAKEN.get(),
                 1,
                 "the mmap-labeled path must actually take mmap for {size_kib} KiB"
             );
@@ -1871,9 +1873,9 @@ mod tests {
             let via_mmap = {
                 let started = Instant::now();
                 for _ in 0..ITERATIONS {
-                    MMAP_PATH_TAKEN.store(0, Ordering::Relaxed);
+                    MMAP_PATH_TAKEN.set(0);
                     std::hint::black_box(read_file(p, None, None, true).unwrap());
-                    assert_eq!(MMAP_PATH_TAKEN.load(Ordering::Relaxed), 1);
+                    assert_eq!(MMAP_PATH_TAKEN.get(), 1);
                 }
                 started.elapsed()
             };
@@ -1897,19 +1899,19 @@ mod tests {
         std::fs::write(&below, vec![0xA5u8; MMAP_READ_THRESHOLD as usize - 1]).unwrap();
         std::fs::write(&above, vec![0xA5u8; MMAP_READ_THRESHOLD as usize]).unwrap();
 
-        MMAP_PATH_TAKEN.store(0, Ordering::Relaxed);
-        READ_PATH_TAKEN.store(0, Ordering::Relaxed);
+        MMAP_PATH_TAKEN.set(0);
+        READ_PATH_TAKEN.set(0);
         let below_data = read_file(below.to_str().unwrap(), None, None, true).unwrap();
         assert_eq!(below_data.len(), MMAP_READ_THRESHOLD as usize - 1);
-        assert_eq!(MMAP_PATH_TAKEN.load(Ordering::Relaxed), 0);
-        assert_eq!(READ_PATH_TAKEN.load(Ordering::Relaxed), 1);
+        assert_eq!(MMAP_PATH_TAKEN.get(), 0);
+        assert_eq!(READ_PATH_TAKEN.get(), 1);
 
-        MMAP_PATH_TAKEN.store(0, Ordering::Relaxed);
-        READ_PATH_TAKEN.store(0, Ordering::Relaxed);
+        MMAP_PATH_TAKEN.set(0);
+        READ_PATH_TAKEN.set(0);
         let above_data = read_file(above.to_str().unwrap(), None, None, true).unwrap();
         assert_eq!(above_data.len(), MMAP_READ_THRESHOLD as usize);
-        assert_eq!(MMAP_PATH_TAKEN.load(Ordering::Relaxed), 1);
-        assert_eq!(READ_PATH_TAKEN.load(Ordering::Relaxed), 0);
+        assert_eq!(MMAP_PATH_TAKEN.get(), 1);
+        assert_eq!(READ_PATH_TAKEN.get(), 0);
 
         let _ = std::fs::remove_dir_all(below_dir);
         let _ = std::fs::remove_dir_all(above_dir);
