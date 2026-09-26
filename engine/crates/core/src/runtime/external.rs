@@ -206,6 +206,11 @@ struct ExternalDecodeContext<'a> {
     /// image)`. `None` on a submit path built without them.
     services: Option<&'a ServiceContext>,
     builder: shared::FramePacketBuilder,
+    /// Whether this packet ends a frame (`FLAG_PRESENT`) rather than being a
+    /// barrier. Its Canvas2D batches carry it as `present`, as the embedded
+    /// runtime's do: the renderer marks the onscreen 2D canvas for presentation
+    /// from that flag, and from nothing else.
+    presents: bool,
 }
 
 impl frame_decode::GlDecodeContext for ExternalDecodeContext<'_> {
@@ -243,7 +248,7 @@ impl frame_decode::RenderSink for ExternalDecodeContext<'_> {
             shared::protocol::render_cmd::CanvasBatchPayload {
                 canvas_id,
                 commands,
-                present: false,
+                present: self.presents,
                 dirty_rect: None,
             },
         ));
@@ -1993,6 +1998,7 @@ impl SubmitPath {
                 budget.frame_op_capacity(),
             )
             .push(shared::FrameOp::BeginFrame),
+            presents: parsed.presents(),
         };
         frame_decode::decode_render_stream_into_with_plan(&mut sink, validated, budget);
         drop(scratch);
@@ -3981,6 +3987,78 @@ mod tests {
         );
         assert_eq!(received(&receiver), (true, true));
         assert_eq!(submit.ingress.lock().last_accepted_sequence(), 2);
+    }
+
+    /// Canvas2D work in the packet that ends a frame is work to present, and in
+    /// a barrier it is not -- the same `present` the embedded runtime gives its
+    /// own batches (`build_frame_packet(present)` / `flush_as_barrier`).
+    ///
+    /// The renderer marks the onscreen 2D canvas for presentation from that
+    /// flag alone; `FrameOp::Present` does not. Every Canvas2D batch this lane
+    /// built said `false`, so on the Performance+ lane a game drawing only with
+    /// Canvas2D ran, drew into its canvas, and put a black screen on the device
+    /// -- WebGL content was unaffected because its batches mark the canvas
+    /// themselves.
+    #[test]
+    fn canvas2d_batches_present_exactly_when_their_packet_ends_the_frame() {
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        let packet = |sequence: u64, flags: u32| {
+            let words: Vec<u8> = [
+                stream::MAGIC,
+                stream::STREAM_VERSION,
+                stream::pack_header(frame_wire::canvas2d::OP2D_SELECT_CANVAS, 2),
+                1,
+                stream::pack_header(frame_wire::canvas2d::OP2D_SAVE, 1),
+            ]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+            let mut frame = frame_wire::builder::WireFrameBuilder::new();
+            frame.launch_nonce = NONCE;
+            frame.sequence = sequence;
+            frame.flags = flags;
+            frame
+                .section(frame_wire::SECTION_KIND_COMMAND_STREAM, 5, &words)
+                .build()
+        };
+        let batch_presents = |receiver: &crossbeam_channel::Receiver<
+            shared::protocol::render_cmd::RenderCommand,
+        >| {
+            let Ok(shared::protocol::render_cmd::RenderCommand::FramePacket(packet)) =
+                receiver.try_recv()
+            else {
+                panic!("the renderer was not handed a frame packet");
+            };
+            let flags: Vec<bool> = packet
+                .ops()
+                .iter()
+                .filter_map(|op| match op {
+                    shared::FrameOp::CanvasBatch(batch) => Some(batch.present),
+                    _ => None,
+                })
+                .collect();
+            assert!(!flags.is_empty(), "the packet carried no Canvas2D batch");
+            flags
+        };
+
+        assert_eq!(
+            submit.submit_frame(&packet(1, 0)).decision,
+            IngressDecision::Accepted
+        );
+        assert!(
+            batch_presents(&receiver).iter().all(|present| !present),
+            "a barrier's Canvas2D work must not be presented"
+        );
+        assert_eq!(
+            submit
+                .submit_frame(&packet(2, frame_wire::FLAG_PRESENT))
+                .decision,
+            IngressDecision::Accepted
+        );
+        assert!(
+            batch_presents(&receiver).iter().all(|present| *present),
+            "the Canvas2D work of the packet that ends the frame must be presented"
+        );
     }
 
     #[test]
