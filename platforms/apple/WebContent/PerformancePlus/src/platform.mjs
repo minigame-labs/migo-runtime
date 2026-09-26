@@ -42,4 +42,7 @@ export const platform = Object.freeze({
   WebSocket: globalThis.WebSocket,
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
+  // The platform's, before the engine installs its own under that name: where
+  // retiring the Worker's globals stops (`global-scope.mjs`).
+  eventTargetPrototype: globalThis.EventTarget?.prototype ?? null,
 });
