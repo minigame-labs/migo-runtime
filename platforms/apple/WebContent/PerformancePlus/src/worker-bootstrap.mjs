@@ -13,6 +13,7 @@
 // to whatever else is listening.
 
 import { FrameSession } from "./frame-session.mjs";
+import { platform } from "./platform.mjs";
 import { isServiceDownMessage } from "./service.mjs";
 import { createHybridSender } from "./uplink.mjs";
 
@@ -55,7 +56,7 @@ export function connectFrameSession({
   return new Promise((resolve, reject) => {
     let socket;
     try {
-      socket = new WebSocket(url);
+      socket = new platform.WebSocket(url);
     } catch (error) {
       reject(error);
       return;

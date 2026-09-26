@@ -340,6 +340,12 @@ PLATFORM_CAPTURE_TEST="$TEST_DIR/platform-capture.test.mjs"
 node "$PLATFORM_CAPTURE_TEST"
 RAN_TESTS+=("$PLATFORM_CAPTURE_TEST")
 
+# Content sees the embedded runtime's global names: a Worker's `importScripts`
+# made Phaser decide it had neither Canvas nor WebGL and refuse to start.
+GLOBAL_SCOPE_TEST="$TEST_DIR/global-scope.test.mjs"
+node "$GLOBAL_SCOPE_TEST"
+RAN_TESTS+=("$GLOBAL_SCOPE_TEST")
+
 SYNC_CALLS="$(mktemp -d)"
 SYNC_ANSWERS="$(mktemp -d)"
 trap 'rm -rf "$PACKETS" "$SYNC_PARAMS" "$REGENERATED" "$SYNC_CALLS" "$SYNC_ANSWERS"' EXIT
