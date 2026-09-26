@@ -16,6 +16,7 @@ import { constructOpError } from "./engine-core.mjs";
 import { applyContextState, bindContextEvents, bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
 import { retireUnpublishedGlobals } from "./global-scope.mjs";
 import { bindHostEvents, dispatchHostEvent } from "./host-events.mjs";
+import { platform } from "./platform.mjs";
 import { ServiceChannel } from "./service.mjs";
 import { SyncCaller } from "./sync-call.mjs";
 import { connectFrameSession } from "./worker-bootstrap.mjs";
@@ -163,7 +164,7 @@ self.onmessage = async (event) => {
     const entry = new URL(config.gameEntry, new URL("/", self.location.href)).href;
     try {
       const { PUBLISHED_GLOBALS } = await import("./engine/published-globals.mjs");
-      const refused = retireUnpublishedGlobals(globalThis, PUBLISHED_GLOBALS);
+      const refused = retireUnpublishedGlobals(globalThis, PUBLISHED_GLOBALS, platform.eventTargetPrototype);
       if (refused.length > 0) {
         report({
           type: "failed",

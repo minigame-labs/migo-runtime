@@ -25,14 +25,43 @@ const REPO = resolve(import.meta.dirname, "../../../../..");
 
 test("a name the embedded runtime does not publish is retired, and one it does is kept", () => {
   const scope = { importScripts() {}, self: null, migo: {}, requestAnimationFrame() {} };
-  assert.deepEqual(retireUnpublishedGlobals(scope, ["migo", "requestAnimationFrame"]), []);
+  assert.deepEqual(retireUnpublishedGlobals(scope, ["migo", "requestAnimationFrame"], null), []);
   assert.deepEqual(Object.keys(scope).sort(), ["migo", "requestAnimationFrame"]);
+});
+
+test("a Worker member on the global's interface prototypes is retired too, and EventTarget's is not", () => {
+  // The shape of a WebKit Worker global: own names, then DedicatedWorkerGlobalScope
+  // and WorkerGlobalScope prototypes, then EventTarget.prototype, shared with
+  // every event target.
+  const eventTarget = { addEventListener() {} };
+  const workerGlobalScope = Object.create(eventTarget, {
+    importScripts: { value() {}, configurable: true, writable: true },
+  });
+  const dedicated = Object.create(workerGlobalScope, {
+    postMessage: { value() {}, configurable: true, writable: true },
+  });
+  const scope = Object.create(dedicated, {
+    migo: { value: {}, configurable: true, writable: true },
+  });
+  assert.equal(typeof scope.importScripts, "function");
+  assert.deepEqual(retireUnpublishedGlobals(scope, ["migo"], eventTarget), []);
+  assert.equal(typeof scope.importScripts, "undefined", "what Phaser reads");
+  assert.equal(typeof scope.postMessage, "undefined");
+  assert.equal(typeof scope.addEventListener, "function", "EventTarget.prototype is shared, and left alone");
+  assert.equal(typeof scope.migo, "object");
+});
+
+test("Object.prototype is never touched, whatever the chain", () => {
+  const scope = Object.create(Object.prototype, { stray: { value: 1, configurable: true } });
+  assert.deepEqual(retireUnpublishedGlobals(scope, [], null), []);
+  assert.equal(typeof ({}).hasOwnProperty, "function");
+  assert.equal(Object.getOwnPropertyNames(scope).length, 0);
 });
 
 test("a global that cannot be deleted is named, not skipped", () => {
   const scope = { kept: 1 };
   Object.defineProperty(scope, "WorkerLocation", { value: 1, configurable: false });
-  assert.deepEqual(retireUnpublishedGlobals(scope, ["kept"]), ["WorkerLocation"]);
+  assert.deepEqual(retireUnpublishedGlobals(scope, ["kept"], null), ["WorkerLocation"]);
 });
 
 test("the kept names are the embedded runtime's baseline, which has no Worker names", async () => {
