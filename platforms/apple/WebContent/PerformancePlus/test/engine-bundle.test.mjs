@@ -212,5 +212,38 @@ if (packetDir) {
   log(`wrote ${packets.length} engine frames to ${packetDir}`);
 }
 
+// WEBGL_lose_context loses its own context and nothing else. Pixi loses a
+// probe context twice while choosing a renderer; when that reset the whole GPU
+// share group, the game's programs vanished mid-startup and a cold start on an
+// iPhone stayed black. So: the probe reads lost, the game's context does not,
+// the probe's canvas hears about it, and nothing asks the host for a reset.
+{
+  const probe = migo.createCanvas();
+  const probeGl = probe.getContext("webgl");
+  const events = [];
+  probe.addEventListener("webglcontextlost", (event) => events.push(event.type));
+  probe.addEventListener("webglcontextrestored", (event) => events.push(event.type));
+  const ext = probeGl.getExtension("WEBGL_lose_context");
+  const before = packets.length;
+  ext.loseContext();
+  ext.loseContext();
+  check(probeGl.isContextLost() && !gl.isContextLost(), "loseContext() lost the probe's context and only that");
+  await new Promise((resolveFrame) => requestAnimationFrame(() => resolveFrame()));
+  await new Promise((resolveSettle) => setTimeout(resolveSettle, 20));
+  check(events.join() === "webglcontextlost", `the probe's canvas was told once (${events.join() || "nothing"})`);
+  const reset = ((2 << 12) | opcodes.OPR_LOSE_CONTEXT) >>> 0;
+  const asked = packets.slice(before).some((packet) => {
+    const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+    for (let at = HEADER_BYTES; at + 4 <= packet.byteLength; at += 4) {
+      if (view.getUint32(at, true) === reset) return true;
+    }
+    return false;
+  });
+  check(!asked, "no GPU reset was sent to the host");
+  ext.restoreContext();
+  await new Promise((resolveSettle) => setTimeout(resolveSettle, 20));
+  check(!probeGl.isContextLost() && events.join() === "webglcontextlost,webglcontextrestored", "restoreContext() restored it");
+}
+
 log(failures === 0 ? "PASS" : `FAIL: ${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

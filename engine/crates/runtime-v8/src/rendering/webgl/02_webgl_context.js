@@ -186,6 +186,7 @@ const {
 } = primordials;
 
 import { WebglConstants } from "./01_constants.js";
+import { setTimeout } from "ext:host_v8_web/02_timers.js";
 import {
     flushRenderCommandStream,
     encodeViewport,
@@ -942,6 +943,8 @@ class WebGLRenderingContext {
         this._canvas = canvas;
         this._options = options || {};
         this._canvasId = canvas._rid;
+        // Lost through WEBGL_lose_context: this context only (see getExtension).
+        this._lostByExtension = false;
         // Resource IDs are allocated from a runtime-global counter in Rust.
         // Nested Map: programId -> Map(name -> location)
         // Allows O(1) per-program invalidation via .delete(programId).
@@ -1298,7 +1301,27 @@ class WebGLRenderingContext {
 
     isContextLost() {
         // Direct, no submit: op_gl_is_context_lost is host-local.
-        return op_gl_is_context_lost();
+        return this._lostByExtension || op_gl_is_context_lost();
+    }
+
+    // WEBGL_lose_context's two halves. The flag changes now and the event is
+    // fired from a task, as the extension specifies. Losing a lost context and
+    // restoring one the extension did not lose change nothing.
+    _setLostByExtension(lost) {
+        if (this._lostByExtension === lost) return;
+        this._lostByExtension = lost;
+        const type = lost ? "webglcontextlost" : "webglcontextrestored";
+        setTimeout(() => {
+            let prevented = false;
+            this._canvas.dispatchEvent({
+                type,
+                statusMessage: "",
+                bubbles: false,
+                cancelable: lost,
+                get defaultPrevented() { return prevented; },
+                preventDefault() { if (lost) prevented = true; },
+            });
+        }, 0);
     }
 
     getShaderPrecisionFormat(_shaderType, precisionType) {
@@ -1586,17 +1609,29 @@ class WebGLRenderingContext {
             return this._oesVertexArrayObject ||
                 (this._oesVertexArrayObject = this._buildOesVertexArrayObject());
         }
-        // Standard debug/robustness extension. loseContext() arms a one-shot
-        // simulated GPU reset on the render thread, driving the real
-        // context-loss -> recovery pipeline (webglcontextlost/restored events,
-        // isContextLost()); the runtime recovers automatically on the next
-        // frame, so restoreContext() is a no-op here. Lets engines (and our own
-        // device tests) exercise context loss without a real driver reset.
+        // WEBGL_lose_context loses THIS context, as the extension specifies:
+        // its isContextLost() turns true and its canvas is sent
+        // webglcontextlost; every other context -- the game's own among them --
+        // is untouched. Engines call it to release a probe context: Pixi does,
+        // twice, while choosing a renderer. Driving the render thread's
+        // share-group reset from it tore down the game's programs mid-startup,
+        // and a cold start on an iPhone stayed black. The probe's GPU objects go
+        // with its canvas, on the canvas's own destroy path.
         if (name === 'WEBGL_lose_context') {
             return this._webglLoseContext ||
                 (this._webglLoseContext = {
-                    loseContext: () => { _rawGlLoseContext(this._canvasId); },
-                    restoreContext: () => {},
+                    loseContext: () => { this._setLostByExtension(true); },
+                    restoreContext: () => { this._setLostByExtension(false); },
+                });
+        }
+        // Migo's own, for verification: a simulated GPU reset -- the whole
+        // share group lost and rebuilt, with webglcontextlost/restored on the
+        // main canvas -- which no device can be made to do on demand. Not in
+        // getSupportedExtensions: no content asks for it by accident.
+        if (name === 'MIGO_debug_gpu_reset') {
+            return this._migoDebugGpuReset ||
+                (this._migoDebugGpuReset = {
+                    reset: () => { _rawGlLoseContext(this._canvasId); },
                 });
         }
         // Instanced drawing: the ops are already the WebGL2 variants
