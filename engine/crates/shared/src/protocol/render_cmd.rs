@@ -658,9 +658,10 @@ pub enum GLCmd {
         bit_field: u32,
     },
 
-    /// Debug trigger for `WEBGL_lose_context.loseContext()`: arm a one-shot
+    /// Debug trigger for the `MIGO_debug_gpu_reset` extension: arm a one-shot
     /// simulated GPU reset on the render thread so the real context-loss
-    /// recovery pipeline can be exercised on demand.
+    /// recovery pipeline can be exercised on demand. `WEBGL_lose_context` does
+    /// not send it: that loses one context, not the share group.
     DebugLoseContext {
         canvas_id: CanvasId,
     },

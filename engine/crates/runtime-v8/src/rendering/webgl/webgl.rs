@@ -4997,7 +4997,8 @@ pub fn op_gl_is_context_lost(state: &mut OpState) -> bool {
         .unwrap_or(false)
 }
 
-/// Backs JS `WEBGL_lose_context.loseContext()`. Arms a one-shot simulated GPU
+/// Backs `MIGO_debug_gpu_reset.reset()` (not `WEBGL_lose_context`, which
+/// loses one context and never reaches the host). Arms a one-shot simulated GPU
 /// reset on the render thread so the real context-loss -> recovery pipeline can
 /// be exercised on demand (there is otherwise no way to trigger EGL_CONTEXT_LOST
 /// from software). Fire-and-forget; the loss surfaces on the next render frame.

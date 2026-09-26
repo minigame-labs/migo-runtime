@@ -526,7 +526,7 @@ pub(crate) struct CanvasManager {
     /// remembers still describes the buffer that is actually installed.
     onscreen_content_backing: Option<(u32, u32)>,
 
-    /// Debug one-shot: when set (via `WEBGL_lose_context.loseContext()` ->
+    /// Debug one-shot: when set (via `MIGO_debug_gpu_reset.reset()` ->
     /// `GLCmd::DebugLoseContext`), the next `check_graphics_reset_status()`
     /// poll reports a reset and consumes the flag, driving the exact same
     /// detection -> teardown -> recovery pipeline as a real GPU reset. This is
@@ -2570,12 +2570,12 @@ impl CanvasManager {
     /// probing itself is cheap: a single driver function pointer
     /// call per frame.
     pub(crate) fn check_graphics_reset_status(&mut self) -> bool {
-        // Debug one-shot injection (WEBGL_lose_context): report a reset once so
+        // Debug one-shot injection (MIGO_debug_gpu_reset): report a reset once so
         // the real detection -> recovery pipeline runs on demand. Consumed here
         // so it fires for exactly one frame, mirroring a real driver reset.
         if self.simulated_reset {
             self.simulated_reset = false;
-            tracing::warn!("Simulated GL context reset (WEBGL_lose_context.loseContext)");
+            tracing::warn!("Simulated GL context reset (MIGO_debug_gpu_reset)");
             self.context_lost = true;
             return true;
         }
@@ -2599,7 +2599,7 @@ impl CanvasManager {
     }
 
     /// Arm a one-shot simulated context reset (debug trigger for
-    /// `WEBGL_lose_context.loseContext()`). The next
+    /// `MIGO_debug_gpu_reset.reset()`). The next
     /// `check_graphics_reset_status()` poll consumes it and drives the real
     /// loss -> recovery path. No-op-safe to call repeatedly.
     pub(crate) fn request_simulated_reset(&mut self) {

@@ -220,7 +220,7 @@ const adoptMainCanvasSurfaceSize = () => {
 };
 
 // Host-driven WebGL context-loss lifecycle. When the render thread rebuilds the
-// GL share group after a real GPU reset (or a WEBGL_lose_context.loseContext
+// GL share group after a real GPU reset (or a MIGO_debug_gpu_reset
 // simulation), it drives these events so the engine can drop and rebuild its
 // own GL resources: `webglcontextlost` then, once the fresh context is ready,
 // `webglcontextrestored`. Dispatched on the main (onscreen) canvas, which is

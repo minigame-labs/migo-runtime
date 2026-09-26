@@ -12,11 +12,12 @@ const W = canvas.width, H = canvas.height;
 ctx.fillStyle = "#ff00ff";   // magenta, set once and never again
 ctx.globalAlpha = 1.0;
 
-// A separate WebGL canvas purely to reach WEBGL_lose_context. The loss tears
-// down the whole share group, so it reaches the 2D context too.
+// A separate WebGL canvas purely to reach MIGO_debug_gpu_reset. A GPU reset
+// tears down the whole share group, so it reaches the 2D context too.
+// (WEBGL_lose_context would not: it loses only its own context.)
 const glCanvas = migo.createCanvas();
 const gl = glCanvas.getContext("webgl");
-const loseExt = gl && gl.getExtension("WEBGL_lose_context");
+const loseExt = gl && gl.getExtension("MIGO_debug_gpu_reset");
 L("lose-context extension:", loseExt ? "available" : "MISSING");
 
 let frame = 0, lost = false;
@@ -26,7 +27,7 @@ function loop() {
     if (frame === 90 && loseExt && !lost) {
         lost = true;
         L("triggering context loss at frame", frame);
-        loseExt.loseContext();
+        loseExt.reset();
     }
     if (frame % 60 === 0) L("frame", frame, "lost:", lost);
     requestAnimationFrame(loop);
