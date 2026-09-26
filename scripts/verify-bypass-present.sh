@@ -67,7 +67,16 @@ run_probe() {
   local log="/tmp/migo-present-$name.log"
   local png="/tmp/migo-present-$name.png"
 
-  MIGO_PLAYER_PNG="$png" "$PLAYER" "$SCRIPT_DIR/fixtures/$name" "$SECS" >"$log" 2>&1 || true
+  # A capture left by an earlier run would be scored as this run's frame: a
+  # player that never presented still reported the previous run's green pixel.
+  rm -f "$log" "$png"
+
+  # Offscreen means no window server, so the probe gets none. Inheriting the
+  # caller's DISPLAY is how this gate stayed green on a desktop for ten days
+  # while every CI run failed: the offscreen display resolved to X11 and
+  # eglInitialize refused wherever DISPLAY was unset.
+  env -u DISPLAY -u WAYLAND_DISPLAY MIGO_PLAYER_PNG="$png" \
+    "$PLAYER" "$SCRIPT_DIR/fixtures/$name" "$SECS" >"$log" 2>&1 || true
 
   local painted
   painted="$(grep -oE "painted [0-9]+ frames" "$log" | tail -1 | grep -oE "[0-9]+" || echo 0)"
