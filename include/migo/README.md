@@ -298,9 +298,13 @@ The candidate cannot be declared stable until all of the following exist:
   proved to be drawing), the C host's median fps, CPU and PSS stay inside the bounds fixed before
   any number existed -- fps at least 97%, CPU and PSS at most 105% of the Java SDK's: bunnymark 60
   vs 60 fps, 40% vs 46% CPU, 118.7 vs 121.0 MiB PSS; endless-runner 60 vs 60 fps, 39% vs 44% CPU,
-  213.9 vs 213.1 MiB PSS (2026-09-26). Android compatibility has evidence but no gate: the bench's
-  eight conformance contents (Canvas2D, readback, text, WebGL, surface geometry, screen fill, WASM)
-  pass on the C host, run by hand. Linux performance is open;
+  213.9 vs 213.1 MiB PSS (2026-09-26; v0.9.10 changes only how images decode at load, not the
+  steady state). **Android compatibility done**: migo-conformance runs its whole suite on the C
+  host through the same loop and verdict as on the Java SDK (`runners/run-android-capi.sh`) --
+  Canvas2D, readback, text, WebGL, surface geometry and resize, lifecycle across a HOME round
+  trip, WASM, and image decode on both decode paths -- and the published v0.9.10 package passes
+  all 114 assertions on the Mate 30 Pro, as the Java SDK does (2026-09-26). Its image-decode
+  bundle is what found v0.9.9's C ABI decoding PNG but not JPEG. Linux performance is open;
 - Android packaging for a third-party consumer — **done**: every release since v0.9.3
   publishes `migo-<version>-capi-android-{arm64,x86_64}.tar.gz`, built, gated and attested
   by CI. `scripts/build-android-sdk.sh` stages a CMake package (headers, `libmigo_capi.a`,
@@ -318,8 +322,8 @@ The candidate cannot be declared stable until all of the following exist:
   and API 31 (Mate 30 Pro, arm64), 2026-09-26. The probe's first paint is a decoded image,
   loaded once before any WebGL context and once after, so both image decode paths are part of
   the check -- v0.9.8's package failed it, having no image decoder at all without the Java SDK.
-  The published tarball's own bytes pass too: v0.9.9's arm64 package, linked through
-  `scripts/build-android-c-host.sh --package`, on the Mate 30 Pro. The `-DANDROID_STL` matrix is measured rather than open: `c++_shared` links as-is,
+  The published tarball's own bytes pass too: the v0.9.9 and v0.9.10 arm64 packages, linked
+  through `scripts/build-android-c-host.sh --package`, on the Mate 30 Pro. The `-DANDROID_STL` matrix is measured rather than open: `c++_shared` links as-is,
   `c++_static` links with `-Wl,--allow-multiple-definition` (without it exactly six
   `std::runtime_error`/`std::logic_error` symbols collide — this library carries
   Chromium's libc++ inside V8's archive while the consumer brings the NDK's), and `none`
