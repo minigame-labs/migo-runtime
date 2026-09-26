@@ -7,8 +7,20 @@
 // gesture is held is evidence of the pointer count that reached JS. That matters
 // because a host has no other way to see it: engine logs need MIGO_CAPI_LOG to
 // be set before the engine is created, and a pixel needs nothing at all.
+//
+// The untouched red is not filled: it is a decoded image, and nothing is painted
+// until two images have decoded. Android builds carry no Rust image decoder, so
+// a host that never registered one decoded nothing -- the C host shipped that
+// way and every WebGL game on it rendered black while its frame loop ran on.
+// The engine decodes by one of two paths, chosen by whether any WebGL context
+// exists yet, so the first image loads before one does and the second after.
+// A failed decode paints FAILED instead, which the first-paint check rejects.
 const canvas = migo.createCanvas();
 const ctx = canvas.getContext('2d');
+
+const RED_PNG = 'data:image/png;base64,' +
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGM4wMAAAAJEAMGTjGgiAAAAAElFTkSuQmCC';
+const FAILED = '#404040';     // grey   -- an image did not decode
 
 const IDLE = '#c00000';       // red    -- untouched since launch
 const RELEASED = '#0000c0';   // blue   -- every finger lifted
@@ -21,10 +33,37 @@ const BY_COUNT = [
 
 let colour = IDLE;
 let events = 0;
+let decoded = null;           // the red image, once both decodes succeeded
+let failed = false;
+
+function load(what, next) {
+  const image = migo.createImage();
+  image.onload = function () {
+    console.error('[touchprobe] decoded ' + what + ' ' + image.width + 'x' + image.height);
+    next(image);
+  };
+  image.onerror = function () {
+    failed = true;
+    console.error('[touchprobe] could not decode ' + what);
+  };
+  image.src = RED_PNG;
+}
+
+load('before any WebGL context', function () {
+  migo.createCanvas().getContext('webgl');
+  load('after a WebGL context', function (image) { decoded = image; });
+});
 
 function paint() {
-  ctx.fillStyle = colour;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (failed) {
+    ctx.fillStyle = FAILED;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  } else if (decoded && colour === IDLE) {
+    ctx.drawImage(decoded, 0, 0, canvas.width, canvas.height);
+  } else if (decoded) {
+    ctx.fillStyle = colour;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
   requestAnimationFrame(paint);
 }
 paint();

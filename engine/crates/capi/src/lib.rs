@@ -495,6 +495,7 @@ pub unsafe extern "C" fn migo_engine_create(
         }
 
         init_dev_logging();
+        crate::platform::install_image_decoders();
 
         let engine = Box::new(MigoEngine {
             inner: Arc::new(EngineInner {

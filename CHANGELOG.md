@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Android C ABI: images never decoded, so every WebGL game rendered black while
+  its frame loop kept running. Android builds leave the Rust image decoders out
+  and rely on the Java SDK to register BitmapFactory at load time, which a C
+  host never runs. The C ABI now registers Skia's decoders -- straight into an
+  `AHardwareBuffer` where the renderer can import one, into RGBA memory where an
+  image must be CPU-backed -- at no binary cost, since Skia is already linked
+  for rendering. The Android C host's on-device check now paints its first frame
+  from decoded images on both paths, so this cannot pass unnoticed again.
+
 ## v0.9.8 (2026-09-26)
 
 ### Changed
