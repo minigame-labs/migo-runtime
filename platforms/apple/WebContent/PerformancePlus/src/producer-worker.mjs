@@ -12,7 +12,7 @@
 // engine release could not be swapped under a game that already shipped.
 
 import { constructOpError } from "./engine-core.mjs";
-import { bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
+import { applyContextState, bindContextEvents, bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
 import { bindHostEvents, dispatchHostEvent } from "./host-events.mjs";
 import { ServiceChannel } from "./service.mjs";
 import { SyncCaller } from "./sync-call.mjs";
@@ -93,6 +93,8 @@ self.onmessage = async (event) => {
       // Always reported: the host replaced the runtime under us, which is
       // terminal for this content and happens once.
       onGenerationLost: (generation) => report({ type: "generation-lost", generation }),
+      // The GL context was lost or came back: adopt the epoch and tell content.
+      onContextState: applyContextState,
       services,
     });
   } catch (error) {
@@ -134,6 +136,7 @@ self.onmessage = async (event) => {
       // it, a rewarded-video completion among them.
       const bridgeName = Symbol.for("Migo.hostBridge");
       bindHostEvents(globalThis[bridgeName]);
+      bindContextEvents(globalThis[bridgeName]);
       delete globalThis[bridgeName];
     } catch (error) {
       report({ type: "failed", stage: "engine", detail: String(error && (error.stack || error)) });

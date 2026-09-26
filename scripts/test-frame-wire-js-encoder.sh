@@ -378,6 +378,12 @@ node "$TEST_DIR/emit-sync-calls.mjs" read "$SYNC_ANSWERS"
 node "$DOWN_TEST"
 RAN_TESTS+=("$DOWN_TEST")
 
+# The context state as the producer applies it: the epoch adopted before content
+# hears, lost/restored told once each, and a missed loss played as the pair.
+CONTEXT_STATE_TEST="$TEST_DIR/context-state.test.mjs"
+node "$CONTEXT_STATE_TEST"
+RAN_TESTS+=("$CONTEXT_STATE_TEST")
+
 # The credit accounting and the frame clock, on bytes this repository's own
 # encoder produced -- so a failure here is about what the producer DOES with a
 # message rather than about what a message is.

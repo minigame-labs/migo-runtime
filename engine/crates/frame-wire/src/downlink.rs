@@ -79,6 +79,24 @@ pub const DOWN_CLOCK_TICK: u32 = 2;
 /// the window was shut, this record carries the window and nothing else. Only
 /// then, which is why it costs nothing while a producer is drawing.
 pub const DOWN_WINDOW_OPEN: u32 = 3;
+/// The GL context's state: whether it is lost, and the resource epoch the
+/// producer's packets must now name.
+///
+/// A context loss rebuilds the renderer's resource table, and the host advances
+/// the epoch so a packet naming the old table's ids is refused
+/// (`STALE_RESOURCE_EPOCH`) rather than executed against whatever took their
+/// place. Without this record the producer never learned the new epoch: every
+/// packet it sent after a loss was refused, the frame clock stopped asking for
+/// frames, and the game stayed on its last frame for good. With it the producer
+/// adopts the epoch and tells content, as the embedded runtime does in process
+/// (`webglcontextlost`, then `webglcontextrestored` once the renderer is back),
+/// so content rebuilds its resources against the new table.
+///
+/// A level, not an edge: it says what is true now. A producer that reads a
+/// newer epoch than it last acted on, with the context no longer lost, missed a
+/// whole loss and recovery, and plays both events -- the embedded runtime's
+/// reconciliation rule. So it coalesces like a tick and is never dropped.
+pub const DOWN_CONTEXT_STATE: u32 = 4;
 
 /// Header word plus generation, decision, wire_error_code, remaining_credits,
 /// and the two halves of `accepted_sequence`.
@@ -92,6 +110,10 @@ pub const CLOCK_TICK_WORDS: u32 = 8;
 /// `accepted_sequence` -- the window in the verdict's field order, so a reader
 /// has one advertisement layout.
 pub const WINDOW_OPEN_WORDS: u32 = 5;
+
+/// Header word plus generation, lost (0 or 1), and the two halves of
+/// `resource_epoch`.
+pub const CONTEXT_STATE_WORDS: u32 = 5;
 
 /// The envelope's two leading words.
 pub const ENVELOPE_WORDS: usize = 2;
@@ -121,6 +143,12 @@ pub enum DownlinkRecord {
         remaining_credits: u32,
         accepted_sequence: u64,
     },
+    /// The GL context's state. See [`DOWN_CONTEXT_STATE`].
+    ContextState {
+        generation: u32,
+        lost: bool,
+        resource_epoch: u64,
+    },
 }
 
 /// Why a downlink message could not be read.
@@ -147,6 +175,9 @@ pub enum DownlinkError {
     /// A known kind whose declared length is not the one that kind has. The
     /// lengths are fixed, so this is a wrong writer rather than an extension.
     WrongLengthForKind { kind: u32, words: u32 },
+    /// A field holds a value its kind does not define -- a `lost` that is
+    /// neither 0 nor 1. A wrong writer, like a wrong length.
+    BadFieldValue { kind: u32 },
 }
 
 impl DownlinkRecord {
@@ -156,6 +187,7 @@ impl DownlinkRecord {
             Self::FrameVerdict { .. } => FRAME_VERDICT_WORDS,
             Self::ClockTick { .. } => CLOCK_TICK_WORDS,
             Self::WindowOpen { .. } => WINDOW_OPEN_WORDS,
+            Self::ContextState { .. } => CONTEXT_STATE_WORDS,
         }
     }
 
@@ -164,6 +196,7 @@ impl DownlinkRecord {
             Self::FrameVerdict { .. } => DOWN_FRAME_VERDICT,
             Self::ClockTick { .. } => DOWN_CLOCK_TICK,
             Self::WindowOpen { .. } => DOWN_WINDOW_OPEN,
+            Self::ContextState { .. } => DOWN_CONTEXT_STATE,
         }
     }
 
@@ -218,6 +251,16 @@ impl DownlinkRecord {
                 put(accepted_sequence as u32);
                 put((accepted_sequence >> 32) as u32);
             }
+            Self::ContextState {
+                generation,
+                lost,
+                resource_epoch,
+            } => {
+                put(generation);
+                put(u32::from(lost));
+                put(resource_epoch as u32);
+                put((resource_epoch >> 32) as u32);
+            }
         }
     }
 
@@ -267,6 +310,16 @@ impl DownlinkRecord {
                 out.push(remaining_credits);
                 out.push(accepted_sequence as u32);
                 out.push((accepted_sequence >> 32) as u32);
+            }
+            Self::ContextState {
+                generation,
+                lost,
+                resource_epoch,
+            } => {
+                out.push(generation);
+                out.push(u32::from(lost));
+                out.push(resource_epoch as u32);
+                out.push((resource_epoch >> 32) as u32);
             }
         }
     }
@@ -353,6 +406,23 @@ pub fn decode_message(words: &[u32]) -> Result<Vec<DownlinkRecord>, DownlinkErro
                     generation: body[0],
                     remaining_credits: body[1],
                     accepted_sequence: u64::from(body[2]) | (u64::from(body[3]) << 32),
+                }
+            }
+            DOWN_CONTEXT_STATE => {
+                if count != CONTEXT_STATE_WORDS {
+                    return Err(DownlinkError::WrongLengthForKind { kind, words: count });
+                }
+                // Exactly 0 or 1: any other value is a writer that does not
+                // agree with this format about what the field is.
+                let lost = match body[1] {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(DownlinkError::BadFieldValue { kind }),
+                };
+                DownlinkRecord::ContextState {
+                    generation: body[0],
+                    lost,
+                    resource_epoch: u64::from(body[2]) | (u64::from(body[3]) << 32),
                 }
             }
             other => return Err(DownlinkError::UnknownKind(other)),
@@ -454,7 +524,31 @@ impl DownlinkQueue {
             | DownlinkRecord::WindowOpen {
                 remaining_credits, ..
             } => Some(remaining_credits),
+            // Carries no window: what the producer believes about it is
+            // whatever the last record that did carry one said.
+            DownlinkRecord::ContextState { .. } => return,
         };
+    }
+
+    /// Drop the oldest records until one more fits -- never the context state.
+    ///
+    /// Everything else here is superseded by a newer record of its kind, which
+    /// is why the oldest can go. The context state is superseded only by a
+    /// newer context state, and if it went, the producer would keep naming a
+    /// resource epoch the host has retired: every packet refused, no frame ever
+    /// drawn again.
+    fn make_room(&mut self) {
+        while self.records.len() >= QUEUE_CAPACITY {
+            let Some(oldest) = self
+                .records
+                .iter()
+                .position(|queued| !matches!(queued, DownlinkRecord::ContextState { .. }))
+            else {
+                break;
+            };
+            self.records.remove(oldest);
+            self.dropped = self.dropped.saturating_add(1);
+        }
     }
 
     /// Queue a verdict, dropping the oldest if there is no room.
@@ -463,10 +557,7 @@ impl DownlinkQueue {
             matches!(record, DownlinkRecord::FrameVerdict { .. }),
             "push_verdict is for verdicts; ticks go through push_tick so they coalesce"
         );
-        while self.records.len() >= QUEUE_CAPACITY {
-            self.records.pop_front();
-            self.dropped = self.dropped.saturating_add(1);
-        }
+        self.make_room();
         self.note_advertisement(&record);
         self.records.push_back(record);
     }
@@ -493,11 +584,30 @@ impl DownlinkQueue {
         {
             self.records.remove(index);
         }
-        while self.records.len() >= QUEUE_CAPACITY {
-            self.records.pop_front();
-            self.dropped = self.dropped.saturating_add(1);
-        }
+        self.make_room();
         self.note_advertisement(&record);
+        self.records.push_back(record);
+    }
+
+    /// Queue the GL context's state, replacing any not yet sent.
+    ///
+    /// At most one is queued: it is a level, and the newest says what is true.
+    /// A producer that never sees an intermediate one -- lost, then recovered,
+    /// before the transport drained -- still reads an epoch newer than the one it
+    /// acted on, and that is how it knows to play the pair it missed.
+    pub fn push_context_state(&mut self, record: DownlinkRecord) {
+        debug_assert!(
+            matches!(record, DownlinkRecord::ContextState { .. }),
+            "push_context_state is for the context state"
+        );
+        if let Some(index) = self
+            .records
+            .iter()
+            .position(|queued| matches!(queued, DownlinkRecord::ContextState { .. }))
+        {
+            self.records.remove(index);
+        }
+        self.make_room();
         self.records.push_back(record);
     }
 
@@ -528,10 +638,7 @@ impl DownlinkQueue {
         {
             self.records.remove(index);
         }
-        while self.records.len() >= QUEUE_CAPACITY {
-            self.records.pop_front();
-            self.dropped = self.dropped.saturating_add(1);
-        }
+        self.make_room();
         self.note_advertisement(&record);
         self.records.push_back(record);
         true
@@ -652,9 +759,23 @@ mod tests {
         }
     }
 
+    fn context_state(lost: bool, resource_epoch: u64) -> DownlinkRecord {
+        DownlinkRecord::ContextState {
+            generation: 7,
+            lost,
+            resource_epoch,
+        }
+    }
+
     #[test]
     fn a_batch_survives_the_round_trip_in_order() {
-        let sent = [tick(), verdict(), tick()];
+        let sent = [
+            tick(),
+            verdict(),
+            // Past 32 bits, like the sequences: the split is what goes wrong.
+            context_state(true, 0x0000_0003_0000_0001),
+            tick(),
+        ];
         let read = decode_message(&encode_message(&sent)).expect("a message this crate wrote");
         assert_eq!(read, sent, "order and contents must both survive");
     }
@@ -945,7 +1066,7 @@ mod tests {
 
     #[test]
     fn the_declared_word_counts_match_what_is_written() {
-        for record in [verdict(), tick()] {
+        for record in [verdict(), tick(), context_state(false, 1)] {
             let mut words = Vec::new();
             record.write_words(&mut words);
             assert_eq!(
@@ -955,5 +1076,65 @@ mod tests {
                  reader walks into the next record"
             );
         }
+    }
+
+    #[test]
+    fn a_lost_flag_that_is_neither_0_nor_1_is_refused() {
+        let mut words = encode_message(&[context_state(true, 1)]);
+        words[ENVELOPE_WORDS + 2] = 2;
+        assert_eq!(
+            decode_message(&words),
+            Err(DownlinkError::BadFieldValue {
+                kind: DOWN_CONTEXT_STATE
+            })
+        );
+    }
+
+    #[test]
+    fn the_context_state_coalesces_to_the_newest_and_carries_no_window() {
+        let mut queue = DownlinkQueue::new();
+        queue.push_verdict(verdict());
+        let window = queue.last_advertised_credits();
+        queue.push_context_state(context_state(true, 1));
+        queue.push_tick(tick());
+        queue.push_context_state(context_state(false, 1));
+        assert_eq!(
+            queue.last_advertised_credits(),
+            Some(1),
+            "the tick's window, untouched by the context records around it"
+        );
+        assert_ne!(window, None);
+
+        let mut out = [0u8; 4096];
+        let written = queue.drain_into(&mut out);
+        assert_eq!(
+            decode_bytes(&out[..written]).expect("round trip"),
+            [verdict(), tick(), context_state(false, 1)],
+            "one context state, the newest, behind what was queued before it"
+        );
+    }
+
+    #[test]
+    fn an_unread_queue_never_drops_the_context_state() {
+        let mut queue = DownlinkQueue::new();
+        queue.push_context_state(context_state(true, 4));
+        for i in 0..(QUEUE_CAPACITY as u64 + 5) {
+            queue.push_verdict(DownlinkRecord::FrameVerdict {
+                generation: 1,
+                decision: 1,
+                wire_error_code: 0,
+                remaining_credits: 0,
+                accepted_sequence: i,
+            });
+        }
+        assert_eq!(queue.len(), QUEUE_CAPACITY, "still bounded");
+        let mut out = [0u8; 4096];
+        let written = queue.drain_into(&mut out);
+        let read = decode_bytes(&out[..written]).expect("round trip");
+        assert!(
+            read.contains(&context_state(true, 4)),
+            "the oldest record was the context state, and it had to survive: \
+             without it the producer keeps naming a retired resource epoch"
+        );
     }
 }

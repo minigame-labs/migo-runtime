@@ -124,7 +124,70 @@ export function bindEngineHost({ session, identity, socketCeilingBytes, sync, se
     // op measures from the runtime's start the same way.
     startedAt: platform.now(),
   });
+  // A context state that arrived between the frame channel opening and this
+  // binding: nothing could act on it then, and the epoch in it is still the one
+  // the host expects.
+  if (earlyContextState !== null) applyContextState(earlyContextState);
+  earlyContextState = null;
   return bound;
+}
+
+/** The newest context state that arrived before the engine host was bound. */
+let earlyContextState = null;
+/** The engine's `webglcontext{lost,restored}` dispatcher, from the host bridge. */
+let contextEventHook = null;
+
+/**
+ * Take the engine's context-event dispatcher from the host bridge. Call where
+ * the host events are bound: the engine has loaded and content has not run.
+ */
+export function bindContextEvents(bridge) {
+  const hook = bridge?._internalTriggerWebglContextEvent;
+  contextEventHook = typeof hook === "function" ? hook : null;
+}
+
+function dispatchContextEvent(type) {
+  try {
+    contextEventHook?.(type);
+  } catch {
+    // Discarded, as the embedded binding discards a hook's exception.
+  }
+}
+
+/**
+ * Apply the host's `DOWN_CONTEXT_STATE`: adopt the resource epoch packets must
+ * now name, and tell content what happened -- the embedded host's
+ * `reconcile_context_lost`, applied here because content runs here.
+ *
+ * A level with an epoch, so it reconciles rather than replays: `lost` dispatches
+ * `webglcontextlost` unless content was already told, recovery dispatches
+ * `webglcontextrestored` if it was; and a newer epoch arriving with the context
+ * not lost, when content was never told of a loss, is a whole loss and recovery
+ * missed in between -- both are played, lost first, so content rebuilds against
+ * the new table. `contextLost` is set before the event, because content's
+ * listener reads `isContextLost()`.
+ */
+export function applyContextState({ lost, resourceEpoch }) {
+  if (bound === null) {
+    earlyContextState = { lost, resourceEpoch };
+    return;
+  }
+  const { state } = bound;
+  const epoch = BigInt(resourceEpoch);
+  const advanced = epoch > state.resourceEpoch;
+  if (epoch > state.resourceEpoch) state.resourceEpoch = epoch;
+  if (lost) {
+    if (!state.contextLost) {
+      state.contextLost = true;
+      dispatchContextEvent("webglcontextlost");
+    }
+  } else if (state.contextLost) {
+    state.contextLost = false;
+    dispatchContextEvent("webglcontextrestored");
+  } else if (advanced) {
+    dispatchContextEvent("webglcontextlost");
+    dispatchContextEvent("webglcontextrestored");
+  }
 }
 
 /** The bound host, or a throw naming the ordering mistake that got here. */

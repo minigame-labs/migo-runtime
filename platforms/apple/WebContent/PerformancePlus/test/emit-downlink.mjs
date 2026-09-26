@@ -17,6 +17,7 @@ import { join } from "node:path";
 
 import {
   DOWN_CLOCK_TICK,
+  DOWN_CONTEXT_STATE,
   DOWN_WINDOW_OPEN,
   DOWN_FRAME_VERDICT,
   decodeBytes,
@@ -39,6 +40,13 @@ const windowOpen = (acceptedSequence, remainingCredits) => ({
   acceptedSequence,
 });
 
+const contextState = (lost, resourceEpoch) => ({
+  kind: DOWN_CONTEXT_STATE,
+  generation: 0x12345678,
+  lost,
+  resourceEpoch,
+});
+
 const tick = (timestampNs, frameId) => ({
   kind: DOWN_CLOCK_TICK,
   generation: 0x12345678,
@@ -59,6 +67,8 @@ const CORPUS = [
   [verdict(0x7_ffff_ffff_ffff, 3)],
   [windowOpen(0x3_0000_0007, 2)],
   [tick(16_666_667, 3), windowOpen(0x5_0000_0009, 1), verdict(0x5_0000_0009, 1)],
+  [contextState(true, 0x2_0000_0001)],
+  [tick(16_666_667, 4), contextState(false, 0x2_0000_0001)],
   Array.from({ length: 64 }, (_, i) =>
     i % 2 === 0 ? verdict(i + 0x1_0000_0000, 1) : tick(i * 16_666_667 + 0x2_0000_0000, i),
   ),

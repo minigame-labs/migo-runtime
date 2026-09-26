@@ -11,7 +11,9 @@
 // Gate: scripts/test-frame-wire-js-encoder.sh
 
 import {
+  CONTEXT_STATE_WORDS,
   DOWN_CLOCK_TICK,
+  DOWN_CONTEXT_STATE,
   DOWN_WINDOW_OPEN,
   DOWN_FRAME_VERDICT,
   DOWNLINK_VERSION,
@@ -106,6 +108,22 @@ check("a window advertisement survives the round trip", () => {
   assertEqual(read[0].kind, DOWN_WINDOW_OPEN, "kind");
   assertEqual(read[0].remainingCredits, windowOpen.remainingCredits, "credits");
   assertEqual(read[0].acceptedSequence, windowOpen.acceptedSequence, "sequence across 32 bits");
+});
+
+check("a context state survives the round trip", () => {
+  const record = { kind: DOWN_CONTEXT_STATE, generation: 7, lost: true, resourceEpoch: 0x3_0000_0001 };
+  const read = decodeMessage(encodeMessage([record]));
+  assertEqual(read.length, 1, "record count");
+  assertEqual(read[0].kind, DOWN_CONTEXT_STATE, "kind");
+  assertEqual(read[0].lost, true, "lost");
+  assertEqual(read[0].resourceEpoch, record.resourceEpoch, "epoch across 32 bits");
+  assertEqual(encodeMessage([record]).length, ENVELOPE_WORDS + CONTEXT_STATE_WORDS, "length");
+});
+
+check("a context state's lost flag is 0 or 1 and nothing else", () => {
+  const words = encodeMessage([{ kind: DOWN_CONTEXT_STATE, generation: 7, lost: false, resourceEpoch: 1 }]);
+  words[ENVELOPE_WORDS + 2] = 2;
+  refuses(() => decodeMessage(words), "lost flag");
 });
 
 check("bytes and words agree", () => {
