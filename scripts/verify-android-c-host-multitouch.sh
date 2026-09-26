@@ -11,17 +11,27 @@
 # its header for what each step asserts.
 #
 # Usage:
-#   scripts/verify-android-c-host-multitouch.sh [ABI]
+#   scripts/verify-android-c-host-multitouch.sh [ABI] [--package <prefix>]
 #
 # ABI defaults to arm64-v8a. Builds the host (scripts/build-android-c-host.sh)
 # and the instrumentation APK every run, installs both on the device adb
 # selects (set ANDROID_SERIAL to choose), and exits 0 only on a PASS.
+# --package links a published C ABI package instead of this tree's engine, so
+# the released bytes are what runs.
 # ============================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ABI="${1:-arm64-v8a}"
+ABI="arm64-v8a"
+PACKAGE_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --package) PACKAGE_ARGS=(--package "${2:?--package needs a prefix}"); shift 2 ;;
+    arm64-v8a | x86_64) ABI="$1"; shift ;;
+    *) echo "usage: $0 [arm64-v8a|x86_64] [--package <prefix>]" >&2; exit 2 ;;
+  esac
+done
 PACKAGE="com.migo.chost"
 RUNNER="com.migo.chost.multitouch/.MultiTouchInstrumentation"
 CONTENT_ID="touchprobe"
@@ -34,7 +44,7 @@ adb get-state >/dev/null 2>&1 || { err "no device (adb get-state failed; set AND
 
 # Always build: an APK left from another tree would be scored as this one.
 info "building the C host ($ABI)"
-bash "$SCRIPT_DIR/build-android-c-host.sh" "$ABI"
+bash "$SCRIPT_DIR/build-android-c-host.sh" "$ABI" ${PACKAGE_ARGS[@]+"${PACKAGE_ARGS[@]}"}
 info "building the instrumentation APK"
 (cd "$REPO_ROOT/platforms/android" && ./gradlew --no-daemon :c-host-multitouch:assembleDebug)
 
