@@ -82,6 +82,9 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String>
 }
 const SURFACE_W: u32 = 720;
 const SURFACE_H: u32 = 1280;
+/// How long the player waits for the first presented frame before it gives up:
+/// the engine's GPU readiness budget (ten seconds) plus room to load the game.
+const FIRST_PRESENT_CEILING: Duration = Duration::from_secs(30);
 /// How often the window mode drains X events while the game renders.
 const EVENT_POLL: Duration = Duration::from_millis(16);
 
@@ -319,6 +322,18 @@ fn run(
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("migo-player-frame.png"));
     graphics::frame_capture::request();
+    // The run is timed from the first presented frame, not from launch: start-up
+    // is not bounded by the run (the engine gives the GPU up to ten seconds), and
+    // a window that included it measured start-up whenever start-up was slow --
+    // a cold software renderer on a loaded runner took four seconds to come up,
+    // and a presentation probe with the engine working painted nothing. The
+    // ceiling is for an engine that never presents, which is then said outright.
+    if !graphics::frame_capture::wait_for_present(FIRST_PRESENT_CEILING) {
+        return Err(format!(
+            "nothing was presented within {}s of loading the game",
+            FIRST_PRESENT_CEILING.as_secs()
+        ));
+    }
     // Let the game render for the window; the render thread keeps overwriting
     // the capture slot with the latest present, so early blank warmup frames
     // are superseded by frames containing game content.

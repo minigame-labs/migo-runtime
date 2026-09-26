@@ -13,8 +13,9 @@
 //! This is a diagnostic/dev-tool hook (the player). It never runs unless
 //! `request()` is called, so it has no effect on shipping render behaviour.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 use glow::HasContext;
 
@@ -38,6 +39,8 @@ use glow::HasContext;
 static REQUESTED: AtomicU64 = AtomicU64::new(0);
 static TAKEN: AtomicU64 = AtomicU64::new(0);
 static RESULT: Mutex<Option<(u64, CapturedFrame)>> = Mutex::new(None);
+/// Signalled whenever a frame lands in `RESULT`, for [`wait_for_present`].
+static PRESENTED: Condvar = Condvar::new();
 
 /// A captured frame. `rgba_bottom_up` is tightly packed RGBA8 in GL row order
 /// (bottom-up); consumers flip to top-down for PNG.
@@ -53,6 +56,26 @@ pub struct CapturedFrame {
 /// only a newly presented frame can satisfy it.
 pub fn request() {
     REQUESTED.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Block until a frame has been presented since the latest [`request`], or until
+/// `timeout` passes. Returns whether one was.
+///
+/// A run measured for a fixed time from launch measures start-up along with it,
+/// and start-up is not bounded by the run: the engine allows the GPU up to ten
+/// seconds to come up, and a cold software renderer on a loaded CI runner took
+/// four -- a whole three-second presentation probe -- so that probe painted
+/// nothing and failed with the engine working. Waiting for the first present
+/// first lets a caller time what it means to time.
+pub fn wait_for_present(timeout: Duration) -> bool {
+    let wanted = REQUESTED.load(Ordering::Acquire);
+    let slot = RESULT.lock().expect("frame_capture result mutex");
+    let (slot, _) = PRESENTED
+        .wait_timeout_while(slot, timeout, |slot| {
+            slot.as_ref().is_none_or(|(seq, _)| *seq < wanted)
+        })
+        .expect("frame_capture result mutex");
+    slot.as_ref().is_some_and(|(seq, _)| *seq >= wanted)
 }
 
 /// Stop capturing and take the most recent frame presented since the latest
@@ -124,6 +147,8 @@ pub(crate) fn capture_default_fbo(gl: &glow::Context, width: u32, height: u32) {
             rgba_bottom_up: buf,
         },
     ));
+    drop(slot);
+    PRESENTED.notify_all();
     // Intentionally do NOT clear the request here: keep the latest frame until
     // the consumer calls take(), so blank warmup frames are replaced by content.
 }
