@@ -1271,6 +1271,30 @@ jobs:
       - name: Presented frames reach the window on every presentation path
         run: bash scripts/verify-bypass-present.sh 3
 
+  # The Windows arms of the sandbox filesystem and the atomic writer, run where
+  # they compile. Until this job existed they were built for every release and
+  # executed by nothing: `vfs/windows.rs` opened roots in the verbatim namespace,
+  # where `..` is a file name, so a host cache root spelled `<files>\..\cache`
+  # failed to pin and every Windows session refused to start -- found by the
+  # examples repository on its first run against v0.9.7, not here. Neither crate
+  # links V8 or Skia, so this is a plain cargo test on the stock runner.
+  windows-unit-tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+
+      - name: Sandbox filesystem and atomic writer tests on Windows
+        working-directory: engine
+        run: cargo test -p migo-shared -p migo-io --lib --locked
+
   host-engine-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 90

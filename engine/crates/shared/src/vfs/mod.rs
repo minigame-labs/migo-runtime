@@ -1042,6 +1042,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    /// A host root spelled with `..` means what the platform says it means.
+    ///
+    /// The Windows examples derive the cache directory as `<files>\..\cache`.
+    /// Pinning opened roots in Win32's verbatim namespace, where `..` is a file
+    /// name rather than a step up, so that root failed to pin with
+    /// ERROR_INVALID_NAME and every session on Windows refused to start. The
+    /// read goes through the same strict open a game's file read takes, which
+    /// builds its paths from the same root.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_root_spelled_with_parent_components_pins_and_reads() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "migo_vfs_parent_component_root-{}-{unique}",
+            std::process::id()
+        ));
+        let files = base.join("files");
+        let cache = files.join("..").join("cache");
+        let paths = GamePaths::new(&files, &cache, "game-a", 1).unwrap();
+        paths.ensure_directories().unwrap();
+        std::fs::create_dir_all(paths.code_dir()).unwrap();
+        std::fs::write(paths.sandbox_cache_dir().join("probe.bin"), b"cached").unwrap();
+
+        let vfs = VirtualFS::try_from_game_paths(&paths)
+            .expect("a root spelled with `..` must pin like its normalized spelling");
+        let mut read = String::new();
+        std::io::Read::read_to_string(
+            &mut vfs.open_regular_for_read("/cache/probe.bin").unwrap(),
+            &mut read,
+        )
+        .unwrap();
+        assert_eq!(read, "cached");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     // -----------------------------------------------------------------------
     // Original tests (kept for regression)
     // -----------------------------------------------------------------------
