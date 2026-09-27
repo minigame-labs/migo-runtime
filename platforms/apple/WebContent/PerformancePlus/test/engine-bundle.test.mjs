@@ -55,7 +55,7 @@ const { FrameSession } = await import(`${root}/frame-session.mjs`);
 const { bindEngineHost, readEngineSessionConfig } = await import(`${root}/engine-host.mjs`);
 const { DOWN_CLOCK_TICK, DOWN_FRAME_VERDICT, encodeBytes } = await import(`${root}/downlink.mjs`);
 const { decodeControlBytes } = await import(`${root}/control.mjs`);
-const { sequenceOf, checksum, HEADER_BYTES, WIRE_MAGIC, SECTION_KIND_COMMAND_STREAM } = await import(
+const { presents, sequenceOf, checksum, HEADER_BYTES, WIRE_MAGIC, SECTION_KIND_COMMAND_STREAM } = await import(
   `${root}/wire-frame-packet.mjs`
 );
 const opcodes = await import(`${root}/render-opcodes.mjs`);
@@ -73,9 +73,29 @@ const packets = [];
 const requests = [];
 let tickId = 0;
 let accepted = 0;
+// The host arms one tick per request, and a presenting packet is a request
+// (*Uplink control messages* in contracts/frame-wire/wire-v1.md).
+function armTick() {
+  setTimeout(() => {
+    tickId += 1;
+    session.handleMessage(
+      encodeBytes([
+        {
+          kind: DOWN_CLOCK_TICK,
+          generation: 1,
+          frameId: tickId,
+          timestampNs: tickId * 16_666_667,
+          remainingCredits: 2,
+          acceptedSequence: accepted,
+        },
+      ]),
+    );
+  }, 1);
+}
 const session = new FrameSession({
   send(bytes) {
     packets.push(bytes.slice());
+    if (presents(bytes)) armTick();
     const sequence = sequenceOf(bytes);
     // The host admits it and answers with a verdict carrying its window.
     queueMicrotask(() => {
@@ -96,21 +116,7 @@ const session = new FrameSession({
   },
   sendControl(bytes) {
     requests.push(...decodeControlBytes(bytes.slice()));
-    setTimeout(() => {
-      tickId += 1;
-      session.handleMessage(
-        encodeBytes([
-          {
-            kind: DOWN_CLOCK_TICK,
-            generation: 1,
-            frameId: tickId,
-            timestampNs: tickId * 16_666_667,
-            remainingCredits: 2,
-            acceptedSequence: accepted,
-          },
-        ]),
-      );
-    }, 1);
+    armTick();
   },
 });
 const reports = [];
@@ -163,7 +169,10 @@ await new Promise((resolveFrame) => {
 await new Promise((resolveSettle) => setTimeout(resolveSettle, 20));
 
 check(packets.length === 2, `two frames became two packets (${packets.length})`);
-check(requests.length >= 2 && requests.every((r) => r.generation === 1), "each frame was requested for generation 1");
+check(
+  requests.length === 1 && requests[0].generation === 1,
+  `the first frame was requested for generation 1, and the second rode on the first packet (${requests.length} requests)`,
+);
 
 const f32 = new DataView(new ArrayBuffer(4));
 const bits = (value) => {
