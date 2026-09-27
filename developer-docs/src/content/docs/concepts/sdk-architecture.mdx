@@ -117,6 +117,6 @@ sequenceDiagram
 
 - **Android、Linux、Windows**：使用 V8；宿主分别通过 Android facade 或可链接的 C ABI 运行时接入。
 - **HarmonyOS NEXT**：由于 HarmonyOS 5.0.0(12) 起匿名内存执行权限限制，Migo 使用 `jitless` 模式运行 V8；不要宣称 NEXT 上的 JIT 性能。
-- **Apple**：外部 frame 会话使用 `CAMetalLayer`；实现尚未完成生产发布验证，因此不应据此作出生产性能声明。
+- **Apple**：iOS 上内容 JavaScript 运行在 WebKit 的 WebContent 进程（JavaScriptCore，带 JIT），Migo 在 App 进程把外部帧渲染进宿主的 `CAMetalLayer`，因此 JS 执行速度与 WKWebView 相同，不要宣称 iOS 上“JS 更快”；macOS 在本进程运行带 JIT 的 V8。见 [Apple 平台](/docs/getting-started/apple/)。
 
 Migo 的构建流程和平台依赖见仓库的 [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md)。

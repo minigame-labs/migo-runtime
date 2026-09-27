@@ -2,92 +2,182 @@
 title: Apple Platform (iOS / macOS)
 sidebar:
   order: 7
-description: "Apple platform integration status: MigoAppleCore is built and tested, MigoAppleRenderer is built, WebKit and MacV8 lanes are placeholders, and no device runs have been recorded."
+description: "Install and run a mini-game package with MigoGameView on iOS (Performance+) and macOS (V8), from the released SwiftPM package migo-<version>-apple-sdk.zip."
 audience: host-integrator
 platforms:
   - ios
   - macos
 sourcePaths:
   - platforms/apple/README.md
+  - platforms/apple/Sources/MigoApplePerformancePlus/MigoGameView.swift
+  - platforms/apple/Sources/MigoMacV8/MigoGameView.swift
+  - platforms/apple/Sources/MigoAppleRenderer/MigoContentInstaller.swift
+  - contracts/apple/deployment-floor.json
   - include/migo/platform/ios.h
   - include/migo/platform/macos.h
-  - platforms/apple/Package.swift
-  - platforms/apple/core/Package.swift
-  - platforms/apple/core/Sources/MigoAppleCore/MigoRuntimeProfile.swift
-  - platforms/apple/Sources/MigoAppleRenderer/MigoEngineCapabilities.swift
 ---
 
-This page records the **current build status** of the Apple platform, not end-to-end integration steps.
-The Apple README says: "Not a skeleton any more, and not a product either."
-The distinction is whether the compiler has seen it; this section therefore reports only what the
-compiler has seen.
+The Apple platform ships as one SwiftPM package: every release has an asset
+`migo-<version>-apple-sdk.zip` that unpacks to `MigoApple/`. It holds two products,
+one per platform, with the same public surface: install a game package, then load it
+into a `MigoGameView`.
 
-**No code has run on an iPhone.** The G0 probe (`ProbeApp/`) is the first Mac task; product selection
-will be determined by probe evidence, not prescribed in advance by any document in this repository.
+| App | Product | `import` | Minimum OS | Content JavaScript runs in | Rendering |
+| --- | --- | --- | --- | --- | --- |
+| iOS | `MigoApplePerformancePlus` | `import MigoApplePerformancePlus` | iOS 15.2 | WebKit's WebContent process (JavaScriptCore with its JIT), in a Dedicated Worker | this app's process: Skia + ANGLE/Metal |
+| macOS | `MigoMacV8` | `import MigoMacV8` | macOS 11 | this process: V8, with JIT and WebAssembly | this process: Skia + ANGLE/Metal |
 
-## Current build status
+## Why iOS is Performance+
 
-| Component | Status |
-| --- | --- |
-| `core/` (`MigoAppleCore`) | Built, tested, and cross-compiled as `aarch64-apple-ios` on an Apple silicon runner for every PR |
-| `Sources/MigoAppleRenderer` | Apple SDK workflow builds iOS/simulator shipping slices and a standalone macOS external-frame diagnostic package; the macOS diagnostic package is not a V8 product test |
-| `Sources/MigoAppleWebKit` | Placeholder; compiles, with no behavior |
-| `Sources/MigoMacV8` | Placeholder; compiles, with no behavior |
-| `WebContent/PerformancePlus` | The encoder runs against the same golden corpus under node on every PR |
-| `ProbeApp/` | README only; no source files, and there should be none until a real device can run it |
+iOS does not let a third-party process enable a JIT, but the WebContent process the
+system spawns for WebKit has one: the boundary is drawn around the process, not the
+engine. So Performance+ runs the game's JavaScript in WebContent -- the same
+JavaScriptCore a WKWebView uses -- and keeps rendering in the app: each frame's
+drawing commands cross the process boundary once, and Migo's renderer draws them into
+the host's `CAMetalLayer`.
 
-## Three product lanes
+This means that on iOS **content JavaScript runs at the same speed as in a WKWebView**;
+there is no "faster JS". The two differ in the path that gets a frame onto the screen.
+Same-device, same-session comparisons are in
+[migo-bench](https://github.com/minigame-labs/migo-bench).
 
-| Product | Where content JS runs | Renderer | Enters v1 |
-| --- | --- | --- | --- |
-| `MigoAppleWebKit` | WebContent, the full Web platform | WebKit | Yes |
-| `MigoApplePerformancePlus` | WebContent, Worker or Window (selected by the G0 probe) | In-process: Skia + ANGLE/Metal | Conditional |
-| `MigoMacV8` | In-process, V8 with JIT | In-process: Skia + ANGLE/Metal | Yes (macOS only) |
+A third lane, `MigoAppleWebKit` (a whole-page WebKit lane with no native renderer),
+has a WebView session only and is **not in the SDK**: until `migo.*` is implemented
+on the web platform itself, there is nothing for content to call there.
 
-`MigoAppleRenderer` is shared by the two native rendering lanes, Performance+ and MacV8;
-`MigoAppleWebKit` intentionally does not depend on it—a host requesting the compatibility baseline
-should not link a renderer that will never drive anything.
+## 1. Get the SDK
 
-## The two SwiftPM packages
+Download `migo-<version>-apple-sdk.zip` and its `.attestation.json` from the
+[SDK download page](https://minigame-labs.com/en/download.html) or
+[GitHub Releases](https://github.com/minigame-labs/migo-runtime/releases), and check it
+as described in [download verification](/docs/en/release/download-verification/)
+before use. Unpack it, then in Xcode choose
+*File → Add Package Dependencies → Add Local*, select `MigoApple/`, and link **one**
+product from the table above to the app target.
 
-The repository contains two packages; the split reflects meaningful payload boundaries:
+## 2. Install and run a game
 
-- **`platforms/apple/core/Package.swift`** (`MigoAppleCore`): no engine dependency and can be resolved,
-  built, and tested without fetching or building anything else. It contains profile policy,
-  deployment floor, lifecycle, permissions, and metrics.
-- **`platforms/apple/Package.swift`** (shipping package): declares a binary target pointing to the
-  xcframework generated by `scripts/build-apple-sdk.sh`; it cannot be resolved before that script
-  runs on a Mac. This means that while this skeleton remains, no Swift files are compiled—including
-  those that mirror `contracts/apple/*.json` and only compare text. `core/` is the engine-free half,
-  so it is built and tested on every PR.
+A game package is a directory with `game.js` at its root, shipped in the app. The
+calls are identical on both platforms:
 
-## C ABI surface types
+```swift
+// .unsigned: the package is inside your own (already signed) app bundle.
+// .verified(publicKey:): packages you download -- see "Content signing" below.
+let configuration = try MigoGameView.Configuration.standard(contentSigning: .unsigned)
+try MigoGameInstaller.install(
+    package: Bundle.main.url(forResource: "my-game", withExtension: nil)!,
+    id: "my-game", version: appBuildNumber, into: configuration.directories)
 
-`include/migo/platform/ios.h` declares two iOS surface descriptors:
-
-- `MigoIosUiViewDescriptor`: holds a host-owned `UIView*` (the convenience path; Host Kit creates and
-  owns the view's sole `CAMetalLayer` backing).
-- `MigoIosMetalLayerDescriptor`: holds a host-owned `CAMetalLayer*` (the Performance+ lane requires
-  a host-owned Metal surface; this is the authoritative path).
-
-`include/migo/platform/macos.h` declares two macOS surface descriptors:
-
-- `MigoMacosNsViewDescriptor`: holds a host-owned `NSView*` (the comment marks it as
-  "A future implementation").
-- `MigoMacosMetalLayerDescriptor`: holds a host-owned `CAMetalLayer*`. Mounting a `CAMetalLayer` on
-  macOS has run in CI (apple-sdk.yml run 34017950809), completing the full retirement handshake:
-  `begin_detach`, polling until `MIGO_SURFACE_RELEASE_RELEASED`,
-  `migo_surface_release_destroy`, `migo_session_destroy`, and `migo_engine_destroy`.
-
-## Building (requires macOS + Xcode)
-
-`core/` has no engine dependency and can be independently resolved, built, and tested:
-
-```bash
-bash scripts/test-apple-swift-core-engine-free.sh
+let gameView = MigoGameView(configuration: configuration)
+gameView.onEvent = { event in
+    // .ready / .exitRequested / .failed(reason) / .restarted / .console / .gameLog ...
+}
+view.addSubview(gameView)          // any size; the game gets it at first layout
+gameView.loadGame(id: "my-game")   // entry defaults to game.js
 ```
 
-The shipping package requires ANGLE to be installed and the SDK to be built, **on macOS only**:
+`version` makes relaunches free: the same version is not copied again. When the game
+asks to exit (`migo.exitMiniProgram()`) the view reports `.exitRequested`, and what
+the app shows next is the app's; the same view can load the next game.
+
+`MigoGameView` owns everything else: the engine session, the `CAMetalLayer`, the
+display clock, touches (and on macOS the mouse, wheel and keys), the app lifecycle
+and the soft keyboard. On iOS it also owns the audio session and recovery from a
+WebContent crash: the game restarts from its entry, the view reports `.restarted`,
+and saves on disk survive.
+
+Complete iOS and macOS apps, resolving this asset and verifying its attestation, are
+in [`apple-swift/` in migo-examples](https://github.com/minigame-labs/migo-examples/tree/master/apple-swift).
+
+## 3. Content signing
+
+`contentSigning` has no default and must be chosen:
+
+- `.unsigned`: only for packages shipped inside the signed app.
+- `.verified(publicKey:)`: a 32-byte raw Ed25519 public key. Every package must then
+  carry `manifest.json`
+  (`{"version": 1, "entry": "game.js", "timestamp": <unix seconds>, "files": {"<path>": "<sha256 hex>", ...}}`)
+  and `manifest.sig`, the raw 64-byte signature of `manifest.json`'s exact bytes. The
+  engine verifies a package in full on its first launch and refuses one that does not
+  match.
+
+With signing enforced, the engine refuses a dynamically downloaded subpackage, since
+it carries no signature; subpackages inside the package work.
+
+## 4. Platform notes
+
+### iOS
+
+- The game's size is fixed when it starts (a mini-game lays itself out once), so lock
+  the hosting view controller to the game's orientation.
+- `MigoGameView.unavailabilityReason` says whether the device can run the lane (for
+  example below iOS 15.2); check it before offering the game.
+- When the canvas is smaller than the screen -- common for games that size
+  `canvas.width` in logical pixels -- the drawable takes the canvas's size and Core
+  Animation scales it to the view, which is how a browser composites a canvas. The
+  host does not set `CAMetalLayer.drawableSize` and leaves `contentsGravity` at its
+  default, `.resize`.
+
+### macOS
+
+- Sign with the hardened runtime and `com.apple.security.cs.allow-jit`. Without it
+  the view refuses to start and `onEvent` says why (V8 would die at its first compile,
+  and a jitless V8 has no WebAssembly).
+- Embed ANGLE with a Run Script build phase before signing, and add
+  `@executable_path/../Frameworks` to the runpath search paths:
+
+  ```bash
+  bash "$MIGO_PACKAGE/Frameworks/Scripts/embed-apple-angle.sh" \
+    --frameworks-dir "$MIGO_PACKAGE/Frameworks" \
+    --destination "$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH" \
+    --architectures "$ARCHS" \
+    --sign "$EXPANDED_CODE_SIGN_IDENTITY"
+  ```
+
+- `Configuration.mouse` chooses how the mouse reaches content: `.touch` (phone-first
+  content, the default), `.pointer` (PC-first content) or `.touchAndPointer` (only for
+  content known to listen to exactly one of them).
+
+## 5. Device capabilities
+
+`MigoGameView` also answers what content asks of the device:
+
+| API | iOS | macOS |
+| --- | --- | --- |
+| `setKeepScreenOn` | the idle timer; the app's own setting comes back when the game ends | a power assertion; likewise |
+| `getNetworkType` / `onNetworkStatusChange` | `NWPathMonitor` (wired is `wifi`, cellular `unknown`, as on Android) | likewise |
+| `vibrateShort` / `vibrateLong` | the Taptic Engine | answers "not supported" |
+| `getBatteryInfo` | battery level and Low Power Mode | answers "not supported" |
+| `getGameLogManager().log` | delivered to the app as `onEvent(.gameLog(json))` | likewise |
+
+These are **refused rather than faked** on both lanes: `setDeviceOrientation` (the
+size is fixed at start), `setEnableDebug` (there is no debug panel),
+`getHeapStatistics` on iOS (content runs in WebKit's JavaScriptCore, which exposes no
+heap figures), and downloaded subpackages when signing is enforced.
+
+## 6. What has been verified
+
+- **iOS devices**: on an iPhone XS Max (iOS 18.7), a game installed, loaded, turning
+  frames on the display clock, exiting to the app and the next game running on the
+  same layer; the soft keyboard; signed content verified, updated and refused when
+  tampered; a game's packaged sounds playing through the host's audio. On the iPhone
+  XS Max and an iPhone 15 Pro (iOS 26.6), the three benchmark games (PixiJS, Phaser,
+  plain Canvas) and the measurement calibration pages all present at 60 fps.
+- **iOS simulator** (every pull request): an acceptance suite running a real
+  WebContent producer against a real renderer -- WebGL and 2D, textures, text,
+  images, touches, a frame larger than one packet, synchronous readback and audio.
+- **macOS** (every pull request): `MigoGameView` runs a game in an app signed with the
+  hardened runtime and allow-jit -- V8's JIT and WebAssembly, Canvas2D on ANGLE,
+  signed content verified and tampered content refused, and the view refusing to
+  start without the entitlement.
+- **Release**: `migo-<version>-apple-sdk.zip` is published only after the asset itself
+  has been unpacked, built for iOS and macOS, and has run a game
+  (`scripts/test-apple-sdk-release-asset.sh`).
+
+## Building from source
+
+This needs macOS and Xcode. Install the pinned ANGLE first (the build script never
+downloads it), then build each platform group:
 
 ```bash
 bash scripts/fetch-apple-angle.sh ios
@@ -97,37 +187,5 @@ bash scripts/build-apple-sdk.sh --platform ios --configuration Release
 bash scripts/build-apple-sdk.sh --platform ios-simulator --configuration Release
 ```
 
-This produces `platforms/apple/Frameworks/MigoEngine.xcframework`, containing iOS device and
-iOS simulator platform groups.
-
-macOS external-frame renderer/ABI diagnostic test (not a V8 product test):
-
-```bash
-bash scripts/build-apple-sdk.sh --platform macos \
-  --product external-frames-diagnostic --configuration Debug
-```
-
-Packaging contracts can be verified without Xcode:
-
-```bash
-bash scripts/test-apple-shipping-package-contract.sh
-bash scripts/test-apple-sdk-packaging.sh
-```
-
-## What currently does not exist
-
-The following is **currently unavailable**; do not use this page as a basis for attempting it:
-
-- Steps for running Migo on an iPhone or iPad—`ProbeApp/` has no source files, and the G0 probe has
-  not yet run.
-- An application session implementation for `MigoAppleWebKit` or `MigoMacV8`—the Swift placeholders
-  compile but implement no session logic.
-- A macOS V8 shipping artifact—the README explicitly says the SDK workflow does not publish a macOS
-  V8 release and does not claim to have built a macOS V8 archive; a compiling placeholder is not a
-  complete product.
-
-## Building from source
-
-See [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md) and
-[`platforms/apple/README.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/platforms/apple/README.md)
-in the repository for build details.
+The macOS V8 group, building ANGLE from source and the embedding details are in
+[`platforms/apple/README.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/platforms/apple/README.md).
