@@ -120,11 +120,20 @@ Decided, because the OS enforces it:
   not a usable shape. The target shape is attached and moved outside the visible
   area.
 
+Measured, and the shape `MigoGameView` uses: **off-screen and one point
+square**. WebKit keeps a backing store for the page at the view's size even
+though this page draws nothing, and it lives in WebContent's footprint: at the
+window's size, 11 MiB on an iPhone 15 Pro (iOS 26.6, 2026-09-27; bunnymark
+136.9 to 125.9 MiB across the arm's processes, canvasmark 119.0 to 108.2). The
+Worker was not throttled: 60 fps and the same CPU (29.4% to 29.5%, 33.4% to
+33.6%). A one-point view is neither hidden nor zero-sized, and off the window's
+edge it is not occluded.
+
 Still measured on the supported OS/device matrix, because these are
 throttling-and-throughput questions rather than capability ones:
 
-- Which attached-but-not-visible variant wins: off-screen, a 1x1 visible corner,
-  or fully occluded. Whether the Worker gets throttled is what is being compared.
+- Whether a 1x1 visible corner or a fully occluded view would do better than
+  off-screen. Whether the Worker gets throttled is what is being compared.
 - Whether the loopback downlink needs a third leg at all. A custom-scheme
   streaming response runs its handler in the host process and saves a
   NetworkProcess hop, but it adds cross-origin and COEP complexity, so it is only

@@ -282,10 +282,15 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             host.onReport = { [weak self] report in self?.producerReport(report) }
             host.onConsole = { [weak self] level, message in self?.onEvent?(.console(level: level, message: message)) }
 
-            // Off the window's left edge and the full window's size: attached,
-            // not occluded, never seen, and not clipped by wherever the app put
-            // this view.
-            host.view.frame = window.bounds.offsetBy(dx: -window.bounds.width - 1, dy: 0)
+            // One point square, just off the window's left edge: attached (an
+            // unattached web view is killed), neither hidden nor zero-sized
+            // (both stop it), not occluded (occlusion stops JavaScript), never
+            // seen, and not clipped by wherever the app put this view. The size
+            // is the page's backing store: WebKit keeps one at the view's size
+            // even for a page that draws nothing, and at the window's size it
+            // was 11 MiB of WebContent's memory on an iPhone 15 Pro. One point
+            // measured the same frame rate and CPU (README, "host shape").
+            host.view.frame = CGRect(x: -2, y: 0, width: 1, height: 1)
             window.addSubview(host.view)
             try host.start()
 
