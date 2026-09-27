@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.11 (2026-09-27)
+
+### Fixed
+- Every platform: `WEBGL_lose_context.loseContext()` reset the whole GPU share
+  group instead of losing the one context it was called on. Pixi calls it on a
+  probe context while choosing a renderer, and a reset that landed after the
+  game had built its shaders took them away: on an iPhone, Pixi games stayed
+  black on their first launch after install. It now loses that context only, as
+  the extension specifies; the reset is still reachable for verification as
+  `MIGO_debug_gpu_reset`.
+- Every platform: `console.error(error)` logged an `Error` as `{}`. It now logs
+  its name, message and stack; `undefined`, functions and symbols, which logged
+  as nothing, log as their text.
+- iOS and macOS (Performance+): a game that draws only with Canvas2D showed a
+  black screen -- its batches were never marked for presentation.
+- iOS and macOS (Performance+): after a GL context loss every frame was refused
+  and the game froze on its last picture, because the producer was never told
+  the new resource epoch. The host now sends it (`DOWN_CONTEXT_STATE`, a
+  downlink-only addition to frame-wire v1), and content gets
+  `webglcontextlost`/`webglcontextrestored` as on every other platform.
+- iOS and macOS (Performance+): a web adapter's `XMLHttpRequest` shim broke the
+  engine's synchronous calls, and its timers threw `Illegal invocation`; the
+  producer now uses the platform objects it captured before content ran.
+- iOS and macOS (Performance+): content saw the WebKit Worker's own globals
+  (`importScripts`, `self`, `navigator`, ...). Phaser read `importScripts`,
+  decided it was in a Web Worker and refused to start. Content now sees the
+  same global names the engine publishes on every other platform.
+
 ## v0.9.10 (2026-09-26)
 
 ### Fixed
