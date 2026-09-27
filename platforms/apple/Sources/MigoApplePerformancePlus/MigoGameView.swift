@@ -243,7 +243,7 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 widthPixels: UInt32((points.width * scale).rounded()),
                 heightPixels: UInt32((points.height * scale).rounded()),
                 scale: Float(scale))
-            metalView.configure(scale: scale, drawableSize: size)
+            metalView.configure(scale: scale)
 
             let engine = try MigoEngineSession(
                 directories: configuration.directories, contentSigning: configuration.contentSigning,
@@ -707,14 +707,16 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
         @available(*, unavailable)
         required init?(coder: NSCoder) { fatalError() }
 
-        /// The drawable is sized once per session; a later bounds change is
-        /// scaled by Core Animation. `framebufferOnly` stays on: nothing samples
-        /// the drawable, and off costs bandwidth on every frame.
-        func configure(scale: CGFloat, drawableSize: MigoEngineSession.SurfaceSize) {
+        /// Core Animation scales the drawable to the layer's bounds. The
+        /// drawable's size is the engine's alone: its window surface is
+        /// fixed-size and follows the game's canvas when that is smaller than
+        /// the screen, which is how a browser composites a canvas, so a
+        /// DPR-naive game presents a ninth of the pixels and its three
+        /// drawables shrink with it. A later bounds change is scaled the same
+        /// way.
+        func configure(scale: CGFloat) {
             contentScaleFactor = scale
             metalLayer.contentsScale = scale
-            metalLayer.drawableSize = CGSize(
-                width: CGFloat(drawableSize.widthPixels), height: CGFloat(drawableSize.heightPixels))
             metalLayer.contentsGravity = .resize
         }
     }

@@ -1,0 +1,89 @@
+diff --git a/src/libANGLE/renderer/metal/DisplayMtl.mm b/src/libANGLE/renderer/metal/DisplayMtl.mm
+--- a/src/libANGLE/renderer/metal/DisplayMtl.mm
++++ b/src/libANGLE/renderer/metal/DisplayMtl.mm
+@@ -497,6 +497,9 @@ void DisplayMtl::generateExtensions(egl::DisplayExtensions *outExtensions) const
+ 
+     // EGL_ANGLE_metal_commands_scheduled_sync
+     outExtensions->mtlSyncCommandsScheduledANGLE = true;
++
++    // EGL_ANGLE_window_fixed_size
++    outExtensions->windowFixedSize = true;
+ }
+ 
+ void DisplayMtl::generateCaps(egl::Caps *outCaps) const
+diff --git a/src/libANGLE/renderer/metal/SurfaceMtl.h b/src/libANGLE/renderer/metal/SurfaceMtl.h
+--- a/src/libANGLE/renderer/metal/SurfaceMtl.h
++++ b/src/libANGLE/renderer/metal/SurfaceMtl.h
+@@ -147,6 +147,10 @@ class WindowSurfaceMtl : public SurfaceMtl
+ 
+     // size can change with client window resizing
+     gl::Extents getSize() const override;
++    // EGL_ANGLE_window_fixed_size: the drawable keeps this size whatever the layer's bounds, and
++    // Core Animation scales it to them.
++    void setFixedWidth(EGLint width) override;
++    void setFixedHeight(EGLint height) override;
+     angle::Result getAttachmentRenderTarget(const gl::Context *context,
+                                             GLenum binding,
+                                             const gl::ImageIndex &imageIndex,
+@@ -182,6 +186,11 @@ class WindowSurfaceMtl : public SurfaceMtl
+     // metal runtime.
+     CGSize mCurrentKnownDrawableSize;
+ 
++    // Set when the surface was created with EGL_FIXED_SIZE_ANGLE: the drawable size the client
++    // asked for, which then replaces the layer's bounds times contentsScale.
++    bool mFixedSize = false;
++    CGSize mFixedDrawableSize;
++
+     bool mRetainBuffer = false;
+ };
+ 
+diff --git a/src/libANGLE/renderer/metal/SurfaceMtl.mm b/src/libANGLE/renderer/metal/SurfaceMtl.mm
+--- a/src/libANGLE/renderer/metal/SurfaceMtl.mm
++++ b/src/libANGLE/renderer/metal/SurfaceMtl.mm
+@@ -411,10 +411,14 @@ WindowSurfaceMtl::WindowSurfaceMtl(DisplayMtl *display,
+                                    const egl::SurfaceState &state,
+                                    EGLNativeWindowType window,
+                                    const egl::AttributeMap &attribs)
+-    : SurfaceMtl(display, state, attribs), mLayer((__bridge CALayer *)(window))
++    : SurfaceMtl(display, state, attribs),
++      mLayer((__bridge CALayer *)(window)),
++      mFixedSize(attribs.get(EGL_FIXED_SIZE_ANGLE, EGL_FALSE) == EGL_TRUE)
+ {
+-    // NOTE(hqle): Width and height attributes is ignored for now.
++    // Width and height are only meaningful with EGL_FIXED_SIZE_ANGLE; otherwise the layer decides.
+     mCurrentKnownDrawableSize = CGSizeMake(0, 0);
++    mFixedDrawableSize        = CGSizeMake(static_cast<CGFloat>(attribs.get(EGL_WIDTH, 0)),
++                                           static_cast<CGFloat>(attribs.get(EGL_HEIGHT, 0)));
+ }
+ 
+ WindowSurfaceMtl::~WindowSurfaceMtl() {}
+@@ -582,8 +586,29 @@ angle::Result WindowSurfaceMtl::ensureColorTextureReadyForReadPixels(const gl::C
+     return angle::Result::Continue;
+ }
+ 
++void WindowSurfaceMtl::setFixedWidth(EGLint width)
++{
++    // Takes effect at the next drawable: checkIfLayerResized() compares against this.
++    mFixedDrawableSize.width = static_cast<CGFloat>(width);
++}
++
++void WindowSurfaceMtl::setFixedHeight(EGLint height)
++{
++    mFixedDrawableSize.height = static_cast<CGFloat>(height);
++}
++
+ CGSize WindowSurfaceMtl::calcExpectedDrawableSize() const
+ {
++    // MIGO: EGL_ANGLE_window_fixed_size for Metal, which upstream implements only for D3D. The
++    // client sizes the drawable to what it renders -- a canvas smaller than the screen -- and the
++    // layer's contentsGravity has Core Animation scale it, the way a browser composites a canvas,
++    // instead of the client upscaling into a screen-sized drawable every frame. Three screen-sized
++    // drawables are the largest allocation such a client makes.
++    if (mFixedSize)
++    {
++        return mFixedDrawableSize;
++    }
++
+     CGSize currentLayerSize           = mMetalLayer.get().bounds.size;
+     CGFloat currentLayerContentsScale = mMetalLayer.get().contentsScale;
+     CGSize expectedDrawableSize = CGSizeMake(currentLayerSize.width * currentLayerContentsScale,

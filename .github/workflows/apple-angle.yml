@@ -101,6 +101,12 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          # A fresh clone is no longer usable as-is: since this lane last ran
+          # (2026-09-05), `fetch` refuses to start until depot_tools has
+          # bootstrapped its own Python ("python3_bin_reldir.txt not found",
+          # run 36318106374). `ensure_bootstrap` is the step it names, done
+          # here once rather than left to whichever tool runs first.
+          "$RUNNER_TEMP/depot_tools/ensure_bootstrap"
           echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
 
       # The recipe's own readiness report, before it costs anything. It names
