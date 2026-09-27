@@ -2,89 +2,160 @@
 title: Apple 平台（iOS / macOS）
 sidebar:
   order: 7
-description: Apple 平台集成状态：MigoAppleCore 已构建测试，MigoAppleRenderer 已构建，WebKit 与 MacV8 lane 为占位符，尚无设备运行记录。
+description: 用发布的 SwiftPM 包 migo-<版本>-apple-sdk.zip，在 iOS（Performance+）与 macOS（V8）上通过 MigoGameView 安装并运行小游戏包。
 audience: host-integrator
 platforms:
   - ios
   - macos
 sourcePaths:
   - platforms/apple/README.md
+  - platforms/apple/Sources/MigoApplePerformancePlus/MigoGameView.swift
+  - platforms/apple/Sources/MigoMacV8/MigoGameView.swift
+  - platforms/apple/Sources/MigoAppleRenderer/MigoContentInstaller.swift
+  - contracts/apple/deployment-floor.json
   - include/migo/platform/ios.h
   - include/migo/platform/macos.h
-  - platforms/apple/Package.swift
-  - platforms/apple/core/Package.swift
-  - platforms/apple/core/Sources/MigoAppleCore/MigoRuntimeProfile.swift
-  - platforms/apple/Sources/MigoAppleRenderer/MigoEngineCapabilities.swift
 ---
 
-本页记录 Apple 平台的**当前构建状态**，而非端到端集成步骤。
-Apple README 原文：「Not a skeleton any more, and not a product either.」
-区分两者的标准是编译器是否见过它——因此本节仅报告编译器见到了什么。
+Apple 平台以一个 SwiftPM 包发布：每个版本的 Release 附件 `migo-<版本>-apple-sdk.zip`，
+解压得到 `MigoApple/`。包里有两个产品，各对应一种平台，公开接口相同：安装游戏包，
+再把它载入一个 `MigoGameView`。
 
-**没有任何代码在 iPhone 上运行过。** G0 探测（`ProbeApp/`）是第一个 Mac 任务；
-产品选择由探测证据决定，不由本仓库中的任何文档预先给出。
+| App | 产品 | `import` | 最低系统 | 内容 JavaScript 运行在 | 渲染 |
+| --- | --- | --- | --- | --- | --- |
+| iOS | `MigoApplePerformancePlus` | `import MigoApplePerformancePlus` | iOS 15.2 | WebKit 的 WebContent 进程（JavaScriptCore，带 JIT），Dedicated Worker 内 | 本 App 进程：Skia + ANGLE/Metal |
+| macOS | `MigoMacV8` | `import MigoMacV8` | macOS 11 | 本进程：V8，带 JIT 与 WebAssembly | 本进程：Skia + ANGLE/Metal |
 
-## 当前构建状态
+## iOS 为什么是 Performance+
 
-| 组件 | 状态 |
-| --- | --- |
-| `core/`（`MigoAppleCore`） | 在每次 PR 上于 Apple silicon runner 构建、测试并交叉编译为 `aarch64-apple-ios` |
-| `Sources/MigoAppleRenderer` | Apple SDK workflow 构建 iOS/simulator shipping slices 及独立 macOS external-frame 诊断包；macOS 诊断包不是 V8 产品测试 |
-| `Sources/MigoAppleWebKit` | 占位符；可编译，无行为 |
-| `Sources/MigoMacV8` | 占位符；可编译，无行为 |
-| `WebContent/PerformancePlus` | 编码器在每次 PR 上于 node 下对同一黄金语料库运行 |
-| `ProbeApp/` | 仅有 README；无源文件，在有真机可运行之前也不应有 |
+iOS 不允许第三方进程开 JIT，但系统拉起的 WebKit WebContent 进程有 JIT 权限——边界划在
+进程上，不在引擎上。Performance+ 因此让游戏的 JavaScript 在 WebContent 里跑（与
+WKWebView 同一个 JavaScriptCore），渲染留在 App 进程：每帧的绘制命令跨一次进程边界，
+由 Migo 的渲染器画进宿主的 `CAMetalLayer`。
 
-## 三条产品路线
+这意味着 iOS 上**内容 JavaScript 的执行速度与 WKWebView 相同**，不存在“JS 更快”；两者的
+差别在把画面送上屏的那条链路。同机同场次的对照数据见
+[migo-bench](https://github.com/minigame-labs/migo-bench)。
 
-| 产品 | 内容 JS 运行位置 | 渲染器 | 进入 v1 |
-| --- | --- | --- | --- |
-| `MigoAppleWebKit` | WebContent，完整 Web 平台 | WebKit | 是 |
-| `MigoApplePerformancePlus` | WebContent，Worker 或 Window（由 G0 探测选择） | 本进程：Skia + ANGLE/Metal | 条件性 |
-| `MigoMacV8` | 本进程，V8 with JIT | 本进程：Skia + ANGLE/Metal | 是（仅 macOS） |
+另外有一条 `MigoAppleWebKit`（整页 WebKit、无 native 渲染）车道，它只有 WebView 会话，
+**不在 SDK 里**：在 web 平台上实现 `migo.*` 之前，它没有可供内容调用的东西。
 
-`MigoAppleRenderer` 被 Performance+ 和 MacV8 两条 native 渲染 lane 共享；
-`MigoAppleWebKit` 有意不依赖它——请求了兼容性基线的宿主不应链接一个永远不会驱动的渲染器。
+## 1. 获取 SDK
 
-## 两个 SwiftPM 包
+从 [SDK 下载页](https://minigame-labs.com/download.html) 或
+[GitHub Releases](https://github.com/minigame-labs/migo-runtime/releases) 下载
+`migo-<版本>-apple-sdk.zip` 与同名的 `.attestation.json`，先按
+[下载校验](/docs/release/download-verification/) 核对再使用。解压后在 Xcode 中
+*File → Add Package Dependencies → Add Local*，选中 `MigoApple/`，给 App target 链接
+上表中对应平台的**一个**产品。
 
-仓库包含两个包，拆分是有意义的负载：
+## 2. 安装并运行游戏
 
-- **`platforms/apple/core/Package.swift`**（`MigoAppleCore`）：无引擎依赖，无需拉取
-  或构建任何内容即可解析和构建。包含 profile policy、部署底线、生命周期、权限、metrics。
-- **`platforms/apple/Package.swift`**（shipping package）：声明一个 binary target，
-  指向 `scripts/build-apple-sdk.sh` 生成的 xcframework；在 Mac 上运行该脚本之前
-  无法解析。这意味着在此 skeleton 存续期间，没有任何 Swift 文件被编译——包括那些
-  镜像 `contracts/apple/*.json` 并仅比较文本的文件。`core/` 是不需要引擎的那半部分，
-  因此在每次 PR 上构建和测试。
+游戏包是一个根目录下有 `game.js` 的目录，随 App 打包。两个平台的调用完全相同：
 
-## C ABI Surface 类型
+```swift
+// .unsigned：包在你自己（已签名）的 App 包内。
+// .verified(publicKey:)：从网络下载的包，见下文「内容签名」。
+let configuration = try MigoGameView.Configuration.standard(contentSigning: .unsigned)
+try MigoGameInstaller.install(
+    package: Bundle.main.url(forResource: "my-game", withExtension: nil)!,
+    id: "my-game", version: appBuildNumber, into: configuration.directories)
 
-`include/migo/platform/ios.h` 声明两种 iOS surface 描述符：
-
-- `MigoIosUiViewDescriptor`：持有宿主拥有的 `UIView*`（便捷路径；Host Kit 创建并
-  拥有该 view 的唯一 `CAMetalLayer` backing）。
-- `MigoIosMetalLayerDescriptor`：持有宿主拥有的 `CAMetalLayer*`（Performance+ lane
-  需要宿主拥有的 Metal surface；这是权威路径）。
-
-`include/migo/platform/macos.h` 声明两种 macOS surface 描述符：
-
-- `MigoMacosNsViewDescriptor`：持有宿主拥有的 `NSView*`（注释标明为
-  "A future implementation"）。
-- `MigoMacosMetalLayerDescriptor`：持有宿主拥有的 `CAMetalLayer*`。macOS 上的
-  `CAMetalLayer` 挂载已在 CI 上运行（apple-sdk.yml run 34017950809），完成了完整的
-  retirement 握手：`begin_detach`、轮询至 `MIGO_SURFACE_RELEASE_RELEASED`、
-  `migo_surface_release_destroy`、`migo_session_destroy`、`migo_engine_destroy`。
-
-## 构建（需要 macOS + Xcode）
-
-`core/` 无引擎依赖，可独立解析、构建和测试：
-
-```bash
-bash scripts/test-apple-swift-core-engine-free.sh
+let gameView = MigoGameView(configuration: configuration)
+gameView.onEvent = { event in
+    // .ready / .exitRequested / .failed(reason) / .restarted / .console / .gameLog ...
+}
+view.addSubview(gameView)          // 任意尺寸；首次布局时游戏拿到这个尺寸
+gameView.loadGame(id: "my-game")   // 入口默认 game.js
 ```
 
-shipping package 需要先安装 ANGLE 并构建 SDK，**仅限 macOS**：
+`version` 让重复启动零成本：同一版本不会再拷一遍。游戏请求退出
+（`migo.exitMiniProgram()`）时收到 `.exitRequested`，之后显示什么由 App 决定；同一个
+view 可以接着载入下一个游戏。
+
+`MigoGameView` 负责其余一切：引擎会话、`CAMetalLayer`、显示时钟、触摸（macOS 上还有
+鼠标、滚轮和键盘）、App 生命周期、软键盘；在 iOS 上还负责音频会话，以及 WebContent
+进程崩溃后的恢复（游戏从入口重启，事件为 `.restarted`，磁盘上的存档保留）。
+
+完整可运行的 iOS 与 macOS App（解析这个附件并校验其 attestation）在
+[migo-examples 的 `apple-swift/`](https://github.com/minigame-labs/migo-examples/tree/master/apple-swift)。
+
+## 3. 内容签名
+
+`contentSigning` 没有默认值，必须显式选择：
+
+- `.unsigned`：只用于随 App 一起签名分发的包。
+- `.verified(publicKey:)`：32 字节原始 Ed25519 公钥。每个包都必须带 `manifest.json`
+  （`{"version": 1, "entry": "game.js", "timestamp": <unix 秒>, "files": {"<路径>": "<sha256 hex>", ...}}`）
+  与 `manifest.sig`（对 `manifest.json` 原始字节的 64 字节签名）。引擎在首次启动时完整
+  校验，不匹配即拒绝。
+
+启用签名校验时，引擎拒绝动态下载的分包（下载的分包不带签名）；包内自带的分包正常可用。
+
+## 4. 平台注意事项
+
+### iOS
+
+- 游戏尺寸在启动时确定（小游戏只布局一次），请把承载的 view controller 锁定在游戏的
+  方向上。
+- `MigoGameView.unavailabilityReason` 说明当前设备能否运行这条车道（例如系统低于
+  15.2），在展示入口前检查。
+- 画布小于屏幕时（按逻辑像素设置 `canvas.width` 的游戏很常见），drawable 取画布的
+  尺寸，由 Core Animation 缩放到 view 上——与浏览器合成画布的方式相同。宿主不要设置
+  `CAMetalLayer.drawableSize`，`contentsGravity` 保持默认的 `.resize`。
+
+### macOS
+
+- 用 hardened runtime 签名，并加 `com.apple.security.cs.allow-jit`。缺少时 view 拒绝
+  启动并在 `onEvent` 里说明原因（V8 会在第一次编译时崩溃，而 jitless 的 V8 没有
+  WebAssembly）。
+- 签名前用 Run Script 构建阶段嵌入 ANGLE，并在 Runpath Search Paths 中加入
+  `@executable_path/../Frameworks`：
+
+  ```bash
+  bash "$MIGO_PACKAGE/Frameworks/Scripts/embed-apple-angle.sh" \
+    --frameworks-dir "$MIGO_PACKAGE/Frameworks" \
+    --destination "$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH" \
+    --architectures "$ARCHS" \
+    --sign "$EXPANDED_CODE_SIGN_IDENTITY"
+  ```
+
+- `Configuration.mouse` 选择鼠标如何送给内容：`.touch`（面向手机的内容，默认）、
+  `.pointer`（面向 PC 的内容）、`.touchAndPointer`（仅用于确知只监听其中一种的内容）。
+
+## 5. 设备能力
+
+`MigoGameView` 也回答内容对设备的询问：
+
+| 接口 | iOS | macOS |
+| --- | --- | --- |
+| `setKeepScreenOn` | 空闲计时器；游戏结束时交还 App 原设置 | 电源断言；同左 |
+| `getNetworkType` / `onNetworkStatusChange` | `NWPathMonitor`（有线记为 `wifi`，蜂窝记为 `unknown`，与 Android 一致） | 同左 |
+| `vibrateShort` / `vibrateLong` | Taptic Engine | 回答“不支持” |
+| `getBatteryInfo` | 电量与低电量模式 | 回答“不支持” |
+| `getGameLogManager().log` | 以 `onEvent(.gameLog(json))` 交给 App | 同左 |
+
+以下接口在这两条车道上**明确拒绝，不伪造结果**：`setDeviceOrientation`（尺寸在启动时
+固定）、`setEnableDebug`（没有调试面板）、iOS 上的 `getHeapStatistics`（内容运行在
+WebKit 的 JavaScriptCore 中，它不暴露堆数据），以及启用签名校验时的动态下载分包。
+
+## 6. 验证记录
+
+- **iOS 真机**：iPhone XS Max（iOS 18.7）上游戏安装、载入、按显示时钟出帧、退出回到
+  App、同一 layer 上运行下一个游戏；软键盘；签名包的校验、更新与篡改拒绝；游戏的打包
+  音效经宿主音频播放。iPhone XS Max 与 iPhone 15 Pro（iOS 26.6）上，三款基准游戏
+  （PixiJS、Phaser、原生 Canvas）与测量校准页都以 60 fps 出帧。
+- **iOS 模拟器**（每个 PR）：真实的 WebContent 生产端对真实渲染器的验收套件，覆盖
+  WebGL 与 2D、纹理、文字、图片、触摸、超过单包的帧、同步回读与音频。
+- **macOS**（每个 PR）：`MigoGameView` 在 hardened runtime + allow-jit 签名的 App 中
+  运行游戏：V8 JIT 与 WebAssembly、ANGLE 上的 Canvas2D、签名内容校验与篡改拒绝，以及
+  缺少 entitlement 时拒绝启动。
+- **发布**：只有在 `migo-<版本>-apple-sdk.zip` 本身被解压、为 iOS 与 macOS 构建并跑通一个
+  游戏之后才会发布（`scripts/test-apple-sdk-release-asset.sh`）。
+
+## 从源码构建
+
+需要 macOS 与 Xcode。先安装钉住的 ANGLE（构建脚本从不自行下载），再构建各平台组：
 
 ```bash
 bash scripts/fetch-apple-angle.sh ios
@@ -94,35 +165,5 @@ bash scripts/build-apple-sdk.sh --platform ios --configuration Release
 bash scripts/build-apple-sdk.sh --platform ios-simulator --configuration Release
 ```
 
-产出 `platforms/apple/Frameworks/MigoEngine.xcframework`，包含 iOS device 和
-iOS simulator 两个 platform group。
-
-macOS external-frame 渲染器/ABI 诊断测试（不是 V8 产品测试）：
-
-```bash
-bash scripts/build-apple-sdk.sh --platform macos \
-  --product external-frames-diagnostic --configuration Debug
-```
-
-packaging 契约可在无 Xcode 的情况下验证：
-
-```bash
-bash scripts/test-apple-shipping-package-contract.sh
-bash scripts/test-apple-sdk-packaging.sh
-```
-
-## 目前不存在的内容
-
-以下内容**目前不可用**；不要依据本页尝试：
-
-- 在 iPhone 或 iPad 上运行 Migo 的步骤——`ProbeApp/` 无源文件，G0 探测尚未进行。
-- `MigoAppleWebKit` 或 `MigoMacV8` 的应用 session 实现——Swift 占位符可编译，但不
-  实现任何 session 逻辑。
-- macOS V8 shipping artifact 的可用性——README 明确说 SDK workflow 不发布
-  macOS V8 release，也不声称已经构建 macOS V8 archive；占位符可编译不等于产品完整。
-
-## 从源码构建
-
-构建细节见仓库中的
-[`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md) 及
+macOS V8 组、ANGLE 的源码构建与嵌入细节见
 [`platforms/apple/README.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/platforms/apple/README.md)。

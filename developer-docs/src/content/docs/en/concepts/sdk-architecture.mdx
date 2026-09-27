@@ -115,6 +115,6 @@ sequenceDiagram
 
 - **Android, Linux, Windows**: use V8; the host integrates through the Android facade or the linkable C ABI runtime.
 - **HarmonyOS NEXT**: due to anonymous-memory execution restrictions introduced in HarmonyOS 5.0.0 (12), Migo runs V8 in `jitless` mode; do not claim JIT-level performance on NEXT.
-- **Apple**: external-frame sessions use `CAMetalLayer`; the implementation has not completed production-readiness verification, so production performance claims must not be made.
+- **Apple**: on iOS, content JavaScript runs in WebKit's WebContent process (JavaScriptCore, with its JIT) and Migo renders the external frames into the host's `CAMetalLayer` in the app process, so JS runs at the same speed as in a WKWebView -- do not claim faster JS on iOS; macOS runs V8 with a JIT in-process. See [Apple platform](/docs/en/getting-started/apple/).
 
 Migo's build process and platform dependencies are documented in the repository's [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md).

@@ -32,7 +32,7 @@ This page answers the two most practical questions on the vendor side: **"which 
 | OpenHarmony | Static library, DevEco host project | aarch64, x86_64 | Target device per the OHOS target manifest; multi-touch validated only in the API 20 simulator — on-device regression is the host's job |
 | Windows | `migo.dll` + `rusty_v8.dll` + headers, CMake target | x64, arm64 | Windows (with ANGLE/HWND); WinUI integration is the host's responsibility |
 | Linux | host-kit toolchain + wayland/x11 platform headers + pkg-config/CMake | x86_64 | **glibc only** (musl/bionic: headers only, no runtime); official build sysroot and glibc lower bound: see the release manifest |
-| Apple (iOS/macOS) | SwiftPM: `MigoAppleCore` / `MigoAppleRenderer` (CI build artifacts) | arm64, x86_64 (macOS) / arm64 (iOS) | Placeholder lane; no on-device run records yet; macOS can attach the host's own `CAMetalLayer` |
+| Apple (iOS/macOS) | SwiftPM package `migo-<version>-apple-sdk.zip`: iOS `MigoApplePerformancePlus`, macOS `MigoMacV8`, each with `MigoGameView` | arm64 (iOS devices); arm64 and x86_64 (iOS simulator, macOS) | iOS 15.2 (the Performance+ lane; the SDK's deployment target is 15.0); macOS 11 with the hardened runtime and `allow-jit`. iOS devices: iPhone XS Max (iOS 18.7), iPhone 15 Pro (iOS 26.6) |
 
 Per-platform integration details are covered step by step in each quickstart; product-level trade-offs ("is it production-ready") are covered in [Platform Selection](/docs/en/concepts/choose-platform/).
 
