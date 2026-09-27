@@ -215,9 +215,8 @@ The shipping matrix has one native product per platform group:
 
 These groups share the `MigoEngine` C module and XCFramework because their
 platforms are disjoint. A macOS Performance+ shipping build is rejected. The
-WebKit and macOS V8 products do not yet implement application sessions;
-compiling them does not establish that the corresponding runtime product is
-complete.
+WebKit product has a session but no content surface, so it is not in the SDK
+(see *Three products* above).
 
 Build on macOS with Xcode, Python 3.9 or newer, and the Rust targets reported by
 `build-apple-sdk.sh --print-slices <platform>`. First install the pinned ANGLE
@@ -258,9 +257,10 @@ bash scripts/build-apple-sdk.sh --platform macos --product macos-v8 \
 
 `--require-all-slices` refuses an incomplete shipping matrix.
 `--assemble-only` reuses staged groups, including groups downloaded from the
-same CI run, without compiling Rust. The SDK workflow assembles the validated
-iOS device and simulator groups into one artifact; it does not publish a
-release or claim that a macOS V8 archive was built.
+same CI run, without compiling Rust. The pull-request SDK workflow assembles the
+validated groups into an artifact without publishing it; the release workflow
+builds all three groups and publishes `migo-<version>-apple-sdk.zip` as described
+under *Status*.
 
 The macOS external-frame renderer/ABI tests use a separate diagnostic product:
 
