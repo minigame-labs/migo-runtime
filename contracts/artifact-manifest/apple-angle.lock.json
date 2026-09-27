@@ -14,12 +14,12 @@
       "libGLESv2"
     ]
   },
-  "release": "https://github.com/minigame-labs/migo-runtime/releases/download/angle-apple-52f59428",
+  "release": "https://github.com/minigame-labs/migo-runtime/releases/download/angle-apple-52f59428-p2",
   "targets": {
     "ios-simulator": {
       "asset": "angle-apple-ios-simulator.tar.gz",
-      "size_bytes": 3918965,
-      "sha256": "3ff8b49b189606335f212ea64cc5b07e18663c1924ae58f5fcc8d13e8a97cdb4",
+      "size_bytes": 3919213,
+      "sha256": "24e68a9cfa9c8fb39c6727072826f52fb74f587d2180bb220bf59b3fe5f6310a",
       "contents": [
         "libEGL.framework",
         "libGLESv2.framework"
@@ -31,8 +31,8 @@
     },
     "ios": {
       "asset": "angle-apple-ios.tar.gz",
-      "size_bytes": 1816806,
-      "sha256": "e362c5a533d0d8fa6184f0071c0e3ce71cbd3758e8b8bc646fe66d565ea75485",
+      "size_bytes": 1816794,
+      "sha256": "5fac059fee6f7e8c64ff94d24217a0758bc2ededf4d89985304d9da2558d1016",
       "contents": [
         "libEGL.framework",
         "libGLESv2.framework"
@@ -43,8 +43,8 @@
     },
     "macos": {
       "asset": "angle-apple-macos.tar.gz",
-      "size_bytes": 4136160,
-      "sha256": "d35b5a9762a947148f6b0eec2ec0b865871369c2cc1794dc5e2bbaf0f5a7caea",
+      "size_bytes": 4136379,
+      "sha256": "8813107176820711886cbc1f40b3736c80984c33483ed9f18f31296ffef4fb40",
       "contents": [
         "libEGL.dylib",
         "libGLESv2.dylib"
@@ -63,6 +63,7 @@
     "why_five_configurations_for_three_platforms": "`target_os=\"ios\"` is not a complete configuration: gn's //build/config/apple/mobile_config.gni asserts that target_environment is one of simulator, device or catalyst, so iOS device and iOS simulator are separate builds. That is the same split an xcframework already forces, since it refuses a fat archive that mixes a device slice with a simulator one. On top of that, both the simulator group and macOS carry an Intel slice, because scripts/build-apple-sdk.sh builds the engine for those and the two xcframeworks are linked into the same application. The slice list is asked of that script rather than copied here.",
     "no_upstream_binaries_to_pin_instead": "ANGLE (google/angle) publishes no official prebuilt binaries for any platform -- the same finding windows-angle.lock.json's why_self_hosted note records, checked again for Apple. So there is no upstream URL to pin, only a self-built and fully-provenanced artifact, which is what this recipe produces.",
     "what_the_products_are_and_why_they_are_archives": "ANGLE's own `angle_shared_library` template switches to `ios_framework_bundle` when `is_ios`, so an iOS build produces `libEGL.framework` -- a DIRECTORY -- and a macOS build produces a plain shared library. That is upstream's decision and it is the right one per platform: Apple accepts an embedded framework bundle in an app and rejects a bare dylib. A directory is not a GitHub release asset, so the published unit is one .tar.gz per platform rather than one asset per file, which is where this pin's shape differs from windows-angle.lock.json's. scripts/build-angle-apple.sh --archive packs them on the machine that built them, so what is published is the build's own output rather than a repackaging of an artifact download. The archives are not claimed to be byte-reproducible: gzip stores an mtime. The pin is trust-on-first-use, the model ohos-sdk.lock.json states plainly -- the hash proves the bytes have not changed since they were hashed, not that a second build would produce them.",
-    "why_the_macos_libraries_are_not_repackaged": "The shapes above are not tidied up to match each other, and the reason is in ANGLE's source rather than in anyone's taste. libEGL does not link libGLESv2 -- `otool -L` on the built library names only system frameworks -- it opens it at run time under a name it composes against a directory. At this revision: src/libEGL/libEGL_autogen.cpp:41 asks for ANGLE_DISPATCH_LIBRARY with SearchType::ModuleDir; src/common/system_utils.cpp:221-234 appends \".\" + GetSharedLibraryExtension() and, on the iOS family only, \"/\" + the name again; that extension is \"framework\" (system_utils_ios.cpp:27) or \"dylib\" (system_utils_mac.cpp:26); and ModuleDir is the app bundle's Frameworks directory on the iOS family but libEGL's OWN directory, via dladdr, on macOS (system_utils_posix.cpp:198). So macOS needs libGLESv2.dylib sitting beside the libEGL binary, and iOS needs libGLESv2.framework beside libEGL.framework in the app's Frameworks folder. Wrapping the macOS libraries in framework bundles -- the obvious way to make one xcframework hold all three platforms, since `xcodebuild -create-xcframework` refuses to mix frameworks and libraries -- moves libEGL to libEGL.framework/Versions/A/libEGL, and the search follows it to a directory holding no libGLESv2.dylib. Nothing would fail at build time; the first symptom would be an application that cannot get an EGL display. The xcframeworks are therefore split along ANGLE's own axis instead, one per shipped library per platform family, and scripts/build-angle-apple.sh --print-loader-layout is the one place that answers what the layout has to be."
+    "why_the_macos_libraries_are_not_repackaged": "The shapes above are not tidied up to match each other, and the reason is in ANGLE's source rather than in anyone's taste. libEGL does not link libGLESv2 -- `otool -L` on the built library names only system frameworks -- it opens it at run time under a name it composes against a directory. At this revision: src/libEGL/libEGL_autogen.cpp:41 asks for ANGLE_DISPATCH_LIBRARY with SearchType::ModuleDir; src/common/system_utils.cpp:221-234 appends \".\" + GetSharedLibraryExtension() and, on the iOS family only, \"/\" + the name again; that extension is \"framework\" (system_utils_ios.cpp:27) or \"dylib\" (system_utils_mac.cpp:26); and ModuleDir is the app bundle's Frameworks directory on the iOS family but libEGL's OWN directory, via dladdr, on macOS (system_utils_posix.cpp:198). So macOS needs libGLESv2.dylib sitting beside the libEGL binary, and iOS needs libGLESv2.framework beside libEGL.framework in the app's Frameworks folder. Wrapping the macOS libraries in framework bundles -- the obvious way to make one xcframework hold all three platforms, since `xcodebuild -create-xcframework` refuses to mix frameworks and libraries -- moves libEGL to libEGL.framework/Versions/A/libEGL, and the search follows it to a directory holding no libGLESv2.dylib. Nothing would fail at build time; the first symptom would be an application that cannot get an EGL display. The xcframeworks are therefore split along ANGLE's own axis instead, one per shipped library per platform family, and scripts/build-angle-apple.sh --print-loader-layout is the one place that answers what the layout has to be.",
+    "patches_in_these_bytes": "The published archives are the pinned revision plus every patch in engine/third_party/angle-patches/apple, applied by scripts/build-angle-apple.sh before gn runs: 0001 so ANGLE compiles for the macOS deployment floor, and 0002 so the Metal backend implements EGL_ANGLE_window_fixed_size, which upstream implements for D3D only. The engine creates its Apple window surfaces fixed-size and sizes the drawable to the onscreen canvas when that fits inside the window, letting Core Animation scale it; without 0002 the Metal backend re-derives the drawable from the layer's bounds times contentsScale before every drawable and overrides that. Adding a patch changes the bytes without changing the revision, so the release tag carries a patch-set suffix (angle-apple-52f59428-p2) rather than reusing the revision's own tag, whose archives stay what they were."
   }
 }
