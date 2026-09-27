@@ -476,13 +476,15 @@ MIGO_API MigoResult MIGO_CALL migo_session_submit_uplink_control(
  * -------------------------------------------------------------------------*/
 
 /*
- * Called when the library has queued a downlink record the transport did not
- * cause -- a frame-clock tick. A verdict is queued inside a submit the
- * transport made and drains right after, so it needs no wake-up; a tick does,
- * or it waits until the producer sends something, and a producer waiting for a
- * tick sends nothing.
+ * Called when the producer has to hear what is queued now: a frame-clock tick,
+ * a verdict that cannot wait for the next tick, a service answer. A verdict
+ * that can wait -- an accepted frame that asked for the next tick, with credits
+ * still open -- is queued without a wake-up and leaves with that tick, so a
+ * frame costs one downlink message ("When a verdict is sent" in the wire
+ * contract).
  *
- * Called on the session's own thread. SCHEDULE THE DRAIN, DO NOT PERFORM IT:
+ * Called on the session's own thread, on the frame signal, or inside a submit
+ * on the caller's thread. SCHEDULE THE DRAIN, DO NOT PERFORM IT:
  * return promptly, and do not call back into the library from inside the
  * waker -- in particular not migo_session_set_downlink_waker, which waits for
  * the call in progress to return.
@@ -522,11 +524,12 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_downlink_waker(
  * a larger buffer loses nothing. 4096 bytes holds any message this queue
  * produces.
  *
- * WHEN TO CALL IT. After every submit and after every frame the host delivers,
- * and send whatever comes out. The queue is bounded and coalesces ticks, so a
- * transport that falls behind costs the producer scheduling decisions rather
- * than memory -- every record is absolute, so the next one it reads is already
- * correct.
+ * WHEN TO CALL IT. When the downlink waker asks, and when the producer
+ * (re)connects, and send whatever comes out. Draining after every submit as
+ * well is harmless but sends each verdict alone, a message the tick would have
+ * carried. The queue is bounded and coalesces ticks, so a transport that falls
+ * behind costs the producer scheduling decisions rather than memory -- every
+ * record is absolute, so the next one it reads is already correct.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_take_downlink(
     MigoSession *session, uint8_t *buffer, size_t capacity,

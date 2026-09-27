@@ -87,6 +87,23 @@ queue never drops it: a producer that missed it would name a retired epoch
 forever. Downlink-only and additive, under the same audit as the amendment
 above.
 
+### Amendment, 2026-09-27: one message each way per frame
+
+No format changes; two behaviours. **A presenting packet is also a request for
+the next frame-clock tick** (*Uplink control messages*), so a producer sends no
+`REQUEST_FRAME` after one. And **an accepted packet's verdict waits for the
+tick it asked for** when it tells the producer nothing that tick will not
+(*When a verdict is sent*, under *The window*), so the two leave as one
+downlink message. A frame was four messages across the WebContent boundary --
+packet, request, verdict, tick -- and is now two. On an iPhone XS Max at 60
+frames a second, WebKit's network process alone spent about a fifth of a core
+carrying those four, and moving the packet to another channel removed only a
+quarter of that: the cost is per message, not per byte. A host that drains
+after every submit, as the previous text asked, stays correct and only sends
+verdicts alone; a producer of the previous version still sends its requests,
+which the host still honours.
+The same audit as the amendments above.
+
 ### Amendment, 2026-09-18: the service stream
 
 `MUS1`/`MDS1` join the format (see *The service stream*), the synchronous call
@@ -516,6 +533,22 @@ A packet sent in a window of two can overtake the one before it on the other
 uplink; that is the packet ingress holds (see *Identity, ordering and resource
 admission*). A producer with no advertisement cannot produce one.
 
+### When a verdict is sent
+
+A tick carries an advertisement too, so a verdict on an accepted packet tells a
+producer nothing the next tick will not -- **unless no tick is owed**, or **the
+window it advertises is zero**. The host sends a verdict at once in those two
+cases and for every decision that is not an acceptance, and otherwise leaves it
+queued, to go with the tick its packet asked for in one message.
+
+Zero is the case the rule exists for. A producer that sent a barrier and is
+holding the frame's presenting packet is waiting for a credit, and the window
+advertisement above reaches it only if the last window it was told was zero:
+had that verdict waited, the producer would learn of the returned credit from
+the next tick, a whole frame late. A tick is owed from the moment a frame is
+requested -- by a control record or by a presenting packet -- until the tick
+answering it is queued.
+
 ## Uplink control messages
 
 The socket carries one more thing than frames: a request for the next frame.
@@ -550,6 +583,18 @@ A request that arrives before the renderer is up is **held**, not refused, and
 armed when the renderer starts: the producer's first request races the host's
 bring-up, and a producer whose request was dropped would wait for a tick
 nothing is going to send.
+
+**A presenting packet is a request too.** A packet with `PRESENT` set, whose
+header names the current runtime generation, arms the next tick exactly as a
+`REQUEST_FRAME` would -- read from the header before admission, and standing
+whatever admission decides, because a packet that waits for a credit still
+needs the tick after it. A producer's frame loop asks for the next frame right
+after sending the one it drew, so the request would otherwise cross the
+boundary as a message of its own every frame. A producer therefore sends
+`REQUEST_FRAME` only when its last message was not a presenting packet: the
+first request, a request after a barrier, and a request while a packet waits
+for a credit (which has not been sent). When an animation stops, the tick its
+last packet asked for arrives with nothing to run -- one tick, not a tail.
 
 A transport routes each socket message by its first word: `MUC1` goes to the
 control reader and everything else to frame ingress, which refuses what it

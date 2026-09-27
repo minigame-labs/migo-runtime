@@ -71,19 +71,44 @@ final class MigoFrameChannelTests: XCTestCase {
         }
     }
 
+    /// The engine's downlink waker, as the channel installs it: a fake engine
+    /// calls it when it has queued something the producer must hear now, which
+    /// is when the real one does (`verdict_is_urgent` in the engine).
+    private final class Waker {
+        private let lock = NSLock()
+        private var installed: (() -> Void)?
+
+        func install(_ wake: (() -> Void)?) -> Bool {
+            lock.lock()
+            installed = wake
+            lock.unlock()
+            return true
+        }
+
+        func wake() {
+            lock.lock()
+            let wake = installed
+            lock.unlock()
+            wake?()
+        }
+    }
+
     func testAFrameIsSubmittedAndTheAnswerGoesBack() throws {
         let submitted = expectation(description: "the engine is handed the packet")
         var seen: Data?
         let queue = VerdictAfterSubmit()
+        let waker = Waker()
 
         let channel = MigoFrameChannel(
             submit: { packet in
                 seen = packet
                 queue.armFromSubmit()
+                waker.wake()
                 submitted.fulfill()
                 return .accepted
             },
-            takeDownlink: { queue.take(into: $0) })
+            takeDownlink: { queue.take(into: $0) },
+            setDownlinkWaker: waker.install)
         let endpoint = try channel.start()
         defer { channel.stop() }
 
@@ -122,12 +147,16 @@ final class MigoFrameChannelTests: XCTestCase {
         // time out to find out, and a timeout is indistinguishable from a host
         // that died.
         let queue = VerdictAfterSubmit()
+        let waker = Waker()
         let channel = MigoFrameChannel(
             submit: { _ in
+                // A refusal is always urgent, so the engine wakes for it.
                 queue.armFromSubmit()
+                waker.wake()
                 return .refused
             },
-            takeDownlink: { queue.take(into: $0) })
+            takeDownlink: { queue.take(into: $0) },
+            setDownlinkWaker: waker.install)
         let endpoint = try channel.start()
         defer { channel.stop() }
 
@@ -142,6 +171,48 @@ final class MigoFrameChannelTests: XCTestCase {
         producer.send(.data(Data([9, 9, 9, 9]))) { _ in }
         wait(for: [answered], timeout: 10)
         XCTAssertEqual(channel.currentStatistics.framesRefused, 1)
+    }
+
+    /// A verdict the engine did not wake for waits for the drain that the next
+    /// wake-up -- in the product, the tick its packet asked for -- performs. The
+    /// channel does not drain after a submit on its own: that sent every
+    /// verdict alone, a second downlink message per frame through WebKit's
+    /// network process.
+    func testAVerdictTheEngineDidNotWakeForWaitsForTheNextWake() throws {
+        let submitted = expectation(description: "the engine is handed the packet")
+        let queue = VerdictAfterSubmit()
+        let waker = Waker()
+        let channel = MigoFrameChannel(
+            submit: { _ in
+                queue.armFromSubmit()
+                submitted.fulfill()
+                return .accepted
+            },
+            takeDownlink: { queue.take(into: $0) },
+            setDownlinkWaker: waker.install)
+        let endpoint = try channel.start()
+        defer { channel.stop() }
+        let producer = client(for: endpoint)
+        defer { producer.cancel(with: .goingAway, reason: nil) }
+
+        let answered = expectation(description: "the verdict arrives after the wake")
+        producer.receive { result in
+            if case .success(.data(let data)) = result {
+                XCTAssertEqual(Array(data), Self.verdictMessage)
+                answered.fulfill()
+            } else {
+                XCTFail("expected a binary downlink message, got \(result)")
+            }
+        }
+        producer.send(.data(Data([1, 2, 3, 4]))) { XCTAssertNil($0) }
+        wait(for: [submitted], timeout: 10)
+        // Long enough for a drain the channel ran on its own to have been sent.
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertEqual(channel.currentStatistics.messagesSent, 0, "nothing without a wake")
+
+        waker.wake()
+        wait(for: [answered], timeout: 10)
+        XCTAssertEqual(channel.currentStatistics.messagesSent, 1)
     }
 
     func testAProducerThatJustConnectedIsToldWhatIsWaiting() throws {

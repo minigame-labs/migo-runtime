@@ -134,6 +134,16 @@ export function sequenceOf(bytes) {
   return low + high * 0x1_0000_0000;
 }
 
+/**
+ * Whether a packet ends a frame: its `PRESENT` flag, read as the host reads it
+ * before admission (`frame_wire::presenting_generation`). False for anything too
+ * short to carry the flag.
+ */
+export function presents(bytes) {
+  if (bytes.length < OFF_FLAGS + 4) return false;
+  return (bytes[OFF_FLAGS] & FLAG_PRESENT) !== 0;
+}
+
 /** CRC32 of the whole packet with the checksum field's own four bytes as zero. */
 export function checksum(bytes) {
   const head = Math.min(bytes.length, OFF_CHECKSUM);
