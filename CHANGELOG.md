@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.12 (2026-09-27)
+
+### Changed
+- iOS and macOS (Performance+): a frame now crosses the WebContent boundary as
+  one message each way instead of two. A presenting packet is also the request
+  for the next frame-clock tick, and its verdict travels with that tick unless
+  the producer cannot wait for it (a refusal, an empty window, or no tick
+  owed). On an iPhone XS Max at 60 fps the Performance+ lane's CPU time fell
+  7-20% across the bench games, most of it in WebKit's network process, with
+  frame rate and memory unchanged. No wire-format change: a host that drains
+  after every submit, or a producer that still sends every request, stays
+  correct (`contracts/frame-wire/wire-v1.md`, amendment of 2026-09-27).
+
 ## v0.9.11 (2026-09-27)
 
 ### Fixed
