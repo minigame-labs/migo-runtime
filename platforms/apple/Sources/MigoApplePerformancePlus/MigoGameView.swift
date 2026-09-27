@@ -282,15 +282,18 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             host.onReport = { [weak self] report in self?.producerReport(report) }
             host.onConsole = { [weak self] level, message in self?.onEvent?(.console(level: level, message: message)) }
 
-            // One point square, just off the window's left edge: attached (an
-            // unattached web view is killed), neither hidden nor zero-sized
+            // Off the window's left edge and the full window's size: attached
+            // (an unattached web view is killed), neither hidden nor zero-sized
             // (both stop it), not occluded (occlusion stops JavaScript), never
-            // seen, and not clipped by wherever the app put this view. The size
-            // is the page's backing store: WebKit keeps one at the view's size
-            // even for a page that draws nothing, and at the window's size it
-            // was 11 MiB of WebContent's memory on an iPhone 15 Pro. One point
-            // measured the same frame rate and CPU (README, "host shape").
-            host.view.frame = CGRect(x: -2, y: 0, width: 1, height: 1)
+            // seen, and not clipped by wherever the app put this view.
+            //
+            // Not smaller, although WebKit keeps a backing store for the page at
+            // the view's size -- 11 MiB of WebContent's memory at the window's
+            // size on an iPhone 15 Pro. A one-point view (v0.9.13) presented
+            // more late frames on the Canvas2D bench game in every one of six
+            // interleaved pairs, and frame pacing outranks memory (README,
+            // "host shape").
+            host.view.frame = window.bounds.offsetBy(dx: -window.bounds.width - 1, dy: 0)
             window.addSubview(host.view)
             try host.start()
 
