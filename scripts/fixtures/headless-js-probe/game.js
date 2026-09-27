@@ -61,7 +61,35 @@ function warmThroughput() {
   }
 }
 
-const measured = warmThroughput();
+// The best of a few timed passes, not the first. V8 tiers up concurrently: the
+// optimizing compile runs on a background thread, and until it lands the loop
+// runs baseline-tier code -- JIT output, but a fraction of the peak. On a loaded
+// macOS runner the first timed pass read 97 M it/s against 880-1200 on every
+// other run of the same job (Apple SDK run 36322682951, 2026-09-27), just under
+// the gate's floor of 100. A working JIT reaches its peak once the optimized
+// code is installed, so the best pass answers the question the first one only
+// sometimes did.
+//
+// The floor is the weaker of the two signals and this does not make it
+// stronger: node --jitless ran this loop at 147 M it/s on a desktop x86
+// (2026-09-27), so a fast enough interpreter clears 100 too. What tells a
+// jitless V8 apart is `wasm` -- jitless deletes WebAssembly -- and the gates
+// check that first. Further passes
+// stop once one clears the floor the gates apply (JIT_FLOOR_MIPS in
+// scripts/test-macos-archive-runs-js.sh, and scripts/test-macos-game-view.sh),
+// so a healthy run pays for one pass, as it did before.
+const GATE_FLOOR_MIPS = 100;
+
+function bestThroughput(passes) {
+  let best = warmThroughput();
+  for (let pass = 1; pass < passes && best.mips < GATE_FLOOR_MIPS; pass += 1) {
+    const next = warmThroughput();
+    if (next.mips > best.mips) best = next;
+  }
+  return best;
+}
+
+const measured = bestThroughput(4);
 // console.error, because console.log is filtered; this lands in the host's
 // output through tracing::error! and the gate reads it from there.
 console.error(
