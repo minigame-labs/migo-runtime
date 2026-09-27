@@ -251,10 +251,15 @@ int main(int argc, char **argv) {
      * wrong with any of them except the surface they were asking about.
      *
      * A real host does not hit this, because a layer in a view hierarchy has
-     * bounds. A headless one has to say so. */
+     * bounds. A headless one has to say so.
+     *
+     * Since 2026-09-27 the engine's window surface is fixed-size: the drawable
+     * is sized from the attach's width_pixels x height_pixels (and then from
+     * the onscreen canvas), not from bounds, and a host no longer sets
+     * drawableSize at all. The bounds stay true for Core Animation, which
+     * scales the drawable to them. */
     layer.contentsScale = SCALE_FACTOR;
     layer.bounds = CGRectMake(0, 0, SURFACE_WIDTH / SCALE_FACTOR, SURFACE_HEIGHT / SCALE_FACTOR);
-    layer.drawableSize = CGSizeMake(SURFACE_WIDTH, SURFACE_HEIGHT);
     layer.framebufferOnly = NO;
     // The host's property, and the reason Migo takes a layer rather than a view:
     // handed a plain CALayer, ANGLE allocates its own metal layer and the host
