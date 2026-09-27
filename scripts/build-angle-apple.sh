@@ -5,8 +5,9 @@
 # not this script's, and the reason is under "WHAT THE PRODUCT ACTUALLY IS".
 # Location: scripts/build-angle-apple.sh
 #
-# It also carries the patches ANGLE needs to compile for this project's macOS
-# deployment floor; see the "Patches" section further down for what and why.
+# It also carries the patches this project needs from ANGLE -- one to compile
+# for the macOS deployment floor, one to give the Metal backend fixed-size
+# window surfaces; see the "Patches" section further down for what and why.
 #
 # WHY THIS EXISTS AT ALL:
 #   .github/workflows/apple-sdk.yml asked rustc, on 2026-09-05, what a non-Rust
@@ -747,6 +748,17 @@ locate_product() {
 # floor was the other candidate and is a DECISION -- contracts/apple/deployment-floor.json
 # says so in as many words -- so it is not something a build script gets to make
 # by being easier to write.
+#
+# The Metal backend has no EGL_ANGLE_window_fixed_size, which upstream
+# implements for D3D only: its window surface always sizes the drawable to the
+# layer's bounds times contentsScale, overriding whatever the client set. The
+# engine sizes the drawable to the onscreen canvas when that is smaller than the
+# screen and lets the layer's contentsGravity scale it -- how a browser
+# composites a canvas -- instead of upscaling into three screen-sized drawables
+# every frame. Measured on an iPhone XS Max, those three are 38 MiB, the largest
+# allocation the app makes (0002-metal-window-fixed-size.patch). The frontend
+# already routes the extension's attributes and eglSurfaceAttrib(EGL_WIDTH /
+# EGL_HEIGHT) to the backend; the patch is the backend half.
 #
 # APPLIED-NESS IS DECIDED BY ASKING `patch` TO REVERSE THE PATCH, never by a
 # sentinel string in the target file. scripts/lib/v8-patch-apply.sh's header
