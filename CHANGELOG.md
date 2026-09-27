@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.13 (2026-09-27)
+
+### Changed
+- iOS and macOS: when the onscreen canvas is smaller than the window -- as the
+  canvas of a game that sizes it in logical pixels is -- the drawable now takes
+  the canvas's size and Core Animation scales it to the view, the way a browser
+  composites a canvas, instead of the engine upscaling into three window-sized
+  drawables every frame. On an iPhone 15 Pro the Performance+ lane's footprint
+  fell 41-47 MiB per bench game (bunnymark 184 to 137 MiB, endless-runner 229
+  to 188, canvasmark 164 to 119) with CPU unchanged, and frames still present
+  at 60 per second with a 16.67 ms p99 interval. It needs fixed-size window
+  surfaces, which ANGLE implements only for D3D, so the Apple ANGLE build now
+  carries them for Metal (`angle-apple-52f59428-p2`). The drawable's size is
+  the engine's: a host must not set `CAMetalLayer.drawableSize`, and
+  `MigoGameView` no longer does (`include/migo/platform/ios.h`, `macos.h`).
+- iOS (Performance+): the web view that hosts the producer is one point square
+  just off the window's edge instead of window-sized. WebKit keeps a backing
+  store for the page at the view's size even though the page draws nothing;
+  at the window's size that was 11 MiB of WebContent's memory on an iPhone 15
+  Pro, with frame rate and CPU unchanged at one point.
+- Developer documentation: the Apple page is an integration guide for the
+  released SwiftPM package -- the two products and their minimum OS, content
+  signing, platform notes, the device capabilities `MigoGameView` answers and
+  the ones it refuses, and what has been verified where -- in place of a
+  description of the skeleton.
+
 ## v0.9.12 (2026-09-27)
 
 ### Changed
