@@ -22,6 +22,12 @@ typedef struct MigoMacosNsViewDescriptor {
  * retains it before attach returns success, keeps it through asynchronous
  * native Surface retirement, and releases its reference before publishing
  * MIGO_SURFACE_RELEASE_RELEASED. The host controls geometry and the display link.
+ *
+ * The drawable's size is Migo's, not the host's: the window surface is
+ * fixed-size and takes the onscreen canvas's size when that fits inside the
+ * surface (width_pixels x height_pixels), so Core Animation scales it to the
+ * layer's bounds through contentsGravity, which must stay kCAGravityResize (the
+ * default). A host does not set drawableSize.
  */
 typedef struct MigoMacosMetalLayerDescriptor {
     uint32_t struct_size;

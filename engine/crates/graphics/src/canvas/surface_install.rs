@@ -53,6 +53,32 @@ pub(crate) fn engine_default_backing(surface: (u32, u32), pixel_ratio: f32) -> (
     }
 }
 
+/// The buffer a fixed-size window surface should have, given the onscreen
+/// canvas's DrawingBuffer and the window it fills.
+///
+/// The DrawingBuffer when it fits inside the window, and the window otherwise.
+/// Every present fills the whole window with the whole canvas, stretched, so a
+/// buffer the canvas's size shows exactly what a window-sized one does once the
+/// compositor scales it -- which is how a browser composites a canvas -- while
+/// the copy into it becomes 1:1 (or, under bypass, disappears) and the window
+/// system's drawables shrink with it. A DPR-naive game's canvas is a ninth of a
+/// 3x screen, so the three drawables of a triple-buffered layer shrink ninefold:
+/// 38 MiB to 4 on an iPhone XS Max.
+///
+/// A canvas larger than the window in either direction keeps the window's size:
+/// a bigger buffer shows no more pixels and costs more than the downscaling
+/// blit. No DrawingBuffer means content draws straight into the window, so the
+/// window's size is the only one that exists.
+pub(crate) fn window_buffer_size(
+    drawing_buffer: Option<(u32, u32)>,
+    window: (u32, u32),
+) -> (u32, u32) {
+    match drawing_buffer {
+        Some((width, height)) if width <= window.0 && height <= window.1 => (width, height),
+        _ => window,
+    }
+}
+
 /// Pure cold-path policy. Reuse is permitted only when backend-specific native
 /// equivalence has already been proven and no generation/force boundary
 /// requires a fresh EGLSurface.
@@ -101,7 +127,55 @@ pub(crate) fn classify_surface_install(
 mod tests {
     use crate::surface_binding::RecreateKind;
 
-    use super::{InstallPolicy, classify_surface_install, engine_default_backing};
+    use super::{
+        InstallPolicy, classify_surface_install, engine_default_backing, window_buffer_size,
+    };
+
+    /// A canvas that fits takes the buffer at its own size -- the DPR-naive
+    /// case, a ninth of a 3x screen, and the one the rule exists for -- down to a
+    /// canvas matching the window exactly, which is the same answer either way.
+    #[test]
+    fn a_canvas_that_fits_the_window_is_the_buffer() {
+        assert_eq!(
+            window_buffer_size(Some((414, 896)), (1242, 2688)),
+            (414, 896)
+        );
+        assert_eq!(
+            window_buffer_size(Some((960, 640)), (2688, 1242)),
+            (960, 640)
+        );
+        assert_eq!(
+            window_buffer_size(Some((1242, 2688)), (1242, 2688)),
+            (1242, 2688)
+        );
+        assert_eq!(window_buffer_size(Some((1, 1)), (1242, 2688)), (1, 1));
+    }
+
+    /// Larger than the window in either direction keeps the window: a bigger
+    /// buffer shows no more pixels. One axis over is enough, since the present
+    /// stretches the whole canvas over the whole window regardless of aspect.
+    #[test]
+    fn a_canvas_larger_than_the_window_in_either_direction_keeps_the_window() {
+        assert_eq!(
+            window_buffer_size(Some((2484, 5376)), (1242, 2688)),
+            (1242, 2688)
+        );
+        assert_eq!(
+            window_buffer_size(Some((1280, 720)), (1242, 2688)),
+            (1242, 2688)
+        );
+        assert_eq!(
+            window_buffer_size(Some((720, 2700)), (1242, 2688)),
+            (1242, 2688)
+        );
+    }
+
+    /// No DrawingBuffer means content draws into the window itself, so there is
+    /// no other size to take.
+    #[test]
+    fn without_a_drawing_buffer_the_buffer_is_the_window() {
+        assert_eq!(window_buffer_size(None, (1242, 2688)), (1242, 2688));
+    }
 
     /// The engine's own default is the surface in CSS pixels.
     ///

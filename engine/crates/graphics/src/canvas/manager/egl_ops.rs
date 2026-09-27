@@ -514,6 +514,33 @@ pub(super) fn init_egl(provider: &dyn EglProvider) -> EngineResult<EglInitResult
 /// Build the `eglCreateContext` attribute list for a GLES
 /// context, optionally appending the robustness / reset
 /// notification attributes when the driver supports them (R-3).
+/// `EGL_FIXED_SIZE_ANGLE`, from `EGL_ANGLE_window_fixed_size`.
+const EGL_FIXED_SIZE_ANGLE: egl::Int = 0x3201;
+
+/// The buffer size of a window surface the engine sizes, or `None` for one its
+/// native window sizes.
+///
+/// Asked of the surface rather than of whoever created it: it is the surface
+/// that `eglSurfaceAttrib(EGL_WIDTH/EGL_HEIGHT)` will act on, and what EGL says
+/// it is afterwards is what the blit has to target. Only asked where the
+/// display advertises the extension, since anywhere else the attribute is an
+/// `EGL_BAD_ATTRIBUTE`.
+pub(super) fn fixed_window_size(
+    egl: &EglInstance,
+    display: egl::Display,
+    surface: egl::Surface,
+) -> Option<(u32, u32)> {
+    let fixed = egl
+        .query_surface(display, surface, EGL_FIXED_SIZE_ANGLE)
+        .ok()?;
+    if fixed != egl::TRUE as egl::Int {
+        return None;
+    }
+    let width = egl.query_surface(display, surface, egl::WIDTH).ok()?;
+    let height = egl.query_surface(display, surface, egl::HEIGHT).ok()?;
+    (width > 0 && height > 0).then_some((width as u32, height as u32))
+}
+
 pub(super) fn build_ctx_attribs(gles_major: u32, has_robust_context: bool) -> Vec<egl::Int> {
     let mut attribs: Vec<egl::Int> = vec![
         egl::CONTEXT_CLIENT_VERSION as egl::Int,

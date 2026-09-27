@@ -205,12 +205,13 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 scale: Float(scale))
         }
 
-        /// ANGLE sizes its window surface from the layer's bounds times
-        /// `contentsScale`, so both are kept true, and the engine is told.
+        /// The engine is told the window's size and sizes the drawable itself:
+        /// its window surface is fixed-size and follows the game's canvas, and
+        /// Core Animation scales it to the layer's bounds. `contentsScale` is
+        /// kept true for Core Animation.
         private func surfaceChanged() {
             guard let size = currentSize else { return }
             metalLayer.contentsScale = CGFloat(size.scale)
-            metalLayer.drawableSize = CGSize(width: CGFloat(size.widthPixels), height: CGFloat(size.heightPixels))
             if let engine {
                 do {
                     try engine.resize(to: size)
@@ -228,7 +229,6 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             guard let game, !isRunning, closing == 0, let size = currentSize else { return }
             do {
                 metalLayer.contentsScale = CGFloat(size.scale)
-                metalLayer.drawableSize = CGSize(width: CGFloat(size.widthPixels), height: CGFloat(size.heightPixels))
                 let engine = try MigoEngineSession(
                     directories: configuration.directories, contentSigning: configuration.contentSigning,
                     preferredFramesPerSecond: configuration.preferredFramesPerSecond)
@@ -277,6 +277,9 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             let layer = CAMetalLayer()
             layer.isOpaque = true
             layer.backgroundColor = NSColor.black.cgColor
+            // The engine's drawable follows the game's canvas, not the view;
+            // this is what scales it to the view.
+            layer.contentsGravity = .resize
             return layer
         }
 

@@ -797,6 +797,9 @@ pub(crate) struct CanvasManager {
     /// `eglSetDamageRegionKHR` declaration may keep a partial repair: EXT
     /// guarantees the aged back-buffer contents, KHR-only does not.
     has_ext_buffer_age: bool,
+    /// `EGL_ANGLE_window_fixed_size` is advertised, so a window surface may be
+    /// one whose buffer the engine sizes; see [`CanvasEntry::window_buffer`].
+    has_window_fixed_size: bool,
 
     /// Count of `glClientWaitSync` calls issued by
     /// [`Self::snapshot_canvas2d_region_with_id`] since the last
@@ -1051,6 +1054,9 @@ impl CanvasManager {
         // opposed to age support supplied only by EGL_KHR_partial_update) before
         // `device_caps` is moved into `Self`.
         let has_ext_buffer_age = device_caps.has_ext_buffer_age;
+        let has_window_fixed_size = egl_extensions
+            .split_ascii_whitespace()
+            .any(|extension| extension == "EGL_ANGLE_window_fixed_size");
 
         // Probe `GL_KHR_robustness::glGetGraphicsResetStatusKHR` (R-3).
         // Only resolved when both the EGL extension for robust contexts
@@ -1169,6 +1175,7 @@ impl CanvasManager {
             damage_history: crate::present_damage::PresentDamageHistory::new(),
             dest_single_sample,
             has_ext_buffer_age,
+            has_window_fixed_size,
         })
     }
 
@@ -1273,6 +1280,7 @@ impl CanvasManager {
                 info,
                 physical_width: w,
                 physical_height: h,
+                window_buffer: None,
                 kind: SurfaceKind::Pbuffer,
                 ctx: EglContextHandle { ctx, surf },
                 drawing_buffer: None,
@@ -1859,7 +1867,10 @@ impl CanvasManager {
             // window surface from bounds x contentsScale, and the query above
             // came back 0x0 and clamped to 1x1. Every check that host ran --
             // frames turning, a WebGL readback, a drawable-pool throughput A/B
-            // -- then ran against one pixel, and nothing in any log said so.
+            // -- then ran against one pixel, and nothing in any log said so. (A
+            // fixed-size surface, which the Apple presenter now creates, takes
+            // the declared size instead; an ANGLE without the extension still
+            // sizes from bounds.)
             //
             // A warning rather than a failure because the engine is not the
             // authority here: a host may legitimately install a tiny surface,
@@ -1871,8 +1882,8 @@ impl CanvasManager {
                     queried_h,
                     "CanvasManager::create_onscreen adopted a degenerate EGL surface size and no \
                      declared size was supplied; every frame will render into that. On Apple this \
-                     is what a CAMetalLayer with zero bounds produces -- ANGLE sizes from bounds, \
-                     not from drawableSize"
+                     is what a CAMetalLayer with zero bounds produces when the surface is not \
+                     fixed-size -- ANGLE then sizes from bounds, not from drawableSize"
                 );
             }
             (queried_w, queried_h)
@@ -1902,6 +1913,11 @@ impl CanvasManager {
                 kind: SurfaceKind::Window,
                 physical_width: physical_w,
                 physical_height: physical_h,
+                window_buffer: if self.has_window_fixed_size {
+                    egl_ops::fixed_window_size(&self.egl, self.display, pending.surface)
+                } else {
+                    None
+                },
                 ctx: EglContextHandle {
                     ctx: installed_ctx,
                     // An onscreen canvas always has a real window surface; the
@@ -2072,6 +2088,8 @@ impl CanvasManager {
                 }
             }
         };
+        // Before the first frame, while the new surface holds no drawable.
+        self.reconcile_window_buffer(id);
         self.evaluate_bypass();
 
         // Reset default viewport/state for the newly created onscreen context.
@@ -3531,12 +3549,8 @@ impl CanvasManager {
                 if let Some(db) = entry.drawing_buffer.as_ref() {
                     // A DrawingBuffer exists only after create() successfully
                     // probes split bindings and glBlitFramebuffer on this driver.
-                    if !drawing_buffer::blit_from_surface(
-                        &self.gl,
-                        db,
-                        entry.physical_width,
-                        entry.physical_height,
-                    ) {
+                    let (buffer_w, buffer_h) = entry.presented_size();
+                    if !drawing_buffer::blit_from_surface(&self.gl, db, buffer_w, buffer_h) {
                         return Err(ee(
                             ErrorCode::RenderBackendError,
                             "default framebuffer snapshot failed",
@@ -3548,6 +3562,75 @@ impl CanvasManager {
         self.needs_default_fbo_readback = true;
         self.evaluate_bypass();
         Ok(())
+    }
+
+    /// Give a fixed-size window surface the buffer
+    /// [`crate::canvas::window_buffer_size`] asks for, and report whether its
+    /// size changed.
+    ///
+    /// Only between frames: `eglSurfaceAttrib` moves the size EGL reports at
+    /// once, while the backend's drawable follows at the next one it takes, so a
+    /// frame that already holds one would target a size its drawable does not
+    /// have. Until then the present still fills the old buffer through the
+    /// scaling blit, which is correct at any size, so deferring costs one frame
+    /// of that copy and nothing on screen.
+    ///
+    /// A change is a new set of back buffers, so it opens a full-damage
+    /// boundary; the caller re-evaluates bypass, which depends on it.
+    fn reconcile_window_buffer(&mut self, id: CanvasId) -> bool {
+        let Some(entry) = self.canvases.get(&id) else {
+            return false;
+        };
+        let (Some(current), Some(surf)) = (entry.window_buffer, entry.ctx.surf) else {
+            return false;
+        };
+        let wanted = crate::canvas::window_buffer_size(
+            entry
+                .drawing_buffer
+                .as_ref()
+                .map(|db| (db.width, db.height)),
+            (entry.physical_width, entry.physical_height),
+        );
+        if wanted == current {
+            return false;
+        }
+        let requested = self
+            .egl
+            .surface_attrib(self.display, surf, egl::WIDTH, wanted.0 as egl::Int)
+            .and_then(|()| {
+                self.egl
+                    .surface_attrib(self.display, surf, egl::HEIGHT, wanted.1 as egl::Int)
+            });
+        // What the surface says now, not what was asked: a refusal between the
+        // two calls leaves one dimension moved, and the blit has to target the
+        // buffer that exists.
+        let actual = egl_ops::fixed_window_size(&self.egl, self.display, surf).unwrap_or(current);
+        match requested {
+            Ok(()) => tracing::info!(
+                from = ?current,
+                to = ?actual,
+                window = ?(entry.physical_width, entry.physical_height),
+                "window buffer follows the onscreen canvas"
+            ),
+            Err(error) => tracing::warn!(
+                ?error,
+                from = ?current,
+                wanted = ?wanted,
+                now = ?actual,
+                "eglSurfaceAttrib refused the window buffer size; the present keeps scaling into the buffer it has"
+            ),
+        }
+        if actual == current {
+            return false;
+        }
+        if let Some(entry) = self.canvases.get_mut(&id) {
+            entry.window_buffer = Some(actual);
+        }
+        self.damage_history.clear();
+        self.pending_present_plan = None;
+        self.damage
+            .add(crate::damage_effect::DamageEffect::FullSurface);
+        true
     }
 
     pub(crate) fn evaluate_bypass(&mut self) {
@@ -3573,9 +3656,19 @@ impl CanvasManager {
         // below the surface (Phaser Scale.NONE) must go through the blit so it
         // fills the window instead of landing in a corner. `false` when there
         // is no DrawingBuffer, which also (correctly) disables bypass.
+        //
+        // "The surface" is both the window and the buffer a present writes. A
+        // fixed-size window buffer that follows a smaller canvas makes the copy
+        // into it 1:1, but it does not make bypass eligible: that would widen
+        // bypass from content that sized its canvas to the window to every
+        // DPR-naive WebGL game, and bypass does not yet honour
+        // `preserveDrawingBuffer` or clear after a present -- gaps that are
+        // reachable today only by the narrower population. The buffer has to
+        // match as well, since under bypass WebGL draws into it directly.
         let onscreen_db_matches_surface = self.canvases.get(&onscreen_id).map_or(false, |e| {
             e.drawing_buffer.as_ref().map_or(false, |db| {
-                db.width == e.physical_width && db.height == e.physical_height
+                let size = (db.width, db.height);
+                size == (e.physical_width, e.physical_height) && size == e.presented_size()
             })
         });
         let canvas_count = self.canvases.len();
@@ -4056,9 +4149,11 @@ impl CanvasManager {
                 // db -> surface: it rewrites the whole surface every frame and the
                 // game's damage rects (DrawingBuffer/game coordinates) no longer
                 // map 1:1 onto surface pixels, so partial repair must stay full.
-                let db_matches = e.drawing_buffer.as_ref().map_or(false, |db| {
-                    db.width == e.physical_width && db.height == e.physical_height
-                });
+                let (surface_w, surface_h) = e.presented_size();
+                let db_matches = e
+                    .drawing_buffer
+                    .as_ref()
+                    .map_or(false, |db| (db.width, db.height) == (surface_w, surface_h));
                 // Buffer age and partial repair are properties of a window
                 // surface. A canvas without one is offscreen and never reaches
                 // here, but a full plan is the safe answer if it ever did.
@@ -4069,8 +4164,8 @@ impl CanvasManager {
                     };
                 };
                 (
-                    e.physical_width,
-                    e.physical_height,
+                    surface_w,
+                    surface_h,
                     surf,
                     db_matches,
                     e.bypass_drawing_buffer,
@@ -4314,23 +4409,18 @@ impl CanvasManager {
         // Blit DrawingBuffer to the real window surface before swap, driven by the
         // plan's `repair` region (never `current`). When bypass is active, WebGL
         // already rendered to FBO 0 — skip the blit.
+        let (buffer_w, buffer_h) = entry.presented_size();
         let mut blit_succeeded = true;
         if !entry.bypass_drawing_buffer {
             if let Some(ref db) = entry.drawing_buffer {
-                let db_matches =
-                    db.width == entry.physical_width && db.height == entry.physical_height;
+                let db_matches = (db.width, db.height) == (buffer_w, buffer_h);
                 let blit = crate::present_damage::blit_plan(
                     &plan.repair,
                     db_matches,
                     self.dest_single_sample,
                 );
-                blit_succeeded = drawing_buffer::blit_to_surface(
-                    &self.gl,
-                    db,
-                    entry.physical_width,
-                    entry.physical_height,
-                    &blit,
-                );
+                blit_succeeded =
+                    drawing_buffer::blit_to_surface(&self.gl, db, buffer_w, buffer_h, &blit);
             }
         }
 
@@ -4338,11 +4428,7 @@ impl CanvasManager {
         // frame from FBO 0 after the blit and before eglSwapBuffers, while the
         // context is current and the back buffer is still valid. No-op (single
         // atomic load) unless a capture was explicitly requested.
-        crate::frame_capture::capture_default_fbo(
-            &self.gl,
-            entry.physical_width,
-            entry.physical_height,
-        );
+        crate::frame_capture::capture_default_fbo(&self.gl, buffer_w, buffer_h);
 
         // Only call eglSwapInterval when the value actually changes
         let interval = if wait_for_vsync { 1 } else { 0 };
@@ -4406,6 +4492,13 @@ impl CanvasManager {
         // Under bypass there was no blit, nothing was destroyed, and the
         // resolver's answer (real FBO 0) is what is already bound.
         self.bind_default_framebuffer(id);
+
+        // Between frames is the one point no drawable is held, so a canvas
+        // resized during this frame -- presented just now through a scaling
+        // blit -- gets its buffer for the next one here.
+        if self.reconcile_window_buffer(id) {
+            self.evaluate_bypass();
+        }
 
         Ok(match commit {
             PresentCommit::Presented(resolved) => resolved,

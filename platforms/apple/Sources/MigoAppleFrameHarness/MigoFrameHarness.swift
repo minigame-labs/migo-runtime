@@ -105,7 +105,6 @@ public final class MigoFrameHarness {
         self.session = session
 
         let layer = CAMetalLayer()
-        layer.drawableSize = CGSize(width: sizePixels, height: sizePixels)
         layer.frame = CGRect(x: 0, y: 0, width: sizePixels, height: sizePixels)
         retainedLayer = layer
 

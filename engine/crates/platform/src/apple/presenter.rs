@@ -463,7 +463,31 @@ impl PreparedEglSurface for ApplePreparedSurface {
                             .with_detail(format!("{error:?}"))
                     })
             }
-            Self::MetalLayer { layer, .. } => {
+            Self::MetalLayer {
+                layer,
+                width,
+                height,
+            } => {
+                // Fixed-size, so the engine owns the drawable's size: ANGLE's
+                // Metal backend otherwise re-derives it from the layer's bounds
+                // times contentsScale before every drawable, overriding any
+                // other size. It starts at the window's and follows the onscreen
+                // canvas (`window_buffer_size` in migo-graphics); the host's
+                // layer scales it to its bounds through contentsGravity. Our
+                // ANGLE carries the extension
+                // (engine/third_party/angle-patches/apple/0002); one that does
+                // not gets the window-sized surface it always had.
+                let fixed_size = [
+                    EGL_FIXED_SIZE_ANGLE,
+                    egl::TRUE as egl::Int,
+                    egl::WIDTH,
+                    *width as egl::Int,
+                    egl::HEIGHT,
+                    *height as egl::Int,
+                    egl::NONE,
+                ];
+                let attributes = display_has_extension(egl, display, "EGL_ANGLE_window_fixed_size")
+                    .then_some(&fixed_size[..]);
                 // EGL 1.4's `eglCreateWindowSurface` takes the native window
                 // **by value**, and ANGLE's Metal backend defines
                 // `EGLNativeWindowType` as the `CAMetalLayer *` itself -- the
@@ -477,7 +501,7 @@ impl PreparedEglSurface for ApplePreparedSurface {
                         display,
                         config,
                         layer.as_ptr() as egl::NativeWindowType,
-                        None,
+                        attributes,
                     )
                 }
                 .map_err(|error| {
@@ -488,6 +512,20 @@ impl PreparedEglSurface for ApplePreparedSurface {
             }
         }
     }
+}
+
+/// `EGL_FIXED_SIZE_ANGLE`, from `EGL_ANGLE_window_fixed_size`.
+const EGL_FIXED_SIZE_ANGLE: egl::Int = 0x3201;
+
+fn display_has_extension(egl: &EglInstance, display: egl::Display, name: &str) -> bool {
+    egl.query_string(Some(display), egl::EXTENSIONS)
+        .map(|extensions| {
+            extensions
+                .to_string_lossy()
+                .split_ascii_whitespace()
+                .any(|extension| extension == name)
+        })
+        .unwrap_or(false)
 }
 
 /// Headless Apple graphics platform: ANGLE-Metal plus a pbuffer surface factory.

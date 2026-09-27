@@ -1716,9 +1716,17 @@ pub(super) enum SurfaceKind {
 
 pub(super) struct CanvasEntry {
     pub info: CanvasInfo,
-    /// Actual EGL surface dimensions (physical pixels).
+    /// The surface's dimensions in physical pixels: for a window, the window the
+    /// host reported, which is what the engine's default backing store and every
+    /// install decision are derived from.
     pub physical_width: u32,
     pub physical_height: u32,
+    /// The window surface's buffer size when the engine chooses it -- a
+    /// fixed-size surface (`EGL_ANGLE_window_fixed_size`) whose buffer the
+    /// compositor scales to the window, kept at
+    /// [`crate::canvas::window_buffer_size`]. `None` when the native window sizes
+    /// its own buffers, which are then `physical_*`.
+    pub window_buffer: Option<(u32, u32)>,
     pub kind: SurfaceKind,
     pub ctx: EglContextHandle,
     /// DrawingBuffer for the onscreen canvas. None for offscreen pbuffer canvases.
@@ -1743,4 +1751,13 @@ pub(super) struct CanvasEntry {
     /// framebuffer rather than the mode that chose it is what makes a rebuilt
     /// DrawingBuffer under an unchanged mode a change this can see.
     pub applied_default_framebuffer: Option<glow::NativeFramebuffer>,
+}
+
+impl CanvasEntry {
+    /// The size of the buffer a present writes: what the blit targets, what
+    /// bypass has to match and what damage is clamped to.
+    pub fn presented_size(&self) -> (u32, u32) {
+        self.window_buffer
+            .unwrap_or((self.physical_width, self.physical_height))
+    }
 }
