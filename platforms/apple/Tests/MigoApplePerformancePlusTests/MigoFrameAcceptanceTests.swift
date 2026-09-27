@@ -206,9 +206,10 @@ import XCTest
         /// tick, and asks again -- the loop every game is.
         ///
         /// This is what the frame clock crossing the process boundary has to
-        /// carry. Each request is a control message on the socket, which the
-        /// engine arms (the first one races the renderer's bring-up, and is held);
-        /// each tick comes back through the waker, carrying the window, because
+        /// carry. A request is a presenting packet, or a control message on the
+        /// socket for a tick that sent none, and the engine arms it (the first one
+        /// races the renderer's bring-up, and is held); each tick comes back
+        /// through the waker, carrying the window, because
         /// nothing else would tell a producer whose last verdict said zero that a
         /// credit came back. Without that the loop stops after two frames.
         ///
@@ -336,7 +337,15 @@ import XCTest
                 "a frame was refused: a producer that follows the window is never told to wait,"
                     + " and a gap ends the content")
             XCTAssertEqual(statistics.framesAccepted + statistics.framesDeferred, sent)
-            XCTAssertGreaterThanOrEqual(statistics.controlMessagesReceived, ticks)
+            // Every one of the ticks was asked for -- the loop reached its end -- and
+            // a presenting packet carries the request for the tick after it, so a
+            // request goes on its own only for a tick that sent none: the ones
+            // where the window held the pair back.
+            XCTAssertLessThanOrEqual(
+                statistics.controlMessagesReceived, ticks, "never more than one request a tick")
+            XCTAssertLessThan(
+                statistics.controlMessagesReceived, ticks,
+                "the presenting packets carried the requests for the ticks that sent them")
             XCTAssertEqual(statistics.controlMessagesRefused, 0)
             XCTAssertGreaterThan(statistics.downlinkWakes, 0, "ticks reached the producer by being woken")
 

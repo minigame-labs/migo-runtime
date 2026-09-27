@@ -639,10 +639,13 @@ public final class MigoFrameChannel {
         }
         lock.unlock()
 
-        // Every decision, including the refusals. A producer told nothing about
-        // a frame it sent has to time out to find out, and a timeout is
-        // indistinguishable from a host that died.
-        pump()
+        // No drain here. The engine wakes the drain for a verdict the producer
+        // cannot wait for -- every refusal, and an acceptance with no tick
+        // coming or an empty window -- and leaves any other to travel with the
+        // tick the packet asked for: one downlink message per frame, not two.
+        // Draining after every submit sent each verdict alone, and WebKit's
+        // network process charges per message, whatever its size (*When a
+        // verdict is sent* in contracts/frame-wire/wire-v1.md).
         return disposition
     }
 }

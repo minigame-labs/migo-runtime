@@ -10,7 +10,7 @@ use frame_wire::{
     RESOURCE_REFERENCE_BYTES, SECTION_ENTRY_BYTES, SECTION_KIND_COMMAND_STREAM,
     SECTION_KIND_DAMAGE, SECTION_KIND_INLINE_DATA, SECTION_KIND_RESOURCE_REFERENCES,
     SECTION_KIND_TIMING, WIRE_MAGIC, WIRE_VERSION, WireError, builder::WireFrameBuilder,
-    stamp_checksum, validate,
+    presenting_generation, stamp_checksum, validate,
 };
 
 const OFF_MAGIC: usize = 0;
@@ -249,6 +249,58 @@ fn a_packet_without_present_is_a_valid_barrier() {
     let fixture = good();
     let presenting = validate(&fixture).expect("the fixture presents");
     assert!(presenting.presents());
+}
+
+/// A presenting packet names its generation from the header alone; a barrier,
+/// another format and a fragment of a header name nothing.
+///
+/// The external lane reads this as the producer's request for the next tick,
+/// before admission, so it must not depend on anything admission checks.
+#[test]
+fn only_a_presenting_packet_names_a_generation_before_admission() {
+    let presenting = good();
+    let generation = validate(&presenting)
+        .expect("the fixture is valid")
+        .runtime_generation();
+    assert_eq!(presenting_generation(&presenting), Some(generation));
+
+    let barrier = mutate(|bytes| put_u32(bytes, OFF_FLAGS, 0));
+    assert_eq!(
+        presenting_generation(&barrier),
+        None,
+        "a barrier asks for no frame"
+    );
+
+    let foreign = mutate(|bytes| put_u32(bytes, OFF_MAGIC, 0x4D55_5331));
+    assert_eq!(
+        presenting_generation(&foreign),
+        None,
+        "another format's message"
+    );
+
+    let old = mutate(|bytes| put_u32(bytes, OFF_WIRE_VERSION, WIRE_VERSION + 1));
+    assert_eq!(
+        presenting_generation(&old),
+        None,
+        "a version this build does not read"
+    );
+
+    for length in 0..HEADER_BYTES as usize {
+        assert_eq!(
+            presenting_generation(&presenting[..length]),
+            None,
+            "{length} bytes"
+        );
+    }
+
+    // The checksum is deliberately not consulted: a bad one is admission's to
+    // refuse, and costs at most one unused tick here.
+    let damaged = {
+        let mut bytes = presenting.clone();
+        bytes[OFF_CHECKSUM] ^= 0xff;
+        bytes
+    };
+    assert_eq!(presenting_generation(&damaged), Some(generation));
 }
 
 /// A transport that splits a packet must reassemble before calling the parser.

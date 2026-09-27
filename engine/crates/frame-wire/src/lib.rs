@@ -529,6 +529,28 @@ const fn align_up(value: u32) -> Option<u32> {
     }
 }
 
+/// The runtime generation of a packet that ends a frame, read from its header
+/// alone -- or `None` for anything else, barriers included.
+///
+/// What the external lane reads before admission. A presenting packet is also
+/// the producer's request for the next frame-clock tick (*Uplink control messages* in
+/// `contracts/frame-wire/wire-v1.md`), and that request has to stand whatever
+/// admission then decides: a producer whose packet waits for a credit still
+/// needs the tick after it. So this looks at the fixed fields only -- the
+/// length that holds them, magic, version, flags -- and not at the checksum
+/// [`validate`] is about to compute anyway. A packet that fails validation
+/// afterwards has at worst armed one tick nobody uses.
+pub fn presenting_generation(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < HEADER_BYTES as usize
+        || read_u32(bytes, OFF_MAGIC) != WIRE_MAGIC
+        || read_u32(bytes, OFF_WIRE_VERSION) != WIRE_VERSION
+        || read_u32(bytes, OFF_FLAGS) & FLAG_PRESENT == 0
+    {
+        return None;
+    }
+    Some(read_u64(bytes, OFF_RUNTIME_GENERATION))
+}
+
 /// Validate one packet's envelope. Allocates nothing, and cannot panic for any
 /// input.
 ///

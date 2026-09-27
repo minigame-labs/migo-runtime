@@ -1591,6 +1591,14 @@ pub struct ExternalFrameClock {
     /// request racing publication is armed once or twice and never zero times --
     /// and twice is free, because demand is a latch rather than a count.
     held: AtomicBool,
+    /// A tick is owed: a frame was requested and the tick that answers it has
+    /// not been queued yet.
+    ///
+    /// What lets an accepted packet's verdict wait for that tick instead of
+    /// travelling alone -- see [`verdict_is_urgent`]. Set by every request,
+    /// cleared by the tick before it is queued, so a request made after the
+    /// clear is owed the next tick and not taken as answered by this one.
+    tick_owed: AtomicBool,
     ticks: AtomicU64,
     last_timestamp_millis: AtomicU64,
     /// The same queue the session drains. The clock holds it because the tick
@@ -1604,21 +1612,23 @@ pub struct ExternalFrameClock {
     runtime_generation: u64,
     /// Where each tick's window is read from, without the ingress lock.
     window: WindowSource,
-    /// Called after a tick is queued, so the transport sends it.
+    /// Called when the queue holds something the producer must hear now, so the
+    /// transport sends it: a tick, and a verdict that cannot wait for the next
+    /// one ([`verdict_is_urgent`]).
     ///
-    /// A tick is the one record nothing on the transport's side caused -- a
-    /// verdict is queued inside a submit the transport made and drains right
-    /// after -- so without this a tick waits in the queue until the producer
-    /// happens to send something, and a producer waiting for a tick sends
-    /// nothing. Held under its lock for the call, so clearing it returns only
-    /// once no call is in progress, which is what lets a host free whatever the
-    /// waker points at.
+    /// The transport drains only when this calls it. A verdict that can wait
+    /// stays queued and leaves with the tick its packet asked for, which is what
+    /// makes a frame one downlink message rather than two. Held under its lock
+    /// for the call, so clearing it returns only once no call is in progress,
+    /// which is what lets a host free whatever the waker points at.
     waker: Arc<WakerSlot>,
 }
 
-/// Called on the session thread whenever a record the transport did not cause
-/// is queued. It must return promptly and must not call back into the session:
-/// schedule the drain, do not perform it.
+/// Called whenever the producer has to hear what is queued now -- a tick, an
+/// urgent verdict, a service answer -- on whichever thread queued it: the
+/// session thread, the render signal, or the transport's own inside a submit.
+/// It must return promptly and must not call back into the session: schedule
+/// the drain, do not perform it.
 pub type DownlinkWaker = Box<dyn Fn() + Send + Sync>;
 
 struct FrameClockParts {
@@ -1678,6 +1688,7 @@ impl ExternalFrameClock {
         Self {
             inner: OnceLock::new(),
             held: AtomicBool::new(false),
+            tick_owed: AtomicBool::new(false),
             ticks: AtomicU64::new(0),
             last_timestamp_millis: AtomicU64::new(0),
             downlink,
@@ -1775,6 +1786,8 @@ impl ExternalFrameClock {
     /// request made before the renderer is up is held and armed when it is, so
     /// it is never lost; the `held` field says why that cannot race.
     pub fn request_frame(&self) -> FrameRequest {
+        // Before arming: the tick an armed request produces must find it set.
+        self.tick_owed.store(true, Ordering::SeqCst);
         // `SeqCst` on both sides of the hand-off: correctness here is about the
         // order of writes to two different locations -- this flag, and the
         // `OnceLock` the session thread publishes into -- which is exactly the
@@ -1833,6 +1846,16 @@ impl ExternalFrameClock {
         self.waker.set(waker);
     }
 
+    /// Whether a tick is owed; see the field.
+    fn owes_tick(&self) -> bool {
+        self.tick_owed.load(Ordering::SeqCst)
+    }
+
+    /// Ask the transport to drain now, for records it did not cause.
+    fn wake_downlink(&self) {
+        self.waker.wake();
+    }
+
     /// How many frame signals the renderer has delivered to this session.
     pub fn ticks(&self) -> u64 {
         self.ticks.load(Ordering::Relaxed)
@@ -1848,6 +1871,9 @@ impl ExternalFrameClock {
     }
 
     fn record(&self, timestamp_millis: f64) {
+        // Cleared before this tick is queued: every request made up to here is
+        // answered by it, and one made after is owed the next.
+        self.tick_owed.store(false, Ordering::SeqCst);
         let frame_id = self.ticks.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         self.last_timestamp_millis
             .store(timestamp_millis as u64, Ordering::Relaxed);
@@ -1877,6 +1903,48 @@ impl ExternalFrameClock {
         // After the queue lock is released, so a transport that drains from
         // inside its wake-up does not find the lock still held by this thread.
         self.waker.wake();
+    }
+}
+
+/// One packet through admission, with the two things the frame clock owes it:
+/// the tick a presenting packet asks for, and a prompt wake-up when its verdict
+/// cannot wait for that tick. [`ExternalFrameSession::submit_frame`], as a
+/// function of its parts so the rule is testable without a session thread.
+fn submit_through(submit: &SubmitPath, clock: &ExternalFrameClock, bytes: &[u8]) -> IngressOutcome {
+    if frame_wire::presenting_generation(bytes) == Some(submit.runtime_generation) {
+        clock.request_frame();
+    }
+    let (outcome, released) = submit.submit(bytes);
+    let tick_owed = clock.owes_tick();
+    if [Some(outcome), released]
+        .into_iter()
+        .flatten()
+        .any(|verdict| verdict_is_urgent(&verdict, tick_owed))
+    {
+        clock.wake_downlink();
+    }
+    outcome
+}
+
+/// Whether a verdict has to reach the producer now, or can go with the tick
+/// that is already owed.
+///
+/// A tick carries the same window advertisement a verdict does, so an accepted
+/// packet's verdict tells a producer nothing the next tick will not -- unless
+/// no tick is coming, or the window it advertises is empty. Empty is the case
+/// that matters: a producer holding the next packet of the same frame is
+/// waiting on a credit, and [`ExternalFrameClock::window_opened`] tells it when
+/// one returns only if the last advertisement it was sent said zero. Deferring
+/// that verdict would leave it waiting a whole frame for the tick instead.
+///
+/// Everything that is not an acceptance goes at once: a refusal ends or pauses
+/// the content, and a producer should not learn it a frame late. A held packet
+/// has no verdict yet.
+fn verdict_is_urgent(verdict: &IngressOutcome, tick_owed: bool) -> bool {
+    match verdict.decision {
+        IngressDecision::Deferred => false,
+        IngressDecision::Accepted => !tick_owed || verdict.remaining_credits == 0,
+        _ => true,
     }
 }
 
@@ -1913,6 +1981,13 @@ impl SubmitPath {
     /// The bytes are borrowed only for this call. Decode returns the wire
     /// storage to its pool while the owned render packet keeps the credit.
     pub fn submit_frame(&self, bytes: &[u8]) -> IngressOutcome {
+        self.submit(bytes).0
+    }
+
+    /// [`Self::submit_frame`], and the verdict of a held packet this one
+    /// released, if it did: the session decides from both whether the producer
+    /// has to hear now.
+    fn submit(&self, bytes: &[u8]) -> (IngressOutcome, Option<IngressOutcome>) {
         // Serialize through decode and queue submission too: releasing this
         // lock earlier lets concurrent callers dispatch N+1 before N, and
         // commits rejected frames before their decoder or queue can refuse them.
@@ -1965,7 +2040,7 @@ impl SubmitPath {
         // After the lock is released, so a woken reader does not wake straight
         // into the lock this thread still holds.
         self.admitted.notify_all();
-        outcome
+        (outcome, released)
     }
 
     /// Decode one accepted frame and hand it to the renderer.
@@ -2142,8 +2217,15 @@ impl ExternalFrameSession {
     /// has to be validated and credited before it is queued, and a channel hop
     /// to do that would put a scheduling delay on the latency path this lane
     /// exists to shorten.
+    ///
+    /// A presenting packet is also the producer's request for the next tick
+    /// (*Uplink control messages* in `contracts/frame-wire/wire-v1.md`): armed before
+    /// admission, whatever admission decides, because a packet that waits for a
+    /// credit still needs the tick after it. Its verdict is queued, and the
+    /// transport woken for it only when the producer cannot wait for that tick
+    /// -- see [`verdict_is_urgent`].
     pub fn submit_frame(&self, bytes: &[u8]) -> IngressOutcome {
-        self.submit.submit_frame(bytes)
+        submit_through(&self.submit, &self.clock, bytes)
     }
     /// Release the transport-side frame storage once no more submissions can
     /// reach this session. The C boundary calls this before handing ownership to
@@ -2161,7 +2243,7 @@ impl ExternalFrameSession {
     /// Fill `out` with the next downlink message, and return its length.
     ///
     /// Zero means there is nothing to send, which is the normal answer between
-    /// frames. The transport calls this after every submit and every tick; a
+    /// frames. The transport calls this when the downlink waker asks it to; a
     /// message it did not ask for is a message it would have to buffer, and the
     /// queue is a better place to buffer than a socket.
     ///
@@ -3848,6 +3930,175 @@ mod tests {
             receiver,
             lifecycle_sender,
         )
+    }
+
+    /// A ready submit path, and a clock that shares its downlink queue and
+    /// credit window, with its frame parts published and a counting waker: the
+    /// pieces `ExternalFrameSession::submit_frame` joins.
+    fn submit_and_clock() -> (
+        SubmitPath,
+        crossbeam_channel::Receiver<shared::protocol::render_cmd::RenderCommand>,
+        Arc<shared::render_command_sender::CommandSender>,
+        ExternalFrameClock,
+        Arc<AtomicU64>,
+        Arc<AtomicU64>,
+    ) {
+        let (submit, receiver, lifecycle) = ready_submit();
+        let clock = ExternalFrameClock::new(
+            Arc::clone(&submit.downlink),
+            submit.ingress.lock().window_source(),
+            INITIAL_RUNTIME_GENERATION,
+        );
+        let (parts, _demand, armed) = counted_parts();
+        clock.publish(parts);
+        let woken = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&woken);
+        clock.set_downlink_waker(Some(Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+        (submit, receiver, lifecycle, clock, armed, woken)
+    }
+
+    /// A packet the renderer accepts: a stream that is only its header, ending
+    /// the frame (`present`) or not (a barrier).
+    fn minimal(sequence: u64, present: bool) -> Vec<u8> {
+        let words = [stream::MAGIC, stream::STREAM_VERSION];
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let mut frame = frame_wire::builder::WireFrameBuilder::new();
+        frame.launch_nonce = NONCE;
+        frame.runtime_generation = INITIAL_RUNTIME_GENERATION;
+        frame.sequence = sequence;
+        frame.flags = if present { frame_wire::FLAG_PRESENT } else { 0 };
+        frame
+            .section(
+                frame_wire::SECTION_KIND_COMMAND_STREAM,
+                words.len() as u32,
+                &bytes,
+            )
+            .build()
+    }
+
+    fn presenting(sequence: u64) -> Vec<u8> {
+        minimal(sequence, true)
+    }
+
+    fn barrier(sequence: u64) -> Vec<u8> {
+        minimal(sequence, false)
+    }
+
+    /// A presenting packet is the producer's request for the next tick, so the
+    /// producer sends no separate one. A barrier asks for nothing, and neither
+    /// does a packet from a generation that is gone.
+    #[test]
+    fn a_presenting_packet_asks_for_the_next_tick() {
+        let (submit, _receiver, _lifecycle, clock, armed, _woken) = submit_and_clock();
+
+        submit_through(&submit, &clock, &barrier(1));
+        assert_eq!(armed.load(Ordering::SeqCst), 0, "a barrier arms nothing");
+        assert!(!clock.owes_tick());
+
+        submit_through(&submit, &clock, &presenting(2));
+        assert_eq!(
+            armed.load(Ordering::SeqCst),
+            1,
+            "the presenting packet armed a frame"
+        );
+        assert!(clock.owes_tick());
+
+        clock.record(16.0);
+        assert!(!clock.owes_tick(), "the tick answered it");
+
+        let mut stale = frame_wire::builder::WireFrameBuilder::new();
+        stale.launch_nonce = NONCE;
+        stale.runtime_generation = INITIAL_RUNTIME_GENERATION + 1;
+        stale.sequence = 3;
+        let stale = stale
+            .section(frame_wire::SECTION_KIND_COMMAND_STREAM, 0, &[])
+            .build();
+        submit_through(&submit, &clock, &stale);
+        assert_eq!(
+            armed.load(Ordering::SeqCst),
+            1,
+            "nothing is owed to a dead generation"
+        );
+    }
+
+    /// The steady state: a presenting packet's verdict does not travel alone.
+    /// It waits in the queue for the tick the packet asked for, and the two go
+    /// as one downlink message -- the tick carrying the newer window.
+    #[test]
+    fn an_accepted_verdict_travels_with_the_tick_it_asked_for() {
+        let (submit, _receiver, _lifecycle, clock, _armed, woken) = submit_and_clock();
+
+        let outcome = submit_through(&submit, &clock, &presenting(1));
+        assert_eq!(outcome.decision, IngressDecision::Accepted);
+        assert_eq!(outcome.remaining_credits, 1);
+        assert_eq!(
+            woken.load(Ordering::SeqCst),
+            0,
+            "the verdict waits for the tick"
+        );
+
+        clock.record(16.0);
+        assert_eq!(
+            woken.load(Ordering::SeqCst),
+            1,
+            "the tick wakes the transport once"
+        );
+        let records = drain_records(&submit.downlink);
+        assert!(
+            matches!(
+                records.as_slice(),
+                [
+                    DownlinkRecord::FrameVerdict {
+                        accepted_sequence: 1,
+                        ..
+                    },
+                    DownlinkRecord::ClockTick { .. }
+                ]
+            ),
+            "one message: the verdict, then the tick -- {records:?}"
+        );
+    }
+
+    /// A verdict that empties the window goes at once. The producer may be
+    /// holding the next packet of the same frame, and it hears a credit return
+    /// only if the last window it was told was zero -- deferred, this verdict
+    /// would leave it waiting for the next tick instead.
+    #[test]
+    fn a_verdict_that_empties_the_window_goes_at_once() {
+        let (submit, _receiver, _lifecycle, clock, _armed, woken) = submit_and_clock();
+        submit_through(&submit, &clock, &barrier(1));
+        let before = woken.load(Ordering::SeqCst);
+        let outcome = submit_through(&submit, &clock, &presenting(2));
+        assert_eq!(outcome.decision, IngressDecision::Accepted);
+        assert_eq!(outcome.remaining_credits, 0);
+        assert_eq!(woken.load(Ordering::SeqCst), before + 1);
+    }
+
+    /// With no tick coming, nothing else would carry the verdict: a barrier from
+    /// a producer that asked for no frame is answered at once.
+    #[test]
+    fn a_verdict_goes_at_once_when_no_tick_is_owed() {
+        let (submit, _receiver, _lifecycle, clock, _armed, woken) = submit_and_clock();
+        let outcome = submit_through(&submit, &clock, &barrier(1));
+        assert_eq!(outcome.decision, IngressDecision::Accepted);
+        assert_eq!(outcome.remaining_credits, 1);
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+    }
+
+    /// A refusal is never held for a tick, owed or not.
+    #[test]
+    fn a_refusal_goes_at_once() {
+        let (submit, _receiver, _lifecycle, clock, _armed, woken) = submit_and_clock();
+        clock.request_frame();
+        let outcome = submit_through(&submit, &clock, &presenting(2));
+        assert_ne!(
+            outcome.decision,
+            IngressDecision::Accepted,
+            "sequence 2 before 1"
+        );
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
     }
 
     fn stream_packet(sequence: u64, words: &[u32]) -> Vec<u8> {

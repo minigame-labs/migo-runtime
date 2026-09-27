@@ -19,7 +19,7 @@ import {
   decodeBytes,
 } from "./downlink.mjs";
 import { RequestFrameMessage, generationWord } from "./control.mjs";
-import { sequenceOf } from "./wire-frame-packet.mjs";
+import { presents, sequenceOf } from "./wire-frame-packet.mjs";
 
 /// `IngressDecision` in `engine/crates/frame-wire/src/ingress.rs`. The numbers
 /// cross the C ABI and are never renumbered, only appended.
@@ -129,6 +129,12 @@ export class FrameSession {
     if (this.#closed) return SUBMIT_CLOSED;
     if (this.credits === 0) return SUBMIT_NO_CREDIT;
     this.#send(packet);
+    // A packet that ends a frame is also the request for the next tick: the
+    // host arms one for it before admission (*Uplink control messages* in
+    // contracts/frame-wire/wire-v1.md). So the request content's frame loop
+    // makes right after this goes nowhere -- it is already outstanding -- and a
+    // frame costs one uplink message, not two.
+    if (presents(packet)) this.#requestOutstanding = true;
     const sequence = sequenceOf(packet);
     if (sequence > this.#sent) {
       this.#sent = sequence;

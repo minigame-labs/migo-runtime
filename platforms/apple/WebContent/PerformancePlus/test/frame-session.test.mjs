@@ -45,6 +45,13 @@ function packet(sequence) {
   return bytes;
 }
 
+/// A packet that ends a frame: `PRESENT` set in the flags word at offset 68.
+function presenting(sequence) {
+  const bytes = packet(sequence);
+  new DataView(bytes.buffer).setUint32(68, 1, true);
+  return bytes;
+}
+
 const verdict = (remainingCredits, acceptedSequence, decision = DECISION_ACCEPTED) =>
   encodeBytes([
     {
@@ -171,6 +178,38 @@ check("a callback that asks again sends a new request", () => {
   for (let id = 1; id <= 4; id += 1) instance.handleMessage(tick(id));
   assertEqual(frames.join(","), "1,2,3", "one frame per request");
   assertEqual(control.length, 3, "and one request per frame");
+});
+
+// The engine's frame loop, in its order: the tick resolves the wait, the
+// frame's packet is sent, and the loop asks for the next frame.
+check("a presenting packet is the request for the next tick: a frame is one uplink message", () => {
+  const { instance, sent, control } = session();
+  let next = 1;
+  const loop = () => {
+    assertEqual(instance.submit(presenting(next)), true, `frame ${next} is sent`);
+    next += 1;
+    instance.requestFrame(1n, loop);
+  };
+  instance.requestFrame(1n, loop);
+  assertEqual(control.length, 1, "the first request has no packet to ride on");
+  for (let id = 1; id <= 5; id += 1) instance.handleMessage(tick(id, { acceptedSequence: id - 1 }));
+  assertEqual(sent.length, 5, "a packet per frame");
+  assertEqual(control.length, 1, "and no request after the first: each packet carried it");
+});
+
+check("a barrier asks for nothing, so the request after it is sent", () => {
+  const { instance, control } = session();
+  assertEqual(instance.submit(packet(1)), true, "the barrier is sent");
+  instance.requestFrame(1n, () => {});
+  assertEqual(control.length, 1, "a request of its own");
+});
+
+check("a presenting packet held back for a credit asks for nothing", () => {
+  const { instance, control } = session();
+  instance.handleMessage(verdict(0, 0));
+  assertEqual(instance.submit(presenting(1)), SUBMIT_NO_CREDIT, "no credit, not sent");
+  instance.requestFrame(1n, () => {});
+  assertEqual(control.length, 1, "the host never saw the packet, so the request is sent");
 });
 
 check("the generation is carried as its low 32 bits", () => {
