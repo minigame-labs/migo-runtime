@@ -148,6 +148,12 @@ pub type PreparedEglSurfaceRef = Arc<dyn PreparedEglSurface>;
 /// Structural pairing between a prepared platform target and the attachment
 /// resource it may reach. Field order makes the native target drop before its
 /// final resource lease.
+///
+/// Every production target reaches EGL through this wrapper
+/// (`prepare_surface_for_lease`), so it forwards every method of the trait --
+/// the defaulted ones too. A defaulted method it does not forward compiles, and
+/// silently becomes the no-op default on every platform: that is how Android's
+/// frame-rate request never reached `ANativeWindow_setFrameRate`.
 struct ResourceBoundPreparedSurface {
     inner: PreparedEglSurfaceRef,
     _resource: SurfaceResourceLease,
@@ -189,6 +195,10 @@ impl PreparedEglSurface for ResourceBoundPreparedSurface {
         config: egl::Config,
     ) -> EngineResult<egl::Surface> {
         self.inner.create_window_surface(egl, display, config)
+    }
+
+    fn request_frame_rate(&self, fps: u32) {
+        self.inner.request_frame_rate(fps)
     }
 }
 
@@ -288,9 +298,11 @@ mod tests {
         marker::PhantomData,
         sync::{
             Arc,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicU32, AtomicUsize, Ordering},
         },
     };
+
+    use shared::surface::SurfaceGenerationGate;
 
     use super::*;
 
@@ -345,6 +357,7 @@ mod tests {
     #[derive(Debug)]
     struct FakeFactory<FactoryBackend, TargetBackend> {
         native_creates: Arc<AtomicUsize>,
+        frame_rate: Arc<AtomicU32>,
         marker: PhantomData<fn() -> (FactoryBackend, TargetBackend)>,
     }
 
@@ -352,6 +365,7 @@ mod tests {
         fn new(native_creates: Arc<AtomicUsize>) -> Self {
             Self {
                 native_creates,
+                frame_rate: Arc::new(AtomicU32::new(0)),
                 marker: PhantomData,
             }
         }
@@ -369,6 +383,7 @@ mod tests {
         fn prepare(&self, _surface: &dyn Surface) -> EngineResult<PreparedEglSurfaceRef> {
             Ok(Arc::new(FakePrepared::<T> {
                 native_creates: Arc::clone(&self.native_creates),
+                frame_rate: Arc::clone(&self.frame_rate),
                 marker: PhantomData,
             }))
         }
@@ -377,6 +392,8 @@ mod tests {
     #[derive(Debug)]
     struct FakePrepared<T> {
         native_creates: Arc<AtomicUsize>,
+        /// The last rate `request_frame_rate` asked the native target for.
+        frame_rate: Arc<AtomicU32>,
         marker: PhantomData<fn() -> T>,
     }
 
@@ -401,6 +418,10 @@ mod tests {
         ) -> EngineResult<egl::Surface> {
             self.native_creates.fetch_add(1, Ordering::Relaxed);
             Err(EngineError::new(ErrorCode::RenderBackendError))
+        }
+
+        fn request_frame_rate(&self, fps: u32) {
+            self.frame_rate.store(fps, Ordering::Relaxed);
         }
     }
 
@@ -479,14 +500,37 @@ mod tests {
     }
 
     #[test]
+    fn a_lease_bound_target_passes_the_frame_rate_request_to_the_native_one() {
+        let factory = FakeFactory::<BackendA, BackendA>::new(Arc::new(AtomicUsize::new(0)));
+        let frame_rate = Arc::clone(&factory.frame_rate);
+        let platform =
+            GraphicsPlatform::try_new(Arc::new(FakeProvider::<BackendA>::new()), Arc::new(factory))
+                .unwrap();
+        let gate = Arc::new(SurfaceGenerationGate::new());
+        let lease = SurfaceLease::new(Arc::new(TestSurface), gate.attach_or_update().unwrap());
+
+        // The path every production install takes.
+        let prepared = platform.prepare_surface_for_lease(&lease).unwrap();
+        prepared.request_frame_rate(60);
+
+        assert_eq!(
+            frame_rate.load(Ordering::Relaxed),
+            60,
+            "the lease wrapper answered with the trait's no-op default instead of forwarding"
+        );
+    }
+
+    #[test]
     fn cross_type_native_comparison_fails_closed() {
         let creates = Arc::new(AtomicUsize::new(0));
         let a = FakePrepared::<BackendA> {
             native_creates: Arc::clone(&creates),
+            frame_rate: Arc::new(AtomicU32::new(0)),
             marker: PhantomData,
         };
         let b = FakePrepared::<BackendB> {
             native_creates: creates,
+            frame_rate: Arc::new(AtomicU32::new(0)),
             marker: PhantomData,
         };
 
