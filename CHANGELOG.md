@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Android: the engine's frame-rate request never reached the display.
+  `ANativeWindow_setFrameRate` (Android 11+) was not called at all, from
+  v0.9.5 on, because the wrapper every window surface passes through did not
+  forward the request, so the display picked its refresh rate from its own
+  heuristics rather than from the rate the game presents at. On an Android 14
+  emulator the game's layer now carries a 60 Hz vote with Default
+  compatibility; before the fix it carried none.
+
 ## v0.9.16 (2026-09-28)
 
 ### Fixed
