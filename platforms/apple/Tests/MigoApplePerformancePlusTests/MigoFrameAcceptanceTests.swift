@@ -1729,6 +1729,9 @@ import XCTest
         /// game registers for it later in the same script. So content arms a timer
         /// and a frame, then spends 300 ms in back-to-back `getError` calls, each a
         /// blocking round trip, and both have to have waited for the script to end.
+        ///
+        /// Red without task-gate.mjs: on an iPhone XS Max (iOS 18.7) the timer ran
+        /// inside the calls in every run (about 700 calls in the 300 ms).
         func testNothingContentQueuedRunsInsideItsSynchronousCalls() throws {
             let harness = try MigoFrameHarness()
             self.harness = harness

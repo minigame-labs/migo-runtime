@@ -3,11 +3,15 @@
 //
 // A synchronous call (`SyncCaller`, sync-call.mjs) blocks in a synchronous
 // XMLHttpRequest, and WebKit serves a Worker's synchronous request from a
-// nested run loop that keeps dispatching the Worker's other tasks -- its
-// timers, its WebSocket's events -- while the request is outstanding. A task
-// run there runs inside the script that made the call, which JavaScript
-// promises cannot happen: a timer fires between two statements of a function
-// that never yielded. The synchronous path was designed on `Atomics.wait`,
+// nested run loop that keeps firing the Worker's timers while the request is
+// outstanding: on an iPhone XS Max (iOS 18.7), a zero-delay timer armed before
+// 300 ms of back-to-back calls ran inside them, every time
+// (MigoFrameAcceptanceTests, testNothingContentQueuedRunsInsideItsSynchronousCalls).
+// A task run there runs inside the script that made the call, which
+// JavaScript promises cannot happen: a timer fires between two statements of a
+// function that never yielded. The same run saw no WebSocket event inside a
+// call, but WebKit's source says its timers do not fire there either, so the
+// producer holds both rather than trust either to the source. The synchronous path was designed on `Atomics.wait`,
 // which dispatches nothing, and everything above it assumes that. What broke
 // first was a Phaser game on an iPhone XS Max: the web adapter queues its
 // `load` event on a zero-delay timer, and in the launches that went black that

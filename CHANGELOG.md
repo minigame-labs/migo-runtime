@@ -10,18 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - iOS (Performance+): a game could start to a black screen, its frame loop
   running and nothing drawn, in about one launch in four on an iPhone XS Max
-  under load. WebKit keeps dispatching a Worker's timers and WebSocket events
-  while the Worker is blocked in a synchronous request -- the channel the
-  engine's synchronous calls (`getImageData`, `getStorageSync`, WebGL queries)
-  take -- so a task could run in the middle of the script that made the call.
-  The web adapter's `load` event, queued on a zero-delay timer, then fired
-  while a Phaser bundle was still being evaluated, before the game registered
-  for it, and the game never started. The producer now holds every timer and
-  socket event that arrives during a synchronous call until the script that
-  made it has finished, and runs them in arrival order, each as a task of its
-  own. The engine's synchronous channel was designed on `Atomics.wait`, which
-  dispatches nothing; this restores what it assumed. Reproduced on v0.9.14 and
-  v0.9.15 alike.
+  under load. WebKit keeps firing a Worker's timers while the Worker is
+  blocked in a synchronous request -- the channel the engine's synchronous
+  calls (`getImageData`, `getStorageSync`, WebGL queries) take -- so a timer
+  could run in the middle of the script that made the call. The web adapter's
+  `load` event, queued on a zero-delay timer, then fired while a Phaser bundle
+  was still being evaluated, before the game registered for it, and the game
+  never started. The producer now holds every timer and socket event that
+  arrives during a synchronous call until the script that made it has
+  finished, and runs them in arrival order, each as a task of its own. The
+  engine's synchronous channel was designed on `Atomics.wait`, which
+  dispatches nothing; this restores what it assumed. A device acceptance test
+  arms a timer before 300 ms of synchronous calls: without the fix it ran
+  inside them on every run. The black screen reproduced on v0.9.14 and v0.9.15
+  alike.
 - Docs: the Apple guide says the game's orientation has to hold before
   `MigoGameView`'s first layout, not only eventually.
 
