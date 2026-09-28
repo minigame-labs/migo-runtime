@@ -100,11 +100,14 @@ topology does not otherwise have.
 
 How the demand crosses (landed with the frame loop, see `contracts/frame-wire/wire-v1.md`
 *The window* and *Uplink control messages*): content's `session.requestFrame` sends a
-`REQUEST_FRAME` control message on the socket; `MigoFrameChannel` routes it by the kind
-`migo_uplink_message_kind` reports and the engine arms one vsync -- or holds the request
-until the renderer is up. The tick is queued on the engine's thread, which calls the waker
-the channel installed (`migo_session_set_downlink_waker`), and the channel sends it. The
-tick carries the credit window `(remaining_credits, accepted_sequence)`, because a verdict
+`REQUEST_FRAME` control message on the socket; the engine's frame endpoint
+(`migo_session_start_frame_endpoint`, which terminates the socket in the engine) routes it
+by the message's kind and the engine arms one vsync -- or holds the request until the
+renderer is up. The tick is queued on the render signal, which unparks the endpoint's
+downlink thread, and that thread writes it. The socket used to be the host's
+(Network.framework, the downlink pumped from a GCD queue the engine's waker scheduled); on
+devices that was about a quarter of the App process's CPU samples while a game ran, and a
+tick crossed three queues on its way out. The tick carries the credit window `(remaining_credits, accepted_sequence)`, because a verdict
 is only sent for a frame and a producer whose last verdict said zero would otherwise never
 learn a credit came back.
 

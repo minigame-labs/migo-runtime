@@ -77,6 +77,7 @@ pub mod render_command_sender;
 pub mod render_event;
 pub mod render_exit;
 pub mod services;
+pub mod socket;
 pub mod stats;
 pub mod surface;
 pub mod text_measurer;

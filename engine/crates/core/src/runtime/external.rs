@@ -49,6 +49,9 @@ use crate::runtime::external_services::{
     RenderHandles, ServiceAdmission, ServiceContext, ServiceDispatcher, ServiceHandle, ServiceHost,
     ServiceSubmitError, ServiceWork, WakerSlot,
 };
+use crate::runtime::frame_endpoint::{
+    EndpointTarget, FrameEndpoint, FrameEndpointError, FrameTransportStatistics, TransportCounters,
+};
 use crate::runtime::host_events::ServiceEventSink;
 use crate::runtime::input_route;
 use crate::runtime::input_state::InputState;
@@ -85,6 +88,10 @@ pub struct ExternalFrameSession {
     /// The service stream: files, storage, images, audio, network. Shared with
     /// the transports that admit into it and the session thread that runs it.
     services: Arc<ServiceHost>,
+    /// The engine's own transport, once the host has started it (see
+    /// [`crate::runtime::frame_endpoint`]). Kept after it is stopped, until the
+    /// session is joined: stopping does not wait for its threads.
+    endpoint: Mutex<Option<FrameEndpoint>>,
 }
 
 /// A started external session and, when it was given a Surface, the lease for
@@ -1915,6 +1922,7 @@ fn submit_through(submit: &SubmitPath, clock: &ExternalFrameClock, bytes: &[u8])
         clock.request_frame();
     }
     let (outcome, released) = submit.submit(bytes);
+    submit.counters.frame(&outcome);
     let tick_owed = clock.owes_tick();
     if [Some(outcome), released]
         .into_iter()
@@ -1924,6 +1932,66 @@ fn submit_through(submit: &SubmitPath, clock: &ExternalFrameClock, bytes: &[u8])
         clock.wake_downlink();
     }
     outcome
+}
+
+/// One control message, read and counted: [`ExternalFrameSession::submit_control`],
+/// as a function of its parts so the frame endpoint reads it the same way.
+fn submit_control_through(
+    clock: &ExternalFrameClock,
+    counters: &TransportCounters,
+    bytes: &[u8],
+) -> Result<ControlOutcome, ControlError> {
+    let result = clock.handle_control(bytes);
+    counters.control(&result);
+    result
+}
+
+/// What the frame endpoint serves: the session's doors and drains, detached
+/// from the thread handle. Clones of the session's own parts, so a message the
+/// endpoint delivers is validated, counted and answered exactly as one the host
+/// submits through the C boundary.
+struct SessionTransport {
+    submit: SubmitPath,
+    clock: Arc<ExternalFrameClock>,
+    downlink: Arc<Mutex<DownlinkQueue>>,
+    services: Arc<ServiceHost>,
+}
+
+impl EndpointTarget for SessionTransport {
+    fn submit_frame(&self, packet: &[u8]) {
+        submit_through(&self.submit, &self.clock, packet);
+    }
+
+    fn submit_control(&self, message: &[u8]) {
+        // A refusal is counted with its code; the producer that sent it is
+        // waiting for a tick, which is what the host reports.
+        let _ = submit_control_through(&self.clock, &self.submit.counters, message);
+    }
+
+    fn submit_service(&self, message: &[u8]) {
+        // A refusal is answered on the downlink by the service host itself.
+        let _ = self.services.submit(message);
+    }
+
+    fn take_service_message(&self) -> Option<Vec<u8>> {
+        self.services.outbox.take_message()
+    }
+
+    fn take_downlink(&self, out: &mut [u8]) -> usize {
+        self.downlink.lock().drain_into(out)
+    }
+
+    fn take_downlink_drops(&self) -> u32 {
+        self.downlink.lock().take_dropped()
+    }
+
+    fn set_downlink_waker(&self, waker: Option<DownlinkWaker>) {
+        self.clock.set_downlink_waker(waker);
+    }
+
+    fn counters(&self) -> &TransportCounters {
+        &self.submit.counters
+    }
 }
 
 /// Whether a verdict has to reach the producer now, or can go with the tick
@@ -1954,6 +2022,7 @@ fn verdict_is_urgent(verdict: &IngressOutcome, tick_owed: bool) -> bool {
 /// which is what makes the acceptance rules testable without a renderer. The
 /// separation is not only for tests: the transport calls into exactly these
 /// three things and has no business reaching a `JoinHandle`.
+#[derive(Clone)]
 struct SubmitPath {
     ingress: Arc<Mutex<FrameIngress>>,
     /// Notified whenever the admitted sequence moves; see [`Admission`].
@@ -1967,6 +2036,8 @@ struct SubmitPath {
     /// The session's services, for the records whose answer is the host's:
     /// an upload from an image it loaded.
     services: Option<Arc<ServiceContext>>,
+    /// Where every packet is counted, whichever uplink carried it.
+    counters: Arc<TransportCounters>,
 }
 
 impl SubmitPath {
@@ -2232,6 +2303,10 @@ impl ExternalFrameSession {
     /// the retirement reaper; replacing the ingress also makes late producers
     /// fail validation instead of retaining the old pool through an Arc clone.
     pub fn release_submit_resources(&mut self) {
+        // Before the ingress is replaced: nothing arrives on the socket after
+        // this, and the endpoint's hold on the old ingress ends with its
+        // threads.
+        self.stop_frame_endpoint();
         self.submit.ingress = Arc::new(Mutex::new(FrameIngress::new(0, 0)));
         if let Some(dispatch) = self.submit.dispatch.get() {
             let mut words = dispatch.words.lock();
@@ -2270,7 +2345,7 @@ impl ExternalFrameSession {
     /// names the rule the message broke; see *Control refusals* in the wire
     /// contract for the codes.
     pub fn submit_control(&self, bytes: &[u8]) -> Result<ControlOutcome, ControlError> {
-        self.clock.handle_control(bytes)
+        submit_control_through(&self.clock, &self.submit.counters, bytes)
     }
 
     /// Admit one service message (`MUS1`), or hold it until the one before it
@@ -2319,6 +2394,48 @@ impl ExternalFrameSession {
         self.clock.set_downlink_waker(waker);
     }
 
+    /// Start the engine's own frame transport and return its loopback port;
+    /// see [`crate::runtime::frame_endpoint`]. It takes over the downlink
+    /// waker. Once per session: a stopped endpoint is not restarted.
+    pub fn start_frame_endpoint(&self) -> Result<u16, FrameEndpointError> {
+        let mut slot = self.endpoint.lock();
+        if slot.is_some() {
+            return Err(FrameEndpointError::AlreadyStarted);
+        }
+        let endpoint = FrameEndpoint::start(Arc::new(SessionTransport {
+            submit: self.submit.clone(),
+            clock: Arc::clone(&self.clock),
+            downlink: Arc::clone(&self.downlink),
+            services: Arc::clone(&self.services),
+        }))
+        .map_err(FrameEndpointError::Io)?;
+        let port = endpoint.port();
+        *slot = Some(endpoint);
+        Ok(port)
+    }
+
+    /// Stop the frame endpoint, if one is running. Idempotent, and does not
+    /// wait for its threads: they are joined with the session.
+    pub fn stop_frame_endpoint(&self) {
+        if let Some(endpoint) = self.endpoint.lock().as_ref() {
+            endpoint.stop();
+        }
+    }
+
+    /// Whether the engine's endpoint is serving this session -- and so owns
+    /// its downlink, which a host must then not drain.
+    pub fn frame_endpoint_running(&self) -> bool {
+        self.endpoint
+            .lock()
+            .as_ref()
+            .is_some_and(FrameEndpoint::is_running)
+    }
+
+    /// What the session's transports have done, whichever carried it.
+    pub fn transport_statistics(&self) -> FrameTransportStatistics {
+        self.submit.counters.snapshot()
+    }
+
     /// Whether the caller is the session's own thread.
     ///
     /// Exposed for the same reason `HostThread` exposes it: joining from inside
@@ -2339,22 +2456,30 @@ impl ExternalFrameSession {
         // session that goes away without settling it leaves that agent blocked
         // until WebKit reclaims its process. Which is a game that stopped
         // drawing and never said why.
+        self.stop_frame_endpoint();
         self.end_sync();
         self.services.end();
         self.host.request_shutdown()
     }
 
     pub fn join(&mut self) -> EngineResult<()> {
-        self.host.join()
+        let joined = self.host.join();
+        // After the session thread: a service submit the io thread is blocked
+        // in returns once that thread has gone.
+        drop(self.endpoint.get_mut().take());
+        joined
     }
 
     pub fn shutdown_and_join(&mut self) -> EngineResult<()> {
         // Both entry points, because either may be the one a host calls, and
         // waking the producer is not something to do only on the path somebody
         // happened to test.
+        self.stop_frame_endpoint();
         self.end_sync();
         self.services.end();
-        self.host.shutdown_and_join()
+        let joined = self.host.shutdown_and_join();
+        drop(self.endpoint.get_mut().take());
+        joined
     }
 
     /// A session around an already-running thread, for tests that need a handle
@@ -2383,6 +2508,7 @@ impl ExternalFrameSession {
         ))));
         let window = admission.ingress.lock().window_source();
         let errors = Arc::new(ExternalGlErrors::default());
+        let counters = Arc::new(TransportCounters::default());
         Self {
             host: HostThread::from_join_handle_for_test(host_id, join),
             submit: SubmitPath {
@@ -2393,6 +2519,7 @@ impl ExternalFrameSession {
                 downlink: Arc::clone(&downlink),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
                 services: None,
+                counters: Arc::clone(&counters),
             },
             sync: Arc::new(SyncPath::new(
                 INITIAL_RUNTIME_GENERATION,
@@ -2410,9 +2537,11 @@ impl ExternalFrameSession {
                 std::path::PathBuf::new(),
                 std::path::PathBuf::new(),
                 Arc::default(),
+                counters,
             )
             .0,
             downlink,
+            endpoint: Mutex::new(None),
         }
     }
 }
@@ -2463,11 +2592,13 @@ pub fn spawn_external_frame_session(
         Arc::clone(&waker),
     );
     let thread_clock = Arc::clone(&clock);
+    let counters = Arc::new(TransportCounters::default());
     let (services, service_work) = ServiceHost::new(
         INITIAL_RUNTIME_GENERATION,
         opt.files_dir().to_path_buf(),
         opt.cache_dir().to_path_buf(),
         waker,
+        Arc::clone(&counters),
     );
     let thread_services = Arc::clone(&services);
     // The decision the embedded execution makes from the same two options,
@@ -2523,10 +2654,12 @@ pub fn spawn_external_frame_session(
                 downlink: Arc::clone(&downlink),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
                 services: Some(Arc::clone(&services.context)),
+                counters,
             },
             clock,
             downlink,
             services,
+            endpoint: Mutex::new(None),
         },
         resource: started.resource,
         ingress: started.ingress,
@@ -3288,6 +3421,7 @@ mod tests {
             std::path::PathBuf::new(),
             std::path::PathBuf::new(),
             Arc::new(WakerSlot::default()),
+            Arc::default(),
         );
         let sink = ServiceEventSink {
             outbox: &host.outbox,
@@ -3526,6 +3660,7 @@ mod tests {
             downlink: Arc::clone(&downlink),
             runtime_generation: INITIAL_RUNTIME_GENERATION,
             services: None,
+            counters: Arc::default(),
         };
 
         let outcome = submit.submit_frame(&packet(1));
@@ -3867,6 +4002,7 @@ mod tests {
             downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
             runtime_generation: INITIAL_RUNTIME_GENERATION,
             services: None,
+            counters: Arc::default(),
         };
 
         let bytes = packet(1);
@@ -3926,6 +4062,7 @@ mod tests {
                 downlink: Arc::new(Mutex::new(DownlinkQueue::new())),
                 runtime_generation: INITIAL_RUNTIME_GENERATION,
                 services: None,
+                counters: Arc::default(),
             },
             receiver,
             lifecycle_sender,
@@ -4925,6 +5062,7 @@ mod sync_tests {
             files,
             cache,
             Arc::new(crate::runtime::external_services::WakerSlot::default()),
+            Arc::default(),
         );
         services.context.bind_session(1);
         services

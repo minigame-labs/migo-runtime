@@ -275,6 +275,17 @@ def api_sections(text: str) -> set[str]:
     return set(re.findall(r"^## (migo_[a-z0-9_]+)\s*$", text.replace(r"\_", "_"), flags=re.M))
 
 
+# Entry points introduced after the 0.9.7 archive was cut, with the release
+# that introduced each. A frozen archive does not gain sections for API it
+# predates -- adding them would document, under 0.9.7, calls 0.9.7 does not
+# export -- so these are the only sections latest may have and the archive may
+# not. Named one by one so a section the generator dropped is still caught.
+ADDED_AFTER_ARCHIVE = {
+    "migo_session_start_frame_endpoint": "0.9.15",
+    "migo_session_stop_frame_endpoint": "0.9.15",
+    "migo_session_get_frame_transport_statistics": "0.9.15",
+}
+
 for page in sorted((docs_root / "reference").glob("*.mdx")):
     current_sections = api_sections(page.read_text(encoding="utf-8"))
     for archive_dir in (docs_root / "0.9" / "reference", docs_root / "en" / "0.9" / "reference"):
@@ -283,10 +294,18 @@ for page in sorted((docs_root / "reference").glob("*.mdx")):
             continue
         archived_sections = api_sections(archived.read_text(encoding="utf-8"))
         rel = archived.relative_to(docs_root).as_posix()
-        for name in sorted(current_sections - archived_sections):
+        for name in sorted(current_sections - archived_sections - ADDED_AFTER_ARCHIVE.keys()):
             error(f"{rel} 缺函数节 {name}")
         for name in sorted(archived_sections - current_sections):
             error(f"{rel} 多出函数节 {name}")
+        for name in sorted(archived_sections & ADDED_AFTER_ARCHIVE.keys()):
+            error(f"{rel} 有 {name} 的函数节,但它 {ADDED_AFTER_ARCHIVE[name]} 才引入")
+
+latest_sections = set()
+for page in (docs_root / "reference").glob("*.mdx"):
+    latest_sections |= api_sections(page.read_text(encoding="utf-8"))
+for name in sorted(ADDED_AFTER_ARCHIVE.keys() - latest_sections):
+    error(f"ADDED_AFTER_ARCHIVE 列了 {name},但 latest reference 没有它的函数节")
 
 # -- 6. Docusaurus remains -----------------------------------------------------
 

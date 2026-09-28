@@ -20,3 +20,10 @@ pub mod tcp;
 pub mod udp;
 pub mod upload;
 pub mod websocket;
+
+/// The WebSocket implementation behind content's sockets, for the engine's one
+/// other WebSocket: the server end of the Performance+ frame endpoint
+/// (`migo-core`'s `frame_endpoint`). Re-exported rather than depended on a
+/// second time, so the lockfile -- and every V8 snapshot fingerprint that
+/// hashes it -- does not move.
+pub use tokio_tungstenite::tungstenite;

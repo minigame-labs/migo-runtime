@@ -31,6 +31,9 @@ pub mod external;
 // The service stream's host half, and the numbers its ops travel under.
 #[cfg(feature = "external-frames")]
 pub mod external_services;
+// The loopback WebSocket the external session's producer connects to.
+#[cfg(feature = "external-frames")]
+pub(crate) mod frame_endpoint;
 #[cfg(feature = "external-frames")]
 mod host_events;
 #[cfg(feature = "external-frames")]

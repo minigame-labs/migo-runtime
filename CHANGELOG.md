@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- C ABI (external-frames product): `migo_session_start_frame_endpoint`,
+  `migo_session_stop_frame_endpoint` and
+  `migo_session_get_frame_transport_statistics` with its
+  `MigoFrameTransportStatistics` record. While the endpoint runs it owns the
+  downlink, so `migo_session_take_downlink`,
+  `migo_session_take_service_message` and `migo_session_set_downlink_waker`
+  return `MIGO_ERROR_INVALID_STATE`; a host that brings its own transport keeps
+  using them as before.
+
+### Changed
+- iOS (Performance+): the engine terminates the producer's socket itself. The
+  loopback WebSocket the WebContent producer sends frames on and hears its
+  verdicts, frame-clock ticks and answers from used to be the host's --
+  Network.framework, every message copied across the C boundary and the
+  downlink pumped from a GCD queue -- and on devices that was about a quarter
+  of the App process's CPU samples while a game ran (iPhone 15 Pro: 23%, ~3.4%
+  of a core), with three queue hops between the frame clock and the socket. Now
+  an uplink message is one read and a submit on the engine thread that read it,
+  and a downlink message one unpark and one write, with Nagle's algorithm off
+  and `SO_NOSIGPIPE` on every connection. Measured on an iPhone XS Max against
+  v0.9.14 built the same way, interleaved, 30-second windows, one message each
+  way per frame in both: the App process's CPU fell by 4.7 and 5.2 points
+  (bunnymark, endless-runner) and was unchanged on canvasmark, and frames
+  presented late fell from 13 in 9 runs to 4 in 8. The WebKit helper processes'
+  CPU time rose by about as much as the App's fell -- every process ran on the
+  efficiency cores, whose clock they share -- so the device's total CPU time is
+  about the same; an energy measurement needs a phone that runs Power Profiler.
+  `MigoFrameChannel` keeps the content origin's half and its `Statistics`, now
+  counted by the engine for both uplinks alike.
+
+### Removed
+- Swift: `MigoFrameTransport`, the host-side Network.framework socket the
+  engine's frame endpoint replaces.
+
 ## v0.9.14 (2026-09-28)
 
 ### Fixed
