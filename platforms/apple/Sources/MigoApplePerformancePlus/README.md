@@ -120,20 +120,25 @@ Decided, because the OS enforces it:
   not a usable shape. The target shape is attached and moved outside the visible
   area.
 
-Measured, and the shape `MigoGameView` uses: **off-screen and one point
-square**. WebKit keeps a backing store for the page at the view's size even
-though this page draws nothing, and it lives in WebContent's footprint: at the
-window's size, 11 MiB on an iPhone 15 Pro (iOS 26.6, 2026-09-27; bunnymark
-136.9 to 125.9 MiB across the arm's processes, canvasmark 119.0 to 108.2). The
-Worker was not throttled: 60 fps and the same CPU (29.4% to 29.5%, 33.4% to
-33.6%). A one-point view is neither hidden nor zero-sized, and off the window's
-edge it is not occluded.
+Measured, and the shape `MigoGameView` uses: **off-screen at the window's
+size**. WebKit keeps a backing store for the page at the view's size even though
+this page draws nothing, and it lives in WebContent's footprint: 11 MiB at the
+window's size on an iPhone 15 Pro (iOS 26.6). A one-point off-screen view drops
+it (v0.9.13 shipped that shape), but it cost frame pacing: in six interleaved
+pairs of 30-second Metal System Trace windows (2026-09-27, both builds made the
+same way from v0.9.13, differing only in this frame), the Canvas2D bench game
+presented late frames 6.3 times per 30 s at one point against 4.0 at the
+window's size, worse in every pair; the WebGL game showed no difference
+(4.7 against 4.8). Frame rate and pacing outrank memory here, so the full size
+stays until the cause is understood.
 
 Still measured on the supported OS/device matrix, because these are
 throttling-and-throughput questions rather than capability ones:
 
-- Whether a 1x1 visible corner or a fully occluded view would do better than
-  off-screen. Whether the Worker gets throttled is what is being compared.
+- Why a one-point off-screen view costs the Canvas2D content late frames, and
+  whether a shape exists that keeps the 11 MiB without it; and whether a 1x1
+  visible corner or a fully occluded view would do better than off-screen.
+  Whether the Worker gets throttled is what is being compared.
 - Whether the loopback downlink needs a third leg at all. A custom-scheme
   streaming response runs its handler in the host process and saves a
   NetworkProcess hop, but it adds cross-origin and COEP complexity, so it is only
