@@ -97,7 +97,9 @@ view 可以接着载入下一个游戏。
 ### iOS
 
 - 游戏尺寸在启动时确定（小游戏只布局一次），请把承载的 view controller 锁定在游戏的
-  方向上。
+  方向上，而且要在 `MigoGameView` **第一次布局之前**就已是这个方向：App 的 Info.plist
+  只声明游戏的方向，或者由一个只支持该方向的 view controller 来呈现它。启动后才决定方向的
+  root view controller 会先按启动时的方向布局，游戏就在形状不对的窗口里开始。
 - `MigoGameView.unavailabilityReason` 说明当前设备能否运行这条车道（例如系统低于
   15.2），在展示入口前检查。
 - 画布小于屏幕时（按逻辑像素设置 `canvas.width` 的游戏很常见），drawable 取画布的
