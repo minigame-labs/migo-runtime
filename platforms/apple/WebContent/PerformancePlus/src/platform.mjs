@@ -40,6 +40,8 @@ export const platform = Object.freeze({
   // Constructors, not functions to bind: `new` supplies its own receiver.
   XMLHttpRequest: globalThis.XMLHttpRequest,
   WebSocket: globalThis.WebSocket,
+  // How a task held during a synchronous call is dispatched (task-gate.mjs).
+  MessageChannel: globalThis.MessageChannel,
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
   // The platform's, before the engine installs its own under that name: where
