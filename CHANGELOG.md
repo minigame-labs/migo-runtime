@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.15 (2026-09-28)
+
 ### Added
 - C ABI (external-frames product): `migo_session_start_frame_endpoint`,
   `migo_session_stop_frame_endpoint` and
