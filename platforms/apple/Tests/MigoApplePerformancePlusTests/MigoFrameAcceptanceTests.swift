@@ -1804,9 +1804,14 @@ import XCTest
                 "task gate: calls=\(calls) millis=\(report?["millis"] as? Double ?? -1)"
                     + " timerInScript=\(timer?["inScript"] as? Bool ?? true)"
                     + " tickInScript=\(tick?["inScript"] as? Bool ?? true)")
-            // Enough round trips that a zero-delay timer and a vsync both came due
-            // while one was outstanding.
-            XCTAssertGreaterThanOrEqual(calls, 20, "too few calls for the timer and the tick to fall inside one")
+            // The 300 ms are spent blocked, not spinning: every `getError` was a
+            // round trip the host answered. How many fit is the runner's business
+            // -- about 700 on a phone, 17 on a starved simulator runner -- and
+            // either way the timer and a vsync came due while one was outstanding.
+            XCTAssertGreaterThan(calls, 0)
+            XCTAssertGreaterThanOrEqual(
+                host.channel.currentStatistics.syncCallsAnswered, calls,
+                "a getError that the host did not answer did not block")
             XCTAssertEqual(timer?["inScript"] as? Bool, false, "the timer ran inside the script that armed it")
             XCTAssertEqual(tick?["inScript"] as? Bool, false, "the frame ran inside the script that asked for it")
         }
