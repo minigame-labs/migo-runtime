@@ -27,9 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of a core), with three queue hops between the frame clock and the socket. Now
   an uplink message is one read and a submit on the engine thread that read it,
   and a downlink message one unpark and one write, with Nagle's algorithm off
-  and `SO_NOSIGPIPE` on every connection. `MigoFrameChannel` keeps the content
-  origin's half and its `Statistics`, now counted by the engine for both
-  uplinks alike.
+  and `SO_NOSIGPIPE` on every connection. Measured on an iPhone XS Max against
+  v0.9.14 built the same way, interleaved, 30-second windows, one message each
+  way per frame in both: the App process's CPU fell by 4.7 and 5.2 points
+  (bunnymark, endless-runner) and was unchanged on canvasmark, and frames
+  presented late fell from 13 in 9 runs to 4 in 8. The WebKit helper processes'
+  CPU time rose by about as much as the App's fell -- every process ran on the
+  efficiency cores, whose clock they share -- so the device's total CPU time is
+  about the same; an energy measurement needs a phone that runs Power Profiler.
+  `MigoFrameChannel` keeps the content origin's half and its `Statistics`, now
+  counted by the engine for both uplinks alike.
 
 ### Removed
 - Swift: `MigoFrameTransport`, the host-side Network.framework socket the
