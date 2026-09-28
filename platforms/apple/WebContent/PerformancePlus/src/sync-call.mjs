@@ -18,6 +18,7 @@
 // `node` for its test.
 
 import { platform } from "./platform.mjs";
+import { synchronously } from "./task-gate.mjs";
 import {
   MAX_REPLY_BYTES,
   MAX_SERVICE_REPLY_BYTES,
@@ -229,7 +230,9 @@ export class SyncCaller {
    */
   call(call, into) {
     const body = encodeSyncCall(call);
-    const { status, response } = this.post(this.url, body);
+    // Every task that reaches the Worker while this blocks waits for the
+    // script that made the call to finish (task-gate.mjs).
+    const { status, response } = synchronously(() => this.post(this.url, body));
     if (status !== 200) {
       throw new SyncTransportError(`the host answered ${status} for a synchronous call`);
     }

@@ -14,6 +14,7 @@
 
 import { FrameSession } from "./frame-session.mjs";
 import { platform } from "./platform.mjs";
+import { runTask } from "./task-gate.mjs";
 import { isServiceDownMessage } from "./service.mjs";
 import { createHybridSender } from "./uplink.mjs";
 
@@ -97,34 +98,46 @@ export function connectFrameSession({
       reject(new Error(`the host's frame channel at ${url} did not open in ${timeoutMillis} ms`));
     }, timeoutMillis);
 
-    socket.addEventListener("open", () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      services?.attachSocket((bytes) => socket.send(bytes));
-      resolve(session);
-    });
-    socket.addEventListener("message", (event) => {
-      const bytes = new Uint8Array(event.data);
-      // Routed by the first word, as the host routes the other direction: the
-      // service stream's answers have their own envelope.
-      if (services !== undefined && isServiceDownMessage(bytes)) {
-        services.handleMessage(bytes);
-      } else {
-        session.handleMessage(bytes);
-      }
-    });
-    socket.addEventListener("close", () => {
-      session.close();
-      services?.close();
-    });
-    socket.addEventListener("error", (event) => {
-      session.close();
-      services?.close();
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(new Error(`the host's frame channel at ${url} failed: ${event && event.type}`));
-    });
+    // Every event enters through the task gate: one that arrives while content
+    // is blocked in a synchronous call runs after that call's script, never
+    // inside it (task-gate.mjs) -- a tick delivered there would run content's
+    // frame callbacks in the middle of the script that is waiting.
+    socket.addEventListener("open", () =>
+      runTask(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        services?.attachSocket((bytes) => socket.send(bytes));
+        resolve(session);
+      }),
+    );
+    socket.addEventListener("message", (event) =>
+      runTask(() => {
+        const bytes = new Uint8Array(event.data);
+        // Routed by the first word, as the host routes the other direction: the
+        // service stream's answers have their own envelope.
+        if (services !== undefined && isServiceDownMessage(bytes)) {
+          services.handleMessage(bytes);
+        } else {
+          session.handleMessage(bytes);
+        }
+      }),
+    );
+    socket.addEventListener("close", () =>
+      runTask(() => {
+        session.close();
+        services?.close();
+      }),
+    );
+    socket.addEventListener("error", (event) =>
+      runTask(() => {
+        session.close();
+        services?.close();
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(`the host's frame channel at ${url} failed: ${event && event.type}`));
+      }),
+    );
   });
 }

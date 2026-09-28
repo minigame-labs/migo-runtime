@@ -11,6 +11,7 @@
 // arriving as `undefined` in the middle of a frame.
 
 import { platform } from "./platform.mjs";
+import { runTask } from "./task-gate.mjs";
 
 const { apply, bind, call } = Function.prototype;
 // deno's own construction: `uncurryThis(fn)(self, ...args)` is `fn.call(self,
@@ -325,9 +326,18 @@ export function makeCore(ops, coreStream) {
     // Timers ride the Worker's own. `depth` is the nesting the engine computed;
     // it is reported back by getTimerDepth while that timer's task runs, which
     // is how the engine applies the HTML nesting clamp itself.
+    //
+    // A timer that comes due during a synchronous call runs after it
+    // (task-gate.mjs), and one cancelled in between does not run at all. An
+    // interval that comes due again while its run is still waiting is not
+    // queued twice: a browser runs an interval once for however many periods a
+    // busy loop kept it waiting.
     queueUserTimer(depth, repeat, timeout, task) {
       const id = nextTimerId++;
+      let waiting = false;
       const run = () => {
+        waiting = false;
+        if (!timers.has(id)) return;
         const outer = timerDepth;
         timerDepth = depth;
         try {
@@ -337,7 +347,12 @@ export function makeCore(ops, coreStream) {
           if (!repeat) timers.delete(id);
         }
       };
-      timers.set(id, { repeat, handle: repeat ? platform.setInterval(run, timeout) : platform.setTimeout(run, timeout) });
+      const due = () => {
+        if (waiting) return;
+        waiting = true;
+        runTask(run);
+      };
+      timers.set(id, { repeat, handle: repeat ? platform.setInterval(due, timeout) : platform.setTimeout(due, timeout) });
       return id;
     },
     cancelTimer(id) {
