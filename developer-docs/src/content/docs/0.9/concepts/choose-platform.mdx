@@ -28,7 +28,7 @@ slug: 0.9/concepts/choose-platform
 | **OpenHarmony** | 完整 DevEco 宿主项目(`entry/` + hvigor) | 打开工程,按项目 README 跑 | aarch64 真机多指仅在 API20 模拟器验过 |
 | **Windows** | 发布 `migo.dll`(x64/arm64) + `rusty_v8.dll` + C ABI 头 | CMake `migo::migo` target + `HWND` attach | WinUI 集成、Win32 host-kit 未包含;EGLProvider 实现归宿主 |
 | **Linux** | host-kit(工具链) + wayland/x11 平台头 | 供宿主集成的预览构建 | 不是 shipping runtime;定位为开发宿主 |
-| **Apple (iOS/macOS)** | SwiftPM package + `MigoAppleCore` / `MigoAppleRenderer`(CI 构) | SwiftPM dependency 接入 core/renderer 车道 | WebKit 兼容层、性能车道、MacV8 均 placeholder;真机未跑过 |
+| **Apple (iOS/macOS)** | SwiftPM 包 `migo-<版本>-apple-sdk.zip`:iOS Performance+、macOS V8 | Xcode 添加本地包,`MigoGameInstaller.install` + `MigoGameView.loadGame` | iOS 内容 JS 在 WebContent 的 JavaScriptCore 中运行(与 WKWebView 同速);Android 那套 handler(广告/支付/分享)无对应物;WebKit 兼容车道不在 SDK 中 |
 
 行内「缺口」列是 rejected-promotion 的真相,不是下一个版本的承诺。
 
@@ -37,7 +37,7 @@ slug: 0.9/concepts/choose-platform
 * **今天要跑生产** → Android,没有第二选择;[Android quickstart](/docs/0.9/getting-started/android/) 就是主路径;
 * **鸿蒙上架** → OpenHarmony 工程是真的能跑的:克隆仓库、开 DevEco、对照 [OpenHarmony quickstart](/docs/0.9/getting-started/openharmony/);但买设备前先确认内容里的多指交互面在 API20 模拟器行为 — 真机多指回归你来做;
 * **桌面渠道(Windows)** → 已发布 DLL 可以直接集成 C ABI,宿主自己写 Win32 窗口/输入泵;[Windows quickstart](/docs/0.9/getting-started/windows/) 按发布包 + `test-windows-sdk-contract.sh` 钉住的 API 面起步;
-* **Apple 生态** → 按「当前集成面」而不是「quickstart」期待;[Apple doc](/docs/0.9/getting-started/apple/) 列出**真实存在**的 SwiftPM 车道与各自的缺口,不编造 AppStore-ready 流程;
+* **Apple 生态** → [Apple doc](/docs/0.9/getting-started/apple/) 给出 SwiftPM 包的接入步骤、两条车道各自的系统要求与验证记录,以及明确拒绝(不伪造)的接口;
 * **Linux 桌面宿主** → 定位为**开发宿主工具链**,不是玩家通道 — 它是你拿来跨平台验证游戏逻辑的表面,不是 0.9 的发布平面。
 
 ## 共享的 C ABI 托盘

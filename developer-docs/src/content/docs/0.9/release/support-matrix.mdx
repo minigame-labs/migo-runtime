@@ -33,7 +33,7 @@ slug: 0.9/release/support-matrix
 | OpenHarmony | 静态库，DevEco 宿主工程 | aarch64、x86\_64 | 目标设备以 OHOS 目标清单为准；多点触控仅 API20 模拟器环境验过，真机回归待宿主自证 |
 | Windows | `migo.dll` + `rusty_v8.dll` + 头文件，CMake target | x64、arm64 | Windows（带 ANGLE/HWND）；WinUI 集成归宿主 |
 | Linux | host-kit 工具链 + wayland/x11 平台头 + pkg-config/CMake | x86\_64 | **仅 glibc**（musl/bionic 仅头文件无 runtime）；官方构建 sysroot 与 glibc 下限见发布 manifest |
-| Apple（iOS/macOS） | SwiftPM：`MigoAppleCore` / `MigoAppleRenderer`（CI 构建件） | arm64、x86\_64（macOS）/ arm64（iOS） | 占位车道，尚无设备运行记录；macOS 可附宿主自有 `CAMetalLayer` |
+| Apple（iOS/macOS） | SwiftPM 包 `migo-<版本>-apple-sdk.zip`：iOS `MigoApplePerformancePlus`、macOS `MigoMacV8`，各含 `MigoGameView` | arm64（iOS 设备）、arm64 与 x86_64（iOS 模拟器、macOS） | iOS 15.2（Performance+ 车道；SDK 部署目标 15.0）；macOS 11，需 hardened runtime 与 `allow-jit`。iOS 真机：iPhone XS Max（iOS 18.7） |
 
 详细行级集成逐项见各 quickstart；产品级取舍（"现在能否投产"）见 [平台选型](/docs/0.9/concepts/choose-platform/)。
 

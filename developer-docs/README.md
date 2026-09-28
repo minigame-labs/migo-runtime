@@ -102,6 +102,10 @@ Portal 是纯深色,所以文档也是深色锁定(`ThemeProvider.astro` + `Them
 
 0.9 归档于 2026-09-26 重新生成一次,以补齐此前缺失的页面和英文占位内容。此后禁止手工修订归档;需要勘误时先修 latest,再明确判断是否值得做带审计记录的历史勘误。
 
+历史勘误记录:
+
+- **2026-09-28,Apple 平台(中英各 4 页)**:`getting-started/apple`、`concepts/choose-platform`、`concepts/sdk-architecture`、`release/support-matrix` 的 Apple 描述。归档生成时 latest 的 Apple 页仍是交付前的占位("占位车道、无设备运行记录"),而 0.9.7 的发布已附带 Apple SDK(`migo-<version>-apple-sdk.zip`),并已在 iPhone XS Max 上跑通 `MigoDeviceTests` 88/88——归档对 0.9.7 的描述与事实相反。改法:以 latest 为底本,逐项对照 `v0.9.7` 标签的源码(公开 API、`contracts/apple/deployment-floor.json`、`contracts/runtime/op-boundary.json`、发布门禁),删去 0.9.7 之后才有的内容(0.9.13 的 drawable 跟画布尺寸、09-27 的基准游戏与 iPhone 15 Pro 记录),Apple 页顶部加勘误说明。
+
 发布下一系列(例如 0.10)时:
 
 1. 先发布 SDK,把 `release/VERSION` 更新为真实版本,再维护文档;不要让文档先宣告尚未发布的 API。
