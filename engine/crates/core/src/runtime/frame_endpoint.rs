@@ -594,9 +594,14 @@ impl FrameEndpoint {
             connection.shutdown();
         }
         // An io thread in `accept` returns with this connection, sees
-        // `stopping`, and drops it.
-        if let Err(error) = TcpStream::connect(self.state.address) {
-            warn!("frame endpoint: could not wake the io thread to stop it: {error}");
+        // `stopping`, and drops it. Refused means there is no listener left to
+        // wake: the io thread saw the shutdown above and has already returned.
+        match TcpStream::connect(self.state.address) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {}
+            Err(error) => {
+                warn!("frame endpoint: could not wake the io thread to stop it: {error}");
+            }
         }
         for handle in [&self.io, &self.downlink].into_iter().flatten() {
             handle.thread().unpark();
