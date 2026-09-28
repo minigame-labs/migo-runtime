@@ -104,7 +104,7 @@ static void forward_touch(MigoSession *session, AInputEvent *ev, float density) 
         AMotionEvent_getY(ev, i) / density, fminf(fmaxf(AMotionEvent_getPressure(ev, i), 0.0f), 1.0f),
         MIGO_TOUCH_FLAG_CHANGED | ((type >= MIGO_TOUCH_END) ? MIGO_TOUCH_FLAG_REMOVED : 0)};
     MigoTouchEvent touch = {sizeof touch, MIGO_ABI_VERSION_CURRENT, type, 1,
-        (int64_t)(AMotionEvent_getEventTime(ev) / 1000000), &point};
+        (int64_t)AMotionEvent_getEventTime(ev), &point};
     (void)migo_session_send_touch(session, &touch);
 }
 ```

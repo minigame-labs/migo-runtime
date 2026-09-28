@@ -6,10 +6,10 @@
 # Location: scripts/measure-skia-floor-cpu.sh
 #
 # Frame time is the wrong instrument here and this repo has already paid for
-# that lesson once (JITLESS.md / jitless-cost-measured): at 60 vsyncs/s a
-# fixture that never asks for more than 60 draws/s reads as flat regardless of
-# how much render-thread work each frame costs, because vsync is the ceiling,
-# not the workload. So this measures render-thread CPU% instead --
+# that lesson once: at 60 vsyncs/s a fixture that never asks for more than 60
+# draws/s reads as flat regardless of how much render-thread work each frame
+# costs, because vsync is the ceiling, not the workload. So this measures
+# render-thread CPU% instead --
 # /proc/<pid>/stat (utime+stime) delta, median of three 2s windows -- the same
 # instrument migo-bench/scripts/lib.sh's capture_cpu uses and for the same
 # reason (a single window occasionally lands on a stalled moment).

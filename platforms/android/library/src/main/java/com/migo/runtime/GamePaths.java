@@ -191,8 +191,9 @@ public final class GamePaths {
     }
 
     /**
-     * Ensure all directories exist.
-     * Call this before starting the game.
+     * Ensure the runtime-managed directories exist before starting the game.
+     * The code directory is created by game deployment or extraction logic and
+     * is intentionally not created here.
      */
     public void ensureDirectories() {
         userDataDir.mkdirs();

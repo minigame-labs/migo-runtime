@@ -385,8 +385,7 @@ pub(crate) struct CanvasManager {
     /// invalidates the cache with no signal. Nothing but offscreen 2D drawing
     /// ever binds this one, which makes that invariant local and checkable.
     ///
-    /// See `Canvas2DContext::new_shared_offscreen` and
-    /// `docs/performance/android/multicanvas-fixed-cost.md`.
+    /// See `Canvas2DContext::new_shared_offscreen`.
     shared_2d: Option<Shared2DContext>,
 
     // current binding

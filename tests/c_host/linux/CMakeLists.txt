@@ -6,7 +6,7 @@
 # incomplete.
 #
 # Configure it against a staged package:
-#   cmake -S tests/c_host -B <build> -DCMAKE_PREFIX_PATH=<prefix>
+#   cmake -S tests/c_host/linux -B <build> -DCMAKE_PREFIX_PATH=<prefix>
 cmake_minimum_required(VERSION 3.16)
 project(migo_c_host C)
 

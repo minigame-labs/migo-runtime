@@ -166,16 +166,14 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
-    // PRE-EXISTING FAILURE (predates feat/v8-snapshot; file unchanged vs master).
-    // `push_alias` dedups case-insensitively, so the lowercased duplicate
+    // `push_alias` deduplicates case-insensitively, so the lowercase duplicate
     // ("notosans-regular") is dropped and this expectation no longer holds.
-    // Whether the dedup is intended (test stale) or a bug (the lowercase family
-    // should remain a resolvable alias) needs font-subsystem owner review — the
-    // consuming lookup is in the skia-backed graphics crate. Ignored here so the
-    // snapshot PR's test gate can pass; un-ignore + resolve in the lint/test
-    // cleanup PR. See engine/crates/runtime-v8/snapshots/README.md.
+    // The test is ignored until it is decided whether the case-insensitive dedup
+    // is correct (update the assertion) or a bug (fix the lookup path in
+    // engine/crates/graphics so the alias resolves). Either resolution
+    // un-ignores this test.
     #[test]
-    #[ignore = "pre-existing font-alias dedup mismatch; resolve in cleanup PR"]
+    #[ignore = "font-alias dedup drops lowercased duplicate; update assertion or fix lookup path"]
     fn explicit_family_becomes_canonical_registration_key() {
         let request =
             build_font_registration_request("fonts/NotoSans-Regular.ttf", Some("Brand Sans"));

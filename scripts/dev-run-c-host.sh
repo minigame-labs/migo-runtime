@@ -56,7 +56,7 @@ c_info "deployed '$CONTENT_ID' to $CODE_DIR"
 
 # ---- build the C host ----
 #
-# Cargo drives the link: `tools/c-host-example` compiles tests/c_host/main.c
+# Cargo drives the link: `tools/c-host-example` compiles tests/c_host/linux/main.c
 # through a `#![no_main]` bin crate, so the C code sees nothing but the public
 # headers while cargo resolves the native dependencies.
 #

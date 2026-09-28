@@ -136,7 +136,6 @@ $WorkerSnapshotSuffix = if ($WorkerSnapshot.IsPresent) { "-worker-snapshot" } el
 $ArtifactSuffix = "$CodegenSuffix$WorkerSnapshotSuffix"
 
 $RustBuildScript     = Join-Path $ScriptDir "build-android-so.ps1"
-$SnapshotBuildScript = Join-Path $ScriptDir "build-snapshot.ps1"
 $ExternalJniLibs     = Join-Path $RepoRoot "engine/jniLibs/$ProductProfile$ArtifactSuffix"
 
 # The staged-identity inputs. Every path here is the one build-aar.sh uses, because
@@ -473,32 +472,8 @@ function Collect-Outputs {
 }
 
 # =========================
-# Generate V8 Snapshot (currently disabled)
-# =========================
-# Snapshot generation is disabled because the Android V8 is a custom
-# termux-packages build incompatible with the official rusty_v8 releases.
-# When a compatible V8 build is available, uncomment the Build-Snapshot call.
-#
-# function Build-Snapshot {
-#     if ($BuildType -ne "release") {
-#         Write-Host "Skipping snapshot generation (debug build)"
-#         return
-#     }
-#     Write-Host "Generating V8 snapshot for release build..."
-#     if (-not (Test-Path $SnapshotBuildScript)) {
-#         throw "Snapshot build script not found: $SnapshotBuildScript"
-#     }
-#     & $SnapshotBuildScript
-#     if ($LASTEXITCODE -ne 0) {
-#         throw "V8 snapshot generation failed"
-#     }
-#     Write-Host "V8 snapshot generated"
-# }
-
-# =========================
 # Main
 # =========================
-# Build-Snapshot  # Disabled — see comment above
 $SupportedArchitectures = @("arm64-v8a", "x86_64")
 if ($Architectures -contains "all") {
     $ResolvedArchitectures = $SupportedArchitectures

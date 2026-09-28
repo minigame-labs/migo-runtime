@@ -31,8 +31,10 @@ package com.migo.runtime.callback;
  *   <li>Calls arrive on the runtime's host thread. Do not block: hand work to
  *       your ad SDK and return. Events come back through the {@link AdEventSink},
  *       which is safe to use from any thread.</li>
- *   <li>Every method has a default that settles the request as "not supported",
- *       so a handler need only implement the ad formats it actually sells.</li>
+ *   <li>Every request-bearing method has a default that settles as "not supported",
+ *       so a handler need only implement the ad formats it actually sells.
+ *       The layout-update and destroy methods are lifecycle operations and have
+ *       no result to settle.</li>
  *   <li>After {@link #destroyAd}, emit nothing further for that {@code adId}.</li>
  * </ul>
  */

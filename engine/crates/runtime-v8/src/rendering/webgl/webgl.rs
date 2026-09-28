@@ -1543,13 +1543,13 @@ pub(super) mod tests {
         );
     }
 
-    // Characterization (Q5 review gap): a length-tracking `Float32Array` over a
-    // *resizable* `ArrayBuffer` is a legal uniform source, before AND after a
-    // grow. The op must copy at call time; a later mutate/`resize` must never
-    // change an already-queued command, and two calls from the same view must
-    // keep their respective call-time values and submission order. If the locked
-    // V8 rejects RAB construction the `.expect` below fails loudly and we would
-    // document RAB-unavailable instead of asserting fabricated behavior.
+    // A length-tracking `Float32Array` over a *resizable* `ArrayBuffer` is a
+    // legal uniform source, before AND after a grow. The op must copy at call
+    // time; a later mutate/`resize` must never change an already-queued command,
+    // and two calls from the same view must keep their respective call-time
+    // values and submission order. If the locked V8 rejects RAB construction
+    // the `.expect` below fails loudly and we would document RAB-unavailable
+    // instead of asserting fabricated behavior.
     #[test]
     fn resizable_arraybuffer_uniform_source_copies_at_call_time() {
         let (mut runtime, render_rx) = new_webgl_runtime();

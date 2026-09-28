@@ -514,9 +514,9 @@ mod js_regression_tests {
             .expect("test executor")
     }
 
-    // ── NET-01 ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────────
 
-    /// NET-01 regression (OPEN-ITEMS-host-vs-device.md):
+    /// Regression:
     /// `downloadFile` abort() used to close only the send cancel handle; the
     /// response body resource (`responseRid`) was not touched until `core.read`
     /// unblocked — non-deterministic, and the resource leaked if the read never
@@ -740,9 +740,9 @@ mod js_regression_tests {
         }
     }
 
-    // ── NET-02 ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────────────
 
-    /// NET-02 regression (OPEN-ITEMS-host-vs-device.md):
+    /// Regression:
     /// Concurrent `downloadFile` calls to the same destination shared a fixed
     /// `.part` path — the second task would truncate the first.  The fix adds a
     /// module-level monotonic counter to `generateTempFilePath` in `05_download.js`.
@@ -842,9 +842,9 @@ mod js_regression_tests {
         .expect("NET-02: concurrent downloads must produce distinct temp paths");
     }
 
-    // ── NET-04 ────────────────────────────────────────────────────────────────
+    // ────────────────────────────────────────────────────────────────────────────
 
-    /// NET-04 regression (OPEN-ITEMS-host-vs-device.md):
+    /// Regression:
     /// The buffered-body pull in `request()` had no byte ceiling, allowing an
     /// unbounded allocation.  Separately, `responseRid` leaked until GC when
     /// a successful `readAll` completed without error.  Two fixes in

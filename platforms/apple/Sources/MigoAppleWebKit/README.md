@@ -20,7 +20,7 @@ policy, permission allowlist and storage quota; and recovery from
 `webViewWebContentProcessDidTerminate:` as a new runtime generation rather than
 as an ordinary navigation failure.
 
-That is why this lane ships before Performance+ despite being the slower one.
+That is why this lane ships before Performance+ despite adding a frame-handoff hop that the Performance+ lane avoids.
 It is the cheapest thing that can be submitted to App Review, and App Review is
 the risk that can end the project without any engineering being wrong: App
 Store guideline 4.7 permits HTML5 mini games, but 4.7.2 requires Apple's prior

@@ -12,6 +12,13 @@ A lightweight, high-performance JavaScript game runtime for Android.
 - 🎮 **Game Ready** - Canvas 2D and WebGL support
 - 🔒 **Sandboxed Filesystem** - Isolated file storage per game
 
+### Measured against the system WebView
+
+On Android, same games, same device, both at ~60 fps: **40–44% less memory** and
+**1.9–2.9× less CPU** than the system WebView. Framerate is a tie — both are V8 —
+so the honest claims are memory, CPU, cross-OEM consistency, and an auditable,
+pinned supply chain. Methodology and raw data: [migo-bench](https://github.com/minigame-labs/migo-bench).
+
 ## Installation
 
 Release builds have two products: `slim` keeps the base capability set —
@@ -187,10 +194,10 @@ session.setListener(new GameSessionListener() {
     }
 
     @Override
-    public void onError(int errorCode, String message, boolean recoverable) {
-        Log.e(TAG, "Error " + errorCode + ": " + message);
-        if (!recoverable) {
-            showErrorDialog(message);
+    public void onError(MigoException exception) {
+        Log.e(TAG, "Error " + exception.getErrorCode() + ": " + exception.getMessage());
+        if (!exception.isRecoverable()) {
+            showErrorDialog(exception.getMessage());
         }
     }
 
@@ -216,7 +223,7 @@ if (result.isSuccess()) {
 
 ### Register Host Handlers (Auth / GameLog / Subpackage)
 
-In the latest API, `GameSession` supports three host callback handlers.
+This section covers three host callback handlers on `GameSession`.
 Register them before `startGame()` whenever possible.
 
 ```java
@@ -273,11 +280,19 @@ ErrorCode.ERR_INIT_FAILED       // -1000: Initialization failed
 ErrorCode.ERR_INVALID_SURFACE   // -1001: Invalid Surface
 ErrorCode.ERR_INVALID_CONFIG    // -1002: Invalid configuration
 ErrorCode.ERR_NATIVE_LOAD_FAILED// -1003: Native library load failed
+ErrorCode.ERR_INVALID_GAME_ID   // -1004: Invalid game identifier
+ErrorCode.ERR_NOT_SUPPORTED     // -1005: Operation not supported
 ErrorCode.ERR_SESSION_DESTROYED // -2000: Session destroyed
 ErrorCode.ERR_CODE_DIR_NOT_FOUND// -2002: Code directory not found
 ErrorCode.ERR_ENTRY_NOT_FOUND   // -2003: Entry point not found
 ErrorCode.ERR_JS_EXECUTION      // -2004: JavaScript execution error
+ErrorCode.ERR_CLEANUP_FAILED    // -2005: Session cleanup failed
 ErrorCode.ERR_INVALID_ACTIVITY  // -5004: Invalid Activity
+
+// Native-originated failures are positive values, distinct from the SDK-side
+// negative range: NATIVE_OUT_OF_MEMORY (203), NATIVE_JS_EXECUTION_TIMEOUT (204),
+// NATIVE_HOST_PANIC (205), NATIVE_ANR (206), NATIVE_CODE_SIGNATURE_INVALID (207),
+// NATIVE_CODE_INTEGRITY_FAILED (208), NATIVE_INPUT_SATURATED (11).
 
 // Get human-readable message
 String message = ErrorCode.getMessage(code);
@@ -295,6 +310,8 @@ The main entry point (singleton):
 | `createSession(Activity, Surface, RuntimeConfig, String gameId)` | Create a game session (Activity-bound) |
 | `createSession(Context, Surface, RuntimeConfig, String gameId)` | Create a game session (without Activity binding) |
 | `createSessionSafe(Activity, Surface, RuntimeConfig, String gameId)` | Non-throwing version |
+| `createSessionWarm(Activity, RuntimeConfig, String gameId)` | Create a warmed session with no Surface attached yet |
+| `createSessionWarmSafe(Activity, RuntimeConfig, String gameId)` | Non-throwing version |
 | `getVersion()` | Get SDK version |
 | `getNativeVersion()` | Get native engine version |
 | `isNativeLoaded()` | Check if native library loaded |
@@ -314,10 +331,17 @@ Represents an active game session (implements `Closeable`):
 | `resume()` | Resume the game |
 | `restart()` | Restart the game |
 | `updateSurface(Surface)` | Update rendering surface |
+| `updateSurface(Surface, int width, int height)` | Update surface with explicit physical-pixel size |
+| `onSurfaceDestroyed()` | Mark the surface destroyed (recreate via `updateSurface`, session stays alive) |
 | `dispatchTouchEvent(MotionEvent)` | Handle touch input |
 | `dispatchMemoryWarning(int)` | Forward memory pressure signal |
+| `getState()` / `setOnStateChangeListener(...)` | Read/subscribe session lifecycle state |
+| `getPerformanceSnapshot()` | Read the session's performance counters |
+| `evaluateJavaScript(String)` / `setMessageHandler(...)` | Run JS in the game context / receive host messages |
 | `setListener(GameSessionListener)` | Register unified session listener |
 | `setAuthHandler(AuthHandler)` | Register auth handler |
+| `setPermissionHandler(...)` / `setAdHandler(...)` / `setSettingHandler(...)` | Register permission / ad / settings handlers |
+| `setShareHandler(...)` / `setNavigationHandler(...)` / `setPaymentHandler(...)` | Register share / navigation / payment handlers |
 | `setGameLogHandler(GameLogHandler)` | Register game log handler |
 | `setSubpackageHandler(SubpackageHandler)` | Register subpackage download handler |
 | `close()` / `destroy()` | Release resources |
@@ -350,7 +374,7 @@ The library includes ProGuard rules. If you need to add custom rules:
 ## Requirements
 
 - **Minimum SDK**: 26 (Android 8.0 Oreo)
-- **Target SDK**: 34 (Android 14)
+- **Target SDK**: 36 (Android 16)
 - **Supported ABIs**: arm64-v8a, x86_64
 
 ## License

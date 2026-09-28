@@ -64,7 +64,7 @@ public final class MigoNativeLoader {
     public enum State {
         /** No load has succeeded yet. */
         NOT_LOADED,
-        /** The engine is in the process. */
+        /** The engine has been loaded into the process. */
         LOADED,
         /** The last attempt failed. Another may be made — see {@link #lastError()}. */
         FAILED
@@ -126,8 +126,8 @@ public final class MigoNativeLoader {
      * not asked for anything yet.
      *
      * <p>It also moves the check off the main thread. Verification is a SHA-256
-     * over the whole binary -- 41 ms for a 45 MB release engine on a Mate 30
-     * Pro -- and without this it runs inside the first Migo call, which is on
+     * over the whole binary -- 41 ms for a 45 MB release engine on a reference
+     * Android device -- and without this it runs inside the first Migo call, which is on
      * the main thread while the user waits. Afterwards that call finds the
      * result already recorded and hashes nothing (3 ms).
      *
@@ -229,7 +229,7 @@ public final class MigoNativeLoader {
     /**
      * Load the engine if it is not loaded already.
      *
-     * @return true when the engine is in the process
+     * @return true when the engine has been loaded into the process
      */
     static boolean ensureLoaded() {
         boolean loaded = COORDINATOR.ensureLoaded(deviceAbi(), EXPECTATIONS);

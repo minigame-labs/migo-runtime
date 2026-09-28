@@ -55,7 +55,7 @@ Use `RuntimeConfig.Builder` in the host's initialization code to configure the r
 RuntimeConfig config = new RuntimeConfig.Builder(context)
     .setDebugEnabled(BuildConfig.DEBUG)
     .setTargetFps(60)
-    .setLogLevel(LogLevel.INFO)
+    .setLogLevel(RuntimeConfig.LogLevel.INFO)
     .build();
 ```
 
@@ -92,6 +92,8 @@ public void surfaceChanged(
 public void surfaceDestroyed(SurfaceHolder holder) {
     if (session != null) {
         session.onSurfaceDestroyed();
+        session.close();
+        session = null;
     }
 }
 ```

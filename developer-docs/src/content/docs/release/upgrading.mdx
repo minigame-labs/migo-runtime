@@ -26,9 +26,9 @@ sourcePaths:
 4. **跑你的关键场景。** ABI 仍是 CANDIDATE 期间，尤其先跑：`surface` attach/retire 全流程、输入泵、自写 dispatcher。冻结前 minor 版对调用方结构也可能重排——唯一保证向上兼容的机制是 `struct_size`/`abi_version` 协商（见 [ABI 兼容性](/docs/concepts/abi-compatibility/))。
 5. **如果你复制了文档片段。** 文档有归档前缀（`/docs/0.9/`）出现时，把引用的链接改成归档形态或当前 latest——归档内容冻结，新系列的行为只在 latest 上。
 
-## 0.9 → 0.10（本节在 0.10 定稿当天填充）
+## 0.9 → 0.10
 
-0.10 的 breaking-changes 清单、迁移步骤、最低工具链要求将在 `CHANGELOG.md` 的该版本节同时书写，并以本页作为过期横幅的落地页。**在那一刻之前,本节仅说明流程本身,不声明任何内容。**
+0.9.x 系列内部无破坏性变更，无需迁移操作。0.10 迁移指南将在 0.10 定稿时与 `CHANGELOG.md` 同步发布。
 
 ## 稳定版本线路
 

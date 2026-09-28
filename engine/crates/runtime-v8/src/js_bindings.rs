@@ -6,11 +6,12 @@ use shared::protocol::host_cmd::{TouchPoint, TouchType};
 /// Cache of V8 `Global<Function>` handles for JS callbacks that the host
 /// thread dispatches into frequently (touch, sensors, audio, etc.).
 ///
-/// All callback fields (27 total) are `Option<v8::Global<v8::Function>>`.
-/// They are populated during `reload()` by looking up `_internal*` functions
-/// from the V8 global scope. A `None` value means the corresponding JS
-/// function was not found (e.g., the extension is not loaded or the game
-/// has not registered that API). Dispatch methods silently skip `None` fields.
+/// One dispatch hook (`dispatch_hook_fn`) plus per-domain callback fields are
+/// cached as `Option<v8::Global<v8::Function>>`. Populated during `reload()` by
+/// looking up `_internal*` functions from the V8 global scope. A `None` value
+/// means the corresponding JS function was not found (e.g., the extension is
+/// not loaded or the game has not registered that API). Dispatch methods
+/// silently skip `None` fields.
 ///
 /// ## Field groups
 ///
@@ -22,7 +23,12 @@ use shared::protocol::host_cmd::{TouchPoint, TouchType};
 /// - **Bluetooth / Beacon** (4): adapter state, device found, beacon update, beacon service
 /// - **BLE GATT** (3): connection state, characteristic value, MTU
 /// - **System** (1): `memory_warning_fn`
+/// - **WebGL** (1): `webgl_context_event_fn`
+/// - **Focus** (1): `focus_changed_fn`
 /// - **Keyboard** (6): input, height, confirm, complete, key down, key up
+/// - **Gamepad** (3): connected, disconnected, state
+/// - **Composition** (3): start, update, end
+/// - **Mouse** (4): down, move, up, wheel
 /// - **Video** (1): `video_event_fn`
 pub(crate) struct JsBindings {
     main_js_context: v8::Global<v8::Context>,
@@ -986,10 +992,8 @@ impl JsBindings {
     ) {
         if let Some(func_g) = self.key_down_fn.as_ref() {
             self.with_main_context(rt, |scope, _ctx, global| {
-                // modifiers and repeat are appended after the arguments the
-                // previous signature had, so a stale V8 snapshot's shorter
-                // function still binds key/code/timeStamp correctly and simply
-                // misses the new ones; see 02_keyboard.js.
+                // Argument order: key, code, timeStamp, modifiers, repeat;
+                // see 02_keyboard.js.
                 let args = [
                     v8::String::new(scope, key)
                         .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
@@ -1086,9 +1090,8 @@ impl JsBindings {
     ) {
         if let Some(func_g) = self.wheel_fn.as_ref() {
             self.with_main_context(rt, |scope, _ctx, global| {
-                // delta_mode goes last to match the JS signature, which appends
-                // it so a stale snapshot's four-parameter function still binds
-                // the timestamp correctly; see 03_mouse.js.
+                // Argument order: delta_x, delta_y, delta_z, timestamp_ms,
+                // delta_mode; see 03_mouse.js.
                 let args = [
                     v8::Number::new(scope, delta_x).into(),
                     v8::Number::new(scope, delta_y).into(),
@@ -1235,10 +1238,8 @@ impl JsBindings {
     ) {
         if let Some(func_g) = self.key_up_fn.as_ref() {
             self.with_main_context(rt, |scope, _ctx, global| {
-                // modifiers and repeat are appended after the arguments the
-                // previous signature had, so a stale V8 snapshot's shorter
-                // function still binds key/code/timeStamp correctly and simply
-                // misses the new ones; see 02_keyboard.js.
+                // Argument order: key, code, timeStamp, modifiers, repeat;
+                // see 02_keyboard.js.
                 let args = [
                     v8::String::new(scope, key)
                         .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))

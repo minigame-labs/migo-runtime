@@ -1,4 +1,4 @@
-//! V05 end-to-end regression: `code_cache_dir` must be the directory that
+//! V05: `code_cache_dir` must be the directory that
 //! actually receives V8 bytecode, not the ordinary app cache directory.
 //!
 //! # What was wrong
@@ -20,7 +20,7 @@
 //!   when a directory distinct from `app_cache_dir` is passed, compiled
 //!   bytecode lands in *that* directory and not in `app_cache_dir`.
 //!
-//! * The proof is RED-first: see the "Regression probe" section in the test
+//! * See the "Regression probe" section in the test
 //!   doc below for the exact change that makes it fail.
 //!
 //! # Determinism
@@ -114,7 +114,7 @@ mod code_cache_dir_tests {
     /// `DiskCodeCache::Drop` drops the write-channel sender and joins the writer
     /// thread, so by the time `drop(rt)` returns all queued jobs are on disk.
     ///
-    /// # Regression probe (how to make this RED)
+    /// # Regression probe
     ///
     /// Change the `HostJsRuntime::new` call below to pass `&ordinary_dir`
     /// instead of `&code_cache_dir` as `code_cache_root`.  The assertion

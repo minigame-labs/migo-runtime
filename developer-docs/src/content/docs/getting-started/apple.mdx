@@ -2,7 +2,7 @@
 title: Apple 平台（iOS / macOS）
 sidebar:
   order: 7
-description: Apple 平台集成状态：MigoAppleCore 已构建测试，MigoAppleRenderer 已构建，WebKit 与 MacV8 lane 为占位符，尚无设备运行记录。
+description: Apple 平台集成状态：iOS Performance+ lane 与 macOS V8 lane 已实现并有真机运行记录；ProbeApp 源码已存在；releasable Apple SDK 制品已发布；设备性能数据尚无测量。
 audience: host-integrator
 platforms:
   - ios
@@ -21,8 +21,7 @@ sourcePaths:
 Apple README 原文：「Not a skeleton any more, and not a product either.」
 区分两者的标准是编译器是否见过它——因此本节仅报告编译器见到了什么。
 
-**没有任何代码在 iPhone 上运行过。** G0 探测（`ProbeApp/`）是第一个 Mac 任务；
-产品选择由探测证据决定，不由本仓库中的任何文档预先给出。
+iPhone XS Max 上 `MigoGameView` 已运行游戏（iOS 18.7，2026-09-25），含帧时钟、软键盘与内容签名验证；macOS 上 V8+JIT 已在签名应用中运行游戏。设备性能（帧率、内存等具体数值）尚未测量，不作宣称。
 
 ## 当前构建状态
 
@@ -30,17 +29,19 @@ Apple README 原文：「Not a skeleton any more, and not a product either.」
 | --- | --- |
 | `core/`（`MigoAppleCore`） | 在每次 PR 上于 Apple silicon runner 构建、测试并交叉编译为 `aarch64-apple-ios` |
 | `Sources/MigoAppleRenderer` | Apple SDK workflow 构建 iOS/simulator shipping slices 及独立 macOS external-frame 诊断包；macOS 诊断包不是 V8 产品测试 |
-| `Sources/MigoAppleWebKit` | 占位符；可编译，无行为 |
-| `Sources/MigoMacV8` | 占位符；可编译，无行为 |
+| `Sources/MigoAppleWebKit` | 占位符；可编译，有 session 但无内容渲染面；未进入 SDK |
+| `Sources/MigoApplePerformancePlus` | 验收套件在 iOS 模拟器上运行真实 WebContent producer 与真实渲染器：游戏通过引擎自有 WebGL/Canvas 渲染帧；`MigoGameView` 运行已安装游戏（无测试供给，游戏自行启动帧时钟并退出后可重启） |
+| `Sources/MigoMacV8` | `MigoGameView` 在带硬化运行时与 allow-jit 签名的应用中运行游戏：V8+JIT+WebAssembly、Canvas2D on ANGLE、帧时钟、内容签名验证与拒绝 |
 | `WebContent/PerformancePlus` | 编码器在每次 PR 上于 node 下对同一黄金语料库运行 |
-| `ProbeApp/` | 仅有 README；无源文件，在有真机可运行之前也不应有 |
+| `ProbeApp/` | 源码存在；回答 G0 探测问题，不链接进任何产品 |
+| iPhone XS Max（iOS 18.7） | `MigoGameView` 在真机上运行（2026-09-25）：游戏安装、帧时钟、退出后重启、软键盘、内容签名验证与音频播放 |
 
 ## 三条产品路线
 
 | 产品 | 内容 JS 运行位置 | 渲染器 | 进入 v1 |
 | --- | --- | --- | --- |
 | `MigoAppleWebKit` | WebContent，完整 Web 平台 | WebKit | 是 |
-| `MigoApplePerformancePlus` | WebContent，Worker 或 Window（由 G0 探测选择） | 本进程：Skia + ANGLE/Metal | 条件性 |
+| `MigoApplePerformancePlus` | WebContent，Dedicated Worker | 本进程：Skia + ANGLE/Metal | 是（iOS 15.2+） |
 | `MigoMacV8` | 本进程，V8 with JIT | 本进程：Skia + ANGLE/Metal | 是（仅 macOS） |
 
 `MigoAppleRenderer` 被 Performance+ 和 MacV8 两条 native 渲染 lane 共享；
@@ -54,9 +55,7 @@ Apple README 原文：「Not a skeleton any more, and not a product either.」
   或构建任何内容即可解析和构建。包含 profile policy、部署底线、生命周期、权限、metrics。
 - **`platforms/apple/Package.swift`**（shipping package）：声明一个 binary target，
   指向 `scripts/build-apple-sdk.sh` 生成的 xcframework；在 Mac 上运行该脚本之前
-  无法解析。这意味着在此 skeleton 存续期间，没有任何 Swift 文件被编译——包括那些
-  镜像 `contracts/apple/*.json` 并仅比较文本的文件。`core/` 是不需要引擎的那半部分，
-  因此在每次 PR 上构建和测试。
+  无法解析。shipping package 在 Mac 上运行 `build-apple-sdk.sh` 之前无法解析；SDK 制品构建完成后，完整 Swift 包含 session、显示时钟与签名验证可一并构建测试。`core/` 是不需要引擎的那半部分，因此在每次 PR 上独立构建和测试。
 
 ## C ABI Surface 类型
 
@@ -111,15 +110,13 @@ bash scripts/test-apple-shipping-package-contract.sh
 bash scripts/test-apple-sdk-packaging.sh
 ```
 
-## 目前不存在的内容
+## 尚未完成的内容
 
-以下内容**目前不可用**；不要依据本页尝试：
+以下内容**目前尚未完成**；不作宣称：
 
-- 在 iPhone 或 iPad 上运行 Migo 的步骤——`ProbeApp/` 无源文件，G0 探测尚未进行。
-- `MigoAppleWebKit` 或 `MigoMacV8` 的应用 session 实现——Swift 占位符可编译，但不
-  实现任何 session 逻辑。
-- macOS V8 shipping artifact 的可用性——README 明确说 SDK workflow 不发布
-  macOS V8 release，也不声称已经构建 macOS V8 archive；占位符可编译不等于产品完整。
+- `MigoAppleWebKit` 应用 session——此 lane 可编译但不运行游戏；它是 Lockdown Mode 设备与 App Review 首次提交的兼容性基线，待有客户需求后构建。
+- **设备性能测量**——iPhone XS Max 上游戏已运行，但帧率、内存、CPU 等具体数值尚未测量，不做任何性能宣称。
+- macOS App Store 完整签名与真机上架流程——macOS V8 本地构建与测试通过，但完整 App Store 路径的真机验证尚未完成。
 
 ## 从源码构建
 

@@ -188,7 +188,7 @@ public final class NetworkMonitor {
     }
 
     /**
-     * Get network type string from NetworkCapabilities (API 23+).
+     * Get network type string from NetworkCapabilities (available from API 23; this SDK requires API 26+).
      */
     @SuppressWarnings("deprecation")
     private String getNetworkTypeFromCapabilities(NetworkCapabilities capabilities) {
@@ -281,7 +281,7 @@ public final class NetworkMonitor {
             this.error = error;
         }
 
-        // Keep old constructor for compatibility if needed or update callers
+        // Legacy overload retained for compatibility; current callers use the full constructor.
         public NetworkStatus(boolean isConnected, String networkType, String error) {
             this(isConnected, networkType, 0, false, false, error);
         }

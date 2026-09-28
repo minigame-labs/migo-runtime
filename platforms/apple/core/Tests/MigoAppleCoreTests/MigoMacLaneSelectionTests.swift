@@ -5,10 +5,10 @@ import XCTest
 /// The sentence `Sources/MigoMacV8/README.md` has promised since the lane was
 /// specified, executed.
 ///
-/// It promised that a missing JIT entitlement selects a WebKit lane and does not
-/// silently become a jitless V8. Until this existed the promise was checked by
-/// nobody -- `MigoMacV8` was a single `Placeholder.swift` -- and
-/// `scripts/test-macos-archive-runs-js.sh` says so in its own output.
+/// It promises that a missing JIT entitlement selects a WebKit lane and does not
+/// silently become a jitless V8. `MigoMacV8` now contains
+/// `MigoMacV8Availability` and `MigoGameView`; this test keeps that promise
+/// executable.
 final class MigoMacLaneSelectionTests: XCTestCase {
 
     private typealias Selection = MigoMacLaneSelection

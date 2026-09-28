@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Validates the Starlight build output in build/ before it is copied into
 // migo-www/dist/docs. These are publication gates: crawlable SSG HTML, a real
-// Pagefind index for the zh corpus, noindexed en stubs, and no Next/docusaurus
-// leftovers.
+// Pagefind index for the zh corpus, en stub pages kept out of the crawl (the
+// generated skeletons carry noindex so search engines canonicalize to the zh
+// page until a human translation replaces them; see ensure-en-stubs.mjs), and
+// no Next/docusaurus leftovers.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,7 +103,7 @@ if (!fileExists('sitemap-index.xml')) {
   check(!!docsMap, 'sitemap-index references a /docs/ sitemap');
   for (const rel of readdirSync(buildDir).filter((f) => /^sitemap-\d+\.xml$/.test(f))) {
     const xml = readFile(rel);
-    check(!xml.includes('/docs/en/0.9/'), `${rel}: no English archive (stub) URLs`);
+    check(!xml.includes('/docs/en/0.9/'), `${rel}: no English archive URLs (those pages are noindexed stubs, so keep them out of the sitemap)`);
     check(xml.includes('https://minigame-labs.com/docs/en/getting-started/'), `${rel}: English latest pages published`);
     check(!xml.includes('/docs/next/'), `${rel}: no next URLs`);
     check(xml.includes('https://minigame-labs.com/docs/getting-started/android/') ||

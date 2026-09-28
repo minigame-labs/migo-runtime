@@ -276,21 +276,6 @@ pub fn is_ktx2(data: &[u8]) -> bool {
     data.len() >= 12 && data[..12] == KTX2_MAGIC
 }
 
-/// Write a single-level, non-supercompressed KTX2 container around already
-/// compressed block data.
-///
-/// This is the ingest-side counterpart of [`parse_ktx2`]: transcoding a source
-/// image at package-install time produces block data that still needs a
-/// container the runtime can recognise. Keeping the writer beside the parser is
-/// deliberate -- they share the offset constants and the magic, so the layout
-/// cannot drift apart, and `parse_ktx2` is the round-trip oracle for the writer.
-///
-/// Emits exactly what the parser needs and nothing else: no DFD, no key/value
-/// data, no supercompression global data. Those sections are optional in the
-/// spec, and every consumer in this engine reads only the header, the level
-/// index and the level bytes. It writes a single level: nothing in this engine
-/// generates a mip chain at ingest yet, while `parse_ktx2` has to read the
-/// chains that authored assets arrive with.
 /// Write a non-supercompressed KTX2 container around a whole mip chain.
 ///
 /// Levels are given base-first. They are *stored* smallest-first, which is the
@@ -355,6 +340,21 @@ pub fn write_ktx2_levels(
     Some(buf)
 }
 
+/// Write a single-level, non-supercompressed KTX2 container around already
+/// compressed block data.
+///
+/// This is the ingest-side counterpart of [`parse_ktx2`]: transcoding a source
+/// image at package-install time produces block data that still needs a
+/// container the runtime can recognise. Keeping the writer beside the parser is
+/// deliberate -- they share the offset constants and the magic, so the layout
+/// cannot drift apart, and `parse_ktx2` is the round-trip oracle for the writer.
+///
+/// Emits exactly what the parser needs and nothing else: no DFD, no key/value
+/// data, no supercompression global data. Those sections are optional in the
+/// spec, and every consumer in this engine reads only the header, the level
+/// index and the level bytes. It writes a single level: nothing in this engine
+/// generates a mip chain at ingest yet, while `parse_ktx2` has to read the
+/// chains that authored assets arrive with.
 pub fn write_ktx2(vk_format: u32, width: u32, height: u32, level0: &[u8]) -> Vec<u8> {
     let level0_offset = (HEADER_SIZE + LEVEL_INDEX_ENTRY_SIZE) as u64;
     let level0_length = level0.len() as u64;

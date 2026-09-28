@@ -12,6 +12,13 @@
 - 🎮 **游戏就绪** - 支持 Canvas 2D 和 WebGL
 - 🔒 **沙箱隔离** - 每个游戏独立的文件系统空间
 
+### 与系统 WebView 的实测对比
+
+在 Android 上：同样的游戏、同一台设备、两边都跑到 ~60 fps 的前提下，比系统 WebView
+**内存低 40–44%**、**CPU 低 1.9–2.9×**。帧率持平——两边都是 V8——所以可声称的是内存、
+CPU、跨 OEM 一致性与可审计、版本钉死的供应链。方法与原始数据见
+[migo-bench](https://github.com/minigame-labs/migo-bench)。
+
 ## 安装
 
 发布构建提供两个产品：`slim` 保留基础能力集——渲染、输入、生命周期、存储/VFS、
@@ -181,10 +188,10 @@ session.setListener(new GameSessionListener() {
     }
 
     @Override
-    public void onError(int errorCode, String message, boolean recoverable) {
-        Log.e(TAG, "错误 " + errorCode + ": " + message);
-        if (!recoverable) {
-            showErrorDialog(message);
+    public void onError(MigoException exception) {
+        Log.e(TAG, "错误 " + exception.getErrorCode() + ": " + exception.getMessage());
+        if (!exception.isRecoverable()) {
+            showErrorDialog(exception.getMessage());
         }
     }
 
@@ -210,7 +217,7 @@ if (result.isSuccess()) {
 
 ### 注册宿主回调 Handler（Auth / GameLog / Subpackage）
 
-在最新 API 中，`GameSession` 支持三类宿主回调。建议在 `startGame()` 前注册。
+下面示例展示 `GameSession` 的三类宿主回调。建议在 `startGame()` 前注册。
 
 ```java
 session.setAuthHandler(new AuthHandler() {
@@ -318,7 +325,7 @@ staging tree，再用可恢复的整树事务发布，恢复完成后才允许�
 ### gameId 要求
 
 - 长度: 1-64 字符
-- 允许字符: `a-z`, `A-Z`, `0-9`, `_`, `-`
+- 允许字符: `a-z`, `0-9`, `_`, `-`
 - 示例: `puzzle-game`, `com_example_game`, `game123`
 
 ## 配置选项
@@ -349,11 +356,19 @@ ErrorCode.ERR_INIT_FAILED       // -1000: 初始化失败
 ErrorCode.ERR_INVALID_SURFACE   // -1001: 无效 Surface
 ErrorCode.ERR_INVALID_CONFIG    // -1002: 无效配置
 ErrorCode.ERR_NATIVE_LOAD_FAILED// -1003: 原生库加载失败
+ErrorCode.ERR_INVALID_GAME_ID   // -1004: 无效游戏标识
+ErrorCode.ERR_NOT_SUPPORTED     // -1005: 操作不受支持
 ErrorCode.ERR_SESSION_DESTROYED // -2000: Session 已销毁
 ErrorCode.ERR_CODE_DIR_NOT_FOUND// -2002: 代码目录不存在
 ErrorCode.ERR_ENTRY_NOT_FOUND   // -2003: 入口文件不存在
 ErrorCode.ERR_JS_EXECUTION      // -2004: JS 执行错误
+ErrorCode.ERR_CLEANUP_FAILED    // -2005: 会话清理失败
 ErrorCode.ERR_INVALID_ACTIVITY  // -5004: 无效 Activity
+
+// 原生侧失败是正值，与 SDK 侧负值区间区分开：NATIVE_OUT_OF_MEMORY (203)、
+// NATIVE_JS_EXECUTION_TIMEOUT (204)、NATIVE_HOST_PANIC (205)、NATIVE_ANR (206)、
+// NATIVE_CODE_SIGNATURE_INVALID (207)、NATIVE_CODE_INTEGRITY_FAILED (208)、
+// NATIVE_INPUT_SATURATED (11)。
 
 // 获取可读的错误消息
 String message = ErrorCode.getMessage(code);
@@ -371,6 +386,8 @@ String message = ErrorCode.getMessage(code);
 | `createSession(Activity, Surface, RuntimeConfig, String gameId)` | 创建游戏会话（Activity 绑定） |
 | `createSession(Context, Surface, RuntimeConfig, String gameId)` | 创建游戏会话（无 Activity 绑定） |
 | `createSessionSafe(Activity, Surface, RuntimeConfig, String gameId)` | 无异常版本 |
+| `createSessionWarm(Activity, RuntimeConfig, String gameId)` | 创建预热会话（运行时就绪，尚未附着 Surface） |
+| `createSessionWarmSafe(Activity, RuntimeConfig, String gameId)` | 无异常版本 |
 | `getVersion()` | 获取 SDK 版本 |
 | `getNativeVersion()` | 获取原生引擎版本 |
 | `isNativeLoaded()` | 检查原生库是否加载 |
@@ -390,9 +407,16 @@ String message = ErrorCode.getMessage(code);
 | `resume()` | 恢复游戏 |
 | `restart()` | 重启游戏 |
 | `updateSurface(Surface)` | 更新渲染表面 |
+| `updateSurface(Surface, int width, int height)` | 按显式物理像素尺寸更新表面 |
+| `onSurfaceDestroyed()` | 标记表面已销毁（之后用 `updateSurface` 重建，会话保持存活） |
 | `dispatchTouchEvent(MotionEvent)` | 处理触摸输入 |
 | `dispatchMemoryWarning(int)` | 转发内存告警 |
+| `getState()` / `setOnStateChangeListener(...)` | 读取/订阅会话生命周期状态 |
+| `getPerformanceSnapshot()` | 读取会话性能计数 |
+| `evaluateJavaScript(String)` / `setMessageHandler(...)` | 在游戏上下文执行 JS / 接收 host 消息 |
 | `setListener(GameSessionListener)` | 注册统一会话事件回调 |
+| `setPermissionHandler(...)` / `setAdHandler(...)` / `setSettingHandler(...)` | 注册权限 / 广告 / 设置回调 |
+| `setShareHandler(...)` / `setNavigationHandler(...)` / `setPaymentHandler(...)` | 注册分享 / 导航 / 支付回调 |
 | `setAuthHandler(AuthHandler)` | 注册鉴权回调 |
 | `setGameLogHandler(GameLogHandler)` | 注册游戏日志回调 |
 | `setSubpackageHandler(SubpackageHandler)` | 注册分包下载回调 |
@@ -426,7 +450,7 @@ String message = ErrorCode.getMessage(code);
 ## 系统要求
 
 - **最低 SDK**: 26 (Android 8.0 Oreo)
-- **目标 SDK**: 34 (Android 14)
+- **目标 SDK**: 36 (Android 16)
 - **支持的 ABI**: arm64-v8a, x86_64
 
 ## 许可证

@@ -1,4 +1,4 @@
-//! Regression tests for the V8-snapshot JS fingerprint (Q1 review-2 P2-A).
+//! Regression tests for the V8-snapshot JS fingerprint.
 //!
 //! The fingerprint is computed independently in two places that MUST agree:
 //!   * `build.rs` (compile-time: decides whether to embed a snapshot), through

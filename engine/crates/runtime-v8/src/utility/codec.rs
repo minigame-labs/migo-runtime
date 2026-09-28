@@ -62,10 +62,10 @@ pub(super) fn op_decode_multi_formats(
     // For UTF-8 specifically, match browser/Node semantics: invalid byte
     // sequences become U+FFFD replacement characters rather than throwing.
     // Strict decoding caused real-world breakage when games called
-    // readFile({encoding: 'utf8'}) on files that turned out to be binary --
-    // the rejection looped in adapter retry code (see hxddd dl_47_motloalg
-    // polling).  Other encodings keep going through `decode_bytes`, which
-    // the unzip path relies on for its strict->base64 fallback.
+    // `readFile({encoding: 'utf8'})` on files that turned out to be binary:
+    // the rejection triggered adapter retry loops. Other encodings keep going
+    // through `decode_bytes`, which the unzip path relies on for its
+    // strict-to-base64 fallback.
     if coding.eq_ignore_ascii_case("utf8") || coding.eq_ignore_ascii_case("utf-8") {
         return Ok(String::from_utf8_lossy(buf).into_owned());
     }

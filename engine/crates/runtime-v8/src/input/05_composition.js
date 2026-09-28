@@ -1,7 +1,8 @@
 // IME composition, as the DOM CompositionEvent.
 //
-// Mainstream mini-game platforms have no composition API, so the reference is the Web platform Migo
-// replaces. Composition is the IN-PROGRESS state of IME input: typing pinyin
+// Mainstream mini-game platforms have no composition API, so this follows the
+// standard Web composition events used by HTML5 content. Composition is the
+// in-progress state of IME input: typing pinyin
 // shows a preedit string before any of it is committed. It is distinct from the
 // soft keyboard's onKeyboardInput, which reports text that has already been
 // committed.

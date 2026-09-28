@@ -10,7 +10,7 @@ external-frame builds are isolated renderer diagnostics, not this product.
 
 ## 🏁 The gate has run (2026-09-10). What the challenge reopened is closed again, on measurement.
 
-The adversarial review of 2026-09-07 reopened two axes on one observation: synchronous
+The design review of 2026-09-07 reopened two axes on one observation: synchronous
 XHR is a second public blocking primitive, so a synchronous readback might be expressible
 without `SharedArrayBuffer`, which would turn a capability fact into a performance
 trade-off. It said a probe is entitled to decide a trade-off. The probe has run.
@@ -41,15 +41,15 @@ device on 15.0, 15.1 and 15.2 as well.
 The section below is kept as written, because what it reopened and why is worth reading
 next to what settled it.
 
-## What is decided, what is leading, and what an adversarial review has reopened
+## What was considered, what the probe selected, and what the design review reopened
 
-Two of the three axes below were recorded here as *settled on capability grounds, not
-performance grounds*, with the argument that a probe measuring latency cannot overturn a
-constraint that leaves one candidate unable to express an operation at all. That argument
-is sound in form. **Its premise has been challenged, and until the challenge is checked
-these are candidates, not decisions.**
+At the time, two of the three axes were recorded here as *settled on capability
+grounds, not performance grounds*, with the argument that a probe measuring latency
+cannot overturn a constraint that leaves one candidate unable to express an operation
+at all. That premise was challenged; before the capability gate ran, these were
+candidates rather than decisions.
 
-The challenge (adversarial design review, 2026-09-07) is a single observation: `Atomics.wait`
+The challenge (design review, 2026-09-07) is a single observation: `Atomics.wait`
 is **not the only public blocking primitive**. **Synchronous XHR** blocks too, and it is
 available in a Worker; the Window-specific restriction is that a synchronous XHR may not set
 a nonempty `responseType`. If that holds on the supported releases, then a synchronous
@@ -60,23 +60,22 @@ entitled to decide.
 NOTE: This file previously said the topology was decided while
 `../../WebContent/PerformancePlus/README.md` said G0 had not selected one. Both are about the
 same choice, so one of them was wrong; that contradiction is what surfaced the challenge.
-Neither may claim a decision until the capability gate produces an artifact.
+The capability gate has run; the decisions are recorded above with evidence in `docs/performance/apple/g0/{capability,transport}/`.
 
-**Content JavaScript in a Dedicated Worker -- leading candidate, no longer excluded on
-capability grounds.** A Window agent's `[[CanBlock]]` is false, so `Atomics.wait` is
-unavailable there, and every synchronous GPU readback this engine must support --
-`getImageData`, `readPixels`, `toDataURL` -- has no *SAB* primitive to build on in a Window
-agent. A Dedicated Worker's `[[CanBlock]]` is true. A Worker also has no `document`/`window`
-to start with, which is what makes the environment match the other five platforms instead of
-requiring DOM removal -- and that reason is unaffected by the challenge, which is why Worker
-stays *leading*. What is withdrawn is only the claim that Window makes the operation
-*impossible*: with synchronous XHR it may merely be worse.
+**Content JavaScript in a Dedicated Worker -- selected.** A Window agent's `[[CanBlock]]`
+is false, so `Atomics.wait` is unavailable there, and every synchronous GPU readback
+this engine must support -- `getImageData`, `readPixels`, `toDataURL` -- has no *SAB*
+primitive to build on in a Window agent. A Dedicated Worker's `[[CanBlock]]` is true.
+A Worker also has no `document`/`window` to start with, which is what makes the
+environment match the other five platforms instead of requiring DOM removal -- and
+that reason is unaffected by the challenge, which is part of why Worker was selected.
+What is withdrawn is only the claim that Window makes the operation *impossible*: with
+synchronous XHR it may merely be worse.
 
-Note also that a Worker does not need the Window as a frame relay: `WebSocket` is exposed to
-Workers. The relay exists because a Worker blocked in `Atomics.wait` cannot service its own
-socket -- which a **two-Worker** split answers directly (content Worker blocks, I/O Worker
-owns the socket and notifies). That is a third topology this file did not consider and the
-capability gate must include.
+Note also that the selected Worker does not need the Window as a frame relay:
+`WebSocket` is exposed to Workers. The gate compared Worker-direct, Worker-to-Window
+relay, and the two-Worker split where an I/O Worker owns the socket; the selected
+Worker-direct path avoids the relay while retaining a Window fallback.
 
 **The page origin `127.0.0.1` -- candidate, and one stated reason is contradicted.** This
 file said a custom URL scheme "is not a secure context, and promoting one to a secure
@@ -165,14 +164,12 @@ frame bytes -- and it cannot: `WebSocket.send` takes no shared view, because
 WebIDL gives `BufferSource` no `[AllowShared]`. Frame bytes move through a bounded
 transferable `ArrayBuffer` ping-pong or pool and only then enter the app transport.
 
-Which agent owns that transport is **open**, not the Window. `WebSocket` is exposed
-to Workers, so the Worker can send its own frames; the Window relay exists only
-because a Worker blocked in `Atomics.wait` cannot service its own socket. The
-capability gate must compare at least three shapes -- Worker-direct, Worker to
-Window relay, and a two-Worker split where a separate I/O Worker owns the socket
-and notifies the blocked content Worker -- because the relay is a consequence of
-the blocking primitive, and the blocking primitive is itself now a candidate
-rather than a decision (see above).
+The Worker owns that transport; it is not the Window. `WebSocket` is exposed to
+Workers, and the selected Worker sends its own frames while scheme requests use the
+same producer path. The Window relay remains a supported fallback, not the selected
+frame path. The gate measured the blocking primitives: synchronous XHR can express
+readback without `SharedArrayBuffer`, while the two-Worker topology that requires SAB
+was eliminated.
 
 The host side validates generation, sequence, lengths, credits and integrity
 before materialization or GPU effects. Queues and allocations are bounded.

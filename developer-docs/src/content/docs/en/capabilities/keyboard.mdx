@@ -69,13 +69,13 @@ When the user acts, the host sends the event back with `migo_session_send_keyboa
 
 > `height_css_px` applies to `MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE` only and is CSS pixels. Sending physical pixels lays content out for a keyboard of the wrong size on every display whose scale factor is not 1.
 
-On a device with DPR=2.75, treating 1020 physical pixels as 1020 CSS px makes the KPI panel UI, which uses the content's CSS coordinates, treat the keyboard as roughly 36% of its actual height — scene elements in the panel end up underneath the keyboard. If your ViewTree gives you a View height, divide by `Resources.getDisplayMetrics().density` before sending px to `send`.
+On a device with DPR=2.75, treating 1020 physical pixels as 1020 CSS px makes the KPI panel UI, which uses the content's CSS coordinates, treat the keyboard as roughly 34% of its actual height — scene elements in the panel end up underneath the keyboard. If your ViewTree gives you a View height, divide by `Resources.getDisplayMetrics().density` before sending px to `send`.
 
 ## Physical Keyboard / IME: Not This Channel
 
 Two things are often conflated:
 
-- **Physical keys** (`KeyEvent`, gamepad buttons) and **soft-keyboard text** are **two capabilities**, even though both have "key" in their names. Physical keys use `migo_session_send_key_event` (`MigoKeyEventType` DOWN/UP + modifiers + scancode/keyCode). A host without a soft keyboard can still send physical keys — gravity sensing and Esc-to-exit desktop mini-games use this arrangement;
+- **Physical keys** (`KeyEvent`, gamepad buttons) and **soft-keyboard text** are **two capabilities**, even though both have "key" in their names. Physical keys use `migo_session_send_key_event` (`MigoKeyEventType` DOWN/UP + modifiers + `key_utf8`/`code_utf8`). A host without a soft keyboard can still send physical keys — gravity sensing and Esc-to-exit desktop mini-games use this arrangement;
 - **IME composition** (Chinese/Japanese candidate text while it is being composed) uses `migo_session_send_composition_event` — a desktop host uses this whenever it supports IME. Android's `TextWatcher` receives the **text after composition is complete**, so sending it directly as an INPUT event is correct; do not fabricate a composition event.
 
 A host may legitimately use both `migo_session_send_key_event` and composition events (for example, a desktop host with physical keys and an IME). A container-style Android mini-game host only needs send_touch + send_keyboard_event; composition and key_event may remain entirely unused.

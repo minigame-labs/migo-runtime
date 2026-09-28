@@ -13,13 +13,9 @@ sourcePaths:
   - include/migo/platform/wayland.h
 ---
 
-In version 0.9, Linux is **not a standalone runtime target**; it is a development host toolchain.
-`platforms/linux/host-kit/` provides the source-level adapters needed to embed Migo in a Linux UI
-owned by the application; it does not create the application, top-level window, or event loop.
+The Linux SDK (`libmigo.so` + `libmigo.a`, x86_64) is published and provides a linkable C ABI. `platforms/linux/host-kit/` builds on it with source-level Qt/X11 adapters; **the host is still responsible for creating the window and event loop**.
 
-This page drives the minimum C ABI pipeline created by the host and verifies surface attachment and
-lifecycle. It does not claim that Linux has releasable runtime hosting, or that Host Kit creates
-production windows and event loops for the application.
+The three CMake targets in Host Kit are source-level integration components; they do not create a top-level window or event loop. The SDK is available independently of Host Kit. This page drives the minimum C ABI pipeline created by the host and verifies surface attachment and lifecycle.
 
 The three currently declared CMake targets are:
 

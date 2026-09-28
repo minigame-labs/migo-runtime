@@ -11,8 +11,8 @@ sourcePaths:
   - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
 ---
 
-:::caution[平台范围]
-`GameLogHandler` 是 Android Java facade 的合同。C ABI 与跨平台层在 `0.9` 没有公开的游戏日志出口。
+:::note[平台范围]
+`GameLogHandler` 是 Android Java facade 的合同。C ABI 层在 `MigoHostCallbacks.on_game_log`（`session.h`）中提供 `MigoOnGameLogFn` 钩子，宿主可从中接收每条 JSON 游戏日志；不安装则静默丢弃。**不要在日志条目中记录密钥、令牌或用户标识符**——宿主上传日志前须做好脱敏与最小化。
 :::
 
 ## 宿主要实现什么
@@ -38,4 +38,4 @@ void onLog(String logJson);
 | 层 | 状态 |
 | --- | --- |
 | Android Java facade | ✓ |
-| C ABI | none |
+| C ABI | `MigoOnGameLogFn`（`MigoHostCallbacks.on_game_log`，`session.h`） |

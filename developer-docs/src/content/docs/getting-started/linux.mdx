@@ -13,12 +13,9 @@ sourcePaths:
   - include/migo/platform/wayland.h
 ---
 
-Linux 在 0.9 版本中**不是独立的运行目标**，而是开发宿主工具链。
-`platforms/linux/host-kit/` 提供在应用拥有的 Linux UI 中嵌入 Migo 所需的源码级适配器；
-它不创建应用、顶层窗口或事件循环。
+Linux SDK（`libmigo.so` + `libmigo.a`，x86_64）已发布，提供可链接的 C ABI；`platforms/linux/host-kit/` 在此基础上提供源码级 Qt/X11 适配器，**宿主仍需自行创建窗口和事件循环**。
 
-本文的目标是驱动宿主创建的最小 C ABI 管线，验证 surface 挂载和生命周期；不是声称
-Linux 已有可发布的 runtime hosting，或 Host Kit 会替应用创建生产窗口和事件循环。
+Host Kit 的三个 CMake 目标为源码级集成组件，不创建顶层窗口或事件循环；SDK 本身独立于 Host Kit 可用。本文目标是驱动宿主创建的最小 C ABI 管线，验证 surface 挂载和生命周期。
 
 当前已声明的三个 CMake 目标：
 

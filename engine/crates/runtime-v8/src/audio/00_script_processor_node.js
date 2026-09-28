@@ -4,8 +4,8 @@ import { AudioNode } from "ext:host_v8_audio/00_audio_node.js";
  * ScriptProcessorNode (DEPRECATED)
  *
  * This is a stub implementation. The ScriptProcessorNode is deprecated
- * in the Web Audio specification in favor of AudioWorklet.
- * It passes audio through without processing.
+ * in the Web Audio specification. It passes audio through without processing;
+ * the onaudioprocess callback is never invoked.
  */
 class ScriptProcessorNode extends AudioNode {
   #bufferSize;
@@ -18,7 +18,7 @@ class ScriptProcessorNode extends AudioNode {
     });
     this.#bufferSize = bufferSize;
     console.warn(
-      "ScriptProcessorNode is deprecated. Use AudioWorkletNode instead."
+      "ScriptProcessorNode is deprecated; this runtime does not invoke onaudioprocess."
     );
   }
 

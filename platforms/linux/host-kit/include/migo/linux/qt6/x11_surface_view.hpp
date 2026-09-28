@@ -30,7 +30,7 @@ namespace migo::linux_host::qt6 {
 ///
 /// The widget is a native X11 child window placed by the host's layout. It does
 /// not create/configure the Session, install its callback table, load content,
-/// or translate input. Those belong to the future Managed Host Kit and to the
+/// or translate input. Those belong to the Managed ownership shape and to the
 /// host that selected Bound ownership. Call `close()` (or `beginDetach()` and
 /// `pollDetach()`) and wait for `surfaceReleased` before destroying a parent
 /// that owns this widget's native window. SurfaceHost and QApplication must

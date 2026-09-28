@@ -310,7 +310,7 @@ MIGO_API MigoResult MIGO_CALL migo_surface_update(
     const MigoSurfaceMetrics *metrics);
 ```
 
-Reports a resize or presentation-parameter change to an attached surface. This call is synchronous: on return, the new metrics have either been committed and the resize command queued, or nothing has happened (there is no partial commit). `metrics.generation` should use a monotonically increasing sequence so the engine can identify and discard resize events superseded by newer updates.
+Reports a resize or presentation-parameter change to an attached surface. This call is synchronous: on return, the new metrics have either been committed and the resize command queued, or nothing has happened (there is no partial commit). `metrics.generation` must carry the generation of the attachment being updated (the same value as the `MigoSurfaceDescriptor.generation` supplied at attach time); use the same value on every update — it does not increment. Only a new attach creates a new generation.
 
 Parameters:
 

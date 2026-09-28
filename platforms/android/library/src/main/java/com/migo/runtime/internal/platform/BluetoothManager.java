@@ -842,7 +842,7 @@ public class BluetoothManager {
             JSONObject opts = new JSONObject(optionsJson);
             String deviceId = opts.getString("deviceId");
             BluetoothDevice device = adapter.getRemoteDevice(deviceId);
-            // createBond() is API 19+, safe since minSdk=21
+            // createBond() is API 19+, safe since the SDK minimum is API 26
             device.createBond();
         } catch (JSONException e) {
             throw new RuntimeException("makeBluetoothPair:fail invalid options");

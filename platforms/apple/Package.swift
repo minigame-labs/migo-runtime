@@ -209,9 +209,8 @@ let package = Package(
         // at all -- it reads this process's own signature -- so it runs there
         // correctly and answers the same question.
         //
-        // It exists because `MigoMacV8` was a target no lane had ever EXECUTED,
-        // which is how a one-line `Placeholder.swift` sat in it while
-        // `Sources/MigoMacV8/README.md` promised a profile resolver.
+        // It exists because `MigoMacV8` now contains executable availability and
+        // game-view code, and its profile-resolver promise needs a test target.
         .testTarget(
             name: "MigoMacV8Tests",
             dependencies: ["MigoMacV8"],

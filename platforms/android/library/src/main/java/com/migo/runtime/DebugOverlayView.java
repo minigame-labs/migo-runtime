@@ -115,7 +115,7 @@ public class DebugOverlayView extends LinearLayout {
      * Attach this view as a sub-panel window so it always floats above the
      * SurfaceView used for game rendering.
      *
-     * @param anchorToken window token of the host Activity's decor view
+     * @param anchor      view whose window token hosts this panel
      */
     public void attachToWindow(View anchor) {
         if (attached) return;

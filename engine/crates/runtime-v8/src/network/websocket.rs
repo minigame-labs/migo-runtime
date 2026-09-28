@@ -102,10 +102,8 @@ pub async fn op_ws_create(
     #[string] url: String,
     #[serde] protocols: Vec<String>,
     #[serde] headers: Vec<(String, String)>,
-    // `Option` rather than a bare u32 so a stale V8 snapshot, whose baked
-    // JavaScript still calls the three-argument form, falls back to the default
-    // timeout: deno coerces a missing `Option` smi to `None`, where a missing
-    // required smi throws.
+    // `Option` rather than a bare `u32`: deno coerces a missing `Option` smi
+    // to `None` and would throw for a missing bare `u32`. Defaults to no timeout.
     #[smi] timeout_ms: Option<u32>,
 ) -> Result<WsCreateResult, JsErrorBox> {
     let (resources, policy) = session(&state);

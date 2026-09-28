@@ -45,7 +45,7 @@ class Camera {
    * Start listening for camera frame changes.
    * Begins high-frequency frame data streaming from the native camera.
    *
-   * @param {Worker} [worker] - Optional Worker for iOS ExperimentalWorker frame data
+   * @param {Worker} [worker] - Accepted for API compatibility (unused).
    */
   listenFrameChange(worker) {
     try {

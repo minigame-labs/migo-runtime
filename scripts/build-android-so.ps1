@@ -1,13 +1,13 @@
 # ============================================================
 # Android dynamic library build script
-# Location: engine/scripts/build-android.ps1
+# Location: scripts/build-android-so.ps1
 #
 # Usage:
-#   ./build-android.ps1
-#   ./build-android.ps1 arm64-v8a
-#   ./build-android.ps1 arm64-v8a x86_64 release
-#   ./build-android.ps1 all release
-#   ./build-android.ps1 arm64-v8a release --codegen-profile=2
+#   ./build-android-so.ps1
+#   ./build-android-so.ps1 arm64-v8a
+#   ./build-android-so.ps1 arm64-v8a x86_64 release
+#   ./build-android-so.ps1 all release
+#   ./build-android-so.ps1 arm64-v8a release --codegen-profile=2
 # ============================================================
 
 param(

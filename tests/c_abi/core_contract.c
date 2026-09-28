@@ -45,10 +45,6 @@ _Static_assert(MIGO_PLATFORM_IS_WINDOWS == 0, "only _WIN32 targets classify as W
 _Static_assert(MIGO_C_ABI_HAS_RUNTIME == 0, "no runtime on unclassified targets");
 #endif
 _Static_assert(MIGO_ABI_VERSION_1 == UINT32_C(1), "ABI version value");
-/* 72, not 64: on_request_frame was appended in the frame-pacing slice. Appending
- * is what keeps this compatible -- an older host's struct_size still describes a
- * valid prefix, and such a host simply does not drive frames. Growing the struct
- * anywhere but the end would silently reinterpret existing fields. */
 _Static_assert(sizeof(MigoResult) == 4, "fixed-width result");
 _Static_assert(MIGO_OK == INT32_C(0), "success value");
 _Static_assert(MIGO_ERROR_INVALID_ARGUMENT == -INT32_C(1), "invalid argument value");

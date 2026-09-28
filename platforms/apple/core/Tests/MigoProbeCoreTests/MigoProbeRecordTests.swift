@@ -198,7 +198,7 @@ final class MigoProbeRecordTests: XCTestCase {
         let encoded = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         let answers = encoded["capabilities"] as! [String: Any]
 
-        // The sample answered exactly one. All eleven must still be present,
+        // The sample answered exactly one. All ten must still be present,
         // because an absent key and a `false` read the same to a human.
         XCTAssertEqual(
             Set(answers.keys), declared,
@@ -225,7 +225,7 @@ final class MigoProbeRecordTests: XCTestCase {
         //     from the one place that defines them.
         //
         // So this asks the contract what an answer needs, and asks it of all
-        // eleven.
+        // ten.
         let schema = try loadContract("capability-probe.schema.json")
         let required = Set((schema["answer"] as! [String: Any])["required"] as! [String])
         XCTAssertFalse(required.isEmpty, "the contract declares no required answer fields")

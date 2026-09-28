@@ -359,7 +359,7 @@ public final class MigoRuntime {
      * <p>
      * The gain is not that any of that work got cheaper -- it is that an
      * Activity spends real time between {@code onCreate} and
-     * {@code surfaceCreated} (~150 ms on a Mate 30 Pro, more when it rotates
+     * {@code surfaceCreated} (~150 ms on a reference Android device, more when it rotates
      * for a landscape game) during which the engine used to be doing nothing at
      * all, because it had not been allowed to start yet.
      * <p>
@@ -569,7 +569,7 @@ public final class MigoRuntime {
     }
 
     private void enterImmersiveMode(Activity activity) {
-        // Use DisplayCompat for API 21+ compatibility
+        // Use DisplayCompat for the supported Android API range.
         DisplayCompat.enterImmersiveMode(activity);
     }
 

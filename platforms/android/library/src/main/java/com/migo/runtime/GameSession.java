@@ -298,7 +298,8 @@ public final class GameSession implements Closeable {
 
     /**
      * Returns a snapshot of current engine performance metrics.
-     * Returns null if the session is not running or stats are unavailable.
+     * Returns null if the stats are unavailable or the session is destroyed; a session that has not
+     * started yet may also return null when the native stats packet is unavailable.
      * <p>
      * This method polls the native engine and parses the binary stats protocol.
      * Safe to call from any thread, but avoid calling more than once per second
@@ -346,7 +347,7 @@ public final class GameSession implements Closeable {
                     ErrorCode.getMessage(ErrorCode.ERR_ENTRY_NOT_FOUND) + ": entryPoint is null or empty");
         }
 
-        // Optional: Validate code directory and entry point exist (for better error messages)
+        // Validate the code directory and entry point before native execution.
         File codeDir = paths.getCodeDir();
         if (!codeDir.exists() || !codeDir.isDirectory()) {
             throw new MigoException(ErrorCode.ERR_CODE_DIR_NOT_FOUND,

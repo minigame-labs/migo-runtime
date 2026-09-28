@@ -69,9 +69,9 @@ final class MigoDisplayLinkProxy: NSObject {
 ///
 /// **What it does not decide.** The cadence comes from `MigoDisplayLinkPolicy`, which
 /// takes the host's target and says what is admissible. And this is the presenter's
-/// clock, not the Performance+ frame clock: G0 has to choose that one between a
-/// Worker rAF, a Window rAF relay and a host relay, and that choice is a measurement
-/// nobody has taken.
+/// clock, not the Performance+ frame clock: the G0 probe (2026-09-10) selected
+/// host-driven as the Performance+ frame clock, so the two converge on the same
+/// vsync source; policy and delivery remain separate concerns.
 public final class MigoDisplayLink {
 
     /// One vsync. `targetTimestamp` is when the frame being drawn is due to appear,

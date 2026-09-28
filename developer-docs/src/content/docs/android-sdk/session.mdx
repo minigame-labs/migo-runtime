@@ -35,9 +35,12 @@ session.startGame("game.js");        // game.js 在 session.getPaths().getCodeDi
 
 ```java
 surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
-    public void surfaceCreated(SurfaceHolder h)  { /* createSession */ }
-    public void surfaceChanged(SurfaceHolder h, int fmt, int w, int h) {
-        session.updateSurface(h.getSurface(), w, h);
+    public void surfaceCreated(SurfaceHolder h)  {
+        session = runtime.createSession(activity, h.getSurface(), config, gameId);
+        session.startGame("game.js");
+    }
+    public void surfaceChanged(SurfaceHolder holder, int fmt, int w, int h) {
+        session.updateSurface(holder.getSurface(), w, h);
     }
     public void surfaceDestroyed(SurfaceHolder h) {
         session.onSurfaceDestroyed();       // 引擎推进 surface 丢失路径;JS 的 onHide 在这里停

@@ -23,7 +23,7 @@ final class NativeBridge {
     /**
      * Get the native engine version string.
      *
-     * @return Version string (e.g., "0.1.0")
+     * @return Version string derived from the release version source
      */
     static native String version();
 

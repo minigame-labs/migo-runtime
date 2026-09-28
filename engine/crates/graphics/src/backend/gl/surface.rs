@@ -93,7 +93,7 @@ const DEFAULT_SKIA_RESOURCE_CACHE_BUDGET_BYTES: usize = 32 * 1024 * 1024;
 /// scripts/fixtures/skia-floor-probe-{30,80,80-dynamic}), read via
 /// `dumpsys meminfo` and render-thread CPU% (`/proc/<pid>/stat`
 /// utime+stime, median of three 2s windows — frame time is not the right
-/// instrument at 60 vsyncs/s; see the JITLESS.md precedent for why):
+/// instrument at 60 vsyncs/s):
 ///
 /// * **The overshoot is real, not theoretical, at the old floor** — and it
 ///   materialised the same way whether the 80 canvases redrew *unchanging*
@@ -311,22 +311,17 @@ fn alloc_ctx_tag() -> u32 {
     CTX_TAG_ALLOC.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Thin newtype around `skia_safe::gpu::DirectContext` (P2-3).
+/// Thin newtype around `skia_safe::gpu::DirectContext`.
 ///
 /// Exists to give the rest of the renderer a bounded API surface
-/// that documents *which* Ganesh operations we actually use —
-/// callers that want to reach past this wrapper still can via
-/// [`Self::inner_mut`], but the presence of this type lets a
-/// reviewer audit new Skia entry points by grepping for
-/// `CanvasGr::` rather than trawling every file that imports
-/// `skia_safe::gpu::DirectContext`.
+/// documenting which Ganesh operations the engine uses —
+/// callers that need to reach past this wrapper can do so via
+/// [`Self::inner_mut`], and grepping for `CanvasGr::` locates
+/// every Skia entry point the renderer calls.
 ///
-/// The current engine already stores `gr_ctx: DirectContext`
-/// directly on `Canvas2DContext` for backwards-compat with the
-/// existing call graph; migrating each call site to use
-/// `CanvasGr` is a follow-up (see `AUDIT.md` P2-3).  Until then
-/// the newtype is exposed here as a documentation anchor and a
-/// place to hang a narrow API once the migration starts.
+/// Some call sites on `Canvas2DContext` still hold `gr_ctx:
+/// DirectContext` directly rather than going through this wrapper;
+/// those sites are the ones not yet reflected in the `CanvasGr` API.
 #[allow(dead_code)]
 pub(crate) struct CanvasGr {
     inner: DirectContext,
@@ -706,8 +701,7 @@ impl Canvas2DContext {
     /// **Why.** Measured on a Mate 30 Pro, an offscreen canvas costs 4.86 MB of
     /// `Graphics` and **96% of that is its own `GrDirectContext`** -- the EGL
     /// context under it is 0.20 MB and the 128x64 backing is 32 KB. 80 canvases
-    /// therefore hold 398 MB where the pixels account for 2.5 MB. The full
-    /// attribution is in `docs/performance/android/multicanvas-fixed-cost.md`.
+    /// therefore hold 398 MB where the pixels account for 2.5 MB.
     /// One context with many surfaces is also Skia's own usage model; a context
     /// per surface was the unusual part.
     ///

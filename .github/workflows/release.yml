@@ -938,7 +938,7 @@ jobs:
       - name: Linux player type-checks
         run: cd engine && cargo check -p migo-player --locked
 
-  # ── Job 4: Host engine tests — graphics, core, capi, platform, audio ─
+  # ── Job 3: Host engine tests — graphics, core, capi, platform, audio ─
   # These five crates' test suites ran in no release job: the AAR build cross-
   # compiles them and runs nothing. Mirrors pr-ci.yml's host-engine-tests job
   # exactly (same packages, same system deps, same flags) so the tag gate is
@@ -1029,7 +1029,7 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
-  # ── Job 5: Release AAR build ────────────────────────────────────────
+  # ── Job 4: Release AAR build ────────────────────────────────────────
   release-android:
     needs: [quality-gate, linux-qt-host-kit, host-engine-tests]
     runs-on: ubuntu-latest
@@ -1303,6 +1303,7 @@ jobs:
   # can never pass is worse than no gate; v0.9.4 published without this job.
   # Once both are in place, set repo variable MIGO_DEVICE_EVIDENCE=true and add
   # `release-android-device-evidence` back to `publish`'s `needs`.
+  # ── Job 5: Android device evidence (physical-device lane; gated off until a device farm exists)
   release-android-device-evidence:
     needs: [release-android]
     if: ${{ vars.MIGO_DEVICE_EVIDENCE == 'true' }}
@@ -1384,6 +1385,7 @@ jobs:
   # without an embedded V8 snapshot (see build-linux-sdk.sh's own header
   # comment) -- generating one needs to run natively on real AArch64 Linux,
   # which is a separate piece of work, not a gap in this job.
+  # ── Job 6: Linux SDK package
   release-linux:
     needs: [quality-gate, host-engine-tests]
     runs-on: ubuntu-24.04
@@ -1467,6 +1469,7 @@ jobs:
   #
   # Also the first release to carry OHOS arm64. Every release so far shipped only
   # ohos-x86_64, which is the emulator architecture -- real HarmonyOS devices are arm64.
+  # ── Job 7: OpenHarmony SDK package (first release carrying arm64)
   release-ohos:
     needs: [quality-gate, host-engine-tests]
     runs-on: ubuntu-latest
@@ -1552,6 +1555,7 @@ jobs:
   # a branch inside this one.
   # Same job as pr-ci.yml's; see the comment there. A Windows SDK is not
   # published on the strength of a sandbox the runner never executed.
+  # ── Job 8: Windows unit tests — migo-shared / migo-io on the stock runner
   windows-unit-tests:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -1569,6 +1573,7 @@ jobs:
         working-directory: engine
         run: cargo test -p migo-shared -p migo-io --lib --locked
 
+  # ── Job 9: Windows SDK package (x86_64)
   release-windows:
     needs: [quality-gate, host-engine-tests, windows-unit-tests]
     runs-on: windows-latest
@@ -1667,6 +1672,7 @@ jobs:
   # aarch64-pc-windows-msvc entry (a target this rare), so the from-source
   # Skia build via ninja that release-windows treats as a defensive fallback
   # is the expected path here -- hence the longer timeout.
+  # ── Job 10: Windows SDK package (arm64)
   release-windows-arm64:
     needs: [quality-gate, host-engine-tests, windows-unit-tests]
     runs-on: windows-11-arm
@@ -1746,6 +1752,7 @@ jobs:
   # release can never ship a partial SDK. Everything that proves the SDK works
   # is asked of the ZIP in that second job -- the thing published, not the tree
   # it was packed from.
+  # ── Job 11: Apple SDK build
   release-apple:
     needs: [quality-gate]
     runs-on: macos-15
@@ -1815,6 +1822,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # ── Job 12: Apple SDK packaging
   release-apple-package:
     needs: [release-apple]
     runs-on: macos-15
@@ -1898,6 +1906,7 @@ jobs:
   # thing that publishes.
   #
   # Adding a platform is now additive: one job, one entry in `needs`.
+  # ── Job 13: Publish the GitHub release
   publish:
     # release-android-device-evidence is intentionally absent: it is opt-in (see
     # its own comment) and cannot run until its runner and suite exist. Add it
@@ -2082,6 +2091,7 @@ jobs:
   # test-release-asset-ordering-contract.sh refused it -- deny-by-default, `bash
   # <script>` cannot be proven read-only against the staging directory -- and it was
   # right to: the step was in the wrong place, not the gate too strict.)
+  # ── Job 14: Verify the published assets
   verify-published:
     needs: [publish]
     runs-on: ubuntu-latest

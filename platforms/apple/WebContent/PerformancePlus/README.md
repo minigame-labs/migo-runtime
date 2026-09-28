@@ -7,7 +7,7 @@ and minified by `scripts/build-apple-sdk.sh` into
 🏁 **G0 has run (2026-09-10).** This file used to say it had not, while
 `../../Sources/MigoApplePerformancePlus/README.md` said the topology was decided;
 both were about the same choice, so one of them was wrong, and that contradiction
-is what surfaced the adversarial review. Now they agree with the evidence in
+is what surfaced the design review. Now they agree with the evidence in
 `docs/performance/apple/g0/`.
 
 **The agent is a Dedicated Worker and the transport is a hybrid that switches at
@@ -21,10 +21,9 @@ frame's worth of draw commands", so the rule reads as *commands over the socket,
 textures over the scheme*.
 
 **Worker rAF exists and does not need feature-detecting away**: `worker_raf` came
-back available on the device, at both origins. It is still measured against the
-Window relay and the host `CADisplayLink` relay, because which clock *wins* is
-gate 2's question and not gate 1's — but the producer no longer has to be written
-for a Worker that might not have it.
+back available on the device, at both origins. The G0 probe selected the
+host-driven frame clock over the Worker and Window rAF alternatives; the producer
+uses the host-driven clock.
 
 The producer still supports a Window agent, and the reason changed. It is no
 longer that G0 might select one: the review of 2026-09-07 was right that

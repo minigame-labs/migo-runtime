@@ -11,7 +11,7 @@ import android.widget.Toast;
 /**
  * Clipboard utilities.
  * <p>
- * Provides clipboard read/write operations compatible with Android API 21+.
+ * Provides clipboard read/write operations compatible with Android API 26+.
  * setClipboardData shows a toast "内容已复制" for 1.5 seconds.
  *
  * @hide

@@ -39,7 +39,7 @@ public final class NativeLoadCoordinator {
     public enum State {
         /** No attempt has succeeded yet. */
         NOT_LOADED,
-        /** The engine is in the process. */
+        /** The engine has been loaded into the process. */
         LOADED,
         /** The last attempt failed; another may be made. */
         FAILED
@@ -108,7 +108,7 @@ public final class NativeLoadCoordinator {
      * @param abi         the device's primary ABI, used only on the provided path
      * @param expectations consulted only on the provided path, so the default
      *                     path never pays for reading the manifest
-     * @return true when the engine is in the process
+     * @return true when the engine has been loaded into the process
      */
     public synchronized boolean ensureLoaded(String abi, ExpectationSource expectations) {
         if (state == State.LOADED) {

@@ -68,11 +68,10 @@ play audio**.
 ## The generation Counter (Android-Specific Pitfall)
 
 Android destroys and recreates `ANativeWindow` every time the app moves to the background and
-returns to the foreground. Each `surfaceCreated` / `surfaceChanged` callback delivers a new window;
-`generation` must **strictly increment** and must never be hard-coded to the constant `1`.
+returns to the foreground. Each `surfaceCreated` callback delivers a new `ANativeWindow` and requires a new attach; `generation` must **strictly increment** and must never be hard-coded to the constant `1`. A `surfaceChanged` callback that is only a resize or parameter change (same window, not destroyed) calls `migo_surface_update` with the **same generation** — no new attach. Only when a new `ANativeWindow` arrives (following `surfaceCreated`) is a detach + attach (new generation) required.
 
 ```c
-/* host-owned counter, incremented across surfaceCreated/surfaceChanged */
+/* host-owned counter, incremented on each surfaceCreated (new ANativeWindow) */
 static uint64_t g_surface_gen = 0;
 ```
 

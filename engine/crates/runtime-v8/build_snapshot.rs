@@ -1,11 +1,11 @@
 // Shared V8-snapshot input fingerprint helpers.
 //
 // `include!`d verbatim by both `build.rs` (the compile-time embed decision) and
-// the `tests_snapshot_fingerprint` test module, so the two stay byte-identical.
-// (`include!` is why this uses `//` rather than `//!` — inner doc comments are
-// rejected when pasted inside a `mod` block.) Kept dependency-light (only `sha2`
-// + `std`): `build.rs` pulls `sha2` in as a build-dependency and the test pulls
-// it in as a dev-dependency.
+// the `src/tests/snapshot_fingerprint.rs` test module, so the two stay
+// byte-identical. (`include!` is why this uses `//` rather than `//!` — inner
+// doc comments are rejected when pasted inside a `mod` block.) Kept
+// dependency-light (only `sha2` + `std`): `build.rs` pulls `sha2` in as a
+// build-dependency and the test pulls it in as a dev-dependency.
 //
 // The result MUST equal the shell pipeline in
 // `scripts/lib/snapshot-fingerprint.sh`:

@@ -686,12 +686,11 @@ MIGO_API MigoResult MIGO_CALL migo_session_destroy(MigoSession *session);
 
 - `MIGO_OK` — Session 已销毁；回调已取消；宿主线程已移交 Engine
 - `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL
-- `MIGO_ERROR_INVALID_STATE` — Session 已销毁；surface 过渡仍在进行；仍有活跃 attachment；退役 surface 仍处于 PENDING 状态；或从引擎 worker 线程重入调用
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁；surface 过渡仍在进行；仍有活跃 attachment；退役 surface 仍处于 PENDING 状态
 
 线程模型：
 
-不可从引擎 worker 线程调用（即宿主 dispatcher 可能分配任务的引擎线程）；否则返回
-`MIGO_ERROR_INVALID_STATE`，Session 保持完整，宿主须在回调展开后从自身线程重试。
+从宿主线程调用；宿主回调中重入 destroy 是合法的——Session 立即失效，当前回调栈正常展开而不触发新回调（见 session.h 销毁合同）。
 
 ```c
 /* 1. 退役所有 surface 并等待 RELEASED（见 surface.mdx） */

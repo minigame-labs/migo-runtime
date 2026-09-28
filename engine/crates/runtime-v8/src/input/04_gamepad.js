@@ -1,9 +1,9 @@
 // The W3C Gamepad API.
 //
-// Mainstream mini-game platforms have no gamepad API, so the reference here is the Web platform Migo
-// replaces: content that runs in a WebView calls navigator.getGamepads() and
-// listens for gamepadconnected. Inventing a Migo-shaped API instead would make
-// existing HTML5 games not work for no reason.
+// Mainstream mini-game platforms have no gamepad API, so this follows the
+// standard Web API used by HTML5 content: navigator.getGamepads() and
+// gamepadconnected. Inventing a Migo-shaped API instead would make existing
+// HTML5 games not work for no reason.
 //
 // The API is POLLED, not evented: content calls getGamepads() every frame and
 // reads whatever is current. So state lives here and the host pushes updates

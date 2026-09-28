@@ -623,7 +623,7 @@ public final class NativeMethods {
      *
      * @param sessionId The session ID
      * @param direction Direction in degrees (0-360, 0 = north)
-     * @param accuracy  Accuracy string: "high", "medium", "low", "no-contact", "unreliable", or "unknow X"
+     * @param accuracy  Accuracy string: "high", "medium", "low", "no-contact", "unreliable", or "unknown <status>"
      */
     public static void onCompassChange(
             int sessionId, long generation, double direction, String accuracy) {
@@ -1022,7 +1022,8 @@ public final class NativeMethods {
      * Record the host's standing decision for one scope.
      * <p>
      * Goes into the native cache that capability checks read. Not routed to
-     * JavaScript: state content could reach is state content could rewrite.
+     * JavaScript: routing the standing decision back would let content rewrite
+     * the state it is supposed to be asking about.
      *
      * @param sessionId The session ID
      * @param scope     platform scope name, e.g. "scope.camera"

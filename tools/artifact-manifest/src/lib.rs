@@ -18,19 +18,20 @@ pub const PACKAGE_INDEX_SCHEMA_V1: &str = "migo-artifact-package-index/v1";
 pub const RELEASE_ATTESTATION_SCHEMA_V1: &str = "migo-release-attestation/v1";
 pub const LINUX_PACKAGE_SCHEMA_V2: &str = "migo-linux-package-manifest/v2";
 
-/// Loader ABI floor for the Linux GNU slice.
-///
-/// These are policy, not measurement: the build is pinned to a Debian bullseye
-/// sysroot and the SDK contract audits the shipped binaries for any `GLIBC_*` or
-/// `GLIBCXX_*` requirement above them. Measured values today sit below both
-/// (2.27 / 3.4.26), and the headroom is deliberate -- the floor is what is
-/// promised to consumers, so it may only be raised as a breaking change.
-/// Which C runtime the Windows V8 is compiled against. Unlike the Linux floors
+/// Which C runtime the Windows V8 is compiled against. Unlike the Linux floors,
 /// this is not a version the loader enforces -- the MSVC runtime is a
 /// redistributable the host ships -- so what matters is that every artifact in
 /// one binary agrees on it. Mixing /MD and /MT is what produced the LNK4098
 /// libcmt conflict this build recipe exists to avoid.
 pub const WINDOWS_MSVC_RUNTIME: &str = "MD (dynamic CRT)";
+
+/// Loader ABI floors for the Linux GNU slice.
+///
+/// These are policy, not measurement: the build is pinned to a Debian bullseye
+/// sysroot and the SDK contract audits the shipped binaries for any `GLIBC_*`
+/// or `GLIBCXX_*` requirement above them. Measured values today sit below both
+/// (2.27 / 3.4.26), and the headroom is deliberate -- the floor is what is
+/// promised to consumers, so it may only be raised as a breaking change.
 pub const LINUX_GLIBC_FLOOR: &str = "2.31";
 pub const LINUX_GLIBCXX_FLOOR: &str = "3.4.28";
 

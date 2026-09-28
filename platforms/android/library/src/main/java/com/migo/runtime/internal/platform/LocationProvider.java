@@ -24,7 +24,7 @@ import java.util.function.Consumer;
 /**
  * Async location provider for getLocation / getFuzzyLocation.
  *
- * <p>Design decisions for broad Android compatibility (API 21+, domestic & international):
+ * <p>Design decisions for broad Android compatibility (API 26+, domestic & international):
  * <ul>
  *   <li>Uses {@link LocationManager} directly (not Google Play Services / FusedLocationProvider)
  *       to work on devices without GMS (Huawei, many domestic Chinese phones).</li>

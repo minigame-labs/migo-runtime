@@ -26,18 +26,18 @@ sourcePaths:
 | **Android** | AAR + Java facade (`MigoRuntime` / `GameSession`) | gradle `implementation` + `SurfaceView` three-step | None — primary path |
 | **OpenHarmony** | Complete DevEco host project (`entry/` + hvigor) | Open the project, follow the project README | Multi-finger on real aarch64 hardware verified on API20 emulator only |
 | **Windows** | Published `migo.dll` (x64/arm64) + `rusty_v8.dll` + C ABI headers | CMake `migo::migo` target + `HWND` attach | WinUI integration and Win32 host-kit not included; EGLProvider implementation is the host's responsibility |
-| **Linux** | host-kit (toolchain) + wayland/x11 platform headers | Preview build for host integration | Not a shipping runtime; positioned as a development host |
-| **Apple (iOS/macOS)** | SwiftPM package + `MigoAppleCore` / `MigoAppleRenderer` (CI build) | SwiftPM dependency for core/renderer lanes | WebKit compatibility layer, performance lane, and MacV8 are all placeholders; not run on real hardware |
+| **Linux** | Linkable C ABI SDK (`libmigo.so`/`libmigo.a`, x86_64) + host-kit toolchain + wayland/x11 platform headers | `find_package(migo)` CMake + Host Kit source integration | Host Kit does not create a window or event loop; Qt Wayland/Quick/GTK 4 not yet supported |
+| **Apple (iOS/macOS)** | SwiftPM package: `MigoAppleCore` / `MigoApplePerformancePlus` (iOS) / `MigoMacV8` (macOS); `migo-<version>-apple-sdk.zip` published | SwiftPM dependency for SDK lanes | iOS Performance+ and macOS V8 implemented with recorded device execution; device performance not measured, no claims made |
 
 The Gaps column reflects rejected-promotion facts, not promises for a future release.
 
 ## Quick Decision
 
-- **Production today** → Android, no second choice; the [Android quickstart](/docs/en/getting-started/android/) is the primary path.
+- **Production today** → Android (device-measured primary path); Linux/Windows/OpenHarmony provide linkable C ABI SDKs; the [Android quickstart](/docs/en/getting-started/android/) is the primary path.
 - **HarmonyOS listing** → the OpenHarmony project genuinely runs: clone the repo, open DevEco, follow the [OpenHarmony quickstart](/docs/en/getting-started/openharmony/); but before buying hardware, verify multi-finger behavior on the API20 emulator — real-device multi-touch regression is your responsibility.
 - **Desktop channel (Windows)** → the published DLL integrates the C ABI directly; write your own Win32 window and input pump; the [Windows quickstart](/docs/en/getting-started/windows/) starts from the published package and the API surface pinned by `test-windows-sdk-contract.sh`.
-- **Apple ecosystem** → set expectations against the current integration surface, not a polished quickstart; the [Apple doc](/docs/en/getting-started/apple/) lists the **actually existing** SwiftPM lanes and their gaps, without fabricating an App Store-ready flow.
-- **Linux desktop host** → positioned as a **development host toolchain**, not a player-facing channel — it is the surface for cross-platform game logic verification, not a 0.9 shipping target.
+- **Apple ecosystem** → iOS Performance+ and macOS V8 have recorded device runs; the [Apple doc](/docs/en/getting-started/apple/) lists each lane's actual status; device performance has not been measured and no performance claims are made.
+- **Linux desktop host** → a linkable SDK is available; Host Kit provides source-level Qt/X11 adapters, **the host must create the window and event loop**; positioned as a development-verification host, not a player-facing shipping target.
 
 ## Shared C ABI Layer
 

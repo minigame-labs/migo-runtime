@@ -1,6 +1,6 @@
 //! Compiles the C host example and links the window-system libraries it needs.
 //!
-//! The C source lives outside the crate (`tests/c_host/main.c`) because it is
+//! The C source lives outside the crate (`tests/c_host/linux/main.c`) because it is
 //! documentation as much as it is a test: a host author should be able to read
 //! it without knowing anything about cargo.
 

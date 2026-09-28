@@ -1188,7 +1188,6 @@ fn next_temp_id() -> u64 {
 /// that size, and everything from 256 KiB to 4 MiB — which is most of a game's
 /// atlases and JSON bundles — was paying 1.4–2.2x for the branch.
 ///
-/// Re-run the bench before moving this. Absolute numbers are host-specific;
 
 /// Re-run the bench before moving this. Absolute numbers are host-specific;
 /// the shape (per-page fault overhead dominating until the file is large) is

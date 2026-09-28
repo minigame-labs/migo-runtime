@@ -1020,7 +1020,7 @@ jobs:
       - name: Linux player type-checks
         run: cd engine && cargo check -p migo-player --locked
 
-  # ── Job 4: Android AAR build — the real "does the whole project compile,
+  # ── Job 3: Android AAR build — the real "does the whole project compile,
   # link, and embed the profile/ABI snapshot" gate (cross-compiles graphics/audio
   # via the NDK, where skia/alsa deps are handled). ───────────────────
   build:
@@ -1192,30 +1192,7 @@ jobs:
             reports/*.json
           if-no-files-found: warn
 
-  # ── Job 5: host engine tests — graphics, core, capi, platform ────────
-  # These four crates' 240 lib tests ran in no job. The reason given for excluding
-  # them was that the Android AAR build is "their real gate", which is true for
-  # compilation and false for tests: build-aar.sh cross-compiles them and runs
-  # nothing. A test that runs nowhere is not a gate, so they run here.
-  #
-  # Its own job rather than a step in quality-gate, because Skia is built from
-  # source for the host (the skia-safe feature set has no matching prebuilt), which
-  # does not fit that job's 20-minute budget. Runs in parallel with the Android
-  # job, so the wall clock is unchanged.
-  #
-  # NO Rust cache, for the reason scripts/lib/v8-materialise.sh's header states:
-  # this job links V8, and Swatinem/rust-cache keeps the v8 build script's
-  # fingerprint while pruning the archive that script copied into
-  # `target/<profile>/gn_out/obj`, so a warm run replays a recorded link-search
-  # path with nothing behind it.
-  #
-  # This job did cache, on a comment saying the hazard did not reach it because
-  # "there is no fetch step: the v8 crate resolves its own archive under target/".
-  # A later commit added the verified fetch above -- taking the archive out of
-  # target/ and pointing RUSTY_V8_ARCHIVE at it -- and the justification stopped
-  # being true without anyone reading it again. The gate then failed on every run
-  # from 2026-09-18 with "could not find native static library `rusty_v8`",
-  # including on master, which is exactly the shape the header predicts.
+  # ── Job 4: presentation paths — a frame is only real when the window shows it ──
   # What content drew has to reach the window. `scripts/verify-bypass-present.sh`
   # runs the host player headless over seven fixtures and reads the presented
   # frame back, and it had never run on CI -- so #225 merged with bypass-probe
@@ -1277,6 +1254,7 @@ jobs:
   # where `..` is a file name, so a host cache root spelled `<files>\..\cache`
   # failed to pin and every Windows session refused to start -- found by the
   # examples repository on its first run against v0.9.7, not here. Neither crate
+  # ── Job 5: Windows unit tests — migo-shared / migo-io on the stock runner ──
   # links V8 or Skia, so this is a plain cargo test on the stock runner.
   windows-unit-tests:
     runs-on: windows-latest
@@ -1295,6 +1273,30 @@ jobs:
         working-directory: engine
         run: cargo test -p migo-shared -p migo-io --lib --locked
 
+  # ── Job 6: host engine tests — graphics, core, capi, platform ────────
+  # These four crates' 240 lib tests ran in no job. The reason given for excluding
+  # them was that the Android AAR build is "their real gate", which is true for
+  # compilation and false for tests: build-aar.sh cross-compiles them and runs
+  # nothing. A test that runs nowhere is not a gate, so they run here.
+  #
+  # Its own job rather than a step in quality-gate, because Skia is built from
+  # source for the host (the skia-safe feature set has no matching prebuilt), which
+  # does not fit that job's 20-minute budget. Runs in parallel with the Android
+  # job, so the wall clock is unchanged.
+  #
+  # NO Rust cache, for the reason scripts/lib/v8-materialise.sh's header states:
+  # this job links V8, and Swatinem/rust-cache keeps the v8 build script's
+  # fingerprint while pruning the archive that script copied into
+  # `target/<profile>/gn_out/obj`, so a warm run replays a recorded link-search
+  # path with nothing behind it.
+  #
+  # This job did cache, on a comment saying the hazard did not reach it because
+  # "there is no fetch step: the v8 crate resolves its own archive under target/".
+  # A later commit added the verified fetch above -- taking the archive out of
+  # target/ and pointing RUSTY_V8_ARCHIVE at it -- and the justification stopped
+  # being true without anyone reading it again. The gate then failed on every run
+  # from 2026-09-18 with "could not find native static library `rusty_v8`",
+  # including on master, which is exactly the shape the header predicts.
   host-engine-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 90

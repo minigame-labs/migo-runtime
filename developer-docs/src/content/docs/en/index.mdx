@@ -98,7 +98,7 @@ negotiated via `abi_version`. One page per header:
 | [Base Types and Export Macros](/docs/en/reference/types/) | Handles / error codes / export macros, `MIGO_ABI_*` constants, and `struct_size` evolution rules |
 | [Engine Initialization](/docs/en/reference/engine/) | `migo_engine_*` lifecycle: creation, ICU data, and the destruction thread-completion barrier |
 | [Session](/docs/en/reference/session/) | Session handle, `MigoHostCallbacks`, the host dispatcher, and shutdown ordering |
-| [Surface Interface](/docs/en/reference/surface/) | `migo_surface_attach`, platform descriptors, `frame_info`, and back-pressure |
+| [Surface Interface](/docs/en/reference/surface/) | `migo_session_attach_surface`, platform descriptors, `MigoSurfaceMetrics`, and back-pressure |
 | [Input Events](/docs/en/reference/input/) | The `migo_session_send_*` family: validation, FIFO, coordinate units, and per-event payloads |
 | [External Frame Injection](/docs/en/reference/external-frames/) | readPixels/getImageData-compatible path — ingress, sync-barrier, and resource lanes |
 | [Runtime Capability Query](/docs/en/reference/capabilities/) | `migo_query_capabilities`: runtime query of ABI version range and platform bitmask |
@@ -111,8 +111,7 @@ Semantic details (architecture, lifecycle, threading model) are in the
 :::note[Getting started]
 
 1. **[Android Quick Start](/docs/en/getting-started/android/)** — 9 steps from downloading the AAR
-   to lighting up a bundle (guides for other platforms will be added as platform artifacts mature,
-   one page per platform).
+   to lighting up a bundle; guides for [Linux](/docs/en/getting-started/linux/), [Windows](/docs/en/getting-started/windows/), [OpenHarmony](/docs/en/getting-started/openharmony/), and [Apple](/docs/en/getting-started/apple/) are already available.
 2. [Download and Verify](/docs/en/release/download-verification/) — obtaining release artifacts,
    fingerprint verification, and the minimum validation set before first deployment.
 

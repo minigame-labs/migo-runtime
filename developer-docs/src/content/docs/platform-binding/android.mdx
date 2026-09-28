@@ -54,10 +54,10 @@ MigoResult migo_android_init_context(void *vm, void *activity);
 
 ## generation 计数器（Android 特有陷阱）
 
-Android 在每次应用进入后台再回到前台时都会销毁并重建 `ANativeWindow`。每次 `surfaceCreated` / `surfaceChanged` 回调都是一个新窗口，`generation` 必须**严格递增**，不能写死为常量 `1`。
+Android 在每次应用进入后台再回到前台时都会销毁并重建 `ANativeWindow`。每次 `surfaceCreated` 回调都带来一个新的 `ANativeWindow`，需要新一轮 attach，`generation` 必须**严格递增**，不能写死为常量 `1`。`surfaceChanged` 若仅为尺寸/参数变更（原 window 未销毁），则调用 `migo_surface_update` 并携带**相同 generation**，不发起新 attach；只有新 `ANativeWindow` 到来（即 surfaceCreated 之后）才需要 detach + attach（新 generation）。
 
 ```c
-/* 宿主维护的计数器，跨 surfaceCreated/surfaceChanged 递增 */
+/* 宿主维护的计数器，每次 surfaceCreated（新 ANativeWindow）时递增 */
 static uint64_t g_surface_gen = 0;
 ```
 

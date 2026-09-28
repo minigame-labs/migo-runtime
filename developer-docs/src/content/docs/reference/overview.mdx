@@ -51,7 +51,7 @@ migo_query_capabilities(&caps);
 MigoEngineConfig eng_cfg = {0};
 eng_cfg.struct_size         = (uint32_t)sizeof(eng_cfg);
 eng_cfg.abi_version         = MIGO_ABI_VERSION_CURRENT;
-eng_cfg.flags               = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT;
+eng_cfg.flags               = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT;  /* 仅开发用：生产环境须提供签名公钥并清除此标志 */
 eng_cfg.files_dir_utf8      = "/data/user/0/com.example/files";
 eng_cfg.cache_dir_utf8      = "/data/user/0/com.example/cache";
 eng_cfg.code_cache_dir_utf8 = "/data/user/0/com.example/code_cache";
@@ -141,7 +141,7 @@ while (status.state != MIGO_SURFACE_RELEASE_RELEASED) {
 /* GPU 已完全释放，现在可以安全销毁原生窗口资源 */
 migo_surface_release_destroy(release);
 
-r = migo_session_destroy(session);   /* 拒绝：attachment 存活 / 释放仍 PENDING */
+r = migo_session_destroy(session);   /* 成功：release 已完成，所有 attachment 已退役 */
 r = migo_engine_destroy(engine);     /* 必须在所有 Session 销毁后调用；joining 所有工作线程 */
 ```
 

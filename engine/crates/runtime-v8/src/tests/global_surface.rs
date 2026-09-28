@@ -1,4 +1,4 @@
-//! Integration tests for the game-visible global surface (P0 audit hardening).
+//! Integration tests for the game-visible global surface.
 //!
 //! These tests boot a full runtime via `main_extensions()` so the runtime
 //! ESM entry point (`99_main.js`) executes and registers the real global

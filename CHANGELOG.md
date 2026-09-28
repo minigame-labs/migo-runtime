@@ -824,7 +824,7 @@ While the version is below 1.0.0:
 - MINOR version bumps may include breaking changes
 - PATCH version bumps are backward compatible
 
-[Unreleased]: https://github.com/minigame-labs/migo/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/minigame-labs/migo/compare/v0.9.12...HEAD
 [v0.9.3]: https://github.com/minigame-labs/migo/releases/tag/v0.9.3
 [v0.9.2]: https://github.com/minigame-labs/migo/releases/tag/v0.9.2
 [v0.9.0]: https://github.com/minigame-labs/migo/releases/tag/v0.9.0

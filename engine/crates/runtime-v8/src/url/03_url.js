@@ -156,22 +156,13 @@ class URL {
         return this._url;
     }
 
-    // TODO: Implement Blob URL creation and revocation
+    // Blob URL creation and revocation are not supported; no Blob type is present.
     static createObjectURL(blob) {
         throw new Error('createObjectURL is not supported in this environment');
-        // if (!(blob instanceof Blob)) {
-        //     throw new TypeError('Expected a Blob');
-        // }
-        // return new URL(`blob:${blob._rid}`);
     }
 
     static revokeObjectURL(url) {
         throw new Error('revokeObjectURL is not supported in this environment');
-        // if (typeof url !== 'string' || !url.startsWith('blob:')) {
-        //     throw new TypeError('Expected a blob URL');
-        // }
-        // const rid = url.slice(5); // Remove 'blob:' prefix
-        // remove_resource_from_table(rid);
     }
 }
 

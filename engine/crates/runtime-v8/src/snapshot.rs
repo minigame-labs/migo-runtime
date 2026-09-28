@@ -12,13 +12,16 @@
 //! 1. **Build-time** -- the `migo-snapshot-gen` binary creates a snapshot.
 //!    It calls [`lazy_extensions()`] to get extensions with JS but without
 //!    runtime state, feeds them to `deno_core::create_snapshot()`, and writes
-//!    the output to `snapshots/SNAPSHOT-<profile>-<arch>.bin`. Because snapshots are
-//!    platform-bound, the generator is cross-compiled to each Android ABI and
-//!    run on that ABI's emulator/device (see `tools/snapshot-gen`).
+//!    the output to `snapshots/SNAPSHOT-<profile>-<os>-<arch>.bin`. Because
+//!    snapshots are platform-bound, the generator is run on the target
+//!    platform (device/emulator for Android and OpenHarmony, natively for
+//!    Linux and Windows; see `tools/snapshot-gen`).
 //!
-//! 2. **Compile-time** -- for android targets, `build.rs` picks
-//!    `snapshots/SNAPSHOT-<profile>-<target arch>.bin` and embeds it via `include_bytes!`.
-//!    Missing snapshot or host builds fall back to JS source loading.
+//! 2. **Compile-time** -- for supported target OS/environment combinations,
+//!    `build.rs` picks `snapshots/SNAPSHOT-<profile>-<os>-<target arch>.bin`
+//!    and embeds it via `include_bytes!` after validating its manifest and V8
+//!    archive identity. Missing or unsupported snapshots fall back to JS source
+//!    loading.
 //!
 //! 3. **Runtime** -- `HostJsRuntime::new()` passes the snapshot bytes to
 //!    `RuntimeOptions::startup_snapshot`.  Extensions are created via

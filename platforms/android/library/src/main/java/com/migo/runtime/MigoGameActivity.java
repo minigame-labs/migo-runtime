@@ -246,9 +246,9 @@ public class MigoGameActivity extends Activity
      * Whether to start the engine here, in {@code onCreate}, instead of when the
      * Surface arrives. Off by default, and the default is the measured one.
      * <p>
-     * Starting it here was measured on a Mate 30 Pro and it lost, on both numbers
-     * it was meant to win: first frame 369 -> 401 ms and game-ready 788 -> 838 ms,
-     * interleaved, four rounds each. The ~150 ms between {@code onCreate} and
+     * Starting it here was measured on a reference Android device and it lost, on both
+     * numbers it was meant to win: first frame 369 -> 401 ms and game-ready
+     * 788 -> 838 ms. The ~150 ms between {@code onCreate} and
      * {@code surfaceCreated} is idle on the main thread but not on the CPU -- it
      * is process init, dex loading, layout and, for a landscape game, a window
      * rotation. Three more engine threads in that window take more from Android's
@@ -274,8 +274,8 @@ public class MigoGameActivity extends Activity
      * {@code attachSurfaceAndStart} -- so a subclass sees exactly the same
      * callbacks in the same order either way.
      *
-     * @return false if the subclass rejected the session, in which case the
-     *         launch has already been failed
+     * @return false if the session-created callback threw and the launch was
+     *         failed; true after the session and listener are published
      */
     private boolean publishSession() {
         lastOrientationEventValue = DisplayCompat.mapDeviceOrientationValue(
@@ -529,8 +529,8 @@ public class MigoGameActivity extends Activity
      * and after the surface was created at that smaller size. Hiding the bars
      * then resizes the window, so every launch produced a second
      * {@code surfaceChanged} and made the engine tear down and rebuild its
-     * GPU-side surface while the game was still starting. Measured on a Mate 30
-     * Pro, the surface went 2235x1080 -> 2340x1080 some 66 ms after the first
+     * GPU-side surface while the game was still starting. Measured on a reference Android device, the surface went 2235x1080 ->
+     * 2340x1080 some 66 ms after the first
      * one, all of it on the path to first frame.
      * <p>
      * Applying the same flags here, before {@code setContentView}, means the
@@ -546,7 +546,7 @@ public class MigoGameActivity extends Activity
      * {@code surfaceCreated} is delivered from the middle of a
      * {@code ViewRootImpl} traversal, and creating a session is not cheap: it
      * spawns the host thread and blocks until that thread has built the V8
-     * isolate and the graphics stack. Measured on a Mate 30 Pro that is ~114 ms
+     * isolate and the graphics stack. Measured on a reference Android device, that is ~114 ms
      * of the launch, and every millisecond of it is a millisecond the window
      * cannot finish its first draw -- the activity transition stalls and the
      * system reports the activity displayed that much later.

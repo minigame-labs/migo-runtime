@@ -21,8 +21,7 @@
 //! post-dedup state change since the previous one. A workload whose draws are
 //! separated only by `glBindTexture` would show near-zero adjacency before an
 //! atlas and high adjacency after. `scripts/measure-draw-batching.sh` reads
-//! those counters, and T10 in `scripts/DEVICE-VERIFICATION-RENDERING.md` is the
-//! device task that would produce the before number.
+//! those counters.
 //!
 //! Kept rather than deleted because, unlike the `upload_policy` module removed
 //! from `lib.rs`, nothing here is falsified — a shelf packer for small images is

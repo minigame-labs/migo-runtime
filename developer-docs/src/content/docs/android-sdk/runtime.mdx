@@ -2,7 +2,7 @@
 title: MigoRuntime
 sidebar:
   order: 1
-description: Android SDK 入口:单例、版本与状态查询、四种 createSession 变体、Safe 变体的错误返回语义。
+description: Android SDK 入口:单例、版本与状态查询、五种 createSession 变体、Safe 变体的错误返回语义。
 audience: host-integrator
 platforms:
   - android
@@ -31,7 +31,7 @@ String version = MigoRuntime.SDK_VERSION;   // BuildInfo.VERSION,编译期写入
 
 `getNativeLoadError()` 是诊断时唯一可靠的一手证据 — 比在崩溃堆栈里翻找 `UnsatisfiedLinkError` 可靠得多。
 
-## 会话创建:四变体
+## 会话创建:五变体
 
 ```java
 GameSession createSession(Activity, Surface, RuntimeConfig, String gameId);      // 立即建面

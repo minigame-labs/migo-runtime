@@ -58,8 +58,8 @@ architectures above a device can host at all, and every later gate draws its
 candidates from that answer. Benchmarking an arm the device cannot run
 benchmarks whatever ran instead.
 
-That gate is what this app runs. Nothing else here is implemented yet, and the
-performance arms deliberately are not: a transport measured before the
+That gate is what this app runs: capability and transport probing are both
+implemented. The performance arms deliberately are not: a transport measured before the
 capability gate has cut the candidate set is a transport measured against a
 fallback.
 

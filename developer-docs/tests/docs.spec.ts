@@ -3,7 +3,9 @@ import AxeBuilder from '@axe-core/playwright';
 
 // Starlight routes: the current docs at the /docs/ root (no version prefix),
 // zh primary, the English translation under /docs/en/, and the frozen 0.9
-// archive under /docs/0.9/ (zh) and /docs/en/0.9/ (TranslationPending stubs).
+// archive under /docs/0.9/ (zh) and /docs/en/0.9/ (generated English skeletons
+// carrying noindex until a human translation replaces them; see
+// scripts/ensure-en-stubs.mjs).
 
 async function openDocsPage(page: Page, path: string) {
   return page.goto(`/docs${path}`, {waitUntil: 'networkidle'});

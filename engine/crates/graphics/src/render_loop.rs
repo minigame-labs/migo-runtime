@@ -85,8 +85,6 @@ pub(crate) enum LoopCtl {
     Shutdown,
 }
 
-// G-4 dispatch lives in `render_thread::dispatch_one_cmd` so
-// the closure body can stay where it has always been (diff
-// minimisation for reviewers); only its signature changes from
-// 11 threaded arguments to a single `&mut RenderLoopState` plus
-// the externally-owned `gl` / `events` / `debug_stats` handles.
+// Command dispatch remains in `render_thread` because it owns the external
+// GL, event, and debug-stat handles; `RenderLoopState` holds the mutable
+// per-loop values shared by the handlers.

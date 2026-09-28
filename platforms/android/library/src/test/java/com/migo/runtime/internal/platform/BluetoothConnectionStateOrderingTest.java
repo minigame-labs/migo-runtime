@@ -193,9 +193,9 @@ public final class BluetoothConnectionStateOrderingTest {
     /**
      * Wait until {@code thread} is actually parked on a monitor.
      *
-     * <p>Polling for the state rather than sleeping for a plausible interval:
-     * a sleep asserts a scheduler, and this test's whole subject is what a
-     * scheduler is allowed to do between two steps.
+     * <p>Polling for the state rather than relying on a plausible fixed interval:
+     * the short sleeps only avoid a busy loop, while the observed state determines
+     * when the test proceeds.
      */
     private static void awaitBlockedOn(Thread thread) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);

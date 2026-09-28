@@ -2,7 +2,7 @@
 title: MigoRuntime
 sidebar:
   order: 1
-description: "Android SDK entry point: singleton, version and status queries, four createSession variants, and Safe-variant error-return semantics."
+description: "Android SDK entry point: singleton, version and status queries, five createSession variants, and Safe-variant error-return semantics."
 audience: host-integrator
 platforms:
   - android
@@ -31,7 +31,7 @@ String version = MigoRuntime.SDK_VERSION;   // BuildInfo.VERSION, written at com
 
 `getNativeLoadError()` is the only reliable first-hand evidence during diagnosis — much more reliable than searching a crash stack for `UnsatisfiedLinkError`.
 
-## Session creation: four variants
+## Session creation: five variants
 
 ```java
 GameSession createSession(Activity, Surface, RuntimeConfig, String gameId);      // creates the surface now

@@ -2,13 +2,13 @@
 #
 # `github-actions` only, and that restriction is deliberate.
 #
-# Every third-party action in this repository is referenced by a mutable tag
-# (`@v2`, `@v4`, ...). A tag can be repointed by whoever owns the action, so the
-# code CI runs is not pinned by anything the repository controls. The usual
-# hardening is to pin each action to a commit SHA -- but a SHA pin with nothing
-# bumping it is strictly worse than a tag, because security fixes then never
-# arrive at all. This file is the half that makes pinning sustainable: with it in
-# place, pinning becomes a reviewable weekly PR instead of a decision to freeze.
+# Every third-party action in this repository is pinned to a commit SHA, with
+# Dependabot keeping those pins current. A mutable tag can be repointed by
+# whoever owns the action; a SHA pin makes the reviewed code immutable. A SHA
+# pin with nothing bumping it is strictly worse than a tag, because security
+# fixes then never arrive at all. This file is the half that makes pinning
+# sustainable: with it in place, pinning becomes a reviewable weekly PR instead
+# of a decision to freeze.
 #
 # `cargo` is deliberately NOT enabled. `engine/Cargo.lock` is an input to the V8
 # startup-snapshot fingerprint (scripts/lib/snapshot-fingerprint.sh), so any

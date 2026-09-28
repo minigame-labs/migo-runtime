@@ -6,8 +6,8 @@ name: Build V8 Snapshot
 # snapshot that fails V8's magic-number check at load and hard-crashes.
 #
 # We therefore generate the snapshot the "Deno issue #27496" way: cross-compile
-# `migo-snapshot-gen` to the target Android ABI (linking the committed,
-# self-built android V8 archive via Git LFS), then RUN it on that ABI's Android
+# `migo-snapshot-gen` to the target Android ABI (linking the Android V8 archive
+# fetched as a verified release asset), then RUN it on that ABI's Android
 # emulator/device.
 #
 #   x86_64 -> GitHub-hosted `ubuntu-latest` HAS /dev/kvm, so we boot a
@@ -76,8 +76,8 @@ permissions:
 
 jobs:
   # Confirm all committed kind/profile/ABI snapshots match every schema-v3 input.
-  # The host-only gate reads Git LFS pointer oid/size identities, so it does not
-  # need to download the large snapshot or V8 archive objects.
+  # The gate validates committed snapshot blobs via fingerprint manifests;
+  # no V8 archive download is needed.
   freshness:
     name: snapshot freshness gate
     runs-on: ubuntu-latest
@@ -85,7 +85,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        # No LFS download: the gate validates large objects from pointer oid/size.
+        # No V8 archive download: committed snapshots are verified by fingerprint manifest.
       - name: Check snapshot freshness
         run: |
           bash scripts/check-snapshot-freshness.sh --snapshot-kind host --product-profile full

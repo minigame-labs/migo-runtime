@@ -3,7 +3,8 @@ package com.migo.runtime;
 /**
  * Error codes for the Migo Runtime SDK.
  * <p>
- * All error codes are negative integers. Success is indicated by code 0.
+ * SDK and platform errors are negative; native engine errors are positive.
+ * Success is indicated by code 0.
  *
  */
 public final class ErrorCode {

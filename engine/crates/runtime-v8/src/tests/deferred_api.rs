@@ -11,13 +11,12 @@
 //! (`fnet01_connect_generation_discards_stale_result_and_closes_orphan`): inject
 //! mock globals, include the real source, assert observable state.
 //!
-//! ## Why these tests are RED before the V07 + RT-01 fix
+//! ## What these tests verify
 //!
-//! * Every assertion uses `api.pendingCount()`, which does not exist on the
-//!   object returned by `createDeferredApi` before the fix.
-//! * `v07_timer_full_rolls_back_and_calls_fail_complete` additionally requires
-//!   that `fail` / `complete` are invoked when `setTimeout` throws — a code path
-//!   that currently does not execute them.
+//! * Every assertion uses `api.pendingCount()`, which must exist on the
+//!   object returned by `createDeferredApi`.
+//! * `v07_timer_full_rolls_back_and_calls_fail_complete` requires
+//!   that `fail` / `complete` are invoked when `setTimeout` throws.
 
 #[cfg(test)]
 mod deferred_api_tests {
@@ -125,13 +124,13 @@ mod deferred_api_tests {
     // Tests
     // ---------------------------------------------------------------------------
 
-    /// V07 (regression): when `setTimeout` throws — e.g. because the 1024-live-
+    /// V07: when `setTimeout` throws — e.g. because the 1024-live-
     /// timer cap is exhausted — the pending entry must be rolled back, and
     /// `fail` / `complete` must be called exactly once.
     ///
-    /// Before the fix: `setTimeout` is called outside the executor try/catch, so
-    /// the RangeError escapes the Promise constructor without touching
-    /// `fail`/`complete` and the pending entry leaks.
+    /// Without this guard: `setTimeout` outside the executor try/catch lets
+    /// the RangeError escape the Promise constructor without touching
+    /// `fail`/`complete`, leaking the pending entry.
     #[test]
     fn v07_timer_full_rolls_back_and_calls_fail_complete() {
         let mut rt = boot();

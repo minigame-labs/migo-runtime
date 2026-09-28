@@ -132,17 +132,12 @@ final class MigoLoopbackListenerTests: XCTestCase {
         let (listener, port) = try makeListener()
         defer { listener.stop() }
 
-        // Comfortably past the 64 KiB header cap, and past the size the sync-XHR
-        // arm died at. Filled with a loop rather than a mapped range: the
-        // one-expression form defeats the type checker outright here, which is a
-        // compile error and not a style opinion.
+        // A 256 KiB body must pass; the same size in headers must hit the cap.
         var body = Data(count: 256 * 1024)
         for index in 0..<body.count {
             body[index] = UInt8((index &* 31 &+ 7) & 0xFF)
         }
-        // Built in pieces: one interpolated multi-line literal here defeated the
-        // type checker outright ("unable to type-check this expression in
-        // reasonable time"), which is a compile error and not a style opinion.
+        // Build the request header in pieces before appending the body.
         var head = "POST /echo-body HTTP/1.1\r\n"
         head += "Host: 127.0.0.1\r\n"
         head += "Content-Length: "

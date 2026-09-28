@@ -31,8 +31,8 @@ This page answers the two most practical questions on the vendor side: **"which 
 | Android | Static library + CMake package (`find_package(migo)`), Java AAR facade | arm64-v8a, x86_64 | minSdk 26 (see the android-sdk page and `test-android-sdk-levels-contract.sh`); on-device multi-touch requires the instrumentation APK path (one of the ABI freeze blockers) |
 | OpenHarmony | Static library, DevEco host project | aarch64, x86_64 | Target device per the OHOS target manifest; multi-touch validated only in the API 20 simulator — on-device regression is the host's job |
 | Windows | `migo.dll` + `rusty_v8.dll` + headers, CMake target | x64, arm64 | Windows (with ANGLE/HWND); WinUI integration is the host's responsibility |
-| Linux | host-kit toolchain + wayland/x11 platform headers + pkg-config/CMake | x86_64 | **glibc only** (musl/bionic: headers only, no runtime); official build sysroot and glibc lower bound: see the release manifest |
-| Apple (iOS/macOS) | SwiftPM: `MigoAppleCore` / `MigoAppleRenderer` (CI build artifacts) | arm64, x86_64 (macOS) / arm64 (iOS) | Placeholder lane; no on-device run records yet; macOS can attach the host's own `CAMetalLayer` |
+| Linux | Linkable C ABI SDK (`libmigo.so` + `libmigo.a`) + host-kit toolchain + wayland/x11 platform headers + pkg-config/CMake | x86_64 | **glibc only** (musl/bionic: headers only, no runtime); official build sysroot and glibc lower bound: see the release manifest |
+| Apple (iOS/macOS) | SwiftPM: `MigoApplePerformancePlus` (iOS) / `MigoMacV8` (macOS); `migo-<version>-apple-sdk.zip` published | arm64 (iOS) / arm64 + x86_64 (macOS) | iOS Performance+ and macOS V8 implemented with recorded device execution; device performance not measured, no claims made |
 
 Per-platform integration details are covered step by step in each quickstart; product-level trade-offs ("is it production-ready") are covered in [Platform Selection](/docs/en/concepts/choose-platform/).
 

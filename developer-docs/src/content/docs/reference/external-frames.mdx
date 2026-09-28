@@ -14,7 +14,7 @@ Migo 通常在自己的脚本运行时内执行 JavaScript 并直接渲染；外
 
 > **注意：此模式仅在 Performance+ 产品中可用。** 其他产品不导出本页所列的入口点；链接错误产品会在构建期得到未解析符号，这是故意设计的快速失败，而不是一个运行时返回失败的存根符号。
 
-本接口分为三条功能通道：
+本接口分为五条功能通道：
 
 | 通道 | 作用 |
 | --- | --- |
@@ -32,7 +32,7 @@ Migo 通常在自己的脚本运行时内执行 JavaScript 并直接渲染；外
 
 `launch_nonce` **必须由宿主生成**（例如 iOS 上用 `SecRandomCopyBytes`），不由 Migo 库生成，原因是宿主同时拥有传输层和 session 两端，是唯一可以安全保管这一共享密钥的一方。全零值被视为"无外部生产者"，不会验证任何帧包——这也是旧版本宿主零初始化结构体时的默认语义。nonce 不得出现在日志、URL 或查询字符串中。
 
-> 使用 `MigoExternalSessionDescriptor` 创建外部帧 session 时，`launch_nonce[16]` 字段同样存在于该 descriptor 中，语义与 `MigoSessionConfig.launch_nonce` 完全相同。
+> Performance+ iOS 的外部帧 session 通过 `migo_session_create` + `MigoSessionConfig.launch_nonce` 创建，`launch_nonce` 是帧包传输层用于验证包归属的共享密钥。`MigoExternalSessionDescriptor` 中同样有 `launch_nonce[16]`，语义相同，适用于不需要脚本运行时的纯渲染器 session。
 
 ---
 
@@ -49,6 +49,7 @@ typedef uint32_t MigoFrameIngressDecision;
 #define MIGO_FRAME_INGRESS_WOULD_BLOCK     2U
 #define MIGO_FRAME_INGRESS_REJECTED        3U
 #define MIGO_FRAME_INGRESS_GENERATION_LOST 4U
+#define MIGO_FRAME_INGRESS_DEFERRED        5U
 ```
 
 `migo_session_submit_external_frame` 调用成功后，`MigoFrameIngressOutcome.decision` 字段持有此类型的值，表示本次帧包的处置结果。
@@ -59,6 +60,7 @@ typedef uint32_t MigoFrameIngressDecision;
 | `MIGO_FRAME_INGRESS_WOULD_BLOCK` | 包格式合法但信用额度已耗尽，生产者必须等待；不可丢弃该包，因为包内可能含有后续帧依赖的状态变更。 |
 | `MIGO_FRAME_INGRESS_REJECTED` | 包格式错误或目标 session 不匹配；不消耗信用，生产者不得重发相同字节。 |
 | `MIGO_FRAME_INGRESS_GENERATION_LOST` | 字节合法，但对应的运行时代（runtime generation）已不存在（WebContent 进程已替换或 session 已重载）；不是错误，重试无效。 |
+| `MIGO_FRAME_INGRESS_DEFERRED` | 合法且属于本 session，但比必须先到的那个包超前一步（上行是两条独立流，包可能超越前驱）；被持有并不占用信用，前驱到达后立即按序执行并送出判决。不是错误，不得重发或计入拒绝。 |
 
 #### MigoFrameIngressOutcome
 
@@ -127,6 +129,7 @@ typedef uint32_t MigoSyncError;
 #define MIGO_SYNC_ERROR_LATE_REPLY             8U
 #define MIGO_SYNC_ERROR_BAD_DEADLINE           9U
 #define MIGO_SYNC_ERROR_BAD_REPLY_RESERVATION  10U
+#define MIGO_SYNC_ERROR_OPERATION_FAILED       11U
 ```
 
 这些错误码在版本间保持稳定，生产者可将其映射为对应的异常类型。
@@ -143,6 +146,7 @@ typedef uint32_t MigoSyncError;
 | `LATE_REPLY` | 回复在截止时间之后到达。 |
 | `BAD_DEADLINE` | `deadline_nanos` 为零或不合理。 |
 | `BAD_REPLY_RESERVATION` | `max_reply_bytes` 为零或超出允许范围。 |
+| `OPERATION_FAILED` | 宿主实现了该操作并尝试执行，但本次执行失败；与 `UNSUPPORTED_OPERATION` 不同——前者是临时失败可再次尝试，后者是永久不支持。 |
 
 #### MigoSyncRequestDescriptor
 
@@ -324,7 +328,7 @@ typedef struct MigoExternalSessionDescriptor {
 } MigoExternalSessionDescriptor;
 ```
 
-创建外部帧 session 的配置描述符。与普通 `MigoSessionConfig` 路径不同——外部帧 session 没有脚本运行时，生命周期模型也不同；用此 descriptor 创建的 session 调用 `migo_session_load_content` 会返回 `MIGO_ERROR_INVALID_STATE`。
+纯渲染器 session 的配置描述符：此描述符创建一个拥有渲染器、surface 和帧时钟、但**没有脚本运行时**的 session。Performance+ iOS 实际路径不使用此描述符——外部内容通过标准 `migo_session_create`（带 `MigoSessionConfig.launch_nonce`）创建 session，再调用 `migo_session_load_content` 挂载内容；`launch_nonce` 即帧包传输层的共享密钥。`MigoExternalSessionDescriptor` 适用于不需要内容挂载的纯帧注入场景；此类 session 调用 `migo_session_load_content` 会返回 `MIGO_ERROR_INVALID_STATE`。
 
 参数：
 

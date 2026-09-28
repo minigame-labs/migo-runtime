@@ -98,7 +98,7 @@ Portal 是纯深色,所以文档也是深色锁定(`ThemeProvider.astro` + `Them
 
 ## 8. 版本归档与发布新系列
 
-当前稳定 SDK 是 0.9.7。`/docs/` 与 `/docs/en/` 服务当前稳定内容;`/docs/0.9/` 与 `/docs/en/0.9/` 是同一发布基线的完整冻结快照,用于固定链接和后续升级对照。`starlight-versions`、版本切换器、版本搜索和 `versions` collection 均已启用。
+当前稳定 SDK 是 0.9.12。`/docs/` 与 `/docs/en/` 服务当前稳定内容;`/docs/0.9/` 与 `/docs/en/0.9/` 是同一发布基线的完整冻结快照,用于固定链接和后续升级对照。`starlight-versions`、版本切换器、版本搜索和 `versions` collection 均已启用。
 
 0.9 归档于 2026-09-26 重新生成一次,以补齐此前缺失的页面和英文占位内容。此后禁止手工修订归档;需要勘误时先修 latest,再明确判断是否值得做带审计记录的历史勘误。
 

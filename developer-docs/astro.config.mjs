@@ -19,8 +19,8 @@ export default defineConfig({
     sitemap({
       // 排除两类:0.9 冻结归档(zh 与 en) + Next 版。
       // 英文 latest 已于 2026-09-15 全量翻译完成并放行索引;
-      // en/0.9 归档仍是 Translation-pending 占位,维持排除
-      // (归档与 latest 内容重复,索引会互相争 canonical,spec §6.4)。
+      // en/0.9 归档内容与 latest 完全重复,排除以避免规范 URL 竞争
+      // (重复内容规范化,spec §6.4)。
       filter: (page) => !page.includes('/docs/en/0.9/') && !page.includes('/docs/0.9/'),
     }),
     starlight({

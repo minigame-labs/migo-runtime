@@ -20,14 +20,13 @@ import MigoEngine
 /// time to ask, because the alternative is discovering it from a failed attach
 /// after the host has built all three.
 ///
-/// WHAT IT ANSWERS ON APPLE TODAY is "nothing attachable". `migo-capi`'s
-/// platform module selects `unsupported` for every target that is not Android,
-/// Linux, OpenHarmony or Windows, so an Apple build reports `platform_kinds ==
-/// 0` and `preflight` refuses. That is the honest state of the port and it is
-/// deliberately not asserted anywhere as an expected value: a test that pins
-/// today's absence goes red on the day the presenter lands, which is the one
-/// day nobody wants to be reading a failing test. The invariants below are
-/// written so they hold on both sides of that change.
+/// WHAT IT ANSWERS ON APPLE TODAY is that the linked Apple platform module
+/// advertises the target's `CAMetalLayer` surface kind, and `preflight` can
+/// accept a matching host surface. The capability is queried from the linked
+/// library rather than assumed from the headers, so the preflight remains the
+/// check that the actual artifact accepts the surface this target presents.
+/// The invariants below are written to hold whether a future build advertises
+/// the same kind or adds another supported surface.
 public struct MigoEngineCapabilities: Equatable, Sendable {
     /// The inclusive range of ABI versions the linked library accepts on its
     /// entry points.

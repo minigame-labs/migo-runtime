@@ -1,9 +1,8 @@
 //! Backend abstraction layer for the Migo renderer.
 //!
-//! The rendering pipeline is organised into a pluggable `Backend` trait that
-//! owns both the Canvas2D (Skia Ganesh GL) and WebGL (glow + StateTracker)
-//! paths.  Today only the GL backend exists; the trait keeps the door open
-//! for a future Vulkan/Graphite backend without disturbing callers.
+//! Today only the GL backend exists.  The module is structured as if a second
+//! backend (Vulkan/Graphite) could be added later; no `RenderBackend` trait
+//! or runtime selection exists yet.
 //!
 //! # Layering
 //!
@@ -12,10 +11,8 @@
 //!     │
 //!     │ FramePacket (Canvas2DCmd + GLCmd)
 //!     ▼
-//! Backend (trait)
-//!     │
-//!     ├── gl::SkiaCanvasBackend   — Canvas2D → SkCanvas
-//!     └── gl::WebGlBackend        — GLCmd    → glow + StateTracker
+//! gl::Canvas2DRenderer   — Canvas2D → SkCanvas
+//! renderergl::RendererGL  — GLCmd    → glow + StateTracker
 //! ```
 //!
 //! Both sub-backends share the same `CanvasManager` (EGL contexts, onscreen

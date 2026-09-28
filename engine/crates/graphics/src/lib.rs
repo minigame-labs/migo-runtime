@@ -35,8 +35,7 @@
 //!   organised as if it were pluggable because we may add a Vulkan /
 //!   wgpu backend later, but there is **no** `RenderBackend` trait
 //!   abstraction and no runtime choice between backends yet — the
-//!   name is aspirational, not plug-and-play.  See
-//!   `AUDIT.md` P2-2 for the full-trait roadmap.
+//!   name is aspirational, not plug-and-play.
 //! - [`renderergl`]: WebGL 1.0 / 2.0 command handler (glow-backed).
 
 #[cfg(all(feature = "profile-full", feature = "profile-slim"))]

@@ -34,7 +34,7 @@ slug: 0.9/concepts/content-bundle
 
 1. **`content_id` 隔离一切。** 同 id 的两款游戏共享同一棵子树——存档、缓存、代码目录都在其中；所以宿主欠引擎的承诺就一条：**不同游戏绝不能用同一个 content\_id**。冲突的后果不是报错而是静默互相覆盖。
 2. **`code/` 是引擎会读的目录。** bundle 的入口与依赖放这里；放置动作是**宿主的职责**（复制 / 解压 / 下载），引擎不替你搬文件。
-3. **不要猜路径。** 目录从来都由引擎给出的 API 告诉你（Android: `session.getPaths().getCodeDir()`；C ABI 侧见 [Session](/docs/0.9/reference/session/) 的路径字段）。硬编码内部路径，一旦引擎改布局你的宿主就碎。
+3. **不要猜路径。** 目录从来都由引擎给出的 API 告诉你（Android: `session.getPaths().getCodeDir()`；C ABI 侧见 [外部帧接口](/docs/0.9/reference/external-frames/) 中的 `migo_session_copy_content_root`（声明在 `external_frames.h`））。硬编码内部路径，一旦引擎改布局你的宿主就碎。
 
 ## 装载 → 加载 → 更新
 

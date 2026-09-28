@@ -11,8 +11,8 @@ sourcePaths:
   - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
 ---
 
-::::caution[Platform scope]
-`GameLogHandler` is the Android Java facade contract. The C ABI and cross-platform layer have no public game-log entry point in `0.9`.
+::::note[Platform scope]
+`GameLogHandler` is the Android Java facade contract. The C ABI layer provides `MigoOnGameLogFn` via `MigoHostCallbacks.on_game_log` (`session.h`); the host receives each JSON game-log entry there. If not installed, log entries are silently dropped. **Do not record secrets, tokens, or user identifiers in game logs** — redact and minimize entries before uploading.
 ::::
 
 ## What the host must implement
@@ -38,4 +38,4 @@ The interface file describes the logs only as "JS-reported game log entries" and
 | Layer | Status |
 | --- | --- |
 | Android Java facade | ✓ |
-| C ABI | none |
+| C ABI | `MigoOnGameLogFn` (`MigoHostCallbacks.on_game_log`, `session.h`) |

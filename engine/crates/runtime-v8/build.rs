@@ -38,8 +38,8 @@ use std::{
 use serde_json::Value;
 
 // The snapshot-input fingerprint helpers are shared verbatim with the
-// regression test (`tests_snapshot_fingerprint.rs`) so the compile-time embed
-// decision and the test agree byte-for-byte. They also mirror
+// regression test (`src/tests/snapshot_fingerprint.rs`) so the compile-time
+// embed decision and the test agree byte-for-byte. They also mirror
 // `scripts/lib/snapshot-fingerprint.sh` (filesystem walk + LC_ALL=C byte order).
 mod build_snapshot {
     include!("build_snapshot.rs");

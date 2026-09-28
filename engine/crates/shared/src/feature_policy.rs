@@ -155,10 +155,6 @@ impl FeatureKey {
             // whether it is memory- or frame-bound, which the host knows and
             // this crate does not. Turn it on for shop-UI / label-cache shapes
             // under memory pressure; leave it off for content already at vsync.
-            //
-            // Full write-up, including why 60 fps read as a tie until the
-            // measurement was taken above the vsync cap:
-            // docs/performance/android/shared-direct-context.md
             Self::CanvasSharedDirectContext
             | Self::CanvasHotBackingPool
             | Self::PresentSwappy

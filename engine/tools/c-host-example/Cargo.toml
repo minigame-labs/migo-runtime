@@ -4,7 +4,7 @@ version.workspace = true
 license.workspace = true
 edition = "2024"
 
-# Builds `tests/c_host/main.c` — a host written in C against the public
+# Builds `tests/c_host/linux/main.c` — a host written in C against the public
 # headers only — and links it with the engine.
 #
 # Cargo drives the link here so this example always matches the engine's real

@@ -5,9 +5,9 @@ import Foundation
 /// `Sources/MigoMacV8/README.md` has promised one sentence since the lane was
 /// specified: *"If the entitlement is missing or the signature does not
 /// validate, the profile resolver selects a WebKit lane. It does not silently
-/// fall back to a jitless V8."* Nothing checked it, because there was no
-/// resolver -- `MigoMacV8` was one `Placeholder.swift`. This is the decision
-/// half of that resolver.
+/// fall back to a jitless V8."* `MigoMacV8` now contains
+/// `MigoMacV8Availability` and `MigoGameView`; this is the decision half of
+/// that resolver.
 ///
 /// **Why it is here and not in `MigoMacV8`.** The decision is a pure function of
 /// three observations; the observations need the Security framework and a real
@@ -18,7 +18,7 @@ import Foundation
 ///
 /// **Why jitless is not among the answers.** A V8 built jitless does not run
 /// slower, it deletes WebAssembly outright (`typeof WebAssembly === "undefined"`,
-/// measured on HarmonyOS NEXT and recorded in CLAUDE.md), and every Cocos and
+/// measured on HarmonyOS NEXT), and every Cocos and
 /// Unity export ships `.wasm.br`. So it is a diagnostic profile and never a
 /// default, which makes "V8 without JIT" a lane this type must never return.
 public enum MigoMacLaneSelection {

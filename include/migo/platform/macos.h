@@ -4,8 +4,8 @@
 #include <migo/surface.h>
 
 /*
- * ns_view is an NSView*. A future implementation retains it before attach
- * returns success and releases it before the release observer reaches
+ * ns_view is an NSView*. Migo retains ns_view before attach returns success
+ * and releases it before the release observer reaches
  * MIGO_SURFACE_RELEASE_RELEASED.
  */
 typedef struct MigoMacosNsViewDescriptor {

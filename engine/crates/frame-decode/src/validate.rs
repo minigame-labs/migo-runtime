@@ -12,14 +12,6 @@
 
 use crate::codes;
 
-/// What the decoder needs from whoever is hosting it.
-///
-/// Two methods, and both of them exist because WebGL semantics require them
-/// rather than because the decoder wants state. A trait rather than a concrete
-/// type because the two hosts are genuinely different -- one has a JavaScript
-/// runtime's op state behind it and the other has the external session's --
-/// and generic rather than `dyn` because this is called once per command on
-/// the render path.
 /// Where a canvas's transform feedback is. Only `Active` refuses a rebind of
 /// the feedback buffers; see [`GlDecodeContext::transform_feedback_captures`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -30,6 +22,14 @@ pub enum TransformFeedbackPhase {
     Paused,
 }
 
+/// What the decoder needs from whoever is hosting it.
+///
+/// Two methods, and both of them exist because WebGL semantics require them
+/// rather than because the decoder wants state. A trait rather than a concrete
+/// type because the two hosts are genuinely different -- one has a JavaScript
+/// runtime's op state behind it and the other has the external session's --
+/// and generic rather than `dyn` because this is called once per command on
+/// the render path.
 pub trait GlDecodeContext {
     /// Record a WebGL error for a canvas. The call that produced it is then
     /// skipped, per the specification.

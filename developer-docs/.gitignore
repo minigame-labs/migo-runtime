@@ -1,4 +1,4 @@
-# Astro / 构建产物:`pnpm docs:build` 全部重新生成,不入库。(`node_modules/` 由仓库
+# Astro / 构建产物:`npm run docs:build` 全部重新生成,不入库。(`node_modules/` 由仓库
 # 根 .gitignore 覆盖,不再重复。)
 build/
 .astro/

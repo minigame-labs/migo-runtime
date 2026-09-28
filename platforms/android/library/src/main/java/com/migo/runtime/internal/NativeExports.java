@@ -894,7 +894,7 @@ public final class NativeExports {
 
     /**
      * Encode a string to GBK bytes using Android's built-in java.nio.charset.Charset.
-     * Available on all Android API levels (API 1+).
+     * Available on all supported Android API levels (API 26+).
      *
      * @param data The string to encode
      * @return GBK-encoded bytes, or null on error
@@ -910,7 +910,7 @@ public final class NativeExports {
 
     /**
      * Decode GBK bytes to a string using Android's built-in java.nio.charset.Charset.
-     * Available on all Android API levels (API 1+).
+     * Available on all supported Android API levels (API 26+).
      *
      * @param data The GBK-encoded bytes
      * @return Decoded string, or null on error
@@ -1023,7 +1023,7 @@ public final class NativeExports {
         }
 
         try {
-            // Use DisplayCompat for API 21+ compatibility
+            // Use DisplayCompat for the supported Android API range.
             int screenWidth = DisplayCompat.getScreenWidth(activity);
             int screenHeight = DisplayCompat.getScreenHeight(activity);
             float density = DisplayCompat.getDensity(activity);

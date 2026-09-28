@@ -190,7 +190,7 @@ fn every_wire_error_code_is_non_zero_and_distinct_from_the_ingress_range() {
 
 // ---------------------------------------------------------------------------
 // The header, the Rust mirror, and the protocol enums, checked against each
-// other rather than each against a reviewer's memory.
+// other rather than each against an external manual recollection.
 // ---------------------------------------------------------------------------
 
 /// `#define NAME <n>U` lines in the public header.

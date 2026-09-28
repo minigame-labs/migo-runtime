@@ -2,14 +2,6 @@
 # Migo Engine - Android Build Configuration
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Host (x86_64-unknown-linux-gnu) — used by `cargo test` and dev builds
-# -----------------------------------------------------------------------------
-# Adds ~/.local/lib to the linker search path so rust-lld can find
-# libfontconfig / libfreetype / libEGL via symlinks created by
-# scripts/dev-setup-skia.sh.  On CI hosts with the corresponding -dev
-# packages installed, this directory is simply empty and harmless.
-# -----------------------------------------------------------------------------
 # ARM64 (aarch64) - Most modern Android devices
 # -----------------------------------------------------------------------------
 [target.aarch64-linux-android]

@@ -93,7 +93,7 @@ C ABI 由 8 个头文件组成,跨四个平台接口一致,`abi_version` 协商�
 | [基础类型与导出宏](/docs/0.9/reference/types/) | 句柄/错误码/导出宏,`MIGO_ABI_*` 常量与 `struct_size` 演进规则 |
 | [Engine 初始化](/docs/0.9/reference/engine/) | `migo_engine_*` 生命周期:创建、ICU 数据、销毁线程完成屏障 |
 | [Session](/docs/0.9/reference/session/) | 会话句柄、`MigoHostCallbacks`、dispatch 派发器与销毁顺序 |
-| [Surface 接入](/docs/0.9/reference/surface/) | `migo_surface_attach`、平台 descriptor、`frame_info` 与背压 |
+| [Surface 接入](/docs/0.9/reference/surface/) | `migo_session_attach_surface`、平台 descriptor、`MigoSurfaceMetrics` 与背压 |
 | [输入事件](/docs/0.9/reference/input/) | `migo_session_send_*` 系列:校验、FIFO、坐标单位与各事件载荷 |
 | [外部帧注入](/docs/0.9/reference/external-frames/) | readPixels/getImageData 兼容路径、ingress/sync-barrier/resource 三 lane |
 | [运行库能力查询](/docs/0.9/reference/capabilities/) | `migo_query_capabilities`:ABI 版本区间与平台位掩码的运行时查询 |
@@ -104,7 +104,7 @@ C ABI 由 8 个头文件组成,跨四个平台接口一致,`abi_version` 协商�
 
 :::note[上手路径]
 
-1. **[Android 快速开始](/docs/0.9/getting-started/android/)** — 9 步从下载 AAR 到 bundle 点亮(其他平台指南将随平台产物成熟按一平台一页并入);
+1. **[Android 快速开始](/docs/0.9/getting-started/android/)** — 9 步从下载 AAR 到 bundle 点亮;[Linux](/docs/0.9/getting-started/linux/)、[Windows](/docs/0.9/getting-started/windows/)、[OpenHarmony](/docs/0.9/getting-started/openharmony/) 及 [Apple](/docs/0.9/getting-started/apple/) 平台指南均已提供;
 2. [下载与校验](/docs/0.9/release/download-verification/) — 发布产物的获取、指纹校验与首次部署前的最小验证集。
 
 :::

@@ -7,7 +7,7 @@ import android.os.VibrationEffect;
 /**
  * Vibration utilities.
  * <p>
- * Provides short and long vibration patterns compatible with Android API 21+.
+ * Provides short and long vibration patterns compatible with Android API 26+.
  * Uses VibrationEffect on API 26+ for better haptic feedback control.
  *
  * @hide
@@ -26,7 +26,7 @@ public final class Vibrator {
      * Trigger a short vibration (15ms).
      * <p>
      * On API 26+, uses VibrationEffect with intensity based on type parameter.
-     * On API 21-25, uses legacy vibrate() method (type is ignored).
+     * The SDK minimum API is 26, so the VibrationEffect path is used.
      *
      * @param context The context
      * @param type    Vibration type: "heavy", "medium", or "light"
@@ -49,7 +49,7 @@ public final class Vibrator {
             VibrationEffect effect = VibrationEffect.createOneShot(SHORT_DURATION_MS, amplitude);
             vibrator.vibrate(effect);
         } else {
-            // API 21-25: Legacy vibration (no amplitude control)
+            // Defensive fallback for API levels below 26; unreachable with this SDK minimum.
             vibrator.vibrate(SHORT_DURATION_MS);
         }
 

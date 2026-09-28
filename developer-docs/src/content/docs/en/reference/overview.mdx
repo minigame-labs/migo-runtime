@@ -52,7 +52,7 @@ migo_query_capabilities(&caps);
 MigoEngineConfig eng_cfg = {0};
 eng_cfg.struct_size         = (uint32_t)sizeof(eng_cfg);
 eng_cfg.abi_version         = MIGO_ABI_VERSION_CURRENT;
-eng_cfg.flags               = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT;
+eng_cfg.flags               = MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT;  /* development only: production must supply a signing key and clear this flag */
 eng_cfg.files_dir_utf8      = "/data/user/0/com.example/files";
 eng_cfg.cache_dir_utf8      = "/data/user/0/com.example/cache";
 eng_cfg.code_cache_dir_utf8 = "/data/user/0/com.example/code_cache";
@@ -142,7 +142,7 @@ while (status.state != MIGO_SURFACE_RELEASE_RELEASED) {
 /* the GPU has let go; the native window's resources can be destroyed now */
 migo_surface_release_destroy(release);
 
-r = migo_session_destroy(session);   /* refused while an attachment lives or a release is still PENDING */
+r = migo_session_destroy(session);   /* succeeds: release is complete and all attachments are retired */
 r = migo_engine_destroy(engine);     /* only after every session is destroyed; joins all worker threads */
 ```
 

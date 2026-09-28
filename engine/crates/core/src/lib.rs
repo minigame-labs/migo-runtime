@@ -182,7 +182,7 @@ compile_error!("profile-full and profile-slim are mutually exclusive");
 // says which flag to drop; failing there says only that V8 is present.
 #[cfg(all(feature = "embedded-v8", feature = "external-frames"))]
 compile_error!(
-    "embedded-v8 and external-frames are mutually exclusive: the external lane exists to      prove no JavaScript engine is linked, and a build with both links one"
+    "embedded-v8 and external-frames are mutually exclusive: the external lane exists to prove no JavaScript engine is linked, and a build with both links one"
 );
 #[cfg(all(feature = "worker-snapshot", not(feature = "profile-full")))]
 compile_error!("worker-snapshot requires profile-full");

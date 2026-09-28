@@ -19,7 +19,7 @@ import android.view.WindowMetrics;
 /**
  * Compatibility wrapper for display-related APIs.
  * <p>
- * Provides consistent APIs across Android API 21-34, handling deprecated
+ * Provides consistent APIs across Android API 26+, handling deprecated
  * methods appropriately for each API level.
  *
  * @hide
@@ -46,7 +46,7 @@ public final class DisplayCompat {
             WindowMetrics metrics = activity.getWindowManager().getCurrentWindowMetrics();
             return metrics.getBounds().width();
         } else {
-            // API 21-29: Use deprecated getRealMetrics
+            // API 26-29: Use deprecated getRealMetrics
             DisplayMetrics dm = new DisplayMetrics();
             activity.getWindowManager().getDefaultDisplay().getRealMetrics(dm);
             return dm.widthPixels;
@@ -69,7 +69,7 @@ public final class DisplayCompat {
             WindowMetrics metrics = activity.getWindowManager().getCurrentWindowMetrics();
             return metrics.getBounds().height();
         } else {
-            // API 21-29: Use deprecated getRealMetrics
+            // API 26-29: Use deprecated getRealMetrics
             DisplayMetrics dm = new DisplayMetrics();
             activity.getWindowManager().getDefaultDisplay().getRealMetrics(dm);
             return dm.heightPixels;
@@ -116,7 +116,7 @@ public final class DisplayCompat {
             Display display = activity.getDisplay();
             return display != null ? display.getRotation() : 0;
         } else {
-            // API 21-29: Use deprecated getDefaultDisplay()
+            // API 26-29: Use deprecated getDefaultDisplay()
             return activity.getWindowManager().getDefaultDisplay().getRotation();
         }
     }
@@ -342,7 +342,7 @@ public final class DisplayCompat {
                 );
             }
         } else {
-            // API 21-29: Use deprecated setSystemUiVisibility
+            // API 26-29: Use deprecated setSystemUiVisibility
             window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
             
             int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -444,7 +444,7 @@ public final class DisplayCompat {
                 controller.show(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
             }
         } else {
-            // API 21-29: Clear flags
+            // API 26-29: Clear flags
             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
             View decorView = window.getDecorView();
             decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);

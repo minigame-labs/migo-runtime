@@ -33,7 +33,7 @@ Three invariants:
 
 1. **`content_id` isolates everything.** Two games with the same id share a single subtree — save data, caches, and the code directory all live under it. The host's one promise to the engine is therefore: **no two distinct games may share a `content_id`**. Collisions do not produce errors; they silently overwrite each other.
 2. **`code/` is the directory the engine reads.** The bundle's entry point and its dependencies go here. Placing them there is **the host's responsibility** (copy, unzip, or download); the engine does not move files for you.
-3. **Never guess the path.** The directory is always given to you by the engine's API (Android: `session.getPaths().getCodeDir()`; on the C ABI side see the path fields in [Session](/docs/en/reference/session/)). Hard-coding internal paths makes your host brittle to any future engine layout change.
+3. **Never guess the path.** The directory is always given to you by the engine's API (Android: `session.getPaths().getCodeDir()`; on the C ABI side see `migo_session_copy_content_root` in [External Frames](/docs/en/reference/external-frames/) (declared in `external_frames.h`)). Hard-coding internal paths makes your host brittle to any future engine layout change.
 
 ## Stage → Load → Update
 

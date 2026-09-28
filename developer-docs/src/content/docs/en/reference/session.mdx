@@ -634,11 +634,11 @@ Returns:
 
 - `MIGO_OK` — Session destroyed; callbacks cancelled; host thread work handed to the Engine.
 - `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL.
-- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed; a Surface transition is in progress; an active attachment remains; a retired Surface is still PENDING; or the call was re-entered from an engine worker thread.
+- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed; a Surface transition is in progress; an active attachment remains; or a retired Surface is still PENDING.
 
 Thread model:
 
-Do not call from an engine worker thread (the engine thread on which the host dispatcher may schedule tasks). It returns `MIGO_ERROR_INVALID_STATE`, leaves the Session intact, and requires the host to retry from its own thread after the callback unwinds.
+Call from the host thread. Reentrant destruction from within a host callback is valid: the Session is immediately invalidated, the current callback stack unwinds normally, and no new callbacks are triggered (see the session.h destroy contract).
 
 ```c
 /* 1. retire every surface and wait for RELEASED (see surface.mdx) */

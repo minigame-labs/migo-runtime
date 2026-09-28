@@ -315,7 +315,7 @@ MIGO_API MigoResult MIGO_CALL migo_surface_update(
     const MigoSurfaceMetrics *metrics);
 ```
 
-向已绑定的 surface 报告一次 resize 或呈现参数变更。此调用是同步的：返回时，新的 metrics 已提交并将 resize 命令入队，或什么都没有发生（不存在部分提交）。`metrics.generation` 应使用单调递增序号，以允许引擎检测并丢弃被更新版本超越的 resize 事件。
+向已绑定的 surface 报告一次 resize 或呈现参数变更。此调用是同步的：返回时，新的 metrics 已提交并将 resize 命令入队，或什么都没有发生（不存在部分提交）。`metrics.generation` 必须携带本次更新所属 attachment 的 generation（即 attach 时提交的 `MigoSurfaceDescriptor.generation`）；每次 update 使用相同的值，不递增。只有新的 attach 才产生新的 generation。
 
 参数：
 

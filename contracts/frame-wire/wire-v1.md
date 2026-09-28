@@ -137,7 +137,7 @@ product release contains either.
 | 48 | 8 | `surface_generation` | the surface they were built against; `0` means "not surface-bound" |
 | 56 | 8 | `resource_epoch` | the resource-table epoch the ids inside are valid in |
 | 64 | 4 | `frame_id` | producer's own frame counter; advisory, for latency attribution. Checksummed like everything else, but nothing is derived from it |
-| 68 | 4 | `flags` | exactly `PRESENT` in v1; see below |
+| 68 | 4 | `flags` | `PRESENT` or 0 (barrier); see below |
 | 72 | 4 | `section_count` | `<= 8`. Zero is rejected too, by `MissingCommandStream`, which says why rather than counting |
 | 76 | 4 | `payload_checksum` | CRC32 of the whole packet with these four bytes read as zero |
 

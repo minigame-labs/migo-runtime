@@ -77,8 +77,9 @@ public interface NavigationHandler {
         /** Path within the target, empty when content named none. */
         public final String path;
         /**
-         * Data to hand the target, as an immutable tree of {@code String},
-         * {@code Boolean}, {@code Number}, {@code List} and {@code Map}. Empty
+         * Data to hand the target, as a tree of {@code String}, {@code Boolean},
+         * {@code Number}, {@code List} and {@code Map}; the caller-supplied map is
+         * retained as passed. Empty
          * when content supplied none.
          */
         public final Map<String, Object> extraData;

@@ -32,20 +32,10 @@ embedded-v8 = ["dep:runtime-v8"]
 # second script runtime: there is no engine on this side of that boundary, which
 # is the whole point.
 #
-# TODAY THIS IS A MEASUREMENT POINT, NOT A PRODUCT CONFIGURATION. It compiles,
-# and its resolved dependency graph is what the closure gate measures -- 114
-# packages against 269 for profile-full, with v8, deno_core and migo-runtime-v8
-# absent. What it does not yet have is a session shell: the host thread, the
-# render bring-up and the command loop all live inside the embedded execution,
-# so a build with this feature and nothing else exports the engine-neutral types
-# and no way to run them, and the engine-neutral infrastructure it will use
-# compiles without a caller. Those dead-code warnings are accurate.
-#
-# The shell is the next task, and the shape is already established: `Host::new`
-# is 311 lines of which exactly four touch the JavaScript runtime, so the split
-# is between the neutral bring-up above line ~150 and the runtime assembly
-# below it -- not the 49 `self.js.*` call sites, which belong to the embedded
-# execution either way and do not move.
+# The session shell (`runtime/session_thread.rs`, `runtime/external.rs`) owns
+# the host thread, render bring-up, and command loop for the external execution.
+# The dependency graph it produces — V8-free — is what
+# `scripts/test-apple-performance-rust-closure.sh` measures.
 external-frames = ["dep:migo-frame-wire", "dep:frame-decode", "dep:migo-services", "migo-services/code-signing", "host-audio"]
 # The host's audio thread: the WebAudio graph, InnerAudioContext and the device
 # output, with no opinion about where the JavaScript that drives it runs. The

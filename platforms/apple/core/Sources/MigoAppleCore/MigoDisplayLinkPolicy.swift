@@ -2,12 +2,12 @@ import Foundation
 
 /// Which vsync source the presenter uses, and at what cadence.
 ///
-/// **What this is not.** G0 has to choose the Performance+ *frame clock* between a
-/// feature-detected Worker `requestAnimationFrame`, a Window rAF relay, and a host
-/// display-link relay -- and that choice is a measurement nobody has taken. This is
-/// the other clock: the one the native presenter needs to know when a drawable is
-/// due, on macOS V8 native and on the rendering side of Performance+ regardless of
-/// which arm wins. Implementing it is not implementing an arm.
+/// **What this is not.** The G0 probe (2026-09-10) selected host-driven as the
+/// Performance+ frame clock from three measured candidates: feature-detected Worker
+/// `requestAnimationFrame`, a Window rAF relay, and a host display-link relay. This
+/// is the presenter-side clock: the one the native presenter needs to know when a
+/// drawable is due, on macOS V8 native and on the rendering side of Performance+.
+/// Implementing it is not implementing the full frame-delivery arm.
 ///
 /// **Why the cadence is an input and not a constant.** `contracts/apple/profile-policy.json`
 /// has `apple_promotion: host_opt_in`, so the host asks. The host also knows its
