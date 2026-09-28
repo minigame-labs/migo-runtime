@@ -128,6 +128,48 @@ const _: () = assert!(offset_of!(MigoFrameIngressOutcome, remaining_credits) == 
 const _: () = assert!(offset_of!(MigoFrameIngressOutcome, wire_error_code) == 24);
 const _: () = assert!(offset_of!(MigoFrameIngressOutcome, reserved0) == 28);
 
+/// What a session's frame transports have done; see
+/// `migo_session_get_frame_transport_statistics`.
+///
+/// Library-written and append-only, like every output record. The 64-bit
+/// counters precede the 32-bit fields so the record has no interior padding on
+/// LP64 or ILP32: one layout, rather than two that happen to agree.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MigoFrameTransportStatistics {
+    pub header: VersionedHeader,
+    pub frames_received: u64,
+    pub frames_accepted: u64,
+    pub frames_deferred: u64,
+    pub frames_refused: u64,
+    pub control_messages_received: u64,
+    pub control_messages_refused: u64,
+    pub service_messages_received: u64,
+    pub service_messages_refused: u64,
+    pub downlink_messages_sent: u64,
+    pub service_messages_sent: u64,
+    pub downlink_wakes: u64,
+    pub downlink_records_dropped: u64,
+    pub sends_without_producer: u64,
+    pub producers_connected: u64,
+    pub last_control_refusal_code: u32,
+    pub last_service_refusal_code: u32,
+    /// 1 while a producer is connected to the engine's endpoint, else 0.
+    pub producer_connected: u32,
+    pub reserved0: u32,
+}
+
+// SAFETY: every field is an integer, so all-zero is valid, and v1 requires the
+// complete record.
+unsafe impl AbiStruct for MigoFrameTransportStatistics {}
+
+const _: () = assert!(size_of::<MigoFrameTransportStatistics>() == 136);
+const _: () = assert!(offset_of!(MigoFrameTransportStatistics, frames_received) == 8);
+const _: () = assert!(offset_of!(MigoFrameTransportStatistics, producers_connected) == 112);
+const _: () = assert!(offset_of!(MigoFrameTransportStatistics, last_control_refusal_code) == 120);
+const _: () = assert!(offset_of!(MigoFrameTransportStatistics, producer_connected) == 128);
+const _: () = assert!(offset_of!(MigoFrameTransportStatistics, reserved0) == 132);
+
 // ---------------------------------------------------------------------------
 // The synchronous barrier
 // ---------------------------------------------------------------------------

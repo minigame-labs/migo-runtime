@@ -167,6 +167,9 @@ pub use runtime::external::{
 /// The service stream's admission outcomes, for the C boundary to report.
 #[cfg(feature = "external-frames")]
 pub use runtime::external_services::{ServiceAdmission, ServiceHandle, ServiceSubmitError};
+/// The engine's own frame transport, for the C boundary to start and report.
+#[cfg(feature = "external-frames")]
+pub use runtime::frame_endpoint::{FrameEndpointError, FrameTransportStatistics};
 pub use runtime::{HostThread, SpawnedSurfaceHost};
 #[cfg(feature = "embedded-v8")]
 pub use runtime::{spawn_host_thread, spawn_host_thread_tracked};

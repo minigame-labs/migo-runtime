@@ -1,3 +1,4 @@
+import MigoAppleFrameHarness
 import WebKit
 import XCTest
 
@@ -13,15 +14,16 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
 #if os(iOS)
     import UIKit
 
-    /// The lane, end to end, minus the engine and the renderer.
+    /// The lane, end to end, with the engine behind it and no game drawing.
     ///
     /// A real `WKWebView` loads the producer page from the reserved prefix, the page
-    /// starts a real module worker, the worker opens a real WebSocket to the host's
-    /// ephemeral port, and a frame content submits arrives at the closure the engine
-    /// would be behind. Everything in that sentence except the last clause is the
-    /// part no unit test reaches: `MigoFrameChannelTests` connects a
-    /// `URLSessionWebSocketTask` written in Swift, which proves the channel and
-    /// proves nothing about whether WebKit will run the producer at all.
+    /// starts a real module worker, the worker opens a real WebSocket to the
+    /// engine's endpoint, and what content submits reaches the engine. Everything in
+    /// that sentence is the part no unit test reaches: `MigoFrameChannelTests`
+    /// connects a `URLSessionWebSocketTask` written in Swift, which proves the
+    /// endpoint and proves nothing about whether WebKit will run the producer at
+    /// all. Where a test asserts what WebKit delivered to the content origin, the
+    /// origin's half of the channel is a closure; the socket is always the engine's.
     ///
     /// Simulator is enough. None of this is a measurement -- what a *device* can
     /// host is the capability gate's question, and it has answered it. Whether the
@@ -32,6 +34,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
         private var contentRoot: URL!
         private var window: UIWindow!
         private var host: MigoPerformancePlusHost?
+        private var harness: MigoFrameHarness?
 
         override func setUpWithError() throws {
             contentRoot = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -45,7 +48,25 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             host = nil
             window?.isHidden = true
             window = nil
+            if let harness {
+                XCTAssertTrue(harness.shutDown(), "the retired surface never reported RELEASED")
+            }
+            harness = nil
             try? FileManager.default.removeItem(at: contentRoot)
+        }
+
+        /// A channel on a live session. `submit` and `answerSync` replace the
+        /// content origin's half for the tests that assert what WebKit delivered
+        /// to it.
+        private func makeChannel(
+            submit: MigoFrameChannel.Submit? = nil, answerSync: MigoFrameChannel.AnswerSync? = nil
+        ) throws -> MigoFrameChannel {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            return MigoFrameChannel(
+                session: harness.session,
+                submit: submit ?? MigoFrameChannel.engineSubmit(harness.session),
+                answerSync: answerSync)
         }
 
         private func writeContent(_ text: String, to name: String) throws {
@@ -76,9 +97,9 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
 
         func testTheProducerStartsAndAFrameReachesTheEngine() throws {
             // Content, as the product will supply it: a module on the game's own
-            // root, imported by the producer, handed a session. The bytes are
-            // arbitrary -- the engine is a closure here, and what is being asserted
-            // is that they arrive unchanged.
+            // root, imported by the producer, handed a session. The bytes are not a
+            // frame, so the engine refuses them -- what is asserted is that they
+            // reached it; `MigoFrameAcceptanceTests` sends frames that draw.
             try writeContent(
                 """
                 export function start({ session }) {
@@ -86,15 +107,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 }
                 """, to: "game/main.mjs")
 
-            let submitted = expectation(description: "a frame reaches the engine")
-            var seen: Data?
-            let channel = MigoFrameChannel(
-                submit: { packet in
-                    seen = packet
-                    submitted.fulfill()
-                    return .accepted
-                },
-                takeDownlink: { _ in 0 })
+            let channel = try makeChannel()
 
             let ready = expectation(description: "the producer reports ready")
             var connected = false
@@ -127,13 +140,15 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             XCTAssertNil(failure, "the producer reported a failure")
             XCTAssertTrue(connected, "the worker never said it had a socket")
             // The submit happens inside content's `start`, so it precedes `ready` at
-            // the producer. It crosses a different queue to get here, which is the
-            // only reason this is a wait rather than an assertion.
-            wait(for: [submitted], timeout: 10)
-            XCTAssertEqual(
-                seen, Data([7, 6, 5, 4, 3, 2, 1, 0]),
-                "the engine must see the bytes content submitted, unchanged")
-            XCTAssertEqual(channel.currentStatistics.framesAccepted, 1)
+            // the producer. It crosses a process and a thread to get here, which is
+            // the only reason this is a wait rather than an assertion.
+            let deadline = Date().addingTimeInterval(10)
+            while channel.currentStatistics.framesReceived == 0, Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            XCTAssertEqual(channel.currentStatistics.framesReceived, 1, "the frame reached the engine")
+            XCTAssertEqual(channel.currentStatistics.framesRefused, 1, "and was read as what it is")
+            XCTAssertEqual(host.originActivity.framesDelivered, 0, "over the socket")
         }
 
         /// A game cannot replace the producer by shipping a file with its name.
@@ -170,7 +185,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             var failure: String?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
-                channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
+                channel: try makeChannel())
             self.host = host
             host.onReport = { report in
                 switch report["type"] as? String {
@@ -220,8 +235,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
 
             var calls: [Data] = []
             let callsLock = NSLock()
-            let channel = MigoFrameChannel(
-                submit: { _ in .accepted }, takeDownlink: { _ in 0 },
+            let channel = try makeChannel(
                 answerSync: { call in
                     callsLock.lock()
                     calls.append(call)
@@ -296,8 +310,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             let arrived = expectation(description: "the call reached the answerer")
             let released = DispatchSemaphore(value: 0)
             let answerReturned = expectation(description: "the late answer was produced")
-            let channel = MigoFrameChannel(
-                submit: { _ in .accepted }, takeDownlink: { _ in 0 },
+            let channel = try makeChannel(
                 answerSync: { _ in
                     arrived.fulfill()
                     // Held until the page is gone, so the answer is late by
@@ -333,16 +346,17 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 "the answer was produced; reaching here without a trap is the assertion")
         }
 
-        func testAMissingProducerBundleIsNamedRatherThanSilent() {
+        func testAMissingProducerBundleIsNamedRatherThanSilent() throws {
             // The packaging step is what puts the producer in the resource bundle,
             // and a build that skipped it otherwise presents as a worker that never
             // connects -- which reads as a transport fault and is not one.
+            let channel = try makeChannel()
             XCTAssertThrowsError(
                 try MigoPerformancePlusHost(
                     configuration: .init(
                         contentRoot: contentRoot,
                         engineRoot: contentRoot.appendingPathComponent("nothing-here")),
-                    channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
+                    channel: channel)
             ) { error in
                 guard case MigoPerformancePlusHost.StartFailure.engineModulesMissing = error else {
                     return XCTFail("expected engineModulesMissing, got \(error)")
@@ -385,15 +399,13 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 }
                 """, to: "game/main.mjs")
 
-            let submitted = expectation(description: "the large frame reaches the engine")
+            let submitted = expectation(description: "the large frame reaches the content origin")
             var seen: Data?
-            let channel = MigoFrameChannel(
-                submit: { packet in
-                    seen = packet
-                    submitted.fulfill()
-                    return .accepted
-                },
-                takeDownlink: { _ in 0 })
+            let channel = try makeChannel(submit: { packet in
+                seen = packet
+                submitted.fulfill()
+                return .accepted
+            })
 
             let ready = expectation(description: "the producer reports ready")
             var failure: String?
@@ -427,8 +439,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 "it must have come through the scheme handler, not the socket")
             XCTAssertEqual(host.originActivity.framesRefused, 0)
             XCTAssertEqual(
-                channel.currentStatistics.framesAccepted, 1,
-                "one frame, counted once, whichever uplink carried it")
+                channel.currentStatistics.framesReceived, 0, "the socket must not have carried it too")
         }
 
         func testAFrameAtTheCeilingStillGoesOverTheSocket() throws {
@@ -443,15 +454,10 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
                 }
                 """, to: "game/main.mjs")
 
-            let submitted = expectation(description: "the frame reaches the engine")
-            var seen: Data?
-            let channel = MigoFrameChannel(
-                submit: { packet in
-                    seen = packet
-                    submitted.fulfill()
-                    return .accepted
-                },
-                takeDownlink: { _ in 0 })
+            let channel = try makeChannel(submit: { _ in
+                XCTFail("at exactly the ceiling the socket carries it, not the content origin")
+                return .refused
+            })
 
             let ready = expectation(description: "the producer reports ready")
             let host = try MigoPerformancePlusHost(
@@ -467,8 +473,11 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             try host.start()
 
             wait(for: [ready], timeout: Self.reportTimeout)
-            wait(for: [submitted], timeout: 30)
-            XCTAssertEqual(seen?.count, ceiling)
+            let deadline = Date().addingTimeInterval(30)
+            while channel.currentStatistics.framesReceived == 0, Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            XCTAssertEqual(channel.currentStatistics.framesReceived, 1, "the frame reached the engine")
             XCTAssertEqual(
                 host.originActivity.framesDelivered, 0,
                 "at exactly the ceiling the socket carries it; the scheme must not have seen it")
@@ -490,7 +499,7 @@ import enum MigoAppleCore.MigoFrameChannelPolicy
             var status: Int?
             let host = try MigoPerformancePlusHost(
                 configuration: .init(contentRoot: contentRoot, harnessEntry: "/game/main.mjs"),
-                channel: MigoFrameChannel(submit: { _ in .accepted }, takeDownlink: { _ in 0 }))
+                channel: try makeChannel())
             self.host = host
             host.onReport = { report in
                 if report["type"] as? String == "probe" {

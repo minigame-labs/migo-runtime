@@ -62,6 +62,7 @@ use migo_services::content::MountedContent;
 use migo_services::image::cache::{ImageCache, SharedImageCache};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
+use super::frame_endpoint::TransportCounters;
 use super::service_args::{
     boolean, bytes, exactly, f64_of, i32_of, not_a, string, strings, u32_of,
 };
@@ -1196,6 +1197,9 @@ pub(crate) struct ServiceHost {
     work: tokio::sync::mpsc::Sender<ServiceWork>,
     pub(crate) outbox: Arc<ServiceOutbox>,
     pub(crate) context: Arc<ServiceContext>,
+    /// Where every service message is counted, whichever uplink carried it:
+    /// the session's transport counters, shared with its submit path.
+    counters: Arc<TransportCounters>,
 }
 
 impl ServiceHost {
@@ -1206,6 +1210,7 @@ impl ServiceHost {
         files_dir: PathBuf,
         cache_dir: PathBuf,
         waker: Arc<WakerSlot>,
+        counters: Arc<TransportCounters>,
     ) -> (Arc<Self>, tokio::sync::mpsc::Receiver<ServiceWork>) {
         // The wire carries the low 32 bits, as every other stream does.
         let generation = runtime_generation as u32;
@@ -1222,6 +1227,7 @@ impl ServiceHost {
                 work,
                 outbox: Arc::new(ServiceOutbox::new(generation, waker)),
                 context: Arc::new(ServiceContext::new(files_dir, cache_dir)),
+                counters,
             }),
             receiver,
         )
@@ -1241,6 +1247,7 @@ impl ServiceHost {
     /// called from inside a Tokio runtime.
     pub(crate) fn submit(&self, bytes: &[u8]) -> Result<ServiceAdmission, ServiceSubmitError> {
         let result = self.admit(bytes);
+        self.counters.service(&result);
         if let Err(ServiceSubmitError::Refused(error)) = result {
             let sequence = read_service_envelope(bytes).map_or(0, |(_, sequence)| sequence);
             warn!("service message {sequence} refused: {error}");
@@ -1568,6 +1575,7 @@ mod tests {
             PathBuf::new(),
             PathBuf::new(),
             Arc::new(WakerSlot::default()),
+            Arc::default(),
         )
     }
 

@@ -298,8 +298,8 @@ import os
             /// loads and a worker that never connects -- which reads like a
             /// transport fault and is a packaging one.
             case engineModulesMissing(URL)
-            /// The frame channel could not start: it could not listen, or the
-            /// engine would not install its downlink waker.
+            /// The frame channel could not start: the engine would not start its
+            /// endpoint, having no surface yet or no loopback port to bind.
             case transport(Error)
             /// The engine session cannot be handed to a producer; the reason is
             /// named. Refused here because a producer given it would have every
@@ -472,8 +472,8 @@ import os
 
         /// Listen, then load. In that order, because the page is handed the port.
         @discardableResult
-        public func start() throws -> MigoFrameTransport.Endpoint {
-            let endpoint: MigoFrameTransport.Endpoint
+        public func start() throws -> MigoFrameChannel.Endpoint {
+            let endpoint: MigoFrameChannel.Endpoint
             do {
                 endpoint = try channel.start()
             } catch {
@@ -492,7 +492,7 @@ import os
             webView = nil
         }
 
-        private func build(endpoint: MigoFrameTransport.Endpoint) {
+        private func build(endpoint: MigoFrameChannel.Endpoint) {
             let webConfiguration = WKWebViewConfiguration()
             webConfiguration.setURLSchemeHandler(
                 origin, forURLScheme: MigoWebKitContentOrigin.scheme)
@@ -526,7 +526,7 @@ import os
         }
 
         /// The one global the page reads, serialised rather than escaped by hand.
-        private func configurationScript(endpoint: MigoFrameTransport.Endpoint) -> String {
+        private func configurationScript(endpoint: MigoFrameChannel.Endpoint) -> String {
             var fields: [String: Any] = [
                 "frameChannelUrl": endpoint.url.absoluteString,
                 "frameSchemeUrl": MigoPerformancePlusOrigin.frameURL.absoluteString,

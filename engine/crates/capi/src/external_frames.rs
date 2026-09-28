@@ -24,8 +24,9 @@ use migo_capi_abi::{
         MIGO_SYNC_ERROR_UNSUPPORTED_OPERATION, MIGO_SYNC_STATE_CANCELLED, MIGO_SYNC_STATE_FAILED,
         MIGO_SYNC_STATE_FREE, MIGO_SYNC_STATE_PENDING, MIGO_SYNC_STATE_READY,
         MIGO_UPLINK_MESSAGE_CONTROL, MIGO_UPLINK_MESSAGE_FRAME, MIGO_UPLINK_MESSAGE_SERVICE,
-        MigoDownlinkWakerFn, MigoFrameIngressOutcome, MigoSyncOutcome, MigoSyncRequestDescriptor,
-        MigoUplinkMessageKind, write_frame_ingress_outcome, write_sync_outcome,
+        MigoDownlinkWakerFn, MigoFrameIngressOutcome, MigoFrameTransportStatistics,
+        MigoSyncOutcome, MigoSyncRequestDescriptor, MigoUplinkMessageKind,
+        write_frame_ingress_outcome, write_sync_outcome,
     },
 };
 use migo_core::IngressDecision;
@@ -308,6 +309,11 @@ pub unsafe extern "C" fn migo_session_set_downlink_waker(
         let Some(engine) = state.host.as_ref() else {
             return MIGO_ERROR_INVALID_STATE;
         };
+        // The engine's endpoint drains this session through the same slot; a
+        // host waker installed now would take its wake-ups from it.
+        if engine.frame_endpoint_running() {
+            return MIGO_ERROR_INVALID_STATE;
+        }
         let installed = waker.map(|waker| {
             let target = CWaker { waker, user_data };
             Box::new(move || target.wake()) as migo_core::DownlinkWaker
@@ -316,6 +322,127 @@ pub unsafe extern "C" fn migo_session_set_downlink_waker(
         // so waiting here for a call in progress cannot deadlock with it.
         engine.set_downlink_waker(installed);
         MIGO_OK
+    })
+}
+
+/// Start the engine's frame endpoint and report its loopback port.
+///
+/// # Safety
+/// `session` must be a live session handle. `out_port` must be writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_start_frame_endpoint(
+    session: *mut MigoSession,
+    out_port: *mut u16,
+) -> MigoResult {
+    guard("migo_session_start_frame_endpoint", || {
+        let Some(out_port) = (unsafe { out_port.as_mut() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let Ok(state) = session.state.lock() else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        let Some(engine) = state.host.as_ref() else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        match engine.start_frame_endpoint() {
+            Ok(port) => {
+                *out_port = port;
+                MIGO_OK
+            }
+            Err(migo_core::FrameEndpointError::AlreadyStarted) => MIGO_ERROR_INVALID_STATE,
+            Err(error) => {
+                tracing::error!("migo_session_start_frame_endpoint: {error}");
+                MIGO_ERROR_INTERNAL
+            }
+        }
+    })
+}
+
+/// Stop the engine's frame endpoint. Idempotent.
+///
+/// # Safety
+/// `session` must be a live session handle.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_stop_frame_endpoint(session: *mut MigoSession) -> MigoResult {
+    guard("migo_session_stop_frame_endpoint", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let Ok(state) = session.state.lock() else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        // No engine is no endpoint: nothing to stop, which is what was asked.
+        if let Some(engine) = state.host.as_ref() {
+            engine.stop_frame_endpoint();
+        }
+        MIGO_OK
+    })
+}
+
+/// What the session's frame transports have done.
+///
+/// # Safety
+/// `session` must be a live session handle. `out_statistics` must satisfy the
+/// versioned-output contract.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_get_frame_transport_statistics(
+    session: *mut MigoSession,
+    out_statistics: *mut MigoFrameTransportStatistics,
+) -> MigoResult {
+    guard("migo_session_get_frame_transport_statistics", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let Ok(state) = session.state.lock() else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        let Some(engine) = state.host.as_ref() else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        let statistics = engine.transport_statistics();
+        drop(state);
+        let value = MigoFrameTransportStatistics {
+            header: migo_capi_abi::VersionedHeader {
+                struct_size: size_of::<MigoFrameTransportStatistics>() as u32,
+                abi_version: migo_capi_abi::MIGO_ABI_VERSION_CURRENT,
+            },
+            frames_received: statistics.frames_received,
+            frames_accepted: statistics.frames_accepted,
+            frames_deferred: statistics.frames_deferred,
+            frames_refused: statistics.frames_refused,
+            control_messages_received: statistics.control_messages_received,
+            control_messages_refused: statistics.control_messages_refused,
+            service_messages_received: statistics.service_messages_received,
+            service_messages_refused: statistics.service_messages_refused,
+            downlink_messages_sent: statistics.downlink_messages_sent,
+            service_messages_sent: statistics.service_messages_sent,
+            downlink_wakes: statistics.downlink_wakes,
+            downlink_records_dropped: statistics.downlink_records_dropped,
+            sends_without_producer: statistics.sends_without_producer,
+            producers_connected: statistics.producers_connected,
+            last_control_refusal_code: statistics.last_control_refusal_code,
+            last_service_refusal_code: statistics.last_service_refusal_code,
+            producer_connected: u32::from(statistics.producer_connected),
+            reserved0: 0,
+        };
+        // SAFETY: forwarded from this function's output contract; `value` is a
+        // distinct, fully initialized local.
+        unsafe {
+            migo_capi_abi::write_versioned_output(
+                out_statistics,
+                &value,
+                migo_capi_abi::OutputVersionPolicy::CurrentAbi,
+            )
+        }
     })
 }
 
@@ -852,6 +979,213 @@ mod tests {
         );
     }
 
+    fn statistics(session: *mut MigoSession) -> MigoFrameTransportStatistics {
+        let mut out = MigoFrameTransportStatistics {
+            header: VersionedHeader {
+                struct_size: size_of::<MigoFrameTransportStatistics>() as u32,
+                abi_version: 1,
+            },
+            frames_received: 0,
+            frames_accepted: 0,
+            frames_deferred: 0,
+            frames_refused: 0,
+            control_messages_received: 0,
+            control_messages_refused: 0,
+            service_messages_received: 0,
+            service_messages_refused: 0,
+            downlink_messages_sent: 0,
+            service_messages_sent: 0,
+            downlink_wakes: 0,
+            downlink_records_dropped: 0,
+            sends_without_producer: 0,
+            producers_connected: 0,
+            last_control_refusal_code: 0,
+            last_service_refusal_code: 0,
+            producer_connected: 0,
+            reserved0: 0,
+        };
+        assert_eq!(
+            unsafe { migo_session_get_frame_transport_statistics(session, &mut out) },
+            MIGO_OK
+        );
+        out
+    }
+
+    #[test]
+    fn the_endpoint_needs_a_surface_starts_once_and_listens_on_loopback() {
+        let mut port = 0u16;
+        with_session("external-endpoint-no-surface", |session| {
+            assert_eq!(
+                unsafe { migo_session_start_frame_endpoint(session, &mut port) },
+                MIGO_ERROR_INVALID_STATE
+            );
+            assert_eq!(
+                unsafe { migo_session_stop_frame_endpoint(session) },
+                MIGO_OK
+            );
+        });
+        with_engine_installed("external-endpoint", |session| {
+            assert_eq!(
+                unsafe { migo_session_start_frame_endpoint(session, std::ptr::null_mut()) },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                unsafe { migo_session_start_frame_endpoint(session, &mut port) },
+                MIGO_OK
+            );
+            assert_ne!(port, 0);
+            std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+                .expect("the endpoint listens on the port it reported");
+            assert_eq!(
+                unsafe { migo_session_start_frame_endpoint(session, &mut port) },
+                MIGO_ERROR_INVALID_STATE,
+                "one endpoint per session"
+            );
+            assert_eq!(
+                unsafe { migo_session_stop_frame_endpoint(session) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { migo_session_stop_frame_endpoint(session) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { migo_session_start_frame_endpoint(session, &mut port) },
+                MIGO_ERROR_INVALID_STATE,
+                "a stopped endpoint is not restarted"
+            );
+        });
+    }
+
+    #[test]
+    fn a_host_cannot_drain_what_the_running_endpoint_owns() {
+        let counter = std::sync::atomic::AtomicU32::new(0);
+        let user_data = &counter as *const _ as *mut std::ffi::c_void;
+        with_engine_installed("external-endpoint-drains", |session| {
+            let mut port = 0u16;
+            assert_eq!(
+                unsafe { migo_session_start_frame_endpoint(session, &mut port) },
+                MIGO_OK
+            );
+            let mut buffer = [0u8; 64];
+            let mut written = 0usize;
+            let mut message: *mut MigoOwnedBytes = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { migo_session_set_downlink_waker(session, Some(count_wake), user_data) },
+                MIGO_ERROR_INVALID_STATE
+            );
+            assert_eq!(
+                unsafe {
+                    migo_session_take_downlink(
+                        session,
+                        buffer.as_mut_ptr(),
+                        buffer.len(),
+                        &mut written,
+                    )
+                },
+                MIGO_ERROR_INVALID_STATE
+            );
+            assert_eq!(
+                unsafe { migo_session_take_service_message(session, &mut message) },
+                MIGO_ERROR_INVALID_STATE
+            );
+
+            // Stopped, the drains are the host's again.
+            assert_eq!(
+                unsafe { migo_session_stop_frame_endpoint(session) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe {
+                    migo_session_take_downlink(
+                        session,
+                        buffer.as_mut_ptr(),
+                        buffer.len(),
+                        &mut written,
+                    )
+                },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { migo_session_set_downlink_waker(session, Some(count_wake), user_data) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { migo_session_set_downlink_waker(session, None, std::ptr::null_mut()) },
+                MIGO_OK
+            );
+        });
+    }
+
+    #[test]
+    fn statistics_count_what_the_host_submits_as_the_endpoint_would() {
+        with_session("external-statistics-no-surface", |session| {
+            let mut out = MigoFrameTransportStatistics {
+                header: VersionedHeader {
+                    struct_size: size_of::<MigoFrameTransportStatistics>() as u32,
+                    abi_version: 1,
+                },
+                ..unsafe { std::mem::zeroed() }
+            };
+            assert_eq!(
+                unsafe { migo_session_get_frame_transport_statistics(session, &mut out) },
+                MIGO_ERROR_INVALID_STATE
+            );
+        });
+        with_engine_installed("external-statistics", |session| {
+            assert_eq!(statistics(session).frames_received, 0);
+
+            // No renderer behind this engine: the packet is refused, and
+            // counted as the endpoint's would be.
+            let packet = [0u8; 64];
+            let mut out = outcome();
+            assert_eq!(
+                unsafe {
+                    migo_session_submit_external_frame(
+                        session,
+                        packet.as_ptr(),
+                        packet.len(),
+                        &mut out,
+                    )
+                },
+                MIGO_OK
+            );
+            let mut refusal = 0u32;
+            let mut malformed = control(1);
+            malformed.push(0);
+            assert_eq!(
+                unsafe {
+                    migo_session_submit_uplink_control(
+                        session,
+                        malformed.as_ptr(),
+                        malformed.len(),
+                        &mut refusal,
+                    )
+                },
+                MIGO_OK
+            );
+
+            let counted = statistics(session);
+            assert_eq!(
+                counted.header.struct_size as usize,
+                size_of::<MigoFrameTransportStatistics>()
+            );
+            assert_eq!(counted.frames_received, 1);
+            assert_eq!(counted.frames_refused, 1);
+            assert_eq!(counted.control_messages_received, 1);
+            assert_eq!(counted.control_messages_refused, 1);
+            assert_eq!(counted.last_control_refusal_code, refusal);
+            assert_eq!(counted.producer_connected, 0);
+
+            let mut wrong = counted;
+            wrong.header.abi_version = 2;
+            assert_eq!(
+                unsafe { migo_session_get_frame_transport_statistics(session, &mut wrong) },
+                migo_capi_abi::MIGO_ERROR_UNSUPPORTED_ABI
+            );
+        });
+    }
+
     #[test]
     fn taking_an_error_needs_somewhere_to_put_it() {
         with_session("external-take-error", |session| {
@@ -1328,6 +1662,10 @@ pub unsafe extern "C" fn migo_session_take_downlink(
         let Some(engine) = state.host.as_ref() else {
             return MIGO_ERROR_INVALID_STATE;
         };
+        // Records drained here would never reach the endpoint's producer.
+        if engine.frame_endpoint_running() {
+            return MIGO_ERROR_INVALID_STATE;
+        }
         // SAFETY: null and length were checked above; the contract requires the
         // range to be writable for the call.
         let out = if capacity == 0 {
@@ -1552,9 +1890,18 @@ pub unsafe extern "C" fn migo_session_take_service_message(
             Ok(session) => session,
             Err(error) => return error,
         };
-        let services = match service_handle(&session) {
-            Ok(services) => services,
-            Err(error) => return error,
+        let services = {
+            let Ok(state) = session.state.lock() else {
+                return MIGO_ERROR_INTERNAL;
+            };
+            let Some(engine) = state.host.as_ref() else {
+                return MIGO_ERROR_INVALID_STATE;
+            };
+            // Messages taken here would never reach the endpoint's producer.
+            if engine.frame_endpoint_running() {
+                return MIGO_ERROR_INVALID_STATE;
+            }
+            engine.service_handle()
         };
         hand_over(services.take_message(), out_message);
         MIGO_OK

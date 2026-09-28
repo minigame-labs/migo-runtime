@@ -331,6 +331,8 @@ text = text.replace("MigoFrameIngressOutcome *out_outcome);",
                     "const MigoFrameIngressOutcome *out_outcome);")
 text = text.replace("MigoSyncOutcome *out_outcome);",
                     "const MigoSyncOutcome *out_outcome);")
+text = text.replace("MigoFrameTransportStatistics *out_statistics);",
+                    "const MigoFrameTransportStatistics *out_statistics);")
 '
 expect_violation "every output record turns const, so the audit can see none" \
     no-output-records-found "$dest"

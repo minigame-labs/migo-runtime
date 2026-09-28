@@ -413,6 +413,111 @@ MIGO_API MigoResult MIGO_CALL migo_session_cancel_sync(
     MigoSession *session, uint64_t now_nanos, MigoSyncOutcome *out_outcome);
 
 /* ---------------------------------------------------------------------------
+ * The engine's frame endpoint
+ *
+ * The producer's socket, terminated by the library: a loopback WebSocket
+ * server the producer connects to at ws://127.0.0.1:<port>/. Messages that
+ * arrive on it go to the door the wire names, on the thread that read them,
+ * and what the session owes the producer -- verdicts, frame-clock ticks,
+ * service answers and events -- is written back as the session queues it,
+ * without the host touching either direction. This is the transport the
+ * Apple SDK uses; a host that terminated the socket itself paid for a copy of
+ * every message across this boundary and a hop through its own queues for
+ * every tick.
+ *
+ * The entry points further down -- migo_uplink_message_kind, the submits,
+ * the downlink waker and the drains -- remain for a host that brings its own
+ * transport. While the endpoint runs it owns the downlink, so the drains and
+ * migo_session_set_downlink_waker return MIGO_ERROR_INVALID_STATE. Frames and
+ * service messages too large for the socket still arrive at the host's content
+ * origin and are submitted with migo_session_submit_external_frame and
+ * migo_session_submit_service; their answers leave on the endpoint.
+ *
+ * One producer at a time: a second connection waits until the first has gone,
+ * so two producers' sequences never interleave, and a producer rebuilt after a
+ * WebContent termination is served as soon as the old socket's end is read.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Start the endpoint and write its loopback port to *out_port.
+ *
+ * Needs an attached surface (MIGO_ERROR_INVALID_STATE without one). Once per
+ * session: a second call, including after migo_session_stop_frame_endpoint,
+ * returns MIGO_ERROR_INVALID_STATE. MIGO_ERROR_INTERNAL when the port could
+ * not be bound.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_start_frame_endpoint(
+    MigoSession *session, uint16_t *out_port);
+
+/*
+ * Stop the endpoint: close the producer's socket and stop accepting. Returns
+ * without waiting for the endpoint's threads, which are joined when the
+ * session is destroyed; nothing is written to the producer after it returns.
+ * Idempotent, and MIGO_OK when there is no endpoint to stop.
+ * migo_session_destroy stops a running endpoint itself.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_stop_frame_endpoint(
+    MigoSession *session);
+
+/*
+ * What the session's transports have done, for a host that has to explain a
+ * frame rate or a stall. Frames, control and service messages are counted
+ * where they are submitted, so the socket and the content origin are counted
+ * alike and a host's own transport is counted too; the downlink counters are
+ * the endpoint's.
+ *
+ * Library-written and append-only. The 64-bit counters precede the 32-bit
+ * fields, so the record is 136 bytes with no interior padding on LP64 and
+ * ILP32.
+ */
+typedef struct MigoFrameTransportStatistics {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    /* Packets offered to frame ingress, and what became of them. Refused
+     * includes WOULD_BLOCK: the credit window doing its job. */
+    uint64_t frames_received;
+    uint64_t frames_accepted;
+    uint64_t frames_deferred;
+    uint64_t frames_refused;
+    /* The producer's requests for a frame. */
+    uint64_t control_messages_received;
+    uint64_t control_messages_refused;
+    uint64_t service_messages_received;
+    uint64_t service_messages_refused;
+    /* Downlink envelopes (verdicts and ticks) and service messages (answers
+     * and events) the endpoint wrote to the producer. */
+    uint64_t downlink_messages_sent;
+    uint64_t service_messages_sent;
+    /* Drains the session asked the endpoint for. */
+    uint64_t downlink_wakes;
+    /* Records the session dropped because nothing drained them in time. Every
+     * record is absolute, so the next one corrects the producer. */
+    uint64_t downlink_records_dropped;
+    /* Messages drained while no producer could take them: expected between a
+     * WebContent termination and the rebuilt producer's connection. */
+    uint64_t sends_without_producer;
+    /* Producers that completed the WebSocket handshake. */
+    uint64_t producers_connected;
+    /* The most recent refusal's code, 0 when there has been none. */
+    uint32_t last_control_refusal_code;
+    uint32_t last_service_refusal_code;
+    /* 1 while a producer is connected to the endpoint, else 0. */
+    uint32_t producer_connected;
+    uint32_t reserved0;
+} MigoFrameTransportStatistics;
+
+/*
+ * Write the session's transport statistics. Needs an attached surface.
+ *
+ * out_statistics IS CALLER-OWNED AND ITS HEADER IS AN INPUT. Set struct_size
+ * and abi_version before every call: struct_size is what bounds the write
+ * into your storage, and a zeroed record is refused with
+ * MIGO_ERROR_INVALID_ARGUMENT rather than written.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_get_frame_transport_statistics(
+    MigoSession *session, MigoFrameTransportStatistics *out_statistics);
+
+/* ---------------------------------------------------------------------------
  * The socket's other message
  *
  * The producer's socket carries frame packets and one more thing: control
@@ -497,6 +602,8 @@ typedef void(MIGO_CALL *MigoDownlinkWakerFn)(void *user_data);
  * One waker per session; installing replaces the previous one. Clearing
  * returns only after any call already in progress has returned, so once it
  * returns `user_data` may be freed. Clear it before migo_session_destroy.
+ * MIGO_ERROR_INVALID_STATE while the engine's frame endpoint runs: it drains
+ * the session through the same slot.
  *
  * Needs an attached surface, like every other entry point on this path, and
  * returns MIGO_ERROR_INVALID_STATE without one.
@@ -530,6 +637,9 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_downlink_waker(
  * carried. The queue is bounded and coalesces ticks, so a transport that falls
  * behind costs the producer scheduling decisions rather than memory -- every
  * record is absolute, so the next one it reads is already correct.
+ *
+ * MIGO_ERROR_INVALID_STATE while the engine's frame endpoint runs, which
+ * drains the queue itself.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_take_downlink(
     MigoSession *session, uint8_t *buffer, size_t capacity,
@@ -600,7 +710,8 @@ MIGO_API MigoResult MIGO_CALL migo_session_submit_service(
  * *out_message receives NULL when nothing is queued -- the normal answer, not
  * an error. Otherwise send the bytes on the socket unread and release them.
  * Call it wherever migo_session_take_downlink is called: the downlink waker
- * fires for both.
+ * fires for both. MIGO_ERROR_INVALID_STATE while the engine's frame endpoint
+ * runs, which sends these itself.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_take_service_message(
     MigoSession *session, MigoOwnedBytes **out_message);
