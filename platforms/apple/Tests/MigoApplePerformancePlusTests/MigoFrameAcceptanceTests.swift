@@ -1718,6 +1718,96 @@ import XCTest
                 """)
         }
 
+        /// A task never runs inside the script that is blocked in a synchronous call.
+        ///
+        /// JavaScript's run-to-completion: a timer, a frame-clock tick, a socket
+        /// message runs between scripts, never between two statements of a
+        /// function that did not yield. A synchronous call here is a synchronous
+        /// request, and what WebKit dispatches while a Worker waits on one is
+        /// WebKit's business; what this asserts is the promise content relies on
+        /// -- a web adapter queues its `load` event on a zero-delay timer and a
+        /// game registers for it later in the same script. So content arms a timer
+        /// and a frame, then spends 300 ms in back-to-back `getError` calls, each a
+        /// blocking round trip, and both have to have waited for the script to end.
+        func testNothingContentQueuedRunsInsideItsSynchronousCalls() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                export function start({ report }) {
+                  const gl = migo.createCanvas().getContext("webgl");
+                  let inScript = true;
+                  const timer = { ran: false, inScript: false };
+                  const tick = { ran: false, inScript: false };
+                  setTimeout(() => { timer.ran = true; timer.inScript = inScript; }, 0);
+                  requestAnimationFrame(() => { tick.ran = true; tick.inScript = inScript; });
+
+                  const started = performance.now();
+                  let calls = 0;
+                  try {
+                    while (performance.now() - started < 300) {
+                      gl.getError();
+                      calls += 1;
+                    }
+                  } catch (error) {
+                    report({ type: "failed", stage: "calls", detail: `${error.name}: ${error.message}` });
+                    throw error;
+                  }
+                  const millis = performance.now() - started;
+                  inScript = false;
+
+                  const settled = () => {
+                    if (timer.ran && tick.ran) report({ type: "gated", calls, millis, timer, tick });
+                    else setTimeout(settled, 10);
+                  };
+                  setTimeout(settled, 0);
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let gated = expectation(description: "the timer and the frame both ran")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "gated":
+                    report = message
+                    gated.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    gated.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [gated], timeout: 240)
+            XCTAssertNil(failure)
+
+            let calls = report?["calls"] as? Int ?? 0
+            let timer = report?["timer"] as? [String: Any]
+            let tick = report?["tick"] as? [String: Any]
+            print(
+                "task gate: calls=\(calls) millis=\(report?["millis"] as? Double ?? -1)"
+                    + " timerInScript=\(timer?["inScript"] as? Bool ?? true)"
+                    + " tickInScript=\(tick?["inScript"] as? Bool ?? true)")
+            // Enough round trips that a zero-delay timer and a vsync both came due
+            // while one was outstanding.
+            XCTAssertGreaterThanOrEqual(calls, 20, "too few calls for the timer and the tick to fall inside one")
+            XCTAssertEqual(timer?["inScript"] as? Bool, false, "the timer ran inside the script that armed it")
+            XCTAssertEqual(tick?["inScript"] as? Bool, false, "the frame ran inside the script that asked for it")
+        }
+
         /// Attached and off-screen: an unattached web view is killed since iOS 16
         /// and an occluded one stops executing JavaScript.
         /// A game hears its own sounds: both audio APIs, on the host's audio
