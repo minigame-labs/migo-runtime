@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.16 (2026-09-28)
+
 ### Fixed
 - iOS (Performance+): a game could start to a black screen, its frame loop
   running and nothing drawn, in about one launch in four on an iPhone XS Max
