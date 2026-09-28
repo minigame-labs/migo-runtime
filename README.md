@@ -156,7 +156,7 @@ migo_session_notify_vsync(...);         // every display frame
 
 ## License
 
-[BSL 1.1](LICENSE), source-available. Each release becomes Apache 2.0 four years after publication; for the current release, **2030-09-27**.
+[BSL 1.1](LICENSE), source-available. Each release becomes Apache 2.0 four years after publication; for the current release, **2030-09-28**.
 
 - **Read, build, test, benchmark, modify, port** — free, at any scale.
 - **Ship in your own app** — free up to USD 1M company revenue a year and 3M monthly active users.

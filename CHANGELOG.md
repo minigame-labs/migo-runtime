@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.14 (2026-09-28)
+
+### Fixed
+- iOS (Performance+): the web view that hosts the producer is window-sized
+  again (still off-screen), undoing v0.9.13's one-point shape. At one point the
+  Canvas2D bench game presented more late frames in every one of six
+  interleaved 30-second pairs on an iPhone 15 Pro -- 6.3 against 4.0 per 30 s,
+  with both builds made the same way and differing only in that frame -- while
+  the WebGL game showed no difference. Frame pacing outranks the 11 MiB of
+  WebContent memory the smaller view saved, so the window's size stays until
+  the cause is understood. v0.9.13's canvas-sized drawable is unaffected.
+
 ## v0.9.13 (2026-09-27)
 
 ### Changed
