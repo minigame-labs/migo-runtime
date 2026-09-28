@@ -109,7 +109,11 @@ it carries no signature; subpackages inside the package work.
 ### iOS
 
 - The game's size is fixed when it starts (a mini-game lays itself out once), so lock
-  the hosting view controller to the game's orientation.
+  the hosting view controller to the game's orientation -- and have it locked **before
+  `MigoGameView`'s first layout**: an app whose Info.plist declares only the game's
+  orientation, or a view controller that supports only that orientation presenting it. A
+  root view controller that picks its orientation after launch lays out in the launch
+  orientation first, and the game starts in a window of the wrong shape.
 - `MigoGameView.unavailabilityReason` says whether the device can run the lane (for
   example below iOS 15.2); check it before offering the game.
 - When the canvas is smaller than the screen -- common for games that size

@@ -38,7 +38,12 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
     /// platform. So the session starts at the view's first non-empty layout and
     /// keeps that size: a later bounds change scales the rendered frame to the
     /// new bounds rather than lying to a game that has already laid itself out.
-    /// Lock the hosting controller's orientation to the game's.
+    /// Lock the hosting controller's orientation to the game's, and have it
+    /// locked before this view's first layout: an app whose Info.plist allows
+    /// the game's orientation only, or a controller that supports only that
+    /// orientation and presents this view. A root controller that picks its
+    /// orientation after launch lays out in the launch orientation first, and
+    /// the game starts in a window of the wrong shape.
     ///
     /// ## The web view is not a view you see
     ///

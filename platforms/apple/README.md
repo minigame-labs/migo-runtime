@@ -106,7 +106,11 @@ the engine refuses a dynamic install whenever signing is enforced, because a
 downloaded subpackage carries no signature; subpackages inside the package work.
 
 **iOS.** The game's size is fixed when it starts (a mini-game lays itself out
-once), so lock the hosting controller to the game's orientation.
+once), so lock the hosting controller to the game's orientation before the view's
+first layout: an Info.plist that declares only that orientation, or a controller
+that supports only it presenting the view. A root controller that chooses its
+orientation after launch lays out in the launch orientation first, and the game
+starts in a window of the wrong shape.
 `MigoGameView.unavailabilityReason` says whether the device can run the lane.
 
 **macOS.** Sign the app with the hardened runtime and
