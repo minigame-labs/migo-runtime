@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.17 (2026-09-28)
+
 ### Fixed
 - Android: the engine's frame-rate request never reached the display.
   `ANativeWindow_setFrameRate` (Android 11+) was not called at all, from
