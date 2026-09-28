@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- iOS (Performance+): the engine terminates the producer's socket itself. The
+  loopback WebSocket the WebContent producer sends frames on and hears its
+  verdicts, frame-clock ticks and answers from used to be the host's --
+  Network.framework, every message copied across the C boundary and the
+  downlink pumped from a GCD queue -- and on devices that was about a quarter
+  of the App process's CPU samples while a game ran (iPhone 15 Pro: 23%, ~3.4%
+  of a core), with three queue hops between the frame clock and the socket. Now
+  an uplink message is one read and a submit on the engine thread that read it,
+  and a downlink message one unpark and one write, with Nagle's algorithm off
+  and `SO_NOSIGPIPE` on every connection. `MigoFrameTransport` is gone;
+  `MigoFrameChannel` keeps the content origin's half and its `Statistics`, now
+  counted by the engine for both uplinks alike.
+
+### Added
+- C ABI (external-frames product): `migo_session_start_frame_endpoint`,
+  `migo_session_stop_frame_endpoint` and
+  `migo_session_get_frame_transport_statistics` with its
+  `MigoFrameTransportStatistics` record. While the endpoint runs it owns the
+  downlink, so `migo_session_take_downlink`,
+  `migo_session_take_service_message` and `migo_session_set_downlink_waker`
+  return `MIGO_ERROR_INVALID_STATE`; a host that brings its own transport keeps
+  using them as before.
+
 ## v0.9.14 (2026-09-28)
 
 ### Fixed
