@@ -334,10 +334,11 @@ node "$SYNC_CALL_TEST"
 RAN_TESTS+=("$SYNC_CALL_TEST")
 
 # While content is blocked in one of those synchronous requests, WebKit keeps
-# dispatching the Worker's timers and socket events from a nested run loop. A
-# zero-delay timer that fired there ran the web adapter's `load` event in the
-# middle of a Phaser bundle's evaluation, and the game never started. The gate
-# holds such tasks until the script that made the call has finished.
+# dispatching the Worker's timers and socket events from a nested run loop, so
+# a zero-delay timer can run the web adapter's `load` event in the middle of a
+# bundle's evaluation -- a Phaser game then registers for `load` after it has
+# fired and never starts. The gate holds such tasks until the script that made
+# the call has finished.
 TASK_GATE_TEST="$TEST_DIR/task-gate.test.mjs"
 node "$TASK_GATE_TEST"
 RAN_TESTS+=("$TASK_GATE_TEST")

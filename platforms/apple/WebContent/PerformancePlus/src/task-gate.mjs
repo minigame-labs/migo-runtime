@@ -10,10 +10,11 @@
 // that never yielded. The synchronous path was designed on `Atomics.wait`,
 // which dispatches nothing, and everything above it assumes that. What broke
 // first was a Phaser game on an iPhone XS Max: the web adapter queues its
-// `load` event on a zero-delay timer, the timer fired inside a `getImageData`
-// the engine was still evaluating, and the game -- which registers for `load`
-// a few statements later -- never started. A black screen over a running frame
-// loop, in about one launch in four under load.
+// `load` event on a zero-delay timer, and in the launches that went black that
+// event had already fired when the game's bundle -- still being evaluated,
+// blocked in synchronous calls on the way -- registered for it. The game never
+// started: a black screen over a running frame loop, in about one launch in
+// four under load.
 //
 // So every task source the producer owns enters JavaScript through `runTask`.
 // While a synchronous call is outstanding the task is queued instead; once the
