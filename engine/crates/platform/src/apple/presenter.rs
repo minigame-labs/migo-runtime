@@ -28,6 +28,21 @@
 //! attribute list anyway, which is the same reason the Windows presenter gives
 //! for not pinning there.
 //!
+//! # Which GPU
+//!
+//! The one the host chose for its layer, on a Mac. Left to itself, ANGLE's
+//! Metal display takes `MTLCreateSystemDefaultDevice()`, which on a dual-GPU
+//! Mac is the discrete GPU whether or not it drives the display. Measured
+//! 2026-09-30 on a MacBookPro16,1 held on its integrated GPU
+//! (`pmset gpuswitch 0`): on the AMD GPU the frame loop ran at 57 fps, the
+//! window stayed black and a Canvas2D read back 0,0,0,0; pointed at the Intel
+//! GPU, ANGLE drew. Which GPU drives a display is the host's knowledge -- it knows the
+//! screen its view is on -- and `CAMetalLayer.device` is where Apple has hosts
+//! record it, so that is what [`RetainedMetalLayer::retain`] reads and
+//! [`AppleEglProvider::display`] hands to ANGLE through
+//! `EGL_ANGLE_platform_angle_device_id`. A layer with no device keeps ANGLE's
+//! default. iOS reads nothing: it has one GPU.
+//!
 //! # Where ANGLE comes from
 //!
 //! From the process, not from a path this module guesses. An Apple application
@@ -44,7 +59,7 @@
 //! and is the same delegation the Linux presenter makes when it opens its EGL
 //! runtime by bare soname.
 
-use std::{any::Any, ffi::c_void, ptr::NonNull, sync::Arc};
+use std::{any::Any, ffi::c_void, num::NonZeroU64, ptr::NonNull, sync::Arc};
 
 use graphics::egl_platform::{
     EglConcurrency, EglInstance, EglProvider, EglSurfaceFactory, GraphicsBackendId,
@@ -88,18 +103,43 @@ const APPLE_EGL_LIBRARY: &str = "libEGL.framework/libEGL";
 struct AppleAngleEglBackend;
 struct AppleAngleDeviceDomain;
 
+/// A Metal device, by `MTLDevice.registryID`: the GPU a host chose for its
+/// layer. See "Which GPU" in the module header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MetalDeviceId(NonZeroU64);
+
+impl MetalDeviceId {
+    /// `None` for zero, which no device carries and ANGLE reads as "no device
+    /// named".
+    pub fn new(registry_id: u64) -> Option<Self> {
+        NonZeroU64::new(registry_id).map(Self)
+    }
+
+    pub fn registry_id(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// Distinguishes the displays of one domain, as `PlatformIdentity` asks:
+/// ANGLE keeps one display per attribute list, so a device is a display.
+fn device_instance(device: Option<MetalDeviceId>) -> usize {
+    device.map_or(0, |device| device.registry_id() as usize)
+}
+
 /// EGL provider backed by ANGLE-Metal.
 ///
 /// Like Windows and unlike X11, the display is not the host's connection: ANGLE
 /// resolves it from `EGL_DEFAULT_DISPLAY` and takes the layer only when the
 /// surface is created. So one provider serves both the headless and the
-/// onscreen case.
+/// onscreen case, on the device it was built for.
 #[derive(Debug, Default)]
-pub struct AppleEglProvider;
+pub struct AppleEglProvider {
+    device: Option<MetalDeviceId>,
+}
 
 impl AppleEglProvider {
-    pub fn new() -> Self {
-        Self
+    pub fn new(device: Option<MetalDeviceId>) -> Self {
+        Self { device }
     }
 }
 
@@ -117,7 +157,10 @@ impl EglProvider for AppleEglProvider {
     }
 
     fn platform_identity(&self) -> PlatformIdentity {
-        PlatformIdentity::new::<AppleAngleDeviceDomain>(self.backend_id(), 0)
+        PlatformIdentity::new::<AppleAngleDeviceDomain>(
+            self.backend_id(),
+            device_instance(self.device),
+        )
     }
 
     fn label(&self) -> &str {
@@ -153,12 +196,73 @@ impl EglProvider for AppleEglProvider {
     }
 
     fn display(&self, egl: &EglInstance) -> EngineResult<egl::Display> {
-        unsafe { egl.get_display(egl::DEFAULT_DISPLAY) }.ok_or_else(|| {
-            EngineError::new(ErrorCode::RenderInitializeError)
-                .with_msg("ANGLE eglGetDisplay failed")
-                .with_detail(format!("provider={}", self.label()))
-        })
+        let Some(device) = self.device else {
+            return unsafe { egl.get_display(egl::DEFAULT_DISPLAY) }.ok_or_else(|| {
+                EngineError::new(ErrorCode::RenderInitializeError)
+                    .with_msg("ANGLE eglGetDisplay failed")
+                    .with_detail(format!("provider={}", self.label()))
+            });
+        };
+        // `eglGetPlatformDisplayEXT` is ANGLE's own export, reached the way EGL
+        // extension entry points are.
+        let get_platform_display = egl
+            .get_proc_address("eglGetPlatformDisplayEXT")
+            .map(|pointer| {
+                // SAFETY: the prototype `EGL_EXT_platform_base` gives this name.
+                unsafe { std::mem::transmute::<_, GetPlatformDisplayExt>(pointer) }
+            })
+            .ok_or_else(|| {
+                EngineError::new(ErrorCode::RenderInitializeError)
+                    .with_msg("ANGLE does not export eglGetPlatformDisplayEXT")
+                    .with_detail(format!("provider={}", self.label()))
+            })?;
+        let attributes = device_display_attributes(device);
+        // SAFETY: EGL_DEFAULT_DISPLAY is ANGLE's native display, and the
+        // attribute list is EGL_NONE-terminated.
+        let raw = unsafe {
+            get_platform_display(
+                EGL_PLATFORM_ANGLE_ANGLE,
+                egl::DEFAULT_DISPLAY,
+                attributes.as_ptr(),
+            )
+        };
+        if raw.is_null() {
+            return Err(EngineError::new(ErrorCode::RenderInitializeError)
+                .with_msg("ANGLE eglGetPlatformDisplayEXT failed for the layer's Metal device")
+                .with_detail(format!(
+                    "provider={}, registryID={:#x}, error={:?}",
+                    self.label(),
+                    device.registry_id(),
+                    egl.get_error()
+                )));
+        }
+        // SAFETY: non-null and produced by EGL itself.
+        Ok(unsafe { egl::Display::from_ptr(raw) })
     }
+}
+
+/// `eglGetPlatformDisplayEXT`, per `EGL_EXT_platform_base`.
+type GetPlatformDisplayExt =
+    unsafe extern "system" fn(egl::Enum, *mut c_void, *const egl::Int) -> *mut c_void;
+
+/// `EGL_PLATFORM_ANGLE_ANGLE`, from `EGL_ANGLE_platform_angle`.
+const EGL_PLATFORM_ANGLE_ANGLE: egl::Enum = 0x3202;
+/// From `EGL_ANGLE_platform_angle_device_id`, which ANGLE's Metal build
+/// advertises and matches against `MTLDevice.registryID`.
+const EGL_PLATFORM_ANGLE_DEVICE_ID_HIGH_ANGLE: egl::Int = 0x34D6;
+const EGL_PLATFORM_ANGLE_DEVICE_ID_LOW_ANGLE: egl::Int = 0x34D7;
+
+/// The registry ID in the two 32-bit halves the extension takes. Each half is
+/// passed as its bit pattern; ANGLE reads them back as `uint32_t`.
+fn device_display_attributes(device: MetalDeviceId) -> [egl::Int; 5] {
+    let registry_id = device.registry_id();
+    [
+        EGL_PLATFORM_ANGLE_DEVICE_ID_HIGH_ANGLE,
+        (registry_id >> 32) as u32 as egl::Int,
+        EGL_PLATFORM_ANGLE_DEVICE_ID_LOW_ANGLE,
+        registry_id as u32 as egl::Int,
+        egl::NONE,
+    ]
 }
 
 /// Headless render target: the presenter serves it from a pbuffer sized to
@@ -196,6 +300,7 @@ pub struct RetainedMetalLayer(Arc<MetalLayerOwner>);
 struct MetalLayerOwner {
     layer: NonNull<c_void>,
     release: unsafe fn(NonNull<c_void>),
+    device: Option<MetalDeviceId>,
 }
 
 // SAFETY: Objective-C retain/release may run on either lifecycle thread. All
@@ -219,8 +324,37 @@ unsafe extern "C" {
     fn objc_release(object: *mut c_void);
 }
 
+#[cfg(target_os = "macos")]
+#[link(name = "objc")]
+unsafe extern "C" {
+    fn sel_registerName(name: *const std::ffi::c_char) -> *const c_void;
+    fn objc_msgSend();
+}
+
+/// `layer.device.registryID`, or `None` while the host has set no device.
+///
+/// # Safety
+/// `layer` must point to a live `CAMetalLayer`.
+#[cfg(target_os = "macos")]
+unsafe fn layer_device(layer: NonNull<c_void>) -> Option<MetalDeviceId> {
+    type Send<R> = unsafe extern "C" fn(*mut c_void, *const c_void) -> R;
+    // SAFETY: `objc_msgSend` is called through the prototype of the method it
+    // dispatches to: `-[CAMetalLayer device]` returns an object and
+    // `-[MTLDevice registryID]` a `uint64_t`, both in registers on arm64 and
+    // x86_64.
+    let object: Send<*mut c_void> = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    let integer: Send<u64> = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    let device = unsafe { object(layer.as_ptr(), sel_registerName(c"device".as_ptr())) };
+    if device.is_null() {
+        return None;
+    }
+    MetalDeviceId::new(unsafe { integer(device, sel_registerName(c"registryID".as_ptr())) })
+}
+
 impl RetainedMetalLayer {
-    /// Acquire ownership before a surface can be published to another thread.
+    /// Acquire ownership before a surface can be published to another thread,
+    /// and read the device the host chose for the layer (macOS; see "Which
+    /// GPU" in the module header).
     ///
     /// # Safety
     /// `layer` must point to a live `CAMetalLayer` for this call. The host must
@@ -234,7 +368,11 @@ impl RetainedMetalLayer {
             unsafe fn release(layer: NonNull<c_void>) {
                 unsafe { objc_release(layer.as_ptr()) };
             }
-            unsafe { Self::with_refcount(layer, retain, release) }
+            #[cfg(target_os = "macos")]
+            let device = unsafe { layer_device(layer) };
+            #[cfg(not(target_os = "macos"))]
+            let device = None;
+            unsafe { Self::with_refcount(layer, retain, release, device) }
         }
         #[cfg(not(target_vendor = "apple"))]
         {
@@ -247,12 +385,18 @@ impl RetainedMetalLayer {
         layer: NonNull<c_void>,
         retain: unsafe fn(NonNull<c_void>),
         release: unsafe fn(NonNull<c_void>),
+        device: Option<MetalDeviceId>,
     ) -> Self {
         unsafe { retain(layer) };
-        Self(Arc::new(MetalLayerOwner { layer, release }))
+        Self(Arc::new(MetalLayerOwner {
+            layer,
+            release,
+            device,
+        }))
     }
 
-    /// Inject native refcount operations for portable lifecycle tests.
+    /// Inject native refcount operations, and the device a host would have
+    /// set, for portable lifecycle tests.
     ///
     /// # Safety
     /// Both callbacks must implement a balanced, thread-safe retain/release
@@ -262,12 +406,18 @@ impl RetainedMetalLayer {
         layer: NonNull<c_void>,
         retain: unsafe fn(NonNull<c_void>),
         release: unsafe fn(NonNull<c_void>),
+        device: Option<MetalDeviceId>,
     ) -> Self {
-        unsafe { Self::with_refcount(layer, retain, release) }
+        unsafe { Self::with_refcount(layer, retain, release, device) }
     }
 
     pub fn as_ptr(&self) -> *mut c_void {
         self.0.layer.as_ptr()
+    }
+
+    /// The device the host had set on the layer when it was retained.
+    pub fn device(&self) -> Option<MetalDeviceId> {
+        self.0.device
     }
 
     /// How many `RetainedMetalLayer` values share this one native retain.
@@ -340,18 +490,21 @@ enum AppleSurfaceTarget {
 #[derive(Debug)]
 pub struct AppleEglSurfaceFactory {
     target: AppleSurfaceTarget,
+    device: Option<MetalDeviceId>,
 }
 
 impl AppleEglSurfaceFactory {
     fn offscreen() -> Self {
         Self {
             target: AppleSurfaceTarget::Offscreen,
+            device: None,
         }
     }
 
-    fn metal_layer() -> Self {
+    fn metal_layer(device: Option<MetalDeviceId>) -> Self {
         Self {
             target: AppleSurfaceTarget::MetalLayer,
+            device,
         }
     }
 }
@@ -362,7 +515,10 @@ impl EglSurfaceFactory for AppleEglSurfaceFactory {
     }
 
     fn platform_identity(&self) -> PlatformIdentity {
-        PlatformIdentity::new::<AppleAngleDeviceDomain>(self.backend_id(), 0)
+        PlatformIdentity::new::<AppleAngleDeviceDomain>(
+            self.backend_id(),
+            device_instance(self.device),
+        )
     }
 
     fn prepare(&self, surface: &dyn Surface) -> EngineResult<PreparedEglSurfaceRef> {
@@ -531,20 +687,23 @@ fn display_has_extension(egl: &EglInstance, display: egl::Display, name: &str) -
 /// Headless Apple graphics platform: ANGLE-Metal plus a pbuffer surface factory.
 pub fn apple_graphics_platform() -> EngineResult<GraphicsPlatform> {
     GraphicsPlatform::try_new(
-        Arc::new(AppleEglProvider::new()),
+        Arc::new(AppleEglProvider::new(None)),
         Arc::new(AppleEglSurfaceFactory::offscreen()),
     )
 }
 
-/// Onscreen Apple graphics platform rendering into a host-owned `CAMetalLayer`.
+/// Onscreen Apple graphics platform rendering into a host-owned `CAMetalLayer`,
+/// on `device` -- the one the host set on that layer -- or ANGLE's default.
 ///
 /// The caller creates the layer and drives its layout and display link. Surface
 /// wrappers retain it until native retirement completes; the engine never
 /// creates or resizes it.
-pub fn apple_metal_layer_graphics_platform() -> EngineResult<GraphicsPlatform> {
+pub fn apple_metal_layer_graphics_platform(
+    device: Option<MetalDeviceId>,
+) -> EngineResult<GraphicsPlatform> {
     GraphicsPlatform::try_new(
-        Arc::new(AppleEglProvider::new()),
-        Arc::new(AppleEglSurfaceFactory::metal_layer()),
+        Arc::new(AppleEglProvider::new(device)),
+        Arc::new(AppleEglSurfaceFactory::metal_layer(device)),
     )
 }
 
@@ -578,6 +737,7 @@ mod tests {
                 pointer,
                 retain_counted_layer,
                 release_counted_layer,
+                None,
             )
         };
         AppleMetalLayerSurface::from_retained_layer(layer, 800, 600)
@@ -615,7 +775,7 @@ mod tests {
             "a surface that nothing has prepared is the only owner of its layer"
         );
 
-        let prepared = AppleEglSurfaceFactory::metal_layer()
+        let prepared = AppleEglSurfaceFactory::metal_layer(None)
             .prepare(&surface)
             .expect("prepare retained layer");
         assert_eq!(
@@ -645,7 +805,7 @@ mod tests {
     fn prepared_surface_keeps_the_layer_until_its_final_reference_is_retired() {
         let counts = LayerRefcounts::default();
         let surface = unsafe { counted_surface(&counts) };
-        let prepared = AppleEglSurfaceFactory::metal_layer()
+        let prepared = AppleEglSurfaceFactory::metal_layer(None)
             .prepare(&surface)
             .expect("prepare retained layer");
         let retiring = prepared.clone();
@@ -666,7 +826,7 @@ mod tests {
             Arc::new(unsafe { counted_surface(&counts) }),
             gate.attach_or_update().expect("attach generation"),
         );
-        let prepared = apple_metal_layer_graphics_platform()
+        let prepared = apple_metal_layer_graphics_platform(None)
             .expect("graphics platform")
             .prepare_surface_for_lease(&lease)
             .expect("prepare resource-bound layer");
@@ -704,8 +864,9 @@ mod tests {
 
     fn fake_surface(value: usize, width: u32, height: u32) -> AppleMetalLayerSurface {
         unsafe fn no_refcount(_: NonNull<c_void>) {}
-        let layer =
-            unsafe { RetainedMetalLayer::retain_for_test(layer(value), no_refcount, no_refcount) };
+        let layer = unsafe {
+            RetainedMetalLayer::retain_for_test(layer(value), no_refcount, no_refcount, None)
+        };
         AppleMetalLayerSurface::from_retained_layer(layer, width, height)
     }
 
@@ -733,10 +894,56 @@ mod tests {
             apple_graphics_platform()
                 .expect("offscreen ANGLE platform")
                 .platform_identity(),
-            apple_metal_layer_graphics_platform()
+            apple_metal_layer_graphics_platform(None)
                 .expect("CAMetalLayer ANGLE platform")
                 .platform_identity(),
         );
+    }
+
+    /// A device is a display: ANGLE keeps one per attribute list, so two
+    /// devices must never read as one platform, and one device must always
+    /// read as itself -- a reattachment is checked against the identity the
+    /// session started with.
+    #[test]
+    fn a_device_is_part_of_the_platform_identity() {
+        let identity = |registry_id| {
+            apple_metal_layer_graphics_platform(MetalDeviceId::new(registry_id))
+                .expect("CAMetalLayer ANGLE platform")
+                .platform_identity()
+        };
+        assert_eq!(identity(0x1_0000_06ee), identity(0x1_0000_06ee));
+        assert_ne!(identity(0x1_0000_06ee), identity(0x1_0000_0699));
+        assert_ne!(
+            identity(0x1_0000_06ee),
+            apple_graphics_platform()
+                .expect("offscreen ANGLE platform")
+                .platform_identity(),
+            "the default device is not a named one"
+        );
+        assert_eq!(MetalDeviceId::new(0), None, "zero names no device");
+    }
+
+    /// Registry IDs are 64-bit and the extension takes two 32-bit EGLints.
+    /// Real IDs have a high half (a MacBookPro16,1's are 0x1_0000_06EE and
+    /// 0x1_0000_0699), and a low half at or above 2^31 is only an EGLint by its
+    /// bit pattern, which is what ANGLE casts back to `uint32_t`.
+    #[test]
+    fn the_device_attributes_carry_both_halves_of_the_registry_id() {
+        let attributes = |registry_id| {
+            device_display_attributes(MetalDeviceId::new(registry_id).expect("non-zero"))
+        };
+        assert_eq!(
+            attributes(0x1_0000_06ee),
+            [
+                EGL_PLATFORM_ANGLE_DEVICE_ID_HIGH_ANGLE,
+                1,
+                EGL_PLATFORM_ANGLE_DEVICE_ID_LOW_ANGLE,
+                0x6ee,
+                egl::NONE
+            ]
+        );
+        let [_, high, _, low, _] = attributes(0xdead_beef_8000_0001);
+        assert_eq!((high as u32, low as u32), (0xdead_beef, 0x8000_0001));
     }
 
     #[test]
@@ -751,7 +958,7 @@ mod tests {
 
     #[test]
     fn a_layer_factory_refuses_an_offscreen_surface() {
-        let factory = AppleEglSurfaceFactory::metal_layer();
+        let factory = AppleEglSurfaceFactory::metal_layer(None);
         let offscreen = AppleOffscreenSurface::new(800, 600);
         assert!(factory.prepare(&offscreen).is_err());
     }
@@ -760,7 +967,7 @@ mod tests {
     /// would retire an attachment the host never replaced.
     #[test]
     fn layer_identity_is_the_layer_not_the_size() {
-        let factory = AppleEglSurfaceFactory::metal_layer();
+        let factory = AppleEglSurfaceFactory::metal_layer(None);
         let before = factory
             .prepare(&fake_surface(0x1234, 800, 600))
             .expect("prepare");
@@ -800,7 +1007,10 @@ mod tests {
             offscreen.backend_id(),
             GraphicsBackendId::of::<AppleAngleEglBackend>()
         );
-        assert_eq!(AppleEglProvider::new().backend_id(), offscreen.backend_id());
+        assert_eq!(
+            AppleEglProvider::new(None).backend_id(),
+            offscreen.backend_id()
+        );
     }
 
     /// A pbuffer and a layer are never the same native surface, whatever their
@@ -823,7 +1033,7 @@ mod tests {
         let offscreen = AppleEglSurfaceFactory::offscreen()
             .prepare(&AppleOffscreenSurface::new(800, 600))
             .expect("prepare offscreen");
-        let onscreen = AppleEglSurfaceFactory::metal_layer()
+        let onscreen = AppleEglSurfaceFactory::metal_layer(None)
             .prepare(&fake_surface(0x1234, 800, 600))
             .expect("prepare layer");
 
@@ -877,7 +1087,7 @@ mod tests {
     #[cfg(target_vendor = "apple")]
     fn angle_loads_under_its_pinned_name_and_answers_with_a_display() {
         let _serialised = EGL_DISPLAY.lock();
-        let provider = AppleEglProvider::new();
+        let provider = AppleEglProvider::new(None);
         let egl = provider.load().unwrap_or_else(|error| {
             panic!(
                 "loading ANGLE failed: {error:?}\nThis build looks for {APPLE_EGL_LIBRARY:?}. \
@@ -896,6 +1106,105 @@ mod tests {
             "the engine needs EGL 1.4 or better, ANGLE reported {major}.{minor}"
         );
         egl.terminate(display).expect("eglTerminate");
+    }
+
+    /// For every GPU this Mac has: a layer set to it reads back as it, and the
+    /// display built for it is ANGLE's display on that GPU.
+    ///
+    /// The portable tests prove the attribute list; this proves the reader's
+    /// selectors and that the pinned ANGLE honours the list -- asked through
+    /// `EGL_ANGLE_device_metal` which `MTLDevice` it holds. A single-GPU runner
+    /// only proves the plumbing, since its one GPU is also the default; the
+    /// lab's MacBookPro16,1 covers the GPU ANGLE would not have picked.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn angle_renders_on_the_gpu_the_layer_names() {
+        #[link(name = "Metal", kind = "framework")]
+        unsafe extern "C" {
+            fn MTLCopyAllDevices() -> *mut c_void;
+        }
+        #[link(name = "QuartzCore", kind = "framework")]
+        unsafe extern "C" {}
+        #[link(name = "objc")]
+        unsafe extern "C" {
+            fn objc_getClass(name: *const std::ffi::c_char) -> *mut c_void;
+        }
+        type Send<R> = unsafe extern "C" fn(*mut c_void, *const c_void) -> R;
+        type SendWith<A, R> = unsafe extern "C" fn(*mut c_void, *const c_void, A) -> R;
+        type QueryAttrib =
+            unsafe extern "system" fn(*mut c_void, egl::Int, *mut egl::Attrib) -> egl::Boolean;
+        const EGL_DEVICE_EXT: egl::Int = 0x322C;
+        const EGL_METAL_DEVICE_ANGLE: egl::Int = 0x34A6;
+
+        let msg = objc_msgSend as *const ();
+        let (send_object, send_count, registry_id): (Send<*mut c_void>, Send<usize>, Send<u64>) = unsafe {
+            (
+                std::mem::transmute(msg),
+                std::mem::transmute(msg),
+                std::mem::transmute(msg),
+            )
+        };
+        let (object_at, set_device): (SendWith<usize, *mut c_void>, SendWith<*mut c_void, ()>) =
+            unsafe { (std::mem::transmute(msg), std::mem::transmute(msg)) };
+        let sel = |name: &std::ffi::CStr| unsafe { sel_registerName(name.as_ptr()) };
+
+        let _serialised = EGL_DISPLAY.lock();
+        let egl = AppleEglProvider::new(None).load().expect("load ANGLE");
+        let query = |name: &str| -> QueryAttrib {
+            let entry = egl.get_proc_address(name).expect(name);
+            unsafe { std::mem::transmute(entry) }
+        };
+        let (query_display, query_device) = (
+            query("eglQueryDisplayAttribEXT"),
+            query("eglQueryDeviceAttribEXT"),
+        );
+
+        let devices = unsafe { MTLCopyAllDevices() };
+        let count = unsafe { send_count(devices, sel(c"count")) };
+        assert!(
+            count > 0,
+            "a Mac with no Metal device cannot run this engine"
+        );
+        for index in 0..count {
+            let device = unsafe { object_at(devices, sel(c"objectAtIndex:"), index) };
+            let wanted = unsafe { registry_id(device, sel(c"registryID")) };
+
+            let layer =
+                unsafe { send_object(objc_getClass(c"CAMetalLayer".as_ptr()), sel(c"new")) };
+            let layer = NonNull::new(layer).expect("a CAMetalLayer");
+            assert_eq!(
+                unsafe { layer_device(layer) },
+                None,
+                "a new layer names no GPU"
+            );
+            unsafe { set_device(layer.as_ptr(), sel(c"setDevice:"), device) };
+            let named = unsafe { layer_device(layer) };
+            unsafe { objc_release(layer.as_ptr()) };
+            assert_eq!(named, MetalDeviceId::new(wanted));
+
+            let display = AppleEglProvider::new(named)
+                .display(&egl)
+                .expect("a display for the layer's GPU");
+            egl.initialize(display).expect("eglInitialize");
+            let (mut egl_device, mut metal_device): (egl::Attrib, egl::Attrib) = (0, 0);
+            let answered = unsafe {
+                query_display(display.as_ptr(), EGL_DEVICE_EXT, &mut egl_device) == egl::TRUE
+                    && query_device(
+                        egl_device as *mut c_void,
+                        EGL_METAL_DEVICE_ANGLE,
+                        &mut metal_device,
+                    ) == egl::TRUE
+            };
+            let rendering_on = answered
+                .then(|| unsafe { registry_id(metal_device as *mut c_void, sel(c"registryID")) });
+            egl.terminate(display).expect("eglTerminate");
+            assert_eq!(
+                rendering_on,
+                Some(wanted),
+                "ANGLE must render on the GPU the layer names (device {index} of {count})"
+            );
+        }
+        unsafe { objc_release(devices) };
     }
 
     /// Skia builds a GL context on this platform's ANGLE, or it does not.
@@ -927,7 +1236,7 @@ mod tests {
     #[cfg(target_vendor = "apple")]
     fn skia_builds_a_gl_context_on_this_platforms_angle() {
         let _serialised = EGL_DISPLAY.lock();
-        let provider = AppleEglProvider::new();
+        let provider = AppleEglProvider::new(None);
         let Ok(egl) = provider.load() else {
             eprintln!("SKIP: ANGLE did not load on this machine; nothing to ask");
             return;

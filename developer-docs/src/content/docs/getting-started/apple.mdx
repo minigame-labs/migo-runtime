@@ -123,6 +123,11 @@ view 可以接着载入下一个游戏。
     --sign "$EXPANDED_CODE_SIGN_IDENTITY"
   ```
 
+- 双显卡的 Mac 上，`MigoGameView` 让引擎在驱动窗口所在显示器的那块 GPU 上渲染。
+  通过 C ABI 自己挂 `CAMetalLayer` 的宿主，要在 attach 之前把 layer 的 `device` 设为
+  `CGDirectDisplayCopyCurrentMetalDevice`（窗口所在的显示器）；引擎在会话第一次 attach 时
+  读取它。不设时引擎用系统默认 GPU，也就是独显，系统固定在核显上时窗口是黑的。
+
 - `Configuration.mouse` 选择鼠标如何送给内容：`.touch`（面向手机的内容，默认）、
   `.pointer`（面向 PC 的内容）、`.touchAndPointer`（仅用于确知只监听其中一种的内容）。
 

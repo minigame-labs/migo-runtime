@@ -139,6 +139,13 @@ it carries no signature; subpackages inside the package work.
     --sign "$EXPANDED_CODE_SIGN_IDENTITY"
   ```
 
+- On a Mac with two GPUs, `MigoGameView` renders on the GPU that drives the window's
+  display. A host that attaches its own `CAMetalLayer` through the C ABI sets the layer's
+  `device` to `CGDirectDisplayCopyCurrentMetalDevice` for the window's screen before
+  attaching; the engine reads it at the session's first attach. A layer with no device
+  renders on the system default GPU -- the discrete one -- and with the system held on
+  the integrated GPU the window stays black.
+
 - `Configuration.mouse` chooses how the mouse reaches content: `.touch` (phone-first
   content, the default), `.pointer` (PC-first content) or `.touchAndPointer` (only for
   content known to listen to exactly one of them).

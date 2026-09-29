@@ -1,6 +1,8 @@
 import AppKit
 import CryptoKit
+import Metal
 import MigoMacV8
+import QuartzCore
 
 // usage: MigoGameViewHost <package-dir> <work-dir> [seconds] [unsigned|signed|tampered]
 //
@@ -97,6 +99,18 @@ window.center()
 window.makeKeyAndOrderFront(nil)
 app.activate(ignoringOtherApps: true)
 
+/// The GPU the view presents from against the one that drives its display.
+/// ANGLE sets the layer's device to the GPU it renders on; on a Mac with two
+/// GPUs, a mismatch is a black window while every frame renders.
+func gpuReport() -> String {
+    func describe(_ device: MTLDevice?) -> String {
+        device.map { "\($0.registryID) (\($0.name))" } ?? "none"
+    }
+    let display = window.screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+    let driving = display.flatMap { CGDirectDisplayCopyCurrentMetalDevice($0.uint32Value) }
+    return "gpu rendering=\(describe((view.layer as? CAMetalLayer)?.device)) display=\(describe(driving))"
+}
+
 var sawReady = false
 var frames = 0
 view.onEvent = { event in
@@ -105,6 +119,7 @@ view.onEvent = { event in
         sawReady = true
         say("ready")
     case .exitRequested:
+        say(gpuReport())
         say("exit requested after ready=\(sawReady), clock delivered \(frames) frames")
         exit(sawReady && frames > 0 ? 0 : 4)
     case .failed(let reason):
