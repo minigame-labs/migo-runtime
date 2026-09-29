@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- macOS: on a Mac with two GPUs held on its integrated one (`pmset gpuswitch 0`),
+  a game rendered every frame and its window stayed black. ANGLE took the
+  system default GPU -- the discrete one -- whatever drove the display.
+  `MigoGameView` now sets its layer's device to the GPU that drives the
+  window's display and the engine renders on the layer's device, named to
+  ANGLE through `EGL_ANGLE_platform_angle_device_id`. A host attaching its own
+  `CAMetalLayer` through the C ABI does the same (`include/migo/platform/macos.h`).
+  Measured on a MacBookPro16,1: black at 57 fps before, drawing after, on the
+  integrated and the discrete GPU alike.
+
 ## v0.9.18 (2026-09-29)
 
 ### Removed

@@ -35,7 +35,8 @@ C ABI 在 Apple 上由 `MigoGameView` 在包内使用，不是受支持的集成
 
 一个 view 运行一个游戏。安装一次（[`MigoGameInstaller`](#migogameinstaller)），加入窗口，
 调 `loadGame(id:entry:)`；其余都由它负责：引擎会话、它渲染进去的 `CAMetalLayer`、显示时钟、
-输入、App 生命周期、软键盘，iOS 上还有 WebContent 生产端、音频会话与 WebContent 崩溃恢复。
+输入、App 生命周期、软键盘，iOS 上还有 WebContent 生产端、音频会话与 WebContent 崩溃恢复，
+双显卡的 Mac 上还有 GPU 的选择（驱动窗口所在显示器的那块）。
 Android SDK 的 `MigoGameView.loadGame(gameId, entryPoint)` 是同一个调用，这是有意的。
 
 **只在主线程使用。** `loadGame` 以 `precondition(Thread.isMainThread)` 检查；所有事件都在主队列上送达。

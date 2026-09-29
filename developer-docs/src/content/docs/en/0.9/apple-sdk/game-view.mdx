@@ -39,7 +39,8 @@ surface: internal targets such as `MigoAppleRenderer` are not products, and the 
 One view runs one game. Install it once ([`MigoGameInstaller`](#migogameinstaller)), add the view to
 a window and call `loadGame(id:entry:)`; the view owns everything else: the engine session, the
 `CAMetalLayer` it renders into, the display clock, input, the app's lifecycle and the soft keyboard,
-and on iOS also the WebContent producer, the audio session and recovery from a WebContent crash. The
+on iOS also the WebContent producer, the audio session and recovery from a WebContent crash, and on
+a Mac with two GPUs the choice of the one that drives the window's display. The
 Android SDK's `MigoGameView.loadGame(gameId, entryPoint)` is the same call, on purpose.
 
 **Main thread only.** `loadGame` checks it with `precondition(Thread.isMainThread)`; every event is

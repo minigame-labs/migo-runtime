@@ -28,6 +28,14 @@ typedef struct MigoMacosNsViewDescriptor {
  * surface (width_pixels x height_pixels), so Core Animation scales it to the
  * layer's bounds through contentsGravity, which must stay kCAGravityResize (the
  * default). A host does not set drawableSize.
+ *
+ * The GPU is the host's too: Migo renders on the layer's device, read when the
+ * session first attaches and kept for the session's lifetime. Set it to the GPU
+ * that drives the view's display -- CGDirectDisplayCopyCurrentMetalDevice for
+ * the window's screen, as MigoGameView does. A layer with no device renders on
+ * the system default GPU, which on a Mac with two GPUs is the discrete one even
+ * while the display is driven by the integrated one, and the window then shows
+ * nothing.
  */
 typedef struct MigoMacosMetalLayerDescriptor {
     uint32_t struct_size;
