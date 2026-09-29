@@ -40,6 +40,9 @@ impl GlDecodeContext for ImageContext {
         self.resolves
             .then(|| GLCmd::DebugLoseContext { canvas_id: 99 })
     }
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        None
+    }
 }
 
 fn record(opcode: u32, words: &[u32]) -> Vec<u32> {

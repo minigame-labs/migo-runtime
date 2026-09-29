@@ -298,6 +298,9 @@ impl frame_decode::GlDecodeContext for OpStateDecodeContext<'_> {
     ) -> Option<shared::protocol::render_cmd::GLCmd> {
         image_upload(self.0, upload)
     }
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        None
+    }
 }
 
 /// A record's texture upload from a loaded image, resolved against this

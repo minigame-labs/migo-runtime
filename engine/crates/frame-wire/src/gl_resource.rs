@@ -144,6 +144,25 @@ pub const OPR_DRAW_BUFFERS: u32 = 202;
 pub const OPR_INVALIDATE_FRAMEBUFFER: u32 = 203;
 // H C program buffer_mode | len names(UTF-8, joined by U+001F)
 pub const OPR_TRANSFORM_FEEDBACK_VARYINGS: u32 = 204;
+/// One chunk of an upload too large to be a record of its own:
+/// `H total_bytes offset | len chunk`.
+///
+/// The uploads above take their bytes inline, and a record cannot be larger
+/// than a packet. So a larger one is staged: its bytes arrive as these records,
+/// contiguous from offset 0 and in stream order, across as many packets as they
+/// need, and then the upload's own record follows with `byte_length` set to
+/// [`crate::stream::STAGED_PAYLOAD`] and no bytes. The reader holds the session's
+/// one staged payload until that record takes it. Offset 0 starts a payload,
+/// dropping any unfinished one; a chunk that is not the next one, or that runs
+/// past `total_bytes`, spoils it, and the upload that takes a spoiled or
+/// incomplete payload fails as an allocation GL cannot make fails.
+///
+/// In band rather than out of band because a WebGL upload takes effect where
+/// it is called: the bytes are used once, by the record right after them, and
+/// the stream already orders them there. The transport below is loopback TCP
+/// and every packet is checksummed, so a digest over the whole would check
+/// nothing twice.
+pub const OPR_STAGE_PAYLOAD: u32 = 205;
 
 // ─── Uploads whose pixels are already the host's (171..=174) ─────────────────
 //
@@ -177,6 +196,16 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
             prefix_words,
             presence_word,
             text,
+            stageable: false,
+        }
+    }
+    // An upload: its bytes may have been staged (`OPR_STAGE_PAYLOAD`).
+    const fn upload(prefix_words: u8, presence_word: Option<u8>) -> RecordSpec {
+        RecordSpec::Bytes {
+            prefix_words,
+            presence_word,
+            text: false,
+            stageable: true,
         }
     }
     Some(match opcode {
@@ -225,14 +254,14 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
 
         OPR_SHADER_SOURCE => bytes(3, None, true),
         OPR_BIND_ATTRIB_LOCATION => bytes(3, None, true),
-        OPR_BUFFER_DATA => bytes(6, Some(5), false),
-        OPR_BUFFER_SUB_DATA => bytes(4, None, false),
-        OPR_TEX_IMAGE_2D => bytes(11, Some(10), false),
-        OPR_TEX_SUB_IMAGE_2D => bytes(10, None, false),
-        OPR_COMPRESSED_TEX_IMAGE_2D => bytes(8, None, false),
-        OPR_COMPRESSED_TEX_SUB_IMAGE_2D => bytes(9, None, false),
-        OPR_TEX_IMAGE_3D => bytes(13, Some(12), false),
-        OPR_TEX_SUB_IMAGE_3D => bytes(14, Some(13), false),
+        OPR_BUFFER_DATA => upload(6, Some(5)),
+        OPR_BUFFER_SUB_DATA => upload(4, None),
+        OPR_TEX_IMAGE_2D => upload(11, Some(10)),
+        OPR_TEX_SUB_IMAGE_2D => upload(10, None),
+        OPR_COMPRESSED_TEX_IMAGE_2D => upload(8, None),
+        OPR_COMPRESSED_TEX_SUB_IMAGE_2D => upload(9, None),
+        OPR_TEX_IMAGE_3D => upload(13, Some(12)),
+        OPR_TEX_SUB_IMAGE_3D => upload(14, Some(13)),
         OPR_DRAW_BUFFERS => RecordSpec::Words {
             prefix_words: 2,
             max_count: MAX_RESOURCE_WORD_LIST,
@@ -242,6 +271,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
             max_count: MAX_RESOURCE_WORD_LIST,
         },
         OPR_TRANSFORM_FEEDBACK_VARYINGS => bytes(4, None, true),
+        OPR_STAGE_PAYLOAD => bytes(3, None, false),
 
         // The sub forms carry one more word than the full ones: an offset pair
         // in place of an internal format.

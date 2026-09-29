@@ -31,6 +31,17 @@ use crate::gl::MAX_STREAM_UNIFORM_WORDS;
 pub const MAGIC: u32 = 0x4D47_4C31;
 pub const STREAM_VERSION: u32 = 1;
 
+/// The `byte_length` of a stageable record whose bytes were staged ahead of it
+/// (`gl_resource::OPR_STAGE_PAYLOAD`) rather than carried inline.
+///
+/// A record's twenty-bit word count cannot say more than 4 MiB, and a packet
+/// carries no more than that either, so an upload larger than a packet -- a
+/// 2048-square RGBA texture is 16 MiB, a 2048-square ASTC 4x4 one exactly 4 MiB
+/// -- could not be a record at all. Staged, its bytes arrive in chunks over as
+/// many packets as they need, in stream order, and the record that uses them is
+/// the size of any other. No length a packet can hold is this one.
+pub const STAGED_PAYLOAD: u32 = 0xFFFF_FFFF;
+
 // ─── Header codec ────────────────────────────────────────────────────────────
 
 /// Pack a record header: low 12 bits = opcode, high 20 bits = total word count.
@@ -163,6 +174,10 @@ pub enum RecordSpec {
         /// The bytes are text and must be UTF-8. A JavaScript string encoded by
         /// the producer always is, so bytes that are not were not written by one.
         text: bool,
+        /// The bytes may instead have been staged ahead of the record: its
+        /// `byte_length` is then [`STAGED_PAYLOAD`] and no payload words follow.
+        /// Only uploads, whose bytes can outgrow a packet; never text.
+        stageable: bool,
     },
     /// Fixed words, then a word list: `H prefix... count words...`.
     /// `word_count = prefix_words + 1 + count`.
@@ -384,10 +399,26 @@ fn validate_stream_with_limit(
                 prefix_words,
                 presence_word,
                 text,
+                stageable,
             } => {
                 let prefix = prefix_words as usize;
                 if (wc as usize) <= prefix {
                     return Err(StreamError::BadArity);
+                }
+                if words[cursor + prefix] == STAGED_PAYLOAD {
+                    // Bytes that were staged: none follow, and a nullable
+                    // payload has to be present -- a staged absence is two
+                    // answers to one question, as a sized absence is.
+                    if !stageable || record_end != cursor + prefix + 1 {
+                        return Err(StreamError::BadPayload);
+                    }
+                    if let Some(index) = presence_word
+                        && words[cursor + index as usize] != 1
+                    {
+                        return Err(StreamError::BadPayload);
+                    }
+                    cursor = record_end;
+                    continue;
                 }
                 let len = words[cursor + prefix] as usize;
                 let payload = &words[cursor + prefix + 1..record_end];
@@ -1368,6 +1399,50 @@ mod tests {
         assert_eq!(check(&record(1, &[])), Ok(()), "present and empty");
         assert_eq!(check(&record(0, &[1])), Err(StreamError::BadPayload));
         assert_eq!(check(&record(2, &[])), Err(StreamError::BadBool));
+    }
+
+    #[test]
+    fn an_upload_may_name_staged_bytes_and_carry_none() {
+        // H C target size:I usage has_data | STAGED_PAYLOAD
+        let buffer_data = |has_data: u32, tail: &[u32]| {
+            let mut record = vec![0, 1, 0x8892, -1i32 as u32, 0x88E4, has_data, STAGED_PAYLOAD];
+            record.extend_from_slice(tail);
+            record[0] = pack_header(OPR_BUFFER_DATA, record.len() as u32);
+            record
+        };
+        assert_eq!(check(&buffer_data(1, &[])), Ok(()));
+        assert_eq!(
+            check(&buffer_data(0, &[])),
+            Err(StreamError::BadPayload),
+            "a staged absence is two answers to one question"
+        );
+        assert_eq!(
+            check(&buffer_data(1, &[0])),
+            Err(StreamError::BadPayload),
+            "staged bytes and inline ones"
+        );
+        let mut text = vec![0, 1, 7, STAGED_PAYLOAD];
+        text[0] = pack_header(OPR_SHADER_SOURCE, text.len() as u32);
+        assert_eq!(
+            check(&text),
+            Err(StreamError::BadPayload),
+            "text is never staged"
+        );
+        let mut chunk_of_chunks = vec![0, 8, 0, STAGED_PAYLOAD];
+        chunk_of_chunks[0] = pack_header(crate::gl_resource::OPR_STAGE_PAYLOAD, 4);
+        assert_eq!(
+            check(&chunk_of_chunks),
+            Err(StreamError::BadPayload),
+            "a chunk carries its bytes"
+        );
+    }
+
+    #[test]
+    fn a_staged_chunk_is_a_byte_payload() {
+        let mut record = vec![0, 6, 0];
+        record.extend(payload(&[1, 2, 3, 4, 5, 6]));
+        record[0] = pack_header(crate::gl_resource::OPR_STAGE_PAYLOAD, record.len() as u32);
+        assert_eq!(check(&record), Ok(()));
     }
 
     #[test]

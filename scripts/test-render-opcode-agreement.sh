@@ -23,7 +23,12 @@
 #   engine/crates/runtime-v8/src/rendering/webgl/00_render_command_stream.js
 #   platforms/apple/WebContent/PerformancePlus/src/render-opcodes.mjs
 #
-# Host-only: reads three files.
+# Two numbers beside the opcodes are held the same way, because a record carries
+# them just as silently: STAGED_PAYLOAD, the byte_length that says an upload's
+# bytes were staged ahead of it, and MAX_WEBGL_UPLOAD_BYTES, the producer's copy
+# of the one-upload ceiling it refuses above rather than staging for nothing.
+#
+# Host-only: reads the tables and those two constants.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -234,6 +239,55 @@ for key in ("MAGIC", "STREAM_VERSION"):
         problems.append(f"{key} disagrees: {values}")
     else:
         print(f"  - {key} agrees: {hex(values['rust envelope'])}")
+
+# The byte_length that says an upload's bytes were staged ahead of it. Only the
+# resource block's two encoders write one, and a producer that wrote any other
+# value there would have its upload read as a 4 GiB inline payload and the
+# packet refused.
+STAGED = {
+    "rust envelope": re.compile(r"^pub const STAGED_PAYLOAD: u32 = (0x[0-9A-Fa-f_]+);", re.M),
+    "webcontent js": re.compile(r"^export const STAGED_PAYLOAD = (0x[0-9A-Fa-f_]+);", re.M),
+}
+staged = {}
+for name, pattern in STAGED.items():
+    found = pattern.findall(text_of[name])
+    if len(found) != 1:
+        problems.append(f"STAGED_PAYLOAD is declared {len(found)} times by {name}")
+    else:
+        staged[name] = int(found[0].replace("_", ""), 16)
+if len(staged) == len(STAGED):
+    if len(set(staged.values())) != 1:
+        problems.append(f"STAGED_PAYLOAD disagrees: {staged}")
+    else:
+        print(f"  - STAGED_PAYLOAD agrees: {hex(staged['rust envelope'])}")
+
+# The most one upload may carry. The producer refuses above it rather than
+# staging bytes the host would refuse; one lower than the host's would refuse,
+# on iOS alone, uploads every other lane accepts.
+def ceiling(path, pattern):
+    found = re.findall(pattern, Path(path).read_text(encoding="utf-8"), re.M)
+    if len(found) != 1 or not re.fullmatch(r"[0-9_ *]+", found[0]):
+        problems.append(f"MAX_WEBGL_UPLOAD_BYTES is not one product of integers in {path}: {found}")
+        return None
+    value = 1
+    for factor in found[0].replace("_", "").split("*"):
+        value *= int(factor)
+    return value
+upload_ceilings = {
+    "rust": ceiling(
+        "engine/crates/shared/src/protocol/render_cmd.rs",
+        r"^pub const MAX_WEBGL_UPLOAD_BYTES: usize = ([^;]+);",
+    ),
+    "webcontent js": ceiling(
+        "platforms/apple/WebContent/PerformancePlus/src/lane-stream.mjs",
+        r"^export const MAX_WEBGL_UPLOAD_BYTES = ([^;]+);",
+    ),
+}
+if None not in upload_ceilings.values():
+    if len(set(upload_ceilings.values())) != 1:
+        problems.append(f"MAX_WEBGL_UPLOAD_BYTES disagrees: {upload_ceilings}")
+    else:
+        print(f"  - MAX_WEBGL_UPLOAD_BYTES agrees: {upload_ceilings['rust']}")
 
 print()
 if problems:

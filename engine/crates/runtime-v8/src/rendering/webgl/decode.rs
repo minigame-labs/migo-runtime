@@ -85,6 +85,9 @@ impl frame_decode::GlDecodeContext for OpStateRenderTarget<'_> {
     ) -> Option<shared::protocol::render_cmd::GLCmd> {
         crate::rendering::webgl::error_state::image_upload(self.state, upload)
     }
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        None
+    }
 }
 
 impl RenderSink for OpStateRenderTarget<'_> {

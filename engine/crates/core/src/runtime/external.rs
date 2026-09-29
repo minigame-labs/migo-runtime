@@ -218,6 +218,9 @@ struct ExternalDecodeContext<'a> {
     /// runtime's do: the renderer marks the onscreen 2D canvas for presentation
     /// from that flag, and from nothing else.
     presents: bool,
+    /// The session's staged upload, which this packet's chunks extend and its
+    /// uploads take.
+    staged: &'a mut frame_decode::StagedPayload,
 }
 
 impl frame_decode::GlDecodeContext for ExternalDecodeContext<'_> {
@@ -242,6 +245,10 @@ impl frame_decode::GlDecodeContext for ExternalDecodeContext<'_> {
         upload: frame_decode::ImageUpload,
     ) -> Option<shared::protocol::render_cmd::GLCmd> {
         self.services?.image_upload(upload)
+    }
+
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        Some(self.staged)
     }
 }
 
@@ -1571,6 +1578,9 @@ struct RenderDispatch {
     /// the same lock as the submit path, because submits are serialized by the
     /// ingress anyway.
     words: Mutex<Vec<u32>>,
+    /// The upload being staged across packets (`frame_decode::staging`). The
+    /// session's, not a packet's: its chunks arrive in several.
+    staged: Mutex<frame_decode::StagedPayload>,
 }
 
 /// The frame clock, reachable from whichever thread the transport runs on.
@@ -2149,6 +2159,7 @@ impl SubmitPath {
 
         let budget = frame_decode::validate_frame_budget(&validated, MAX_DECODED_FRAME_BYTES)
             .map_err(|_| EXTERNAL_ERROR_BAD_COMMAND_STREAM)?;
+        let mut staged = dispatch.staged.lock();
         let mut sink = ExternalDecodeContext {
             errors: &self.errors,
             services: self.services.as_deref(),
@@ -2159,17 +2170,20 @@ impl SubmitPath {
             )
             .push(shared::FrameOp::BeginFrame),
             presents: parsed.presents(),
+            staged: &mut staged,
         };
         frame_decode::decode_render_stream_into_with_plan(&mut sink, validated, budget);
+        let builder = sink.builder;
+        drop(staged);
         drop(scratch);
         // A barrier ends here: its commands run, its trailing 2D work is
         // materialized by the decoder, and the frame goes on -- the shape of the
         // embedded runtime's own barrier flush. Presenting it would put half a
         // frame on screen whenever content asked a question mid-frame.
         let builder = if parsed.presents() {
-            sink.builder.push(shared::FrameOp::Present)
+            builder.push(shared::FrameOp::Present)
         } else {
-            sink.builder
+            builder
         };
         let packet = builder.finish().with_credit(frame.into_credit());
 
@@ -2793,6 +2807,7 @@ fn run_external_session(
     let _ = dispatch.set(RenderDispatch {
         sender: Arc::downgrade(&lifecycle_sender),
         words: Mutex::new(Vec::new()),
+        staged: Mutex::new(frame_decode::StagedPayload::new()),
     });
 
     // The generation the producer must stamp every packet with. The handle was
@@ -4047,6 +4062,7 @@ mod tests {
                 .set(RenderDispatch {
                     sender: Arc::downgrade(&lifecycle_sender),
                     words: Mutex::new(Vec::new()),
+                    staged: Mutex::new(frame_decode::StagedPayload::new()),
                 })
                 .is_ok()
         );
@@ -4266,6 +4282,112 @@ mod tests {
             IngressDecision::Accepted
         );
         assert!(receiver.try_recv().is_ok());
+    }
+
+    /// An upload larger than a packet: its chunks arrive in packets of their
+    /// own, the session keeps them between packets, and the upload's record in a
+    /// later one takes them whole -- moved into its command, nothing left staged.
+    #[test]
+    fn an_upload_staged_across_packets_reaches_the_renderer_whole() {
+        use frame_wire::gl_resource::{OPR_BUFFER_DATA, OPR_STAGE_PAYLOAD};
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        let data: Vec<u8> = (0..10u8)
+            .map(|i| i.wrapping_mul(37).wrapping_add(1))
+            .collect();
+        let chunk = |offset: usize, len: usize| {
+            let mut words = vec![
+                stream::MAGIC,
+                stream::STREAM_VERSION,
+                0,
+                data.len() as u32,
+                offset as u32,
+                len as u32,
+            ];
+            for piece in data[offset..offset + len].chunks(4) {
+                let mut word = [0u8; 4];
+                word[..piece.len()].copy_from_slice(piece);
+                words.push(u32::from_le_bytes(word));
+            }
+            words[2] = stream::pack_header(OPR_STAGE_PAYLOAD, (words.len() - 2) as u32);
+            words
+        };
+        for (sequence, (offset, len)) in [(1, (0, 6)), (2, (6, 4))] {
+            let outcome = submit.submit_frame(&stream_packet(sequence, &chunk(offset, len)));
+            assert_eq!(
+                outcome.decision,
+                IngressDecision::Accepted,
+                "chunk {sequence}"
+            );
+            drop(receiver.try_recv().expect("the chunk's packet ran"));
+        }
+        let upload = [
+            stream::MAGIC,
+            stream::STREAM_VERSION,
+            stream::pack_header(OPR_BUFFER_DATA, 7),
+            1,
+            0x8892,
+            -1i32 as u32,
+            0x88E4,
+            1,
+            stream::STAGED_PAYLOAD,
+        ];
+        assert_eq!(
+            submit.submit_frame(&stream_packet(3, &upload)).decision,
+            IngressDecision::Accepted
+        );
+        let Ok(RenderCommand::FramePacket(packet)) = receiver.try_recv() else {
+            panic!("the renderer was not handed the upload's packet");
+        };
+        let uploaded = packet.ops().iter().find_map(|op| match op {
+            shared::FrameOp::GlBatch(batch) => {
+                batch.commands.iter().find_map(|command| match command {
+                    GLCmd::BufferData {
+                        data: Some(data), ..
+                    } => Some(data.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        });
+        assert_eq!(uploaded, Some(data));
+        assert_eq!(submit.errors.take(1), None, "no GL error for the upload");
+        assert_eq!(
+            submit
+                .dispatch
+                .get()
+                .expect("dispatch")
+                .staged
+                .lock()
+                .held_bytes(),
+            0,
+            "nothing is left staged"
+        );
+    }
+
+    /// An upload that names staged bytes nobody staged fails as GL fails an
+    /// allocation it cannot make, and the frame around it runs.
+    #[test]
+    fn an_upload_with_nothing_staged_is_out_of_memory() {
+        use frame_wire::gl_resource::OPR_BUFFER_DATA;
+        let (submit, receiver, _lifecycle_sender) = ready_submit();
+        let upload = [
+            stream::MAGIC,
+            stream::STREAM_VERSION,
+            stream::pack_header(OPR_BUFFER_DATA, 7),
+            1,
+            0x8892,
+            -1i32 as u32,
+            0x88E4,
+            1,
+            stream::STAGED_PAYLOAD,
+        ];
+        assert_eq!(
+            submit.submit_frame(&stream_packet(1, &upload)).decision,
+            IngressDecision::Accepted
+        );
+        assert!(receiver.try_recv().is_ok());
+        assert_eq!(submit.errors.take(1), Some(0x0505));
     }
 
     #[test]
@@ -4837,6 +4959,7 @@ mod sync_tests {
                     .set(RenderDispatch {
                         sender: Arc::downgrade(&sender),
                         words: Mutex::new(Vec::new()),
+                        staged: Mutex::new(frame_decode::StagedPayload::new()),
                     })
                     .is_ok()
             );
@@ -5165,6 +5288,7 @@ mod sync_tests {
                 .set(RenderDispatch {
                     sender: Arc::downgrade(&sender),
                     words: Mutex::new(Vec::new()),
+                    staged: Mutex::new(frame_decode::StagedPayload::new()),
                 })
                 .is_ok()
         );
@@ -5314,6 +5438,7 @@ mod sync_tests {
                 .set(RenderDispatch {
                     sender: Arc::downgrade(&sender),
                     words: Mutex::new(Vec::new()),
+                    staged: Mutex::new(frame_decode::StagedPayload::new()),
                 })
                 .is_ok()
         );
@@ -5413,6 +5538,7 @@ mod sync_tests {
                 .set(RenderDispatch {
                     sender: Arc::downgrade(sender),
                     words: Mutex::new(Vec::new()),
+                    staged: Mutex::new(frame_decode::StagedPayload::new()),
                 })
                 .is_ok()
         );
@@ -5792,6 +5918,7 @@ mod sync_answer_tests {
                 .set(RenderDispatch {
                     sender: Arc::downgrade(&sender),
                     words: Mutex::new(Vec::new()),
+                    staged: Mutex::new(frame_decode::StagedPayload::new()),
                 })
                 .is_ok()
         );
@@ -6037,6 +6164,7 @@ mod sync_fence_tests {
                 .set(RenderDispatch {
                     sender: Arc::downgrade(&sender),
                     words: Mutex::new(Vec::new()),
+                    staged: Mutex::new(frame_decode::StagedPayload::new()),
                 })
                 .is_ok()
         );

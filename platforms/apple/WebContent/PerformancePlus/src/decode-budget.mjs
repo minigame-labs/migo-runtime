@@ -34,11 +34,13 @@ import {
   OPR_DRAW_BUFFERS,
   OPR_INVALIDATE_FRAMEBUFFER,
   OPR_SHADER_SOURCE,
+  OPR_STAGE_PAYLOAD,
   OPR_TEX_IMAGE_2D,
   OPR_TEX_IMAGE_3D,
   OPR_TEX_SUB_IMAGE_2D,
   OPR_TEX_SUB_IMAGE_3D,
   OPR_TRANSFORM_FEEDBACK_VARYINGS,
+  STAGED_PAYLOAD,
 } from "./render-opcodes.mjs";
 
 export const MAX_DECODED_FRAME_BYTES = 4 * 1024 * 1024;
@@ -77,6 +79,7 @@ export const PAYLOAD_PREFIX_WORDS = new Map([
   [OPR_TEX_IMAGE_3D, 13],
   [OPR_TEX_SUB_IMAGE_3D, 14],
   [OPR_TRANSFORM_FEEDBACK_VARYINGS, 4],
+  [OPR_STAGE_PAYLOAD, 3],
 ]);
 export const WORD_LIST_PREFIX_WORDS = new Map([
   [OPR_DRAW_BUFFERS, 2],
@@ -125,9 +128,14 @@ function ownedPayloadBytes(words, start, opcode, wordCount) {
     const payload = wordCount - (opcode >= OP_UNIFORM_MATRIX2FV ? 4 : 3);
     return payload > UNIFORM_INLINE_WORDS ? capacity(payload, 0) * 4 : 0;
   }
+  // A chunk's bytes go to the host's staging, which is bounded on its own, not
+  // to anything this packet decodes into.
+  if (opcode === OPR_STAGE_PAYLOAD) return 0;
   const prefix = PAYLOAD_PREFIX_WORDS.get(opcode);
   if (prefix !== undefined) {
     const length = words[start + prefix];
+    // The staged vector is moved into the command, not allocated for it.
+    if (length === STAGED_PAYLOAD) return PAYLOAD_OVERHEAD_BYTES;
     if (opcode === OPR_TRANSFORM_FEEDBACK_VARYINGS) {
       return length + STRING_BYTES * (length + 1) + PAYLOAD_OVERHEAD_BYTES;
     }

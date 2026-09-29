@@ -547,6 +547,134 @@ import XCTest
             XCTAssertEqual(right, [255, 0, 255, 255], "the right half samples the magenta texel")
         }
 
+        /// Uploads larger than one packet: an 8 MiB texture and a 5 MiB vertex
+        /// buffer, whose bytes cross as staged chunks ahead of the calls that use
+        /// them (`OPR_STAGE_PAYLOAD`). Before staging, both were refused
+        /// OUT_OF_MEMORY on the producer and the triangle drew nothing.
+        ///
+        /// The texture is 2048x1024, its left half green and its right half
+        /// magenta, drawn with nearest filtering across the surface: a texel that
+        /// did not arrive, or arrived at the wrong offset, reads as the blue
+        /// clear or as the other colour. The vertex buffer's three vertices are
+        /// followed by five megabytes of zeros, so a buffer that did not upload
+        /// draws nothing.
+        func testContentUploadsATextureAndABufferLargerThanOnePacket() throws {
+            let harness = try MigoFrameHarness()
+            self.harness = harness
+            try Data(
+                """
+                import { frameStatistics, lastSequence } from "/__migo/engine-frames.mjs";
+
+                export function start({ report }) {
+                  const gl = migo.createCanvas().getContext("webgl");
+                  const vertex = gl.createShader(gl.VERTEX_SHADER);
+                  gl.shaderSource(vertex, "attribute vec2 p; varying vec2 uv; " +
+                    "void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }");
+                  gl.compileShader(vertex);
+                  const fragment = gl.createShader(gl.FRAGMENT_SHADER);
+                  gl.shaderSource(fragment, "precision mediump float; varying vec2 uv; " +
+                    "uniform sampler2D t; void main() { gl_FragColor = texture2D(t, uv); }");
+                  gl.compileShader(fragment);
+                  const program = gl.createProgram();
+                  gl.attachShader(program, vertex);
+                  gl.attachShader(program, fragment);
+                  gl.bindAttribLocation(program, 0, "p");
+                  gl.linkProgram(program);
+
+                  const vertices = new Float32Array(3 * 2 + (5 * 1024 * 1024) / 4);
+                  vertices.set([-1, -1, 3, -1, -1, 3]);
+                  const buffer = gl.createBuffer();
+                  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+                  const width = 2048, height = 1024;
+                  const texels = new Uint8Array(width * height * 4);
+                  for (let y = 0; y < height; y += 1) {
+                    for (let x = 0; x < width; x += 1) {
+                      const at = (y * width + x) * 4;
+                      const left = x < width / 2;
+                      texels[at] = left ? 0 : 255;
+                      texels[at + 1] = left ? 255 : 0;
+                      texels[at + 2] = left ? 0 : 255;
+                      texels[at + 3] = 255;
+                    }
+                  }
+                  const texture = gl.createTexture();
+                  gl.bindTexture(gl.TEXTURE_2D, texture);
+                  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, texels);
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+                  requestAnimationFrame(() => {
+                    gl.clearColor(0, 0, 1, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.useProgram(program);
+                    gl.enableVertexAttribArray(0);
+                    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+                    gl.drawArrays(gl.TRIANGLES, 0, 3);
+                    const error = gl.getError();
+                    setTimeout(() => report({ type: "drawn", sequence: lastSequence(), error,
+                      ...frameStatistics() }), 0);
+                  });
+                }
+                """.utf8
+            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+
+            var nonce = [UInt8](repeating: 0, count: 16)
+            nonce[0] = MigoFrameHarness.fixtureLaunchNonce
+            let drawn = expectation(description: "content drew with uploads larger than a packet")
+            var report: MigoPerformancePlusHost.Report?
+            var failure: String?
+            let host = try MigoPerformancePlusHost(
+                configuration: .init(
+                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
+                    engineSession: .init(
+                        launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
+                        surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
+                channel: MigoFrameChannel(session: harness.session))
+            self.host = host
+            host.onReport = { message in
+                switch message["type"] as? String {
+                case "drawn":
+                    report = message
+                    drawn.fulfill()
+                case "failed":
+                    failure = "failed at \(message["stage"] as? String ?? "?"): \(message["detail"] as? String ?? "?")"
+                    drawn.fulfill()
+                default: break
+                }
+            }
+            mount(host)
+            try host.start()
+            wait(for: [drawn], timeout: 240)
+            XCTAssertNil(failure)
+            XCTAssertEqual(report?["error"] as? Int, 0, "getError after the draw")
+            let sequence = UInt64(report?["sequence"] as? Int ?? 0)
+            XCTAssertGreaterThan(sequence, 0)
+            XCTAssertGreaterThanOrEqual(
+                report?["barriers"] as? Int ?? 0, 3, "13 MiB of staged bytes crossed as barriers")
+
+            let pollDeadline = Date().addingTimeInterval(60)
+            while host.channel.currentStatistics.framesAccepted < Int(sequence), Date() < pollDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+            XCTAssertEqual(host.channel.currentStatistics.framesRefused, 0)
+
+            let quarter = Int32(harness.sizePixels / 4)
+            let middle = Int32(harness.sizePixels / 2)
+            let left = try readPixel(
+                session: harness.session, x: quarter, y: middle, triggeringSequence: sequence)
+            let right = try readPixel(
+                session: harness.session, x: 3 * quarter, y: middle, triggeringSequence: sequence)
+            print(
+                "staged uploads: left=\(left) right=\(right) sequence=\(sequence)"
+                    + " packets=\(report?["packets"] as? Int ?? -1) barriers=\(report?["barriers"] as? Int ?? -1)")
+            XCTAssertEqual(left, [0, 255, 0, 255], "the left half samples the green texels")
+            XCTAssertEqual(right, [255, 0, 255, 255], "the right half samples the magenta texels")
+        }
+
         /// The queries: a compile status, a link status, a uniform location, an
         /// error code -- each answered after the frame it is about.
         ///

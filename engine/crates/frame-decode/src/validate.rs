@@ -56,6 +56,16 @@ pub trait GlDecodeContext {
     /// method would drop every upload silently -- which is what the first
     /// version of this did, and what a test caught.
     fn image_upload(&mut self, upload: ImageUpload) -> Option<shared::protocol::render_cmd::GLCmd>;
+
+    /// Where this host stages uploads larger than a record, or `None` if it
+    /// takes none. Only a producer in another process sends them -- the
+    /// embedded runtime's uploads are ops, never records -- so every other host
+    /// answers `None`, and an upload that names staged bytes there fails as an
+    /// allocation GL cannot make.
+    ///
+    /// Required for the reason `image_upload` is: a wrapper that forgot to
+    /// forward it would fail every large upload, quietly.
+    fn staged_payload(&mut self) -> Option<&mut crate::staging::StagedPayload>;
 }
 
 /// A texture upload whose source is a loaded image, as a record carries it.

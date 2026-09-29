@@ -58,6 +58,9 @@ impl frame_decode::GlDecodeContext for Host {
             self.capturing.push(canvas_id);
         }
     }
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        None
+    }
 }
 
 fn repository() -> PathBuf {

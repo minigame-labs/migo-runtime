@@ -32,6 +32,7 @@ import {
   OP2D_DRAW_IMAGE,
   OP2D_DRAW_IMAGE_BATCH,
   OP2D_SELECT_CANVAS,
+  OPR_STAGE_PAYLOAD,
   STREAM_VERSION,
 } from "./render-opcodes.mjs";
 import { SYNC_OP_AWAIT_WINDOW, WINDOW_REPLY_BYTES, decodeWindowReply } from "./sync-mailbox.mjs";
@@ -177,8 +178,9 @@ export function appendStream(words, usedWords) {
  * null. Split into a new packet first if it does not fit this one.
  *
  * Returns false, appending nothing, when the record cannot fit even an empty
- * packet: an upload above what one packet carries. Those need the resource
- * lane; the caller reports it the way GL reports an allocation it cannot make.
+ * packet: an upload above what one packet carries. The caller stages those
+ * (`appendStagedPayload`), or reports one it cannot stage the way GL reports an
+ * allocation it cannot make.
  */
 export function appendRecord(record, headerWords, payload) {
   writeImageRun();
@@ -210,6 +212,54 @@ function appendCanvas2DRecordNow(canvasId, record, headerWords, payload) {
   if (!fitRecord(record)) return false;
   selectCanvasFor(canvasId);
   writeRecord(record, headerWords, payload);
+  return true;
+}
+
+// A staged chunk's words before its bytes: H total_bytes offset byte_length.
+const STAGE_HEADER_WORDS = 4;
+// The smallest chunk worth a record of its own. A packet with less room than
+// this is sent first, so a staged upload is a few packets filled to the brim
+// rather than one more for a sliver.
+const MIN_STAGE_CHUNK_BYTES = 64 * 1024;
+const stageRecord = new Uint32Array(STAGE_HEADER_WORDS);
+
+/**
+ * Stage `bytes` for the upload record the caller appends next, whose
+ * `byte_length` then says STAGED_PAYLOAD and which carries no bytes of its own.
+ *
+ * For an upload larger than one packet carries (see OPR_STAGE_PAYLOAD in
+ * engine/crates/frame-wire/src/gl_resource.rs): the bytes go as chunks, each as
+ * large as the packet it lands in has room for, contiguous from offset 0, and
+ * every packet but the last is a barrier -- the host runs it, stages its chunks,
+ * and the frame goes on. The chunks are in the stream right before the upload,
+ * so the host has them all when it reaches it, in the order content called.
+ *
+ * Returns false if a chunk could not be appended, which a packet with room for
+ * a chunk's header cannot do; the caller reports it as it reports an upload it
+ * cannot carry.
+ */
+export function appendStagedPayload(bytes) {
+  writeImageRun();
+  const total = bytes.byteLength;
+  let offset = 0;
+  while (offset < total) {
+    let frame = currentWriter();
+    // The headroom `fitRecord` keeps for a 2D selection, which a split may
+    // have to repeat.
+    let room = frame.roomWords - STAGE_HEADER_WORDS - SELECT_CANVAS_WORDS;
+    if (room * 4 < MIN_STAGE_CHUNK_BYTES && frame.wordCount !== 0) {
+      sendBarrier(frame);
+      frame = currentWriter();
+      room = frame.roomWords - STAGE_HEADER_WORDS - SELECT_CANVAS_WORDS;
+    }
+    const length = Math.min(total - offset, room * 4);
+    stageRecord[0] = (((STAGE_HEADER_WORDS + ((length + 3) >>> 2)) << HEADER_WORD_SHIFT) | OPR_STAGE_PAYLOAD) >>> 0;
+    stageRecord[1] = total;
+    stageRecord[2] = offset;
+    stageRecord[3] = length;
+    if (!appendRecord(stageRecord, STAGE_HEADER_WORDS, bytes.subarray(offset, offset + length))) return false;
+    offset += length;
+  }
   return true;
 }
 

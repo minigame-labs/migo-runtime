@@ -349,6 +349,15 @@ fn owned_payload_bytes(record: &[u32], opcode: u32) -> usize {
     match record_spec(opcode) {
         Some(RecordSpec::VectorUniform { .. }) => uniform_spill(wc - 3),
         Some(RecordSpec::MatrixUniform { .. }) => uniform_spill(wc - 4),
+        // A chunk's bytes go to the session's staging, which is bounded on its
+        // own (`crate::staging`), not to anything this packet decodes into.
+        _ if opcode == frame_wire::gl_resource::OPR_STAGE_PAYLOAD => 0,
+        Some(RecordSpec::Bytes { prefix_words, .. })
+            if record[prefix_words as usize] == frame_wire::stream::STAGED_PAYLOAD =>
+        {
+            // The staged vector is moved into the command, not allocated for it.
+            PAYLOAD_OVERHEAD_BYTES
+        }
         Some(RecordSpec::Bytes { prefix_words, .. }) => {
             let len = record[prefix_words as usize] as usize;
             if opcode == frame_wire::gl_resource::OPR_TRANSFORM_FEEDBACK_VARYINGS {

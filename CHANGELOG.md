@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- iOS (Performance+): a WebGL upload larger than one frame packet -- 4 MiB --
+  was refused `OUT_OF_MEMORY` on the producer, so it drew nothing: a
+  2048-square RGBA texture (16 MiB), a 2048-square ASTC 4x4 one (exactly
+  4 MiB), a large vertex buffer. Its bytes now cross ahead of the call as
+  staged chunks in the same command stream, over as many packets as they
+  need, and the host moves them into the upload whole; up to the 64 MiB one
+  upload may carry on every lane. Uploads that fit a packet are sent exactly as
+  before. A simulator acceptance test draws with an 8 MiB texture and a 5 MiB
+  vertex buffer and reads back both halves of the texture.
+- iOS (Performance+): a record that filled the last 8 bytes of a frame packet
+  threw instead of being sent -- the writer asked for 8 bytes more than the
+  check before it had allowed for.
+- Docs: the developer docs describe iOS and macOS as shipped -- an Apple SDK
+  reference for `MigoGameView`, six platforms on the home and architecture
+  pages -- Linux as the released C ABI SDK it is, and the English architecture
+  diagrams render.
+
 ## v0.9.17 (2026-09-28)
 
 ### Fixed

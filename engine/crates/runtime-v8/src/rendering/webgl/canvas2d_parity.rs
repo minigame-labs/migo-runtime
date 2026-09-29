@@ -46,6 +46,9 @@ impl frame_decode::GlDecodeContext for Host {
         _phase: frame_decode::TransformFeedbackPhase,
     ) {
     }
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        None
+    }
 }
 
 impl frame_decode::RenderSink for Host {

@@ -170,7 +170,8 @@ heap figures), and downloaded subpackages when signing is enforced.
   plain Canvas) and the measurement calibration pages all present at 60 fps.
 - **iOS simulator** (every pull request): an acceptance suite running a real
   WebContent producer against a real renderer -- WebGL and 2D, textures, text,
-  images, touches, a frame larger than one packet, synchronous readback and audio.
+  images, touches, frames and uploads larger than one packet (an 8 MiB texture, a 5 MiB buffer),
+  synchronous readback and audio.
 - **macOS** (every pull request): `MigoGameView` runs a game in an app signed with the
   hardened runtime and allow-jit -- V8's JIT and WebAssembly, Canvas2D on ANGLE,
   signed content verified and tampered content refused, and the view refusing to

@@ -355,6 +355,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
                 prefix_words: 1,
                 presence_word: None,
                 text: true,
+                stageable: false,
             });
         }
         OP2D_FILL_TEXT | OP2D_STROKE_TEXT => {
@@ -362,6 +363,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
                 prefix_words: 4,
                 presence_word: None,
                 text: true,
+                stageable: false,
             });
         }
         OP2D_SET_LINE_DASH => {
@@ -375,6 +377,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
                 prefix_words: 8,
                 presence_word: None,
                 text: true,
+                stageable: false,
             });
         }
 

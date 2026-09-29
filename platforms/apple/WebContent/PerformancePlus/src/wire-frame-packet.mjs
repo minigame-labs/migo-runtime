@@ -322,8 +322,17 @@ export class FramePacketWriter {
    * from the RangeError `appendWords` throws.
    */
   fits(count) {
+    return count <= this.roomWords;
+  }
+
+  /**
+   * The most words one more append can add within the ceiling. The payload
+   * offset and the ceiling are both multiples of the section alignment, so a
+   * stream that ends at the ceiling needs no padding past it.
+   */
+  get roomWords() {
     const used = this.#used === 0 ? STREAM_HEADER_WORDS : this.#used;
-    return alignUp(STREAM_PAYLOAD_OFFSET + (used + count) * 4) <= MAX_TOTAL_BYTES;
+    return Math.floor((MAX_TOTAL_BYTES - STREAM_PAYLOAD_OFFSET) / 4) - used;
   }
 
   /**
@@ -360,7 +369,10 @@ export class FramePacketWriter {
 
   #reserve(count) {
     if (this.#used === 0) this.#used = STREAM_HEADER_WORDS;
-    const neededBytes = STREAM_PAYLOAD_OFFSET + (this.#used + count) * 4 + SECTION_ALIGNMENT;
+    // What `finish` writes: the stream, then zero bytes to the section
+    // alignment. The same bound `fits` answers with -- a reserve that asked for
+    // more refused the last few words of a packet `fits` had said were free.
+    const neededBytes = alignUp(STREAM_PAYLOAD_OFFSET + (this.#used + count) * 4);
     if (neededBytes <= this.#buffer.byteLength) return;
     if (neededBytes > MAX_TOTAL_BYTES) {
       throw new RangeError(`a frame of ${neededBytes} bytes is above the ${MAX_TOTAL_BYTES}-byte packet ceiling`);
