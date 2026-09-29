@@ -357,6 +357,12 @@ Memory stays bounded without a rule of its own: a packet's commands can own at
 most what its own chunks carried plus the one payload staged before it, and the
 credit window bounds the packets in flight.
 
+An out-of-band reservation lane -- host-assigned ids, chunks outside frame
+packets, a SHA-256 declared up front -- was specified here and declared in
+`external_frames.h` before any of it was built. It was retired with this
+section: nothing ever implemented it, and the reasons above are why nothing
+needs to.
+
 ## Ceilings
 
 | Ceiling | Value | Where it lives |
@@ -490,9 +496,9 @@ them, because they depend on state the host owns.
 - **Resource admission.** A packet carrying `RESOURCE_REFERENCES` is rejected
   until the host has declared the current epoch's resources ready. Advancing the
   epoch clears that state, because an epoch advance means the resource table was
-  rebuilt and nothing in it is ready yet by definition. In v1 readiness is
-  per-epoch; the per-resource, hash-verified form arrives with the resource
-  protocol and can only narrow this rule.
+  rebuilt and nothing in it is ready yet by definition. Readiness is per-epoch.
+  The Performance+ producer sends no `RESOURCE_REFERENCES`: an upload larger
+  than a packet is staged in the command stream instead (*Staged payloads*).
 - **Envelope checks precede load checks.** Envelope, identity, sequence and
   resource checks run before credit reservation. The external session validates
   the typed command stream and its decoded budget after reserving a credit;
@@ -1042,41 +1048,6 @@ ranges. The list lives in `engine/crates/frame-wire/src/service.rs`
 | 4012 | `BadValues` | a record's arguments are not a valid run of values |
 | 4013 | `OutOfSequence` | at or behind the last admitted sequence, or a second copy of a held message |
 | 4014 | `TooFarAhead` | ahead of a missing predecessor with the host's hold already full |
-
-## The resource lane
-
-A frame packet is small and bounded; a texture atlas is neither. Large assets
-are reserved, uploaded in chunks, verified against a digest declared up front,
-and become nameable from a frame only then. The frame ceiling stays small
-because this exists.
-
-| Bound | Value |
-|---|---:|
-| Bytes per resource | 64 MiB |
-| Bytes per chunk | 1 MiB |
-| Open reservations per session | 64 |
-
-States are `RESERVED → UPLOADING → VERIFYING → READY \| FAILED`. Chunks are
-**strictly contiguous**, for the same reason frame sequences are: a gap means a
-chunk was lost, and there is no recovery from that which is not "upload it
-again". The reservation id is assigned by the host, not chosen by the producer:
-a producer-chosen id could collide with one already in the table, and the
-collision would be a frame naming the wrong texture.
-
-**Verification happens before creation.** The alternative — create the GPU
-object as bytes arrive, fix it up if the digest turns out wrong — trades a
-bounded failure for an unbounded one: a texture whose contents are whatever
-arrived, already bound by a frame that referenced it, with no way to tell it
-from a correct one except by looking at the screen.
-
-The digest is computed by the host, not by this protocol. This crate has one
-dependency because it parses bytes from another process and each one is inside
-that trust boundary; a SHA-256 implementation would be a second, and the bytes
-are already in the host's hands when they arrive.
-
-Advancing the resource epoch discards every reservation, verified ones
-included. The ids in a rebuilt table name different objects, so a resource that
-survived would be a name pointing at whatever took its place.
 
 ## Rejection codes
 

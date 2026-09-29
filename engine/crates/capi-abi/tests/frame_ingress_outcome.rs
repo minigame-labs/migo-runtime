@@ -317,45 +317,16 @@ fn the_header_states_the_answer_header_size_the_format_writes() {
     );
 }
 
-#[test]
-fn the_header_and_the_protocol_enums_agree_on_every_resource_constant() {
-    use frame_wire::resource::{ResourceError, ResourceState};
-
-    let states = header_defines("MIGO_RESOURCE_STATE_");
-    assert_eq!(states.len(), ResourceState::ALL.len());
-    for state in ResourceState::ALL {
-        let expected = format!("MIGO_RESOURCE_STATE_{}", shouted(&format!("{state:?}")));
-        let (_, value) = states
-            .iter()
-            .find(|(name, _)| *name == expected)
-            .unwrap_or_else(|| panic!("the header has no {expected}"));
-        assert_eq!(*value, state.code(), "{expected}");
-    }
-
-    let errors = header_defines("MIGO_RESOURCE_ERROR_");
-    assert_eq!(errors.len(), ResourceError::ALL.len());
-    for error in ResourceError::ALL {
-        let expected = format!("MIGO_RESOURCE_ERROR_{}", shouted(&format!("{error:?}")));
-        let (_, value) = errors
-            .iter()
-            .find(|(name, _)| *name == expected)
-            .unwrap_or_else(|| panic!("the header has no {expected}"));
-        assert_eq!(*value, error.code(), "{expected}");
-    }
-}
-
 /// Every state and every reason must survive the write path it is destined for.
 ///
 /// A reason the host can reach and the ABI cannot report is a producer left
 /// blocked with no explanation, which on a device is a game that stopped and
 /// said nothing.
 #[test]
-fn every_sync_and_resource_outcome_can_actually_be_reported() {
-    use frame_wire::resource::{ResourceError, ResourceState};
+fn every_sync_outcome_can_actually_be_reported() {
     use frame_wire::sync::{SyncError, SyncState};
     use migo_capi_abi::external_frames::{
-        MIGO_RESOURCE_STATE_FAILED, MIGO_SYNC_STATE_FAILED, MigoResourceOutcome, MigoSyncOutcome,
-        write_resource_outcome, write_sync_outcome,
+        MIGO_SYNC_STATE_FAILED, MigoSyncOutcome, write_sync_outcome,
     };
 
     for state in SyncState::ALL {
@@ -396,59 +367,15 @@ fn every_sync_and_resource_outcome_can_actually_be_reported() {
         assert_eq!(result, MIGO_OK, "{error:?} could not be reported");
         assert_eq!(out.error, error.code());
     }
-
-    for state in ResourceState::ALL {
-        let mut out = MigoResourceOutcome {
-            header: migo_capi_abi::VersionedHeader {
-                struct_size: size_of::<MigoResourceOutcome>() as u32,
-                abi_version: 1,
-            },
-            reservation_id: 0,
-            received_bytes: 0,
-            state: 0,
-            error: 0,
-            next_chunk: 0,
-            reserved0: 0,
-        };
-        let error = if state.code() == MIGO_RESOURCE_STATE_FAILED {
-            ResourceError::DigestMismatch.code()
-        } else {
-            0
-        };
-        let result = unsafe { write_resource_outcome(&mut out, 1, 64, state.code(), error, 1) };
-        assert_eq!(result, MIGO_OK, "{state:?} could not be reported");
-        assert_eq!(out.state, state.code());
-    }
-
-    for error in ResourceError::ALL {
-        let mut out = MigoResourceOutcome {
-            header: migo_capi_abi::VersionedHeader {
-                struct_size: size_of::<MigoResourceOutcome>() as u32,
-                abi_version: 1,
-            },
-            reservation_id: 0,
-            received_bytes: 0,
-            state: 0,
-            error: 0,
-            next_chunk: 0,
-            reserved0: 0,
-        };
-        let result = unsafe {
-            write_resource_outcome(&mut out, 1, 0, MIGO_RESOURCE_STATE_FAILED, error.code(), 0)
-        };
-        assert_eq!(result, MIGO_OK, "{error:?} could not be reported");
-        assert_eq!(out.error, error.code());
-    }
 }
 
 /// A contradiction is refused rather than written. A `READY` carrying an error
 /// is a pair the producer -- which is blocked reading this -- has no way to act
 /// on.
 #[test]
-fn contradictory_sync_and_resource_outcomes_are_refused() {
+fn contradictory_sync_outcomes_are_refused() {
     use migo_capi_abi::external_frames::{
-        MIGO_RESOURCE_STATE_READY, MIGO_SYNC_STATE_FAILED, MIGO_SYNC_STATE_READY,
-        MigoResourceOutcome, MigoSyncOutcome, write_resource_outcome, write_sync_outcome,
+        MIGO_SYNC_STATE_FAILED, MIGO_SYNC_STATE_READY, MigoSyncOutcome, write_sync_outcome,
     };
 
     let mut sync = MigoSyncOutcome {
@@ -478,29 +405,6 @@ fn contradictory_sync_and_resource_outcomes_are_refused() {
     );
     assert_ne!(
         unsafe { write_sync_outcome(&mut sync, 1, 99, 0, 0) },
-        MIGO_OK,
-        "an unrecognised state is refused"
-    );
-
-    let mut resource = MigoResourceOutcome {
-        header: migo_capi_abi::VersionedHeader {
-            struct_size: size_of::<MigoResourceOutcome>() as u32,
-            abi_version: 1,
-        },
-        reservation_id: 0,
-        received_bytes: 0,
-        state: 0,
-        error: 0,
-        next_chunk: 0,
-        reserved0: 0,
-    };
-    assert_ne!(
-        unsafe { write_resource_outcome(&mut resource, 1, 64, MIGO_RESOURCE_STATE_READY, 7, 1) },
-        MIGO_OK,
-        "a READY resource carrying an error is one a frame may name and a host was told not to trust"
-    );
-    assert_ne!(
-        unsafe { write_resource_outcome(&mut resource, 1, 0, 99, 0, 0) },
         MIGO_OK,
         "an unrecognised state is refused"
     );

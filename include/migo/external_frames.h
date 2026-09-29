@@ -768,71 +768,16 @@ MIGO_API MigoResult MIGO_CALL migo_session_read_content_module(
     uint32_t *out_status);
 
 /* ---------------------------------------------------------------------------
- * The resource lane
+ * Uploads larger than a packet
  *
- * A frame packet is small and bounded; a texture atlas is neither. Large assets
- * are reserved, uploaded in chunks, verified against a digest declared up
- * front, and become nameable from a frame only then. The frame ceiling stays
- * small because this exists.
- *
- * Verification happens BEFORE creation. Creating the GPU object as bytes arrive
- * and fixing it up if the digest turns out wrong trades a bounded failure for
- * an unbounded one: a texture whose contents are whatever arrived, already
- * bound by a frame that referenced it.
+ * They have no entry point of their own. The producer sends such an upload's
+ * bytes as staged chunks in the command stream, ahead of the upload that uses
+ * them, and the session holds them until it does -- see *Staged payloads* in
+ * contracts/frame-wire/wire-v1.md. An out-of-band reservation lane with
+ * host-assigned ids and a digest was declared here before any of it was built;
+ * it is gone because the stream already orders an upload's bytes where WebGL
+ * uses them, and every packet is checksummed.
  * ------------------------------------------------------------------------- */
-
-typedef uint32_t MigoResourceState;
-#define MIGO_RESOURCE_STATE_RESERVED  0U
-#define MIGO_RESOURCE_STATE_UPLOADING 1U
-#define MIGO_RESOURCE_STATE_VERIFYING 2U
-/* Verified. A frame may name this resource, and not before. */
-#define MIGO_RESOURCE_STATE_READY     3U
-#define MIGO_RESOURCE_STATE_FAILED    4U
-
-typedef uint32_t MigoResourceError;
-#define MIGO_RESOURCE_ERROR_TOO_MANY_RESERVATIONS 1U
-#define MIGO_RESOURCE_ERROR_BAD_SIZE              2U
-#define MIGO_RESOURCE_ERROR_BAD_CHUNK_COUNT       3U
-#define MIGO_RESOURCE_ERROR_UNKNOWN_RESERVATION   4U
-#define MIGO_RESOURCE_ERROR_NON_CONTIGUOUS_CHUNK  5U
-#define MIGO_RESOURCE_ERROR_CHUNK_OUT_OF_BOUNDS   6U
-#define MIGO_RESOURCE_ERROR_DIGEST_MISMATCH       7U
-#define MIGO_RESOURCE_ERROR_TIMED_OUT             8U
-#define MIGO_RESOURCE_ERROR_EPOCH_ADVANCED        9U
-#define MIGO_RESOURCE_ERROR_INCOMPLETE            10U
-#define MIGO_RESOURCE_ERROR_NOT_UPLOADING         11U
-
-/*
- * Caller-written. The reservation id is assigned by the library, not chosen
- * here: an id the producer picked could collide with one already in the table,
- * and the collision would be a frame naming the wrong texture.
- */
-typedef struct MigoResourceReservationDescriptor {
-    uint32_t struct_size;
-    uint32_t abi_version;
-    uint64_t total_bytes;
-    uint64_t deadline_nanos;
-    uint32_t chunk_count;
-    /* Producer-declared format tag; opaque to the protocol. */
-    uint32_t format;
-    /* The digest the uploaded bytes must hash to. */
-    uint8_t  sha256[32];
-} MigoResourceReservationDescriptor;
-
-/* Library-written, append-only. */
-typedef struct MigoResourceOutcome {
-    uint32_t struct_size;
-    uint32_t abi_version;
-    /* Non-zero once a reservation exists. */
-    uint64_t reservation_id;
-    uint64_t received_bytes;
-    MigoResourceState state;
-    /* Non-zero only for FAILED. */
-    MigoResourceError error;
-    /* The chunk index the next upload must carry; chunks are contiguous. */
-    uint32_t next_chunk;
-    uint32_t reserved0;
-} MigoResourceOutcome;
 
 
 /* ---------------------------------------------------------------------------

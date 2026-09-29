@@ -127,41 +127,6 @@ _Static_assert(MIGO_SYNC_ERROR_BAD_REPLY_RESERVATION == UINT32_C(10),
                "the reason codes are contiguous from one; a gap means a retired code");
 
 /* ---------------------------------------------------------------------------
- * The resource lane
- * ------------------------------------------------------------------------- */
-
-_Static_assert(sizeof(MigoResourceReservationDescriptor) == 64,
-               "resource reservation is 64 bytes on every target");
-_Static_assert(offsetof(MigoResourceReservationDescriptor, total_bytes) == 8, "");
-_Static_assert(offsetof(MigoResourceReservationDescriptor, deadline_nanos) == 16, "");
-_Static_assert(offsetof(MigoResourceReservationDescriptor, chunk_count) == 24, "");
-_Static_assert(offsetof(MigoResourceReservationDescriptor, format) == 28, "");
-_Static_assert(offsetof(MigoResourceReservationDescriptor, sha256) == 32, "");
-_Static_assert(sizeof(((MigoResourceReservationDescriptor *)0)->sha256) == 32,
-               "a SHA-256 is thirty-two bytes; a shorter array would compare a prefix");
-
-_Static_assert(sizeof(MigoResourceOutcome) == 40,
-               "resource outcome is 40 bytes on every target");
-_Static_assert(offsetof(MigoResourceOutcome, reservation_id) == 8, "");
-_Static_assert(offsetof(MigoResourceOutcome, received_bytes) == 16, "");
-_Static_assert(offsetof(MigoResourceOutcome, state) == 24, "");
-_Static_assert(offsetof(MigoResourceOutcome, error) == 28, "");
-_Static_assert(offsetof(MigoResourceOutcome, next_chunk) == 32, "");
-_Static_assert(offsetof(MigoResourceOutcome, reserved0) == 36, "");
-
-/*
- * RESERVED is zero, so a zeroed outcome reads as "declared, nothing arrived" --
- * the state in which a frame may not name the resource. READY being non-zero is
- * the load-bearing half: a zeroed record must never say a resource is usable.
- */
-_Static_assert(MIGO_RESOURCE_STATE_RESERVED == UINT32_C(0), "");
-_Static_assert(MIGO_RESOURCE_STATE_READY != UINT32_C(0),
-               "a zeroed record must not claim a resource is ready to name");
-_Static_assert(MIGO_RESOURCE_STATE_FAILED != UINT32_C(0), "");
-_Static_assert(MIGO_RESOURCE_ERROR_DIGEST_MISMATCH != UINT32_C(0), "");
-
-
-/* ---------------------------------------------------------------------------
  * Creating an external-frame session
  * ------------------------------------------------------------------------- */
 
@@ -187,19 +152,10 @@ int migo_external_frames_c_contract(void) {
     answer.struct_size = (uint32_t)sizeof answer;
     answer.state = MIGO_SYNC_STATE_READY;
 
-    MigoResourceReservationDescriptor reservation = {0};
-    reservation.struct_size = (uint32_t)sizeof reservation;
-    reservation.chunk_count = 1u;
-
-    MigoResourceOutcome resource = {0};
-    resource.struct_size = (uint32_t)sizeof resource;
-    resource.state = MIGO_RESOURCE_STATE_READY;
-
     MigoExternalSessionDescriptor session = {0};
     session.struct_size = (uint32_t)sizeof session;
     session.launch_nonce[0] = 1u;
 
     return (int)(outcome.struct_size + outcome.decision + request.struct_size
-                 + answer.struct_size + reservation.struct_size + resource.struct_size
-                 + session.struct_size + session.launch_nonce[0]);
+                 + answer.struct_size + session.struct_size + session.launch_nonce[0]);
 }

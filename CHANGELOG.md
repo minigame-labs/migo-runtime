@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- C ABI: the resource-lane declarations in `external_frames.h` --
+  `MigoResourceReservationDescriptor`, `MigoResourceOutcome`,
+  `MigoResourceState`, `MigoResourceError`. No entry point ever took them and
+  nothing implemented the lane; uploads larger than a frame packet are staged
+  in the command stream instead (below).
+
 ### Fixed
 - iOS (Performance+): a WebGL upload larger than one frame packet -- 4 MiB --
   was refused `OUT_OF_MEMORY` on the producer, so it drew nothing: a

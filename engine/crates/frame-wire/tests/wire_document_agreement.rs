@@ -18,7 +18,6 @@ use frame_wire::{
         REQUEST_FRAME_WORDS, UP_REQUEST_FRAME,
     },
     ingress::{INGRESS_ERROR_BASE, INGRESS_ERROR_CODES},
-    resource::{ResourceError, ResourceState},
     sync::{
         MAX_REPLY_BYTES, SYNC_ANSWER_HEADER_BYTES, SYNC_ANSWER_LAYOUT, SYNC_CALL_HEADER_BYTES,
         SYNC_CALL_LAYOUT, SYNC_CALL_MAX_BYTES, SYNC_CALL_MAX_TIMEOUT_MILLIS, SYNC_LAYOUT,
@@ -506,22 +505,6 @@ fn the_protocol_enums_export_every_variant_their_source_declares() {
                 .map(|error| (format!("{error:?}"), error.code()))
                 .collect(),
         },
-        EnumUnderTest {
-            file: "resource.rs",
-            name: "ResourceState",
-            exported: ResourceState::ALL
-                .iter()
-                .map(|state| (format!("{state:?}"), state.code()))
-                .collect(),
-        },
-        EnumUnderTest {
-            file: "resource.rs",
-            name: "ResourceError",
-            exported: ResourceError::ALL
-                .iter()
-                .map(|error| (format!("{error:?}"), error.code()))
-                .collect(),
-        },
     ];
 
     for EnumUnderTest {
@@ -690,7 +673,7 @@ fn the_document_service_stream_matches_the_crate() {
     let section = &document[document
         .find("## The service stream")
         .expect("the document specifies the service stream")..];
-    let section = &section[..section.find("## The resource lane").expect("next section")];
+    let section = &section[..section.find("## Rejection codes").expect("next section")];
     let prose = section.split_whitespace().collect::<Vec<_>>().join(" ");
 
     for (stated, what) in [
