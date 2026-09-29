@@ -126,6 +126,20 @@
               }
             }
           ]
+        },
+        {
+          "label": "Apple SDK",
+          "translations": {
+            "en": "Apple SDK"
+          },
+          "collapsed": true,
+          "items": [
+            {
+              "autogenerate": {
+                "directory": "apple-sdk"
+              }
+            }
+          ]
         }
       ]
     },

@@ -1,0 +1,302 @@
+---
+title: MigoGameView
+sidebar:
+  order: 1
+description: The whole public surface of the Apple SDK — MigoGameView on iOS and macOS, Configuration, Event, MigoGameInstaller, and content signing, each item matched to the source.
+audience: host-integrator
+platforms:
+  - ios
+  - macos
+sourcePaths:
+  - platforms/apple/Sources/MigoApplePerformancePlus/MigoGameView.swift
+  - platforms/apple/Sources/MigoMacV8/MigoGameView.swift
+  - platforms/apple/Sources/MigoAppleRenderer/MigoContentInstaller.swift
+  - platforms/apple/Sources/MigoAppleRenderer/MigoEngineSession.swift
+  - platforms/apple/Sources/MigoAppleRenderer/MigoSessionFrameClock.swift
+slug: en/0.9/apple-sdk/game-view
+---
+
+The Apple SDK (the SwiftPM package `MigoApple/` inside `migo-<version>-apple-sdk.zip`) exposes one
+view and one installer to the host. Each of its two products serves one platform, with the same
+names and shapes:
+
+| Product | Platform | `MigoGameView` subclasses | Content JavaScript |
+| --- | --- | --- | --- |
+| `MigoApplePerformancePlus` | iOS 15.2+ | `UIView` | JavaScriptCore (with JIT) in WebKit's WebContent process; frames come back to this process to be rendered |
+| `MigoMacV8` | macOS 11+ | `NSView` | V8 in this process (with JIT and WebAssembly) |
+
+Both products export three type aliases — `MigoGameDirectories`, `MigoGameInstaller` and
+`MigoContentSigning` — so importing one product is enough to write the whole integration. The
+integration steps are in the [Apple getting-started guide](/docs/en/0.9/getting-started/apple/); this page
+is the item-by-item reference.
+
+On Apple the C ABI is used by `MigoGameView` inside the package and is not a supported integration
+surface: internal targets such as `MigoAppleRenderer` are not products, and the headers'
+`MIGO_C_ABI_HAS_RUNTIME` is 0 on Apple.
+
+## MigoGameView
+
+One view runs one game. Install it once ([`MigoGameInstaller`](#migogameinstaller)), add the view to
+a window and call `loadGame(id:entry:)`; the view owns everything else: the engine session, the
+`CAMetalLayer` it renders into, the display clock, input, the app's lifecycle and the soft keyboard,
+and on iOS also the WebContent producer, the audio session and recovery from a WebContent crash. The
+Android SDK's `MigoGameView.loadGame(gameId, entryPoint)` is the same call, on purpose.
+
+**Main thread only.** `loadGame` checks it with `precondition(Thread.isMainThread)`; every event is
+delivered on the main queue.
+
+### init(configuration:)
+
+```swift
+public init(configuration: Configuration)
+```
+
+Created in code only (`init?(coder:)` is unavailable). Creating the view starts nothing.
+
+### loadGame(id:entry:)
+
+```swift
+public func loadGame(id: String, entry: String = "game.js")
+```
+
+Runs an **installed** game. The game starts at the view's first layout once it is in a window with
+a non-empty size; calling this again calls `stop()` first and then switches to the new game. A
+failure to start is reported as [`.failed`](#onevent--event); nothing is thrown.
+
+On macOS, if [`unavailabilityReason`](#unavailabilityreason) is non-nil the call returns immediately
+with `.failed(reason)` and starts nothing.
+
+### stop()
+
+```swift
+public func stop()
+```
+
+Stops the game and releases everything it held (session, layer, observers; on iOS it also
+deactivates the audio session when `managesAudioSession` is true). The same view can `loadGame`
+again afterwards. After `exitRequested` the view has already stopped itself; there is no need to
+call this.
+
+### onEvent / Event
+
+```swift
+public var onEvent: ((Event) -> Void)?
+```
+
+Called on the main queue.
+
+| `Event` | iOS | macOS | Meaning |
+| --- | :-: | :-: | --- |
+| `.ready` | ✓ | ✓ | The game's entry has been evaluated |
+| `.exitRequested` | ✓ | ✓ | The game asked to exit (`migo.exitMiniProgram()`); the view has stopped the game, and what the app shows next is the app's |
+| `.failed(String)` | ✓ | ✓ | The game could not start or cannot continue |
+| `.error(code:message:recoverable:)` | ✓ | ✓ | A runtime error the engine reported; `recoverable` errors are pressure notices and the game keeps running |
+| `.restarted` | ✓ | — | WebKit's content process died and the game was restarted from its entry, as a web page would reload; saves on disk survive, state in memory does not |
+| `.console(level:message:)` | ✓ | — | A line the game wrote to `console`: level 1 info, 2 warn, 3 error, anything else debug |
+| `.gameLog(String)` | ✓ | ✓ | An entry from the game's log (`getGameLogManager().log`), as the JSON object the engine merged (level, key, value, commonInfo), for the app to keep or upload |
+
+Later versions may add events: keep a `default` branch in your `switch` so an upgrade does not fail
+to compile on a new one.
+
+### isRunning
+
+```swift
+public private(set) var isRunning: Bool
+```
+
+Whether a game is loaded and not stopped.
+
+### unavailabilityReason
+
+```swift
+public static var unavailabilityReason: String? { get }
+```
+
+Why this lane cannot run on the current device or in the current process, or `nil` if it can. Check
+it before showing the entry to a game, so the app can choose not to show the entry at all.
+
+- **iOS**: the device has no Metal device; or the linked engine does not accept the ABI version these
+  sources were written against, or does not offer the iOS `CAMetalLayer` surface.
+- **macOS**: the process lacks the hardened runtime's `com.apple.security.cs.allow-jit` (V8 dies at
+  its first compile without it, and a jitless V8 has no WebAssembly, so neither is offered in its
+  place); or the engine's capability query does not pass.
+
+### frameClockStatistics / frameChannelStatistics
+
+```swift
+public var frameClockStatistics: MigoSessionFrameClock.Statistics? { get }
+public var frameChannelStatistics: MigoFrameChannel.Statistics? { get }   // iOS only
+```
+
+Diagnostic readings, `nil` while no game runs, for a test or a diagnostics screen that explains a
+frame rate. `frameClockStatistics` records the display clock: `ticks` (vsyncs the display delivered),
+`delivered` (ticks that carried a requested frame to the engine), `idle` (ticks with no frame
+outstanding — the majority when content is not animating, not a fault), `coalescedRequests`,
+`unusableTimestamps`, `refused` and `lastRefusal`. On iOS, `frameChannelStatistics` records the frame
+channel between the producer and the engine; its fields change with the transport's implementation,
+so do not parse them as a stable interface.
+
+### Size and orientation
+
+The game is told its window size before its first line runs and lays itself out to it — that is how
+the mini-game API works on every platform. So the session starts at the view's first non-empty layout
+and **keeps that size**: a later bounds change is handled by Core Animation scaling the rendered frame
+to the new bounds, rather than by lying to a game that has already laid itself out.
+
+- **iOS**: the hosting view controller must be locked to the game's orientation **before
+  `MigoGameView`'s first layout** (an Info.plist that declares only the game's orientation, or a
+  controller that supports only that orientation presenting the view).
+- The drawable's size is the engine's: when the canvas is smaller than the window the drawable takes
+  the canvas's size and Core Animation scales it to the layer. Do not set
+  `CAMetalLayer.drawableSize`, and keep `contentsGravity` at its default, resize.
+
+### Input
+
+- **iOS**: multi-touch (`isMultipleTouchEnabled = true`); when content calls `migo.showKeyboard` the
+  system keyboard comes up and the game draws its own text field, as on every platform.
+- **macOS**: the mouse is sent to content as [`Configuration.mouse`](#configuration) says; physical
+  keys are always sent while the view is first responder; on a machine with no soft keyboard, a text
+  field appears along the game's bottom edge while content asks for a keyboard.
+
+## Configuration
+
+```swift
+// iOS
+public struct Configuration {
+    public var directories: MigoGameDirectories
+    public var contentSigning: MigoContentSigning
+    public var preferredFramesPerSecond: Int?
+    public var managesAudioSession: Bool
+    public var webContentTerminationBudget: Int
+    public init(directories:contentSigning:preferredFramesPerSecond: = nil,
+                managesAudioSession: = true, webContentTerminationBudget: = 2)
+    public static func standard(contentSigning:) throws -> Configuration
+}
+
+// macOS
+public struct Configuration {
+    public var directories: MigoGameDirectories
+    public var contentSigning: MigoContentSigning
+    public var preferredFramesPerSecond: Int?
+    public var mouse: MouseInput
+    public init(directories:contentSigning:preferredFramesPerSecond: = nil, mouse: = .touch)
+    public static func standard(contentSigning:) throws -> Configuration
+}
+```
+
+| Field | Platform | Default | Meaning |
+| --- | --- | --- | --- |
+| `directories` | both | `.standard()` | Where installed games, saves and caches live; see [`MigoGameDirectories`](#migogamedirectories) |
+| `contentSigning` | both | **no default** | Whether game packages must be signed; see [`MigoContentSigning`](#migocontentsigning) |
+| `preferredFramesPerSecond` | both | `nil` | The frame rate to ask the display for; `nil` is the system's default cadence. Above 60 on iOS needs ProMotion and `CADisableMinimumFrameDurationOnPhone` in the app's Info.plist |
+| `managesAudioSession` | iOS | `true` | The view sets the `AVAudioSession` category and follows its interruptions. Turn it off only if the app manages the audio session itself; pausing and resuming the game is then the app's job |
+| `webContentTerminationBudget` | iOS | `2` | How many WebContent crashes, counted since the game last became ready, before the game is reported `.failed` instead of restarted |
+| `mouse` | macOS | `.touch` | Which input stream the mouse feeds; see the table below |
+
+`standard(contentSigning:)` builds a configuration from the directories of
+[`MigoGameDirectories.standard()`](#migogamedirectories) and the other defaults; it throws if the
+directories cannot be created.
+
+### MouseInput (macOS)
+
+| Value | What content receives |
+| --- | --- |
+| `.touch` | One touch, id 0: phone-first content |
+| `.pointer` | Mouse and wheel events: content for PC mini-game platforms |
+| `.touchAndPointer` | Both. Only for content known to listen to exactly one |
+
+The engine synthesises neither from the other — only the host knows which device its content was
+written for.
+
+## MigoGameDirectories
+
+An alias of `MigoEngineSession.Directories`.
+
+```swift
+public struct Directories: Equatable, Sendable {
+    public var files: URL
+    public var cache: URL
+    public var codeCache: URL
+    public init(files: URL, cache: URL, codeCache: URL)
+    public static func standard(namespace: String = "Migo") throws -> Directories
+    public func installedCode(contentID: String) -> URL
+}
+```
+
+- `standard(namespace:)`: `files` under Application Support (`<namespace>/files`), `cache` and
+  `codeCache` under Caches. A player's saves must survive and a compiled-code cache may be reclaimed
+  by the system; one place for both would either back up megabytes of regenerable code or let the
+  system delete saves.
+- `installedCode(contentID:)`: where the engine looks for an installed game's code,
+  `<files>/migo/games/<id>/code` — the same layout the Android SDK writes.
+
+## MigoGameInstaller
+
+An alias of `MigoContentInstaller`. The engine does not load content from an arbitrary directory; it
+resolves an id to `installedCode(contentID:)`, so that a game's code, saves and cache hang off one
+identity. Installing is therefore the host's step.
+
+```swift
+@discardableResult
+public static func install(package: URL, id: String, entry: String = "game.js",
+                           version: String? = nil,
+                           into directories: MigoGameDirectories) throws -> URL
+
+public static func isValidID(_ id: String) -> Bool
+```
+
+- `package`: the game package directory; `entry` must be at its root.
+- `id`: 1–64 of `a-z 0-9 _ -`, and not a Windows device name (`con`, `prn`, `aux`, `nul`, `com1`…,
+  `lpt1`…). Lower case only, because the id is a path component and must name one directory on APFS,
+  which is case-insensitive by default.
+- `version`: the host's name for what it is installing (the app's build number, a content hash). A
+  package whose version is already installed is not copied again, so a relaunch is free; `nil`
+  always installs.
+- Returns the installed code directory.
+
+The install is atomic: the new version is staged on the same volume and swapped in by rename, so a
+crash halfway through leaves the previous version, never half of the new one. With signing enabled the
+engine seals a verified package read-only; an update renames the old tree aside as a whole and swaps
+the new one in, rather than modifying it in place.
+
+**Do not install while a session runs this game.** An update replaces the whole tree while the
+running session is reading the old one — call `stop()` on the view first.
+
+Failures throw `MigoContentInstaller.Failure` (`Equatable`; its `description` is a whole sentence):
+
+| `Failure` | Cause |
+| --- | --- |
+| `.invalidID(String)` | The id breaks the rule above |
+| `.packageMissing(URL)` | The package directory does not exist or is not a directory |
+| `.entryMissing(String)` | The package has no entry file at its root |
+
+File-system errors (no space, permissions) are thrown as `FileManager` throws them.
+
+## MigoContentSigning
+
+An alias of `MigoEngineSession.ContentSigning`, with **no default**: each default is wrong for
+someone — verifying with no key starts nothing (the engine fails closed), and not verifying runs
+whatever is in the install directory.
+
+| Value | For |
+| --- | --- |
+| `.unsigned` | Games that ship inside the app's own signed bundle, which the platform already verifies |
+| `.verified(publicKey: Data)` | Everything else, such as packages downloaded from the network. `publicKey` is a 32-byte raw Ed25519 public key |
+
+With `.verified`, every package must carry:
+
+- `manifest.json`: `{"version": 1, "entry": "game.js", "timestamp": <unix seconds>, "files": {"<path>": "<sha256 hex>", ...}}`
+- `manifest.sig`: the 64-byte Ed25519 signature, made with the matching private key, over the raw
+  bytes of `manifest.json`.
+
+The engine verifies a package in full on its first launch and seals the result; a mismatch is refused
+and reported as `.failed`. With signing enabled the engine refuses dynamically downloaded subpackages
+(a downloaded subpackage carries no signature); subpackages inside the package work normally.
+
+## Calls that are refused
+
+These content calls answer "unsupported" on both lanes rather than inventing a result:
+`setDeviceOrientation` (the size is fixed at start), `setEnableDebug` (there is no debug panel),
+`getHeapStatistics` on iOS (content runs in WebKit's JavaScriptCore, which exposes no heap data), and
+vibration and battery on macOS. Per-call device behavior is in
+[Apple getting started · Device capabilities](/docs/en/0.9/getting-started/apple/#5-device-capabilities).

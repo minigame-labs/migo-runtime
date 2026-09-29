@@ -29,7 +29,7 @@ slug: en/0.9/concepts/choose-platform
 | **Android** | AAR + Java facade (`MigoRuntime` / `GameSession`) | gradle `implementation` + `SurfaceView` three-step | None — primary path |
 | **OpenHarmony** | Complete DevEco host project (`entry/` + hvigor) | Open the project, follow the project README | Multi-finger on real aarch64 hardware verified on API20 emulator only |
 | **Windows** | Published `migo.dll` (x64/arm64) + `rusty_v8.dll` + C ABI headers | CMake `migo::migo` target + `HWND` attach | WinUI integration and Win32 host-kit not included; EGLProvider implementation is the host's responsibility |
-| **Linux** | host-kit (toolchain) + wayland/x11 platform headers | Preview build for host integration | Not a shipping runtime; positioned as a development host |
+| **Linux** | Linkable C ABI SDK (`libmigo.so`/`libmigo.a`, x86_64/aarch64) + host-kit source adapters | CMake `find_package(migo)` or pkg-config; the host creates its own X11/Wayland window and event loop | host-kit covers Qt 6 Widgets/X11 only; Qt Wayland, Qt Quick and GTK 4 are unsupported; aarch64 has not run on a device |
 | **Apple (iOS/macOS)** | SwiftPM package `migo-<version>-apple-sdk.zip`: iOS Performance+, macOS V8 | Add the local package in Xcode; `MigoGameInstaller.install` + `MigoGameView.loadGame` | On iOS content JS runs in WebContent's JavaScriptCore (the same speed as a WKWebView); no counterparts to Android's handlers (ads, payments, sharing); the WebKit compatibility lane is not in the SDK |
 
 The Gaps column reflects rejected-promotion facts, not promises for a future release.
@@ -40,7 +40,7 @@ The Gaps column reflects rejected-promotion facts, not promises for a future rel
 * **HarmonyOS listing** → the OpenHarmony project genuinely runs: clone the repo, open DevEco, follow the [OpenHarmony quickstart](/docs/en/0.9/getting-started/openharmony/); but before buying hardware, verify multi-finger behavior on the API20 emulator — real-device multi-touch regression is your responsibility.
 * **Desktop channel (Windows)** → the published DLL integrates the C ABI directly; write your own Win32 window and input pump; the [Windows quickstart](/docs/en/0.9/getting-started/windows/) starts from the published package and the API surface pinned by `test-windows-sdk-contract.sh`.
 * **Apple ecosystem** → the [Apple doc](/docs/en/0.9/getting-started/apple/) gives the SwiftPM package's integration steps, each lane's system requirements and verification record, and the APIs it refuses rather than fakes.
-* **Linux desktop host** → positioned as a **development host toolchain**, not a player-facing channel — it is the surface for cross-platform game logic verification, not a 0.9 shipping target.
+* **Linux desktop host** → the released SDK links the C ABI directly, and the host creates its own window and event loop; the [Linux quickstart](/docs/en/0.9/getting-started/linux/) uses the Qt 6 X11 host-kit as its example. It is also the most convenient development host for checking game logic across platforms.
 
 ## Shared C ABI Layer
 

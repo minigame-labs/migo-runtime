@@ -2,13 +2,18 @@
 title: Host Capabilities Overview
 sidebar:
   order: 1
-description: "The three categories of capabilities that content (migo.*)
-  requests from the host: input events, soft keyboard, and Android handler
+description: "The four categories of capabilities that content (migo.*)
+  requests from the host: input events, soft keyboard, device capabilities, and Android handler
   contracts. Lists the contract owner, fallback behavior, and platform
   distribution for each."
 audience: host-integrator
 platforms:
   - android
+  - ios
+  - macos
+  - linux
+  - windows
+  - openharmony
 sourcePaths:
   - include/migo/input.h
   - include/migo/session.h
@@ -19,7 +24,7 @@ slug: en/0.9/capabilities/overview
 
 import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-A **capability** in Migo is the layer between **content calling `migo.*`** and the host's actual implementation. The engine never fabricates system capabilities the host does not provide — an unregistered capability returns an explicit "not supported" instead of pretending to succeed. Three categories:
+A **capability** in Migo is the layer between **content calling `migo.*`** and the host's actual implementation. The engine never fabricates system capabilities the host does not provide — an unregistered capability returns an explicit "not supported" instead of pretending to succeed. Four categories: input events, the soft keyboard, device capabilities, and Android handlers. Dedicated pages:
 
 <CardGrid>
   <LinkCard title="Commerce: Ads" href="/docs/en/0.9/capabilities/commerce/ads/" description="The SDK is already delivered to content; the host calls the other end. Rewarded video settled fallback and callback dispatch are all covered here." />
@@ -28,7 +33,7 @@ A **capability** in Migo is the layer between **content calling `migo.*`** and t
 
   <LinkCard title="Platform Services" href="/docs/en/0.9/capabilities/services/auth/" description="Login/auth, share, settings, permissions, subpackages, logging, mini-program navigation — contracts and fallbacks for seven platform handlers." />
 
-  <LinkCard title="Soft Keyboard and Key Events" href="/docs/en/0.9/capabilities/keyboard/" description="The only C-ABI-level capability: the on_show/hide/update_keyboard triad plus IME composition events." />
+  <LinkCard title="Soft Keyboard and Key Events" href="/docs/en/0.9/capabilities/keyboard/" description="A C-ABI-level capability: the on_show/hide/update_keyboard triad plus IME composition events." />
 </CardGrid>
 
 ## 1. Input Events: Host Feeds the Engine
@@ -58,7 +63,23 @@ The host reports events back via `migo_session_send_keyboard_event` — four typ
 
 See [Soft Keyboard and Key Events](/docs/en/0.9/capabilities/keyboard/) for details.
 
-## 3. Android Handler Contracts: Host Registers in the Java Layer
+## 3. Device Capabilities: the Host Acts, the Host Reports
+
+Vibration, keeping the screen on, the game log, the network and the battery — content asks about the device, and the answers are the host's. The C ABI has two directions:
+
+| Direction | Entry point | Content's migo.* call | When the host provides nothing |
+| --- | --- | --- | --- |
+| Content asks the host to act | `MigoHostCallbacks.on_vibrate` | `vibrateShort` / `vibrateLong` | not supported |
+| Content asks the host to act | `MigoHostCallbacks.on_keep_screen_on` | `setKeepScreenOn` | not supported |
+| Content asks the host to act | `MigoHostCallbacks.on_game_log` | `getGameLogManager().log` | not supported |
+| The host reports the current state | `migo_session_set_network_status` | `getNetworkType` / `onNetworkStatusChange` | not supported until the first report |
+| The host reports the current state | `migo_session_set_battery_status` | `getBatteryInfo` | not supported until the first report (the right answer on a device with no battery) |
+
+The three callbacks are each optional and independent, and are delivered through `dispatch` like every other callback; for the two status entry points the engine keeps the last report and forwards a change only while content is listening. Details are in [Session · Device capability callbacks](/docs/en/0.9/reference/session/#device-capability-callbacks).
+
+Who provides them: the Android Java SDK implements these calls in its own platform layer (the game log goes to `GameLogHandler` in the table below); on Apple, `MigoGameView` provides them (iOS: Taptic Engine, the idle timer, `NWPathMonitor`, battery level and Low Power Mode; macOS: a power assertion and `NWPathMonitor`, answering unsupported for vibration and battery) — see [Apple platform · Device capabilities](/docs/en/0.9/getting-started/apple/#5-device-capabilities); C ABI hosts on Linux, Windows and OpenHarmony provide them from the table above.
+
+## 4. Android Handler Contracts: Host Registers in the Java Layer
 
 Ten `set*Handler(...)` methods on `GameSession` plus `setListener(GameSessionListener)` — 11 registration points in total, all host-side capabilities. An unregistered handler falls back to a runtime-level default — each interface has a documented contract for "what content sees when not registered":
 

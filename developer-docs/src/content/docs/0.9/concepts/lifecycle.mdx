@@ -67,7 +67,7 @@ CREATED ──load_content + set_lifecycle──> RUNNING ⇄ PAUSED ⇄ destroy
 * 时间戳是**有符号**的,为了与平台回调原样过(AChoreographer 的参数) — 不是「负值有意义」；
 * 装 `MigoOnRequestFrameFn` 可选 — 装了的宿主驱帧;没装的引擎自己起心跳,慢不了也准不了(这是「engine-paced」的默认)。
 
-选择决策:宿主与系统 vsync 有自然对应(Android `Choreographer`、macOS `CVDisplayLink`、WAYLAND `frame_callback`)就装 — 帧对齐是内容卡帧与否分岔点;没有对应就诚实不装,交给引擎派帧。
+选择决策:宿主与系统 vsync 有自然对应(Android `Choreographer`、Apple `CADisplayLink`（macOS 14 以下为 `CVDisplayLink`）、Wayland `frame_callback`)就装 — 帧对齐是内容卡帧与否分岔点;没有对应就诚实不装,交给引擎派帧。
 
 ## destroy 的所有权语义
 

@@ -68,7 +68,7 @@ All three exist, but they express non-overlapping concerns:
 * The timestamp is **signed** to pass through platform callback values unchanged (e.g. AChoreographer's parameter) — negative values carry no intended meaning.
 * Installing `MigoOnRequestFrameFn` is optional — hosts that install it drive frames; those that do not get an engine-paced heartbeat that is neither as fast nor as accurate (this is the engine-paced default).
 
-Decision guide: if the host has a natural vsync correspondence (Android `Choreographer`, macOS `CVDisplayLink`, Wayland `frame_callback`), install the callback — frame alignment is the fork between smooth and janky content; if there is no natural correspondence, leave it uninstalled and let the engine dispatch frames.
+Decision guide: if the host has a natural vsync correspondence (Android `Choreographer`, Apple `CADisplayLink` (`CVDisplayLink` below macOS 14), Wayland `frame_callback`), install the callback — frame alignment is the fork between smooth and janky content; if there is no natural correspondence, leave it uninstalled and let the engine dispatch frames.
 
 ## Ownership Semantics of destroy
 

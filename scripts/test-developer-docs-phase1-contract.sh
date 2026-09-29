@@ -10,6 +10,7 @@
 #     never half of each; a translation links within the en tree
 #   * the C ABI reference: one section per public header entry point, in zh and
 #     in the en translation alike
+#   * Mermaid flowchart labels that Mermaid can parse (ASCII parentheses quoted)
 #   * no Docusaurus remnants
 set -euo pipefail
 
@@ -182,6 +183,23 @@ if arch is not None:
     for term in ("migo.*", "capability", "V8", "Skia"):
         if term not in arch:
             error(f"sdk-architecture.mdx is missing required boundary term: {term}")
+
+# -- 4b. flowchart 节点标签里的 ASCII 括号必须加引号 ------------------------------
+#
+# Mermaid 把 `A[text (x)]` 里的 `(` 读成形状语法,整张图渲染成错误框。英文首页与
+# 架构页的两张图就是这样坏着上线的:官网在发布边界打了一个补丁
+# (migo-www docs/patches/migo-docs-mermaid-labels.patch)才把它们救回来,
+# 而本仓库自己的构建与测试都没有察觉。全角括号不触发,中文页因此一直正常。
+unquoted_label = re.compile(r'\b[A-Za-z0-9_]+\[(?!")([^\]\n]*[()][^\]\n]*)\]')
+for page in sorted(docs_root.rglob("*.mdx")):
+    for block in mermaid_blocks(page.read_text(encoding="utf-8")):
+        if not re.match(r"\s*(flowchart|graph)\b", block):
+            continue
+        for line in block.splitlines():
+            for match in unquoted_label.finditer(line):
+                rel = page.relative_to(docs_root).as_posix()
+                error(f"{rel}: Mermaid 标签含未加引号的括号,会被当成形状语法:{match.group(0)}"
+                      f"(写成 [\"...\"])")
 
 # -- 5. en 页形状对称(占位 stub 或完整翻译均合法;半翻译是非法状态) ---------
 

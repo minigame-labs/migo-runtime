@@ -1,0 +1,271 @@
+---
+title: MigoGameView
+sidebar:
+  order: 1
+description: Apple SDK 的全部公开接口：iOS 与 macOS 的 MigoGameView、Configuration、Event、MigoGameInstaller 与内容签名，逐项对应源码。
+audience: host-integrator
+platforms:
+  - ios
+  - macos
+sourcePaths:
+  - platforms/apple/Sources/MigoApplePerformancePlus/MigoGameView.swift
+  - platforms/apple/Sources/MigoMacV8/MigoGameView.swift
+  - platforms/apple/Sources/MigoAppleRenderer/MigoContentInstaller.swift
+  - platforms/apple/Sources/MigoAppleRenderer/MigoEngineSession.swift
+  - platforms/apple/Sources/MigoAppleRenderer/MigoSessionFrameClock.swift
+slug: 0.9/apple-sdk/game-view
+---
+
+Apple SDK（`migo-<版本>-apple-sdk.zip` 里的 SwiftPM 包 `MigoApple/`）对宿主只公开一个视图和
+一个安装器。两个产品各对应一个平台，接口同名同形：
+
+| 产品 | 平台 | `MigoGameView` 继承自 | 内容 JavaScript |
+| --- | --- | --- | --- |
+| `MigoApplePerformancePlus` | iOS 15.2+ | `UIView` | WebKit WebContent 进程的 JavaScriptCore（带 JIT），帧回到本进程渲染 |
+| `MigoMacV8` | macOS 11+ | `NSView` | 本进程 V8（带 JIT 与 WebAssembly） |
+
+两个产品都导出三个类型别名：`MigoGameDirectories`、`MigoGameInstaller`、
+`MigoContentSigning`，只 `import` 一个产品即可写出全部集成代码。接入步骤见
+[Apple 平台快速开始](/docs/0.9/getting-started/apple/)；本页是逐项参考。
+
+C ABI 在 Apple 上由 `MigoGameView` 在包内使用，不是受支持的集成面：`MigoAppleRenderer`
+等内部 target 不是产品，头文件的 `MIGO_C_ABI_HAS_RUNTIME` 在 Apple 上为 0。
+
+## MigoGameView
+
+一个 view 运行一个游戏。安装一次（[`MigoGameInstaller`](#migogameinstaller)），加入窗口，
+调 `loadGame(id:entry:)`；其余都由它负责：引擎会话、它渲染进去的 `CAMetalLayer`、显示时钟、
+输入、App 生命周期、软键盘，iOS 上还有 WebContent 生产端、音频会话与 WebContent 崩溃恢复。
+Android SDK 的 `MigoGameView.loadGame(gameId, entryPoint)` 是同一个调用，这是有意的。
+
+**只在主线程使用。** `loadGame` 以 `precondition(Thread.isMainThread)` 检查；所有事件都在主队列上送达。
+
+### init(configuration:)
+
+```swift
+public init(configuration: Configuration)
+```
+
+只能用代码创建（`init?(coder:)` 标为 unavailable）。创建本身不启动任何东西。
+
+### loadGame(id:entry:)
+
+```swift
+public func loadGame(id: String, entry: String = "game.js")
+```
+
+运行一个**已安装**的游戏。游戏在 view 进入窗口且尺寸非空后的第一次布局时启动；再次调用会先
+`stop()` 再换成新游戏。启动失败以 [`.failed`](#onevent--event) 报告，不抛异常。
+
+macOS 上若 [`unavailabilityReason`](#unavailabilityreason) 非空，立即以 `.failed(原因)` 返回，不启动。
+
+### stop()
+
+```swift
+public func stop()
+```
+
+停止游戏并释放它持有的一切（会话、层、观察者；iOS 上若 `managesAudioSession` 为真还会停用
+音频会话）。之后同一个 view 可以再 `loadGame`。`exitRequested` 之后 view 已自行停止，不必再调。
+
+### onEvent / Event
+
+```swift
+public var onEvent: ((Event) -> Void)?
+```
+
+在主队列上调用。
+
+| `Event` | iOS | macOS | 含义 |
+| --- | :-: | :-: | --- |
+| `.ready` | ✓ | ✓ | 游戏入口已执行完 |
+| `.exitRequested` | ✓ | ✓ | 游戏请求退出（`migo.exitMiniProgram()`）；view 已停止游戏，接下来显示什么由 App 决定 |
+| `.failed(String)` | ✓ | ✓ | 游戏无法启动或无法继续 |
+| `.error(code:message:recoverable:)` | ✓ | ✓ | 引擎报告的运行时错误；`recoverable` 为真的是资源压力提示，游戏继续运行 |
+| `.restarted` | ✓ | — | WebKit 内容进程崩溃，游戏已从入口重启（如同网页重新加载）；磁盘上的存档保留，内存中的状态不保留 |
+| `.console(level:message:)` | ✓ | — | 游戏写到 `console` 的一行：级别 1 info、2 warn、3 error，其余为 debug |
+| `.gameLog(String)` | ✓ | ✓ | 游戏日志（`getGameLogManager().log`）的一条，引擎合并好的 JSON 对象（level、key、value、commonInfo），由 App 保存或上报 |
+
+新版本可能追加事件：`switch` 里留一个 `default` 分支，升级就不会因新事件而编译失败。
+
+### isRunning
+
+```swift
+public private(set) var isRunning: Bool
+```
+
+有游戏已载入且未停止。
+
+### unavailabilityReason
+
+```swift
+public static var unavailabilityReason: String? { get }
+```
+
+当前设备或进程为什么跑不了这条车道；能跑时为 `nil`。在展示游戏入口之前检查，App 可以据此
+直接不显示入口。
+
+- **iOS**：没有 Metal 设备；或链接的引擎不接受这些源码对应的 ABI 版本、不提供 iOS `CAMetalLayer` surface。
+- **macOS**：进程没有 hardened runtime 的 `com.apple.security.cs.allow-jit`（V8 会在第一次编译时崩溃，
+  而 jitless 的 V8 没有 WebAssembly，因此两者都不作为替代提供）；或引擎能力查询不通过。
+
+### frameClockStatistics / frameChannelStatistics
+
+```swift
+public var frameClockStatistics: MigoSessionFrameClock.Statistics? { get }
+public var frameChannelStatistics: MigoFrameChannel.Statistics? { get }   // 仅 iOS
+```
+
+诊断读数，没有游戏在跑时为 `nil`，用于测试或解释帧率的诊断页。`frameClockStatistics` 记录显示
+时钟：`ticks`（显示送来的 vsync）、`delivered`（带着请求帧送给引擎的 tick）、`idle`（没有待发帧的
+tick，内容静止时占多数，不是故障）、`coalescedRequests`、`unusableTimestamps`、`refused` 与
+`lastRefusal`。iOS 的 `frameChannelStatistics` 记录生产端与引擎之间的帧通道；它的字段随传输实现
+变化，不要当作稳定接口去解析。
+
+### 尺寸与方向
+
+游戏在第一行代码执行之前得知窗口尺寸，并按它布局自己——小游戏 API 在所有平台上都这样工作。
+所以会话在 view 第一次非空布局时开始，并**保持这个尺寸**：之后的 bounds 变化由 Core Animation
+把渲染结果缩放过去，而不是对一个已经布局完的游戏谎报尺寸。
+
+- **iOS**：承载的 view controller 要在 `MigoGameView` **第一次布局之前**就锁定在游戏的方向上
+  （Info.plist 只声明游戏的方向，或由只支持该方向的 controller 呈现它）。
+- drawable 的尺寸由引擎决定：画布小于窗口时取画布尺寸，由 Core Animation 缩放到 layer 上。
+  宿主不要设置 `CAMetalLayer.drawableSize`，`contentsGravity` 保持默认的 resize。
+
+### 输入
+
+- **iOS**：多点触摸（`isMultipleTouchEnabled = true`）；内容调用 `migo.showKeyboard` 时弹出系统
+  键盘，游戏自己绘制输入框，与其他平台一致。
+- **macOS**：鼠标按 [`Configuration.mouse`](#configuration) 送给内容；view 是 first responder 时
+  物理按键总会送达；没有软键盘的机器上，内容请求键盘时在游戏底边显示一个文本框。
+
+## Configuration
+
+```swift
+// iOS
+public struct Configuration {
+    public var directories: MigoGameDirectories
+    public var contentSigning: MigoContentSigning
+    public var preferredFramesPerSecond: Int?
+    public var managesAudioSession: Bool
+    public var webContentTerminationBudget: Int
+    public init(directories:contentSigning:preferredFramesPerSecond: = nil,
+                managesAudioSession: = true, webContentTerminationBudget: = 2)
+    public static func standard(contentSigning:) throws -> Configuration
+}
+
+// macOS
+public struct Configuration {
+    public var directories: MigoGameDirectories
+    public var contentSigning: MigoContentSigning
+    public var preferredFramesPerSecond: Int?
+    public var mouse: MouseInput
+    public init(directories:contentSigning:preferredFramesPerSecond: = nil, mouse: = .touch)
+    public static func standard(contentSigning:) throws -> Configuration
+}
+```
+
+| 字段 | 平台 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `directories` | 两者 | `.standard()` | 已安装游戏、存档与缓存的位置，见 [`MigoGameDirectories`](#migogamedirectories) |
+| `contentSigning` | 两者 | **无默认** | 游戏包是否必须签名，见 [`MigoContentSigning`](#migocontentsigning) |
+| `preferredFramesPerSecond` | 两者 | `nil` | 向显示请求的帧率，`nil` 为系统默认节奏。iOS 上高于 60 需要 ProMotion 且 Info.plist 带 `CADisableMinimumFrameDurationOnPhone` |
+| `managesAudioSession` | iOS | `true` | 由 view 设置 `AVAudioSession` 类别并跟随其中断。只有 App 自己管理音频会话时才关掉，此时游戏的暂停与恢复由 App 负责 |
+| `webContentTerminationBudget` | iOS | `2` | 自游戏上次 ready 起，WebContent 崩溃几次之后改为报告 `.failed` 而不再重启 |
+| `mouse` | macOS | `.touch` | 鼠标送给内容的哪条输入流，见下表 |
+
+`standard(contentSigning:)` 用 [`MigoGameDirectories.standard()`](#migogamedirectories) 的目录和
+其余默认值构造配置；目录创建失败时抛出。
+
+### MouseInput（macOS）
+
+| 值 | 送给内容的 |
+| --- | --- |
+| `.touch` | 单指触摸，id 0：面向手机的内容 |
+| `.pointer` | 鼠标与滚轮事件：面向 PC 小游戏平台的内容 |
+| `.touchAndPointer` | 两者都送。只用于确知只监听其中一种的内容 |
+
+引擎不会从一种合成另一种——只有宿主知道自己的内容面向哪种设备。
+
+## MigoGameDirectories
+
+`MigoEngineSession.Directories` 的别名。
+
+```swift
+public struct Directories: Equatable, Sendable {
+    public var files: URL
+    public var cache: URL
+    public var codeCache: URL
+    public init(files: URL, cache: URL, codeCache: URL)
+    public static func standard(namespace: String = "Migo") throws -> Directories
+    public func installedCode(contentID: String) -> URL
+}
+```
+
+- `standard(namespace:)`：`files` 在 Application Support 下（`<namespace>/files`），`cache` 与
+  `codeCache` 在 Caches 下。玩家存档必须保留，编译缓存可被系统回收——放在一处要么备份了几
+  MB 可再生的代码，要么让系统删掉存档。
+- `installedCode(contentID:)`：引擎查找已安装游戏代码的目录，`<files>/migo/games/<id>/code`。
+  与 Android SDK 写入的布局相同。
+
+## MigoGameInstaller
+
+`MigoContentInstaller` 的别名。引擎不从任意目录加载内容，而是按 id 解析到
+`installedCode(contentID:)`，让游戏的代码、存档与缓存挂在同一个身份下；安装因此是宿主的一步。
+
+```swift
+@discardableResult
+public static func install(package: URL, id: String, entry: String = "game.js",
+                           version: String? = nil,
+                           into directories: MigoGameDirectories) throws -> URL
+
+public static func isValidID(_ id: String) -> Bool
+```
+
+- `package`：游戏包目录，根目录下必须有 `entry`。
+- `id`：1–64 个 `a-z 0-9 _ -`，且不是 Windows 设备名（`con`、`prn`、`aux`、`nul`、`com1`…、`lpt1`…）。
+  只允许小写，因为 id 是路径分量，在默认不区分大小写的 APFS 上必须只指一个目录。
+- `version`：宿主对所装内容的命名（App 构建号、内容哈希）。已安装的版本相同时不再复制，
+  重复启动零成本；`nil` 总是安装。
+- 返回已安装的代码目录。
+
+安装是原子的：新版本先在同一卷上暂存，再以改名换入；中途崩溃留下的是旧版本，不会是半个新版本。
+启用签名时引擎把验证过的包封存为只读，更新时安装器先把旧树整体改名移开再换入新树，而不是原地修改。
+
+**不要在会话运行这个游戏时安装。** 更新会整体替换目录树，而运行中的会话正在读旧树——先对 view 调 `stop()`。
+
+失败时抛出 `MigoContentInstaller.Failure`（`Equatable`，`description` 是完整的一句话）：
+
+| `Failure` | 原因 |
+| --- | --- |
+| `.invalidID(String)` | id 不符合上面的规则 |
+| `.packageMissing(URL)` | 包目录不存在或不是目录 |
+| `.entryMissing(String)` | 包根目录下没有入口文件 |
+
+文件系统错误（空间不足、权限）按 `FileManager` 原样抛出。
+
+## MigoContentSigning
+
+`MigoEngineSession.ContentSigning` 的别名，**没有默认值**：两个默认各自对某些人是错的——没有
+公钥就验证什么也启动不了（引擎失败即关闭），不验证则运行安装目录里的任何东西。
+
+| 值 | 用于 |
+| --- | --- |
+| `.unsigned` | 随 App 自身（已签名）的包一起分发的游戏；平台已验证过 App 包 |
+| `.verified(publicKey: Data)` | 其余一切，例如从网络下载的包。`publicKey` 是 32 字节原始 Ed25519 公钥 |
+
+`.verified` 时每个包都必须带：
+
+- `manifest.json`：`{"version": 1, "entry": "game.js", "timestamp": <unix 秒>, "files": {"<路径>": "<sha256 hex>", ...}}`
+- `manifest.sig`：用对应私钥对 `manifest.json` 原始字节的 64 字节 Ed25519 签名。
+
+引擎在首次启动时完整校验并封存结果，不匹配即拒绝（以 `.failed` 报告）。启用签名时引擎拒绝动态
+下载的分包（下载的分包不带签名）；包内自带的分包正常可用。
+
+## 明确拒绝的接口
+
+以下内容调用在这两条车道上回答“不支持”，不伪造结果：`setDeviceOrientation`（尺寸在启动时固定）、
+`setEnableDebug`（没有调试面板）、iOS 上的 `getHeapStatistics`（内容运行在 WebKit 的
+JavaScriptCore 中，它不暴露堆数据），以及 macOS 上的振动与电量。设备能力的逐项行为见
+[Apple 平台快速开始 · 设备能力](/docs/0.9/getting-started/apple/#5-设备能力)。

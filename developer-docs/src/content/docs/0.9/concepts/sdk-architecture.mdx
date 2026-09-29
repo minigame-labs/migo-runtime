@@ -29,7 +29,7 @@ flowchart TB
   Boundary --> Core[Rust core]
   Core --> V8[V8 JavaScript runtime]
   Core --> Render[Skia / Canvas / WebGL]
-  Host[宿主 App] <--> SDK[C ABI（Android 之上有语言 facade）]
+  Host[宿主 App] <--> SDK[C ABI（Android、Apple 之上有语言 facade）]
   SDK <--> Core
   Host --> Services[surface · input · storage · network · ads]
 ```
@@ -38,7 +38,7 @@ flowchart TB
 
 1. 小游戏 bundle 只通过 `migo.*` 能力边界访问运行时能力；可选的独立适配器位于引擎之外。
 2. Rust core 编排 V8 JavaScript runtime 与 Skia 渲染后端，输出 Canvas/WebGL 内容。
-3. 宿主 App 通过 C ABI 创建和管理会话 — 这是四个平台唯一共有的事实接口;Android 侧惯用的 Java facade(`MigoRuntime`/`MigoGameView`)只是这层 ABI 之上的语言包装。surface、input、storage、network、ads 等服务由宿主自行提供。
+3. 宿主 App 通过 C ABI 创建和管理会话 — Android、Linux、Windows、OpenHarmony 上可直接链接;Android 侧惯用的 Java facade(`MigoRuntime`/`MigoGameView`)与 Apple 的 Swift `MigoGameView` 都是这层 ABI 之上的语言包装(Apple 只以 SwiftPM 包交付,C ABI 在包内使用)。surface、input、storage、network、ads 等服务由宿主自行提供。
 4. Migo 不提供 DOM、CSS、页面布局或浏览器文档对象模型。
 
 ## 会话生命周期
@@ -118,6 +118,6 @@ sequenceDiagram
 
 * **Android、Linux、Windows**：使用 V8；宿主分别通过 Android facade 或可链接的 C ABI 运行时接入。
 * **HarmonyOS NEXT**：由于 HarmonyOS 5.0.0(12) 起匿名内存执行权限限制，Migo 使用 `jitless` 模式运行 V8；不要宣称 NEXT 上的 JIT 性能。
-* **Apple**：iOS 上内容 JavaScript 运行在 WebKit 的 WebContent 进程（JavaScriptCore，带 JIT），Migo 在 App 进程把外部帧渲染进宿主的 `CAMetalLayer`，因此 JS 执行速度与 WKWebView 相同，不要宣称 iOS 上“JS 更快”；macOS 在本进程运行带 JIT 的 V8。见 [Apple 平台](/docs/0.9/getting-started/apple/)。
+* **Apple**：iOS 上内容 JavaScript 运行在 WebKit 的 WebContent 进程（JavaScriptCore，带 JIT），Migo 在 App 进程把外部帧渲染进宿主的 `CAMetalLayer`，因此 JS 执行速度与 WKWebView 相同，不要宣称 iOS 上“JS 更快”；macOS 在本进程运行带 JIT 的 V8。两者的宿主都通过 Swift 的 `MigoGameView` 接入，见 [Apple 平台](/docs/0.9/getting-started/apple/) 与 [Apple SDK 参考](/docs/0.9/apple-sdk/game-view/)。
 
 Migo 的构建流程和平台依赖见仓库的 [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md)。

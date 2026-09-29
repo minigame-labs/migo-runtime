@@ -1,6 +1,6 @@
 # Migo C ABI and Surface v1 candidate
 
-These headers are a design candidate. They make Migo's planned low-level embedding contract reviewable from C11 and C++17. On Linux they are also callable: `scripts/build-linux-sdk.sh` produces `libmigo.so` and `libmigo.a` exporting exactly the `migo_*` set declared here, with pkg-config and CMake integration, and `scripts/build-android-c-host.sh` cross-compiles the same implementation as a static library for Android. Everywhere else the headers remain compile-only.
+These headers are a design candidate. They make Migo's planned low-level embedding contract reviewable from C11 and C++17. On Linux they are also callable: `scripts/build-linux-sdk.sh` produces `libmigo.so` and `libmigo.a` exporting exactly the `migo_*` set declared here, with pkg-config and CMake integration, and `scripts/build-android-c-host.sh` cross-compiles the same implementation as a static library for Android; Windows and OpenHarmony packages follow below. On Apple the engine XCFramework carries these headers for the SwiftPM package's own use -- the supported surface there is the Swift `MigoGameView`, which is why `MIGO_C_ABI_HAS_RUNTIME` stays 0 on Apple. Everywhere else the headers remain compile-only.
 
 The public markers are intentional:
 

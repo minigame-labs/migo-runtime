@@ -101,7 +101,8 @@ export default defineConfig({
         {
           // 按 API 表面切子组(IA spec §4):C ABI 是表面一;平台绑定子组 trigger = 第二个
           // 平台快速开始落地(已满足,platform-binding/ 正在并入);Android SDK 子组 trigger =
-          // 与宿主能力首批同批。新子组目录不放在 reference/ 下(autogenerate 递归吸子目录)。
+          // 与宿主能力首批同批;Apple SDK 子组 = Apple 唯一受支持的集成面(Swift MigoGameView,
+          // C ABI 只在包内用)。新子组目录不放在 reference/ 下(autogenerate 递归吸子目录)。
           label: 'API 参考',
           translations: { en: 'API reference' },
           collapsed: true,
@@ -123,6 +124,12 @@ export default defineConfig({
               translations: { en: 'Android SDK' },
               collapsed: true,
               items: [{ autogenerate: { directory: 'android-sdk' } }],
+            },
+            {
+              label: 'Apple SDK',
+              translations: { en: 'Apple SDK' },
+              collapsed: true,
+              items: [{ autogenerate: { directory: 'apple-sdk' } }],
             },
           ],
         },

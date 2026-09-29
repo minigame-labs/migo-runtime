@@ -21,7 +21,7 @@ C ABI 目前是**候选（CANDIDATE）**：真源在 `include/migo/types.h` 的 
 
 ## 现在的状态
 
-* **候选 ≠ 不可用。** 四个平台（Android / Linux / Windows / OpenHarmony）已有可链接运行时（`MIGO_C_ABI_HAS_RUNTIME`），头文件可编译、产物可按契约消费；被冻结的是"我们承诺永远不变"这句话，而不是代码。
+* **候选 ≠ 不可用。** 四个平台（Android / Linux / Windows / OpenHarmony）已有可链接运行时（`MIGO_C_ABI_HAS_RUNTIME`），头文件可编译、产物可按契约消费；被冻结的是"我们承诺永远不变"这句话，而不是代码。Apple（iOS / macOS）只以 SwiftPM 包交付：C ABI 在包内由 `MigoGameView` 使用，不是受支持的独立链接面，因此那里此宏为 0。
 * **候选 ≠ 会动。** 所有面向调用方的结构都工作在"旧头文件编译的程序继续对"的形状下；下节的每条规则都已经由测试固定，冻结时只是摘掉警告而不是改动行为。
 
 ## 兼容机器（已实施）

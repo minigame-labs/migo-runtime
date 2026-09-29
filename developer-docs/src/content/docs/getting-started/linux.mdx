@@ -13,12 +13,12 @@ sourcePaths:
   - include/migo/platform/wayland.h
 ---
 
-Linux 在 0.9 版本中**不是独立的运行目标**，而是开发宿主工具链。
-`platforms/linux/host-kit/` 提供在应用拥有的 Linux UI 中嵌入 Migo 所需的源码级适配器；
-它不创建应用、顶层窗口或事件循环。
+Linux 以可链接的 C ABI SDK 发布：每个版本的 Release 附件 `migo-<版本>-capi-linux-x86_64.tar.gz`
+与 `migo-<版本>-capi-linux-arm64.tar.gz`（`libmigo.so`、`libmigo.a`、头文件、pkg-config 与 CMake
+包，仅 glibc）。`platforms/linux/host-kit/` 是其上的源码级适配器，用于把 Migo 嵌进应用自己的
+Linux UI；它不创建应用、顶层窗口或事件循环——这些始终归宿主。
 
-本文的目标是驱动宿主创建的最小 C ABI 管线，验证 surface 挂载和生命周期；不是声称
-Linux 已有可发布的 runtime hosting，或 Host Kit 会替应用创建生产窗口和事件循环。
+本文驱动宿主创建的最小 C ABI 管线，验证 surface 挂载和生命周期。
 
 当前已声明的三个 CMake 目标：
 
@@ -54,8 +54,14 @@ sudo apt-get install -y libwayland-dev
 
 ## 2. 获取 Linux SDK
 
-Host Kit 依赖 Linux SDK（提供 `find_package(migo)` 所需的 CMake 包）。
-完整构建步骤见 [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md)
+Host Kit 依赖 Linux SDK（提供 `find_package(migo)` 所需的 CMake 包）。从
+[SDK 下载页](https://minigame-labs.com/download.html) 或
+[GitHub Releases](https://github.com/minigame-labs/migo-runtime/releases) 下载
+`migo-<版本>-capi-linux-x86_64.tar.gz` 与同名的 `.attestation.json`，按
+[下载校验](/docs/release/download-verification/) 核对后解压，得到 `migo-linux-x86_64/`。
+其中 `share/migo/linux-x86_64-manifest.json` 记录 glibc 下限与全部动态依赖。
+
+从源码构建见 [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md)
 "4. Linux x86\_64 SDK" 一节：
 
 ```bash

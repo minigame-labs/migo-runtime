@@ -97,6 +97,27 @@ test('no-JS readability', async ({browser}) => {
   }
 });
 
+// Mermaid renders client-side, and a label it cannot parse becomes an error
+// box rather than a failed build: the English home and architecture diagrams
+// shipped that way, rescued only by a patch at the portal's publication
+// boundary. The source gate catches the one syntax that did it; this catches
+// whatever Mermaid refuses next.
+test.describe('architecture diagrams render', () => {
+  for (const path of ['/', '/en/', '/concepts/sdk-architecture/', '/en/concepts/sdk-architecture/', '/en/0.9/']) {
+    test(`every diagram on ${path} is an SVG`, async ({page}) => {
+      await openDocsPage(page, path);
+      const diagrams = page.locator('pre.mermaid');
+      const count = await diagrams.count();
+      expect(count).toBeGreaterThan(0);
+      await expect(page.locator('pre.mermaid svg')).toHaveCount(count, {timeout: 15_000});
+      const refused = await diagrams.evaluateAll(
+        (blocks) => blocks.filter((block) => /Syntax error|Parse error/.test(block.textContent ?? '')).length,
+      );
+      expect(refused).toBe(0);
+    });
+  }
+});
+
 test('zh search indexes an API term', async ({page}) => {
   await openDocsPage(page, '/');
   await page.locator('button[data-open-modal]').first().click();

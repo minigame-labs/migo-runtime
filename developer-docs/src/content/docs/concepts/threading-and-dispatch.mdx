@@ -106,7 +106,7 @@ ABI v1 只有两个异步操作，形状刻意不同：
 | Linux | GLib main loop / 自有事件循环 | X11/Wayland 的连接纪律见 surface 页 |
 | Windows | 消息循环 / `PostMessage` | Win32 `HWND` 宿主拥有消息循环 |
 | OpenHarmony | ArkUI 宿主事件循环 | 静态库宿主链接进自家 `.so` |
-| iOS/macOS | 主队列（GCD） | Apple 产品走 WebKit 宿主路径，回调仍经文 ABI |
+| iOS/macOS | 主队列（GCD） | Swift 的 `MigoGameView` 已按此派发；Apple 上 C ABI 在包内使用，宿主不自己装 dispatcher |
 
 ## 常见反模式
 
