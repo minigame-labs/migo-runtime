@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.19 (2026-09-29)
+
 ### Fixed
 - macOS: on a Mac with two GPUs held on its integrated one (`pmset gpuswitch 0`),
   a game's frame loop ran and its window stayed black; even a Canvas2D read
