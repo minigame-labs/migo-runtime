@@ -159,6 +159,16 @@ device="$(grep -o 'migo-headless-probe: device .*' "$LAST_LOG" | tail -1)"
 [[ "$device" == *"/true keep=ok log=ok"* ]] || fail "the device did not answer through MigoGameView: ${device:-no report}"
 grep -q '\[game-view-host\] game log: .*"key":"probe"' "$LAST_LOG" \
   || fail "the game's log entry did not reach the app"
+# The window shows what the engine draws only from the GPU that drives its
+# display. ANGLE left to itself takes the system default -- on a dual-GPU Mac
+# the discrete one -- and a Mac held on its integrated GPU then renders every
+# frame into a black window (measured on the lab MacBookPro16,1, 2026-09-30).
+# A one-GPU runner passes trivially; the lab Mac under `pmset gpuswitch 0` is
+# where this line means something.
+gpu="$(grep -o '\[game-view-host\] gpu rendering=.*' "$LAST_LOG" | tail -1)"
+[[ "$gpu" =~ rendering=([0-9]+).*display=([0-9]+) ]] || fail "the host did not report its GPUs: ${gpu:-no report}"
+[[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]] \
+  || fail "the engine renders on a GPU that does not drive the window's display: $gpu"
 
 echo "[3/4] signed content: verified with its key runs, tampered is refused"
 status=0

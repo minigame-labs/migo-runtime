@@ -17,6 +17,7 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
 #if os(macOS)
     import AppKit
     import IOKit.pwr_mgt
+    import Metal
     import QuartzCore
 
     /// A view that runs one mini-game: the macOS product surface of Migo.
@@ -229,6 +230,11 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             guard let game, !isRunning, closing == 0, let size = currentSize else { return }
             do {
                 metalLayer.contentsScale = CGFloat(size.scale)
+                // The engine renders on the layer's GPU, so name the one that
+                // drives this window's display. Left unset, a Mac with two GPUs
+                // held on its integrated one renders on the discrete one and
+                // shows nothing.
+                metalLayer.device = window?.screen.flatMap(Self.displayDevice)
                 let engine = try MigoEngineSession(
                     directories: configuration.directories, contentSigning: configuration.contentSigning,
                     preferredFramesPerSecond: configuration.preferredFramesPerSecond)
@@ -271,6 +277,12 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 }
                 self.startIfPossible()
             }
+        }
+
+        private static func displayDevice(of screen: NSScreen) -> MTLDevice? {
+            let key = NSDeviceDescriptionKey("NSScreenNumber")
+            guard let display = screen.deviceDescription[key] as? NSNumber else { return nil }
+            return CGDirectDisplayCopyCurrentMetalDevice(display.uint32Value)
         }
 
         private static func makeLayer() -> CAMetalLayer {

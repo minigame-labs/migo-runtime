@@ -183,10 +183,13 @@ fn build_target_with_retain(
         #[cfg(test)]
         Some(PlatformContext::TestOnly) => return Err(MIGO_ERROR_INTERNAL),
         None => {
-            platform::apple::presenter::apple_metal_layer_graphics_platform().map_err(|error| {
-                tracing::error!("build_target: CAMetalLayer graphics platform: {error:?}");
-                MIGO_ERROR_INTERNAL
-            })?
+            // The session renders on the device its first layer names, for
+            // its lifetime: the reuse above keeps it.
+            platform::apple::presenter::apple_metal_layer_graphics_platform(layer.device())
+                .map_err(|error| {
+                    tracing::error!("build_target: CAMetalLayer graphics platform: {error:?}");
+                    MIGO_ERROR_INTERNAL
+                })?
         }
     };
     Ok((
@@ -244,7 +247,7 @@ mod tests {
                 .releases
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        unsafe { RetainedMetalLayer::retain_for_test(layer, retain, release) }
+        unsafe { RetainedMetalLayer::retain_for_test(layer, retain, release, None) }
     }
 
     #[test]
@@ -313,7 +316,7 @@ mod tests {
     > {
         unsafe fn retain(layer: NonNull<c_void>) -> RetainedMetalLayer {
             unsafe fn no_refcount(_: NonNull<c_void>) {}
-            unsafe { RetainedMetalLayer::retain_for_test(layer, no_refcount, no_refcount) }
+            unsafe { RetainedMetalLayer::retain_for_test(layer, no_refcount, no_refcount, None) }
         }
         build_target_with_retain(descriptor, existing, retain)
     }
@@ -515,7 +518,7 @@ mod tests {
         assert_eq!(surface.size(), (WIDTH, HEIGHT));
         assert_eq!(
             graphics_platform.platform_identity(),
-            platform::apple::presenter::apple_metal_layer_graphics_platform()
+            platform::apple::presenter::apple_metal_layer_graphics_platform(None)
                 .expect("CAMetalLayer ANGLE platform")
                 .platform_identity(),
             "the layer path must run on the CAMetalLayer graphics platform"
@@ -535,6 +538,32 @@ mod tests {
             Arc::ptr_eq(first.egl_provider(), reused.egl_provider()),
             "a reattachment must not construct a second EGL provider"
         );
+    }
+
+    /// The GPU is the one the host set on the layer: without it, a dual-GPU
+    /// Mac held on its integrated GPU renders on the discrete one and shows a
+    /// black window.
+    #[test]
+    fn the_first_attach_renders_on_the_device_the_layer_names() {
+        use platform::apple::presenter::{MetalDeviceId, apple_metal_layer_graphics_platform};
+        unsafe fn retain_on_device(layer: NonNull<c_void>) -> RetainedMetalLayer {
+            unsafe fn no_refcount(_: NonNull<c_void>) {}
+            let device = MetalDeviceId::new(0x1_0000_0699);
+            unsafe { RetainedMetalLayer::retain_for_test(layer, no_refcount, no_refcount, device) }
+        }
+        let (_, graphics_platform, _, _) =
+            build_target_with_retain(own_layer(0x1234), None, retain_on_device)
+                .expect("layer target");
+        let identity = |device| {
+            apple_metal_layer_graphics_platform(device)
+                .expect("CAMetalLayer ANGLE platform")
+                .platform_identity()
+        };
+        assert_eq!(
+            graphics_platform.platform_identity(),
+            identity(MetalDeviceId::new(0x1_0000_0699))
+        );
+        assert_ne!(graphics_platform.platform_identity(), identity(None));
     }
 
     /// The view descriptors, on every host, because the refusal is not
