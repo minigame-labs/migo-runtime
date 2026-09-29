@@ -68,7 +68,7 @@ try MigoGameInstaller.install(
 
 let gameView = MigoGameView(configuration: configuration)
 gameView.onEvent = { event in
-    // .ready / .exitRequested / .failed(reason) / .restarted / .console / .gameLog ...
+    // .ready / .exitRequested / .failed / .error / .gameLog；iOS 另有 .restarted / .console
 }
 view.addSubview(gameView)          // 任意尺寸；首次布局时游戏拿到这个尺寸
 gameView.loadGame(id: "my-game")   // 入口默认 game.js
@@ -84,6 +84,7 @@ view 可以接着载入下一个游戏。
 
 完整可运行的 iOS 与 macOS App（解析这个附件并校验其 attestation）在
 [migo-examples 的 `apple-swift/`](https://github.com/minigame-labs/migo-examples/tree/master/apple-swift)。
+每个类型、字段与事件的逐项说明见 [Apple SDK 参考](/docs/0.9/apple-sdk/game-view/)。
 
 ## 3. 内容签名
 

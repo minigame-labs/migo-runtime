@@ -89,7 +89,7 @@ static MigoResult MIGO_CALL my_dispatch(
 #define MIGO_C_ABI_CANDIDATE 1
 ```
 
-此宏恒为 `1`，表示当前头文件描述的 C ABI 仍处于候选阶段，尚未冻结。即使 Android、Linux、Windows 均已存在可链接的运行时制品，也不意味着 ABI 已稳定；`MIGO_C_ABI_CANDIDATE` 会在 `README.md` 中列出的所有冻结阻塞项关闭后才被移除或置 0。
+此宏恒为 `1`，表示当前头文件描述的 C ABI 仍处于候选阶段，尚未冻结。即使 Android、Linux、Windows、OpenHarmony 均已存在可链接的运行时制品，也不意味着 ABI 已稳定；`MIGO_C_ABI_CANDIDATE` 会在 `README.md` 中列出的所有冻结阻塞项关闭后才被移除或置 0。
 
 ## MIGO\_C\_ABI\_HAS\_RUNTIME
 

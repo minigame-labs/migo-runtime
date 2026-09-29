@@ -26,7 +26,7 @@ sourcePaths:
 | **Android** | AAR + Java facade(`MigoRuntime` / `GameSession`) | gradle `implementation` + `SurfaceView` 三部曲 | 无 — 主路径 |
 | **OpenHarmony** | 完整 DevEco 宿主项目(`entry/` + hvigor) | 打开工程,按项目 README 跑 | aarch64 真机多指仅在 API20 模拟器验过 |
 | **Windows** | 发布 `migo.dll`(x64/arm64) + `rusty_v8.dll` + C ABI 头 | CMake `migo::migo` target + `HWND` attach | WinUI 集成、Win32 host-kit 未包含;EGLProvider 实现归宿主 |
-| **Linux** | host-kit(工具链) + wayland/x11 平台头 | 供宿主集成的预览构建 | 不是 shipping runtime;定位为开发宿主 |
+| **Linux** | 可链接 C ABI SDK(`libmigo.so`/`libmigo.a`,x86_64/aarch64) + host-kit 源码适配器 | CMake `find_package(migo)` 或 pkg-config;宿主自建 X11/Wayland 窗口与事件循环 | host-kit 只有 Qt 6 Widgets/X11;Qt Wayland、Qt Quick、GTK 4 未支持;aarch64 未在设备上运行 |
 | **Apple (iOS/macOS)** | SwiftPM 包 `migo-<版本>-apple-sdk.zip`:iOS Performance+、macOS V8 | Xcode 添加本地包,`MigoGameInstaller.install` + `MigoGameView.loadGame` | iOS 内容 JS 在 WebContent 的 JavaScriptCore 中运行(与 WKWebView 同速);Android 那套 handler(广告/支付/分享)无对应物;WebKit 兼容车道不在 SDK 中 |
 
 行内「缺口」列是 rejected-promotion 的真相,不是下一个版本的承诺。
@@ -37,7 +37,7 @@ sourcePaths:
 - **鸿蒙上架** → OpenHarmony 工程是真的能跑的:克隆仓库、开 DevEco、对照 [OpenHarmony quickstart](/docs/getting-started/openharmony/);但买设备前先确认内容里的多指交互面在 API20 模拟器行为 — 真机多指回归你来做;
 - **桌面渠道(Windows)** → 已发布 DLL 可以直接集成 C ABI,宿主自己写 Win32 窗口/输入泵;[Windows quickstart](/docs/getting-started/windows/) 按发布包 + `test-windows-sdk-contract.sh` 钉住的 API 面起步;
 - **Apple 生态** → [Apple doc](/docs/getting-started/apple/) 给出 SwiftPM 包的接入步骤、两条车道各自的系统要求与验证记录,以及明确拒绝(不伪造)的接口;
-- **Linux 桌面宿主** → 定位为**开发宿主工具链**,不是玩家通道 — 它是你拿来跨平台验证游戏逻辑的表面,不是 0.9 的发布平面。
+- **Linux 桌面宿主** → 发布的 SDK 可直接链接 C ABI,窗口与事件循环由宿主自建;[Linux quickstart](/docs/getting-started/linux/) 以 Qt 6 X11 host-kit 为例。它也是跨平台验证游戏逻辑最顺手的开发宿主。
 
 ## 共享的 C ABI 托盘
 

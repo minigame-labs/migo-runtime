@@ -70,7 +70,7 @@ try MigoGameInstaller.install(
 
 let gameView = MigoGameView(configuration: configuration)
 gameView.onEvent = { event in
-    // .ready / .exitRequested / .failed(reason) / .restarted / .console / .gameLog ...
+    // .ready / .exitRequested / .failed / .error / .gameLog; on iOS also .restarted / .console
 }
 view.addSubview(gameView)          // any size; the game gets it at first layout
 gameView.loadGame(id: "my-game")   // entry defaults to game.js
@@ -88,6 +88,7 @@ and saves on disk survive.
 
 Complete iOS and macOS apps, resolving this asset and verifying its attestation, are
 in [`apple-swift/` in migo-examples](https://github.com/minigame-labs/migo-examples/tree/master/apple-swift).
+Every type, field and event is described item by item in the [Apple SDK reference](/docs/en/apple-sdk/game-view/).
 
 ## 3. Content signing
 

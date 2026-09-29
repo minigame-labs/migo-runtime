@@ -5,7 +5,7 @@ description: Integration, architecture, and C ABI reference for the Migo native 
 
 <div class="home-hero">
   <p class="home-hero-tagline">
-    An embeddable Canvas/WebGL mini-game runtime with a single C ABI across Android, Linux, Windows, and OpenHarmony
+    An embeddable Canvas/WebGL mini-game runtime: one Rust core and Skia rendering pipeline across Android, iOS, macOS, Linux, Windows, and OpenHarmony
   </p>
   <div class="home-hero-actions">
     <a class="hh-btn hh-btn-primary" href="/docs/en/getting-started/android/">Quick Start →</a>
@@ -61,18 +61,19 @@ description: Integration, architecture, and C ABI reference for the Migo native 
 </style>
 
 Migo is an embeddable Canvas/WebGL mini-game container. The host app provides the surface, input,
-and storage; Migo provides a V8 JavaScript runtime and a Skia rendering pipeline, across Android,
-Linux, Windows, and OpenHarmony. There is no DOM or CSS — Migo is not a general-purpose WebView
-replacement.
+and storage; Migo provides the JavaScript runtime and a Skia rendering pipeline. On Android, Linux,
+Windows, OpenHarmony and macOS that runtime is V8 in the app's process; iOS gives JIT to WebKit
+alone, so there content JavaScript runs in WebKit's JavaScriptCore and Migo renders in the app's
+process. There is no DOM or CSS — Migo is not a general-purpose WebView replacement.
 
 ```mermaid
 flowchart TB
-  Bundle[mini-game bundle] --> Adapter[standalone adapter (optional)]
+  Bundle[mini-game bundle] --> Adapter["standalone adapter (optional)"]
   Adapter --> Boundary[migo.* capability boundary]
   Boundary --> Core[Rust core]
   Core --> V8[V8 JavaScript runtime]
   Core --> Render[Skia / Canvas / WebGL]
-  Host[host app] <--> SDK[C ABI (language facade above Android)]
+  Host[host app] <--> SDK["C ABI (language facades above Android and Apple)"]
   SDK <--> Core
   Host --> Services[surface · input · storage · network · ads]
 ```
@@ -81,15 +82,16 @@ flowchart TB
    boundary; an optional standalone adapter sits outside the engine.
 2. The Rust core orchestrates the V8 JavaScript runtime and the Skia rendering backend, producing
    Canvas/WebGL output.
-3. The host app creates and manages sessions through the C ABI — the single interface shared across
-   all four platforms. The Java facade (`MigoRuntime` / `MigoGameView`) used on Android is purely
-   a language wrapper above this ABI. Services such as surface, input, storage, network, and ads
+3. The host app creates and manages sessions through the C ABI, which Android, Linux, Windows and
+   OpenHarmony hosts link directly. The Java facade (`MigoRuntime` / `MigoGameView`) used on Android
+   and the Swift `MigoGameView` on Apple are language wrappers above this ABI (Apple ships only as a
+   SwiftPM package, which uses the C ABI inside). Services such as surface, input, storage, network, and ads
    are provided by the host.
 4. Migo provides no DOM, CSS, page layout, or browser document object model.
 
 ## API Reference Overview
 
-The C ABI consists of 8 header files with a consistent interface across all four platforms,
+The C ABI consists of 8 header files with a consistent interface across the four platforms that link it,
 negotiated via `abi_version`. One page per header:
 
 | Page | Summary |
@@ -98,10 +100,13 @@ negotiated via `abi_version`. One page per header:
 | [Base Types and Export Macros](/docs/en/reference/types/) | Handles / error codes / export macros, `MIGO_ABI_*` constants, and `struct_size` evolution rules |
 | [Engine Initialization](/docs/en/reference/engine/) | `migo_engine_*` lifecycle: creation, ICU data, and the destruction thread-completion barrier |
 | [Session](/docs/en/reference/session/) | Session handle, `MigoHostCallbacks`, the host dispatcher, and shutdown ordering |
-| [Surface Interface](/docs/en/reference/surface/) | `migo_surface_attach`, platform descriptors, `frame_info`, and back-pressure |
+| [Surface Interface](/docs/en/reference/surface/) | `migo_session_attach_surface`, platform descriptors, `MigoSurfaceMetrics`, and back-pressure |
 | [Input Events](/docs/en/reference/input/) | The `migo_session_send_*` family: validation, FIFO, coordinate units, and per-event payloads |
-| [External Frame Injection](/docs/en/reference/external-frames/) | readPixels/getImageData-compatible path — ingress, sync-barrier, and resource lanes |
+| [External Frame Injection](/docs/en/reference/external-frames/) | Frames produced in another process (the iOS Performance+ lane): frame packets, the engine's frame endpoint, sync calls, and service messages |
 | [Runtime Capability Query](/docs/en/reference/capabilities/) | `migo_query_capabilities`: runtime query of ABI version range and platform bitmask |
+
+The language SDKs each have their own reference pages: [Android SDK](/docs/en/android-sdk/runtime/) and
+[Apple SDK](/docs/en/apple-sdk/game-view/).
 
 Semantic details (architecture, lifecycle, threading model) are in the
 [Core Concepts](/docs/en/concepts/sdk-architecture/) section.
@@ -111,8 +116,9 @@ Semantic details (architecture, lifecycle, threading model) are in the
 :::note[Getting started]
 
 1. **[Android Quick Start](/docs/en/getting-started/android/)** — 9 steps from downloading the AAR
-   to lighting up a bundle (guides for other platforms will be added as platform artifacts mature,
-   one page per platform).
+   to lighting up a bundle. Other platforms: [Apple (iOS / macOS)](/docs/en/getting-started/apple/),
+   [Linux](/docs/en/getting-started/linux/), [Windows](/docs/en/getting-started/windows/),
+   [OpenHarmony](/docs/en/getting-started/openharmony/).
 2. [Download and Verify](/docs/en/release/download-verification/) — obtaining release artifacts,
    fingerprint verification, and the minimum validation set before first deployment.
 

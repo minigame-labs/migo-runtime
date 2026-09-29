@@ -21,12 +21,12 @@ Migo is an embeddable Canvas/WebGL mini-game runtime container. `migo.*` is the 
 
 ```mermaid
 flowchart TB
-  Bundle[Mini-game bundle] --> Adapter[Standalone adapter (optional)]
+  Bundle[Mini-game bundle] --> Adapter["Standalone adapter (optional)"]
   Adapter --> Boundary[migo.* capability boundary]
   Boundary --> Core[Rust core]
   Core --> V8[V8 JavaScript runtime]
   Core --> Render[Skia / Canvas / WebGL]
-  Host[Host App] <--> SDK[C ABI (language facade above Android)]
+  Host[Host App] <--> SDK["C ABI (language facades above Android and Apple)"]
   SDK <--> Core
   Host --> Services[surface · input · storage · network · ads]
 ```
@@ -35,7 +35,7 @@ flowchart TB
 
 1. The mini-game bundle accesses runtime capabilities exclusively through the `migo.*` capability boundary; optional standalone adapters live outside the engine.
 2. The Rust core orchestrates the V8 JavaScript runtime and the Skia rendering back-end, producing Canvas/WebGL content.
-3. The host app creates and manages sessions through the C ABI — the one interface shared by all four platforms; the Java facade (`MigoRuntime`/`MigoGameView`) conventionally used on Android is only a language wrapper above this ABI layer. Services such as surface, input, storage, network, and ads are provided by the host.
+3. The host app creates and manages sessions through the C ABI, which Android, Linux, Windows and OpenHarmony hosts link directly; the Java facade (`MigoRuntime`/`MigoGameView`) conventionally used on Android and the Swift `MigoGameView` on Apple are language wrappers above this ABI layer (Apple ships only as a SwiftPM package, which uses the C ABI inside). Services such as surface, input, storage, network, and ads are provided by the host.
 4. Migo provides no DOM, CSS, page layout, or browser document object model.
 
 ## Session Lifecycle
@@ -115,6 +115,6 @@ sequenceDiagram
 
 - **Android, Linux, Windows**: use V8; the host integrates through the Android facade or the linkable C ABI runtime.
 - **HarmonyOS NEXT**: due to anonymous-memory execution restrictions introduced in HarmonyOS 5.0.0 (12), Migo runs V8 in `jitless` mode; do not claim JIT-level performance on NEXT.
-- **Apple**: on iOS, content JavaScript runs in WebKit's WebContent process (JavaScriptCore, with its JIT) and Migo renders the external frames into the host's `CAMetalLayer` in the app process, so JS runs at the same speed as in a WKWebView -- do not claim faster JS on iOS; macOS runs V8 with a JIT in-process. See [Apple platform](/docs/en/getting-started/apple/).
+- **Apple**: on iOS, content JavaScript runs in WebKit's WebContent process (JavaScriptCore, with its JIT) and Migo renders the external frames into the host's `CAMetalLayer` in the app process, so JS runs at the same speed as in a WKWebView -- do not claim faster JS on iOS; macOS runs V8 with a JIT in-process. On both, the host integrates through the Swift `MigoGameView`; see [Apple platform](/docs/en/getting-started/apple/) and the [Apple SDK reference](/docs/en/apple-sdk/game-view/).
 
 Migo's build process and platform dependencies are documented in the repository's [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md).

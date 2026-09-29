@@ -84,7 +84,7 @@ All public header declarations are wrapped by this macro pair so that C++ hosts 
 #define MIGO_C_ABI_CANDIDATE 1
 ```
 
-This macro is always `1`, indicating that the C ABI described by the current headers is still a candidate and has not been frozen. Even though linkable runtime artifacts already exist for Android, Linux, and Windows, this does not mean the ABI is stable; `MIGO_C_ABI_CANDIDATE` will only be removed or set to 0 after all freeze blockers listed in `README.md` have been closed.
+This macro is always `1`, indicating that the C ABI described by the current headers is still a candidate and has not been frozen. Even though linkable runtime artifacts already exist for Android, Linux, Windows, and OpenHarmony, this does not mean the ABI is stable; `MIGO_C_ABI_CANDIDATE` will only be removed or set to 0 after all freeze blockers listed in `README.md` have been closed.
 
 ## MIGO_C_ABI_HAS_RUNTIME
 

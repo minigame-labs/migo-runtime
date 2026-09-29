@@ -20,7 +20,7 @@ The C ABI is currently **CANDIDATE**: the source of truth is `MIGO_C_ABI_CANDIDA
 
 ## Current Status
 
-- **Candidate does not mean unusable.** Four platforms (Android / Linux / Windows / OpenHarmony) already have linkable runtimes (`MIGO_C_ABI_HAS_RUNTIME`); the headers compile, and artifacts can be consumed according to the contract. What is frozen is not the code, but the statement "we promise this will never change."
+- **Candidate does not mean unusable.** Four platforms (Android / Linux / Windows / OpenHarmony) already have linkable runtimes (`MIGO_C_ABI_HAS_RUNTIME`); the headers compile, and artifacts can be consumed according to the contract. What is frozen is not the code, but the statement "we promise this will never change." Apple (iOS / macOS) ships only as a SwiftPM package: the C ABI is used inside it by `MigoGameView` and is not a supported linking surface on its own, so the macro is 0 there.
 - **Candidate does not mean unstable.** Every caller-facing structure already works in the shape that lets programs compiled with old headers continue to work. Every rule in the next section is fixed by tests; freezing the ABI removes a warning rather than changing behavior.
 
 ## Compatibility Machinery (Implemented)

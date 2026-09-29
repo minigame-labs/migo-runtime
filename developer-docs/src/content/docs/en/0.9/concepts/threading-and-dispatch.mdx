@@ -109,7 +109,7 @@ The `on_surface_released` callback is only an optional **edge wake-up**: rejecti
 | Linux | GLib main loop / custom event loop | X11/Wayland connection discipline described on the surface page |
 | Windows | Message loop / `PostMessage` | Win32 `HWND` host owns the message loop |
 | OpenHarmony | ArkUI host event loop | Static-library host links into its own `.so` |
-| iOS/macOS | Main queue (GCD) | Apple products take the WebKit host path; callbacks still go through this ABI |
+| iOS/macOS | Main queue (GCD) | The Swift `MigoGameView` already dispatches this way; on Apple the C ABI is used inside the package and the host installs no dispatcher |
 
 ## Common Anti-patterns
 

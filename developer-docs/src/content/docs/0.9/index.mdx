@@ -6,7 +6,7 @@ slug: "0.9"
 
 <div class="home-hero">
   <p class="home-hero-tagline">
-    可嵌入的 Canvas/WebGL 小游戏运行时,同一份 C ABI 跨 Android、Linux、Windows、OpenHarmony
+    可嵌入的 Canvas/WebGL 小游戏运行时,同一套 Rust core 与 Skia 渲染管线跨 Android、iOS、macOS、Linux、Windows、OpenHarmony
   </p>
 
   <div class="home-hero-actions">
@@ -63,8 +63,9 @@ slug: "0.9"
 </style>
 
 Migo 是可嵌入的 Canvas/WebGL 小游戏运行容器。宿主 App 提供 surface、输入与存储,Migo 提供
-V8 JavaScript 运行时与 Skia 渲染管线,跨 Android、Linux、Windows 及 OpenHarmony 四个平台。没
-有 DOM 或 CSS——不是通用 WebView 替代品。
+JavaScript 运行时与 Skia 渲染管线:Android、Linux、Windows、OpenHarmony 与 macOS 上是本进程的
+V8;iOS 只允许 WebKit 开 JIT,内容 JavaScript 因此运行在 WebKit 的 JavaScriptCore 中,由 Migo
+在 App 进程渲染。没有 DOM 或 CSS——不是通用 WebView 替代品。
 
 ```mermaid
 flowchart TB
@@ -73,19 +74,19 @@ flowchart TB
   Boundary --> Core[Rust core]
   Core --> V8[V8 JavaScript runtime]
   Core --> Render[Skia / Canvas / WebGL]
-  Host[宿主 App] <--> SDK[C ABI（Android 之上有语言 facade）]
+  Host[宿主 App] <--> SDK[C ABI（Android、Apple 之上有语言 facade）]
   SDK <--> Core
   Host --> Services[surface · input · storage · network · ads]
 ```
 
 1. 小游戏 bundle 只通过 `migo.*` 能力边界访问运行时能力;可选的独立适配器位于引擎之外。
 2. Rust core 编排 V8 JavaScript runtime 与 Skia 渲染后端,输出 Canvas/WebGL 内容。
-3. 宿主 App 通过 C ABI 创建和管理会话 — 四个平台唯一共有的事实接口;Android 侧惯用的 Java facade(MigoRuntime/MigoGameView)只是这层 ABI 之上的语言包装。surface、input、storage、network、ads 等服务由宿主自行提供。
+3. 宿主 App 通过 C ABI 创建和管理会话 — Android、Linux、Windows、OpenHarmony 上可直接链接;Android 侧惯用的 Java facade(MigoRuntime/MigoGameView)与 Apple 的 Swift `MigoGameView` 都是这层 ABI 之上的语言包装(Apple 只以 SwiftPM 包交付,C ABI 在包内使用)。surface、input、storage、network、ads 等服务由宿主自行提供。
 4. Migo 不提供 DOM、CSS、页面布局或浏览器文档对象模型。
 
 ## API 参考一览
 
-C ABI 由 8 个头文件组成,跨四个平台接口一致,`abi_version` 协商。按头文件逐页:
+C ABI 由 8 个头文件组成,在可直接链接的四个平台上接口一致,`abi_version` 协商。按头文件逐页:
 
 | 页面 | 一句话 |
 | --- | --- |
@@ -93,10 +94,12 @@ C ABI 由 8 个头文件组成,跨四个平台接口一致,`abi_version` 协商�
 | [基础类型与导出宏](/docs/0.9/reference/types/) | 句柄/错误码/导出宏,`MIGO_ABI_*` 常量与 `struct_size` 演进规则 |
 | [Engine 初始化](/docs/0.9/reference/engine/) | `migo_engine_*` 生命周期:创建、ICU 数据、销毁线程完成屏障 |
 | [Session](/docs/0.9/reference/session/) | 会话句柄、`MigoHostCallbacks`、dispatch 派发器与销毁顺序 |
-| [Surface 接入](/docs/0.9/reference/surface/) | `migo_surface_attach`、平台 descriptor、`frame_info` 与背压 |
+| [Surface 接入](/docs/0.9/reference/surface/) | `migo_session_attach_surface`、平台 descriptor、`MigoSurfaceMetrics` 与背压 |
 | [输入事件](/docs/0.9/reference/input/) | `migo_session_send_*` 系列:校验、FIFO、坐标单位与各事件载荷 |
-| [外部帧注入](/docs/0.9/reference/external-frames/) | readPixels/getImageData 兼容路径、ingress/sync-barrier/resource 三 lane |
+| [外部帧注入](/docs/0.9/reference/external-frames/) | 跨进程生产的帧(iOS Performance+ 车道):帧包、引擎自有帧端点、同步调用与服务消息 |
 | [运行库能力查询](/docs/0.9/reference/capabilities/) | `migo_query_capabilities`:ABI 版本区间与平台位掩码的运行时查询 |
+
+语言 SDK 各有一组参考页:[Android SDK](/docs/0.9/android-sdk/runtime/)、[Apple SDK](/docs/0.9/apple-sdk/game-view/)。
 
 语义细节(架构、生命周期、线程模型)见[核心概念区](/docs/0.9/concepts/sdk-architecture/)。
 
@@ -104,7 +107,7 @@ C ABI 由 8 个头文件组成,跨四个平台接口一致,`abi_version` 协商�
 
 :::note[上手路径]
 
-1. **[Android 快速开始](/docs/0.9/getting-started/android/)** — 9 步从下载 AAR 到 bundle 点亮(其他平台指南将随平台产物成熟按一平台一页并入);
+1. **[Android 快速开始](/docs/0.9/getting-started/android/)** — 9 步从下载 AAR 到 bundle 点亮;其他平台:[Apple(iOS / macOS)](/docs/0.9/getting-started/apple/)、[Linux](/docs/0.9/getting-started/linux/)、[Windows](/docs/0.9/getting-started/windows/)、[OpenHarmony](/docs/0.9/getting-started/openharmony/);
 2. [下载与校验](/docs/0.9/release/download-verification/) — 发布产物的获取、指纹校验与首次部署前的最小验证集。
 
 :::

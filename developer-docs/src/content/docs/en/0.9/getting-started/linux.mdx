@@ -15,13 +15,14 @@ sourcePaths:
 slug: en/0.9/getting-started/linux
 ---
 
-In version 0.9, Linux is **not a standalone runtime target**; it is a development host toolchain.
-`platforms/linux/host-kit/` provides the source-level adapters needed to embed Migo in a Linux UI
-owned by the application; it does not create the application, top-level window, or event loop.
+Linux ships as a linkable C ABI SDK: every release attaches `migo-<version>-capi-linux-x86_64.tar.gz`
+and `migo-<version>-capi-linux-arm64.tar.gz` (`libmigo.so`, `libmigo.a`, headers, pkg-config and a
+CMake package; glibc only). `platforms/linux/host-kit/` is a source-level adapter on top of it for
+embedding Migo in a Linux UI the application owns; it does not create the application, top-level
+window, or event loop — those are always the host's.
 
 This page drives the minimum C ABI pipeline created by the host and verifies surface attachment and
-lifecycle. It does not claim that Linux has releasable runtime hosting, or that Host Kit creates
-production windows and event loops for the application.
+lifecycle.
 
 The three currently declared CMake targets are:
 
@@ -61,8 +62,14 @@ Do not install Qt private-header packages; Host Kit does not depend on any priva
 ## 2. Obtain the Linux SDK
 
 Host Kit depends on the Linux SDK, which provides the CMake package required by `find_package(migo)`.
-See [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md), section
-"4. Linux x86\_64 SDK", for the complete build procedure:
+Download `migo-<version>-capi-linux-x86_64.tar.gz` and its `.attestation.json` from the
+[SDK download page](https://minigame-labs.com/download.html) or
+[GitHub Releases](https://github.com/minigame-labs/migo-runtime/releases), check them as in
+[Download and verify](/docs/en/0.9/release/download-verification/), and unpack to get `migo-linux-x86_64/`.
+Its `share/migo/linux-x86_64-manifest.json` records the glibc floor and every dynamic dependency.
+
+To build it from source instead, see [`BUILD.md`](https://github.com/minigame-labs/migo-runtime/blob/HEAD/BUILD.md), section
+"4. Linux x86\_64 SDK":
 
 ```bash
 bash scripts/fetch-linux-sysroot.sh
