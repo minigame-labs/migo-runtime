@@ -15,14 +15,14 @@ Migo normally runs JavaScript in its own script runtime and renders directly. Th
 
 > **Note: This mode is available only in the Performance+ product.** Other products do not export the entry points listed on this page. Linking the wrong product produces an unresolved-symbol error at build time; this is an intentional fail-fast design, not a runtime stub that returns failure.
 
-The interface has three functional lanes:
+The interface has these functional lanes:
 
 | Lane | Purpose |
 | --- | --- |
 | **Frame endpoint** | The engine terminates the producer's loopback WebSocket itself: messages go straight to their door, and verdicts, ticks and answers are written back by the engine |
 | **Frame ingress lane** | Submit cross-process frame packets to a session and obtain acceptance/rejection decisions and backpressure signals |
 | **Sync barrier lane** | Provide a request/reply mailbox for calls such as `readPixels`, `getImageData`, and `toDataURL` that must block while waiting for a result |
-| **Resource lane** | Reserve and upload large assets such as texture atlases in chunks outside frame packets; a frame may reference them only after validation succeeds |
+| **Uploads larger than a packet** | Texture and buffer uploads above one frame packet (4 MiB) are staged in chunks in the same command stream and taken, in order, by the upload that uses them; no entry point of their own |
 | **Service stream** | Everything content asks the host for that is not drawing -- read a file, write a save, load an image, play a sound -- admitted strictly in order and answered on a return stream of its own |
 | **Content origin** | The host serves a game's scripts through the engine's own module-loading rules, so the source WebKit evaluates is the source the embedded runtime evaluates |
 
@@ -202,115 +202,14 @@ typedef struct MigoSyncOutcome {
 
 ---
 
-### Resource lane
+### Uploads larger than a packet
 
-Large assets such as texture atlases do not travel through frame packets: packets have a size limit, while textures do not. The resource lane lets producers **reserve a slot → upload chunks → wait for digest verification → reference the resource in a frame**. Verification completes before GPU objects are created, preventing a digest error from becoming a bound dirty texture.
-
-#### MigoResourceState
-
-```c
-typedef uint32_t MigoResourceState;
-
-#define MIGO_RESOURCE_STATE_RESERVED  0U
-#define MIGO_RESOURCE_STATE_UPLOADING 1U
-#define MIGO_RESOURCE_STATE_VERIFYING 2U
-#define MIGO_RESOURCE_STATE_READY     3U
-#define MIGO_RESOURCE_STATE_FAILED    4U
-```
-
-| Value | Meaning |
-| --- | --- |
-| `RESERVED` | Slot allocated; upload has not started. |
-| `UPLOADING` | Data chunks are being received. |
-| `VERIFYING` | All chunks received; SHA-256 digest is being checked. |
-| `READY` | Verification passed; frame packets may reference this resource. |
-| `FAILED` | Verification failed or timed out; `error` explains why. |
-
-#### MigoResourceError
-
-```c
-typedef uint32_t MigoResourceError;
-
-#define MIGO_RESOURCE_ERROR_TOO_MANY_RESERVATIONS 1U
-#define MIGO_RESOURCE_ERROR_BAD_SIZE              2U
-#define MIGO_RESOURCE_ERROR_BAD_CHUNK_COUNT       3U
-#define MIGO_RESOURCE_ERROR_UNKNOWN_RESERVATION   4U
-#define MIGO_RESOURCE_ERROR_NON_CONTIGUOUS_CHUNK  5U
-#define MIGO_RESOURCE_ERROR_CHUNK_OUT_OF_BOUNDS   6U
-#define MIGO_RESOURCE_ERROR_DIGEST_MISMATCH       7U
-#define MIGO_RESOURCE_ERROR_TIMED_OUT             8U
-#define MIGO_RESOURCE_ERROR_EPOCH_ADVANCED        9U
-#define MIGO_RESOURCE_ERROR_INCOMPLETE            10U
-#define MIGO_RESOURCE_ERROR_NOT_UPLOADING         11U
-```
-
-| Value | Meaning |
-| --- | --- |
-| `TOO_MANY_RESERVATIONS` | The maximum number of simultaneous reservations has been reached. |
-| `BAD_SIZE` | `total_bytes` is zero or outside the permitted range. |
-| `BAD_CHUNK_COUNT` | `chunk_count` is zero or outside the permitted range. |
-| `UNKNOWN_RESERVATION` | `reservation_id` does not exist in the table. |
-| `NON_CONTIGUOUS_CHUNK` | Uploaded chunk numbers are not contiguous. |
-| `CHUNK_OUT_OF_BOUNDS` | Chunk offset plus length exceeds `total_bytes`. |
-| `DIGEST_MISMATCH` | All chunks arrived, but SHA-256 does not match the declaration. |
-| `TIMED_OUT` | Upload did not complete before `deadline_nanos`. |
-| `EPOCH_ADVANCED` | The resource epoch advanced; this reservation is invalid. |
-| `INCOMPLETE` | Not all chunks had arrived at verification time. |
-| `NOT_UPLOADING` | A chunk was sent for a reservation not in `UPLOADING` state. |
-
-#### MigoResourceReservationDescriptor
-
-```c
-typedef struct MigoResourceReservationDescriptor {
-    uint32_t struct_size;
-    uint32_t abi_version;
-    uint64_t total_bytes;
-    uint64_t deadline_nanos;
-    uint32_t chunk_count;
-    uint32_t format;
-    uint8_t  sha256[32];
-} MigoResourceReservationDescriptor;
-```
-
-**Written by the caller.** The library assigns `reservation_id` (writing it into `MigoResourceOutcome`); the caller does not provide it, preventing a producer-selected ID from colliding with an existing reservation.
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `struct_size` | `uint32_t` | Set to `sizeof(MigoResourceReservationDescriptor)`. |
-| `abi_version` | `uint32_t` | Set to `MIGO_ABI_VERSION_CURRENT`. |
-| `total_bytes` | `uint64_t` | Total resource size in bytes; must match the uploaded data. |
-| `deadline_nanos` | `uint64_t` | Monotonic-clock deadline; the reservation becomes invalid after it expires. |
-| `chunk_count` | `uint32_t` | Expected number of chunks; upload must be ordered and contiguous. |
-| `format` | `uint32_t` | Producer-declared format tag; opaque to the protocol and passed unchanged to the renderer. |
-| `sha256[32]` | `uint8_t[32]` | SHA-256 digest expected after all chunks are combined; the entire reservation becomes invalid if verification fails. |
-
-#### MigoResourceOutcome
-
-```c
-typedef struct MigoResourceOutcome {
-    uint32_t struct_size;
-    uint32_t abi_version;
-    uint64_t reservation_id;
-    uint64_t received_bytes;
-    MigoResourceState state;
-    MigoResourceError error;
-    uint32_t next_chunk;
-    uint32_t reserved0;
-} MigoResourceOutcome;
-```
-
-**Written by the library, append-only.**
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `struct_size` | `uint32_t` | Caller input; bounds writes. |
-| `abi_version` | `uint32_t` | Caller input. |
-| `reservation_id` | `uint64_t` | Library-assigned reservation identifier; non-zero means the reservation was established. |
-| `received_bytes` | `uint64_t` | Number of bytes successfully received. |
-| `state` | `MigoResourceState` | Current reservation state. |
-| `error` | `MigoResourceError` | Non-zero only for `FAILED`. |
-| `next_chunk` | `uint32_t` | Chunk number that the next upload must carry; chunks must be contiguous. |
-| `reserved0` | `uint32_t` | Reserved; ignore. |
+Neither a record nor a frame packet can exceed 4 MiB, and a 2048×2048 RGBA texture is 16 MiB. Such an upload has no lane
+of its own: the producer sends its bytes as `STAGE_PAYLOAD` records in the same command stream, across as many packets as
+they need, and the upload call itself then takes them with `byte_length = STAGED_PAYLOAD`. The session stages one payload at
+a time, reserved once from `total_bytes` and held to the 64 MiB ceiling one upload has; the upload moves it into its command
+rather than copying it. An incomplete or non-contiguous payload fails the upload with `OUT_OF_MEMORY`, as an allocation GL
+cannot make fails. The wire format is *Staged payloads* in `contracts/frame-wire/wire-v1.md`; the host calls no entry point.
 
 ---
 
@@ -1013,8 +912,8 @@ while (has_frame()) {
 
 **Ownership rules:**
 
-- `MigoFrameIngressOutcome`, `MigoSyncOutcome`, and `MigoResourceOutcome` are allocated by the caller; the library only writes them and does not retain them.
-- `MigoSyncRequestDescriptor`, `MigoResourceReservationDescriptor`, and `MigoExternalSessionDescriptor` are filled by the caller and borrowed for the duration of the call; they may be released after the call returns.
+- `MigoFrameIngressOutcome` and `MigoSyncOutcome` are allocated by the caller; the library only writes them and does not retain them.
+- `MigoSyncRequestDescriptor` and `MigoExternalSessionDescriptor` are filled by the caller and borrowed for the duration of the call; they may be released after the call returns.
 - The `bytes` pointer passed to `migo_session_submit_external_frame` is borrowed only during the call; the library completes its copy before returning.
 - `MigoOwnedBytes` are allocated by the library and handed to the caller, who releases each exactly once with `migo_owned_bytes_release`.
 

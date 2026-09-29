@@ -14,14 +14,14 @@ Migo 通常在自己的脚本运行时内执行 JavaScript 并直接渲染；外
 
 > **注意：此模式仅在 Performance+ 产品中可用。** 其他产品不导出本页所列的入口点；链接错误产品会在构建期得到未解析符号，这是故意设计的快速失败，而不是一个运行时返回失败的存根符号。
 
-本接口分为三条功能通道：
+本接口分为以下几条功能通道：
 
 | 通道 | 作用 |
 | --- | --- |
 | **帧端点**（Frame endpoint） | 引擎自己终结生产者的 loopback WebSocket：消息直接进对应的门，判决、tick 与应答由引擎写回 |
 | **帧注入通道**（Ingress） | 将跨进程帧包提交给 session，并获取接受/拒绝决策与背压信号 |
 | **同步屏障通道**（Sync barrier） | 为 `readPixels`、`getImageData`、`toDataURL` 等必须阻塞等待结果的调用提供请求/回复邮箱 |
-| **资源通道**（Resource lane） | 在帧包之外预留并分块上传纹理图集等大型资产；验证通过后帧才可引用 |
+| **大于一包的上传**（Staged payloads） | 超过一个帧包（4 MiB）的纹理、缓冲区上传，在同一命令流中分块暂存、由上传调用按序取用；没有独立入口 |
 | **服务流**（Service stream） | 绘制以外的一切请求——读文件、写存档、加载图片、播放声音——按序准入，在自己的返回流上应答 |
 | **内容源**（Content origin） | 宿主以引擎自己的模块加载规则提供游戏脚本，使 WebKit 求值的源码与内嵌运行时一致 |
 
@@ -201,115 +201,13 @@ typedef struct MigoSyncOutcome {
 
 ---
 
-### 资源通道
+### 大于一包的上传
 
-大型资产（纹理图集等）不通过帧包传输：帧包有大小上限，而纹理没有。资源通道允许生产者**预留槽位 → 分块上传 → 等待摘要验证通过 → 帧中引用**。验证在 GPU 对象创建之前完成，避免将摘要错误变成已绑定的脏纹理。
-
-#### MigoResourceState
-
-```c
-typedef uint32_t MigoResourceState;
-
-#define MIGO_RESOURCE_STATE_RESERVED  0U
-#define MIGO_RESOURCE_STATE_UPLOADING 1U
-#define MIGO_RESOURCE_STATE_VERIFYING 2U
-#define MIGO_RESOURCE_STATE_READY     3U
-#define MIGO_RESOURCE_STATE_FAILED    4U
-```
-
-| 值 | 含义 |
-| --- | --- |
-| `RESERVED` | 槽位已分配，尚未开始上传。 |
-| `UPLOADING` | 正在接收数据块。 |
-| `VERIFYING` | 所有块已接收，正在核验 SHA-256 摘要。 |
-| `READY` | 已验证通过；帧包方可引用此资源。 |
-| `FAILED` | 验证失败或超时，`error` 字段说明原因。 |
-
-#### MigoResourceError
-
-```c
-typedef uint32_t MigoResourceError;
-
-#define MIGO_RESOURCE_ERROR_TOO_MANY_RESERVATIONS 1U
-#define MIGO_RESOURCE_ERROR_BAD_SIZE              2U
-#define MIGO_RESOURCE_ERROR_BAD_CHUNK_COUNT       3U
-#define MIGO_RESOURCE_ERROR_UNKNOWN_RESERVATION   4U
-#define MIGO_RESOURCE_ERROR_NON_CONTIGUOUS_CHUNK  5U
-#define MIGO_RESOURCE_ERROR_CHUNK_OUT_OF_BOUNDS   6U
-#define MIGO_RESOURCE_ERROR_DIGEST_MISMATCH       7U
-#define MIGO_RESOURCE_ERROR_TIMED_OUT             8U
-#define MIGO_RESOURCE_ERROR_EPOCH_ADVANCED        9U
-#define MIGO_RESOURCE_ERROR_INCOMPLETE            10U
-#define MIGO_RESOURCE_ERROR_NOT_UPLOADING         11U
-```
-
-| 值 | 含义 |
-| --- | --- |
-| `TOO_MANY_RESERVATIONS` | 已达到同时存在的预留数量上限。 |
-| `BAD_SIZE` | `total_bytes` 为零或超出允许范围。 |
-| `BAD_CHUNK_COUNT` | `chunk_count` 为零或超出允许范围。 |
-| `UNKNOWN_RESERVATION` | `reservation_id` 在表中不存在。 |
-| `NON_CONTIGUOUS_CHUNK` | 上传的块编号不连续。 |
-| `CHUNK_OUT_OF_BOUNDS` | 块偏移 + 长度超出 `total_bytes`。 |
-| `DIGEST_MISMATCH` | 所有块已到达，但 SHA-256 与声明不符。 |
-| `TIMED_OUT` | 在 `deadline_nanos` 前未完成上传。 |
-| `EPOCH_ADVANCED` | 资源 epoch 已推进，此预留已失效。 |
-| `INCOMPLETE` | 验证时块尚未全部到达。 |
-| `NOT_UPLOADING` | 对不处于 `UPLOADING` 状态的预留发送了块。 |
-
-#### MigoResourceReservationDescriptor
-
-```c
-typedef struct MigoResourceReservationDescriptor {
-    uint32_t struct_size;
-    uint32_t abi_version;
-    uint64_t total_bytes;
-    uint64_t deadline_nanos;
-    uint32_t chunk_count;
-    uint32_t format;
-    uint8_t  sha256[32];
-} MigoResourceReservationDescriptor;
-```
-
-**调用方写入**。`reservation_id` 由库分配（写入 `MigoResourceOutcome`），不由调用方指定，以避免生产者选择的 ID 与已有预留碰撞。
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `struct_size` | `uint32_t` | 设为 `sizeof(MigoResourceReservationDescriptor)`。 |
-| `abi_version` | `uint32_t` | 设为 `MIGO_ABI_VERSION_CURRENT`。 |
-| `total_bytes` | `uint64_t` | 资源总字节数；必须与实际上传数据匹配。 |
-| `deadline_nanos` | `uint64_t` | 单调时钟截止时间；超时后预留失效。 |
-| `chunk_count` | `uint32_t` | 预期块数；上传必须按顺序且连续。 |
-| `format` | `uint32_t` | 生产者声明的格式标签；对协议不透明，原样传递给渲染器。 |
-| `sha256[32]` | `uint8_t[32]` | 所有块合并后应有的 SHA-256 摘要；验证失败则整个预留失效。 |
-
-#### MigoResourceOutcome
-
-```c
-typedef struct MigoResourceOutcome {
-    uint32_t struct_size;
-    uint32_t abi_version;
-    uint64_t reservation_id;
-    uint64_t received_bytes;
-    MigoResourceState state;
-    MigoResourceError error;
-    uint32_t next_chunk;
-    uint32_t reserved0;
-} MigoResourceOutcome;
-```
-
-**库写入，append-only**。
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| `struct_size` | `uint32_t` | 调用方输入，限定写入范围。 |
-| `abi_version` | `uint32_t` | 调用方输入。 |
-| `reservation_id` | `uint64_t` | 库分配的预留标识；非零表示预留已建立。 |
-| `received_bytes` | `uint64_t` | 已成功接收的字节数。 |
-| `state` | `MigoResourceState` | 当前预留状态。 |
-| `error` | `MigoResourceError` | 仅 `FAILED` 时非零。 |
-| `next_chunk` | `uint32_t` | 下一次上传必须携带的块编号；块必须连续。 |
-| `reserved0` | `uint32_t` | 保留，忽略。 |
+一条记录和一个帧包都不能超过 4 MiB，而 2048×2048 的 RGBA 纹理就有 16 MiB。这样的上传不走独立通道：生产者把它的字节作为
+`STAGE_PAYLOAD` 记录分块放进同一条命令流，跨越需要的包数，随后上传调用本身以 `byte_length = STAGED_PAYLOAD` 取用它们。
+session 同一时刻只暂存一份，按 `total_bytes` 一次性预留、以单次上传的 64 MiB 上限约束；上传取用时整体移入命令，不复制。
+不完整或块不连续时，该上传以 `OUT_OF_MEMORY` 失败，与 GL 无法分配时一致。线格式见
+`contracts/frame-wire/wire-v1.md` 的 *Staged payloads*；宿主不需要调用任何入口。
 
 ---
 
@@ -1010,8 +908,8 @@ while (has_frame()) {
 
 **所有权规则**：
 
-- `MigoFrameIngressOutcome`、`MigoSyncOutcome`、`MigoResourceOutcome` 由调用方分配，库只写入，不持有。
-- `MigoSyncRequestDescriptor`、`MigoResourceReservationDescriptor`、`MigoExternalSessionDescriptor` 由调用方填写并在调用期间借用，调用返回后可释放。
+- `MigoFrameIngressOutcome`、`MigoSyncOutcome` 由调用方分配，库只写入，不持有。
+- `MigoSyncRequestDescriptor`、`MigoExternalSessionDescriptor` 由调用方填写并在调用期间借用，调用返回后可释放。
 - `migo_session_submit_external_frame` 的 `bytes` 指针仅在调用期间借用，返回前库已完成拷贝。
 - `MigoOwnedBytes` 由库分配并移交给调用方，调用方恰好用 `migo_owned_bytes_release` 释放一次。
 

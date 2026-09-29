@@ -807,9 +807,6 @@ pub mod control;
 pub mod downlink;
 pub mod ingress;
 pub mod pool;
-/// The resource lane: large bytes uploaded out of band and referenceable only
-/// once verified.
-pub mod resource;
 /// The service stream: files, storage, images, audio, network -- everything a
 /// producer asks the host to do that is not drawing.
 pub mod service;
