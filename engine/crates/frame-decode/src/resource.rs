@@ -18,8 +18,10 @@ use shared::protocol::render_cmd::{
 };
 
 use frame_wire::gl_resource::*;
+use frame_wire::stream::STAGED_PAYLOAD;
 
 use crate::codes;
+use crate::staging::StagedPayload;
 use crate::validate::{GlDecodeContext, TransformFeedbackPhase};
 
 const GL_VERTEX_SHADER: u32 = 0x8B31;
@@ -32,9 +34,10 @@ pub const VARYINGS_SEPARATOR: char = '\u{1F}';
 /// A call's bytes, wherever they are.
 ///
 /// The op has them as a slice V8 lent it; the decoder has them as the words of a
-/// record. Both are copied exactly once, into the vector the command owns --
-/// converting the words to a byte slice first would be a second copy of a
-/// texture on the render path.
+/// record, or -- for an upload larger than a record -- staged in the session
+/// ahead of it. Inline bytes are copied exactly once, into the vector the
+/// command owns -- converting the words to a byte slice first would be a second
+/// copy of a texture on the render path -- and staged ones are moved there.
 #[derive(Clone, Copy, Debug)]
 pub enum Payload<'a> {
     Bytes(&'a [u8]),
@@ -43,13 +46,20 @@ pub enum Payload<'a> {
         words: &'a [u32],
         len: usize,
     },
+    /// The record's `byte_length` was `STAGED_PAYLOAD`: the bytes are the
+    /// session's [`StagedPayload`](crate::staging::StagedPayload), which only an
+    /// upload takes ([`bounded_upload`]).
+    Staged,
 }
 
 impl Payload<'_> {
+    /// The inline length. A staged payload's is the staging's, and nothing
+    /// inline: 0.
     pub fn len(&self) -> usize {
         match self {
             Payload::Bytes(bytes) => bytes.len(),
             Payload::Words { len, .. } => *len,
+            Payload::Staged => 0,
         }
     }
 
@@ -57,22 +67,32 @@ impl Payload<'_> {
         self.len() == 0
     }
 
-    /// The bytes, owned, or `None` if the allocation failed.
-    fn to_vec(self) -> Option<Vec<u8>> {
-        let mut owned = Vec::new();
-        owned.try_reserve_exact(self.len()).ok()?;
+    /// Append the inline bytes to `out`.
+    pub(crate) fn extend_into(self, out: &mut Vec<u8>) {
         match self {
-            Payload::Bytes(bytes) => owned.extend_from_slice(bytes),
+            Payload::Bytes(bytes) => out.extend_from_slice(bytes),
             Payload::Words { words, len } => {
                 let whole = len / 4;
                 for word in &words[..whole] {
-                    owned.extend_from_slice(&word.to_le_bytes());
+                    out.extend_from_slice(&word.to_le_bytes());
                 }
                 if len % 4 != 0 {
-                    owned.extend_from_slice(&words[whole].to_le_bytes()[..len % 4]);
+                    out.extend_from_slice(&words[whole].to_le_bytes()[..len % 4]);
                 }
             }
+            Payload::Staged => {}
         }
+    }
+
+    /// The inline bytes, owned, or `None` if the allocation failed or the bytes
+    /// are staged.
+    fn to_vec(self) -> Option<Vec<u8>> {
+        if matches!(self, Payload::Staged) {
+            return None;
+        }
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(self.len()).ok()?;
+        self.extend_into(&mut owned);
         Some(owned)
     }
 }
@@ -84,10 +104,12 @@ pub fn bounded_upload<C: GlDecodeContext>(
     canvas_id: u32,
     payload: Payload<'_>,
 ) -> Option<Vec<u8>> {
-    let owned = if webgl_upload_is_within_limit(payload.len()) {
-        payload.to_vec()
-    } else {
-        None
+    let owned = match payload {
+        // Held to the same ceiling when it was staged; incomplete or spoiled
+        // staging is the allocation this upload could not have.
+        Payload::Staged => context.staged_payload().and_then(StagedPayload::take),
+        _ if webgl_upload_is_within_limit(payload.len()) => payload.to_vec(),
+        _ => None,
     };
     if owned.is_none() {
         context.push_error(canvas_id, codes::OUT_OF_MEMORY);
@@ -424,9 +446,12 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
     fn signed_id(word: u32) -> Option<u32> {
         if (word as i32) < 0 { None } else { Some(word) }
     }
-    /// The payload after a prefix of `prefix` words.
+    /// The payload after a prefix of `prefix` words: inline, or staged.
     #[inline]
     fn payload(record: &[u32], prefix: usize) -> Payload<'_> {
+        if record[prefix] == STAGED_PAYLOAD {
+            return Payload::Staged;
+        }
         Payload::Words {
             words: &record[prefix + 1..],
             len: record[prefix] as usize,
@@ -610,6 +635,14 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             });
         }
 
+        OPR_STAGE_PAYLOAD => {
+            // `H total offset | len chunk`. A host that stages nothing drops the
+            // chunk, and the upload after it fails for want of its bytes.
+            if let Some(staged) = context.staged_payload() {
+                staged.stage(record[1], record[2], payload(record, 3));
+            }
+            return None;
+        }
         OPR_SHADER_SOURCE => return shader_source(context, c, record[2], payload(record, 3)),
         OPR_BIND_ATTRIB_LOCATION => GLCmd::BindAttribLocation {
             program_id: c,

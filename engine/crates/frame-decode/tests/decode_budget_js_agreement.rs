@@ -120,6 +120,9 @@ impl GlDecodeContext for Counting {
         _phase: frame_decode::TransformFeedbackPhase,
     ) {
     }
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        None
+    }
 }
 
 impl RenderSink for Counting {
@@ -185,4 +188,156 @@ fn a_frame_split_by_the_producer_is_admitted_whole_and_within_budget() {
         "{barriers} barriers, {presents} presenting packets"
     );
     println!("admitted {barriers} barriers and {presents} presenting packets, each within budget");
+}
+
+/// A host that stages uploads, and keeps what each one decoded to.
+#[derive(Default)]
+struct Staging {
+    staged: frame_decode::StagedPayload,
+    /// `(opcode's name, the bytes the command owns)`, in decode order.
+    uploads: Vec<(&'static str, Vec<u8>)>,
+    errors: usize,
+    /// The most the staging held at any packet boundary.
+    peak_held: usize,
+}
+
+impl GlDecodeContext for Staging {
+    fn push_error(&mut self, _canvas_id: u32, _code: u32) {
+        self.errors += 1;
+    }
+    fn transform_feedback_captures(&self, _canvas_id: u32) -> bool {
+        false
+    }
+    fn set_transform_feedback(
+        &mut self,
+        _canvas_id: u32,
+        _phase: frame_decode::TransformFeedbackPhase,
+    ) {
+    }
+    fn image_upload(
+        &mut self,
+        _upload: frame_decode::ImageUpload,
+    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        None
+    }
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        Some(&mut self.staged)
+    }
+}
+
+impl RenderSink for Staging {
+    fn canvas_batch(
+        &mut self,
+        _canvas_id: u32,
+        _commands: shared::command_vec_pool::PooledVec<shared::protocol::render_cmd::Canvas2DCmd>,
+    ) {
+    }
+    fn gl_batch(
+        &mut self,
+        commands: shared::command_vec_pool::PooledVec<shared::protocol::render_cmd::GLCmd>,
+        _approx_bytes: usize,
+    ) {
+        use shared::protocol::render_cmd::GLCmd;
+        for command in commands.iter() {
+            match command {
+                GLCmd::TexImage2D {
+                    data: Some(data), ..
+                } => {
+                    self.uploads.push(("texImage2D", data.as_ref().clone()));
+                }
+                GLCmd::CompressedTexImage2D { data, .. } => {
+                    self.uploads.push(("compressedTexImage2D", data.clone()));
+                }
+                GLCmd::BufferData {
+                    data: Some(data), ..
+                } => {
+                    self.uploads.push(("bufferData", data.clone()));
+                }
+                _ => {}
+            }
+        }
+    }
+    fn materialize(&mut self, _canvas_id: u32) {}
+}
+
+/// Byte `i` of upload `seed`: `patternByte` in engine-frames.test.mjs.
+fn pattern_byte(seed: u32, i: u32) -> u8 {
+    (i.wrapping_mul(0x9e37_79b1).wrapping_add(seed) >> 24) as u8
+}
+
+#[test]
+#[ignore = "needs packets from node; run through scripts/test-frame-wire-js-encoder.sh"]
+fn uploads_larger_than_a_packet_arrive_staged_and_byte_for_byte() {
+    let root = directory().join("staged");
+    let manifest = fs::read_to_string(root.join("manifest.jsonl")).expect("manifest");
+    let mut host = Staging::default();
+    // Admission through ingress is the split test's; these come later in the
+    // same producer's run, so they start mid-sequence. What holds here is that
+    // they are one contiguous run, which is what a host admits.
+    let mut previous: Option<u64> = None;
+    for line in manifest.lines().filter(|line| !line.trim().is_empty()) {
+        let name = field(line, "name");
+        let bytes = fs::read(root.join(name)).expect("packet");
+        let frame = validate(&bytes).unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        let sequence: u64 = field(line, "sequence").parse().expect("sequence");
+        assert_eq!(frame.sequence(), sequence, "{name}: sequence");
+        if let Some(previous) = previous {
+            assert_eq!(sequence, previous + 1, "{name}: not contiguous");
+        }
+        previous = Some(sequence);
+        let words = words_of(frame.command_stream().expect("stream").bytes);
+        let stream = validate_frame_stream(&words, words.len() as u32)
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        let budget = validate_frame_budget(&stream, MAX_DECODED_FRAME_BYTES)
+            .unwrap_or_else(|error| panic!("{name}: the host would refuse it: {error}"));
+        frame_decode::decode_render_stream_into_with_plan(&mut host, stream, budget);
+        host.peak_held = host.peak_held.max(host.staged.held_bytes());
+    }
+    assert_eq!(host.errors, 0, "an upload failed to decode");
+    assert_eq!(
+        host.staged.held_bytes(),
+        0,
+        "nothing is left staged after its upload"
+    );
+
+    let expected = fs::read_to_string(root.join("uploads.jsonl")).expect("uploads");
+    let expected: Vec<(u32, usize)> = expected
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            (
+                field(line, "seed").parse().expect("seed"),
+                field(line, "bytes").parse().expect("bytes"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        host.uploads.len(),
+        expected.len(),
+        "{:?}",
+        host.uploads
+            .iter()
+            .map(|u| (u.0, u.1.len()))
+            .collect::<Vec<_>>()
+    );
+    for ((name, got), (seed, length)) in host.uploads.iter().zip(&expected) {
+        assert_eq!(got.len(), *length, "{name} {seed}: length");
+        let first_wrong = (0..*length as u32).find(|&i| got[i as usize] != pattern_byte(*seed, i));
+        assert_eq!(
+            first_wrong, None,
+            "{name} {seed}: the first byte that differs"
+        );
+    }
+    // The largest payload is the only one staged at a packet boundary: no copy
+    // of it is kept beside the one moved into its command.
+    assert!(
+        host.peak_held <= 8 * 1024 * 1024,
+        "the staging held {} bytes at a packet boundary",
+        host.peak_held
+    );
+    println!(
+        "{} uploads decoded byte for byte, staging peaked at {} bytes between packets",
+        host.uploads.len(),
+        host.peak_held
+    );
 }

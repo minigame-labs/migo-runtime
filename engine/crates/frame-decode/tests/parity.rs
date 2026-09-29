@@ -46,6 +46,9 @@ impl GlDecodeContext for RecordingContext {
         _phase: frame_decode::TransformFeedbackPhase,
     ) {
     }
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        None
+    }
 }
 
 /// `word_count` in a record header counts the header itself, which is what a

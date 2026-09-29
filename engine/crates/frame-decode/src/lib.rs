@@ -55,12 +55,15 @@ pub mod codes;
 /// The WebGL resource block, and the builders the in-process ops share with it.
 pub mod resource;
 mod scratch;
+/// Uploads larger than a record, staged ahead of it.
+pub mod staging;
 pub mod validate;
 
 pub use budget::{
     FrameDecodeBudget, FrameDecodeBudgetError, MAX_DECODED_FRAME_BYTES, producer_bounds,
     producer_estimated_bytes, validate_frame_budget,
 };
+pub use staging::StagedPayload;
 pub use validate::{GlDecodeContext, ImageUpload, TransformFeedbackPhase};
 
 use validate::{
@@ -1106,6 +1109,11 @@ impl<C: GlDecodeContext> GlDecodeContext for FrameOpSink<'_, C> {
     fn image_upload(&mut self, upload: ImageUpload) -> Option<GLCmd> {
         self.context.image_upload(upload)
     }
+
+    #[inline]
+    fn staged_payload(&mut self) -> Option<&mut StagedPayload> {
+        self.context.staged_payload()
+    }
 }
 
 impl<C: GlDecodeContext> RenderSink for FrameOpSink<'_, C> {
@@ -1319,6 +1327,9 @@ mod tests {
             }
             fn set_transform_feedback(&mut self, _: u32, _: TransformFeedbackPhase) {}
             fn image_upload(&mut self, _: ImageUpload) -> Option<GLCmd> {
+                None
+            }
+            fn staged_payload(&mut self) -> Option<&mut StagedPayload> {
                 None
             }
         }

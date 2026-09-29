@@ -8,6 +8,7 @@ import {
   appendCanvas2DRecord,
   appendDrawImage,
   appendRecord,
+  appendStagedPayload,
   appendStream,
   endFrame,
   flushToHost,
@@ -54,37 +55,68 @@ function emit(opcode, ...args) {
 
 /**
  * Append a byte-payload record: `prefix` words, then `byte_length`, then the
- * bytes. A payload larger than one packet can carry is refused the way GL
+ * bytes -- inline when the record fits a packet, staged ahead of it when it does
+ * not and it is an upload (`appendStagedPayload`). An upload above the ceiling
+ * every lane holds one to, or text no packet carries, is refused the way GL
  * refuses an allocation it cannot make -- OUT_OF_MEMORY, and nothing done -- and
- * the host log says why, because the cause is this lane's packet size and not
- * the device: uploads that large need the resource lane.
+ * the host log says why.
  */
 function emitBytes(canvasId, opcode, bytes, ...prefix) {
   const headerWords = prefix.length + 2;
   const wordCount = headerWords + Math.ceil(bytes.byteLength / 4);
-  // Checked before the header is built: twenty bits of word count cannot say
-  // more, and a packet could not carry it anyway.
-  if (wordCount > MAX_RECORD_WORDS) {
-    refuseUpload(canvasId, bytes.byteLength);
+  for (let i = 0; i < prefix.length; i += 1) record[i + 1] = prefix[i] >>> 0;
+  // Twenty bits of word count cannot say more than MAX_RECORD_WORDS, and a
+  // packet could not carry it anyway.
+  if (wordCount <= MAX_RECORD_WORDS) {
+    record[0] = ((wordCount << 12) | opcode) >>> 0;
+    record[headerWords - 1] = bytes.byteLength;
+    if (appendRecord(record, headerWords, bytes)) return;
+  }
+  if (!STAGEABLE.has(opcode)) {
+    refuseUpload(canvasId, `a ${bytes.byteLength}-byte WebGL string is larger than one frame packet carries`);
     return;
   }
-  record[0] = ((wordCount << 12) | opcode) >>> 0;
-  for (let i = 0; i < prefix.length; i += 1) record[i + 1] = prefix[i] >>> 0;
-  record[headerWords - 1] = bytes.byteLength;
-  if (!appendRecord(record, headerWords, bytes)) refuseUpload(canvasId, bytes.byteLength);
+  if (bytes.byteLength > MAX_WEBGL_UPLOAD_BYTES) {
+    refuseUpload(
+      canvasId,
+      `a ${bytes.byteLength}-byte WebGL upload is larger than the ${MAX_WEBGL_UPLOAD_BYTES} bytes one upload may carry`,
+    );
+    return;
+  }
+  record[0] = ((headerWords << 12) | opcode) >>> 0;
+  record[headerWords - 1] = R.STAGED_PAYLOAD;
+  if (!appendStagedPayload(bytes) || !appendRecord(record, headerWords, null)) {
+    // A packet always has room for a chunk and for a record this short.
+    refuseUpload(canvasId, `a ${bytes.byteLength}-byte WebGL upload could not be staged`);
+  }
 }
 
 const MAX_RECORD_WORDS = 0xfffff;
 
-function refuseUpload(canvasId, byteLength) {
+// The uploads whose bytes may be staged: every byte-payload record that is not
+// text, as `upload(..)` marks them in engine/crates/frame-wire/src/gl_resource.rs.
+// A record staged that the host does not take staged is refused whole, which
+// engine-frames.test.mjs's interop run would show for any member here.
+const STAGEABLE = new Set([
+  R.OPR_BUFFER_DATA,
+  R.OPR_BUFFER_SUB_DATA,
+  R.OPR_TEX_IMAGE_2D,
+  R.OPR_TEX_SUB_IMAGE_2D,
+  R.OPR_COMPRESSED_TEX_IMAGE_2D,
+  R.OPR_COMPRESSED_TEX_SUB_IMAGE_2D,
+  R.OPR_TEX_IMAGE_3D,
+  R.OPR_TEX_SUB_IMAGE_3D,
+]);
+
+// The most one WebGL upload may carry, on every lane: MAX_WEBGL_UPLOAD_BYTES in
+// engine/crates/shared/src/protocol/render_cmd.rs, which the host holds a staged
+// payload to as well. Checked here so bytes the host would refuse are not sent;
+// scripts/test-render-opcode-agreement.sh holds the two to each other.
+export const MAX_WEBGL_UPLOAD_BYTES = 64 * 1024 * 1024;
+
+function refuseUpload(canvasId, reason) {
   recordProducerError(canvasId, OUT_OF_MEMORY);
-  engineHost().report({
-    type: "console",
-    level: 2,
-    message:
-      `a ${byteLength}-byte WebGL upload is larger than one frame packet carries; ` +
-      "it was refused with OUT_OF_MEMORY until the resource lane carries uploads that large",
-  });
+  engineHost().report({ type: "console", level: 2, message: `${reason}; it was refused with OUT_OF_MEMORY` });
 }
 
 /**

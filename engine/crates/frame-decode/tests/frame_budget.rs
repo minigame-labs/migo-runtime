@@ -85,6 +85,9 @@ fn admitted_storage_covers_real_capacities_after_a_larger_pooled_frame() {
             _phase: frame_decode::TransformFeedbackPhase,
         ) {
         }
+        fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+            None
+        }
     }
     impl RenderSink for Sink {
         fn canvas_batch(&mut self, canvas_id: u32, commands: PooledVec<Canvas2DCmd>) {

@@ -149,7 +149,7 @@ WebKit 的 JavaScriptCore 中，它不暴露堆数据），以及启用签名校
   音效经宿主音频播放。iPhone XS Max 与 iPhone 15 Pro（iOS 26.6）上，三款基准游戏
   （PixiJS、Phaser、原生 Canvas）与测量校准页都以 60 fps 出帧。
 - **iOS 模拟器**（每个 PR）：真实的 WebContent 生产端对真实渲染器的验收套件，覆盖
-  WebGL 与 2D、纹理、文字、图片、触摸、超过单包的帧、同步回读与音频。
+  WebGL 与 2D、纹理、文字、图片、触摸、超过单包的帧与上传（8 MiB 纹理、5 MiB 缓冲区）、同步回读与音频。
 - **macOS**（每个 PR）：`MigoGameView` 在 hardened runtime + allow-jit 签名的 App 中
   运行游戏：V8 JIT 与 WebAssembly、ANGLE 上的 Canvas2D、签名内容校验与篡改拒绝，以及
   缺少 entitlement 时拒绝启动。

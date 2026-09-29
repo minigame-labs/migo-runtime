@@ -269,6 +269,12 @@ export const OPR_TEX_SUB_IMAGE_3D = 201;
 export const OPR_DRAW_BUFFERS = 202;
 export const OPR_INVALIDATE_FRAMEBUFFER = 203;
 export const OPR_TRANSFORM_FEEDBACK_VARYINGS = 204;
+export const OPR_STAGE_PAYLOAD = 205;
+
+// The byte_length of an upload whose bytes were staged ahead of it in
+// OPR_STAGE_PAYLOAD chunks: no bytes follow in the record. Declared beside
+// MAGIC in engine/crates/frame-wire/src/stream.rs.
+export const STAGED_PAYLOAD = 0xffffffff;
 
 // Uploads whose pixels the host already holds: a snapshot of a 2D canvas, or
 // the canvas itself. No pixel crosses on either lane.

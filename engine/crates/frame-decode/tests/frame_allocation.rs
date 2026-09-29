@@ -29,6 +29,9 @@ impl GlDecodeContext for Context {
         _phase: frame_decode::TransformFeedbackPhase,
     ) {
     }
+    fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
+        None
+    }
 }
 
 #[test]

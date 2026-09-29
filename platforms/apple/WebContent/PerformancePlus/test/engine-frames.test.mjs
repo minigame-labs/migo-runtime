@@ -43,12 +43,16 @@ import {
   OPR_CREATE_BUFFER,
   OPR_DRAW_BUFFERS,
   OPR_SHADER_SOURCE,
+  OPR_BUFFER_DATA,
+  OPR_COMPRESSED_TEX_IMAGE_2D,
+  OPR_STAGE_PAYLOAD,
   OPR_TEX_IMAGE_2D,
   OPR_TRANSFORM_FEEDBACK_VARYINGS,
+  STAGED_PAYLOAD,
   STREAM_VERSION,
 } from "../src/render-opcodes.mjs";
 import { SYNC_OP_AWAIT_WINDOW, WINDOW_REPLY_BYTES } from "../src/sync-mailbox.mjs";
-import { sequenceOf } from "../src/wire-frame-packet.mjs";
+import { MAX_TOTAL_BYTES, sequenceOf } from "../src/wire-frame-packet.mjs";
 
 const outputDirectory = process.argv[2];
 let failures = 0;
@@ -333,20 +337,105 @@ check(flushToHost() === sequenceBefore, "a flush with nothing recorded sends not
 endFrame();
 check(sent.length === afterBarriers + 1, "a frame end with nothing recorded after the flush sends nothing");
 
-// An upload no packet can carry: refused the way GL refuses an allocation, with
-// the reason in the host's log, and nothing sent.
+// ---- 2b. uploads larger than a packet -----------------------------------------
+//
+// A record cannot be larger than a packet, and a 2048-square RGBA texture is
+// 16 MiB. Such an upload's bytes go ahead of it as OPR_STAGE_PAYLOAD chunks and
+// the upload follows with byte_length STAGED_PAYLOAD. The packets are written out
+// for engine/crates/frame-decode/tests/decode_budget_js_agreement.rs, which
+// admits them, decodes them with the host's staging, and compares every byte.
+
+console.log("Uploads larger than a packet");
+/** Byte `i` of upload `seed`: the same function in the Rust half. */
+const patternByte = (seed, i) => (Math.imul(i, 0x9e3779b1) + seed) >>> 24;
+function patterned(seed, length) {
+  const bytes = new Uint8Array(length);
+  for (let i = 0; i < length; i += 1) bytes[i] = patternByte(seed, i);
+  return bytes;
+}
+const stagedUploads = [];
+const stagedPackets = [];
 {
-  const { op_tex_image_2d } = await import("../src/lane-stream.mjs");
+  const { op_tex_image_2d, op_compressed_tex_image_2d, op_buffer_data, op_shader_source } = await import(
+    "../src/lane-stream.mjs"
+  );
   const { drainProducerError } = await import("../src/lane-local.mjs");
   const before = sent.length;
-  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 2048, 1024, 0, 0x1908, 0x1401, new Uint8Array(2048 * 1024 * 4));
+  // RGBA 2048x1024, 8 MiB: two packets' worth.
+  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 2048, 1024, 0, 0x1908, 0x1401, patterned(1, 2048 * 1024 * 4));
+  stagedUploads.push({ opcode: OPR_TEX_IMAGE_2D, seed: 1, bytes: 2048 * 1024 * 4 });
+  // ASTC 4x4 2048x2048 is exactly 4 MiB: one byte more than a record can say.
+  op_compressed_tex_image_2d(1, 0x0de1, 0, 0x93b0, 2048, 2048, 0, patterned(2, 4 * 1024 * 1024));
+  stagedUploads.push({ opcode: OPR_COMPRESSED_TEX_IMAGE_2D, seed: 2, bytes: 4 * 1024 * 1024 });
+  // A buffer, whose data is nullable: a staged payload is a present one.
+  op_buffer_data(1, 0x8892, -1, patterned(3, 5 * 1024 * 1024 + 3), 0x88e4);
+  stagedUploads.push({ opcode: OPR_BUFFER_DATA, seed: 3, bytes: 5 * 1024 * 1024 + 3 });
+  // And one that fits, inline, after them.
+  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 4, 4, 0, 0x1908, 0x1401, patterned(4, 64));
+  stagedUploads.push({ opcode: OPR_TEX_IMAGE_2D, seed: 4, bytes: 64 });
   endFrame();
-  check(drainProducerError(1) === 0x0505, "an upload larger than a packet is OUT_OF_MEMORY on the producer");
+  stagedPackets.push(...sent.slice(before));
+  check(drainProducerError(1) === 0, "no upload was refused");
   check(
-    reports.some((report) => report.type === "console" && report.level === 2 && /resource lane/.test(report.message)),
+    stagedPackets.every((packet) => packet.byteLength <= MAX_TOTAL_BYTES),
+    `${stagedPackets.length} packets, each within the ${MAX_TOTAL_BYTES}-byte ceiling`,
+  );
+  check(
+    stagedPackets.slice(0, -1).every((packet) => flags(packet) === 0) && flags(stagedPackets.at(-1)) === 1,
+    "every packet but the last is a barrier",
+  );
+  const records = stagedPackets.flatMap(recordsOf);
+  const uploads = [];
+  let staging = null;
+  let contiguous = true;
+  for (const record of records) {
+    const opcode = record[0] & 0xfff;
+    if (opcode === OPR_STAGE_PAYLOAD) {
+      const [total, offset, length] = [record[1], record[2], record[3]];
+      if (offset === 0) staging = { total, received: 0 };
+      if (staging === null || total !== staging.total || offset !== staging.received) contiguous = false;
+      staging.received += length;
+    } else if (opcode === OPR_TEX_IMAGE_2D || opcode === OPR_COMPRESSED_TEX_IMAGE_2D || opcode === OPR_BUFFER_DATA) {
+      const prefix = { [OPR_TEX_IMAGE_2D]: 11, [OPR_COMPRESSED_TEX_IMAGE_2D]: 8, [OPR_BUFFER_DATA]: 6 }[opcode];
+      const staged = record[prefix] === STAGED_PAYLOAD;
+      if (staged && (staging === null || staging.received !== staging.total || record.length !== prefix + 1)) {
+        contiguous = false;
+      }
+      uploads.push({ opcode, staged, bytes: staged ? staging.total : record[prefix] });
+      if (staged) staging = null;
+    }
+  }
+  check(contiguous, "each staged payload's chunks are contiguous from 0 and complete before its upload");
+  check(
+    uploads.map((upload) => `${upload.opcode}:${upload.staged}:${upload.bytes}`).join() ===
+      stagedUploads.map((upload, i) => `${upload.opcode}:${i < 3}:${upload.bytes}`).join(),
+    "the three large uploads were staged, the small one inline, in the order they were made",
+  );
+  const chunkPackets = stagedPackets.filter((packet) =>
+    recordsOf(packet).some((record) => (record[0] & 0xfff) === OPR_STAGE_PAYLOAD),
+  );
+  check(
+    chunkPackets.length <= 6,
+    `17 MiB of staged bytes filled ${chunkPackets.length} packets (a packet carries just under 4 MiB)`,
+  );
+
+  // Above the ceiling one upload has on every lane: refused, nothing sent.
+  const beforeRefusal = sent.length;
+  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 4096, 4097, 0, 0x1908, 0x1401, new Uint8Array(4096 * 4097 * 4));
+  endFrame();
+  check(drainProducerError(1) === 0x0505, "an upload above 64 MiB is OUT_OF_MEMORY on the producer");
+  check(
+    reports.some((report) => report.type === "console" && report.level === 2 && /one upload may carry/.test(report.message)),
     "and the host's log says why",
   );
-  check(sent.length === before, "and nothing was sent for it");
+  check(sent.length === beforeRefusal, "and nothing was sent for it");
+
+  // Text is never staged: a shader no packet carries is refused.
+  const beforeText = sent.length;
+  op_shader_source(1, 1, "x".repeat(5 * 1024 * 1024));
+  endFrame();
+  check(drainProducerError(1) === 0x0505, "a string larger than a packet is OUT_OF_MEMORY");
+  check(sent.length === beforeText, "and nothing was sent for it");
 }
 
 // ---- 3. a 2D record after a barrier ----------------------------------------
@@ -432,6 +521,17 @@ if (outputDirectory) {
     return JSON.stringify({ name, sequence: sequenceOf(packet), presents: flags(packet) === 1 });
   });
   writeFileSync(join(outputDirectory, "split", "manifest.jsonl"), `${split.join("\n")}\n`);
+  mkdirSync(join(outputDirectory, "staged"), { recursive: true });
+  const stagedManifest = stagedPackets.map((packet, index) => {
+    const name = `packet-${String(index + 1).padStart(4, "0")}.bin`;
+    writeFileSync(join(outputDirectory, "staged", name), packet);
+    return JSON.stringify({ name, sequence: sequenceOf(packet), presents: flags(packet) === 1 });
+  });
+  writeFileSync(join(outputDirectory, "staged", "manifest.jsonl"), `${stagedManifest.join("\n")}\n`);
+  writeFileSync(
+    join(outputDirectory, "staged", "uploads.jsonl"),
+    `${stagedUploads.map((upload) => JSON.stringify(upload)).join("\n")}\n`,
+  );
   console.log(`wrote ${streams.length} streams and ${packets.length} split packets to ${outputDirectory}`);
 }
 

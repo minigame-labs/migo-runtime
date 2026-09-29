@@ -113,6 +113,18 @@ the frame; a change to the call body, made in place on the same audit as the
 two amendments above -- the producer and the host ship in one package, and no
 product release contains either.
 
+### Amendment, 2026-09-29: staged payloads
+
+`STAGE_PAYLOAD` (205) joins the resource block and `byte_length` gains one
+reserved value, `STAGED_PAYLOAD`, on the eight upload records (see *Staged
+payloads*). Additive: no field moves, no existing value changes meaning, and a
+record that fit a packet is written exactly as before. Unlike the amendments
+above, releases have shipped this format since v0.9.7 -- but only inside the
+Apple package, whose producer is a resource of the same Swift package as the
+reader, so a producer and a reader of different versions still cannot meet.
+Until this, an upload larger than a packet was refused `OUT_OF_MEMORY` on the
+producer.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.
@@ -307,6 +319,44 @@ envelope checks of a record is its shape, and two shapes carry data:
 Zero padding and exact counts for the reason sections are canonical: no word or
 byte is covered by the checksum and read by nobody.
 
+### Staged payloads
+
+A record's twenty-bit word count cannot say more than 4 MiB, and a packet
+carries no more than that either, so an upload larger than a packet -- a
+2048-square RGBA texture is 16 MiB, a 2048-square ASTC 4x4 one exactly 4 MiB --
+cannot be a record. Its bytes are **staged** ahead of it instead:
+
+1. `STAGE_PAYLOAD` (`gl_resource.rs`, 205) records carry them in chunks:
+   `H total_bytes offset | byte_length bytes`, a Bytes record like any other.
+   Chunks are contiguous from offset 0, in stream order, and may span as many
+   packets as they need; every packet but the frame's last is a barrier.
+2. The upload's own record follows with `byte_length` = **`STAGED_PAYLOAD`**
+   (`0xFFFFFFFF`, `stream.rs`) and no payload words. Only records the block marks
+   stageable may say it -- the eight uploads (`bufferData`, `bufferSubData`,
+   `texImage2D`, `texSubImage2D`, `compressedTexImage2D`,
+   `compressedTexSubImage2D`, `texImage3D`, `texSubImage3D`), never text -- and a
+   nullable payload named this way must be present.
+
+The reader holds one staged payload per session. Offset 0 starts one, dropping
+any unfinished payload, and reserves `total_bytes` once; `total_bytes` is held to
+the 64 MiB ceiling one upload has on every lane (`MAX_WEBGL_UPLOAD_BYTES`). A
+chunk that is not the next one, has a different total, or runs past it spoils
+the payload and frees it. The upload that names the payload takes it -- moved
+into its command, not copied -- if it is complete and unspoiled; otherwise it
+fails `OUT_OF_MEMORY`, as an allocation GL cannot make fails, and nothing is
+staged afterwards either way.
+
+In band, because a WebGL upload takes effect where it is called: the bytes are
+used once, by the record right after them, and the stream already orders them
+there, so no id names a payload and no second ordering has to agree with the
+first. Nothing is verified beyond the packets that carry the chunks: they are
+checksummed and arrive over loopback TCP, so a digest over the whole would check
+the same bytes twice.
+
+Memory stays bounded without a rule of its own: a packet's commands can own at
+most what its own chunks carried plus the one payload staged before it, and the
+credit window bounds the packets in flight.
+
 ## Ceilings
 
 | Ceiling | Value | Where it lives |
@@ -380,8 +430,10 @@ Walking the command stream's records in order, with `cap(n, m)` meaning
   what the command owns beyond itself: a uniform array whose payload exceeds the
   inline size `cap(payload, 0) * 4`; a byte-payload record `byte_length + 64`,
   except `TRANSFORM_FEEDBACK_VARYINGS`, whose names are separate strings,
-  `byte_length + 24 * (byte_length + 1) + 64`; a word-list record
-  `count * 4 + 64`.
+  `byte_length + 24 * (byte_length + 1) + 64`, an upload whose payload is
+  staged `64` (its bytes are moved in, not allocated), and a `STAGE_PAYLOAD`
+  chunk nothing (its bytes go to the staged payload, bounded on its own); a
+  word-list record `count * 4 + 64`.
 - Closing a Canvas2D batch of `n` charges `cap(n, 8) * 64`, one op, and one
   pending canvas; closing a GL batch of `n` charges `cap(n, 16) * 144` and one
   op. An empty batch closes for nothing.
