@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## v0.9.18 (2026-09-29)
+
 ### Removed
 - C ABI: the resource-lane declarations in `external_frames.h` --
   `MigoResourceReservationDescriptor`, `MigoResourceOutcome`,
