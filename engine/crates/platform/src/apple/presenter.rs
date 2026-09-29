@@ -34,9 +34,9 @@
 //! Metal display takes `MTLCreateSystemDefaultDevice()`, which on a dual-GPU
 //! Mac is the discrete GPU whether or not it drives the display. Measured
 //! 2026-09-30 on a MacBookPro16,1 held on its integrated GPU
-//! (`pmset gpuswitch 0`): the engine rendered 57 frames a second on the AMD
-//! GPU and the window stayed black, and pointing ANGLE at the Intel GPU made
-//! it draw. Which GPU drives a display is the host's knowledge -- it knows the
+//! (`pmset gpuswitch 0`): on the AMD GPU the frame loop ran at 57 fps, the
+//! window stayed black and a Canvas2D read back 0,0,0,0; pointed at the Intel
+//! GPU, ANGLE drew. Which GPU drives a display is the host's knowledge -- it knows the
 //! screen its view is on -- and `CAMetalLayer.device` is where Apple has hosts
 //! record it, so that is what [`RetainedMetalLayer::retain`] reads and
 //! [`AppleEglProvider::display`] hands to ANGLE through
