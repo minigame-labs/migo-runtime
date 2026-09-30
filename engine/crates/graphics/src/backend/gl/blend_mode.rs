@@ -87,6 +87,56 @@ pub fn name_from_code(op: u8) -> &'static str {
         .unwrap_or("source-over")
 }
 
+/// Whether `mode` changes the destination *outside* the shape being drawn.
+///
+/// HTML composites every draw as if the shape were an infinite bitmap that is
+/// transparent beyond it. For most operators a transparent source leaves the
+/// destination alone, so only the shape's own pixels matter. For these five it
+/// does not -- `source-in`, `source-out`, `destination-in`, `destination-atop`
+/// and `copy` all produce transparent black where the source is transparent --
+/// so drawing a small shape under one of them clears everything else the clip
+/// allows. `destination-in` with a circle is how a circular crop is made.
+/// Skia applies a draw only within the geometry's coverage, so these draws need
+/// the layer in [`in_full_canvas_layer`] to reach the rest of the canvas.
+#[inline]
+pub fn is_full_canvas_composite(mode: BlendMode) -> bool {
+    matches!(
+        mode,
+        BlendMode::SrcIn
+            | BlendMode::SrcOut
+            | BlendMode::DstIn
+            | BlendMode::DstATop
+            | BlendMode::Src
+    )
+}
+
+/// Run `draw` into a layer and composite the layer over the whole clip with
+/// `mode`.
+///
+/// `draw` must paint with `SrcOver` (the layer is empty, so that is "the shape,
+/// alone"); the layer is then applied to everything the clip allows, transparent
+/// pixels included, which is what makes an unbounded operator reach beyond the
+/// shape. The current matrix and clip are the layer's own, so both apply exactly
+/// as they do to an ordinary draw.
+pub fn in_full_canvas_layer<T>(
+    canvas: &skia_safe::Canvas,
+    mode: BlendMode,
+    draw: impl FnOnce() -> T,
+) -> T {
+    begin_full_canvas_layer(canvas, mode);
+    let painted = draw();
+    canvas.restore();
+    painted
+}
+
+/// The opening half of [`in_full_canvas_layer`], for a caller that cannot hold
+/// the canvas borrow across its draw. Must be paired with `canvas.restore()`.
+pub fn begin_full_canvas_layer(canvas: &skia_safe::Canvas, mode: BlendMode) {
+    let mut layer_paint = skia_safe::Paint::default();
+    layer_paint.set_blend_mode(mode);
+    canvas.save_layer(&skia_safe::canvas::SaveLayerRec::default().paint(&layer_paint));
+}
+
 /// Number of valid compositing-operation codes (0..`OP_COUNT`).
 pub const OP_COUNT: u8 = TABLE.len() as u8;
 
@@ -243,5 +293,104 @@ mod tests {
         for (op, expected_name) in legacy_names.iter().enumerate() {
             assert_eq!(name_from_code(op as u8), *expected_name);
         }
+    }
+
+    /// Raster-surface behaviour of the layer: a blue 20x20 destination at the
+    /// origin, a red 20x20 source at (10,10), each operator's three regions.
+    #[test]
+    fn unbounded_operators_reach_outside_the_shape() {
+        let read = |surface: &mut skia_safe::Surface, x: i32, y: i32| -> [u8; 4] {
+            let info = skia_safe::ImageInfo::new(
+                (1, 1),
+                skia_safe::ColorType::RGBA8888,
+                skia_safe::AlphaType::Unpremul,
+                None,
+            );
+            let mut px = [0u8; 4];
+            assert!(surface.read_pixels(&info, &mut px, 4, (x, y)));
+            px
+        };
+        const T: [u8; 4] = [0, 0, 0, 0];
+        const BLUE: [u8; 4] = [0, 0, 255, 255];
+        const RED: [u8; 4] = [255, 0, 0, 255];
+        // (mode, destination-only, overlap, source-only)
+        let cases = [
+            (SrcIn, T, RED, T),
+            (SrcOut, T, T, RED),
+            (DstIn, T, BLUE, T),
+            (DstATop, T, BLUE, RED),
+            (Src, T, RED, RED),
+        ];
+        for (mode, dst_only, overlap, src_only) in cases {
+            assert!(is_full_canvas_composite(mode), "{mode:?}");
+            let mut surface = skia_safe::surfaces::raster_n32_premul((40, 40)).unwrap();
+            let canvas = surface.canvas();
+            let mut p = skia_safe::Paint::default();
+            p.set_color(skia_safe::Color::from_argb(255, 0, 0, 255));
+            canvas.draw_rect(skia_safe::Rect::from_xywh(0.0, 0.0, 20.0, 20.0), &p);
+            in_full_canvas_layer(canvas, mode, || {
+                let mut p = skia_safe::Paint::default();
+                p.set_color(skia_safe::Color::from_argb(255, 255, 0, 0));
+                canvas.draw_rect(skia_safe::Rect::from_xywh(10.0, 10.0, 20.0, 20.0), &p);
+            });
+            assert_eq!(
+                read(&mut surface, 5, 5),
+                dst_only,
+                "{mode:?} destination only"
+            );
+            assert_eq!(read(&mut surface, 15, 15), overlap, "{mode:?} overlap");
+            assert_eq!(read(&mut surface, 25, 25), src_only, "{mode:?} source only");
+        }
+    }
+
+    /// The rest are bounded: a transparent source leaves the destination alone,
+    /// so they must not pay for a layer.
+    #[test]
+    fn bounded_operators_are_left_to_the_ordinary_draw() {
+        for mode in [
+            SrcOver, DstOver, DstOut, SrcATop, Xor, Plus, Multiply, Screen, Darken, Lighten,
+            Difference, Exclusion,
+        ] {
+            assert!(!is_full_canvas_composite(mode), "{mode:?}");
+        }
+    }
+
+    /// A clip limits the reach: outside it nothing changes, even for `copy`.
+    #[test]
+    fn the_layer_respects_the_clip() {
+        let mut surface = skia_safe::surfaces::raster_n32_premul((40, 40)).unwrap();
+        let canvas = surface.canvas();
+        let mut p = skia_safe::Paint::default();
+        p.set_color(skia_safe::Color::from_argb(255, 0, 0, 255));
+        canvas.draw_rect(skia_safe::Rect::from_xywh(0.0, 0.0, 40.0, 40.0), &p);
+        canvas.save();
+        canvas.clip_rect(
+            skia_safe::Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
+            None,
+            None,
+        );
+        in_full_canvas_layer(canvas, Src, || {
+            let mut p = skia_safe::Paint::default();
+            p.set_color(skia_safe::Color::from_argb(255, 255, 0, 0));
+            canvas.draw_rect(skia_safe::Rect::from_xywh(12.0, 12.0, 5.0, 5.0), &p);
+        });
+        canvas.restore();
+        let info = skia_safe::ImageInfo::new(
+            (1, 1),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Unpremul,
+            None,
+        );
+        let mut px = [0u8; 4];
+        surface.read_pixels(&info, &mut px, 4, (5, 5));
+        assert_eq!(px, [0, 0, 255, 255], "outside the clip is untouched");
+        surface.read_pixels(&info, &mut px, 4, (25, 25));
+        assert_eq!(
+            px,
+            [0, 0, 0, 0],
+            "inside the clip, outside the shape, copy clears"
+        );
+        surface.read_pixels(&info, &mut px, 4, (14, 14));
+        assert_eq!(px, [255, 0, 0, 255], "the shape");
     }
 }
