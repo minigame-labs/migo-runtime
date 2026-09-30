@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D: `ctx.ellipse(x, y, rx, ry, 0, 0, 2 * Math.PI)` -- a full turn, the
+  usual way to draw an ellipse -- drew nothing. Skia's `arc_to` treats a sweep of
+  360 degrees as degenerate; `arc` already split a full turn in two and
+  `ellipse` did not.
 - Canvas2D `getImageData` returned premultiplied colour for translucent pixels:
   half-transparent red read back as `(127, 0, 0, 127)` where `ImageData` holds
   straight alpha, `(255, 0, 0, 128)`. Every translucent edge was darker than it
