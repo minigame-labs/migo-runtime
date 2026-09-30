@@ -522,8 +522,10 @@ impl TextContext {
 
     /// Inline capacity of the family chain. A CSS `font-family` list of three
     /// or four names plus this engine's two fallbacks is the widest shape seen
-    /// in practice; a longer list spills to the heap and still works.
-    const FAMILY_CHAIN_INLINE: usize = 8;
+    /// in practice, and on a platform that names concrete faces for the CSS
+    /// generics (see [`generic_family_candidates`]) each generic adds up to
+    /// three; a longer list spills to the heap and still works.
+    const FAMILY_CHAIN_INLINE: usize = 12;
 
     /// Compute the family fallback chain used when building a
     /// [`ParagraphStyle`] / [`TextStyle`].  R-1: the chain is
@@ -563,19 +565,30 @@ impl TextContext {
         &'a self,
         attrs: &'a TextAttrs,
     ) -> smallvec::SmallVec<[&'a str; Self::FAMILY_CHAIN_INLINE]> {
-        let mut families: smallvec::SmallVec<[&'a str; Self::FAMILY_CHAIN_INLINE]> =
-            attrs.families.iter().map(String::as_str).collect();
+        let mut families = Self::author_families(attrs);
         if !families
             .iter()
             .any(|f| f.eq_ignore_ascii_case(&self.system_fallback_family))
         {
-            families.push(&self.system_fallback_family);
+            push_family_with_candidates(&mut families, &self.system_fallback_family);
         }
         if !families
             .iter()
             .any(|f| f.eq_ignore_ascii_case(&self.bundled_fallback_family))
         {
             families.push(&self.bundled_fallback_family);
+        }
+        families
+    }
+
+    /// The families the author named, each CSS generic keyword preceded by the
+    /// concrete faces this platform gives it.
+    fn author_families<'a>(
+        attrs: &'a TextAttrs,
+    ) -> smallvec::SmallVec<[&'a str; Self::FAMILY_CHAIN_INLINE]> {
+        let mut families = smallvec::SmallVec::new();
+        for family in attrs.families.iter() {
+            push_family_with_candidates(&mut families, family);
         }
         families
     }
@@ -594,7 +607,7 @@ impl TextContext {
         // and we resolved it to e.g. `"Roboto-Regular"` via the
         // system fallback, the log tells us directly.
         let mut any_resolved = false;
-        for family in attrs.families.iter() {
+        for family in Self::author_families(attrs).iter().copied() {
             // Check asset manager first (registered via
             // op_load_font) — these are games' own TTFs.
             if let Some(tf) = self.asset_font_mgr.match_family_style(family, style) {
@@ -1467,6 +1480,67 @@ fn paint_for_measure() -> &'static Paint {
     PAINT.get_or_init(Paint::default)
 }
 
+/// Append `family` to the chain, preceded by the concrete faces this platform
+/// names for it when it is a CSS generic keyword. A face already in the chain is
+/// not added again.
+fn push_family_with_candidates<'a, const N: usize>(
+    families: &mut smallvec::SmallVec<[&'a str; N]>,
+    family: &'a str,
+) {
+    for candidate in generic_family_candidates(family) {
+        if !families.iter().any(|f| f.eq_ignore_ascii_case(candidate)) {
+            families.push(candidate);
+        }
+    }
+    families.push(family);
+}
+
+/// The concrete font families a CSS generic keyword names on this platform,
+/// best first; empty for anything that is not such a keyword.
+///
+/// Only where the system font manager does not answer the keyword itself. Skia's
+/// CoreText manager resolves `Helvetica` and `Times New Roman` but returns
+/// nothing for `sans-serif`, `serif`, `monospace`, `system-ui` or `cursive`
+/// (measured on macOS 26), so without this every one of them fell through to the
+/// bundled Noto Sans: a `serif` or `monospace` label came out in a sans face
+/// with Noto's metrics, and text that named no installed family at all was drawn
+/// in a face no Apple browser would pick. The names are the ones Safari and
+/// Chrome use on these systems. Android (fonts.xml) and Linux (fontconfig)
+/// resolve the keywords natively and keep doing so.
+///
+/// A name the device does not have is skipped by the font manager and the next
+/// one is tried, which is why several are listed where they differ between
+/// macOS and iOS. The keyword itself stays in the chain after these, so a
+/// manager that does resolve it is still asked.
+#[cfg(target_vendor = "apple")]
+fn generic_family_candidates(keyword: &str) -> &'static [&'static str] {
+    const TABLE: &[(&str, &[&str])] = &[
+        ("sans-serif", &["Helvetica"]),
+        ("serif", &["Times New Roman", "Times"]),
+        ("ui-serif", &["Times New Roman", "Times"]),
+        ("monospace", &["Menlo", "Courier New", "Courier"]),
+        ("ui-monospace", &["Menlo", "Courier New", "Courier"]),
+        // The system UI face: the name CoreText gives the platform's current
+        // system font, whatever it is called this year.
+        ("system-ui", &[".AppleSystemUIFont"]),
+        ("ui-sans-serif", &[".AppleSystemUIFont"]),
+        ("ui-rounded", &[".AppleSystemUIFont"]),
+        ("-apple-system", &[".AppleSystemUIFont"]),
+        ("blinkmacsystemfont", &[".AppleSystemUIFont"]),
+        ("cursive", &["Apple Chancery", "Snell Roundhand"]),
+        ("fantasy", &["Papyrus"]),
+    ];
+    TABLE
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(keyword))
+        .map_or(&[], |(_, faces)| *faces)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn generic_family_candidates(_keyword: &str) -> &'static [&'static str] {
+    &[]
+}
+
 fn normalize_registered_family(candidate: &str) -> Option<String> {
     let trimmed = candidate
         .trim()
@@ -1641,6 +1715,7 @@ mod tests {
     /// The chain's contents, since the burst above only proves it is cheap.
     /// Both fallbacks appended, in order, and neither duplicated when the
     /// author already named it.
+    #[cfg(not(target_vendor = "apple"))]
     #[test]
     fn the_family_chain_appends_each_fallback_exactly_once() {
         let ctx = TextContext::new();
@@ -1660,6 +1735,93 @@ mod tests {
         attrs.families = std::sync::Arc::new(Vec::new());
         let chain: Vec<&str> = ctx.effective_families(&attrs).to_vec();
         assert_eq!(chain, vec!["sans-serif", "migo-default-sans"]);
+    }
+
+    /// The same chain where the platform names concrete faces for the CSS
+    /// generics: each keyword is preceded by them, a face the author already
+    /// named is not repeated, and the fallbacks are still appended once.
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn the_family_chain_appends_each_fallback_exactly_once() {
+        let ctx = TextContext::new();
+        let mut attrs = test_attrs(16.0);
+
+        attrs.families = std::sync::Arc::new(vec!["Arial".to_string()]);
+        let chain: Vec<&str> = ctx.effective_families(&attrs).to_vec();
+        assert_eq!(
+            chain,
+            vec!["Arial", "Helvetica", "sans-serif", "migo-default-sans"]
+        );
+
+        // Author already asked for the generic; it must not appear twice, and
+        // the match is case-insensitive.
+        attrs.families = std::sync::Arc::new(vec!["SANS-SERIF".to_string()]);
+        let chain: Vec<&str> = ctx.effective_families(&attrs).to_vec();
+        assert_eq!(chain, vec!["Helvetica", "SANS-SERIF", "migo-default-sans"]);
+
+        // A face the author named is not added again by the expansion.
+        attrs.families =
+            std::sync::Arc::new(vec!["Helvetica".to_string(), "sans-serif".to_string()]);
+        let chain: Vec<&str> = ctx.effective_families(&attrs).to_vec();
+        assert_eq!(chain, vec!["Helvetica", "sans-serif", "migo-default-sans"]);
+
+        // No author families at all: the fallbacks alone, still in order.
+        attrs.families = std::sync::Arc::new(Vec::new());
+        let chain: Vec<&str> = ctx.effective_families(&attrs).to_vec();
+        assert_eq!(chain, vec!["Helvetica", "sans-serif", "migo-default-sans"]);
+
+        // A generic with several faces lists them best first, then itself.
+        attrs.families = std::sync::Arc::new(vec!["monospace".to_string()]);
+        let chain: Vec<&str> = ctx.effective_families(&attrs).to_vec();
+        assert_eq!(
+            chain,
+            vec![
+                "Menlo",
+                "Courier New",
+                "Courier",
+                "monospace",
+                "Helvetica",
+                "sans-serif",
+                "migo-default-sans"
+            ]
+        );
+    }
+
+    /// What the table is for, measured rather than read off the chain: on Apple
+    /// the system font manager answers none of these keywords, so each used to
+    /// land on the bundled Noto Sans. A monospace face has one advance for every
+    /// glyph; Noto Sans does not, so equal widths for `iiii` and `mmmm` can only
+    /// come from a real monospace face. The other keywords must no longer
+    /// measure as the bundled face.
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn css_generic_families_reach_system_faces_on_apple() {
+        let ctx = TextContext::new();
+        let width = |family: &str, text: &str| {
+            let mut attrs = test_attrs(32.0);
+            attrs.families = std::sync::Arc::new(vec![family.to_string()]);
+            ctx.measure_text(text, &attrs).width
+        };
+        // Control: the bundled face is proportional, so the monospace check
+        // below cannot pass by accident.
+        assert!(
+            (width("migo-default-sans", "iiiiiiii") - width("migo-default-sans", "mmmmmmmm")).abs()
+                > 1.0
+        );
+        assert!((width("monospace", "iiiiiiii") - width("monospace", "mmmmmmmm")).abs() < 0.01);
+
+        let sample = "Hamburgefonstiv";
+        let bundled = width("migo-default-sans", sample);
+        for keyword in ["sans-serif", "serif", "system-ui", "monospace", "cursive"] {
+            assert!(
+                (width(keyword, sample) - bundled).abs() > 0.5,
+                "`{keyword}` still measures as the bundled Noto Sans"
+            );
+        }
+        assert!(
+            (width("serif", sample) - width("sans-serif", sample)).abs() > 0.5,
+            "`serif` and `sans-serif` are the same face"
+        );
     }
 
     /// The obligation a hashed key takes on: two different strings that landed

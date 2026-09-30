@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D text on macOS and iOS: `serif`, `monospace`, `cursive`, `fantasy`,
+  `system-ui` (and `-apple-system`, `ui-monospace`, ...) now reach a system face.
+  Skia's CoreText font manager answers `Helvetica` and `Menlo` but none of the CSS
+  generic keywords, so each used to fall through to the bundled Noto Sans: a
+  `monospace` overlay came out proportional, a `serif` heading came out sans, and
+  text that named no installed family was drawn in a face no Apple browser picks.
+  The keywords now map to the faces Safari and Chrome use (`Helvetica`, `Times`,
+  `Menlo`, the system UI font, `Apple Chancery`/`Snell Roundhand`, `Papyrus`);
+  Android and Linux keep resolving them natively.
+- Canvas2D `measureText` and `getTextLineHeight`, every platform: the JS-thread
+  measurement resolved only the first name of the `font` list (plus `sans-serif`)
+  while `fillText` resolved the whole list, so `"Microsoft YaHei", serif`
+  measured one face and painted another and text laid out from the measurement
+  did not fit what was drawn. Both now resolve the same list.
 - Canvas2D: assigning `canvas.width` or `canvas.height` the value it already has
   now clears the canvas and resets the context, as the specification says
   (`canvas.width = canvas.width` is the old way to clear a canvas). It cleared
