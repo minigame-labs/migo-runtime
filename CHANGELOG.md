@@ -18,6 +18,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Canvas2D compositing: `source-in`, `source-out`, `destination-in`,
+  `destination-atop` and `copy` only changed the pixels of the shape being drawn.
+  The specification composites against a bitmap that is transparent beyond the
+  shape, so for these five everything else the clip allows is cleared (or kept,
+  per operator): drawing a circle with `destination-in` is how a picture is
+  cropped to a circle, and it cropped nothing. These draws now go through a layer
+  composited over the whole clip.
+- WebGL: a new offscreen canvas's drawing buffer could begin holding an earlier
+  canvas's pixels, the same defect as the Canvas2D one below (measured on macOS:
+  77-93 of 360 after the first ~90). A drawing buffer is specified as transparent
+  black, depth 1, stencil 0 when created and again when resized; the DrawingBuffer
+  is now cleared to that where it is allocated, and a pbuffer canvas at its first
+  use after it was created or resized, with the content's own clear values, write
+  masks, scissor and rasterizer-discard put back afterwards. Assigning a WebGL
+  canvas the size it already has now clears it too.
+- Canvas2D: a new canvas could begin holding an earlier canvas's pixels. The
+  framebuffer under a fresh surface is whatever the driver returns, and ANGLE's
+  Metal backend recycles the storage of destroyed surfaces without clearing it:
+  after a few hundred canvases had been created and collected, every new one
+  started with the pixels of one that had been freed (measured on macOS: 162 of
+  480). Every Canvas2D surface is now cleared when it is created, which also makes
+  assigning a canvas the size it already has clear it by construction.
+- Canvas2D: `ctx.ellipse(x, y, rx, ry, 0, 0, 2 * Math.PI)` -- a full turn, the
+  usual way to draw an ellipse -- drew nothing. Skia's `arc_to` treats a sweep of
+  360 degrees as degenerate; `arc` already split a full turn in two and
+  `ellipse` did not.
+- Canvas2D `getImageData` returned premultiplied colour for translucent pixels:
+  half-transparent red read back as `(127, 0, 0, 127)` where `ImageData` holds
+  straight alpha, `(255, 0, 0, 128)`. Every translucent edge was darker than it
+  is, and a read followed by a write would have darkened it again. The CPU read
+  of the snapshot behind `getImageData` now unpremultiplies.
+- Canvas2D shadows: `shadowOffsetX/Y` and `shadowBlur` are in device pixels and
+  not affected by the current transform, as the specification says; they were
+  carried through the matrix, so a context under `scale(2, 2)` -- every
+  device-pixel-ratio game -- drew its shadow twice as far and twice as soft as a
+  browser. And `globalAlpha` was applied to the shadow twice (once in the
+  silhouette, once in the shadow colour): at `globalAlpha = 0.5` the shadow was a
+  quarter transparent instead of half.
+- Canvas2D text on macOS and iOS: `serif`, `monospace`, `cursive`, `fantasy`,
+  `system-ui` (and `-apple-system`, `ui-monospace`, ...) now reach a system face.
+  Skia's CoreText font manager answers `Helvetica` and `Menlo` but none of the CSS
+  generic keywords, so each used to fall through to the bundled Noto Sans: a
+  `monospace` overlay came out proportional, a `serif` heading came out sans, and
+  text that named no installed family was drawn in a face no Apple browser picks.
+  The keywords now map to the faces Safari and Chrome use (`Helvetica`, `Times`,
+  `Menlo`, the system UI font, `Apple Chancery`/`Snell Roundhand`, `Papyrus`);
+  Android and Linux keep resolving them natively.
+- Canvas2D `measureText` and `getTextLineHeight`, every platform: the JS-thread
+  measurement resolved only the first name of the `font` list (plus `sans-serif`)
+  while `fillText` resolved the whole list, so `"Microsoft YaHei", serif`
+  measured one face and painted another and text laid out from the measurement
+  did not fit what was drawn. Both now resolve the same list.
+- Canvas2D: assigning `canvas.width` or `canvas.height` the value it already has
+  now clears the canvas and resets the context, as the specification says
+  (`canvas.width = canvas.width` is the old way to clear a canvas). It cleared
+  nothing and reset nothing on the renderer while the JavaScript half reset its
+  shadow of the state, so `fillStyle = "#000"` afterwards drew the previous
+  colour. A draw still queued when the canvas is resized, to any size, is
+  dropped with the old bitmap instead of landing on the new one. The engine's
+  own resizes to the size a canvas already has stay a no-op.
+- Canvas2D: a `getImageData` on an offscreen canvas could stop the on-screen
+  canvas from drawing or reading back anything afterwards. The snapshot code
+  kept one temporary framebuffer for every canvas, created in whichever EGL
+  context needed it first, and used that name in all the others; a framebuffer
+  is not shared between contexts, so in the on-screen canvas's context the name
+  was its DrawingBuffer, and each snapshot attached a texture to it and detached
+  it again. Each canvas now has its own temporary. Found by the first run of
+  migo-conformance on macOS; the same sequence on any platform reaches it.
 
 ## v0.9.19 (2026-09-29)
 

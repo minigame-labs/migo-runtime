@@ -658,7 +658,7 @@ impl Canvas2DContext {
             /* color_space */ None,
             /* surface_props */ None,
         );
-        let Some(surface) = surface else {
+        let Some(mut surface) = surface else {
             tracing::error!(
                 fbo = fbo_id,
                 width,
@@ -667,6 +667,13 @@ impl Canvas2DContext {
             );
             return Err(Canvas2DInitFailure::WrapRenderTarget);
         };
+        // A new canvas bitmap is transparent black. The framebuffer under it is
+        // whatever the driver handed back, and ANGLE's Metal backend recycles
+        // the textures of destroyed surfaces without clearing them: after a few
+        // hundred canvases had been created and collected, every new one began
+        // holding the pixels of an earlier one. The clear is recorded first, so
+        // it runs before anything drawn afterwards.
+        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
 
         // Clamp Ganesh's resource cache so a long-running scene
         // can't silently grow the GPU memory footprint past the
@@ -762,6 +769,10 @@ impl Canvas2DContext {
             );
             return Err(Canvas2DInitFailure::SharedRenderTarget);
         };
+
+        // The same rule as `with_interface`: a new bitmap is transparent black,
+        // whatever the allocator recycled it from.
+        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
 
         // The snapshot path blits from a raw FBO id. Ask Skia which one it
         // allocated rather than tracking a second copy of that fact.
@@ -902,12 +913,54 @@ impl Canvas2DContext {
         text: &TextContext,
         resolver: &R,
     ) -> bool {
-        let env = super::canvas::DrawEnv {
-            canvas: self.surface.canvas(),
-            text: Some(text),
-            resolver,
-        };
-        self.renderer.apply_env(&env, cmd)
+        self.with_unbounded_composite(cmd, |this| {
+            let env = super::canvas::DrawEnv {
+                canvas: this.surface.canvas(),
+                text: Some(text),
+                resolver,
+            };
+            this.renderer.apply_env(&env, cmd)
+        })
+    }
+
+    /// Run `draw`, which executes `cmd`, inside the layer an unbounded compositing
+    /// operator needs.
+    ///
+    /// `source-in`, `source-out`, `destination-in`, `destination-atop` and `copy`
+    /// change the canvas *beyond* the shape a draw paints (see
+    /// [`blend_mode::is_full_canvas_composite`](super::blend_mode::is_full_canvas_composite)),
+    /// and Skia only applies a draw within the geometry's coverage. So the shape is
+    /// drawn `source-over` into a layer and the layer is composited over the whole
+    /// clip with the operator -- what a browser does, and what makes
+    /// `destination-in` with a circle crop an image to the circle. Every other
+    /// operator, and every command that does not paint, runs as it always did.
+    fn with_unbounded_composite(
+        &mut self,
+        cmd: &shared::protocol::render_cmd::Canvas2DCmd,
+        draw: impl FnOnce(&mut Self) -> bool,
+    ) -> bool {
+        use shared::protocol::render_cmd::Canvas2DCmd as C;
+        let mode = self.renderer.state.blend_mode;
+        let paints = matches!(
+            cmd,
+            C::Fill
+                | C::Stroke
+                | C::FillRect { .. }
+                | C::StrokeRect { .. }
+                | C::FillText { .. }
+                | C::StrokeText { .. }
+                | C::DrawImage { .. }
+                | C::DrawImageBatch { .. }
+        );
+        if !paints || !super::blend_mode::is_full_canvas_composite(mode) {
+            return draw(self);
+        }
+        super::blend_mode::begin_full_canvas_layer(self.surface.canvas(), mode);
+        self.renderer.state.blend_mode = skia_safe::BlendMode::SrcOver;
+        let painted = draw(self);
+        self.renderer.state.blend_mode = mode;
+        self.surface.canvas().restore();
+        painted
     }
 
     /// Apply a Canvas2D command with full access to the shared
@@ -924,6 +977,17 @@ impl Canvas2DContext {
     /// don't have to infer which commands take the fast path.  See
     /// [`FastPathOutcome`] and [`Self::try_fast_path_draw_image`].
     pub fn apply_with_images(
+        &mut self,
+        cmd: &shared::protocol::render_cmd::Canvas2DCmd,
+        text: Option<&TextContext>,
+        image_store: &mut ImageStore,
+    ) -> bool {
+        self.with_unbounded_composite(cmd, |this| {
+            this.apply_with_images_in_place(cmd, text, image_store)
+        })
+    }
+
+    fn apply_with_images_in_place(
         &mut self,
         cmd: &shared::protocol::render_cmd::Canvas2DCmd,
         text: Option<&TextContext>,
@@ -1152,6 +1216,20 @@ impl Canvas2DContext {
             shared::error::EngineError::new(shared::error::ErrorCode::Internal)
                 .with_msg("Canvas2D getImageData read_pixels failed")
         })
+    }
+
+    /// Run the draws Skia has queued on this surface.
+    ///
+    /// Skia records draws and executes them at the next flush; a context that is
+    /// dropped flushes what it holds. So a resize that replaces the backing
+    /// store and then drops the old context would draw everything issued before
+    /// the resize *onto the new store*, after the clear the resize exists to
+    /// perform. Callers that are about to replace the store run this first,
+    /// while the store those draws were meant for still exists.
+    pub fn flush_pending_draws(&mut self) {
+        self.reset_gl_state_if_stale();
+        self.flush_and_submit();
+        self.reset_gl_state();
     }
 
     /// Tell Skia to drop its cached GL state tracking.  Required
@@ -1409,6 +1487,46 @@ pub(crate) fn read_surface_rgba_unpremul(
 
 #[cfg(test)]
 mod tests {
+    /// Every constructor of a Canvas2D surface must clear it.
+    ///
+    /// A new canvas is transparent black, and the framebuffer or texture under it
+    /// is whatever the driver recycled: ANGLE's Metal backend reuses the storage
+    /// of destroyed surfaces without clearing it, so after a few hundred canvases
+    /// had been created and collected, every new one began holding an earlier
+    /// one's pixels (measured: 162 of 480). Structural because a surface needs a
+    /// GL context; the behaviour is covered by migo-conformance's
+    /// `canvas2d-spec/new-canvases-start-transparent`.
+    #[test]
+    fn every_surface_constructor_clears_the_new_bitmap() {
+        const SRC: &str = include_str!("surface.rs");
+        let production = SRC.split_once("#[cfg(test)]").map_or(SRC, |(a, _)| a);
+        for signature in ["fn with_interface(", "pub fn new_shared_offscreen("] {
+            let start = production.find(signature).expect("constructor exists");
+            let rest = &production[start..];
+            let open = rest.find('{').expect("body opens");
+            let mut depth = 0usize;
+            let mut end = rest.len();
+            for (offset, ch) in rest[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + offset;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let body = &rest[open..end];
+            assert!(
+                body.contains("canvas().clear("),
+                "{signature} must clear the surface it creates, or a recycled buffer shows through"
+            );
+        }
+    }
+
     use super::{
         LOW_MEMORY_AGGREGATE_BYTES, LiveContextCount, MIN_PER_CTX_BYTES,
         SKIA_RESOURCE_CACHE_BUDGET_BYTES, low_memory_per_ctx_bytes, per_ctx_resource_cache_bytes,

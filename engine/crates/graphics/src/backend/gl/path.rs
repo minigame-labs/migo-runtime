@@ -182,18 +182,13 @@ impl CanvasPath {
 
         let bounds = Rect::from_ltrb(cx - radius, cy - radius, cx + radius, cy + radius);
 
-        // Skia's `arc_to` treats `sweep >= 360` as a degenerate case and
-        // may produce only the starting point.  Canvas spec requires a
-        // full oval, so split into two ~180° sweeps when near 2π.
-        let sweep_deg = sweep.to_degrees();
-        let start_deg = start.to_degrees();
-        if sweep_deg.abs() >= 360.0 - 1e-3 {
-            let half = sweep_deg * 0.5;
-            self.inner.arc_to(bounds, start_deg, half, false);
-            self.inner.arc_to(bounds, start_deg + half, half, false);
-        } else {
-            self.inner.arc_to(bounds, start_deg, sweep_deg, false);
-        }
+        arc_to_oval(
+            &mut self.inner,
+            bounds,
+            start.to_degrees(),
+            sweep.to_degrees(),
+            false,
+        );
     }
 
     pub fn arc_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, r: f32) {
@@ -240,7 +235,7 @@ impl CanvasPath {
         // space via a pre-matrix.
         let mut sub = PathBuilder::new();
         let unit = Rect::from_ltrb(-1.0, -1.0, 1.0, 1.0);
-        sub.arc_to(unit, start.to_degrees(), sweep.to_degrees(), true);
+        arc_to_oval(&mut sub, unit, start.to_degrees(), sweep.to_degrees(), true);
 
         let mut m = Matrix::new_identity();
         m.post_scale((rx, ry), None);
@@ -253,6 +248,29 @@ impl CanvasPath {
         if self.subpath_start.is_none() {
             self.subpath_start = Some(Point::new(px, py));
         }
+    }
+}
+
+/// Append the arc of `oval` from `start_deg` through `sweep_deg` to `builder`.
+///
+/// Skia's `arc_to` treats a sweep of 360 degrees or more as degenerate and may
+/// produce only the starting point, where the Canvas specification wants the whole
+/// oval, so a full turn is split into two half turns. `arc` had this and
+/// `ellipse` did not: `ctx.ellipse(x, y, rx, ry, 0, 0, 2 * Math.PI)` -- the usual
+/// way to draw an ellipse -- drew nothing at all.
+fn arc_to_oval(
+    builder: &mut PathBuilder,
+    oval: Rect,
+    start_deg: f32,
+    sweep_deg: f32,
+    force_move: bool,
+) {
+    if sweep_deg.abs() >= 360.0 - 1e-3 {
+        let half = sweep_deg * 0.5;
+        builder.arc_to(oval, start_deg, half, force_move);
+        builder.arc_to(oval, start_deg + half, half, false);
+    } else {
+        builder.arc_to(oval, start_deg, sweep_deg, force_move);
     }
 }
 
@@ -450,6 +468,38 @@ mod tests {
         let mut p = CanvasPath::new();
         p.bezier_to(1.0, 2.0, 3.0, 4.0, 5.0, 6.0);
         assert!(p.has_current_point());
+    }
+
+    /// A full turn is an ellipse, not nothing: `ellipse(x, y, rx, ry, 0, 0, 2pi)` is the
+    /// usual way to draw one.
+    #[test]
+    fn ellipse_full_turn_covers_the_whole_ellipse() {
+        for ccw in [false, true] {
+            let mut p = CanvasPath::new();
+            let end = if ccw { -TAU } else { TAU };
+            p.ellipse(30.0, 20.0, 20.0, 8.0, 0.0, 0.0, end, ccw);
+            let b = bounds(&p);
+            assert!((b.left - 10.0).abs() < 0.1, "ccw={ccw}: left {}", b.left);
+            assert!((b.right - 50.0).abs() < 0.1, "ccw={ccw}: right {}", b.right);
+            assert!((b.top - 12.0).abs() < 0.1, "ccw={ccw}: top {}", b.top);
+            assert!(
+                (b.bottom - 28.0).abs() < 0.1,
+                "ccw={ccw}: bottom {}",
+                b.bottom
+            );
+        }
+    }
+
+    /// A rotated full ellipse keeps its extent (rx = 20, ry = 8, turned a quarter).
+    #[test]
+    fn ellipse_full_turn_rotates() {
+        let mut p = CanvasPath::new();
+        p.ellipse(30.0, 20.0, 20.0, 8.0, PI / 2.0, 0.0, TAU, false);
+        let b = bounds(&p);
+        assert!((b.left - 22.0).abs() < 0.1, "left {}", b.left);
+        assert!((b.right - 38.0).abs() < 0.1, "right {}", b.right);
+        assert!((b.top - 0.0).abs() < 0.1, "top {}", b.top);
+        assert!((b.bottom - 40.0).abs() < 0.1, "bottom {}", b.bottom);
     }
 
     #[test]

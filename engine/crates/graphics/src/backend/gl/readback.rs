@@ -472,6 +472,27 @@ impl Rgba8Readback {
     }
 }
 
+/// Convert premultiplied RGBA8 to the straight alpha `ImageData` is specified to
+/// hold, in place.
+///
+/// Skia renders premultiplied, so what a framebuffer or a snapshot texture holds
+/// for a half-transparent red is `(128, 0, 0, 128)`; `getImageData` must report
+/// `(255, 0, 0, 128)`. Opaque and fully transparent pixels -- nearly all of
+/// any real canvas -- are skipped without a division. The rounding is to
+/// nearest, which is what makes a premultiply followed by this the identity on
+/// every value the premultiply can produce from 8-bit input.
+pub(crate) fn unpremultiply_rgba8(pixels: &mut [u8]) {
+    for px in pixels.chunks_exact_mut(4) {
+        let a = u32::from(px[3]);
+        if a == 0 || a == 255 {
+            continue;
+        }
+        for channel in &mut px[..3] {
+            *channel = ((u32::from(*channel) * 255 + a / 2) / a).min(255) as u8;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1120,5 +1141,35 @@ mod tests {
         .unwrap();
         assert!(result.pixels.is_empty());
         assert!(test_gl::reads().is_empty());
+    }
+
+    #[test]
+    fn unpremultiply_restores_straight_alpha() {
+        let mut px = [128, 0, 0, 128, 0, 64, 0, 64, 10, 20, 30, 255, 0, 0, 0, 0];
+        unpremultiply_rgba8(&mut px);
+        assert_eq!(
+            px,
+            [255, 0, 0, 128, 0, 255, 0, 64, 10, 20, 30, 255, 0, 0, 0, 0]
+        );
+    }
+
+    /// Premultiplying every 8-bit straight colour at every alpha and unpremultiplying
+    /// again lands within one step of where it started -- the most 8-bit storage
+    /// can promise -- and never overflows a channel.
+    #[test]
+    fn unpremultiply_inverts_premultiply_within_quantisation() {
+        for a in 1..=254u32 {
+            for c in (0..=255u32).step_by(5) {
+                let premul = ((c * a + 127) / 255) as u8;
+                let mut px = [premul, premul, premul, a as u8];
+                unpremultiply_rgba8(&mut px);
+                let worst = 255 / a + 1; // one premultiplied step is this many straight steps
+                assert!(
+                    (i64::from(px[0]) - i64::from(c)).unsigned_abs() as u32 <= worst,
+                    "a={a} c={c}: premul {premul} -> {}",
+                    px[0]
+                );
+            }
+        }
     }
 }

@@ -449,16 +449,6 @@ pub(crate) struct CanvasManager {
     /// command, so the manager only tracks insertion order, not
     /// allocation.
     canvas2d_snapshot_order: std::collections::VecDeque<u32>,
-    /// Lazy per-render-thread temp FBO used as the DRAW target when
-    /// blitting from a Canvas2D surface into a freshly allocated
-    /// snapshot texture.  One global FBO is enough because we
-    /// detach the colour attachment immediately after each blit.
-    canvas2d_snapshot_blit_fbo: Option<glow::NativeFramebuffer>,
-    /// Lazy per-render-thread temp FBO used as the READ source when
-    /// uploading a snapshot texture into a destination texture via
-    /// `glCopyTexImage2D`.  Same one-FBO-many-attachments idiom as
-    /// [`Self::canvas2d_snapshot_blit_fbo`].
-    canvas2d_snapshot_read_fbo: Option<glow::NativeFramebuffer>,
 
     /// Last eglSwapInterval value to avoid redundant driver calls per frame.
     /// Initialized to -1 (sentinel) so the first swap forces an actual EGL call.
@@ -1112,8 +1102,6 @@ impl CanvasManager {
             canvas2d_snapshots: HashMap::with_capacity(8),
             canvas2d_snapshot_bytes: 0,
             canvas2d_snapshot_order: std::collections::VecDeque::with_capacity(8),
-            canvas2d_snapshot_blit_fbo: None,
-            canvas2d_snapshot_read_fbo: None,
             last_swap_interval: -1, // force first eglSwapInterval call
             context_lost: false,
             surface_unavailable: false,
@@ -1286,6 +1274,7 @@ impl CanvasManager {
                 drawing_buffer: None,
                 bypass_drawing_buffer: false,
                 applied_default_framebuffer: None,
+                default_framebuffer_uninitialised: true,
             },
         );
         // Offscreen canvas created → bypass no longer valid.
@@ -1931,6 +1920,7 @@ impl CanvasManager {
                 // A fresh context's default framebuffer is real FBO 0 until an
                 // install or `create` points it somewhere; both record it there.
                 applied_default_framebuffer: None,
+                default_framebuffer_uninitialised: false,
             },
         );
         // A fresh native target carries no frame-rate request, so it is asserted
@@ -3202,12 +3192,6 @@ impl CanvasManager {
                 self.canvas2d_snapshot_order.clear();
                 self.canvas2d_snapshot_bytes = 0;
             }
-            if let Some(fbo) = self.canvas2d_snapshot_blit_fbo.take() {
-                self.gl.delete_framebuffer(fbo);
-            }
-            if let Some(fbo) = self.canvas2d_snapshot_read_fbo.take() {
-                self.gl.delete_framebuffer(fbo);
-            }
             for (_id, r) in self.renderbuffers.drain() {
                 if let Some(h) = r.gl_handle {
                     self.gl.delete_renderbuffer(h);
@@ -3795,8 +3779,28 @@ impl CanvasManager {
         // to the native meaning of its default framebuffer needs applying.
         // Custom READ/DRAW bindings remain exactly as the context left them.
         self.apply_default_framebuffer_mapping(id);
+        self.clear_fresh_default_framebuffer(id);
 
         Ok(())
+    }
+
+    /// Clear a pbuffer canvas's default framebuffer to a WebGL drawing buffer's
+    /// initial state, once, the first time its context is current after the
+    /// storage was (re)allocated. See `CanvasEntry::default_framebuffer_uninitialised`.
+    ///
+    /// Only for a canvas with no Skia surface and no DrawingBuffer: the first clears
+    /// its own bitmap and the second is cleared where it is allocated.
+    fn clear_fresh_default_framebuffer(&mut self, id: CanvasId) {
+        let Some(entry) = self.canvases.get_mut(&id) else {
+            return;
+        };
+        if !std::mem::take(&mut entry.default_framebuffer_uninitialised) {
+            return;
+        }
+        if entry.drawing_buffer.is_some() || self.contexts_2d.contains_key(&id) {
+            return;
+        }
+        drawing_buffer::clear_to_initial_state(&self.gl, None);
     }
 
     /// Re-point `id` at its WebGL default framebuffer and tell the dedup shadow.
@@ -3945,9 +3949,17 @@ impl CanvasManager {
             self.onscreen_content_backing = Some((new_w, new_h));
         }
 
-        if new_w == old_w && new_h == old_h {
+        if resize_is_a_no_op(old_w, old_h, new_w, new_h, owner) {
             return Ok(());
         }
+
+        // What the 2D context has queued was drawn before this resize, so the
+        // resize clears it. Run it now, against the store it was drawn for:
+        // Skia would otherwise run it when the old context is dropped, which is
+        // after the store is replaced, and the canvas would come back holding
+        // draws the specification says are gone.
+        let saved_bound = self.bound;
+        self.flush_2d_before_backing_change(id)?;
 
         // Window surfaces: the EGL surface is controlled by Android SurfaceView.
         // Resize only the DrawingBuffer so canvas.width/height reflects what JS
@@ -4010,8 +4022,7 @@ impl CanvasManager {
             return Ok(());
         }
 
-        let saved_bound = self.bound;
-        let was_current = matches!(saved_bound, BoundContext::Canvas(cur) if cur == id);
+        let was_current = matches!(self.bound, BoundContext::Canvas(cur) if cur == id);
 
         if was_current {
             self.egl
@@ -4113,11 +4124,33 @@ impl CanvasManager {
         if !resized_ok {
             self.rebuild_2d_context_preserving_state(id)?;
         }
+        // The new storage is uninitialised. The context is current right now, so a
+        // WebGL canvas that was being drawn to is cleared at once; one that is not
+        // bound again after the restore below is cleared on its next use.
+        if let Some(entry) = self.canvases.get_mut(&id) {
+            entry.default_framebuffer_uninitialised = true;
+        }
+        if was_current {
+            self.clear_fresh_default_framebuffer(id);
+        }
 
-        if !was_current {
+        if saved_bound != BoundContext::Canvas(id) {
             self.restore_bound(saved_bound)?;
         }
 
+        Ok(())
+    }
+
+    /// Run the draws the canvas's 2D context has queued, before the backing
+    /// store they target is replaced. See `Canvas2DContext::flush_pending_draws`.
+    fn flush_2d_before_backing_change(&mut self, id: CanvasId) -> EngineResult<()> {
+        if !self.contexts_2d.contains_key(&id) {
+            return Ok(());
+        }
+        self.make_current_needed(id)?;
+        if let Some(ctx2d) = self.contexts_2d.get_mut(&id) {
+            ctx2d.flush_pending_draws();
+        }
         Ok(())
     }
 
@@ -4820,6 +4853,14 @@ impl CanvasManager {
         Ok(())
     }
 
+    /// The canvas's temporary framebuffer, for transfers that attach a texture,
+    /// use it, and detach it again.
+    ///
+    /// One per canvas, not one per manager: a framebuffer object is not shared
+    /// between EGL contexts, so a name created in one context is, in another,
+    /// either nothing or an unrelated framebuffer -- the onscreen canvas's
+    /// DrawingBuffer is the one that was overwritten when this was global. The
+    /// caller must have this canvas's context current.
     fn ensure_image_copy_fbo(
         &mut self,
         canvas_id: CanvasId,
@@ -5048,6 +5089,13 @@ impl CanvasManager {
         };
         let src_fbo =
             <glow::NativeFramebuffer as NativeFramebufferFromRawShim>::try_from_raw(src_fbo_raw);
+        // The DRAW target of the blit below. A framebuffer object belongs to
+        // the EGL context it was created in and its name means something else
+        // in every other context -- in the onscreen canvas's it can be the
+        // DrawingBuffer. So this is the canvas's own temporary, created in the
+        // context that is current, not one the manager keeps for all of them.
+        // Acquired before the destination texture so a failure leaks nothing.
+        let blit_fbo = self.ensure_image_copy_fbo(canvas_id)?;
         // src_fbo == None means "default framebuffer"; pass `None` to
         // bind FBO 0 explicitly.
 
@@ -5133,24 +5181,6 @@ impl CanvasManager {
                 glow::PixelUnpackData::Slice(None),
             );
         }
-
-        // Lazy-init the temp FBOs.  Read FBO is not used in this
-        // function but the snapshot upload path needs it; create it
-        // here too so destroy_all has a single deletion site.
-        let blit_fbo = match self.canvas2d_snapshot_blit_fbo {
-            Some(f) => f,
-            None => {
-                let f = unsafe {
-                    self.gl.create_framebuffer().map_err(|e| {
-                        shared::error::EngineError::new(ErrorCode::Internal)
-                            .with_msg("snapshot blit FBO alloc failed")
-                            .with_detail(e)
-                    })?
-                };
-                self.canvas2d_snapshot_blit_fbo = Some(f);
-                f
-            }
-        };
 
         unsafe {
             self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, src_fbo);
@@ -5615,7 +5645,8 @@ impl CanvasManager {
 
     /// Sync CPU readback of a snapshot texture, used by
     /// lazy `ImageData.data` getter. Layout matches the
-    /// legacy CPU path: top-down RGBA8 rows, length `w * h * 4`.
+    /// legacy CPU path: top-down RGBA8 rows, length `w * h * 4`,
+    /// straight (unpremultiplied) alpha as `ImageData` holds it.
     /// Empty `Vec` for a missing snapshot or incomplete FBO; allocation and
     /// context errors are returned to the caller.
     pub(crate) fn read_canvas2d_snapshot_pixels(
@@ -5630,22 +5661,13 @@ impl CanvasManager {
         // Need any current GL context to issue commands.  Hop on
         // whichever canvas is convenient — the snapshot tex is
         // shared across the EGL share group.
-        self.ensure_any_canvas_current()?;
+        let canvas_id = self.ensure_any_canvas_current()?;
 
-        let read_fbo = match self.canvas2d_snapshot_read_fbo {
-            Some(f) => f,
-            None => {
-                let f = unsafe {
-                    self.gl.create_framebuffer().map_err(|e| {
-                        shared::error::EngineError::new(ErrorCode::Internal)
-                            .with_msg("snapshot read FBO alloc failed")
-                            .with_detail(e)
-                    })?
-                };
-                self.canvas2d_snapshot_read_fbo = Some(f);
-                f
-            }
-        };
+        // The framebuffer is that canvas's own temporary: its name is only
+        // meaningful in the context it was created in, and the context that
+        // happens to be current here is not always the one a cached copy came
+        // from. See `snapshot_canvas2d_region_with_id`.
+        let read_fbo = self.ensure_image_copy_fbo(canvas_id)?;
 
         let prev_read_fbo =
             unsafe { self.gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32 };
@@ -5662,7 +5684,11 @@ impl CanvasManager {
             );
             let status = self.gl.check_framebuffer_status(glow::READ_FRAMEBUFFER);
             let out = if status == glow::FRAMEBUFFER_COMPLETE {
-                readback.read(&self.gl)
+                let mut pixels = readback.read(&self.gl);
+                // The snapshot is premultiplied (it is what Skia rendered, and what
+                // the GPU-side texture upload wants); `ImageData` is not.
+                crate::backend::gl::readback::unpremultiply_rgba8(&mut pixels);
+                pixels
             } else {
                 tracing::warn!(
                     "read_canvas2d_snapshot_pixels: FBO incomplete: 0x{:X}",
@@ -6574,6 +6600,31 @@ fn plan_share_group_restore(
     }
 }
 
+/// Whether a resize to `(new_w, new_h)` leaves the canvas exactly as it is.
+///
+/// Only the engine's own requests can. A platform surface change that lands on
+/// the size the backing store already has has nothing to redo. A request from
+/// content is `canvas.width = n`, and the specification resets the bitmap and
+/// the context state on every such assignment, *even to the size the canvas
+/// already has* -- `canvas.width = canvas.width` is the old way to clear a
+/// canvas.
+///
+/// This used to return true for content too, while the JavaScript setters did
+/// the specified thing on their side (reset their shadow of the context state
+/// after every assignment). The two halves then disagreed: the shadow said
+/// "already the default", the setter sent nothing, and the renderer kept the
+/// old value, so `fillStyle = "#000"` after a same-size assignment drew the
+/// previous red. Content-owned requests now always take the full path.
+fn resize_is_a_no_op(
+    old_w: u32,
+    old_h: u32,
+    new_w: u32,
+    new_h: u32,
+    owner: BackingSizeOwner,
+) -> bool {
+    new_w == old_w && new_h == old_h && owner == BackingSizeOwner::Engine
+}
+
 /// Source guards for the context-recovery contract. `CanvasManager` cannot be
 /// constructed without an EGL display, so the wiring that pairs the teardown
 /// with its restore is asserted against the source itself — the same technique
@@ -6602,6 +6653,129 @@ mod recovery_source_guards {
             }
         }
         panic!("function body must close");
+    }
+
+    /// A WebGL drawing buffer is transparent black when it is created and again
+    /// when it is resized, whatever the driver recycled into its storage.
+    ///
+    /// Every place that allocates that storage must clear it: the DrawingBuffer on
+    /// creation and on resize, and a pbuffer canvas at its first use after it was
+    /// created or resized. Structural because each needs a GL context; the
+    /// behaviour is migo-conformance's `webgl-drawing-buffer`.
+    #[test]
+    fn every_drawing_buffer_allocation_is_cleared() {
+        const DRAWING_BUFFER: &str = include_str!("drawing_buffer.rs");
+        let production = DRAWING_BUFFER
+            .split_once("#[cfg(test)]")
+            .map_or(DRAWING_BUFFER, |(a, _)| a);
+        for signature in ["pub(crate) fn create(", "pub(crate) fn resize("] {
+            let body = function_body(production, signature);
+            assert!(
+                body.contains("clear_to_initial_state("),
+                "drawing_buffer {signature} must clear the storage it allocates"
+            );
+        }
+        let current = function_body(MGR, "pub(crate) fn make_current_needed(");
+        assert!(
+            current.contains("clear_fresh_default_framebuffer("),
+            "make_current_needed must give a fresh pbuffer canvas its initial clear"
+        );
+        let resize = function_body(MGR, "pub(crate) fn resize_canvas(");
+        assert!(
+            resize.contains("default_framebuffer_uninitialised = true"),
+            "resize_canvas must mark a reallocated pbuffer for its initial clear"
+        );
+        let insert = function_body(MGR, "fn insert_offscreen(");
+        assert!(
+            insert.contains("default_framebuffer_uninitialised: true"),
+            "a new pbuffer canvas must start marked for its initial clear"
+        );
+    }
+
+    /// What `ImageData.data` holds is straight alpha, and the snapshot behind it is
+    /// premultiplied, so the CPU read of a snapshot must convert.
+    ///
+    /// Without it a half-transparent red read back as `(127, 0, 0, 127)` where the
+    /// specification says `(255, 0, 0, 128)`: every translucent pixel darkened, and
+    /// `putImageData(getImageData(...))` would darken it again. Structural because
+    /// the read needs an EGL display; the conversion itself is tested in
+    /// `readback` and the behaviour in migo-conformance's `canvas2d-spec`.
+    #[test]
+    fn the_snapshot_cpu_read_returns_straight_alpha() {
+        let body = function_body(MGR, "pub(crate) fn read_canvas2d_snapshot_pixels(");
+        assert!(
+            body.contains("unpremultiply_rgba8("),
+            "read_canvas2d_snapshot_pixels must unpremultiply what it reads"
+        );
+    }
+
+    /// The manager must not keep one framebuffer name for every canvas.
+    ///
+    /// A framebuffer object belongs to the EGL context that created it, and each
+    /// canvas has its own context, so a name cached on the manager is right in
+    /// the one context that made it and, in any other, either nothing or an
+    /// unrelated framebuffer. The snapshot code cached two that way; in the
+    /// onscreen canvas's context the blit's name was its DrawingBuffer, and every
+    /// `getImageData` attached a texture to it and detached it again, after
+    /// which the canvas neither drew nor read back. Per-canvas temporaries live
+    /// in `image_copy_fbos`, keyed by canvas.
+    ///
+    /// Structural because the manager needs an EGL display; the behaviour is
+    /// covered by migo-conformance's `canvas2d-offscreen-readback`.
+    #[test]
+    fn no_framebuffer_name_is_cached_across_contexts() {
+        let fields: Vec<&str> = function_body(MGR, "pub(crate) struct CanvasManager")
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.ends_with("Option<glow::NativeFramebuffer>,"))
+            .collect();
+        assert!(
+            fields.is_empty(),
+            "a single framebuffer name cached on the manager is used in every context; \
+             key it by canvas like `image_copy_fbos`: {fields:?}"
+        );
+        for signature in [
+            "fn snapshot_canvas2d_region_with_id(",
+            "fn read_canvas2d_snapshot_pixels(",
+        ] {
+            let body = function_body(MGR, signature);
+            assert!(
+                body.contains("self.ensure_image_copy_fbo("),
+                "{signature} must take its framebuffer from the canvas's own temporary"
+            );
+            assert!(
+                !body.contains("create_framebuffer("),
+                "{signature} must not create a framebuffer that outlives it in another context"
+            );
+        }
+    }
+
+    /// A resize must run the draws the 2D context has queued *before* it replaces
+    /// the backing store.
+    ///
+    /// Skia defers draws and a dropped context flushes what it holds, so a
+    /// queued draw survives the resize that should have cleared it: it runs when
+    /// the old context is dropped, which is after the store is replaced, and
+    /// lands on the new one. Measured on macOS: `fillRect` then `canvas.width =
+    /// 33` with nothing read in between came back red, as did the same-size
+    /// assignment. Structural for the same reason as the tests around it -- the
+    /// manager needs an EGL display -- and the behaviour itself is covered by
+    /// migo-conformance's `canvas2d-resize-resets`.
+    #[test]
+    fn resize_flushes_queued_draws_before_the_store_is_replaced() {
+        let body = function_body(MGR, "pub(crate) fn resize_canvas(");
+        let flush = body
+            .find("self.flush_2d_before_backing_change(id)")
+            .expect("resize_canvas must flush the 2D context before changing its store");
+        for replaced in ["drawing_buffer::resize(", ".destroy_surface("] {
+            let at = body
+                .find(replaced)
+                .unwrap_or_else(|| panic!("resize_canvas no longer contains {replaced}"));
+            assert!(
+                flush < at,
+                "the flush must come before `{replaced}`, or queued draws land on the new store"
+            );
+        }
     }
 
     /// A fresh native target carries no frame-rate request, so the install has to
@@ -7987,5 +8161,25 @@ mod tests {
             classify_snapshot_fence(glow::WAIT_FAILED),
             SnapshotFenceStatus::Failed
         );
+    }
+
+    #[test]
+    fn only_an_engine_request_for_the_size_it_already_has_is_a_no_op() {
+        use BackingSizeOwner::{Content, Engine};
+        assert!(resize_is_a_no_op(64, 32, 64, 32, Engine));
+        assert!(
+            !resize_is_a_no_op(64, 32, 64, 32, Content),
+            "canvas.width = canvas.width clears the canvas and resets the context, per spec"
+        );
+        for owner in [Engine, Content] {
+            assert!(
+                !resize_is_a_no_op(64, 32, 65, 32, owner),
+                "a different width is a resize"
+            );
+            assert!(
+                !resize_is_a_no_op(64, 32, 64, 33, owner),
+                "a different height is a resize"
+            );
+        }
     }
 }
