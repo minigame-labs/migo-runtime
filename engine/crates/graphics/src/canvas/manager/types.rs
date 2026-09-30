@@ -1751,6 +1751,12 @@ pub(super) struct CanvasEntry {
     /// framebuffer rather than the mode that chose it is what makes a rebuilt
     /// DrawingBuffer under an unchanged mode a change this can see.
     pub applied_default_framebuffer: Option<glow::NativeFramebuffer>,
+    /// The default framebuffer's storage was allocated since it was last cleared,
+    /// so whatever a driver recycled into it is still there. A WebGL drawing
+    /// buffer starts (and, resized, starts again) as transparent black, depth 1,
+    /// stencil 0; the first use of the canvas's context clears it to that.
+    /// A canvas with a Skia surface clears its own and never needs this.
+    pub default_framebuffer_uninitialised: bool,
 }
 
 impl CanvasEntry {

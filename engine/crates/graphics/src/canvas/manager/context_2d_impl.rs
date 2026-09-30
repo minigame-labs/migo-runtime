@@ -32,6 +32,12 @@ pub(super) fn init_skia_for_canvas(
     cm: &mut CanvasManager,
     canvas_id: CanvasId,
 ) -> EngineResult<()> {
+    // A canvas that gets a Skia surface clears its own bitmap, so it never needs
+    // the WebGL drawing buffer's initial clear that `make_current_needed` would
+    // otherwise do on its first use.
+    if let Some(entry) = cm.canvases.get_mut(&canvas_id) {
+        entry.default_framebuffer_uninitialised = false;
+    }
     cm.make_current_needed(canvas_id)?;
 
     if cm.contexts_2d.contains_key(&canvas_id) {

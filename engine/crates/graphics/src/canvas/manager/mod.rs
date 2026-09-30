@@ -1274,6 +1274,7 @@ impl CanvasManager {
                 drawing_buffer: None,
                 bypass_drawing_buffer: false,
                 applied_default_framebuffer: None,
+                default_framebuffer_uninitialised: true,
             },
         );
         // Offscreen canvas created → bypass no longer valid.
@@ -1919,6 +1920,7 @@ impl CanvasManager {
                 // A fresh context's default framebuffer is real FBO 0 until an
                 // install or `create` points it somewhere; both record it there.
                 applied_default_framebuffer: None,
+                default_framebuffer_uninitialised: false,
             },
         );
         // A fresh native target carries no frame-rate request, so it is asserted
@@ -3777,8 +3779,28 @@ impl CanvasManager {
         // to the native meaning of its default framebuffer needs applying.
         // Custom READ/DRAW bindings remain exactly as the context left them.
         self.apply_default_framebuffer_mapping(id);
+        self.clear_fresh_default_framebuffer(id);
 
         Ok(())
+    }
+
+    /// Clear a pbuffer canvas's default framebuffer to a WebGL drawing buffer's
+    /// initial state, once, the first time its context is current after the
+    /// storage was (re)allocated. See `CanvasEntry::default_framebuffer_uninitialised`.
+    ///
+    /// Only for a canvas with no Skia surface and no DrawingBuffer: the first clears
+    /// its own bitmap and the second is cleared where it is allocated.
+    fn clear_fresh_default_framebuffer(&mut self, id: CanvasId) {
+        let Some(entry) = self.canvases.get_mut(&id) else {
+            return;
+        };
+        if !std::mem::take(&mut entry.default_framebuffer_uninitialised) {
+            return;
+        }
+        if entry.drawing_buffer.is_some() || self.contexts_2d.contains_key(&id) {
+            return;
+        }
+        drawing_buffer::clear_to_initial_state(&self.gl, None);
     }
 
     /// Re-point `id` at its WebGL default framebuffer and tell the dedup shadow.
@@ -4101,6 +4123,15 @@ impl CanvasManager {
         };
         if !resized_ok {
             self.rebuild_2d_context_preserving_state(id)?;
+        }
+        // The new storage is uninitialised. The context is current right now, so a
+        // WebGL canvas that was being drawn to is cleared at once; one that is not
+        // bound again after the restore below is cleared on its next use.
+        if let Some(entry) = self.canvases.get_mut(&id) {
+            entry.default_framebuffer_uninitialised = true;
+        }
+        if was_current {
+            self.clear_fresh_default_framebuffer(id);
         }
 
         if saved_bound != BoundContext::Canvas(id) {
@@ -6622,6 +6653,43 @@ mod recovery_source_guards {
             }
         }
         panic!("function body must close");
+    }
+
+    /// A WebGL drawing buffer is transparent black when it is created and again
+    /// when it is resized, whatever the driver recycled into its storage.
+    ///
+    /// Every place that allocates that storage must clear it: the DrawingBuffer on
+    /// creation and on resize, and a pbuffer canvas at its first use after it was
+    /// created or resized. Structural because each needs a GL context; the
+    /// behaviour is migo-conformance's `webgl-drawing-buffer`.
+    #[test]
+    fn every_drawing_buffer_allocation_is_cleared() {
+        const DRAWING_BUFFER: &str = include_str!("drawing_buffer.rs");
+        let production = DRAWING_BUFFER
+            .split_once("#[cfg(test)]")
+            .map_or(DRAWING_BUFFER, |(a, _)| a);
+        for signature in ["pub(crate) fn create(", "pub(crate) fn resize("] {
+            let body = function_body(production, signature);
+            assert!(
+                body.contains("clear_to_initial_state("),
+                "drawing_buffer {signature} must clear the storage it allocates"
+            );
+        }
+        let current = function_body(MGR, "pub(crate) fn make_current_needed(");
+        assert!(
+            current.contains("clear_fresh_default_framebuffer("),
+            "make_current_needed must give a fresh pbuffer canvas its initial clear"
+        );
+        let resize = function_body(MGR, "pub(crate) fn resize_canvas(");
+        assert!(
+            resize.contains("default_framebuffer_uninitialised = true"),
+            "resize_canvas must mark a reallocated pbuffer for its initial clear"
+        );
+        let insert = function_body(MGR, "fn insert_offscreen(");
+        assert!(
+            insert.contains("default_framebuffer_uninitialised: true"),
+            "a new pbuffer canvas must start marked for its initial clear"
+        );
     }
 
     /// What `ImageData.data` holds is straight alpha, and the snapshot behind it is

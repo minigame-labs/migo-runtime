@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- WebGL: a new offscreen canvas's drawing buffer could begin holding an earlier
+  canvas's pixels, the same defect as the Canvas2D one below (measured on macOS:
+  77-93 of 360 after the first ~90). A drawing buffer is specified as transparent
+  black, depth 1, stencil 0 when created and again when resized; the DrawingBuffer
+  is now cleared to that where it is allocated, and a pbuffer canvas at its first
+  use after it was created or resized, with the content's own clear values, write
+  masks, scissor and rasterizer-discard put back afterwards. Assigning a WebGL
+  canvas the size it already has now clears it too.
 - Canvas2D: a new canvas could begin holding an earlier canvas's pixels. The
   framebuffer under a fresh surface is whatever the driver returns, and ANGLE's
   Metal backend recycles the storage of destroyed surfaces without clearing it:
