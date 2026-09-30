@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D compositing: `source-in`, `source-out`, `destination-in`,
+  `destination-atop` and `copy` only changed the pixels of the shape being drawn.
+  The specification composites against a bitmap that is transparent beyond the
+  shape, so for these five everything else the clip allows is cleared (or kept,
+  per operator): drawing a circle with `destination-in` is how a picture is
+  cropped to a circle, and it cropped nothing. These draws now go through a layer
+  composited over the whole clip.
 - WebGL: a new offscreen canvas's drawing buffer could begin holding an earlier
   canvas's pixels, the same defect as the Canvas2D one below (measured on macOS:
   77-93 of 360 after the first ~90). A drawing buffer is specified as transparent

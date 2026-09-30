@@ -913,12 +913,54 @@ impl Canvas2DContext {
         text: &TextContext,
         resolver: &R,
     ) -> bool {
-        let env = super::canvas::DrawEnv {
-            canvas: self.surface.canvas(),
-            text: Some(text),
-            resolver,
-        };
-        self.renderer.apply_env(&env, cmd)
+        self.with_unbounded_composite(cmd, |this| {
+            let env = super::canvas::DrawEnv {
+                canvas: this.surface.canvas(),
+                text: Some(text),
+                resolver,
+            };
+            this.renderer.apply_env(&env, cmd)
+        })
+    }
+
+    /// Run `draw`, which executes `cmd`, inside the layer an unbounded compositing
+    /// operator needs.
+    ///
+    /// `source-in`, `source-out`, `destination-in`, `destination-atop` and `copy`
+    /// change the canvas *beyond* the shape a draw paints (see
+    /// [`blend_mode::is_full_canvas_composite`](super::blend_mode::is_full_canvas_composite)),
+    /// and Skia only applies a draw within the geometry's coverage. So the shape is
+    /// drawn `source-over` into a layer and the layer is composited over the whole
+    /// clip with the operator -- what a browser does, and what makes
+    /// `destination-in` with a circle crop an image to the circle. Every other
+    /// operator, and every command that does not paint, runs as it always did.
+    fn with_unbounded_composite(
+        &mut self,
+        cmd: &shared::protocol::render_cmd::Canvas2DCmd,
+        draw: impl FnOnce(&mut Self) -> bool,
+    ) -> bool {
+        use shared::protocol::render_cmd::Canvas2DCmd as C;
+        let mode = self.renderer.state.blend_mode;
+        let paints = matches!(
+            cmd,
+            C::Fill
+                | C::Stroke
+                | C::FillRect { .. }
+                | C::StrokeRect { .. }
+                | C::FillText { .. }
+                | C::StrokeText { .. }
+                | C::DrawImage { .. }
+                | C::DrawImageBatch { .. }
+        );
+        if !paints || !super::blend_mode::is_full_canvas_composite(mode) {
+            return draw(self);
+        }
+        super::blend_mode::begin_full_canvas_layer(self.surface.canvas(), mode);
+        self.renderer.state.blend_mode = skia_safe::BlendMode::SrcOver;
+        let painted = draw(self);
+        self.renderer.state.blend_mode = mode;
+        self.surface.canvas().restore();
+        painted
     }
 
     /// Apply a Canvas2D command with full access to the shared
@@ -935,6 +977,17 @@ impl Canvas2DContext {
     /// don't have to infer which commands take the fast path.  See
     /// [`FastPathOutcome`] and [`Self::try_fast_path_draw_image`].
     pub fn apply_with_images(
+        &mut self,
+        cmd: &shared::protocol::render_cmd::Canvas2DCmd,
+        text: Option<&TextContext>,
+        image_store: &mut ImageStore,
+    ) -> bool {
+        self.with_unbounded_composite(cmd, |this| {
+            this.apply_with_images_in_place(cmd, text, image_store)
+        })
+    }
+
+    fn apply_with_images_in_place(
         &mut self,
         cmd: &shared::protocol::render_cmd::Canvas2DCmd,
         text: Option<&TextContext>,
