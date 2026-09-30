@@ -168,6 +168,7 @@ pub(crate) fn create(gl: &glow::Context, width: u32, height: u32) -> EngineResul
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
         // The DrawingBuffer FBO stays bound: the onscreen caller's contract is
         // that a fresh buffer is the default framebuffer's new meaning.
+        clear_to_initial_state(gl, Some(fbo));
 
         Ok(DrawingBuffer {
             fbo,
@@ -176,6 +177,115 @@ pub(crate) fn create(gl: &glow::Context, width: u32, height: u32) -> EngineResul
             width,
             height,
         })
+    }
+}
+
+/// Clear `target` (the framebuffer bound for drawing; `None` is the default
+/// framebuffer) to the initial state of a WebGL drawing buffer: transparent black,
+/// depth 1, stencil 0.
+///
+/// The specification has a drawing buffer start that way, and again after it is
+/// resized. The storage under it is whatever the driver returned: ANGLE's Metal
+/// backend recycles the storage of destroyed surfaces without clearing it, so
+/// after ~90 offscreen WebGL canvases had been created and collected each new one
+/// began with an earlier one's pixels (measured on macOS: 93 of 360).
+///
+/// The content owns the state a clear reads -- clear values, write masks, the
+/// scissor box, rasterizer discard -- so all of it is set aside and put back; a
+/// `colorMask(false, ...)` or a scissor must not make the initial clear a partial
+/// one, and the clear must not change what the content sees afterwards.
+/// A target that is not complete (an offscreen context with no surface) is left
+/// alone rather than raising `INVALID_FRAMEBUFFER_OPERATION` into the content's
+/// first `getError`.
+pub(crate) fn clear_to_initial_state(gl: &glow::Context, target: Option<glow::NativeFramebuffer>) {
+    let _scope = ClearStateScope::enter(gl, target);
+}
+
+struct ClearStateScope<'a> {
+    gl: &'a glow::Context,
+    draw_framebuffer: Option<glow::NativeFramebuffer>,
+    scissor: bool,
+    rasterizer_discard: bool,
+    color_mask: [bool; 4],
+    depth_mask: bool,
+    stencil_mask: i32,
+    stencil_back_mask: i32,
+    clear_color: [f32; 4],
+    clear_depth: f32,
+    clear_stencil: i32,
+}
+
+impl<'a> ClearStateScope<'a> {
+    fn enter(gl: &'a glow::Context, target: Option<glow::NativeFramebuffer>) -> Option<Self> {
+        unsafe {
+            let es3 = gl.version().major >= 3;
+            let scope = Self {
+                gl,
+                draw_framebuffer: gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING),
+                scissor: gl.is_enabled(glow::SCISSOR_TEST),
+                rasterizer_discard: es3 && gl.is_enabled(glow::RASTERIZER_DISCARD),
+                color_mask: gl.get_parameter_bool_array::<4>(glow::COLOR_WRITEMASK),
+                depth_mask: gl.get_parameter_bool(glow::DEPTH_WRITEMASK),
+                stencil_mask: gl.get_parameter_i32(glow::STENCIL_WRITEMASK),
+                stencil_back_mask: gl.get_parameter_i32(glow::STENCIL_BACK_WRITEMASK),
+                clear_color: {
+                    let mut c = [0.0; 4];
+                    gl.get_parameter_f32_slice(glow::COLOR_CLEAR_VALUE, &mut c);
+                    c
+                },
+                clear_depth: gl.get_parameter_f32(glow::DEPTH_CLEAR_VALUE),
+                clear_stencil: gl.get_parameter_i32(glow::STENCIL_CLEAR_VALUE),
+            };
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, target);
+            if gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+                // Dropping `scope` restores the binding.
+                return None;
+            }
+            gl.disable(glow::SCISSOR_TEST);
+            if es3 {
+                gl.disable(glow::RASTERIZER_DISCARD);
+            }
+            gl.color_mask(true, true, true, true);
+            gl.depth_mask(true);
+            gl.stencil_mask(0xFFFF_FFFF);
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
+            gl.clear_depth_f32(1.0);
+            gl.clear_stencil(0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT | glow::STENCIL_BUFFER_BIT);
+            Some(scope)
+        }
+    }
+}
+
+impl Drop for ClearStateScope<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            let gl = self.gl;
+            gl.clear_color(
+                self.clear_color[0],
+                self.clear_color[1],
+                self.clear_color[2],
+                self.clear_color[3],
+            );
+            gl.clear_depth_f32(self.clear_depth);
+            gl.clear_stencil(self.clear_stencil);
+            gl.color_mask(
+                self.color_mask[0],
+                self.color_mask[1],
+                self.color_mask[2],
+                self.color_mask[3],
+            );
+            gl.depth_mask(self.depth_mask);
+            gl.stencil_mask_separate(glow::FRONT, self.stencil_mask as u32);
+            gl.stencil_mask_separate(glow::BACK, self.stencil_back_mask as u32);
+            if self.scissor {
+                gl.enable(glow::SCISSOR_TEST);
+            }
+            if self.rasterizer_discard {
+                gl.enable(glow::RASTERIZER_DISCARD);
+            }
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.draw_framebuffer);
+        }
     }
 }
 
@@ -295,6 +405,9 @@ pub(crate) fn resize(
             ));
         }
     }
+
+    // The reallocated storage is whatever the driver returned.
+    clear_to_initial_state(gl, Some(db.fbo));
 
     db.width = new_w;
     db.height = new_h;
