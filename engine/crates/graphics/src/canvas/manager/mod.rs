@@ -449,16 +449,6 @@ pub(crate) struct CanvasManager {
     /// command, so the manager only tracks insertion order, not
     /// allocation.
     canvas2d_snapshot_order: std::collections::VecDeque<u32>,
-    /// Lazy per-render-thread temp FBO used as the DRAW target when
-    /// blitting from a Canvas2D surface into a freshly allocated
-    /// snapshot texture.  One global FBO is enough because we
-    /// detach the colour attachment immediately after each blit.
-    canvas2d_snapshot_blit_fbo: Option<glow::NativeFramebuffer>,
-    /// Lazy per-render-thread temp FBO used as the READ source when
-    /// uploading a snapshot texture into a destination texture via
-    /// `glCopyTexImage2D`.  Same one-FBO-many-attachments idiom as
-    /// [`Self::canvas2d_snapshot_blit_fbo`].
-    canvas2d_snapshot_read_fbo: Option<glow::NativeFramebuffer>,
 
     /// Last eglSwapInterval value to avoid redundant driver calls per frame.
     /// Initialized to -1 (sentinel) so the first swap forces an actual EGL call.
@@ -1112,8 +1102,6 @@ impl CanvasManager {
             canvas2d_snapshots: HashMap::with_capacity(8),
             canvas2d_snapshot_bytes: 0,
             canvas2d_snapshot_order: std::collections::VecDeque::with_capacity(8),
-            canvas2d_snapshot_blit_fbo: None,
-            canvas2d_snapshot_read_fbo: None,
             last_swap_interval: -1, // force first eglSwapInterval call
             context_lost: false,
             surface_unavailable: false,
@@ -3202,12 +3190,6 @@ impl CanvasManager {
                 self.canvas2d_snapshot_order.clear();
                 self.canvas2d_snapshot_bytes = 0;
             }
-            if let Some(fbo) = self.canvas2d_snapshot_blit_fbo.take() {
-                self.gl.delete_framebuffer(fbo);
-            }
-            if let Some(fbo) = self.canvas2d_snapshot_read_fbo.take() {
-                self.gl.delete_framebuffer(fbo);
-            }
             for (_id, r) in self.renderbuffers.drain() {
                 if let Some(h) = r.gl_handle {
                     self.gl.delete_renderbuffer(h);
@@ -4820,6 +4802,14 @@ impl CanvasManager {
         Ok(())
     }
 
+    /// The canvas's temporary framebuffer, for transfers that attach a texture,
+    /// use it, and detach it again.
+    ///
+    /// One per canvas, not one per manager: a framebuffer object is not shared
+    /// between EGL contexts, so a name created in one context is, in another,
+    /// either nothing or an unrelated framebuffer -- the onscreen canvas's
+    /// DrawingBuffer is the one that was overwritten when this was global. The
+    /// caller must have this canvas's context current.
     fn ensure_image_copy_fbo(
         &mut self,
         canvas_id: CanvasId,
@@ -5048,6 +5038,13 @@ impl CanvasManager {
         };
         let src_fbo =
             <glow::NativeFramebuffer as NativeFramebufferFromRawShim>::try_from_raw(src_fbo_raw);
+        // The DRAW target of the blit below. A framebuffer object belongs to
+        // the EGL context it was created in and its name means something else
+        // in every other context -- in the onscreen canvas's it can be the
+        // DrawingBuffer. So this is the canvas's own temporary, created in the
+        // context that is current, not one the manager keeps for all of them.
+        // Acquired before the destination texture so a failure leaks nothing.
+        let blit_fbo = self.ensure_image_copy_fbo(canvas_id)?;
         // src_fbo == None means "default framebuffer"; pass `None` to
         // bind FBO 0 explicitly.
 
@@ -5133,24 +5130,6 @@ impl CanvasManager {
                 glow::PixelUnpackData::Slice(None),
             );
         }
-
-        // Lazy-init the temp FBOs.  Read FBO is not used in this
-        // function but the snapshot upload path needs it; create it
-        // here too so destroy_all has a single deletion site.
-        let blit_fbo = match self.canvas2d_snapshot_blit_fbo {
-            Some(f) => f,
-            None => {
-                let f = unsafe {
-                    self.gl.create_framebuffer().map_err(|e| {
-                        shared::error::EngineError::new(ErrorCode::Internal)
-                            .with_msg("snapshot blit FBO alloc failed")
-                            .with_detail(e)
-                    })?
-                };
-                self.canvas2d_snapshot_blit_fbo = Some(f);
-                f
-            }
-        };
 
         unsafe {
             self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, src_fbo);
@@ -5630,22 +5609,13 @@ impl CanvasManager {
         // Need any current GL context to issue commands.  Hop on
         // whichever canvas is convenient — the snapshot tex is
         // shared across the EGL share group.
-        self.ensure_any_canvas_current()?;
+        let canvas_id = self.ensure_any_canvas_current()?;
 
-        let read_fbo = match self.canvas2d_snapshot_read_fbo {
-            Some(f) => f,
-            None => {
-                let f = unsafe {
-                    self.gl.create_framebuffer().map_err(|e| {
-                        shared::error::EngineError::new(ErrorCode::Internal)
-                            .with_msg("snapshot read FBO alloc failed")
-                            .with_detail(e)
-                    })?
-                };
-                self.canvas2d_snapshot_read_fbo = Some(f);
-                f
-            }
-        };
+        // The framebuffer is that canvas's own temporary: its name is only
+        // meaningful in the context it was created in, and the context that
+        // happens to be current here is not always the one a cached copy came
+        // from. See `snapshot_canvas2d_region_with_id`.
+        let read_fbo = self.ensure_image_copy_fbo(canvas_id)?;
 
         let prev_read_fbo =
             unsafe { self.gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32 };
@@ -6602,6 +6572,47 @@ mod recovery_source_guards {
             }
         }
         panic!("function body must close");
+    }
+
+    /// The manager must not keep one framebuffer name for every canvas.
+    ///
+    /// A framebuffer object belongs to the EGL context that created it, and each
+    /// canvas has its own context, so a name cached on the manager is right in
+    /// the one context that made it and, in any other, either nothing or an
+    /// unrelated framebuffer. The snapshot code cached two that way; in the
+    /// onscreen canvas's context the blit's name was its DrawingBuffer, and every
+    /// `getImageData` attached a texture to it and detached it again, after
+    /// which the canvas neither drew nor read back. Per-canvas temporaries live
+    /// in `image_copy_fbos`, keyed by canvas.
+    ///
+    /// Structural because the manager needs an EGL display; the behaviour is
+    /// covered by migo-conformance's `canvas2d-offscreen-readback`.
+    #[test]
+    fn no_framebuffer_name_is_cached_across_contexts() {
+        let fields: Vec<&str> = function_body(MGR, "pub(crate) struct CanvasManager")
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.ends_with("Option<glow::NativeFramebuffer>,"))
+            .collect();
+        assert!(
+            fields.is_empty(),
+            "a single framebuffer name cached on the manager is used in every context; \
+             key it by canvas like `image_copy_fbos`: {fields:?}"
+        );
+        for signature in [
+            "fn snapshot_canvas2d_region_with_id(",
+            "fn read_canvas2d_snapshot_pixels(",
+        ] {
+            let body = function_body(MGR, signature);
+            assert!(
+                body.contains("self.ensure_image_copy_fbo("),
+                "{signature} must take its framebuffer from the canvas's own temporary"
+            );
+            assert!(
+                !body.contains("create_framebuffer("),
+                "{signature} must not create a framebuffer that outlives it in another context"
+            );
+        }
     }
 
     /// A fresh native target carries no frame-rate request, so the install has to
