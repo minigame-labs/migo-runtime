@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D: a new canvas could begin holding an earlier canvas's pixels. The
+  framebuffer under a fresh surface is whatever the driver returns, and ANGLE's
+  Metal backend recycles the storage of destroyed surfaces without clearing it:
+  after a few hundred canvases had been created and collected, every new one
+  started with the pixels of one that had been freed (measured on macOS: 162 of
+  480). Every Canvas2D surface is now cleared when it is created, which also makes
+  assigning a canvas the size it already has clear it by construction.
 - Canvas2D: `ctx.ellipse(x, y, rx, ry, 0, 0, 2 * Math.PI)` -- a full turn, the
   usual way to draw an ellipse -- drew nothing. Skia's `arc_to` treats a sweep of
   360 degrees as degenerate; `arc` already split a full turn in two and

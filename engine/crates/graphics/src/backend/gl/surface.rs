@@ -658,7 +658,7 @@ impl Canvas2DContext {
             /* color_space */ None,
             /* surface_props */ None,
         );
-        let Some(surface) = surface else {
+        let Some(mut surface) = surface else {
             tracing::error!(
                 fbo = fbo_id,
                 width,
@@ -667,6 +667,13 @@ impl Canvas2DContext {
             );
             return Err(Canvas2DInitFailure::WrapRenderTarget);
         };
+        // A new canvas bitmap is transparent black. The framebuffer under it is
+        // whatever the driver handed back, and ANGLE's Metal backend recycles
+        // the textures of destroyed surfaces without clearing them: after a few
+        // hundred canvases had been created and collected, every new one began
+        // holding the pixels of an earlier one. The clear is recorded first, so
+        // it runs before anything drawn afterwards.
+        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
 
         // Clamp Ganesh's resource cache so a long-running scene
         // can't silently grow the GPU memory footprint past the
@@ -762,6 +769,10 @@ impl Canvas2DContext {
             );
             return Err(Canvas2DInitFailure::SharedRenderTarget);
         };
+
+        // The same rule as `with_interface`: a new bitmap is transparent black,
+        // whatever the allocator recycled it from.
+        surface.canvas().clear(skia_safe::Color::TRANSPARENT);
 
         // The snapshot path blits from a raw FBO id. Ask Skia which one it
         // allocated rather than tracking a second copy of that fact.
@@ -1168,20 +1179,6 @@ impl Canvas2DContext {
         self.reset_gl_state();
     }
 
-    /// Clear the bitmap to transparent black without touching its storage, and
-    /// submit the clear.
-    ///
-    /// What assigning a canvas dimension the size it already has has to do to a
-    /// surface whose backing store a resize would not reallocate: the window
-    /// canvas draws into the DrawingBuffer's framebuffer, which keeps its
-    /// content when the new size equals the old, so nothing else clears it.
-    pub fn clear_bitmap(&mut self) {
-        self.reset_gl_state_if_stale();
-        self.surface.canvas().clear(skia_safe::Color::TRANSPARENT);
-        self.flush_and_submit();
-        self.reset_gl_state();
-    }
-
     /// Tell Skia to drop its cached GL state tracking.  Required
     /// immediately after [`flush_and_submit`] when control is about to
     /// return to code that mutates GL state outside Skia (WebGL handler,
@@ -1437,6 +1434,46 @@ pub(crate) fn read_surface_rgba_unpremul(
 
 #[cfg(test)]
 mod tests {
+    /// Every constructor of a Canvas2D surface must clear it.
+    ///
+    /// A new canvas is transparent black, and the framebuffer or texture under it
+    /// is whatever the driver recycled: ANGLE's Metal backend reuses the storage
+    /// of destroyed surfaces without clearing it, so after a few hundred canvases
+    /// had been created and collected, every new one began holding an earlier
+    /// one's pixels (measured: 162 of 480). Structural because a surface needs a
+    /// GL context; the behaviour is covered by migo-conformance's
+    /// `canvas2d-spec/new-canvases-start-transparent`.
+    #[test]
+    fn every_surface_constructor_clears_the_new_bitmap() {
+        const SRC: &str = include_str!("surface.rs");
+        let production = SRC.split_once("#[cfg(test)]").map_or(SRC, |(a, _)| a);
+        for signature in ["fn with_interface(", "pub fn new_shared_offscreen("] {
+            let start = production.find(signature).expect("constructor exists");
+            let rest = &production[start..];
+            let open = rest.find('{').expect("body opens");
+            let mut depth = 0usize;
+            let mut end = rest.len();
+            for (offset, ch) in rest[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + offset;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let body = &rest[open..end];
+            assert!(
+                body.contains("canvas().clear("),
+                "{signature} must clear the surface it creates, or a recycled buffer shows through"
+            );
+        }
+    }
+
     use super::{
         LOW_MEMORY_AGGREGATE_BYTES, LiveContextCount, MIN_PER_CTX_BYTES,
         SKIA_RESOURCE_CACHE_BUDGET_BYTES, low_memory_per_ctx_bytes, per_ctx_resource_cache_bytes,

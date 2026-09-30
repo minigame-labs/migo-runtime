@@ -3969,7 +3969,6 @@ impl CanvasManager {
             if !resized_ok {
                 self.rebuild_2d_context_preserving_state(id)?;
             }
-            self.clear_2d_bitmap_if_size_unchanged(id, (old_w, old_h), (new_w, new_h));
 
             // WebGL default framebuffer viewport resets after drawing buffer resize.
             unsafe {
@@ -4103,7 +4102,6 @@ impl CanvasManager {
         if !resized_ok {
             self.rebuild_2d_context_preserving_state(id)?;
         }
-        self.clear_2d_bitmap_if_size_unchanged(id, (old_w, old_h), (new_w, new_h));
 
         if saved_bound != BoundContext::Canvas(id) {
             self.restore_bound(saved_bound)?;
@@ -4123,27 +4121,6 @@ impl CanvasManager {
             ctx2d.flush_pending_draws();
         }
         Ok(())
-    }
-
-    /// Clear the 2D bitmap when a resize did not change the size.
-    ///
-    /// A new size reallocates the backing store, which is what clears it. The
-    /// same size may not reallocate anything (the window canvas's
-    /// DrawingBuffer keeps its framebuffer), yet assigning `width` or `height`
-    /// clears the canvas either way, so the clear is stated here instead of
-    /// being left to whatever the allocator happens to do.
-    fn clear_2d_bitmap_if_size_unchanged(
-        &mut self,
-        id: CanvasId,
-        old: (u32, u32),
-        new: (u32, u32),
-    ) {
-        if old != new {
-            return;
-        }
-        if let Some(ctx2d) = self.contexts_2d.get_mut(&id) {
-            ctx2d.clear_bitmap();
-        }
     }
 
     /// Declare the damage region for the current back buffer BEFORE rendering
