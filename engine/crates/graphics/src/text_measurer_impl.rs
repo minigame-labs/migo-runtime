@@ -106,18 +106,24 @@ impl TextMeasurer for TextMeasurerAdapter {
     fn measure(
         &self,
         text: &str,
-        font_family: &str,
+        families: &Arc<Vec<String>>,
         font_size: f32,
         weight: u16,
         italic: bool,
     ) -> TextMetrics {
-        let attrs = build_attrs(font_family, font_size, weight, italic);
+        let attrs = build_attrs(families, font_size, weight, italic);
         let mut ctx = self.inner.lock();
         ctx.get().measure_text(text, &attrs)
     }
 
-    fn line_height(&self, font_family: &str, font_size: f32, weight: u16, italic: bool) -> f32 {
-        let attrs = build_attrs(font_family, font_size, weight, italic);
+    fn line_height(
+        &self,
+        families: &Arc<Vec<String>>,
+        font_size: f32,
+        weight: u16,
+        italic: bool,
+    ) -> f32 {
+        let attrs = build_attrs(families, font_size, weight, italic);
         let mut ctx = self.inner.lock();
         let m = ctx.get().measure_text(" ", &attrs);
         let line = m.font_bounding_box_ascent + m.font_bounding_box_descent;
@@ -135,10 +141,18 @@ impl TextMeasurer for TextMeasurerAdapter {
     }
 }
 
-fn build_attrs(font_family: &str, font_size: f32, weight: u16, italic: bool) -> TextAttrs {
+/// The attributes a `fillText` of the same font builds: the author's whole
+/// family list, with the engine's fallbacks appended by the text context the
+/// same way for both.
+fn build_attrs(
+    families: &Arc<Vec<String>>,
+    font_size: f32,
+    weight: u16,
+    italic: bool,
+) -> TextAttrs {
     TextAttrs {
         size: font_size,
-        families: std::sync::Arc::new(vec![font_family.to_string(), "sans-serif".into()]),
+        families: families.clone(),
         weight,
         italic,
         align: TextAlign::Start,
@@ -167,7 +181,13 @@ mod tests {
             "deferred_shared_measurer must not build the text context"
         );
 
-        let _ = measurer.measure("hello", "sans-serif", 16.0, 400, false);
+        let _ = measurer.measure(
+            "hello",
+            &std::sync::Arc::new(vec!["sans-serif".to_string()]),
+            16.0,
+            400,
+            false,
+        );
 
         assert!(
             shared.lock().is_built(),

@@ -50,23 +50,34 @@ use crate::protocol::render_cmd::TextMetrics;
 pub trait TextMeasurer: Send + Sync + 'static {
     /// Measure `text` using the given font descriptor.
     ///
-    /// `font_family` is the head of the CSS family list
-    /// (`ctx.font` post-split); `weight` and `italic` come from
-    /// the shorthand parser.  Returns the same `TextMetrics`
+    /// `families` is the whole CSS family list, head first
+    /// (`ctx.font` post-split), and it is resolved exactly as a
+    /// `fillText` of the same font resolves it. It used to be the
+    /// head alone, so a list whose first name the device lacks
+    /// (`"Microsoft YaHei", serif`) measured one face and painted
+    /// another, and text laid out from the measurement did not fit
+    /// what was drawn. `weight` and `italic` come from the
+    /// shorthand parser.  Returns the same `TextMetrics`
     /// shape the `Canvas2DCmd::MeasureText` path produces, so
     /// the JS side doesn't have to branch on which path served
     /// the metric.
     fn measure(
         &self,
         text: &str,
-        font_family: &str,
+        families: &std::sync::Arc<Vec<String>>,
         font_size: f32,
         weight: u16,
         italic: bool,
     ) -> TextMetrics;
 
     /// Line-height helper paralleling `RenderCommand::GetTextLineHeight`.
-    fn line_height(&self, font_family: &str, font_size: f32, weight: u16, italic: bool) -> f32;
+    fn line_height(
+        &self,
+        families: &std::sync::Arc<Vec<String>>,
+        font_size: f32,
+        weight: u16,
+        italic: bool,
+    ) -> f32;
 
     /// Register a font byte blob under one or more aliases.
     /// Returns the canonical family name (typically the font's
@@ -80,15 +91,46 @@ pub trait TextMeasurer: Send + Sync + 'static {
     /// their own parser.  Default impl so existing implementors
     /// pick it up automatically.
     fn measure_css(&self, text: &str, css_font: &str) -> TextMetrics {
-        let p = crate::css_font::parse_css_font(css_font);
-        self.measure(text, &p.family, p.size, p.weight, p.italic)
+        let f = parse_family_list(css_font);
+        self.measure(text, &f.families, f.size, f.weight, f.italic)
     }
 
     /// G-2 companion to [`Self::measure_css`] — same parse flow
     /// but for `getTextLineHeight`.
     fn line_height_css(&self, css_font: &str) -> f32 {
-        let p = crate::css_font::parse_css_font(css_font);
-        self.line_height(&p.family, p.size, p.weight, p.italic)
+        let f = parse_family_list(css_font);
+        self.line_height(&f.families, f.size, f.weight, f.italic)
+    }
+}
+
+/// A CSS `font` string as the measurer needs it: the whole family list, parsed
+/// by the parser the paint side uses, so a measurement and the `fillText` that
+/// follows it resolve the same list.
+///
+/// Input that parser rejects goes through the lenient one, which has always
+/// answered something for any string; its single family is the whole list.
+struct FamilyListFont {
+    families: std::sync::Arc<Vec<String>>,
+    size: f32,
+    weight: u16,
+    italic: bool,
+}
+
+fn parse_family_list(css_font: &str) -> FamilyListFont {
+    if let Some(p) = crate::css_font_shorthand::parse_font_shorthand(css_font) {
+        return FamilyListFont {
+            families: std::sync::Arc::new(p.families),
+            size: p.size_px,
+            weight: p.weight,
+            italic: p.italic,
+        };
+    }
+    let p = crate::css_font::parse_css_font(css_font);
+    FamilyListFont {
+        families: std::sync::Arc::new(vec![p.family]),
+        size: p.size,
+        weight: p.weight,
+        italic: p.italic,
     }
 }
 
@@ -96,3 +138,109 @@ pub trait TextMeasurer: Send + Sync + 'static {
 /// refcount bump; every clone dispatches through the same
 /// underlying mutex-guarded context.
 pub type SharedTextMeasurer = std::sync::Arc<dyn TextMeasurer>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn zero_metrics() -> TextMetrics {
+        TextMetrics {
+            width: 0.0,
+            actual_bounding_box_left: 0.0,
+            actual_bounding_box_right: 0.0,
+            actual_bounding_box_ascent: 0.0,
+            actual_bounding_box_descent: 0.0,
+            font_bounding_box_ascent: 0.0,
+            font_bounding_box_descent: 0.0,
+            em_height_ascent: 0.0,
+            em_height_descent: 0.0,
+            hanging_baseline: 0.0,
+            alphabetic_baseline: 0.0,
+            ideographic_baseline: 0.0,
+        }
+    }
+
+    /// Records what the default `*_css` methods hand to the implementation.
+    #[derive(Default)]
+    struct Recorder {
+        seen: Mutex<Vec<(Vec<String>, f32, u16, bool)>>,
+    }
+
+    impl TextMeasurer for Recorder {
+        fn measure(
+            &self,
+            _text: &str,
+            families: &Arc<Vec<String>>,
+            font_size: f32,
+            weight: u16,
+            italic: bool,
+        ) -> TextMetrics {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((families.to_vec(), font_size, weight, italic));
+            zero_metrics()
+        }
+
+        fn line_height(
+            &self,
+            families: &Arc<Vec<String>>,
+            font_size: f32,
+            weight: u16,
+            italic: bool,
+        ) -> f32 {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((families.to_vec(), font_size, weight, italic));
+            0.0
+        }
+
+        fn register_font(&self, _aliases: &[String], _bytes: &[u8]) -> Option<String> {
+            None
+        }
+    }
+
+    /// A measurement must resolve the list a `fillText` of the same font does.
+    /// It used to receive the head alone, so `"Microsoft YaHei", serif` measured
+    /// one face where it painted another.
+    #[test]
+    fn a_measurement_gets_the_whole_family_list() {
+        let r = Recorder::default();
+        r.measure_css(
+            "x",
+            "italic bold 18px 'Microsoft YaHei', \"Noto Serif\", serif",
+        );
+        r.line_height_css("14px Arial, sans-serif");
+        let seen = r.seen.lock().unwrap();
+        assert_eq!(
+            seen[0],
+            (
+                vec![
+                    "Microsoft YaHei".to_string(),
+                    "Noto Serif".to_string(),
+                    "serif".to_string()
+                ],
+                18.0,
+                700,
+                true
+            )
+        );
+        assert_eq!(
+            seen[1].0,
+            vec!["Arial".to_string(), "sans-serif".to_string()]
+        );
+    }
+
+    /// Input the paint-side parser rejects still measures, through the lenient
+    /// parser, as it always did.
+    #[test]
+    fn input_the_shorthand_parser_rejects_still_measures() {
+        let r = Recorder::default();
+        r.measure_css("x", "");
+        let seen = r.seen.lock().unwrap();
+        assert_eq!(seen[0].0, vec!["sans-serif".to_string()]);
+        assert_eq!(seen[0].1, 10.0);
+    }
+}
