@@ -106,13 +106,39 @@ impl PatternResolver for NullPatternResolver {
 /// Canvas2D's shadow is a drop-shadow (rendered *behind* the primary
 /// draw).  We convert `shadowBlur` to sigma via `sigma = blur / 2` which
 /// matches Chrome's interpretation of the CSS "blur length" as
-/// `2 × stddev`.
+/// `2 x stddev`.
+///
+/// Two rules of the specification (HTML, "shadows") decide the numbers:
+///
+///  * `shadowOffsetX/Y` and `shadowBlur` are in device pixels and are **not
+///    affected by the current transformation matrix**. A Skia image filter
+///    runs in the canvas's local space, so the device values are carried
+///    back through the inverse of the matrix's linear part first. Handed over
+///    as they were, a context under `scale(2, 2)` -- every device-pixel-ratio
+///    game -- drew its shadow twice as far and twice as soft as a browser.
+///  * The shadow's alpha is the silhouette's alpha times the shadow colour's
+///    alpha, and `globalAlpha` is applied once, to the result. The silhouette
+///    already carries `globalAlpha` (it is the paint's own alpha), so the
+///    shadow colour must not be scaled by it again: at `globalAlpha = 0.5` the
+///    shadow came out at a quarter.
 pub fn apply_shadow_to_paint(paint: &mut Paint, state: &Canvas2DState) {
     if !state.shadow.is_visible() {
         return;
     }
+    let [a, b, c, d, _, _] = state.ctm;
+    let det = a * d - b * c;
+    // A singular matrix flattens the drawing to a line or a point; there is
+    // nothing for a shadow to be cast from.
+    if !det.is_finite() || det.abs() < f32::EPSILON {
+        return;
+    }
+    let (dx, dy) = (state.shadow.offset_x, state.shadow.offset_y);
+    let local_dx = (d * dx - c * dy) / det;
+    let local_dy = (a * dy - b * dx) / det;
     let sigma = state.shadow.blur * 0.5;
-    let color = to_sk_color4f_modulated(state.shadow.color, state.global_alpha).to_color();
+    let sigma_x = sigma / a.hypot(b);
+    let sigma_y = sigma / c.hypot(d);
+    let color = to_sk_color4f(state.shadow.color).to_color();
     // Shared filter pool: drop-shadow reuse is very high because
     // games set the same shadow on every label / button-container
     // for a whole screen.  `get_or_build_drop_shadow` hands back a
@@ -127,10 +153,10 @@ pub fn apply_shadow_to_paint(paint: &mut Paint, state: &Canvas2DState) {
             | (color.r() as u32) << 16
             | (color.g() as u32) << 8
             | (color.b() as u32),
-        sigma,
-        sigma,
-        state.shadow.offset_x,
-        state.shadow.offset_y,
+        sigma_x,
+        sigma_y,
+        local_dx,
+        local_dy,
     ) {
         paint.set_image_filter(filter);
     }
@@ -241,6 +267,91 @@ mod tests {
     use shared::protocol::color::Color as ProtocolColor;
     use shared::protocol::render_cmd::GradientStop;
     use skia_safe::Color;
+
+    /// A 1x1 read of a raster surface as premultiplied RGBA.
+    fn pixel(surface: &mut skia_safe::Surface, x: i32, y: i32) -> [u8; 4] {
+        let info = skia_safe::ImageInfo::new(
+            (1, 1),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Premul,
+            None,
+        );
+        let mut px = [0u8; 4];
+        assert!(surface.read_pixels(&info, &mut px, 4, (x, y)));
+        px
+    }
+
+    /// Draw a red `size` square at the origin of a `scale`-scaled 64x64 surface
+    /// with a hard black shadow `offset` device pixels to the right, exactly as
+    /// the renderer does (the canvas carries the matrix, the state records it,
+    /// the paint carries the filter).
+    fn shadowed_square(
+        scale: f32,
+        offset: f32,
+        global_alpha: f32,
+        size: f32,
+    ) -> skia_safe::Surface {
+        let mut s = Canvas2DState::default();
+        s.ctm = [scale, 0.0, 0.0, scale, 0.0, 0.0];
+        s.global_alpha = global_alpha;
+        s.fill = StyleKind::Color(ProtocolColor::rgb(255, 0, 0));
+        s.shadow = Shadow {
+            blur: 0.0,
+            color: ProtocolColor::black(),
+            offset_x: offset,
+            offset_y: 0.0,
+        };
+        let paint = build_fill_paint(&s, &NullPatternResolver);
+        let mut surface = skia_safe::surfaces::raster_n32_premul((64, 64)).unwrap();
+        surface.canvas().scale((scale, scale));
+        surface
+            .canvas()
+            .draw_rect(skia_safe::Rect::from_xywh(0.0, 0.0, size, size), &paint);
+        surface
+    }
+
+    /// The offset is in device pixels whatever the matrix: a 10x10 pixel square
+    /// drawn under `scale(2, 2)` with `shadowOffsetX = 10` casts its shadow to
+    /// device x 10..20, not 20..30.
+    #[test]
+    fn shadow_offset_is_in_device_pixels_not_user_space() {
+        let mut surface = shadowed_square(2.0, 10.0, 1.0, 5.0);
+        assert_eq!(pixel(&mut surface, 5, 5), [255, 0, 0, 255], "the shape");
+        assert_eq!(pixel(&mut surface, 15, 5), [0, 0, 0, 255], "the shadow");
+        assert_eq!(pixel(&mut surface, 25, 5), [0, 0, 0, 0], "not doubled");
+    }
+
+    /// The same rule at the identity matrix is unchanged, and at `scale(0.5)` the
+    /// offset is still device pixels.
+    #[test]
+    fn shadow_offset_at_other_scales() {
+        let mut surface = shadowed_square(1.0, 10.0, 1.0, 10.0);
+        assert_eq!(pixel(&mut surface, 15, 5), [0, 0, 0, 255]);
+        let mut surface = shadowed_square(0.5, 10.0, 1.0, 20.0);
+        // a 10x10 pixel square; its shadow at device x 10..20
+        assert_eq!(pixel(&mut surface, 5, 5), [255, 0, 0, 255]);
+        assert_eq!(pixel(&mut surface, 15, 5), [0, 0, 0, 255]);
+        assert_eq!(pixel(&mut surface, 25, 5), [0, 0, 0, 0]);
+    }
+
+    /// `globalAlpha` scales the shadow once: half alpha is a half-transparent
+    /// shadow (premultiplied 0,0,0,128), not a quarter.
+    #[test]
+    fn shadow_takes_global_alpha_once() {
+        let mut surface = shadowed_square(1.0, 10.0, 0.5, 10.0);
+        let shadow = pixel(&mut surface, 15, 5);
+        assert!(
+            (i32::from(shadow[3]) - 128).abs() <= 2,
+            "shadow alpha {} at globalAlpha 0.5, want about 128",
+            shadow[3]
+        );
+        let shape = pixel(&mut surface, 5, 5);
+        assert!(
+            (i32::from(shape[3]) - 128).abs() <= 2,
+            "shape alpha {}",
+            shape[3]
+        );
+    }
 
     #[test]
     fn build_fill_paint_uses_color_when_style_is_flat() {

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D shadows: `shadowOffsetX/Y` and `shadowBlur` are in device pixels and
+  not affected by the current transform, as the specification says; they were
+  carried through the matrix, so a context under `scale(2, 2)` -- every
+  device-pixel-ratio game -- drew its shadow twice as far and twice as soft as a
+  browser. And `globalAlpha` was applied to the shadow twice (once in the
+  silhouette, once in the shadow colour): at `globalAlpha = 0.5` the shadow was a
+  quarter transparent instead of half.
 - Canvas2D text on macOS and iOS: `serif`, `monospace`, `cursive`, `fantasy`,
   `system-ui` (and `-apple-system`, `ui-monospace`, ...) now reach a system face.
   Skia's CoreText font manager answers `Helvetica` and `Menlo` but none of the CSS
