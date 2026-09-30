@@ -202,6 +202,11 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             op: record[1] as u8,
         },
 
+        // The spec table made this word exactly 0 or 1, so it is read, not re-checked.
+        OP2D_SET_IMAGE_SMOOTHING => Canvas2DCmd::SetImageSmoothing {
+            enabled: record[1] == 1,
+        },
+
         OP2D_SET_FILL_STYLE => Canvas2DCmd::SetFillStyle {
             color: color_of(record),
         },

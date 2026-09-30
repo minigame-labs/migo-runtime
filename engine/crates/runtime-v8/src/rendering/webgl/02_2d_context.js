@@ -40,6 +40,7 @@ import {
     encode2dSetLineCap,
     encode2dSetLineJoin,
     encode2dSetCompositeOperation,
+    encode2dSetImageSmoothing,
     encode2dSetFillStyle,
     encode2dSetStrokeStyle,
     encode2dSetShadowColor,
@@ -472,6 +473,8 @@ class CanvasRenderingContext2D {
         this._font = '10px sans-serif';
         this._textAlign = 'start';
         this._textBaseline = 'alphabetic';
+        this._imageSmoothing = true;
+        this._imageSmoothingQuality = 'low';
 
         // Current transform matrix [a, b, c, d, e, f] for getTransform/transform
         this._tm = [1, 0, 0, 1, 0, 0];
@@ -979,6 +982,8 @@ class CanvasRenderingContext2D {
         this._font = '10px sans-serif';
         this._textAlign = 'start';
         this._textBaseline = 'alphabetic';
+        this._imageSmoothing = true;
+        this._imageSmoothingQuality = 'low';
         this._direction = undefined;
         this._tm = [1, 0, 0, 1, 0, 0];
         this._stateStack = [];
@@ -1003,6 +1008,8 @@ class CanvasRenderingContext2D {
             font: this._font,
             textAlign: this._textAlign,
             textBaseline: this._textBaseline,
+            imageSmoothing: this._imageSmoothing,
+            imageSmoothingQuality: this._imageSmoothingQuality,
             tm: this._tm.slice(),
             compositeOp: this._compositeOp,
             lineDash: this._lineDash ? this._lineDash.slice() : null,
@@ -1029,6 +1036,8 @@ class CanvasRenderingContext2D {
                 _font: state.font,
                 _textAlign: state.textAlign,
                 _textBaseline: state.textBaseline,
+                _imageSmoothing: state.imageSmoothing,
+                _imageSmoothingQuality: state.imageSmoothingQuality,
                 _tm: state.tm,
                 _compositeOp: state.compositeOp,
                 _lineDash: state.lineDash,
@@ -1262,6 +1271,28 @@ class CanvasRenderingContext2D {
 
     putImageData(imageData, dx, dy) {
         // Not implemented
+    }
+
+    // ==================== Image smoothing ====================
+    //
+    // `false` samples a scaled `drawImage` at the nearest texel; `true` (the default) samples it bilinearly. Drawing state:
+    // `save()` keeps it and `restore()` gives it back, on this side and, through the record, on the renderer's.
+    //
+    // Until this existed the name was an ordinary property on the object and nothing read it, so pixel art was blurred
+    // on every platform -- which is what a conformance run on a Mac with a 2x display finally showed.
+    get imageSmoothingEnabled() { return this._imageSmoothing; }
+    set imageSmoothingEnabled(value) {
+        const enabled = !!value;
+        if (this._imageSmoothing === enabled) return;
+        this._imageSmoothing = enabled;
+        encode2dSetImageSmoothing(this._canvasId, enabled);
+    }
+
+    // A hint the specification lets an implementation ignore: `low`, `medium` and `high` all draw the same here, and a
+    // value that is not one of the three is ignored, as it is in a browser.
+    get imageSmoothingQuality() { return this._imageSmoothingQuality; }
+    set imageSmoothingQuality(value) {
+        if (value === 'low' || value === 'medium' || value === 'high') this._imageSmoothingQuality = value;
     }
 
     // ==================== Compositing ====================

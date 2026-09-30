@@ -25,6 +25,87 @@ fn apply(ctx: &mut Canvas2DRenderer, canvas: &skia_safe::Canvas, cmds: &[Canvas2
     }
 }
 
+// ====== Image smoothing ====================================================
+//
+// `imageSmoothingEnabled` is drawing state. What the renderer does with it is pick `drawImage`'s sampling; the
+// pixels that follow from the sampling are checked end to end in migo-conformance (`canvas2d-image-smoothing`),
+// because a scaled texture needs a GPU context and these tests run on a raster surface. What is checked here is
+// the half that has no GPU in it: the command lands in the state, and the state is saved, restored and reset the
+// way the specification says.
+
+fn sampling_filter(ctx: &Canvas2DRenderer) -> skia_safe::FilterMode {
+    ctx.state.image_sampling_options().filter
+}
+
+#[test]
+fn image_smoothing_defaults_on_and_the_command_turns_it_off_and_on() {
+    let mut c = Canvas2DRenderer::new();
+    assert_eq!(
+        sampling_filter(&c),
+        skia_safe::FilterMode::Linear,
+        "smoothing is on by default"
+    );
+    let (w, h) = (4, 4);
+    with_raster_surface(w, h, |s| {
+        apply(&mut c, s.canvas(), &[SetImageSmoothing { enabled: false }]);
+        assert_eq!(sampling_filter(&c), skia_safe::FilterMode::Nearest);
+        assert_eq!(
+            c.state.image_sampling_options().mipmap,
+            skia_safe::MipmapMode::None,
+            "nearest is nearest all the way down: no mip level to blend through"
+        );
+        apply(&mut c, s.canvas(), &[SetImageSmoothing { enabled: true }]);
+        assert_eq!(sampling_filter(&c), skia_safe::FilterMode::Linear);
+    });
+}
+
+#[test]
+fn image_smoothing_is_saved_and_restored_with_the_rest_of_the_state() {
+    let mut c = Canvas2DRenderer::new();
+    with_raster_surface(4, 4, |s| {
+        apply(
+            &mut c,
+            s.canvas(),
+            &[
+                SetImageSmoothing { enabled: false },
+                Save,
+                SetImageSmoothing { enabled: true },
+                Save,
+                SetImageSmoothing { enabled: false },
+            ],
+        );
+        assert_eq!(
+            sampling_filter(&c),
+            skia_safe::FilterMode::Nearest,
+            "innermost"
+        );
+        apply(&mut c, s.canvas(), &[Restore]);
+        assert_eq!(
+            sampling_filter(&c),
+            skia_safe::FilterMode::Linear,
+            "the middle level's setting comes back"
+        );
+        apply(&mut c, s.canvas(), &[Restore]);
+        assert_eq!(
+            sampling_filter(&c),
+            skia_safe::FilterMode::Nearest,
+            "and the outer one's"
+        );
+    });
+}
+
+#[test]
+fn a_context_reset_returns_smoothing_to_its_default() {
+    // A canvas resize resets the context, per spec; the JavaScript side resets its shadow to match.
+    let mut c = Canvas2DRenderer::new();
+    with_raster_surface(4, 4, |s| {
+        apply(&mut c, s.canvas(), &[SetImageSmoothing { enabled: false }]);
+        assert_eq!(sampling_filter(&c), skia_safe::FilterMode::Nearest);
+    });
+    c.reset();
+    assert_eq!(sampling_filter(&c), skia_safe::FilterMode::Linear);
+}
+
 // ====== Path fill / stroke / clip ==========================================
 
 #[test]

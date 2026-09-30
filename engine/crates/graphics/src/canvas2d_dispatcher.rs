@@ -317,6 +317,7 @@ pub(crate) fn classify_draw_damage(
         | SetMiterLimit { .. }
         | SetGlobalAlpha { .. }
         | SetCompositeOperation { .. }
+        | SetImageSmoothing { .. }
         | SetLineDash { .. }
         | SetLineDashOffset { .. }
         | SetShadowBlur { .. }

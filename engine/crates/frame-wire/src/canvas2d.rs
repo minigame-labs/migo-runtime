@@ -270,8 +270,25 @@ pub const OP2D_SET_STROKE_STYLE_PATTERN: u32 = 565;
 /// is a piece of its own.
 pub const OP2D_CAPTURE_SNAPSHOT: u32 = 566;
 
+// ─── Image smoothing (567) ───────────────────────────────────────────────────
+
+/// `imageSmoothingEnabled = b`: `H enabled:B`, where `enabled` is exactly 0 or 1.
+///
+/// It is drawing state like `globalAlpha`, not an argument of `drawImage`: the
+/// specification saves it with `save()` and gives it back with `restore()`, and
+/// a game sets it once for a whole pixel-art scene. Numbered after the snapshot
+/// op rather than placed beside the other state setters because 543..548 are
+/// taken and renumbering a block that shipped is what this block's ranges exist
+/// to avoid.
+///
+/// Until this record existed the property was never sent anywhere: assigning
+/// `imageSmoothingEnabled = false` left a plain property on the JavaScript
+/// object and every scaled `drawImage` was sampled bilinearly, which blurs pixel
+/// art on every platform.
+pub const OP2D_SET_IMAGE_SMOOTHING: u32 = 567;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 567;
+pub const OP2D_END: u32 = 568;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -333,6 +350,9 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OP2D_SET_FILL_STYLE | OP2D_SET_STROKE_STYLE | OP2D_SET_SHADOW_COLOR => (5, &[]),
 
         OP2D_SET_TEXT_ALIGN | OP2D_SET_TEXT_BASELINE | OP2D_SET_TEXT_DIRECTION => (2, &[]),
+
+        // enabled: a boolean, not a number a producer may round -- 2 is a bug
+        OP2D_SET_IMAGE_SMOOTHING => (2, &[1]),
 
         // image_id, repeat_x, repeat_y
         OP2D_SET_FILL_STYLE_PATTERN | OP2D_SET_STROKE_STYLE_PATTERN => (4, &[2, 3]),

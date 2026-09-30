@@ -366,6 +366,12 @@ impl Canvas2DRenderer {
                 self.state.blend_mode = blend_mode_from_code(*op);
                 false
             }
+            // Read by every `drawImage` through `Canvas2DState::image_sampling_options`, and saved and
+            // restored with the rest of the state because it is a field of it.
+            SetImageSmoothing { enabled } => {
+                self.state.image_smoothing = *enabled;
+                false
+            }
             SetLineDash { segments } => {
                 // Spec: odd-length dash arrays double up to even length.
                 //

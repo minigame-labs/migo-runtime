@@ -125,6 +125,18 @@ reader, so a producer and a reader of different versions still cannot meet.
 Until this, an upload larger than a packet was refused `OUT_OF_MEMORY` on the
 producer.
 
+### Amendment, 2026-10-01: image smoothing
+
+`SET_IMAGE_SMOOTHING` (567) joins the 2D block for `imageSmoothingEnabled`, and
+`OP2D_END` moves from 567 to 568. One word after the header, exactly 0 or 1 --
+the record spec refuses any other value. Additive: no field moves, no existing
+value changes meaning, and a stream that never writes it draws as before
+(smoothing on). The producer is a resource of the same Swift package as the
+reader, and the in-process JavaScript is baked into the engine that reads it, so
+a writer and a reader of different versions still cannot meet -- the audit the
+amendments above rest on. The property itself was never sent anywhere before
+this record, which is why pixel art drew blurred on every platform.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.

@@ -259,6 +259,40 @@ fn the_arc_direction_flag_is_a_real_bool() {
     );
 }
 
+/// `imageSmoothingEnabled` is a bool on the wire: 0 and 1 decode to the two settings and keep their place among the
+/// other state, and the validator refuses anything else, so the decoder can read it without re-checking.
+#[test]
+fn image_smoothing_is_a_real_bool_and_keeps_its_place_in_the_state_stream() {
+    for (raw, expected) in [(0u32, false), (1u32, true)] {
+        let words = stream_of(&[
+            record(OP2D_SELECT_CANVAS, &[1]),
+            record(OP2D_SET_IMAGE_SMOOTHING, &[raw]),
+            record(OP2D_SAVE, &[]),
+            record(OP2D_FILL, &[]),
+        ]);
+        let (ops, _) = decode(&words);
+        let FrameOp::CanvasBatch(batch) = &ops[0] else {
+            panic!("expected a canvas batch");
+        };
+        assert!(
+            matches!(batch.commands[0], Canvas2DCmd::SetImageSmoothing { enabled } if enabled == expected),
+            "{raw} decodes to {expected}"
+        );
+        // Order is the point of one stream: the setting sits before the save that captures it.
+        assert!(matches!(batch.commands[1], Canvas2DCmd::Save));
+    }
+    for raw in [2u32, 0xFFFF_FFFF] {
+        let words = stream_of(&[
+            record(OP2D_SELECT_CANVAS, &[1]),
+            record(OP2D_SET_IMAGE_SMOOTHING, &[raw]),
+        ]);
+        assert!(
+            validate_stream(&words, words.len() as u32).is_err(),
+            "{raw} is not a boolean: the record is malformed"
+        );
+    }
+}
+
 /// Every opcode the block declares has a spec, and every spec is reachable.
 #[test]
 fn the_block_is_contiguous_and_fully_specified() {

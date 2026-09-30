@@ -1204,6 +1204,12 @@ const OP2D_SET_STROKE_STYLE_PATTERN = 565;
 // op, so the capture is a record in the same run.
 const OP2D_CAPTURE_SNAPSHOT = 566;
 
+// --- 2D image smoothing ---
+//
+// `imageSmoothingEnabled`: drawing state like `globalAlpha`, so it is an ordinary
+// in-process record (encode2dSetImageSmoothing below) and the producer's too.
+const OP2D_SET_IMAGE_SMOOTHING = 567;
+
 // --- 2D canvas selection ---
 //
 // `Canvas2DCmd` carries no canvas id -- the id lives on the batch -- so the
@@ -1405,6 +1411,15 @@ function encode2dSetLineCap(canvasId, v) { _encode2dEnum(OP2D_SET_LINE_CAP, canv
 function encode2dSetLineJoin(canvasId, v) { _encode2dEnum(OP2D_SET_LINE_JOIN, canvasId, v); }
 function encode2dSetCompositeOperation(canvasId, v) { _encode2dEnum(OP2D_SET_COMPOSITE_OPERATION, canvasId, v); }
 
+// 567 SET_IMAGE_SMOOTHING: H B (2 words). The word is a bool on the wire -- the reader refuses anything but 0 or 1 --
+// so it is narrowed here, in the encoder that owns the record, not passed through a general enum writer.
+function encode2dSetImageSmoothing(canvasId, enabled) {
+    const base = begin2d(canvasId, 2);
+    _u32[base] = packHeader(OP2D_SET_IMAGE_SMOOTHING, 2);
+    _u32[base + 1] = enabled ? 1 : 0;
+    cursor = base + 2;
+}
+
 function encode2dSetFillStyle(canvasId, r, g, b, a) { _encode2dColor(OP2D_SET_FILL_STYLE, canvasId, r, g, b, a); }
 function encode2dSetStrokeStyle(canvasId, r, g, b, a) { _encode2dColor(OP2D_SET_STROKE_STYLE, canvasId, r, g, b, a); }
 function encode2dSetShadowColor(canvasId, r, g, b, a) { _encode2dColor(OP2D_SET_SHADOW_COLOR, canvasId, r, g, b, a); }
@@ -1540,6 +1555,7 @@ export {
     encode2dSetLineCap,
     encode2dSetLineJoin,
     encode2dSetCompositeOperation,
+    encode2dSetImageSmoothing,
     encode2dSetFillStyle,
     encode2dSetStrokeStyle,
     encode2dSetShadowColor,

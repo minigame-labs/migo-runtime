@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Canvas2D: `imageSmoothingEnabled` now does what it says. The property was never
+  sent to the renderer -- assigning it left a plain value on the JavaScript object
+  -- so every scaled `drawImage` was sampled bilinearly and pixel art came out
+  blurred on every platform. `imageSmoothingEnabled = false` samples the nearest
+  texel; it is saved and restored with the rest of the drawing state, survives a
+  readback, and is reset by a canvas resize. `imageSmoothingQuality` is accepted
+  and validated; all three levels draw the same. Found by the first run of
+  migo-conformance on macOS, where a 2x display put the old assertion's sample a
+  device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
+  (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+
 ## v0.9.19 (2026-09-29)
 
 ### Fixed

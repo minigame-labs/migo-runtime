@@ -1944,6 +1944,12 @@ pub enum Canvas2DCmd {
         /// 6=destination-out, 7=destination-atop, 8=lighter, 9=copy, 10=xor
         op: u8,
     },
+    /// `imageSmoothingEnabled`: `true` samples a scaled `drawImage` bilinearly,
+    /// `false` takes the nearest texel. Part of the drawing state, so `save()`
+    /// keeps it and `restore()` gives it back.
+    SetImageSmoothing {
+        enabled: bool,
+    },
     SetLineDash {
         /// Alternating dash/gap lengths. Empty = solid line.
         segments: Vec<f32>,
@@ -2145,6 +2151,7 @@ impl Canvas2DCmd {
             | Self::SetMiterLimit { .. }
             | Self::SetGlobalAlpha { .. }
             | Self::SetCompositeOperation { .. }
+            | Self::SetImageSmoothing { .. }
             | Self::SetLineDash { .. }
             | Self::SetLineDashOffset { .. }
             | Self::SetShadowBlur { .. }
