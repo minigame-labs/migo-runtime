@@ -181,6 +181,7 @@ export const OP2D_CAPTURE_SNAPSHOT = 566;
 // `imageSmoothingEnabled`: drawing state, the word exactly 0 or 1.
 export const OP2D_SET_IMAGE_SMOOTHING = 567;
 export const OP2D_FILL_EVEN_ODD = 568;
+export const OP2D_DRAW_CANVAS = 570;
 export const OP2D_CLIP_EVEN_ODD = 569;
 
 // The flags word of OP2D_RESIZE_CANVAS: content assigns width and height

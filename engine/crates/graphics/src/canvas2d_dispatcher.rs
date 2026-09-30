@@ -55,6 +55,20 @@ impl Renderer2d {
         canvas_id: CanvasId,
         cmd: Canvas2DCmd,
     ) -> EngineResult<bool> {
+        let painted = self.execute_command(cm, canvas_id, cmd);
+        // A command that painted changed the canvas, so any copy `drawImage(canvas)` took of it is stale.
+        if matches!(painted, Ok(true)) {
+            cm.note_canvas_painted(canvas_id);
+        }
+        painted
+    }
+
+    fn execute_command(
+        &mut self,
+        cm: &mut CanvasManager,
+        canvas_id: CanvasId,
+        cmd: Canvas2DCmd,
+    ) -> EngineResult<bool> {
         match cmd {
             // CreateContext2D fast path — init the Skia surface in
             // FIFO order with the surrounding command stream.  No reply
@@ -241,6 +255,30 @@ impl Renderer2d {
                 resp.ok(metrics);
                 Ok(false)
             }
+            // `drawImage(canvas)`: the source's pixels, through a texture both canvases can see. See
+            // `CanvasManager::draw_canvas_into`.
+            Canvas2DCmd::DrawCanvas {
+                source,
+                sx,
+                sy,
+                sw,
+                sh,
+                dx,
+                dy,
+                dw,
+                dh,
+            } => cm.draw_canvas_into(
+                canvas_id,
+                CanvasId::from(source),
+                sx,
+                sy,
+                sw,
+                sh,
+                dx,
+                dy,
+                dw,
+                dh,
+            ),
             cmd => {
                 // Everything else routes through the per-canvas handler.
                 // Split-borrow `cm` so the handler can see both the 2D context
@@ -383,7 +421,9 @@ pub(crate) fn classify_draw_damage(
                 *h + state.line_width,
             )
         }
-        DrawImage { dx, dy, dw, dh, .. } => rect_damage_in_space(state, *dx, *dy, *dw, *dh),
+        DrawImage { dx, dy, dw, dh, .. } | DrawCanvas { dx, dy, dw, dh, .. } => {
+            rect_damage_in_space(state, *dx, *dy, *dw, *dh)
+        }
         DrawImageBatch { draws } => {
             // Union the sub-rects in OBJECT SPACE first, then CTM
             // the single union rect once.  This produces the same

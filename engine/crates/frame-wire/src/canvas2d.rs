@@ -301,8 +301,23 @@ pub const OP2D_FILL_EVEN_ODD: u32 = 568;
 /// `clip("evenodd")`: `OP2D_CLIP` under the even-odd rule. See [`OP2D_FILL_EVEN_ODD`].
 pub const OP2D_CLIP_EVEN_ODD: u32 = 569;
 
+// ─── Canvas as an image source (570) ─────────────────────────────────────────
+
+/// `drawImage(canvas, sx, sy, sw, sh, dx, dy, dw, dh)`:
+/// `H source_canvas:U sx sy sw sh dx dy dw dh:F`.
+///
+/// `OP2D_DRAW_IMAGE` names an image the host decoded; this names another canvas,
+/// whose pixels the renderer reads when the record runs -- in stream order, so
+/// the source has drawn everything the content drew to it before this call.
+/// The facade has expanded the shorter forms, as for `OP2D_DRAW_IMAGE`. The
+/// source may be the destination itself.
+///
+/// Until this record existed `drawImage` silently drew nothing for a canvas:
+/// the facade only knew images the host had decoded.
+pub const OP2D_DRAW_CANVAS: u32 = 570;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 570;
+pub const OP2D_END: u32 = 571;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -371,7 +386,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         // image_id, repeat_x, repeat_y
         OP2D_SET_FILL_STYLE_PATTERN | OP2D_SET_STROKE_STYLE_PATTERN => (4, &[2, 3]),
 
-        OP2D_DRAW_IMAGE => (10, &[]),
+        OP2D_DRAW_IMAGE | OP2D_DRAW_CANVAS => (10, &[]),
         // x, y, width, height, snapshot_id
         OP2D_CAPTURE_SNAPSHOT => (6, &[]),
         OP2D_DRAW_IMAGE_BATCH => {

@@ -151,6 +151,19 @@ package as the reader and the in-process JavaScript is baked into the engine tha
 reads it. Before these records the rule argument was dropped and every fill and
 clip was nonzero, which turned the holes of an even-odd shape solid.
 
+### Amendment, 2026-10-01: a canvas as an image source
+
+`DRAW_CANVAS` (570) joins the 2D block for `drawImage(canvas, ...)`, and `OP2D_END`
+moves from 570 to 571. Ten words: the source canvas id as an exact word (canvas ids
+are integers and an `f32` cannot tell two large ones apart), then the eight
+rectangle `f32`s -- `sx sy sw sh dx dy dw dh`, the shorter forms already expanded,
+exactly as `DRAW_IMAGE`. It is a record of the stream, not an op, so it runs in
+stream order: the source has drawn everything the content drew to it before this
+call, and Performance+ needs nothing beyond the record. Additive: no field moves,
+no existing value changes meaning, and a stream that never writes it draws as
+before. Same version audit as above. Until this record existed `drawImage` drew
+nothing for a canvas source: the facade only knew images the host had decoded.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.

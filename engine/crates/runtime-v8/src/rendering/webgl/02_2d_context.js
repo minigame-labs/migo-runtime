@@ -21,6 +21,7 @@ import {
     encode2dStroke,
     encode2dClip,
     encode2dFillEvenOdd,
+    encode2dDrawCanvas,
     encode2dClipEvenOdd,
     encode2dFillRect,
     encode2dStrokeRect,
@@ -1190,6 +1191,11 @@ class CanvasRenderingContext2D {
 
     drawImage(image, ...args) {
         this._abandonPendingTextCache();
+        // A canvas is an image source too: its pixels are read by the renderer when the record runs, in stream order.
+        if (image && typeof image.getContext === 'function' && typeof image._rid === 'number') {
+            this._drawCanvas(image, args);
+            return;
+        }
         if (!image || !image.loaded) return;
 
         this._barrier();
@@ -1215,6 +1221,29 @@ class CanvasRenderingContext2D {
         }
 
         op_draw_image(this._canvasId, image.rid, sx, sy, sw, sh, dx, dy, dw, dh);
+    }
+
+    // drawImage(canvas, dx, dy) / (canvas, dx, dy, dw, dh) / (canvas, sx, sy, sw, sh, dx, dy, dw, dh). A canvas with no
+    // pixels cannot be drawn: the specification throws, and so do we. Any non-finite argument is a silent no-op.
+    _drawCanvas(canvas, args) {
+        const w = canvas.width, h = canvas.height;
+        if (w === 0 || h === 0) {
+            throw new _DOMException("The image argument is a canvas element with a width or height of 0.", "InvalidStateError");
+        }
+        let sx, sy, sw, sh, dx, dy, dw, dh;
+        if (args.length === 2) {
+            [dx, dy] = args;
+            sx = sy = 0; sw = w; sh = h; dw = w; dh = h;
+        } else if (args.length === 4) {
+            [dx, dy, dw, dh] = args;
+            sx = sy = 0; sw = w; sh = h;
+        } else if (args.length === 8) {
+            [sx, sy, sw, sh, dx, dy, dw, dh] = args;
+        } else {
+            return;
+        }
+        if (!_fin4(sx, sy, sw, sh) || !_fin4(dx, dy, dw, dh)) return;
+        encode2dDrawCanvas(this._canvasId, canvas._rid, sx, sy, sw, sh, dx, dy, dw, dh);
     }
 
     drawImageBatch(draws) {

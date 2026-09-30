@@ -307,6 +307,17 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             dw: f(record[8]),
             dh: f(record[9]),
         },
+        OP2D_DRAW_CANVAS => Canvas2DCmd::DrawCanvas {
+            source: record[1],
+            sx: f(record[2]),
+            sy: f(record[3]),
+            sw: f(record[4]),
+            sh: f(record[5]),
+            dx: f(record[6]),
+            dy: f(record[7]),
+            dw: f(record[8]),
+            dh: f(record[9]),
+        },
         OP2D_DRAW_IMAGE_BATCH => Canvas2DCmd::DrawImageBatch {
             draws: draw_image_entries(record)?,
         },

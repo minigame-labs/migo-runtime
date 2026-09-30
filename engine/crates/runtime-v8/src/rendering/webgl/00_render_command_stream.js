@@ -1210,6 +1210,7 @@ const OP2D_CAPTURE_SNAPSHOT = 566;
 // in-process record (encode2dSetImageSmoothing below) and the producer's too.
 const OP2D_SET_IMAGE_SMOOTHING = 567;
 const OP2D_FILL_EVEN_ODD = 568;
+const OP2D_DRAW_CANVAS = 570;
 const OP2D_CLIP_EVEN_ODD = 569;
 
 // --- 2D canvas selection ---
@@ -1312,6 +1313,23 @@ function encode2dFill(canvasId) { _encode2dNullary(OP2D_FILL, canvasId); }
 function encode2dStroke(canvasId) { _encode2dNullary(OP2D_STROKE, canvasId); }
 function encode2dClip(canvasId) { _encode2dNullary(OP2D_CLIP, canvasId); }
 function encode2dFillEvenOdd(canvasId) { _encode2dNullary(OP2D_FILL_EVEN_ODD, canvasId); }
+
+// 570 DRAW_CANVAS: H U F F F F F F F F (10 words). The source canvas id is an exact word: canvas ids are integers and
+// an f32 cannot tell two large ones apart.
+function encode2dDrawCanvas(canvasId, sourceCanvasId, sx, sy, sw, sh, dx, dy, dw, dh) {
+    const base = begin2d(canvasId, 10);
+    _u32[base] = packHeader(OP2D_DRAW_CANVAS, 10);
+    _u32[base + 1] = sourceCanvasId >>> 0;
+    _f32[base + 2] = sx;
+    _f32[base + 3] = sy;
+    _f32[base + 4] = sw;
+    _f32[base + 5] = sh;
+    _f32[base + 6] = dx;
+    _f32[base + 7] = dy;
+    _f32[base + 8] = dw;
+    _f32[base + 9] = dh;
+    cursor = base + 10;
+}
 function encode2dClipEvenOdd(canvasId) { _encode2dNullary(OP2D_CLIP_EVEN_ODD, canvasId); }
 function encode2dSave(canvasId) { _encode2dNullary(OP2D_SAVE, canvasId); }
 function encode2dRestore(canvasId) { _encode2dNullary(OP2D_RESTORE, canvasId); }
@@ -1540,6 +1558,7 @@ export {
     encode2dStroke,
     encode2dClip,
     encode2dFillEvenOdd,
+    encode2dDrawCanvas,
     encode2dClipEvenOdd,
     encode2dFillRect,
     encode2dStrokeRect,

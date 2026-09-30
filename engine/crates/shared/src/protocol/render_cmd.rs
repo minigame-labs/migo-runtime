@@ -2056,6 +2056,21 @@ pub enum Canvas2DCmd {
         dw: f32,
         dh: f32,
     },
+    /// `drawImage(canvas, ...)`: the pixels of another canvas, read when this
+    /// command runs. `source` is the source canvas's id; the rectangles are the
+    /// same eight numbers as `DrawImage`'s, in the source canvas's pixels and the
+    /// destination's user space.
+    DrawCanvas {
+        source: u32,
+        sx: f32,
+        sy: f32,
+        sw: f32,
+        sh: f32,
+        dx: f32,
+        dy: f32,
+        dw: f32,
+        dh: f32,
+    },
     GetImageData {
         x: i32,
         y: i32,
@@ -2180,6 +2195,7 @@ impl Canvas2DCmd {
             | Self::Rotate { .. }
             | Self::Scale { .. }
             | Self::DrawImage { .. }
+            | Self::DrawCanvas { .. }
             | Self::GetImageData { .. }
             | Self::CaptureSnapshot { .. }
             | Self::ReadSnapshotPixels { .. }

@@ -259,6 +259,61 @@ fn the_arc_direction_flag_is_a_real_bool() {
     );
 }
 
+/// `drawImage(canvas, ...)`: the source canvas id is an exact word, the eight rectangle numbers follow, and the
+/// record keeps its place in stream order -- the source has drawn everything the content drew to it before.
+#[test]
+fn draw_canvas_carries_the_source_id_exactly_and_keeps_its_place() {
+    // a canvas id no f32 can tell from its neighbour
+    let source = (1u32 << 30) + 7;
+    let words = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[1]),
+        record(
+            OP2D_FILL_RECT,
+            &[
+                0f32.to_bits(),
+                0f32.to_bits(),
+                4f32.to_bits(),
+                4f32.to_bits(),
+            ],
+        ),
+        record(
+            OP2D_DRAW_CANVAS,
+            &[
+                source,
+                1f32.to_bits(),
+                2f32.to_bits(),
+                3f32.to_bits(),
+                4f32.to_bits(),
+                5f32.to_bits(),
+                6f32.to_bits(),
+                7f32.to_bits(),
+                8f32.to_bits(),
+            ],
+        ),
+        record(OP2D_SAVE, &[]),
+    ]);
+    let (ops, context) = decode(&words);
+    assert!(context.errors.is_empty());
+    let FrameOp::CanvasBatch(batch) = &ops[0] else {
+        panic!("expected a canvas batch");
+    };
+    assert!(matches!(batch.commands[0], Canvas2DCmd::FillRect { .. }));
+    assert!(matches!(
+        batch.commands[1],
+        Canvas2DCmd::DrawCanvas {
+            source: s, sx, sy, sw, sh, dx, dy, dw, dh
+        } if s == source && [sx, sy, sw, sh, dx, dy, dw, dh] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    ));
+    assert!(matches!(batch.commands[2], Canvas2DCmd::Save));
+
+    // ten words, no more, no less
+    let words = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[1]),
+        record(OP2D_DRAW_CANVAS, &[source, 0]),
+    ]);
+    assert!(validate_stream(&words, words.len() as u32).is_err());
+}
+
 /// The fill rule is part of the record: `OP2D_FILL_EVEN_ODD` and `OP2D_CLIP_EVEN_ODD` decode to their own commands
 /// (not `Fill`/`Clip` with the rule lost), keep their place among the path records, and carry no words.
 #[test]

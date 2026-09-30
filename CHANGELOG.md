@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D: `drawImage` accepts a canvas as its source, in all three forms and
+  including the canvas itself and the on-screen canvas. It silently drew nothing:
+  the facade only knew images the host had decoded. A new 2D record
+  (`DRAW_CANVAS`, 570) carries it; the renderer copies the source into a texture
+  the destination can see, keeps that one copy for every later draw of the same
+  unchanged canvas (200 draws of a 256x256 canvas took 264 ms with a copy per
+  draw and 51 ms with the cache), and drops it when the source is painted on,
+  resized or destroyed. Not yet: a WebGL canvas as a source, and `createPattern`
+  with a canvas.
 - Canvas2D: `fill("evenodd")` and `clip("evenodd")` honour the rule. The argument
   was dropped and every fill and clip was nonzero, so the holes of an even-odd
   shape (icons, rings, cut-outs) came out solid. Two new 2D records
