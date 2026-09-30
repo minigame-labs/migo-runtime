@@ -5637,7 +5637,8 @@ impl CanvasManager {
 
     /// Sync CPU readback of a snapshot texture, used by
     /// lazy `ImageData.data` getter. Layout matches the
-    /// legacy CPU path: top-down RGBA8 rows, length `w * h * 4`.
+    /// legacy CPU path: top-down RGBA8 rows, length `w * h * 4`,
+    /// straight (unpremultiplied) alpha as `ImageData` holds it.
     /// Empty `Vec` for a missing snapshot or incomplete FBO; allocation and
     /// context errors are returned to the caller.
     pub(crate) fn read_canvas2d_snapshot_pixels(
@@ -5675,7 +5676,11 @@ impl CanvasManager {
             );
             let status = self.gl.check_framebuffer_status(glow::READ_FRAMEBUFFER);
             let out = if status == glow::FRAMEBUFFER_COMPLETE {
-                readback.read(&self.gl)
+                let mut pixels = readback.read(&self.gl);
+                // The snapshot is premultiplied (it is what Skia rendered, and what
+                // the GPU-side texture upload wants); `ImageData` is not.
+                crate::backend::gl::readback::unpremultiply_rgba8(&mut pixels);
+                pixels
             } else {
                 tracing::warn!(
                     "read_canvas2d_snapshot_pixels: FBO incomplete: 0x{:X}",
@@ -6640,6 +6645,23 @@ mod recovery_source_guards {
             }
         }
         panic!("function body must close");
+    }
+
+    /// What `ImageData.data` holds is straight alpha, and the snapshot behind it is
+    /// premultiplied, so the CPU read of a snapshot must convert.
+    ///
+    /// Without it a half-transparent red read back as `(127, 0, 0, 127)` where the
+    /// specification says `(255, 0, 0, 128)`: every translucent pixel darkened, and
+    /// `putImageData(getImageData(...))` would darken it again. Structural because
+    /// the read needs an EGL display; the conversion itself is tested in
+    /// `readback` and the behaviour in migo-conformance's `canvas2d-spec`.
+    #[test]
+    fn the_snapshot_cpu_read_returns_straight_alpha() {
+        let body = function_body(MGR, "pub(crate) fn read_canvas2d_snapshot_pixels(");
+        assert!(
+            body.contains("unpremultiply_rgba8("),
+            "read_canvas2d_snapshot_pixels must unpremultiply what it reads"
+        );
     }
 
     /// The manager must not keep one framebuffer name for every canvas.

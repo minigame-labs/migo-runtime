@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D `getImageData` returned premultiplied colour for translucent pixels:
+  half-transparent red read back as `(127, 0, 0, 127)` where `ImageData` holds
+  straight alpha, `(255, 0, 0, 128)`. Every translucent edge was darker than it
+  is, and a read followed by a write would have darkened it again. The CPU read
+  of the snapshot behind `getImageData` now unpremultiplies.
 - Canvas2D shadows: `shadowOffsetX/Y` and `shadowBlur` are in device pixels and
   not affected by the current transform, as the specification says; they were
   carried through the matrix, so a context under `scale(2, 2)` -- every
