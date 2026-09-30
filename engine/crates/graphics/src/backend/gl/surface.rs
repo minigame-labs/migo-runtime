@@ -1154,6 +1154,34 @@ impl Canvas2DContext {
         })
     }
 
+    /// Run the draws Skia has queued on this surface.
+    ///
+    /// Skia records draws and executes them at the next flush; a context that is
+    /// dropped flushes what it holds. So a resize that replaces the backing
+    /// store and then drops the old context would draw everything issued before
+    /// the resize *onto the new store*, after the clear the resize exists to
+    /// perform. Callers that are about to replace the store run this first,
+    /// while the store those draws were meant for still exists.
+    pub fn flush_pending_draws(&mut self) {
+        self.reset_gl_state_if_stale();
+        self.flush_and_submit();
+        self.reset_gl_state();
+    }
+
+    /// Clear the bitmap to transparent black without touching its storage, and
+    /// submit the clear.
+    ///
+    /// What assigning a canvas dimension the size it already has has to do to a
+    /// surface whose backing store a resize would not reallocate: the window
+    /// canvas draws into the DrawingBuffer's framebuffer, which keeps its
+    /// content when the new size equals the old, so nothing else clears it.
+    pub fn clear_bitmap(&mut self) {
+        self.reset_gl_state_if_stale();
+        self.surface.canvas().clear(skia_safe::Color::TRANSPARENT);
+        self.flush_and_submit();
+        self.reset_gl_state();
+    }
+
     /// Tell Skia to drop its cached GL state tracking.  Required
     /// immediately after [`flush_and_submit`] when control is about to
     /// return to code that mutates GL state outside Skia (WebGL handler,
