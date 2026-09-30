@@ -3927,9 +3927,17 @@ impl CanvasManager {
             self.onscreen_content_backing = Some((new_w, new_h));
         }
 
-        if new_w == old_w && new_h == old_h {
+        if resize_is_a_no_op(old_w, old_h, new_w, new_h, owner) {
             return Ok(());
         }
+
+        // What the 2D context has queued was drawn before this resize, so the
+        // resize clears it. Run it now, against the store it was drawn for:
+        // Skia would otherwise run it when the old context is dropped, which is
+        // after the store is replaced, and the canvas would come back holding
+        // draws the specification says are gone.
+        let saved_bound = self.bound;
+        self.flush_2d_before_backing_change(id)?;
 
         // Window surfaces: the EGL surface is controlled by Android SurfaceView.
         // Resize only the DrawingBuffer so canvas.width/height reflects what JS
@@ -3961,6 +3969,7 @@ impl CanvasManager {
             if !resized_ok {
                 self.rebuild_2d_context_preserving_state(id)?;
             }
+            self.clear_2d_bitmap_if_size_unchanged(id, (old_w, old_h), (new_w, new_h));
 
             // WebGL default framebuffer viewport resets after drawing buffer resize.
             unsafe {
@@ -3992,8 +4001,7 @@ impl CanvasManager {
             return Ok(());
         }
 
-        let saved_bound = self.bound;
-        let was_current = matches!(saved_bound, BoundContext::Canvas(cur) if cur == id);
+        let was_current = matches!(self.bound, BoundContext::Canvas(cur) if cur == id);
 
         if was_current {
             self.egl
@@ -4095,12 +4103,47 @@ impl CanvasManager {
         if !resized_ok {
             self.rebuild_2d_context_preserving_state(id)?;
         }
+        self.clear_2d_bitmap_if_size_unchanged(id, (old_w, old_h), (new_w, new_h));
 
-        if !was_current {
+        if saved_bound != BoundContext::Canvas(id) {
             self.restore_bound(saved_bound)?;
         }
 
         Ok(())
+    }
+
+    /// Run the draws the canvas's 2D context has queued, before the backing
+    /// store they target is replaced. See `Canvas2DContext::flush_pending_draws`.
+    fn flush_2d_before_backing_change(&mut self, id: CanvasId) -> EngineResult<()> {
+        if !self.contexts_2d.contains_key(&id) {
+            return Ok(());
+        }
+        self.make_current_needed(id)?;
+        if let Some(ctx2d) = self.contexts_2d.get_mut(&id) {
+            ctx2d.flush_pending_draws();
+        }
+        Ok(())
+    }
+
+    /// Clear the 2D bitmap when a resize did not change the size.
+    ///
+    /// A new size reallocates the backing store, which is what clears it. The
+    /// same size may not reallocate anything (the window canvas's
+    /// DrawingBuffer keeps its framebuffer), yet assigning `width` or `height`
+    /// clears the canvas either way, so the clear is stated here instead of
+    /// being left to whatever the allocator happens to do.
+    fn clear_2d_bitmap_if_size_unchanged(
+        &mut self,
+        id: CanvasId,
+        old: (u32, u32),
+        new: (u32, u32),
+    ) {
+        if old != new {
+            return;
+        }
+        if let Some(ctx2d) = self.contexts_2d.get_mut(&id) {
+            ctx2d.clear_bitmap();
+        }
     }
 
     /// Declare the damage region for the current back buffer BEFORE rendering
@@ -6544,6 +6587,31 @@ fn plan_share_group_restore(
     }
 }
 
+/// Whether a resize to `(new_w, new_h)` leaves the canvas exactly as it is.
+///
+/// Only the engine's own requests can. A platform surface change that lands on
+/// the size the backing store already has has nothing to redo. A request from
+/// content is `canvas.width = n`, and the specification resets the bitmap and
+/// the context state on every such assignment, *even to the size the canvas
+/// already has* -- `canvas.width = canvas.width` is the old way to clear a
+/// canvas.
+///
+/// This used to return true for content too, while the JavaScript setters did
+/// the specified thing on their side (reset their shadow of the context state
+/// after every assignment). The two halves then disagreed: the shadow said
+/// "already the default", the setter sent nothing, and the renderer kept the
+/// old value, so `fillStyle = "#000"` after a same-size assignment drew the
+/// previous red. Content-owned requests now always take the full path.
+fn resize_is_a_no_op(
+    old_w: u32,
+    old_h: u32,
+    new_w: u32,
+    new_h: u32,
+    owner: BackingSizeOwner,
+) -> bool {
+    new_w == old_w && new_h == old_h && owner == BackingSizeOwner::Engine
+}
+
 /// Source guards for the context-recovery contract. `CanvasManager` cannot be
 /// constructed without an EGL display, so the wiring that pairs the teardown
 /// with its restore is asserted against the source itself — the same technique
@@ -6611,6 +6679,34 @@ mod recovery_source_guards {
             assert!(
                 !body.contains("create_framebuffer("),
                 "{signature} must not create a framebuffer that outlives it in another context"
+            );
+        }
+    }
+
+    /// A resize must run the draws the 2D context has queued *before* it replaces
+    /// the backing store.
+    ///
+    /// Skia defers draws and a dropped context flushes what it holds, so a
+    /// queued draw survives the resize that should have cleared it: it runs when
+    /// the old context is dropped, which is after the store is replaced, and
+    /// lands on the new one. Measured on macOS: `fillRect` then `canvas.width =
+    /// 33` with nothing read in between came back red, as did the same-size
+    /// assignment. Structural for the same reason as the tests around it -- the
+    /// manager needs an EGL display -- and the behaviour itself is covered by
+    /// migo-conformance's `canvas2d-resize-resets`.
+    #[test]
+    fn resize_flushes_queued_draws_before_the_store_is_replaced() {
+        let body = function_body(MGR, "pub(crate) fn resize_canvas(");
+        let flush = body
+            .find("self.flush_2d_before_backing_change(id)")
+            .expect("resize_canvas must flush the 2D context before changing its store");
+        for replaced in ["drawing_buffer::resize(", ".destroy_surface("] {
+            let at = body
+                .find(replaced)
+                .unwrap_or_else(|| panic!("resize_canvas no longer contains {replaced}"));
+            assert!(
+                flush < at,
+                "the flush must come before `{replaced}`, or queued draws land on the new store"
             );
         }
     }
@@ -7998,5 +8094,25 @@ mod tests {
             classify_snapshot_fence(glow::WAIT_FAILED),
             SnapshotFenceStatus::Failed
         );
+    }
+
+    #[test]
+    fn only_an_engine_request_for_the_size_it_already_has_is_a_no_op() {
+        use BackingSizeOwner::{Content, Engine};
+        assert!(resize_is_a_no_op(64, 32, 64, 32, Engine));
+        assert!(
+            !resize_is_a_no_op(64, 32, 64, 32, Content),
+            "canvas.width = canvas.width clears the canvas and resets the context, per spec"
+        );
+        for owner in [Engine, Content] {
+            assert!(
+                !resize_is_a_no_op(64, 32, 65, 32, owner),
+                "a different width is a resize"
+            );
+            assert!(
+                !resize_is_a_no_op(64, 32, 64, 33, owner),
+                "a different height is a resize"
+            );
+        }
     }
 }

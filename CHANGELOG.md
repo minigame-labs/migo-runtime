@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D: assigning `canvas.width` or `canvas.height` the value it already has
+  now clears the canvas and resets the context, as the specification says
+  (`canvas.width = canvas.width` is the old way to clear a canvas). It cleared
+  nothing and reset nothing on the renderer while the JavaScript half reset its
+  shadow of the state, so `fillStyle = "#000"` afterwards drew the previous
+  colour. A draw still queued when the canvas is resized, to any size, is
+  dropped with the old bitmap instead of landing on the new one. The engine's
+  own resizes to the size a canvas already has stay a no-op.
 - Canvas2D: a `getImageData` on an offscreen canvas could stop the on-screen
   canvas from drawing or reading back anything afterwards. The snapshot code
   kept one temporary framebuffer for every canvas, created in whichever EGL
