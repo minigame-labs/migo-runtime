@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Canvas2D: a `getImageData` on an offscreen canvas could stop the on-screen
+  canvas from drawing or reading back anything afterwards. The snapshot code
+  kept one temporary framebuffer for every canvas, created in whichever EGL
+  context needed it first, and used that name in all the others; a framebuffer
+  is not shared between contexts, so in the on-screen canvas's context the name
+  was its DrawingBuffer, and each snapshot attached a texture to it and detached
+  it again. Each canvas now has its own temporary. Found by the first run of
+  migo-conformance on macOS; the same sequence on any platform reaches it.
+
 ## v0.9.19 (2026-09-29)
 
 ### Fixed
