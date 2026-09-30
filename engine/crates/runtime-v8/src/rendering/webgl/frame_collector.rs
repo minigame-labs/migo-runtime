@@ -118,8 +118,10 @@ impl Canvas2DSegment {
             | Canvas2DCmd::FillText { .. }
             | Canvas2DCmd::StrokeText { .. }
             | Canvas2DCmd::Fill
+            | Canvas2DCmd::FillEvenOdd
             | Canvas2DCmd::Stroke
-            | Canvas2DCmd::Clip => {
+            | Canvas2DCmd::Clip
+            | Canvas2DCmd::ClipEvenOdd => {
                 self.poison_dirty();
             }
 

@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D: `fill("evenodd")` and `clip("evenodd")` honour the rule. The argument
+  was dropped and every fill and clip was nonzero, so the holes of an even-odd
+  shape (icons, rings, cut-outs) came out solid. Two new 2D records
+  (`FILL_EVEN_ODD` 568, `CLIP_EVEN_ODD` 569) carry it
+  (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Canvas2D attributes now keep their previous value when assigned what the
+  specification rejects, instead of storing it: `lineWidth`/`miterLimit` that is
+  zero, negative or not finite, `globalAlpha` outside 0..1 or NaN (it was
+  clamped), an unknown `lineCap`/`lineJoin`/`textAlign`/`textBaseline`, a negative
+  `shadowBlur`, a non-finite shadow offset or `lineDashOffset`, a `setLineDash`
+  list with a negative or non-finite entry. `lineWidth = NaN` used to read NaN and
+  draw nothing. `getLineDash()` reports an odd list repeated to an even one
+  (`[5]` is `[5, 5]`) and `shadowColor` reads `rgba(0, 0, 0, 0)` by default.
+- Canvas2D methods that take numbers return without doing anything when an
+  argument is NaN or infinite (`translate`, `scale`, `rotate`, `transform`,
+  `setTransform`, the path methods, `fillText`/`strokeText`), as in a browser: a
+  single `translate(NaN, 0)` used to poison the matrix and blank every later
+  draw. `arc`, `arcTo` and `ellipse` with a negative radius throw
+  `IndexSizeError`.
+- `canvas.width` / `canvas.height` convert what they are given as an
+  `unsigned long` does: `canvas.width = 1023.75` reads back 1023 (it read back
+  1023.75 while the renderer used 1023), a numeric string works (it threw a
+  `TypeError`), a negative number takes the default of 300 (it threw an engine
+  error). `getContext` answers `null` for a different kind of context than the
+  canvas already has, and `createImageData(imageData)` is accepted.
+- `getImageData(0, 0, 0, 1)` threw a `ReferenceError` (`DOMException is not
+  defined`) instead of `IndexSizeError`: the 2D context now carries its own
+  `DOMException` where the host provides none.
 - Canvas2D: `imageSmoothingEnabled` now does what it says. The property was never
   sent to the renderer -- assigning it left a plain value on the JavaScript object
   -- so every scaled `drawImage` was sampled bilinearly and pixel art came out

@@ -20,6 +20,8 @@ import {
     encode2dFill,
     encode2dStroke,
     encode2dClip,
+    encode2dFillEvenOdd,
+    encode2dClipEvenOdd,
     encode2dFillRect,
     encode2dStrokeRect,
     encode2dClearRect,
@@ -98,6 +100,33 @@ const TEXT_BASELINE_MAP = {
 // are treated as "inherit" (browser-compatible no-op).
 const TEXT_DIRECTION_MAP = { 'inherit': 0, 'ltr': 1, 'rtl': 2 };
 
+// The exception the specification names for a rejected argument. The host
+// provides `DOMException` only when an adapter installed one, and this file
+// throws it from paths that must work without one: a missing global turned
+// `getImageData(0, 0, 0, 1)` into a ReferenceError instead of an IndexSizeError.
+const _DOM_EXCEPTION_CODES = { IndexSizeError: 1, InvalidStateError: 11, SyntaxError: 12 };
+const _DOMException = typeof DOMException === 'function'
+    ? DOMException
+    : class DOMException extends Error {
+        constructor(message = '', name = 'Error') {
+            super(message);
+            Object.defineProperty(this, 'name', { value: name, configurable: true });
+            this.code = _DOM_EXCEPTION_CODES[name] || 0;
+        }
+    };
+
+// Canvas 2D methods that take numbers return without doing anything when any of
+// them is NaN or infinite, and a transform or a path that took one would poison
+// every later draw (one `translate(NaN, 0)` blanks the canvas). `n - n` is 0
+// for every finite number and NaN for NaN, Infinity and anything that is not a
+// number, in one subtraction.
+function _fin1(a) { return a - a === 0; }
+function _fin2(a, b) { return a - a === 0 && b - b === 0; }
+function _fin4(a, b, c, d) { return a - a === 0 && b - b === 0 && c - c === 0 && d - d === 0; }
+function _fin6(a, b, c, d, e, f) {
+    return a - a === 0 && b - b === 0 && c - c === 0 && d - d === 0 && e - e === 0 && f - f === 0;
+}
+
 // Composite operation names indexed to stable u8 opcodes consumed by the
 // Rust render thread.  The first 11 entries preserve the legacy numbering
 // (so pre-existing bytecode keeps the same behaviour); entries 11..25 are
@@ -127,7 +156,7 @@ function checkedImageDataDimensions(width, height) {
     width |= 0;
     height |= 0;
     if (width === 0 || height === 0) {
-        throw new DOMException(
+        throw new _DOMException(
             "ImageData width and height must be non-zero",
             "IndexSizeError",
         );
@@ -652,42 +681,63 @@ class CanvasRenderingContext2D {
     }
 
     moveTo(x, y) {
+        if (!_fin2(x, y)) return;
         encode2dMoveTo(this._canvasId, x, y);
     }
 
     lineTo(x, y) {
+        if (!_fin2(x, y)) return;
         encode2dLineTo(this._canvasId, x, y);
     }
 
     quadraticCurveTo(cpx, cpy, x, y) {
+        if (!_fin4(cpx, cpy, x, y)) return;
         encode2dQuadraticCurveTo(this._canvasId, cpx, cpy, x, y);
     }
 
     bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y) {
+        if (!_fin6(cp1x, cp1y, cp2x, cp2y, x, y)) return;
         encode2dBezierCurveTo(this._canvasId, cp1x, cp1y, cp2x, cp2y, x, y);
     }
 
+    // A negative radius is an error the content is told about; any non-finite argument is a silent no-op, and is
+    // checked first.
     arc(x, y, radius, startAngle, endAngle, counterclockwise = false) {
+        if (!_fin6(x, y, radius, startAngle, endAngle, 0)) return;
+        if (radius < 0) throw new _DOMException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
         encode2dArc(this._canvasId, x, y, radius, startAngle, endAngle, counterclockwise);
     }
 
     arcTo(x1, y1, x2, y2, radius) {
+        if (!_fin6(x1, y1, x2, y2, radius, 0)) return;
+        if (radius < 0) throw new _DOMException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
         encode2dArcTo(this._canvasId, x1, y1, x2, y2, radius);
     }
 
     rect(x, y, width, height) {
+        if (!_fin4(x, y, width, height)) return;
         encode2dRect(this._canvasId, x, y, width, height);
     }
 
     ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise = false) {
+        if (!_fin6(x, y, radiusX, radiusY, rotation, startAngle) || !_fin1(endAngle)) return;
+        if (radiusX < 0 || radiusY < 0) {
+            throw new _DOMException("The radius provided (" + (radiusX < 0 ? radiusX : radiusY) + ") is negative.", "IndexSizeError");
+        }
         encode2dEllipse(this._canvasId, x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise);
     }
 
     // ==================== Drawing Methods ====================
 
+    // `fill("evenodd")` fills under the even-odd rule; no argument, or "nonzero", is the default. A Path2D argument is
+    // not supported (there is no Path2D) and is ignored as it always was.
     fill(pathOrFillRule) {
         this._abandonPendingTextCache();
-        encode2dFill(this._canvasId);
+        if (pathOrFillRule === 'evenodd') {
+            encode2dFillEvenOdd(this._canvasId);
+        } else {
+            encode2dFill(this._canvasId);
+        }
     }
 
     stroke(path) {
@@ -696,7 +746,11 @@ class CanvasRenderingContext2D {
     }
 
     clip(pathOrFillRule) {
-        encode2dClip(this._canvasId);
+        if (pathOrFillRule === 'evenodd') {
+            encode2dClipEvenOdd(this._canvasId);
+        } else {
+            encode2dClip(this._canvasId);
+        }
     }
 
     // ==================== Rectangle Methods ====================
@@ -719,6 +773,9 @@ class CanvasRenderingContext2D {
     // ==================== Text Methods ====================
 
     fillText(text, x, y, maxWidth = Infinity) {
+        // Non-finite position: nothing is drawn. A maxWidth that is NaN or not positive draws nothing either
+        // (Infinity, the default, is "no limit").
+        if (!_fin2(x, y) || maxWidth !== maxWidth || !(maxWidth > 0)) return;
         // A second fillText before the prior pending entry was
         // consumed means the cocos single-label pattern doesn't
         // hold; abandon (and commit) the prior one first.
@@ -753,6 +810,7 @@ class CanvasRenderingContext2D {
     }
 
     strokeText(text, x, y, maxWidth = Infinity) {
+        if (!_fin2(x, y) || maxWidth !== maxWidth || !(maxWidth > 0)) return;
         this._abandonPendingTextCache();
         this._barrier();
         op_stroke_text(this._canvasId, String(text), x, y, maxWidth);
@@ -883,40 +941,52 @@ class CanvasRenderingContext2D {
         }
     }
 
+    // Each of these keeps its previous value when assigned something the specification rejects: a number that is
+    // not finite (and, where the attribute has a range, outside it) or a keyword it does not define. Storing the
+    // rejected value instead -- as these did -- made `lineWidth = NaN` read NaN and draw nothing, and `lineCap =
+    // "banana"` read back "banana" while drawing butt caps.
     get lineWidth() { return this._lineWidth; }
     set lineWidth(value) {
-        if (this._lineWidth === value) return;
-        this._lineWidth = value;
-        encode2dSetLineWidth(this._canvasId, value);
+        const v = +value;
+        if (!(v > 0) || v === Infinity) return;
+        if (this._lineWidth === v) return;
+        this._lineWidth = v;
+        encode2dSetLineWidth(this._canvasId, v);
     }
 
     get lineCap() { return this._lineCap; }
     set lineCap(value) {
         if (this._lineCap === value) return;
+        if (!Object.prototype.hasOwnProperty.call(LINE_CAP_MAP, value)) return;
         this._lineCap = value;
-        encode2dSetLineCap(this._canvasId, LINE_CAP_MAP[value] ?? 0);
+        encode2dSetLineCap(this._canvasId, LINE_CAP_MAP[value]);
     }
 
     get lineJoin() { return this._lineJoin; }
     set lineJoin(value) {
         if (this._lineJoin === value) return;
+        if (!Object.prototype.hasOwnProperty.call(LINE_JOIN_MAP, value)) return;
         this._lineJoin = value;
-        encode2dSetLineJoin(this._canvasId, LINE_JOIN_MAP[value] ?? 0);
+        encode2dSetLineJoin(this._canvasId, LINE_JOIN_MAP[value]);
     }
 
     get miterLimit() { return this._miterLimit; }
     set miterLimit(value) {
-        if (this._miterLimit === value) return;
-        this._miterLimit = value;
-        encode2dSetMiterLimit(this._canvasId, value);
+        const v = +value;
+        if (!(v > 0) || v === Infinity) return;
+        if (this._miterLimit === v) return;
+        this._miterLimit = v;
+        encode2dSetMiterLimit(this._canvasId, v);
     }
 
+    // Outside 0..1 (or NaN) is ignored, not clamped: `globalAlpha = 2` leaves the previous value, as in a browser.
     get globalAlpha() { return this._globalAlpha; }
     set globalAlpha(value) {
-        const clamped = Math.max(0, Math.min(1, value));
-        if (this._globalAlpha === clamped) return;
-        this._globalAlpha = clamped;
-        encode2dSetGlobalAlpha(this._canvasId, this._globalAlpha);
+        const v = +value;
+        if (!(v >= 0 && v <= 1)) return;
+        if (this._globalAlpha === v) return;
+        this._globalAlpha = v;
+        encode2dSetGlobalAlpha(this._canvasId, v);
     }
 
     get font() { return this._font; }
@@ -942,17 +1012,19 @@ class CanvasRenderingContext2D {
     get textAlign() { return this._textAlign; }
     set textAlign(value) {
         if (this._textAlign === value) return;
+        if (!Object.prototype.hasOwnProperty.call(TEXT_ALIGN_MAP, value)) return;
         this._textAlign = value;
         this._barrier();
-        op_set_text_align(this._canvasId, TEXT_ALIGN_MAP[value] ?? 0);
+        op_set_text_align(this._canvasId, TEXT_ALIGN_MAP[value]);
     }
 
     get textBaseline() { return this._textBaseline; }
     set textBaseline(value) {
         if (this._textBaseline === value) return;
+        if (!Object.prototype.hasOwnProperty.call(TEXT_BASELINE_MAP, value)) return;
         this._textBaseline = value;
         this._barrier();
-        op_set_text_baseline(this._canvasId, TEXT_BASELINE_MAP[value] ?? 3);
+        op_set_text_baseline(this._canvasId, TEXT_BASELINE_MAP[value]);
     }
 
     get direction() { return this._direction || 'inherit'; }
@@ -1054,6 +1126,7 @@ class CanvasRenderingContext2D {
     // ==================== Transform Methods ====================
 
     translate(x, y) {
+        if (!_fin2(x, y)) return;
         const m = this._tm;
         m[4] += m[0] * x + m[2] * y;
         m[5] += m[1] * x + m[3] * y;
@@ -1061,6 +1134,7 @@ class CanvasRenderingContext2D {
     }
 
     rotate(angle) {
+        if (!_fin1(angle)) return;
         const cos = Math.cos(angle), sin = Math.sin(angle);
         const m = this._tm;
         const a = m[0], b = m[1], c = m[2], d = m[3];
@@ -1072,12 +1146,14 @@ class CanvasRenderingContext2D {
     }
 
     scale(x, y) {
+        if (!_fin2(x, y)) return;
         this._tm[0] *= x; this._tm[1] *= x;
         this._tm[2] *= y; this._tm[3] *= y;
         encode2dScale(this._canvasId, x, y);
     }
 
     setTransform(a, b, c, d, e, f) {
+        if (!_fin6(a, b, c, d, e, f)) return;
         this._tm[0] = a; this._tm[1] = b;
         this._tm[2] = c; this._tm[3] = d;
         this._tm[4] = e; this._tm[5] = f;
@@ -1092,6 +1168,7 @@ class CanvasRenderingContext2D {
     }
 
     transform(a, b, c, d, e, f) {
+        if (!_fin6(a, b, c, d, e, f)) return;
         // Multiply current matrix: CTM = CTM * [a b c d e f]
         const m = this._tm;
         const a0 = m[0], b0 = m[1], c0 = m[2], d0 = m[3], e0 = m[4], f0 = m[5];
@@ -1260,7 +1337,13 @@ class CanvasRenderingContext2D {
         return { width: w, height: h, data: new Uint8ClampedArray(data) };
     }
 
+    // `createImageData(imageData)` is a blank image of that image's size.
     createImageData(sw, sh) {
+        if (sw !== null && typeof sw === 'object'
+                && typeof sw.width === 'number' && typeof sw.height === 'number') {
+            sh = sw.height;
+            sw = sw.width;
+        }
         const dimensions = checkedImageDataDimensions(sw, sh);
         return {
             width: dimensions.width,
@@ -1307,14 +1390,16 @@ class CanvasRenderingContext2D {
     }
 
     // ==================== Shadows ====================
+    // A negative blur and a non-finite blur or offset are ignored, like every other attribute with a domain.
     get shadowBlur() { return this._shadowBlur || 0; }
     set shadowBlur(value) {
-        const v = +value || 0;
+        const v = +value;
+        if (!(v >= 0) || v === Infinity) return;
         if (this._shadowBlur === v) return;
         this._shadowBlur = v;
-        encode2dSetShadowBlur(this._canvasId, this._shadowBlur);
+        encode2dSetShadowBlur(this._canvasId, v);
     }
-    get shadowColor() { return this._shadowColor || 'rgba(0,0,0,0)'; }
+    get shadowColor() { return this._shadowColor || 'rgba(0, 0, 0, 0)'; }
     set shadowColor(value) {
         if (this._shadowColor === value) return;
         this._shadowColor = value;
@@ -1331,17 +1416,19 @@ class CanvasRenderingContext2D {
     }
     get shadowOffsetX() { return this._shadowOffsetX || 0; }
     set shadowOffsetX(value) {
-        const v = +value || 0;
+        const v = +value;
+        if (v - v !== 0) return;
         if (this._shadowOffsetX === v) return;
         this._shadowOffsetX = v;
-        encode2dSetShadowOffsetX(this._canvasId, this._shadowOffsetX);
+        encode2dSetShadowOffsetX(this._canvasId, v);
     }
     get shadowOffsetY() { return this._shadowOffsetY || 0; }
     set shadowOffsetY(value) {
-        const v = +value || 0;
+        const v = +value;
+        if (v - v !== 0) return;
         if (this._shadowOffsetY === v) return;
         this._shadowOffsetY = v;
-        encode2dSetShadowOffsetY(this._canvasId, this._shadowOffsetY);
+        encode2dSetShadowOffsetY(this._canvasId, v);
     }
 
     // ==================== Gradient ====================
@@ -1359,18 +1446,31 @@ class CanvasRenderingContext2D {
     // Handled by the Rust render thread via Skia's `SkPathEffect::dash`
     // (see engine/crates/graphics/backend/gl/paint.rs).  Odd-length dash
     // arrays are doubled on the render side, matching the Canvas 2D spec.
+    // A list with a negative or non-finite entry is rejected whole; an odd-length list is stored (and reported by
+    // `getLineDash`) repeated to an even one, so `[5]` is `[5, 5]`.
     setLineDash(segments) {
-        if (!Array.isArray(segments)) return;
-        this._lineDash = segments.slice();
+        if (segments === null || typeof segments !== 'object' || typeof segments.length !== 'number') return;
+        const list = [];
+        for (let i = 0; i < segments.length; i++) {
+            const v = +segments[i];
+            if (!(v >= 0) || v === Infinity) return;
+            list.push(v);
+        }
+        if (list.length % 2 === 1) {
+            for (let i = 0, n = list.length; i < n; i++) list.push(list[i]);
+        }
+        this._lineDash = list;
         this._barrier();
-        var buf = new Float32Array(segments);
+        var buf = new Float32Array(list);
         op_set_line_dash(this._canvasId, new Uint8Array(buf.buffer));
     }
     getLineDash() { return this._lineDash ? this._lineDash.slice() : []; }
     get lineDashOffset() { return this._lineDashOffset || 0; }
     set lineDashOffset(value) {
-        this._lineDashOffset = +value || 0;
-        encode2dSetLineDashOffset(this._canvasId, this._lineDashOffset);
+        const v = +value;
+        if (v - v !== 0) return;
+        this._lineDashOffset = v;
+        encode2dSetLineDashOffset(this._canvasId, v);
     }
 
     // ==================== Other stubs ====================

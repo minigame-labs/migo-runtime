@@ -16,7 +16,7 @@
 
 use shared::protocol::color::Color as ProtocolColor;
 use shared::protocol::render_cmd::{Canvas2DCmd, GradientType, TextAlign, TextBaseline};
-use skia_safe::{Canvas, ClipOp, Matrix, Paint, PaintCap, PaintJoin, Rect as SkRect};
+use skia_safe::{Canvas, ClipOp, Matrix, Paint, PaintCap, PaintJoin, PathFillType, Rect as SkRect};
 
 use super::blend_mode::blend_mode_from_code;
 use super::paint::{PatternResolver, build_clear_paint, build_fill_paint, build_stroke_paint};
@@ -287,6 +287,13 @@ impl Canvas2DRenderer {
                 canvas.draw_path(&path, &paint);
                 true
             }
+            // The same path under the other winding rule: the holes of an even-odd icon stay holes.
+            FillEvenOdd => {
+                let paint = build_fill_paint(&self.state, resolver);
+                let path = self.path.snapshot().with_fill_type(PathFillType::EvenOdd);
+                canvas.draw_path(&path, &paint);
+                true
+            }
             Stroke => {
                 let paint = build_stroke_paint(&self.state, resolver);
                 let path = self.path.snapshot();
@@ -295,6 +302,11 @@ impl Canvas2DRenderer {
             }
             Clip => {
                 let path = self.path.snapshot();
+                canvas.clip_path(&path, ClipOp::Intersect, true);
+                false
+            }
+            ClipEvenOdd => {
+                let path = self.path.snapshot().with_fill_type(PathFillType::EvenOdd);
                 canvas.clip_path(&path, ClipOp::Intersect, true);
                 false
             }

@@ -287,8 +287,22 @@ pub const OP2D_CAPTURE_SNAPSHOT: u32 = 566;
 /// art on every platform.
 pub const OP2D_SET_IMAGE_SMOOTHING: u32 = 567;
 
+// ─── Fill rule (568, 569) ────────────────────────────────────────────────────
+
+/// `fill("evenodd")`: the path as `OP2D_FILL` paints it, under the even-odd rule.
+///
+/// `OP2D_FILL` is the nonzero rule, the specification's default. The rule is a
+/// second record rather than a word added to `OP2D_FILL` because that record is
+/// nullary and shipped so; adding a word would change what every existing
+/// writer and reader of it means. Until these existed the rule argument was
+/// dropped on the floor and every fill was nonzero, which turns the holes of
+/// an even-odd icon solid.
+pub const OP2D_FILL_EVEN_ODD: u32 = 568;
+/// `clip("evenodd")`: `OP2D_CLIP` under the even-odd rule. See [`OP2D_FILL_EVEN_ODD`].
+pub const OP2D_CLIP_EVEN_ODD: u32 = 569;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 568;
+pub const OP2D_END: u32 = 570;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -325,7 +339,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         // x, y, radiusX, radiusY, rotation, startAngle, endAngle, ccw
         OP2D_ELLIPSE => (9, &[8]),
 
-        OP2D_FILL | OP2D_STROKE | OP2D_CLIP => (1, &[]),
+        OP2D_FILL | OP2D_STROKE | OP2D_CLIP | OP2D_FILL_EVEN_ODD | OP2D_CLIP_EVEN_ODD => (1, &[]),
 
         OP2D_FILL_RECT | OP2D_STROKE_RECT | OP2D_CLEAR_RECT => (5, &[]),
 

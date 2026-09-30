@@ -1877,6 +1877,10 @@ pub enum Canvas2DCmd {
     Fill,
     Stroke,
     Clip,
+    /// `fill("evenodd")`: `Fill` under the even-odd rule.
+    FillEvenOdd,
+    /// `clip("evenodd")`: `Clip` under the even-odd rule.
+    ClipEvenOdd,
 
     // ========== Rectangle methods ==========
     FillRect {
@@ -2140,6 +2144,8 @@ impl Canvas2DCmd {
             | Self::Fill
             | Self::Stroke
             | Self::Clip
+            | Self::FillEvenOdd
+            | Self::ClipEvenOdd
             | Self::FillRect { .. }
             | Self::StrokeRect { .. }
             | Self::ClearRect { .. }

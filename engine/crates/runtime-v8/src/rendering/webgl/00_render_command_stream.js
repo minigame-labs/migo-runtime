@@ -1209,6 +1209,8 @@ const OP2D_CAPTURE_SNAPSHOT = 566;
 // `imageSmoothingEnabled`: drawing state like `globalAlpha`, so it is an ordinary
 // in-process record (encode2dSetImageSmoothing below) and the producer's too.
 const OP2D_SET_IMAGE_SMOOTHING = 567;
+const OP2D_FILL_EVEN_ODD = 568;
+const OP2D_CLIP_EVEN_ODD = 569;
 
 // --- 2D canvas selection ---
 //
@@ -1309,6 +1311,8 @@ function encode2dClosePath(canvasId) { _encode2dNullary(OP2D_CLOSE_PATH, canvasI
 function encode2dFill(canvasId) { _encode2dNullary(OP2D_FILL, canvasId); }
 function encode2dStroke(canvasId) { _encode2dNullary(OP2D_STROKE, canvasId); }
 function encode2dClip(canvasId) { _encode2dNullary(OP2D_CLIP, canvasId); }
+function encode2dFillEvenOdd(canvasId) { _encode2dNullary(OP2D_FILL_EVEN_ODD, canvasId); }
+function encode2dClipEvenOdd(canvasId) { _encode2dNullary(OP2D_CLIP_EVEN_ODD, canvasId); }
 function encode2dSave(canvasId) { _encode2dNullary(OP2D_SAVE, canvasId); }
 function encode2dRestore(canvasId) { _encode2dNullary(OP2D_RESTORE, canvasId); }
 function encode2dResetTransform(canvasId) { _encode2dNullary(OP2D_RESET_TRANSFORM, canvasId); }
@@ -1535,6 +1539,8 @@ export {
     encode2dFill,
     encode2dStroke,
     encode2dClip,
+    encode2dFillEvenOdd,
+    encode2dClipEvenOdd,
     encode2dFillRect,
     encode2dStrokeRect,
     encode2dClearRect,

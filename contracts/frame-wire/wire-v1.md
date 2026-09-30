@@ -137,6 +137,20 @@ a writer and a reader of different versions still cannot meet -- the audit the
 amendments above rest on. The property itself was never sent anywhere before
 this record, which is why pixel art drew blurred on every platform.
 
+### Amendment, 2026-10-01: fill rule
+
+`FILL_EVEN_ODD` (568) and `CLIP_EVEN_ODD` (569) join the 2D block for
+`fill("evenodd")` and `clip("evenodd")`, and `OP2D_END` moves from 568 to 570.
+Both are nullary, like `FILL` and `CLIP`, which remain the nonzero rule -- the
+specification's default. The rule is a record of its own, not a word added to
+`FILL`/`CLIP`: those are nullary and shipped so, and a word would change what
+every existing writer and reader of them means. Additive: no field moves, no
+existing value changes meaning, and a stream that never writes them draws as
+before. Same version audit as above: the producer is a resource of the same Swift
+package as the reader and the in-process JavaScript is baked into the engine that
+reads it. Before these records the rule argument was dropped and every fill and
+clip was nonzero, which turned the holes of an even-odd shape solid.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.

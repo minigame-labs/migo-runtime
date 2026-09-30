@@ -97,6 +97,8 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
         OP2D_FILL => Canvas2DCmd::Fill,
         OP2D_STROKE => Canvas2DCmd::Stroke,
         OP2D_CLIP => Canvas2DCmd::Clip,
+        OP2D_FILL_EVEN_ODD => Canvas2DCmd::FillEvenOdd,
+        OP2D_CLIP_EVEN_ODD => Canvas2DCmd::ClipEvenOdd,
 
         OP2D_FILL_RECT => Canvas2DCmd::FillRect {
             x: f(record[1]),

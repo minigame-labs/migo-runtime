@@ -340,6 +340,7 @@ pub(crate) fn classify_draw_damage(
         | Rotate { .. }
         | Scale { .. }
         | Clip
+        | ClipEvenOdd
         | MeasureText { .. }
         | GetImageData { .. }
         | CaptureSnapshot { .. }
