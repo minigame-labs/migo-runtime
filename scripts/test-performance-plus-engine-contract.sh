@@ -80,7 +80,9 @@ output="$(node platforms/apple/WebContent/PerformancePlus/test/engine-bundle.tes
     || { printf '%s\n' "$output" >&2; fail "the staged engine did not draw the frames it was asked for"; }
 printf '%s\n' "$output" | grep -E "wrote [0-9]+ engine frames|PASS" || true
 
-frames="$(find "$FRAMES" -name 'engine-frame-*.bin' | wc -l)"
+# `tr`: BSD `wc -l` pads the count with spaces, and this is pasted into a pattern below -- on a Mac the gate looked for
+# "admitted        2 frames" and failed a check the Rust test had just passed.
+frames="$(find "$FRAMES" -name 'engine-frame-*.bin' | wc -l | tr -d '[:space:]')"
 (( frames >= 2 )) || fail "the node test wrote $frames frames; it writes two"
 
 status=0
