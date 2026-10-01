@@ -22,6 +22,16 @@ class AudioError extends _PrimError {
 }
 core.registerErrorClass("AudioError", AudioError);
 
+// What a decode that could not read its bytes is thrown as by the op; `decodeAudioData` turns it into the
+// DOMException the specification names (see 01_audio_context.js). Registered for the same reason as AudioError.
+class AudioEncodingError extends _PrimError {
+  constructor(msg) {
+    super(msg);
+    this.name = "EncodingError";
+  }
+}
+core.registerErrorClass("EncodingError", AudioEncodingError);
+
 
 class AudioParam {
   #value;

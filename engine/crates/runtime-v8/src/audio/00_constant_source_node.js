@@ -2,6 +2,7 @@ import {
   op_audio_start_constant_source,
   op_audio_stop_constant_source,
 } from "ext:core/ops";
+import { domException } from "ext:host_v8_base/06_dom_exception.js";
 import { AudioParam } from "ext:host_v8_audio/00_audio_param.js";
 import {
   AudioNode,
@@ -44,7 +45,7 @@ class ConstantSourceNode extends AudioNode {
 
   start(when = 0) {
     if (this.#started) {
-      throw new DOMException("ConstantSourceNode can only be started once", "InvalidStateError");
+      throw domException("ConstantSourceNode can only be started once", "InvalidStateError");
     }
     when = validateScheduledTime(when, "when");
     op_audio_start_constant_source(this._nodeId, when);
@@ -53,7 +54,7 @@ class ConstantSourceNode extends AudioNode {
 
   stop(when = 0) {
     if (!this.#started) {
-      throw new DOMException("ConstantSourceNode has not been started", "InvalidStateError");
+      throw domException("ConstantSourceNode has not been started", "InvalidStateError");
     }
     when = validateScheduledTime(when, "when");
     op_audio_stop_constant_source(this._nodeId, when);

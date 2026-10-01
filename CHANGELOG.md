@@ -55,6 +55,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Web Audio: the errors the engine's own audio, `ImageData` and Canvas 2D code
+  throw are the ones the specification names. They were written as
+  `new DOMException(...)`, and `DOMException` is the host page's to provide: with
+  no adapter installed, `createBuffer(1, 10, 1)`, a second `start()` on an
+  oscillator, `connect()` to a missing input and `createImageData(0, 1)` threw a
+  `ReferenceError` instead of `NotSupportedError`, `InvalidStateError` and
+  `IndexSizeError`. One shared factory (`base/06_dom_exception.js`) makes them: it
+  uses the adapter's `DOMException` when there is one, so `instanceof` holds in
+  content, and its own class (same `name`, `message` and legacy `code`) otherwise,
+  and installs nothing on the global object. Also: `createBuffer` / `new
+  AudioBuffer` with zero channels or zero length are `NotSupportedError` (they
+  were `RangeError`); `getChannelData`, `copyFromChannel` and `copyToChannel` with
+  a channel that does not exist are `IndexSizeError` (they were `RangeError`);
+  `decodeAudioData` rejects bytes it cannot read with `EncodingError` (it rejected
+  with an `AudioError` carrying the engine's text), through the promise and the
+  error callback alike.
+- Web Audio: `decodeAudioData` makes a buffer at the context's sample rate. It
+  resampled to the device's, so a context at 44100 Hz on a 48000 Hz device handed
+  content buffers whose `sampleRate` was not its own, and every sample index
+  computed from the context's rate was 8.8% off; playback also paid to resample
+  them back at run time. Found by migo-conformance's new `audio-spec` bundle (53
+  assertions: the released v0.9.19 fails 19 of them).
 - WebGL: `pixelStorei(UNPACK_FLIP_Y_WEBGL)` and
   `pixelStorei(UNPACK_PREMULTIPLY_ALPHA_WEBGL)` were recorded and never applied,
   so every upload ignored them: an engine that flips its textures (three.js and

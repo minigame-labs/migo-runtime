@@ -81,6 +81,10 @@ enum DecodeResult {
 enum DecodeJob {
     AudioBuffer {
         ctx_id: AudioContextId,
+        /// The sample rate of the context the buffer is for. `decodeAudioData` resamples to
+        /// the context's rate, not the device's: a context at 44100 on a 48000 device
+        /// otherwise hands content buffers whose `sampleRate` is not its own.
+        target_rate: u32,
         data: std::sync::Arc<Vec<u8>>,
         resp: AudioResp<DecodedPcm>,
     },
@@ -677,6 +681,13 @@ fn run_decode_with_panic_boundary(
     }
 }
 
+/// Decode `data` and resample it to `target_rate`: what `decodeAudioData` makes of the bytes for
+/// a context running at that rate.
+fn decode_for_rate(data: &[u8], target_rate: u32) -> EngineResult<crate::decoder::DecodedAudio> {
+    crate::decoder::decode(data)
+        .and_then(|decoded| crate::resampler::resample_if_needed(decoded, target_rate))
+}
+
 /// Worker loop: wait for jobs, decode, send result, wake audio thread.
 fn decode_worker(
     job_rx: Arc<std::sync::Mutex<DecodeQueueReceiver<DecodeJob>>>,
@@ -714,12 +725,14 @@ fn decode_worker(
                     continue;
                 };
                 match job {
-                    DecodeJob::AudioBuffer { ctx_id, data, resp } => {
-                        let result = run_decode_with_panic_boundary(|| {
-                            crate::decoder::decode(&data).and_then(|decoded| {
-                                crate::resampler::resample_if_needed(decoded, sample_rate)
-                            })
-                        });
+                    DecodeJob::AudioBuffer {
+                        ctx_id,
+                        target_rate,
+                        data,
+                        resp,
+                    } => {
+                        let result =
+                            run_decode_with_panic_boundary(|| decode_for_rate(&data, target_rate));
                         publish_decode_result(
                             &result_tx,
                             DecodeResult::AudioBuffer {
@@ -1551,8 +1564,13 @@ fn run_audio_thread(
                 }
 
                 AudioCmd::DecodeAudioData { ctx_id, data, resp } => {
-                    if contexts.contains_key(&ctx_id) {
-                        decode_pool.submit(DecodeJob::AudioBuffer { ctx_id, data, resp });
+                    if let Some(context) = contexts.get(&ctx_id) {
+                        decode_pool.submit(DecodeJob::AudioBuffer {
+                            ctx_id,
+                            target_rate: context.sample_rate(),
+                            data,
+                            resp,
+                        });
                     } else {
                         let _ = resp.send(Err(EngineError::from_detail(
                             ErrorCode::NotFound,
@@ -2983,6 +3001,53 @@ mod tests {
         )
     }
 
+    /// A PCM16 WAV of `frames` frames of a ramp, mono, at `rate`.
+    fn wav(rate: u32, frames: u32) -> Vec<u8> {
+        let data_len = frames * 2;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_len).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        out.extend_from_slice(&1u16.to_le_bytes()); // mono
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 2).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_len.to_le_bytes());
+        for i in 0..frames {
+            out.extend_from_slice(&(((i % 100) as i16 - 50) * 300).to_le_bytes());
+        }
+        out
+    }
+
+    /// `decodeAudioData` makes a buffer at the context's rate, whatever the clip's and the
+    /// device's are: a 44100 Hz context on a 48000 Hz device otherwise handed content buffers
+    /// whose `sampleRate` was not its own, and every sample index computed from the context's rate
+    /// was 8.8% off.
+    #[test]
+    fn a_decode_resamples_to_the_rate_it_is_asked_for() {
+        let clip = wav(8_000, 4_000);
+        for target in [8_000, 22_050, 44_100, 48_000, 96_000] {
+            let decoded = decode_for_rate(&clip, target).unwrap();
+            assert_eq!(decoded.sample_rate, target, "decoded at {target}");
+            let want = 4_000.0 * f64::from(target) / 8_000.0;
+            let got = decoded.frame_count() as f64;
+            assert!(
+                (got - want).abs() <= 2.0,
+                "{target} Hz: {got} frames, want about {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_decode_of_bytes_that_are_not_audio_is_an_invalid_argument() {
+        let error = decode_for_rate(&[7u8; 64], 44_100).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+    }
+
     fn audio_buffer_decode_job(
         ctx_id: AudioContextId,
         data: Arc<Vec<u8>>,
@@ -2991,7 +3056,15 @@ mod tests {
         tokio::sync::oneshot::Receiver<EngineResult<DecodedPcm>>,
     ) {
         let (resp, rx) = tokio::sync::oneshot::channel();
-        (DecodeJob::AudioBuffer { ctx_id, data, resp }, rx)
+        (
+            DecodeJob::AudioBuffer {
+                ctx_id,
+                target_rate: 48_000,
+                data,
+                resp,
+            },
+            rx,
+        )
     }
 
     fn failed_decode_result(id: InnerAudioId) -> DecodeResult {

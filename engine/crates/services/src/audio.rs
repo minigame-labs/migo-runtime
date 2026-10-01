@@ -56,6 +56,10 @@ pub use url::Url;
 /// The class every audio failure is thrown as.
 pub const CLASS_AUDIO_ERROR: &str = "AudioError";
 
+/// The class of a `decodeAudioData` whose bytes could not be decoded. The specification rejects that
+/// with an `EncodingError`, which content tells apart from the other ways a decode can fail.
+pub const CLASS_ENCODING_ERROR: &str = "EncodingError";
+
 /// Maximum compressed/encoded bytes one decode or load takes.
 pub const MAX_ENCODED_AUDIO_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum bytes of one WaveShaper curve.
@@ -291,6 +295,21 @@ impl<T> Pending<T> {
             .map_err(|_| response_closed())?
             .map_err(engine_error)
     }
+
+    /// [`Self::answer`] for a decode: bytes the decoder refused (`InvalidArgument`: not a format it knows,
+    /// truncated, corrupt) are an [`CLASS_ENCODING_ERROR`], and every other failure keeps the audio
+    /// error's class.
+    pub async fn answer_decode(self) -> Result<T, ServiceError> {
+        match self.0.await.map_err(|_| response_closed())? {
+            Ok(value) => Ok(value),
+            Err(error) if error.code == ErrorCode::InvalidArgument => {
+                let mut service = engine_error(error);
+                service.class = CLASS_ENCODING_ERROR;
+                Err(service)
+            }
+            Err(error) => Err(engine_error(error)),
+        }
+    }
 }
 
 fn send(tx: &AudioSender, command: AudioCmd) -> Result<(), ServiceError> {
@@ -465,7 +484,7 @@ impl Decoding {
     /// serial every `AudioBuffer` op takes, and it has no JavaScript backing
     /// until content reads it.
     pub async fn answer(self) -> Result<AudioBufferInfo, ServiceError> {
-        let pcm = self.pcm.answer().await?;
+        let pcm = self.pcm.answer_decode().await?;
         let format = AudioBufferFormat {
             channels: pcm.channels,
             frames: pcm.frames,

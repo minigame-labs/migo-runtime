@@ -84,6 +84,7 @@ import {
     op_set_stroke_style_pattern,
     op_set_shadow_color,
 } from "ext:core/ops";
+import { domException } from "ext:host_v8_base/06_dom_exception.js";
 
 // Line cap constants
 const LINE_CAP_MAP = { 'butt': 0, 'round': 1, 'square': 2 };
@@ -101,21 +102,9 @@ const TEXT_BASELINE_MAP = {
 // are treated as "inherit" (browser-compatible no-op).
 const TEXT_DIRECTION_MAP = { 'inherit': 0, 'ltr': 1, 'rtl': 2 };
 
-// The exception the specification names for a rejected argument. The host
-// provides `DOMException` only when an adapter installed one, and this file
-// throws it from paths that must work without one: a missing global turned
-// `getImageData(0, 0, 0, 1)` into a ReferenceError instead of an IndexSizeError.
-const _DOM_EXCEPTION_CODES = { IndexSizeError: 1, InvalidStateError: 11, SyntaxError: 12 };
-const _DOMException = typeof DOMException === 'function'
-    ? DOMException
-    : class DOMException extends Error {
-        constructor(message = '', name = 'Error') {
-            super(message);
-            Object.defineProperty(this, 'name', { value: name, configurable: true });
-            this.code = _DOM_EXCEPTION_CODES[name] || 0;
-        }
-    };
-
+// The exception the specification names for a rejected argument: the adapter's `DOMException` when
+// one was installed, the engine's own otherwise (see base/06_dom_exception.js). A missing global
+// turned `getImageData(0, 0, 0, 1)` into a ReferenceError instead of an IndexSizeError.
 // Canvas 2D methods that take numbers return without doing anything when any of
 // them is NaN or infinite, and a transform or a path that took one would poison
 // every later draw (one `translate(NaN, 0)` blanks the canvas). `n - n` is 0
@@ -157,7 +146,7 @@ function checkedImageDataDimensions(width, height) {
     width |= 0;
     height |= 0;
     if (width === 0 || height === 0) {
-        throw new _DOMException(
+        throw domException(
             "ImageData width and height must be non-zero",
             "IndexSizeError",
         );
@@ -705,13 +694,13 @@ class CanvasRenderingContext2D {
     // checked first.
     arc(x, y, radius, startAngle, endAngle, counterclockwise = false) {
         if (!_fin6(x, y, radius, startAngle, endAngle, 0)) return;
-        if (radius < 0) throw new _DOMException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
+        if (radius < 0) throw domException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
         encode2dArc(this._canvasId, x, y, radius, startAngle, endAngle, counterclockwise);
     }
 
     arcTo(x1, y1, x2, y2, radius) {
         if (!_fin6(x1, y1, x2, y2, radius, 0)) return;
-        if (radius < 0) throw new _DOMException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
+        if (radius < 0) throw domException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
         encode2dArcTo(this._canvasId, x1, y1, x2, y2, radius);
     }
 
@@ -723,7 +712,7 @@ class CanvasRenderingContext2D {
     ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise = false) {
         if (!_fin6(x, y, radiusX, radiusY, rotation, startAngle) || !_fin1(endAngle)) return;
         if (radiusX < 0 || radiusY < 0) {
-            throw new _DOMException("The radius provided (" + (radiusX < 0 ? radiusX : radiusY) + ") is negative.", "IndexSizeError");
+            throw domException("The radius provided (" + (radiusX < 0 ? radiusX : radiusY) + ") is negative.", "IndexSizeError");
         }
         encode2dEllipse(this._canvasId, x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise);
     }
@@ -1228,7 +1217,7 @@ class CanvasRenderingContext2D {
     _drawCanvas(canvas, args) {
         const w = canvas.width, h = canvas.height;
         if (w === 0 || h === 0) {
-            throw new _DOMException("The image argument is a canvas element with a width or height of 0.", "InvalidStateError");
+            throw domException("The image argument is a canvas element with a width or height of 0.", "InvalidStateError");
         }
         let sx, sy, sw, sh, dx, dy, dw, dh;
         if (args.length === 2) {

@@ -3,6 +3,7 @@ import {
   op_audio_disconnect,
   op_audio_release_node,
 } from "ext:core/ops";
+import { domException } from "ext:host_v8_base/06_dom_exception.js";
  
 const WARNED_CAPABILITIES = new Set();
 function warnUnsupportedCapability(key, message) {
@@ -164,10 +165,10 @@ class AudioNode {
       throw new TypeError("destination must be an AudioNode");
     }
     if (outputIndex < 0 || outputIndex >= this.#numberOfOutputs) {
-      throw new DOMException("outputIndex is out of range", "IndexSizeError");
+      throw domException("outputIndex is out of range", "IndexSizeError");
     }
     if (inputIndex < 0 || inputIndex >= destination.numberOfInputs) {
-      throw new DOMException("inputIndex is out of range", "IndexSizeError");
+      throw domException("inputIndex is out of range", "IndexSizeError");
     }
     op_audio_connect(this.#nodeId, destination._nodeId, outputIndex, inputIndex);
     this.#connections.push(destination);

@@ -603,6 +603,7 @@ deno_core::extension!(
         "03_gc.js",
         "04_subpackage.js",
         "05_perf.js",
+        "06_dom_exception.js",
     ],
     options = {
         options: HostOpState,

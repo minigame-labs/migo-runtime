@@ -29,6 +29,11 @@ pub enum AudioError {
     #[class("AudioError")]
     #[error("{0}")]
     Message(String),
+    /// Bytes `decodeAudioData` could not decode. Its own class so the JavaScript side can
+    /// turn it into the `EncodingError` the specification names.
+    #[class("EncodingError")]
+    #[error("{0}")]
+    Encoding(String),
 }
 
 impl From<&str> for AudioError {
@@ -57,6 +62,9 @@ impl From<migo_services::ServiceError> for AudioError {
     /// this type's, and the message is carried as it is.
     #[inline]
     fn from(e: migo_services::ServiceError) -> Self {
+        if e.class == service::CLASS_ENCODING_ERROR {
+            return AudioError::Encoding(e.message);
+        }
         debug_assert_eq!(e.class, service::CLASS_AUDIO_ERROR);
         AudioError::Message(e.message)
     }
@@ -1886,13 +1894,10 @@ mod tests {
 
         let js = include_str!("01_audio_context.js");
         let body = section(js, "async decodeAudioData", "  createBuffer(");
-        assert!(
-            body.contains(
-                "op_audio_decode_audio_data(\n        this.#nativeId,\n        audioData"
-            )
-        );
+        // The op takes the caller's ArrayBuffer itself (it detaches it), not a view or a copy.
+        assert!(body.contains("op_audio_decode_audio_data(this.#nativeId, audioData)"));
         assert!(!body.contains("new Uint8Array(audioData)\n      )"));
-        assert!(body.contains("new DOMException") && body.contains("\"DataCloneError\""));
+        assert!(body.contains("domException(") && body.contains("\"DataCloneError\""));
         assert!(body.contains("const decodePromise"));
         assert!(body.contains("decodePromise.then"));
         assert!(

@@ -20,6 +20,7 @@ import {
   op_audio_resume_context,
   op_audio_suspend_context,
 } from "ext:core/ops";
+import { domException } from "ext:host_v8_base/06_dom_exception.js";
 import { AudioParam } from "ext:host_v8_audio/00_audio_param.js";
 import { AudioBuffer, createDecodedAudioBuffer } from "ext:host_v8_audio/00_audio_buffer.js";
 import {
@@ -195,7 +196,7 @@ class BaseAudioContext {
     try {
       new Uint8Array(audioData, 0, 0);
     } catch (_) {
-      throw new DOMException("audioData is already detached", "DataCloneError");
+      throw domException("audioData is already detached", "DataCloneError");
     }
 
     const decodePromise = (async () => {
@@ -203,10 +204,17 @@ class BaseAudioContext {
       // names it: the AudioBuffer starts with no JavaScript backing, playing
       // it shares the native samples, and only reading its channels copies
       // them here. A clip that is only played is never copied at all.
-      const info = await op_audio_decode_audio_data(
-        this.#nativeId,
-        audioData
-      );
+      let info;
+      try {
+        info = await op_audio_decode_audio_data(this.#nativeId, audioData);
+      } catch (error) {
+        // Bytes the decoder could not read reject with an EncodingError, which is how content tells
+        // "this file is not audio" from "the engine failed"; every other failure is passed on as it came.
+        if (error && error.name === "EncodingError") {
+          throw domException(error.message || "Unable to decode audio data", "EncodingError");
+        }
+        throw error;
+      }
       try {
         return createDecodedAudioBuffer(info.id, info);
       } catch (error) {
