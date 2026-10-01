@@ -73,6 +73,7 @@ import {
   GL_QUERY_PROGRAM_PARAMETER,
   GL_QUERY_QUERY_PARAMETER,
   GL_QUERY_SHADER_INFO_LOG,
+  GL_QUERY_STATE,
   GL_QUERY_SHADER_PARAMETER,
   GL_QUERY_TRANSFORM_FEEDBACK_VARYING,
   GL_QUERY_UNIFORM_BLOCK_INDEX,
@@ -259,6 +260,17 @@ export function op_get_transform_feedback_varying(program, index) {
 
 export function op_get_parameter(canvasId, pname) {
   return text({ kind: GL_QUERY_PARAMETER, canvasId: smiU32(canvasId, "canvas_id"), pname: smiU32(pname, "pname") });
+}
+
+export function op_get_gl_state(canvasId, query, pname, extra, name) {
+  return text({
+    kind: GL_QUERY_STATE,
+    canvasId: smiU32(canvasId, "canvas_id"),
+    object: smiU32(query, "query"),
+    pname: smiU32(pname, "pname"),
+    extra: smiU32(extra, "extra"),
+    name: stringOf(name, "name"),
+  });
 }
 
 export function op_check_framebuffer_status(canvasId, target) {

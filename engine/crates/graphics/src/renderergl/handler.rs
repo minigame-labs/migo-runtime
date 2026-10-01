@@ -1384,6 +1384,26 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            GLCmd::GetState {
+                canvas_id,
+                query,
+                pname,
+                extra,
+                name: _,
+                resp,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let json = match query {
+                    shared::protocol::render_cmd::gl_state::INTERNALFORMAT_SAMPLES => {
+                        internalformat_samples_json(gl, pname, extra)
+                    }
+                    // The wire refuses a number it does not know before it gets here.
+                    _ => "null".to_string(),
+                };
+                let _ = resp.send(Ok(json));
+                Ok(DamageEffect::NoDamage)
+            }
+
             // ========== Phase 1B: Textures ==========
             GLCmd::CreateTexture {
                 canvas_id,
@@ -3757,6 +3777,68 @@ pub(crate) fn clear_damage_effect(
         // Unknown rect or disabled: can't bound the clear.
         ScissorState::EnabledUnknownRect | ScissorState::Disabled => DamageEffect::FullSurface,
     }
+}
+
+/// The renderable color formats whose components are integers, which ES 3.0 does not multisample.
+fn is_integer_color_format(internalformat: u32) -> bool {
+    matches!(
+        internalformat,
+        glow::R8I
+            | glow::R8UI
+            | glow::R16I
+            | glow::R16UI
+            | glow::R32I
+            | glow::R32UI
+            | glow::RG8I
+            | glow::RG8UI
+            | glow::RG16I
+            | glow::RG16UI
+            | glow::RG32I
+            | glow::RG32UI
+            | glow::RGBA8I
+            | glow::RGBA8UI
+            | glow::RGBA16I
+            | glow::RGBA16UI
+            | glow::RGBA32I
+            | glow::RGBA32UI
+            | glow::RGB10_A2UI
+    )
+}
+
+/// `getInternalformatParameter(target, internalformat, SAMPLES)`: the sample counts the driver supports for a
+/// renderbuffer of `internalformat`, as a JSON array sorted descending (the specification's order), empty when the
+/// format cannot be multisampled.
+///
+/// Asked of the driver, not derived from `MAX_SAMPLES`: which formats multisample, and at which counts, is the
+/// driver's. `target` is checked by the caller's validation; a target the driver refuses reads back as no counts.
+fn internalformat_samples_json(gl: &glow::Context, target: u32, internalformat: u32) -> String {
+    // WebGL 2 is OpenGL ES 3.0, where a signed or unsigned integer renderbuffer cannot be multisampled: the
+    // specification's answer is no counts. ANGLE reports its ES 3.1 ones whatever the context version.
+    if is_integer_color_format(internalformat) {
+        return "[]".to_string();
+    }
+    let mut count = [0i32; 1];
+    unsafe {
+        gl.get_internal_format_i32_slice(
+            target,
+            internalformat,
+            glow::NUM_SAMPLE_COUNTS,
+            &mut count,
+        );
+    }
+    let count = count[0].clamp(0, 64) as usize;
+    if count == 0 {
+        return "[]".to_string();
+    }
+    let mut samples = vec![0i32; count];
+    unsafe {
+        gl.get_internal_format_i32_slice(target, internalformat, glow::SAMPLES, &mut samples);
+    }
+    // The driver lists them largest first; the specification promises it, so it is not left to the driver.
+    samples.sort_unstable_by(|a, b| b.cmp(a));
+    samples.dedup();
+    let items: Vec<String> = samples.iter().map(i32::to_string).collect();
+    format!("[{}]", items.join(","))
 }
 
 #[cfg(test)]

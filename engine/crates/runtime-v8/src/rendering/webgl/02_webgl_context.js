@@ -41,6 +41,7 @@ import {
     op_enable,
     op_disable,
     op_get_parameter,
+    op_get_gl_state,
     op_create_texture,
     op_delete_texture,
     op_bind_texture,
@@ -309,6 +310,11 @@ const _rawBindBuffer         = _makeOrderedRaw(op_bind_buffer);
 const _rawBufferData         = _makeOrderedRaw(op_buffer_data);
 const _rawGetUniformLocation = _makeOrderedRaw(op_get_uniform_location);
 const _rawGetParameter       = _makeOrderedRaw(op_get_parameter);
+const _rawGetGlState         = _makeOrderedRaw(op_get_gl_state);
+
+// The numbers of `frame_wire::sync::gl_state`: which state query `op_get_gl_state` asks. Mirrored by hand, and
+// checked against the Rust table by `render_stream_js_agreement`.
+const GL_STATE_INTERNALFORMAT_SAMPLES = 1;
 
 // --- Producer-side capability shadow ---------------------------------------
 //
@@ -2806,6 +2812,22 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         }
         flushRenderCommandStream();
         _rawDrawElementsInstanced(this._canvasId, mode, count, type, offset, instanceCount);
+    }
+
+    // ---- Renderbuffer formats ----------------------------------
+    // `getInternalformatParameter(RENDERBUFFER, format, SAMPLES)`: the sample counts the driver supports for a
+    // renderbuffer of `format`, sorted descending, an empty Int32Array when it cannot be multisampled. WebGL 2 allows
+    // nothing else: any other target or pname is INVALID_ENUM and answers null. Pixi and three.js ask this when
+    // they build a multisampled render target, and Pixi asks it while it creates its renderer.
+    getInternalformatParameter(target, internalformat, pname) {
+        if (target !== WebglConstants.RENDERBUFFER || pname !== WebglConstants.SAMPLES) {
+            this._pushJsError(WebglConstants.INVALID_ENUM);
+            return null;
+        }
+        const json = _rawGetGlState(this._canvasId, GL_STATE_INTERNALFORMAT_SAMPLES, target, internalformat >>> 0, "");
+        let samples = [];
+        try { samples = JSON.parse(json); } catch (_) { /* no answer: no counts */ }
+        return new Int32Array(Array.isArray(samples) ? samples : []);
     }
 
     // ---- Uniform Buffer Objects --------------------------------

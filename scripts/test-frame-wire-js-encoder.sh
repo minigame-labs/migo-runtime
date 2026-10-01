@@ -296,7 +296,7 @@ if (( status != 0 )); then
     echo "FAIL: the Rust decoder rejected query records built by the JavaScript producer." >&2
     exit 1
 fi
-if ! printf '%s\n' "$output" | grep -qE 'read 15 JavaScript-encoded query records'; then
+if ! printf '%s\n' "$output" | grep -qE 'read 16 JavaScript-encoded query records'; then
     echo "FAIL: the query interop did not report every kind; it may not have run." >&2
     exit 1
 fi

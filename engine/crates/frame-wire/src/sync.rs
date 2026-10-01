@@ -647,11 +647,40 @@ pub mod gl_query {
     pub const ACTIVE_UNIFORM: u32 = 14;
     /// `getTransformFeedbackVarying(program, index)`.
     pub const TRANSFORM_FEEDBACK_VARYING: u32 = 15;
+    /// A query of the state a WebGL context holds, whose answer is JSON text.
+    ///
+    /// The one kind for the queries that read a value or a list back and have
+    /// no reply shape of their own -- `getInternalformatParameter`,
+    /// `getUniform`, `getVertexAttrib`, `getIndexedParameter`, the uniform-block
+    /// introspection family. Which one is `object`, one of the [`super::gl_state`]
+    /// numbers; `pname` and `extra` are its first two arguments and `name` carries
+    /// any more (words, or text, as that query says). New queries of this shape
+    /// are a number in [`super::gl_state`] and an arm in the renderer, not a new
+    /// kind through every producer, host and contract in the tree.
+    pub const STATE: u32 = 16;
 
     /// Whether a kind is one this build knows. A query nobody implements is
     /// [`super::SyncError::UnsupportedOperation`], never an answer of zero.
     pub fn is_known(kind: u32) -> bool {
-        (PROGRAM_PARAMETER..=TRANSFORM_FEEDBACK_VARYING).contains(&kind)
+        (PROGRAM_PARAMETER..=STATE).contains(&kind)
+    }
+}
+
+/// Which query a [`gl_query::STATE`] asks, in `object`.
+///
+/// Numbered and stable, like an opcode. The producer writes one of these and the
+/// renderer dispatches on it; an unknown number is answered as
+/// [`SyncError::UnsupportedOperation`] by the host, never as an empty value.
+pub mod gl_state {
+    /// `getInternalformatParameter(target, internalformat, pname)`: `pname` is
+    /// the target, `extra` the internal format, and the answer is the JSON array
+    /// of what the driver reports for `GL_SAMPLES` (sorted descending, as the
+    /// specification asks), empty for a format that cannot be multisampled.
+    pub const INTERNALFORMAT_SAMPLES: u32 = 1;
+
+    /// Whether a number is one this build knows.
+    pub fn is_known(state: u32) -> bool {
+        (INTERNALFORMAT_SAMPLES..=INTERNALFORMAT_SAMPLES).contains(&state)
     }
 }
 
@@ -721,6 +750,10 @@ impl<'a> GlQueryParams<'a> {
         if !gl_query::is_known(kind) {
             return Err(SyncError::UnsupportedOperation);
         }
+        // A state query names which one in `object`; a number this build does not know is refused like a kind.
+        if kind == gl_query::STATE && !gl_state::is_known(word(8)) {
+            return Err(SyncError::UnsupportedOperation);
+        }
         let name_len = word(20) as usize;
         if name_len > GL_QUERY_MAX_NAME_BYTES {
             return Err(SyncError::UnsupportedOperation);
@@ -755,9 +788,10 @@ impl<'a> GlQueryParams<'a> {
     /// Which operation answers this kind, and therefore what shape its reply is.
     pub fn operation(kind: u32) -> u32 {
         match kind {
-            gl_query::PROGRAM_INFO_LOG | gl_query::SHADER_INFO_LOG | gl_query::PARAMETER => {
-                SYNC_OP_GL_QUERY_TEXT
-            }
+            gl_query::PROGRAM_INFO_LOG
+            | gl_query::SHADER_INFO_LOG
+            | gl_query::PARAMETER
+            | gl_query::STATE => SYNC_OP_GL_QUERY_TEXT,
             gl_query::ACTIVE_ATTRIB
             | gl_query::ACTIVE_UNIFORM
             | gl_query::TRANSFORM_FEEDBACK_VARYING => SYNC_OP_GL_QUERY_ACTIVE,

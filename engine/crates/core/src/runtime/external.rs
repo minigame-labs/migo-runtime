@@ -947,6 +947,14 @@ impl SyncPath {
                         pname: query.pname,
                         resp,
                     }),
+                    gl_query::STATE => ask!(|resp| GLCmd::GetState {
+                        canvas_id: query.canvas_id,
+                        query: query.object,
+                        pname: query.pname,
+                        extra: query.extra,
+                        name: query.name_str().into_owned(),
+                        resp,
+                    }),
                     _ => return Err(SyncError::UnsupportedOperation),
                 };
                 // Truncating an info log would be a wrong answer that looks
