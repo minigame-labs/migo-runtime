@@ -28,7 +28,7 @@ const {
     StringPrototypeCharCodeAt,
 } = primordials;
 
-const MAX_PENDING_MESSAGES = 64;
+const MAX_PENDING_MESSAGES = 4096;
 const MAX_PENDING_MESSAGE_BYTES = 64 * 1024 * 1024;
 const MAX_WORKER_MESSAGE_BYTES = 16 * 1024 * 1024;
 

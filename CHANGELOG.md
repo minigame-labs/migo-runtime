@@ -55,6 +55,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Workers: `terminate()` is quiet. The worker's event loop ends with V8's
+  "execution terminated", which is the answer to the request, and it was reported
+  to the content's `onError` (and logged at ERROR) as if the worker had crashed,
+  every time. Also: `terminate()` followed at once by `createWorker()` -- restarting
+  a worker -- no longer fails or hands back a worker that never starts: the old
+  thread needs a moment to leave its isolate, and `createWorker()` now waits for it
+  (up to two seconds) instead of racing it. And a worker may post a burst of
+  messages: the queue held 64, so a worker that posted a result per item in a loop
+  threw `Worker message queue full` at the 65th and the rest never existed (68 of
+  200 arrived); it holds 4096 per direction, still inside the same byte budget that
+  actually bounds the memory. Found by migo-conformance's new `worker-spec` bundle
+  (17 assertions: the released v0.9.19 fails 3).
+- `performance.now()`'s origin is clamped to the clock it is read against, which
+  matters only to tests that advance a paused clock by hand: the worker timer
+  lifecycle tests failed when run on their own, since the shared process origin
+  introduced with the frame-timestamp fix could be later than a paused clock's
+  "now" and time then stood still at zero until the clock caught up. They passed in
+  the full run by accident of ordering.
 - The V8 code cache's directory has one name however many sessions start at once.
   Two sessions asking for the cache while its worker was clearing and recreating
   the directory (it does that whenever the stored V8 version differs, which a
