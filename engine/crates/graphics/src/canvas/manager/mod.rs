@@ -133,6 +133,21 @@ struct CanvasSourceCopy {
     last_used: u64,
 }
 
+/// Where the pixels of an upload whose source is a texture go.
+#[derive(Clone, Copy)]
+enum UploadPlacement {
+    /// A new image, `texImage2D`: the destination's internal format.
+    Image { internalformat: i32 },
+    /// A region of the image already there, `texSubImage2D`: its offsets, and the `format` and
+    /// `type` the caller passed (what the destination holds).
+    Region {
+        xoffset: i32,
+        yoffset: i32,
+        format: u32,
+        type_: u32,
+    },
+}
+
 /// What a texture that is the source of an upload holds in its alpha channel.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SourceAlpha {
@@ -4919,6 +4934,10 @@ impl CanvasManager {
     /// nothing, when the destination format is not RGB(A) (the GPU copy keeps handling those, as it
     /// always did) or when the source cannot be read.
     ///
+    /// The pixels go where `placement` says: a new image (`texImage2D`) or a region of the one
+    /// already there (`texSubImage2D`, which is what three.js, Pixi and Cocos use for every canvas
+    /// texture once the storage is allocated: `texStorage2D` then `texSubImage2D`).
+    ///
     /// [`unpack_convert`]: crate::backend::gl::unpack_convert
     #[allow(clippy::too_many_arguments)]
     fn upload_unpack_converted(
@@ -4930,7 +4949,7 @@ impl CanvasManager {
         source: SourceAlpha,
         target: u32,
         level: i32,
-        internalformat: i32,
+        placement: UploadPlacement,
     ) -> bool {
         let (flip_y, wants_premultiplied) = match self.unpack_conversion(canvas_id) {
             Some(state) => (state.flip_y, state.premultiply),
@@ -4941,10 +4960,19 @@ impl CanvasManager {
         if !(flip_y || premultiply || unpremultiply) {
             return false;
         }
-        let format = match internalformat as u32 {
-            glow::RGBA | glow::RGBA8 => glow::RGBA,
-            glow::RGB | glow::RGB8 => glow::RGB,
-            _ => return false,
+        let format = match placement {
+            UploadPlacement::Image { internalformat } => match internalformat as u32 {
+                glow::RGBA | glow::RGBA8 => glow::RGBA,
+                glow::RGB | glow::RGB8 => glow::RGB,
+                _ => return false,
+            },
+            // The caller says what the destination holds. Only 8-bit RGB(A) is converted here;
+            // a packed or float destination keeps the GPU copy, as it always did.
+            UploadPlacement::Region { format, type_, .. } => match (format, type_) {
+                (glow::RGBA, glow::UNSIGNED_BYTE) => glow::RGBA,
+                (glow::RGB, glow::UNSIGNED_BYTE) => glow::RGB,
+                _ => return false,
+            },
         };
         let Some(mut pixels) = crate::backend::gl::texture_copy::read_texture_rgba8(
             &self.gl, copy_fbo, src_tex, sx, sy, width, height,
@@ -4973,17 +5001,32 @@ impl CanvasManager {
             // Tight rows whatever UNPACK_ALIGNMENT, ROW_LENGTH and the skips the content set.
             let _unpack = crate::backend::gl::readback::CompactPixelUnpackGuard::new(&self.gl, 1);
             unsafe {
-                self.gl.tex_image_2d(
-                    target,
-                    level,
-                    internalformat,
-                    width,
-                    height,
-                    0,
-                    format,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(&bytes)),
-                );
+                match placement {
+                    UploadPlacement::Image { internalformat } => self.gl.tex_image_2d(
+                        target,
+                        level,
+                        internalformat,
+                        width,
+                        height,
+                        0,
+                        format,
+                        glow::UNSIGNED_BYTE,
+                        glow::PixelUnpackData::Slice(Some(&bytes)),
+                    ),
+                    UploadPlacement::Region {
+                        xoffset, yoffset, ..
+                    } => self.gl.tex_sub_image_2d(
+                        target,
+                        level,
+                        xoffset,
+                        yoffset,
+                        width,
+                        height,
+                        format,
+                        glow::UNSIGNED_BYTE,
+                        glow::PixelUnpackData::Slice(Some(&bytes)),
+                    ),
+                }
             }
         }
         self.mark_all_2d_contexts_stale_bits(
@@ -5060,7 +5103,7 @@ impl CanvasManager {
             source_alpha,
             target,
             level,
-            internalformat,
+            UploadPlacement::Image { internalformat },
         ) {
             return Ok(());
         }
@@ -5822,7 +5865,7 @@ impl CanvasManager {
             SourceAlpha::Premultiplied,
             target,
             level,
-            internalformat,
+            UploadPlacement::Image { internalformat },
         ) {
             return Ok(());
         }
@@ -5906,7 +5949,7 @@ impl CanvasManager {
             SourceAlpha::Premultiplied,
             target,
             level,
-            internalformat,
+            UploadPlacement::Image { internalformat },
         ) {
             return Ok(true);
         }
@@ -6026,8 +6069,15 @@ impl CanvasManager {
             return Ok(());
         }
 
+        // The command carries no format or type: a canvas is RGBA8, and that is what is converted.
         self.tex_sub_image_2d_from_canvas2d_snapshot(
-            canvas_id, target, level, xoffset, yoffset, id,
+            canvas_id,
+            target,
+            level,
+            xoffset,
+            yoffset,
+            (glow::RGBA, glow::UNSIGNED_BYTE),
+            id,
         )?;
 
         if let Some(entry) = self.remove_canvas2d_snapshot(id) {
@@ -6044,6 +6094,7 @@ impl CanvasManager {
     /// `canvas_id`, anchored at (`xoffset`, `yoffset`).  Required for
     /// cocos-style text atlases that pre-allocate via `texImage2D` and
     /// stream glyphs in via `texSubImage2D`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn tex_sub_image_2d_from_canvas2d_snapshot(
         &mut self,
         canvas_id: CanvasId,
@@ -6051,6 +6102,7 @@ impl CanvasManager {
         level: i32,
         xoffset: i32,
         yoffset: i32,
+        (format, type_): (u32, u32),
         snapshot_id: u32,
     ) -> EngineResult<()> {
         let entry = match self.canvas2d_snapshots.get(&snapshot_id) {
@@ -6066,6 +6118,26 @@ impl CanvasManager {
         self.make_current_needed(canvas_id)?;
 
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
+        // UNPACK_FLIP_Y_WEBGL / UNPACK_PREMULTIPLY_ALPHA_WEBGL apply to a sub-image upload exactly as
+        // to a whole one: three.js flips every canvas texture (`CanvasTexture.flipY`) and uploads it
+        // with `texStorage2D` + `texSubImage2D`, so without this every text sprite was upside down.
+        if self.upload_unpack_converted(
+            canvas_id,
+            copy_fbo,
+            entry.tex,
+            (0, 0, entry.width as i32, entry.height as i32),
+            SourceAlpha::Premultiplied,
+            target,
+            level,
+            UploadPlacement::Region {
+                xoffset,
+                yoffset,
+                format,
+                type_,
+            },
+        ) {
+            return Ok(());
+        }
         let status = crate::backend::gl::texture_copy::copy_texture(
             &self.gl,
             copy_fbo,
@@ -7202,6 +7274,9 @@ mod recovery_source_guards {
             "pub(crate) fn tex_image_2d_from_shared(",
             "pub(crate) fn tex_image_2d_from_canvas2d_snapshot(",
             "pub(crate) fn tex_image_2d_from_text_cache(",
+            // `texStorage2D` + `texSubImage2D(canvas)` is how three.js, Pixi and Cocos upload every canvas
+            // texture: without this, `CanvasTexture.flipY` left every text sprite upside down.
+            "pub(crate) fn tex_sub_image_2d_from_canvas2d_snapshot(",
         ] {
             let body = function_body(MGR, signature);
             assert!(
