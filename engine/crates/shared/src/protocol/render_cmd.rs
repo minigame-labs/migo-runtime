@@ -2084,6 +2084,17 @@ pub enum Canvas2DCmd {
         dw: f32,
         dh: f32,
     },
+    /// `putImageData`: `width * height` RGBA8 pixels (not premultiplied, the layout of `ImageData.data`) written at
+    /// `(x, y)` in the canvas's own pixels. The specification has it replace the bitmap's pixels outright, so the
+    /// renderer ignores the transform, the clip, `globalAlpha`, the composite operation and the shadow; `pixels.len()`
+    /// is exactly `width * height * 4`, which the decoder refuses to produce otherwise.
+    PutImageData {
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
     GetImageData {
         x: i32,
         y: i32,
@@ -2209,6 +2220,7 @@ impl Canvas2DCmd {
             | Self::Scale { .. }
             | Self::DrawImage { .. }
             | Self::DrawCanvas { .. }
+            | Self::PutImageData { .. }
             | Self::GetImageData { .. }
             | Self::CaptureSnapshot { .. }
             | Self::ReadSnapshotPixels { .. }
@@ -2963,6 +2975,7 @@ impl Canvas2DCmd {
             Canvas2DCmd::FillText { text, .. }
             | Canvas2DCmd::StrokeText { text, .. }
             | Canvas2DCmd::MeasureText { text, .. } => text.capacity(),
+            Canvas2DCmd::PutImageData { pixels, .. } => pixels.capacity(),
             Canvas2DCmd::SetFont { font, .. } => font.capacity(),
             Canvas2DCmd::SetLineDash { segments } => {
                 segments.capacity() * std::mem::size_of::<f32>()

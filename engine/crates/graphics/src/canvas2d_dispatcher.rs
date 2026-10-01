@@ -390,6 +390,25 @@ pub(crate) fn classify_draw_damage(
         _ => {}
     }
 
+    // `putImageData` writes device pixels whatever the drawing state is (no transform, clip, alpha, composite or shadow
+    // reaches it), so its rectangle is its damage and the state gate below, which exists for paints the state can
+    // widen, has nothing to say about it.
+    if let PutImageData {
+        x,
+        y,
+        width,
+        height,
+        ..
+    } = cmd
+    {
+        return DamageEffect::OnscreenRect {
+            x: *x,
+            y: *y,
+            width: i32::try_from(*width).unwrap_or(i32::MAX),
+            height: i32::try_from(*height).unwrap_or(i32::MAX),
+        };
+    }
+
     // Fast-path: tight bounding rects.  Only fire when the global
     // state is safe (no shadow / filter / alpha modulation / non
     // source-over composite / non-axis-aligned CTM / user clip).

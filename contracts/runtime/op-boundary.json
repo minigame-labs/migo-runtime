@@ -558,6 +558,7 @@
         "op_set_line_dash": "stream",
         "op_set_preferred_fps": "command",
         "op_set_shadow_color": "stream",
+        "op_put_image_data": "stream",
         "op_set_stroke_style": "stream",
         "op_set_stroke_style_gradient": "stream",
         "op_set_stroke_style_pattern": "stream",

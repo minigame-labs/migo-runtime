@@ -377,6 +377,110 @@ fn image_smoothing_is_a_real_bool_and_keeps_its_place_in_the_state_stream() {
     }
 }
 
+/// A `putImageData` record: `H x y width height byte_length | pixels`, the bytes in little-endian words.
+fn put_image_data_record(x: i32, y: i32, width: u32, height: u32, bytes: &[u8]) -> Vec<u32> {
+    let mut words = vec![x as u32, y as u32, width, height, bytes.len() as u32];
+    for chunk in bytes.chunks(4) {
+        let mut word = [0u8; 4];
+        word[..chunk.len()].copy_from_slice(chunk);
+        words.push(u32::from_le_bytes(word));
+    }
+    record(OP2D_PUT_IMAGE_DATA, &words)
+}
+
+/// The pixels arrive as written, at the position written, in the order they were issued among the state around them.
+#[test]
+fn put_image_data_decodes_to_its_pixels_in_stream_order() {
+    // 3 x 2 pixels: 24 bytes, a whole number of words; and 1 x 1 (4 bytes) below.
+    let pixels: Vec<u8> = (0u8..24).collect();
+    let words = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[5]),
+        record(OP2D_SAVE, &[]),
+        put_image_data_record(-2, 7, 3, 2, &pixels),
+        record(OP2D_RESTORE, &[]),
+        put_image_data_record(10, 11, 1, 1, &[255, 0, 128, 64]),
+    ]);
+    let (ops, context) = decode(&words);
+    assert!(context.errors.is_empty());
+    let FrameOp::CanvasBatch(batch) = &ops[0] else {
+        panic!("expected a canvas batch");
+    };
+    assert!(matches!(batch.commands[0], Canvas2DCmd::Save));
+    match &batch.commands[1] {
+        Canvas2DCmd::PutImageData {
+            x,
+            y,
+            width,
+            height,
+            pixels: got,
+        } => {
+            assert_eq!(
+                (*x, *y, *width, *height),
+                (-2, 7, 3, 2),
+                "a negative x is kept"
+            );
+            assert_eq!(got, &pixels);
+        }
+        other => panic!("expected the first put, got {other:?}"),
+    }
+    assert!(matches!(batch.commands[2], Canvas2DCmd::Restore));
+    assert!(matches!(
+        &batch.commands[3],
+        Canvas2DCmd::PutImageData { x: 10, y: 11, width: 1, height: 1, pixels } if pixels == &[255, 0, 128, 64]
+    ));
+}
+
+/// A record whose size and bytes disagree is one the renderer cannot write: it is dropped, not guessed at -- and the
+/// commands around it still decode.
+#[test]
+fn put_image_data_with_the_wrong_byte_count_is_dropped() {
+    let words = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[5]),
+        record(OP2D_BEGIN_PATH, &[]),
+        // 2 x 2 needs 16 bytes; 8 are carried
+        put_image_data_record(0, 0, 2, 2, &[0u8; 8]),
+        record(OP2D_FILL, &[]),
+    ]);
+    let stream = validate_stream(&words, words.len() as u32);
+    // Whether the validator or the decoder refuses it, no put reaches the renderer.
+    if let Ok(stream) = stream {
+        let mut context = RecordingContext::default();
+        let mut out = Vec::new();
+        decode_render_stream(&mut context, stream, &mut out);
+        for op in &out {
+            if let FrameOp::CanvasBatch(batch) = op {
+                assert!(
+                    !batch
+                        .commands
+                        .iter()
+                        .any(|cmd| matches!(cmd, Canvas2DCmd::PutImageData { .. })),
+                    "a put with 8 bytes for 4 pixels must not become a command"
+                );
+            }
+        }
+    }
+}
+
+/// A byte count that is not a whole number of words still pads and reads exactly: 3 bytes would be a 1 x 1 image missing
+/// one, so the payload shape is checked at the byte, not the word.
+#[test]
+fn put_image_data_payload_is_checked_at_the_byte() {
+    let words = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[5]),
+        put_image_data_record(0, 0, 1, 1, &[1, 2, 3]),
+    ]);
+    if let Ok(stream) = validate_stream(&words, words.len() as u32) {
+        let mut context = RecordingContext::default();
+        let mut out = Vec::new();
+        decode_render_stream(&mut context, stream, &mut out);
+        let any_put = out.iter().any(|op| {
+            matches!(op, FrameOp::CanvasBatch(batch)
+                if batch.commands.iter().any(|cmd| matches!(cmd, Canvas2DCmd::PutImageData { .. })))
+        });
+        assert!(!any_put, "3 bytes are not a pixel");
+    }
+}
+
 /// Every opcode the block declares has a spec, and every spec is reachable.
 #[test]
 fn the_block_is_contiguous_and_fully_specified() {

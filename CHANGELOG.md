@@ -55,6 +55,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- `putImageData` writes pixels. It was an empty function (`// Not implemented`): p5.js's `updatePixels`, EaselJS's filters
+  and every game that edits pixels on the CPU changed nothing, found by running both libraries on the real host. The
+  specification's algorithm (the dirty-rectangle form, negative extents, WebIDL `long` arguments) is in the 2D facade, and
+  the rectangle -- cut to the ImageData's dirty part and the canvas's bounds, so nothing outside is sent -- goes to the
+  renderer as one command that Skia's `writePixels` executes: it ignores the transform, the clip, `globalAlpha`, the
+  composite operation and the shadow, as the specification says, and converts from `ImageData`'s unpremultiplied RGBA.
+  In process it is `op_put_image_data` (a stream op); on the Performance+ lane it is the new record
+  `OP2D_PUT_IMAGE_DATA` (571: `H x y width height byte_length | rgba`), written as bands of at most 1 MiB so a record stays
+  inside a packet, decoded with the byte count checked against `width * height * 4`. The damage of a put is its exact device
+  rectangle, whatever the drawing state. Tests: the renderer under a hostile state (transform, clip, alpha, composite),
+  edge clipping, a short buffer (red before, green after), the decoder (order, pixels, wrong byte counts), the
+  producer's banding (tiles the rectangle exactly), and the conformance `canvas2d-spec` assertions. Runtime-v8 JavaScript
+  changed: joins the snapshot backlog.
 - `onended` of `AudioBufferSourceNode`, `OscillatorNode` and `ConstantSourceNode` fires. The nodes accepted the handler and
   told the console that "onended callbacks are not dispatched by the native graph", so Phaser's `complete`, three.js's
   `onEnded` and every sound library that chains one sound after another never heard a sound end. The graph knew all along

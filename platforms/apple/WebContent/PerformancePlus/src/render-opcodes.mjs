@@ -184,6 +184,11 @@ export const OP2D_FILL_EVEN_ODD = 568;
 export const OP2D_DRAW_CANVAS = 570;
 export const OP2D_CLIP_EVEN_ODD = 569;
 
+// `putImageData`: `H x:I y:I width:U height:U byte_length | rgba`, one band of rows per record.
+export const OP2D_PUT_IMAGE_DATA = 571;
+/** The most pixel bytes one record carries; a larger ImageData is written as bands of rows. */
+export const PUT_IMAGE_DATA_BAND_BYTES = 1024 * 1024;
+
 // The flags word of OP2D_RESIZE_CANVAS: content assigns width and height
 // separately, and the op this stands for takes each as an option.
 export const RESIZE_CANVAS_WIDTH = 1;

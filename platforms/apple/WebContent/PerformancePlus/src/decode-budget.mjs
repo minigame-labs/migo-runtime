@@ -19,6 +19,7 @@ import {
   OP2D_BASE,
   OP2D_DRAW_IMAGE_BATCH,
   OP2D_FILL_TEXT,
+  OP2D_PUT_IMAGE_DATA,
   OP2D_SELECT_CANVAS,
   OP2D_SET_FONT,
   OP2D_SET_LINE_DASH,
@@ -87,13 +88,14 @@ export const WORD_LIST_PREFIX_WORDS = new Map([
 ]);
 /**
  * The 2D payload records' shapes, from engine/crates/frame-wire/src/canvas2d.rs:
- * a font or a text is a string the decode copies out, a dash list or an image
+ * a font or a text is a string the decode copies out, pixels are bytes it copies out, a dash list or an image
  * batch a vector of the record's own words.
  */
 export const CANVAS2D_PAYLOAD_PREFIX_WORDS = new Map([
   [OP2D_SET_FONT, 1],
   [OP2D_FILL_TEXT, 4],
   [OP2D_STROKE_TEXT, 4],
+  [OP2D_PUT_IMAGE_DATA, 5],
 ]);
 export const CANVAS2D_WORD_LIST_PREFIX_WORDS = new Map([
   [OP2D_SET_LINE_DASH, 1],
