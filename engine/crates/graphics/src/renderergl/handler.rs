@@ -367,6 +367,16 @@ impl RendererGL {
                 program_id,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                // `useProgram(null)` crosses as program 0: it is the call that unbinds the current program (a
+                // draw after it is INVALID_OPERATION). Phaser makes it while it sets its context up; it was an
+                // error here -- "program not found: 0" -- and the previous program stayed bound.
+                if program_id == 0 {
+                    let entry = cm.gl_state.entry(canvas_id).or_default();
+                    if entry.current_program.take().is_some() {
+                        unsafe { gl.use_program(None) };
+                    }
+                    return Ok(DamageEffect::NoDamage);
+                }
                 let meta = cm.programs.get(&program_id).ok_or_else(|| {
                     ee(
                         ErrorCode::NotFound,
@@ -1638,6 +1648,14 @@ impl RendererGL {
                 snapshot_id,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                // The record carries the `format` and `type` the content passed when the facade knows them, and
+                // zeros when it does not (the form of `texImage2D(canvas)` that has no `format`/`type` of its
+                // own to forward). A snapshot is RGBA8 pixels, so for an unsized internal format the format is
+                // the internal format and the type is UNSIGNED_BYTE -- what `TexImage2DFromCanvas2D` already
+                // assumes below. Passing the zeros on made the budget refuse the upload (an unsized format must
+                // equal its format), and every canvas drawn and uploaded in the same frame -- every dynamic
+                // text sprite -- became an empty texture, drawn opaque black.
+                let (format, type_) = canvas_source_upload_format(internalformat, format, type_);
                 let prepared = cm
                     .canvas2d_snapshot_dimensions(snapshot_id)
                     .map(|(width, height)| {
@@ -3779,6 +3797,25 @@ pub(crate) fn clear_damage_effect(
     }
 }
 
+/// The `format` and `type` a texture upload from a canvas is accounted under.
+///
+/// What the content passed when the record carries it; otherwise what a canvas is: 8-bit pixels, in the internal
+/// format's own components. A zero is "not forwarded", never a real format (GL has none).
+fn canvas_source_upload_format(internalformat: i32, format: u32, type_: u32) -> (u32, u32) {
+    (
+        if format == 0 {
+            internalformat as u32
+        } else {
+            format
+        },
+        if type_ == 0 {
+            glow::UNSIGNED_BYTE
+        } else {
+            type_
+        },
+    )
+}
+
 /// The renderable color formats whose components are integers, which ES 3.0 does not multisample.
 fn is_integer_color_format(internalformat: u32) -> bool {
     matches!(
@@ -4271,13 +4308,21 @@ mod tests {
     fn use_program_validates_before_it_consults_the_shadow() {
         const SRC: &str = include_str!("handler.rs");
         let arm_start = SRC.find("GLCmd::UseProgram {").expect("the UseProgram arm");
-        let arm = &SRC[arm_start..arm_start + 1200];
+        let arm = &SRC[arm_start..arm_start + 2000];
         let arm_end = arm.find("GLCmd::GetAttribLocation").unwrap_or(arm.len());
         let arm = &arm[..arm_end];
 
+        // `useProgram(null)` is program 0 and unbinds: answered before the lookup, which would call it not found.
+        let unbind = arm
+            .find("program_id == 0")
+            .expect("UseProgram no longer handles useProgram(null)");
         let lookup = arm
             .find("cm.programs.get(&program_id)")
             .expect("UseProgram no longer resolves the program id at all");
+        assert!(
+            unbind < lookup,
+            "useProgram(null) must be answered before the program lookup"
+        );
         let owner = arm
             .find("check_owner")
             .expect("UseProgram no longer checks program ownership");
@@ -4295,6 +4340,41 @@ mod tests {
              redundant useProgram on a deleted or missing program would then \
              succeed silently, where the first call errored — see this test's \
              doc for why the saved hash lookup is not worth that"
+        );
+    }
+
+    /// A snapshot upload is accounted under the format a canvas is, whatever the record forwarded.
+    ///
+    /// The record carries `format` and `type` as zeros when the facade has none to forward, and the budget refuses an
+    /// unsized internal format that does not equal its format: so every `texImage2D(canvas)` of a canvas drawn in
+    /// the same frame was rejected and left an empty texture. Phaser's Text drew opaque black boxes.
+    #[test]
+    fn a_canvas_source_upload_is_accounted_as_the_8_bit_pixels_it_is() {
+        assert_eq!(
+            canvas_source_upload_format(glow::RGBA as i32, 0, 0),
+            (glow::RGBA, glow::UNSIGNED_BYTE)
+        );
+        assert_eq!(
+            canvas_source_upload_format(glow::RGB as i32, 0, 0),
+            (glow::RGB, glow::UNSIGNED_BYTE)
+        );
+        // What the content did pass is kept.
+        assert_eq!(
+            canvas_source_upload_format(glow::RGBA8 as i32, glow::RGBA, glow::UNSIGNED_BYTE),
+            (glow::RGBA, glow::UNSIGNED_BYTE)
+        );
+        const SRC: &str = include_str!("handler.rs");
+        let arm = &SRC[SRC.find("GLCmd::TexImage2DFromSnapshot {").unwrap()..];
+        let arm = &arm[..arm.find("GLCmd::TexImage2DFromTextCache").unwrap()];
+        let mapped = arm
+            .find("canvas_source_upload_format(")
+            .expect("the arm maps format and type");
+        let prepared = arm
+            .find("prepare_tex_image_2d(")
+            .expect("the arm accounts the allocation");
+        assert!(
+            mapped < prepared,
+            "format and type are mapped before the budget sees them"
         );
     }
 

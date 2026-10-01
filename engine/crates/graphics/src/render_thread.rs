@@ -658,6 +658,33 @@ fn execute_canvas_batch(
     should_mark_present
 }
 
+/// Whether a failed GL command is logged with the command that failed (`MIGO_GL_TRACE_FAILURES=1`).
+///
+/// The error says what went wrong ("WebGL GPU storage rejected"), not which of the thousand calls of a frame
+/// asked for it, and finding that out meant bisecting the content. Off by default: describing a command formats
+/// its fields, and a texture upload's bytes are among them.
+fn trace_failed_gl_commands() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var_os("MIGO_GL_TRACE_FAILURES")
+            .is_some_and(|value| !value.is_empty() && value != "0")
+    })
+}
+
+/// A command as a short line: its variant and fields, cut at 240 characters (a payload's bytes are not wanted).
+fn describe_gl_command(command: &shared::protocol::render_cmd::GLCmd) -> String {
+    let mut text = format!("{command:?}");
+    if text.len() > 240 {
+        let mut end = 240;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("...");
+    }
+    text
+}
+
 fn execute_gl_batch(
     cm: &mut CanvasManager,
     gl: &glow::Context,
@@ -674,10 +701,13 @@ fn execute_gl_batch(
     // old "broadcast to every live Canvas2DContext" overkill.
     let mut touched_canvases = CanvasIdSet::new();
 
+    let trace_failures = trace_failed_gl_commands();
     for gl_cmd in commands.drain(..) {
         if let Some(cid) = gl_cmd.touches_canvas() {
             touched_canvases.insert(cid);
         }
+        // Only when asked: formatting a command costs, and most of them carry bytes.
+        let described = trace_failures.then(|| describe_gl_command(&gl_cmd));
         match renderer_gl.handle_command(cm, gl, gl_cmd) {
             Ok(effect) => {
                 if !matches!(effect, DamageEffect::NoDamage) {
@@ -687,7 +717,10 @@ fn execute_gl_batch(
             }
             Err(e) => {
                 if error_count == 0 {
-                    error!("GLBatch cmd failed: {}", e);
+                    match &described {
+                        Some(command) => error!("GLBatch cmd failed: {e} -- {command}"),
+                        None => error!("GLBatch cmd failed: {}", e),
+                    }
                 }
                 error_count += 1;
             }
