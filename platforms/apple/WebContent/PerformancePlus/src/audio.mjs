@@ -19,6 +19,7 @@
 // wrote.
 
 import { constructOpError } from "./engine-core.mjs";
+import { platform } from "./platform.mjs";
 
 /** The class every audio failure is thrown as. */
 export const CLASS_AUDIO_ERROR = "AudioError";
@@ -176,7 +177,7 @@ export function checkPlanarBacking(backing) {
  */
 export function transferOut(buffer, message) {
   try {
-    return structuredClone(buffer, { transfer: [buffer] });
+    return platform.structuredClone(buffer, { transfer: [buffer] });
   } catch {
     throw audioError(message);
   }

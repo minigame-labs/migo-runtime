@@ -22,6 +22,12 @@
 
 const platformPerformance = globalThis.performance;
 
+// Where content's clock starts. `performance.now()` (the engine's `op_now`) and the frame-clock timestamps
+// `requestAnimationFrame` hands a callback are both counted from here, which is what makes them one timeline, as
+// the specification has them. Taken when this module is evaluated -- the first thing the Worker does -- so the
+// clock counts from when the page started, as a browser's counts from navigation start.
+const timelineStart = platformPerformance.now();
+
 // Bound to the global they came from: they are called as methods of this
 // record, and a WebKit Worker's timer functions throw "Illegal invocation" when
 // `this` is anything but the global scope. Node's do not care, so a test there
@@ -30,6 +36,8 @@ const bound = (name) => globalThis[name]?.bind(globalThis);
 
 export const platform = Object.freeze({
   now: platformPerformance.now.bind(platformPerformance),
+  // The same clock on content's timeline: milliseconds since `timelineStart`.
+  timelineNow: () => platformPerformance.now() - timelineStart,
   timeOrigin: platformPerformance.timeOrigin,
   setTimeout: bound("setTimeout"),
   clearTimeout: bound("clearTimeout"),
@@ -42,6 +50,9 @@ export const platform = Object.freeze({
   WebSocket: globalThis.WebSocket,
   // How a task held during a synchronous call is dispatched (task-gate.mjs).
   MessageChannel: globalThis.MessageChannel,
+  // How an ArrayBuffer is handed over without a copy (audio.mjs). The Worker's own, before the engine's namespace
+  // handling retires the global: content cannot see it, and neither could this producer once content was running.
+  structuredClone: bound("structuredClone"),
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
   // The platform's, before the engine installs its own under that name: where

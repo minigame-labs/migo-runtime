@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- iOS (Performance+): `decodeAudioData` works. It threw "audioData is detached or cannot be detached"
+  for every buffer: the producer looked `structuredClone` up when it ran, and by then the engine's
+  namespace handling had retired the Worker's own names. The platform primitive is now captured at
+  load like the others, and a test removes the global and requires the transfer to still work. This
+  was the whole audio path on iOS: Howler's WebAudio, Phaser's audio loader and three.js's AudioLoader.
+- iOS (Performance+): `requestAnimationFrame`'s timestamp is on `performance.now()`'s timeline. The host
+  stamped frames with its own clock, 115 ms apart from content's after a loading screen, so a
+  frame's timestamp came out before the moment it was asked for and elapsed times went negative.
+  Both clocks now count from the producer's start, and the host's stamps are put on that timeline
+  with the smallest transport delay seen taken out of the gap (never later than the clock, never
+  backwards, vsync spacing kept).
 - Canvas2D: `createPattern` accepts a canvas, and a pattern does not paint past its tile
   on an axis it does not repeat. It returned null for a canvas -- so a tiled background
   built from an offscreen tile (Phaser's Canvas TileSprite, every hand-rolled 2D game)

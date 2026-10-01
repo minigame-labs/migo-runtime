@@ -67,3 +67,21 @@ test("the platform fetch is the one present when the modules loaded", async () =
 test("the platform record cannot be altered by content either", () => {
   assert.ok(Object.isFrozen(platform));
 });
+
+// `decodeAudioData` hands the ArrayBuffer to the host by transferring it. It looked `structuredClone` up when it
+// ran, and by then the engine's namespace handling had retired the Worker's own names: on an iPhone every
+// `decodeAudioData` threw "audioData is detached or cannot be detached" (migo-conformance `audio-spec`, and so Howler's
+// and Phaser's audio) while the buffer was perfectly detachable.
+test("the audio transfer uses the platform's structuredClone after the global is gone", async () => {
+  const { transferOut } = await import("../src/audio.mjs");
+  const source = new Uint8Array([1, 2, 3, 4]).buffer;
+  const retired = globalThis.structuredClone;
+  delete globalThis.structuredClone;
+  try {
+    const moved = transferOut(source, "cannot be detached");
+    assert.deepEqual([...new Uint8Array(moved)], [1, 2, 3, 4]);
+    assert.equal(source.byteLength, 0, "the source was detached, as the embedded op detaches it");
+  } finally {
+    globalThis.structuredClone = retired;
+  }
+});

@@ -261,6 +261,7 @@ check("a callback that throws does not stop the others or the rest of the messag
 check("a tick reaches content in milliseconds", () => {
   let seen = null;
   const { instance } = session({
+    now: () => 16.7, // the page clock agrees with the host: no offset to take out
     onFrame: (timestampMillis, frameId) => {
       seen = { timestampMillis, frameId };
     },
@@ -305,6 +306,41 @@ check("control messages default to the frame uplink when no socket is named", ()
   instance.requestFrame(1n, () => {});
   assertEqual(sent.length, 1, "the request went somewhere");
   assertEqual(decodeControlBytes(sent[0])[0].kind, UP_REQUEST_FRAME, "and it is a request");
+});
+
+check("frame timestamps are on the page's timeline, not the host's", () => {
+  // The host's clock reads 5000 ms when the page's reads 115: a frame stamped on the host's would be 4885 ms
+  // in the future of every performance.now() content takes. Each tick arrives 3 ms after its vsync, then one
+  // arrives after 1 ms (the best the transport did), then one after 9.
+  let pageNow = 0;
+  const stamps = [];
+  const { instance } = session({ now: () => pageNow, onFrame: (timestampMillis) => stamps.push(timestampMillis) });
+  const hostVsync = [5000, 5016.7, 5033.4, 5050.1, 5066.8];
+  const latency = [3, 3, 1, 9, 3];
+  hostVsync.forEach((host, index) => {
+    pageNow = host - 4885 + latency[index];
+    instance.handleMessage(tick(index + 1, { timestampNs: Math.round(host * 1_000_000) }));
+    assertEqual(stamps[index] <= pageNow, true, `tick ${index + 1}: the timestamp ${stamps[index]} is not after the page clock ${pageNow}`);
+  });
+  for (let i = 1; i < stamps.length; i++) {
+    assertEqual(stamps[i] > stamps[i - 1], true, `timestamps only go forward (${stamps[i - 1]} then ${stamps[i]})`);
+  }
+  // Once the 1 ms tick has shown the smallest delay, a timestamp is the vsync on the page's clock plus that delay:
+  // the closest the page can tell. (5066.8 on the host is 181.8 on the page, and 1 ms is the least a tick took.)
+  assertEqual(Math.abs(stamps[4] - 182.8) < 0.002, true, `the last timestamp ${stamps[4]} is the vsync on the page's timeline`);
+});
+
+check("a better clock estimate never makes a frame timestamp go backwards", () => {
+  // The first tick was slow (40 ms in transit), the second quick: the offset estimate drops by 39 ms, which would
+  // put the second timestamp before the first. A game divides by the difference.
+  let pageNow = 0;
+  const stamps = [];
+  const { instance } = session({ now: () => pageNow, onFrame: (timestampMillis) => stamps.push(timestampMillis) });
+  pageNow = 100 + 40;
+  instance.handleMessage(tick(1, { timestampNs: 100_000_000 }));
+  pageNow = 116.7 + 1;
+  instance.handleMessage(tick(2, { timestampNs: 116_700_000 }));
+  assertEqual(stamps[1] > stamps[0], true, `${stamps[0]} then ${stamps[1]}`);
 });
 
 console.log(failures === 0 ? "PASS" : `FAIL: ${failures} check(s) failed`);

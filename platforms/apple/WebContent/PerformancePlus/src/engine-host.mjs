@@ -120,9 +120,9 @@ export function bindEngineHost({ session, identity, socketCeilingBytes, sync, se
       backgrounded: false,
       contextLost: false,
     },
-    // Monotonic origin for `op_now`, taken when the session is bound: the Rust
-    // op measures from the runtime's start the same way.
-    startedAt: platform.now(),
+    // Nothing here: `op_now` counts from the producer's start (`platform.timelineNow`), the same origin the
+    // frame-clock timestamps are put on, so `performance.now()` and `requestAnimationFrame`'s argument are one
+    // timeline. The Rust op measures from the runtime's start, which is the same moment for the embedded runtime.
   });
   // A context state that arrived between the frame channel opening and this
   // binding: nothing could act on it then, and the epoch in it is still the one
