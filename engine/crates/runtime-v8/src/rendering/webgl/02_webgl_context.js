@@ -893,6 +893,20 @@ function nextResourceId() {
     return id;
 }
 
+// A `sequence<GLenum>` argument (`drawBuffers`, `invalidateFramebuffer`) as the Uint32Array the op takes.
+// A number is not a sequence: `new Uint32Array(4294967295)` is a 16 GiB allocation, which is what the bare
+// constructor made of `invalidateFramebuffer(target, 4294967295)` -- the isolate stopped answering until the
+// watchdog ended it. WebIDL says a value that is not an iterable object is a TypeError; null and undefined stay
+// the empty list they were taken for, which is what content written against the old behaviour passes.
+function toGLenumSequence(value) {
+    if (value instanceof Uint32Array) return value;
+    if (value === null || value === undefined) return new Uint32Array(0);
+    if (typeof value !== "object" || typeof value[Symbol.iterator] !== "function") {
+        throw new TypeError("Failed to convert value to 'sequence<GLenum>'");
+    }
+    return Uint32Array.from(value);
+}
+
 // Channel sizes in bits of a renderbuffer format: [red, green, blue, alpha, depth, stencil].
 function _renderbufferBits(format, channel) {
     let bits;
@@ -1843,7 +1857,7 @@ class WebGLRenderingContext {
             MAX_COLOR_ATTACHMENTS_WEBGL: 0x8CDF,
             MAX_DRAW_BUFFERS_WEBGL: 0x8824,
             drawBuffersWEBGL(buffers) {
-                const buf = new Uint32Array(buffers);
+                const buf = toGLenumSequence(buffers);
                 _rawDrawBuffers(ctx._canvasId, buf);
             },
         };
@@ -2850,9 +2864,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     invalidateFramebuffer(target, attachments) {
         // WebGL spec accepts a sequence<GLenum>; normalise to Uint32Array
         // for the op boundary.
-        const buf = attachments instanceof Uint32Array
-            ? attachments
-            : new Uint32Array(attachments || []);
+        const buf = toGLenumSequence(attachments);
         _rawInvalidateFramebuffer(this._canvasId, target, buf);
     }
     renderbufferStorageMultisample(target, samples, internalformat, width, height) {
@@ -2948,9 +2960,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
 
     // ---- Draw / read buffer selection --------------------------
     drawBuffers(buffers) {
-        const buf = buffers instanceof Uint32Array
-            ? buffers
-            : new Uint32Array(buffers || []);
+        const buf = toGLenumSequence(buffers);
         _rawDrawBuffers(this._canvasId, buf);
     }
     readBuffer(src) {

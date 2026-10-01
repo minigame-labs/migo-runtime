@@ -73,6 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `WebGL 1.0` / `WebGL GLSL ES 1.00` (`WebGL 2.0` / `WebGL GLSL ES 3.00` on a
   WebGL 2 context) followed by the driver's string in parentheses, which is what
   content and libraries test; they returned the driver's `OpenGL ES 3.0 ...`.
+- WebGL: `invalidateFramebuffer(target, 4294967295)`, `drawBuffers(4294967295)` and
+  `drawBuffersWEBGL(4294967295)` -- a number where a sequence of enums belongs --
+  built a 16 GiB typed array, and the isolate stopped answering until the watchdog
+  ended it. They throw `TypeError`, as WebIDL says; `null` and `undefined` remain
+  the empty list. Found by a hostile-call test (`robustness-hostile-calls` in
+  migo-conformance: 1.8 M random calls with NaN, infinities, 2^32, BigInt, odd
+  typed arrays at the Canvas2D, WebGL and WebGL 2 contexts) which otherwise found
+  no crash and no other hang.
 - WebGL 2: `gl.HALF_FLOAT` was `undefined` (the constant was never declared), so a
   half-float upload -- the `type` of every `RGBA16F` texture -- went to the driver
   with no type.
