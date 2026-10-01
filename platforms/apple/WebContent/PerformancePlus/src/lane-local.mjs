@@ -68,9 +68,39 @@ export function allocateCanvas(width, height) {
   return id;
 }
 
+/// The size the engine gives an onscreen canvas the content has not sized: the surface in CSS pixels, not physical ones.
+///
+/// `graphics::canvas::surface_install::engine_default_backing`, which the renderer applies to the real canvas: a DPR-naive
+/// engine (Pixi or Phaser at resolution 1) sizes its GL viewport to what the canvas says, so the canvas must say the logical
+/// window -- on an iPhone 12 that is 390 x 844, and the renderer's buffer follows it to exactly that. Reporting the 1170 x
+/// 2532 surface here left content drawing in coordinates three times the canvas it was drawing on (reads past the real
+/// 390 x 844 came back empty, a game's world was cropped to a ninth). The ratio comes from `pixel_ratio` in the window info the host
+/// described (`MigoPerformancePlusHost.swift`, the JSON the engine's own `getWindowInfo` parses); a host that described none has no ratio to divide by, and the surface is the answer, as in the renderer
+/// when the ratio is 1. The arithmetic is single precision, as the renderer's is.
+function defaultBackingSize(host) {
+  const { state, device: profile } = host;
+  let ratio = 1;
+  if (profile !== null && typeof profile.windowInfo === "string") {
+    try {
+      const described = JSON.parse(profile.windowInfo).pixel_ratio;
+      if (typeof described === "number" && Number.isFinite(described)) ratio = Math.fround(described);
+    } catch (_) {
+      ratio = 1;
+    }
+  }
+  const scale = (pixels) =>
+    ratio > 1 ? Math.max(1, Math.round(Math.fround(Math.fround(pixels) / ratio))) : Math.max(1, pixels);
+  return [scale(state.surfaceWidth), scale(state.surfaceHeight)];
+}
+
 /// A resize this producer sent, as `canvas.width`/`height` will read it back.
 export function recordCanvasSize(id, width, height) {
-  const size = canvasSizes.get(id);
+  let size = canvasSizes.get(id);
+  // The onscreen canvas starts at the engine's default and is the content's from the first size it sets.
+  if (size === undefined && id === 1) {
+    size = defaultBackingSize(engineHost());
+    canvasSizes.set(1, size);
+  }
   if (size === undefined) return;
   if (width !== null) size[0] = width;
   if (height !== null) size[1] = height;
@@ -88,8 +118,8 @@ export function forgetCanvas(id) {
 /// id the render thread does not hold.
 export function op_get_canvas_info(id) {
   const canvasId = smiU32(id, "id");
-  const { state } = engineHost();
-  if (canvasId === 1) return [state.surfaceWidth, state.surfaceHeight];
+  // The onscreen canvas reports what content last sized it to, else the engine's default backing store.
+  if (canvasId === 1 && !canvasSizes.has(1)) return defaultBackingSize(engineHost());
   const size = canvasSizes.get(canvasId);
   if (size !== undefined) return [size[0], size[1]];
   throw new Error(`canvas ${canvasId} not found`);

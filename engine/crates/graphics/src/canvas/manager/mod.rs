@@ -3490,6 +3490,9 @@ impl CanvasManager {
             self.cancelled_uploads.remove(&d.image_id);
         }
 
+        // Whether this drain handed the renderer a texture the upload thread made.
+        let mut registered_upload = false;
+
         // Deferred first, newly completed after — the order `stage_upload_drain`
         // preserves and the order this loop has always seen.
         for c in deferred.drain(..) {
@@ -3517,6 +3520,7 @@ impl CanvasManager {
                 );
                 self.image_registry
                     .register_shared_texture(c.image_id as u32, c.texture, info);
+                registered_upload = true;
 
                 if let Some(resp) = self.pending_load_responses.remove(&c.image_id) {
                     resp.send(Ok((c.width, c.height)));
@@ -3551,6 +3555,31 @@ impl CanvasManager {
                 // frame rather than deleting a texture whose DMA may continue.
                 self.pending_uploads.push(c);
             }
+        }
+        // Taking an upload from the other context is a hand-over, and the render
+        // context's own queue has to be submitted before it draws again.
+        //
+        // Measured on an iPhone 12 (iOS 17.0.3, ANGLE 2.1.28772, Metal) with the
+        // onscreen 2D canvas -- and the cause is in the driver, not in anything
+        // this crate does wrong, so what follows is the observation, not a
+        // mechanism: a page that decodes an image *before* the canvas has drawn
+        // or been read once got a canvas that could not be written. Every later
+        // `fillRect`, `drawImage` and even `putImageData` came back as
+        // transparent black from `glReadPixels` on the DrawingBuffer's own
+        // framebuffer (complete, no GL error, no Metal validation message, Skia
+        // not abandoned), and it stayed that way until a WebGL context was
+        // created. The same page that read the canvas once before the image
+        // loaded was fine. What did not change the outcome: a Skia state reset
+        // after the upload, a `glFinish` on the upload thread, flushing after the
+        // DrawingBuffer or after Skia's context was built, deleting the fence
+        // late, or `SYNC_FLUSH_COMMANDS_BIT` on the poll (the fence is already
+        // signalled by then, so that bit is never acted on). What did: a
+        // `glFlush` here, after the upload is registered and before the next
+        // Canvas2D batch. A flush costs a command-buffer commit that is almost
+        // always empty, once per drain that took an upload, so it is paid at
+        // image-load time and never per frame.
+        if registered_upload {
+            unsafe { self.gl.flush() };
         }
         // Both scratch buffers go home empty, keeping their capacity for the
         // next frame.
@@ -7172,6 +7201,34 @@ mod recovery_source_guards {
             }
         }
         panic!("function body must close");
+    }
+
+    /// Taking an image from the upload thread flushes the render context.
+    ///
+    /// Without it an iPhone 12's onscreen 2D canvas, if an image finished decoding before the
+    /// canvas had been drawn on or read, ignored every later write (see the comment in
+    /// `drain_upload_completed`). It needs a device -- the behaviour is migo-conformance's
+    /// `image-decode` suite on iOS, `png-before-webgl/pixel-*` -- so this holds the line the
+    /// device found: the flush is there, it follows the registration it exists for, and it is
+    /// conditional on an upload having been taken, so a frame that took none pays nothing.
+    #[test]
+    fn taking_an_upload_flushes_the_render_context_afterwards() {
+        let drain = function_body(MGR, "pub(crate) fn drain_upload_completed(");
+        let register = drain
+            .find(".register_shared_texture(")
+            .expect("the drain registers each completed upload");
+        let flush = drain
+            .find("self.gl.flush()")
+            .expect("the drain flushes the render context after taking an upload");
+        assert!(
+            register < flush,
+            "the flush follows the registration, so it covers the texture it handed over"
+        );
+        let guard = &drain[..flush];
+        assert!(
+            guard.rfind("if registered_upload").is_some_and(|at| at > register),
+            "the flush runs only when this drain took an upload"
+        );
     }
 
     /// `drawImage(canvas)` reuses one copy of the source until the source changes, so

@@ -184,6 +184,11 @@ mod tests {
     /// only ever agrees if both round the same ratio the same way.
     #[test]
     fn the_engine_default_backing_is_the_surface_in_css_pixels() {
+        // The Performance+ producer answers `canvas.width` locally with the same rule (`lane-local.mjs`,
+        // `defaultBackingSize`, held to these numbers by `test/onscreen-canvas-size*.test.mjs`): an iPhone 12 and a ratio that
+        // does not divide the surface.
+        assert_eq!(engine_default_backing((1170, 2532), 3.0), (390, 844));
+        assert_eq!(engine_default_backing((1080, 2400), 2.625), (411, 914));
         assert_eq!(engine_default_backing((1080, 2340), 2.75), (393, 851));
         assert_eq!(engine_default_backing((2204, 1080), 2.75), (801, 393));
     }

@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- iOS (Performance+): the on-screen canvas reports the size the renderer gives it
+  (the surface in CSS pixels: 390 x 844 on an iPhone 12), not the physical surface
+  (1170 x 2532). Content that sized its drawing from `canvas.width` drew at three
+  times the canvas it was drawing on, and a `getImageData` past the real canvas
+  came back empty. A size the content sets is still its own.
+- iOS: an image that finished decoding before the on-screen 2D canvas had been
+  drawn on or read left that canvas unwritable -- every later `fillRect`,
+  `drawImage` and `putImageData` read back as transparent black -- until a WebGL
+  context existed (measured on an iPhone 12, ANGLE Metal). The render thread now
+  flushes its own queue after taking an upload from the upload thread. Found by
+  running migo-conformance's `image-decode` suite on a device.
 - Canvas2D: `drawImage` accepts a canvas as its source, in all three forms and
   including the canvas itself and the on-screen canvas. It silently drew nothing:
   the facade only knew images the host had decoded. A new 2D record
