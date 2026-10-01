@@ -55,6 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- `getSystemInfoSync().platform` and `getDeviceInfo().platform` named the
+  platform the engine was built for instead of `"android"` on everything. A host
+  that attached no device services (the in-process Apple host, and the desktop
+  hosts that implement window info only) was answered with an `"android"` default
+  with an empty `system` string, so content branching on the platform -- which
+  audio format, which layout, which input model -- decided as if it ran on
+  Android on a Mac, a Windows PC or a Linux box. The answer is now `"mac"`,
+  `"windows"`, `"linux"`, `"ios"`, `"ohos"` or `"android"` from the build target,
+  with `system` leading with the OS name (`"macOS"`), `abi` from the build, and
+  nothing invented: `model` stays `"unknown"`, `brand` empty, `benchmarkLevel`
+  `-1`. A host that can say more (a model, an OS version) overrides it, as the
+  Android host and the iOS Performance+ profile already do. Found by
+  migo-conformance's new `system-info-spec` bundle (37 assertions: the released
+  v0.9.19 fails the one that checks the platform against the OS string).
 - File system: `readFileSync(path, "base64")` (and `readFile`, `unzip`'s readers)
   threw `btoa is not defined`: the encoder called the page's `btoa`, which this
   runtime does not have without an adapter. It uses the native codec the other
