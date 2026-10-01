@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D: a `getImageData` whose pixels were read while the renderer presented could
+  come back all zeros -- about one read in 400 on an iPhone 12 (Performance+), where
+  the capture and the read of `.data` are a socket round trip apart. The renderer
+  dropped its snapshot pool at every present; it now drops only the snapshots of
+  content frames that have ended (a presenting packet), and keeps the frame being
+  built. Found by running migo-conformance's suites on a device. Still open: an
+  `ImageData` whose `.data` is first read after its frame has ended reads as zeros on
+  every platform.
 - iOS (Performance+): the on-screen canvas reports the size the renderer gives it
   (the surface in CSS pixels: 390 x 844 on an iPhone 12), not the physical surface
   (1170 x 2532). Content that sized its drawing from `canvas.width` drew at three
