@@ -16,7 +16,14 @@ use crate::watchdog::{DeadlineWatchdog, DeadlineWatchdogConfig};
 const MAX_WORKER_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 /// User messages allowed to wait in either Worker direction.
-const WORKER_MESSAGE_QUEUE_CAPACITY: usize = 64;
+///
+/// What bounds the memory a Worker can hold is `MAX_WORKER_QUEUED_BYTES`; this bounds how many entries
+/// that is divided into. It was 64, which a Worker that posted a result per item in a loop (a chunked
+/// decode, a progress report, an array of results sent one message each) exceeded in a single tick: the
+/// 65th `postMessage` threw `Worker message queue full`, the loop stopped, and the rest of the results
+/// never existed. A message is at least a few dozen bytes, so 4096 of them stays far inside the byte
+/// budget, and a burst of a few thousand is an ordinary thing to send.
+const WORKER_MESSAGE_QUEUE_CAPACITY: usize = 4096;
 /// Physical slots unavailable to user messages and reserved for termination.
 const WORKER_CONTROL_RESERVE: usize = 1;
 /// Aggregate queued payload budget per Worker message direction.
@@ -609,6 +616,29 @@ pub(crate) enum WorkerInbound {
     },
 }
 
+/// How long `createWorker()` waits for a terminated worker's thread to finish before it refuses the new
+/// worker. Leaving the isolate after an interrupt takes milliseconds; a thread that is stuck in a native
+/// call is the case this bounds.
+const WORKER_EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether the worker's thread has finished, waiting up to `limit` for it to.
+fn wait_until_finished(handle: &WorkerHandle, limit: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if handle
+            .join_handle
+            .as_ref()
+            .is_none_or(|jh| jh.is_finished())
+        {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 /// Stored in the **main** thread's `OpState` when a worker is active.
 pub(crate) struct WorkerHandle {
     tx_to_worker: WorkerMessageSender,
@@ -625,6 +655,11 @@ pub(crate) struct WorkerHandle {
     /// `Mutex<Option<..>>` because it is filled asynchronously (the worker may
     /// not have created the isolate yet when this handle is stored).
     isolate_handle: Arc<std::sync::Mutex<Option<v8::IsolateHandle>>>,
+    /// Set the moment the main thread asks the worker to stop (`terminate()`, or the handle being
+    /// dropped). The worker's event loop then ends with V8's "execution terminated", which is the
+    /// answer to that request and not a failure: reported to the content's `onError`, it made every
+    /// deliberate `terminate()` look like a crash.
+    terminate_requested: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl WorkerHandle {
@@ -633,6 +668,10 @@ impl WorkerHandle {
     /// and signal the message pump to exit. Safe to call more than once and
     /// after the worker isolate has already been disposed.
     fn force_terminate(&self) {
+        // Before the isolate is interrupted, so a worker that observes the termination also observes
+        // that it was asked for.
+        self.terminate_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if let Ok(guard) = self.isolate_handle.lock() {
             if let Some(h) = guard.as_ref() {
                 h.terminate_execution();
@@ -904,7 +943,12 @@ async fn op_worker_create(
             match st.try_borrow::<WorkerHandle>() {
                 None => false,
                 Some(h) => {
-                    let finished = h.join_handle.as_ref().map_or(true, |jh| jh.is_finished());
+                    // A worker the content has terminated is gone as far as the content is concerned,
+                    // and `terminate()` followed at once by `createWorker()` -- restarting a worker --
+                    // is the ordinary way to use the pair. The old thread needs a moment to leave its
+                    // isolate, so wait for it (bounded) instead of refusing the new worker for that
+                    // moment, which made the restart pattern throw on a timing it cannot control.
+                    let finished = h.terminated && wait_until_finished(h, WORKER_EXIT_WAIT);
                     if h.terminated && finished {
                         true
                     } else {
@@ -1009,6 +1053,7 @@ async fn op_worker_create(
     // worker (see WorkerHandle::force_terminate).
     let isolate_handle: Arc<std::sync::Mutex<Option<v8::IsolateHandle>>> =
         Arc::new(std::sync::Mutex::new(None));
+    let terminate_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Spawn worker thread
     info!(
@@ -1022,6 +1067,7 @@ async fn op_worker_create(
         worker_host_state,
         sab_store,
         isolate_handle.clone(),
+        terminate_requested.clone(),
     )?;
     info!("[Worker] worker thread spawned, storing handle");
 
@@ -1034,6 +1080,7 @@ async fn op_worker_create(
         join_handle: Some(join_handle),
         terminated: false,
         isolate_handle,
+        terminate_requested,
     };
 
     state.borrow_mut().put(handle);
@@ -1528,10 +1575,15 @@ const WORKER_TIMEOUT_MSG: &str =
 /// resulting "execution terminated" error.
 fn report_worker_error(
     watchdog: Option<&DeadlineWatchdog>,
+    terminate_requested: &std::sync::atomic::AtomicBool,
     tx_errors: &WorkerQueueSender<String>,
     message: String,
 ) {
     if watchdog.is_some_and(DeadlineWatchdog::timed_out) {
+        return;
+    }
+    // A worker the content stopped is not a worker that failed.
+    if terminate_requested.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
     send_worker_diagnostic(tx_errors, message);
@@ -1644,6 +1696,7 @@ fn spawn_worker_thread(
     host_state: HostOpState,
     sab_store: SharedArrayBufferStore,
     isolate_handle_slot: Arc<std::sync::Mutex<Option<v8::IsolateHandle>>>,
+    terminate_requested: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<std::thread::JoinHandle<()>, WorkerError> {
     let tx_errors = ctx.tx_errors.clone();
 
@@ -1816,6 +1869,7 @@ fn spawn_worker_thread(
                             );
                             report_worker_error(
                                 watchdog.as_ref(),
+                                &terminate_requested,
                                 &tx_errors,
                                 format!(r#"{{"message":"Failed to resolve worker script: {}"}}"#, e),
                             );
@@ -1831,6 +1885,7 @@ fn spawn_worker_thread(
                                 error!("[Worker] failed to load worker script: {}", e);
                                 report_worker_error(
                                     watchdog.as_ref(),
+                                    &terminate_requested,
                                     &tx_errors,
                                     format!(r#"{{"message":"Failed to load worker script: {}"}}"#, e),
                                 );
@@ -1844,6 +1899,7 @@ fn spawn_worker_thread(
                         error!("[Worker] worker script evaluation error: {}", e);
                         report_worker_error(
                             watchdog.as_ref(),
+                            &terminate_requested,
                             &tx_errors,
                             format!(r#"{{"message":"Worker script evaluation error: {}"}}"#, e),
                         );
@@ -1853,9 +1909,14 @@ fn spawn_worker_thread(
                     info!("[Worker] module evaluated, running event loop");
                     // Run event loop until it completes (message pump op keeps it alive)
                     if let Err(e) = worker_run_event_loop(&mut rt, watchdog.as_ref()).await {
-                        error!("[Worker] event loop error: {}", e);
+                        if terminate_requested.load(std::sync::atomic::Ordering::SeqCst) {
+                            info!("[Worker] event loop ended by terminate(): {}", e);
+                        } else {
+                            error!("[Worker] event loop error: {}", e);
+                        }
                         report_worker_error(
                             watchdog.as_ref(),
+                            &terminate_requested,
                             &tx_errors,
                             format!(r#"{{"message":"Worker event loop error: {}"}}"#, e),
                         );
@@ -1890,7 +1951,7 @@ fn spawn_worker_thread(
 mod worker_queue_boundary_tests {
     use super::*;
 
-    const EXPECTED_MESSAGE_CAPACITY: usize = 64;
+    const EXPECTED_MESSAGE_CAPACITY: usize = 4096;
 
     fn main_worker_handle() -> (WorkerHandle, WorkerMessageReceiver) {
         let (tx_to_worker, rx_from_main) = worker_message_channel();
@@ -1906,9 +1967,87 @@ mod worker_queue_boundary_tests {
                 join_handle: None,
                 terminated: false,
                 isolate_handle: Arc::new(std::sync::Mutex::new(None)),
+                terminate_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
             rx_from_main,
         )
+    }
+
+    /// `terminate()` ends the worker's event loop with V8's "execution terminated", which is the answer to
+    /// the request: it must not reach the content's `onError` as if the worker had failed. Anything else
+    /// still does.
+    /// `terminate()` then `createWorker()` -- restarting a worker -- must not throw because the old thread
+    /// is a few milliseconds from finishing.
+    #[test]
+    fn a_terminated_worker_that_is_still_winding_down_is_waited_for_not_refused() {
+        use std::time::{Duration, Instant};
+        let (mut handle, _rx) = main_worker_handle();
+        handle.terminated = true;
+        handle.join_handle = Some(std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(120));
+        }));
+        let started = Instant::now();
+        assert!(
+            wait_until_finished(&handle, Duration::from_secs(2)),
+            "a thread that finishes in 120 ms was not waited for"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "it did not actually wait"
+        );
+
+        // A thread that does not finish is given up on at the limit, not waited on forever.
+        let (mut stuck, _rx) = main_worker_handle();
+        stuck.terminated = true;
+        stuck.join_handle = Some(std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(600));
+        }));
+        let started = Instant::now();
+        assert!(!wait_until_finished(&stuck, Duration::from_millis(80)));
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "the wait overran its limit"
+        );
+        // no thread at all (never spawned, or already reaped) is finished
+        let (none, _rx) = main_worker_handle();
+        assert!(wait_until_finished(&none, Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn an_error_after_terminate_is_requested_is_not_reported_and_any_other_is() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (tx, mut rx) = worker_error_channel();
+        let requested = AtomicBool::new(false);
+
+        report_worker_error(None, &requested, &tx, "a real failure".to_string());
+        assert_eq!(
+            rx.try_recv().ok().as_deref(),
+            Some("a real failure"),
+            "an error nobody asked for is reported"
+        );
+
+        requested.store(true, Ordering::SeqCst);
+        report_worker_error(
+            None,
+            &requested,
+            &tx,
+            "Worker event loop error: Uncaught Error: execution terminated".to_string(),
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the answer to terminate() was reported as a worker error"
+        );
+    }
+
+    /// The flag is set by the handle's `force_terminate`, before the isolate is interrupted, and by
+    /// dropping the handle: both are a request to stop.
+    #[test]
+    fn force_terminate_marks_the_stop_as_requested() {
+        use std::sync::atomic::Ordering;
+        let (handle, _rx) = main_worker_handle();
+        assert!(!handle.terminate_requested.load(Ordering::SeqCst));
+        handle.force_terminate();
+        assert!(handle.terminate_requested.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -2138,7 +2277,7 @@ mod worker_queue_boundary_tests {
     fn pre_ready_js_messages_have_the_same_count_and_byte_bounds_as_rust() {
         let source = include_str!("01_worker.js");
 
-        assert!(source.contains("const MAX_PENDING_MESSAGES = 64"));
+        assert!(source.contains("const MAX_PENDING_MESSAGES = 4096"));
         assert!(source.contains("const MAX_PENDING_MESSAGE_BYTES = 64 * 1024 * 1024"));
         assert!(source.contains("const MAX_WORKER_MESSAGE_BYTES = 16 * 1024 * 1024"));
         assert!(source.contains("#pendingMessageBytes = 0"));
@@ -2842,7 +2981,12 @@ mod watchdog_worker_tests {
         // Mirror the run block: the eval error is suppressed because the observer
         // already reported the timeout exactly once.
         if let Err(e) = eval {
-            report_worker_error(Some(&wd), &err_tx, format!("eval error: {e}"));
+            report_worker_error(
+                Some(&wd),
+                &std::sync::atomic::AtomicBool::new(false),
+                &err_tx,
+                format!("eval error: {e}"),
+            );
         }
         let first = tokio::time::timeout(Duration::from_secs(2), err_rx.recv())
             .await

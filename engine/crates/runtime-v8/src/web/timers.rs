@@ -8,12 +8,24 @@ use tokio::time::Instant;
 
 pub struct StartTime(Instant);
 
+impl StartTime {
+    /// A clock that counts from `origin`, which is never taken to be later than the clock it is read
+    /// against. With the real clock `origin` is always in the past and nothing changes; with a paused
+    /// clock (tests that advance time by hand, whose virtual "now" is set when time is paused) an
+    /// origin fixed a moment later by a different thread would put `now` before `origin`, `elapsed()`
+    /// would saturate at zero, and every timer computed from it would see time stand still until the
+    /// virtual clock caught up.
+    fn from_origin(origin: std::time::Instant) -> Self {
+        Self(Instant::from_std(origin).min(Instant::now()))
+    }
+}
+
 impl Default for StartTime {
     /// `performance.now()` counts from the process time origin, the same instant the frame
     /// timestamps handed to `requestAnimationFrame` callbacks count from (`shared::time_origin`),
     /// so the two are on one timeline as they are in a browser.
     fn default() -> Self {
-        Self(Instant::from_std(shared::time_origin::process_origin()))
+        Self::from_origin(shared::time_origin::process_origin())
     }
 }
 
@@ -65,6 +77,23 @@ pub fn op_now_us() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::StartTime;
+
+    /// An origin that is later than the clock's "now" (a paused tokio clock set before the process
+    /// origin was fixed) is clamped to it, so `elapsed()` starts at zero instead of standing at zero until
+    /// the clock catches up. The worker timer lifecycle tests, which advance a paused clock by hand,
+    /// failed when run on their own for exactly this.
+    #[tokio::test(start_paused = true)]
+    async fn an_origin_in_the_future_of_the_clock_does_not_freeze_time() {
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let start = StartTime::from_origin(later);
+        tokio::time::advance(std::time::Duration::from_millis(10)).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(10)
+                && elapsed < std::time::Duration::from_millis(500),
+            "{elapsed:?}: time stood still, or the origin was believed"
+        );
+    }
 
     /// `performance.now()` and the animation-frame timestamps count from one instant. A session's
     /// `StartTime` made at any later moment still reads the process clock, not a clock of its own:
