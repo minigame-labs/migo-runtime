@@ -535,7 +535,7 @@ class BaseFileManager {
       let pos = options.position;
       if (typeof pos !== "number" || !Number.isFinite(pos)) pos = undefined;
       return op_write_file(ensureFd(options.fd), data_buf, data_str, encoding, pos)
-        .then((bytesWritten) => ({ bytesWritten }));
+        .then((bytesWritten) => ({ bytesWritten: Number(bytesWritten) }));
     }, options);
   }
 
@@ -546,8 +546,10 @@ class BaseFileManager {
     if (typeof pos !== "number" || !Number.isFinite(pos)) pos = undefined;
 
     return wrapSync(() => {
+      // The op returns a BigInt so a count past 2^31 is exact; content expects a number
+      // (`bytesWritten + 1` on a BigInt is a TypeError, and JSON.stringify refuses one).
       const bytesWritten = op_write_file_sync(ensureFd(fd), data_buf, data_str, encoding, pos);
-      return { bytesWritten };
+      return { bytesWritten: Number(bytesWritten) };
     }, "writeSync");
   }
 
@@ -664,7 +666,9 @@ class BaseFileManager {
       }
 
       case "base64":
-        return btoa(BaseFileManager.#bytesToStringChunked(bytes, len, false));
+        // `btoa` is the page's to provide and this runtime has none: reading a file as base64 threw
+        // `btoa is not defined`. The codec the other encodings use does it.
+        return op_decode_multi_formats(bytes, "base64");
 
       default:
         throw new IOError(`Unsupported encoding: ${encoding}`);

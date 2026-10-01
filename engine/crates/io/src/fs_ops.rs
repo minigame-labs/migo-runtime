@@ -864,7 +864,8 @@ pub fn readdir(dir_path: &str) -> Result<Vec<String>, EngineError> {
             None => {
                 return Err(EngineError::new(ErrorCode::InvalidArgument)
                     .with_msg("readdir:fail non-UTF-8 filename")
-                    .with_detail(format!("dir={} name={:?}", dir_path, os_name)));
+                    // The name, not the directory: `dir_path` is the host path.
+                    .with_detail(format!("name={:?}", os_name)));
             }
         }
     }

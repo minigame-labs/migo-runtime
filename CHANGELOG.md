@@ -55,6 +55,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- File system: `readFileSync(path, "base64")` (and `readFile`, `unzip`'s readers)
+  threw `btoa is not defined`: the encoder called the page's `btoa`, which this
+  runtime does not have without an adapter. It uses the native codec the other
+  encodings use. `writeSync` / `write` returned `{ bytesWritten }` as a BigInt, so
+  `bytesWritten + 1` was a `TypeError` and `JSON.stringify` of the result threw;
+  it is a Number now, as `readSync`'s `bytesRead` already was.
+- File system: a failed `renameSync` / `copyFileSync` (and the async forms) told
+  the content the host paths the virtual ones resolved to -- `rename
+  /Users/<name>/Library/Application Support/Migo/files/.../user_data/x -> ...` --
+  which is the user's home directory and the game's sandbox location, in the text
+  of an error a game may well log or report. It names the paths the content gave.
+  The same for a `readdirSync` that meets a non-UTF-8 file name. Found by
+  migo-conformance's new `fs-spec` bundle (81 assertions: the released v0.9.19
+  fails 8, and two groups of its assertions never ran because the base64 read
+  threw first).
 - The timestamp handed to a `requestAnimationFrame` callback is on the same
   timeline as `performance.now()`, as in a browser. They were two clocks:
   `performance.now()` counted from the creation of the JavaScript runtime, the
