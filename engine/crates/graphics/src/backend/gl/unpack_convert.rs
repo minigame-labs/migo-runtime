@@ -99,15 +99,30 @@ pub(crate) fn convert_upload<'a>(
         .ok()
         .filter(|r| *r > 0)
         .unwrap_or(width);
-    let row_bytes = width * bpp;
-    let stride = (row_length * bpp).div_ceil(alignment) * alignment;
-    let skip_rows = usize::try_from(state.skip_rows).unwrap_or(0);
-    let skip_pixels = usize::try_from(state.skip_pixels).unwrap_or(0);
-    let start = skip_rows * stride + skip_pixels * bpp;
-    let Some(end) = (height - 1)
-        .checked_mul(stride)
-        .and_then(|rows| rows.checked_add(start + row_bytes))
-    else {
+    // The pixel-store values are content's, up to i32::MAX each, and so are the sizes: every
+    // product is checked, and an upload whose layout does not fit in memory is not interpreted
+    // (it goes to the driver as it came, which refuses it).
+    let layout = (|| {
+        let row_bytes = width.checked_mul(bpp)?;
+        let stride = row_length
+            .checked_mul(bpp)?
+            .div_ceil(alignment)
+            .checked_mul(alignment)?;
+        let start = usize::try_from(state.skip_rows)
+            .unwrap_or(0)
+            .checked_mul(stride)?
+            .checked_add(
+                usize::try_from(state.skip_pixels)
+                    .unwrap_or(0)
+                    .checked_mul(bpp)?,
+            )?;
+        let end = (height - 1)
+            .checked_mul(stride)?
+            .checked_add(start)?
+            .checked_add(row_bytes)?;
+        Some((row_bytes, stride, start, end))
+    })();
+    let Some((row_bytes, stride, start, end)) = layout else {
         return Cow::Borrowed(bytes);
     };
     if bytes.len() < end {
@@ -409,5 +424,46 @@ mod tests {
             &state(true, true),
         );
         assert_eq!(px, before);
+    }
+
+    /// The pixel-store values are content's. Whatever they are, no layout may make the conversion
+    /// panic or write outside the buffer: it interprets the bytes or hands them back.
+    #[test]
+    fn no_pixel_store_value_makes_the_layout_overflow() {
+        let px = vec![7u8; 64];
+        let extremes = [i32::MIN, -1, 0, 1, 3, 4, 8, 1 << 16, 1 << 30, i32::MAX];
+        for &alignment in &extremes {
+            for &row_length in &extremes {
+                for &skip_rows in &extremes {
+                    for &skip_pixels in &extremes {
+                        for &(w, h) in &[
+                            (1, 1),
+                            (2, 3),
+                            (i32::MAX, 1),
+                            (1, i32::MAX),
+                            (i32::MAX, i32::MAX),
+                        ] {
+                            for format in [glow::RGBA, glow::RGB, glow::LUMINANCE_ALPHA, 0x8dad] {
+                                let st = UnpackState {
+                                    flip_y: true,
+                                    premultiply: true,
+                                    alignment,
+                                    row_length,
+                                    skip_rows,
+                                    skip_pixels,
+                                };
+                                let out =
+                                    convert_upload(&px, w, h, format, glow::UNSIGNED_BYTE, &st);
+                                assert_eq!(
+                                    out.len(),
+                                    px.len(),
+                                    "the converted bytes keep the buffer's size"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
