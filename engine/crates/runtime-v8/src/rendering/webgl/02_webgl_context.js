@@ -2062,6 +2062,7 @@ class WebGLRenderingContext {
                 _rawTexImage2DFromSnapshot(
                     this._canvasId, target, level, internalformat, a7, a8, snapshotId,
                 );
+                a9.__migo_snapshot_spent__ = true;
                 return;
             }
             if (_migoIsHTMLCanvas(a9) && a9.width === a4 && a9.height === a5) {
@@ -2092,6 +2093,7 @@ class WebGLRenderingContext {
                 _rawTexImage2DFromSnapshot(
                     this._canvasId, target, level, internalformat, a4, a5, snapshotId,
                 );
+                source.__migo_snapshot_spent__ = true;
                 return;
             }
             if (_migoIsHTMLCanvas(source)) {
@@ -2143,6 +2145,7 @@ class WebGLRenderingContext {
                 _rawTexSubImage2DFromSnapshot(
                     this._canvasId, target, level, xoffset, yoffset, format, type, snapshotId,
                 );
+                pixels.__migo_snapshot_spent__ = true;
                 return;
             }
             if (_migoIsHTMLCanvas(pixels) && pixels.width === width && pixels.height === height) {
@@ -2170,6 +2173,7 @@ class WebGLRenderingContext {
             _rawTexSubImage2DFromSnapshot(
                 this._canvasId, target, level, xoffset, yoffset, sourceFormat, sourceType, subSnapshotId,
             );
+            source.__migo_snapshot_spent__ = true;
             return;
         }
         if (_migoIsHTMLCanvas(source)) {

@@ -13,9 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the capture and the read of `.data` are a socket round trip apart. The renderer
   dropped its snapshot pool at every present; it now drops only the snapshots of
   content frames that have ended (a presenting packet), and keeps the frame being
-  built. Found by running migo-conformance's suites on a device. Still open: an
-  `ImageData` whose `.data` is first read after its frame has ended reads as zeros on
-  every platform.
+  built. Found by running migo-conformance's suites on a device.
+- Canvas2D: an `ImageData` from `getImageData` read after its frame has ended no longer
+  reads as zeros. The facade captures a GPU snapshot and reads it back only on `.data`,
+  and the renderer keeps a snapshot for one frame: a stored `ImageData` used for
+  hit-testing was all transparent a frame later, on every platform (a 100 ms delay was
+  enough). The frame-end pass now reads back every `ImageData` nobody has read and no
+  `texImage2D`/`texSubImage2D` has consumed -- the readback a browser does at the call,
+  taken when it can no longer be avoided; the text-label pattern the snapshots exist
+  for (`texImage2D(imageData)` in the same frame) still costs no readback. The facade
+  also counts snapshot bytes (32 MiB, half the render pool's 64 MiB) and reads eagerly
+  past them: a capture the pool refuses reached nobody, and sixty 1 MiB captures read
+  later would have been all zeros from the 64th megabyte on.
 - iOS (Performance+): the on-screen canvas reports the size the renderer gives it
   (the surface in CSS pixels: 390 x 844 on an iPhone 12), not the physical surface
   (1170 x 2532). Content that sized its drawing from `canvas.width` drew at three

@@ -4279,6 +4279,177 @@ pub(super) mod tests {
         );
     }
 
+    /// A render thread that answers what `getImageData` asks of it and records what it is asked,
+    /// until a frame that presents arrives or a second passes with nothing. (A frame whose
+    /// commands a barrier already carried has nothing left to send, and sends no packet.)
+    /// `canvas` is the size it reports for every canvas.
+    fn spawn_snapshot_responder(
+        render_rx: crossbeam_channel::Receiver<RenderCommand>,
+        canvas: (u32, u32),
+    ) -> (
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<Vec<&'static str>>,
+    ) {
+        use shared::protocol::render_cmd::{Canvas2DCmd, CanvasCmd};
+
+        let (events_tx, events_rx) = std::sync::mpsc::sync_channel(1);
+        let handle = std::thread::spawn(move || {
+            let mut events: Vec<&'static str> = Vec::new();
+            loop {
+                match render_rx.recv_timeout(Duration::from_secs(1)) {
+                    Ok(RenderCommand::Canvas(CanvasCmd::GetInfo { resp, .. })) => {
+                        resp.send(Ok(canvas));
+                    }
+                    Ok(RenderCommand::Canvas2D {
+                        cmd: Canvas2DCmd::ReadSnapshotPixels { resp, .. },
+                        ..
+                    }) => {
+                        events.push("read-snapshot");
+                        // Nothing to give: the placeholder stays, which is all these tests look at.
+                        resp.ok(Vec::new());
+                    }
+                    Ok(RenderCommand::Canvas2D {
+                        cmd: Canvas2DCmd::GetImageData { width, height, resp, .. },
+                        ..
+                    }) => {
+                        events.push("direct-read");
+                        resp.ok(vec![0u8; (width * height * 4) as usize]);
+                    }
+                    Ok(RenderCommand::FramePacket(packet)) => {
+                        let presents = packet
+                            .into_ops()
+                            .iter()
+                            .any(|op| matches!(op, FrameOp::Present));
+                        if presents {
+                            events.push("present");
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            let _ = events_tx.send(events);
+        });
+        (handle, events_rx)
+    }
+
+    /// An `ImageData` nobody has read, and nothing has consumed, is read back before its frame ends.
+    ///
+    /// The render pool keeps a snapshot for one frame; read a frame later and the pixels are gone
+    /// and `.data` is zeros -- on every platform, a stored `ImageData` used for hit-testing. The
+    /// readback a browser does at the call is taken at frame end instead.
+    #[test]
+    fn an_unread_image_data_is_read_back_before_its_frame_ends() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let (handle, events_rx) = spawn_snapshot_responder(render_rx, (4, 4));
+
+        runtime
+            .exec_script(
+                "held_image_data.js",
+                r#"
+                globalThis.held = createCanvas().getContext("2d").getImageData(0, 0, 1, 1);
+                if (held.__migo_snapshot_id__ === 0) throw new Error("expected a snapshot-backed ImageData");
+                "#,
+            )
+            .expect("capture must execute");
+        end_test_frame(&mut runtime);
+        handle.join().expect("responder must not panic");
+        let events = events_rx.recv_timeout(Duration::from_secs(2)).expect("events");
+
+        assert_eq!(
+            events,
+            vec!["read-snapshot"],
+            "the unread snapshot is read while the frame still holds it"
+        );
+        runtime
+            .exec_script(
+                "held_image_data_after.js",
+                r#"if (held.__migo_snapshot_id__ !== 0) throw new Error("the ImageData was not materialised");"#,
+            )
+            .expect("the ImageData owns its pixels once the frame has ended");
+    }
+
+    /// The pattern the snapshots exist for -- `texImage2D(imageData)` in the frame that took it --
+    /// costs no readback at frame end.
+    #[test]
+    fn a_spent_image_data_is_not_read_back_at_frame_end() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let (handle, events_rx) = spawn_snapshot_responder(render_rx, (4, 4));
+
+        runtime
+            .exec_script(
+                "spent_image_data.js",
+                r#"
+                const gl = new WebGLRenderingContext({ _rid: 149, width: 1, height: 1 }, {});
+                const spentBy2d = createCanvas().getContext("2d").getImageData(0, 0, 1, 1);
+                gl.texImage2D(0x0DE1, 0, 0x1908, 0x1908, 0x1401, spentBy2d);
+                globalThis.spentSix = spentBy2d;
+                const spentBySub = createCanvas().getContext("2d").getImageData(1, 1, 1, 1);
+                gl.texSubImage2D(0x0DE1, 0, 0, 0, 0x1908, 0x1401, spentBySub);
+                globalThis.spentSub = spentBySub;
+                "#,
+            )
+            .expect("uploads must execute");
+        end_test_frame(&mut runtime);
+        handle.join().expect("responder must not panic");
+        let events = events_rx.recv_timeout(Duration::from_secs(2)).expect("events");
+
+        assert_eq!(
+            events,
+            vec!["present"],
+            "a snapshot a texture upload took is not read back"
+        );
+        runtime
+            .exec_script(
+                "spent_image_data_after.js",
+                r#"
+                for (const d of [spentSix, spentSub]) {
+                    if (d.__migo_snapshot_spent__ !== true) throw new Error("not marked spent");
+                    if (d.__migo_snapshot_id__ === 0) throw new Error("a spent snapshot must keep its id");
+                }
+                "#,
+            )
+            .expect("spent ImageData keep their snapshot");
+    }
+
+    /// Past the snapshot byte budget a `getImageData` is read eagerly, as a browser reads it, rather
+    /// than captured into a pool that would refuse it and leave the `ImageData` all zeros.
+    #[test]
+    fn past_the_snapshot_byte_budget_get_image_data_reads_eagerly() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let (handle, events_rx) = spawn_snapshot_responder(render_rx, (4096, 4096));
+
+        // 1800 x 1800 x 4 = 12.96 MB: two fit under 32 MiB, the third does not.
+        runtime
+            .exec_script(
+                "snapshot_budget.js",
+                r#"
+                const ctx = createCanvas().getContext("2d");
+                globalThis.reads = [0, 1, 2].map(() => ctx.getImageData(0, 0, 1800, 1800));
+                "#,
+            )
+            .expect("reads must execute");
+        end_test_frame(&mut runtime);
+        handle.join().expect("responder must not panic");
+        let events = events_rx.recv_timeout(Duration::from_secs(5)).expect("events");
+
+        assert_eq!(
+            events.iter().filter(|e| **e == "direct-read").count(),
+            1,
+            "the third read is over the budget and goes straight to pixels; events={events:?}"
+        );
+        runtime
+            .exec_script(
+                "snapshot_budget_after.js",
+                r#"
+                const kinds = reads.map((d) => d.__migo_snapshot_id__ === undefined ? "bytes" : "snapshot");
+                if (kinds.join() !== "snapshot,snapshot,bytes") throw new Error("kinds=" + kinds.join());
+                "#,
+            )
+            .expect("two captured, the third eager");
+    }
+
     #[test]
     fn r2_text_cache_consume_flushes_pending_gl_before_capture_and_upload() {
         let (mut runtime, render_rx) = new_webgl_runtime();
