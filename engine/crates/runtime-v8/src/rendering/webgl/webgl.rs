@@ -5567,6 +5567,36 @@ pub fn op_get_parameter(state: &mut OpState, #[smi] canvas_id: u32, #[smi] pname
     .unwrap_or_default()
 }
 
+/// A read of state the context holds whose answer is JSON text (`getInternalformatParameter`, and the queries that
+/// follow it): `query` is one of `frame_wire::sync::gl_state`, `pname` and `extra` its first two arguments, `name` any
+/// more. One op for the family, so a new query is a number and a handler arm, not a new op through the embedded
+/// runtime, the producer and the contracts.
+///
+/// Synchronous like `op_get_parameter`, and with the same cost: the pending batch is flushed and the JS thread waits
+/// for the render thread. These are setup-time queries.
+#[op2]
+#[string]
+pub fn op_get_gl_state(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] query: u32,
+    #[smi] pname: u32,
+    #[smi] extra: u32,
+    #[string] name: String,
+) -> String {
+    send_gl_sync_with_flush(state, |resp| {
+        RenderCommand::GL(GLCmd::GetState {
+            canvas_id,
+            query,
+            pname,
+            extra,
+            name,
+            resp,
+        })
+    })
+    .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1B: Textures
 // ---------------------------------------------------------------------------

@@ -514,6 +514,7 @@
         "op_get_active_attrib": "sync",
         "op_get_active_uniform": "sync",
         "op_get_attrib_location": "sync",
+        "op_get_gl_state": "sync",
         "op_get_image_data": "sync",
         "op_get_parameter": "sync",
         "op_get_program_info_log": "sync",

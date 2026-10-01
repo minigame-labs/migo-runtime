@@ -36,8 +36,10 @@ import {
   GL_QUERY_QUERY_PARAMETER,
   GL_QUERY_SHADER_INFO_LOG,
   GL_QUERY_SHADER_PARAMETER,
+  GL_QUERY_STATE,
   GL_QUERY_TRANSFORM_FEEDBACK_VARYING,
   GL_QUERY_UNIFORM_BLOCK_INDEX,
+  GL_STATE_INTERNALFORMAT_SAMPLES,
   GL_QUERY_UNIFORM_LOCATION,
   encodeCanvas2DQueryParams,
   encodeGlQueryParams,
@@ -67,6 +69,7 @@ const KINDS = [
   GL_QUERY_ACTIVE_ATTRIB,
   GL_QUERY_ACTIVE_UNIFORM,
   GL_QUERY_TRANSFORM_FEEDBACK_VARYING,
+  GL_QUERY_STATE,
 ];
 
 // Names of every length modulo four, plus one that is not ASCII: the length is
@@ -105,7 +108,8 @@ for (let index = 0; index < count; index += 1) {
   const record = {
     kind,
     canvasId: 1 + next(8),
-    object: next(4096),
+    // A state query names which one in `object`, and the host refuses a number it does not know.
+    object: kind === GL_QUERY_STATE ? GL_STATE_INTERNALFORMAT_SAMPLES : next(4096),
     pname: next(0x9000),
     extra: next(1024),
     name,

@@ -83,6 +83,33 @@ mod js_agreement {
         }
     }
 
+    /// The numbers of `frame_wire::sync::gl_state` that the facade writes into `op_get_gl_state`'s `query` are the ones the
+    /// wire defines. The facade mirrors them by hand (`GL_STATE_*` in `02_webgl_context.js`); this reads them back, so a
+    /// renumbering on either side is a red test and not a driver query answering as another one.
+    #[test]
+    fn the_facade_asks_state_queries_by_the_numbers_the_wire_defines() {
+        const FACADE: &str = include_str!("02_webgl_context.js");
+        for (name, wire) in [(
+            "GL_STATE_INTERNALFORMAT_SAMPLES",
+            frame_wire::sync::gl_state::INTERNALFORMAT_SAMPLES,
+        )] {
+            let prefix = format!("const {name} = ");
+            let line = FACADE
+                .lines()
+                .find(|line| line.trim_start().starts_with(&prefix))
+                .unwrap_or_else(|| panic!("the facade declares {name}"));
+            let value: u32 = line
+                .trim_start()
+                .strip_prefix(&prefix)
+                .unwrap()
+                .trim_end_matches(';')
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{name} is a number"));
+            assert_eq!(value, wire, "{name}");
+        }
+    }
+
     #[test]
     fn js_module_buffers_null_at_module_load() {
         let js = include_str!("00_render_command_stream.js");

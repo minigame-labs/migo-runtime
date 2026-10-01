@@ -642,6 +642,9 @@ const _: () = {
     }
 };
 
+/// The numbers of the state queries a `GLCmd::GetState` can ask (the wire defines them; the renderer dispatches on them).
+pub use frame_wire::sync::gl_state;
+
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum GLCmd {
@@ -859,6 +862,16 @@ pub enum GLCmd {
     GetParameter {
         canvas_id: CanvasId,
         pname: u32,
+        resp: RenderCmdResp<String>,
+    },
+    /// A read of the state a context holds whose answer is JSON text: `query` is one of
+    /// `frame_wire::sync::gl_state`, and `pname`, `extra` and `name` are its arguments.
+    GetState {
+        canvas_id: CanvasId,
+        query: u32,
+        pname: u32,
+        extra: u32,
+        name: String,
         resp: RenderCmdResp<String>,
     },
 
@@ -2500,6 +2513,7 @@ impl GLCmd {
             | GLCmd::ReadPixels { canvas_id, .. }
             | GLCmd::ReadPixelsToBuffer { canvas_id, .. }
             | GLCmd::GetParameter { canvas_id, .. }
+            | GLCmd::GetState { canvas_id, .. }
             | GLCmd::BlitFramebuffer { canvas_id, .. }
             | GLCmd::InvalidateFramebuffer { canvas_id, .. }
             | GLCmd::CreateSampler { canvas_id, .. }
@@ -2753,6 +2767,7 @@ impl GLCmd {
             | GLCmd::ReadPixels { .. }
             | GLCmd::ReadPixelsToBuffer { .. }
             | GLCmd::GetParameter { .. }
+            | GLCmd::GetState { .. }
             | GLCmd::BlitFramebuffer { .. }
             | GLCmd::InvalidateFramebuffer { .. }
             | GLCmd::CreateSampler { .. }

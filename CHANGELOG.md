@@ -55,6 +55,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Pixi v7 renders: `getInternalformatParameter` exists. Pixi asks `gl.getInternalformatParameter(RENDERBUFFER,
+  ..., SAMPLES)` while it creates its renderer and three.js when it makes a multisampled target, and the
+  facade did not define it (a TypeError at construction). It is the driver's answer, descending as the
+  WebGL 2 specification promises, empty for a format that cannot be multisampled (ES 3.0 cannot multisample
+  an integer renderbuffer, which ANGLE's ES 3.1 reports anyway), `null` with INVALID_ENUM for a target other
+  than RENDERBUFFER or a pname other than SAMPLES. With it a Pixi scene -- graphics, a canvas sprite, Text,
+  alpha blending, a render texture, the ticker -- draws the right pixels (10 checks on a real device; they
+  crashed the process three times before this: a zero-sized canvas, `Intl`, and this).
+  Built on a new synchronous query kind, `STATE` (`gl_query::STATE`, 16): JSON text, one kind for every
+  query that reads a value or a list back and has no reply shape of its own, selected by a number in
+  `frame_wire::sync::gl_state`. The 40-odd methods of the specification that are still missing
+  (`getUniform`, `getVertexAttrib`, `getIndexedParameter`, the uniform-block family, ...) need no new
+  wire kind, producer op, contract entry or host dispatch each: a number and a handler arm.
 - `Intl`, `toLocaleString`, `localeCompare` and `normalize` work, and `new Intl.DateTimeFormat()`
   no longer aborts the process. V8 does not carry its own locale data: the embedder hands it
   ICU's data before the first isolate, and `deno_core` does that only with its

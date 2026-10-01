@@ -364,7 +364,7 @@ fn gl_query_arguments_from_the_javascript_producer_decode_unchanged() {
 
     assert_eq!(
         kinds_seen.len(),
-        (gl_query::TRANSFORM_FEEDBACK_VARYING - gl_query::PROGRAM_PARAMETER + 1) as usize,
+        (gl_query::STATE - gl_query::PROGRAM_PARAMETER + 1) as usize,
         "every query kind has to appear, or the corpus covers a table it does not exercise"
     );
     assert!(

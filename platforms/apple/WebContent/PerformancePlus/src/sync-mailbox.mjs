@@ -152,6 +152,12 @@ export const GL_QUERY_PARAMETER = 12;
 export const GL_QUERY_ACTIVE_ATTRIB = 13;
 export const GL_QUERY_ACTIVE_UNIFORM = 14;
 export const GL_QUERY_TRANSFORM_FEEDBACK_VARYING = 15;
+/** A query of context state whose answer is JSON text; `object` says which, one of the `GL_STATE_*` below. */
+export const GL_QUERY_STATE = 16;
+
+// Which state query a `GL_QUERY_STATE` asks. The host's table is `frame_wire::sync::gl_state`, and the interop gate
+// holds the two together.
+export const GL_STATE_INTERNALFORMAT_SAMPLES = 1;
 
 /** Words before a query's name: five fields and the name's byte length. */
 export const GL_QUERY_HEADER_BYTES = 24;

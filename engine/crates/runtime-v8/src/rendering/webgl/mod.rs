@@ -98,6 +98,7 @@ extension!(host_v8_webgl,
         op_enable,
         op_disable,
         op_get_parameter,
+        op_get_gl_state,
 
         // Textures
         op_create_texture,
