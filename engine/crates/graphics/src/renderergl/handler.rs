@@ -1399,13 +1399,22 @@ impl RendererGL {
                 query,
                 pname,
                 extra,
-                name: _,
+                name,
                 resp,
             } => {
                 cm.make_current_needed(canvas_id)?;
                 let json = match query {
                     shared::protocol::render_cmd::gl_state::INTERNALFORMAT_SAMPLES => {
                         internalformat_samples_json(gl, pname, extra)
+                    }
+                    shared::protocol::render_cmd::gl_state::FRAMEBUFFER_ATTACHMENT_PARAMETER => {
+                        // The queried pname travels as decimal text in `name`: three numbers do not fit the
+                        // two a state query has.
+                        let queried = name.trim().parse::<u32>().unwrap_or(0);
+                        unsafe {
+                            gl.get_framebuffer_attachment_parameter_i32(pname, extra, queried)
+                        }
+                        .to_string()
                     }
                     // The wire refuses a number it does not know before it gets here.
                     _ => "null".to_string(),

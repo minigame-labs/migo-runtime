@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- `getFramebufferAttachmentParameter` exists (Phaser 3.90 asks it while it boots: a TypeError that
+  stopped the game before its first frame). The facade now records what is attached to each framebuffer, so
+  the object (the wrapper the content holds, not a GL name), its type and its level are answered from
+  that, and the default framebuffer follows the specification (`BACK`/`DEPTH`/`STENCIL`, present as the
+  context attributes say, anything else INVALID_ENUM). What it cannot know -- an attached texture's component
+  sizes, type and colour encoding -- is the driver's, through the second number of the generic state query
+  (`gl_state::FRAMEBUFFER_ATTACHMENT_PARAMETER`; no new wire kind, op or contract line). With it Phaser 3.90.0,
+  Pixi 7.4.3 and three.js 0.186.1 all run their scenes on real pixels (conformance `engines/`).
 - Phaser 3 renders: dynamic text, `useProgram(null)`, integer uniforms. Found running Phaser on the runtime
   (graphics, a canvas texture, `Text`; 5 of 6 checks passed, and then 6 of 6):
   - **A canvas drawn and uploaded in the same frame became an empty texture.** `texImage2D(canvas)` of a
