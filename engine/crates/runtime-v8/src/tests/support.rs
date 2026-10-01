@@ -15,6 +15,13 @@ use shared::{
 };
 
 pub(super) fn test_host_state() -> HostOpState {
+    test_host_state_with_audio(shared::audio_channel::disconnected())
+}
+
+/// The same, with an audio command channel something answers (a test that plays the audio thread).
+pub(super) fn test_host_state_with_audio(
+    audio_tx: shared::audio_channel::AudioCommandSender,
+) -> HostOpState {
     let (render_tx, _render_rx) = CommandSender::new();
     let (host_tx, _critical_host_tx, _host_rx) = shared::host_channel::channel(1);
 
@@ -30,7 +37,7 @@ pub(super) fn test_host_state() -> HostOpState {
         mount_table: None,
         render_tx,
         text_measurer: None,
-        audio_tx: AudioSender::new(shared::audio_channel::disconnected(), ThreadWakeup::new()),
+        audio_tx: AudioSender::new(audio_tx, ThreadWakeup::new()),
         host_tx,
         device_services: None,
         raf_rx: None,

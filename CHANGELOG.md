@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- `InnerAudioContext`'s `canplay` listeners run after the duration is known. The context fetched `duration` from the
+  audio thread with an async op when the native `canPlay` arrived and fired the listeners without waiting for the answer,
+  so every `onCanplay` callback read `duration === 0` (it was right 50 ms later); Howler.js's HTML5 path computes its end
+  timer from `node.duration` in that callback, got a zero-length sound and ended it before it started. Events that arrive
+  while the state is being fetched now wait behind it, so listeners still see canplay before the play of an autoplaying
+  source (a test plays the audio thread: red before, green after). Runtime-v8 JavaScript changed: joins the snapshot backlog.
 - Uniform-block introspection: `getActiveUniformBlockName`, `getActiveUniformBlockParameter`,
   `getUniformIndices` and `getActiveUniforms` exist (PlayCanvas 2.x reads every block's name while it links
   a shader, and stopped there with a TypeError). The driver answers, through four more numbers of the generic state

@@ -87,6 +87,8 @@ class InnerAudioContext {
   #offlineMode = false;
   // Read-only properties (cached from native)
   #duration = 0;
+  // The tail of the events waiting for native state (see _handleNativeEvent), or null.
+  #behind = null;
   #currentTime = 0;
   #paused = true;
   #buffered = false;
@@ -127,6 +129,24 @@ class InnerAudioContext {
   /** Internal: Handle native event */
   _handleNativeEvent(event) {
     if (this.#destroyed) return;
+    // `canplay` waits for native state (below). An event that arrives while it waits waits behind it, so listeners see
+    // events in the order they happened: canplay, then the play of an autoplaying source.
+    let pending = this.#behind;
+    if (pending === null) {
+      pending = this.#deliver(event);       // nothing: this event did not have to wait
+      if (!pending) return;
+    } else {
+      pending = pending.then(() => this.#deliver(event));
+    }
+    const tail = pending.then(() => {
+      if (this.#behind === tail) this.#behind = null;
+    });
+    this.#behind = tail;
+  }
+
+  /** Delivers one native event; returns a promise when its listeners must wait for native state, else undefined. */
+  #deliver(event) {
+    if (this.#destroyed) return undefined;
 
     // Update current time from event
     this.#currentTime = event.currentTime;
@@ -134,9 +154,11 @@ class InnerAudioContext {
     switch (event.eventType) {
       case "canPlay":
         this.#buffered = true;
-        this.#refreshState(); // populate duration/buffered (events carry only currentTime)
-        this.#fireListeners("canplay");
-        break;
+        // The event carries only currentTime, and `canplay` is when a game reads `duration` (Howler's HTML5 path computes
+        // its end timer from it there): the listeners run once the duration has been fetched, not before.
+        return this.#refreshState().then(() => {
+          if (!this.#destroyed) this.#fireListeners("canplay");
+        });
       case "play":
         this.#paused = false;
         this.#refreshState(); // refresh duration for streaming sources
@@ -176,6 +198,7 @@ class InnerAudioContext {
         this.#fireListeners("error", { errCode: 10001, errMsg: "Playback error" });
         break;
     }
+    return undefined;
   }
 
   #fireListeners(type, arg) {
