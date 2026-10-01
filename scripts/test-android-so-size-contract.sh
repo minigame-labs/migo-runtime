@@ -73,17 +73,29 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # only two states in practice -- packed, or a flat table an order of magnitude
 # larger -- so a tight bound costs nothing and names the cause exactly.
 # ---------------------------------------------------------------------------
+#
+# 2026-10-01: V8's own ICU data, +6,774,896 bytes of .rodata on every ABI, which moves the file and
+# .rodata ceilings by that and ~5% (the .text ceilings do not move). Until then V8 had no locale data at
+# all: `Intl.NumberFormat` threw "Icu error" and `new Intl.DateTimeFormat()` / `new Intl.Segmenter()`
+# aborted the process, so any game that called `toLocaleString` or ran Pixi's Text was one line from a
+# crash. The data is `migo-icu-data`'s filtered package (10.7 MB -> 6.8 MB: converters, transliteration
+# and the display names of 650 locales gone; every locale's number/date data, the time zone rules, the
+# break-iterator dictionaries and Chinese collation kept -- see that crate's policy.rs for why each).
+# It is stored uncompressed on purpose: ICU reads it in place, so only the pages a game touches become
+# resident, where a compressed copy would cost the whole 6.8 MB of heap. The delta is the file's size,
+# so it is computed, not measured; the first release that carries it should be measured and these
+# tightened to ~5% over it.
 declare -A BUDGET_FILE=(
-    ["arm64-v8a"]=42200000
-    ["x86_64"]=45200000
+    ["arm64-v8a"]=49300000
+    ["x86_64"]=52300000
 )
 declare -A BUDGET_TEXT=(
     ["arm64-v8a"]=30700000
     ["x86_64"]=33300000
 )
 declare -A BUDGET_RODATA=(
-    ["arm64-v8a"]=8250000
-    ["x86_64"]=8500000
+    ["arm64-v8a"]=15300000
+    ["x86_64"]=15600000
 )
 RELOC_BUDGET=600000
 
@@ -101,9 +113,10 @@ budget_hint() {
       the codegen profile is still 'z'."
             ;;
         .rodata)
-            echo "Embedded data. The usual causes are the ICU blob (slim_icu_data in
+            echo "Embedded data. The usual causes are Skia's ICU blob (slim_icu_data in
       build-android-so.sh must leave the 761 KB flutter icudtl.dat in place of
-      Skia's 8.5 MB android one) and the V8 startup snapshot."
+      Skia's 8.5 MB android one), V8's own ICU data (migo-icu-data, 6.8 MB by
+      design: widen its policy.rs and this grows) and the V8 startup snapshot."
             ;;
         .rela.dyn|.rel.dyn)
             echo "The relative relocations are being shipped as a flat table. Check

@@ -91,6 +91,11 @@ BSD-3-Clause:
 - pxfm - BSD-3-Clause OR Apache-2.0
 - Skia (https://skia.org/) - BSD-3-Clause
 
+Note: V8's `Intl` reads ICU locale data (Unicode-3.0, https://www.unicode.org/license.html).
+It is the data of the `deno_core_icudata` crate (MIT) -- ICU 77's common data file --
+filtered by `migo-icu-data` to what a game engine ships (see its policy.rs) and embedded
+in the binary.
+
 Note: Migo's 2D graphics are rendered by Skia (Ganesh GL backend). The bundled
 Skia binary embeds FreeType (FreeType License "FTL", or GPLv2) and ICU data
 (Unicode-3.0) via the embed-freetype / embed-icudtl build features. See Skia's

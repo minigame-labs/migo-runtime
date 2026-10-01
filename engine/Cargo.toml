@@ -10,6 +10,7 @@ members = [
  "crates/frame-decode",
     "crates/frame-wire",
  "crates/graphics",
+ "crates/icu-data",
  "crates/io",
  "crates/platform",
  "crates/runtime-v8",

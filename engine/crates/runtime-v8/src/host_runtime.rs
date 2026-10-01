@@ -106,6 +106,9 @@ impl HostJsRuntime {
         #[cfg(feature = "code-signing")] code_signing_enabled: bool,
         #[cfg(feature = "code-signing")] code_signing_pubkey: Option<&str>,
     ) -> Self {
+        // V8's locale data, before anything that can start V8 (a runtime cannot be handed it later).
+        crate::icu::install_icu_data();
+
         // Backend-owned module loader + V8 code cache assembly. Moved out of
         // core (Phase B) so the orchestration layer never names deno_core. The
         // disk code cache is shared between the module loader and the V8
