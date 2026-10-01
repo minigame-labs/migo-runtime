@@ -38,6 +38,7 @@ pub(super) fn init_skia_for_canvas(
     if let Some(entry) = cm.canvases.get_mut(&canvas_id) {
         entry.default_framebuffer_uninitialised = false;
     }
+    cm.gl_initial_state_pending.remove(&canvas_id);
     cm.make_current_needed(canvas_id)?;
 
     if cm.contexts_2d.contains_key(&canvas_id) {
