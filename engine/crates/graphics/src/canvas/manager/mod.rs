@@ -87,6 +87,9 @@ pub(crate) use types::{
     VaoMeta, VertexAttribPointerFp, ee,
 };
 use types::{CanvasEntry, EglContextHandle, SurfaceKind};
+pub(crate) use types::{
+    PIXEL_STORE_FLIP_Y, PIXEL_STORE_PREMULTIPLY_ALPHA, is_webgl_only_pixel_store,
+};
 
 use self::image::ImageRegistry;
 
@@ -128,6 +131,15 @@ struct CanvasSourceCopy {
     bytes: usize,
     /// Least-recently-used eviction order.
     last_used: u64,
+}
+
+/// What a texture that is the source of an upload holds in its alpha channel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceAlpha {
+    /// Straight (unpremultiplied): a host-decoded image.
+    Straight,
+    /// Premultiplied: what Skia rendered, so every canvas snapshot.
+    Premultiplied,
 }
 
 /// What every live source-canvas copy may hold in total. A copy is one RGBA8 texture the size of its canvas.
@@ -4870,6 +4882,116 @@ impl CanvasManager {
         Ok(result)
     }
 
+    /// The unpack state of `canvas_id`'s context when `UNPACK_FLIP_Y_WEBGL` or
+    /// `UNPACK_PREMULTIPLY_ALPHA_WEBGL` is on, `None` -- the common case -- when neither is, so an
+    /// upload that wants no conversion pays one lookup.
+    pub(crate) fn unpack_conversion(
+        &self,
+        canvas_id: CanvasId,
+    ) -> Option<crate::backend::gl::unpack_convert::UnpackState> {
+        let shadow = &self.gl_state.get(&canvas_id)?.pixel_store_i32;
+        let flip_y = shadow.value(PIXEL_STORE_FLIP_Y) != 0;
+        let premultiply = shadow.value(PIXEL_STORE_PREMULTIPLY_ALPHA) != 0;
+        if !flip_y && !premultiply {
+            return None;
+        }
+        Some(crate::backend::gl::unpack_convert::UnpackState {
+            flip_y,
+            premultiply,
+            alignment: shadow.value_or(glow::UNPACK_ALIGNMENT, 4),
+            row_length: shadow.value(glow::UNPACK_ROW_LENGTH),
+            skip_rows: shadow.value(glow::UNPACK_SKIP_ROWS),
+            skip_pixels: shadow.value(glow::UNPACK_SKIP_PIXELS),
+        })
+    }
+
+    /// `UNPACK_FLIP_Y_WEBGL` / `UNPACK_PREMULTIPLY_ALPHA_WEBGL` for an upload whose source is
+    /// already a GPU texture.
+    ///
+    /// The GPU copy those uploads use cannot change the pixels, so when the flags ask for a
+    /// change they are read back, converted ([`unpack_convert`]) and uploaded as bytes. What the
+    /// flags ask for depends on what the source holds: a host-decoded image is straight alpha, so
+    /// premultiply-on is a conversion; a canvas snapshot is what Skia rendered, premultiplied, so
+    /// premultiply-off -- WebGL's default -- is the conversion, the straight alpha the
+    /// specification promises. Flip applies to both.
+    ///
+    /// `true` when the upload was done here. `false` -- nothing touched -- when the flags change
+    /// nothing, when the destination format is not RGB(A) (the GPU copy keeps handling those, as it
+    /// always did) or when the source cannot be read.
+    ///
+    /// [`unpack_convert`]: crate::backend::gl::unpack_convert
+    #[allow(clippy::too_many_arguments)]
+    fn upload_unpack_converted(
+        &mut self,
+        canvas_id: CanvasId,
+        copy_fbo: glow::NativeFramebuffer,
+        src_tex: glow::NativeTexture,
+        (sx, sy, width, height): (i32, i32, i32, i32),
+        source: SourceAlpha,
+        target: u32,
+        level: i32,
+        internalformat: i32,
+    ) -> bool {
+        let (flip_y, wants_premultiplied) = match self.unpack_conversion(canvas_id) {
+            Some(state) => (state.flip_y, state.premultiply),
+            None => (false, false),
+        };
+        let premultiply = wants_premultiplied && source == SourceAlpha::Straight;
+        let unpremultiply = !wants_premultiplied && source == SourceAlpha::Premultiplied;
+        if !(flip_y || premultiply || unpremultiply) {
+            return false;
+        }
+        let format = match internalformat as u32 {
+            glow::RGBA | glow::RGBA8 => glow::RGBA,
+            glow::RGB | glow::RGB8 => glow::RGB,
+            _ => return false,
+        };
+        let Some(mut pixels) = crate::backend::gl::texture_copy::read_texture_rgba8(
+            &self.gl, copy_fbo, src_tex, sx, sy, width, height,
+        ) else {
+            return false;
+        };
+        use crate::backend::gl::unpack_convert::{flip_rows_in_place, premultiply_rgba8};
+        if premultiply {
+            premultiply_rgba8(&mut pixels);
+        }
+        if unpremultiply {
+            crate::backend::gl::readback::unpremultiply_rgba8(&mut pixels);
+        }
+        if flip_y {
+            flip_rows_in_place(&mut pixels, width.max(0) as usize * 4);
+        }
+        let bytes = if format == glow::RGB {
+            pixels
+                .chunks_exact(4)
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .collect::<Vec<u8>>()
+        } else {
+            pixels
+        };
+        {
+            // Tight rows whatever UNPACK_ALIGNMENT, ROW_LENGTH and the skips the content set.
+            let _unpack = crate::backend::gl::readback::CompactPixelUnpackGuard::new(&self.gl, 1);
+            unsafe {
+                self.gl.tex_image_2d(
+                    target,
+                    level,
+                    internalformat,
+                    width,
+                    height,
+                    0,
+                    format,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(&bytes)),
+                );
+            }
+        }
+        self.mark_all_2d_contexts_stale_bits(
+            crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
+        );
+        true
+    }
+
     /// GPU-side `glTexImage2D(image)`: copy from a previously uploaded
     /// shared image's GL texture into the destination texture
     /// currently bound to `target` on `canvas_id`.  Replaces the slow
@@ -4925,6 +5047,24 @@ impl CanvasManager {
             .unwrap_or((0, 0));
 
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
+
+        let source_alpha = match stored.info.alpha_type {
+            skia_safe::AlphaType::Premul => SourceAlpha::Premultiplied,
+            _ => SourceAlpha::Straight,
+        };
+        if self.upload_unpack_converted(
+            canvas_id,
+            copy_fbo,
+            src_tex,
+            (sx, sy, src_width, src_height),
+            source_alpha,
+            target,
+            level,
+            internalformat,
+        ) {
+            return Ok(());
+        }
+
         let status = crate::backend::gl::texture_copy::copy_texture(
             &self.gl,
             copy_fbo,
@@ -5674,6 +5814,18 @@ impl CanvasManager {
         // — exactly the same primitive `tex_image_2d_from_shared`
         // uses, so the same driver paths are exercised.
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
+        if self.upload_unpack_converted(
+            canvas_id,
+            copy_fbo,
+            entry.tex,
+            (0, 0, entry.width as i32, entry.height as i32),
+            SourceAlpha::Premultiplied,
+            target,
+            level,
+            internalformat,
+        ) {
+            return Ok(());
+        }
         let status = crate::backend::gl::texture_copy::copy_texture(
             &self.gl,
             copy_fbo,
@@ -5745,6 +5897,19 @@ impl CanvasManager {
 
         self.make_current_needed(canvas_id)?;
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
+        // A cached text texture is a snapshot that outlived its frame: premultiplied.
+        if self.upload_unpack_converted(
+            canvas_id,
+            copy_fbo,
+            src_tex,
+            (0, 0, width as i32, height as i32),
+            SourceAlpha::Premultiplied,
+            target,
+            level,
+            internalformat,
+        ) {
+            return Ok(true);
+        }
         let status = crate::backend::gl::texture_copy::copy_texture(
             &self.gl,
             copy_fbo,
@@ -6996,6 +7161,68 @@ mod recovery_source_guards {
             destroy.contains("gl_initial_state_pending.remove("),
             "destroy_canvas must forget a canvas that never ran a GL command"
         );
+    }
+
+    /// `UNPACK_FLIP_Y_WEBGL` and `UNPACK_PREMULTIPLY_ALPHA_WEBGL` are WebGL's, not the driver's.
+    ///
+    /// The `pixelStorei` handler must keep them off `glPixelStorei` (a GL ES driver answers
+    /// `INVALID_ENUM`, and that error would reach the content), and every upload that takes its
+    /// pixels from a texture the engine holds must consult them, because the GPU copy it
+    /// otherwise uses cannot flip or convert alpha. Structural because each needs a GL context;
+    /// the behaviour is migo-conformance's `webgl-spec/flip-y-*` and `premultiply-*`.
+    #[test]
+    fn the_webgl_only_unpack_flags_are_applied_by_the_engine_and_never_sent_to_the_driver() {
+        const GL_HANDLER: &str = include_str!("../../renderergl/handler.rs");
+        let handle = function_body(GL_HANDLER, "pub(crate) fn handle_command(");
+        let at = handle
+            .find("GLCmd::PixelStorei")
+            .expect("the handler must have a PixelStorei arm");
+        let arm = &handle[at..];
+        let arm = &arm[..arm
+            .find("unsafe { gl.pixel_store_i32")
+            .expect("the arm forwards to the driver")];
+        assert!(
+            arm.contains("is_webgl_only_pixel_store("),
+            "the PixelStorei arm must not forward the WebGL-only parameters to the driver"
+        );
+        // the byte uploads: a typed array, `ImageData`, a host-decoded image's bytes
+        for arm in ["GLCmd::TexImage2D {", "GLCmd::TexSubImage2D {"] {
+            let at = handle
+                .find(arm)
+                .unwrap_or_else(|| panic!("the handler must have a {arm} arm"));
+            let rest = &handle[at..];
+            let upload = rest.find("gl.tex_").expect("the arm uploads to the driver");
+            let before = &rest[..upload];
+            assert!(
+                before.contains("unpack_conversion(") && before.contains("convert_upload("),
+                "{arm} must apply the unpack flags to the bytes before they reach the driver"
+            );
+        }
+        for signature in [
+            "pub(crate) fn tex_image_2d_from_shared(",
+            "pub(crate) fn tex_image_2d_from_canvas2d_snapshot(",
+            "pub(crate) fn tex_image_2d_from_text_cache(",
+        ] {
+            let body = function_body(MGR, signature);
+            assert!(
+                body.contains("upload_unpack_converted("),
+                "{signature} copies a texture into the content's and must apply the unpack flags"
+            );
+            let call = body.find("upload_unpack_converted(").unwrap();
+            let copy = body
+                .find("texture_copy::copy_texture(")
+                .expect("and keep the GPU copy for when they ask for nothing");
+            assert!(
+                call < copy,
+                "{signature}: the conversion must be tried before the GPU copy"
+            );
+        }
+        let source_alpha =
+            |signature: &str| function_body(MGR, signature).contains("SourceAlpha::Premultiplied");
+        assert!(source_alpha(
+            "pub(crate) fn tex_image_2d_from_canvas2d_snapshot("
+        ));
+        assert!(source_alpha("pub(crate) fn tex_image_2d_from_text_cache("));
     }
 
     /// A WebGL drawing buffer is transparent black when it is created and again

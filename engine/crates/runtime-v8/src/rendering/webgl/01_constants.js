@@ -414,6 +414,10 @@ const WebglConstants = {
     CONTEXT_LOST_WEBGL: 37442,
     UNPACK_COLORSPACE_CONVERSION_WEBGL: 37443,
     BROWSER_DEFAULT_WEBGL: 37444,
+    // WebGL 2's half-float pixel type, the `type` of every RGBA16F/RG16F upload. Absent, `gl.HALF_FLOAT`
+    // was `undefined` and such an upload went to the driver with no type. (WebGL 1 has it as
+    // `HALF_FLOAT_OES` on OES_texture_half_float.)
+    HALF_FLOAT: 5131,
     // WebGL 2 sized internal formats. Fifth instance of this file's recorded defect
     // class and the largest: six methods that take one are implemented --
     // texStorage2D/3D, renderbufferStorage, renderbufferStorageMultisample,

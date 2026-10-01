@@ -893,9 +893,35 @@ function nextResourceId() {
     return id;
 }
 
+// Channel sizes in bits of a renderbuffer format: [red, green, blue, alpha, depth, stencil].
+function _renderbufferBits(format, channel) {
+    let bits;
+    switch (format) {
+        case 0x8056: bits = [4, 4, 4, 4, 0, 0]; break;     // RGBA4
+        case 0x8057: bits = [5, 5, 5, 1, 0, 0]; break;     // RGB5_A1
+        case 0x8d62: bits = [5, 6, 5, 0, 0, 0]; break;     // RGB565
+        case 0x8058: bits = [8, 8, 8, 8, 0, 0]; break;     // RGBA8
+        case 0x8051: bits = [8, 8, 8, 0, 0, 0]; break;     // RGB8
+        case 0x81a5: bits = [0, 0, 0, 0, 16, 0]; break;    // DEPTH_COMPONENT16
+        case 0x81a6: bits = [0, 0, 0, 0, 24, 0]; break;    // DEPTH_COMPONENT24
+        case 0x8cac: bits = [0, 0, 0, 0, 32, 0]; break;    // DEPTH_COMPONENT32F
+        case 0x8d48: bits = [0, 0, 0, 0, 0, 8]; break;     // STENCIL_INDEX8
+        case 0x84f9: bits = [0, 0, 0, 0, 16, 8]; break;    // DEPTH_STENCIL: 16 and 8 is what WebGL reports
+        case 0x88f0: bits = [0, 0, 0, 0, 24, 8]; break;    // DEPTH24_STENCIL8
+        case 0x8cad: bits = [0, 0, 0, 0, 32, 8]; break;    // DEPTH32F_STENCIL8
+        default: bits = [0, 0, 0, 0, 0, 0]; break;
+    }
+    return bits[channel];
+}
+
 class WebglObject {
-    constructor(id) {
+    // `kind` is what `isTexture` and its siblings tell the objects apart by, `ownerId` the canvas of the context
+    // that made it (a number, so an object still serialises).
+    constructor(id, kind, ownerId) {
         this._id = id;
+        this._kind = kind;
+        this._ownerId = ownerId;
+        this._deleted = false;
     }
 
     get id() {
@@ -1147,7 +1173,7 @@ class WebGLRenderingContext {
         const id = nextResourceId();
         // op_create_program: ordered raw (not in encoded set).
         _rawCreateProgram(this._canvasId, id);
-        return new WebglObject(id);
+        return new WebglObject(id, "program", this._canvasId);
     }
 
     useProgram(program) {
@@ -1208,6 +1234,7 @@ class WebGLRenderingContext {
     }
 
     deleteProgram(program) {
+        if (program instanceof WebglObject) program._deleted = true;
         const programId = program?.id;
         _rawDeleteProgram(programId);
         if (programId !== undefined) {
@@ -1218,12 +1245,18 @@ class WebGLRenderingContext {
     createShader(type) {
         const id = nextResourceId();
         _rawCreateShader(this._canvasId, id, type);
-        return new WebglObject(id);
+        return new WebglObject(id, "shader", this._canvasId);
     }
 
     shaderSource(shader, src) {
         if (!allowWebglShaderSource(this._canvasId, src)) return;
+        // What getShaderSource answers: the string the content gave, as a string.
+        if (shader) shader._source = String(src);
         return _rawShaderSource(this._canvasId, shader?.id, src);
+    }
+
+    getShaderSource(shader) {
+        return shader && shader._source !== undefined ? shader._source : "";
     }
 
     compileShader(shader) {
@@ -1263,6 +1296,7 @@ class WebGLRenderingContext {
     }
 
     deleteShader(shader) {
+        if (shader instanceof WebglObject) shader._deleted = true;
         const shaderId = shader?.id;
         _rawDeleteShader(shaderId);
         if (shaderId !== undefined) {
@@ -1298,6 +1332,18 @@ class WebGLRenderingContext {
         // Locations only change on the next link; drop any cached lookups.
         this._attribLocationCache.delete(programId);
     }
+
+    // True for an object this context made, of that kind, and not deleted.
+    _isLive(object, kind) {
+        return object instanceof WebglObject && object._kind === kind &&
+            object._ownerId === this._canvasId && !object._deleted;
+    }
+    isBuffer(object) { return this._isLive(object, "buffer"); }
+    isFramebuffer(object) { return this._isLive(object, "framebuffer"); }
+    isProgram(object) { return this._isLive(object, "program"); }
+    isRenderbuffer(object) { return this._isLive(object, "renderbuffer"); }
+    isShader(object) { return this._isLive(object, "shader"); }
+    isTexture(object) { return this._isLive(object, "texture"); }
 
     isContextLost() {
         // Direct, no submit: op_gl_is_context_lost is host-local.
@@ -1408,10 +1454,11 @@ class WebGLRenderingContext {
     createBuffer() {
         const id = nextResourceId();
         _rawCreateBuffer(this._canvasId, id);
-        return new WebglObject(id);
+        return new WebglObject(id, "buffer", this._canvasId);
     }
 
     deleteBuffer(buffer) {
+        if (buffer instanceof WebglObject) buffer._deleted = true;
         // Per WebGL: deleting a bound buffer unbinds it from the current target.
         if (this._arrayBufferBinding === buffer) this._arrayBufferBinding = null;
         if (this._elementArrayBufferBinding === buffer) this._elementArrayBufferBinding = null;
@@ -1433,15 +1480,31 @@ class WebGLRenderingContext {
     }
 
     bufferData(target, srcOrSize, usage) {
+        // What getBufferParameter answers, recorded on the buffer bound to `target`.
+        const bound = target === 0x8892 ? this._arrayBufferBinding
+            : target === 0x8893 ? this._elementArrayBufferBinding : null;
         if (typeof srcOrSize === "number") {
             const size = srcOrSize >>> 0;
             if (!allowWebglUpload(this._canvasId, size)) return;
+            if (bound && typeof usage === "number") { bound._size = size; bound._usage = usage >>> 0; }
             return _rawBufferData(this._canvasId, target, size, null, usage);
         } else {
             const u8 = toBoundedUploadBytes(this._canvasId, srcOrSize);
             if (u8 === null) return;
+            if (bound && typeof usage === "number") { bound._size = u8.byteLength; bound._usage = usage >>> 0; }
             return _rawBufferData(this._canvasId, target, -1, u8, usage);
         }
+    }
+
+    getBufferParameter(target, pname) {
+        const bound = target === 0x8892 ? this._arrayBufferBinding
+            : target === 0x8893 ? this._elementArrayBufferBinding : undefined;
+        if (bound === undefined) { this._pushJsError(0x0500); return null; } // INVALID_ENUM
+        if (bound === null) { this._pushJsError(0x0502); return null; }      // INVALID_OPERATION
+        if (pname === 0x8764) return bound._size || 0;                         // BUFFER_SIZE
+        if (pname === 0x8765) return bound._usage || 0x88e4;                   // BUFFER_USAGE, STATIC_DRAW
+        this._pushJsError(0x0500);
+        return null;
     }
 
     getUniformLocation(program, name) {
@@ -1558,6 +1621,14 @@ class WebGLRenderingContext {
             // knows -- asking it would have crossed for a constant. Zero: see
             // `clientWaitSync`.
             case 0x9247: return 0;
+            // The two flags are booleans in WebGL; the colour space default is BROWSER_DEFAULT_WEBGL.
+            case 0x9240: return this._unpackFlipY === true;
+            case 0x9241: return this._unpackPremultiplyAlpha === true;
+            case 0x9243: return 0x9244;
+            // `VERSION` and `SHADING_LANGUAGE_VERSION` begin with the WebGL version, then the driver's own
+            // string in parentheses. Content (and libraries) tell WebGL 1 from 2 by this prefix.
+            case 0x1f02: return this._webglVersionString(0x1f02, "WebGL");
+            case 0x8b8c: return this._webglVersionString(0x8b8c, "WebGL GLSL ES");
             default: break;
         }
         // A capability queried through getParameter is the same GLboolean
@@ -1573,6 +1644,16 @@ class WebGLRenderingContext {
         const json = _rawGetParameter(this._canvasId, pname);
         if (!json) return null;
         try { return JSON.parse(json); } catch (_) { return null; }
+    }
+
+    // `<prefix> <version> (<driver string>)`, with the version of the interface this object is.
+    _webglVersionString(pname, prefix) {
+        const raw = _rawGetParameter(this._canvasId, pname);
+        let driver = "";
+        try { driver = JSON.parse(raw); } catch (_) { /* no string: an empty one */ }
+        const two = typeof WebGL2RenderingContext === "function" && this instanceof WebGL2RenderingContext;
+        const version = pname === 0x1f02 ? (two ? "2.0" : "1.0") : (two ? "3.00" : "1.00");
+        return `${prefix} ${version} (${driver})`;
     }
 
     getError() {
@@ -1893,10 +1974,11 @@ class WebGLRenderingContext {
     createTexture() {
         const id = nextResourceId();
         _rawCreateTexture(this._canvasId, id);
-        return new WebglObject(id);
+        return new WebglObject(id, "texture", this._canvasId);
     }
 
     deleteTexture(texture) {
+        if (texture instanceof WebglObject) texture._deleted = true;
         if (texture && texture.id !== undefined) _rawDeleteTexture(texture.id);
     }
 
@@ -2090,10 +2172,42 @@ class WebGLRenderingContext {
         }
     }
 
+    // The texture bound to `target` on the active unit, `undefined` for a target that is not a texture target.
+    _boundTextureFor(target) {
+        if (target === 0x0de1) return this._textureBindings2D.get(this._activeTextureUnit) || null;
+        if (target === 0x8513) return this._textureBindingsCube.get(this._activeTextureUnit) || null;
+        return undefined;
+    }
+
+    // Record a sampler parameter on the bound texture, so getTexParameter answers what was set.
+    _noteTexParameter(target, pname, param) {
+        const tex = this._boundTextureFor(target);
+        if (!tex) return;
+        (tex._params || (tex._params = new Map())).set(pname >>> 0, param);
+    }
+
+    getTexParameter(target, pname) {
+        const tex = this._boundTextureFor(target);
+        if (tex === undefined) { this._pushJsError(0x0500); return null; } // INVALID_ENUM
+        if (tex === null) { this._pushJsError(0x0502); return null; }      // INVALID_OPERATION
+        const set = tex._params && tex._params.get(pname >>> 0);
+        if (set !== undefined) return set;
+        switch (pname >>> 0) {
+            case 0x2800: return 0x2601; // TEXTURE_MAG_FILTER: LINEAR
+            case 0x2801: return 0x2702; // TEXTURE_MIN_FILTER: NEAREST_MIPMAP_LINEAR
+            case 0x2802: return 0x2901; // TEXTURE_WRAP_S: REPEAT
+            case 0x2803: return 0x2901; // TEXTURE_WRAP_T: REPEAT
+            default: break;
+        }
+        this._pushJsError(0x0500);
+        return null;
+    }
+
     texParameteri(target, pname, param) {
         // opcode 40: H C U U I. target/pname are u32, param is i32.
         if (typeof target === "number" && typeof pname === "number" &&
             typeof param === "number") {
+            this._noteTexParameter(target, pname, param | 0);
             encodeTexParameteri(this._canvasId, target >>> 0, pname >>> 0, param | 0);
             return;
         }
@@ -2105,6 +2219,8 @@ class WebGLRenderingContext {
         // opcode 41: H C U U F. target/pname are u32, param is f32.
         if (typeof target === "number" && typeof pname === "number" &&
             typeof param === "number") {
+            // The filter and wrap parameters are enums, and read back as such.
+            this._noteTexParameter(target, pname, param | 0);
             encodeTexParameterf(this._canvasId, target >>> 0, pname >>> 0, param);
             return;
         }
@@ -2122,11 +2238,11 @@ class WebGLRenderingContext {
     }
 
     pixelStorei(pname, param) {
-        // UNPACK_FLIP_Y_WEBGL / UNPACK_PREMULTIPLY_ALPHA_WEBGL / UNPACK_COLORSPACE_CONVERSION_WEBGL
-        // are JS-only state; colorspace is a no-op.
-        if (pname === 0x9240) { this._unpackFlipY = !!param; return; }
-        if (pname === 0x9241) { this._unpackPremultiplyAlpha = !!param; return; }
-        if (pname === 0x9243) { return; }
+        // UNPACK_FLIP_Y_WEBGL / UNPACK_PREMULTIPLY_ALPHA_WEBGL / UNPACK_COLORSPACE_CONVERSION_WEBGL are WebGL's,
+        // not the driver's: every one goes down the stream like the others and the renderer applies the first
+        // two to the pixels of each upload. They are kept here as well, because getParameter reads them.
+        if (pname === 0x9240) { this._unpackFlipY = !!param; }
+        else if (pname === 0x9241) { this._unpackPremultiplyAlpha = !!param; }
         let value;
         if (param === true) value = 1;
         else if (param === false) value = 0;
@@ -2466,9 +2582,10 @@ class WebGLRenderingContext {
     createFramebuffer() {
         const id = nextResourceId();
         _rawCreateFramebuffer(this._canvasId, id);
-        return new WebglObject(id);
+        return new WebglObject(id, "framebuffer", this._canvasId);
     }
     deleteFramebuffer(fb) {
+        if (fb instanceof WebglObject) fb._deleted = true;
         if (fb && fb.id !== undefined) _rawDeleteFramebuffer(fb.id);
     }
     bindFramebuffer(target, fb) {
@@ -2505,9 +2622,10 @@ class WebGLRenderingContext {
     createRenderbuffer() {
         const id = nextResourceId();
         _rawCreateRenderbuffer(this._canvasId, id);
-        return new WebglObject(id);
+        return new WebglObject(id, "renderbuffer", this._canvasId);
     }
     deleteRenderbuffer(rb) {
+        if (rb instanceof WebglObject) rb._deleted = true;
         if (rb && rb.id !== undefined) _rawDeleteRenderbuffer(rb.id);
     }
     bindRenderbuffer(target, rb) {
@@ -2525,7 +2643,38 @@ class WebGLRenderingContext {
         if (!preflightRenderbuffer(
             this._canvasId, target, internalformat, width, height, 1,
         )) return;
+        this._noteRenderbufferStorage(internalformat, width, height);
         _rawRenderbufferStorage(this._canvasId, target, internalformat, width, height);
+    }
+
+    // What getRenderbufferParameter answers, recorded on the renderbuffer bound to RENDERBUFFER.
+    _noteRenderbufferStorage(internalformat, width, height) {
+        const rb = this._renderbufferBinding;
+        if (!rb || typeof internalformat !== "number" || typeof width !== "number" || typeof height !== "number") return;
+        rb._format = internalformat >>> 0;
+        rb._width = width >>> 0;
+        rb._height = height >>> 0;
+    }
+
+    getRenderbufferParameter(target, pname) {
+        if (target !== 0x8d41) { this._pushJsError(0x0500); return null; }   // RENDERBUFFER only
+        const rb = this._renderbufferBinding;
+        if (!rb) { this._pushJsError(0x0502); return null; }
+        const format = rb._format === undefined ? 0x8056 : rb._format;       // RGBA4 until storage is given
+        switch (pname >>> 0) {
+            case 0x8d42: return rb._width || 0;       // RENDERBUFFER_WIDTH
+            case 0x8d43: return rb._height || 0;      // RENDERBUFFER_HEIGHT
+            case 0x8d44: return format;               // RENDERBUFFER_INTERNAL_FORMAT
+            case 0x8d50: return _renderbufferBits(format, 0); // RED_SIZE
+            case 0x8d51: return _renderbufferBits(format, 1); // GREEN_SIZE
+            case 0x8d52: return _renderbufferBits(format, 2); // BLUE_SIZE
+            case 0x8d53: return _renderbufferBits(format, 3); // ALPHA_SIZE
+            case 0x8d54: return _renderbufferBits(format, 4); // DEPTH_SIZE
+            case 0x8d55: return _renderbufferBits(format, 5); // STENCIL_SIZE
+            default: break;
+        }
+        this._pushJsError(0x0500);
+        return null;
     }
 
     // -- Phase 3B: Misc --
@@ -2710,6 +2859,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         if (!preflightRenderbuffer(
             this._canvasId, target, internalformat, width, height, samples,
         )) return;
+        this._noteRenderbufferStorage(internalformat, width, height);
         _rawRenderbufferStorageMultisample(this._canvasId, target, samples,
                                             internalformat, width, height);
     }

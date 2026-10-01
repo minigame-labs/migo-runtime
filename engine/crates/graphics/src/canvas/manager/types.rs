@@ -514,6 +514,21 @@ impl PixelStoreShadow {
         None
     }
 
+    /// What `pixelStorei(pname, ...)` last set, `default` for one never set.
+    #[inline]
+    pub(crate) fn value_or(&self, pname: u32, default: i32) -> i32 {
+        match Self::slot(pname) {
+            Some(i) if self.observed & (1u16 << i) != 0 => self.params[i],
+            _ => default,
+        }
+    }
+
+    /// [`Self::value_or`] with the initial value of everything but the alignments.
+    #[inline]
+    pub(crate) fn value(&self, pname: u32) -> i32 {
+        self.value_or(pname, 0)
+    }
+
     /// Record `glPixelStorei(pname, param)`; `true` when the driver call must
     /// be issued. An unrecognised pname forwards untracked.
     #[inline]
@@ -535,6 +550,22 @@ impl PixelStoreShadow {
         self.observed = 0;
     }
 }
+
+/// `UNPACK_FLIP_Y_WEBGL`, `UNPACK_PREMULTIPLY_ALPHA_WEBGL` and
+/// `UNPACK_COLORSPACE_CONVERSION_WEBGL` exist in WebGL, not in GL ES: the driver has no
+/// `glPixelStorei` for them (it answers `INVALID_ENUM`), and the engine applies them
+/// itself where it builds a texture from an image.
+#[inline]
+pub(crate) fn is_webgl_only_pixel_store(pname: u32) -> bool {
+    matches!(
+        pname,
+        UNPACK_FLIP_Y_WEBGL | UNPACK_PREMULTIPLY_ALPHA_WEBGL | UNPACK_COLORSPACE_CONVERSION_WEBGL
+    )
+}
+
+/// `UNPACK_FLIP_Y_WEBGL` and `UNPACK_PREMULTIPLY_ALPHA_WEBGL`, for the code that reads them back.
+pub(crate) const PIXEL_STORE_FLIP_Y: u32 = UNPACK_FLIP_Y_WEBGL;
+pub(crate) const PIXEL_STORE_PREMULTIPLY_ALPHA: u32 = UNPACK_PREMULTIPLY_ALPHA_WEBGL;
 
 /// Indexed `UNIFORM_BUFFER` bindings, one slot per binding index.
 ///

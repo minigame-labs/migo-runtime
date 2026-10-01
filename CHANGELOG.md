@@ -55,6 +55,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- WebGL: `pixelStorei(UNPACK_FLIP_Y_WEBGL)` and
+  `pixelStorei(UNPACK_PREMULTIPLY_ALPHA_WEBGL)` were recorded and never applied,
+  so every upload ignored them: an engine that flips its textures (three.js and
+  Babylon do by default) drew them upside down, and one that uploads premultiplied
+  (Pixi, Phaser, Egret) got straight alpha and bright fringes. The renderer now
+  applies them to `texImage2D` and `texSubImage2D` from bytes (a typed array,
+  `ImageData`, a decoded image), reading the rows the way the driver would
+  (`UNPACK_ALIGNMENT`, `UNPACK_ROW_LENGTH`, the skips), and to `texImage2D` from a
+  canvas. A canvas also keeps WebGL's default of straight alpha: it holds
+  premultiplied colour, and was uploaded as it was whatever the flag said, so a
+  translucent edge came out too dark. The flags are no longer sent to the driver,
+  which has no such parameter and answers `INVALID_ENUM`; `getParameter` reports
+  them as booleans (and `UNPACK_COLORSPACE_CONVERSION_WEBGL` as
+  `BROWSER_DEFAULT_WEBGL`). Not yet: `texSubImage2D` from a canvas ignores them.
+- WebGL: `getParameter(VERSION)` and `getParameter(SHADING_LANGUAGE_VERSION)` begin
+  with `WebGL 1.0` / `WebGL GLSL ES 1.00` (`WebGL 2.0` / `WebGL GLSL ES 3.00` on a
+  WebGL 2 context) followed by the driver's string in parentheses, which is what
+  content and libraries test; they returned the driver's `OpenGL ES 3.0 ...`.
+- WebGL 2: `gl.HALF_FLOAT` was `undefined` (the constant was never declared), so a
+  half-float upload -- the `type` of every `RGBA16F` texture -- went to the driver
+  with no type.
+- WebGL: `isBuffer`, `isFramebuffer`, `isProgram`, `isRenderbuffer`, `isShader`
+  and `isTexture` exist (calling one was a `TypeError`), and `getShaderSource`,
+  `getBufferParameter`, `getTexParameter` and `getRenderbufferParameter` answer
+  from what the content set, without a round trip to the render thread. Not yet:
+  `getVertexAttrib`, `getVertexAttribOffset`, `getUniform`.
 - WebGL: a context on an offscreen canvas began with a 1x1 viewport and scissor
   box. A GL context takes the size of the surface it is first made current with,
   and an offscreen canvas is created as a 1x1 pbuffer and sized by the content
