@@ -266,6 +266,11 @@ pub enum AudioCmd {
         loop_end: f64,
     },
 
+    /// Report a source node's end (fire-and-forget): while enabled, the node finishing -- running to its end, or being
+    /// stopped -- sends [`HostCommand::AudioSourceEnded`](super::host_cmd::HostCommand::AudioSourceEnded). Only nodes
+    /// content set `onended` on are watched, so a game that never listens pays nothing.
+    WatchSourceEnded { node_id: AudioNodeId, enabled: bool },
+
     /// Set playback rate
     SetPlaybackRate {
         node_id: AudioNodeId,
@@ -706,6 +711,7 @@ impl AudioCmd {
             | Self::Start { .. }
             | Self::Stop { .. }
             | Self::SetLoop { .. }
+            | Self::WatchSourceEnded { .. }
             | Self::SetPlaybackRate { .. }
             | Self::CreateGain { .. }
             | Self::SetGainValue { .. }

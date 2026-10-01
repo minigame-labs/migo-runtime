@@ -55,6 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- `onended` of `AudioBufferSourceNode`, `OscillatorNode` and `ConstantSourceNode` fires. The nodes accepted the handler and
+  told the console that "onended callbacks are not dispatched by the native graph", so Phaser's `complete`, three.js's
+  `onEnded` and every sound library that chains one sound after another never heard a sound end. The graph knew all along
+  (`prune` already collects the finished source): setting a handler now asks the audio thread to watch that node
+  (`op_audio_watch_source_ended`, service op 181, a command in every lane), and when a watched source finishes -- runs out of
+  buffer, or `stop()` comes due -- the audio thread sends `HostCommand::AudioSourceEnded`, delivered through the host-bridge
+  hook `_internalTriggerAudioSourceEnded` (in process and in the embedded runtime alike). A game that never sets `onended`
+  costs the audio thread nothing; a source collected while it still had audio to play reports nothing; an end is reported
+  once. Tests: the context (runs to its end, stopped, collected, unwatched), the embedded dispatch, and the runtime with a
+  fake audio thread. Runtime-v8 JavaScript changed: joins the snapshot backlog.
 - `InnerAudioContext`'s `canplay` listeners run after the duration is known. The context fetched `duration` from the
   audio thread with an async op when the native `canPlay` arrived and fired the listeners without waiting for the answer,
   so every `onCanplay` callback read `duration === 0` (it was right 50 ms later); Howler.js's HTML5 path computes its end

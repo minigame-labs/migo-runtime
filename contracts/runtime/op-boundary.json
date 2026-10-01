@@ -91,6 +91,7 @@
         "op_audio_set_gain_value": "command",
         "op_audio_set_inner_audio_option": "sync",
         "op_audio_set_loop": "command",
+        "op_audio_watch_source_ended": "command",
         "op_audio_set_node_param": "command",
         "op_audio_set_oscillator_type": "command",
         "op_audio_set_panner_scalar": "command",

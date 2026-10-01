@@ -789,6 +789,12 @@ impl Host {
                 Ok(())
             }
 
+            HostCommand::AudioSourceEnded { node_id } => {
+                self.js
+                    .invoke_host_hook("_internalTriggerAudioSourceEnded", &format!("[{node_id}]"));
+                Ok(())
+            }
+
             // The generation is read at the top of `handle_command_inner`, which
             // is the only place that may act on it: a handler comparing it again
             // would be a second decision point that could disagree with the one

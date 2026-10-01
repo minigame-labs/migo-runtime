@@ -881,6 +881,18 @@ fn release_buffer_scoped(
     }
 }
 
+/// Tell the host a watched source node finished. A full queue drops the event, as it does for the InnerAudio ones: the
+/// host drains it far faster than sounds end.
+fn send_source_ended(host_tx: &HostTx, node_id: AudioNodeId) {
+    if let Err(e) = host_tx.try_send(HostCommand::AudioSourceEnded { node_id }) {
+        tracing::warn!(
+            "Failed to send source-ended event (node={}): {}",
+            node_id,
+            e
+        );
+    }
+}
+
 /// Mark a node unreachable from JavaScript and unregister whatever that made
 /// collectible.
 ///
@@ -1693,6 +1705,9 @@ fn run_audio_thread(
                                 for &removed in ctx.remove_finished_node(node_id) {
                                     node_index.unregister(removed);
                                 }
+                                for ended_id in ctx.drain_ended() {
+                                    send_source_ended(&host_tx, ended_id);
+                                }
                             }
                             found
                         }
@@ -1731,6 +1746,19 @@ fn run_audio_thread(
 
                     if !found {
                         tracing::warn!("SetLoop: node {} not found", node_id);
+                    }
+                }
+
+                AudioCmd::WatchSourceEnded { node_id, enabled } => {
+                    // A source that already finished before `onended` was set is reported on the next quantum's drain
+                    // only if it is still in the graph; one that is gone is gone (the spec fires ended once, at the end).
+                    let found = node_index
+                        .get_context(node_id)
+                        .and_then(|ctx_id| contexts.get_mut(&ctx_id))
+                        .map(|ctx| ctx.watch_source_ended(node_id, enabled))
+                        .unwrap_or(false);
+                    if !found {
+                        tracing::trace!("WatchSourceEnded: node {} not found", node_id);
                     }
                 }
 
@@ -2860,6 +2888,9 @@ fn run_audio_thread(
                                     ctx.process_for_device(quantum, sample_rate, channels)
                                 {
                                     node_index.unregister(finished_id);
+                                }
+                                for ended_id in ctx.drain_ended() {
+                                    send_source_ended(&host_tx, ended_id);
                                 }
                             }
                         }

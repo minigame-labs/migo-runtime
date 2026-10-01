@@ -247,6 +247,15 @@ export function op_audio_set_loop(nodeId, loopEnabled, loopStart, loopEnd) {
   });
 }
 
+export function op_audio_watch_source_ended(nodeId, enabled) {
+  const node = smiU32(nodeId, "node_id");
+  const watch = toBool(enabled, "enabled");
+  audioCommand(SERVICE_OP.op_audio_watch_source_ended, (w) => {
+    w.u32(node);
+    w.bool(watch);
+  });
+}
+
 export function op_audio_set_gain_value(nodeId, value) {
   const node = smiU32(nodeId, "node_id");
   const gain = f32BitsOf(value, "value");

@@ -201,6 +201,7 @@ service_ops! {
     op_get_battery_info = 178,
     op_get_network_type = 179,
     op_webgl_query_compressed_caps = 180,
+    op_audio_watch_source_ended = 181,
 }
 
 /// The op's name, for a refusal a person will read.

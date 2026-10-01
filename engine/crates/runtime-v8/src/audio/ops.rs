@@ -633,6 +633,21 @@ pub fn op_audio_set_loop(
     )?)
 }
 
+/// Ask to hear of a source node finishing (`onended`); fire and forget. The node's end comes back as the host-bridge hook
+/// `_internalTriggerAudioSourceEnded`.
+#[op2(fast)]
+pub fn op_audio_watch_source_ended(
+    state: Rc<RefCell<OpState>>,
+    #[smi] node_id: AudioNodeId,
+    enabled: bool,
+) -> Result<(), AudioError> {
+    Ok(service::watch_source_ended(
+        &get_audio_tx(state),
+        node_id,
+        enabled,
+    )?)
+}
+
 // ============================================================================
 // Parameters
 // ============================================================================

@@ -25,7 +25,7 @@
 //!
 //! - **Module Loading** (2): `EvaluateModule`, `EvalScript`
 //! - **Lifecycle** (4): `Restart`, `Shutdown`, `OnShow`, `OnHide`
-//! - **Audio** (3): `OnAudioInterruptionBegin`, `OnAudioInterruptionEnd`, `InnerAudioEvent`
+//! - **Audio** (4): `OnAudioInterruptionBegin`, `OnAudioInterruptionEnd`, `InnerAudioEvent`, `AudioSourceEnded`
 //! - **Rendering / Surface** (1): `UpdateSurface`
 //! - **Touch / Input** (1): `OnTouch`
 //! - **Desktop pointer** (4): `OnMouseDown` .. `OnWheel`
@@ -253,7 +253,7 @@ fn retain_string_within(buffer: &mut String, limit: usize) {
 /// - **IME Composition Events** (3): `OnCompositionStart` .. `OnCompositionEnd`
 /// - **Sensor Events** (5): `OnDeviceMotionChange` .. `OnAccelerometerChange`
 /// - **Network** (1): `OnNetworkStatusChange`
-/// - **Audio Events** (3): `OnAudioInterruptionBegin`, `OnAudioInterruptionEnd`, `InnerAudioEvent`
+/// - **Audio Events** (4): `OnAudioInterruptionBegin`, `OnAudioInterruptionEnd`, `InnerAudioEvent`, `AudioSourceEnded`
 /// - **Recorder Events** (2): `RecorderEvent`, `RecorderFrameData`
 /// - **Camera Events** (2): `CameraEvent`, `CameraFrameData`
 /// - **Bluetooth / BLE Events** (7): `OnBluetoothAdapterStateChange` .. `OnBeaconServiceChange`
@@ -400,6 +400,13 @@ pub enum HostCommand {
         event_type: InnerAudioEventType,
         /// Current playback position in seconds.
         current_time: f64,
+    },
+
+    /// A Web Audio source node finished -- ran to its end or was stopped -- and content asked to hear of it
+    /// (`onended`). Sent only for nodes watched with `AudioCmd::WatchSourceEnded`.
+    AudioSourceEnded {
+        /// The source node's id, as content holds it.
+        node_id: u32,
     },
 
     // ---- Rendering / Surface ----
@@ -1021,6 +1028,7 @@ impl HostCommand {
             | Self::OnAudioInterruptionBegin
             | Self::OnAudioInterruptionEnd
             | Self::InnerAudioEvent { .. }
+            | Self::AudioSourceEnded { .. }
             | Self::UpdateSurface { .. }
             | Self::SurfaceDestroyed { .. }
             | Self::SurfaceInstalled { .. }
