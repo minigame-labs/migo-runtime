@@ -55,6 +55,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Starting many reads at once no longer fails most of them. A game does not read
+  its assets one at a time: an asset loader starts dozens of `readFile` calls in
+  one tick. Each whole-file read was charged the largest read a read can be
+  (100 MiB) against the scheduler's pending-byte budget instead of what the file
+  is, so sixty reads of a few hundred bytes spent the budget twice over and 37 of
+  them failed with `IO pending-byte budget exhausted: requested 104857600 bytes`.
+  The same went for the digest (`getFileInfo`) and Brotli read of a package
+  entry. A read is now charged the size of the file (one `stat`) or of the
+  package entry, bounded by the caller's `length`; one nobody can size keeps the
+  cautious estimate, which is what the budget is for. Found by migo-conformance's
+  new `io-spec` bundle (released v0.9.19: 23 of 60 succeed), and by a unit test
+  that failed one run in twenty for the same reason.
 - Workers: `terminate()` is quiet. The worker's event loop ends with V8's
   "execution terminated", which is the answer to the request, and it was reported
   to the content's `onError` (and logged at ERROR) as if the worker had crashed,
