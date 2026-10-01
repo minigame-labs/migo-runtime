@@ -384,6 +384,13 @@ jobs:
       - name: WebGL constant reach contract
         run: bash scripts/test-webgl-constant-reach-contract.sh
 
+      # The fuzz targets are not workspace members (cargo-fuzz brings its own profile and
+      # sanitizer flags), so nothing else compiles them: a rename in frame-wire or frame-decode
+      # breaks a target silently and the property it checked stops being checked. This type-checks
+      # each one, and checks that each is declared and described in engine/fuzz/README.md.
+      - name: Fuzz targets build contract
+        run: bash scripts/test-fuzz-targets-build-contract.sh
+
       # The inbound half of the same boundary, and the same reason a compiler
       # cannot help: `platform/src/android/jni/**` is `cfg(target_os =
       # "android")`, so nothing in it is executed by any test on any machine here.

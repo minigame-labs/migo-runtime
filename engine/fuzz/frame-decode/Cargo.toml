@@ -1,0 +1,26 @@
+[package]
+name = "migo-frame-decode-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Outside the engine workspace on purpose: cargo-fuzz builds with its own
+# profile and sanitizer flags, and a member here would apply them to, or take
+# them from, every other crate's build.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+migo-frame-wire = { path = "../../crates/frame-wire", default-features = false }
+migo-frame-decode = { path = "../../crates/frame-decode" }
+migo-shared = { path = "../../crates/shared" }
+
+[[bin]]
+name = "render_stream"
+path = "fuzz_targets/render_stream.rs"
+test = false
+doc = false
+bench = false
