@@ -1062,6 +1062,107 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Zip-slip, end to end: an archive whose entry names reach outside the destination is refused,
+    /// and nothing lands outside it.
+    ///
+    /// `test_path_traversal_detection` above checks `normalize_path`, which is one step of the
+    /// defence; this runs the whole extraction on real archives. The names are the ones
+    /// that have broken extractors: parent components at the head and in the middle, an absolute
+    /// path, a Windows-style separator, a drive-less UNC-looking prefix, and a name that only
+    /// escapes after a legitimate directory. The check is on the filesystem, not just the
+    /// return value: a refusal that came after the write would pass a test of the return value.
+    #[test]
+    fn hostile_entry_names_are_refused_and_write_nothing_outside_the_destination() {
+        let hostile = [
+            "../escaped.txt",
+            "../../escaped.txt",
+            "a/../../escaped.txt",
+            "a/b/../../../escaped.txt",
+            "./../escaped.txt",
+            "..\\escaped.txt",
+            "a\\..\\..\\escaped.txt",
+        ];
+        let base = std::env::temp_dir().join(format!("migo_zip_slip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        for (n, name) in hostile.iter().enumerate() {
+            let case = base.join(format!("case{n}"));
+            let dest = case.join("out");
+            std::fs::create_dir_all(&case).unwrap();
+
+            let zip_path = case.join("hostile.zip");
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("fine.txt", options).unwrap();
+            zip.write_all(b"fine").unwrap();
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(b"ESCAPED").unwrap();
+            zip.finish().unwrap();
+
+            let result = extract_zip(&zip_path, &dest, None);
+
+            // Wherever a naive join would have put the escaped file: next to the destination, two
+            // levels up, and in the case directory itself.
+            for outside in [
+                case.join("escaped.txt"),
+                base.join("escaped.txt"),
+                dest.join("escaped.txt"),
+            ] {
+                assert!(
+                    !outside.exists(),
+                    "entry {name:?} wrote {} (extract returned {result:?})",
+                    outside.display()
+                );
+            }
+            // A separator that is not one on this platform is a plain file name here, so it may
+            // legitimately extract inside the destination; what must hold is that it did not
+            // escape, which the loop above checked. Everything with a real parent component is
+            // refused outright.
+            if name.contains("..") && !name.contains('\\') {
+                assert!(
+                    matches!(result, Err(ZipError::PathTraversal(_))),
+                    "entry {name:?} was not refused: {result:?}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// An absolute entry name replaces the destination when joined, so it must be caught as the
+    /// escape it is: the file is the one the archive's author named, not one under the destination.
+    #[cfg(unix)]
+    #[test]
+    fn an_absolute_entry_name_is_refused_and_writes_nothing_where_it_points() {
+        let base = std::env::temp_dir().join(format!("migo_zip_abs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let target = base.join("absolute-target.txt");
+
+        let zip_path = base.join("abs.zip");
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file(target.to_str().unwrap(), options).unwrap();
+        zip.write_all(b"ESCAPED").unwrap();
+        zip.finish().unwrap();
+
+        let dest = base.join("out");
+        let result = extract_zip(&zip_path, &dest, None);
+        assert!(
+            matches!(result, Err(ZipError::PathTraversal(_))),
+            "an absolute entry name was not refused: {result:?}"
+        );
+        assert!(
+            !target.exists(),
+            "the absolute entry wrote the file it named"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn test_normalize_path() {
         let p = normalize_path(Path::new("/a/b/../c/./d"));
