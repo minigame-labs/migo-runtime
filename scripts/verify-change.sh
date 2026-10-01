@@ -90,6 +90,9 @@ HOST_CARGO_STEPS=(
     # for the same reason as its neighbours: every case lives in `tests/`.
     "test -p migo-frame-decode --all-targets"
     "test -p migo-shared"
+    # V8's locale data, filtered at build time. Its tests read the full ICU file and check the linked bytes are the
+    # filter applied to it; `runtime-v8`'s `Intl` tests are what check V8 accepts the result.
+    "test -p migo-icu-data"
     # `--tests`, not `--lib`: the ASTC fixture emitter lives in `tests/` and is
     # `#[ignore]`d, so this runs none of its cases -- but it compiles the binary,
     # which is the half a gate driving it from outside cannot do. A fixture
