@@ -20,15 +20,20 @@ ctx.fillStyle = "#123456";
 ctx.fillRect(0, 0, 64, 64);
 
 // The whole canvas, which is what cocos reads after a single fillText.
-ctx.getImageData(0, 0, 64, 64);
+const taken = [ctx.getImageData(0, 0, 64, 64)];
 
 // A sub-rectangle, and one with a negative extent -- the facade normalises the
 // rectangle before it captures, so both lanes must capture the same one.
-ctx.getImageData(8, 16, 32, 16);
-ctx.getImageData(40, 40, -8, -8);
+taken.push(ctx.getImageData(8, 16, 32, 16));
+taken.push(ctx.getImageData(40, 40, -8, -8));
 
 // Between two more draws, so a capture that drifted out of the run would show
 // as a different order rather than a different record.
 ctx.fillRect(1, 1, 2, 2);
-ctx.getImageData(0, 0, 4, 4);
+taken.push(ctx.getImageData(0, 0, 4, 4));
 ctx.fillRect(3, 3, 4, 4);
+
+// What a `texImage2D(imageData)` does to the snapshot it takes: the frame's end would
+// otherwise read back an `ImageData` nobody has read, which is a synchronous call (see above).
+// This fixture is the capture-only path, so these are spent the way an upload spends them.
+for (const imageData of taken) imageData.__migo_snapshot_spent__ = true;

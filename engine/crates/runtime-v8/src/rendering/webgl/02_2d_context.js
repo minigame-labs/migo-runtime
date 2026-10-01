@@ -621,14 +621,14 @@ class CanvasRenderingContext2D {
             );
             return true;
         }
-        if (_migoSnapshotFrameCount >= MAX_LIVE_CANVAS2D_SNAPSHOTS_JS) {
+        if (!_migoSnapshotBudgetAllows(k.canvasW, k.canvasH)) {
             // Snapshot budget exhausted this frame: can't record.
             // Fall back to the normal direct path (text already
             // painted, so the canvas is correct).
             return false;
         }
         const snapId = _migoNextSnapshotId();
-        _migoSnapshotFrameCount++;
+        _migoSnapshotCharge(k.canvasW, k.canvasH);
         op_capture_canvas2d_snapshot_for_cache(
             this._canvasId, 0, 0, k.canvasW, k.canvasH, snapId,
             k.text, k.fontRequest, k.fontSize, k.fontWeight,
@@ -1321,7 +1321,7 @@ class CanvasRenderingContext2D {
             }
             if (fullCanvas && snapshotInBounds && this._tcState === 1
                     && w > 0 && h > 0
-                    && _migoSnapshotFrameCount < MAX_LIVE_CANVAS2D_SNAPSHOTS_JS) {
+                    && _migoSnapshotBudgetAllows(w, h)) {
                 // MISS: capture + record.  for_cache op tags the
                 // snapshot so the render thread transfers its texture
                 // into the cache at frame-end drain.
@@ -1332,7 +1332,7 @@ class CanvasRenderingContext2D {
                     k.italic, k.fillColor, k.textAlign, k.textBaseline,
                     k.canvasW, k.canvasH,
                 );
-                _migoSnapshotFrameCount++;
+                _migoSnapshotCharge(w, h);
                 this._tcState = 0;
                 this._tcKey = null;
                 return _migoMakeSnapshotImageData(snapshotId, w, h);
@@ -1343,11 +1343,10 @@ class CanvasRenderingContext2D {
             this._abandonPendingTextCache();
         }
 
-        if (snapshotInBounds && w > 0 && h > 0
-                && _migoSnapshotFrameCount < MAX_LIVE_CANVAS2D_SNAPSHOTS_JS) {
+        if (snapshotInBounds && w > 0 && h > 0 && _migoSnapshotBudgetAllows(w, h)) {
             const snapshotId = _migoNextSnapshotId();
             op_capture_canvas2d_snapshot(this._canvasId, x, y, w, h, snapshotId);
-            _migoSnapshotFrameCount++;
+            _migoSnapshotCharge(w, h);
             return _migoMakeSnapshotImageData(snapshotId, w, h);
         }
         // Fall back to legacy CPU path (zero-area, GLES 2, or budget
@@ -1579,7 +1578,28 @@ class CanvasRenderingContext2D {
 // fall back to the legacy CPU path before the render-side pool
 // silently drops snapshots.
 const MAX_LIVE_CANVAS2D_SNAPSHOTS_JS = 512;
+// The render side refuses a capture past 64 MiB of live snapshots, and a refused capture reaches
+// nobody: the op is fire-and-forget, so the ImageData built around it would read as zeros. This
+// is the same bound counted here, at half, because the render pool is drained a frame after the
+// frame that filled it and the two frames can overlap. Past it the read is taken eagerly, as a
+// browser takes every one. The bound is held to the Rust constant by a test in `graphics`.
+const MAX_LIVE_CANVAS2D_SNAPSHOT_BYTES_JS = 32 * 1024 * 1024;
 let _migoSnapshotFrameCount = 0;
+let _migoSnapshotFrameBytes = 0;
+
+function _migoSnapshotBudgetAllows(w, h) {
+    return _migoSnapshotFrameCount < MAX_LIVE_CANVAS2D_SNAPSHOTS_JS
+        && _migoSnapshotFrameBytes + w * h * 4 <= MAX_LIVE_CANVAS2D_SNAPSHOT_BYTES_JS;
+}
+
+function _migoSnapshotCharge(w, h) {
+    _migoSnapshotFrameCount++;
+    _migoSnapshotFrameBytes += w * h * 4;
+}
+
+// The snapshot-backed ImageData this frame has made. Held strongly until the frame ends, so the
+// end-of-frame pass can reach the ones nobody has read.
+const _migoFrameSnapshotImageData = [];
 
 let _migoSnapshotIdCounter = 0;
 function _migoNextSnapshotId() {
@@ -1605,6 +1625,13 @@ function _migoNextSnapshotId() {
 // legacy bytes path with whatever is now in (and may have been
 // modified in) the buffer.  When JS never touches `.data`, the
 // snapshot fast path stays in effect and no readback occurs.
+//
+// The render pool holds a snapshot for the frame it was captured in and no longer, so a `.data`
+// first read in a later frame would find nothing and read zeros -- a stored `ImageData` used for
+// hit-testing was all transparent a frame later. So the frame-end pass below reads back every
+// one that is neither read nor spent by then: the readback a browser does at the call, taken
+// when it can no longer be avoided. `texImage2D(imageData)` within the frame, which is the
+// pattern this exists for, spends the snapshot and costs nothing.
 function _migoMakeSnapshotImageData(snapshotId, w, h) {
     const placeholder = new Uint8ClampedArray(w * h * 4);
     let _populated = false;
@@ -1615,6 +1642,15 @@ function _migoMakeSnapshotImageData(snapshotId, w, h) {
         writable: true,
         configurable: true,
     });
+    // Set by a `texImage2D`/`texSubImage2D` that took this snapshot: the render side has consumed
+    // it, there is nothing left to read back, and the end-of-frame pass must leave it alone.
+    Object.defineProperty(imageData, '__migo_snapshot_spent__', {
+        value: false,
+        enumerable: false,
+        writable: true,
+        configurable: true,
+    });
+    _migoFrameSnapshotImageData.push(imageData);
     Object.defineProperty(imageData, 'data', {
         get() {
             if (!_populated) {
@@ -1708,6 +1744,23 @@ function frameEndAll() {
         frameEndHooks[i]();
     }
 }
+// First, while the frame's snapshots are still the renderer's: read back the `ImageData` that
+// nobody has read and nothing has consumed (see `_migoMakeSnapshotImageData`).
+frameEndHooks.push(() => {
+    const held = _migoFrameSnapshotImageData;
+    for (let i = 0; i < held.length; i++) {
+        const imageData = held[i];
+        if (imageData.__migo_snapshot_id__ !== 0 && !imageData.__migo_snapshot_spent__) {
+            // A readback that fails (the session is going away) must not take the frame with it.
+            try {
+                void imageData.data;
+            } catch (e) {
+                console.error("getImageData: reading a held ImageData at frame end failed:", e);
+            }
+        }
+    }
+    held.length = 0;
+});
 frameEndHooks.push(() => {
     // Flush any pending GL stream BEFORE building the frame packet so that
     // GL commands encoded in the JS buffer arrive at the render thread in the
@@ -1723,6 +1776,7 @@ frameEndHooks.push(() => {
 // on both sides.
 frameEndHooks.push(() => {
     _migoSnapshotFrameCount = 0;
+    _migoSnapshotFrameBytes = 0;
 });
 
 // The native test/host side may need to terminate a synthetic frame without

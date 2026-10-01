@@ -7287,6 +7287,35 @@ mod recovery_source_guards {
         assert!(finished_snapshot_ids(pool.iter(), 0).is_empty(), "nothing has ended yet");
     }
 
+    /// The facade's snapshot byte budget is at most half the pool's cap.
+    ///
+    /// A capture the pool refuses reaches nobody -- the op is fire-and-forget -- and the
+    /// `ImageData` built around it reads as zeros, so the facade counts the bytes itself and reads
+    /// eagerly past its own bound. Half, because the pool is drained a frame after the frame that
+    /// filled it, and two frames' captures can be live together.
+    #[test]
+    fn the_facades_snapshot_byte_budget_stays_under_the_pools_cap() {
+        const FACADE: &str =
+            include_str!("../../../../runtime-v8/src/rendering/webgl/02_2d_context.js");
+        let line = FACADE
+            .lines()
+            .find(|line| line.starts_with("const MAX_LIVE_CANVAS2D_SNAPSHOT_BYTES_JS ="))
+            .expect("the facade states its snapshot byte budget");
+        let product: usize = line
+            .split_once('=')
+            .unwrap()
+            .1
+            .trim_end_matches(';')
+            .split('*')
+            .map(|factor| factor.trim().parse::<usize>().expect("a plain product of integers"))
+            .product();
+        assert!(
+            product * 2 <= super::CanvasManager::MAX_LIVE_CANVAS2D_SNAPSHOT_BYTES,
+            "the facade's budget ({product}) must be at most half the pool's cap ({})",
+            super::CanvasManager::MAX_LIVE_CANVAS2D_SNAPSHOT_BYTES
+        );
+    }
+
     /// The frame boundary is the presenting op, and the drain asks the epoch rather than taking all.
     #[test]
     fn a_presenting_frame_ends_the_snapshot_epoch_and_the_drain_respects_it() {
