@@ -3714,232 +3714,112 @@ pub(super) mod tests {
         ));
     }
 
-    /// The colour strings both parsers are held to.
+    /// What a colour string means, as the specification has a canvas read it.
     ///
-    /// Shared by the test above and by the fixture the producer's port is checked
-    /// against (`the_producer_s_colour_parser_answers_as_the_rust_one_does`): one
-    /// corpus, so a string added for one execution is answered by all of them.
-    fn colour_corpus() -> Vec<String> {
-        let mut corpus: Vec<String> = Vec::new();
-        // Every named colour the Rust table knows, in the spellings content uses.
-        //
-        // Sorted, because the table is a `HashMap` and its order is the run's:
-        // the fixture this corpus is written to would differ run to run.
-        let mut names: Vec<&str> = crate::rendering::webgl::context2d::NAMED_COLORS
-            .keys()
-            .copied()
-            .collect();
-        names.sort_unstable();
-        for name in names {
-            corpus.push(name.to_string());
-            corpus.push(name.to_uppercase());
-        }
-        corpus.push("transparent".to_string());
-        corpus.push("chartreuseish".to_string());
+    /// The facade is the only reader of colour strings: the renderer is sent the colour. So this is the whole of what
+    /// a canvas does with one -- which are colours, what `fillStyle` reads back, and that a string that is not one
+    /// leaves the style alone and sends nothing. migo-conformance's `canvas2d-spec/colour-*` asks the same through
+    /// every platform; this is the fast one, and the one that names each case.
+    #[test]
+    fn colour_strings_read_as_the_specification_has_them() {
+        // (assigned, what fillStyle reads back or None when the assignment is ignored)
+        let cases: &[(&str, Option<&str>)] = &[
+            ("red", Some("#ff0000")),
+            ("ReD", Some("#ff0000")),
+            ("REBECCAPURPLE", Some("#663399")),
+            ("#f00", Some("#ff0000")),
+            ("#FF0000", Some("#ff0000")),
+            ("#f008", Some("rgba(255, 0, 0, 0.533)")),
+            ("#ff000080", Some("rgba(255, 0, 0, 0.5)")),
+            ("rgb(0, 255, 0)", Some("#00ff00")),
+            ("rgb( 0 , 255 , 0 )", Some("#00ff00")),
+            ("RGB(0,255,0)", Some("#00ff00")),
+            ("rgba(0, 0, 255, 1)", Some("#0000ff")),
+            ("rgba(0, 0, 255, 0.5)", Some("rgba(0, 0, 255, 0.5)")),
+            ("rgb(10 20 30 / 50%)", Some("rgba(10, 20, 30, 0.5)")),
+            ("rgb(10 20 30)", Some("#0a141e")),
+            ("rgb(100% 0% 0%)", Some("#ff0000")),
+            ("rgb(1.5, 2.5, 3.5)", Some("#020304")),
+            ("rgb(300, -5, 128)", Some("#ff0080")),
+            ("rgb(none 255 none)", Some("#00ff00")),
+            ("hsl(120, 100%, 50%)", Some("#00ff00")),
+            ("hsl(0, 100%, 50%)", Some("#ff0000")),
+            ("hsl(240deg 100% 50% / 0.5)", Some("rgba(0, 0, 255, 0.5)")),
+            ("hsl(0.5turn, 100%, 50%)", Some("#00ffff")),
+            ("hsla(60, 100%, 50%, 1)", Some("#ffff00")),
+            ("hwb(0 0% 0%)", Some("#ff0000")),
+            ("hwb(0 100% 0%)", Some("#ffffff")),
+            ("transparent", Some("rgba(0, 0, 0, 0)")),
+            ("currentcolor", Some("#000000")),
+            ("  blue  ", Some("#0000ff")),
+            // Not colours: the assignment is ignored.
+            ("definitely not a colour", None),
+            ("", None),
+            ("#ff", None),
+            ("#ggg", None),
+            ("rgb(1, 2)", None),
+            ("rgb(1, 2, 3, 4, 5)", None),
+            ("rgb(1, 2, 3 / 0.5)", None),
+            ("rgb(10% 20 30)", Some("#1a141e")),
+            ("rgb(10%, 20, 30)", None),
+            ("hsl(120, 100, 50)", None),
+            ("lab(50% 40 59)", None),
+            ("rgb(", None),
+        ];
 
-        // Every channel value, so the u8-to-f32 conversion is checked at each of
-        // its 256 inputs rather than at a handful.
-        for channel in 0..=255u32 {
-            corpus.push(format!("#{channel:02x}{channel:02x}{channel:02x}"));
-            corpus.push(format!("rgb({channel}, {}, {channel})", 255 - channel));
+        let mut script = String::from("const ctx = createCanvas().getContext('2d');\n");
+        for (input, expected) in cases {
+            let want = expected.unwrap_or("#123456");
+            script.push_str(&format!(
+                "ctx.fillStyle = '#123456'; ctx.fillStyle = {input}; if (ctx.fillStyle !== {want}) throw new Error({label} + ' read back as ' + ctx.fillStyle + ', want ' + {want});\n",
+                input = js_string(input),
+                want = js_string(want),
+                label = js_string(input),
+            ));
         }
-        // Short forms, alpha forms, and the shapes at the edge of what the
-        // encoder is willing to claim.
-        for hex in [
-            "#fff",
-            "#FFF",
-            "#0a0",
-            "#1234",
-            "#12345678",
-            "#abcdef",
-            "#ABCDEF01",
-        ] {
-            corpus.push(hex.to_string());
-        }
-        for alpha in 0..=100u32 {
-            corpus.push(format!("rgba(1, 2, 3, {}.{:02})", alpha / 100, alpha % 100));
-        }
-        // The alpha literals where the arithmetic's width decides the answer.
-        //
-        // Rust parses to `f32` and multiplies by 255 in `f32`; JavaScript's
-        // numbers are `f64`, so an encoder that multiplies before narrowing lands
-        // on the other side of an integer here and truncates one lower. Two
-        // decimal places never distinguishes the two -- the corpus above passed
-        // with the narrowing removed -- so these are the eight-decimal literals
-        // nearest the k/255 boundaries, found by sweeping them.
-        for boundary in [
-            "0.02745098",
-            "0.05490196",
-            "0.10980392",
-            "0.16862745",
-            "0.24705882",
-            "0.31372549",
-            "0.972549",
-        ] {
-            corpus.push(format!("rgba(1, 2, 3, {boundary})"));
-        }
-        for odd in [
-            "rgba(0,0,0,0)",
-            "rgba( 10 , 20 , 30 , .5 )",
-            "RGBA(10,20,30,0.5)",
-            "RgB(1,2,3)",
-            "rgb(1,2,3,4)",
-            "rgba(1,2,3)",
-            "rgb(300,0,0)",
-            "rgb(-1,0,0)",
-            "rgb(1.5,0,0)",
-            "rgb(+1,+2,+3)",
-            "rgba(1,2,3,1e-1)",
-            "rgba(1,2,3,Infinity)",
-            "rgba(1,2,3,NaN)",
-            "rgba(1,2,3,-0.5)",
-            "rgba(1,2,3,2)",
-            "#",
-            "#12",
-            "#12345",
-            "#gg0000",
-            "  #ff0000  ",
-            "",
-            "not-a-colour",
-            "hsl(0, 100%, 50%)",
-        ] {
-            corpus.push(odd.to_string());
-        }
-
-        // Adjacent duplicates would be swallowed by the setter's own dedup, and
-        // then the sequence below would not line up with the corpus.
-        corpus.dedup();
-        let mut deduped: Vec<String> = Vec::with_capacity(corpus.len());
-        for entry in corpus {
-            if deduped.last() != Some(&entry) {
-                deduped.push(entry);
-            }
-        }
-        let corpus = deduped;
-        corpus
+        // Every string reads back as specified, or the script throws naming the one that did not.
+        run_2d_frame("colour_strings.js", &script);
     }
 
-    /// The corpus and the colour the Rust parser reads for each, for
-    /// `test/canvas2d-color.test.mjs` -- which requires the producer's port to
-    /// answer the same for every one.
-    ///
-    /// Regenerate with `MIGO_COLOUR_ANSWERS_BLESS=1 cargo test -p migo-runtime-v8
-    /// --lib the_producer_s_colour_parser`.
+    /// An invalid colour sends nothing, a valid one sends the colour, and a repeat sends nothing again.
     #[test]
-    fn the_producer_s_colour_parser_answers_as_the_rust_one_does() {
-        use deno_core::serde_json;
-        let answers: Vec<serde_json::Value> = colour_corpus()
-            .into_iter()
-            .map(|entry| {
-                let colour = crate::rendering::webgl::context2d::parse_color_string(&entry);
-                serde_json::json!({
-                    "text": entry,
-                    // A name the engine's own table answers never reaches the
-                    // op: the producer runs that same JavaScript. Recorded
-                    // rather than dropped, so the corpus stays one corpus.
-                    "named": crate::rendering::webgl::context2d::NAMED_COLORS
-                        .contains_key(entry.to_lowercase().as_str()),
-                    // The bytes the op's record carries, which is what the producer
-                    // has to arrive at: the parser's floats are k/255 exactly.
-                    "rgba": [
-                        (colour.r * 255.0).round() as u32,
-                        (colour.g * 255.0).round() as u32,
-                        (colour.b * 255.0).round() as u32,
-                        (colour.a * 255.0).round() as u32,
-                    ],
-                })
-            })
-            .collect();
-        let rendered = serde_json::to_string_pretty(&serde_json::json!({ "colours": answers }))
-            .expect("JSON")
-            + "\n";
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../platforms/apple/WebContent/PerformancePlus/test/fixtures/canvas2d-color-answers.json",
-        );
-        if std::env::var_os("MIGO_COLOUR_ANSWERS_BLESS").is_some() {
-            std::fs::write(&path, &rendered).expect("write the fixture");
-            return;
-        }
-        let checked_in = std::fs::read_to_string(&path).expect("the fixture is checked in");
-        assert_eq!(
-            checked_in, rendered,
-            "the colour corpus or its answers changed; regenerate with MIGO_COLOUR_ANSWERS_BLESS=1"
-        );
-    }
-
-    /// The JavaScript colour parser may abstain. It may not disagree.
-    ///
-    /// `fillStyle` is assigned on the hot path — a scene that changes colour per
-    /// shape assigns it as often as it draws — so leaving every assignment on
-    /// the op path would have left the barrier firing between every two records
-    /// and the batching with nothing to batch. So the encoder answers the forms
-    /// it is certain of, and hands the rest to the Rust parser, which stays the
-    /// authority.
-    ///
-    /// That split is only safe while the two agree, and "these two parsers agree"
-    /// is exactly the claim this repository has already watched go wrong once:
-    /// the CSS *font* parser existed in both languages, drifted, and produced a
-    /// `measureText` that disagreed with `fillText`. So the corpus runs through
-    /// the whole path — the JavaScript parser, the wire encoding, the decoder,
-    /// and the op fallback — and requires a bit-identical `Color` either way.
-    #[test]
-    fn the_javascript_colour_parser_never_disagrees_with_the_rust_one() {
-        let corpus = colour_corpus();
-
-        let script = {
-            let mut script = String::from("const ctx = createCanvas(64, 64).getContext('2d');\n");
-            for entry in &corpus {
-                script.push_str(&format!("ctx.fillStyle = {};\n", js_string(entry)));
-            }
-            script
-        };
-
-        crate::rendering::webgl::submit_test_counter::reset();
-        let ops = run_2d_frame("canvas2d_colour_corpus.js", &script);
-
+    fn an_assignment_reaches_the_renderer_only_as_a_new_colour() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            ctx.fillStyle = 'rgb(10 20 30 / 50%)';
+            ctx.fillStyle = 'not a colour';
+            ctx.fillStyle = 'rgba(10, 20, 30, 0.5)';
+            ctx.strokeStyle = 'hsl(120 100% 50%)';
+            ctx.shadowColor = 'transparent';
+        "#;
+        let ops = run_2d_frame("colour_records.js", script);
         let commands = canvas_commands(&ops);
-        let seen: Vec<shared::protocol::color::Color> = commands
+        let colours: Vec<(&str, [u32; 4])> = commands
             .iter()
-            .map(|command| match command {
-                Canvas2DCmd::SetFillStyle { color } => *color,
-                other => panic!("unexpected command {other:?}"),
+            .filter_map(|command| match command {
+                Canvas2DCmd::SetFillStyle { color } => Some(("fill", color)),
+                Canvas2DCmd::SetStrokeStyle { color } => Some(("stroke", color)),
+                Canvas2DCmd::SetShadowColor { color } => Some(("shadow", color)),
+                _ => None,
             })
+            .map(|(kind, c)| (kind, [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()]))
             .collect();
+        let bits = |r: u8, g: u8, b: u8, a: u8| {
+            [
+                (r as f32 / 255.0).to_bits(),
+                (g as f32 / 255.0).to_bits(),
+                (b as f32 / 255.0).to_bits(),
+                (a as f32 / 255.0).to_bits(),
+            ]
+        };
+        // The second fill is the same colour as the first (alpha 0.5 is byte 128 either way): nothing is sent for it,
+        // and nothing for the invalid string between them. The shadow colour is already transparent.
         assert_eq!(
-            seen.len(),
-            corpus.len(),
-            "every assignment must reach the renderer exactly once"
-        );
-
-        for (entry, got) in corpus.iter().zip(&seen) {
-            let want = crate::rendering::webgl::context2d::parse_color_string(entry);
-            assert_eq!(
-                (
-                    got.r.to_bits(),
-                    got.g.to_bits(),
-                    got.b.to_bits(),
-                    got.a.to_bits()
-                ),
-                (
-                    want.r.to_bits(),
-                    want.g.to_bits(),
-                    want.b.to_bits(),
-                    want.a.to_bits()
-                ),
-                "{entry:?} reached the renderer as {got:?}, the Rust parser reads it as {want:?}"
-            );
-        }
-
-        // A positive control. Every assertion above passes if the encoder
-        // abstains on everything and the op path answers all of it — which would
-        // be correct and pointless. The stream has to be carrying the common
-        // forms, and the count below is what says it is.
-        let (_, decoded) = crate::rendering::webgl::submit_test_counter::read();
-        assert!(
-            decoded as usize > corpus.len() / 2,
-            "only {decoded} of {} colours took the encoded path; the parser is \
-             abstaining on forms it is supposed to answer",
-            corpus.len()
+            colours,
+            vec![
+                ("fill", bits(10, 20, 30, 128)),
+                ("stroke", bits(0, 255, 0, 255)),
+            ]
         );
     }
 
@@ -3999,12 +3879,12 @@ pub(super) mod tests {
             "for (let i = 0; i < 50; i++) ctx.fillRect(i, i, 2, 2);\n",
         );
 
-        // The same fifty, each preceded by a colour the encoder abstains on, so
-        // each one pays a barrier submission and an op.
+        // The same fifty, each preceded by a call that crosses to the renderer for an answer (a text measurement the
+        // facade's own cache has not seen), so each one pays a barrier submission and an op.
         let (per_call, per_call_commands) = crossings_for(
             "boundary_per_call.js",
             "for (let i = 0; i < 50; i++) {\n\
-               ctx.fillStyle = 'hsl(' + i + ', 50%, 50%)';\n\
+               ctx.measureText('boundary ' + i);\n\
                ctx.fillRect(i, i, 2, 2);\n\
              }\n",
         );
@@ -4021,15 +3901,17 @@ pub(super) mod tests {
         );
         assert!(
             per_call >= 50,
-            "fifty colours the encoder abstains on should cross at least once each, got {per_call}"
+            "fifty measurements the facade has not cached should cross at least once each, got {per_call}"
         );
         assert!(
             per_call > batched * 5,
             "the counter does not separate the two paths: batched={batched}, per_call={per_call}"
         );
+        // Only the batched frame's commands are all in the window the counter reads: each crossing of the other
+        // sends what the stream held ahead of it, so what is left in the window is the tail.
         assert!(
-            batched_commands >= 50 && per_call_commands >= 100,
-            "both frames must still carry their commands: {batched_commands} and {per_call_commands}"
+            batched_commands >= 50,
+            "the batched frame must still carry its commands: {batched_commands} ({per_call_commands} left in the per-call window)"
         );
     }
 

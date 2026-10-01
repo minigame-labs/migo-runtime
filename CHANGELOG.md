@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D: colour strings are read as the specification has them, by one parser. `fillStyle`,
+  `strokeStyle` and `shadowColor` read back the serialised colour (`#ff0000`, or
+  `rgba(255, 0, 0, 0.5)`) instead of the string that was assigned; a string that is not a
+  colour is ignored and leaves the previous style, where it used to be stored (and drew
+  black); `addColorStop` with one throws a SyntaxError. `hsl()`, `hsla()`, `hwb()`, the
+  modern space syntax (`rgb(10 20 30 / 50%)`), percentages, decimals and `none` are read;
+  `lab()`, `lch()`, `oklab()`, `oklch()` and `color()` are not (ignored). The facade is now
+  the only reader: there were three (the facade's, the host's `parse_color_string` behind
+  `op_set_fill_style`, and the Performance+ producer's port), kept in step by a corpus test,
+  and they read a narrower language than the one content writes. The renderer is only ever
+  sent the colour, so the Rust parser, its named-colour table, the three string ops and the
+  producer's port are gone.
+- Canvas2D: freeing the copy a `createPattern(canvas)` pattern holds, and allocating its id,
+  now go after everything the stream holds (the rule every op in the 2D facade follows; the
+  test that holds it had been missed when the pattern change merged).
 - iOS (Performance+): `decodeAudioData` works. It threw "audioData is detached or cannot be detached"
   for every buffer: the producer looked `structuredClone` up when it ran, and by then the engine's
   namespace handling had retired the Worker's own names. The platform primitive is now captured at

@@ -700,81 +700,65 @@ mod canvas2d_ordering {
     }
 }
 
-/// The two named-colour tables are one table.
+/// The named-colour table is the CSS one.
 ///
-/// The encoder answers named colours itself, and it may only do that while its
-/// table says exactly what the Rust one says. A name in one table and not the
-/// other is not a crash: the encoder abstains, the Rust parser reads it as
-/// black, and the shape is painted the wrong colour with nothing logged.
-///
-/// The corpus case next door catches this only for names someone thought to
-/// write down. This compares the tables themselves, so a name added to either
-/// side is checked whether or not anyone remembers it -- which is how
-/// `transparent` was found: the JavaScript table had it and the Rust one did
-/// not, so `fillStyle = "transparent"` painted opaque black.
+/// The facade is the only reader of colour strings, so this table is the only copy of what each name means. A name
+/// that is missing reads as "not a colour" and the assignment is ignored with nothing logged -- which is how
+/// `transparent` once painted opaque black. This holds the table to the specification's own list: 148 names and
+/// `transparent`, and a spot-check of the ones that are easy to get wrong (the gray/grey pairs, `rebeccapurple`).
 mod canvas2d_colour_table {
-    use crate::rendering::webgl::context2d::NAMED_COLORS;
-
     const JS: &str = include_str!("02_2d_context.js");
 
     /// `'name': [r, g, b, a]`, as the JavaScript table declares them.
     fn javascript_table() -> Vec<(String, [u8; 4])> {
+        let start = JS
+            .find("const _NAMED_COLORS = {")
+            .expect("the facade declares its named colours");
+        let table = &JS[start..];
+        let table = &table[..table.find("\n};").expect("the table closes")];
         let mut found = Vec::new();
-        for entry in JS.split('\'').skip(1).collect::<Vec<_>>().chunks(2) {
-            let [name, rest] = entry else { continue };
-            if !name.chars().all(|c| c.is_ascii_lowercase()) || name.is_empty() {
-                continue;
-            }
-            let Some(open) = rest.find('[') else { continue };
-            if !rest[..open].trim().starts_with(':') {
-                continue;
-            }
-            let Some(close) = rest[open..].find(']') else {
-                continue;
-            };
-            let channels: Vec<u8> = rest[open + 1..open + close]
+        let mut rest = table;
+        while let Some(open) = rest.find("': [") {
+            let name_start = rest[..open].rfind('\'').expect("a quoted name") + 1;
+            let name = &rest[name_start..open];
+            let after = &rest[open + 4..];
+            let close = after.find(']').expect("a closing bracket");
+            let channels: Vec<u8> = after[..close]
                 .split(',')
                 .filter_map(|value| value.trim().parse().ok())
                 .collect();
-            if let Ok(channels) = <[u8; 4]>::try_from(channels.as_slice()) {
-                found.push((name.to_string(), channels));
-            }
+            let channels = <[u8; 4]>::try_from(channels.as_slice()).expect("four channels");
+            found.push((name.to_string(), channels));
+            rest = &after[close..];
         }
         found
     }
 
     #[test]
-    fn the_named_colours_agree_name_for_name() {
-        let javascript = javascript_table();
-        assert!(
-            javascript.len() >= 140,
-            "only {} named colours parsed out of the JavaScript; the pattern no \
-             longer matches",
-            javascript.len()
-        );
-        assert_eq!(
-            javascript.len(),
-            NAMED_COLORS.len(),
-            "the JavaScript table has {} names and the Rust table {}",
-            javascript.len(),
-            NAMED_COLORS.len()
-        );
-
-        for (name, channels) in &javascript {
-            let rust = NAMED_COLORS
-                .get(name.as_str())
-                .unwrap_or_else(|| panic!("the Rust table has no {name}"));
-            let js = shared::protocol::color::Color::rgbai(
-                channels[0],
-                channels[1],
-                channels[2],
-                channels[3],
-            );
-            assert_eq!(
-                (rust.r, rust.g, rust.b, rust.a),
-                (js.r, js.g, js.b, js.a),
-                "{name} is {js:?} in JavaScript and {rust:?} in Rust"
-            );
-        }
+    fn the_named_colours_are_the_css_list() {
+        let table = javascript_table();
+        // 148 colour keywords in CSS Color 4, and `transparent`.
+        assert_eq!(table.len(), 149, "the table has {} names", table.len());
+        let get = |name: &str| {
+            table
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("no {name}"))
+                .1
+        };
+        assert_eq!(get("transparent"), [0, 0, 0, 0]);
+        assert_eq!(get("rebeccapurple"), [102, 51, 153, 255]);
+        assert_eq!(get("gray"), get("grey"));
+        assert_eq!(get("darkgray"), get("darkgrey"));
+        assert_eq!(get("slategray"), get("slategrey"));
+        assert_eq!(get("aqua"), get("cyan"));
+        assert_eq!(get("fuchsia"), get("magenta"));
+        assert_eq!(get("gray"), [128, 128, 128, 255]);
+        assert_eq!(get("green"), [0, 128, 0, 255]);
+        assert_eq!(get("lime"), [0, 255, 0, 255]);
+        assert_eq!(get("orange"), [255, 165, 0, 255]);
+        assert_eq!(get("lightgoldenrodyellow"), [250, 250, 210, 255]);
+        let mut seen = std::collections::HashSet::new();
+        assert!(table.iter().all(|(n, _)| seen.insert(n.clone())), "a name is declared twice");
     }
 }

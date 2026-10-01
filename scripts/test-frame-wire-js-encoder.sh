@@ -594,8 +594,6 @@ RAN_TESTS+=("$TEST_DIR/audio-checks.test.mjs")
 # is the producer's, so its port has to answer the same -- including for
 # `rgb( 1 , 2 , 3 )`, which the engine's strict reader abstains from and Rust
 # reads as an ordinary colour. The corpus is the one both Rust checks use.
-node "$TEST_DIR/canvas2d-color.test.mjs"
-RAN_TESTS+=("$TEST_DIR/canvas2d-color.test.mjs")
 
 # --- the two 2D reads whose answer is pixels --------------------------------
 #

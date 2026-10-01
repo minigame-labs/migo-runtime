@@ -68,8 +68,6 @@ import {
     op_fill_text,
     op_stroke_text,
     // Style setters
-    op_set_fill_style,
-    op_set_stroke_style,
     op_set_font,
     op_set_text_align,
     op_set_text_baseline,
@@ -85,7 +83,6 @@ import {
     op_set_stroke_style_gradient,
     op_set_fill_style_pattern,
     op_set_stroke_style_pattern,
-    op_set_shadow_color,
     op_put_image_data,
 } from "ext:core/ops";
 import { domException } from "ext:host_v8_base/06_dom_exception.js";
@@ -143,6 +140,9 @@ const _COMPOSITE_OPS = [
 const { SafeFinalizationRegistry } = primordials;
 const _patternCopies = new SafeFinalizationRegistry((imageId) => {
     try {
+        // Whatever the stream still holds that names this copy goes first: a destroy that overtook the pattern's
+        // last fill would draw with an image the renderer no longer has.
+        flushRenderCommandStream();
         op_destroy_image(imageId);
     } catch (_) { }
 });
@@ -196,7 +196,11 @@ class CanvasGradient {
         if (typeof color !== 'string') {
             throw new TypeError("Failed to execute 'addColorStop': color must be a string");
         }
-        var parsed = _parseColorToRGBA(color);
+        var entry = _cssColour(color);
+        if (entry === null) {
+            throw domException("Failed to execute 'addColorStop': the value provided ('" + color + "') could not be parsed as a color.", "SyntaxError");
+        }
+        var parsed = entry.rgba;
         this._stops.push({ offset: off, r: parsed[0], g: parsed[1], b: parsed[2], a: parsed[3] });
         this._stops.sort(function (a, b) { return a.offset - b.offset; });
     }
@@ -326,152 +330,245 @@ const _NAMED_COLORS = {
     'yellow': [255,255,0,255], 'yellowgreen': [154,205,50,255],
 };
 
-// Minimal color string to [r,g,b,a] parser.
-function _parseColorToRGBA(color) {
-    if (typeof color !== 'string') return [0, 0, 0, 255];
-    color = color.trim();
-    // rgba(r,g,b,a) or rgb(r,g,b)
-    var m = color.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)$/);
-    if (m) {
-        var a = m[4] !== undefined ? Math.round(parseFloat(m[4]) * 255) : 255;
-        return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3]), a];
+// ---- CSS colour strings ----
+//
+// The one parser. A colour string is read here, in the facade, and the renderer is only ever sent the colour: the
+// stream records carry r, g, b, a, never text. It has to be here because the answer is needed synchronously -- an
+// invalid string is ignored and leaves the previous colour (which the renderer would have to be asked about), and
+// `fillStyle` reads back the serialised colour, not the string that was assigned.
+//
+// The syntax is CSS Color 4 as a canvas takes it: `#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`, every named colour,
+// `transparent`, `currentcolor` (the canvas's own colour: black), `rgb()`/`rgba()` and `hsl()`/`hsla()` in the legacy
+// comma form and the modern space form (`rgb(10 20 30 / 50%)`, numbers or percentages, `none`), and `hwb()`. `lab()`,
+// `lch()`, `oklab()`, `oklch()`, `color()` and `color-mix()` are not read: they are invalid here, so ignored.
+//
+// There used to be a second reader in Rust (`parse_color_string`, reached through `op_set_fill_style`) and a third in the
+// producer, kept in step by a corpus test. They read a narrower language (no hsl, no percentages, no decimals, an invalid
+// string was black rather than ignored), so the strings the specification tests assign were handled one way here and
+// another there. Now there is one.
+
+// Named colours that are not a plain table lookup: `currentcolor` is the canvas's text colour, black until a page says
+// otherwise.
+const _CSS_NUMBER = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+// A component token: a number, a percentage, an angle, or `none`. `null` for anything else.
+function _cssToken(text) {
+    if (text === 'none') return { kind: 'none', v: 0 };
+    if (text.charCodeAt(text.length - 1) === 37 /* % */) {
+        const body = text.slice(0, -1);
+        return _CSS_NUMBER.test(body) ? { kind: 'pct', v: parseFloat(body) } : null;
     }
-    // #RRGGBB, #RGB, #RRGGBBAA, #RGBA
-    if (color[0] === '#') {
-        var hex = color.slice(1);
-        if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
-        if (hex.length === 4) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2]+hex[3]+hex[3];
-        var n = parseInt(hex.substring(0, 6), 16);
-        var alpha = hex.length === 8 ? parseInt(hex.substring(6, 8), 16) : 255;
-        return [(n >> 16) & 255, (n >> 8) & 255, n & 255, alpha];
+    if (_CSS_NUMBER.test(text)) return { kind: 'num', v: parseFloat(text) };
+    const unit = /(deg|grad|rad|turn)$/.exec(text);
+    if (unit !== null) {
+        const body = text.slice(0, text.length - unit[1].length);
+        if (!_CSS_NUMBER.test(body)) return null;
+        const n = parseFloat(body);
+        const degrees = unit[1] === 'deg' ? n : unit[1] === 'grad' ? n * 0.9 : unit[1] === 'rad' ? n * 180 / Math.PI : n * 360;
+        return { kind: 'angle', v: degrees };
     }
-    // Named colors
-    var named = _NAMED_COLORS[color.toLowerCase()];
-    if (named) return named.slice();
-    return [0, 0, 0, 255];
+    return null;
 }
 
-// The colour forms this encoder is willing to answer for itself.
-//
-// `parse_color_string` on the Rust side is the authority, and it stays the
-// authority: this returns `null` for anything it is not certain it would agree
-// with, and the caller falls back to the op that runs the Rust parser. So the
-// contract is one-sided and checkable -- **this may abstain, it may not
-// disagree** -- which is what makes a second parser tolerable here at all. The
-// CSS *font* parser was deleted from this file for the opposite reason: it was
-// two implementations both claiming to be right, and they drifted.
-//
-// Abstaining is not a slow path in any sense that matters. It costs exactly
-// what every colour assignment cost before this existed: one stream flush and
-// one op.
-//
-// `canvas2d_colour_agreement` in the Rust tests runs a corpus through the whole
-// path -- this parser, the wire encoding, the decoder, and the Rust parser on
-// the fallback -- and requires the resulting `Color` to be bit-identical either
-// way.
-function _strictColorToRGBA(color) {
-    if (typeof color !== 'string') return null;
-    const s = color.trim();
+const _clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+// The alpha byte of an alpha token: a number 0..1 or a percentage; `none` is 0.
+function _cssAlphaByte(token) {
+    if (token === null) return -1;
+    if (token.kind === 'num') return Math.round(_clamp(token.v, 0, 1) * 255);
+    if (token.kind === 'pct') return Math.round(_clamp(token.v / 100, 0, 1) * 255);
+    if (token.kind === 'none') return 0;
+    return -1;
+}
+
+// The three components and the optional alpha of a function's arguments, in either syntax. Legacy is comma-separated
+// and takes no `none` and no `/`; modern is space-separated with an optional `/ alpha`. `{ parts, alpha }` or `null`.
+function _cssArguments(inner) {
+    const body = inner.trim();
+    if (body.indexOf(',') !== -1) {
+        if (body.indexOf('/') !== -1) return null;
+        const pieces = body.split(',').map((t) => t.trim().toLowerCase());
+        if (pieces.length !== 3 && pieces.length !== 4) return null;
+        const tokens = pieces.map(_cssToken);
+        if (tokens.some((t) => t === null || t.kind === 'none')) return null;
+        return { parts: tokens.slice(0, 3), alpha: pieces.length === 4 ? tokens[3] : undefined, legacy: true };
+    }
+    let colour = body, alphaText = null;
+    const slash = body.indexOf('/');
+    if (slash !== -1) {
+        colour = body.slice(0, slash);
+        alphaText = body.slice(slash + 1).trim().toLowerCase();
+        if (alphaText.length === 0 || /\s/.test(alphaText)) return null;
+    }
+    const pieces = colour.trim().toLowerCase().split(/\s+/);
+    if (pieces.length !== 3) return null;
+    const tokens = pieces.map(_cssToken);
+    if (tokens.some((t) => t === null)) return null;
+    const alpha = alphaText === null ? undefined : _cssToken(alphaText);
+    if (alphaText !== null && alpha === null) return null;
+    return { parts: tokens, alpha, legacy: false };
+}
+
+const _channelByte = (token, scale) => Math.round(_clamp(token.kind === 'pct' ? token.v * scale / 100 : token.v, 0, scale));
+
+// `rgb()` / `rgba()`.
+function _cssRgb(inner) {
+    const args = _cssArguments(inner);
+    if (args === null) return null;
+    const [r, g, b] = args.parts;
+    for (const t of args.parts) if (t.kind === 'angle') return null;
+    // The legacy form takes numbers or percentages throughout, not a mix.
+    if (args.legacy && !(r.kind === g.kind && g.kind === b.kind)) return null;
+    let a = 255;
+    if (args.alpha !== undefined) {
+        a = _cssAlphaByte(args.alpha);
+        if (a < 0) return null;
+    }
+    return [_channelByte(r, 255), _channelByte(g, 255), _channelByte(b, 255), a];
+}
+
+// A hue in degrees from a token: a number is degrees, and `none` is 0.
+function _cssHue(token) {
+    if (token.kind === 'num' || token.kind === 'angle') return ((token.v % 360) + 360) % 360;
+    if (token.kind === 'none') return 0;
+    return null;
+}
+
+// The RGB, each 0..1, of a hue at full saturation and half lightness.
+function _hueToRgb(h) {
+    const f = (n) => {
+        const k = (n + h / 30) % 12;
+        return 0.5 - 0.5 * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    };
+    return [f(0), f(8), f(4)];
+}
+
+// `hsl()` / `hsla()`.
+function _cssHsl(inner) {
+    const args = _cssArguments(inner);
+    if (args === null) return null;
+    const [ht, st, lt] = args.parts;
+    const h = _cssHue(ht);
+    if (h === null) return null;
+    // Saturation and lightness are percentages; the modern form also takes a bare number as one.
+    for (const t of [st, lt]) {
+        if (t.kind === 'angle') return null;
+        if (args.legacy && t.kind !== 'pct') return null;
+    }
+    if (args.legacy && ht.kind === 'pct') return null;
+    const s = _clamp(st.v, 0, 100) / 100;
+    const l = _clamp(lt.v, 0, 100) / 100;
+    let a = 255;
+    if (args.alpha !== undefined) {
+        a = _cssAlphaByte(args.alpha);
+        if (a < 0) return null;
+    }
+    const m = s * Math.min(l, 1 - l);
+    const channel = (n) => {
+        const k = (n + h / 30) % 12;
+        return l - m * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    };
+    return [Math.round(channel(0) * 255), Math.round(channel(8) * 255), Math.round(channel(4) * 255), a];
+}
+
+// `hwb()`.
+function _cssHwb(inner) {
+    const args = _cssArguments(inner);
+    if (args === null || args.legacy) return null;
+    const [ht, wt, bt] = args.parts;
+    const h = _cssHue(ht);
+    if (h === null || wt.kind === 'angle' || bt.kind === 'angle') return null;
+    let w = _clamp(wt.v, 0, 100) / 100;
+    let k = _clamp(bt.v, 0, 100) / 100;
+    let a = 255;
+    if (args.alpha !== undefined) {
+        a = _cssAlphaByte(args.alpha);
+        if (a < 0) return null;
+    }
+    if (w + k >= 1) {
+        const grey = Math.round(w / (w + k) * 255);
+        return [grey, grey, grey, a];
+    }
+    const base = _hueToRgb(h);
+    return [
+        Math.round((base[0] * (1 - w - k) + w) * 255),
+        Math.round((base[1] * (1 - w - k) + w) * 255),
+        Math.round((base[2] * (1 - w - k) + w) * 255),
+        a,
+    ];
+}
+
+// A colour string as [r, g, b, a] bytes, or `null` when it is not a colour this canvas reads.
+function _parseCssColor(input) {
+    const s = input.trim();
     if (s.length === 0) return null;
 
     if (s.charCodeAt(0) === 35 /* # */) {
         const hex = s.slice(1);
         for (let i = 0; i < hex.length; i++) {
             const c = hex.charCodeAt(i);
-            const isHex = (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
-            if (!isHex) return null;
+            if (!((c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102))) return null;
         }
-        // Short forms double each digit, exactly as `Color::hex` does.
         if (hex.length === 3 || hex.length === 4) {
             const r = parseInt(hex[0], 16), g = parseInt(hex[1], 16), b = parseInt(hex[2], 16);
             const a = hex.length === 4 ? parseInt(hex[3], 16) : 15;
             return [(r << 4) | r, (g << 4) | g, (b << 4) | b, (a << 4) | a];
         }
         if (hex.length === 6 || hex.length === 8) {
-            const r = parseInt(hex.substring(0, 2), 16);
-            const g = parseInt(hex.substring(2, 4), 16);
-            const b = parseInt(hex.substring(4, 6), 16);
-            const a = hex.length === 8 ? parseInt(hex.substring(6, 8), 16) : 255;
-            return [r, g, b, a];
+            return [
+                parseInt(hex.substring(0, 2), 16), parseInt(hex.substring(2, 4), 16), parseInt(hex.substring(4, 6), 16),
+                hex.length === 8 ? parseInt(hex.substring(6, 8), 16) : 255,
+            ];
         }
         return null;
     }
 
-    const lower = s.toLowerCase();
-    if (lower.charCodeAt(0) === 114 /* r */ && s.charCodeAt(s.length - 1) === 41 /* ) */) {
-        let inner = null, wantsAlpha = false;
-        if (lower.startsWith('rgba(')) {
-            inner = s.substring(5, s.length - 1);
-            wantsAlpha = true;
-        } else if (lower.startsWith('rgb(')) {
-            inner = s.substring(4, s.length - 1);
-        } else {
-            return null;
-        }
-        const parts = inner.split(',');
-        if (parts.length !== (wantsAlpha ? 4 : 3)) return null;
-        const out = [0, 0, 0, 255];
-        for (let i = 0; i < 3; i++) {
-            const channel = _strictU8(parts[i].trim());
-            if (channel === null) return null;
-            out[i] = channel;
-        }
-        if (wantsAlpha) {
-            const alpha = _strictAlpha(parts[3].trim());
-            if (alpha === null) return null;
-            out[3] = alpha;
-        }
-        return out;
+    const open = s.indexOf('(');
+    if (open === -1) {
+        const lower = s.toLowerCase();
+        if (lower === 'currentcolor') return [0, 0, 0, 255];
+        const named = _NAMED_COLORS[lower];
+        return named === undefined ? null : named.slice();
     }
-
-    // Named colours are answered only on a hit. Both tables read an unknown name
-    // as black, so a miss answered here would agree today -- but only while the
-    // tables are identical, and `the_named_colours_agree_name_for_name` is what
-    // holds that, not this. Abstaining costs a miss path nothing and keeps this
-    // function's own rule intact: it answers what it knows and guesses nothing.
-    if (lower.length > 24) return null;
-    const named = _NAMED_COLORS[lower];
-    return named === undefined ? null : named;
+    if (s.charCodeAt(s.length - 1) !== 41 /* ) */) return null;
+    const name = s.slice(0, open).trim().toLowerCase();
+    const inner = s.slice(open + 1, s.length - 1);
+    if (name === 'rgb' || name === 'rgba') return _cssRgb(inner);
+    if (name === 'hsl' || name === 'hsla') return _cssHsl(inner);
+    if (name === 'hwb') return _cssHwb(inner);
+    return null;
 }
 
-// A channel exactly as Rust's `str::parse::<u8>` would take it: optional `+`,
-// decimal digits, nothing else, and in range. Anything Rust would reject lands
-// on `unwrap_or(0)` there, which this abstains from guessing at.
-function _strictU8(text) {
-    let i = 0;
-    if (text.charCodeAt(0) === 43 /* + */) i = 1;
-    if (i === text.length || text.length - i > 3) return null;
-    let value = 0;
-    for (; i < text.length; i++) {
-        const digit = text.charCodeAt(i) - 48;
-        if (digit < 0 || digit > 9) return null;
-        value = value * 10 + digit;
-    }
-    return value > 255 ? null : value;
+const _hex2 = (n) => (n < 16 ? '0' : '') + n.toString(16);
+
+// "Serialization of a color": `#rrggbb` when opaque, otherwise `rgba(r, g, b, a)` with the alpha as the shortest
+// decimal of two places that is the same byte, three when two cannot say it.
+function _serializeCssColor(rgba) {
+    const a = rgba[3];
+    if (a === 255) return '#' + _hex2(rgba[0]) + _hex2(rgba[1]) + _hex2(rgba[2]);
+    let alpha = Math.round(a / 255 * 100) / 100;
+    if (Math.round(alpha * 255) !== a) alpha = Math.round(a / 255 * 1000) / 1000;
+    return 'rgba(' + rgba[0] + ', ' + rgba[1] + ', ' + rgba[2] + ', ' + alpha + ')';
 }
 
-// The alpha channel, mirroring `parse::<f32>().unwrap_or(1.0).clamp(0,1) * 255.0
-// as u8`. The arithmetic runs at `f32` through `Math.fround` because the Rust
-// side does: at `f64` the product can land on the other side of an integer and
-// truncate one lower.
-//
-// Only plain decimal literals are accepted. Exponents, infinities and NaN are
-// left to the Rust parser rather than reimplemented.
-function _strictAlpha(text) {
-    let i = 0;
-    if (text.charCodeAt(0) === 43 /* + */) i = 1;
-    let digits = 0, dots = 0;
-    for (let j = i; j < text.length; j++) {
-        const c = text.charCodeAt(j);
-        if (c === 46 /* . */) { dots++; if (dots > 1) return null; continue; }
-        if (c < 48 || c > 57) return null;
-        digits++;
-    }
-    if (digits === 0) return null;
-    let value = Math.fround(parseFloat(text));
-    if (!(value >= 0)) value = 0;
-    if (value > 1) value = 1;
-    return Math.trunc(Math.fround(value * 255));
+// Assignments repeat the same few strings (a scene sets a colour per shape), so each string is read once.
+// `{ text, rgba }`, or `null` for a string that is not a colour.
+const _colourCache = new Map();
+const _COLOUR_CACHE_LIMIT = 512;
+function _cssColour(raw) {
+    let entry = _colourCache.get(raw);
+    if (entry !== undefined) return entry;
+    const rgba = _parseCssColor(raw);
+    entry = rgba === null ? null : { text: _serializeCssColor(rgba), rgba };
+    if (_colourCache.size >= _COLOUR_CACHE_LIMIT) _colourCache.clear();
+    _colourCache.set(raw, entry);
+    return entry;
+}
+
+// The colour of a style as a text-cache key wants it: bytes, black for a gradient, a pattern or anything unread.
+function _styleRgba(style) {
+    const entry = typeof style === 'string' ? _cssColour(style) : null;
+    return entry === null ? [0, 0, 0, 255] : entry.rgba;
 }
 
 // G-2: CSS `font` parsing used to live here as `_parseCssFont`
@@ -556,7 +653,7 @@ class CanvasRenderingContext2D {
         const cw = this._canvas.width | 0;
         const ch = this._canvas.height | 0;
         if (cw <= 0 || ch <= 0) return null;
-        const rgba = _parseColorToRGBA(this._fillStyle);
+        const rgba = _styleRgba(this._fillStyle);
         const color = (((rgba[0] & 255) << 24)
             | ((rgba[1] & 255) << 16)
             | ((rgba[2] & 255) << 8)
@@ -903,45 +1000,40 @@ class CanvasRenderingContext2D {
 
     get fillStyle() { return this._fillStyle; }
     set fillStyle(value) {
-        if (this._fillStyle === value) return;
-        this._fillStyle = value;
         if (value instanceof CanvasGradient) {
+            if (this._fillStyle === value) return;
+            this._fillStyle = value;
             value._apply();
         } else if (value instanceof CanvasPattern) {
+            if (this._fillStyle === value) return;
+            this._fillStyle = value;
             value._applyFill();
         } else {
-            const rgba = _strictColorToRGBA(value);
-            if (rgba === null) {
-                this._barrier();
-                op_set_fill_style(this._canvasId, String(value));
-            } else {
-                encode2dSetFillStyle(
-                    this._canvasId,
-                    rgba[0] / 255, rgba[1] / 255, rgba[2] / 255, rgba[3] / 255,
-                );
-            }
+            // A string that is not a colour leaves the style as it was; what reads back is the serialised colour.
+            const entry = _cssColour(typeof value === 'string' ? value : String(value));
+            if (entry === null || entry.text === this._fillStyle) return;
+            this._fillStyle = entry.text;
+            const rgba = entry.rgba;
+            encode2dSetFillStyle(this._canvasId, rgba[0] / 255, rgba[1] / 255, rgba[2] / 255, rgba[3] / 255);
         }
     }
 
     get strokeStyle() { return this._strokeStyle; }
     set strokeStyle(value) {
-        if (this._strokeStyle === value) return;
-        this._strokeStyle = value;
         if (value instanceof CanvasGradient) {
+            if (this._strokeStyle === value) return;
+            this._strokeStyle = value;
             value._applyStroke();
         } else if (value instanceof CanvasPattern) {
+            if (this._strokeStyle === value) return;
+            this._strokeStyle = value;
             value._applyStroke();
         } else {
-            const rgba = _strictColorToRGBA(value);
-            if (rgba === null) {
-                this._barrier();
-                op_set_stroke_style(this._canvasId, String(value));
-            } else {
-                encode2dSetStrokeStyle(
-                    this._canvasId,
-                    rgba[0] / 255, rgba[1] / 255, rgba[2] / 255, rgba[3] / 255,
-                );
-            }
+            const entry = _cssColour(typeof value === 'string' ? value : String(value));
+            if (entry === null || entry.text === this._strokeStyle) return;
+            this._strokeStyle = entry.text;
+            const rgba = entry.rgba;
+            encode2dSetStrokeStyle(this._canvasId, rgba[0] / 255, rgba[1] / 255, rgba[2] / 255, rgba[3] / 255);
         }
     }
 
@@ -1500,18 +1592,11 @@ class CanvasRenderingContext2D {
     }
     get shadowColor() { return this._shadowColor || 'rgba(0, 0, 0, 0)'; }
     set shadowColor(value) {
-        if (this._shadowColor === value) return;
-        this._shadowColor = value;
-        const rgba = _strictColorToRGBA(value);
-        if (rgba === null) {
-            this._barrier();
-            op_set_shadow_color(this._canvasId, String(value));
-        } else {
-            encode2dSetShadowColor(
-                this._canvasId,
-                rgba[0] / 255, rgba[1] / 255, rgba[2] / 255, rgba[3] / 255,
-            );
-        }
+        const entry = _cssColour(typeof value === 'string' ? value : String(value));
+        if (entry === null || entry.text === (this._shadowColor || 'rgba(0, 0, 0, 0)')) return;
+        this._shadowColor = entry.text;
+        const rgba = entry.rgba;
+        encode2dSetShadowColor(this._canvasId, rgba[0] / 255, rgba[1] / 255, rgba[2] / 255, rgba[3] / 255);
     }
     get shadowOffsetX() { return this._shadowOffsetX || 0; }
     set shadowOffsetX(value) {
@@ -1591,7 +1676,9 @@ class CanvasRenderingContext2D {
                 throw domException("The image argument is a canvas element with a width or height of 0.", "InvalidStateError");
             }
             // A copy that belongs to the pattern: the canvas is selected for the record so it runs in the
-            // canvas's own stream, after everything drawn to it so far.
+            // canvas's own stream, after everything drawn to it so far. The id is allocated after what the stream
+            // holds, as every op in this file is.
+            flushRenderCommandStream();
             const imageId = op_create_image();
             encode2dCaptureImage(image._rid, imageId);
             const pattern = new CanvasPattern(this._canvasId, imageId, rep);
