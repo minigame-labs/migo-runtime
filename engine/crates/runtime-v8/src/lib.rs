@@ -159,6 +159,7 @@ pub(crate) mod worker;
 
 mod code_cache;
 mod host_runtime;
+mod icu;
 #[allow(dead_code)]
 mod isolate_pool;
 mod js_bindings;
@@ -169,6 +170,7 @@ pub mod watchdog;
 pub use host_runtime::HostJsRuntime;
 pub use host_runtime::SharedMountTableRef;
 pub use host_runtime::V8LimitsConfig;
+pub use icu::install_icu_data;
 
 #[cfg(test)]
 mod tests;

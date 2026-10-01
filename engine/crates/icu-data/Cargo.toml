@@ -1,0 +1,20 @@
+[package]
+name = "migo-icu-data"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+description = "The locale data V8's Intl needs, filtered to what a game engine ships"
+build = "build.rs"
+
+[lib]
+name = "icu_data"
+path = "src/lib.rs"
+
+[build-dependencies]
+# The data deno_core hands V8 when its `include_icu_data` feature is on, at the version deno_core 0.385 pins:
+# ICU 77, the one the `v8` crate's `set_common_data_77` takes. It is a BUILD dependency on purpose: the full 10.7 MB
+# file is read by build.rs, filtered, and only the filtered package is linked.
+deno_core_icudata = "=0.77.0"
+
+[dev-dependencies]
+deno_core_icudata = "=0.77.0"

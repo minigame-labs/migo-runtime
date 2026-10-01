@@ -53,6 +53,8 @@ api-system = []
 # default-features = false leaves the packet builder out: this crate reads
 # the stream, it does not encode wire packets.
 migo-frame-wire = { path = "../frame-wire", default-features = false }
+# The locale data V8's Intl reads, filtered to what a game engine ships. Installed once, before the first isolate.
+migo-icu-data = { path = "../icu-data" }
 # The command decoder. Engine-neutral by construction: the Apple Performance+
 # product needs the same decoding with no JavaScript engine in its closure, and
 # a second copy would be two decoders that have to agree.

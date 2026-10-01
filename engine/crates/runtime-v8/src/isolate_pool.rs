@@ -60,6 +60,8 @@ pub(crate) fn prewarm(
     create_params: Option<deno_core::v8::CreateParams>,
     ext_code_cache: Option<std::rc::Rc<dyn deno_core::ExtCodeCache>>,
 ) {
+    // This can be the first V8 to start in the process, on a background thread.
+    crate::icu::install_icu_data();
     let t0 = std::time::Instant::now();
     let version_key = current_version_key();
 

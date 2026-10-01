@@ -55,6 +55,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- `Intl`, `toLocaleString`, `localeCompare` and `normalize` work, and `new Intl.DateTimeFormat()`
+  no longer aborts the process. V8 does not carry its own locale data: the embedder hands it
+  ICU's data before the first isolate, and `deno_core` does that only with its
+  `include_icu_data` feature, which this runtime built without. So `new
+  Intl.NumberFormat('en-US')` threw `TypeError: Internal error. Icu error.`, and
+  `new Intl.DateTimeFormat()` or `new Intl.Segmenter()` crashed the process (a V8 CHECK,
+  not an exception; a segfault in the unit tests). Nothing had ever formatted a number
+  in a test, and a game that calls `score.toLocaleString()`, sorts names with
+  `localeCompare`, or runs Pixi's `Text` (which builds an `Intl.Segmenter`) was one line
+  from it. The full data is 10.7 MB, a quarter of the Android library, so the new
+  `migo-icu-data` crate reads deno_core's pinned ICU 77 file at build time and links only
+  what `policy.rs` keeps: 6.8 MB. Kept, because what is wrong when it is missing is a
+  wrong answer: the number/date/plural data of every locale (without a locale's file a
+  German player's `1234.5` is `1,234.5`), the time zone rules, the break iterators and
+  their dictionaries (`Intl.Segmenter`, Chinese word breaking), Chinese collation
+  (pinyin/stroke order for a leaderboard), and the display names of 16 languages. Dropped:
+  character converters, transliteration, number spell-out, and the display names and
+  collation tailorings of the other locales (they fall back to the root). Installed once,
+  before the first runtime of any kind (the main one, the prewarmed one, snapshot
+  generation). The data is stored uncompressed so ICU reads it in place and only touched
+  pages become resident. The filter is code (a 150-line reader/writer of ICU's package
+  format with tests, no tool and no committed blob) and the Android size budgets move by
+  its size, with the reason written next to them. Found running Pixi on the runtime;
+  migo-conformance's `intl-spec` (27 assertions) crashes the released v0.9.19 and passes
+  here.
 - Asking for WebGL on a canvas nobody has sized yet no longer takes the process down.
   `document.createElement('canvas')` is zero-sized until something sizes it, and
   Pixi, Phaser and three.js all test for WebGL on exactly such a canvas before they

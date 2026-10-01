@@ -83,6 +83,10 @@ fn main() {
     // Initialize V8 platform (required before any V8 operations).
     deno_core::JsRuntime::init_platform(None);
 
+    // The runtime hands V8 its locale data before the first isolate; a snapshot is made by an isolate too, and one made
+    // without the data it will run with is a snapshot of a different V8.
+    runtime_v8::install_icu_data();
+
     let extensions = match snapshot_kind {
         SnapshotKind::Host => runtime_v8::snapshot::lazy_extensions(),
         #[cfg(feature = "profile-full")]

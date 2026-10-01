@@ -815,7 +815,7 @@ jobs:
       # the pre-existing backlog. Mirrors pr-ci.yml so the tag gate matches PR CI.
       - name: Run clippy lints (host-buildable crates)
         working-directory: engine
-        run: cargo clippy -p migo-shared -p migo-io -p migo-runtime-v8 -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
+        run: cargo clippy -p migo-shared -p migo-io -p migo-icu-data -p migo-runtime-v8 -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
 
       # `--tests` mirrors pr-ci.yml: `--lib` skipped the frame-boundary allocation
       # gate (shared/tests/frame_cycle_allocation.rs) and both snapshot round-trips,
@@ -824,7 +824,7 @@ jobs:
       - name: Run Rust tests (host-buildable crates)
         working-directory: engine
         run: |
-          cargo test -p migo-shared -p migo-runtime-v8 --tests
+          cargo test -p migo-shared -p migo-icu-data -p migo-runtime-v8 --tests
           # `--tests` so the ASTC fixture emitter in `tests/` is compiled here.
           # Its cases are `#[ignore]`d and belong to the ASTC gate, but a
           # binary nothing builds is one that stops building unnoticed.

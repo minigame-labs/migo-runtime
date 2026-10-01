@@ -27,6 +27,7 @@ mod host_bridge_dispatch;
 mod host_events_contract;
 mod input_clock;
 mod install_receipt;
+mod intl;
 mod op_args_agreement;
 #[cfg(feature = "api-connectivity")]
 mod permission_reporting;
