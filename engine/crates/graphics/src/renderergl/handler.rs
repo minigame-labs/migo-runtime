@@ -14,6 +14,7 @@ use crate::CanvasGLState;
 use crate::CanvasManager;
 use crate::ScissorState;
 use crate::backend::gl::state_tracker as st;
+use crate::backend::gl::unpack_convert;
 use crate::canvas::gl_object::GlObject;
 use crate::damage_effect::DamageEffect;
 use crate::renderergl::link_queue::{self, DrainCause};
@@ -1515,7 +1516,18 @@ impl RendererGL {
                         type_,
                     )
                     .map_err(gpu_allocation_error)?;
-                let slice = data.as_deref().map(|v| v.as_slice());
+                // `UNPACK_FLIP_Y_WEBGL` / `UNPACK_PREMULTIPLY_ALPHA_WEBGL` are applied to the bytes
+                // here, with the layout the driver reads them with; a borrow when neither is on.
+                let converted = match (cm.unpack_conversion(canvas_id), data.as_deref()) {
+                    (Some(state), Some(bytes)) => Some(unpack_convert::convert_upload(
+                        bytes, width, height, format, type_, &state,
+                    )),
+                    _ => None,
+                };
+                let slice = match &converted {
+                    Some(bytes) => Some(&bytes[..]),
+                    None => data.as_deref().map(|v| v.as_slice()),
+                };
                 // Use PBO for large uploads (> 64 KB) to avoid GPU pipeline stalls.
                 if let Some(bytes) = slice {
                     if bytes.len() > 65536 {
@@ -1792,7 +1804,14 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
-                let bytes: &[u8] = &data;
+                // As in `TexImage2D`: the unpack flags are applied here.
+                let converted = cm.unpack_conversion(canvas_id).map(|state| {
+                    unpack_convert::convert_upload(&data, width, height, format, type_, &state)
+                });
+                let bytes: &[u8] = match &converted {
+                    Some(bytes) => bytes,
+                    None => &data,
+                };
                 // Use PBO for large sub-image uploads (> 64 KB).
                 if bytes.len() > 65536 {
                     if let Some(pool) = cm.pbo_pool_mut() {
@@ -1860,7 +1879,11 @@ impl RendererGL {
             } => {
                 cm.make_current_needed(canvas_id)?;
                 let entry = cm.gl_state.entry(canvas_id).or_default();
-                if st::update_pixel_store_i32(entry, pname, param) {
+                // The WebGL-only ones are state the engine reads when it builds a texture from an
+                // image; the driver has no such parameter.
+                if st::update_pixel_store_i32(entry, pname, param)
+                    && !crate::canvas::is_webgl_only_pixel_store(pname)
+                {
                     unsafe { gl.pixel_store_i32(pname, param) };
                 }
                 Ok(DamageEffect::NoDamage)

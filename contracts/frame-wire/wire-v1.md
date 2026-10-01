@@ -125,6 +125,45 @@ reader, so a producer and a reader of different versions still cannot meet.
 Until this, an upload larger than a packet was refused `OUT_OF_MEMORY` on the
 producer.
 
+### Amendment, 2026-10-01: image smoothing
+
+`SET_IMAGE_SMOOTHING` (567) joins the 2D block for `imageSmoothingEnabled`, and
+`OP2D_END` moves from 567 to 568. One word after the header, exactly 0 or 1 --
+the record spec refuses any other value. Additive: no field moves, no existing
+value changes meaning, and a stream that never writes it draws as before
+(smoothing on). The producer is a resource of the same Swift package as the
+reader, and the in-process JavaScript is baked into the engine that reads it, so
+a writer and a reader of different versions still cannot meet -- the audit the
+amendments above rest on. The property itself was never sent anywhere before
+this record, which is why pixel art drew blurred on every platform.
+
+### Amendment, 2026-10-01: fill rule
+
+`FILL_EVEN_ODD` (568) and `CLIP_EVEN_ODD` (569) join the 2D block for
+`fill("evenodd")` and `clip("evenodd")`, and `OP2D_END` moves from 568 to 570.
+Both are nullary, like `FILL` and `CLIP`, which remain the nonzero rule -- the
+specification's default. The rule is a record of its own, not a word added to
+`FILL`/`CLIP`: those are nullary and shipped so, and a word would change what
+every existing writer and reader of them means. Additive: no field moves, no
+existing value changes meaning, and a stream that never writes them draws as
+before. Same version audit as above: the producer is a resource of the same Swift
+package as the reader and the in-process JavaScript is baked into the engine that
+reads it. Before these records the rule argument was dropped and every fill and
+clip was nonzero, which turned the holes of an even-odd shape solid.
+
+### Amendment, 2026-10-01: a canvas as an image source
+
+`DRAW_CANVAS` (570) joins the 2D block for `drawImage(canvas, ...)`, and `OP2D_END`
+moves from 570 to 571. Ten words: the source canvas id as an exact word (canvas ids
+are integers and an `f32` cannot tell two large ones apart), then the eight
+rectangle `f32`s -- `sx sy sw sh dx dy dw dh`, the shorter forms already expanded,
+exactly as `DRAW_IMAGE`. It is a record of the stream, not an op, so it runs in
+stream order: the source has drawn everything the content drew to it before this
+call, and Performance+ needs nothing beyond the record. Additive: no field moves,
+no existing value changes meaning, and a stream that never writes it draws as
+before. Same version audit as above. Until this record existed `drawImage` drew
+nothing for a canvas source: the facade only knew images the host had decoded.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.

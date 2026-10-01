@@ -155,7 +155,7 @@ pub(crate) struct CompactPixelStoreGuard<'a, D: PixelStoreDomain> {
 }
 
 pub(crate) type CompactPixelUnpackGuard<'a> = CompactPixelStoreGuard<'a, Unpack>;
-type CompactPixelPackGuard<'a> = CompactPixelStoreGuard<'a, Pack>;
+pub(crate) type CompactPixelPackGuard<'a> = CompactPixelStoreGuard<'a, Pack>;
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "readback_native_test.rs"]

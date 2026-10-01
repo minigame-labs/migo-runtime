@@ -87,6 +87,9 @@ pub(crate) use types::{
     VaoMeta, VertexAttribPointerFp, ee,
 };
 use types::{CanvasEntry, EglContextHandle, SurfaceKind};
+pub(crate) use types::{
+    PIXEL_STORE_FLIP_Y, PIXEL_STORE_PREMULTIPLY_ALPHA, is_webgl_only_pixel_store,
+};
 
 use self::image::ImageRegistry;
 
@@ -111,6 +114,36 @@ struct Canvas2DSnapshotEntry {
     bytes: usize,
     cache_key: Option<Box<shared::text_texture_cache::TextCacheKey>>,
 }
+
+/// A whole source canvas copied into a texture for `drawImage(canvas)`, kept until the canvas changes.
+///
+/// One copy serves every draw from that canvas -- the sprite-sheet, text-atlas and cached-layer
+/// patterns draw the same canvas many times per frame -- so the cost of reading it (the source's draws
+/// are flushed, waited for and blitted) is paid once per modification, not once per draw.
+struct CanvasSourceCopy {
+    /// The source's generation when this was taken; it is stale when they differ.
+    generation: u64,
+    /// The image-store id the texture is registered under, for the wrapper `drawImage` resolves.
+    image_id: u32,
+    tex: glow::NativeTexture,
+    width: u32,
+    height: u32,
+    bytes: usize,
+    /// Least-recently-used eviction order.
+    last_used: u64,
+}
+
+/// What a texture that is the source of an upload holds in its alpha channel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceAlpha {
+    /// Straight (unpremultiplied): a host-decoded image.
+    Straight,
+    /// Premultiplied: what Skia rendered, so every canvas snapshot.
+    Premultiplied,
+}
+
+/// What every live source-canvas copy may hold in total. A copy is one RGBA8 texture the size of its canvas.
+const CANVAS_SOURCE_CACHE_BYTES: usize = 96 * 1024 * 1024;
 
 /// Bounded ownership for a window EGLSurface between native creation and
 /// installation in `canvases`.  The slot is populated immediately after
@@ -449,6 +482,17 @@ pub(crate) struct CanvasManager {
     /// command, so the manager only tracks insertion order, not
     /// allocation.
     canvas2d_snapshot_order: std::collections::VecDeque<u32>,
+    /// Ids for the snapshots the renderer takes for itself (`drawImage(canvas)`).
+    /// JavaScript allocates its own from a small process-local counter; these start
+    /// at 2^31 so the two can never meet in the pool.
+    next_internal_snapshot_id: u32,
+    /// Copies of canvases that have been drawn onto another canvas, by source. See [`CanvasSourceCopy`].
+    canvas_source_cache: HashMap<CanvasId, CanvasSourceCopy>,
+    canvas_source_cache_bytes: usize,
+    canvas_source_clock: u64,
+    /// How many times each canvas that has been used as a source has been painted on since it was created. Only
+    /// canvases that have been a source are here, so a canvas nothing draws from costs nothing per draw.
+    canvas_generations: HashMap<CanvasId, u64>,
     /// Pbuffer canvases whose WebGL context has not yet been given its initial viewport and scissor box; see
     /// [`CanvasManager::ensure_gl_initial_state`].
     gl_initial_state_pending: HashSet<CanvasId>,
@@ -1105,6 +1149,11 @@ impl CanvasManager {
             canvas2d_snapshots: HashMap::with_capacity(8),
             canvas2d_snapshot_bytes: 0,
             canvas2d_snapshot_order: std::collections::VecDeque::with_capacity(8),
+            next_internal_snapshot_id: 0x8000_0000,
+            canvas_source_cache: HashMap::new(),
+            canvas_source_cache_bytes: 0,
+            canvas_source_clock: 0,
+            canvas_generations: HashMap::new(),
             gl_initial_state_pending: HashSet::new(),
             last_swap_interval: -1, // force first eglSwapInterval call
             context_lost: false,
@@ -2942,6 +2991,9 @@ impl CanvasManager {
         self.queries.clear();
         self.transform_feedbacks.clear();
         self.image_copy_fbos.clear();
+        // The copies' textures died with the share group; the registry that named them is replaced below.
+        self.canvas_source_cache.clear();
+        self.canvas_source_cache_bytes = 0;
         self.gl_state.clear();
         self.atlas = None;
         self.image_registry = ImageRegistry::new();
@@ -3116,6 +3168,9 @@ impl CanvasManager {
             if let Some(fbo) = self.image_copy_fbos.remove(&id) {
                 unsafe { self.gl.delete_framebuffer(fbo) };
             }
+            // A canvas that was drawn from leaves no copy of itself behind.
+            self.drop_canvas_source_copy(id);
+            self.canvas_generations.remove(&id);
             self.gl_initial_state_pending.remove(&id);
 
             self.image_registry.remove_canvas_images(id);
@@ -3192,6 +3247,10 @@ impl CanvasManager {
                 self.gl.delete_framebuffer(fbo);
             }
             if has_current_context {
+                for (_id, copy) in self.canvas_source_cache.drain() {
+                    self.gl.delete_texture(copy.tex);
+                }
+                self.canvas_source_cache_bytes = 0;
                 for (_id, entry) in self.canvas2d_snapshots.drain() {
                     self.gl.delete_texture(entry.tex);
                 }
@@ -4005,6 +4064,10 @@ impl CanvasManager {
         // draws the specification says are gone.
         let saved_bound = self.bound;
         self.flush_2d_before_backing_change(id)?;
+        // Its pixels are about to be replaced, so a copy of the old ones is stale. A 2D canvas is current here,
+        // which releasing the copy's texture needs.
+        self.note_canvas_painted(id);
+        self.drop_canvas_source_copy(id);
 
         // Window surfaces: the EGL surface is controlled by Android SurfaceView.
         // Resize only the DrawingBuffer so canvas.width/height reflects what JS
@@ -4819,6 +4882,116 @@ impl CanvasManager {
         Ok(result)
     }
 
+    /// The unpack state of `canvas_id`'s context when `UNPACK_FLIP_Y_WEBGL` or
+    /// `UNPACK_PREMULTIPLY_ALPHA_WEBGL` is on, `None` -- the common case -- when neither is, so an
+    /// upload that wants no conversion pays one lookup.
+    pub(crate) fn unpack_conversion(
+        &self,
+        canvas_id: CanvasId,
+    ) -> Option<crate::backend::gl::unpack_convert::UnpackState> {
+        let shadow = &self.gl_state.get(&canvas_id)?.pixel_store_i32;
+        let flip_y = shadow.value(PIXEL_STORE_FLIP_Y) != 0;
+        let premultiply = shadow.value(PIXEL_STORE_PREMULTIPLY_ALPHA) != 0;
+        if !flip_y && !premultiply {
+            return None;
+        }
+        Some(crate::backend::gl::unpack_convert::UnpackState {
+            flip_y,
+            premultiply,
+            alignment: shadow.value_or(glow::UNPACK_ALIGNMENT, 4),
+            row_length: shadow.value(glow::UNPACK_ROW_LENGTH),
+            skip_rows: shadow.value(glow::UNPACK_SKIP_ROWS),
+            skip_pixels: shadow.value(glow::UNPACK_SKIP_PIXELS),
+        })
+    }
+
+    /// `UNPACK_FLIP_Y_WEBGL` / `UNPACK_PREMULTIPLY_ALPHA_WEBGL` for an upload whose source is
+    /// already a GPU texture.
+    ///
+    /// The GPU copy those uploads use cannot change the pixels, so when the flags ask for a
+    /// change they are read back, converted ([`unpack_convert`]) and uploaded as bytes. What the
+    /// flags ask for depends on what the source holds: a host-decoded image is straight alpha, so
+    /// premultiply-on is a conversion; a canvas snapshot is what Skia rendered, premultiplied, so
+    /// premultiply-off -- WebGL's default -- is the conversion, the straight alpha the
+    /// specification promises. Flip applies to both.
+    ///
+    /// `true` when the upload was done here. `false` -- nothing touched -- when the flags change
+    /// nothing, when the destination format is not RGB(A) (the GPU copy keeps handling those, as it
+    /// always did) or when the source cannot be read.
+    ///
+    /// [`unpack_convert`]: crate::backend::gl::unpack_convert
+    #[allow(clippy::too_many_arguments)]
+    fn upload_unpack_converted(
+        &mut self,
+        canvas_id: CanvasId,
+        copy_fbo: glow::NativeFramebuffer,
+        src_tex: glow::NativeTexture,
+        (sx, sy, width, height): (i32, i32, i32, i32),
+        source: SourceAlpha,
+        target: u32,
+        level: i32,
+        internalformat: i32,
+    ) -> bool {
+        let (flip_y, wants_premultiplied) = match self.unpack_conversion(canvas_id) {
+            Some(state) => (state.flip_y, state.premultiply),
+            None => (false, false),
+        };
+        let premultiply = wants_premultiplied && source == SourceAlpha::Straight;
+        let unpremultiply = !wants_premultiplied && source == SourceAlpha::Premultiplied;
+        if !(flip_y || premultiply || unpremultiply) {
+            return false;
+        }
+        let format = match internalformat as u32 {
+            glow::RGBA | glow::RGBA8 => glow::RGBA,
+            glow::RGB | glow::RGB8 => glow::RGB,
+            _ => return false,
+        };
+        let Some(mut pixels) = crate::backend::gl::texture_copy::read_texture_rgba8(
+            &self.gl, copy_fbo, src_tex, sx, sy, width, height,
+        ) else {
+            return false;
+        };
+        use crate::backend::gl::unpack_convert::{flip_rows_in_place, premultiply_rgba8};
+        if premultiply {
+            premultiply_rgba8(&mut pixels);
+        }
+        if unpremultiply {
+            crate::backend::gl::readback::unpremultiply_rgba8(&mut pixels);
+        }
+        if flip_y {
+            flip_rows_in_place(&mut pixels, width.max(0) as usize * 4);
+        }
+        let bytes = if format == glow::RGB {
+            pixels
+                .chunks_exact(4)
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .collect::<Vec<u8>>()
+        } else {
+            pixels
+        };
+        {
+            // Tight rows whatever UNPACK_ALIGNMENT, ROW_LENGTH and the skips the content set.
+            let _unpack = crate::backend::gl::readback::CompactPixelUnpackGuard::new(&self.gl, 1);
+            unsafe {
+                self.gl.tex_image_2d(
+                    target,
+                    level,
+                    internalformat,
+                    width,
+                    height,
+                    0,
+                    format,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(&bytes)),
+                );
+            }
+        }
+        self.mark_all_2d_contexts_stale_bits(
+            crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
+        );
+        true
+    }
+
     /// GPU-side `glTexImage2D(image)`: copy from a previously uploaded
     /// shared image's GL texture into the destination texture
     /// currently bound to `target` on `canvas_id`.  Replaces the slow
@@ -4874,6 +5047,24 @@ impl CanvasManager {
             .unwrap_or((0, 0));
 
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
+
+        let source_alpha = match stored.info.alpha_type {
+            skia_safe::AlphaType::Premul => SourceAlpha::Premultiplied,
+            _ => SourceAlpha::Straight,
+        };
+        if self.upload_unpack_converted(
+            canvas_id,
+            copy_fbo,
+            src_tex,
+            (sx, sy, src_width, src_height),
+            source_alpha,
+            target,
+            level,
+            internalformat,
+        ) {
+            return Ok(());
+        }
+
         let status = crate::backend::gl::texture_copy::copy_texture(
             &self.gl,
             copy_fbo,
@@ -5343,6 +5534,191 @@ impl CanvasManager {
         }
     }
 
+    /// `drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)` where `source` is another
+    /// canvas (or the destination itself): draw the source's pixels onto `dest`
+    /// through the ordinary image path. Returns whether anything was painted.
+    ///
+    /// Every canvas has its own EGL context and Skia `GrDirectContext`, and a Skia
+    /// image belongs to the context that made it, so the source cannot be handed to
+    /// `dest` as it is. What crosses is a GL texture in the share group -- the
+    /// snapshot machinery `getImageData` uses, which also flushes the source and
+    /// waits for its draws -- registered in the image store and wrapped for `dest`
+    /// like any decoded image. The whole source is copied once and kept until the
+    /// canvas is painted on again (see [`CanvasSourceCopy`]), so a canvas drawn many
+    /// times per frame is read once.
+    ///
+    /// The source rectangle is clipped to the source canvas and the destination
+    /// rectangle shrunk in the same proportion, as the specification's `drawImage`
+    /// steps say; what falls outside the source is transparent and paints nothing.
+    ///
+    /// `dest` is flushed after the draw, so every GL call that reads the texture has
+    /// been issued before the copy can be evicted.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_canvas_into(
+        &mut self,
+        dest: CanvasId,
+        source: CanvasId,
+        sx: f32,
+        sy: f32,
+        sw: f32,
+        sh: f32,
+        dx: f32,
+        dy: f32,
+        dw: f32,
+        dh: f32,
+    ) -> EngineResult<bool> {
+        let Some((canvas_w, canvas_h)) = self
+            .contexts_2d
+            .get(&source)
+            .map(|ctx| (ctx.width as f32, ctx.height as f32))
+        else {
+            return Ok(false);
+        };
+        if ![sx, sy, sw, sh, dx, dy, dw, dh]
+            .iter()
+            .all(|v| v.is_finite())
+            || sw <= 0.0
+            || sh <= 0.0
+        {
+            return Ok(false);
+        }
+        let (x0, y0) = (sx.max(0.0), sy.max(0.0));
+        let (x1, y1) = ((sx + sw).min(canvas_w), (sy + sh).min(canvas_h));
+        if !(x1 > x0 && y1 > y0) {
+            return Ok(false);
+        }
+        let (kx, ky) = (dw / sw, dh / sh);
+
+        let Some(image_id) = self.source_copy_image(source)? else {
+            return Ok(false);
+        };
+        self.make_current_needed(dest)?;
+        let (ctx, store) = self.split_2d_and_images(dest)?;
+        let painted = ctx.apply_with_images(
+            &shared::protocol::render_cmd::Canvas2DCmd::DrawImage {
+                image_id,
+                sx: x0,
+                sy: y0,
+                sw: x1 - x0,
+                sh: y1 - y0,
+                dx: dx + (x0 - sx) * kx,
+                dy: dy + (y0 - sy) * ky,
+                dw: (x1 - x0) * kx,
+                dh: (y1 - y0) * ky,
+            },
+            None,
+            store,
+        );
+        // Issue the GL calls that read the copy before anything can evict it.
+        ctx.flush_pending_draws();
+        Ok(painted)
+    }
+
+    /// The image-store id of a current copy of the whole of `source`, taking one if
+    /// there is none or it is stale. `None` when the canvas cannot be copied (no
+    /// 2D context, too large for the snapshot budget, the capture failed).
+    fn source_copy_image(&mut self, source: CanvasId) -> EngineResult<Option<u32>> {
+        use crate::backend::gl::image_store::{GpuImageInfo, StoredImage};
+        let generation = *self.canvas_generations.entry(source).or_insert(0);
+        self.canvas_source_clock += 1;
+        let now = self.canvas_source_clock;
+        if let Some(copy) = self.canvas_source_cache.get_mut(&source) {
+            if copy.generation == generation {
+                copy.last_used = now;
+                return Ok(Some(copy.image_id));
+            }
+        }
+        // Stale, or none: the old copy goes before the new one is taken.
+        self.drop_canvas_source_copy(source);
+
+        let Some((w, h)) = self
+            .contexts_2d
+            .get(&source)
+            .map(|ctx| (ctx.width, ctx.height))
+        else {
+            return Ok(None);
+        };
+        let Some(bytes) = shared::protocol::render_cmd::checked_canvas_rgba_byte_len(w, h) else {
+            return Ok(None);
+        };
+        if bytes > CANVAS_SOURCE_CACHE_BYTES {
+            return Ok(None);
+        }
+        self.evict_source_copies_to_fit(bytes);
+
+        let snapshot_id = self.next_internal_snapshot_id;
+        self.next_internal_snapshot_id = snapshot_id.checked_add(1).unwrap_or(0x8000_0000);
+        if self.snapshot_canvas2d_region_with_id(source, 0, 0, w, h, snapshot_id)? == 0 {
+            return Ok(None);
+        }
+        let Some(entry) = self.remove_canvas2d_snapshot(snapshot_id) else {
+            return Ok(None);
+        };
+        let store = self.image_registry.store_mut();
+        let image_id = store.generate_id();
+        store.insert(
+            image_id,
+            StoredImage::dedicated(
+                entry.tex.0.get(),
+                // What Skia rendered: premultiplied, top row first.
+                GpuImageInfo {
+                    width: entry.width,
+                    height: entry.height,
+                    color_type: skia_safe::ColorType::RGBA8888,
+                    alpha_type: skia_safe::AlphaType::Premul,
+                },
+            ),
+        );
+        self.canvas_source_cache.insert(
+            source,
+            CanvasSourceCopy {
+                generation,
+                image_id,
+                tex: entry.tex,
+                width: entry.width,
+                height: entry.height,
+                bytes,
+                last_used: now,
+            },
+        );
+        self.canvas_source_cache_bytes += bytes;
+        Ok(Some(image_id))
+    }
+
+    /// Release the copy of `source`, if any: its image-store entry (and every Skia
+    /// wrapper of it) and its texture.
+    fn drop_canvas_source_copy(&mut self, source: CanvasId) {
+        if let Some(copy) = self.canvas_source_cache.remove(&source) {
+            self.canvas_source_cache_bytes =
+                self.canvas_source_cache_bytes.saturating_sub(copy.bytes);
+            self.image_registry.store_mut().remove(copy.image_id);
+            unsafe { self.gl.delete_texture(copy.tex) };
+        }
+    }
+
+    /// Evict least-recently-used copies until `incoming` more bytes fit.
+    fn evict_source_copies_to_fit(&mut self, incoming: usize) {
+        while self.canvas_source_cache_bytes + incoming > CANVAS_SOURCE_CACHE_BYTES {
+            let Some(oldest) = self
+                .canvas_source_cache
+                .iter()
+                .min_by_key(|(_, copy)| copy.last_used)
+                .map(|(id, _)| *id)
+            else {
+                break;
+            };
+            self.drop_canvas_source_copy(oldest);
+        }
+    }
+
+    /// Note that `canvas`'s pixels changed, so a copy taken of it is stale. A canvas
+    /// nothing has drawn from has no entry and costs one failed lookup.
+    pub(crate) fn note_canvas_painted(&mut self, canvas: CanvasId) {
+        if let Some(generation) = self.canvas_generations.get_mut(&canvas) {
+            *generation += 1;
+        }
+    }
+
     fn remove_canvas2d_snapshot(&mut self, snapshot_id: u32) -> Option<Canvas2DSnapshotEntry> {
         let entry = self.canvas2d_snapshots.remove(&snapshot_id)?;
         self.canvas2d_snapshot_order.retain(|&id| id != snapshot_id);
@@ -5438,6 +5814,18 @@ impl CanvasManager {
         // — exactly the same primitive `tex_image_2d_from_shared`
         // uses, so the same driver paths are exercised.
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
+        if self.upload_unpack_converted(
+            canvas_id,
+            copy_fbo,
+            entry.tex,
+            (0, 0, entry.width as i32, entry.height as i32),
+            SourceAlpha::Premultiplied,
+            target,
+            level,
+            internalformat,
+        ) {
+            return Ok(());
+        }
         let status = crate::backend::gl::texture_copy::copy_texture(
             &self.gl,
             copy_fbo,
@@ -5509,6 +5897,19 @@ impl CanvasManager {
 
         self.make_current_needed(canvas_id)?;
         let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
+        // A cached text texture is a snapshot that outlived its frame: premultiplied.
+        if self.upload_unpack_converted(
+            canvas_id,
+            copy_fbo,
+            src_tex,
+            (0, 0, width as i32, height as i32),
+            SourceAlpha::Premultiplied,
+            target,
+            level,
+            internalformat,
+        ) {
+            return Ok(true);
+        }
         let status = crate::backend::gl::texture_copy::copy_texture(
             &self.gl,
             copy_fbo,
@@ -6700,6 +7101,34 @@ mod recovery_source_guards {
         panic!("function body must close");
     }
 
+    /// `drawImage(canvas)` reuses one copy of the source until the source changes, so
+    /// everything that changes a canvas has to say so.
+    ///
+    /// A copy that outlived a change would draw the canvas as it was: the dispatcher
+    /// notes every command that painted, a resize drops the copy before the pixels
+    /// are replaced, and destroying a canvas releases it. Structural because each
+    /// needs a GL context; the behaviour is migo-conformance's
+    /// `canvas2d-spec/draw-image-canvas-sees-the-sources-changes`.
+    #[test]
+    fn a_source_canvas_copy_is_invalidated_by_every_change() {
+        const DISPATCHER: &str = include_str!("../../canvas2d_dispatcher.rs");
+        let handle = function_body(DISPATCHER, "pub(crate) fn handle_command(");
+        assert!(
+            handle.contains("note_canvas_painted("),
+            "handle_command must note a canvas that a command painted"
+        );
+        let resize = function_body(MGR, "pub(crate) fn resize_canvas(");
+        assert!(
+            resize.contains("note_canvas_painted(") && resize.contains("drop_canvas_source_copy("),
+            "resize_canvas must invalidate and release the copy before the pixels are replaced"
+        );
+        let destroy = function_body(MGR, "pub(crate) fn destroy_canvas(");
+        assert!(
+            destroy.contains("drop_canvas_source_copy("),
+            "destroy_canvas must release the canvas's copy"
+        );
+    }
+
     /// A pbuffer canvas's WebGL context starts with the viewport and scissor box of
     /// the drawing buffer, not of the 1x1 pbuffer the canvas was registered as.
     ///
@@ -6732,6 +7161,68 @@ mod recovery_source_guards {
             destroy.contains("gl_initial_state_pending.remove("),
             "destroy_canvas must forget a canvas that never ran a GL command"
         );
+    }
+
+    /// `UNPACK_FLIP_Y_WEBGL` and `UNPACK_PREMULTIPLY_ALPHA_WEBGL` are WebGL's, not the driver's.
+    ///
+    /// The `pixelStorei` handler must keep them off `glPixelStorei` (a GL ES driver answers
+    /// `INVALID_ENUM`, and that error would reach the content), and every upload that takes its
+    /// pixels from a texture the engine holds must consult them, because the GPU copy it
+    /// otherwise uses cannot flip or convert alpha. Structural because each needs a GL context;
+    /// the behaviour is migo-conformance's `webgl-spec/flip-y-*` and `premultiply-*`.
+    #[test]
+    fn the_webgl_only_unpack_flags_are_applied_by_the_engine_and_never_sent_to_the_driver() {
+        const GL_HANDLER: &str = include_str!("../../renderergl/handler.rs");
+        let handle = function_body(GL_HANDLER, "pub(crate) fn handle_command(");
+        let at = handle
+            .find("GLCmd::PixelStorei")
+            .expect("the handler must have a PixelStorei arm");
+        let arm = &handle[at..];
+        let arm = &arm[..arm
+            .find("unsafe { gl.pixel_store_i32")
+            .expect("the arm forwards to the driver")];
+        assert!(
+            arm.contains("is_webgl_only_pixel_store("),
+            "the PixelStorei arm must not forward the WebGL-only parameters to the driver"
+        );
+        // the byte uploads: a typed array, `ImageData`, a host-decoded image's bytes
+        for arm in ["GLCmd::TexImage2D {", "GLCmd::TexSubImage2D {"] {
+            let at = handle
+                .find(arm)
+                .unwrap_or_else(|| panic!("the handler must have a {arm} arm"));
+            let rest = &handle[at..];
+            let upload = rest.find("gl.tex_").expect("the arm uploads to the driver");
+            let before = &rest[..upload];
+            assert!(
+                before.contains("unpack_conversion(") && before.contains("convert_upload("),
+                "{arm} must apply the unpack flags to the bytes before they reach the driver"
+            );
+        }
+        for signature in [
+            "pub(crate) fn tex_image_2d_from_shared(",
+            "pub(crate) fn tex_image_2d_from_canvas2d_snapshot(",
+            "pub(crate) fn tex_image_2d_from_text_cache(",
+        ] {
+            let body = function_body(MGR, signature);
+            assert!(
+                body.contains("upload_unpack_converted("),
+                "{signature} copies a texture into the content's and must apply the unpack flags"
+            );
+            let call = body.find("upload_unpack_converted(").unwrap();
+            let copy = body
+                .find("texture_copy::copy_texture(")
+                .expect("and keep the GPU copy for when they ask for nothing");
+            assert!(
+                call < copy,
+                "{signature}: the conversion must be tried before the GPU copy"
+            );
+        }
+        let source_alpha =
+            |signature: &str| function_body(MGR, signature).contains("SourceAlpha::Premultiplied");
+        assert!(source_alpha(
+            "pub(crate) fn tex_image_2d_from_canvas2d_snapshot("
+        ));
+        assert!(source_alpha("pub(crate) fn tex_image_2d_from_text_cache("));
     }
 
     /// A WebGL drawing buffer is transparent black when it is created and again

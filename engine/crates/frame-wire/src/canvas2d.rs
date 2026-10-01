@@ -270,8 +270,54 @@ pub const OP2D_SET_STROKE_STYLE_PATTERN: u32 = 565;
 /// is a piece of its own.
 pub const OP2D_CAPTURE_SNAPSHOT: u32 = 566;
 
+// ─── Image smoothing (567) ───────────────────────────────────────────────────
+
+/// `imageSmoothingEnabled = b`: `H enabled:B`, where `enabled` is exactly 0 or 1.
+///
+/// It is drawing state like `globalAlpha`, not an argument of `drawImage`: the
+/// specification saves it with `save()` and gives it back with `restore()`, and
+/// a game sets it once for a whole pixel-art scene. Numbered after the snapshot
+/// op rather than placed beside the other state setters because 543..548 are
+/// taken and renumbering a block that shipped is what this block's ranges exist
+/// to avoid.
+///
+/// Until this record existed the property was never sent anywhere: assigning
+/// `imageSmoothingEnabled = false` left a plain property on the JavaScript
+/// object and every scaled `drawImage` was sampled bilinearly, which blurs pixel
+/// art on every platform.
+pub const OP2D_SET_IMAGE_SMOOTHING: u32 = 567;
+
+// ─── Fill rule (568, 569) ────────────────────────────────────────────────────
+
+/// `fill("evenodd")`: the path as `OP2D_FILL` paints it, under the even-odd rule.
+///
+/// `OP2D_FILL` is the nonzero rule, the specification's default. The rule is a
+/// second record rather than a word added to `OP2D_FILL` because that record is
+/// nullary and shipped so; adding a word would change what every existing
+/// writer and reader of it means. Until these existed the rule argument was
+/// dropped on the floor and every fill was nonzero, which turns the holes of
+/// an even-odd icon solid.
+pub const OP2D_FILL_EVEN_ODD: u32 = 568;
+/// `clip("evenodd")`: `OP2D_CLIP` under the even-odd rule. See [`OP2D_FILL_EVEN_ODD`].
+pub const OP2D_CLIP_EVEN_ODD: u32 = 569;
+
+// ─── Canvas as an image source (570) ─────────────────────────────────────────
+
+/// `drawImage(canvas, sx, sy, sw, sh, dx, dy, dw, dh)`:
+/// `H source_canvas:U sx sy sw sh dx dy dw dh:F`.
+///
+/// `OP2D_DRAW_IMAGE` names an image the host decoded; this names another canvas,
+/// whose pixels the renderer reads when the record runs -- in stream order, so
+/// the source has drawn everything the content drew to it before this call.
+/// The facade has expanded the shorter forms, as for `OP2D_DRAW_IMAGE`. The
+/// source may be the destination itself.
+///
+/// Until this record existed `drawImage` silently drew nothing for a canvas:
+/// the facade only knew images the host had decoded.
+pub const OP2D_DRAW_CANVAS: u32 = 570;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 567;
+pub const OP2D_END: u32 = 571;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -308,7 +354,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         // x, y, radiusX, radiusY, rotation, startAngle, endAngle, ccw
         OP2D_ELLIPSE => (9, &[8]),
 
-        OP2D_FILL | OP2D_STROKE | OP2D_CLIP => (1, &[]),
+        OP2D_FILL | OP2D_STROKE | OP2D_CLIP | OP2D_FILL_EVEN_ODD | OP2D_CLIP_EVEN_ODD => (1, &[]),
 
         OP2D_FILL_RECT | OP2D_STROKE_RECT | OP2D_CLEAR_RECT => (5, &[]),
 
@@ -334,10 +380,13 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
 
         OP2D_SET_TEXT_ALIGN | OP2D_SET_TEXT_BASELINE | OP2D_SET_TEXT_DIRECTION => (2, &[]),
 
+        // enabled: a boolean, not a number a producer may round -- 2 is a bug
+        OP2D_SET_IMAGE_SMOOTHING => (2, &[1]),
+
         // image_id, repeat_x, repeat_y
         OP2D_SET_FILL_STYLE_PATTERN | OP2D_SET_STROKE_STYLE_PATTERN => (4, &[2, 3]),
 
-        OP2D_DRAW_IMAGE => (10, &[]),
+        OP2D_DRAW_IMAGE | OP2D_DRAW_CANVAS => (10, &[]),
         // x, y, width, height, snapshot_id
         OP2D_CAPTURE_SNAPSHOT => (6, &[]),
         OP2D_DRAW_IMAGE_BATCH => {

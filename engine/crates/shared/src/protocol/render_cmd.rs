@@ -1877,6 +1877,10 @@ pub enum Canvas2DCmd {
     Fill,
     Stroke,
     Clip,
+    /// `fill("evenodd")`: `Fill` under the even-odd rule.
+    FillEvenOdd,
+    /// `clip("evenodd")`: `Clip` under the even-odd rule.
+    ClipEvenOdd,
 
     // ========== Rectangle methods ==========
     FillRect {
@@ -1943,6 +1947,12 @@ pub enum Canvas2DCmd {
         /// 3=source-atop, 4=destination-over, 5=destination-in,
         /// 6=destination-out, 7=destination-atop, 8=lighter, 9=copy, 10=xor
         op: u8,
+    },
+    /// `imageSmoothingEnabled`: `true` samples a scaled `drawImage` bilinearly,
+    /// `false` takes the nearest texel. Part of the drawing state, so `save()`
+    /// keeps it and `restore()` gives it back.
+    SetImageSmoothing {
+        enabled: bool,
     },
     SetLineDash {
         /// Alternating dash/gap lengths. Empty = solid line.
@@ -2046,6 +2056,21 @@ pub enum Canvas2DCmd {
         dw: f32,
         dh: f32,
     },
+    /// `drawImage(canvas, ...)`: the pixels of another canvas, read when this
+    /// command runs. `source` is the source canvas's id; the rectangles are the
+    /// same eight numbers as `DrawImage`'s, in the source canvas's pixels and the
+    /// destination's user space.
+    DrawCanvas {
+        source: u32,
+        sx: f32,
+        sy: f32,
+        sw: f32,
+        sh: f32,
+        dx: f32,
+        dy: f32,
+        dw: f32,
+        dh: f32,
+    },
     GetImageData {
         x: i32,
         y: i32,
@@ -2134,6 +2159,8 @@ impl Canvas2DCmd {
             | Self::Fill
             | Self::Stroke
             | Self::Clip
+            | Self::FillEvenOdd
+            | Self::ClipEvenOdd
             | Self::FillRect { .. }
             | Self::StrokeRect { .. }
             | Self::ClearRect { .. }
@@ -2145,6 +2172,7 @@ impl Canvas2DCmd {
             | Self::SetMiterLimit { .. }
             | Self::SetGlobalAlpha { .. }
             | Self::SetCompositeOperation { .. }
+            | Self::SetImageSmoothing { .. }
             | Self::SetLineDash { .. }
             | Self::SetLineDashOffset { .. }
             | Self::SetShadowBlur { .. }
@@ -2167,6 +2195,7 @@ impl Canvas2DCmd {
             | Self::Rotate { .. }
             | Self::Scale { .. }
             | Self::DrawImage { .. }
+            | Self::DrawCanvas { .. }
             | Self::GetImageData { .. }
             | Self::CaptureSnapshot { .. }
             | Self::ReadSnapshotPixels { .. }

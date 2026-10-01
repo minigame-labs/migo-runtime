@@ -104,7 +104,8 @@ impl Canvas2DSegment {
             | Canvas2DCmd::ClearRect { x, y, w, h } => {
                 self.mark_dirty(*x, *y, *w, *h);
             }
-            Canvas2DCmd::DrawImage { dx, dy, dw, dh, .. } => {
+            Canvas2DCmd::DrawImage { dx, dy, dw, dh, .. }
+            | Canvas2DCmd::DrawCanvas { dx, dy, dw, dh, .. } => {
                 self.mark_dirty(*dx, *dy, *dw, *dh);
             }
             Canvas2DCmd::DrawImageBatch { draws } => {
@@ -118,8 +119,10 @@ impl Canvas2DSegment {
             | Canvas2DCmd::FillText { .. }
             | Canvas2DCmd::StrokeText { .. }
             | Canvas2DCmd::Fill
+            | Canvas2DCmd::FillEvenOdd
             | Canvas2DCmd::Stroke
-            | Canvas2DCmd::Clip => {
+            | Canvas2DCmd::Clip
+            | Canvas2DCmd::ClipEvenOdd => {
                 self.poison_dirty();
             }
 

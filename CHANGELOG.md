@@ -8,6 +8,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D: `drawImage` accepts a canvas as its source, in all three forms and
+  including the canvas itself and the on-screen canvas. It silently drew nothing:
+  the facade only knew images the host had decoded. A new 2D record
+  (`DRAW_CANVAS`, 570) carries it; the renderer copies the source into a texture
+  the destination can see, keeps that one copy for every later draw of the same
+  unchanged canvas (200 draws of a 256x256 canvas took 264 ms with a copy per
+  draw and 51 ms with the cache), and drops it when the source is painted on,
+  resized or destroyed. Not yet: a WebGL canvas as a source, and `createPattern`
+  with a canvas.
+- Canvas2D: `fill("evenodd")` and `clip("evenodd")` honour the rule. The argument
+  was dropped and every fill and clip was nonzero, so the holes of an even-odd
+  shape (icons, rings, cut-outs) came out solid. Two new 2D records
+  (`FILL_EVEN_ODD` 568, `CLIP_EVEN_ODD` 569) carry it
+  (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Canvas2D attributes now keep their previous value when assigned what the
+  specification rejects, instead of storing it: `lineWidth`/`miterLimit` that is
+  zero, negative or not finite, `globalAlpha` outside 0..1 or NaN (it was
+  clamped), an unknown `lineCap`/`lineJoin`/`textAlign`/`textBaseline`, a negative
+  `shadowBlur`, a non-finite shadow offset or `lineDashOffset`, a `setLineDash`
+  list with a negative or non-finite entry. `lineWidth = NaN` used to read NaN and
+  draw nothing. `getLineDash()` reports an odd list repeated to an even one
+  (`[5]` is `[5, 5]`) and `shadowColor` reads `rgba(0, 0, 0, 0)` by default.
+- Canvas2D methods that take numbers return without doing anything when an
+  argument is NaN or infinite (`translate`, `scale`, `rotate`, `transform`,
+  `setTransform`, the path methods, `fillText`/`strokeText`), as in a browser: a
+  single `translate(NaN, 0)` used to poison the matrix and blank every later
+  draw. `arc`, `arcTo` and `ellipse` with a negative radius throw
+  `IndexSizeError`.
+- `canvas.width` / `canvas.height` convert what they are given as an
+  `unsigned long` does: `canvas.width = 1023.75` reads back 1023 (it read back
+  1023.75 while the renderer used 1023), a numeric string works (it threw a
+  `TypeError`), a negative number takes the default of 300 (it threw an engine
+  error). `getContext` answers `null` for a different kind of context than the
+  canvas already has, and `createImageData(imageData)` is accepted.
+- `getImageData(0, 0, 0, 1)` threw a `ReferenceError` (`DOMException is not
+  defined`) instead of `IndexSizeError`: the 2D context now carries its own
+  `DOMException` where the host provides none.
+- Canvas2D: `imageSmoothingEnabled` now does what it says. The property was never
+  sent to the renderer -- assigning it left a plain value on the JavaScript object
+  -- so every scaled `drawImage` was sampled bilinearly and pixel art came out
+  blurred on every platform. `imageSmoothingEnabled = false` samples the nearest
+  texel; it is saved and restored with the rest of the drawing state, survives a
+  readback, and is reset by a canvas resize. `imageSmoothingQuality` is accepted
+  and validated; all three levels draw the same. Found by the first run of
+  migo-conformance on macOS, where a 2x display put the old assertion's sample a
+  device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
+  (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- WebGL: `pixelStorei(UNPACK_FLIP_Y_WEBGL)` and
+  `pixelStorei(UNPACK_PREMULTIPLY_ALPHA_WEBGL)` were recorded and never applied,
+  so every upload ignored them: an engine that flips its textures (three.js and
+  Babylon do by default) drew them upside down, and one that uploads premultiplied
+  (Pixi, Phaser, Egret) got straight alpha and bright fringes. The renderer now
+  applies them to `texImage2D` and `texSubImage2D` from bytes (a typed array,
+  `ImageData`, a decoded image), reading the rows the way the driver would
+  (`UNPACK_ALIGNMENT`, `UNPACK_ROW_LENGTH`, the skips), and to `texImage2D` from a
+  canvas. A canvas also keeps WebGL's default of straight alpha: it holds
+  premultiplied colour, and was uploaded as it was whatever the flag said, so a
+  translucent edge came out too dark. The flags are no longer sent to the driver,
+  which has no such parameter and answers `INVALID_ENUM`; `getParameter` reports
+  them as booleans (and `UNPACK_COLORSPACE_CONVERSION_WEBGL` as
+  `BROWSER_DEFAULT_WEBGL`). Not yet: `texSubImage2D` from a canvas ignores them.
+- WebGL: `getParameter(VERSION)` and `getParameter(SHADING_LANGUAGE_VERSION)` begin
+  with `WebGL 1.0` / `WebGL GLSL ES 1.00` (`WebGL 2.0` / `WebGL GLSL ES 3.00` on a
+  WebGL 2 context) followed by the driver's string in parentheses, which is what
+  content and libraries test; they returned the driver's `OpenGL ES 3.0 ...`.
+- WebGL: `invalidateFramebuffer(target, 4294967295)`, `drawBuffers(4294967295)` and
+  `drawBuffersWEBGL(4294967295)` -- a number where a sequence of enums belongs --
+  built a 16 GiB typed array, and the isolate stopped answering until the watchdog
+  ended it. They throw `TypeError`, as WebIDL says; `null` and `undefined` remain
+  the empty list. Found by a hostile-call test (`robustness-hostile-calls` in
+  migo-conformance: 1.8 M random calls with NaN, infinities, 2^32, BigInt, odd
+  typed arrays at the Canvas2D, WebGL and WebGL 2 contexts) which otherwise found
+  no crash and no other hang.
+- WebGL 2: `gl.HALF_FLOAT` was `undefined` (the constant was never declared), so a
+  half-float upload -- the `type` of every `RGBA16F` texture -- went to the driver
+  with no type.
+- WebGL: `isBuffer`, `isFramebuffer`, `isProgram`, `isRenderbuffer`, `isShader`
+  and `isTexture` exist (calling one was a `TypeError`), and `getShaderSource`,
+  `getBufferParameter`, `getTexParameter` and `getRenderbufferParameter` answer
+  from what the content set, without a round trip to the render thread. Not yet:
+  `getVertexAttrib`, `getVertexAttribOffset`, `getUniform`.
 - WebGL: a context on an offscreen canvas began with a 1x1 viewport and scissor
   box. A GL context takes the size of the surface it is first made current with,
   and an offscreen canvas is created as a 1x1 pbuffer and sized by the content

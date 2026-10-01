@@ -23,6 +23,22 @@ const registry = new SafeFinalizationRegistry((rid) => {
 let _mainCanvas = null;
 let _isFirstCreate = true;
 
+// What assigning `canvas.width` / `canvas.height` stores: the attribute is an
+// `unsigned long`, so the value goes through ToUint32 (a fraction is cut off,
+// NaN and Infinity are 0, a negative number wraps) and anything above
+// 2147483647 falls back to the default of 300. The getter reports the
+// converted number, so `canvas.width = 1023.75` reads back 1023 -- content that
+// lays itself out from `canvas.width` sees the size the canvas really has. The
+// op takes a `u32` and used to be handed the raw value: a string threw a
+// TypeError, a negative number threw an engine error, and a fraction was kept
+// on the JavaScript object while the renderer truncated it.
+const _toCanvasDimension = (value) => {
+    let n = +value;
+    n = n - n === 0 ? Math.trunc(n) : 0;
+    n = ((n % 4294967296) + 4294967296) % 4294967296;
+    return n > 2147483647 ? 300 : n;
+};
+
 class Canvas {
     constructor(rid) {
         this._rid = rid;
@@ -60,7 +76,8 @@ class Canvas {
     get height() {
         return this._height;
     }
-    set width(v) {
+    set width(value) {
+        const v = _toCanvasDimension(value);
         // Flush pending GL stream before resize so GL commands encoded before this
         // resize arrive at the render thread before the ResizeCanvas command.
         flushRenderCommandStream();
@@ -71,7 +88,8 @@ class Canvas {
             this._context._resetShadowState();
         }
     }
-    set height(v) {
+    set height(value) {
+        const v = _toCanvasDimension(value);
         // Flush pending GL stream before resize (same ordering invariant as width setter).
         flushRenderCommandStream();
         this._sizedByContent = true;
@@ -149,7 +167,15 @@ class Canvas {
         return !event.defaultPrevented;
     }
     getContext(contextType, options) {
-        if (this._context) { return this._context; }
+        if (this._context) {
+            // A canvas has one kind of context for life: asking for a different kind is answered with null, and only
+            // the same kind returns the existing one.
+            const kind = contextType === 'webgl2' ? 'webgl2'
+                : (contextType === 'webgl' || contextType === 'experimental-webgl') ? 'webgl'
+                : contextType === '2d' ? '2d' : null;
+            if (kind !== null && kind !== this._contextKind) { return null; }
+            return this._context;
+        }
         if (contextType === 'webgl2') {
             this._context = new WebGL2RenderingContext(this, options);
         } else if (contextType === 'webgl' || contextType === 'experimental-webgl') {
@@ -157,6 +183,8 @@ class Canvas {
         } else {
             this._context = new CanvasRenderingContext2D(this);
         }
+        this._contextKind = this._context instanceof WebGL2RenderingContext ? 'webgl2'
+            : this._context instanceof WebGLRenderingContext ? 'webgl' : '2d';
         return this._context;
     }
 }

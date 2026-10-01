@@ -97,6 +97,8 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
         OP2D_FILL => Canvas2DCmd::Fill,
         OP2D_STROKE => Canvas2DCmd::Stroke,
         OP2D_CLIP => Canvas2DCmd::Clip,
+        OP2D_FILL_EVEN_ODD => Canvas2DCmd::FillEvenOdd,
+        OP2D_CLIP_EVEN_ODD => Canvas2DCmd::ClipEvenOdd,
 
         OP2D_FILL_RECT => Canvas2DCmd::FillRect {
             x: f(record[1]),
@@ -202,6 +204,11 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             op: record[1] as u8,
         },
 
+        // The spec table made this word exactly 0 or 1, so it is read, not re-checked.
+        OP2D_SET_IMAGE_SMOOTHING => Canvas2DCmd::SetImageSmoothing {
+            enabled: record[1] == 1,
+        },
+
         OP2D_SET_FILL_STYLE => Canvas2DCmd::SetFillStyle {
             color: color_of(record),
         },
@@ -291,6 +298,17 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
         // ── Images ──────────────────────────────────────────────────────────
         OP2D_DRAW_IMAGE => Canvas2DCmd::DrawImage {
             image_id: record[1],
+            sx: f(record[2]),
+            sy: f(record[3]),
+            sw: f(record[4]),
+            sh: f(record[5]),
+            dx: f(record[6]),
+            dy: f(record[7]),
+            dw: f(record[8]),
+            dh: f(record[9]),
+        },
+        OP2D_DRAW_CANVAS => Canvas2DCmd::DrawCanvas {
+            source: record[1],
             sx: f(record[2]),
             sy: f(record[3]),
             sw: f(record[4]),

@@ -25,6 +25,87 @@ fn apply(ctx: &mut Canvas2DRenderer, canvas: &skia_safe::Canvas, cmds: &[Canvas2
     }
 }
 
+// ====== Image smoothing ====================================================
+//
+// `imageSmoothingEnabled` is drawing state. What the renderer does with it is pick `drawImage`'s sampling; the
+// pixels that follow from the sampling are checked end to end in migo-conformance (`canvas2d-image-smoothing`),
+// because a scaled texture needs a GPU context and these tests run on a raster surface. What is checked here is
+// the half that has no GPU in it: the command lands in the state, and the state is saved, restored and reset the
+// way the specification says.
+
+fn sampling_filter(ctx: &Canvas2DRenderer) -> skia_safe::FilterMode {
+    ctx.state.image_sampling_options().filter
+}
+
+#[test]
+fn image_smoothing_defaults_on_and_the_command_turns_it_off_and_on() {
+    let mut c = Canvas2DRenderer::new();
+    assert_eq!(
+        sampling_filter(&c),
+        skia_safe::FilterMode::Linear,
+        "smoothing is on by default"
+    );
+    let (w, h) = (4, 4);
+    with_raster_surface(w, h, |s| {
+        apply(&mut c, s.canvas(), &[SetImageSmoothing { enabled: false }]);
+        assert_eq!(sampling_filter(&c), skia_safe::FilterMode::Nearest);
+        assert_eq!(
+            c.state.image_sampling_options().mipmap,
+            skia_safe::MipmapMode::None,
+            "nearest is nearest all the way down: no mip level to blend through"
+        );
+        apply(&mut c, s.canvas(), &[SetImageSmoothing { enabled: true }]);
+        assert_eq!(sampling_filter(&c), skia_safe::FilterMode::Linear);
+    });
+}
+
+#[test]
+fn image_smoothing_is_saved_and_restored_with_the_rest_of_the_state() {
+    let mut c = Canvas2DRenderer::new();
+    with_raster_surface(4, 4, |s| {
+        apply(
+            &mut c,
+            s.canvas(),
+            &[
+                SetImageSmoothing { enabled: false },
+                Save,
+                SetImageSmoothing { enabled: true },
+                Save,
+                SetImageSmoothing { enabled: false },
+            ],
+        );
+        assert_eq!(
+            sampling_filter(&c),
+            skia_safe::FilterMode::Nearest,
+            "innermost"
+        );
+        apply(&mut c, s.canvas(), &[Restore]);
+        assert_eq!(
+            sampling_filter(&c),
+            skia_safe::FilterMode::Linear,
+            "the middle level's setting comes back"
+        );
+        apply(&mut c, s.canvas(), &[Restore]);
+        assert_eq!(
+            sampling_filter(&c),
+            skia_safe::FilterMode::Nearest,
+            "and the outer one's"
+        );
+    });
+}
+
+#[test]
+fn a_context_reset_returns_smoothing_to_its_default() {
+    // A canvas resize resets the context, per spec; the JavaScript side resets its shadow to match.
+    let mut c = Canvas2DRenderer::new();
+    with_raster_surface(4, 4, |s| {
+        apply(&mut c, s.canvas(), &[SetImageSmoothing { enabled: false }]);
+        assert_eq!(sampling_filter(&c), skia_safe::FilterMode::Nearest);
+    });
+    c.reset();
+    assert_eq!(sampling_filter(&c), skia_safe::FilterMode::Linear);
+}
+
 // ====== Path fill / stroke / clip ==========================================
 
 #[test]
@@ -159,6 +240,115 @@ fn clip_intersects_fillrect_to_subregion() {
     let right = ((16 * 32 + 24) * 4) as usize;
     assert_eq!(&buf[left..left + 4], &[255, 0, 0, 255]);
     assert_eq!(&buf[right..right + 4], &[255, 255, 255, 255]);
+}
+
+// ====== Fill rule ==========================================================
+//
+// Two nested squares drawn in the same direction: the nonzero rule fills the middle (winding 2), the even-odd rule
+// leaves it a hole. `FillEvenOdd` / `ClipEvenOdd` are the records `fill("evenodd")` / `clip("evenodd")` become.
+
+fn nested_squares() -> Vec<Canvas2DCmd> {
+    vec![
+        BeginPath,
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 40.0,
+            h: 40.0,
+        },
+        Rect {
+            x: 10.0,
+            y: 10.0,
+            w: 20.0,
+            h: 20.0,
+        },
+    ]
+}
+
+fn pixel(buf: &[u8], w: usize, x: usize, y: usize) -> [u8; 4] {
+    let i = (y * w + x) * 4;
+    [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+}
+
+#[test]
+fn fill_even_odd_leaves_the_middle_a_hole_and_nonzero_fills_it() {
+    let render = |rule: Canvas2DCmd| {
+        with_raster_surface(48, 48, |s| {
+            s.canvas().clear(skia_safe::Color::WHITE);
+            let mut c = Canvas2DRenderer::new();
+            let mut cmds = vec![SetFillStyle {
+                color: ProtoColor::rgb(255, 0, 0),
+            }];
+            cmds.extend(nested_squares());
+            cmds.push(rule);
+            apply(&mut c, s.canvas(), &cmds);
+            read_pixels_rgba8(s)
+        })
+    };
+    let nonzero = render(Fill);
+    assert_eq!(
+        pixel(&nonzero, 48, 20, 20),
+        [255, 0, 0, 255],
+        "nonzero fills the middle"
+    );
+    assert_eq!(pixel(&nonzero, 48, 5, 20), [255, 0, 0, 255], "and the ring");
+
+    let even_odd = render(FillEvenOdd);
+    assert_eq!(
+        pixel(&even_odd, 48, 20, 20),
+        [255, 255, 255, 255],
+        "even-odd leaves a hole"
+    );
+    assert_eq!(
+        pixel(&even_odd, 48, 5, 20),
+        [255, 0, 0, 255],
+        "and fills the ring"
+    );
+    assert_eq!(
+        pixel(&even_odd, 48, 45, 45),
+        [255, 255, 255, 255],
+        "outside is untouched"
+    );
+}
+
+#[test]
+fn clip_even_odd_clips_out_the_hole() {
+    let render = |rule: Canvas2DCmd| {
+        with_raster_surface(48, 48, |s| {
+            s.canvas().clear(skia_safe::Color::WHITE);
+            let mut c = Canvas2DRenderer::new();
+            let mut cmds = nested_squares();
+            cmds.push(rule);
+            cmds.push(SetFillStyle {
+                color: ProtoColor::rgb(255, 0, 0),
+            });
+            cmds.push(FillRect {
+                x: 0.0,
+                y: 0.0,
+                w: 48.0,
+                h: 48.0,
+            });
+            apply(&mut c, s.canvas(), &cmds);
+            read_pixels_rgba8(s)
+        })
+    };
+    let nonzero = render(Clip);
+    assert_eq!(
+        pixel(&nonzero, 48, 20, 20),
+        [255, 0, 0, 255],
+        "a nonzero clip keeps the middle"
+    );
+    let even_odd = render(ClipEvenOdd);
+    assert_eq!(
+        pixel(&even_odd, 48, 20, 20),
+        [255, 255, 255, 255],
+        "an even-odd clip excludes the hole"
+    );
+    assert_eq!(
+        pixel(&even_odd, 48, 5, 20),
+        [255, 0, 0, 255],
+        "and keeps the ring"
+    );
 }
 
 // ====== Transform stack ===================================================

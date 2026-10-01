@@ -122,6 +122,61 @@ pub(crate) fn copy_texture(
     }
 }
 
+/// Read a region of `source` as tightly packed RGBA8 through the private copy FBO.
+///
+/// The counterpart of [`copy_texture`] for a caller that has to change the pixels on the
+/// way: it attaches, reads and detaches the same way and leaves DRAW and the client
+/// bindings alone. `None` when the framebuffer is not complete, so the caller can fall
+/// back to the plain GPU copy.
+pub(crate) fn read_texture_rgba8(
+    gl: &glow::Context,
+    framebuffer: glow::NativeFramebuffer,
+    source: glow::NativeTexture,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Option<Vec<u8>> {
+    let len = (width.max(0) as usize)
+        .checked_mul(height.max(0) as usize)?
+        .checked_mul(4)?;
+    let mut pixels = vec![0u8; len];
+    let _binding = ReadFramebufferScope::bind(gl, framebuffer);
+    unsafe {
+        gl.framebuffer_texture_2d(
+            glow::READ_FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(source),
+            0,
+        );
+        let complete =
+            gl.check_framebuffer_status(glow::READ_FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
+        if complete {
+            // Rows packed tightly whatever the content set: PACK_ALIGNMENT, ROW_LENGTH and the skips
+            // are its state in both directions.
+            let _pack = crate::backend::gl::readback::CompactPixelPackGuard::new(gl, 1);
+            gl.read_pixels(
+                x,
+                y,
+                width,
+                height,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut pixels)),
+            );
+        }
+        gl.framebuffer_texture_2d(
+            glow::READ_FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            None,
+            0,
+        );
+        complete.then_some(pixels)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
