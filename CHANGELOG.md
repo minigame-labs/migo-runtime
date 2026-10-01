@@ -55,6 +55,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Asking for WebGL on a canvas nobody has sized yet no longer takes the process down.
+  `document.createElement('canvas')` is zero-sized until something sizes it, and
+  Pixi, Phaser and three.js all test for WebGL on exactly such a canvas before they
+  make their own. The offscreen canvas's EGL pbuffer was created at the canvas's size,
+  zero by zero; on a Mac ANGLE turned that into a zero-width Metal texture descriptor,
+  Metal's validation asserted, and the whole process aborted -- no JavaScript
+  exception, no log line -- the first time a game merely looked for WebGL (on drivers
+  that refuse a zero pbuffer, `createCanvas()` failed instead). The pbuffer is only
+  the surface `eglMakeCurrent` needs and is now never smaller than one pixel
+  (`pbuffer_extent`, at both places one is made), and `drawingBufferWidth/Height`
+  say what the WebGL specification says for a zero-sized canvas: "A 0x0 canvas will
+  yield a 1x1 drawingBufferWidth/Height". Found running Pixi on the runtime;
+  migo-conformance's `webgl-zero-size` aborts the released v0.9.19 and passes here.
 - three.js can create a WebGLRenderer, and a canvas texture is the right way up.
   Found by running three.js (r1xx) on the runtime for the first time, which no test
   had done: `new THREE.WebGLRenderer()` threw `TypeError: expected i32` out of

@@ -179,6 +179,7 @@ const {
     DataViewPrototypeGetByteLength,
     DataViewPrototypeGetByteOffset,
     ArrayBufferPrototypeGetByteLength,
+    MathMax,
     MathTrunc,
     NumberIsFinite,
     NumberIsInteger,
@@ -1118,12 +1119,15 @@ class WebGLRenderingContext {
         throw new Error("drawingBufferColorSpace not supported");
     }
 
+    // WebGL 1.0 section 2.2: "HTMLCanvasElement.width and .height values less than 1 are treated as 1. A 0x0
+    // canvas will yield a 1x1 drawingBufferWidth/Height." The drawing buffer behind a zero-sized canvas is
+    // one pixel (see `pbuffer_extent` in graphics), and this must say so.
     get drawingBufferWidth() {
-        return this._canvas ? this._canvas.width : 0;
+        return this._canvas ? MathMax(1, this._canvas.width) : 0;
     }
 
     get drawingBufferHeight() {
-        return this._canvas ? this._canvas.height : 0;
+        return this._canvas ? MathMax(1, this._canvas.height) : 0;
     }
 
     set unpackColorSpace(value) {

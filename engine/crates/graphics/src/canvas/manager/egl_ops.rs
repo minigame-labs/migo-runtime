@@ -567,6 +567,19 @@ pub(super) fn build_ctx_attribs(gles_major: u32, has_robust_context: bool) -> Ve
 ///
 /// `gles_major` should match the version negotiated by `init_egl` so all
 /// contexts in the share group use the same GLES level.
+/// The size of the pbuffer behind an offscreen canvas of `width` x `height`.
+///
+/// Never zero. A canvas may be any size content sets, zero included (`document.createElement('canvas')`
+/// is zero-sized until something sizes it, and Pixi, Phaser and three.js all probe WebGL support on such a
+/// canvas), but the pbuffer is only the surface `eglMakeCurrent` needs: nothing is drawn through it at the
+/// canvas's size. A zero-width pbuffer reached Metal as a zero-width texture descriptor and ANGLE's
+/// validation aborted the whole process -- a page that merely tested for WebGL took the game down -- and
+/// on other drivers `eglCreatePbufferSurface` refuses it, so `createCanvas()` fails. Browsers do the same:
+/// a zero-sized canvas has a one-by-one drawing buffer.
+pub(super) fn pbuffer_extent(width: u32, height: u32) -> (i32, i32) {
+    (width.max(1) as i32, height.max(1) as i32)
+}
+
 pub(super) fn create_pbuffer_context(
     egl: &egl::DynamicInstance<EGL1_4>,
     display: egl::Display,
@@ -604,11 +617,12 @@ pub(super) fn create_pbuffer_context(
     let surf = if surfaceless {
         None
     } else {
+        let (pbuffer_w, pbuffer_h) = pbuffer_extent(width, height);
         let pbuf_attribs = [
             egl::WIDTH as i32,
-            width as i32,
+            pbuffer_w,
             egl::HEIGHT as i32,
-            height as i32,
+            pbuffer_h,
             egl::NONE as i32,
         ];
         Some(
@@ -683,6 +697,30 @@ mod tests {
         let error = init_egl(&provider).err().expect("provider must fail");
         assert_eq!(loads.load(Ordering::Relaxed), 1);
         assert_eq!(error.msg, "sentinel provider load failure");
+    }
+
+    /// A canvas content has not sized yet is zero by zero; the surface behind it never is.
+    #[test]
+    fn a_zero_sized_canvas_has_a_pbuffer_of_at_least_one_pixel() {
+        assert_eq!(super::pbuffer_extent(0, 0), (1, 1));
+        assert_eq!(super::pbuffer_extent(0, 150), (1, 150));
+        assert_eq!(super::pbuffer_extent(300, 0), (300, 1));
+        assert_eq!(super::pbuffer_extent(300, 150), (300, 150));
+        // Both places that make a pbuffer go through it, so neither can hand the driver a zero.
+        const MANAGER: &str = include_str!("mod.rs");
+        for (source, what) in [
+            (EGL_OPS_SOURCE, "create_pbuffer_context"),
+            (MANAGER, "resize_canvas"),
+        ] {
+            assert!(
+                source.contains("pbuffer_extent("),
+                "{what} must size its pbuffer with pbuffer_extent"
+            );
+        }
+        assert!(
+            !MANAGER.contains("egl::WIDTH as i32,\n                    new_w as i32"),
+            "resize_canvas must not give the driver the content's size unclamped"
+        );
     }
 
     #[test]
