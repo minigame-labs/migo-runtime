@@ -1,5 +1,25 @@
 use std::time::{Duration, Instant};
 
+/// Puts the frame timestamps of a host vsync clock on the process timeline.
+///
+/// The scheduler works in time since the first vsync -- the host's clock has an arbitrary base, and
+/// the scheduler only ever compares and subtracts -- but the timestamp content is handed has to be
+/// on the timeline `performance.now()` counts on (`shared::time_origin`). The first frame is
+/// stamped with the process time at which it arrived and every later one keeps its distance from
+/// it, so the host clock's own steadiness is preserved and only its base is replaced.
+#[derive(Default)]
+pub struct RafTimeline {
+    anchor_ms: Option<f64>,
+}
+
+impl RafTimeline {
+    /// `raf_time_ms` is the scheduler's (zero at the first vsync), `process_now_ms` the process
+    /// timeline's reading as this frame is handled.
+    pub fn align(&mut self, raf_time_ms: f64, process_now_ms: f64) -> f64 {
+        raf_time_ms + *self.anchor_ms.get_or_insert(process_now_ms - raf_time_ms)
+    }
+}
+
 pub struct FrameDecision {
     pub should_render: bool,
     pub raf_time_ms: f64,
@@ -327,6 +347,43 @@ pub(crate) fn assert_does_not_present_when_surface_is_not_ready() {
 
 #[cfg(test)]
 mod tests {
+    use super::RafTimeline;
+
+    /// The first frame is stamped with the process time it arrived at; each later one keeps its
+    /// distance from it. A game that spent two seconds loading used to see `ts = 0` on its first
+    /// frame against a `performance.now()` of 2000.
+    #[test]
+    fn the_first_frame_takes_the_process_time_and_the_rest_keep_their_spacing() {
+        let mut timeline = RafTimeline::default();
+        assert_eq!(timeline.align(0.0, 2_000.0), 2_000.0);
+        // the host's clock advances 16.667 ms a frame; the process clock a little unevenly
+        assert!((timeline.align(16.667, 2_017.3) - 2_016.667).abs() < 1e-9);
+        assert!((timeline.align(33.333, 2_033.9) - 2_033.333).abs() < 1e-9);
+    }
+
+    /// The anchor is taken once. A later frame arriving late (a stall, a background) does not move
+    /// the timeline, so the stall stays visible in the timestamps as the gap it was.
+    #[test]
+    fn a_late_frame_does_not_move_the_anchor() {
+        let mut timeline = RafTimeline::default();
+        timeline.align(0.0, 500.0);
+        let after_stall = timeline.align(16.667 * 60.0, 5_000.0);
+        assert!(
+            (after_stall - (500.0 + 16.667 * 60.0)).abs() < 1e-9,
+            "{after_stall}"
+        );
+    }
+
+    /// If the first frame handled is not at scheduler time zero (the scheduler's origin is the
+    /// first vsync it was given, so it is in practice) the anchor still makes the stamp equal the
+    /// process time at that frame.
+    #[test]
+    fn the_anchor_makes_the_first_stamp_equal_the_process_time_whatever_the_scheduler_said() {
+        let mut timeline = RafTimeline::default();
+        assert_eq!(timeline.align(7.5, 100.0), 100.0);
+        assert!((timeline.align(24.167, 118.0) - 116.667).abs() < 1e-9);
+    }
+
     use super::{
         assert_does_not_present_when_surface_is_not_ready,
         assert_hits_60fps_on_90hz_without_jittering_to_45fps,

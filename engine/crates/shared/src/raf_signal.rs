@@ -5,7 +5,9 @@
 //!
 //! - **Android/Linux**: `eventfd` + `tokio::io::unix::AsyncFd` — true epoll wait,
 //!   zero CPU when idle, ~1-3 µs wake latency.
-//! - **Other platforms**: `tokio::sync::mpsc::channel(2)` — current path, unchanged.
+//! - **Other platforms**: a one-frame slot and a `tokio::sync::Notify`, with the same
+//!   meaning as the eventfd: signals that arrive before the consumer looks collapse into one
+//!   wake carrying the NEWEST timestamp.
 
 use std::sync::Arc;
 
@@ -23,6 +25,8 @@ impl RafSender {
     /// (channel full or write error).  The caller should count drops for
     /// debug stats.
     pub fn signal(&self, ts_ms: f64, ticket: u64) -> bool {
+        // On every platform a signal that nobody has consumed yet is replaced by this one, never
+        // queued behind it: the consumer must be woken for the newest frame, not for the oldest.
         match &self.0 {
             #[cfg(target_os = "android")]
             SenderInner::Eventfd { fd, frame } => {
@@ -43,7 +47,13 @@ impl RafSender {
                     }
                 }
             }
-            SenderInner::Channel(tx) => tx.try_send(RafFrame { ts_ms, ticket }).is_ok(),
+            SenderInner::Slot(slot) => {
+                *slot.frame.lock() = RafFrame { ts_ms, ticket };
+                // `notify_one` keeps one permit when nobody is waiting, so a signal that
+                // arrives before `recv` is not lost, and several before it collapse into one.
+                slot.wake.notify_one();
+                true
+            }
         }
     }
 }
@@ -109,19 +119,14 @@ impl RafReceiver {
                         return None;
                     }
                 }
-                ReceiverInner::Channel(rx) => {
-                    let mut rx = rx.lock().await;
-                    let first = rx.recv().await?;
-                    // Coalesce to the newest queued timestamp so RAF uses the latest
-                    // frame time, matching the eventfd path (which collapses multiple
-                    // signals into one wake with the newest ts via the atomic). The
-                    // bounded(2) channel would otherwise hand back a stale buffered
-                    // frame first when the consumer briefly falls behind.
-                    let mut latest = first;
-                    while let Ok(frame) = rx.try_recv() {
-                        latest = frame;
-                    }
-                    latest
+                ReceiverInner::Slot(slot) => {
+                    // The newest signal, as the eventfd path gives. This was a bounded(2) channel,
+                    // which dropped the NEWEST signal when full: a consumer that fell behind (a long
+                    // frame, an idle screen) was handed the oldest two timestamps the render thread
+                    // had written, and its next animation frame carried a time from before the
+                    // stall began.
+                    slot.wake.notified().await;
+                    *slot.frame.lock()
                 }
             };
 
@@ -142,7 +147,7 @@ enum SenderInner {
         fd: std::os::fd::OwnedFd,
         frame: Arc<parking_lot::Mutex<RafFrame>>,
     },
-    Channel(tokio::sync::mpsc::Sender<RafFrame>),
+    Slot(Arc<RafSlot>),
 }
 
 enum ReceiverInner {
@@ -156,7 +161,13 @@ enum ReceiverInner {
         fd: std::os::fd::OwnedFd,
         frame: Arc<parking_lot::Mutex<RafFrame>>,
     },
-    Channel(tokio::sync::Mutex<tokio::sync::mpsc::Receiver<RafFrame>>),
+    Slot(Arc<RafSlot>),
+}
+
+/// The newest frame signal and the wake that says there is one.
+struct RafSlot {
+    frame: parking_lot::Mutex<RafFrame>,
+    wake: tokio::sync::Notify,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -185,7 +196,7 @@ fn frame_matches_ticket(delivered_ticket: u64, expected_ticket: u64) -> bool {
 /// Create a matched (sender, receiver) pair.
 ///
 /// On Android: uses eventfd for low-latency, low-power wake.
-/// Falls back to tokio mpsc channel on failure or other platforms.
+/// Falls back to the newest-frame slot on failure or other platforms.
 pub fn create_raf_pair() -> (RafSender, Arc<RafReceiver>) {
     #[cfg(target_os = "android")]
     {
@@ -201,7 +212,7 @@ pub fn create_raf_pair() -> (RafSender, Arc<RafReceiver>) {
     }
 
     let (tx, rx) = create_channel_pair();
-    tracing::info!("RAF signal: using tokio mpsc channel");
+    tracing::info!("RAF signal: using the newest-frame slot");
     (tx, Arc::new(rx))
 }
 
@@ -239,10 +250,16 @@ fn create_eventfd_pair() -> Result<(RafSender, RafReceiver), String> {
 }
 
 fn create_channel_pair() -> (RafSender, RafReceiver) {
-    let (tx, rx) = tokio::sync::mpsc::channel(2);
+    let slot = Arc::new(RafSlot {
+        frame: parking_lot::Mutex::new(RafFrame {
+            ts_ms: 0.0,
+            ticket: 0,
+        }),
+        wake: tokio::sync::Notify::new(),
+    });
     (
-        RafSender(SenderInner::Channel(tx)),
-        RafReceiver(ReceiverInner::Channel(tokio::sync::Mutex::new(rx))),
+        RafSender(SenderInner::Slot(slot.clone())),
+        RafReceiver(ReceiverInner::Slot(slot)),
     )
 }
 
@@ -430,6 +447,47 @@ mod demand_tests {
         // a usable non-zero ticket so mark/signal/recv line up.
         assert_ne!(d.session_ticket(), 0);
         assert_eq!(d.mark_waiting(), d.session_ticket());
+    }
+
+    /// A consumer that was not looking while several frames were signalled is handed the newest, not
+    /// the oldest: the render thread signals every vsync while animating, and a long frame or an idle
+    /// screen leaves several unconsumed.
+    #[test]
+    fn a_consumer_that_fell_behind_gets_the_newest_signal() {
+        let (tx, rx) = create_channel_pair();
+        for i in 0..10 {
+            assert!(tx.signal(100.0 + i as f64 * 16.667, 5));
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let got = runtime.block_on(rx.recv(5)).unwrap();
+        assert!(
+            (got - (100.0 + 9.0 * 16.667)).abs() < 1e-9,
+            "got {got}, not the newest"
+        );
+    }
+
+    /// Signals collapse: ten signals are one wake, so the next `recv` waits for a signal made after
+    /// the first was consumed rather than replaying an old one.
+    #[test]
+    fn a_consumed_signal_is_not_delivered_twice() {
+        let (tx, rx) = create_channel_pair();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+        tx.signal(1.0, 3);
+        assert_eq!(runtime.block_on(rx.recv(3)), Some(1.0));
+        let second = runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(30), rx.recv(3)).await
+        });
+        assert!(
+            second.is_err(),
+            "a second recv replayed a consumed signal: {second:?}"
+        );
+        tx.signal(2.0, 3);
+        assert_eq!(runtime.block_on(rx.recv(3)), Some(2.0));
     }
 
     #[test]

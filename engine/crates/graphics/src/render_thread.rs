@@ -2464,6 +2464,7 @@ impl RenderThread {
                 let mut fps: u32 = shared::frame_rate::DEFAULT_FPS;
                 let mut frame_clock = SoftwareFrameClock::new(fps);
                 let mut frame_scheduler = FrameScheduler::new(fps);
+                let mut raf_timeline = crate::frame_scheduler::RafTimeline::default();
 
                 let start_time = Instant::now();
                 let cleanup_cadence = DeferredCleanupCadence::new(start_time.elapsed());
@@ -3725,7 +3726,9 @@ impl RenderThread {
                             let frame_started = Instant::now();
                             frame_clock.on_frame_ran(frame_started);
                             crate::render_diagnostics::set_render_queue_len(cmd_rx.len() as u32);
-                            let ts = frame_started.duration_since(start_time).as_secs_f64() * 1000.0;
+                            // On the process timeline `performance.now()` counts on, not
+                            // from this thread's own start (see `shared::time_origin`).
+                            let ts = shared::time_origin::ms_since_origin(frame_started);
                             render_server.set_raf_time_ms(ts);
 
                             // 1) Signal RAF first (free-run), unconditionally while
@@ -3780,11 +3783,15 @@ impl RenderThread {
                             vsync_armed.set(false);
                             crate::render_diagnostics::set_render_queue_len(cmd_rx.len() as u32);
 
-                            let decision = next_vsync_frame_decision(
+                            let mut decision = next_vsync_frame_decision(
                                 &mut frame_scheduler,
                                 &surface_system,
                                 frame_time_ms,
                             );
+                            // The scheduler counts from the first vsync; content is handed a
+                            // timestamp on the timeline `performance.now()` counts on.
+                            decision.raf_time_ms = raf_timeline
+                                .align(decision.raf_time_ms, shared::time_origin::elapsed_ms());
 
                             if !decision.should_signal_raf {
                                 // RAF-skipped tick (e.g. game hasn't
