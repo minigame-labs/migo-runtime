@@ -1,7 +1,7 @@
 import { core, primordials } from "ext:core/mod.js";
 import { Header } from "ext:host_v8_network/01_header.js";
-import { NetworkTask } from "ext:host_v8_network/03_task.js";
-import { createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { NetworkTask, createSettler, headerEntries } from "ext:host_v8_network/03_task.js";
+import { createListenerGroup, errorMessage } from "ext:host_v8_base/02_async.js";
 import {
     DownloadResponse, DownloadErrorResponse, Exception, abortedNetworkError,
 } from "ext:host_v8_network/02_response.js";
@@ -71,17 +71,19 @@ const CHUNK_SIZE = 64 * 1024;
 
 // -- downloadFile() --
 
-function downloadFile(options = {}) {
+function downloadFile(options) {
+    // `null` and non-objects are a call that names no url, not a throw out of the caller's helper.
+    const opts = (options !== null && typeof options === 'object') ? options : {};
     const {
-        url, filePath, header = {}, timeout = 60000,
+        url, filePath, header, timeout = 60000,
         enableHttp2 = false,
-        success = () => {}, fail = () => {}, complete = () => {}
-    } = options;
+    } = opts;
+    const settler = createSettler('downloadFile', opts);
 
     // Validate URL
     if (!url || typeof url !== 'string') {
         const error = makeError(0, "downloadFile:fail invalid url");
-        queueMicrotask(() => { fail(error); complete(error); });
+        queueMicrotask(() => settler.fail(error));
         return new DownloadTask(null);
     }
 
@@ -90,7 +92,7 @@ function downloadFile(options = {}) {
     // directory. A fixed `<target>.part` lets concurrent tasks truncate,
     // interleave, and unlink one another's work.
     const tmpPath = generateTempFilePath(targetPath);
-    const headers = Object.entries(header).map(([key, value]) => [key, String(value)]);
+    const headers = headerEntries(header);
 
     // Create fetch request (GET, no body)
     let requestRid, cancelHandleRid;
@@ -99,8 +101,8 @@ function downloadFile(options = {}) {
         requestRid = result.requestRid;
         cancelHandleRid = result.cancelHandleRid;
     } catch (err) {
-        const error = makeError(0, "downloadFile:fail " + err.message);
-        queueMicrotask(() => { fail(error); complete(error); });
+        const error = makeError(0, "downloadFile:fail " + errorMessage(err));
+        queueMicrotask(() => settler.fail(error));
         return new DownloadTask(null);
     }
 
@@ -127,9 +129,7 @@ function downloadFile(options = {}) {
             if (cancellation.aborted) throw "aborted";
 
             if (resp?.error) {
-                const error = makeError(resp.status, resp.error);
-                fail(error);
-                complete(error);
+                settler.fail(makeError(resp.status, resp.error));
                 return;
             }
 
@@ -182,8 +182,7 @@ function downloadFile(options = {}) {
                 filePath || undefined,
                 statusCode
             );
-            success(result);
-            complete(result);
+            settler.succeed(result);
         } catch (err) {
             if (fd !== null) {
                 try { await op_close_file(fd); } catch (_) {}
@@ -191,13 +190,9 @@ function downloadFile(options = {}) {
             try { await op_unlink(tmpPath); } catch (_) {}
 
             if (cancellation.aborted || err === "aborted") {
-                const error = abortedNetworkError();
-                fail(error);
-                complete(error);
+                settler.fail(abortedNetworkError());
             } else {
-                const error = makeError(500, "downloadFile:fail " + (err.message || err));
-                fail(error);
-                complete(error);
+                settler.fail(makeError(500, "downloadFile:fail " + errorMessage(err)));
             }
         } finally {
             if (cancellation.responseRid !== null) {

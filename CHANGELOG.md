@@ -55,6 +55,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- `migo.request` works again for any response that has a body. Since v0.9.10 every
+  request that received a non-empty body failed with `request:fail ... read data
+  failed: TypeError: expected typed ArrayBufferView` (errno 500): the perf pass that
+  made the body read bounded (#225) merged the chunks and handed the result on as an
+  ArrayBuffer to the code that decodes a typed array, so `text`, JSON and
+  `arraybuffer` responses all failed, and `readAll`'s old Uint8Array contract was
+  nowhere asserted. It went unseen because nothing ran the engine's own `request()`
+  over a body: the SSRF filter refuses every address a test could listen on, and
+  the one fetch test read the body with `core.read` itself. A `data:` URL is answered
+  through the same ops, reader and callbacks without a connection, so the new
+  `request_through_the_engine` tests (and migo-conformance's `network-spec`) run the
+  real code. They also pin what the same pass left wrong:
+  - A response with no body (empty, 204, 304, HEAD) arrives as `""` or an empty
+    ArrayBuffer, not `null`, so `res.data.length` is not a TypeError.
+  - A `success` callback that throws no longer makes the request a failure: the
+    delivery sat inside the `try` that reports a failed read, so the app's own bug
+    ran its `fail` and `complete` after its `success`. The same shape was in
+    `downloadFile` (the download was kept and reported failed) and `uploadFile`. One
+    settler now delivers a request's outcome once, each callback isolated, and a
+    `fail` that throws no longer escapes into the event loop.
+  - `request`, `downloadFile` and `uploadFile` with arguments that cannot make a
+    request -- an unknown or non-string `method`, a `null` options object or
+    `header` -- fail through `fail`/`complete` with `request:fail ...` instead of
+    throwing out of the caller's helper; callbacks that are not functions are ignored.
+  - A body that fits one chunk (most JSON) is no longer copied a second time.
 - A proxy on the machine no longer breaks every network request. With an HTTP or
   SOCKS proxy configured -- the `HTTP_PROXY`/`HTTPS_PROXY` environment or the
   system setting, which the engine's client honours as the system WebView does --

@@ -534,6 +534,10 @@ mod js_regression_tests {
     #[test]
     fn net01_abort_closes_response_rid_exactly_once() {
         let dl = strip_module_declarations(include_str!("05_download.js"));
+        // The real task module (the settler is what delivers every callback), inlined beside the module
+        // under test; both destructure `TypeError` from the one stub `primordials`.
+        let task = strip_module_declarations(include_str!("03_task.js"))
+            .replace("const { TypeError } = primordials;", "");
 
         // ── Scenario A: abort while core.read is pending ──────────────────────
         {
@@ -554,26 +558,15 @@ mod js_regression_tests {
                 function createListenerGroup(_lbl) {{
                     return {{ on() {{}}, off() {{}}, trigger() {{}} }};
                 }}
-                class Header {{ constructor(_h, _s) {{}} }}
-                class NetworkTask {{
-                    constructor(t) {{
-                        this._aborted = false;
-                        this._terminator = t;
-                        this._headersReceivedListeners = createListenerGroup('h');
-                    }}
-                    abort() {{
-                        if (this._aborted) return;
-                        this._aborted = true;
-                        this._terminator?.abort();
-                        this._headersReceivedListeners.off();
-                        this._onCleanup();
-                    }}
-                    _onCleanup() {{}}
-                    _triggerHeadersReceived(h) {{
-                        if (this._aborted) return;
-                        this._headersReceivedListeners.trigger(h);
-                    }}
+                function invokeCallback(_api, _kind, cb, res) {{
+                    if (typeof cb === "function") {{ try {{ cb(res); }} catch (_) {{}} }}
                 }}
+                function errorMessage(e) {{
+                    const m = e == null ? undefined : e.message;
+                    return (typeof m === "string" && m) ? m : String(e);
+                }}
+                class Header {{ constructor(_h, _s) {{}} }}
+                {task}
                 class DownloadResponse {{ constructor() {{}} }}
                 class DownloadErrorResponse {{ constructor(_e, _x) {{}} }}
                 class Exception {{ constructor(_c, m, _n) {{ this.message = m; }} }}
@@ -604,6 +597,7 @@ mod js_regression_tests {
                 }});
                 "#,
                 dl = dl,
+                task = task,
             );
             rt.execute_script("net01a-setup", setup)
                 .expect("NET-01A setup must execute");
@@ -651,26 +645,15 @@ mod js_regression_tests {
                 function createListenerGroup(_lbl) {{
                     return {{ on() {{}}, off() {{}}, trigger() {{}} }};
                 }}
-                class Header {{ constructor(_h, _s) {{}} }}
-                class NetworkTask {{
-                    constructor(t) {{
-                        this._aborted = false;
-                        this._terminator = t;
-                        this._headersReceivedListeners = createListenerGroup('h');
-                    }}
-                    abort() {{
-                        if (this._aborted) return;
-                        this._aborted = true;
-                        this._terminator?.abort();
-                        this._headersReceivedListeners.off();
-                        this._onCleanup();
-                    }}
-                    _onCleanup() {{}}
-                    _triggerHeadersReceived(h) {{
-                        if (this._aborted) return;
-                        this._headersReceivedListeners.trigger(h);
-                    }}
+                function invokeCallback(_api, _kind, cb, res) {{
+                    if (typeof cb === "function") {{ try {{ cb(res); }} catch (_) {{}} }}
                 }}
+                function errorMessage(e) {{
+                    const m = e == null ? undefined : e.message;
+                    return (typeof m === "string" && m) ? m : String(e);
+                }}
+                class Header {{ constructor(_h, _s) {{}} }}
+                {task}
                 class DownloadResponse {{ constructor() {{}} }}
                 class DownloadErrorResponse {{ constructor(_e, _x) {{}} }}
                 class Exception {{ constructor(_c, m, _n) {{ this.message = m; }} }}
@@ -702,6 +685,7 @@ mod js_regression_tests {
                 }});
                 "#,
                 dl = dl,
+                task = task,
             );
             rt.execute_script("net01b-setup", setup)
                 .expect("NET-01B setup");
@@ -753,6 +737,10 @@ mod js_regression_tests {
     #[test]
     fn net02_concurrent_downloads_use_distinct_temp_paths() {
         let dl = strip_module_declarations(include_str!("05_download.js"));
+        // The real task module (the settler is what delivers every callback), inlined beside the module
+        // under test; both destructure `TypeError` from the one stub `primordials`.
+        let task = strip_module_declarations(include_str!("03_task.js"))
+            .replace("const { TypeError } = primordials;", "");
 
         let mut rt = JsRuntime::new(RuntimeOptions::default());
         // op_fetch_send resolves immediately so both IIFEs advance to op_open_file
@@ -769,23 +757,15 @@ mod js_regression_tests {
             function createListenerGroup(_lbl) {{
                 return {{ on() {{}}, off() {{}}, trigger() {{}} }};
             }}
-            class Header {{ constructor(_h, _s) {{}} }}
-            class NetworkTask {{
-                constructor(t) {{
-                    this._aborted = false;
-                    this._terminator = t;
-                    this._headersReceivedListeners = createListenerGroup('h');
-                }}
-                abort() {{
-                    if (this._aborted) return;
-                    this._aborted = true;
-                    this._terminator?.abort();
-                    this._headersReceivedListeners.off();
-                    this._onCleanup();
-                }}
-                _onCleanup() {{}}
-                _triggerHeadersReceived(_h) {{}}
+            function invokeCallback(_api, _kind, cb, res) {{
+                if (typeof cb === "function") {{ try {{ cb(res); }} catch (_) {{}} }}
             }}
+            function errorMessage(e) {{
+                const m = e == null ? undefined : e.message;
+                return (typeof m === "string" && m) ? m : String(e);
+            }}
+            class Header {{ constructor(_h, _s) {{}} }}
+            {task}
             class DownloadResponse {{ constructor() {{}} }}
             class DownloadErrorResponse {{ constructor(_e, _x) {{}} }}
             class Exception {{ constructor(_c, m, _n) {{ this.message = m; }} }}
@@ -816,6 +796,7 @@ mod js_regression_tests {
             globalThis.openedPaths = openedPaths;
             "#,
             dl = dl,
+            task = task,
         );
         rt.execute_script("net02-setup", setup)
             .expect("NET-02 setup");
@@ -860,6 +841,10 @@ mod js_regression_tests {
     #[test]
     fn net04_buffered_pull_ceiling_and_prompt_rid_release() {
         let req = strip_module_declarations(include_str!("04_request.js"));
+        // The real task module (the settler is what delivers every callback), inlined beside the module
+        // under test; both destructure `TypeError` from the one stub `primordials`.
+        let task = strip_module_declarations(include_str!("03_task.js"))
+            .replace("const { TypeError } = primordials;", "");
 
         let mut rt = JsRuntime::new(RuntimeOptions::default());
         let setup = format!(
@@ -880,23 +865,15 @@ mod js_regression_tests {
             function createListenerGroup(_lbl) {{
                 return {{ on() {{}}, off() {{}}, trigger() {{}} }};
             }}
-            class Header {{ constructor(_h, _s) {{}} }}
-            class NetworkTask {{
-                constructor(t) {{
-                    this._aborted = false;
-                    this._terminator = t;
-                    this._headersReceivedListeners = createListenerGroup('h');
-                }}
-                abort() {{
-                    if (this._aborted) return;
-                    this._aborted = true;
-                    this._terminator?.abort();
-                    this._headersReceivedListeners.off();
-                    this._onCleanup();
-                }}
-                _onCleanup() {{}}
-                _triggerHeadersReceived(_h) {{}}
+            function invokeCallback(_api, _kind, cb, res) {{
+                if (typeof cb === "function") {{ try {{ cb(res); }} catch (_) {{}} }}
             }}
+            function errorMessage(e) {{
+                const m = e == null ? undefined : e.message;
+                return (typeof m === "string" && m) ? m : String(e);
+            }}
+            class Header {{ constructor(_h, _s) {{}} }}
+            {task}
             class Response {{ constructor(h) {{ this.header = h; }} }}
             class ErrorResponse {{ constructor(c, e) {{ this.code = c; this.err = e; }} }}
             class Exception {{ constructor(_c, m, _n) {{ this.message = m; }} }}
@@ -957,6 +934,7 @@ mod js_regression_tests {
             }});
             "#,
             req = req,
+            task = task,
         );
         rt.execute_script("net04-setup", setup)
             .expect("NET-04 setup");
