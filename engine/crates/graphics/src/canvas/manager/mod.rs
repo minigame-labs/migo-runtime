@@ -113,6 +113,22 @@ struct Canvas2DSnapshotEntry {
     height: u32,
     bytes: usize,
     cache_key: Option<Box<shared::text_texture_cache::TextCacheKey>>,
+    /// The content frame this was captured in ([`CanvasManager::snapshot_epoch`] at the time).
+    /// The drain only takes entries of frames that have ended.
+    epoch: u64,
+}
+
+/// The ids of the snapshots whose frame has ended: captured in an epoch before `current`.
+///
+/// Its own function so the rule has one statement and a test that needs no GL context.
+fn finished_snapshot_ids<'a>(
+    entries: impl Iterator<Item = (&'a u32, &'a Canvas2DSnapshotEntry)>,
+    current: u64,
+) -> Vec<u32> {
+    entries
+        .filter(|(_, entry)| entry.epoch < current)
+        .map(|(id, _)| *id)
+        .collect()
 }
 
 /// A whole source canvas copied into a texture for `drawImage(canvas)`, kept until the canvas changes.
@@ -497,6 +513,17 @@ pub(crate) struct CanvasManager {
     /// command, so the manager only tracks insertion order, not
     /// allocation.
     canvas2d_snapshot_order: std::collections::VecDeque<u32>,
+    /// Counts the content frames that have ended: bumped each time a presenting frame has run
+    /// ([`Self::end_snapshot_frame`]). A snapshot is stamped with the value it was captured under,
+    /// and the drain, which runs at every present the render thread makes, takes only the ones
+    /// stamped earlier.
+    ///
+    /// The drain used to take everything. A render-thread present can land between a producer's
+    /// `getImageData` capture and the read of its `.data` -- the producer's frame is still being
+    /// built, and on the Performance+ lane that gap is a socket round trip -- and the read then
+    /// found an empty pool: a read that came back all zeros, one in about four hundred on an
+    /// iPhone 12 (migo-conformance `image-decode`, `canvas2d-spec`).
+    snapshot_epoch: u64,
     /// Ids for the snapshots the renderer takes for itself (`drawImage(canvas)`).
     /// JavaScript allocates its own from a small process-local counter; these start
     /// at 2^31 so the two can never meet in the pool.
@@ -1164,6 +1191,7 @@ impl CanvasManager {
             canvas2d_snapshots: HashMap::with_capacity(8),
             canvas2d_snapshot_bytes: 0,
             canvas2d_snapshot_order: std::collections::VecDeque::with_capacity(8),
+            snapshot_epoch: 0,
             next_internal_snapshot_id: 0x8000_0000,
             canvas_source_cache: HashMap::new(),
             canvas_source_cache_bytes: 0,
@@ -5584,6 +5612,7 @@ impl CanvasManager {
                 height,
                 bytes: snapshot_bytes,
                 cache_key: None,
+                epoch: self.snapshot_epoch,
             },
         );
         self.canvas2d_snapshot_order.push_back(snapshot_id);
@@ -6272,8 +6301,15 @@ impl CanvasManager {
     /// room — any returned victim texture ids are deleted here as part
     /// of the same drain, and they can only ever be this session's own
     /// names because the cache is per session.
+    /// A presenting content frame has run: the snapshots captured so far belong to a frame that has
+    /// ended, and the next drain may take them. See [`Self::snapshot_epoch`].
+    pub(crate) fn end_snapshot_frame(&mut self) {
+        self.snapshot_epoch = self.snapshot_epoch.saturating_add(1);
+    }
+
     pub(crate) fn drain_canvas2d_snapshots(&mut self) {
-        if self.canvas2d_snapshots.is_empty() {
+        let finished = finished_snapshot_ids(self.canvas2d_snapshots.iter(), self.snapshot_epoch);
+        if finished.is_empty() {
             return;
         }
         // Need a current GL context for `glDeleteTextures`.
@@ -6289,9 +6325,21 @@ impl CanvasManager {
         // cache).  Doing the cache inserts after we've collected all
         // entries means we touch the text cache mutex only once even
         // when many entries are being moved.
-        let drained: Vec<(u32, Canvas2DSnapshotEntry)> = self.canvas2d_snapshots.drain().collect();
-        self.canvas2d_snapshot_order.clear();
-        self.canvas2d_snapshot_bytes = 0;
+        // Everything is finished at the end of an ordinary frame, and that case stays one pass with
+        // no per-entry bookkeeping; a frame still being built keeps its entries, and those that
+        // are finished go one by one.
+        let drained: Vec<(u32, Canvas2DSnapshotEntry)> =
+            if finished.len() == self.canvas2d_snapshots.len() {
+                let all = self.canvas2d_snapshots.drain().collect();
+                self.canvas2d_snapshot_order.clear();
+                self.canvas2d_snapshot_bytes = 0;
+                all
+            } else {
+                finished
+                    .into_iter()
+                    .filter_map(|id| self.remove_canvas2d_snapshot(id).map(|entry| (id, entry)))
+                    .collect()
+            };
 
         let mut to_delete: Vec<glow::NativeTexture> = Vec::new();
         let mut to_cache: Vec<Canvas2DSnapshotEntry> = Vec::new();
@@ -7201,6 +7249,70 @@ mod recovery_source_guards {
             }
         }
         panic!("function body must close");
+    }
+
+    fn snapshot_entry_at(epoch: u64) -> super::Canvas2DSnapshotEntry {
+        super::Canvas2DSnapshotEntry {
+            tex: glow::NativeTexture(std::num::NonZeroU32::new(1).unwrap()),
+            width: 1,
+            height: 1,
+            bytes: 4,
+            cache_key: None,
+            epoch,
+        }
+    }
+
+    /// The drain takes the snapshots of frames that have ended and leaves the frame being built.
+    ///
+    /// A present between a capture and the read of its `.data` used to empty the pool and the read
+    /// came back all zeros (one in ~400 on an iPhone 12). The scenario below is that one.
+    #[test]
+    fn the_drain_leaves_the_snapshots_of_the_frame_being_built() {
+        use super::finished_snapshot_ids;
+        use std::collections::HashMap;
+        let mut pool: HashMap<u32, super::Canvas2DSnapshotEntry> = HashMap::new();
+        // Frame 3 is the one being built; 1 and 2 ended.
+        pool.insert(10, snapshot_entry_at(1));
+        pool.insert(11, snapshot_entry_at(2));
+        pool.insert(12, snapshot_entry_at(3));
+        pool.insert(13, snapshot_entry_at(3));
+        let mut finished = finished_snapshot_ids(pool.iter(), 3);
+        finished.sort_unstable();
+        assert_eq!(finished, vec![10, 11], "only the frames that ended are drained");
+
+        // The frame ends: its snapshots become drainable at the next present, and not before.
+        let mut after = finished_snapshot_ids(pool.iter(), 4);
+        after.sort_unstable();
+        assert_eq!(after, vec![10, 11, 12, 13]);
+        assert!(finished_snapshot_ids(pool.iter(), 0).is_empty(), "nothing has ended yet");
+    }
+
+    /// The frame boundary is the presenting op, and the drain asks the epoch rather than taking all.
+    #[test]
+    fn a_presenting_frame_ends_the_snapshot_epoch_and_the_drain_respects_it() {
+        const RENDER_THREAD: &str = include_str!("../../render_thread.rs");
+        let op = function_body(RENDER_THREAD, "fn execute_frame_op(");
+        let present = op
+            .find("FrameOp::Present =>")
+            .expect("execute_frame_op handles the Present op");
+        let rest = &op[present..];
+        let arm = &rest[..rest.find("FrameOp::Materialize").expect("the arm after Present")];
+        // A line of code, not a comment that mentions it.
+        assert!(
+            arm.lines()
+                .any(|line| !line.trim_start().starts_with("//") && line.contains("cm.end_snapshot_frame()")),
+            "the Present op ends the snapshot epoch: a frame's snapshots are drained after it, not before"
+        );
+        let drain = function_body(MGR, "pub(crate) fn drain_canvas2d_snapshots(");
+        assert!(
+            drain.contains("finished_snapshot_ids(") && drain.contains("self.snapshot_epoch"),
+            "the drain takes only the snapshots of frames that have ended"
+        );
+        let capture = function_body(MGR, "pub(crate) fn snapshot_canvas2d_region_with_id(");
+        assert!(
+            capture.contains("epoch: self.snapshot_epoch"),
+            "a snapshot is stamped with the frame it was captured in"
+        );
     }
 
     /// Taking an image from the upload thread flushes the render context.

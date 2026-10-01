@@ -942,7 +942,11 @@ fn execute_frame_op(
         // Presentation is coalesced by the physical-frame loop in the caller.
         // Skia maintenance also lives there so multiple packets cannot trigger
         // multiple all-context sweeps in one display frame.
-        FrameOp::Present => false,
+        FrameOp::Present => {
+            // The content frame has ended: what it captured may be drained at the next present.
+            cm.end_snapshot_frame();
+            false
+        }
         FrameOp::Materialize { canvas_id } => {
             // Canvas2D → WebGL boundary.  We MUST:
             //   1. Flush Skia so subsequent GL ops see the pixels.
