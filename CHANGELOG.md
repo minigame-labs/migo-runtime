@@ -55,6 +55,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Uniform-block introspection: `getActiveUniformBlockName`, `getActiveUniformBlockParameter`,
+  `getUniformIndices` and `getActiveUniforms` exist (PlayCanvas 2.x reads every block's name while it links
+  a shader, and stopped there with a TypeError). The driver answers, through four more numbers of the generic state
+  query (`gl_state::ACTIVE_UNIFORM_BLOCK_NAME` .. `ACTIVE_UNIFORMS_PARAMETER`; no new wire kind, op or host
+  dispatch arm), in an envelope that carries either the value or the specification's error, so an unlinked program,
+  a block or uniform index past the count and a pname WebGL leaves out (`UNIFORM_NAME_LENGTH`,
+  `UNIFORM_BLOCK_NAME_LENGTH`) raise INVALID_OPERATION / INVALID_VALUE / INVALID_ENUM on the context instead of
+  reaching the driver. A list longer than the wire's name limit goes in pieces. ANGLE answers a `getActiveUniforms`
+  list longer than the program's active uniform count with zeros; the driver is asked about each uniform once and
+  every requested index is answered from that. 43 new conformance assertions pin std140 sizes, offsets and strides,
+  the long lists, and each error; with PlayCanvas 2.22.6, Babylon.js 9.29.0, Pixi, Phaser and three.js now all run
+  their scenes.
 - `getFramebufferAttachmentParameter` exists (Phaser 3.90 asks it while it boots: a TypeError that
   stopped the game before its first frame). The facade now records what is attached to each framebuffer, so
   the object (the wrapper the content holds, not a GL name), its type and its level are answered from

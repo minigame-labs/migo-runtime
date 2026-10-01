@@ -98,6 +98,22 @@ mod js_agreement {
                 "GL_STATE_FRAMEBUFFER_ATTACHMENT_PARAMETER",
                 frame_wire::sync::gl_state::FRAMEBUFFER_ATTACHMENT_PARAMETER,
             ),
+            (
+                "GL_STATE_ACTIVE_UNIFORM_BLOCK_NAME",
+                frame_wire::sync::gl_state::ACTIVE_UNIFORM_BLOCK_NAME,
+            ),
+            (
+                "GL_STATE_ACTIVE_UNIFORM_BLOCK_PARAMETER",
+                frame_wire::sync::gl_state::ACTIVE_UNIFORM_BLOCK_PARAMETER,
+            ),
+            (
+                "GL_STATE_UNIFORM_INDICES",
+                frame_wire::sync::gl_state::UNIFORM_INDICES,
+            ),
+            (
+                "GL_STATE_ACTIVE_UNIFORMS_PARAMETER",
+                frame_wire::sync::gl_state::ACTIVE_UNIFORMS_PARAMETER,
+            ),
         ] {
             let prefix = format!("const {name} = ");
             let line = FACADE
