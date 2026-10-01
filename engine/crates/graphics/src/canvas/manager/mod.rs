@@ -4184,11 +4184,12 @@ impl CanvasManager {
             }
             SurfaceKind::Pbuffer if self.surfaceless => None,
             SurfaceKind::Pbuffer => {
+                let (pbuffer_w, pbuffer_h) = egl_ops::pbuffer_extent(new_w, new_h);
                 let pbuf_attribs = [
                     egl::WIDTH as i32,
-                    new_w as i32,
+                    pbuffer_w,
                     egl::HEIGHT as i32,
-                    new_h as i32,
+                    pbuffer_h,
                     egl::NONE as i32,
                 ];
                 Some(
