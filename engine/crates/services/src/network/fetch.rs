@@ -366,18 +366,19 @@ pub async fn fetch_send(
     let content_length = response.content_length();
     let remote_addr = response.remote_addr();
 
-    // SSRF: the address reqwest actually connected to. The gate before the
-    // send catches IP-literal URLs; this covers the domain-name path, where
-    // the name resolved after the check.
-    if let Some(addr) = remote_addr {
-        if super::address_filter::is_blocked_address(&addr) {
-            return Err(ServiceError::generic(format!(
-                "fetch: connection to {} is not allowed (private/loopback address)",
-                addr.ip()
-            )));
-        }
-    }
-
+    // There is no check of `remote_addr` here, and there was one that must not
+    // come back: it refused every response the machine's proxy delivered. A
+    // proxied response's remote address is the PROXY's -- 127.0.0.1 for a local
+    // proxy, a private address for a corporate one -- so with any proxy
+    // configured (environment or system) every request failed with "connection to
+    // 127.0.0.1 is not allowed" after the server had already answered it.
+    //
+    // What it guarded is guarded earlier and completely: IP-literal URLs by the
+    // gate before the send (and on every redirect hop), and domain names by the
+    // client's `SsrfCheckingResolver`, which vets every address reqwest may
+    // connect to, so the connection is made to a vetted address or not at all.
+    // A response can only have come from an unvetted address through a proxy,
+    // which the machine's owner chose, not content.
     // Admit the declared body before the resource exists, so a refused body
     // allocates nothing and exposes no reader.
     let byte_ticket = reserve_response_bytes(pools, content_length)?;

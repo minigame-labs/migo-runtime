@@ -70,6 +70,13 @@ pub type PolicyHttpClient = Client;
 /// Build a client that carries `net_policy`: its resolver refuses blocked
 /// addresses, its redirect policy re-runs the gate under `redirect_kind`, and
 /// `operation` names the caller in both refusals.
+///
+/// Proxies are the device's: the system and environment proxy settings apply,
+/// as they do to the system WebView this runtime stands in for. A proxy is the
+/// machine owner's egress, not something content can name, so it is not held to
+/// the destination rules -- and through one the engine never resolves or connects
+/// to the destination at all, which is why `fetch_send` has no check on the
+/// address a response came from (see the note there).
 pub fn create_policy_http_client(
     user_agent: &str,
     enable_http2: bool,
@@ -77,6 +84,31 @@ pub fn create_policy_http_client(
     redirect_kind: GateKind,
     operation: &'static str,
 ) -> EngineResult<Client> {
+    policy_client_builder(
+        user_agent,
+        enable_http2,
+        net_policy,
+        redirect_kind,
+        operation,
+    )
+    .build()
+    .map_err(|error| {
+        EngineError::from_detail(
+            ErrorCode::IoError,
+            format!("failed to build the HTTP client: {error}"),
+        )
+    })
+}
+
+/// Everything `create_policy_http_client` configures, before it is built: a test
+/// that needs a proxy or no proxy adds that and builds.
+pub(crate) fn policy_client_builder(
+    user_agent: &str,
+    enable_http2: bool,
+    net_policy: &NetworkPolicy,
+    redirect_kind: GateKind,
+    operation: &'static str,
+) -> reqwest::ClientBuilder {
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, user_agent.parse().unwrap());
 
@@ -133,12 +165,7 @@ pub fn create_policy_http_client(
             .http1_only();
     }
 
-    builder.build().map_err(|error| {
-        EngineError::from_detail(
-            ErrorCode::IoError,
-            format!("failed to build the HTTP client: {error}"),
-        )
-    })
+    builder
 }
 
 fn redirect_reject_message(operation: &str, reject: &GateReject) -> String {
