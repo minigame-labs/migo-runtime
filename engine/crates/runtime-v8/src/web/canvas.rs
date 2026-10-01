@@ -13,7 +13,16 @@ use shared::{
     render_command_sender::SendError,
 };
 
-const SYNC_TIMEOUT: Duration = Duration::from_millis(1000);
+/// How long a canvas call that needs the render thread's answer waits for it.
+///
+/// This bounds a hung render thread, not a busy one: a render thread that died is seen at once (the response
+/// channel disconnects), and one that is stuck is the watchdog's to end. A busy one is normal at start. The
+/// first `createCanvas()` of a game is queued behind the render thread's own start-up -- creating the EGL
+/// context, probing the GPU, compiling for a cold driver -- and a second was not enough: on a slow or
+/// loaded machine (a CI runner running the player cold took 3.3 s to build the runtime and 5.8 s to
+/// finish probing the GPU) the call timed out, the unhandled rejection ended the game before its first
+/// frame, and the presentation-paths gate failed one run in several with "blit-probe never painted".
+const SYNC_TIMEOUT: Duration = Duration::from_millis(5000);
 
 /// Process-global counter for JS-allocated offscreen canvas ids.
 ///
@@ -235,6 +244,34 @@ mod tests {
         protocol::render_cmd::{Canvas2DCmd, CanvasCmd, GLCmd, RenderCmdResp, RenderCommand},
         render_command_sender::CommandSender,
     };
+
+    /// A render thread that is busy starting up answers late, and the call waits for it. Two answers after
+    /// a second and a quarter -- longer than the old limit -- both arrive.
+    #[test]
+    fn a_canvas_call_waits_for_a_render_thread_that_is_slow_to_start() {
+        let (tx, rx) = CommandSender::new();
+        let ctx = CanvasOpState::for_host(tx, 1);
+        let responder = std::thread::spawn(move || {
+            let RenderCommand::Canvas(CanvasCmd::GetInfo { resp, .. }) = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the call was sent")
+            else {
+                panic!("a GetInfo");
+            };
+            std::thread::sleep(std::time::Duration::from_millis(1250));
+            resp.send(Ok((390, 844)));
+        });
+        let info = send_canvas_sync(
+            &ctx,
+            |resp: RenderCmdResp<(u32, u32)>| {
+                RenderCommand::Canvas(CanvasCmd::GetInfo { id: 1, resp })
+            },
+            "get_canvas_info timed out",
+        )
+        .expect("a late answer is still an answer");
+        assert_eq!(info, (390, 844));
+        responder.join().unwrap();
+    }
 
     #[test]
     fn send_canvas_sync_times_out_instead_of_dropping_when_queue_is_full() {
