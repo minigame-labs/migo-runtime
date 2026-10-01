@@ -408,6 +408,15 @@ jobs:
       - name: WebGL constant reach contract
         run: bash scripts/test-webgl-constant-reach-contract.sh
 
+      # That derivation is the engine's view of the boundary and cannot see what the engine
+      # never thought of. Running three.js found 160 WebGL 2 constants nobody declared
+      # (`getParameter(gl.MAX_SAMPLES)` passed `undefined` to an op and three.js could not
+      # create a renderer) and 66 methods nobody wrote. The authority here is Khronos's IDL,
+      # vendored: every constant declared with its value, every method defined or listed
+      # with the reason it is not.
+      - name: WebGL spec surface contract
+        run: bash scripts/test-webgl-spec-surface-contract.sh
+
       # The fuzz targets are not workspace members (cargo-fuzz brings its own profile and
       # sanitizer flags), so nothing else compiles them: a rename in frame-wire or frame-decode
       # breaks a target silently and the property it checked stops being checked. This type-checks

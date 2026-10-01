@@ -1775,8 +1775,8 @@ impl RendererGL {
                 level,
                 xoffset,
                 yoffset,
-                format: _,
-                type_: _,
+                format,
+                type_,
                 snapshot_id,
             } => {
                 cm.tex_sub_image_2d_from_canvas2d_snapshot(
@@ -1785,6 +1785,7 @@ impl RendererGL {
                     level,
                     xoffset,
                     yoffset,
+                    (format, type_),
                     snapshot_id,
                 )?;
                 crate::render_diagnostics::bump_canvas2d_snapshot_upload();

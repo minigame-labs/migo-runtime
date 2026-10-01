@@ -155,7 +155,7 @@ for path, hits in per_source.items():
 declared: dict[str, int] = {
     match.group(1): int(match.group(2))
     for match in re.finditer(
-        r"^\s{4}([A-Z][A-Z0-9_]*)\s*:\s*(\d+)\s*,?\s*$",
+        r"^\s{4}([A-Z][A-Za-z0-9_]*)\s*:\s*(-?\d+)\s*,?\s*$",
         strip_line_comments(shim.read_text(encoding="utf-8")),
         re.M,
     )
@@ -168,7 +168,7 @@ if not declared:
 literal_lines = sum(
     1
     for line in strip_line_comments(shim.read_text(encoding="utf-8")).splitlines()
-    if re.match(r"^\s{4}[A-Z][A-Z0-9_]*\s*:\s*\d+\s*,?\s*$", line)
+    if re.match(r"^\s{4}[A-Z][A-Za-z0-9_]*\s*:\s*-?\d+\s*,?\s*$", line)
 )
 if literal_lines != len(declared):
     fail(

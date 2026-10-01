@@ -55,6 +55,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- three.js can create a WebGLRenderer, and a canvas texture is the right way up.
+  Found by running three.js (r1xx) on the runtime for the first time, which no test
+  had done: `new THREE.WebGLRenderer()` threw `TypeError: expected i32` out of
+  `getParameter(gl.MAX_SAMPLES)`. The WebGL 2 facade had never declared 160 of the
+  specification's constants (`MAX_SAMPLES`, `TEXTURE_3D`, `COLOR_ATTACHMENT1..15`,
+  `DRAW_BUFFER0..15`, `UNIFORM_BLOCK_*`, `READ_BUFFER`, `RED`, `RG`, ...), so `gl.X`
+  was `undefined` and went to a native op as an argument. All 559 constants of
+  Khronos's WebGL 1 and 2 IDL are now declared with the specification's values.
+  With that, a three.js scene (basic and PBR materials, a sphere, a data texture, an
+  animation loop) renders correctly, with one more fix: `texSubImage2D(canvas)` ignored
+  `UNPACK_FLIP_Y_WEBGL` and `UNPACK_PREMULTIPLY_ALPHA_WEBGL` (only the whole-image
+  `texImage2D` honoured them), and three.js, Pixi and Cocos all allocate with
+  `texImage2D`/`texStorage2D` and stream every canvas texture in with `texSubImage2D`,
+  so every `CanvasTexture` (every text sprite, every canvas atlas) came out upside down.
+  New gate, `scripts/test-webgl-spec-surface-contract.sh`: Khronos's IDL is vendored
+  (`contracts/runtime/webgl-idl/`), every constant must be declared with its value,
+  and every method must be defined or listed with its reason in
+  `contracts/runtime/webgl-spec-surface.json`. The list is the honest size of the gap:
+  66 methods are not implemented yet (`uniform2i`..`4i` and the `ui`/non-square-matrix
+  uniforms, `vertexAttrib*f`/`I4*`/`IPointer`, `getUniform`, `getVertexAttrib`,
+  `clearBuffer*`, `copyTexImage2D`, `getBufferSubData`, ...). Proven red for a wrong
+  value, a missing constant, a method neither defined nor listed, a stale entry and a
+  reasonless group.
 - Three permission checks work again, and a failed call names its API once. Found by
   probing every callback-style `migo.*` API once on a desktop host
   (migo-conformance's new `api-surface-spec`, found at run time from the namespace so

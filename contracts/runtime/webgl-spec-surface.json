@@ -1,0 +1,105 @@
+{
+  "$comment": [
+    "The WebGL methods of Khronos's IDL (contracts/runtime/webgl-idl/) that the facade does not define yet, grouped by why.",
+    "scripts/test-webgl-spec-surface-contract.sh fails when an IDL method is neither defined nor listed here, and when a listed one is defined.",
+    "IDL retrieved 2026-10-01 from https://registry.khronos.org/webgl/specs/latest/ (webgl.idl, webgl2.idl)."
+  ],
+  "unimplemented_methods": [
+    {
+      "reason": "Reads back state the render thread owns. Needs a synchronous answer path (as getProgramParameter has) or a JS-side shadow of the state; neither exists for these yet.",
+      "methods": [
+        "getUniform",
+        "getVertexAttrib",
+        "getVertexAttribOffset",
+        "getFramebufferAttachmentParameter",
+        "getAttachedShaders",
+        "getIndexedParameter",
+        "getInternalformatParameter",
+        "getSamplerParameter",
+        "getSyncParameter",
+        "getActiveUniforms",
+        "getActiveUniformBlockParameter",
+        "getActiveUniformBlockName",
+        "getUniformIndices",
+        "getFragDataLocation",
+        "isSampler",
+        "isSync",
+        "isVertexArray",
+        "getBufferSubData"
+      ]
+    },
+    {
+      "reason": "Constant (non-array) vertex attributes and integer attributes. Needs a render-stream record for the current-value state of an attribute index, and vertexAttribIPointer a record beside vertexAttribPointer; three.js uses vertexAttribIPointer for integer attributes (skinning indices) and vertexAttrib4f for a disabled attribute's default.",
+      "methods": [
+        "vertexAttrib1f",
+        "vertexAttrib2f",
+        "vertexAttrib3f",
+        "vertexAttrib4f",
+        "vertexAttrib1fv",
+        "vertexAttrib2fv",
+        "vertexAttrib3fv",
+        "vertexAttrib4fv",
+        "vertexAttribI4i",
+        "vertexAttribI4iv",
+        "vertexAttribI4ui",
+        "vertexAttribI4uiv",
+        "vertexAttribIPointer"
+      ]
+    },
+    {
+      "reason": "Integer, unsigned and non-square-matrix uniforms. uniform1i and uniform{1..4}f/iv/fv exist; these are the siblings no record was added for (ivec2/3/4 and uvec uniforms, mat2x3 and friends).",
+      "methods": [
+        "uniform2i",
+        "uniform3i",
+        "uniform4i",
+        "uniform1ui",
+        "uniform2ui",
+        "uniform3ui",
+        "uniform4ui",
+        "uniform1uiv",
+        "uniform2uiv",
+        "uniform3uiv",
+        "uniform4uiv",
+        "uniformMatrix2x3fv",
+        "uniformMatrix2x4fv",
+        "uniformMatrix3x2fv",
+        "uniformMatrix3x4fv",
+        "uniformMatrix4x2fv",
+        "uniformMatrix4x3fv"
+      ]
+    },
+    {
+      "reason": "Framebuffer and texture copies, per-buffer clears and 3D/array texture entry points. Each needs a render-stream record and a handler on the render thread.",
+      "methods": [
+        "copyTexImage2D",
+        "copyTexSubImage2D",
+        "copyTexSubImage3D",
+        "copyBufferSubData",
+        "framebufferTextureLayer",
+        "compressedTexImage3D",
+        "compressedTexSubImage3D",
+        "invalidateSubFramebuffer",
+        "drawRangeElements",
+        "clearBufferfv",
+        "clearBufferiv",
+        "clearBufferuiv",
+        "clearBufferfi",
+        "waitSync"
+      ]
+    },
+    {
+      "reason": "Rarely used state calls: detaching a shader, validating a program, the sample-coverage mask. Cheap to add once the record shape for a no-reply call is copied.",
+      "methods": [
+        "detachShader",
+        "validateProgram",
+        "sampleCoverage"
+      ]
+    },
+    {
+      "reason": "`drawingBufferStorage` is a recent addition to the WebGL 2 interface that browsers do not ship; recorded so the list is the whole difference from the IDL, not a judgement that it will be written.",
+      "methods": [
+        "drawingBufferStorage"
+      ]
+    }
+  ]
+}
