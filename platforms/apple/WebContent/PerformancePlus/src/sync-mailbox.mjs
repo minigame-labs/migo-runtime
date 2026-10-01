@@ -158,6 +158,7 @@ export const GL_QUERY_STATE = 16;
 // Which state query a `GL_QUERY_STATE` asks. The host's table is `frame_wire::sync::gl_state`, and the interop gate
 // holds the two together.
 export const GL_STATE_INTERNALFORMAT_SAMPLES = 1;
+export const GL_STATE_FRAMEBUFFER_ATTACHMENT_PARAMETER = 2;
 
 /** Words before a query's name: five fields and the name's byte length. */
 export const GL_QUERY_HEADER_BYTES = 24;

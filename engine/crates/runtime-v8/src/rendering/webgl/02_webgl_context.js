@@ -315,6 +315,7 @@ const _rawGetGlState         = _makeOrderedRaw(op_get_gl_state);
 // The numbers of `frame_wire::sync::gl_state`: which state query `op_get_gl_state` asks. Mirrored by hand, and
 // checked against the Rust table by `render_stream_js_agreement`.
 const GL_STATE_INTERNALFORMAT_SAMPLES = 1;
+const GL_STATE_FRAMEBUFFER_ATTACHMENT_PARAMETER = 2;
 
 // --- Producer-side capability shadow ---------------------------------------
 //
@@ -2675,10 +2676,114 @@ class WebGLRenderingContext {
         _rawBindFramebuffer(this._canvasId, target, fbId);
     }
     framebufferTexture2D(target, attachment, textarget, texture, level) {
+        this._noteAttachment(target, attachment, texture ? { type: 0x1702, object: texture, level: level | 0, face: textarget } : null);
         _rawFramebufferTexture2D(this._canvasId, target, attachment, textarget, texture ? texture.id : -1, level);
     }
     framebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer) {
+        this._noteAttachment(target, attachment, renderbuffer ? { type: 0x8d41, object: renderbuffer, level: 0, face: 0 } : null);
         _rawFramebufferRenderbuffer(this._canvasId, target, attachment, renderbuffertarget, renderbuffer ? renderbuffer.id : -1);
+    }
+
+    // What is attached where, recorded on the framebuffer it was attached to. `getFramebufferAttachmentParameter` answers the
+    // object, its type and its level from here -- the driver's answer would be a GL name, not the wrapper the content holds --
+    // and asks the driver only for what the facade cannot know (an attached texture's component sizes).
+    _noteAttachment(target, attachment, record) {
+        const fb = target === 0x8ca8 ? this._readFramebufferBinding : this._framebufferBinding;
+        if (!fb || !(fb instanceof WebglObject)) return;   // the default framebuffer takes no attachments
+        if (!fb._attachments) fb._attachments = new Map();
+        // DEPTH_STENCIL_ATTACHMENT is both of the others (ES 3.0 4.4.2): record it as both.
+        const points = attachment === 0x821a ? [0x8d00, 0x8d20] : [attachment >>> 0];
+        for (const point of points) {
+            if (record) fb._attachments.set(point, record); else fb._attachments.delete(point);
+        }
+    }
+
+    getFramebufferAttachmentParameter(target, attachment, pname) {
+        // FRAMEBUFFER, DRAW_FRAMEBUFFER and READ_FRAMEBUFFER; FRAMEBUFFER is the draw one.
+        if (target !== 0x8d40 && target !== 0x8ca9 && target !== 0x8ca8) { this._pushJsError(0x0500); return null; }
+        const fb = target === 0x8ca8 ? this._readFramebufferBinding : this._framebufferBinding;
+        pname = pname >>> 0;
+        attachment = attachment >>> 0;
+        if (!fb) return this._defaultFramebufferAttachmentParameter(attachment, pname);
+        const isColor = attachment >= 0x8ce0 && attachment < 0x8ce0 + 16;
+        if (!isColor && attachment !== 0x8d00 && attachment !== 0x8d20 && attachment !== 0x821a) {
+            this._pushJsError(0x0500);
+            return null;
+        }
+        // DEPTH_STENCIL_ATTACHMENT answers only when one object is both: the same one in each.
+        let record = null;
+        if (attachment === 0x821a) {
+            const depth = fb._attachments && fb._attachments.get(0x8d00);
+            const stencil = fb._attachments && fb._attachments.get(0x8d20);
+            if (depth && stencil && depth.object === stencil.object) record = depth;
+            else if (depth || stencil) { this._pushJsError(0x0506); return null; }
+        } else {
+            record = fb._attachments ? fb._attachments.get(attachment) || null : null;
+        }
+        if (record && record.object && record.object._deleted) record = null;   // deleting detaches
+        const validPname = pname === 0x8cd0 || pname === 0x8cd1 || pname === 0x8cd2 || pname === 0x8cd3 ||
+            pname === 0x8cd4 || (pname >= 0x8212 && pname <= 0x8217) || pname === 0x8211 || pname === 0x8210;
+        if (!validPname) { this._pushJsError(0x0500); return null; }
+        if (!record) {
+            if (pname === 0x8cd0) return 0;                        // OBJECT_TYPE: NONE
+            if (pname === 0x8cd1) return null;                     // OBJECT_NAME: no object
+            this._pushJsError(0x0502);                             // anything else needs an object
+            return null;
+        }
+        switch (pname) {
+            case 0x8cd0: return record.type;                       // FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE
+            case 0x8cd1: return record.object;                     // FRAMEBUFFER_ATTACHMENT_OBJECT_NAME: the wrapper
+            case 0x8cd2: return record.type === 0x1702 ? record.level : this._invalidAttachmentQuery();      // TEXTURE_LEVEL
+            case 0x8cd3: {                                         // TEXTURE_CUBE_MAP_FACE
+                if (record.type !== 0x1702) return this._invalidAttachmentQuery();
+                return record.face >= 0x8515 && record.face <= 0x851a ? record.face : 0;
+            }
+            case 0x8cd4: return record.type === 0x1702 ? (record.layer | 0) : this._invalidAttachmentQuery();  // TEXTURE_LAYER
+            default: break;
+        }
+        // The component sizes, type and colour encoding. A renderbuffer's format is recorded here; a texture's is the
+        // driver's to say.
+        if (record.type === 0x8d41) {
+            const format = record.object._format === undefined ? 0x8056 : record.object._format;
+            switch (pname) {
+                case 0x8212: return _renderbufferBits(format, 0);  // RED_SIZE
+                case 0x8213: return _renderbufferBits(format, 1);  // GREEN_SIZE
+                case 0x8214: return _renderbufferBits(format, 2);  // BLUE_SIZE
+                case 0x8215: return _renderbufferBits(format, 3);  // ALPHA_SIZE
+                case 0x8216: return _renderbufferBits(format, 4);  // DEPTH_SIZE
+                case 0x8217: return _renderbufferBits(format, 5);  // STENCIL_SIZE
+                case 0x8211: return (format === 0x8cac || format === 0x8cad) ? 0x1406 : 0x8c17;   // COMPONENT_TYPE: FLOAT or UNSIGNED_NORMALIZED
+                case 0x8210: return format === 0x8c43 || format === 0x8c41 ? 0x8c40 : 0x2601;     // COLOR_ENCODING: SRGB or LINEAR
+                default: return null;
+            }
+        }
+        const json = _rawGetGlState(this._canvasId, GL_STATE_FRAMEBUFFER_ATTACHMENT_PARAMETER, target, attachment, String(pname));
+        const value = Number(json);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    _invalidAttachmentQuery() {
+        this._pushJsError(0x0500);
+        return null;
+    }
+
+    // The default framebuffer is the drawing buffer: BACK (colour), DEPTH and STENCIL, present as the context attributes
+    // asked (WebGL 1.0 6.? / ES 3.0 6.1.13).
+    _defaultFramebufferAttachmentParameter(attachment, pname) {
+        if (attachment !== 0x0405 && attachment !== 0x1801 && attachment !== 0x1802) { this._pushJsError(0x0500); return null; }
+        const attributes = this.getContextAttributes() || {};
+        const exists = attachment === 0x0405 ? true : (attachment === 0x1801 ? attributes.depth !== false : attributes.stencil === true);
+        switch (pname) {
+            case 0x8cd0: return exists ? 0x8218 : 0;               // OBJECT_TYPE: FRAMEBUFFER_DEFAULT or NONE
+            case 0x8212: case 0x8213: case 0x8214:                 // RED/GREEN/BLUE_SIZE
+                return attachment === 0x0405 ? 8 : 0;
+            case 0x8215: return attachment === 0x0405 && attributes.alpha !== false ? 8 : 0;   // ALPHA_SIZE
+            case 0x8216: return attachment === 0x1801 && exists ? 24 : 0;                       // DEPTH_SIZE
+            case 0x8217: return attachment === 0x1802 && exists ? 8 : 0;                        // STENCIL_SIZE
+            case 0x8211: return exists ? 0x8c17 : 0;                                              // COMPONENT_TYPE: UNSIGNED_NORMALIZED
+            case 0x8210: return exists ? 0x2601 : 0;                                              // COLOR_ENCODING: LINEAR
+            default: this._pushJsError(0x0500); return null;       // an object name, level or face of the default framebuffer: INVALID_ENUM
+        }
     }
     checkFramebufferStatus(target) {
         return _rawCheckFramebufferStatus(this._canvasId, target);

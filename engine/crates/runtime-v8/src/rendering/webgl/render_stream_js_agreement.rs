@@ -89,10 +89,16 @@ mod js_agreement {
     #[test]
     fn the_facade_asks_state_queries_by_the_numbers_the_wire_defines() {
         const FACADE: &str = include_str!("02_webgl_context.js");
-        for (name, wire) in [(
-            "GL_STATE_INTERNALFORMAT_SAMPLES",
-            frame_wire::sync::gl_state::INTERNALFORMAT_SAMPLES,
-        )] {
+        for (name, wire) in [
+            (
+                "GL_STATE_INTERNALFORMAT_SAMPLES",
+                frame_wire::sync::gl_state::INTERNALFORMAT_SAMPLES,
+            ),
+            (
+                "GL_STATE_FRAMEBUFFER_ATTACHMENT_PARAMETER",
+                frame_wire::sync::gl_state::FRAMEBUFFER_ATTACHMENT_PARAMETER,
+            ),
+        ] {
             let prefix = format!("const {name} = ");
             let line = FACADE
                 .lines()

@@ -678,9 +678,15 @@ pub mod gl_state {
     /// specification asks), empty for a format that cannot be multisampled.
     pub const INTERNALFORMAT_SAMPLES: u32 = 1;
 
+    /// `getFramebufferAttachmentParameter(target, attachment, pname)` for a framebuffer the content made: `pname` is
+    /// the target, `extra` the attachment, and `name` the queried pname as decimal text. The answer is the driver's
+    /// integer as JSON. Asked only for what the facade does not hold itself (an attached texture's component sizes,
+    /// type and colour encoding): which object is attached, and at what level, it already knows.
+    pub const FRAMEBUFFER_ATTACHMENT_PARAMETER: u32 = 2;
+
     /// Whether a number is one this build knows.
     pub fn is_known(state: u32) -> bool {
-        (INTERNALFORMAT_SAMPLES..=INTERNALFORMAT_SAMPLES).contains(&state)
+        (INTERNALFORMAT_SAMPLES..=FRAMEBUFFER_ATTACHMENT_PARAMETER).contains(&state)
     }
 }
 
