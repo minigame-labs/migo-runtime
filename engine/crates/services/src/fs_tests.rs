@@ -25,7 +25,7 @@ use shared::{
 };
 
 use super::{
-    ResolvedPath, archive_read_request, code_relative, copy_pack_file_async,
+    FsEnv, ResolvedPath, archive_read_request, code_relative, copy_pack_file_async,
     materialize_pack_to_temp_async, materialize_pack_to_temp_checked, read_request,
     resolve_path_vfs, run_domain_async, run_pack_async,
 };
@@ -323,6 +323,55 @@ fn q12_domain_adapter_preserves_worker_panic_payload() {
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
 
     assert_eq!(message, Some("q12-domain-worker-panic"));
+}
+
+/// A failed copy or rename tells the content the two paths it gave, not the host paths those resolved to.
+///
+/// The io layer's own detail for these two names both host paths -- the user's home directory and
+/// the game's sandbox location -- and the services layer's error text carries it to the content, which
+/// may log it or report it. The sandbox here is a real one in the temp directory, so the host path
+/// is a string the test can look for.
+#[test]
+fn a_failed_copy_or_rename_names_the_paths_the_content_gave_and_none_of_the_host_s() {
+    let root = temp_dir("two_path_errors");
+    let user = root.join("user_data");
+    for dir in ["code", "user_data", "cache", "tmp"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    let vfs = shared::vfs::VirtualFS::new(
+        root.join("code"),
+        user,
+        root.join("cache"),
+        root.join("tmp"),
+    );
+    let env = FsEnv {
+        scheduler: Arc::new(IoScheduler::new(33)),
+        vfs: Some(Arc::new(vfs)),
+        mount_table: None,
+    };
+    let host = root.to_string_lossy().into_owned();
+
+    let rename = super::rename_sync(&env, "/user/missing.txt", "/user/elsewhere.txt").unwrap_err();
+    let copy = super::copy_sync(&env, "/user/missing.txt", "/user/elsewhere.txt").unwrap_err();
+    for (op, error) in [("rename", &rename), ("copy", &copy)] {
+        assert!(
+            !error.message.contains(&host),
+            "{op}: the error names the host path {host}: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("/user/missing.txt")
+                && error.message.contains("/user/elsewhere.txt"),
+            "{op}: the error does not name the paths it was given: {}",
+            error.message
+        );
+        assert!(
+            error.message.starts_with("[NotFound] "),
+            "{op}: the error keeps its form: {}",
+            error.message
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 fn temp_dir(label: &str) -> PathBuf {

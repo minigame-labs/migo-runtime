@@ -927,12 +927,23 @@ pub fn close(env: &FsEnv, rid: FileId) -> FsResult<()> {
     env.scheduler.domain().close_file(rid).map_err(domain_err)
 }
 
+/// What a failed copy or rename tells the content: the two paths it gave. The io layer's own
+/// detail names the host paths the virtual ones resolved to, which are the user's home directory and
+/// the game's sandbox location, and nothing the content has a use for.
+fn two_path_detail(op: &str, from: &str, to: &str) -> String {
+    format!("{op} {from} -> {to}")
+}
+
 pub async fn copy(env: FsEnv, src_path: String, dest_path: String) -> FsResult<()> {
     let src_resolved = env.resolve(&src_path, FileOp::Read)?;
     let dest_full = env.resolve_fs(&dest_path, FileOp::Create)?;
     match src_resolved {
         ResolvedPath::Filesystem(src_full) => {
-            run_fs_async(env.scheduler, move || fs_ops::copy(&src_full, &dest_full)).await
+            let detail = two_path_detail("copy", &src_path, &dest_path);
+            run_fs_async(env.scheduler, move || {
+                fs_ops::copy(&src_full, &dest_full).map_err(|e| e.with_detail(detail))
+            })
+            .await
         }
         ResolvedPath::Pack { virtual_path } => {
             let mount_table = Arc::clone(env.mounts()?);
@@ -947,7 +958,10 @@ pub fn copy_sync(env: &FsEnv, src_path: &str, dest_path: &str) -> FsResult<()> {
     let dest_full = env.resolve_fs(dest_path, FileOp::Create)?;
     match src_resolved {
         ResolvedPath::Filesystem(src_full) => {
-            run_fs_sync(&env.scheduler, move || fs_ops::copy(&src_full, &dest_full))
+            let detail = two_path_detail("copy", src_path, dest_path);
+            run_fs_sync(&env.scheduler, move || {
+                fs_ops::copy(&src_full, &dest_full).map_err(|e| e.with_detail(detail))
+            })
         }
         ResolvedPath::Pack { virtual_path } => {
             let rel = code_relative(&virtual_path);
@@ -1027,13 +1041,20 @@ pub fn unlink_sync(env: &FsEnv, file_path: &str) -> FsResult<()> {
 pub async fn rename(env: FsEnv, old_path: String, new_path: String) -> FsResult<()> {
     let old_full = env.resolve_fs(&old_path, FileOp::Delete)?;
     let new_full = env.resolve_fs(&new_path, FileOp::Create)?;
-    run_fs_async(env.scheduler, move || fs_ops::rename(&old_full, &new_full)).await
+    let detail = two_path_detail("rename", &old_path, &new_path);
+    run_fs_async(env.scheduler, move || {
+        fs_ops::rename(&old_full, &new_full).map_err(|e| e.with_detail(detail))
+    })
+    .await
 }
 
 pub fn rename_sync(env: &FsEnv, old_path: &str, new_path: &str) -> FsResult<()> {
     let old_full = env.resolve_fs(old_path, FileOp::Delete)?;
     let new_full = env.resolve_fs(new_path, FileOp::Create)?;
-    run_fs_sync(&env.scheduler, move || fs_ops::rename(&old_full, &new_full))
+    let detail = two_path_detail("rename", old_path, new_path);
+    run_fs_sync(&env.scheduler, move || {
+        fs_ops::rename(&old_full, &new_full).map_err(|e| e.with_detail(detail))
+    })
 }
 
 pub async fn rmdir(env: FsEnv, dir_path: String, recursive: bool) -> FsResult<()> {
