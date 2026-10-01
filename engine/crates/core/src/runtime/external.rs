@@ -3108,6 +3108,9 @@ fn route_audio_event(sink: &ServiceEventSink<'_>, command: HostCommand) -> Optio
             event_type,
             current_time,
         } => sink.inner_audio_event(id, event_type.as_str(), current_time),
+        HostCommand::AudioSourceEnded { node_id } => {
+            sink.host_hook("_internalTriggerAudioSourceEnded", &format!("[{node_id}]"))
+        }
         HostCommand::OnAudioInterruptionBegin => {
             sink.host_hook("_internalTriggerAudioInterruptionBegin", HOOK_ARGS_NONE)
         }

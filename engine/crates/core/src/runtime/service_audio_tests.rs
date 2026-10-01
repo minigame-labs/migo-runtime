@@ -91,6 +91,31 @@ fn every_numbered_audio_op_is_handled_in_its_contract_lane() {
 }
 
 #[test]
+fn a_source_end_watch_is_a_command_with_a_node_and_a_flag() {
+    let (audio, rx) = binding();
+    command(
+        &audio,
+        id::op_audio_watch_source_ended,
+        vec![OwnedValue::U32(7), OwnedValue::Bool(true)],
+    )
+    .unwrap();
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        AudioCmd::WatchSourceEnded {
+            node_id: 7,
+            enabled: true
+        }
+    ));
+    let error = command(
+        &audio,
+        id::op_audio_watch_source_ended,
+        vec![OwnedValue::U32(7)],
+    )
+    .unwrap_err();
+    assert_eq!(error.class, "TypeError");
+}
+
+#[test]
 fn a_command_is_applied_in_the_shape_the_embedded_op_sends() {
     let (audio, rx) = binding();
     command(

@@ -95,6 +95,11 @@ pub struct AudioContext {
     // sound effect ends on, so returning an owned vector put one allocation per
     // sound effect on the audio thread.
     collected: Vec<AudioNodeId>,
+    // Source nodes content asked to hear the end of (`onended`), and the ones among them that finished since the audio
+    // thread last drained. A node is in `ended` only if it finished -- ran to its end or was stopped -- never because its
+    // JavaScript object was collected, and only once: collecting it removes its watch.
+    ended_watch: std::collections::HashSet<AudioNodeId>,
+    ended: Vec<AudioNodeId>,
     // Scratch buffer for mixing multiple inputs
     mix_buffer: Vec<f32>,
 
@@ -174,6 +179,8 @@ impl AudioContext {
             node_buffers: HashMap::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             buffer_pool: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             collected: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            ended_watch: std::collections::HashSet::new(),
+            ended: Vec::new(),
             mix_buffer: Vec::new(),
             device_resampler: None,
             resample_input: Vec::with_capacity(4096 * channels.max(1) as usize),
@@ -358,6 +365,11 @@ impl AudioContext {
                 }
             }
             let Some(id) = victim else { break };
+            // A watched source that finished is reported; a watched node collected for any other reason just loses its watch.
+            let finished = self.nodes.get(&id).is_some_and(|n| n.is_finished());
+            if self.ended_watch.remove(&id) && finished {
+                self.ended.push(id);
+            }
             self.nodes.remove(&id);
             self.recycle_render_buffer(id);
             self.released.remove(&id);
@@ -694,6 +706,25 @@ impl AudioContext {
             }
         }
         false
+    }
+
+    /// Start or stop watching a source node's end (`onended`). Returns whether the node exists.
+    pub fn watch_source_ended(&mut self, node_id: AudioNodeId, enabled: bool) -> bool {
+        if !self.nodes.contains_key(&node_id) {
+            return false;
+        }
+        if enabled {
+            self.ended_watch.insert(node_id);
+        } else {
+            self.ended_watch.remove(&node_id);
+        }
+        true
+    }
+
+    /// The watched source nodes that finished since the last call, each once. The audio thread drains this after every
+    /// quantum and tells the host.
+    pub fn drain_ended(&mut self) -> std::vec::Drain<'_, AudioNodeId> {
+        self.ended.drain(..)
     }
 
     /// If the node exists and has already finished (e.g. `stop(when <= 0)`
@@ -1774,6 +1805,90 @@ mod tests {
             Some(ctx.dense_index[&DESTINATION_NODE_ID]),
             "the destination must still be rendered last"
         );
+    }
+
+    /// `onended`: a watched source that finishes is reported exactly once -- whether it runs out of buffer or is stopped --
+    /// and never because its JavaScript object was collected.
+    #[test]
+    fn a_watched_source_that_runs_to_its_end_is_reported_once() {
+        let mut ctx = AudioContext::new(1, 48_000, 2);
+        let buffer = ctx.create_empty_buffer(1, 200, 48_000).expect("buffer");
+        ctx.create_buffer_source(30);
+        ctx.connect(30, DESTINATION_NODE_ID);
+        assert!(ctx.set_buffer(30, Some(buffer)));
+        assert!(ctx.watch_source_ended(30, true));
+        assert!(ctx.start_source(30, 0.0, 0.0, None));
+
+        let mut out = vec![0.0f32; 2 * 128];
+        ctx.process(&mut out);
+        assert!(
+            ctx.drain_ended().next().is_none(),
+            "128 of 200 frames played: not over"
+        );
+        ctx.process(&mut out);
+        assert_eq!(
+            ctx.drain_ended().collect::<Vec<_>>(),
+            [30],
+            "over: reported"
+        );
+        ctx.process(&mut out);
+        assert!(ctx.drain_ended().next().is_none(), "and only once");
+        assert!(!ctx.nodes.contains_key(&30));
+    }
+
+    #[test]
+    fn an_unwatched_source_is_not_reported_and_a_stopped_watched_one_is() {
+        let mut ctx = AudioContext::new(1, 48_000, 2);
+        ctx.create_buffer_source(31);
+        ctx.connect(31, DESTINATION_NODE_ID);
+        assert!(ctx.stop_source(31, 0.0));
+        assert_eq!(ctx.remove_finished_node(31), [31]);
+        assert!(ctx.drain_ended().next().is_none(), "nobody asked");
+
+        ctx.create_buffer_source(32);
+        ctx.connect(32, DESTINATION_NODE_ID);
+        assert!(ctx.watch_source_ended(32, true));
+        assert!(ctx.stop_source(32, 0.0));
+        assert_eq!(ctx.remove_finished_node(32), [32]);
+        assert_eq!(
+            ctx.drain_ended().collect::<Vec<_>>(),
+            [32],
+            "stop() ends a watched source"
+        );
+
+        assert!(
+            !ctx.watch_source_ended(99, true),
+            "a node that is not there cannot be watched"
+        );
+    }
+
+    #[test]
+    fn collecting_a_watched_source_that_has_not_finished_reports_nothing() {
+        let mut ctx = AudioContext::new(1, 48_000, 2);
+        ctx.create_buffer_source(33);
+        ctx.connect(33, DESTINATION_NODE_ID);
+        assert!(ctx.watch_source_ended(33, true));
+        // The JavaScript object is collected while the source is still going to play: it is not an end.
+        let _ = ctx.release_node(33);
+        let mut out = vec![0.0f32; 2 * 128];
+        ctx.process(&mut out);
+        assert!(ctx.drain_ended().next().is_none());
+        assert!(
+            !ctx.ended_watch.contains(&33),
+            "the watch goes with the node"
+        );
+    }
+
+    #[test]
+    fn unwatching_stops_the_report() {
+        let mut ctx = AudioContext::new(1, 48_000, 2);
+        ctx.create_buffer_source(34);
+        ctx.connect(34, DESTINATION_NODE_ID);
+        assert!(ctx.watch_source_ended(34, true));
+        assert!(ctx.watch_source_ended(34, false));
+        assert!(ctx.stop_source(34, 0.0));
+        let _ = ctx.remove_finished_node(34);
+        assert!(ctx.drain_ended().next().is_none());
     }
 
     #[test]

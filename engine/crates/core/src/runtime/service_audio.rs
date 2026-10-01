@@ -347,6 +347,7 @@ pub(crate) fn is_command(op: u32) -> bool {
             | id::op_audio_create_constant_source
             | id::op_audio_create_iir_filter
             | id::op_audio_set_loop
+            | id::op_audio_watch_source_ended
             | id::op_audio_set_gain_value
             | id::op_audio_set_node_param
             | id::op_audio_param_set_value_at_time
@@ -610,6 +611,10 @@ pub(crate) fn command(
                 f64_of(op, 2, loop_start)?,
                 f64_of(op, 3, loop_end)?,
             )
+        }
+        id::op_audio_watch_source_ended => {
+            let [node_id, enabled] = exactly(op, args)?;
+            service::watch_source_ended(tx, u32_of(op, 0, node_id)?, boolean(op, 1, enabled)?)
         }
         id::op_audio_set_gain_value => {
             let [node_id, value] = exactly(op, args)?;

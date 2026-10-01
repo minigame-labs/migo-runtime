@@ -804,6 +804,15 @@ pub fn stop(
     })
 }
 
+/// Ask to hear of `node_id` finishing (see `AudioCmd::WatchSourceEnded`).
+pub fn watch_source_ended(
+    tx: &AudioSender,
+    node_id: AudioNodeId,
+    enabled: bool,
+) -> Result<(), ServiceError> {
+    send(tx, AudioCmd::WatchSourceEnded { node_id, enabled })
+}
+
 pub fn set_loop(
     tx: &AudioSender,
     node_id: AudioNodeId,

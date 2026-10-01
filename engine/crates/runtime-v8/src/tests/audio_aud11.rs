@@ -122,6 +122,7 @@ mod audio_aud11_tests {
                 try {
                     const context = new AudioContext();
                     const callback = () => {};
+                    // Setting `onended` is supported: it keeps the handler and asks the audio thread to watch the node.
                     for (const source of [
                         context.createBufferSource(),
                         context.createOscillator(),
@@ -154,9 +155,13 @@ mod audio_aud11_tests {
                     const result = await analyser.getByteFrequencyData(data);
                     if (result !== undefined) throw new Error('analyser read returned a value');
 
-                    if (warnings.length !== 5) {
+                    // `onended` is not on the list: the native graph reports a source's end now (audio_source_ended.rs).
+                    if (warnings.some((message) => message.includes('onended'))) {
+                        throw new Error('onended still warns: ' + JSON.stringify(warnings));
+                    }
+                    if (warnings.length !== 4) {
                         throw new Error('expected one diagnostic per unsupported operation, got '
-                            + warnings.length);
+                            + warnings.length + ': ' + JSON.stringify(warnings));
                     }
                     globalThis.__done = true;
                 } catch (error) {

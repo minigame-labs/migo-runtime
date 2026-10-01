@@ -4,6 +4,7 @@ import * as audio from 'ext:host_v8_audio/01_audio_context.js';
 import * as innerAudio from 'ext:host_v8_audio/02_inner_audio_context.js';
 import * as audioInterruption from 'ext:host_v8_audio/03_audio_interruption.js';
 import * as mediaAudioPlayer from 'ext:host_v8_audio/04_media_audio_player.js';
+import * as sourceEnded from 'ext:host_v8_audio/00_source_ended.js';
 import * as recorderManager from 'ext:host_v8_audio/05_recorder_manager.js';
 
 import { primordials, core } from "ext:core/mod.js";
@@ -40,6 +41,7 @@ ObjectDefineProperties(globalThis, {
     setInnerAudioOption: core.propNonEnumerable(innerAudio.setInnerAudioOption),
     getAvailableAudioSources: core.propNonEnumerable(innerAudio.getAvailableAudioSources),
     _internalEnqueueInnerAudioEvent: core.propNonEnumerable(innerAudio._internalEnqueueInnerAudioEvent),
+    _internalTriggerAudioSourceEnded: core.propNonEnumerable(sourceEnded._internalTriggerAudioSourceEnded),
 
     // MediaAudioPlayer
     MediaAudioPlayer: core.propNonEnumerable(mediaAudioPlayer.MediaAudioPlayer),

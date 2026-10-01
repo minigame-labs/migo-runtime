@@ -5,13 +5,13 @@ import {
   op_audio_set_loop,
 } from "ext:core/ops";
 import { domException } from "ext:host_v8_base/06_dom_exception.js";
+import { watchSourceEnded } from "ext:host_v8_audio/00_source_ended.js";
 import { AudioParam } from "ext:host_v8_audio/00_audio_param.js";
 import { AudioBuffer } from "ext:host_v8_audio/00_audio_buffer.js";
 import {
   AudioNode,
   validateFiniteDouble,
   validateScheduledTime,
-  warnUnsupportedCapability,
 } from "ext:host_v8_audio/00_audio_node.js";
 
 class AudioBufferSourceNode extends AudioNode {
@@ -115,12 +115,7 @@ class AudioBufferSourceNode extends AudioNode {
 
   set onended(value) {
     this.#onended = typeof value === "function" ? value : null;
-    if (typeof value === "function") {
-      warnUnsupportedCapability(
-        "onended",
-        "AudioBufferSourceNode onended callbacks are not dispatched by the native graph",
-      );
-    }
+    watchSourceEnded(this, this.#onended);
   }
 
   start(when = 0, offset = 0, duration) {

@@ -17,6 +17,7 @@ mod ad_reward_integrity;
 mod api_failures;
 mod audio_aud11;
 mod audio_context_close;
+mod audio_source_ended;
 mod binary_helper;
 mod callback_isolation;
 mod canvas_follows_surface;
