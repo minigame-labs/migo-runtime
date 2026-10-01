@@ -610,6 +610,12 @@ node "$TEST_DIR/canvas2d-pixels.test.mjs"
 RAN_TESTS+=("$TEST_DIR/canvas2d-pixels.test.mjs")
 node "$TEST_DIR/put-image-data.test.mjs"
 RAN_TESTS+=("$TEST_DIR/put-image-data.test.mjs")
+node "$TEST_DIR/onscreen-canvas-size.test.mjs"
+RAN_TESTS+=("$TEST_DIR/onscreen-canvas-size.test.mjs")
+node "$TEST_DIR/onscreen-canvas-size-rounding.test.mjs"
+RAN_TESTS+=("$TEST_DIR/onscreen-canvas-size-rounding.test.mjs")
+node "$TEST_DIR/onscreen-canvas-size-unprofiled.test.mjs"
+RAN_TESTS+=("$TEST_DIR/onscreen-canvas-size-unprofiled.test.mjs")
 
 # --- readPixels, whose answer has to be placed rather than returned ---------
 #
