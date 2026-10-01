@@ -1,3 +1,5 @@
+import { domException } from "ext:host_v8_base/06_dom_exception.js";
+
 
 const MAX_IMAGE_DATA_PIXELS = 8192 * 8192;
 const MAX_IMAGE_DATA_BYTES = 64 * 1024 * 1024;
@@ -9,7 +11,7 @@ function checkedDimensions(rawWidth, rawHeight) {
         throw new TypeError("createImageData: width and height must be finite numbers");
     }
     if (width === 0 || height === 0) {
-        throw new DOMException(
+        throw domException(
             "createImageData: width and height must be non-zero",
             "IndexSizeError",
         );

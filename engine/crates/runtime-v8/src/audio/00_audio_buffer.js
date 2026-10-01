@@ -6,6 +6,7 @@ import {
   op_audio_release_buffer,
   op_audio_reserve_buffer,
 } from "ext:core/ops";
+import { domException } from "ext:host_v8_base/06_dom_exception.js";
 
 const MAX_AUDIO_PCM_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIO_CHANNELS = 32;
@@ -20,7 +21,7 @@ const AUDIO_BUFFER_FINALIZER = new FinalizationRegistry((id) => {
 });
 
 function notSupported(message) {
-  return new DOMException(message, "NotSupportedError");
+  return domException(message, "NotSupportedError");
 }
 
 function checkedPcmBytes(numberOfChannels, length) {
@@ -48,14 +49,16 @@ class AudioBuffer {
     numberOfChannels = Number(numberOfChannels);
     length = Number(length);
     sampleRate = Number(sampleRate);
+    // Outside the nominal range is a NotSupportedError, not a RangeError: the specification names
+    // it for the constructor and for createBuffer alike.
     if (!Number.isInteger(numberOfChannels) || numberOfChannels < 1) {
-      throw new RangeError("numberOfChannels must be a positive integer");
+      throw notSupported("numberOfChannels must be a positive integer");
     }
     if (numberOfChannels > MAX_AUDIO_CHANNELS) {
       throw notSupported("numberOfChannels exceeds the implementation limit");
     }
     if (!Number.isInteger(length) || length < 1) {
-      throw new RangeError("length must be a positive integer");
+      throw notSupported("length must be a positive integer");
     }
     if (!Number.isFinite(sampleRate) || sampleRate < MIN_SAMPLE_RATE || sampleRate > MAX_SAMPLE_RATE) {
       throw notSupported("sampleRate is outside the supported range");
@@ -149,7 +152,7 @@ class AudioBuffer {
 
   getChannelData(channel) {
     if (!Number.isInteger(channel) || channel < 0 || channel >= this.#numberOfChannels) {
-      throw new RangeError(`channel index ${channel} out of range`);
+      throw domException(`channel index ${channel} out of range`, "IndexSizeError");
     }
     this.#ensureWritableBacking();
     return this.#channelData[channel];
@@ -157,7 +160,7 @@ class AudioBuffer {
 
   copyFromChannel(destination, channelNumber, startInChannel = 0) {
     if (!Number.isInteger(channelNumber) || channelNumber < 0 || channelNumber >= this.#numberOfChannels) {
-      throw new RangeError(`channel index ${channelNumber} out of range`);
+      throw domException(`channel index ${channelNumber} out of range`, "IndexSizeError");
     }
     this.#ensureWritableBacking();
     const data = this.#channelData[channelNumber];
@@ -168,7 +171,7 @@ class AudioBuffer {
 
   copyToChannel(source, channelNumber, startInChannel = 0) {
     if (!Number.isInteger(channelNumber) || channelNumber < 0 || channelNumber >= this.#numberOfChannels) {
-      throw new RangeError(`channel index ${channelNumber} out of range`);
+      throw domException(`channel index ${channelNumber} out of range`, "IndexSizeError");
     }
     this.#ensureWritableBacking();
     const data = this.#channelData[channelNumber];

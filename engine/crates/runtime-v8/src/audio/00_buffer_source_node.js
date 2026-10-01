@@ -4,6 +4,7 @@ import {
   op_audio_stop,
   op_audio_set_loop,
 } from "ext:core/ops";
+import { domException } from "ext:host_v8_base/06_dom_exception.js";
 import { AudioParam } from "ext:host_v8_audio/00_audio_param.js";
 import { AudioBuffer } from "ext:host_v8_audio/00_audio_buffer.js";
 import {
@@ -44,7 +45,7 @@ class AudioBufferSourceNode extends AudioNode {
       throw new TypeError("buffer must be an AudioBuffer or null");
     }
     if (value !== null && this.#bufferWasSet) {
-      throw new DOMException(
+      throw domException(
         "AudioBufferSourceNode.buffer may only be assigned once",
         "InvalidStateError",
       );
@@ -124,7 +125,7 @@ class AudioBufferSourceNode extends AudioNode {
 
   start(when = 0, offset = 0, duration) {
     if (this.#started) {
-      throw new DOMException("AudioBufferSourceNode can only be started once", "InvalidStateError");
+      throw domException("AudioBufferSourceNode can only be started once", "InvalidStateError");
     }
     when = validateScheduledTime(when, "when");
     offset = validateScheduledTime(offset, "offset");
@@ -152,7 +153,7 @@ class AudioBufferSourceNode extends AudioNode {
 
   stop(when = 0) {
     if (!this.#started) {
-      throw new DOMException("AudioBufferSourceNode has not been started", "InvalidStateError");
+      throw domException("AudioBufferSourceNode has not been started", "InvalidStateError");
     }
     when = validateScheduledTime(when, "when");
     op_audio_stop(this._nodeId, when);

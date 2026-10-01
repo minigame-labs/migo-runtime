@@ -3,6 +3,7 @@ import {
   op_audio_start_oscillator,
   op_audio_stop_oscillator,
 } from "ext:core/ops";
+import { domException } from "ext:host_v8_base/06_dom_exception.js";
 import { AudioParam } from "ext:host_v8_audio/00_audio_param.js";
 import {
   AudioNode,
@@ -65,7 +66,7 @@ class OscillatorNode extends AudioNode {
 
   start(when = 0) {
     if (this.#started) {
-      throw new DOMException("OscillatorNode can only be started once", "InvalidStateError");
+      throw domException("OscillatorNode can only be started once", "InvalidStateError");
     }
     when = validateScheduledTime(when, "when");
     op_audio_start_oscillator(this._nodeId, when);
@@ -74,7 +75,7 @@ class OscillatorNode extends AudioNode {
 
   stop(when = 0) {
     if (!this.#started) {
-      throw new DOMException("OscillatorNode has not been started", "InvalidStateError");
+      throw domException("OscillatorNode has not been started", "InvalidStateError");
     }
     when = validateScheduledTime(when, "when");
     op_audio_stop_oscillator(this._nodeId, when);

@@ -496,6 +496,43 @@ fn an_answer_is_the_audio_thread_s_and_a_dropped_one_says_so() {
     );
 }
 
+/// `decodeAudioData` rejects bytes it cannot read with an `EncodingError`, which is what content tells
+/// "this is not audio" apart by; every other failure keeps the audio error's class, and a decode that
+/// succeeded is not touched.
+#[test]
+fn a_decode_that_could_not_read_its_bytes_is_an_encoding_error_and_nothing_else_is() {
+    let rt = runtime();
+    for (code, class) in [
+        (ErrorCode::InvalidArgument, CLASS_ENCODING_ERROR),
+        (ErrorCode::InputSaturated, CLASS_AUDIO_ERROR),
+        (ErrorCode::NotFound, CLASS_AUDIO_ERROR),
+        (ErrorCode::Internal, CLASS_AUDIO_ERROR),
+    ] {
+        let (tx, rx) = hosted();
+        let pending = close_context(&tx, 4).unwrap();
+        let AudioCmd::CloseContext { resp, .. } = rx.try_recv().unwrap() else {
+            panic!("a close");
+        };
+        resp.send(Err(EngineError::from_detail(code, "detail")))
+            .unwrap();
+        let error = rt.block_on(pending.answer_decode()).unwrap_err();
+        assert_eq!(error.class, class, "{code:?}");
+        assert!(
+            error.message.starts_with(&format!("[{code:?}] ")),
+            "the message keeps its form: {}",
+            error.message
+        );
+    }
+
+    let (tx, rx) = hosted();
+    let pending = close_context(&tx, 4).unwrap();
+    let AudioCmd::CloseContext { resp, .. } = rx.try_recv().unwrap() else {
+        panic!("a close");
+    };
+    resp.send(Ok(())).unwrap();
+    assert!(rt.block_on(pending.answer_decode()).is_ok());
+}
+
 #[test]
 fn analyser_reads_answer_in_their_own_element_type() {
     let (tx, rx) = hosted();
