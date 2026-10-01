@@ -55,6 +55,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- The first `createCanvas()` of a game no longer fails with
+  `[Timeout] get_canvas_info timed out` when the render thread is slow to start.
+  The call waited one second for the render thread's answer, and the render
+  thread answers only after its own start-up (creating the EGL context, probing
+  the GPU, a cold driver): on a slow or loaded machine the call timed out and the
+  unhandled rejection ended the game before its first frame. The wait is five
+  seconds -- it bounds a hung render thread, not a busy one (a dead one is seen at
+  once, and a stuck one is the watchdog's) -- and the presentation-paths CI gate,
+  which failed one run in several with "blit-probe never painted" after a cold
+  runner spent 3.3 s building the runtime and 5.8 s probing the GPU, stops
+  failing for that reason.
 - `getSystemInfoSync().platform` and `getDeviceInfo().platform` named the
   platform the engine was built for instead of `"android"` on everything. A host
   that attached no device services (the in-process Apple host, and the desktop
