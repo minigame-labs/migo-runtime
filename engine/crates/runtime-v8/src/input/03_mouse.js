@@ -10,6 +10,7 @@
 // Coordinates are CSS pixels, the same logical space touch uses.
 
 import { createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { pageTime } from "ext:host_v8_touch/00_input_clock.js";
 
 const _mouseDown = createListenerGroup('onMouseDown');
 const _mouseMove = createListenerGroup('onMouseMove');
@@ -27,7 +28,7 @@ function offMouseDown(listener) {
 }
 
 function _internalTriggerMouseDown(x, y, button, timeStamp) {
-    _mouseDown.trigger({ x: x, y: y, button: button, timeStamp: timeStamp });
+    _mouseDown.trigger({ x: x, y: y, button: button, timeStamp: pageTime(timeStamp) });
 }
 
 // ---- Mouse Move ----
@@ -65,7 +66,7 @@ function _internalTriggerMouseMove(x, y, button, timeStamp) {
         button: button,
         movementX: movementX,
         movementY: movementY,
-        timeStamp: timeStamp,
+        timeStamp: pageTime(timeStamp),
     });
 }
 
@@ -80,7 +81,7 @@ function offMouseUp(listener) {
 }
 
 function _internalTriggerMouseUp(x, y, button, timeStamp) {
-    _mouseUp.trigger({ x: x, y: y, button: button, timeStamp: timeStamp });
+    _mouseUp.trigger({ x: x, y: y, button: button, timeStamp: pageTime(timeStamp) });
 }
 
 // ---- Wheel ----
@@ -110,7 +111,7 @@ function _internalTriggerWheel(deltaX, deltaY, deltaZ, timeStamp, deltaMode) {
         deltaY: deltaY,
         deltaZ: deltaZ,
         deltaMode: deltaMode,
-        timeStamp: timeStamp,
+        timeStamp: pageTime(timeStamp),
     });
 }
 

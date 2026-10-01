@@ -1,5 +1,6 @@
 import { op_show_keyboard, op_hide_keyboard, op_update_keyboard } from "ext:core/ops";
 import { wrapAsync, createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { pageTime } from "ext:host_v8_touch/00_input_clock.js";
 
 // ==================== Soft keyboard event listeners ====================
 
@@ -106,7 +107,7 @@ function _keyEventDetail(key, code, timeStamp, modifiers, repeat) {
     return {
         key,
         code,
-        timeStamp,
+        timeStamp: pageTime(timeStamp),
         ctrlKey: (mask & _MOD_CONTROL) !== 0,
         shiftKey: (mask & _MOD_SHIFT) !== 0,
         altKey: (mask & _MOD_ALT) !== 0,

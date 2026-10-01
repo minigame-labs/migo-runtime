@@ -1,3 +1,4 @@
+import { pageTime } from "ext:host_v8_touch/00_input_clock.js";
 const TOUCH_STRIDE = 20; // bytes
 const FLAG_CHANGED = 1; // pointer is in changedTouches
 const FLAG_REMOVED = 2; // pointer left the surface (end/cancel) -> excluded from touches
@@ -55,7 +56,7 @@ let _scheduled = false;
  * @param {number} timeStamp
  */
 export function _internalEnqueueRawTouchEvent(typeCode, buffer, count, timeStamp) {
-  _queue.push({ typeCode, buffer, count, timeStamp });
+  _queue.push({ typeCode, buffer, count, timeStamp: pageTime(timeStamp) });
 
   if (!_scheduled) {
     _scheduled = true;
@@ -105,8 +106,11 @@ function _drain() {
       for (let li = 0; li < fns.length; li++) {
         try {
           fns[li](event);
-        } catch (_) {
-          // swallow listener errors to avoid breaking input pipeline
+        } catch (e) {
+          // The game's own bug: the listeners after it still hear the event, and the
+          // error is reported, not swallowed -- a handler that throws on every touch
+          // is otherwise a game that "ignores input" with no clue why.
+          console.error('Error in touch listener:', e);
         }
       }
       continue;
@@ -142,8 +146,11 @@ function _drain() {
     for (let li = 0; li < fns.length; li++) {
       try {
         fns[li](event);
-      } catch (_) {
-        // swallow listener errors to avoid breaking input pipeline
+      } catch (e) {
+        // The game's own bug: the listeners after it still hear the event, and the
+        // error is reported, not swallowed -- a handler that throws on every touch
+        // is otherwise a game that "ignores input" with no clue why.
+        console.error('Error in touch listener:', e);
       }
     }
   }

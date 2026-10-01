@@ -1,3 +1,4 @@
+import { pageTime } from "ext:host_v8_touch/00_input_clock.js";
 // The W3C Gamepad API.
 //
 // Mainstream mini-game platforms have no gamepad API, so the reference here is the Web platform Migo
@@ -193,7 +194,7 @@ function _internalTriggerGamepadState(index, timestampMs, packed) {
         }
         at += 3;
     }
-    state.timestamp = timestampMs;
+    state.timestamp = pageTime(timestampMs);
 }
 
 export {

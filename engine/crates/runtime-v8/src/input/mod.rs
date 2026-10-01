@@ -39,6 +39,7 @@ extension!(host_v8_touch,
 ops = [op_show_keyboard, op_hide_keyboard, op_update_keyboard],
 esm = [
     dir "src/input",
+    "00_input_clock.js",
     "01_touch.js",
     "02_keyboard.js",
     "03_mouse.js",

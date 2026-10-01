@@ -24,6 +24,7 @@ mod fetch_through_the_service;
 mod global_surface;
 mod host_bridge_dispatch;
 mod host_events_contract;
+mod input_clock;
 mod install_receipt;
 mod op_args_agreement;
 #[cfg(feature = "api-connectivity")]
@@ -38,6 +39,7 @@ mod request_through_the_engine;
 mod runtime_restart_boundary;
 mod snapshot_fingerprint;
 mod storage_isolation;
+mod support;
 mod timers;
 mod two_session_identity;
 // `getUpdateManager` ships with host_v8_update, which api-system gates.

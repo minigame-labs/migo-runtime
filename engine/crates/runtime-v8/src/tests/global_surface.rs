@@ -302,7 +302,8 @@ mod global_surface_tests {
              bridge._internalTriggerGamepadState(0, 42, [2, 1, 0.5, -0.25, 1, 1, 0.75]); \
              let __ok = Object.isFrozen(pad) && Object.isFrozen(axes) \
                  && Object.isFrozen(buttons) && Object.isFrozen(buttons[0]) \
-                 && pad.connected === true && pad.timestamp === 42 \
+                 && pad.connected === true \
+                 && typeof pad.timestamp === 'number' && pad.timestamp >= 0 && pad.timestamp <= performance.now() \
                  && axes[0] === 0.5 && axes[1] === -0.25 \
                  && buttons[0].pressed === true \
                  && buttons[0].touched === true && buttons[0].value === 0.75; \
@@ -457,6 +458,50 @@ mod global_surface_tests {
                  && e.touches.length === 1 && e.touches[0].identifier === 0 \
                  && e.changedTouches.length === 1 && e.changedTouches[0].identifier === 1; \
              let __msg = e ? ('touches=' + e.touches.length + ' changed=' + e.changedTouches.length) : 'no event delivered'",
+        );
+    }
+
+    /// A touch listener that throws is the game's own bug: the listeners after it still hear the event, and
+    /// the error is reported rather than swallowed (a handler that throws on every touch is otherwise a game
+    /// that "ignores input", with nothing to say why).
+    #[tokio::test]
+    async fn a_throwing_touch_listener_is_reported_and_does_not_stop_the_others() {
+        use deno_core::PollEventLoopOptions;
+        use std::time::Duration;
+
+        let mut rt = boot_runtime();
+
+        rt.execute_script(
+            "<test:setup>",
+            FastString::from_static(
+                "globalThis.__heard = 0; globalThis.__errors = []; \
+                 console.error = (...args) => { globalThis.__errors.push(args.map(String).join(' ')); }; \
+                 globalThis.onTouchStart(() => { throw new Error('a game bug in its touch handler'); }); \
+                 globalThis.onTouchStart(() => { globalThis.__heard += 1; });",
+            ),
+        )
+        .expect("register listeners");
+        rt.execute_script(
+            "<test:enqueue>",
+            FastString::from_static(
+                "const b = globalThis[Symbol.for('Migo.hostBridge')]; \
+                 const buf = new ArrayBuffer(20); const dv = new DataView(buf); \
+                 dv.setFloat32(4, 1, true); dv.setFloat32(8, 2, true); dv.setUint32(16, 1, true); \
+                 b._internalEnqueueRawTouchEvent(0, buf, 1, 1);",
+            ),
+        )
+        .expect("enqueue raw touch");
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            rt.run_event_loop(PollEventLoopOptions::default()),
+        )
+        .await;
+
+        assert_js(
+            &mut rt,
+            "let __ok = globalThis.__heard === 1 \
+                 && globalThis.__errors.some((m) => m.includes('a game bug in its touch handler')); \
+             let __msg = 'heard=' + globalThis.__heard + ' errors=' + JSON.stringify(globalThis.__errors)",
         );
     }
 

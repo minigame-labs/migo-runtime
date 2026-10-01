@@ -49,6 +49,20 @@ MIGO_BEGIN_DECLS
  */
 
 /*
+ * Timestamps.
+ *
+ * Every event carries `timestamp_ms` from the host's own clock, and this ABI
+ * names none: use the one the platform stamps its input with (the system uptime
+ * on Apple and Android is what their events already carry). What the engine
+ * relies on is only that one host's stamps are on ONE clock whose differences
+ * are real time. The engine anchors that clock to the page's at the first event
+ * of each burst of input and gives content `event.timeStamp` on the clock
+ * `performance.now()` reads, with the host's spacing inside the burst, so
+ * nothing about the host's epoch reaches the game. Do not convert a stamp
+ * yourself, and do not mix two clocks in one stream.
+ */
+
+/*
  * Touch, including on desktop. Mini-game content listens for
  * touchstart/touchmove/touchend and nothing else, so a host with a mouse maps it
  * to a single touch point with id 0 rather than expecting a separate pointer

@@ -55,6 +55,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Input events carry a time on the clock content reads. A host stamps input in its
+  own clock -- the system uptime on Apple and Android, which the C ABI does not name --
+  and the engine handed that number to content untouched: on macOS a touch arrived
+  with `timeStamp` 62,067,560 ms ahead of `performance.now()`. Content compares
+  `event.timeStamp` with `performance.now()` and with the requestAnimationFrame
+  timestamp (input smoothing, double-tap windows against the frame clock, latency
+  probes; every ported web game), so every such comparison was wrong on exactly the
+  platforms whose clock disagrees. Touch, key, mouse, wheel and gamepad timestamps now
+  go through one converter (`input/00_input_clock.js`): the host's clock is anchored to
+  the page's at the first event of a burst of input (a quarter-second gap starts a new
+  burst, so the clocks cannot drift apart over a long session or a sleep), inside a
+  burst the host's spacing is kept, and the result is never in the future. The header
+  documents the contract (`include/migo/input.h`: use one clock per host; do not
+  convert). Found by migo-conformance's new `input-touch-spec`, the first bundle that
+  sends the game input (a macOS host replays real mouse events through the view's own
+  handlers; 20 assertions; released v0.9.19 fails the timestamp one and passes the
+  other 19, which is the evidence the coordinate and lifecycle path is right).
+  Also: a touch listener that throws is now reported (`console.error`) instead of
+  swallowed silently, so a handler that throws on every touch is not a game that
+  mysteriously "ignores input"; the listeners after it still hear the event.
 - `migo.request` works again for any response that has a body. Since v0.9.10 every
   request that received a non-empty body failed with `request:fail ... read data
   failed: TypeError: expected typed ArrayBufferView` (errno 500): the perf pass that

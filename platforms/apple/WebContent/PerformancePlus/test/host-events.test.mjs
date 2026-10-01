@@ -98,6 +98,10 @@ function check(what, fn) {
 }
 
 const of = (name) => seen.filter(([kind]) => kind === name).map(([, event]) => event);
+// The host's stamps are in the host's own clock (here small integers); content hears them on the page's clock -- a time
+// `performance.now()` can be compared with, never in its future -- whatever the host's epoch was (input_clock.rs).
+const onPageClock = (stamp) => Number.isFinite(stamp) && stamp >= 0 && stamp <= performance.now();
+const withoutTime = ({ timeStamp, ...rest }) => rest;
 const touch = (event) => ({ id: event.touches.concat(event.changedTouches)[0]?.identifier, x: event.changedTouches[0]?.clientX });
 
 // Every event the contract numbers, bound to a function the engine has: an
@@ -105,24 +109,26 @@ const touch = (event) => ({ id: event.touches.concat(event.changedTouches)[0]?.i
 // nothing would deliver.
 check("the bridge had a hook for every event number", () =>
   assert.equal(bound, Object.keys(HOST_EVENT).length));
-check("a touch start and move carry the host's point and time", () => {
+check("a touch start and move carry the host's point, and a time on the page's clock", () => {
   const [start] = of("touchstart");
   assert.equal(start.touches.length, 1);
   assert.deepEqual(
     { id: start.touches[0].identifier, x: start.touches[0].clientX, y: start.touches[0].clientY, force: start.touches[0].force },
     { id: 7, x: 10, y: 20, force: 0.5 },
   );
-  assert.equal(start.timeStamp, 100);
+  assert.ok(onPageClock(start.timeStamp), `timeStamp ${start.timeStamp}`);
   assert.deepEqual(touch(of("touchmove")[0]), { id: 7, x: 11 });
 });
 check("a key, the mouse and the wheel arrive with their fields", () => {
   const [key] = of("keydown");
   assert.equal(key.key, "a");
   assert.equal(key.code, "KeyA");
-  assert.equal(key.timeStamp, 5);
-  assert.deepEqual(of("mousedown")[0], { x: 1.5, y: 2.5, button: 0, timeStamp: 6 });
+  assert.ok(onPageClock(key.timeStamp), `timeStamp ${key.timeStamp}`);
+  assert.deepEqual(withoutTime(of("mousedown")[0]), { x: 1.5, y: 2.5, button: 0 });
+  assert.ok(onPageClock(of("mousedown")[0].timeStamp));
   const [wheel] = of("wheel");
-  assert.deepEqual([wheel.deltaX, wheel.deltaY, wheel.deltaZ, wheel.deltaMode, wheel.timeStamp], [1, -2, 0, 1, 7]);
+  assert.deepEqual([wheel.deltaX, wheel.deltaY, wheel.deltaZ, wheel.deltaMode], [1, -2, 0, 1]);
+  assert.ok(onPageClock(wheel.timeStamp));
 });
 check("the soft keyboard's text and a composition arrive as text", () => {
   assert.deepEqual(of("keyboardinput")[0], { value: "héllo" });
@@ -146,7 +152,8 @@ check("losing focus releases what was held, heard in the embedded runtime's orde
     .filter((kind) => ["touchcancel", "mouseup", "keyup", "compositionend"].includes(kind));
   assert.deepEqual(releases, ["mouseup", "keyup", "compositionend", "touchcancel"]);
   assert.equal(touch(of("touchcancel")[0]).id, 7);
-  assert.deepEqual(of("mouseup")[0], { x: 1.5, y: 2.5, button: 0, timeStamp: 6 });
+  assert.deepEqual(withoutTime(of("mouseup")[0]), { x: 1.5, y: 2.5, button: 0 });
+  assert.ok(onPageClock(of("mouseup")[0].timeStamp));
   assert.equal(of("keyup")[0].code, "KeyA");
   assert.equal(of("compositionend")[0].data, "");
 });
