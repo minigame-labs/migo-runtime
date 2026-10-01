@@ -601,8 +601,9 @@ pub(crate) fn update_bind_framebuffer(
 /// it put a render-to-texture pass on the screen.** The shadow is keyed on the
 /// user-facing framebuffer name, so content holding its own FBO leaves
 /// `Some(name)` here; the engine then re-points the driver at the DrawingBuffer
-/// (an EGL switch, the post-swap restore after the blit) and the shadow still
-/// claims the content's FBO. The content's next `bindFramebuffer(sameName)` is
+/// (a surface install) and the shadow still claims the content's FBO. The
+/// swap-time blit used to be the other such site; it now puts back the bindings
+/// the content had, which needs no record because the shadow was never wrong. The content's next `bindFramebuffer(sameName)` is
 /// deduped against that stale claim, never reaches the driver, and the pass draws
 /// wherever the engine last pointed. Measured on `scripts/fixtures/rtt-probe`,
 /// which presented its render-target colour full-screen on every frame.
@@ -613,7 +614,7 @@ pub(crate) fn update_bind_framebuffer(
 /// every frame — the redundancy this dedup exists for — stays deduped.
 ///
 /// All three targets, because binding `FRAMEBUFFER` sets the draw *and* read
-/// bindings, and the blit this most often follows clobbered the read target too.
+/// bindings, and an install starts from whatever the fresh context had.
 pub(crate) fn record_default_framebuffer_bind(state: &mut CanvasGLState) {
     state.bound_framebuffer.set_all(None);
     state.draws_to_default_fbo = true;
@@ -2347,11 +2348,9 @@ mod tests {
         assert!(!update_bind_framebuffer(&mut s, glow::FRAMEBUFFER, None));
     }
 
-    /// Binding `FRAMEBUFFER` moves the draw *and* read bindings, and the site this
-    /// most often follows is the swap-time blit, which bound
-    /// `READ=DrawingBuffer, DRAW=0`. A record that covered only `FRAMEBUFFER`
-    /// would leave a WebGL 2 content re-bind of either separate target deduped
-    /// against the blit's leftovers.
+    /// Binding `FRAMEBUFFER` moves the draw *and* read bindings. A record that
+    /// covered only `FRAMEBUFFER` would leave a WebGL 2 content re-bind of either
+    /// separate target deduped against what the engine left bound.
     #[test]
     fn the_engine_repoint_covers_the_separate_draw_and_read_targets_too() {
         let mut s = fresh_state();

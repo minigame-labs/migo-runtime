@@ -3979,24 +3979,19 @@ impl CanvasManager {
         drawing_buffer::clear_to_initial_state(&self.gl, None);
     }
 
-    /// Re-point `id` at its WebGL default framebuffer and tell the dedup shadow.
-    ///
-    /// For the sites that genuinely destroyed the binding rather than merely left
-    /// it: the swap-time blit binds `READ=DrawingBuffer, DRAW=0`, and a surface
-    /// install starts from whatever the fresh context had. The shadow record is
-    /// half of the operation, not bookkeeping after it — a driver re-point the
-    /// shadow does not know about is exactly what put a render-to-texture pass on
-    /// the screen.
-    fn bind_default_framebuffer(&mut self, id: CanvasId) {
-        let Some(target) = self.get_drawing_buffer_fbo(id) else {
-            return;
-        };
+    /// Put the READ and DRAW framebuffer bindings back to raw GL names read before the engine's own
+    /// work (the swap-time blit) rebound them. Zero is the window surface.
+    fn restore_framebuffer_bindings(&self, read: u32, draw: u32) {
         unsafe {
-            self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target));
+            self.gl.bind_framebuffer(
+                glow::READ_FRAMEBUFFER,
+                <glow::NativeFramebuffer as NativeFramebufferFromRawShim>::try_from_raw(read),
+            );
+            self.gl.bind_framebuffer(
+                glow::DRAW_FRAMEBUFFER,
+                <glow::NativeFramebuffer as NativeFramebufferFromRawShim>::try_from_raw(draw),
+            );
         }
-        crate::backend::gl::state_tracker::record_default_framebuffer_bind(
-            self.gl_state.entry(id).or_default(),
-        );
     }
 
     pub(crate) fn ensure_any_canvas_current(&mut self) -> EngineResult<CanvasId> {
@@ -4625,8 +4620,19 @@ impl CanvasManager {
         // already rendered to FBO 0 — skip the blit.
         let (buffer_w, buffer_h) = entry.presented_size();
         let mut blit_succeeded = true;
+        // The framebuffer bindings the content has right now. A present is the engine's own work, and it
+        // can land between any two of the content's GL batches -- in the middle of a render-to-texture
+        // sequence, with the content's own framebuffer bound. The blit below rebinds both targets, and
+        // they go back exactly as they were: see where they are restored.
+        let mut content_bindings = None;
         if !entry.bypass_drawing_buffer {
             if let Some(ref db) = entry.drawing_buffer {
+                content_bindings = Some(unsafe {
+                    (
+                        self.gl.get_parameter_i32(glow::READ_FRAMEBUFFER_BINDING) as u32,
+                        self.gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32,
+                    )
+                });
                 let db_matches = (db.width, db.height) == (buffer_w, buffer_h);
                 let blit = crate::present_damage::blit_plan(
                     &plan.repair,
@@ -4688,6 +4694,21 @@ impl CanvasManager {
             )
         });
 
+        // The blit bound READ=DrawingBuffer / DRAW=0 over whatever the content had bound, so both go
+        // back to what they were -- and the dedup shadow, which has tracked the content's own calls and
+        // was never told about the blit, stays right without being touched.
+        //
+        // This used to re-point `FRAMEBUFFER` at the canvas's default framebuffer and write that into the
+        // shadow. That is only right when the content had the default framebuffer bound, and a present
+        // lands wherever the vsync puts it: with a render target bound mid-sequence, the next draw went
+        // to the screen, because the content (three.js, like most engines, keeps its own cache of what
+        // is bound) did not rebind what it believed was still bound. three.js's PMREMGenerator rendered
+        // its prefiltered environment onto the screen about one run in twelve, and every pass after the
+        // first present of such a run, so the map it handed back was black.
+        if let Some((read, draw)) = content_bindings {
+            self.restore_framebuffer_bindings(read, draw);
+        }
+
         let commit = commit_present_outcome(
             &mut self.damage,
             &mut self.damage_history,
@@ -4698,14 +4719,6 @@ impl CanvasManager {
         // The failed-swap path returns here, and the commit above is what leaves
         // this frame's damage in the accumulator for the retry to repair.
         swap?;
-
-        // The blit bound READ=DrawingBuffer / DRAW=0 and so destroyed whatever
-        // the content had on `FRAMEBUFFER`; re-point it at this canvas's default
-        // framebuffer and record that in the shadow, or the content's next bind of
-        // its own FBO is deduped against a claim the blit already invalidated.
-        // Under bypass there was no blit, nothing was destroyed, and the
-        // resolver's answer (real FBO 0) is what is already bound.
-        self.bind_default_framebuffer(id);
 
         // Between frames is the one point no drawable is held, so a canvas
         // resized during this frame -- presented just now through a scaling
@@ -7285,6 +7298,39 @@ mod recovery_source_guards {
         after.sort_unstable();
         assert_eq!(after, vec![10, 11, 12, 13]);
         assert!(finished_snapshot_ids(pool.iter(), 0).is_empty(), "nothing has ended yet");
+    }
+
+    /// A present puts back the framebuffer bindings the content had.
+    ///
+    /// It lands between any two of the content's GL batches, so the content may have a render target
+    /// bound. Re-pointing at the default framebuffer sent the next pass of three.js's
+    /// PMREMGenerator to the screen (its own cache said the target was still bound) and the
+    /// environment map it returned was black, about one run in twelve. The behaviour is
+    /// migo-conformance's `engine-three-advanced` (`pmrem-environment*`); this holds the shape:
+    /// read before the blit, restored before the swap's result is used (so a failed swap restores
+    /// too), and no re-point to the default afterwards.
+    #[test]
+    fn a_present_restores_the_content_s_framebuffer_bindings() {
+        let swap = function_body(MGR, "pub(crate) fn swap_buffers_no_restore(");
+        let code: Vec<&str> = swap
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect();
+        let at = |needle: &str| {
+            code.iter()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("the swap must contain `{needle}`"))
+        };
+        let read = at("READ_FRAMEBUFFER_BINDING");
+        let blit = at("blit_to_surface(");
+        let restore = at("restore_framebuffer_bindings(");
+        let commit = at("commit_present_outcome(");
+        assert!(read < blit, "the bindings are read before the blit rebinds them");
+        assert!(blit < restore && restore < commit, "they are restored after the blit, on the failed-swap path too");
+        assert!(
+            !code.iter().any(|line| line.contains("bind_default_framebuffer")),
+            "the present must not re-point the content's framebuffer at the default"
+        );
     }
 
     /// The facade's snapshot byte budget is at most half the pool's cap.
