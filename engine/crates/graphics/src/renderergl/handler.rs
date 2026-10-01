@@ -304,6 +304,9 @@ impl RendererGL {
         gl: &glow::Context,
         cmd: GLCmd,
     ) -> EngineResult<DamageEffect> {
+        if let Some(canvas_id) = cmd.touches_canvas() {
+            cm.ensure_gl_initial_state(canvas_id)?;
+        }
         match cmd {
             // ---------- Per-canvas stateful calls ----------
             GLCmd::Viewport {
