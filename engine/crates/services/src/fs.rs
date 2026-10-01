@@ -148,15 +148,38 @@ pub fn read_request(
 
 /// Size of `path` for read classification, or `None` when it can't be had.
 ///
-/// Only called on the sync path. There the caller's thread is blocked for the
-/// whole operation, so a worker hop is pure added latency and one `stat` buys
-/// the chance to skip it — and against the read that follows either way, the
-/// syscall is a rounding error. On the async path the caller is not blocked,
-/// the hop costs throughput rather than latency, and this `stat` would land
-/// on the caller's thread for no gain.
+/// On the sync path the caller's thread is blocked for the whole operation, so a
+/// worker hop is pure added latency and one `stat` buys the chance to skip it. On
+/// the async path the same `stat` buys something else, and more important: the
+/// request's byte estimate. An unhinted whole-file read estimates at
+/// `MAX_READ_LENGTH` (100 MiB), the scheduler charges that against its pending-byte
+/// budget, and the budget refuses the request when it is spent -- so a game that
+/// started sixty small `readFile` calls at once (any asset loader) had most of them
+/// fail with `IO pending-byte budget exhausted: requested 104857600 bytes`. The
+/// syscall is a rounding error against the read that follows either way; failing
+/// the read is not.
 #[inline]
 fn fs_read_size_hint(path: &str) -> Option<u64> {
     std::fs::metadata(path).ok().map(|meta| meta.len())
+}
+
+/// The scheduler descriptor for a read of a real file: sized by the file when `length` alone does
+/// not already say the read is small, so the pending-byte budget is charged what the read will
+/// produce rather than the worst case.
+#[inline]
+fn filesystem_read_request(
+    request: RequestKind,
+    length: Option<u64>,
+    full_path: &str,
+    small_read_bytes: u64,
+) -> IoRequest {
+    // Skip the stat when `length` alone already classifies the read as cheap: it could only
+    // confirm what is known.
+    let size_hint = match length {
+        Some(len) if len <= small_read_bytes => None,
+        _ => fs_read_size_hint(full_path),
+    };
+    read_request(BackendKind::Filesystem, request, length, size_hint)
 }
 
 #[inline]
@@ -174,14 +197,23 @@ fn copy_request(backend: BackendKind, request: RequestKind) -> IoRequest {
     }
 }
 
-/// A whole pack entry read or digested on the Pack lane.
+/// A whole pack entry read or digested on the Pack lane, charged what the entry is.
+///
+/// Charged at `MAX_READ_LENGTH` (100 MiB) whatever the entry, so a loader that verified sixty small pack
+/// files with `getFileInfo` at once spent the scheduler's pending-byte budget twice over and had most of
+/// them refused; the entry's size is in the mount table, and is an upper bound on what a digest or a
+/// decompression of it retains. An entry the table cannot size keeps the cautious estimate.
 #[inline]
-fn pack_whole_read_request() -> IoRequest {
+fn pack_whole_read_request(mount_table: &MountTable, virtual_path: &str) -> IoRequest {
+    let max = shared::protocol::io_cmd::MAX_READ_LENGTH;
+    let estimated_bytes = mount_table
+        .entry_size(code_relative(virtual_path))
+        .map_or(max, |size| size.min(max)) as usize;
     IoRequest::ReadFile {
         backend: BackendKind::Pack,
         request: RequestKind::Async,
         priority: PriorityClass::ForegroundAsync,
-        estimated_bytes: shared::protocol::io_cmd::MAX_READ_LENGTH as usize,
+        estimated_bytes,
     }
 }
 
@@ -1190,8 +1222,12 @@ pub async fn read_file(
         }
         ResolvedPath::Filesystem(full_path) => {
             let allow_mmap = is_read_only_code_path(&path);
-            // No size hint on the async path: see `fs_read_size_hint`.
-            let request = read_request(BackendKind::Filesystem, request_kind, length, None);
+            let request = filesystem_read_request(
+                request_kind,
+                length,
+                &full_path,
+                env.scheduler.policy().small_read_bytes as u64,
+            );
             env.scheduler
                 .run_async(request, move || {
                     let t0 = Instant::now();
@@ -1241,13 +1277,12 @@ pub fn read_file_sync(
         }
         ResolvedPath::Filesystem(full_path) => {
             let allow_mmap = is_read_only_code_path(path);
-            // Skip the stat when `length` alone already classifies the
-            // read as cheap — it could only confirm what we know.
-            let size_hint = match length {
-                Some(len) if len <= scheduler.policy().small_read_bytes as u64 => None,
-                _ => fs_read_size_hint(&full_path),
-            };
-            let request = read_request(BackendKind::Filesystem, request_kind, length, size_hint);
+            let request = filesystem_read_request(
+                request_kind,
+                length,
+                &full_path,
+                scheduler.policy().small_read_bytes as u64,
+            );
             scheduler
                 .run_sync(&request, move || {
                     fs_ops::read_file(&full_path, position, length, allow_mmap)
@@ -1417,7 +1452,8 @@ pub async fn read_compressed(env: FsEnv, path: String) -> FsResult<Vec<u8>> {
         }
         ResolvedPath::Pack { virtual_path } => {
             let mount_table = Arc::clone(env.mounts()?);
-            run_pack_async(env.scheduler, pack_whole_read_request(), move || {
+            let request = pack_whole_read_request(&mount_table, &virtual_path);
+            run_pack_async(env.scheduler, request, move || {
                 // Keep the complete pack read/decompress chain on the Pack
                 // worker. Re-resolve after queueing so remounts are honored.
                 let virtual_path = reresolve_pack(&mount_table, &virtual_path)?;
@@ -1597,7 +1633,8 @@ pub async fn get_file_info(env: FsEnv, path: String, algorithm: String) -> FsRes
         }
         ResolvedPath::Pack { virtual_path } => {
             let mount_table = Arc::clone(env.mounts()?);
-            run_pack_async(env.scheduler, pack_whole_read_request(), move || {
+            let request = pack_whole_read_request(&mount_table, &virtual_path);
+            run_pack_async(env.scheduler, request, move || {
                 // Re-resolve the mount on the Pack lane. Digesting an entry
                 // opens, decompresses, and hashes every chunk; none of that
                 // belongs on the caller's thread.

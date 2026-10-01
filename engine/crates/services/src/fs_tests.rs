@@ -26,8 +26,8 @@ use shared::{
 
 use super::{
     FsEnv, ResolvedPath, archive_read_request, code_relative, copy_pack_file_async,
-    materialize_pack_to_temp_async, materialize_pack_to_temp_checked, read_request,
-    resolve_path_vfs, run_domain_async, run_pack_async,
+    filesystem_read_request, materialize_pack_to_temp_async, materialize_pack_to_temp_checked,
+    pack_whole_read_request, read_request, resolve_path_vfs, run_domain_async, run_pack_async,
 };
 
 /// No production path in this module escapes to tokio's unbounded blocking
@@ -150,11 +150,16 @@ fn q12_async_domain_jobs_run_on_r5_fs_worker() {
 fn pack_digest_job_runs_on_worker_and_reresolves_mount() {
     use shared::vfs::package::{PackSource, PackageWriter};
 
+    const PAYLOAD: [u8; 256 * 1024] = [0x5A; 256 * 1024];
+
     let dir = temp_dir("pack_digest_worker");
     let package_path = dir.join("base.mpkg");
     let file = std::fs::File::create(&package_path).unwrap();
     let mut writer = PackageWriter::new(std::io::BufWriter::new(file)).unwrap();
-    writer.add_entry("payload.bin", b"pack payload").unwrap();
+    // Larger than a small read, so the scheduler delegates it to a worker as it does a real asset's
+    // digest; a few bytes would be classified inline, on this thread, which is the scheduler's rule
+    // for small foreground pack reads and not what this test is about.
+    writer.add_entry("payload.bin", &PAYLOAD).unwrap();
     writer.finish("base", "1").unwrap();
 
     let mount_table = Arc::new(MountTable::new(dir.clone()));
@@ -171,12 +176,10 @@ fn pack_digest_job_runs_on_worker_and_reresolves_mount() {
     let (thread_name, size, digest) = runtime
         .block_on(run_pack_async(
             scheduler,
-            IoRequest::ReadFile {
-                backend: BackendKind::Pack,
-                request: RequestKind::Async,
-                priority: PriorityClass::ForegroundAsync,
-                estimated_bytes: shared::protocol::io_cmd::MAX_READ_LENGTH as usize,
-            },
+            // What production asks for: the entry's own size, not the maximum a read can be. The test
+            // used to charge 100 MiB of the process-wide pending-byte budget, which failed it one run in
+            // twenty whenever another test in the process was holding some of it.
+            pack_whole_read_request(&mount_table, "/code/payload.bin"),
             move || {
                 let resolved = resolve_path_vfs(
                     None,
@@ -207,7 +210,7 @@ fn pack_digest_job_runs_on_worker_and_reresolves_mount() {
         thread_name.starts_with("Migo-IO-"),
         "digest ran on {thread_name}"
     );
-    assert_eq!(size, b"pack payload".len() as u64);
+    assert_eq!(size, PAYLOAD.len() as u64);
     assert!(!digest.is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -372,6 +375,93 @@ fn a_failed_copy_or_rename_names_the_paths_the_content_gave_and_none_of_the_host
         );
     }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// An async whole-file read is charged what the file is, not the maximum a read can be.
+///
+/// Unhinted, it estimated at `MAX_READ_LENGTH` (100 MiB) and the scheduler's pending-byte budget
+/// refused most of sixty concurrent small `readFile` calls with `IO pending-byte budget exhausted`.
+#[test]
+fn an_async_whole_file_read_is_sized_by_the_file_not_the_maximum() {
+    let dir = temp_dir("read_estimate");
+    let small = dir.join("small.json");
+    std::fs::write(&small, vec![b'x'; 1000]).unwrap();
+    let small = small.to_string_lossy().into_owned();
+    let small_read_bytes = 64 * 1024;
+
+    let IoRequest::ReadFile {
+        estimated_bytes, ..
+    } = filesystem_read_request(RequestKind::Async, None, &small, small_read_bytes)
+    else {
+        panic!("a read request");
+    };
+    assert_eq!(estimated_bytes, 1000);
+
+    // The caller's own length bounds it too, whichever is smaller.
+    let IoRequest::ReadFile {
+        estimated_bytes, ..
+    } = filesystem_read_request(RequestKind::Async, Some(300), &small, small_read_bytes)
+    else {
+        panic!("a read request");
+    };
+    assert_eq!(estimated_bytes, 300);
+
+    // A file that cannot be sized keeps the cautious estimate: the budget exists for exactly the
+    // read nobody can bound.
+    let IoRequest::ReadFile {
+        estimated_bytes, ..
+    } = filesystem_read_request(
+        RequestKind::Async,
+        None,
+        &dir.join("missing").to_string_lossy(),
+        small_read_bytes,
+    )
+    else {
+        panic!("a read request");
+    };
+    assert_eq!(
+        estimated_bytes,
+        shared::protocol::io_cmd::MAX_READ_LENGTH as usize
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A pack entry's digest or decompression is charged the entry's size, and an entry the table cannot
+/// size keeps the cautious estimate.
+#[test]
+fn a_pack_whole_read_is_charged_the_entry_size_not_the_maximum() {
+    use shared::vfs::package::{PackSource, PackageWriter};
+
+    let dir = temp_dir("pack_estimate");
+    let package_path = dir.join("base.mpkg");
+    let file = std::fs::File::create(&package_path).unwrap();
+    let mut writer = PackageWriter::new(std::io::BufWriter::new(file)).unwrap();
+    writer.add_entry("payload.bin", &vec![7u8; 4096]).unwrap();
+    writer.finish("base", "1").unwrap();
+    let mount_table = MountTable::new(dir.clone());
+    mount_table.swap_base(Arc::new(
+        PackSource::open(&package_path, "base", "1").unwrap(),
+    ));
+
+    let IoRequest::ReadFile {
+        estimated_bytes, ..
+    } = pack_whole_read_request(&mount_table, "/code/payload.bin")
+    else {
+        panic!("a read request");
+    };
+    assert_eq!(estimated_bytes, 4096);
+
+    let IoRequest::ReadFile {
+        estimated_bytes, ..
+    } = pack_whole_read_request(&mount_table, "/code/absent.bin")
+    else {
+        panic!("a read request");
+    };
+    assert_eq!(
+        estimated_bytes,
+        shared::protocol::io_cmd::MAX_READ_LENGTH as usize
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn temp_dir(label: &str) -> PathBuf {
