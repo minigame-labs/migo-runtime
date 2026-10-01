@@ -15,7 +15,7 @@ import {
   op_audio_set_inner_audio_option,
   op_audio_get_available_audio_sources,
 } from "ext:core/ops";
-import { allocateHostCallbackId, createListenerGroup, invokeCallback, errorMessage } from "ext:host_v8_base/02_async.js";
+import { allocateHostCallbackId, createListenerGroup, invokeCallback, errorMessage, failMessage } from "ext:host_v8_base/02_async.js";
 
 // ID counter for InnerAudioContext instances
 
@@ -489,7 +489,7 @@ function setInnerAudioOption(options = {}) {
     invokeCallback('setInnerAudioOption', 'complete', complete, res);
     return Promise.resolve(res);
   } catch (err) {
-    const res = { errMsg: 'setInnerAudioOption:fail ' + errorMessage(err) };
+    const res = { errMsg: failMessage('setInnerAudioOption', err) };
     invokeCallback('setInnerAudioOption', 'fail', fail, res);
     invokeCallback('setInnerAudioOption', 'complete', complete, res);
     return Promise.reject(res);
@@ -506,7 +506,7 @@ function getAvailableAudioSources(options = {}) {
     invokeCallback('getAvailableAudioSources', 'complete', complete, res);
     return Promise.resolve(res);
   } catch (err) {
-    const res = { errMsg: 'getAvailableAudioSources:fail ' + errorMessage(err) };
+    const res = { errMsg: failMessage('getAvailableAudioSources', err) };
     invokeCallback('getAvailableAudioSources', 'fail', fail, res);
     invokeCallback('getAvailableAudioSources', 'complete', complete, res);
     return Promise.reject(res);

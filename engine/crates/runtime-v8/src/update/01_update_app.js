@@ -1,3 +1,4 @@
+import { failMessage } from "ext:host_v8_base/02_async.js";
 function updateApp(options = {}) {
     const { success, fail, complete } = options;
     
@@ -22,7 +23,7 @@ function updateApp(options = {}) {
         
     } catch (error) {
         const errorResult = {
-            errMsg: "updateApp:fail " + error.message
+            errMsg: failMessage("updateApp", error)
         };
         
         if (typeof fail === 'function') {

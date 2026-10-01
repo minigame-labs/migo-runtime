@@ -1,7 +1,7 @@
 import { core, primordials } from "ext:core/mod.js";
 import { Header } from "ext:host_v8_network/01_header.js";
 import { NetworkTask, createSettler, headerEntries } from "ext:host_v8_network/03_task.js";
-import { createListenerGroup, errorMessage } from "ext:host_v8_base/02_async.js";
+import { createListenerGroup, failMessage } from "ext:host_v8_base/02_async.js";
 import {
     DownloadResponse, DownloadErrorResponse, Exception, abortedNetworkError,
 } from "ext:host_v8_network/02_response.js";
@@ -101,7 +101,7 @@ function downloadFile(options) {
         requestRid = result.requestRid;
         cancelHandleRid = result.cancelHandleRid;
     } catch (err) {
-        const error = makeError(0, "downloadFile:fail " + errorMessage(err));
+        const error = makeError(0, failMessage("downloadFile", err));
         queueMicrotask(() => settler.fail(error));
         return new DownloadTask(null);
     }
@@ -192,7 +192,7 @@ function downloadFile(options) {
             if (cancellation.aborted || err === "aborted") {
                 settler.fail(abortedNetworkError());
             } else {
-                settler.fail(makeError(500, "downloadFile:fail " + errorMessage(err)));
+                settler.fail(makeError(500, failMessage("downloadFile", err)));
             }
         } finally {
             if (cancellation.responseRid !== null) {

@@ -65,6 +65,16 @@ function errorMessage(err) {
     return (typeof m === 'string' && m) ? m : String(err);
 }
 
+// `errMsg` of a failed call: `<api>:fail <why>`, the api named once. An op that fails answers a complete message
+// (`getClipboardData:fail not supported`), and putting the prefix on it again gave content
+// `getClipboardData:fail getClipboardData:fail not supported`: wrong to match against, and the first thing a
+// developer reading the log would take for a bug in the game's own call.
+function failMessage(apiName, e) {
+    var why = errorMessage(e);
+    var prefix = apiName + ':fail ';
+    return prefix + (why.indexOf(prefix) === 0 ? why.slice(prefix.length) : why);
+}
+
 function invokeCallback(apiName, kind, cb, res) {
     if (typeof cb !== 'function') return;
     try {
@@ -109,14 +119,14 @@ function wrapAsync(apiName, fn, options) {
                         console.warn('[MigoPerf][Async] ' + apiName + ' (fail): ' + totalElapsed.toFixed(0) + 'ms');
                     }
                 }
-                const res = { errMsg: apiName + ':fail ' + errorMessage(e) };
+                const res = { errMsg: failMessage(apiName, e) };
                 invokeCallback(apiName, 'fail', fail, res);
                 invokeCallback(apiName, 'complete', complete, res);
                 throw res;
             }
         );
     } catch (e) {
-        const res = { errMsg: apiName + ':fail ' + errorMessage(e) };
+        const res = { errMsg: failMessage(apiName, e) };
         queueMicrotask(function () { invokeCallback(apiName, 'fail', fail, res); });
         queueMicrotask(function () { invokeCallback(apiName, 'complete', complete, res); });
         return Promise.reject(res);
@@ -247,7 +257,7 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
             try {
                 requestId = allocateHostCallbackId();
             } catch (e) {
-                var allocFailure = { errMsg: apiName + ':fail ' + errorMessage(e) };
+                var allocFailure = { errMsg: failMessage(apiName, e) };
                 invokeCallback(apiName, 'fail', fail, allocFailure);
                 invokeCallback(apiName, 'complete', complete, allocFailure);
                 reject(allocFailure);
@@ -286,7 +296,7 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                 var entry = removePending(requestId);
                 if (!entry) return;
                 clearTimeout(entry._timer);
-                var res = { errMsg: apiName + ':fail ' + errorMessage(e) };
+                var res = { errMsg: failMessage(apiName, e) };
                 invokeCallback(apiName, 'fail', entry.fail, res);
                 invokeCallback(apiName, 'complete', entry.complete, res);
                 entry.reject(res);
@@ -466,6 +476,7 @@ function errorToString(err) {
 }
 
 export {
+    failMessage,
     wrapAsync,
     promisify,
     createDeferredApi,

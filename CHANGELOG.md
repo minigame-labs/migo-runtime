@@ -55,6 +55,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Three permission checks work again, and a failed call names its API once. Found by
+  probing every callback-style `migo.*` API once on a desktop host
+  (migo-conformance's new `api-surface-spec`, found at run time from the namespace so
+  an API added later is covered; 272 assertions, released v0.9.19 fails 18):
+  - `checkUserLocation`, `checkWritePhotosAlbum` and `getWritePhotosAlbum` answered
+    `fail: _authSetting is not defined` on every call since the host-owns-the-answer
+    refactor (2026-08-01) removed the local map and left these three naming it. The
+    checks now read the host's current answer; `getWritePhotosAlbum`, which used to set
+    its own entry to `true` (granting itself the permission), asks the host the way
+    `authorize` does and answers under its own name.
+  - An API a host does not serve (`getClipboardData`, `vibrateShort`, `showToast`,
+    ... on a host without that service) failed with its name twice,
+    `getClipboardData:fail getClipboardData:fail not supported`: the op answers a whole
+    message and the caller put the prefix on it again. One composer
+    (`failMessage`, in `02_async.js`) now builds every `<api>:fail <why>`, and the
+    open-coded sites in the login, update, payment, camera, audio, websocket and
+    download/upload modules use it.
 - Input events carry a time on the clock content reads. A host stamps input in its
   own clock -- the system uptime on Apple and Android, which the C ABI does not name --
   and the engine handed that number to content untouched: on macOS a touch arrived

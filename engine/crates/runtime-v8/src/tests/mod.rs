@@ -14,6 +14,7 @@
 
 #[cfg(feature = "api-system")]
 mod ad_reward_integrity;
+mod api_failures;
 mod audio_aud11;
 mod audio_context_close;
 mod binary_helper;

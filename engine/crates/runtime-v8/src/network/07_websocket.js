@@ -2,7 +2,7 @@ import { core } from "ext:core/mod.js";
 import {
     op_ws_create, op_ws_next_event, op_ws_send, op_ws_close,
 } from "ext:core/ops";
-import { createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { createListenerGroup, failMessage } from "ext:host_v8_base/02_async.js";
 import { toExactArrayBuffer } from "ext:host_v8_network/00_binary.js";
 
 // -- SocketTask --
@@ -47,7 +47,7 @@ class SocketTask {
             if (typeof success === 'function') success(res);
             if (typeof complete === 'function') complete(res);
         }).catch((err) => {
-            const res = { errMsg: "sendSocketMessage:fail " + err.message };
+            const res = { errMsg: failMessage("sendSocketMessage", err) };
             if (typeof fail === 'function') fail(res);
             if (typeof complete === 'function') complete(res);
         });
@@ -78,7 +78,7 @@ class SocketTask {
             if (typeof success === 'function') success(res);
             if (typeof complete === 'function') complete(res);
         }).catch((err) => {
-            const res = { errMsg: "closeSocket:fail " + err.message };
+            const res = { errMsg: failMessage("closeSocket", err) };
             if (typeof fail === 'function') fail(res);
             if (typeof complete === 'function') complete(res);
         });
@@ -247,7 +247,7 @@ function connectSocket(options = {}) {
             // If close() already ran (e.g. connect failed after the caller
             // closed), stay silent: no post-close fail/onError/onClose.
             if (task._closed) return;
-            const res = { errMsg: "connectSocket:fail " + (err.message || err) };
+            const res = { errMsg: failMessage("connectSocket", err) };
             if (typeof fail === 'function') fail(res);
             if (typeof complete === 'function') complete(res);
             task._fireError(res.errMsg);
@@ -288,7 +288,7 @@ function sendSocketMessage(options = {}) {
         if (typeof complete === 'function') complete(res);
         return res;
     }).catch((err) => {
-        const res = { errMsg: "sendSocketMessage:fail " + err.message };
+        const res = { errMsg: failMessage("sendSocketMessage", err) };
         if (typeof fail === 'function') fail(res);
         if (typeof complete === 'function') complete(res);
         throw res;
@@ -309,7 +309,7 @@ function closeSocket(options = {}) {
         if (typeof complete === 'function') complete(res);
         return res;
     }).catch((err) => {
-        const res = { errMsg: "closeSocket:fail " + err.message };
+        const res = { errMsg: failMessage("closeSocket", err) };
         if (typeof fail === 'function') fail(res);
         if (typeof complete === 'function') complete(res);
         throw res;

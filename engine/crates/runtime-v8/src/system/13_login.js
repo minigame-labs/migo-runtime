@@ -4,11 +4,7 @@ import {
     op_get_user_info,
     op_get_phone_number,
 } from "ext:core/ops";
-import {
-    allocateHostCallbackId,
-    parseHostCallbackId,
-    invokeCallback,
-} from "ext:host_v8_base/02_async.js";
+import { allocateHostCallbackId, parseHostCallbackId, invokeCallback, failMessage } from "ext:host_v8_base/02_async.js";
 
 const noop = () => {};
 
@@ -95,7 +91,7 @@ function login(options = {}) {
             op_login(JSON.stringify({ requestId, timeout }));
         } catch (error) {
             _pendingLogin.delete(requestId);
-            const res = { errMsg: `login:fail ${_safeErrorMessage(error)}` };
+            const res = { errMsg: failMessage('login', _safeErrorMessage(error)) };
             queueMicrotask(function () {
                 invokeCallback("login", "fail", fail, res);
                 invokeCallback("login", "complete", complete, res);
@@ -125,7 +121,7 @@ function checkSession(options = {}) {
             op_check_session(JSON.stringify({ requestId }));
         } catch (error) {
             _pendingCheckSession.delete(requestId);
-            const res = { errMsg: `checkSession:fail ${_safeErrorMessage(error)}` };
+            const res = { errMsg: failMessage('checkSession', _safeErrorMessage(error)) };
             queueMicrotask(function () {
                 fail(res);
                 complete(res);
@@ -423,7 +419,7 @@ function getUserProfile(options = {}) {
             }));
         } catch (error) {
             _pendingUserInfo.delete(requestId);
-            const res = { errMsg: 'getUserProfile:fail ' + _safeErrorMessage(error) };
+            const res = { errMsg: failMessage('getUserProfile', _safeErrorMessage(error)) };
             queueMicrotask(function () {
                 fail(res);
                 complete(res);
