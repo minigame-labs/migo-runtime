@@ -1416,6 +1416,19 @@ impl RendererGL {
                         }
                         .to_string()
                     }
+                    shared::protocol::render_cmd::gl_state::ACTIVE_UNIFORM_BLOCK_NAME
+                    | shared::protocol::render_cmd::gl_state::ACTIVE_UNIFORM_BLOCK_PARAMETER
+                    | shared::protocol::render_cmd::gl_state::UNIFORM_INDICES
+                    | shared::protocol::render_cmd::gl_state::ACTIVE_UNIFORMS_PARAMETER => {
+                        // `pname` is the program's resource id; a program that is gone or never got a GL handle has
+                        // nothing to say, which is the specification's INVALID_OPERATION.
+                        match cm.programs.get(&pname).and_then(|meta| meta.gl_handle) {
+                            Some(handle) => {
+                                super::program_state::answer(gl, handle, query, extra, &name)
+                            }
+                            None => "{\"e\":1282}".to_string(),
+                        }
+                    }
                     // The wire refuses a number it does not know before it gets here.
                     _ => "null".to_string(),
                 };

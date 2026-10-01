@@ -159,6 +159,10 @@ export const GL_QUERY_STATE = 16;
 // holds the two together.
 export const GL_STATE_INTERNALFORMAT_SAMPLES = 1;
 export const GL_STATE_FRAMEBUFFER_ATTACHMENT_PARAMETER = 2;
+export const GL_STATE_ACTIVE_UNIFORM_BLOCK_NAME = 3;
+export const GL_STATE_ACTIVE_UNIFORM_BLOCK_PARAMETER = 4;
+export const GL_STATE_UNIFORM_INDICES = 5;
+export const GL_STATE_ACTIVE_UNIFORMS_PARAMETER = 6;
 
 /** Words before a query's name: five fields and the name's byte length. */
 export const GL_QUERY_HEADER_BYTES = 24;

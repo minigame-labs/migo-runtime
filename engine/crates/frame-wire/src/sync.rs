@@ -684,9 +684,23 @@ pub mod gl_state {
     /// type and colour encoding): which object is attached, and at what level, it already knows.
     pub const FRAMEBUFFER_ATTACHMENT_PARAMETER: u32 = 2;
 
+    // The next four ask a linked program about its uniform blocks. `pname` is the program (its resource id) in all of
+    // them, and the answer is an envelope: `{"v":<value>}`, or `{"e":<GL error>}` when the specification makes the
+    // call an error.
+
+    /// `getActiveUniformBlockName`: `extra` is the block index; the value is the name.
+    pub const ACTIVE_UNIFORM_BLOCK_NAME: u32 = 3;
+    /// `getActiveUniformBlockParameter`: `extra` is the block index, `name` the queried pname as decimal text.
+    pub const ACTIVE_UNIFORM_BLOCK_PARAMETER: u32 = 4;
+    /// `getUniformIndices`: `name` is the uniform names joined by `\n`; the value is one index per name
+    /// (`INVALID_INDEX` for one that is not active).
+    pub const UNIFORM_INDICES: u32 = 5;
+    /// `getActiveUniforms`: `extra` is the queried pname, `name` the uniform indices joined by `,`.
+    pub const ACTIVE_UNIFORMS_PARAMETER: u32 = 6;
+
     /// Whether a number is one this build knows.
     pub fn is_known(state: u32) -> bool {
-        (INTERNALFORMAT_SAMPLES..=FRAMEBUFFER_ATTACHMENT_PARAMETER).contains(&state)
+        (INTERNALFORMAT_SAMPLES..=ACTIVE_UNIFORMS_PARAMETER).contains(&state)
     }
 }
 

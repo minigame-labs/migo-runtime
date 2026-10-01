@@ -316,6 +316,10 @@ const _rawGetGlState         = _makeOrderedRaw(op_get_gl_state);
 // checked against the Rust table by `render_stream_js_agreement`.
 const GL_STATE_INTERNALFORMAT_SAMPLES = 1;
 const GL_STATE_FRAMEBUFFER_ATTACHMENT_PARAMETER = 2;
+const GL_STATE_ACTIVE_UNIFORM_BLOCK_NAME = 3;
+const GL_STATE_ACTIVE_UNIFORM_BLOCK_PARAMETER = 4;
+const GL_STATE_UNIFORM_INDICES = 5;
+const GL_STATE_ACTIVE_UNIFORMS_PARAMETER = 6;
 
 // --- Producer-side capability shadow ---------------------------------------
 //
@@ -2994,6 +2998,93 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         }
         return index;
     }
+    // What a linked program says about its uniform blocks, from the driver (`program_state.rs` answers). PlayCanvas
+    // reads every block's name while it links a shader; engines with a uniform-buffer layer read the sizes and the
+    // offsets. The answer is `{v}` or `{e}`: the error is the specification's, raised here so the context's `getError`
+    // sees it.
+    _programState(method, program, query, extra, name) {
+        if (!(program instanceof WebglObject) || program._kind !== "program") {
+            throw new TypeError(`${method}: parameter 1 is not of type 'WebGLProgram'.`);
+        }
+        if (program._deleted || program._ownerId !== this._canvasId) {
+            this._pushJsError(WebglConstants.INVALID_OPERATION);
+            return undefined;
+        }
+        let answer;
+        try { answer = JSON.parse(_rawGetGlState(this._canvasId, query, program._id, extra, name)); } catch (_) { return undefined; }
+        if (answer === null || typeof answer !== "object") return undefined;
+        if (answer.e !== undefined) {
+            this._pushJsError(answer.e);
+            return undefined;
+        }
+        return answer.v;
+    }
+
+    getActiveUniformBlockName(program, uniformBlockIndex) {
+        const name = this._programState("getActiveUniformBlockName", program, GL_STATE_ACTIVE_UNIFORM_BLOCK_NAME, uniformBlockIndex >>> 0, "");
+        return typeof name === "string" ? name : null;
+    }
+
+    getActiveUniformBlockParameter(program, uniformBlockIndex, pname) {
+        const value = this._programState("getActiveUniformBlockParameter", program, GL_STATE_ACTIVE_UNIFORM_BLOCK_PARAMETER, uniformBlockIndex >>> 0, String(pname >>> 0));
+        if (value === undefined) return null;
+        return Array.isArray(value) ? new Uint32Array(value) : value;
+    }
+
+    // The wire carries a name of at most 1024 bytes, so a long list goes in pieces. A GLSL identifier is ASCII and
+    // WebGL caps it at 256 characters: a name with a newline (the separator) or past that cannot be one, and is
+    // INVALID_INDEX without asking.
+    getUniformIndices(program, uniformNames) {
+        const names = Array.from(uniformNames, String);
+        const found = new Array(names.length).fill(WebglConstants.INVALID_INDEX);
+        let batch = [];
+        let batchChars = 0;
+        const flush = () => {
+            if (batch.length === 0) return true;
+            const indices = this._programState("getUniformIndices", program, GL_STATE_UNIFORM_INDICES, 0, batch.map((entry) => entry.name).join("\n"));
+            if (!Array.isArray(indices)) return false;
+            for (let i = 0; i < batch.length; i++) found[batch[i].at] = indices[i];
+            batch = [];
+            batchChars = 0;
+            return true;
+        };
+        for (let at = 0; at < names.length; at++) {
+            const name = names[at];
+            if (name.length > 256 || name.includes("\n")) continue;
+            if (batchChars + name.length + 1 > 300 && !flush()) return null;
+            batch.push({ at, name });
+            batchChars += name.length + 1;
+        }
+        if (batch.length === 0) {
+            // Nothing to ask, but a program that is not linked is still an error: ask about no name in particular.
+            if (this._programState("getUniformIndices", program, GL_STATE_UNIFORM_INDICES, 0, "") === undefined) return null;
+        } else if (!flush()) {
+            return null;
+        }
+        return found;
+    }
+
+    getActiveUniforms(program, uniformIndices, pname) {
+        if (!(program instanceof WebglObject) || program._kind !== "program") {
+            throw new TypeError("getActiveUniforms: parameter 1 is not of type 'WebGLProgram'.");
+        }
+        pname = pname >>> 0;
+        // UNIFORM_NAME_LENGTH (0x8A39) is the one pname in that run that WebGL leaves out.
+        if (pname < WebglConstants.UNIFORM_TYPE || pname > WebglConstants.UNIFORM_IS_ROW_MAJOR || pname === 0x8a39) {
+            this._pushJsError(WebglConstants.INVALID_ENUM);
+            return null;
+        }
+        const indices = Array.from(uniformIndices, (i) => i >>> 0);
+        const result = [];
+        // 80 indices of at most ten digits and a comma stay under the wire's 1024 bytes.
+        for (let at = 0; at < indices.length; at += 80) {
+            const values = this._programState("getActiveUniforms", program, GL_STATE_ACTIVE_UNIFORMS_PARAMETER, pname, indices.slice(at, at + 80).join(","));
+            if (!Array.isArray(values)) return null;
+            for (const value of values) result.push(value);
+        }
+        return result;
+    }
+
     uniformBlockBinding(program, uniformBlockIndex, uniformBlockBinding) {
         _rawUniformBlockBinding(program._id, uniformBlockIndex, uniformBlockBinding);
     }
