@@ -56,6 +56,12 @@
       "producer_answers_locally": "partly",
       "note": "The seven *_BINDING queries come from the facade's own shadow, and the ten capability enums come from the same producer-side capability shadow that answers isEnabled -- the spec defines getParameter(BLEND) and isEnabled(BLEND) as one answer, so they must not be able to disagree. Every other pname crosses. The device limits and the four strings are constants of the implementation and could be cached after the first query; the *_BITS values, SAMPLES and SAMPLE_BUFFERS could NOT, because in GL ES they describe the currently bound framebuffer."
     },
+    "GLCmd::GetState": {
+      "api": "WebGL2RenderingContext.getInternalformatParameter, and the read-back queries that follow it (getUniform, getVertexAttrib, getIndexedParameter, the uniform-block family, ...)",
+      "reply": "always",
+      "producer_answers_locally": "no",
+      "note": "One command for the family of read-backs that have no reply shape of their own, selected by a number in frame_wire::sync::gl_state. Every one crosses, because the driver is the only authority on what it supports (sample counts per format) or on a program's linked layout. They are setup-time queries -- a render target is built once, a program introspected once -- not per-frame ones; a caller that asks one per frame pays the stall every synchronous query pays. Where a query can be answered from state the facade already shadows (bindings, the current attribute values), it is answered there and never reaches this command."
+    },
     "GLCmd::GetAttribLocation": {
       "api": "WebGLRenderingContext.getAttribLocation",
       "reply": "always",

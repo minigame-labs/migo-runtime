@@ -61,6 +61,7 @@
   "not_exposed_by_webgl": {
     "INFO_LOG_LENGTH": "WebGL has no length query: getShaderInfoLog and getProgramInfoLog return a string, so the executor reads this length to size its own buffer and content never names it.",
     "SHADER_SOURCE_LENGTH": "Same shape as INFO_LOG_LENGTH, for getShaderSource.",
+    "NUM_SAMPLE_COUNTS": "getInternalformatParameter(.., SAMPLES) returns an Int32Array, so WebGL has no count query: the executor asks the driver how many sample counts a format has to size its own buffer, and content never names it.",
     "EXTENSIONS": "WebGL replaces the GL string query with getSupportedExtensions(), which is implemented. Declaring the enum would offer content a getParameter path WebGL does not define.",
     "PROGRAM_BINARY_LENGTH": "WebGL exposes no program-binary API: getProgramBinary/programBinary are GLES calls with no WebGL counterpart and no extension that adds one. The shader cache uses this to size its own buffer, and content has no way to ask for a binary at all.",
     "NUM_PROGRAM_BINARY_FORMATS": "Same as PROGRAM_BINARY_LENGTH: WebGL has no program-binary API, so there is nothing for content to enumerate formats for.",
