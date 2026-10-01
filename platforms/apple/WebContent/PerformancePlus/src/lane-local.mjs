@@ -14,12 +14,12 @@ import { engineHost } from "./engine-host.mjs";
 
 // ---- time -------------------------------------------------------------------
 
-/// Elapsed time since the session was bound, as the Rust op writes it: u32
-/// seconds then u32 nanoseconds, little-endian, into the caller's 8 bytes.
+/// Elapsed time on content's timeline (since the producer started), as the Rust op writes it: u32 seconds then
+/// u32 nanoseconds, little-endian, into the caller's 8 bytes.
 export function op_now(buf) {
   const buffer = bytesOf(buf, "buf");
   if (buffer.byteLength < 8) return;
-  const elapsedMs = platform.now() - engineHost().startedAt;
+  const elapsedMs = platform.timelineNow();
   const seconds = Math.floor(elapsedMs / 1000);
   const nanos = Math.min(999_999_999, Math.round((elapsedMs - seconds * 1000) * 1e6));
   const view = new DataView(buffer.buffer, buffer.byteOffset, 8);

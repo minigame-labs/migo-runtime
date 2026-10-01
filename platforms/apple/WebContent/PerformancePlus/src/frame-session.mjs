@@ -19,6 +19,7 @@ import {
   decodeBytes,
 } from "./downlink.mjs";
 import { RequestFrameMessage, generationWord } from "./control.mjs";
+import { platform } from "./platform.mjs";
 import { presents, sequenceOf } from "./wire-frame-packet.mjs";
 
 /// `IngressDecision` in `engine/crates/frame-wire/src/ingress.rs`. The numbers
@@ -50,8 +51,11 @@ export class FrameSession {
    *        the GL context was lost or came back, and the resource epoch
    *        packets must now name. The producer adopts the epoch and tells
    *        content (`DOWN_CONTEXT_STATE`).
+   * @param {() => number} [options.now] content's clock in milliseconds
+   *        (`performance.now()` as content reads it), which the frame
+   *        timestamps are put on. `platform.timelineNow` by default.
    */
-  constructor({ send, sendControl, onFrame, onVerdict, onGenerationLost, onContextState } = {}) {
+  constructor({ send, sendControl, onFrame, onVerdict, onGenerationLost, onContextState, now } = {}) {
     if (typeof send !== "function") {
       throw new TypeError("FrameSession needs a send function");
     }
@@ -64,6 +68,7 @@ export class FrameSession {
     this.#onVerdict = onVerdict;
     this.#onGenerationLost = onGenerationLost;
     this.#onContextState = onContextState;
+    this.#now = now ?? platform.timelineNow;
   }
 
   #send;
@@ -72,6 +77,7 @@ export class FrameSession {
   #onVerdict;
   #onGenerationLost;
   #onContextState;
+  #now;
 
   // The window, as "Having accepted every packet through `#accepted`, this many
   // credits were free" -- the latest advertisement the host sent, from an
@@ -91,6 +97,10 @@ export class FrameSession {
   #lastFrameId = 0;
   #lastTimestampMillis = 0;
   #generation = 0;
+
+  // The page clock minus the host clock, as small as any tick has shown it: what is left of the gap between the two
+  // clocks once the smallest delay a tick ever had on its way here is taken out of it. Infinity until the first tick.
+  #clockOffset = Infinity;
 
   // Demand for the next tick. One request is outstanding at most: the host
   // coalesces requests, so a second one before the tick would buy nothing.
@@ -144,6 +154,25 @@ export class FrameSession {
       this.#sent += 1;
     }
     return true;
+  }
+
+  /// A host timestamp on the page's timeline.
+  ///
+  /// The host stamps a tick with its own monotonic clock, and content reads `performance.now()` from its own:
+  /// two clocks that start at different moments (115 ms apart on an iPhone after a loading screen), so a frame's
+  /// timestamp came out before the moment the frame was asked for and a game's elapsed time went negative.
+  /// The specification puts `requestAnimationFrame`'s argument on the same timeline as `performance.now()`.
+  ///
+  /// The gap is `page - host` at the moment a tick arrives, which is the true offset plus the delay the tick had
+  /// getting here; the smallest gap seen is the closest estimate of the offset, and a timestamp built from it is
+  /// never later than the page's clock when the tick arrives. The host's own spacing between frames is kept (it is
+  /// the vsync's, and smooth), except that a better estimate can pull a timestamp back; the result never goes
+  /// backwards, because a game divides by the difference.
+  #onPageTimeline(hostMillis) {
+    const gap = this.#now() - hostMillis;
+    if (gap < this.#clockOffset) this.#clockOffset = gap;
+    const mapped = hostMillis + this.#clockOffset;
+    return mapped > this.#lastTimestampMillis ? mapped : this.#lastTimestampMillis + 0.001;
   }
 
   /// Ask for the next frame-clock tick, and run `callback` on it.
@@ -204,7 +233,7 @@ export class FrameSession {
         // Milliseconds for content, because that is what
         // `requestAnimationFrame` hands a callback everywhere else. The wire
         // carries nanoseconds so the host does not have to round.
-        this.#lastTimestampMillis = record.timestampNs / 1_000_000;
+        this.#lastTimestampMillis = this.#onPageTimeline(record.timestampNs / 1_000_000);
         failure ??= this.#tick(this.#lastTimestampMillis, record.frameId);
       }
     }
