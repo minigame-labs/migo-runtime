@@ -1447,15 +1447,18 @@ impl<'a> PatternResolver for SkiaPatternResolver<'a> {
         let mut gr_ctx = self.gr_ctx.borrow_mut();
         let mut store = self.image_store.borrow_mut();
         let sk_image = store.resolve_cached_or_wrap(self.ctx_tag, *gr_ctx, image_id)?;
+        // Outside the image on an axis that does not repeat the pattern paints nothing: "no-repeat" and the
+        // other axis of "repeat-x"/"repeat-y" are transparent past the tile, not the tile's edge pixels
+        // stretched out to infinity (which is what `Clamp` is).
         let tile_x = if repeat_x {
             TileMode::Repeat
         } else {
-            TileMode::Clamp
+            TileMode::Decal
         };
         let tile_y = if repeat_y {
             TileMode::Repeat
         } else {
-            TileMode::Clamp
+            TileMode::Decal
         };
         // globalAlpha modulation: apply via colour filter on the shader.
         // For fully opaque the base shader is enough.
@@ -1487,6 +1490,23 @@ pub(crate) fn read_surface_rgba_unpremul(
 
 #[cfg(test)]
 mod tests {
+    /// A pattern paints nothing outside its tile on an axis it does not repeat.
+    ///
+    /// `no-repeat`, and the axis `repeat-x`/`repeat-y` leaves out, are transparent past the image; `Clamp`
+    /// would stretch its edge pixels over the whole canvas. It needs a GPU image to run, so this holds the
+    /// choice in the source (migo-conformance `canvas2d-spec/pattern-*-second-tile-*` runs it).
+    #[test]
+    fn a_pattern_does_not_repeat_into_decal_not_clamp() {
+        let source = include_str!("surface.rs");
+        let resolver = &source[source.find("fn resolve_pattern(").unwrap()..];
+        let resolver = &resolver[..resolver.find("sk_image.to_shader(").unwrap()];
+        assert!(resolver.contains("TileMode::Decal"));
+        assert!(
+            !resolver.contains("TileMode::Clamp"),
+            "an axis the pattern does not repeat is transparent past the tile, not the tile's edge"
+        );
+    }
+
     /// Every constructor of a Canvas2D surface must clear it.
     ///
     /// A new canvas is transparent black, and the framebuffer or texture under it

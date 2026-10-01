@@ -4334,6 +4334,100 @@ pub(super) mod tests {
         (handle, events_rx)
     }
 
+    /// `createPattern(canvas)` takes a copy the pattern owns and names it by an id the facade allocated.
+    ///
+    /// The copy is one record under the canvas it copies, in the stream after everything drawn to it, and the
+    /// pattern fill that follows names the same id -- which is what keeps the pattern from changing when the
+    /// canvas does. The repetition is checked first (a SyntaxError), a canvas with no pixels is an
+    /// InvalidStateError, and a canvas the facade cannot reach as a canvas is not a pattern source.
+    #[test]
+    fn create_pattern_from_a_canvas_copies_it_under_an_id_the_fill_names() {
+        use shared::protocol::render_cmd::{Canvas2DCmd, CanvasCmd};
+
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        // Every packet until a second passes quietly: creating a canvas sends a barrier of its own.
+        let (events_tx, events_rx) = std::sync::mpsc::sync_channel(1);
+        let handle = std::thread::spawn(move || {
+            let mut copies: Vec<(u32, u32)> = Vec::new();
+            let mut fills: Vec<(u32, bool, bool)> = Vec::new();
+            while let Ok(command) = render_rx.recv_timeout(Duration::from_secs(1)) {
+                match command {
+                    RenderCommand::Canvas(CanvasCmd::GetInfo { resp, .. }) => {
+                        resp.send(Ok((4, 4)));
+                    }
+                    RenderCommand::FramePacket(packet) => {
+                        for op in packet.into_ops().iter() {
+                            let FrameOp::CanvasBatch(batch) = op else { continue };
+                            for command in batch.commands.iter() {
+                                match command {
+                                    Canvas2DCmd::CaptureImage { image_id } => {
+                                        copies.push((batch.canvas_id.into(), *image_id));
+                                    }
+                                    Canvas2DCmd::SetFillStylePattern {
+                                        image_id,
+                                        repeat_x,
+                                        repeat_y,
+                                    } => fills.push((*image_id, *repeat_x, *repeat_y)),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let _ = events_tx.send((copies, fills));
+        });
+
+        runtime
+            .exec_script(
+                "pattern_from_canvas.js",
+                r#"
+                const screen = createCanvas();
+                const tile = createCanvas();
+                tile.width = 2; tile.height = 2;
+                const ctx = screen.getContext("2d");
+                const pattern = ctx.createPattern(tile, "repeat-x");
+                if (pattern === null) throw new Error("a canvas is a pattern source");
+                ctx.fillStyle = pattern;
+
+                const named = (fn) => { try { fn(); } catch (e) { return e.name; } return null; };
+                const badRepetition = named(() => ctx.createPattern(tile, "diagonal"));
+                if (badRepetition !== "SyntaxError") throw new Error("repetition: " + badRepetition);
+                if (ctx.createPattern(tile, "") === null || ctx.createPattern(tile, null) === null) {
+                    throw new Error("'' and null mean repeat");
+                }
+                const empty = createCanvas();
+                empty.width = 0;
+                const noPixels = named(() => ctx.createPattern(empty, "repeat"));
+                if (noPixels !== "InvalidStateError") throw new Error("empty canvas: " + noPixels);
+                if (ctx.createPattern({}, "repeat") !== null) throw new Error("not a source");
+                "#,
+            )
+            .expect("patterns must execute");
+        end_test_frame(&mut runtime);
+        handle.join().expect("responder must not panic");
+        let (copies, fills) = events_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the frames must carry the records");
+
+        // The `repeat-x` pattern and the two that read "repeat" (`""` and `null`).
+        assert_eq!(copies.len(), 3, "one copy per pattern made; copies={copies:?}");
+        assert!(
+            copies.iter().all(|(canvas, _)| *canvas != 1),
+            "the copy is of the tile, not of the canvas the pattern is for; copies={copies:?}"
+        );
+        assert_eq!(
+            fills,
+            vec![(copies[0].1, true, false)],
+            "the fill names the copy's id with the repetition the pattern was made with"
+        );
+        let mut ids: Vec<u32> = copies.iter().map(|(_, id)| *id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "every pattern has its own copy");
+    }
+
     /// An `ImageData` nobody has read, and nothing has consumed, is read back before its frame ends.
     ///
     /// The render pool keeps a snapshot for one frame; read a frame later and the pixels are gone

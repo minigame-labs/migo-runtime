@@ -672,6 +672,13 @@ impl Canvas2DRenderer {
                 );
                 false
             }
+            CaptureImage { .. } => {
+                tracing::warn!(
+                    "Canvas2DCmd::CaptureImage reached `apply_env` — dispatcher \
+                     layering regressed"
+                );
+                false
+            }
 
             CreateContext2D => {
                 tracing::warn!(

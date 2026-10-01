@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Canvas2D: `createPattern` accepts a canvas, and a pattern does not paint past its tile
+  on an axis it does not repeat. It returned null for a canvas -- so a tiled background
+  built from an offscreen tile (Phaser's Canvas TileSprite, every hand-rolled 2D game)
+  painted nothing -- and `no-repeat`, `repeat-x` and `repeat-y` stretched the tile's edge
+  pixels over the rest of the canvas instead of leaving it transparent. A new 2D record
+  (`CAPTURE_IMAGE`, 572, two words; `contracts/frame-wire/wire-v1.md`, amendment of
+  2026-10-02) keeps a copy of the canvas as it is when the pattern is made -- what the
+  canvas draws later does not reach the pattern -- in the image store under an id the
+  facade allocates and destroys when the pattern is collected. The repetition is
+  validated (SyntaxError), a canvas with no pixels is an InvalidStateError, `""` and
+  `null` mean `repeat`.
 - WebGL: a present no longer takes the content's framebuffer binding with it. The
   engine presents on the display clock, which can land between two of the content's
   GL batches, and the swap-time blit rebinds the read and draw framebuffers; it then

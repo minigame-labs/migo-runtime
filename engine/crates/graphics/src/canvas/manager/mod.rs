@@ -5746,29 +5746,10 @@ impl CanvasManager {
         // Stale, or none: the old copy goes before the new one is taken.
         self.drop_canvas_source_copy(source);
 
-        let Some((w, h)) = self
-            .contexts_2d
-            .get(&source)
-            .map(|ctx| (ctx.width, ctx.height))
-        else {
+        let Some(entry) = self.take_whole_canvas_snapshot(source, true)? else {
             return Ok(None);
         };
-        let Some(bytes) = shared::protocol::render_cmd::checked_canvas_rgba_byte_len(w, h) else {
-            return Ok(None);
-        };
-        if bytes > CANVAS_SOURCE_CACHE_BYTES {
-            return Ok(None);
-        }
-        self.evict_source_copies_to_fit(bytes);
-
-        let snapshot_id = self.next_internal_snapshot_id;
-        self.next_internal_snapshot_id = snapshot_id.checked_add(1).unwrap_or(0x8000_0000);
-        if self.snapshot_canvas2d_region_with_id(source, 0, 0, w, h, snapshot_id)? == 0 {
-            return Ok(None);
-        }
-        let Some(entry) = self.remove_canvas2d_snapshot(snapshot_id) else {
-            return Ok(None);
-        };
+        let bytes = entry.bytes;
         let store = self.image_registry.store_mut();
         let image_id = store.generate_id();
         store.insert(
@@ -5798,6 +5779,70 @@ impl CanvasManager {
         );
         self.canvas_source_cache_bytes += bytes;
         Ok(Some(image_id))
+    }
+
+    /// A texture holding the whole of `source` as it is now, taken out of the snapshot pool so the caller owns
+    /// it. `None` when the canvas has no 2D context, is larger than the copy budget, or the capture failed.
+    /// `make_room` evicts cached source copies until the new one fits.
+    fn take_whole_canvas_snapshot(
+        &mut self,
+        source: CanvasId,
+        make_room: bool,
+    ) -> EngineResult<Option<Canvas2DSnapshotEntry>> {
+        let Some((w, h)) = self
+            .contexts_2d
+            .get(&source)
+            .map(|ctx| (ctx.width, ctx.height))
+        else {
+            return Ok(None);
+        };
+        let Some(bytes) = shared::protocol::render_cmd::checked_canvas_rgba_byte_len(w, h) else {
+            return Ok(None);
+        };
+        if bytes > CANVAS_SOURCE_CACHE_BYTES {
+            return Ok(None);
+        }
+        if make_room {
+            self.evict_source_copies_to_fit(bytes);
+        }
+        let snapshot_id = self.next_internal_snapshot_id;
+        self.next_internal_snapshot_id = snapshot_id.checked_add(1).unwrap_or(0x8000_0000);
+        if self.snapshot_canvas2d_region_with_id(source, 0, 0, w, h, snapshot_id)? == 0 {
+            return Ok(None);
+        }
+        Ok(self.remove_canvas2d_snapshot(snapshot_id))
+    }
+
+    /// `createPattern(canvas)`: keep a copy of `source` as it is now in the image store under `image_id`, which
+    /// the producer allocated and will destroy.
+    ///
+    /// Not the cache `drawImage(canvas)` uses: that copy is replaced when the canvas changes, and a pattern must
+    /// not change with it. This one belongs to the pattern, and `DestroyImage` frees its texture like any image's.
+    /// A canvas that cannot be copied registers nothing; the pattern then names an id the store does not hold and
+    /// paints nothing, as a pattern from an image that failed to decode does.
+    pub(crate) fn capture_canvas_image(
+        &mut self,
+        source: CanvasId,
+        image_id: u32,
+    ) -> EngineResult<()> {
+        use crate::backend::gl::image_store::{GpuImageInfo, StoredImage};
+        let Some(entry) = self.take_whole_canvas_snapshot(source, false)? else {
+            return Ok(());
+        };
+        self.image_registry.store_mut().insert(
+            image_id,
+            StoredImage::dedicated(
+                entry.tex.0.get(),
+                // What Skia rendered: premultiplied, top row first.
+                GpuImageInfo {
+                    width: entry.width,
+                    height: entry.height,
+                    color_type: skia_safe::ColorType::RGBA8888,
+                    alpha_type: skia_safe::AlphaType::Premul,
+                },
+            ),
+        );
+        Ok(())
     }
 
     /// Release the copy of `source`, if any: its image-store entry (and every Skia

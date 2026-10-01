@@ -164,6 +164,24 @@ no existing value changes meaning, and a stream that never writes it draws as
 before. Same version audit as above. Until this record existed `drawImage` drew
 nothing for a canvas source: the facade only knew images the host had decoded.
 
+### Amendment, 2026-10-02: pixels written to a canvas, and a canvas kept as an image
+
+`PUT_IMAGE_DATA` (571) joins the 2D block for `putImageData`: `x:I y:I width:U height:U
+byte_length | rgba`, the pixels as `ImageData.data` has them (RGBA8, not premultiplied,
+rows top to bottom, no padding) with `byte_length` exactly `width * height * 4`; a
+producer cuts a large `ImageData` into bands of rows, each its own record. (This
+amendment is late: the record shipped with `putImageData` and was not written up here.)
+
+`CAPTURE_IMAGE` (572) joins it for `createPattern(canvas, ...)`, and `OP2D_END` moves
+from 571 to 573. Two words: `image_id:U`, under the selection of the canvas it copies.
+The record keeps a copy of that canvas as it is when the record runs -- in stream
+order, after everything the content drew to it -- in the renderer's image store under
+an id the producer allocated (`op_create_image`) and destroys (`op_destroy_image`) when
+the pattern is collected; the pattern then names the id like an image the host decoded
+(`SET_FILL_STYLE_PATTERN`). Additive: no field moves, no existing value changes
+meaning, and a stream that never writes either draws as before. Same version audit as
+above. Until this record existed `createPattern` returned null for a canvas.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.

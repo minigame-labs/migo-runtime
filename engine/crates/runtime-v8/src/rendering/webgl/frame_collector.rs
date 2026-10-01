@@ -229,6 +229,7 @@ impl Canvas2DSegment {
             Canvas2DCmd::MeasureText { .. }
             | Canvas2DCmd::GetImageData { .. }
             | Canvas2DCmd::CaptureSnapshot { .. }
+            | Canvas2DCmd::CaptureImage { .. }
             | Canvas2DCmd::ReadSnapshotPixels { .. } => {}
 
             // Context creation paints nothing.

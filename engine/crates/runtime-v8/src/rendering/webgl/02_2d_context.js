@@ -22,6 +22,7 @@ import {
     encode2dClip,
     encode2dFillEvenOdd,
     encode2dDrawCanvas,
+    encode2dCaptureImage,
     encode2dClipEvenOdd,
     encode2dFillRect,
     encode2dStrokeRect,
@@ -76,6 +77,8 @@ import {
     // Image methods
     op_draw_image,
     op_draw_image_batch,
+    op_create_image,
+    op_destroy_image,
     // Compositing + gradient + dash
     op_set_line_dash,
     op_set_fill_style_gradient,
@@ -86,6 +89,7 @@ import {
     op_put_image_data,
 } from "ext:core/ops";
 import { domException } from "ext:host_v8_base/06_dom_exception.js";
+import { primordials } from "ext:core/mod.js";
 
 // Line cap constants
 const LINE_CAP_MAP = { 'butt': 0, 'round': 1, 'square': 2 };
@@ -133,6 +137,15 @@ const _COMPOSITE_OPS = [
     'difference', 'exclusion',
     'hue', 'saturation', 'color', 'luminosity',
 ];
+
+// The canvas copies `createPattern(canvas)` made are the renderer's image-store entries; one goes when the
+// pattern that holds it is collected.
+const { SafeFinalizationRegistry } = primordials;
+const _patternCopies = new SafeFinalizationRegistry((imageId) => {
+    try {
+        op_destroy_image(imageId);
+    } catch (_) { }
+});
 
 // Gradient object returned by createLinearGradient / createRadialGradient.
 // Collects color stops and sends them to the render thread when assigned
@@ -1562,9 +1575,31 @@ class CanvasRenderingContext2D {
     // ==================== Other stubs ====================
     isPointInPath() { return false; }
     isPointInStroke() { return false; }
+
+    // `createPattern(image, repetition)`: `image` is a decoded image or a canvas, and a pattern from a canvas is
+    // the canvas as it is now -- what it draws afterwards does not reach the pattern.
     createPattern(image, repetition) {
+        // The repetition is checked first, as the specification's steps do: "" and null mean "repeat", anything
+        // that is not one of the four names is a SyntaxError.
+        const rep = repetition == null || repetition === '' ? 'repeat' : String(repetition);
+        if (rep !== 'repeat' && rep !== 'repeat-x' && rep !== 'repeat-y' && rep !== 'no-repeat') {
+            throw domException("The provided repetition value '" + rep + "' is not a valid repetition.", "SyntaxError");
+        }
+        if (image && typeof image.getContext === 'function' && typeof image._rid === 'number') {
+            const w = image.width, h = image.height;
+            if (w === 0 || h === 0) {
+                throw domException("The image argument is a canvas element with a width or height of 0.", "InvalidStateError");
+            }
+            // A copy that belongs to the pattern: the canvas is selected for the record so it runs in the
+            // canvas's own stream, after everything drawn to it so far.
+            const imageId = op_create_image();
+            encode2dCaptureImage(image._rid, imageId);
+            const pattern = new CanvasPattern(this._canvasId, imageId, rep);
+            _patternCopies.register(pattern, imageId);
+            return pattern;
+        }
         if (!image || !image.loaded) return null;
-        return new CanvasPattern(this._canvasId, image.rid, repetition);
+        return new CanvasPattern(this._canvasId, image.rid, rep);
     }
 }
 

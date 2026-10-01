@@ -2084,6 +2084,11 @@ pub enum Canvas2DCmd {
         dw: f32,
         dh: f32,
     },
+    /// `createPattern(canvas)`: a copy of this canvas's pixels as they are now, kept in the renderer's image store under
+    /// `image_id` (allocated by the producer) until the producer destroys that id. A pattern names it like any image.
+    CaptureImage {
+        image_id: u32,
+    },
     /// `putImageData`: `width * height` RGBA8 pixels (not premultiplied, the layout of `ImageData.data`) written at
     /// `(x, y)` in the canvas's own pixels. The specification has it replace the bitmap's pixels outright, so the
     /// renderer ignores the transform, the clip, `globalAlpha`, the composite operation and the shadow; `pixels.len()`
@@ -2220,6 +2225,7 @@ impl Canvas2DCmd {
             | Self::Scale { .. }
             | Self::DrawImage { .. }
             | Self::DrawCanvas { .. }
+            | Self::CaptureImage { .. }
             | Self::PutImageData { .. }
             | Self::GetImageData { .. }
             | Self::CaptureSnapshot { .. }

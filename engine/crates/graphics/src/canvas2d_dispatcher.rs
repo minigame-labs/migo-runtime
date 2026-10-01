@@ -170,6 +170,21 @@ impl Renderer2d {
                 }
                 Ok(false)
             }
+            // `createPattern(canvas)`: the canvas is the one the stream has selected, and the copy is the
+            // pattern's, in the image store under the id the producer chose. A failure is the pattern's to
+            // show -- it paints nothing -- and is logged rather than propagated, as the other canvas-lifetime
+            // commands are.
+            Canvas2DCmd::CaptureImage { image_id } => {
+                if let Err(e) = cm.capture_canvas_image(canvas_id, image_id) {
+                    tracing::warn!(
+                        "Canvas2DCmd::CaptureImage failed: canvas={:?}, image={}, err={}",
+                        canvas_id,
+                        image_id,
+                        e
+                    );
+                }
+                Ok(false)
+            }
             Canvas2DCmd::ReadSnapshotPixels { snapshot_id, resp } => {
                 crate::render_diagnostics::bump_canvas2d_snapshot_forced_readback();
                 let pixels = cm
@@ -383,6 +398,7 @@ pub(crate) fn classify_draw_damage(
         | GetImageData { .. }
         | CaptureSnapshot { .. }
         | ReadSnapshotPixels { .. }
+        | CaptureImage { .. }
         | CreateContext2D
         | RegisterCanvas { .. }
         | DestroyCanvas
