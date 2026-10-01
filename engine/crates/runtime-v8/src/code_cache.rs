@@ -355,9 +355,19 @@ pub(crate) fn create_code_cache(app_cache_dir: &Path) -> SharedCodeCache {
 /// cannot be resolved is used as given rather than refused -- the cache is an
 /// optimisation, and a Session must still start without one.
 fn code_cache_dir(app_cache_dir: &Path) -> PathBuf {
-    let dir = app_cache_dir.join("migo_code_cache");
+    // The PARENT is what is resolved, and the cache's own name is appended to it. Resolving the cache
+    // directory itself raced with the cache's own start-up: the worker clears and recreates that
+    // directory when the stored V8 version differs (which a fresh directory always does), and a Session
+    // that asked in that window found it missing, failed to canonicalize, and fell back to the
+    // unresolved spelling -- `/var/...` where the first Session had `/private/var/...` -- a second key
+    // for one directory, so a second cache, a second counter and a budget each. The parent is not
+    // touched by anything in this module, so what it resolves to is stable.
+    let _ = fs::create_dir_all(app_cache_dir);
+    let resolved_parent =
+        fs::canonicalize(app_cache_dir).unwrap_or_else(|_| app_cache_dir.to_path_buf());
+    let dir = resolved_parent.join("migo_code_cache");
     let _ = fs::create_dir_all(&dir);
-    fs::canonicalize(&dir).unwrap_or(dir)
+    dir
 }
 
 /// Adapter implementing deno_core's `ExtCodeCache` trait for caching
@@ -408,6 +418,41 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("a writable temp root");
         root
+    }
+
+    /// The directory a Session names is one name however many Sessions ask while the cache is starting.
+    ///
+    /// The cache's worker clears and recreates its directory when the stored V8 version differs, which a
+    /// fresh directory always does; a Session asking in that window used to find the directory missing,
+    /// fail to canonicalize it, and key the registry on the unresolved spelling. This asks a few
+    /// thousand times while another thread does what the worker does.
+    #[test]
+    fn the_directory_name_does_not_depend_on_the_cache_directory_existing() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = temp_root("name_is_stable");
+        let expected = super::code_cache_dir(&root);
+        let stop = Arc::new(AtomicBool::new(false));
+        let churn = {
+            let stop = Arc::clone(&stop);
+            let dir = root.join("migo_code_cache");
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = fs::remove_dir_all(&dir);
+                    let _ = fs::create_dir_all(&dir);
+                }
+            })
+        };
+        for _ in 0..3000 {
+            assert_eq!(
+                super::code_cache_dir(&root),
+                expected,
+                "the cache directory's name changed while its directory was being recreated"
+            );
+        }
+        stop.store(true, Ordering::Relaxed);
+        churn.join().unwrap();
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
