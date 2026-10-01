@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- WebGL: a present no longer takes the content's framebuffer binding with it. The
+  engine presents on the display clock, which can land between two of the content's
+  GL batches, and the swap-time blit rebinds the read and draw framebuffers; it then
+  re-pointed `FRAMEBUFFER` at the default one. Content that had a render target bound
+  and keeps its own cache of what is bound (three.js, like most engines) did not
+  rebind, and its next passes drew onto the canvas: `PMREMGenerator` returned a black
+  environment map about one run in twelve, and a multiple-render-target scene
+  intermittently read black. The present now puts back exactly the read and draw
+  bindings it found. Found by running migo-conformance's engine bundles repeatedly;
+  `engine-three-advanced` gains a scene that runs the generator 40 times with the
+  frame clock ticking (24-28 black maps before, none after).
 - Canvas2D: a `getImageData` whose pixels were read while the renderer presented could
   come back all zeros -- about one read in 400 on an iPhone 12 (Performance+), where
   the capture and the read of `.data` are a socket round trip apart. The renderer
