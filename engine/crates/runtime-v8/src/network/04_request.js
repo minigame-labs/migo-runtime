@@ -1,8 +1,8 @@
 import { core, primordials } from "ext:core/mod.js";
 import { Header } from "ext:host_v8_network/01_header.js";
-import { NetworkTask } from "ext:host_v8_network/03_task.js";
+import { NetworkTask, createSettler, headerEntries } from "ext:host_v8_network/03_task.js";
 import { ReadableStream } from "ext:host_v8_web/06_stream.js";
-import { createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { createListenerGroup, errorMessage } from "ext:host_v8_base/02_async.js";
 import {
     abortedNetworkError, Response, ErrorResponse,
     nullBodyStatus, Exception,
@@ -59,9 +59,9 @@ class RequestTask extends NetworkTask {
 // -- Helpers --
 
 function normalizeMethod(method = "GET") {
-    const upper = method.toUpperCase();
+    const upper = typeof method === "string" ? method.toUpperCase() : "";
     if (!KNOWN_METHODS.has(upper)) {
-        throw new TypeError(`Unsupported HTTP method: ${method}`);
+        throw new TypeError(`Unsupported HTTP method: ${String(method)}`);
     }
     return upper;
 }
@@ -97,7 +97,7 @@ function appendQueryParams(url, data) {
  * Build header list with smart Content-Type auto-detection.
  */
 function fillHeaders(headers, method, data, hasBody) {
-    const headerList = Object.entries(headers).map(([key, value]) => [key, String(value)]);
+    const headerList = headerEntries(headers);
 
     // Check if Content-Type already provided (case-insensitive)
     let hasContentType = false;
@@ -120,14 +120,6 @@ function fillHeaders(headers, method, data, hasBody) {
     }
 
     return headerList;
-}
-
-function chunkToU8(chunk) {
-    return typeof chunk === "string" ? core.encode(chunk) : chunk;
-}
-
-function chunkToString(chunk) {
-    return typeof chunk === "string" ? chunk : core.decode(chunk);
 }
 
 /**
@@ -153,14 +145,18 @@ function toBodyBuffer(body) {
 }
 
 /**
- * Deserialize response body with JSON parse resilience.
+ * Turn the bytes of a response body (a Uint8Array) into what the caller asked for, with JSON parse
+ * resilience: a body that is not JSON is the text it is.
+ *
+ * An empty body is an empty body of the kind asked for -- "" or an empty ArrayBuffer -- not `null`:
+ * `res.data.length` and `res.data.byteLength` are read without a check.
  */
-function fromBodyBuffer(buffer, dataType, responseType) {
+function fromBodyBuffer(bytes, dataType, responseType) {
     if (responseType === 'arraybuffer') {
-        return TypedArrayPrototypeGetBuffer(chunkToU8(buffer));
+        return TypedArrayPrototypeGetBuffer(bytes);
     }
+    const text = TypedArrayPrototypeGetByteLength(bytes) === 0 ? '' : core.decode(bytes);
     if (dataType === 'json') {
-        const text = chunkToString(buffer);
         try {
             return JSONParse(text);
         } catch (_) {
@@ -168,54 +164,61 @@ function fromBodyBuffer(buffer, dataType, responseType) {
             return text;
         }
     }
-    return chunkToString(buffer);
+    return text;
 }
+
+const EMPTY_BODY = new Uint8Array(0);
 
 // -- request() --
 
-function request(options = {}) {
+function request(options) {
+    // `null` and non-objects are a call that names no url, not a throw out of the caller's helper.
+    const opts = (options !== null && typeof options === 'object') ? options : {};
     const {
-        url, data, header = {}, timeout = 60000, method = 'GET',
+        url, data, header, timeout = 60000, method = 'GET',
         dataType = 'json', responseType = 'text',
-        enableHttp2 = false, enableQuic = false,
-        enableCache = false, enableHttpDNS = false,
+        enableHttp2 = false,
+        enableCache = false,
         enableChunked = false,
-        success = () => {}, fail = () => {}, complete = () => {}
-    } = options;
+    } = opts;
+    const settler = createSettler('request', opts);
 
-    // Validate URL
-    if (!url || typeof url !== 'string') {
-        const error = new ErrorResponse(0, new Exception(0, "request:fail invalid url", 0));
-        queueMicrotask(() => { fail(error); complete(error); });
+    // A call that cannot make a request is a `fail`, delivered after this returns as every other
+    // outcome is, and not a throw: a game's request helper does not wrap each call in a try.
+    const failBeforeSending = (detail) => {
+        const error = new ErrorResponse(0, new Exception(0, "request:fail " + detail, 0));
+        queueMicrotask(() => settler.fail(error));
         return new RequestTask(null);
+    };
+
+    if (!url || typeof url !== 'string') {
+        return failBeforeSending("invalid url");
     }
 
-    const methodNormalized = normalizeMethod(method);
-
-    // For GET/HEAD: serialize object data as query parameters
-    let finalUrl = url;
-    let reqBody = null;
-    if (data != null) {
-        if (NO_BODY_METHODS.has(methodNormalized)) {
-            finalUrl = appendQueryParams(url, data);
-        } else {
-            reqBody = toBodyBuffer(data);
-        }
-    }
-
-    const headers = fillHeaders(header, methodNormalized, data, reqBody !== null);
-    let reqRid = null;
-
-    let requestRid, cancelHandleRid;
+    let methodNormalized, requestRid, cancelHandleRid;
     try {
+        methodNormalized = normalizeMethod(method);
+
+        // For GET/HEAD: serialize object data as query parameters
+        let finalUrl = url;
+        let reqBody = null;
+        if (data != null) {
+            if (NO_BODY_METHODS.has(methodNormalized)) {
+                finalUrl = appendQueryParams(url, data);
+            } else {
+                reqBody = toBodyBuffer(data);
+            }
+        }
+
+        const headers = fillHeaders(header, methodNormalized, data, reqBody !== null);
         const result = op_fetch(
             methodNormalized,
             finalUrl,
             headers,
             null,   // clientRid
-            reqBody !== null || reqRid !== null,
+            reqBody !== null,
             reqBody,
-            reqRid,
+            null,   // reqRid
             timeout,
             enableHttp2,
             enableCache
@@ -223,9 +226,7 @@ function request(options = {}) {
         requestRid = result.requestRid;
         cancelHandleRid = result.cancelHandleRid;
     } catch (err) {
-        const error = new ErrorResponse(0, new Exception(0, "request:fail " + err.message, 0));
-        queueMicrotask(() => { fail(error); complete(error); });
-        return new RequestTask(null);
+        return failBeforeSending(errorMessage(err));
     }
 
     const cancellation = {
@@ -252,9 +253,7 @@ function request(options = {}) {
             if (resp?.responseRid) cancellation.responseRid = resp.responseRid;
             if (cancellation.aborted) throw abortedNetworkError();
             if (resp?.error) {
-                const error = new ErrorResponse(resp.status, new Exception(resp.status, resp.error, 0));
-                fail(error);
-                complete(error);
+                settler.fail(new ErrorResponse(resp.status, new Exception(resp.status, resp.error, 0)));
                 return;
             }
 
@@ -264,15 +263,14 @@ function request(options = {}) {
 
             const cbResp = new Response(respHeader);
 
-            if (nullBodyStatus(resp.status)) {
+            if (nullBodyStatus(resp.status)
+                || methodNormalized === "HEAD" || methodNormalized === "CONNECT") {
                 core.close(resp.responseRid);
-            } else if (methodNormalized === "HEAD" || methodNormalized === "CONNECT") {
-                core.close(resp.responseRid);
+                cbResp.data = fromBodyBuffer(EMPTY_BODY, dataType, responseType);
             } else {
                 let rds = null;
                 try {
                     rds = new ReadableStream(resp.responseRid);
-                    let bodyBytes;
 
                     if (enableChunked) {
                         // Truly streaming: chunks are handed to the user's
@@ -299,18 +297,19 @@ function request(options = {}) {
                             }
                             chunks.push(new Uint8Array(chunk));
                         });
-                        if (totalBytes > 0) {
-                            const merged = new Uint8Array(totalBytes);
+                        let bodyBytes = EMPTY_BODY;
+                        if (chunks.length === 1) {
+                            // Most bodies (JSON, a small config) fit one chunk, which is already
+                            // a copy out of the shared read buffer: no second one.
+                            bodyBytes = chunks[0];
+                        } else if (chunks.length > 1) {
+                            bodyBytes = new Uint8Array(totalBytes);
                             let offset = 0;
                             for (const chunk of chunks) {
-                                merged.set(chunk, offset);
+                                bodyBytes.set(chunk, offset);
                                 offset += chunk.byteLength;
                             }
-                            bodyBytes = merged.buffer;
                         }
-                    }
-
-                    if (bodyBytes != null) {
                         cbResp.data = fromBodyBuffer(bodyBytes, dataType, responseType);
                     }
                 } catch (err) {
@@ -318,23 +317,18 @@ function request(options = {}) {
                     // A read cancelled by abort() surfaces here; report it
                     // as an abort (via the outer catch), not a 500.
                     if (cancellation.aborted) throw "aborted";
-                    const error = new ErrorResponse(500, new Exception(500, "read data failed: " + err, 0));
-                    fail(error);
-                    complete(error);
+                    settler.fail(new ErrorResponse(500, new Exception(500, "read data failed: " + err, 0)));
                     return;
                 }
             }
 
             if (cancellation.aborted) throw "aborted";
 
-            success(cbResp);
-            complete(cbResp);
+            settler.succeed(cbResp);
         } catch (err) {
-            const error = cancellation.aborted
+            settler.fail(cancellation.aborted
                 ? abortedNetworkError()
-                : new ErrorResponse(500, new Exception(500, err.message, 0));
-            fail(error);
-            complete(error);
+                : new ErrorResponse(500, new Exception(500, errorMessage(err), 0)));
         } finally {
             if (cancellation.responseRid !== null) {
                 core.tryClose(cancellation.responseRid);
