@@ -57,7 +57,9 @@ pub use share::ShareService;
 pub use subpackage::{
     SubpackageService, forget_downloaded_zips, intercept_download_result, take_downloaded_zip,
 };
-pub use system_info::SystemInfoService;
+pub use system_info::{
+    SystemInfoService, default_device_info_json, host_os_name, host_platform_name,
+};
 pub use video::VideoService;
 
 pub use crate::protocol::error::{ServiceError, ServiceErrorCode};

@@ -653,7 +653,9 @@ pub fn op_get_device_info(state: &mut OpState) -> Result<String, JsErrorBox> {
             return sys.get_device_info_json().map_err(JsErrorBox::generic);
         }
     }
-    Err(JsErrorBox::generic("getDeviceInfo:fail not supported"))
+    // No device services at all (an embedder that attached none): the engine still knows what it was
+    // built for, and a content branch on `platform` must not be handed another platform's name.
+    Ok(shared::services::default_device_info_json())
 }
 
 // ==================== App Authorization Setting ====================
