@@ -314,6 +314,39 @@ fn draw_canvas_carries_the_source_id_exactly_and_keeps_its_place() {
     assert!(validate_stream(&words, words.len() as u32).is_err());
 }
 
+/// `createPattern(canvas)`'s copy is one record of two words under the canvas it copies, and decodes to its own
+/// command carrying the producer's id. A record of any other length is refused, not read as something else.
+#[test]
+fn the_capture_image_record_decodes_to_its_own_command() {
+    let words = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[3]),
+        record(OP2D_CAPTURE_IMAGE, &[0x1234_5678]),
+        record(OP2D_SAVE, &[]),
+    ]);
+    let (ops, context) = decode(&words);
+    assert!(context.errors.is_empty());
+    let FrameOp::CanvasBatch(batch) = &ops[0] else {
+        panic!("expected a canvas batch");
+    };
+    assert_eq!(batch.canvas_id, 3, "the copy is of the canvas the record is under");
+    assert!(matches!(
+        batch.commands[0],
+        Canvas2DCmd::CaptureImage { image_id: 0x1234_5678 }
+    ));
+    assert!(matches!(batch.commands[1], Canvas2DCmd::Save));
+
+    for extra in [&[][..], &[1, 2][..]] {
+        let words = stream_of(&[
+            record(OP2D_SELECT_CANVAS, &[3]),
+            record(OP2D_CAPTURE_IMAGE, extra),
+        ]);
+        assert!(
+            validate_stream(&words, words.len() as u32).is_err(),
+            "a capture-image record is exactly two words"
+        );
+    }
+}
+
 /// The fill rule is part of the record: `OP2D_FILL_EVEN_ODD` and `OP2D_CLIP_EVEN_ODD` decode to their own commands
 /// (not `Fill`/`Clip` with the rule lost), keep their place among the path records, and carry no words.
 #[test]

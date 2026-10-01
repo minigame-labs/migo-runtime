@@ -1214,6 +1214,7 @@ const OP2D_DRAW_CANVAS = 570;
 // putImageData: carries the pixels as a payload, which the in-process runtime sends as an op (op_put_image_data) and
 // only the external-frame producer writes as this record.
 const OP2D_PUT_IMAGE_DATA = 571;
+const OP2D_CAPTURE_IMAGE = 572;
 const OP2D_CLIP_EVEN_ODD = 569;
 
 // --- 2D canvas selection ---
@@ -1332,6 +1333,14 @@ function encode2dDrawCanvas(canvasId, sourceCanvasId, sx, sy, sw, sh, dx, dy, dw
     _f32[base + 8] = dw;
     _f32[base + 9] = dh;
     cursor = base + 10;
+}
+// 572 CAPTURE_IMAGE: H U (2 words), under the selection of the canvas it copies. `createPattern(canvas)` keeps the
+// canvas as it is now in the renderer's image store under `imageId`, which the caller allocated and will destroy.
+function encode2dCaptureImage(canvasId, imageId) {
+    const base = begin2d(canvasId, 2);
+    _u32[base] = packHeader(OP2D_CAPTURE_IMAGE, 2);
+    _u32[base + 1] = imageId >>> 0;
+    cursor = base + 2;
 }
 function encode2dClipEvenOdd(canvasId) { _encode2dNullary(OP2D_CLIP_EVEN_ODD, canvasId); }
 function encode2dSave(canvasId) { _encode2dNullary(OP2D_SAVE, canvasId); }
@@ -1562,6 +1571,7 @@ export {
     encode2dClip,
     encode2dFillEvenOdd,
     encode2dDrawCanvas,
+    encode2dCaptureImage,
     encode2dClipEvenOdd,
     encode2dFillRect,
     encode2dStrokeRect,

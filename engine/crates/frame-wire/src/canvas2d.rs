@@ -333,8 +333,23 @@ pub const OP2D_PUT_IMAGE_DATA: u32 = 571;
 /// The most pixel bytes a producer should put in one `OP2D_PUT_IMAGE_DATA`: a band of rows is cut to fit it.
 pub const PUT_IMAGE_DATA_BAND_BYTES: u32 = 1024 * 1024;
 
+// ─── A canvas kept as an image (572) ─────────────────────────────────────────
+
+/// `createPattern(canvas, ...)`'s copy of the canvas: `H image_id:U`, under the selection of the canvas it copies.
+///
+/// A pattern is made from the canvas as it is when `createPattern` is called, and what the canvas draws afterwards
+/// does not reach it. The record takes a copy of the selected canvas's pixels -- in stream order, so the canvas has
+/// drawn everything the content drew to it before the call -- and registers it in the renderer's image store under
+/// `image_id`, which the producer allocated (`op_create_image`) and later destroys (`op_destroy_image`) when the pattern
+/// is collected. The pattern then names the id like one of an image the host decoded
+/// (`OP2D_SET_FILL_STYLE_PATTERN`). A canvas that cannot be copied registers nothing, and the pattern paints nothing.
+///
+/// Until this record existed `createPattern` returned null for a canvas, so every pattern fill from an offscreen tile
+/// (the way a 2D game builds a tiled background) was lost.
+pub const OP2D_CAPTURE_IMAGE: u32 = 572;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 572;
+pub const OP2D_END: u32 = 573;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -406,6 +421,8 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OP2D_DRAW_IMAGE | OP2D_DRAW_CANVAS => (10, &[]),
         // x, y, width, height, snapshot_id
         OP2D_CAPTURE_SNAPSHOT => (6, &[]),
+        // image_id
+        OP2D_CAPTURE_IMAGE => (2, &[]),
         OP2D_DRAW_IMAGE_BATCH => {
             return Some(RecordSpec::Words {
                 prefix_words: 1,
