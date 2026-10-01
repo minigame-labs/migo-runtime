@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- WebGL: a context on an offscreen canvas began with a 1x1 viewport and scissor
+  box. A GL context takes the size of the surface it is first made current with,
+  and an offscreen canvas is created as a 1x1 pbuffer and sized by the content
+  afterwards, so every draw was clipped to one pixel until the content called
+  `viewport` itself, and `enable(SCISSOR_TEST)` without a `scissor` call clipped
+  everything for good. `getParameter(VIEWPORT)` and `getParameter(SCISSOR_BOX)`
+  now start at the drawing buffer's size, set when the first GL command reaches
+  the canvas.
 - Canvas2D compositing: `source-in`, `source-out`, `destination-in`,
   `destination-atop` and `copy` only changed the pixels of the shape being drawn.
   The specification composites against a bitmap that is transparent beyond the

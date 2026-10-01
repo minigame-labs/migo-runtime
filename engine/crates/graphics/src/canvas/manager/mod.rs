@@ -481,6 +481,9 @@ pub(crate) struct CanvasManager {
     /// How many times each canvas that has been used as a source has been painted on since it was created. Only
     /// canvases that have been a source are here, so a canvas nothing draws from costs nothing per draw.
     canvas_generations: HashMap<CanvasId, u64>,
+    /// Pbuffer canvases whose WebGL context has not yet been given its initial viewport and scissor box; see
+    /// [`CanvasManager::ensure_gl_initial_state`].
+    gl_initial_state_pending: HashSet<CanvasId>,
 
     /// Last eglSwapInterval value to avoid redundant driver calls per frame.
     /// Initialized to -1 (sentinel) so the first swap forces an actual EGL call.
@@ -1139,6 +1142,7 @@ impl CanvasManager {
             canvas_source_cache_bytes: 0,
             canvas_source_clock: 0,
             canvas_generations: HashMap::new(),
+            gl_initial_state_pending: HashSet::new(),
             last_swap_interval: -1, // force first eglSwapInterval call
             context_lost: false,
             surface_unavailable: false,
@@ -1314,6 +1318,7 @@ impl CanvasManager {
                 default_framebuffer_uninitialised: true,
             },
         );
+        self.gl_initial_state_pending.insert(id);
         // Offscreen canvas created → bypass no longer valid.
         self.evaluate_bypass();
 
@@ -3154,6 +3159,7 @@ impl CanvasManager {
             // A canvas that was drawn from leaves no copy of itself behind.
             self.drop_canvas_source_copy(id);
             self.canvas_generations.remove(&id);
+            self.gl_initial_state_pending.remove(&id);
 
             self.image_registry.remove_canvas_images(id);
             let _ = self.restore_bound(saved_bound);
@@ -3828,6 +3834,45 @@ impl CanvasManager {
         self.apply_default_framebuffer_mapping(id);
         self.clear_fresh_default_framebuffer(id);
 
+        Ok(())
+    }
+
+    /// Give a pbuffer canvas's WebGL context the viewport and scissor box the
+    /// specification starts it with -- the drawing buffer's size -- the first time
+    /// a GL command reaches it.
+    ///
+    /// A GL context takes the size of the surface it is first made current with, and an
+    /// offscreen canvas is created as a 1x1 pbuffer and sized by the content afterwards,
+    /// so a WebGL context began with a 1x1 viewport and scissor box: every draw clipped
+    /// to one pixel until the content set a viewport of its own, and `SCISSOR_TEST`
+    /// enabled without a `scissor` call clipped to one pixel for good.
+    ///
+    /// Run from the GL command handler, not from `make_current_needed`: a canvas is
+    /// made current by its first *2D batch* too -- the one that carries the content's
+    /// `width`/`height` assignments -- and that happens at the size it was registered
+    /// with. The content's own `viewport` command is applied after this, so it wins,
+    /// and the dedup shadow is set to what was set here so that command is not skipped
+    /// as a repeat of something the driver never received.
+    pub(crate) fn ensure_gl_initial_state(&mut self, id: CanvasId) -> EngineResult<()> {
+        // Nearly always empty: every pbuffer canvas is in here until its first GL command.
+        if self.gl_initial_state_pending.is_empty() || !self.gl_initial_state_pending.remove(&id) {
+            return Ok(());
+        }
+        let Some(entry) = self.canvases.get(&id) else {
+            return Ok(());
+        };
+        if entry.drawing_buffer.is_some() || self.contexts_2d.contains_key(&id) {
+            return Ok(());
+        }
+        let (w, h) = (entry.physical_width as i32, entry.physical_height as i32);
+        self.make_current_needed(id)?;
+        unsafe {
+            self.gl.viewport(0, 0, w, h);
+            self.gl.scissor(0, 0, w, h);
+        }
+        let shadow = self.gl_state.entry(id).or_default();
+        shadow.viewport = Some((0, 0, w, h));
+        shadow.last_scissor_rect = Some((0, 0, w, h));
         Ok(())
     }
 
@@ -6916,6 +6961,40 @@ mod recovery_source_guards {
         assert!(
             destroy.contains("drop_canvas_source_copy("),
             "destroy_canvas must release the canvas's copy"
+        );
+    }
+
+    /// A pbuffer canvas's WebGL context starts with the viewport and scissor box of
+    /// the drawing buffer, not of the 1x1 pbuffer the canvas was registered as.
+    ///
+    /// The hook must run where the first *GL* command reaches the canvas -- the
+    /// first 2D batch also makes the canvas current, at the size it was
+    /// registered with, before the content's `width`/`height` assignments in that
+    /// same batch have run -- and it must be consumed once per canvas and
+    /// forgotten with it. Structural because each needs a GL context; the
+    /// behaviour is migo-conformance's `webgl-spec/default-viewport`.
+    #[test]
+    fn a_pbuffer_webgl_context_starts_at_the_drawing_buffer_size() {
+        const GL_HANDLER: &str = include_str!("../../renderergl/handler.rs");
+        let handle = function_body(GL_HANDLER, "pub(crate) fn handle_command(");
+        assert!(
+            handle.contains("ensure_gl_initial_state("),
+            "the GL command handler must give a fresh pbuffer canvas its initial viewport"
+        );
+        let current = function_body(MGR, "pub(crate) fn make_current_needed(");
+        assert!(
+            !current.contains("ensure_gl_initial_state("),
+            "make_current_needed runs for the first 2D batch too, before the canvas has its size"
+        );
+        let insert = function_body(MGR, "fn insert_offscreen(");
+        assert!(
+            insert.contains("gl_initial_state_pending.insert("),
+            "a new pbuffer canvas must be recorded as awaiting its initial viewport"
+        );
+        let destroy = function_body(MGR, "pub(crate) fn destroy_canvas(");
+        assert!(
+            destroy.contains("gl_initial_state_pending.remove("),
+            "destroy_canvas must forget a canvas that never ran a GL command"
         );
     }
 
