@@ -55,6 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Phaser 3 renders: dynamic text, `useProgram(null)`, integer uniforms. Found running Phaser on the runtime
+  (graphics, a canvas texture, `Text`; 5 of 6 checks passed, and then 6 of 6):
+  - **A canvas drawn and uploaded in the same frame became an empty texture.** `texImage2D(canvas)` of a
+    canvas with pending draws goes through a snapshot record whose `format`/`type` are zeros (the facade has
+    none to forward for the six-argument form); the GPU budget refuses an unsized internal format that does
+    not equal its format, so the upload was rejected -- logged once as "WebGL GPU storage rejected" -- and the
+    texture was never allocated. A texture without storage samples (0,0,0,1): Phaser's `Text` was an opaque black
+    box. Every text sprite built this way (Phaser, Cocos Labels) was affected; a canvas that had been read
+    back first went through the other path and worked, which is why no test saw it. The snapshot is RGBA8
+    pixels, so the budget now accounts it as such (`canvas_source_upload_format`).
+  - **`useProgram(null)` failed** with "program not found: 0" and left the previous program bound; it unbinds.
+  - **`uniform2i`, `uniform3i`, `uniform4i` did not exist** (WebGL 1; Phaser sets its integer vector uniforms
+    with them): now defined, over the array forms' records.
+  - `MIGO_GL_TRACE_FAILURES=1` makes the render thread log the command that failed beside its error. The error
+    named what went wrong, not which of the thousand calls of a frame asked for it, and finding that took bisecting
+    the content; it is how the first two items were found.
 - Pixi v7 renders: `getInternalformatParameter` exists. Pixi asks `gl.getInternalformatParameter(RENDERBUFFER,
   ..., SAMPLES)` while it creates its renderer and three.js when it makes a multisampled target, and the
   facade did not define it (a TypeError at construction). It is the driver's answer, descending as the

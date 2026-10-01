@@ -46,11 +46,8 @@
       ]
     },
     {
-      "reason": "Integer, unsigned and non-square-matrix uniforms. uniform1i and uniform{1..4}f/iv/fv exist; these are the siblings no record was added for (ivec2/3/4 and uvec uniforms, mat2x3 and friends).",
+      "reason": "Unsigned and non-square-matrix uniforms. uniform1i/2i/3i/4i, uniform{1..4}f/iv/fv exist; these are the siblings no record was added for (uvec uniforms and mat2x3 and friends: GL needs the unsigned and non-square entry points, so they need new records).",
       "methods": [
-        "uniform2i",
-        "uniform3i",
-        "uniform4i",
         "uniform1ui",
         "uniform2ui",
         "uniform3ui",

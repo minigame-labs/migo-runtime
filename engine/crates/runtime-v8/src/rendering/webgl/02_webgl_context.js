@@ -1014,6 +1014,9 @@ class WebGLRenderingContext {
         // shaderId -> Map(pname -> value)
         this._shaderParameterCache = new Map();
         this._jsErrorQueue = [];
+        // Scratch for the scalar integer-vector setters (`uniform2i`..`4i`): the stream copies the words as it
+        // encodes them, so one array per width serves every call without allocating.
+        this._uniformI32Scratch = [null, null, new Uint32Array(2), new Uint32Array(3), new Uint32Array(4)];
 
         // Client-side binding state. `getParameter(<X>_BINDING)` must return the
         // bound wrapper object (or null), per the WebGL spec -- engines commonly
@@ -2517,6 +2520,43 @@ class WebGLRenderingContext {
     uniform4f(location, x, y, z, w) {
         // opcode 58: H C I F F F F.
         encodeUniform4f(this._canvasId, _loc(location), +x, +y, +z, +w);
+    }
+    // The integer vector setters with their components as arguments (WebGL 1: `ivec2`/`ivec3`/`ivec4` and
+    // `bvec` uniforms). Phaser sets its integer uniforms through them. Each is the array form of the same width,
+    // so the record, the validation and the raw fallback are the ones `uniformNiv` already has; `| 0` is the
+    // ToInt32 WebIDL's GLint applies, and storing it in a Uint32Array keeps its bits.
+    uniform2i(location, x, y) {
+        const loc = _loc(location);
+        const payload = this._uniformI32Scratch[2];
+        payload[0] = x | 0;
+        payload[1] = y | 0;
+        if (!encodeUniform2iv(this._canvasId, loc, payload)) {
+            flushRenderCommandStream();
+            _rawUniform2iv(this._canvasId, loc, payload);
+        }
+    }
+    uniform3i(location, x, y, z) {
+        const loc = _loc(location);
+        const payload = this._uniformI32Scratch[3];
+        payload[0] = x | 0;
+        payload[1] = y | 0;
+        payload[2] = z | 0;
+        if (!encodeUniform3iv(this._canvasId, loc, payload)) {
+            flushRenderCommandStream();
+            _rawUniform3iv(this._canvasId, loc, payload);
+        }
+    }
+    uniform4i(location, x, y, z, w) {
+        const loc = _loc(location);
+        const payload = this._uniformI32Scratch[4];
+        payload[0] = x | 0;
+        payload[1] = y | 0;
+        payload[2] = z | 0;
+        payload[3] = w | 0;
+        if (!encodeUniform4iv(this._canvasId, loc, payload)) {
+            flushRenderCommandStream();
+            _rawUniform4iv(this._canvasId, loc, payload);
+        }
     }
     uniform1iv(location, value) {
         const loc = _loc(location);
