@@ -316,8 +316,25 @@ pub const OP2D_CLIP_EVEN_ODD: u32 = 569;
 /// the facade only knew images the host had decoded.
 pub const OP2D_DRAW_CANVAS: u32 = 570;
 
+// ─── Pixels written to the canvas (571) ──────────────────────────────────────
+
+/// `putImageData`: `H x:I y:I width:U height:U byte_length | rgba`, the pixels as `ImageData.data` has them -- RGBA8, not
+/// premultiplied, rows top to bottom with no padding -- and `byte_length` exactly `width * height * 4`.
+///
+/// The record replaces the pixels of the rectangle it names: not drawn through the transform, the clip, `globalAlpha`,
+/// the composite operation or the shadow, which is the one place the specification says a canvas call ignores its drawing
+/// state. A producer splits a large `ImageData` into bands of rows, each its own record with its own `y`, so a record
+/// stays well inside a packet (`MAX_TOTAL_BYTES`) and a band is the same write as the whole would have been.
+///
+/// Until this record existed `putImageData` was an empty function: p5.js's `updatePixels`, EaselJS's filters and every
+/// game that edits pixels on the CPU changed nothing.
+pub const OP2D_PUT_IMAGE_DATA: u32 = 571;
+
+/// The most pixel bytes a producer should put in one `OP2D_PUT_IMAGE_DATA`: a band of rows is cut to fit it.
+pub const PUT_IMAGE_DATA_BAND_BYTES: u32 = 1024 * 1024;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 571;
+pub const OP2D_END: u32 = 572;
 
 /// The longest dash pattern a record may carry.
 ///
@@ -412,6 +429,16 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
                 prefix_words: 4,
                 presence_word: None,
                 text: true,
+                stageable: false,
+            });
+        }
+        // x, y, width, height, then the pixels. That `byte_length` is `width * height * 4` is a fact about this record's
+        // meaning, not its shape, so the decoder checks it where it reads the words.
+        OP2D_PUT_IMAGE_DATA => {
+            return Some(RecordSpec::Bytes {
+                prefix_words: 5,
+                presence_word: None,
+                text: false,
                 stageable: false,
             });
         }

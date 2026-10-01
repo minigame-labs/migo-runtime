@@ -1401,6 +1401,45 @@ export function op_set_stroke_style(canvasId, colorStr) {
   emit2DColor(smiU32(canvasId, "canvas_id"), R.OP2D_SET_STROKE_STYLE, stringOf(colorStr, "color_str"));
 }
 
+/**
+ * `putImageData`: the rectangle's pixels, RGBA8 and not premultiplied, replace the canvas's at (x, y).
+ *
+ * The facade has cut the dirty rectangle and the canvas's bounds out of the `ImageData`, so the buffer is exactly
+ * `width * height * 4` bytes; one that is not is dropped, as the in-process op drops it. A rectangle larger than a band is
+ * written as bands of whole rows, each its own record with its own `y`: the same write, in pieces a packet holds.
+ */
+export function op_put_image_data(canvasId, x, y, width, height, pixels) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const left = toI32(x, "x");
+  const top = toI32(y, "y");
+  const w = smiU32(width, "width");
+  const h = smiU32(height, "height");
+  const bytes = bytesOf(pixels, "pixels");
+  if (w === 0 || h === 0 || bytes.byteLength !== w * h * 4) return;
+  const rowBytes = w * 4;
+  const rowsPerBand = Math.max(1, Math.floor(R.PUT_IMAGE_DATA_BAND_BYTES / rowBytes));
+  for (let row = 0; row < h; row += rowsPerBand) {
+    const rows = Math.min(rowsPerBand, h - row);
+    const band = bytes.subarray(row * rowBytes, (row + rows) * rowBytes);
+    const headerWords = 6;
+    const wordCount = headerWords + Math.ceil(band.byteLength / 4);
+    if (wordCount > MAX_RECORD_WORDS) {
+      recordProducerError(canvas, OUT_OF_MEMORY);
+      return;
+    }
+    record[0] = ((wordCount << 12) | R.OP2D_PUT_IMAGE_DATA) >>> 0;
+    record[1] = left >>> 0;
+    record[2] = (top + row) >>> 0;
+    record[3] = w;
+    record[4] = rows;
+    record[5] = band.byteLength;
+    if (!appendCanvas2DRecord(canvas, record, headerWords, band)) {
+      recordProducerError(canvas, OUT_OF_MEMORY);
+      return;
+    }
+  }
+}
+
 export function op_set_shadow_color(canvasId, colorStr) {
   emit2DColor(smiU32(canvasId, "canvas_id"), R.OP2D_SET_SHADOW_COLOR, stringOf(colorStr, "color_str"));
 }

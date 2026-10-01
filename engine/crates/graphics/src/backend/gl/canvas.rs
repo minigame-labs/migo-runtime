@@ -627,6 +627,30 @@ impl Canvas2DRenderer {
                 // command stream stays valid.
                 false
             }
+            // `putImageData` replaces the bitmap's pixels: Skia's `writePixels` ignores the matrix, the clip and the
+            // paint (so `globalAlpha`, the composite operation and the shadow), which is what the specification asks
+            // of it, and converts from the unpremultiplied RGBA `ImageData` holds to what the surface stores.
+            PutImageData {
+                x,
+                y,
+                width,
+                height,
+                pixels,
+            } => {
+                let (Ok(w), Ok(h)) = (i32::try_from(*width), i32::try_from(*height)) else {
+                    return false;
+                };
+                if w == 0 || h == 0 {
+                    return false;
+                }
+                let info = skia_safe::ImageInfo::new(
+                    (w, h),
+                    skia_safe::ColorType::RGBA8888,
+                    skia_safe::AlphaType::Unpremul,
+                    None,
+                );
+                canvas.write_pixels(&info, pixels, *width as usize * 4, (*x, *y))
+            }
             GetImageData { .. } => {
                 tracing::warn!(
                     "Canvas2DCmd::GetImageData reached `apply_env` — dispatcher \
@@ -779,5 +803,181 @@ mod set_font_tests {
         // 12pt == 16px at 96dpi
         assert!((state.text.size - 16.0).abs() < 1e-3);
         assert_eq!(&*state.text.families, &vec!["Helvetica".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod put_image_data_tests {
+    use super::*;
+    use crate::backend::gl::paint::NullPatternResolver;
+
+    fn read(surface: &mut skia_safe::Surface, x: i32, y: i32) -> [u8; 4] {
+        let info = skia_safe::ImageInfo::new(
+            (1, 1),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Unpremul,
+            None,
+        );
+        let mut px = [0u8; 4];
+        assert!(surface.read_pixels(&info, &mut px, 4, (x, y)));
+        px
+    }
+
+    fn apply(renderer: &mut Canvas2DRenderer, surface: &mut skia_safe::Surface, cmd: Canvas2DCmd) {
+        let env = DrawEnv {
+            canvas: surface.canvas(),
+            text: None,
+            resolver: &NullPatternResolver,
+        };
+        renderer.apply_env(&env, &cmd);
+    }
+
+    /// `putImageData` replaces pixels: whatever the drawing state is -- a transform, a clip, `globalAlpha`, a composite
+    /// operation -- it neither moves, clips, fades nor combines the pixels it writes (HTML Standard, "putImageData").
+    #[test]
+    fn put_image_data_ignores_the_drawing_state() {
+        let mut surface = skia_safe::surfaces::raster_n32_premul((16, 16)).unwrap();
+        let mut renderer = Canvas2DRenderer::new();
+        // Paint the whole canvas blue, then make every part of the state hostile.
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::SetFillStyle {
+                color: ProtocolColor::rgb(0, 0, 255),
+            },
+        );
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::FillRect {
+                x: 0.0,
+                y: 0.0,
+                w: 16.0,
+                h: 16.0,
+            },
+        );
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::Translate { x: 5.0, y: 5.0 },
+        );
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::Scale { x: 3.0, y: 3.0 },
+        );
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::SetGlobalAlpha { alpha: 0.25 },
+        );
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::SetCompositeOperation { op: 5 }, // destination-in: it would erase most of what is under the write
+        );
+        apply(&mut renderer, &mut surface, Canvas2DCmd::BeginPath);
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+        );
+        apply(&mut renderer, &mut surface, Canvas2DCmd::Clip);
+
+        // Two pixels: opaque red, and half-transparent green (unpremultiplied bytes, as ImageData holds them).
+        let pixels = vec![255, 0, 0, 255, 0, 255, 0, 128];
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::PutImageData {
+                x: 2,
+                y: 3,
+                width: 2,
+                height: 1,
+                pixels,
+            },
+        );
+        assert_eq!(
+            read(&mut surface, 2, 3),
+            [255, 0, 0, 255],
+            "opaque, in place, unclipped"
+        );
+        let green = read(&mut surface, 3, 3);
+        assert!(
+            green[0] == 0 && green[1] >= 254 && green[2] == 0 && (127..=129).contains(&green[3]),
+            "half-transparent green replaces the blue (it is not blended with it): {green:?}"
+        );
+        assert_eq!(
+            read(&mut surface, 4, 3),
+            [0, 0, 255, 255],
+            "next to the write nothing changed"
+        );
+    }
+
+    /// A rectangle that hangs over the canvas's edge writes the part that is inside, and one wholly outside writes nothing.
+    #[test]
+    fn put_image_data_is_clipped_to_the_canvas_edges() {
+        let mut surface = skia_safe::surfaces::raster_n32_premul((4, 4)).unwrap();
+        let mut renderer = Canvas2DRenderer::new();
+        let pixels: Vec<u8> = (0..16).flat_map(|i| [i as u8 * 10, 0, 0, 255]).collect();
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::PutImageData {
+                x: -2,
+                y: -2,
+                width: 4,
+                height: 4,
+                pixels,
+            },
+        );
+        // pixel (2,2) of the image (index 10) lands at (0,0)
+        assert_eq!(read(&mut surface, 0, 0), [100, 0, 0, 255]);
+        assert_eq!(read(&mut surface, 1, 1), [150, 0, 0, 255]);
+        assert_eq!(
+            read(&mut surface, 2, 2),
+            [0, 0, 0, 0],
+            "past the image: untouched"
+        );
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::PutImageData {
+                x: 40,
+                y: 40,
+                width: 1,
+                height: 1,
+                pixels: vec![1, 2, 3, 255],
+            },
+        );
+        assert_eq!(
+            read(&mut surface, 3, 3),
+            [0, 0, 0, 0],
+            "wholly outside: nothing"
+        );
+    }
+
+    /// A buffer that is not `width * height * 4` bytes writes nothing rather than something shifted.
+    #[test]
+    fn put_image_data_with_a_short_buffer_writes_nothing() {
+        let mut surface = skia_safe::surfaces::raster_n32_premul((4, 4)).unwrap();
+        let mut renderer = Canvas2DRenderer::new();
+        apply(
+            &mut renderer,
+            &mut surface,
+            Canvas2DCmd::PutImageData {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                pixels: vec![9; 8],
+            },
+        );
+        assert_eq!(read(&mut surface, 0, 0), [0, 0, 0, 0]);
     }
 }

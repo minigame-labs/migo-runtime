@@ -321,6 +321,25 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
         OP2D_DRAW_IMAGE_BATCH => Canvas2DCmd::DrawImageBatch {
             draws: draw_image_entries(record)?,
         },
+        OP2D_PUT_IMAGE_DATA => {
+            let (x, y) = (record[1] as i32, record[2] as i32);
+            let (width, height) = (record[3], record[4]);
+            // The size is the record's own claim and the bytes are what it carries: a record whose two disagree is one
+            // the renderer cannot write, and it drops the command rather than write a guess.
+            let expected = (width as usize)
+                .checked_mul(height as usize)?
+                .checked_mul(4)?;
+            if record[5] as usize != expected {
+                return None;
+            }
+            Canvas2DCmd::PutImageData {
+                x,
+                y,
+                width,
+                height,
+                pixels: bytes_of(record, 5)?,
+            }
+        }
 
         _ => return None,
     })
@@ -394,6 +413,22 @@ fn text_of(record: &[u32], prefix_words: usize) -> Option<String> {
         bytes.extend_from_slice(&words[whole].to_le_bytes()[..len % 4]);
     }
     String::from_utf8(bytes).ok()
+}
+
+/// A payload record's bytes: the length word at `prefix_words`, then that many bytes in little-endian words.
+fn bytes_of(record: &[u32], prefix_words: usize) -> Option<Vec<u8>> {
+    let len = record[prefix_words] as usize;
+    let words = &record[prefix_words + 1..];
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).ok()?;
+    let whole = len / 4;
+    for word in &words[..whole] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    if len % 4 != 0 {
+        bytes.extend_from_slice(&words[whole].to_le_bytes()[..len % 4]);
+    }
+    Some(bytes)
 }
 
 /// A record's `f32` list: the count word at `prefix_words`, then the bits.

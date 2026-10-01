@@ -608,6 +608,8 @@ RAN_TESTS+=("$TEST_DIR/canvas2d-color.test.mjs")
 # side -- and the empty answer both reads give where the op gives an empty Vec.
 node "$TEST_DIR/canvas2d-pixels.test.mjs"
 RAN_TESTS+=("$TEST_DIR/canvas2d-pixels.test.mjs")
+node "$TEST_DIR/put-image-data.test.mjs"
+RAN_TESTS+=("$TEST_DIR/put-image-data.test.mjs")
 
 # --- readPixels, whose answer has to be placed rather than returned ---------
 #

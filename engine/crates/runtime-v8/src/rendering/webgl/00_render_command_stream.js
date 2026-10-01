@@ -1211,6 +1211,9 @@ const OP2D_CAPTURE_SNAPSHOT = 566;
 const OP2D_SET_IMAGE_SMOOTHING = 567;
 const OP2D_FILL_EVEN_ODD = 568;
 const OP2D_DRAW_CANVAS = 570;
+// putImageData: carries the pixels as a payload, which the in-process runtime sends as an op (op_put_image_data) and
+// only the external-frame producer writes as this record.
+const OP2D_PUT_IMAGE_DATA = 571;
 const OP2D_CLIP_EVEN_ODD = 569;
 
 // --- 2D canvas selection ---

@@ -83,6 +83,7 @@ import {
     op_set_fill_style_pattern,
     op_set_stroke_style_pattern,
     op_set_shadow_color,
+    op_put_image_data,
 } from "ext:core/ops";
 import { domException } from "ext:host_v8_base/06_dom_exception.js";
 
@@ -1370,8 +1371,76 @@ class CanvasRenderingContext2D {
         };
     }
 
-    putImageData(imageData, dx, dy) {
-        // Not implemented
+    // `putImageData(imageData, dx, dy)` and `putImageData(imageData, dx, dy, dirtyX, dirtyY, dirtyWidth, dirtyHeight)`:
+    // the pixels of `imageData` -- or only its dirty rectangle -- replace the canvas's at (dx, dy). The call ignores the
+    // transform, the clip, `globalAlpha`, the composite operation and the shadow (HTML Standard, "putImageData"). The
+    // algorithm below is the specification's; the arguments are WebIDL `long`s (a non-finite one is 0).
+    putImageData(imageData, dx, dy, dirtyX, dirtyY, dirtyWidth, dirtyHeight) {
+        const argc = arguments.length;
+        if (argc !== 3 && argc !== 7) {
+            throw new TypeError(
+                `putImageData: 3 or 7 arguments required, but ${argc} present.`);
+        }
+        if (imageData === null || typeof imageData !== 'object'
+                || typeof imageData.width !== 'number' || typeof imageData.height !== 'number'
+                || imageData.data === null || typeof imageData.data !== 'object') {
+            throw new TypeError("putImageData: parameter 1 is not of type 'ImageData'.");
+        }
+        const width = imageData.width | 0;
+        const height = imageData.height | 0;
+        const data = imageData.data;
+        if (width <= 0 || height <= 0 || data.length < width * height * 4) {
+            throw new TypeError("putImageData: parameter 1 is not of type 'ImageData'.");
+        }
+        dx |= 0;
+        dy |= 0;
+        let x = 0;
+        let y = 0;
+        let w = width;
+        let h = height;
+        if (argc === 7) {
+            x = dirtyX | 0;
+            y = dirtyY | 0;
+            w = dirtyWidth | 0;
+            h = dirtyHeight | 0;
+            // A negative width or height names the rectangle from its other corner.
+            if (w < 0) { x += w; w = -w; }
+            if (h < 0) { y += h; h = -h; }
+            // Only what lies inside the ImageData is taken.
+            if (x < 0) { w += x; x = 0; }
+            if (y < 0) { h += y; y = 0; }
+            if (x + w > width) w = width - x;
+            if (y + h > height) h = height - y;
+        }
+        if (w <= 0 || h <= 0) return;
+        // Where it lands, and the part of that inside the canvas: pixels past the edge are not sent.
+        let destX = dx + x;
+        let destY = dy + y;
+        const canvasW = this._canvas.width | 0;
+        const canvasH = this._canvas.height | 0;
+        let srcX = x;
+        let srcY = y;
+        if (destX < 0) { srcX -= destX; w += destX; destX = 0; }
+        if (destY < 0) { srcY -= destY; h += destY; destY = 0; }
+        if (destX + w > canvasW) w = canvasW - destX;
+        if (destY + h > canvasH) h = canvasH - destY;
+        if (w <= 0 || h <= 0) return;
+        // The rows of the rectangle, contiguous: the ImageData's own bytes when the rectangle is whole rows, a copy of the
+        // rows otherwise.
+        let pixels;
+        if (w === width) {
+            pixels = new Uint8Array(data.buffer, data.byteOffset + srcY * width * 4, w * h * 4);
+        } else {
+            pixels = new Uint8Array(w * h * 4);
+            const rowBytes = w * 4;
+            for (let row = 0; row < h; row++) {
+                const from = ((srcY + row) * width + srcX) * 4;
+                pixels.set(new Uint8Array(data.buffer, data.byteOffset + from, rowBytes), row * rowBytes);
+            }
+        }
+        // Not a stream record: the bytes go in the frame as a command, behind everything the stream already holds.
+        this._barrier();
+        op_put_image_data(this._canvasId, destX, destY, w, h, pixels);
     }
 
     // ==================== Image smoothing ====================

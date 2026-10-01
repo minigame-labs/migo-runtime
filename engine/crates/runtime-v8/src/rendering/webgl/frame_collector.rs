@@ -118,6 +118,8 @@ impl Canvas2DSegment {
             Canvas2DCmd::StrokeRect { .. } // lineWidth expansion unknown JS-side
             | Canvas2DCmd::FillText { .. }
             | Canvas2DCmd::StrokeText { .. }
+            // Device pixels, not object space: the hint's rectangles are object-space, so this is one it cannot name.
+            | Canvas2DCmd::PutImageData { .. }
             | Canvas2DCmd::Fill
             | Canvas2DCmd::FillEvenOdd
             | Canvas2DCmd::Stroke
@@ -866,6 +868,28 @@ impl UnifiedFrameCollector {
     #[inline]
     pub(crate) fn set_line_dash_offset(&mut self, canvas_id: u32, offset: f32) {
         self.push_canvas2d(canvas_id, Canvas2DCmd::SetLineDashOffset { offset });
+    }
+
+    #[inline]
+    pub(crate) fn put_image_data(
+        &mut self,
+        canvas_id: u32,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    ) {
+        self.push_canvas2d(
+            canvas_id,
+            Canvas2DCmd::PutImageData {
+                x,
+                y,
+                width,
+                height,
+                pixels,
+            },
+        );
     }
 
     #[inline]

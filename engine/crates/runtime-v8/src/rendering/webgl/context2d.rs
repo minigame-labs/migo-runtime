@@ -544,6 +544,36 @@ fn encode_text_metrics(m: &TextMetrics) -> Vec<u8> {
     frame_decode::canvas2d::encode_text_metrics(m)
 }
 
+/// `putImageData`: `width * height` RGBA8 pixels written at `(x, y)` in the canvas's own pixels, replacing what is there
+/// (no transform, clip, alpha, composite or shadow applies). The facade has already cut the dirty rectangle and the
+/// canvas's bounds out of the `ImageData`, so the buffer is exactly the rectangle; one that is not is dropped, not guessed
+/// at. The bytes are copied into the command because the frame outlives the JavaScript buffer.
+#[op2(fast)]
+pub fn op_put_image_data(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    x: i32,
+    y: i32,
+    #[smi] width: u32,
+    #[smi] height: u32,
+    #[buffer] pixels: &[u8],
+) {
+    let Some(expected) = checked_canvas_rgba_byte_len(width, height) else {
+        error!("canvas2d put_image_data: dimensions exceed the RGBA cap");
+        return;
+    };
+    if pixels.len() != expected {
+        error!(
+            "canvas2d put_image_data: {} bytes for a {width}x{height} rectangle",
+            pixels.len()
+        );
+        return;
+    }
+    with_collector(state, |collector| {
+        collector.put_image_data(canvas_id, x, y, width, height, pixels.to_vec());
+    });
+}
+
 const OP_GET_IMAGE_DATA: &str = "canvas2d get_image_data";
 #[op2]
 #[buffer]
