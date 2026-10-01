@@ -60,16 +60,33 @@ pub(crate) async fn op_await_next_frame(state: Rc<RefCell<OpState>>) -> Result<f
     // R1: publish demand and kick the one-shot arm BEFORE awaiting, so an idle
     // display clock wakes up and the render thread knows a waiter is pending
     // (it only signals RAF when the demand latch is set).
-    let ticket = raf_publish_demand_and_arm(&demand, arm.as_ref());
+    let mut ticket = raf_publish_demand_and_arm(&demand, arm.as_ref());
 
     if !RAF_WAIT_LOGGED.swap(true, Ordering::Relaxed) {
         tracing::info!("op_await_next_frame first call: host={}", host_id);
     }
 
-    let ts = rx
+    let mut ts = rx
         .recv(ticket)
         .await
         .ok_or_else(|| RafError::Message("RAF channel closed".into()))?;
+
+    // The render thread signals every vsync while animating, whether or not JavaScript is waiting,
+    // so that a consumer that is keeping up never blocks (see `raf_signal::frame_matches_ticket`).
+    // A signal can therefore be older than this request. A frame or two is the point of that design;
+    // a signal from before an idle screen or a long frame is not a frame time, and handing it to a
+    // callback gives the callback a clock that runs backwards across the wake-up. Wait for a signal
+    // made after the arm instead -- a bounded number of times, in case the two clocks disagree.
+    for _ in 0..RAF_STALE_RETRIES {
+        if !raf_signal_is_stale(ts, shared::time_origin::elapsed_ms()) {
+            break;
+        }
+        ticket = raf_publish_demand_and_arm(&demand, arm.as_ref());
+        ts = rx
+            .recv(ticket)
+            .await
+            .ok_or_else(|| RafError::Message("RAF channel closed".into()))?;
+    }
 
     if !RAF_RECV_LOGGED.swap(true, Ordering::Relaxed) {
         tracing::info!(
@@ -80,6 +97,20 @@ pub(crate) async fn op_await_next_frame(state: Rc<RefCell<OpState>>) -> Result<f
     }
 
     Ok(ts)
+}
+
+/// How old a frame signal may be, at the moment a callback asks for one, and still be a frame time.
+/// Three display periods at 60 Hz: the free-run pre-signal is at most one period old, and a consumer
+/// a frame behind is two.
+pub(crate) const RAF_STALE_AFTER_MS: f64 = 50.0;
+
+/// How many times a stale signal is passed over before the next one is taken whatever its age.
+const RAF_STALE_RETRIES: usize = 3;
+
+/// Whether the frame signal stamped `ts_ms` (on the process timeline, `shared::time_origin`) is too
+/// old to be the time of the frame a request made at `now_ms` is waiting for.
+pub(crate) fn raf_signal_is_stale(ts_ms: f64, now_ms: f64) -> bool {
+    now_ms - ts_ms > RAF_STALE_AFTER_MS
 }
 
 /// Publish RAF demand and kick the one-shot vsync arm — the pre-await half of
@@ -121,6 +152,23 @@ mod tests {
     use shared::raf_signal::RafDemand;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_signal_from_before_an_idle_screen_is_stale_and_the_presignal_of_a_frame_is_not() {
+        use super::{RAF_STALE_AFTER_MS, raf_signal_is_stale};
+        // the free-run pre-signal: one display period old, or two when a frame behind
+        assert!(!raf_signal_is_stale(1_000.0, 1_016.7));
+        assert!(!raf_signal_is_stale(1_000.0, 1_033.4));
+        // a signal made before 300 ms of idle is not a frame time
+        assert!(raf_signal_is_stale(1_000.0, 1_300.0));
+        // the boundary is the constant, and a timestamp ahead of now (a vsync target) is never stale
+        assert!(!raf_signal_is_stale(1_000.0, 1_000.0 + RAF_STALE_AFTER_MS));
+        assert!(raf_signal_is_stale(
+            1_000.0,
+            1_000.0 + RAF_STALE_AFTER_MS + 0.01
+        ));
+        assert!(!raf_signal_is_stale(1_020.0, 1_000.0));
+    }
 
     #[test]
     fn publishes_demand_and_kicks_arm_before_blocking() {

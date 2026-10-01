@@ -83,6 +83,7 @@ pub mod surface;
 pub mod text_measurer;
 pub mod text_texture_cache;
 pub mod thread_priority;
+pub mod time_origin;
 #[cfg(feature = "vfs")]
 pub mod vfs;
 

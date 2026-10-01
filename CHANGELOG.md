@@ -55,6 +55,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- The timestamp handed to a `requestAnimationFrame` callback is on the same
+  timeline as `performance.now()`, as in a browser. They were two clocks:
+  `performance.now()` counted from the creation of the JavaScript runtime, the
+  frame timestamp from the first vsync (or from the render thread's start where
+  there is no display clock). A game that had loaded for two seconds read
+  `ts = 0` on its first frame against a `performance.now()` of 2000, so a loop
+  starting with `dt = ts - performance.now()` had a negative first step and an
+  animation timeline anchored to `performance.now()` began two seconds behind.
+  Both now count from one process-wide origin (`shared::time_origin`), and the
+  vsync clock's timestamps are put on it by anchoring the first frame
+  (`RafTimeline`) and keeping the host clock's spacing after that.
+  `performance.timeOrigin` exists (it was `undefined`, so
+  `performance.timeOrigin + performance.now()` was `NaN`).
+- `requestAnimationFrame` after an idle screen or a long frame no longer receives
+  a timestamp from before the stall. The render thread signals every vsync while
+  animating so a consumer that keeps up never blocks; the signal went through a
+  bounded channel that dropped the NEWEST signal when full, so a consumer that
+  fell behind was handed the oldest two timestamps the render thread had written
+  (on Android's eventfd path the newest, which was always right). The first
+  callback after 300 ms of idle got a time 267 ms old, its successor a step of
+  that size. Every platform now keeps only the newest unconsumed signal, and a
+  signal more than 50 ms older than the request is passed over for the next one.
+  Found by migo-conformance's new `timers-spec` bundle (25 assertions: the
+  released v0.9.19 fails 3).
 - Web Audio: the errors the engine's own audio, `ImageData` and Canvas 2D code
   throw are the ones the specification names. They were written as
   `new DOMException(...)`, and `DOMException` is the host page's to provide: with
