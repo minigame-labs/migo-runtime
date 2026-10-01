@@ -25,6 +25,28 @@ impl Session {
             "fetch",
         )
         .expect("a client");
+        Self::with_client(policy, client)
+    }
+
+    /// A session whose client is `configure`d after the policy's own settings: the
+    /// environment's proxies are the machine's, so a test that means to be direct, or
+    /// to be proxied, says which.
+    fn configured(
+        policy: NetworkPolicy,
+        configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+    ) -> Self {
+        let builder = super::super::client::policy_client_builder(
+            "migo",
+            false,
+            &policy,
+            GateKind::FetchRedirect,
+            "fetch",
+        );
+        let client = configure(builder).build().expect("a client");
+        Self::with_client(policy, client)
+    }
+
+    fn with_client(policy: NetworkPolicy, client: Client) -> Self {
         Self {
             policy,
             client,
@@ -313,4 +335,156 @@ fn a_body_that_declares_no_length_is_charged_the_buffered_ceiling() {
     let pools = IoPools::new(9503);
     let _held = reserve_response_bytes(&pools, None).expect("the first fits");
     assert_eq!(MAX_BUFFERED_BODY_BYTES, 32 * 1024 * 1024);
+}
+
+/// A listener on the loopback that answers one connection with `reply` and hands back the request head it read.
+fn loopback_server(reply: &'static str) -> LoopbackServer {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    let port = listener.local_addr().unwrap().port();
+    let (sent, received) = std::sync::mpsc::channel();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = Arc::clone(&stop);
+    let handle = std::thread::spawn(move || {
+        // A connection that never comes is the point of the refusing tests: the thread polls until
+        // the test says it has looked.
+        listener.set_nonblocking(true).expect("a pollable listener");
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(_) if !stopped.load(std::sync::atomic::Ordering::Relaxed) => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if stream.read(&mut byte).unwrap_or(0) == 0 {
+                break;
+            }
+            head.push(byte[0]);
+        }
+        let _ = sent.send(String::from_utf8_lossy(&head).into_owned());
+        let _ = stream.write_all(reply.as_bytes());
+    });
+    LoopbackServer {
+        port,
+        received,
+        stop,
+        handle,
+    }
+}
+
+struct LoopbackServer {
+    port: u16,
+    received: std::sync::mpsc::Receiver<String>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl LoopbackServer {
+    /// Whether a connection arrived within `wait`, and the head of its request.
+    fn request_within(&self, wait: Duration) -> Option<String> {
+        self.received.recv_timeout(wait).ok()
+    }
+
+    fn finish(self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.handle.join().unwrap();
+    }
+}
+
+const OK_REPLY: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+
+fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
+/// A response the machine's proxy delivers is delivered.
+///
+/// The check that used to sit in `fetch_send` compared the address the response came from against the
+/// blocked ranges. Through a proxy that address is the proxy's: 127.0.0.1 for a local one (Clash, a
+/// corporate agent), a private address for a corporate one. With any proxy in the environment, every
+/// request failed with "connection to 127.0.0.1 is not allowed" after the server had answered it.
+#[test]
+fn a_response_delivered_by_a_proxy_on_the_loopback_is_delivered() {
+    let server = loopback_server(OK_REPLY);
+    let proxy = reqwest::Proxy::http(format!("http://127.0.0.1:{}", server.port)).unwrap();
+    let session = Session::configured(policy(&[], false), |builder| builder.proxy(proxy));
+
+    let handles = session.fetch("GET", "http://public.example/a").unwrap();
+    let answer = block_on(fetch_send(
+        &session.resources,
+        &session.pools,
+        handles.request_rid,
+    ))
+    .expect("the proxy's answer is the answer");
+    assert_eq!(answer.status, 200);
+
+    // It went through the proxy: the proxy read an absolute-form request line, for a host the machine
+    // never resolved.
+    let head = server
+        .request_within(Duration::from_secs(5))
+        .expect("the proxy was asked");
+    assert!(
+        head.starts_with("GET http://public.example/a HTTP/1.1"),
+        "{head}"
+    );
+    server.finish();
+}
+
+/// What the removed check guarded is still guarded, without it: a name that resolves to the loopback
+/// is refused by the client's own resolver before any connection is made, and the listener behind it
+/// never sees one.
+#[test]
+fn a_name_that_resolves_to_the_loopback_is_refused_before_it_connects() {
+    let server = loopback_server(OK_REPLY);
+    let session = Session::configured(policy(&[], false), |builder| builder.no_proxy());
+
+    let handles = session
+        .fetch("GET", &format!("http://localhost:{}/a", server.port))
+        .unwrap();
+    let error = block_on(fetch_send(
+        &session.resources,
+        &session.pools,
+        handles.request_rid,
+    ))
+    .expect_err("a loopback destination is refused");
+    assert!(
+        error.message.contains("error sending request")
+            || error
+                .message
+                .contains("not allowed (private/loopback address)"),
+        "{}",
+        error.message
+    );
+    assert!(
+        server.request_within(Duration::from_millis(600)).is_none(),
+        "the listener must never see a connection"
+    );
+    server.finish();
+}
+
+/// An IP literal never reaches the resolver (hyper bypasses it), so the gate refuses it when the
+/// request is built, and the listener never sees a connection either.
+#[test]
+fn an_ip_literal_on_the_loopback_is_refused_when_the_request_is_built() {
+    let server = loopback_server(OK_REPLY);
+    let session = Session::configured(policy(&[], false), |builder| builder.no_proxy());
+    let error = session
+        .fetch("GET", &format!("http://127.0.0.1:{}/a", server.port))
+        .expect_err("a loopback literal is refused");
+    assert!(error.message.contains("not allowed"), "{}", error.message);
+    assert!(server.request_within(Duration::from_millis(600)).is_none());
+    server.finish();
 }

@@ -55,6 +55,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migo-conformance on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- A proxy on the machine no longer breaks every network request. With an HTTP or
+  SOCKS proxy configured -- the `HTTP_PROXY`/`HTTPS_PROXY` environment or the
+  system setting, which the engine's client honours as the system WebView does --
+  every `request`, image and streamed audio fetch failed with `connection to
+  127.0.0.1 is not allowed (private/loopback address)` (errno 500) *after the
+  server had answered it*: the SSRF check on the address a response came from was
+  the proxy's address, 127.0.0.1 for a local proxy and a private one for a
+  corporate proxy. That check guarded nothing the client's own resolver and the
+  gate before the send do not already guard (a name resolving to a blocked
+  address is refused before any connection; an IP-literal URL is refused when the
+  request is built, and on every redirect hop), so it is gone, and tests pin both:
+  a response a loopback proxy delivers is delivered, and a loopback destination is
+  still refused without the listener behind it seeing a connection. Found by
+  trying `migo.request` from the macOS conformance host on a machine behind a
+  local proxy.
 - Starting many reads at once no longer fails most of them. A game does not read
   its assets one at a time: an asset loader starts dozens of `readFile` calls in
   one tick. Each whole-file read was charged the largest read a read can be
