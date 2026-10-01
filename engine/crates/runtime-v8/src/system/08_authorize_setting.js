@@ -1,5 +1,6 @@
 import { op_get_app_authorization_setting } from "ext:core/ops";
 
+import { failMessage } from "ext:host_v8_base/02_async.js";
 function getAppAuthorizeSetting() {
     try {
         const jsonString = op_get_app_authorization_setting();
@@ -10,7 +11,7 @@ function getAppAuthorizeSetting() {
         console.error("Failed to get app authorization setting:", error);
         
         const errorResult = {
-            errMsg: "getAppAuthorizeSetting:fail " + error.message,
+            errMsg: failMessage("getAppAuthorizeSetting", error),
             albumAuthorized: "not determined",
             bluetoothAuthorized: "not determined",
             cameraAuthorized: "not determined",

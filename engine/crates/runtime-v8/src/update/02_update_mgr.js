@@ -18,7 +18,7 @@
 // that fabricated was the one with no test and no @stub marker, so the prescreen
 // report told customers it was supported.
 
-import { createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { createListenerGroup, failMessage } from "ext:host_v8_base/02_async.js";
 
 class UpdateManager {
     constructor() {
@@ -90,7 +90,7 @@ function checkUpdate(options = {}) {
         return Promise.resolve(result);
     } catch (error) {
         const errorResult = {
-            errMsg: 'checkUpdate:fail ' + error.message,
+            errMsg: failMessage('checkUpdate', error),
         };
         if (typeof fail === 'function') {
             fail(errorResult);

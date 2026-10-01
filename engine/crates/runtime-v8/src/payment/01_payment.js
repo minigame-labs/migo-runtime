@@ -19,6 +19,7 @@ import {
     allocateHostCallbackId,
     parseHostCallbackId,
     invokeCallback,
+    failMessage,
 } from "ext:host_v8_base/02_async.js";
 
 const noop = function () {};
@@ -71,7 +72,7 @@ function requestMidasPayment(options) {
             }));
         } catch (e) {
             _pendingMidas.delete(requestId);
-            var res = { errMsg: 'requestMidasPayment:fail ' + (e.message || e), errCode: -1 };
+            var res = { errMsg: failMessage('requestMidasPayment', e), errCode: -1 };
             queueMicrotask(function () { fail(res); complete(res); reject(res); });
         }
     });
@@ -137,7 +138,7 @@ function requestMidasPaymentGameItem(options) {
             }));
         } catch (e) {
             _pendingMidasGameItem.delete(requestId);
-            var res = { errMsg: 'requestMidasPaymentGameItem:fail ' + (e.message || e), errCode: -1 };
+            var res = { errMsg: failMessage('requestMidasPaymentGameItem', e), errCode: -1 };
             queueMicrotask(function () { fail(res); complete(res); reject(res); });
         }
     });

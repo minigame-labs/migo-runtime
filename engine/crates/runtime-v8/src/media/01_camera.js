@@ -9,7 +9,7 @@ import {
   op_camera_listen_frame_change,
   op_camera_close_frame_change,
 } from "ext:core/ops";
-import { allocateHostCallbackId, wrapAsync, createListenerGroup, invokeCallback, errorMessage } from "ext:host_v8_base/02_async.js";
+import { allocateHostCallbackId, wrapAsync, createListenerGroup, invokeCallback, errorMessage, failMessage } from "ext:host_v8_base/02_async.js";
 
 // Camera instance registry: cameraId -> Camera
 const _cameras = new Map();
@@ -292,7 +292,7 @@ function createCamera(options = {}) {
 
     invokeCallback("createCamera", "success", options.success, { camera });
   } catch (e) {
-    const errMsg = "createCamera:fail " + (errorMessage(e));
+    const errMsg = failMessage("createCamera", e);
     invokeCallback("createCamera", "fail", options.fail, { errMsg });
     // The host refused, but the id is this runtime's: content still gets a
     // handle so its later calls fail cleanly instead of on `undefined`. With no

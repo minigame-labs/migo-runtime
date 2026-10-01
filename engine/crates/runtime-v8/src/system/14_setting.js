@@ -222,7 +222,7 @@ function subscribeAppMsg(options) {
 
 function checkUserLocation(options) {
     return wrapAsync('checkUserLocation', function () {
-        var allowed = !!_authSetting['scope.userLocation'];
+        var allowed = !!_cloneAuthSetting()['scope.userLocation'];
         return {
             authSetting: {
                 'scope.userLocation': allowed,
@@ -232,16 +232,33 @@ function checkUserLocation(options) {
     }, options);
 }
 
+// Asks for the permission, as `authorize` does: the host decides, and may put the question to the user. This used
+// to set its own map entry to true and answer success, which is the self-grant the host-owns-it design removed
+// (the map went, this line was left behind, and every call threw a ReferenceError instead).
 function getWritePhotosAlbum(options) {
-    return wrapAsync('getWritePhotosAlbum', function () {
-        _authSetting['scope.writePhotosAlbum'] = true;
-        return {};
-    }, options);
+    var opts = options || {};
+    // `authorize` answers `authorize:ok` / `authorize:fail ...`: the caller asked for this API.
+    var named = function (res) {
+        if (res && typeof res.errMsg === 'string') {
+            var colon = res.errMsg.indexOf(':');
+            return Object.assign({}, res, { errMsg: 'getWritePhotosAlbum' + res.errMsg.slice(colon) });
+        }
+        return res;
+    };
+    var wrap = function (cb) {
+        return typeof cb === 'function' ? function (res) { cb(named(res)); } : undefined;
+    };
+    return authorize({
+        scope: 'scope.writePhotosAlbum',
+        success: wrap(opts.success),
+        fail: wrap(opts.fail),
+        complete: wrap(opts.complete),
+    }).then(named, function (res) { throw named(res); });
 }
 
 function checkWritePhotosAlbum(options) {
     return wrapAsync('checkWritePhotosAlbum', function () {
-        var allowed = !!_authSetting['scope.writePhotosAlbum'];
+        var allowed = !!_cloneAuthSetting()['scope.writePhotosAlbum'];
         return {
             authSetting: {
                 'scope.writePhotosAlbum': allowed,
