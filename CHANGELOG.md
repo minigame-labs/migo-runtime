@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inflate, JPEG through a decoder that shares no code with the encoder) and is a CI step.
 
 ### Fixed
+- Storage: the last `setStorage` / `removeStorage` / `clearStorage` for a key is the one that wins. Async
+  mutations ran as blocking SQLite writes on the scheduler's file-system pool, which has several workers, so two
+  writes to one key could run at once and finish in either order: a burst of saves left an earlier value on
+  disk (an iPhone 12 lost the last write for one or two of twenty keys every run; a Mac, whose writes finish in
+  microseconds, never showed it). Mutations of one store now apply in the order they were asked for, by a chain
+  per storage directory that holds no lock while it waits and that a cancelled write does not stop. The place in
+  line is taken when the call is made -- in the order the host handled the requests -- and not when the task that
+  runs it is first polled, so the spawn order of a multi-threaded runtime cannot reorder them. Both executions
+  share the one path, so the embedded runtime gets the same guarantee.
 - Canvas: a WebGL canvas can be the source of `drawImage(canvas, ...)` on a 2D context and of
   `texImage2D` / `texSubImage2D` on another WebGL context (or its own), where both read nothing:
   the renderer copies 2D canvases only, and a WebGL canvas's pixels are a drawing buffer. What the

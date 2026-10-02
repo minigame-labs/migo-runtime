@@ -944,29 +944,23 @@ impl ServiceContext {
                     string(op, 0, key)?,
                     string(op, 1, value)?,
                 );
-                Box::pin(async move {
-                    migo_services::storage::set(scheduler, paths.as_deref(), key, value)
-                        .await
-                        .map(|()| OwnedValue::Null)
-                })
+                // The write takes its place among the store's writes here, while the
+                // calls are handled in the order they arrived, not when the spawned
+                // task is first polled: see `storage::run_mutate`.
+                let write = migo_services::storage::set(scheduler, paths.as_deref(), key, value);
+                Box::pin(async move { write.await.map(|()| OwnedValue::Null) })
             }
             id::op_storage_remove_async => {
                 let [key] = exactly(op, args)?;
                 let (scheduler, key) = (self.scheduler()?, string(op, 0, key)?);
-                Box::pin(async move {
-                    migo_services::storage::remove(scheduler, paths.as_deref(), key)
-                        .await
-                        .map(|()| OwnedValue::Null)
-                })
+                let write = migo_services::storage::remove(scheduler, paths.as_deref(), key);
+                Box::pin(async move { write.await.map(|()| OwnedValue::Null) })
             }
             id::op_storage_clear_async => {
                 let [] = exactly(op, args)?;
                 let scheduler = self.scheduler()?;
-                Box::pin(async move {
-                    migo_services::storage::clear(scheduler, paths.as_deref())
-                        .await
-                        .map(|()| OwnedValue::Null)
-                })
+                let write = migo_services::storage::clear(scheduler, paths.as_deref());
+                Box::pin(async move { write.await.map(|()| OwnedValue::Null) })
             }
             id::op_storage_info_async => {
                 let [] = exactly(op, args)?;

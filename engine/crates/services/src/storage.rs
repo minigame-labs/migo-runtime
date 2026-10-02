@@ -22,14 +22,18 @@
 //! detail. That difference predates this module and content can observe it, so
 //! it is preserved rather than tidied.
 
+use std::collections::HashMap;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Weak};
 
+use futures::channel::oneshot;
 use migo_io::scheduler::IoScheduler;
 use migo_io::storage_ops::{self, StorageInfo};
 use migo_io::task::{IoRequest, PriorityClass, RequestKind};
 use shared::error::{EngineError, ErrorCode};
+use parking_lot::Mutex;
 use shared::vfs::GamePaths;
 
 use crate::error::{ServiceError, detail_or_message, message_and_detail};
@@ -245,27 +249,98 @@ pub fn info_sync(
 
 // ---- Awaited: `StorageError` with summary and detail ----
 
+/// The mutations of one store, in the order they were asked for.
+///
+/// A mutation is a blocking SQLite write routed to the scheduler's file-system
+/// pool, which has several workers, so two writes to the same key can run at
+/// once and finish in either order: a burst of `setStorage` calls -- an autosave
+/// -- left an earlier value on disk. Which write is last is a property of the
+/// calls, not of which worker was quicker, so each mutation waits for the one
+/// asked for before it.
+///
+/// A mutation is the link after the previous: it holds the receiver of the one
+/// before it, and hands the next a sender that fires when its job has finished
+/// (or was dropped without running). No lock is held across a wait, and a link
+/// that is cancelled does not stop the line.
+#[derive(Default)]
+struct MutationChain {
+    tail: Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+impl MutationChain {
+    /// Take the next place in line: the receiver of the mutation before this one
+    /// (none if the line is empty), and the sender that lets the next one go.
+    fn enqueue(&self) -> (Option<oneshot::Receiver<()>>, oneshot::Sender<()>) {
+        let (finished, follows) = oneshot::channel();
+        let predecessor = self.tail.lock().replace(follows);
+        (predecessor, finished)
+    }
+}
+
+/// One chain per storage directory, kept only while something is in line.
+static MUTATION_CHAINS: LazyLock<Mutex<HashMap<PathBuf, Weak<MutationChain>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn mutation_chain(dir: &Path) -> Arc<MutationChain> {
+    let mut chains = MUTATION_CHAINS.lock();
+    if let Some(chain) = chains.get(dir).and_then(Weak::upgrade) {
+        return chain;
+    }
+    // Nothing in flight for a directory means nothing to wait for: its entry is
+    // dead weight, and so are the ones for games that are no longer running.
+    chains.retain(|_, chain| chain.strong_count() > 0);
+    let chain = Arc::new(MutationChain::default());
+    chains.insert(dir.to_path_buf(), Arc::downgrade(&chain));
+    chain
+}
+
 /// Route a blocking KvStore call through the IoScheduler as an async task. The
-/// four mutate-style calls share this shape.
-async fn run_mutate<F>(
+/// mutate-style calls share this shape.
+///
+/// Mutations of one directory apply in the order this was called. The place in
+/// line is taken here, when the future is made, and not when it is first polled:
+/// the caller that builds the future runs in the order the calls arrived, and a
+/// runtime that spawns them may poll them in any order.
+fn run_mutate<F>(
     scheduler: Arc<IoScheduler>,
     game_paths: Option<&GamePaths>,
     f: F,
-) -> Result<(), ServiceError>
+) -> impl Future<Output = Result<(), ServiceError>> + Send + use<F>
 where
     F: FnOnce(&Path) -> Result<(), EngineError> + Send + 'static,
 {
-    let dir = storage_dir(game_paths).map_err(async_error)?;
-    scheduler
-        .run_async(
-            IoRequest::StorageMutate {
-                request: RequestKind::Async,
-                priority: PriorityClass::from(RequestKind::Async),
-            },
-            move || f(&dir).map_err(async_error),
-        )
-        .await
-        .map_err(|error| storage_error(error.to_string()))?
+    let place = storage_dir(game_paths)
+        .map(|dir| {
+            let chain = mutation_chain(&dir);
+            let (predecessor, finished) = chain.enqueue();
+            (dir, chain, predecessor, finished)
+        })
+        .map_err(async_error);
+    async move {
+        let (dir, _chain, predecessor, finished) = place?;
+        if let Some(predecessor) = predecessor {
+            // An error is a predecessor that was dropped without running: it is
+            // finished either way.
+            let _ = predecessor.await;
+        }
+        scheduler
+            .run_async(
+                IoRequest::StorageMutate {
+                    request: RequestKind::Async,
+                    priority: PriorityClass::from(RequestKind::Async),
+                },
+                move || {
+                    let result = f(&dir).map_err(async_error);
+                    // Released when the job is done, not when the caller stops
+                    // waiting: a caller that gave up must not let the next write
+                    // start while this one is still running.
+                    drop(finished);
+                    result
+                },
+            )
+            .await
+            .map_err(|error| storage_error(error.to_string()))?
+    }
 }
 
 pub async fn get(
@@ -286,38 +361,40 @@ pub async fn get(
     .map_err(async_error)
 }
 
-pub async fn set(
+pub fn set(
     scheduler: Arc<IoScheduler>,
     game_paths: Option<&GamePaths>,
     key: String,
     value: String,
-) -> Result<(), ServiceError> {
-    check_value_and_key(&key, &value).map_err(storage_error)?;
-    run_mutate(scheduler, game_paths, move |dir| {
-        storage_ops::storage_set(dir, &key, &value, MAX_TOTAL_BYTES)
-    })
-    .await
+) -> impl Future<Output = Result<(), ServiceError>> + Send + use<> {
+    // Validated, and the place in line taken, when this is called.
+    let pending = check_value_and_key(&key, &value)
+        .map_err(storage_error)
+        .map(|()| {
+            run_mutate(scheduler, game_paths, move |dir| {
+                storage_ops::storage_set(dir, &key, &value, MAX_TOTAL_BYTES)
+            })
+        });
+    async move { pending?.await }
 }
 
-pub async fn remove(
+pub fn remove(
     scheduler: Arc<IoScheduler>,
     game_paths: Option<&GamePaths>,
     key: String,
-) -> Result<(), ServiceError> {
+) -> impl Future<Output = Result<(), ServiceError>> + Send + use<> {
     run_mutate(scheduler, game_paths, move |dir| {
         storage_ops::storage_remove(dir, &key, MAX_TOTAL_BYTES)
     })
-    .await
 }
 
-pub async fn clear(
+pub fn clear(
     scheduler: Arc<IoScheduler>,
     game_paths: Option<&GamePaths>,
-) -> Result<(), ServiceError> {
+) -> impl Future<Output = Result<(), ServiceError>> + Send + use<> {
     run_mutate(scheduler, game_paths, move |dir| {
         storage_ops::storage_clear(dir, MAX_TOTAL_BYTES)
     })
-    .await
 }
 
 pub async fn info(
@@ -449,6 +526,112 @@ mod tests {
             .block_on(get(scheduler, None, "k".into()))
             .expect_err("no game");
         assert_eq!(awaited.class, CLASS_STORAGE_ERROR);
+    }
+
+    fn paths(game: &str) -> GamePaths {
+        GamePaths::new("/data/files", "/data/cache", game, 1).expect("paths")
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+    }
+
+    /// A burst of `setStorage` calls left an earlier value on disk: the writes ran on
+    /// several workers and finished in whichever order. The last write for a key has
+    /// to be the last one asked for, whatever the workers do and whatever order the
+    /// futures are polled in.
+    #[test]
+    fn mutations_of_one_store_apply_in_the_order_they_were_asked_for() {
+        const N: usize = 24;
+        let scheduler = Arc::new(IoScheduler::new(1));
+        let paths = paths("storage-order");
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        // Asked for in order; each later one is quicker, so with nothing in line the
+        // last would finish first.
+        let writes: Vec<_> = (0..N)
+            .map(|i| {
+                let applied = Arc::clone(&applied);
+                run_mutate(Arc::clone(&scheduler), Some(&paths), move |_| {
+                    std::thread::sleep(std::time::Duration::from_millis(((N - i) * 2) as u64));
+                    applied.lock().push(i);
+                    Ok(())
+                })
+            })
+            .collect();
+        // Polled in the opposite order: the place in line is taken when the future is
+        // made, not when it is first polled.
+        runtime().block_on(async move {
+            let tasks: Vec<_> = writes.into_iter().rev().map(tokio::spawn).collect();
+            for task in tasks {
+                task.await.expect("joined").expect("applied");
+            }
+        });
+        assert_eq!(*applied.lock(), (0..N).collect::<Vec<_>>());
+    }
+
+    /// A write that is dropped before it runs does not stop the ones behind it.
+    #[test]
+    fn a_dropped_write_does_not_stop_the_line() {
+        let scheduler = Arc::new(IoScheduler::new(1));
+        let paths = paths("storage-dropped");
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let write = |i: usize| {
+            let applied = Arc::clone(&applied);
+            run_mutate(Arc::clone(&scheduler), Some(&paths), move |_| {
+                applied.lock().push(i);
+                Ok(())
+            })
+        };
+        let (first, second, third) = (write(0), write(1), write(2));
+        drop(second);
+        runtime().block_on(async move {
+            let both = async { first.await.and(third.await) };
+            tokio::time::timeout(std::time::Duration::from_secs(10), both)
+                .await
+                .expect("the write behind a dropped one was not left waiting")
+                .expect("applied");
+        });
+        assert_eq!(*applied.lock(), vec![0, 2]);
+    }
+
+    /// The line is per store: another game's writes do not wait behind this one's.
+    #[test]
+    fn two_stores_do_not_wait_for_each_other() {
+        let scheduler = Arc::new(IoScheduler::new(1));
+        let (one, two) = (paths("storage-one"), paths("storage-two"));
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let blocked = run_mutate(Arc::clone(&scheduler), Some(&one), move |_| {
+            // Holds the first store's line until the second store's write has run.
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|_| EngineError::from_detail(ErrorCode::Internal, "the other store waited".to_string()))
+        });
+        let free = run_mutate(scheduler, Some(&two), move |_| {
+            let _ = done_tx.send(());
+            Ok(())
+        });
+        runtime().block_on(async move {
+            let (a, b) = tokio::join!(tokio::spawn(blocked), tokio::spawn(free));
+            a.expect("joined").expect("the first store's write");
+            b.expect("joined").expect("the second store's write");
+        });
+    }
+
+    /// Nothing in line means no entry kept: a launcher that runs many games does not
+    /// collect a chain per game.
+    #[test]
+    fn a_finished_line_leaves_nothing_behind() {
+        let scheduler = Arc::new(IoScheduler::new(1));
+        let paths = paths("storage-pruned");
+        runtime().block_on(run_mutate(scheduler, Some(&paths), |_| Ok(()))).expect("applied");
+        let dir = storage_dir(Some(&paths)).expect("dir");
+        assert!(
+            MUTATION_CHAINS.lock().get(&dir).and_then(Weak::upgrade).is_none(),
+            "a chain with nothing in flight is not kept alive"
+        );
     }
 
     #[test]
