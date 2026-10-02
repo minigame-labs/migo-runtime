@@ -443,7 +443,6 @@
         "op_bind_sampler": "stream",
         "op_bind_texture": "stream",
         "op_bind_transform_feedback": "stream",
-        "op_bind_vertex_array": "stream",
         "op_blend_color": "stream",
         "op_blend_equation": "stream",
         "op_blend_equation_separate": "stream",

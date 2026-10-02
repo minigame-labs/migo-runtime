@@ -1235,9 +1235,6 @@ export function op_bind_sampler(canvasId, unit, sampler) {
 export function op_bind_texture(canvasId, target, texture) {
   emit(R.OP_BIND_TEXTURE, smiU32(canvasId, "canvas_id"), smiU32(target, "target"), toI32(texture, "texture"));
 }
-export function op_bind_vertex_array(canvasId, vao) {
-  emit(R.OP_BIND_VERTEX_ARRAY, smiU32(canvasId, "canvas_id"), smiU32(vao, "vao"));
-}
 export function op_blend_color(canvasId, r, g, b, a) {
   emit(R.OP_BLEND_COLOR, smiU32(canvasId, "canvas_id"), f32BitsOf(r, "r"), f32BitsOf(g, "g"), f32BitsOf(b, "b"), f32BitsOf(a, "a"));
 }

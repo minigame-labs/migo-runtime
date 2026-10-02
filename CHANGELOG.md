@@ -97,6 +97,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL 2: `bufferData(target, view, usage, srcOffset, length)` and `bufferSubData(target, dstByteOffset, view,
+  srcOffset, length)` upload the elements they name. Both used to ignore `srcOffset` and `length` and upload the whole
+  view, so a partial attribute update -- three.js updates ranges of an attribute this way -- wrote the wrong bytes, or
+  ran past the buffer and was dropped by the driver.
+- WebGL: buffer state is kept for every target. `getParameter` answers COPY_READ / COPY_WRITE / PIXEL_PACK /
+  PIXEL_UNPACK / UNIFORM / TRANSFORM_FEEDBACK_BUFFER_BINDING and VERTEX_ARRAY_BINDING with the objects (they were the
+  driver's integer names), `getBufferParameter` answers on every WebGL 2 target (it was INVALID_ENUM there), the
+  element array buffer is the bound vertex array object's and the generic transform feedback buffer the bound transform
+  feedback object's (ES 3.0 tables 6.2 and 6.24). From that state the calls refuse what the specification refuses
+  before anything is sent: a target the context does not have and a usage it does not take (INVALID_ENUM); nothing
+  bound, a deleted buffer, an index buffer bound as other data or the reverse, a draw that would read past its index
+  buffer or has none, and a `copyBufferSubData` between index and other data (INVALID_OPERATION); a negative size or
+  offset, null data, a `bufferSubData` or `copyBufferSubData` range past its buffer and two overlapping ranges of one
+  buffer (INVALID_VALUE). Deleting a buffer unbinds it from this context and from the vertex array and transform
+  feedback objects bound, and an object not bound keeps it (ES 3.0 D.1.2). `isBuffer` and `isVertexArray` are false
+  for an object never bound, as GL answers.
+- WebGL 1: `OES_vertex_array_object` works. Its `bindVertexArrayOES` and `deleteVertexArrayOES` called WebGL 2
+  methods a WebGL 1 context does not have, and threw. Vertex array objects are `WebGLVertexArrayObject` objects of the
+  context that made them.
 - WebGL: a name passed to `getUniformLocation`, `getAttribLocation`, `bindAttribLocation` or `getFragDataLocation`
   is checked as WebGL 1.0 6.20 and 6.21 say before GL is asked: longer than 256 characters (1024 in WebGL 2) or
   holding a character outside the GLSL ES source character set is INVALID_VALUE, and a name WebGL reserves (`webgl_`,
