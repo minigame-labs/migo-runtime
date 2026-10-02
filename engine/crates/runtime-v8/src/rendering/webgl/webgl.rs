@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use deno_core::{OpState, ToJsBuffer, op2, v8};
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::rendering::image::ImageCacheState;
 use crate::rendering::webgl::error_state::{self, OpStateDecodeContext, codes};
@@ -1463,9 +1461,20 @@ pub(super) mod tests {
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
-                "clear_buffer_calls.js",
+                "clear_buffer_setup.js",
                 r#"
                 const gl = new WebGL2RenderingContext({ _rid: 164, width: 1, height: 1 }, {});
+                gl.bindBuffer(0x8893, gl.createBuffer());     // ELEMENT_ARRAY_BUFFER: six shorts from byte 2
+                gl.bufferData(0x8893, 14, 0x88e4);
+                gl.flush();
+                "#,
+            )
+            .expect("the index buffer setup should run");
+        drain_gl_commands(&render_rx);
+        runtime
+            .exec_script(
+                "clear_buffer_calls.js",
+                r#"
                 gl._maxDrawBuffers = 4;          // what the renderer would answer for MAX_DRAW_BUFFERS
                 gl.clearBufferfv(0x1800, 1, [0.25, 0.5, 0.75, 1]);
                 gl.clearBufferfv(0x1801, 0, new Float32Array([9, 0.5]), 1);
@@ -1654,7 +1663,11 @@ pub(super) mod tests {
                 gl.copyTexImage2D(0x0de1, 0, 0x8058, 1, 2, 3, 4, 0);       // RGBA8: a WebGL 2 format
                 gl.copyTexSubImage2D(0x0de1, 1, 2, 3, -4, 5, 6, 7);
                 gl.copyTexSubImage3D(0x806f, 0, 1, 2, 3, 4, 5, 6, 7);
-                gl.copyBufferSubData(0x8f36, 0x8f37, 8, 16, 2147483647);
+                gl.bindBuffer(0x8f36, gl.createBuffer());     // COPY_READ_BUFFER and COPY_WRITE_BUFFER, 64 bytes each
+                gl.bufferData(0x8f36, 64, 0x88e4);
+                gl.bindBuffer(0x8f37, gl.createBuffer());
+                gl.bufferData(0x8f37, 64, 0x88e4);
+                gl.copyBufferSubData(0x8f36, 0x8f37, 8, 16, 48);
                 gl.copyBufferSubData(0x8f36, 0x8f37, 0.9, "4", 1.5);
                 const fb = gl.createFramebuffer();
                 gl.bindFramebuffer(0x8d40, fb);
@@ -1761,7 +1774,7 @@ pub(super) mod tests {
                 "copyTexImage2D 0xde1 0 0x8058 1 2 3 4".to_string(),
                 "copyTexSubImage2D 0xde1 1 2 3 -4 5 6 7".to_string(),
                 "copyTexSubImage3D 0x806f 0 1 2 3 4 5 6 7".to_string(),
-                "copyBufferSubData 0x8f36 0x8f37 8 16 2147483647".to_string(),
+                "copyBufferSubData 0x8f36 0x8f37 8 16 48".to_string(),
                 "copyBufferSubData 0x8f36 0x8f37 0 4 1".to_string(),
                 "framebufferTextureLayer 0x8d40 0x8ce0 true 1 3".to_string(),
                 "invalidateSubFramebuffer 0x8d40 [8ce0, 8d00] 1 2 3 4".to_string(),
@@ -1772,8 +1785,10 @@ pub(super) mod tests {
     }
 
     /// What the facade refuses before anything is encoded: WebGL 1's `copyTexImage2D` with a sized format
-    /// (INVALID_ENUM: WebGL 1 has only the five unsized ones), a `copyBufferSubData` offset or size that is negative or
-    /// past 2^31 -- which no buffer reaches -- (INVALID_VALUE, not wrapped into range), an invalidation of a target
+    /// (INVALID_ENUM: WebGL 1 has only the five unsized ones), a `copyBufferSubData` with nothing bound or between an
+    /// index buffer and one of other data (INVALID_OPERATION), with an offset or size that is negative, a range past a
+    /// buffer -- 2^31 among them, not wrapped into range -- or two ranges of one buffer that overlap (INVALID_VALUE), or
+    /// with a target that is not one (INVALID_ENUM), an invalidation of a target
     /// that is not a framebuffer binding, of a name the bound framebuffer does not have (INVALID_ENUM) or of a colour
     /// attachment past MAX_COLOR_ATTACHMENTS (INVALID_OPERATION), a negative invalidation rectangle and a negative
     /// layer or level (INVALID_VALUE). None reaches the renderer; the call whose list is not a list throws.
@@ -1788,11 +1803,25 @@ pub(super) mod tests {
                 const gl = new WebGL2RenderingContext({ _rid: 172, width: 1, height: 1 }, {});
                 gl._maxColorAttachments = 4;
                 const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                const read = gl.createBuffer(), write = gl.createBuffer(), indices = gl.createBuffer();
                 const cases = [
                     [gl1, ENUM, () => gl1.copyTexImage2D(0x0de1, 0, 0x8058, 0, 0, 4, 4, 0)],          // RGBA8 in WebGL 1
-                    [gl, VALUE, () => gl.copyBufferSubData(0x8f36, 0x8f37, -1, 0, 4)],
+                    [gl, OPERATION, () => gl.copyBufferSubData(0x8f36, 0x8f37, 0, 0, 4)],              // nothing bound
+                    [gl, VALUE, () => {                                                                  // 64 bytes each
+                        gl.bindBuffer(0x8f36, read); gl.bufferData(0x8f36, 64, 0x88e4);
+                        gl.bindBuffer(0x8f37, write); gl.bufferData(0x8f37, 64, 0x88e4);
+                        gl.copyBufferSubData(0x8f36, 0x8f37, -1, 0, 4);
+                    }],
                     [gl, VALUE, () => gl.copyBufferSubData(0x8f36, 0x8f37, 0, 0, 2147483648)],          // 2^31
                     [gl, VALUE, () => gl.copyBufferSubData(0x8f36, 0x8f37, 4294967296, 0, 4)],          // not 0 mod 2^32
+                    [gl, VALUE, () => gl.copyBufferSubData(0x8f36, 0x8f37, 0, 32, 33)],                 // past the write buffer
+                    [gl, VALUE, () => { gl.bindBuffer(0x8f37, read); gl.copyBufferSubData(0x8f36, 0x8f37, 0, 8, 16); }],  // overlap
+                    [gl, OPERATION, () => {                                                              // index and other data
+                        gl.bindBuffer(0x8893, indices); gl.bufferData(0x8893, 64, 0x88e4);
+                        gl.bindBuffer(0x8f37, indices);
+                        gl.copyBufferSubData(0x8f36, 0x8f37, 0, 0, 4);
+                    }],
+                    [gl, ENUM, () => gl.copyBufferSubData(0x8892 + 1000, 0x8f37, 0, 0, 4)],
                     [gl, ENUM, () => gl.invalidateFramebuffer(0x0de1, [0x1800])],                       // not a binding
                     [gl, ENUM, () => gl.invalidateFramebuffer(0x8d40, [0x8ce0])],                       // the default has no COLOR_ATTACHMENT0
                     [gl, VALUE, () => gl.invalidateSubFramebuffer(0x8d40, [0x1800], 0, 0, -1, 4)],
@@ -2400,6 +2429,180 @@ pub(super) mod tests {
         assert_eq!(
             asked, expected,
             "each query asks by its name, once per link, and nothing refused or reserved reaches the driver"
+        );
+    }
+
+    /// Buffer state is kept for every target and checked before anything is sent: what each target has bound
+    /// (`getParameter`), each buffer's size and usage (`getBufferParameter`), the WebGL type a buffer takes at its first
+    /// bind, the element array buffer of each vertex array object, the generic transform feedback binding of each
+    /// transform feedback object. `bufferData` / `bufferSubData` take WebGL 2's element ranges and refuse what the
+    /// specification refuses; a draw that would read past its index buffer is INVALID_OPERATION; a deleted buffer
+    /// leaves the bindings of this context and of the objects bound, and keeps the one of an object not bound.
+    #[test]
+    fn buffer_state_is_kept_for_every_target_and_checked_before_anything_is_sent() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "buffer_state.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 199, width: 1, height: 1 }, {});
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const err = (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const a = gl.createBuffer(), b = gl.createBuffer(), idx = gl.createBuffer(), idx2 = gl.createBuffer();
+                check(!gl.isBuffer(a), "a buffer never bound is not one yet");
+                for (const [target, pname] of [[0x8892, 0x8894], [0x8f36, 0x8f36], [0x8f37, 0x8f37], [0x88eb, 0x88ed],
+                                               [0x88ec, 0x88ef], [0x8a11, 0x8a28], [0x8c8e, 0x8c8f]]) {
+                    gl.bindBuffer(target, a);
+                    check(gl.getParameter(pname) === a, "the binding of " + target.toString(16));
+                    gl.bindBuffer(target, null);
+                    check(gl.getParameter(pname) === null, "unbound from " + target.toString(16));
+                }
+                check(gl.isBuffer(a), "bound once, it is a buffer");
+                gl.bindBuffer(0x1234, a); err(0x0500, "a target that is not one");
+                // a buffer is index data or other data for life; the copy targets take either
+                gl.bindBuffer(0x8893, idx);
+                gl.bindBuffer(0x8892, idx); err(0x0502, "an index buffer as vertex data");
+                gl.bindBuffer(0x8893, a); err(0x0502, "vertex data as an index buffer");
+                gl.bindBuffer(0x8f36, idx); err(0, "a copy target takes an index buffer");
+                // bufferData
+                gl.bindBuffer(0x8892, a);
+                gl.bufferData(0x8892, 64, 0x88e8);
+                check(gl.getBufferParameter(0x8892, 0x8764) === 64 && gl.getBufferParameter(0x8892, 0x8765) === 0x88e8, "size and usage");
+                gl.bufferData(0x8892, -1, 0x88e4); err(0x0501, "a negative size");
+                gl.bufferData(0x8892, 4, 0xbeef); err(0x0500, "a usage that is not one");
+                gl.bufferData(0x8892, null, 0x88e4); err(0x0501, "null data");
+                gl.bufferData(0x8893 + 1000, 4, 0x88e4); err(0x0500, "bufferData to a target that is not one");
+                gl.bufferData(0x88eb, 4, 0x88e4); err(0x0502, "bufferData with nothing bound");
+                gl.bufferData(0x8892, 16, 0x88e9); err(0, "DYNAMIC_READ is a WebGL 2 usage");
+                check(gl.getBufferParameter(0x8892, 0x8764) === 16, "the refused calls changed nothing");
+                gl.bufferData(0x8892, new Float32Array([1, 2, 3, 4, 5, 6]), 0x88e4, 2, 3);
+                check(gl.getBufferParameter(0x8892, 0x8764) === 12, "srcOffset and length count elements");
+                gl.bufferData(0x8892, new Uint16Array([1, 2, 3]), 0x88e4, 1);
+                check(gl.getBufferParameter(0x8892, 0x8764) === 4, "a length of 0 is the rest");
+                gl.bufferData(0x8892, new Uint16Array(3), 0x88e4, 4); err(0x0501, "a srcOffset past the view");
+                gl.bufferData(0x8892, new Uint16Array(3), 0x88e4, 1, 3); err(0x0501, "a range past the view");
+                let threw = false;
+                try { gl.bufferData(0x8892, new ArrayBuffer(4), 0x88e4, 0); } catch (e) { threw = e instanceof TypeError && /ArrayBufferView/.test(e.message); }
+                check(threw, "the srcOffset overload takes a view only");
+                // bufferSubData
+                gl.bufferData(0x8892, 16, 0x88e8);
+                gl.bufferSubData(0x8892, 8, new Float32Array([7, 8])); err(0, "in range");
+                gl.bufferSubData(0x8892, 12, new Float32Array([7, 8])); err(0x0501, "past the end");
+                gl.bufferSubData(0x8892, -4, new Float32Array([7])); err(0x0501, "a negative offset");
+                gl.bufferSubData(0x8892, 4, new Float32Array([9, 10, 11, 12]), 1, 2); err(0, "srcOffset and length");
+                gl.bufferSubData(0x8f37, 0, new Uint8Array(1)); err(0x0502, "bufferSubData with nothing bound");
+                gl.bindBuffer(0x8a11, b);
+                gl.bufferData(0x8a11, 256, 0x88e4);
+                check(gl.getBufferParameter(0x8a11, 0x8764) === 256, "a uniform buffer's size");
+                gl.bindBuffer(0x8a11, null);
+                gl._maxUniformBufferBindings = 24;
+                gl.bindBufferBase(0x8a11, 3, b);
+                check(gl.getParameter(0x8a28) === b, "an indexed bind binds the generic point too");
+                // the element array buffer is the vertex array object's
+                const vao = gl.createVertexArray();
+                check(!gl.isVertexArray(vao), "a vertex array object never bound is not one yet");
+                gl.bindVertexArray(vao);
+                check(gl.isVertexArray(vao) && gl.getParameter(0x85b5) === vao, "bound");
+                check(gl.getParameter(0x8895) === null, "a new vertex array object has no index buffer");
+                gl.bindBuffer(0x8893, idx2);
+                gl.bufferData(0x8893, 6, 0x88e4);
+                gl.bindVertexArray(null);
+                check(gl.getParameter(0x85b5) === null && gl.getParameter(0x8895) === idx, "the default object kept its own");
+                gl.bindVertexArray(vao);
+                check(gl.getParameter(0x8895) === idx2, "and the vertex array object its own");
+                // a draw reads its indices from it
+                gl.drawElements(4, 3, 0x1403, 0); err(0, "three shorts of six bytes");
+                gl.drawElements(4, 3, 0x1403, 2); err(0x0502, "past the index buffer");
+                gl.drawElementsInstanced(4, 4, 0x1403, 0, 2); err(0x0502, "an instanced draw past it");
+                gl.drawRangeElements(4, 0, 2, 4, 0x1403, 0); err(0x0502, "a range draw past it");
+                // deleting
+                gl.bindBuffer(0x8892, a);
+                gl.vertexAttribPointer(0, 2, 0x1406, false, 0, 0);
+                gl.deleteBuffer(idx2);
+                check(gl.getParameter(0x8895) === null, "deleting unbinds it from the vertex array object bound");
+                gl.drawElements(4, 0, 0x1403, 0); err(0x0502, "a draw with no index buffer");
+                gl.deleteBuffer(a);
+                check(gl.getParameter(0x8894) === null && gl.getVertexAttrib(0, 0x889f) === null, "and from ARRAY_BUFFER and the attribute");
+                check(!gl.isBuffer(a), "a deleted buffer is not one");
+                gl.bindBuffer(0x8892, a); err(0x0502, "binding a deleted buffer");
+                gl.deleteBuffer(idx);
+                check(gl.getParameter(0x8f36) === null, "deleting idx unbinds COPY_READ_BUFFER");
+                gl.bindVertexArray(null);
+                check(gl.getParameter(0x8895) === idx, "an object not bound keeps its reference");
+                // the generic transform feedback binding is the transform feedback object's
+                gl.bindBuffer(0x8c8e, b);
+                const tf = gl.createTransformFeedback();
+                gl.bindTransformFeedback(0x8e22, tf);
+                check(gl.getParameter(0x8c8f) === null, "a transform feedback object has its own generic binding");
+                gl.bindTransformFeedback(0x8e22, null);
+                check(gl.getParameter(0x8c8f) === b, "the default object's again");
+                // WebGL 1: two targets, and vertex array objects through the extension only
+                const gl1 = new WebGLRenderingContext({ _rid: 200, width: 1, height: 1 }, {});
+                check(gl1.bindVertexArray === undefined && gl1.createVertexArray === undefined, "WebGL 1 has no vertex array methods");
+                check(gl1.getParameter(0x85b5) === null && gl1.getError() === 0x0500, "no VERTEX_ARRAY_BINDING before the extension");
+                const ext = gl1.getExtension("OES_vertex_array_object");
+                const v1 = ext.createVertexArrayOES();
+                ext.bindVertexArrayOES(v1);
+                check(ext.isVertexArrayOES(v1) && gl1.getParameter(0x85b5) === v1, "the extension binds one");
+                ext.deleteVertexArrayOES(v1);
+                check(gl1.getParameter(0x85b5) === null && !ext.isVertexArrayOES(v1), "and deleting it binds the default");
+                gl1.bindBuffer(0x8f36, gl1.createBuffer());
+                check(gl1.getError() === 0x0500, "COPY_READ_BUFFER is WebGL 2's");
+                check(gl1.getParameter(0x8f36) === null && gl1.getError() === 0x0500, "and so is its binding");
+                gl1.bindBuffer(0x8892, gl1.createBuffer());
+                gl1.bufferData(0x8892, 4, 0x88e9);
+                check(gl1.getError() === 0x0500, "DYNAMIC_READ is WebGL 2's");
+                gl1.bufferData(0x8892, new Uint8Array(4), 0x88e4, 1, 2);
+                check(gl1.getError() === 0 && gl1.getBufferParameter(0x8892, 0x8764) === 4,
+                      "WebGL 1 has no srcOffset overload: the extra arguments are ignored");
+                gl.flush();
+                "#,
+            )
+            .expect("the buffer state script should run");
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::BufferData {
+                    target,
+                    size,
+                    data,
+                    usage,
+                    ..
+                } => Some(format!("data {target:#x} {size} {data:?} {usage:#x}")),
+                GLCmd::BufferSubData {
+                    target,
+                    offset,
+                    data,
+                    ..
+                } => Some(format!("subData {target:#x} {offset} {data:?}")),
+                GLCmd::DrawElements { count, offset, .. } => {
+                    Some(format!("drawElements {count} {offset}"))
+                }
+                GLCmd::DrawElementsInstanced { .. } => Some("drawElementsInstanced".to_string()),
+                _ => None,
+            })
+            .collect();
+        let float_bytes =
+            |values: &[f32]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
+        assert_eq!(
+            sent,
+            vec![
+                "data 0x8892 64 None 0x88e8".to_string(),
+                "data 0x8892 16 None 0x88e9".to_string(),
+                format!(
+                    "data 0x8892 12 {:?} 0x88e4",
+                    Some(float_bytes(&[3.0, 4.0, 5.0]))
+                ),
+                format!("data 0x8892 4 {:?} 0x88e4", Some(vec![2u8, 0, 3, 0])),
+                "data 0x8892 16 None 0x88e8".to_string(),
+                format!("subData 0x8892 8 {:?}", float_bytes(&[7.0, 8.0])),
+                format!("subData 0x8892 4 {:?}", float_bytes(&[10.0, 11.0])),
+                "data 0x8a11 256 None 0x88e4".to_string(),
+                "data 0x8893 6 None 0x88e4".to_string(),
+                "drawElements 3 0".to_string(),
+                format!("data 0x8892 4 {:?} 0x88e4", Some(vec![0u8; 4])),
+            ],
+            "only what was taken is sent, with the elements the WebGL 2 ranges name"
         );
     }
 
@@ -3894,6 +4097,20 @@ pub(super) mod tests {
     #[test]
     fn task5_200_mixed_calls_one_submit_strict_order() {
         let (mut runtime, render_rx) = new_webgl_runtime();
+        // drawElements reads its indices from a bound ELEMENT_ARRAY_BUFFER: three UNSIGNED_INTs. Set up, sent and
+        // drained before the count starts.
+        runtime
+            .exec_script(
+                "task5_200_mixed_setup.js",
+                r#"
+                const ctx = new WebGLRenderingContext({ _rid: 200, width: 1, height: 1 }, {});
+                ctx.bindBuffer(0x8893, ctx.createBuffer());
+                ctx.bufferData(0x8893, 12, 0x88e4);
+                ctx.flush();
+                "#,
+            )
+            .expect("the index buffer setup should run");
+        drain_gl_commands(&render_rx);
 
         crate::rendering::webgl::submit_test_counter::reset();
 
@@ -3901,7 +4118,6 @@ pub(super) mod tests {
             .exec_script(
                 "task5_200_mixed_hot.js",
                 r#"
-                const ctx = new WebGLRenderingContext({ _rid: 200, width: 1, height: 1 }, {});
                 // 200 encodable calls in issue order:
                 // 0: viewport
                 ctx.viewport(0, 0, 800, 600);
@@ -4187,16 +4403,16 @@ pub(super) mod tests {
 
         crate::rendering::webgl::submit_test_counter::reset();
 
-        // Bind a stream record that will fail validation (bad buffer target).
+        // Encode a stream record that will fail the decoder's validation (bad texture target).
         // Also push a JS-side error directly, simulating a prior deleteTransformFeedback
         // on active TF (which calls _pushJsError without going through the stream).
         //
         // Sequence:
         //   1. Push JS error (INVALID_OPERATION) via deleteTransformFeedback on active TF.
-        //   2. Encode a semantically invalid bind (bad target = 0xDEAD).
-        //   3. Call getError() → must flush stream first (so bind error lands in host queue),
+        //   2. Encode a record the decoder refuses (copyTexSubImage2D, target 0xDEAD).
+        //   3. Call getError() → must flush stream first (so its error lands in the host queue),
         //      then return JS error (0x0502) first.
-        //   4. Call getError() again → returns the host error from the bad bind.
+        //   4. Call getError() again → returns the host error from the refused record.
         runtime
             .exec_script(
                 "task5_get_error_ordering.js",
@@ -4209,21 +4425,21 @@ pub(super) mod tests {
                 ctx.beginTransformFeedback(0x0004);
                 ctx.deleteTransformFeedback(tf); // JS error: INVALID_OPERATION (0x0502)
 
-                // Encode a semantically invalid bindBuffer into the stream
-                // (buffer target 0xDEAD is not a valid GL constant).
-                // This record is pending in the stream, not yet submitted.
-                ctx.bindBuffer(0xDEAD, null);
+                // Encode a record the decoder refuses into the stream (0xDEAD is no
+                // texture target; the facade leaves that rule to the decoder). This
+                // record is pending in the stream, not yet submitted.
+                ctx.copyTexSubImage2D(0xDEAD, 0, 0, 0, 0, 0, 1, 1);
 
                 // getError() must:
-                //   1. flush the stream (stream submit happens, bad bind detected -> host error queue)
+                //   1. flush the stream (stream submit happens, the decoder refuses the record -> host error queue)
                 //   2. return JS error first (0x0502)
                 const e1 = ctx.getError();
                 if (e1 !== 0x0502) throw new Error("first getError must return JS error 0x0502, got: " + e1.toString(16));
 
                 // getError() again → stream is already flushed, JS queue is empty,
-                // so drain the host error from the bad bind.
+                // so drain the host error from the refused record.
                 const e2 = ctx.getError();
-                if (e2 === 0) throw new Error("second getError must return host error from bad bind, got 0");
+                if (e2 === 0) throw new Error("second getError must return the host error from the refused record, got 0");
 
                 // Third getError → no more errors.
                 const e3 = ctx.getError();
@@ -9070,17 +9286,6 @@ pub fn op_create_vertex_array(state: &mut OpState, #[smi] canvas_id: u32, #[smi]
 #[op2(fast)]
 pub fn op_delete_vertex_array(state: &mut OpState, #[smi] vao: u32) {
     queue_gl_fire_and_forget(state, GLCmd::DeleteVertexArray { vao });
-}
-
-#[op2(fast)]
-pub fn op_bind_vertex_array(state: &mut OpState, #[smi] canvas_id: u32, #[smi] vao: u32) {
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::BindVertexArray {
-            canvas_id,
-            vao: if vao == 0 { None } else { Some(vao) },
-        },
-    );
 }
 
 #[op2(fast)]

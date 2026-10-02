@@ -132,7 +132,6 @@ import {
     // WebGL 2.0 additions
     op_create_vertex_array,
     op_delete_vertex_array,
-    op_bind_vertex_array,
     op_vertex_attrib_divisor,
     op_vertex_attrib_4f,
     op_vertex_attrib_i4i,
@@ -518,7 +517,6 @@ const _rawRenderbufferStorage= _makeOrderedRaw(op_renderbuffer_storage);
 // WebGL2 ordered raw ops
 const _rawCreateVertexArray  = _makeOrderedRaw(op_create_vertex_array);
 const _rawDeleteVertexArray  = _makeOrderedRaw(op_delete_vertex_array);
-const _rawBindVertexArray    = _makeOrderedRaw(op_bind_vertex_array);
 const _rawVertexAttribDivisor= _makeOrderedRaw(op_vertex_attrib_divisor);
 const _rawVertexAttrib4f     = _makeOrderedRaw(op_vertex_attrib_4f);
 const _rawVertexAttribI4i    = _makeOrderedRaw(op_vertex_attrib_i4i);
@@ -1168,22 +1166,29 @@ const _SAMPLER_PARAMETERS = new Map([
 // size), or null when refused with the error recorded. An ArrayBufferView is the first overload: its elements from
 // `srcOffset`, `srcLengthOverride` of them unless that is 0 (both counted in the view's elements; a range past the
 // end is INVALID_VALUE). Anything else is the second: `imageSize` bytes of the bound buffer from `offset`.
+// The bytes of WebGL 2's `srcOffset` / `length` pair over `view`, both counted in its elements (a DataView's are
+// bytes): `length` elements from `srcOffset`, or the rest when it is 0. A range past the view is INVALID_VALUE and
+// null, as is one past the upload budget (`toBoundedUploadBytes`).
+function viewElementBytes(canvasId, view, srcOffset, length) {
+    const dataView = isDataView(view);
+    const unit = dataView ? 1 : view.BYTES_PER_ELEMENT;
+    const byteLength = dataView ? DataViewPrototypeGetByteLength(view) : TypedArrayPrototypeGetByteLength(view);
+    const byteOffset = dataView ? DataViewPrototypeGetByteOffset(view) : TypedArrayPrototypeGetByteOffset(view);
+    const buffer = dataView ? DataViewPrototypeGetBuffer(view) : TypedArrayPrototypeGetBuffer(view);
+    const elements = byteLength / unit;
+    const offset = toUnsignedLongLong(srcOffset);
+    const count = length >>> 0;
+    if (offset > elements || (count !== 0 && offset + count > elements)) {
+        recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
+        return null;
+    }
+    const taken = count !== 0 ? count : elements - offset;
+    return toBoundedUploadBytes(canvasId, new Uint8Array(buffer, byteOffset + offset * unit, taken * unit));
+}
+
 function compressedUploadSource(canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride) {
     if (ArrayBufferIsView(dataOrSize)) {
-        const dataView = isDataView(dataOrSize);
-        const unit = dataView ? 1 : dataOrSize.BYTES_PER_ELEMENT;
-        const byteLength = dataView ? DataViewPrototypeGetByteLength(dataOrSize) : TypedArrayPrototypeGetByteLength(dataOrSize);
-        const byteOffset = dataView ? DataViewPrototypeGetByteOffset(dataOrSize) : TypedArrayPrototypeGetByteOffset(dataOrSize);
-        const buffer = dataView ? DataViewPrototypeGetBuffer(dataOrSize) : TypedArrayPrototypeGetBuffer(dataOrSize);
-        const elements = byteLength / unit;
-        const offset = toUnsignedLongLong(srcOffsetOrOffset);
-        const length = srcLengthOverride >>> 0;
-        if (offset > elements || (length !== 0 && offset + length > elements)) {
-            recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
-            return null;
-        }
-        const count = length !== 0 ? length : elements - offset;
-        const bytes = toBoundedUploadBytes(canvasId, new Uint8Array(buffer, byteOffset + offset * unit, count * unit));
+        const bytes = viewElementBytes(canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride);
         return bytes === null ? null : [bytes, -1, 0];
     }
     // A negative `imageSize` is the decoder's to refuse (INVALID_VALUE), for both lanes.
@@ -1278,6 +1283,9 @@ class VertexAttribShadow {
         this.offset = new Float64Array(_ATTRIB_SHADOW_SLOTS);
         this.divisor = new Uint32Array(_ATTRIB_SHADOW_SLOTS);
         this.buffer = new Array(_ATTRIB_SHADOW_SLOTS).fill(null);
+        // ELEMENT_ARRAY_BUFFER is vertex array object state (ES 3.0 table 6.2): a draw reads the indices of the
+        // object bound, and binding another object binds its own.
+        this.elementArrayBuffer = null;
     }
 }
 
@@ -1348,7 +1356,7 @@ class WebGLRenderingContext {
         this._textureBindings2D = new Map(); // texture unit -> WebglObject|null
         this._textureBindingsCube = new Map(); // texture unit -> WebglObject|null
         this._arrayBufferBinding = null;
-        this._elementArrayBufferBinding = null;
+        this._vertexArrayBinding = null;     // the vertex array object bound, null for the default one
         this._programBinding = null;
         // Two, because WebGL 2 has two framebuffer binding points. A single slot
         // made `getParameter` answer the draw binding for a read bind and vice
@@ -1736,11 +1744,34 @@ class WebGLRenderingContext {
         _rawDrawArrays(this._canvasId, mode, first, count);
     }
 
+    // A draw that reads indices reads `count` of `type` from the bound vertex array object's ELEMENT_ARRAY_BUFFER at
+    // `offset`: no buffer bound, or a range past its end, is INVALID_OPERATION (WebGL 1.0 6.6) -- the driver's error
+    // would not reach `getError`, and a driver that does not check reads past the buffer. A type, count or offset the
+    // call does not take is left to the decoder, which refuses it as the specification says.
+    _elementsError(count, type, offset) {
+        const bytes = type === 0x1403 ? 2 : type === 0x1401 ? 1 : type === 0x1405 ? 4 : 0;   // UNSIGNED_SHORT, _BYTE, _INT
+        if (bytes === 0 || count < 0 || offset < 0) return 0;
+        const indices = this._attribShadow.elementArrayBuffer;
+        if (indices === null || offset + count * bytes > (indices._size || 0)) return GL_INVALID_OPERATION;
+        return 0;
+    }
+
     drawElements(mode, count, type, offset) {
         // opcode 48: H C U I U I. mode/type are u32, count/offset are i32.
         if (typeof mode === "number" && typeof count === "number" &&
             typeof type === "number" && typeof offset === "number") {
-            encodeDrawElements(this._canvasId, mode >>> 0, count | 0, type >>> 0, offset | 0);
+            const c = count | 0, t = type >>> 0, o = offset | 0;
+            const error = this._elementsError(c, t, o);
+            if (error !== 0) {
+                recordGpuPreflightError(this._canvasId, error);
+                return;
+            }
+            encodeDrawElements(this._canvasId, mode >>> 0, c, t, o);
+            return;
+        }
+        const error = this._elementsError(Number(count) | 0, Number(type) >>> 0, Number(offset) | 0);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
             return;
         }
         flushRenderCommandStream();
@@ -1767,7 +1798,7 @@ class WebGLRenderingContext {
         return object instanceof WebglObject && object._kind === kind &&
             object._ownerId === this._canvasId && !object._deleted;
     }
-    isBuffer(object) { return this._isLive(object, "buffer"); }
+    isBuffer(object) { return this._isLive(object, "buffer") && object._everBound === true; }
     isFramebuffer(object) { return this._isLive(object, "framebuffer"); }
     isProgram(object) { return this._isLive(object, "program"); }
     isRenderbuffer(object) { return this._isLive(object, "renderbuffer"); }
@@ -1918,59 +1949,162 @@ class WebGLRenderingContext {
         return new WebglObject(id, "buffer", this._canvasId);
     }
 
-    deleteBuffer(buffer) {
-        if (buffer instanceof WebglObject) buffer._deleted = true;
-        // Per WebGL: deleting a bound buffer unbinds it from the current target.
-        if (this._arrayBufferBinding === buffer) this._arrayBufferBinding = null;
-        if (this._elementArrayBufferBinding === buffer) this._elementArrayBufferBinding = null;
-        // ...and from the indexed bindings of the context and of the bound transform feedback (ES 3.0 2.10.1).
-        if (this._uniformBufferBindings) {
-            for (const bindings of [this._uniformBufferBindings, this._indexedBindings(0x8c8e)]) {
-                for (const [index, binding] of bindings) if (binding.buffer === buffer) bindings.delete(index);
-            }
+    // ---- Buffers ------------------------------------------------------------------------------------------------
+    // What each target has bound, and each buffer's size and usage, are kept here: `getParameter`,
+    // `getBufferParameter` and the range checks of the calls that read or write a buffer answer from them.
+
+    // The buffer bound to `target`: null for none, undefined for a target this context does not have (WebGL 2 adds
+    // its own in its override). ELEMENT_ARRAY_BUFFER is the bound vertex array object's.
+    _boundBuffer(target) {
+        if (target === 0x8892) return this._arrayBufferBinding;
+        if (target === 0x8893) return this._attribShadow.elementArrayBuffer;
+        return undefined;
+    }
+    // Binds `buffer` (or null) to a target `_boundBuffer` knows.
+    _setBoundBuffer(target, buffer) {
+        if (target === 0x8892) this._arrayBufferBinding = buffer;
+        else this._attribShadow.elementArrayBuffer = buffer;
+    }
+    // Whether binding `buffer` to `target` is refused: 0 for null or a live buffer of this context whose WebGL type
+    // takes the target, else the error (WebGL 1.0 6.1, WebGL 2.0 5.1: a buffer is element-array or other data from its
+    // first bind -- COPY_READ_BUFFER and COPY_WRITE_BUFFER take either -- so index data is never also vertex data). A
+    // value that is not a buffer is a TypeError, as WebIDL converts it.
+    _bufferBindError(method, argument, buffer, target) {
+        if (buffer === null) return 0;
+        if (!(buffer instanceof WebglObject) || buffer._kind !== "buffer") {
+            throw new TypeError(`Failed to execute '${method}' on 'WebGLRenderingContext': parameter ${argument} is not of type 'WebGLBuffer'.`);
         }
-        if (buffer && buffer.id !== undefined) _rawDeleteBuffer(buffer.id);
+        if (buffer._deleted || buffer._ownerId !== this._canvasId) return GL_INVALID_OPERATION;
+        const type = buffer._webglType;
+        if (type === undefined || target === 0x8f36 || target === 0x8f37) return 0;
+        return type === (target === 0x8893 ? "element" : "other") ? 0 : GL_INVALID_OPERATION;
+    }
+    // A bind took effect: a buffer bound for the first time takes its WebGL type, and from now on is a buffer
+    // (`isBuffer` is false for one never bound, as `glIsBuffer` is).
+    _noteBufferBound(buffer, target) {
+        if (buffer === null) return;
+        if (buffer._webglType === undefined) buffer._webglType = target === 0x8893 ? "element" : "other";
+        buffer._everBound = true;
+    }
+    // WebGL 1's three usages; WebGL 2 adds the READ and COPY ones.
+    _bufferUsageTakes(usage) {
+        return usage === 0x88e4 || usage === 0x88e8 || usage === 0x88e0 ||       // STATIC_DRAW, DYNAMIC_DRAW, STREAM_DRAW
+            (this._isWebGL2() && (usage === 0x88e1 || usage === 0x88e2 || usage === 0x88e5 ||
+                                  usage === 0x88e6 || usage === 0x88e9 || usage === 0x88ea));
+    }
+    // A deleted buffer leaves every binding of it in this context and in the container objects bound to it -- the
+    // vertex array object's element buffer and attributes; WebGL 2 adds its targets and the transform feedback
+    // object's (ES 3.0 2.10.1, D.1.2). An object not bound keeps its reference.
+    _unbindDeletedBuffer(buffer) {
+        if (this._arrayBufferBinding === buffer) this._arrayBufferBinding = null;
+        const attribs = this._attribShadow;
+        if (attribs.elementArrayBuffer === buffer) attribs.elementArrayBuffer = null;
+        for (let i = 0; i < _ATTRIB_SHADOW_SLOTS; i++) if (attribs.buffer[i] === buffer) attribs.buffer[i] = null;
+    }
+
+    deleteBuffer(buffer) {
+        if (buffer === null || buffer === undefined) return;
+        if (!(buffer instanceof WebglObject) || buffer._kind !== "buffer") {
+            throw new TypeError("Failed to execute 'deleteBuffer' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLBuffer'.");
+        }
+        if (buffer._ownerId !== this._canvasId) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        if (buffer._deleted) return;
+        buffer._deleted = true;
+        this._unbindDeletedBuffer(buffer);
+        _rawDeleteBuffer(buffer._id);
     }
 
     bindBuffer(target, buffer) {
-        const buf = buffer || null;
-        if (target === 0x8892) this._arrayBufferBinding = buf; // ARRAY_BUFFER
-        else if (target === 0x8893) this._elementArrayBufferBinding = buf; // ELEMENT_ARRAY_BUFFER
-        const bufferId = buffer?.id ?? -1;
-        // opcode 9: H C U I. target is u32, bufferId is i32 (negative = unbind).
-        if (typeof target === "number" && typeof bufferId === "number") {
-            encodeBindBuffer(this._canvasId, target >>> 0, bufferId | 0);
+        const t = Number(target) >>> 0;
+        if (this._boundBuffer(t) === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        const bound = buffer === undefined ? null : buffer;
+        const error = this._bufferBindError("bindBuffer", 2, bound, t);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
+        this._noteBufferBound(bound, t);
+        this._setBoundBuffer(t, bound);
+        const bufferId = bound ? bound._id : -1;
+        // opcode 9: H C U I. bufferId is i32 (negative = unbind).
+        if (typeof target === "number") {
+            encodeBindBuffer(this._canvasId, t, bufferId);
             return;
         }
         flushRenderCommandStream();
-        _rawBindBuffer(this._canvasId, target, buffer?.id || -1);
+        _rawBindBuffer(this._canvasId, target, bufferId);
     }
 
-    bufferData(target, srcOrSize, usage) {
-        // What getBufferParameter answers, recorded on the buffer bound to `target`.
-        const bound = target === 0x8892 ? this._arrayBufferBinding
-            : target === 0x8893 ? this._elementArrayBufferBinding : null;
-        if (typeof srcOrSize === "number") {
-            const size = srcOrSize >>> 0;
-            if (!allowWebglUpload(this._canvasId, size)) return;
-            if (bound && typeof usage === "number") { bound._size = size; bound._usage = usage >>> 0; }
-            return _rawBufferData(this._canvasId, target, size, null, usage);
-        } else {
-            const u8 = toBoundedUploadBytes(this._canvasId, srcOrSize);
-            if (u8 === null) return;
-            if (bound && typeof usage === "number") { bound._size = u8.byteLength; bound._usage = usage >>> 0; }
-            return _rawBufferData(this._canvasId, target, -1, u8, usage);
+    // `bufferData(target, size, usage)` and `bufferData(target, data, usage)`, and WebGL 2's
+    // `bufferData(target, view, usage, srcOffset, length)`, whose range is counted in the view's elements. A target
+    // the context does not have and a usage it does not take are INVALID_ENUM, no buffer bound INVALID_OPERATION, a
+    // negative size and null data INVALID_VALUE. The buffer's size and usage are what the call gave it.
+    bufferData(target, srcOrSize, usage, srcOffset, length) {
+        const t = Number(target) >>> 0;
+        const bound = this._boundBuffer(t);
+        const u = Number(usage) >>> 0;
+        if (bound === undefined || !this._bufferUsageTakes(u)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
         }
+        if (bound === null) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        if (typeof srcOrSize === "number" || typeof srcOrSize === "bigint") {
+            const size = toLongLong(Number(srcOrSize));
+            if (size < 0) {
+                recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+                return;
+            }
+            if (!allowWebglUpload(this._canvasId, size)) return;
+            bound._size = size;
+            bound._usage = u;
+            return _rawBufferData(this._canvasId, t, size, null, u);
+        }
+        if (srcOrSize === null || srcOrSize === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        const u8 = arguments.length > 3 && this._isWebGL2()
+            ? this._viewArgumentBytes("bufferData", srcOrSize, srcOffset, length)
+            : toBoundedUploadBytes(this._canvasId, srcOrSize);
+        if (u8 === null) return;
+        bound._size = TypedArrayPrototypeGetByteLength(u8);
+        bound._usage = u;
+        return _rawBufferData(this._canvasId, t, -1, u8, u);
+    }
+
+    // WebGL 2's overloads that take `srcOffset` (and `length`; WebGL 1 has none, and WebIDL ignores the extra
+    // arguments): `data` must be an ArrayBufferView, a TypeError otherwise as WebIDL's overload resolution has it, and
+    // the range is `viewElementBytes`'s.
+    _viewArgumentBytes(method, data, srcOffset, length) {
+        if (!ArrayBufferIsView(data)) {
+            throw new TypeError(`Failed to execute '${method}' on 'WebGL2RenderingContext': the source is not an ArrayBufferView.`);
+        }
+        return viewElementBytes(this._canvasId, data, srcOffset, length);
     }
 
     getBufferParameter(target, pname) {
-        const bound = target === 0x8892 ? this._arrayBufferBinding
-            : target === 0x8893 ? this._elementArrayBufferBinding : undefined;
-        if (bound === undefined) { this._pushJsError(0x0500); return null; } // INVALID_ENUM
-        if (bound === null) { this._pushJsError(0x0502); return null; }      // INVALID_OPERATION
-        if (pname === 0x8764) return bound._size || 0;                         // BUFFER_SIZE
-        if (pname === 0x8765) return bound._usage || 0x88e4;                   // BUFFER_USAGE, STATIC_DRAW
-        this._pushJsError(0x0500);
+        const bound = this._boundBuffer(Number(target) >>> 0);
+        if (bound === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
+        if (bound === null) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return null;
+        }
+        const p = Number(pname) >>> 0;
+        if (p === 0x8764) return bound._size || 0;                         // BUFFER_SIZE
+        if (p === 0x8765) return bound._usage || 0x88e4;                   // BUFFER_USAGE, STATIC_DRAW
+        recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
         return null;
     }
 
@@ -2129,7 +2263,23 @@ class WebGLRenderingContext {
             case 0x8069: return this._textureBindings2D.get(this._activeTextureUnit) || null; // TEXTURE_BINDING_2D
             case 0x8514: return this._textureBindingsCube.get(this._activeTextureUnit) || null; // TEXTURE_BINDING_CUBE_MAP
             case 0x8894: return this._arrayBufferBinding; // ARRAY_BUFFER_BINDING
-            case 0x8895: return this._elementArrayBufferBinding; // ELEMENT_ARRAY_BUFFER_BINDING
+            case 0x8895: return this._attribShadow.elementArrayBuffer; // ELEMENT_ARRAY_BUFFER_BINDING
+            // WebGL 2's buffer bindings, by the target each names (COPY_READ_BUFFER_BINDING is COPY_READ_BUFFER, and
+            // so for COPY_WRITE); a WebGL 1 context has none of them.
+            case 0x8f36: case 0x8f37:
+            case 0x88ed: case 0x88ef: case 0x8a28: case 0x8c8f: {
+                const target = pname === 0x88ed ? 0x88eb : pname === 0x88ef ? 0x88ec    // PIXEL_PACK, PIXEL_UNPACK
+                    : pname === 0x8a28 ? 0x8a11 : pname === 0x8c8f ? 0x8c8e : pname;    // UNIFORM, TRANSFORM_FEEDBACK
+                const bound = this._boundBuffer(target);
+                if (bound !== undefined) return bound;
+                recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                return null;
+            }
+            // VERTEX_ARRAY_BINDING (WebGL 2), VERTEX_ARRAY_BINDING_OES (WebGL 1, once the extension is enabled).
+            case 0x85b5:
+                if (this._oesVertexArrayObject || this._isWebGL2()) return this._vertexArrayBinding;
+                recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                return null;
             case 0x8b8d: return this._programBinding; // CURRENT_PROGRAM
             // FRAMEBUFFER_BINDING and DRAW_FRAMEBUFFER_BINDING are one enum
             // (0x8CA6) in GLES 3, so this arm answers both.
@@ -2437,6 +2587,11 @@ class WebGLRenderingContext {
                 }
             },
             drawElementsInstancedANGLE(mode, count, type, offset, primcount) {
+                const error = ctx._elementsError(Number(count) | 0, Number(type) >>> 0, Number(offset) | 0);
+                if (error !== 0) {
+                    recordGpuPreflightError(ctx._canvasId, error);
+                    return;
+                }
                 if (typeof mode === "number" && typeof count === "number" &&
                     typeof type === "number" && typeof offset === "number" &&
                     typeof primcount === "number") {
@@ -2467,14 +2622,10 @@ class WebGLRenderingContext {
         const ctx = this;
         return {
             VERTEX_ARRAY_BINDING_OES: 0x85B5,
-            createVertexArrayOES() {
-                const id = nextResourceId();
-                _rawCreateVertexArray(ctx._canvasId, id);
-                return { _id: id, _kind: 'vao' };
-            },
-            deleteVertexArrayOES(vao) { ctx.deleteVertexArray(vao); },
-            isVertexArrayOES(vao) { return ctx.isVertexArray(vao); },
-            bindVertexArrayOES(vao) { ctx.bindVertexArray(vao); },
+            createVertexArrayOES() { return ctx._createVertexArray(); },
+            deleteVertexArrayOES(vao) { ctx._deleteVertexArray("deleteVertexArrayOES", vao); },
+            isVertexArrayOES(vao) { return ctx._isVertexArray(vao); },
+            bindVertexArrayOES(vao) { ctx._bindVertexArray("bindVertexArrayOES", vao); },
         };
     }
 
@@ -2783,10 +2934,33 @@ class WebGLRenderingContext {
 
     // -- Phase 1C: Buffer & Vertex Extensions --
 
-    bufferSubData(target, offset, data) {
-        const u8 = toBoundedUploadBytes(this._canvasId, data);
+    // `bufferSubData(target, dstByteOffset, data)`, and WebGL 2's with `srcOffset` and `length` counted in the view's
+    // elements. The bytes must fall inside the bound buffer: a negative offset or a range past its size is
+    // INVALID_VALUE (the driver's error would not reach `getError`), no buffer bound INVALID_OPERATION.
+    bufferSubData(target, dstByteOffset, data, srcOffset, length) {
+        const t = Number(target) >>> 0;
+        const bound = this._boundBuffer(t);
+        if (bound === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        if (bound === null) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        if (data === null || data === undefined) {
+            throw new TypeError("Failed to execute 'bufferSubData' on 'WebGLRenderingContext': the source is not a BufferSource.");
+        }
+        const offset = toLongLong(Number(dstByteOffset));
+        const u8 = arguments.length > 3 && this._isWebGL2()
+            ? this._viewArgumentBytes("bufferSubData", data, srcOffset, length)
+            : toBoundedUploadBytes(this._canvasId, data);
         if (u8 === null) return;
-        _rawBufferSubData(this._canvasId, target, offset, u8);
+        if (offset < 0 || offset + TypedArrayPrototypeGetByteLength(u8) > (bound._size || 0)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        _rawBufferSubData(this._canvasId, t, offset, u8);
     }
 
     disableVertexAttribArray(index) {
@@ -2906,6 +3080,55 @@ class WebGLRenderingContext {
     }
     _bindAttribShadow(vao) {
         this._attribShadow = vao ? (vao._attribs || (vao._attribs = new VertexAttribShadow())) : this._attribDefaults;
+    }
+
+    // ---- Vertex array objects: WebGL 2's, and WebGL 1's through OES_vertex_array_object ----------------------------
+    // One implementation; a WebGL 1 context reaches it only through the extension object, so it does not grow WebGL 2
+    // methods content tells the two apart by.
+    _createVertexArray() {
+        const id = nextResourceId();
+        _rawCreateVertexArray(this._canvasId, id);
+        return new WebglObject(id, "vertexArray", this._canvasId);
+    }
+    _checkVertexArray(method, vao) {
+        if (!(vao instanceof WebglObject) || vao._kind !== "vertexArray") {
+            throw new TypeError(`Failed to execute '${method}': parameter 1 is not of type 'WebGLVertexArrayObject'.`);
+        }
+    }
+    // Deleting the bound object binds the default one, as GL does.
+    _deleteVertexArray(method, vao) {
+        if (vao === null || vao === undefined) return;
+        this._checkVertexArray(method, vao);
+        if (vao._ownerId !== this._canvasId) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        if (vao._deleted) return;
+        vao._deleted = true;
+        _rawDeleteVertexArray(vao._id);
+        if (this._vertexArrayBinding === vao) {
+            this._vertexArrayBinding = null;
+            this._bindAttribShadow(null);
+        }
+    }
+    // A vertex array object is one once it has been bound, as `glIsVertexArray` answers.
+    _isVertexArray(vao) {
+        return this._isLive(vao, "vertexArray") && vao._everBound === true;
+    }
+    _bindVertexArray(method, vao) {
+        const bound = vao === undefined ? null : vao;
+        if (bound !== null) {
+            this._checkVertexArray(method, bound);
+            if (bound._deleted || bound._ownerId !== this._canvasId) {
+                recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+                return;
+            }
+            bound._everBound = true;
+        }
+        // opcode 14: H C U. 0 binds the default object.
+        encodeBindVertexArray(this._canvasId, bound ? bound._id >>> 0 : 0);
+        this._vertexArrayBinding = bound;
+        this._bindAttribShadow(bound);
     }
 
     clearDepth(depth) {
@@ -3496,7 +3719,13 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         this._currentQueryByTarget = new Map();
         this._tfRegistry = new Map();
         this._uniformBufferBindings = new Map();
-        this._defaultTransformFeedbackBindings = new Map();
+        // The default transform feedback object's buffers; one the content made keeps its own in `_tfRegistry`.
+        this._defaultTransformFeedback = { bindings: new Map(), genericBuffer: null };
+        this._copyReadBufferBinding = null;
+        this._copyWriteBufferBinding = null;
+        this._pixelPackBufferBinding = null;
+        this._pixelUnpackBufferBinding = null;
+        this._uniformBufferBinding = null;       // the generic UNIFORM_BUFFER binding
         this._maxUniformBufferBindings = 0;
         this._maxTransformFeedbackBindings = 0;
         this._uniformBufferOffsetAlignment = 0;
@@ -3508,6 +3737,51 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // Scratch for `uniform{1,2,3,4}ui`: the stream copies the words as it encodes them.
         this._uniformU32Scratch = [null, new Uint32Array(1), new Uint32Array(2), new Uint32Array(3), new Uint32Array(4)];
         this._currentTransformFeedback = null;
+    }
+
+    // WebGL 2's buffer targets. The generic TRANSFORM_FEEDBACK_BUFFER binding is the bound transform feedback object's,
+    // as its indexed bindings are (ES 3.0 2.15.1, table 6.24).
+    _boundBuffer(target) {
+        switch (target) {
+            case 0x8f36: return this._copyReadBufferBinding;
+            case 0x8f37: return this._copyWriteBufferBinding;
+            case 0x88eb: return this._pixelPackBufferBinding;
+            case 0x88ec: return this._pixelUnpackBufferBinding;
+            case 0x8a11: return this._uniformBufferBinding;
+            case 0x8c8e: return this._transformFeedbackState().genericBuffer;
+            default: return super._boundBuffer(target);
+        }
+    }
+    _setBoundBuffer(target, buffer) {
+        switch (target) {
+            case 0x8f36: this._copyReadBufferBinding = buffer; break;
+            case 0x8f37: this._copyWriteBufferBinding = buffer; break;
+            case 0x88eb: this._pixelPackBufferBinding = buffer; break;
+            case 0x88ec: this._pixelUnpackBufferBinding = buffer; break;
+            case 0x8a11: this._uniformBufferBinding = buffer; break;
+            case 0x8c8e: this._transformFeedbackState().genericBuffer = buffer; break;
+            default: super._setBoundBuffer(target, buffer);
+        }
+    }
+    _unbindDeletedBuffer(buffer) {
+        super._unbindDeletedBuffer(buffer);
+        for (const target of [0x8f36, 0x8f37, 0x88eb, 0x88ec, 0x8a11, 0x8c8e]) {
+            if (this._boundBuffer(target) === buffer) this._setBoundBuffer(target, null);
+        }
+        for (const bindings of [this._uniformBufferBindings, this._transformFeedbackState().bindings]) {
+            for (const [index, binding] of bindings) if (binding.buffer === buffer) bindings.delete(index);
+        }
+    }
+    // The bound transform feedback object's buffer state: its indexed bindings and its generic binding.
+    _transformFeedbackState() {
+        const tf = this._currentTransformFeedback;
+        if (!tf) return this._defaultTransformFeedback;
+        const state = this._tfRegistry.get(tf._id);
+        if (state.bindings === undefined) {
+            state.bindings = new Map();
+            state.genericBuffer = null;
+        }
+        return state;
     }
 
     readPixels(x, y, width, height, format, type, pixels, dstOffset = 0) {
@@ -3529,34 +3803,10 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     // ---- Vertex Array Objects ----------------------------------
-    createVertexArray() {
-        // op_alloc_gl_resource_id: direct, no-submit.
-        const id = op_alloc_gl_resource_id_webgl2();
-        _rawCreateVertexArray(this._canvasId, id);
-        return { _id: id, _kind: 'vao' };
-    }
-    deleteVertexArray(vao) {
-        if (vao && vao._id) {
-            _rawDeleteVertexArray(vao._id);
-            vao._deleted = true;
-            // Deleting the bound vertex array object binds the default one, as GL does.
-            if (this._attribShadow === vao._attribs) this._attribShadow = this._attribDefaults;
-        }
-    }
-    isVertexArray(vao) {
-        return !!(vao && typeof vao._id === 'number' && vao._kind === 'vao' && vao._deleted !== true);
-    }
-    bindVertexArray(vao) {
-        // opcode 14: H C U. vaoId is u32 (0 = unbind).
-        const vaoId = vao ? vao._id : 0;
-        if (typeof vaoId === "number") {
-            encodeBindVertexArray(this._canvasId, vaoId >>> 0);
-        } else {
-            flushRenderCommandStream();
-            _rawBindVertexArray(this._canvasId, vaoId);
-        }
-        this._bindAttribShadow(vao);
-    }
+    createVertexArray() { return this._createVertexArray(); }
+    deleteVertexArray(vao) { this._deleteVertexArray("deleteVertexArray", vao); }
+    isVertexArray(vao) { return this._isVertexArray(vao); }
+    bindVertexArray(vao) { this._bindVertexArray("bindVertexArray", vao); }
 
     // ---- Integer vertex attributes (WebGL 2) ------------------------------------------------------------------------
     vertexAttribI4i(index, x, y, z, w) {
@@ -3762,6 +4012,11 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         _rawDrawArraysInstanced(this._canvasId, mode, first, count, instanceCount);
     }
     drawElementsInstanced(mode, count, type, offset, instanceCount) {
+        const error = this._elementsError(Number(count) | 0, Number(type) >>> 0, Number(offset) | 0);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         // opcode 50: H C U I U I I.
         if (typeof mode === "number" && typeof count === "number" &&
             typeof type === "number" && typeof offset === "number" &&
@@ -3900,16 +4155,27 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
     // The record is made of the numbers each argument converts to; an argument that is not a Number takes the op
     // (see `_makeOrderedRaw`), as every call with a fast path does.
+    // Binding an indexed point binds the generic one too (ES 3.0 2.10.1.1), and the buffer is checked as `bindBuffer`
+    // checks it.
     bindBufferBase(target, index, buffer) {
         const t = Number(target) >>> 0;
         const i = Number(index) >>> 0;
-        const bound = buffer || null;
+        const bound = buffer === undefined ? null : buffer;
+        const error = this._bufferBindError("bindBufferBase", 3, bound, t);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         if ((t === 0x8a11 || t === 0x8c8e) && this._indexedBindingLimit(t, i)) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
         }
-        if (this._indexedBindTakes(t, bound, 0, 0, false)) this._recordIndexedBind(t, i, bound, 0, 0);
-        const bufferId = bound ? bound.id : 0;
+        if (this._indexedBindTakes(t, bound, 0, 0, false)) {
+            this._recordIndexedBind(t, i, bound, 0, 0);
+            this._noteBufferBound(bound, t);
+            this._setBoundBuffer(t, bound);
+        }
+        const bufferId = bound ? bound._id : 0;
         // opcode 51: H C U U U. bufferId 0 unbinds.
         if (typeof target === "number" && typeof index === "number") {
             encodeBindBufferBase(this._canvasId, t, i, bufferId >>> 0);
@@ -3920,9 +4186,14 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     bindBufferRange(target, index, buffer, offset, size) {
         const t = Number(target) >>> 0;
         const i = Number(index) >>> 0;
-        const bound = buffer || null;
+        const bound = buffer === undefined ? null : buffer;
         const o = toLongLong(Number(offset));
         const n = toLongLong(Number(size));
+        const error = this._bufferBindError("bindBufferRange", 3, bound, t);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         if ((t === 0x8a11 || t === 0x8c8e) && this._indexedBindingLimit(t, i)) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
@@ -3937,8 +4208,12 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
         }
-        if (this._indexedBindTakes(t, bound, o, n, true)) this._recordIndexedBind(t, i, bound, o, n);
-        const bufferId = bound ? bound.id : 0;
+        if (this._indexedBindTakes(t, bound, o, n, true)) {
+            this._recordIndexedBind(t, i, bound, o, n);
+            this._noteBufferBound(bound, t);
+            this._setBoundBuffer(t, bound);
+        }
+        const bufferId = bound ? bound._id : 0;
         // opcode 52: H C U U U I I.
         if (typeof target === "number" && typeof index === "number" &&
                 typeof offset === "number" && typeof size === "number") {
@@ -4031,18 +4306,31 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     copyTexSubImage3D(target, level, xoffset, yoffset, zoffset, x, y, width, height) {
         encodeCopyTexSubImage3D(this._canvasId, target, level, xoffset, yoffset, zoffset, x, y, width, height);
     }
-    // The offsets and size are `long long`. No buffer reaches 2^31 bytes (the render side holds a buffer's size as a
-    // GLint), so one past that cannot fit any buffer and is INVALID_VALUE here, like a negative one; the words that
-    // cross are then exact.
+    // The offsets and size are `long long`, checked against the two buffers bound (ES 3.0 2.10.5, WebGL 2.0 5.1): a
+    // target the context does not have is INVALID_ENUM; a negative offset or size, a range past either buffer and two
+    // ranges of one buffer that overlap are INVALID_VALUE; no buffer bound, or an element-array buffer and one of
+    // other data, INVALID_OPERATION. Every range then lies inside a buffer, whose size the render side holds as a
+    // GLint, so the words that cross are exact.
     copyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size) {
+        const rt = Number(readTarget) >>> 0;
+        const wt = Number(writeTarget) >>> 0;
         const r = toLongLong(readOffset);
         const w = toLongLong(writeOffset);
         const n = toLongLong(size);
-        if (!(r >= 0 && r <= 0x7fffffff && w >= 0 && w <= 0x7fffffff && n >= 0 && n <= 0x7fffffff)) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+        const read = this._boundBuffer(rt);
+        const write = this._boundBuffer(wt);
+        let error = 0;
+        if (read === undefined || write === undefined) error = GL_INVALID_ENUM;
+        else if (!(r >= 0 && w >= 0 && n >= 0)) error = GL_INVALID_VALUE;
+        else if (read === null || write === null) error = GL_INVALID_OPERATION;
+        else if ((read._webglType === "element") !== (write._webglType === "element")) error = GL_INVALID_OPERATION;
+        else if (r + n > (read._size || 0) || w + n > (write._size || 0)) error = GL_INVALID_VALUE;
+        else if (read === write && r < w + n && w < r + n) error = GL_INVALID_VALUE;
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
             return;
         }
-        encodeCopyBufferSubData(this._canvasId, readTarget, writeTarget, r, w, n);
+        encodeCopyBufferSubData(this._canvasId, rt, wt, r, w, n);
     }
     renderbufferStorageMultisample(target, samples, internalformat, width, height) {
         if (!preflightRenderbuffer(
@@ -4150,13 +4438,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // points and a uniform buffer offset off UNIFORM_BUFFER_OFFSET_ALIGNMENT only the driver would see, and its
     // error would not reach `getError`, so those two are INVALID_VALUE here, before anything is encoded.
     _indexedBindings(target) {
-        if (target === 0x8a11) return this._uniformBufferBindings;
-        const tf = this._currentTransformFeedback;
-        if (tf) {
-            const state = this._tfRegistry.get(tf._id);
-            return state.bindings || (state.bindings = new Map());
-        }
-        return this._defaultTransformFeedbackBindings;
+        return target === 0x8a11 ? this._uniformBufferBindings : this._transformFeedbackState().bindings;
     }
     // Whether `index` is past the target's binding points. An index below the minimum every implementation has
     // (24 uniform buffer bindings, 4 transform feedback ones) asks nothing.

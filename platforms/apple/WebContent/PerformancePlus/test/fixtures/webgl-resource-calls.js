@@ -16,9 +16,10 @@ const gl = new WebGL2RenderingContext({ _rid: 1, width: 64, height: 64 }, {});
 const buffer = gl.createBuffer();
 gl.bindBuffer(0x8892, buffer); // ARRAY_BUFFER
 gl.bufferData(0x8892, new Float32Array([0, 1, 2, 3]), 0x88e4); // STATIC_DRAW
-gl.bufferData(0x8893, 24, 0x88e8); // ELEMENT_ARRAY_BUFFER, size only, DYNAMIC_DRAW
+gl.bindBuffer(0x8893, gl.createBuffer()); // ELEMENT_ARRAY_BUFFER
+gl.bufferData(0x8893, 24, 0x88e8); // size only, DYNAMIC_DRAW
 gl.bufferSubData(0x8892, 4, new Uint8Array([9, 8, 7]));
-gl.bufferSubData(0x8892, -1, new Uint8Array([1])); // INVALID_VALUE on both paths
+gl.bufferSubData(0x8892, -1, new Uint8Array([1])); // INVALID_VALUE, from the facade on both paths
 
 const vertex = gl.createShader(0x8b31);
 gl.shaderSource(vertex, "attribute vec4 p; void main() { gl_Position = p; } // ünïcödé ✓ 😀");

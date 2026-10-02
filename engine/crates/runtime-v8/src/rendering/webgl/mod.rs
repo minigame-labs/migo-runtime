@@ -289,7 +289,6 @@ extension!(host_v8_webgl,
         // ---- WebGL 2.0 / GLES 3.0 ----
         op_create_vertex_array,
         op_delete_vertex_array,
-        op_bind_vertex_array,
         op_vertex_attrib_divisor,
         op_draw_arrays_instanced,
         op_draw_elements_instanced,
