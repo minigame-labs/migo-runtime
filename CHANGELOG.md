@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inflate, JPEG through a decoder that shares no code with the encoder) and is a CI step.
 
 ### Fixed
+- iOS (Performance+): a synchronous call (`readPixels`, `getImageData`, `toDataURL`, a WebGL query) no longer
+  waits out its 60-second deadline at random, and records are no longer lost. A finished packet shared its
+  buffer with the writer until it was sent, and a barrier that waits for the frame window blocks in a
+  synchronous request; a `FinalizationRegistry` callback that frees a collected canvas runs inside that
+  request's `send`, and the destroy op it calls appended a record to the same buffer. It overwrote the
+  packet's last word -- the host refused the packet for a pad that was not zero, every later packet was held
+  behind the gap, and the call waited out its deadline -- or, when the packet ended on the alignment, was
+  discarded by the next `reset()`, so the host never freed the canvas. The packet now owns its buffer from
+  `finish`, the writer moves onto another (two alternate, so the frame loop still allocates nothing), and a
+  record appended meanwhile is the next packet's. Found by `webgl-spec` dying on an iPhone 12 at a different
+  place on every change to the test order; the test now appends a record from inside a blocking call and
+  requires every packet well formed and the record delivered once.
 - iOS (Performance+): `downloadFile` works. Every download failed with "Invalid mix of BigInt and other type
   in division": the host wrote the response's content length as a 64-bit integer, which the producer reads
   as a BigInt, where the embedded runtime hands the facade a Number (serde_v8's `u64` in a struct) and the
