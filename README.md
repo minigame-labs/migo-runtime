@@ -41,7 +41,7 @@
 
 - **Pinned** — you ship the engine, so it never drifts across phone brands or OS updates.
 - **Auditable** — full source, checksummed releases, builds reproducible from source.
-- **Compatible** — Cocos, Laya, Egret, Pixi, Phaser, raw Canvas/WebGL, and mini-game content.
+- **Compatible** — Pixi, Phaser, three.js, Babylon.js, PlayCanvas, Egret, p5.js, EaselJS, Howler, raw Canvas/WebGL, and mini-game content: each one run unmodified, at a pinned version, by [`migo-conformance`](https://github.com/minigame-labs/migo-conformance) (`engines/`) through the real macOS host and, for most of them, on an iPhone 12. Cocos Creator and Laya are not in that suite yet, so they are not claimed.
 - **Yours to control** — your app decides login, payments, ads and downloads. Nothing is faked.
 
 ## Architecture
@@ -49,7 +49,7 @@
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
 │  YOUR GAME     game.js + assets                                  │
-│                Cocos, Laya, Egret, Pixi, Phaser, Canvas/WebGL    │
+│                Pixi, Phaser, three.js, Egret, Canvas/WebGL, …    │
 ├──────────────────────────────────────────────────────────────────┤
 │  ADAPTERS      migo-wx-adapter, migo-web-adapter                 │
 │  (optional)    map wx.* and browser globals onto migo.*          │
