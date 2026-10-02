@@ -941,6 +941,10 @@ pub struct VertexAttribPointerFp {
     pub size: i32,
     pub type_: u32,
     pub normalized: bool,
+    /// `vertexAttribIPointer`: the same slot read as integers. Part of the fingerprint because the same
+    /// (size, type, stride, offset) issued as `vertexAttribPointer` is a different call, and skipping it as a
+    /// repeat would leave the attribute converted to float.
+    pub integer: bool,
     pub stride: i32,
     pub offset: i32,
     /// `ARRAY_BUFFER` binding captured at the time of the
@@ -1356,6 +1360,7 @@ mod shadow_shape_benches {
                             size: 3,
                             type_: glow::FLOAT,
                             normalized: false,
+                            integer: false,
                             stride: 32,
                             offset: (index * 12) as i32,
                             array_buffer: Some(10 + vao),

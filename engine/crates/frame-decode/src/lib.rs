@@ -44,7 +44,8 @@ use frame_wire::gl::{
     OP_UNIFORM_MATRIX3FV, OP_UNIFORM_MATRIX4FV, OP_UNIFORM1F, OP_UNIFORM1FV, OP_UNIFORM1I,
     OP_UNIFORM1IV, OP_UNIFORM2F, OP_UNIFORM2FV, OP_UNIFORM2IV, OP_UNIFORM3F, OP_UNIFORM3FV,
     OP_UNIFORM3IV, OP_UNIFORM4F, OP_UNIFORM4FV, OP_UNIFORM4IV, OP_USE_PROGRAM,
-    OP_VERTEX_ATTRIB_DIVISOR, OP_VERTEX_ATTRIB_POINTER, OP_VIEWPORT,
+    OP_VERTEX_ATTRIB_4F, OP_VERTEX_ATTRIB_DIVISOR, OP_VERTEX_ATTRIB_I_POINTER,
+    OP_VERTEX_ATTRIB_I4I, OP_VERTEX_ATTRIB_I4UI, OP_VERTEX_ATTRIB_POINTER, OP_VIEWPORT,
 };
 use frame_wire::stream::{ValidatedStream, opcode_of, word_count_of};
 
@@ -68,7 +69,7 @@ pub use validate::{GlDecodeContext, ImageUpload, TransformFeedbackPhase};
 
 use validate::{
     validate_bind_buffer_base, validate_bind_buffer_range, validate_bind_buffer_target,
-    validate_vertex_attrib_pointer, validate_viewport_like,
+    validate_vertex_attrib_ipointer, validate_vertex_attrib_pointer, validate_viewport_like,
 };
 
 /// Reinterpret uniform words as floats. The producer wrote the bit patterns;
@@ -429,6 +430,54 @@ fn decode_record<C: GlDecodeContext>(
                 canvas_id,
                 index: record[2],
                 divisor: record[3],
+            })
+        }
+
+        // ── 59: VERTEX_ATTRIB_4F: H C U F F F F ─────────────────────────────────
+        OP_VERTEX_ATTRIB_4F => Some(GLCmd::VertexAttrib4f {
+            canvas_id: record[1],
+            index: record[2],
+            x: f(record[3]),
+            y: f(record[4]),
+            z: f(record[5]),
+            w: f(record[6]),
+        }),
+
+        // ── 60: VERTEX_ATTRIB_I4I: H C U I I I I ────────────────────────────────
+        OP_VERTEX_ATTRIB_I4I => Some(GLCmd::VertexAttribI4i {
+            canvas_id: record[1],
+            index: record[2],
+            x: i(record[3]),
+            y: i(record[4]),
+            z: i(record[5]),
+            w: i(record[6]),
+        }),
+
+        // ── 61: VERTEX_ATTRIB_I4UI: H C U U U U U ───────────────────────────────
+        OP_VERTEX_ATTRIB_I4UI => Some(GLCmd::VertexAttribI4ui {
+            canvas_id: record[1],
+            index: record[2],
+            x: record[3],
+            y: record[4],
+            z: record[5],
+            w: record[6],
+        }),
+
+        // ── 62: VERTEX_ATTRIB_I_POINTER: H C U I U I I ──────────────────────────
+        // Validated like OP_VERTEX_ATTRIB_POINTER, with the integer types only.
+        OP_VERTEX_ATTRIB_I_POINTER => {
+            let canvas_id = record[1];
+            let (size, type_, stride, offset) = (i(record[3]), record[4], i(record[5]), i(record[6]));
+            if !validate_vertex_attrib_ipointer(context, canvas_id, size, type_, stride, offset) {
+                return None;
+            }
+            Some(GLCmd::VertexAttribIPointer {
+                canvas_id,
+                index: record[2],
+                size,
+                type_,
+                stride,
+                offset,
             })
         }
 

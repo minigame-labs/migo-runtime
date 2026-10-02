@@ -119,6 +119,10 @@ import {
     op_delete_vertex_array,
     op_bind_vertex_array,
     op_vertex_attrib_divisor,
+    op_vertex_attrib_4f,
+    op_vertex_attrib_i4i,
+    op_vertex_attrib_i4ui,
+    op_vertex_attrib_i_pointer,
     op_draw_arrays_instanced,
     op_draw_elements_instanced,
     op_get_uniform_block_index,
@@ -210,6 +214,10 @@ import {
     encodeDisableVertexAttribArray,
     encodeVertexAttribPointer,
     encodeVertexAttribDivisor,
+    encodeVertexAttrib4f,
+    encodeVertexAttribI4i,
+    encodeVertexAttribI4ui,
+    encodeVertexAttribIPointer,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,
@@ -450,6 +458,10 @@ const _rawCreateVertexArray  = _makeOrderedRaw(op_create_vertex_array);
 const _rawDeleteVertexArray  = _makeOrderedRaw(op_delete_vertex_array);
 const _rawBindVertexArray    = _makeOrderedRaw(op_bind_vertex_array);
 const _rawVertexAttribDivisor= _makeOrderedRaw(op_vertex_attrib_divisor);
+const _rawVertexAttrib4f     = _makeOrderedRaw(op_vertex_attrib_4f);
+const _rawVertexAttribI4i    = _makeOrderedRaw(op_vertex_attrib_i4i);
+const _rawVertexAttribI4ui   = _makeOrderedRaw(op_vertex_attrib_i4ui);
+const _rawVertexAttribIPointer= _makeOrderedRaw(op_vertex_attrib_i_pointer);
 const _rawDrawArraysInstanced= _makeOrderedRaw(op_draw_arrays_instanced);
 const _rawDrawElementsInstanced= _makeOrderedRaw(op_draw_elements_instanced);
 const _rawGetUniformBlockIndex= _makeOrderedRaw(op_get_uniform_block_index);
@@ -997,6 +1009,37 @@ function readPixelsIntoView(canvasId, x, y, width, height, format, type, pixels,
     }
 }
 
+// What `getVertexAttrib` answers: the array state of each attribute, kept per vertex array object, since the render
+// side holds the real state and a query for it would cross for a value this side wrote itself. 32 is a ceiling on
+// MAX_VERTEX_ATTRIBS (16 on every device the engine runs on); an index past it is not shadowed, and
+// `getVertexAttrib` refuses it against the real limit.
+const _ATTRIB_SHADOW_SLOTS = 32;
+class VertexAttribShadow {
+    constructor() {
+        this.enabled = new Uint8Array(_ATTRIB_SHADOW_SLOTS);
+        this.size = new Int32Array(_ATTRIB_SHADOW_SLOTS).fill(4);
+        this.type = new Uint32Array(_ATTRIB_SHADOW_SLOTS).fill(0x1406);   // FLOAT
+        this.normalized = new Uint8Array(_ATTRIB_SHADOW_SLOTS);
+        this.integer = new Uint8Array(_ATTRIB_SHADOW_SLOTS);
+        this.stride = new Int32Array(_ATTRIB_SHADOW_SLOTS);
+        this.offset = new Float64Array(_ATTRIB_SHADOW_SLOTS);
+        this.divisor = new Uint32Array(_ATTRIB_SHADOW_SLOTS);
+        this.buffer = new Array(_ATTRIB_SHADOW_SLOTS).fill(null);
+    }
+}
+
+// The arguments `vertexAttribPointer` / `vertexAttribIPointer` accept: what the host's decoder checks, so that the
+// shadow holds what the render side took and not what a refused call asked for.
+function _attribPointerAccepted(size, type, stride, offset, integer) {
+    if (!(size >= 1 && size <= 4)) return false;
+    if (!(stride >= 0 && stride <= 255) || !(offset >= 0)) return false;
+    switch (type) {
+        case 0x1400: case 0x1401: case 0x1402: case 0x1403: case 0x1404: case 0x1405: return true;
+        case 0x1406: case 0x140b: return !integer;   // FLOAT, HALF_FLOAT
+        default: return false;
+    }
+}
+
 class WebGLRenderingContext {
     constructor(canvas, options) {
         this._canvas = canvas;
@@ -1026,6 +1069,18 @@ class WebGLRenderingContext {
         // shaderId -> Map(pname -> value)
         this._shaderParameterCache = new Map();
         this._jsErrorQueue = [];
+        // Vertex attribute state, for `getVertexAttrib`: the bound vertex array object's per-attribute array state, and the
+        // constant values `vertexAttrib*` set (one set for the context, as GL has it; their bits are shared between the
+        // float, int and uint views, and `_currentAttribKind` says which the last call wrote).
+        this._attribDefaults = new VertexAttribShadow();
+        this._attribShadow = this._attribDefaults;
+        const currentBits = new ArrayBuffer(_ATTRIB_SHADOW_SLOTS * 16);
+        this._currentAttribF = new Float32Array(currentBits);
+        this._currentAttribI = new Int32Array(currentBits);
+        this._currentAttribU = new Uint32Array(currentBits);
+        this._currentAttribKind = new Uint8Array(_ATTRIB_SHADOW_SLOTS);
+        for (let i = 0; i < _ATTRIB_SHADOW_SLOTS; i++) this._currentAttribF[i * 4 + 3] = 1;
+        this._maxVertexAttribs = 0;
         // Scratch for the scalar integer-vector setters (`uniform2i`..`4i`): the stream copies the words as it
         // encodes them, so one array per width serves every call without allocating.
         this._uniformI32Scratch = [null, null, new Uint32Array(2), new Uint32Array(3), new Uint32Array(4)];
@@ -1455,10 +1510,12 @@ class WebGLRenderingContext {
         // opcode 16: H C U. index is u32.
         if (typeof index === "number") {
             encodeEnableVertexAttribArray(this._canvasId, index >>> 0);
-            return;
+        } else {
+            flushRenderCommandStream();
+            _rawEnableVertexAttribArray(this._canvasId, index);
         }
-        flushRenderCommandStream();
-        _rawEnableVertexAttribArray(this._canvasId, index);
+        const i = Number(index) >>> 0;
+        if (i < _ATTRIB_SHADOW_SLOTS) this._attribShadow.enabled[i] = 1;
     }
 
     vertexAttribPointer(index, size, type, normalized, stride, offset) {
@@ -1476,18 +1533,33 @@ class WebGLRenderingContext {
                 stride | 0,
                 offset | 0,
             );
-            return;
+        } else {
+            flushRenderCommandStream();
+            op_vertex_attrib_pointer(
+                this._canvasId,
+                index,
+                size,
+                type,
+                normalized,
+                stride,
+                offset,
+            );
         }
-        flushRenderCommandStream();
-        op_vertex_attrib_pointer(
-            this._canvasId,
-            index,
-            size,
-            type,
-            normalized,
-            stride,
-            offset,
-        );
+        this._shadowAttribPointer(index, size, type, normalized, false, stride, offset);
+    }
+
+    _shadowAttribPointer(index, size, type, normalized, integer, stride, offset) {
+        const i = Number(index) >>> 0;
+        size = Number(size) | 0; type = Number(type) >>> 0; stride = Number(stride) | 0; offset = Number(offset);
+        if (i >= _ATTRIB_SHADOW_SLOTS || !_attribPointerAccepted(size, type, stride, offset, integer)) return;
+        const sh = this._attribShadow;
+        sh.size[i] = size;
+        sh.type[i] = type;
+        sh.normalized[i] = integer || !normalized ? 0 : 1;
+        sh.integer[i] = integer ? 1 : 0;
+        sh.stride[i] = stride;
+        sh.offset[i] = offset;
+        sh.buffer[i] = this._arrayBufferBinding;
     }
 
     createBuffer() {
@@ -1976,6 +2048,8 @@ class WebGLRenderingContext {
                     flushRenderCommandStream();
                     op_vertex_attrib_divisor(ctx._canvasId, index, divisor);
                 }
+                const i = Number(index) >>> 0;
+                if (i < _ATTRIB_SHADOW_SLOTS) ctx._attribShadow.divisor[i] = Number(divisor) >>> 0;
             },
         };
     }
@@ -1989,22 +2063,9 @@ class WebGLRenderingContext {
                 _rawCreateVertexArray(ctx._canvasId, id);
                 return { _id: id, _kind: 'vao' };
             },
-            deleteVertexArrayOES(vao) {
-                if (vao && vao._id) _rawDeleteVertexArray(vao._id);
-            },
-            isVertexArrayOES(vao) {
-                return !!(vao && typeof vao._id === 'number' && vao._kind === 'vao');
-            },
-            bindVertexArrayOES(vao) {
-                // opcode 14: H C U. vaoId is u32 (0 = unbind).
-                const vaoId = vao ? vao._id : 0;
-                if (typeof vaoId === "number") {
-                    encodeBindVertexArray(ctx._canvasId, vaoId >>> 0);
-                } else {
-                    flushRenderCommandStream();
-                    op_bind_vertex_array(ctx._canvasId, vaoId);
-                }
-            },
+            deleteVertexArrayOES(vao) { ctx.deleteVertexArray(vao); },
+            isVertexArrayOES(vao) { return ctx.isVertexArray(vao); },
+            bindVertexArrayOES(vao) { ctx.bindVertexArray(vao); },
         };
     }
 
@@ -2323,10 +2384,109 @@ class WebGLRenderingContext {
         // opcode 17: H C U.
         if (typeof index === "number") {
             encodeDisableVertexAttribArray(this._canvasId, index >>> 0);
-            return;
+        } else {
+            flushRenderCommandStream();
+            _rawDisableVertexAttribArray(this._canvasId, index);
         }
-        flushRenderCommandStream();
-        _rawDisableVertexAttribArray(this._canvasId, index);
+        const i = Number(index) >>> 0;
+        if (i < _ATTRIB_SHADOW_SLOTS) this._attribShadow.enabled[i] = 0;
+    }
+
+    // ---- Constant vertex attributes ---------------------------------------------------------------------------------
+    // What an attribute reads while its array is disabled. All four arities cross as one record: a call that gives
+    // fewer than four components leaves the rest at 0, 0, 0, 1 as the specification has them.
+    _vertexAttribF(index, x, y, z, w) {
+        if (typeof index === "number" && typeof x === "number" && typeof y === "number" &&
+            typeof z === "number" && typeof w === "number") {
+            encodeVertexAttrib4f(this._canvasId, index, x, y, z, w);
+        } else {
+            flushRenderCommandStream();
+            _rawVertexAttrib4f(this._canvasId, index, x, y, z, w);
+        }
+        const i = Number(index) >>> 0;
+        if (i < _ATTRIB_SHADOW_SLOTS) {
+            const f = this._currentAttribF, k = i * 4;
+            f[k] = Number(x); f[k + 1] = Number(y); f[k + 2] = Number(z); f[k + 3] = Number(w);
+            this._currentAttribKind[i] = 0;
+        }
+    }
+    // The values of a `Float32List` / `Int32List` / `Uint32List` call: a typed array or a sequence, at least `n` long.
+    // Anything that is not one is a TypeError; one that is too short is INVALID_VALUE and the call is ignored.
+    _attribList(name, list, n) {
+        if (list === null || typeof list !== "object" || typeof list.length !== "number") {
+            throw new TypeError(`Failed to execute '${name}' on 'WebGLRenderingContext': parameter 2 is not of type '${list === undefined ? "undefined" : "list"}'.`);
+        }
+        if (list.length < n) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return false;
+        }
+        return true;
+    }
+    vertexAttrib1f(index, x) { this._vertexAttribF(index, x, 0, 0, 1); }
+    vertexAttrib2f(index, x, y) { this._vertexAttribF(index, x, y, 0, 1); }
+    vertexAttrib3f(index, x, y, z) { this._vertexAttribF(index, x, y, z, 1); }
+    vertexAttrib4f(index, x, y, z, w) { this._vertexAttribF(index, x, y, z, w); }
+    vertexAttrib1fv(index, v) { if (this._attribList("vertexAttrib1fv", v, 1)) this._vertexAttribF(index, v[0], 0, 0, 1); }
+    vertexAttrib2fv(index, v) { if (this._attribList("vertexAttrib2fv", v, 2)) this._vertexAttribF(index, v[0], v[1], 0, 1); }
+    vertexAttrib3fv(index, v) { if (this._attribList("vertexAttrib3fv", v, 3)) this._vertexAttribF(index, v[0], v[1], v[2], 1); }
+    vertexAttrib4fv(index, v) { if (this._attribList("vertexAttrib4fv", v, 4)) this._vertexAttribF(index, v[0], v[1], v[2], v[3]); }
+
+    // ---- Vertex attribute queries -----------------------------------------------------------------------------------
+    _attribLimit() {
+        if (this._maxVertexAttribs === 0) {
+            const n = this.getParameter(0x8869);   // MAX_VERTEX_ATTRIBS
+            this._maxVertexAttribs = Number.isInteger(n) && n > 0 ? Math.min(n, _ATTRIB_SHADOW_SLOTS) : 16;
+        }
+        return this._maxVertexAttribs;
+    }
+    getVertexAttrib(index, pname) {
+        const i = Number(index) >>> 0;
+        if (i >= this._attribLimit()) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return null;
+        }
+        const sh = this._attribShadow;
+        switch (pname) {
+            case 0x8622: return sh.enabled[i] === 1;                      // VERTEX_ATTRIB_ARRAY_ENABLED
+            case 0x8623: return sh.size[i];                               // VERTEX_ATTRIB_ARRAY_SIZE
+            case 0x8624: return sh.stride[i];                             // VERTEX_ATTRIB_ARRAY_STRIDE
+            case 0x8625: return sh.type[i];                               // VERTEX_ATTRIB_ARRAY_TYPE
+            case 0x886a: return sh.normalized[i] === 1;                   // VERTEX_ATTRIB_ARRAY_NORMALIZED
+            case 0x889f: return sh.buffer[i];                             // VERTEX_ATTRIB_ARRAY_BUFFER_BINDING
+            case 0x8626: {                                                // CURRENT_VERTEX_ATTRIB
+                const k = i * 4;
+                const view = this._currentAttribKind[i] === 1 ? this._currentAttribI
+                    : this._currentAttribKind[i] === 2 ? this._currentAttribU : this._currentAttribF;
+                return view.slice(k, k + 4);
+            }
+            case 0x88fd:                                                  // VERTEX_ATTRIB_ARRAY_INTEGER (WebGL 2)
+                if (this._isWebGL2()) return sh.integer[i] === 1;
+                break;
+            case 0x88fe:                                                  // VERTEX_ATTRIB_ARRAY_DIVISOR (WebGL 2, ANGLE_instanced_arrays)
+                if (this._isWebGL2() || !!this._angleInstancedArrays) return sh.divisor[i];
+                break;
+            default: break;
+        }
+        recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+        return null;
+    }
+    getVertexAttribOffset(index, pname) {
+        const i = Number(index) >>> 0;
+        if (pname !== 0x8645) {                                            // VERTEX_ATTRIB_ARRAY_POINTER
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return 0;
+        }
+        if (i >= this._attribLimit()) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return 0;
+        }
+        return this._attribShadow.offset[i];
+    }
+    _isWebGL2() {
+        return typeof WebGL2RenderingContext === "function" && this instanceof WebGL2RenderingContext;
+    }
+    _bindAttribShadow(vao) {
+        this._attribShadow = vao ? (vao._attribs || (vao._attribs = new VertexAttribShadow())) : this._attribDefaults;
     }
 
     clearDepth(depth) {
@@ -2929,17 +3089,70 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         return { _id: id, _kind: 'vao' };
     }
     deleteVertexArray(vao) {
-        if (vao && vao._id) _rawDeleteVertexArray(vao._id);
+        if (vao && vao._id) {
+            _rawDeleteVertexArray(vao._id);
+            vao._deleted = true;
+            // Deleting the bound vertex array object binds the default one, as GL does.
+            if (this._attribShadow === vao._attribs) this._attribShadow = this._attribDefaults;
+        }
+    }
+    isVertexArray(vao) {
+        return !!(vao && typeof vao._id === 'number' && vao._kind === 'vao' && vao._deleted !== true);
     }
     bindVertexArray(vao) {
         // opcode 14: H C U. vaoId is u32 (0 = unbind).
         const vaoId = vao ? vao._id : 0;
         if (typeof vaoId === "number") {
             encodeBindVertexArray(this._canvasId, vaoId >>> 0);
-            return;
+        } else {
+            flushRenderCommandStream();
+            _rawBindVertexArray(this._canvasId, vaoId);
         }
-        flushRenderCommandStream();
-        _rawBindVertexArray(this._canvasId, vaoId);
+        this._bindAttribShadow(vao);
+    }
+
+    // ---- Integer vertex attributes (WebGL 2) ------------------------------------------------------------------------
+    vertexAttribI4i(index, x, y, z, w) {
+        if (typeof index === "number" && typeof x === "number" && typeof y === "number" &&
+            typeof z === "number" && typeof w === "number") {
+            encodeVertexAttribI4i(this._canvasId, index, x, y, z, w);
+        } else {
+            flushRenderCommandStream();
+            _rawVertexAttribI4i(this._canvasId, index, x, y, z, w);
+        }
+        const i = Number(index) >>> 0;
+        if (i < _ATTRIB_SHADOW_SLOTS) {
+            const v = this._currentAttribI, k = i * 4;
+            v[k] = Number(x); v[k + 1] = Number(y); v[k + 2] = Number(z); v[k + 3] = Number(w);
+            this._currentAttribKind[i] = 1;
+        }
+    }
+    vertexAttribI4ui(index, x, y, z, w) {
+        if (typeof index === "number" && typeof x === "number" && typeof y === "number" &&
+            typeof z === "number" && typeof w === "number") {
+            encodeVertexAttribI4ui(this._canvasId, index, x, y, z, w);
+        } else {
+            flushRenderCommandStream();
+            _rawVertexAttribI4ui(this._canvasId, index, x, y, z, w);
+        }
+        const i = Number(index) >>> 0;
+        if (i < _ATTRIB_SHADOW_SLOTS) {
+            const v = this._currentAttribU, k = i * 4;
+            v[k] = Number(x); v[k + 1] = Number(y); v[k + 2] = Number(z); v[k + 3] = Number(w);
+            this._currentAttribKind[i] = 2;
+        }
+    }
+    vertexAttribI4iv(index, v) { if (this._attribList("vertexAttribI4iv", v, 4)) this.vertexAttribI4i(index, v[0], v[1], v[2], v[3]); }
+    vertexAttribI4uiv(index, v) { if (this._attribList("vertexAttribI4uiv", v, 4)) this.vertexAttribI4ui(index, v[0], v[1], v[2], v[3]); }
+    vertexAttribIPointer(index, size, type, stride, offset) {
+        if (typeof index === "number" && typeof size === "number" && typeof type === "number" &&
+            typeof stride === "number" && typeof offset === "number") {
+            encodeVertexAttribIPointer(this._canvasId, index >>> 0, size | 0, type >>> 0, stride | 0, offset | 0);
+        } else {
+            flushRenderCommandStream();
+            _rawVertexAttribIPointer(this._canvasId, index, size, type, stride, offset);
+        }
+        this._shadowAttribPointer(index, size, type, false, true, stride, offset);
     }
 
     // ---- Instanced drawing -------------------------------------
@@ -2947,10 +3160,12 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // opcode 19: H C U U.
         if (typeof index === "number" && typeof divisor === "number") {
             encodeVertexAttribDivisor(this._canvasId, index >>> 0, divisor >>> 0);
-            return;
+        } else {
+            flushRenderCommandStream();
+            _rawVertexAttribDivisor(this._canvasId, index, divisor);
         }
-        flushRenderCommandStream();
-        _rawVertexAttribDivisor(this._canvasId, index, divisor);
+        const i = Number(index) >>> 0;
+        if (i < _ATTRIB_SHADOW_SLOTS) this._attribShadow.divisor[i] = Number(divisor) >>> 0;
     }
     drawArraysInstanced(mode, first, count, instanceCount) {
         // opcode 49: H C U I I I.

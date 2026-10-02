@@ -23,7 +23,7 @@
 
 import { constructOpError } from "./engine-core.mjs";
 import { engineHost } from "./engine-host.mjs";
-import { recordProducerError } from "./lane-local.mjs";
+import { drainProducerError, recordProducerError } from "./lane-local.mjs";
 import { takeSnapshotSize } from "./lane-stream.mjs";
 import {
   fileBuffer,
@@ -305,7 +305,13 @@ export function op_client_wait_sync(sync, flags) {
  * be in the queue before it is read.
  */
 export function op_webgl_get_error(canvasId) {
-  return scalar({ kind: GL_QUERY_GET_ERROR, canvasId: smiU32(canvasId, "canvas_id") }) >>> 0;
+  const canvas = smiU32(canvasId, "canvas_id");
+  // The errors this side found itself first (a call refused before it was encoded: the host never saw it, and its queue
+  // has nothing for it), one per call and oldest first, as the embedded runtime's JS-level queue is answered ahead of the
+  // host's. Answered here, without crossing: nothing the host could add changes which error is next in this queue.
+  const produced = drainProducerError(canvas);
+  if (produced !== 0) return produced;
+  return scalar({ kind: GL_QUERY_GET_ERROR, canvasId: canvas }) >>> 0;
 }
 
 // ---- Canvas2D ---------------------------------------------------------------

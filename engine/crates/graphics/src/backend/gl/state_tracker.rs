@@ -692,11 +692,40 @@ pub(crate) fn update_vertex_attrib_pointer(
     stride: i32,
     offset: i32,
 ) -> bool {
+    update_pointer(state, index, size, type_, normalized, false, stride, offset)
+}
+
+/// `glVertexAttribIPointer(index, size, type, stride, offset)`: the same dedup as
+/// [`update_vertex_attrib_pointer`], with the integer flag in the fingerprint so a float pointer and an integer
+/// pointer with the same arguments are never taken for one another.
+pub(crate) fn update_vertex_attrib_ipointer(
+    state: &mut CanvasGLState,
+    index: u32,
+    size: i32,
+    type_: u32,
+    stride: i32,
+    offset: i32,
+) -> bool {
+    update_pointer(state, index, size, type_, false, true, stride, offset)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_pointer(
+    state: &mut CanvasGLState,
+    index: u32,
+    size: i32,
+    type_: u32,
+    normalized: bool,
+    integer: bool,
+    stride: i32,
+    offset: i32,
+) -> bool {
     let vao = state.bound_vao.unwrap_or(0);
     let fp = crate::canvas::VertexAttribPointerFp {
         size,
         type_,
         normalized,
+        integer,
         stride,
         offset,
         // The inner `Option<u32>` of `bound_array_buffer` is
@@ -1456,6 +1485,27 @@ mod tests {
             s.vertex_attribs.tracked_slots(0),
             0,
             "an out-of-range index sized the slot vector"
+        );
+    }
+
+    /// `vertexAttribPointer` and `vertexAttribIPointer` with the same arguments are different calls: the first
+    /// converts the data to float, the second leaves it integer. Taking one for a repeat of the other would leave an
+    /// attribute converted to float that the content declared an integer, with no error and no pixel to tell.
+    #[test]
+    fn an_integer_pointer_is_never_a_repeat_of_a_float_pointer_with_the_same_arguments() {
+        let mut s = fresh_state();
+        assert!(update_vertex_attrib_pointer(&mut s, 2, 2, glow::INT, false, 8, 0));
+        assert!(
+            update_vertex_attrib_ipointer(&mut s, 2, 2, glow::INT, 8, 0),
+            "the integer form of the same arguments must reach the driver"
+        );
+        assert!(
+            !update_vertex_attrib_ipointer(&mut s, 2, 2, glow::INT, 8, 0),
+            "and a repeat of that is a repeat"
+        );
+        assert!(
+            update_vertex_attrib_pointer(&mut s, 2, 2, glow::INT, false, 8, 0),
+            "going back to the float form must reach the driver too"
         );
     }
 

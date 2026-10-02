@@ -9,8 +9,6 @@
       "reason": "Reads back state the render thread owns. Needs a synchronous answer path (as getProgramParameter has) or a JS-side shadow of the state; neither exists for these yet.",
       "methods": [
         "getUniform",
-        "getVertexAttrib",
-        "getVertexAttribOffset",
         "getAttachedShaders",
         "getIndexedParameter",
         "getSamplerParameter",
@@ -18,26 +16,7 @@
         "getFragDataLocation",
         "isSampler",
         "isSync",
-        "isVertexArray",
         "getBufferSubData"
-      ]
-    },
-    {
-      "reason": "Constant (non-array) vertex attributes and integer attributes. Needs a render-stream record for the current-value state of an attribute index, and vertexAttribIPointer a record beside vertexAttribPointer; three.js uses vertexAttribIPointer for integer attributes (skinning indices) and vertexAttrib4f for a disabled attribute's default.",
-      "methods": [
-        "vertexAttrib1f",
-        "vertexAttrib2f",
-        "vertexAttrib3f",
-        "vertexAttrib4f",
-        "vertexAttrib1fv",
-        "vertexAttrib2fv",
-        "vertexAttrib3fv",
-        "vertexAttrib4fv",
-        "vertexAttribI4i",
-        "vertexAttribI4iv",
-        "vertexAttribI4ui",
-        "vertexAttribI4uiv",
-        "vertexAttribIPointer"
       ]
     },
     {

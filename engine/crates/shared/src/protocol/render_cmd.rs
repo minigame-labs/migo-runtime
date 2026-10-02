@@ -1404,6 +1404,44 @@ pub enum GLCmd {
         vao: Option<VaoId>,
     },
 
+    /// `vertexAttrib{1,2,3,4}f[v]`: the constant value an attribute reads while its array is disabled. A call that
+    /// gives fewer than four components leaves the rest at 0, 0, 0, 1; the encoder has already written them.
+    VertexAttrib4f {
+        canvas_id: CanvasId,
+        index: u32,
+        x: f32,
+        y: f32,
+        z: f32,
+        w: f32,
+    },
+    /// `vertexAttribI4i[v]` (WebGL 2): the constant value of an integer attribute.
+    VertexAttribI4i {
+        canvas_id: CanvasId,
+        index: u32,
+        x: i32,
+        y: i32,
+        z: i32,
+        w: i32,
+    },
+    /// `vertexAttribI4ui[v]` (WebGL 2).
+    VertexAttribI4ui {
+        canvas_id: CanvasId,
+        index: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        w: u32,
+    },
+    /// `vertexAttribIPointer` (WebGL 2): an attribute read as integers, never converted to float or normalised.
+    VertexAttribIPointer {
+        canvas_id: CanvasId,
+        index: u32,
+        size: i32,
+        type_: u32,
+        stride: i32,
+        offset: i32,
+    },
+
     // Instanced drawing — native in WebGL 2, extension-backed in WebGL 1.
     VertexAttribDivisor {
         canvas_id: CanvasId,
@@ -2485,6 +2523,10 @@ impl GLCmd {
             | GLCmd::DisableVertexAttribArray { canvas_id, .. }
             | GLCmd::VertexAttribPointer { canvas_id, .. }
             | GLCmd::VertexAttribDivisor { canvas_id, .. }
+            | GLCmd::VertexAttrib4f { canvas_id, .. }
+            | GLCmd::VertexAttribI4i { canvas_id, .. }
+            | GLCmd::VertexAttribI4ui { canvas_id, .. }
+            | GLCmd::VertexAttribIPointer { canvas_id, .. }
             | GLCmd::CreateBuffer { canvas_id, .. }
             | GLCmd::BindBuffer { canvas_id, .. }
             | GLCmd::BufferData { canvas_id, .. }
@@ -2739,6 +2781,10 @@ impl GLCmd {
             | GLCmd::DisableVertexAttribArray { .. }
             | GLCmd::VertexAttribPointer { .. }
             | GLCmd::VertexAttribDivisor { .. }
+            | GLCmd::VertexAttrib4f { .. }
+            | GLCmd::VertexAttribI4i { .. }
+            | GLCmd::VertexAttribI4ui { .. }
+            | GLCmd::VertexAttribIPointer { .. }
             | GLCmd::CreateBuffer { .. }
             | GLCmd::BindBuffer { .. }
             | GLCmd::BufferData { .. }
