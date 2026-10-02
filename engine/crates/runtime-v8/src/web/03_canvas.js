@@ -219,6 +219,34 @@ class Canvas {
         }
         return out;
     }
+    // The 2D canvas that holds what this canvas shows, for the places a canvas is read as an image: `drawImage(canvas)` and
+    // `texImage2D` / `texSubImage2D` with a canvas source. A 2D canvas is copied by the renderer, on the GPU, in stream
+    // order, and is its own answer. A WebGL canvas is not something it can copy -- its pixels are a drawing buffer (or a pbuffer's default framebuffer), not a
+    // 2D surface -- so what it shows now is read back (`readPixels`, which orders itself after the context's own commands)
+    // and put onto a 2D canvas this canvas keeps for the purpose, and that one is what is drawn. That is a readback and an
+    // upload per draw: right for a screenshot or a filter, to be avoided for a per-frame composite. A canvas that never had
+    // a context has nothing to show and is returned as it is (the renderer paints nothing for it).
+    _imageSourceCanvas() {
+        const kind = this._contextKind;
+        if (kind !== 'webgl' && kind !== 'webgl2') return this;
+        const w = this._width, h = this._height;
+        if (w === 0 || h === 0) return this;
+        let mirror = this._drawImageMirror;
+        if (mirror === undefined) {
+            mirror = createOffscreenCanvas(w, h);
+            mirror._mirrorContext = mirror.getContext('2d');
+            this._drawImageMirror = mirror;
+        }
+        if (mirror._width !== w || mirror._height !== h) {
+            mirror.width = w;
+            mirror.height = h;
+        }
+        const context = mirror._mirrorContext;
+        const image = context.createImageData(w, h);
+        image.data.set(this._readAllPixels());
+        context.putImageData(image, 0, 0);
+        return mirror;
+    }
     // `canvas.toDataURL(type, quality)`: a PNG, or a JPEG for "image/jpeg" (with `quality` in [0, 1]); a type this
     // does not encode is answered with a PNG. A canvas with no pixels is "data:,".
     toDataURL(type, quality) {
