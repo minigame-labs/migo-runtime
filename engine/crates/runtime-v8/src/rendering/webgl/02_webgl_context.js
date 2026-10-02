@@ -99,6 +99,16 @@ import {
     op_uniform4fv,
     op_uniform_matrix_2fv,
     op_uniform_matrix_4fv,
+    op_uniform1uiv,
+    op_uniform2uiv,
+    op_uniform3uiv,
+    op_uniform4uiv,
+    op_uniform_matrix_2x3fv,
+    op_uniform_matrix_2x4fv,
+    op_uniform_matrix_3x2fv,
+    op_uniform_matrix_3x4fv,
+    op_uniform_matrix_4x2fv,
+    op_uniform_matrix_4x3fv,
     op_create_framebuffer,
     op_delete_framebuffer,
     op_bind_framebuffer,
@@ -268,6 +278,16 @@ import {
     encodeUniformMatrix2fv,
     encodeUniformMatrix3fv,
     encodeUniformMatrix4fv,
+    encodeUniformMatrix2x3fv,
+    encodeUniformMatrix2x4fv,
+    encodeUniformMatrix3x2fv,
+    encodeUniformMatrix3x4fv,
+    encodeUniformMatrix4x2fv,
+    encodeUniformMatrix4x3fv,
+    encodeUniform1uiv,
+    encodeUniform2uiv,
+    encodeUniform3uiv,
+    encodeUniform4uiv,
 } from "./00_render_command_stream.js";
 
 // -- Ordered-raw op wrappers --
@@ -439,7 +459,19 @@ const _rawUniform3iv         = _makeOrderedRaw(op_uniform3iv);
 const _rawUniform3fv         = _makeOrderedRaw(op_uniform3fv);
 const _rawUniform4iv         = _makeOrderedRaw(op_uniform4iv);
 const _rawUniform4fv         = _makeOrderedRaw(op_uniform4fv);
+const _rawUniform1uiv        = _makeOrderedRaw(op_uniform1uiv);
+const _rawUniform2uiv        = _makeOrderedRaw(op_uniform2uiv);
+const _rawUniform3uiv        = _makeOrderedRaw(op_uniform3uiv);
+const _rawUniform4uiv        = _makeOrderedRaw(op_uniform4uiv);
+const _rawUniformMatrix2x3fv  = _makeOrderedRaw(op_uniform_matrix_2x3fv);
+const _rawUniformMatrix2x4fv  = _makeOrderedRaw(op_uniform_matrix_2x4fv);
+const _rawUniformMatrix3x2fv  = _makeOrderedRaw(op_uniform_matrix_3x2fv);
+const _rawUniformMatrix3x4fv  = _makeOrderedRaw(op_uniform_matrix_3x4fv);
+const _rawUniformMatrix4x2fv  = _makeOrderedRaw(op_uniform_matrix_4x2fv);
+const _rawUniformMatrix4x3fv  = _makeOrderedRaw(op_uniform_matrix_4x3fv);
 const _rawHint               = _makeOrderedRaw(op_hint);
+const _UNIFORM_UI_ENCODERS = [null, encodeUniform1uiv, encodeUniform2uiv, encodeUniform3uiv, encodeUniform4uiv];
+const _UNIFORM_UI_RAW = [null, _rawUniform1uiv, _rawUniform2uiv, _rawUniform3uiv, _rawUniform4uiv];
 const _rawReadPixels         = _makeOrderedRaw(op_read_pixels);
 const _rawReadPixelsToBuffer = _makeOrderedRaw(op_read_pixels_to_buffer);
 const _rawCreateFramebuffer  = _makeOrderedRaw(op_create_framebuffer);
@@ -829,6 +861,39 @@ function toInt32AsUint32(input) {
         TypedArrayPrototypeGetBuffer(i32),
         TypedArrayPrototypeGetByteOffset(i32),
         TypedArrayPrototypeGetByteLength(i32) / Uint32Array.BYTES_PER_ELEMENT,
+    );
+}
+
+// The payload of a WebGL 2 uniform list call, `Type` being the element type the uniform takes (Uint32Array for the unsigned
+// vectors, Float32Array for the matrices). WebGL 2 adds `srcOffset` and `srcLength` (in elements; a length of 0 means to the
+// end) to every list setter, and the list has to be a whole number of `unit` elements and at least one: otherwise the call is
+// INVALID_VALUE and changes nothing. Returns the words as the Uint32Array the stream copies, or `null` after recording the
+// error. A value that is not a list is a TypeError, as WebIDL has it.
+function _uniformListPayload(canvasId, name, data, srcOffset, srcLength, unit, Type) {
+    let view;
+    if (isTypedArray(data)) {
+        view = data instanceof Type ? data : new Type(data);
+    } else if (ArrayIsArray(data)) {
+        view = new Type(data);
+    } else {
+        throw new TypeError(`Failed to execute '${name}' on 'WebGL2RenderingContext': parameter 3 is not of type '${Type.name}List'.`);
+    }
+    const length = view.length;
+    const offset = srcOffset >>> 0;
+    let count = srcLength >>> 0;
+    if (offset > length || (count !== 0 && offset + count > length)) {
+        return recordGpuPreflightError(canvasId, GL_INVALID_VALUE) || null;
+    }
+    if (count === 0) count = length - offset;
+    if (count < unit || count % unit !== 0) {
+        return recordGpuPreflightError(canvasId, GL_INVALID_VALUE) || null;
+    }
+    view = view.subarray(offset, offset + count);
+    view = ensureNonSharedTypedArray(view, Type);
+    return new Uint32Array(
+        TypedArrayPrototypeGetBuffer(view),
+        TypedArrayPrototypeGetByteOffset(view),
+        TypedArrayPrototypeGetByteLength(view) / Uint32Array.BYTES_PER_ELEMENT,
     );
 }
 
@@ -3060,6 +3125,8 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         this._queryRegistry = new Map();
         this._currentQueryByTarget = new Map();
         this._tfRegistry = new Map();
+        // Scratch for `uniform{1,2,3,4}ui`: the stream copies the words as it encodes them.
+        this._uniformU32Scratch = [null, new Uint32Array(1), new Uint32Array(2), new Uint32Array(3), new Uint32Array(4)];
         this._currentTransformFeedback = null;
     }
 
@@ -3153,6 +3220,66 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             _rawVertexAttribIPointer(this._canvasId, index, size, type, stride, offset);
         }
         this._shadowAttribPointer(index, size, type, false, true, stride, offset);
+    }
+
+    // ---- Unsigned integer uniforms and the non-square matrices (WebGL 2) --------------------------------------------
+    // `uniform{1,2,3,4}ui` are the component form of the `uiv` record of the same width, as `uniform2i` is of `uniform2iv`.
+    _uniformUi(n, location, a, b, c, d) {
+        const loc = _loc(location);
+        const payload = this._uniformU32Scratch[n];
+        payload[0] = a >>> 0;
+        if (n > 1) payload[1] = b >>> 0;
+        if (n > 2) payload[2] = c >>> 0;
+        if (n > 3) payload[3] = d >>> 0;
+        if (!_UNIFORM_UI_ENCODERS[n](this._canvasId, loc, payload)) {
+            flushRenderCommandStream();
+            _UNIFORM_UI_RAW[n](this._canvasId, loc, payload);
+        }
+    }
+    uniform1ui(location, v0) { this._uniformUi(1, location, v0); }
+    uniform2ui(location, v0, v1) { this._uniformUi(2, location, v0, v1); }
+    uniform3ui(location, v0, v1, v2) { this._uniformUi(3, location, v0, v1, v2); }
+    uniform4ui(location, v0, v1, v2, v3) { this._uniformUi(4, location, v0, v1, v2, v3); }
+    _uniformUiv(n, name, location, data, srcOffset, srcLength) {
+        const loc = _loc(location);
+        const payload = _uniformListPayload(this._canvasId, name, data, srcOffset, srcLength, n, Uint32Array);
+        if (payload === null) return;
+        if (!_UNIFORM_UI_ENCODERS[n](this._canvasId, loc, payload)) {
+            flushRenderCommandStream();
+            _UNIFORM_UI_RAW[n](this._canvasId, loc, payload);
+        }
+    }
+    uniform1uiv(location, data, srcOffset = 0, srcLength = 0) { this._uniformUiv(1, "uniform1uiv", location, data, srcOffset, srcLength); }
+    uniform2uiv(location, data, srcOffset = 0, srcLength = 0) { this._uniformUiv(2, "uniform2uiv", location, data, srcOffset, srcLength); }
+    uniform3uiv(location, data, srcOffset = 0, srcLength = 0) { this._uniformUiv(3, "uniform3uiv", location, data, srcOffset, srcLength); }
+    uniform4uiv(location, data, srcOffset = 0, srcLength = 0) { this._uniformUiv(4, "uniform4uiv", location, data, srcOffset, srcLength); }
+    _uniformMatrixNxM(name, unit, encode, raw, location, transpose, data, srcOffset, srcLength) {
+        const loc = _loc(location);
+        const payload = _uniformListPayload(this._canvasId, name, data, srcOffset, srcLength, unit, Float32Array);
+        if (payload === null) return;
+        const t = !!transpose;
+        if (!encode(this._canvasId, loc, t, payload)) {
+            flushRenderCommandStream();
+            raw(this._canvasId, loc, t, payload);
+        }
+    }
+    uniformMatrix2x3fv(location, transpose, data, srcOffset = 0, srcLength = 0) {
+        this._uniformMatrixNxM("uniformMatrix2x3fv", 6, encodeUniformMatrix2x3fv, _rawUniformMatrix2x3fv, location, transpose, data, srcOffset, srcLength);
+    }
+    uniformMatrix2x4fv(location, transpose, data, srcOffset = 0, srcLength = 0) {
+        this._uniformMatrixNxM("uniformMatrix2x4fv", 8, encodeUniformMatrix2x4fv, _rawUniformMatrix2x4fv, location, transpose, data, srcOffset, srcLength);
+    }
+    uniformMatrix3x2fv(location, transpose, data, srcOffset = 0, srcLength = 0) {
+        this._uniformMatrixNxM("uniformMatrix3x2fv", 6, encodeUniformMatrix3x2fv, _rawUniformMatrix3x2fv, location, transpose, data, srcOffset, srcLength);
+    }
+    uniformMatrix3x4fv(location, transpose, data, srcOffset = 0, srcLength = 0) {
+        this._uniformMatrixNxM("uniformMatrix3x4fv", 12, encodeUniformMatrix3x4fv, _rawUniformMatrix3x4fv, location, transpose, data, srcOffset, srcLength);
+    }
+    uniformMatrix4x2fv(location, transpose, data, srcOffset = 0, srcLength = 0) {
+        this._uniformMatrixNxM("uniformMatrix4x2fv", 8, encodeUniformMatrix4x2fv, _rawUniformMatrix4x2fv, location, transpose, data, srcOffset, srcLength);
+    }
+    uniformMatrix4x3fv(location, transpose, data, srcOffset = 0, srcLength = 0) {
+        this._uniformMatrixNxM("uniformMatrix4x3fv", 12, encodeUniformMatrix4x3fv, _rawUniformMatrix4x3fv, location, transpose, data, srcOffset, srcLength);
     }
 
     // ---- Instanced drawing -------------------------------------

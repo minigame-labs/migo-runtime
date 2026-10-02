@@ -2670,6 +2670,260 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            GLCmd::Uniform1uiv {
+                canvas_id,
+                location,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 1) as u32,
+                    bytemuck::cast_slice::<u32, u8>(&value),
+                ) {
+                    unsafe {
+                        gl.uniform_1_u32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::Uniform2uiv {
+                canvas_id,
+                location,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 2) as u32,
+                    bytemuck::cast_slice::<u32, u8>(&value),
+                ) {
+                    unsafe {
+                        gl.uniform_2_u32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::Uniform3uiv {
+                canvas_id,
+                location,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 3) as u32,
+                    bytemuck::cast_slice::<u32, u8>(&value),
+                ) {
+                    unsafe {
+                        gl.uniform_3_u32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::Uniform4uiv {
+                canvas_id,
+                location,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 4) as u32,
+                    bytemuck::cast_slice::<u32, u8>(&value),
+                ) {
+                    unsafe {
+                        gl.uniform_4_u32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::UniformMatrix2x3fv {
+                canvas_id,
+                location,
+                transpose,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let mut scratch = SmallVec::<[u8; 65]>::new();
+                let bytes = mat_uniform_bytes(&mut scratch, transpose, &value);
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 6 * 2) as u32,
+                    bytes,
+                ) {
+                    unsafe {
+                        gl.uniform_matrix_2x3_f32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            transpose,
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::UniformMatrix2x4fv {
+                canvas_id,
+                location,
+                transpose,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let mut scratch = SmallVec::<[u8; 65]>::new();
+                let bytes = mat_uniform_bytes(&mut scratch, transpose, &value);
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 8 * 2) as u32,
+                    bytes,
+                ) {
+                    unsafe {
+                        gl.uniform_matrix_2x4_f32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            transpose,
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::UniformMatrix3x2fv {
+                canvas_id,
+                location,
+                transpose,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let mut scratch = SmallVec::<[u8; 65]>::new();
+                let bytes = mat_uniform_bytes(&mut scratch, transpose, &value);
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 6 * 3) as u32,
+                    bytes,
+                ) {
+                    unsafe {
+                        gl.uniform_matrix_3x2_f32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            transpose,
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::UniformMatrix3x4fv {
+                canvas_id,
+                location,
+                transpose,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let mut scratch = SmallVec::<[u8; 65]>::new();
+                let bytes = mat_uniform_bytes(&mut scratch, transpose, &value);
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 12 * 3) as u32,
+                    bytes,
+                ) {
+                    unsafe {
+                        gl.uniform_matrix_3x4_f32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            transpose,
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::UniformMatrix4x2fv {
+                canvas_id,
+                location,
+                transpose,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let mut scratch = SmallVec::<[u8; 65]>::new();
+                let bytes = mat_uniform_bytes(&mut scratch, transpose, &value);
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 8 * 4) as u32,
+                    bytes,
+                ) {
+                    unsafe {
+                        gl.uniform_matrix_4x2_f32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            transpose,
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::UniformMatrix4x3fv {
+                canvas_id,
+                location,
+                transpose,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let mut scratch = SmallVec::<[u8; 65]>::new();
+                let bytes = mat_uniform_bytes(&mut scratch, transpose, &value);
+                if should_issue_uniform(
+                    cm,
+                    canvas_id,
+                    location,
+                    (value.len() / 12 * 4) as u32,
+                    bytes,
+                ) {
+                    unsafe {
+                        gl.uniform_matrix_4x3_f32_slice(
+                            to_native_uniform_location(location).as_ref(),
+                            transpose,
+                            &value,
+                        )
+                    };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
             // ========== Phase 3A: Framebuffer/Renderbuffer ==========
             GLCmd::CreateFramebuffer {
                 canvas_id,

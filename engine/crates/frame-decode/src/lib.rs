@@ -27,7 +27,7 @@
 //! object: this runs once per command on the render path, and a virtual call
 //! per command is a cost with nothing to show for it.
 
-use shared::protocol::render_cmd::{GLCmd, UniformF32Values, UniformI32Values};
+use shared::protocol::render_cmd::{GLCmd, UniformF32Values, UniformI32Values, UniformU32Values};
 
 use frame_wire::gl::{
     OP_ACTIVE_TEXTURE, OP_BIND_BUFFER, OP_BIND_BUFFER_BASE, OP_BIND_BUFFER_RANGE,
@@ -41,9 +41,11 @@ use frame_wire::gl::{
     OP_READ_BUFFER, OP_SAMPLER_PARAMETER_F, OP_SAMPLER_PARAMETER_I, OP_SCISSOR, OP_STENCIL_FUNC,
     OP_STENCIL_FUNC_SEPARATE, OP_STENCIL_MASK, OP_STENCIL_MASK_SEPARATE, OP_STENCIL_OP,
     OP_STENCIL_OP_SEPARATE, OP_TEX_PARAMETER_F, OP_TEX_PARAMETER_I, OP_UNIFORM_MATRIX2FV,
-    OP_UNIFORM_MATRIX3FV, OP_UNIFORM_MATRIX4FV, OP_UNIFORM1F, OP_UNIFORM1FV, OP_UNIFORM1I,
-    OP_UNIFORM1IV, OP_UNIFORM2F, OP_UNIFORM2FV, OP_UNIFORM2IV, OP_UNIFORM3F, OP_UNIFORM3FV,
-    OP_UNIFORM3IV, OP_UNIFORM4F, OP_UNIFORM4FV, OP_UNIFORM4IV, OP_USE_PROGRAM,
+    OP_UNIFORM_MATRIX2X3FV, OP_UNIFORM_MATRIX2X4FV, OP_UNIFORM_MATRIX3FV, OP_UNIFORM_MATRIX3X2FV,
+    OP_UNIFORM_MATRIX3X4FV, OP_UNIFORM_MATRIX4FV, OP_UNIFORM_MATRIX4X2FV, OP_UNIFORM_MATRIX4X3FV,
+    OP_UNIFORM1F, OP_UNIFORM1FV, OP_UNIFORM1I, OP_UNIFORM1IV, OP_UNIFORM1UIV, OP_UNIFORM2F,
+    OP_UNIFORM2FV, OP_UNIFORM2IV, OP_UNIFORM2UIV, OP_UNIFORM3F, OP_UNIFORM3FV, OP_UNIFORM3IV,
+    OP_UNIFORM3UIV, OP_UNIFORM4F, OP_UNIFORM4FV, OP_UNIFORM4IV, OP_UNIFORM4UIV, OP_USE_PROGRAM,
     OP_VERTEX_ATTRIB_4F, OP_VERTEX_ATTRIB_DIVISOR, OP_VERTEX_ATTRIB_I_POINTER,
     OP_VERTEX_ATTRIB_I4I, OP_VERTEX_ATTRIB_I4UI, OP_VERTEX_ATTRIB_POINTER, OP_VIEWPORT,
 };
@@ -78,6 +80,11 @@ use validate::{
 #[inline]
 pub fn copy_f32_words(words: &[u32]) -> UniformF32Values {
     words.iter().map(|word| f32::from_bits(*word)).collect()
+}
+
+#[inline]
+pub fn copy_u32_words(words: &[u32]) -> UniformU32Values {
+    words.iter().copied().collect()
 }
 
 #[inline]
@@ -467,7 +474,8 @@ fn decode_record<C: GlDecodeContext>(
         // Validated like OP_VERTEX_ATTRIB_POINTER, with the integer types only.
         OP_VERTEX_ATTRIB_I_POINTER => {
             let canvas_id = record[1];
-            let (size, type_, stride, offset) = (i(record[3]), record[4], i(record[5]), i(record[6]));
+            let (size, type_, stride, offset) =
+                (i(record[3]), record[4], i(record[5]), i(record[6]));
             if !validate_vertex_attrib_ipointer(context, canvas_id, size, type_, stride, offset) {
                 return None;
             }
@@ -1065,6 +1073,129 @@ fn decode_record<C: GlDecodeContext>(
                 canvas_id,
                 location: loc,
                 transpose,
+                value,
+            })
+        }
+
+        // ── Non-square matrices (267..=272) and unsigned vectors (273..=276) ─────────
+        OP_UNIFORM_MATRIX2X3FV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let transpose = b(record[3]);
+            let value: UniformF32Values = copy_f32_words(&record[4..]);
+            Some(GLCmd::UniformMatrix2x3fv {
+                canvas_id,
+                location: loc,
+                transpose,
+                value,
+            })
+        }
+
+        OP_UNIFORM_MATRIX2X4FV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let transpose = b(record[3]);
+            let value: UniformF32Values = copy_f32_words(&record[4..]);
+            Some(GLCmd::UniformMatrix2x4fv {
+                canvas_id,
+                location: loc,
+                transpose,
+                value,
+            })
+        }
+
+        OP_UNIFORM_MATRIX3X2FV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let transpose = b(record[3]);
+            let value: UniformF32Values = copy_f32_words(&record[4..]);
+            Some(GLCmd::UniformMatrix3x2fv {
+                canvas_id,
+                location: loc,
+                transpose,
+                value,
+            })
+        }
+
+        OP_UNIFORM_MATRIX3X4FV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let transpose = b(record[3]);
+            let value: UniformF32Values = copy_f32_words(&record[4..]);
+            Some(GLCmd::UniformMatrix3x4fv {
+                canvas_id,
+                location: loc,
+                transpose,
+                value,
+            })
+        }
+
+        OP_UNIFORM_MATRIX4X2FV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let transpose = b(record[3]);
+            let value: UniformF32Values = copy_f32_words(&record[4..]);
+            Some(GLCmd::UniformMatrix4x2fv {
+                canvas_id,
+                location: loc,
+                transpose,
+                value,
+            })
+        }
+
+        OP_UNIFORM_MATRIX4X3FV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let transpose = b(record[3]);
+            let value: UniformF32Values = copy_f32_words(&record[4..]);
+            Some(GLCmd::UniformMatrix4x3fv {
+                canvas_id,
+                location: loc,
+                transpose,
+                value,
+            })
+        }
+
+        OP_UNIFORM1UIV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let value: UniformU32Values = copy_u32_words(&record[3..]);
+            Some(GLCmd::Uniform1uiv {
+                canvas_id,
+                location: loc,
+                value,
+            })
+        }
+
+        OP_UNIFORM2UIV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let value: UniformU32Values = copy_u32_words(&record[3..]);
+            Some(GLCmd::Uniform2uiv {
+                canvas_id,
+                location: loc,
+                value,
+            })
+        }
+
+        OP_UNIFORM3UIV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let value: UniformU32Values = copy_u32_words(&record[3..]);
+            Some(GLCmd::Uniform3uiv {
+                canvas_id,
+                location: loc,
+                value,
+            })
+        }
+
+        OP_UNIFORM4UIV => {
+            let canvas_id = record[1];
+            let loc = location(record[2]);
+            let value: UniformU32Values = copy_u32_words(&record[3..]);
+            Some(GLCmd::Uniform4uiv {
+                canvas_id,
+                location: loc,
                 value,
             })
         }

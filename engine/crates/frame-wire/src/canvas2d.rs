@@ -24,7 +24,7 @@
 //! order is the order.
 //!
 //! The ranges are load-bearing, not cosmetic. GL owns `1..=62` fixed and
-//! `256..=266` variable; 2D owns `512..`. A reader classifies a record by its
+//! `256..=276` variable; 2D owns `512..`. A reader classifies a record by its
 //! opcode alone, and the gap between the blocks is what makes an opcode added
 //! to the wrong one a rejection rather than a record read with the wrong shape.
 //!

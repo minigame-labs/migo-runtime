@@ -1357,6 +1357,72 @@ export function op_uniform_matrix_3fv(canvasId, location, transpose, value) {
   const valueValue = u32ArrayOf(value, "value");
   emitPayload(canvasIdValue, R.OP_UNIFORM_MATRIX3FV, valueValue, canvasIdValue, locationValue, transposeValue);
 }
+export function op_uniform_matrix_2x3fv(canvasId, location, transpose, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const transposeValue = toBool(transpose, "transpose");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM_MATRIX2X3FV, valueValue, canvasIdValue, locationValue, transposeValue);
+}
+export function op_uniform_matrix_2x4fv(canvasId, location, transpose, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const transposeValue = toBool(transpose, "transpose");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM_MATRIX2X4FV, valueValue, canvasIdValue, locationValue, transposeValue);
+}
+export function op_uniform_matrix_3x2fv(canvasId, location, transpose, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const transposeValue = toBool(transpose, "transpose");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM_MATRIX3X2FV, valueValue, canvasIdValue, locationValue, transposeValue);
+}
+export function op_uniform_matrix_3x4fv(canvasId, location, transpose, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const transposeValue = toBool(transpose, "transpose");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM_MATRIX3X4FV, valueValue, canvasIdValue, locationValue, transposeValue);
+}
+export function op_uniform_matrix_4x2fv(canvasId, location, transpose, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const transposeValue = toBool(transpose, "transpose");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM_MATRIX4X2FV, valueValue, canvasIdValue, locationValue, transposeValue);
+}
+export function op_uniform_matrix_4x3fv(canvasId, location, transpose, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const transposeValue = toBool(transpose, "transpose");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM_MATRIX4X3FV, valueValue, canvasIdValue, locationValue, transposeValue);
+}
+export function op_uniform1uiv(canvasId, location, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM1UIV, valueValue, canvasIdValue, locationValue);
+}
+export function op_uniform2uiv(canvasId, location, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM2UIV, valueValue, canvasIdValue, locationValue);
+}
+export function op_uniform3uiv(canvasId, location, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM3UIV, valueValue, canvasIdValue, locationValue);
+}
+export function op_uniform4uiv(canvasId, location, value) {
+  const canvasIdValue = smiU32(canvasId, "canvas_id");
+  const locationValue = toI32(location, "location");
+  const valueValue = u32ArrayOf(value, "value");
+  emitPayload(canvasIdValue, R.OP_UNIFORM4UIV, valueValue, canvasIdValue, locationValue);
+}
 export function op_uniform_matrix_4fv(canvasId, location, transpose, value) {
   const canvasIdValue = smiU32(canvasId, "canvas_id");
   const locationValue = toI32(location, "location");

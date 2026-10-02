@@ -2,7 +2,7 @@
 // stream this runtime's canvas facades encode into. Module state is NOT on
 // globalThis / any canvas / any context object.
 //
-// One buffer carries both blocks: GL records (opcodes 1..=62 fixed, 256..=266
+// One buffer carries both blocks: GL records (opcodes 1..=62 fixed, 256..=276
 // variable) and Canvas2D records (512..). The reason is order. A frame draws
 // its background with 2D, its sprites with GL and its HUD with 2D again, and
 // the renderer must see those in the order they were issued. Two buffers would
@@ -104,7 +104,7 @@ const OP_VERTEX_ATTRIB_I4I = 60;
 const OP_VERTEX_ATTRIB_I4UI = 61;
 const OP_VERTEX_ATTRIB_I_POINTER = 62;
 
-// --- Variable opcode constants (256..266) ---
+// --- Variable opcode constants (256..276) ---
 
 const OP_UNIFORM1IV = 256;
 const OP_UNIFORM1FV = 257;
@@ -117,6 +117,16 @@ const OP_UNIFORM4FV = 263;
 const OP_UNIFORM_MATRIX2FV = 264;
 const OP_UNIFORM_MATRIX3FV = 265;
 const OP_UNIFORM_MATRIX4FV = 266;
+const OP_UNIFORM_MATRIX2X3FV = 267;
+const OP_UNIFORM_MATRIX2X4FV = 268;
+const OP_UNIFORM_MATRIX3X2FV = 269;
+const OP_UNIFORM_MATRIX3X4FV = 270;
+const OP_UNIFORM_MATRIX4X2FV = 271;
+const OP_UNIFORM_MATRIX4X3FV = 272;
+const OP_UNIFORM1UIV = 273;
+const OP_UNIFORM2UIV = 274;
+const OP_UNIFORM3UIV = 275;
+const OP_UNIFORM4UIV = 276;
 
 // --- Module-private ping-pong state ---
 // All null until the first successful encode (lazy allocation).
@@ -1160,6 +1170,46 @@ function encodeUniformMatrix3fv(canvasId, location, transpose, payloadU32) {
 function encodeUniformMatrix4fv(canvasId, location, transpose, payloadU32) {
     return _encodeMatrixUniform(OP_UNIFORM_MATRIX4FV, canvasId, location, transpose, payloadU32);
 }
+// 267 UNIFORM_MATRIX2X3FV
+function encodeUniformMatrix2x3fv(canvasId, location, transpose, payloadU32) {
+    return _encodeMatrixUniform(OP_UNIFORM_MATRIX2X3FV, canvasId, location, transpose, payloadU32);
+}
+// 268 UNIFORM_MATRIX2X4FV
+function encodeUniformMatrix2x4fv(canvasId, location, transpose, payloadU32) {
+    return _encodeMatrixUniform(OP_UNIFORM_MATRIX2X4FV, canvasId, location, transpose, payloadU32);
+}
+// 269 UNIFORM_MATRIX3X2FV
+function encodeUniformMatrix3x2fv(canvasId, location, transpose, payloadU32) {
+    return _encodeMatrixUniform(OP_UNIFORM_MATRIX3X2FV, canvasId, location, transpose, payloadU32);
+}
+// 270 UNIFORM_MATRIX3X4FV
+function encodeUniformMatrix3x4fv(canvasId, location, transpose, payloadU32) {
+    return _encodeMatrixUniform(OP_UNIFORM_MATRIX3X4FV, canvasId, location, transpose, payloadU32);
+}
+// 271 UNIFORM_MATRIX4X2FV
+function encodeUniformMatrix4x2fv(canvasId, location, transpose, payloadU32) {
+    return _encodeMatrixUniform(OP_UNIFORM_MATRIX4X2FV, canvasId, location, transpose, payloadU32);
+}
+// 272 UNIFORM_MATRIX4X3FV
+function encodeUniformMatrix4x3fv(canvasId, location, transpose, payloadU32) {
+    return _encodeMatrixUniform(OP_UNIFORM_MATRIX4X3FV, canvasId, location, transpose, payloadU32);
+}
+// 273 UNIFORM1UIV
+function encodeUniform1uiv(canvasId, location, payloadU32) {
+    return _encodeVectorUniform(OP_UNIFORM1UIV, canvasId, location, payloadU32);
+}
+// 274 UNIFORM2UIV
+function encodeUniform2uiv(canvasId, location, payloadU32) {
+    return _encodeVectorUniform(OP_UNIFORM2UIV, canvasId, location, payloadU32);
+}
+// 275 UNIFORM3UIV
+function encodeUniform3uiv(canvasId, location, payloadU32) {
+    return _encodeVectorUniform(OP_UNIFORM3UIV, canvasId, location, payloadU32);
+}
+// 276 UNIFORM4UIV
+function encodeUniform4uiv(canvasId, location, payloadU32) {
+    return _encodeVectorUniform(OP_UNIFORM4UIV, canvasId, location, payloadU32);
+}
 
 // --- Canvas2D opcode constants (512..548) ---
 //
@@ -1628,6 +1678,16 @@ export {
     encodeUniformMatrix2fv,
     encodeUniformMatrix3fv,
     encodeUniformMatrix4fv,
+    encodeUniformMatrix2x3fv,
+    encodeUniformMatrix2x4fv,
+    encodeUniformMatrix3x2fv,
+    encodeUniformMatrix3x4fv,
+    encodeUniformMatrix4x2fv,
+    encodeUniformMatrix4x3fv,
+    encodeUniform1uiv,
+    encodeUniform2uiv,
+    encodeUniform3uiv,
+    encodeUniform4uiv,
     // Canvas2D encoders
     encode2dBeginPath,
     encode2dClosePath,

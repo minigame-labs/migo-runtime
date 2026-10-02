@@ -38,8 +38,12 @@ import {
   OP2D_SELECT_CANVAS,
   OP2D_SET_LINE_DASH,
   OP_CLEAR,
+  OP_UNIFORM1UIV,
+  OP_UNIFORM3UIV,
   OP_UNIFORM4FV,
+  OP_UNIFORM_MATRIX2X3FV,
   OP_UNIFORM_MATRIX4FV,
+  OP_UNIFORM_MATRIX4X3FV,
   OPR_CREATE_BUFFER,
   OPR_DRAW_BUFFERS,
   OPR_SHADER_SOURCE,
@@ -138,11 +142,15 @@ function randomRecord(selected) {
       return [header(OP_CLEAR, 3), 1, 0x4000];
     case 2: {
       const payload = pick(40); // either side of the 16-word inline size
-      return [header(OP_UNIFORM4FV, 3 + payload), 1, pick(8), ...Array.from({ length: payload }, next)];
+      // the vector uniforms of the block: the float one, and the unsigned ones that close it (273..=276)
+      const op = [OP_UNIFORM4FV, OP_UNIFORM1UIV, OP_UNIFORM3UIV][pick(3)];
+      return [header(op, 3 + payload), 1, pick(8), ...Array.from({ length: payload }, next)];
     }
     case 3: {
       const payload = pick(2) ? 16 : 32;
-      return [header(OP_UNIFORM_MATRIX4FV, 4 + payload), 1, pick(8), 0, ...Array.from({ length: payload }, next)];
+      // the square matrix, and non-square ones from the run inside the block (267..=272)
+      const op = [OP_UNIFORM_MATRIX4FV, OP_UNIFORM_MATRIX2X3FV, OP_UNIFORM_MATRIX4X3FV][pick(3)];
+      return [header(op, 4 + payload), 1, pick(8), 0, ...Array.from({ length: payload }, next)];
     }
     default:
       return [header(OP2D_SELECT_CANVAS, 2), 1 + pick(3)];

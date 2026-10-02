@@ -131,6 +131,7 @@ impl StreamError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniformElementKind {
     Int,
+    Uint,
     Float,
 }
 
@@ -1141,8 +1142,8 @@ mod tests {
     }
 
     #[test]
-    fn all_variable_opcodes_256_to_266_have_specs() {
-        for op in 256u32..=266 {
+    fn all_variable_opcodes_256_to_276_have_specs() {
+        for op in 256u32..=276 {
             assert!(
                 super::record_spec(op).is_some(),
                 "opcode {} should have a spec",
@@ -1171,12 +1172,39 @@ mod tests {
     }
 
     #[test]
-    fn opcodes_above_266_return_none() {
-        for op in [267u32, 1000, 4095, u32::MAX] {
+    fn opcodes_above_276_return_none() {
+        for op in [277u32, 511, 1000, 4095, u32::MAX] {
             assert!(
                 super::record_spec(op).is_none(),
                 "opcode {} should not have a spec",
                 op
+            );
+        }
+    }
+
+    /// The uniform block's tail: the six non-square matrices (267..=272) are float matrices whose transpose is word 3,
+    /// the four unsigned vectors (273..=276) are vectors of unsigned words. A matrix read as a vector would take its
+    /// transpose flag for the first element; an unsigned vector read as a signed one would hand the renderer negatives.
+    #[test]
+    fn the_uniform_blocks_tail_has_the_shapes_of_its_names() {
+        use super::{RecordSpec, UniformElementKind};
+        for op in 267u32..=272 {
+            assert_eq!(
+                super::record_spec(op),
+                Some(RecordSpec::MatrixUniform {
+                    element_kind: UniformElementKind::Float,
+                    transpose_word_idx: 3,
+                }),
+                "opcode {op}"
+            );
+        }
+        for op in 273u32..=276 {
+            assert_eq!(
+                super::record_spec(op),
+                Some(RecordSpec::VectorUniform {
+                    element_kind: UniformElementKind::Uint,
+                }),
+                "opcode {op}"
             );
         }
     }
