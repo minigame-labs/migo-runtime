@@ -52,7 +52,7 @@ import {
   STREAM_VERSION,
 } from "../src/render-opcodes.mjs";
 import { SYNC_OP_AWAIT_WINDOW, WINDOW_REPLY_BYTES } from "../src/sync-mailbox.mjs";
-import { MAX_TOTAL_BYTES, sequenceOf } from "../src/wire-frame-packet.mjs";
+import { MAX_TOTAL_BYTES, checksum, sequenceOf } from "../src/wire-frame-packet.mjs";
 
 const outputDirectory = process.argv[2];
 let failures = 0;
@@ -205,9 +205,16 @@ const session = new FrameSession({
 });
 const reports = [];
 const syncCalls = [];
+// What runs inside a blocking call: set, it runs once on the next one.
+let insideNextSyncCall = null;
 const sync = {
   call(call) {
     syncCalls.push(call);
+    if (insideNextSyncCall !== null) {
+      const run = insideNextSyncCall;
+      insideNextSyncCall = null;
+      run();
+    }
     // The host, once a credit returns: every packet sent is admitted and one
     // credit is free.
     accepted = session.sentSequence;
@@ -336,6 +343,41 @@ check(sequenceBefore === sequenceOf(sent.at(-1)), "and returns that barrier's se
 check(flushToHost() === sequenceBefore, "a flush with nothing recorded sends nothing and names the last packet");
 endFrame();
 check(sent.length === afterBarriers + 1, "a frame end with nothing recorded after the flush sends nothing");
+
+// Content runs inside a blocking call. A barrier waiting for the window is a synchronous request, and a
+// FinalizationRegistry callback that frees a collected canvas runs from inside the request's native send: the op it
+// calls appends a record. That record belongs to the next packet; it must not reach the barrier's bytes, which are
+// finished and not yet sent. (On an iPhone it overwrote the barrier's last word, the host refused the packet for a pad
+// that was not zero, every later one was held behind the gap, and the readPixels that had asked for the barrier
+// waited out its 60-second deadline.)
+{
+  /** What the host checks of a packet's bytes that a record in the stream cannot say: pads are zero, the checksum holds. */
+  const wellFormed = (packet) => {
+    const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+    const tableEnd = view.getUint32(8, true) + 16;
+    const sectionStart = view.getUint32(84, true);
+    const sectionEnd = sectionStart + view.getUint32(88, true);
+    const pads = [...packet.subarray(tableEnd, sectionStart), ...packet.subarray(sectionEnd)];
+    return view.getUint32(12, true) === packet.byteLength && pads.every((byte) => byte === 0) && view.getUint32(76, true) === checksum(packet);
+  };
+  const MARK = 0xf1a15;
+  const marked = (packet) => recordsOf(packet).some((record) => (record[0] & 0xfff) === OP_CLEAR && record[2] === MARK);
+
+  answerVerdicts = false;
+  const firstOfTheTest = sent.length;
+  // Appended from inside the first blocking call, as the finalizer is: after the barrier's packet is finished.
+  insideNextSyncCall = () => appendStream(Uint32Array.from([MAGIC, STREAM_VERSION, header(OP_CLEAR, 3), 1, MARK]), 5);
+  flushInBuffers(Array.from({ length: 120_000 }, (_, i) => [header(OP_CLEAR, 3), 1, i]));
+  const during = sent.slice(firstOfTheTest);
+  check(insideNextSyncCall === null, "the record was appended from inside a blocking call");
+  check(during.length >= 2 && during.every(wellFormed), `every packet sent around it is well formed (${during.length} packets: pads zero, checksum holds)`);
+  endFrame();
+  answerVerdicts = true;
+  flushToHost();
+  const carrying = sent.slice(firstOfTheTest).filter(marked);
+  check(carrying.length === 1, `the appended record arrives exactly once (in ${carrying.length} packets)`);
+  check(sent.slice(firstOfTheTest).every(wellFormed), "and every packet after it is well formed");
+}
 
 // ---- 2b. uploads larger than a packet -----------------------------------------
 //

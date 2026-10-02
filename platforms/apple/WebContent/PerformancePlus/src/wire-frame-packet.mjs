@@ -271,6 +271,24 @@ const STREAM_HEADER_WORDS = 2;
  *
  * The bytes are exactly `encodeFrame`'s for the same frame: the producer's test
  * suite holds the two to each other.
+ *
+ * WHO OWNS A PACKET'S BYTES. `finish` returns a view over the buffer, and from
+ * that moment the packet owns it: the writer moves onto another buffer before
+ * `finish` returns, so nothing appended afterwards can reach the packet. That is
+ * not a precaution. Between `finish` and the send there are calls that block (a
+ * barrier waits for the window in a synchronous request), and content code runs
+ * inside them: a `FinalizationRegistry` callback that frees a collected canvas
+ * runs from within the request's native `send`, and the op it calls appends a
+ * record. Appended to the buffer the finished packet was still in, that record
+ * overwrote the packet's last word; the host refused it for a pad that was not
+ * zero, every later packet was held behind the gap, and the synchronous call that
+ * had asked for the barrier waited out its whole deadline. What is appended
+ * meanwhile belongs to the next packet, and that is where it goes.
+ *
+ * The packet's buffer comes back with `reset()` (the bytes were copied as they
+ * left, so it is free) and is the next spare; `detach()` lets it go (a request
+ * body still being read). Two buffers alternate, so a frame loop still allocates
+ * nothing once they have grown to the frame sizes content produces.
  */
 export class FramePacketWriter {
   constructor({ launchNonce, runtimeGeneration, surfaceGeneration = 0n, resourceEpoch = 0n, magic, streamVersion }) {
@@ -302,12 +320,20 @@ export class FramePacketWriter {
   #view;
   // Words appended so far, the stream header included once anything is.
   #used = 0;
+  // The buffer of the packet `finish` last returned, until `reset` or `detach` says
+  // what became of it, and a free buffer for the writer to move onto.
+  #inFlight = null;
+  #spare = null;
 
   #allocate(bytes) {
-    this.#buffer = new ArrayBuffer(bytes);
-    this.#bytes = new Uint8Array(this.#buffer);
-    this.#words = new Uint32Array(this.#buffer);
-    this.#view = new DataView(this.#buffer);
+    this.#adopt(new ArrayBuffer(bytes));
+  }
+
+  #adopt(buffer) {
+    this.#buffer = buffer;
+    this.#bytes = new Uint8Array(buffer);
+    this.#words = new Uint32Array(buffer);
+    this.#view = new DataView(buffer);
     this.#used = 0;
   }
 
@@ -424,20 +450,37 @@ export class FramePacketWriter {
     view.setUint32(HEADER_BYTES + 12, this.#used, true);
     const packet = this.#bytes.subarray(0, total);
     view.setUint32(OFF_CHECKSUM, checksum(packet), true);
+    // The packet owns this buffer now (see the class comment): the writer moves
+    // onto the spare, or a new buffer of the same size, before anything can
+    // append again.
+    this.#inFlight = this.#buffer;
+    const spare = this.#spare;
+    this.#spare = null;
+    if (spare !== null) this.#adopt(spare);
+    else this.#allocate(this.#buffer.byteLength);
     return packet;
   }
 
-  /** Start the next frame in the same buffer. The last packet's bytes are dead. */
+  /**
+   * The last packet's bytes are dead -- it was copied as it left. Its buffer is
+   * the next spare. Nothing is cleared: the writer is already on another buffer,
+   * and whatever was appended to it since `finish` is the next packet's.
+   */
   reset() {
-    this.#used = 0;
+    const freed = this.#inFlight;
+    this.#inFlight = null;
+    if (freed !== null && (this.#spare === null || this.#spare.byteLength < freed.byteLength)) {
+      this.#spare = freed;
+    }
   }
 
   /**
-   * Start the next frame in a new buffer, leaving the last packet's bytes to
-   * whoever still holds them -- a request body the uplink has not read yet.
+   * The last packet's bytes are still held by someone -- a request body the
+   * uplink has not read yet, or a packet held for the window. Its buffer is not
+   * reused.
    */
   detach() {
-    this.#allocate(this.#buffer.byteLength);
+    this.#inFlight = null;
   }
 }
 
