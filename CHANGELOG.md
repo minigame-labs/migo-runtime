@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inflate, JPEG through a decoder that shares no code with the encoder) and is a CI step.
 
 ### Fixed
+- iOS (Performance+): `getError()` returns the errors the producer found itself. A call the facade refuses before it is
+  encoded -- an upload over the budget, `texImage2D` with a nonzero border, a `readPixels` into a short buffer -- is an
+  error only the producer can know; it was recorded, and
+  `op_webgl_get_error` never drained that queue, so none was ever returned. It answers from the producer's queue first
+  (one per call, oldest first, without crossing) and then the host's.
 - Storage: the last `setStorage` / `removeStorage` / `clearStorage` for a key is the one that wins. Async
   mutations ran as blocking SQLite writes on the scheduler's file-system pool, which has several workers, so two
   writes to one key could run at once and finish in either order: a burst of saves left an earlier value on

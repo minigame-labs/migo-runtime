@@ -652,6 +652,13 @@ RAN_TESTS+=("$TEST_DIR/canvas-lifetime.test.mjs")
 node "$TEST_DIR/socket-events.test.mjs"
 RAN_TESTS+=("$TEST_DIR/socket-events.test.mjs")
 
+# `getError` on the producer: the errors this side recorded itself were queued
+# and never returned (the sync lane's op did not drain the queue its own doc
+# comment said it drains). A call the facade refuses before it is encoded is an
+# error only this side can know.
+node "$TEST_DIR/get-error.test.mjs"
+RAN_TESTS+=("$TEST_DIR/get-error.test.mjs")
+
 # --- a frame larger than one packet, and what the host will decode ----------
 #
 # The host refuses a packet whose decoded storage is over its budget, and on the
