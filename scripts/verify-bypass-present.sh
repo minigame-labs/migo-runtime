@@ -151,6 +151,17 @@ run_probe() {
   fi
 }
 
+# One unscored run first. The first start of a freshly built debug player pages in
+# its several hundred megabytes and the GL driver from a cold disk; on a hosted
+# runner that stalled the JS runtime and the render thread together for ten
+# seconds (#389, 2026-10-01: `JsRuntime::new` 10.5 s, the EGL config chosen
+# 10.5 s after launch), past the engine's GPU-init budget, so content never
+# launched and the first probe "never painted" -- in roughly one run in five, and
+# always the first probe. That measures the runner's disk, not presentation. Its
+# exit status and output are not the gate's business.
+c_info "warming the player (unscored)"
+env -u DISPLAY -u WAYLAND_DISPLAY "$PLAYER" "$SCRIPT_DIR/fixtures/blit-probe" 1 >/dev/null 2>&1 || true
+
 echo
 echo "PRESENTATION PATHS  ${SECS}s per probe, expecting rgba($EXPECT)"
 run_probe blit-probe false
@@ -166,7 +177,12 @@ run_probe rtt-probe false
 # Its sibling, and the only probe that reaches the post-swap restore. Found by
 # mutation: deleting that site's shadow record left rtt-probe green, because
 # rtt-probe's first framebuffer call each frame binds `null` and is issued however
-# stale the shadow is. This one makes the frame's first call the content's own FBO.
+# stale the shadow is. This one begins every frame holding the content's own FBO
+# and clears it without a bind, so the present between two frames has to leave
+# that binding as the content left it -- driver and shadow alike -- which is what
+# WebGL does. It used to assert the opposite (every frame begins with the default
+# framebuffer bound) and was red on every run from #390, which made the present
+# put back the content's bindings instead of re-pointing them.
 run_probe rtt-boundary-probe false
 # A boundary control, kept because the hypothesis it was built to prove turned out
 # false. It asks whether an image load disturbs the content's texture binding, and
