@@ -114,6 +114,14 @@ mod js_agreement {
                 "GL_STATE_ACTIVE_UNIFORMS_PARAMETER",
                 frame_wire::sync::gl_state::ACTIVE_UNIFORMS_PARAMETER,
             ),
+            (
+                "GL_STATE_UNIFORM_VALUE",
+                frame_wire::sync::gl_state::UNIFORM_VALUE,
+            ),
+            (
+                "GL_STATE_FRAG_DATA_LOCATION",
+                frame_wire::sync::gl_state::FRAG_DATA_LOCATION,
+            ),
         ] {
             let prefix = format!("const {name} = ");
             let line = FACADE

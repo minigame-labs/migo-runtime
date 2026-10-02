@@ -1,11 +1,11 @@
-//! What a linked program says about itself that the facade cannot know: its uniform blocks, and where the uniforms
-//! in them sit. `getActiveUniformBlockName`, `getActiveUniformBlockParameter`, `getUniformIndices` and
-//! `getActiveUniforms` are answered here, from the driver, through the generic state query
-//! (`frame_wire::sync::gl_state`).
+//! What a linked program says about itself that the facade cannot know: its uniform blocks, where the uniforms in
+//! them sit, a uniform's value and a fragment output's location. `getActiveUniformBlockName`,
+//! `getActiveUniformBlockParameter`, `getUniformIndices`, `getActiveUniforms`, `getUniform` and `getFragDataLocation`
+//! are answered here, from the driver, through the generic state query (`frame_wire::sync::gl_state`).
 //!
 //! Every answer is an envelope: `{"v":<value>}`, or `{"e":<GL error>}` when the specification makes the call an
-//! error (an unlinked program is INVALID_OPERATION, a block or uniform index past the count INVALID_VALUE, a pname
-//! WebGL does not allow INVALID_ENUM). The facade unwraps it and raises the error on the context, so the driver is
+//! error (an unlinked program, or a location the program no longer has, is INVALID_OPERATION, a block or uniform
+//! index past the count INVALID_VALUE, a pname WebGL does not allow INVALID_ENUM). The facade unwraps it and raises the error on the context, so the driver is
 //! only ever asked a question it can answer and no stray driver error is left behind for a later `getError`.
 
 use glow::HasContext;
@@ -32,6 +32,73 @@ const UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER: u32 = 0x8A46;
 
 /// `getUniformIndices` answers this for a name that is not an active uniform (`INVALID_INDEX`).
 const INVALID_INDEX: u32 = u32::MAX;
+
+/// How `getUniform` reads a uniform, and what the facade makes of its words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UniformKind {
+    Float,
+    /// An `int` or a sampler.
+    Int,
+    Unsigned,
+    Bool,
+}
+
+impl UniformKind {
+    fn tag(self) -> &'static str {
+        match self {
+            UniformKind::Float => "f",
+            UniformKind::Int => "i",
+            UniformKind::Unsigned => "u",
+            UniformKind::Bool => "b",
+        }
+    }
+}
+
+/// A uniform type's kind and component count (ES 3.0 table 2.10), or `None` for a type that is not a uniform's.
+fn uniform_shape(ty: u32) -> Option<(UniformKind, usize)> {
+    use UniformKind::*;
+    Some(match ty {
+        0x1406 => (Float, 1),           // FLOAT
+        0x8B50 => (Float, 2),           // FLOAT_VEC2
+        0x8B51 => (Float, 3),           // FLOAT_VEC3
+        0x8B52 => (Float, 4),           // FLOAT_VEC4
+        0x8B5A => (Float, 4),           // FLOAT_MAT2
+        0x8B5B => (Float, 9),           // FLOAT_MAT3
+        0x8B5C => (Float, 16),          // FLOAT_MAT4
+        0x8B65 | 0x8B67 => (Float, 6),  // FLOAT_MAT2x3, FLOAT_MAT3x2
+        0x8B66 | 0x8B69 => (Float, 8),  // FLOAT_MAT2x4, FLOAT_MAT4x2
+        0x8B68 | 0x8B6A => (Float, 12), // FLOAT_MAT3x4, FLOAT_MAT4x3
+        0x1404 => (Int, 1),             // INT
+        0x8B53 => (Int, 2),             // INT_VEC2
+        0x8B54 => (Int, 3),             // INT_VEC3
+        0x8B55 => (Int, 4),             // INT_VEC4
+        0x1405 => (Unsigned, 1),        // UNSIGNED_INT
+        0x8DC6 => (Unsigned, 2),        // UNSIGNED_INT_VEC2
+        0x8DC7 => (Unsigned, 3),        // UNSIGNED_INT_VEC3
+        0x8DC8 => (Unsigned, 4),        // UNSIGNED_INT_VEC4
+        0x8B56 => (Bool, 1),            // BOOL
+        0x8B57 => (Bool, 2),            // BOOL_VEC2
+        0x8B58 => (Bool, 3),            // BOOL_VEC3
+        0x8B59 => (Bool, 4),            // BOOL_VEC4
+        // SAMPLER_2D, _3D, _CUBE, _2D_SHADOW, _2D_ARRAY, _2D_ARRAY_SHADOW, _CUBE_SHADOW, and the INT_ and
+        // UNSIGNED_INT_ samplers: the texture unit, an int.
+        0x8B5E | 0x8B5F | 0x8B60 | 0x8B62 | 0x8DC1 | 0x8DC4 | 0x8DC5 | 0x8DCA | 0x8DCB | 0x8DCC
+        | 0x8DCF | 0x8DD2 | 0x8DD3 | 0x8DD4 | 0x8DD7 => (Int, 1),
+        _ => return None,
+    })
+}
+
+/// A uniform's name without a trailing array index: `a[2]`, `a[0]` and `a` are all `a` (the driver names an array by
+/// its first element), and `s[1].f` is itself.
+fn without_index(name: &str) -> &str {
+    if let Some(open) = name.strip_suffix(']').and_then(|inner| inner.rfind('[')) {
+        let digits = &name[open + 1..name.len() - 1];
+        if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+            return &name[..open];
+        }
+    }
+    name
+}
 
 fn value(json: String) -> String {
     format!("{{\"v\":{json}}}")
@@ -76,10 +143,10 @@ pub(super) fn answer(
         if !gl.get_program_link_status(program) {
             return error(INVALID_OPERATION);
         }
-        let blocks = gl.get_program_parameter_i32(program, glow::ACTIVE_UNIFORM_BLOCKS) as u32;
+        let blocks = || gl.get_program_parameter_i32(program, glow::ACTIVE_UNIFORM_BLOCKS) as u32;
         match query {
             gl_state::ACTIVE_UNIFORM_BLOCK_NAME => {
-                if extra >= blocks {
+                if extra >= blocks() {
                     return error(INVALID_VALUE);
                 }
                 value(json_string(
@@ -87,7 +154,7 @@ pub(super) fn answer(
                 ))
             }
             gl_state::ACTIVE_UNIFORM_BLOCK_PARAMETER => {
-                if extra >= blocks {
+                if extra >= blocks() {
                     return error(INVALID_VALUE);
                 }
                 // The queried pname travels as decimal text: three numbers do not fit the two a state query has.
@@ -116,6 +183,10 @@ pub(super) fn answer(
                     return error(INVALID_VALUE);
                 }
                 uniforms_parameter(gl, program, &indices, extra)
+            }
+            gl_state::UNIFORM_VALUE => uniform_value(gl, program, name),
+            gl_state::FRAG_DATA_LOCATION => {
+                value(gl.get_frag_data_location(program, name).to_string())
             }
             _ => "null".to_string(),
         }
@@ -156,6 +227,48 @@ fn block_parameter(gl: &glow::Context, program: glow::Program, block: u32, pname
             }
             _ => error(INVALID_ENUM),
         }
+    }
+}
+
+/// `getUniform`: the value of the uniform the facade looked its location up by `name`, in the link that gave it -- the
+/// facade refuses a location from an earlier link, so the name finds the same location now. The type is the active
+/// uniform's that `name` is an element or a member of.
+fn uniform_value(gl: &glow::Context, program: glow::Program, name: &str) -> String {
+    // SAFETY: `gl` is the current context and `program` a linked program of it, which `answer` checked. Every read
+    // writes at most 16 components (a mat4), the size of the buffers it is given.
+    unsafe {
+        let Some(found) = gl.get_uniform_location(program, name) else {
+            return error(INVALID_OPERATION);
+        };
+        let base = without_index(name);
+        let uniforms = gl
+            .get_program_parameter_i32(program, glow::ACTIVE_UNIFORMS)
+            .max(0) as u32;
+        let shape = (0..uniforms)
+            .filter_map(|index| gl.get_active_uniform(program, index))
+            .find(|uniform| without_index(&uniform.name) == base)
+            .and_then(|uniform| uniform_shape(uniform.utype));
+        let Some((kind, count)) = shape else {
+            return error(INVALID_OPERATION);
+        };
+        let words: Vec<u32> = match kind {
+            UniformKind::Float => {
+                let mut v = [0f32; 16];
+                gl.get_uniform_f32(program, &found, &mut v);
+                v[..count].iter().map(|f| f.to_bits()).collect()
+            }
+            UniformKind::Int | UniformKind::Bool => {
+                let mut v = [0i32; 16];
+                gl.get_uniform_i32(program, &found, &mut v);
+                v[..count].iter().map(|&i| i as u32).collect()
+            }
+            UniformKind::Unsigned => {
+                let mut v = [0u32; 16];
+                gl.get_uniform_u32(program, &found, &mut v);
+                v[..count].to_vec()
+            }
+        };
+        value(format!("[\"{}\",{}]", kind.tag(), array(words)))
     }
 }
 
@@ -208,6 +321,36 @@ mod tests {
     fn json_strings_are_escaped() {
         assert_eq!(json_string("ub_view"), "\"ub_view\"");
         assert_eq!(json_string("a\"b\\c\n"), "\"a\\\"b\\\\c\\u000a\"");
+    }
+
+    #[test]
+    fn an_array_element_and_its_first_element_name_the_same_uniform() {
+        assert_eq!(without_index("a[2]"), "a");
+        assert_eq!(without_index("a[0]"), "a");
+        assert_eq!(without_index("a"), "a");
+        assert_eq!(without_index("s[1].f"), "s[1].f");
+        assert_eq!(without_index("s[1].v[3]"), "s[1].v");
+        assert_eq!(without_index("a[]"), "a[]");
+        assert_eq!(without_index("a[x]"), "a[x]");
+    }
+
+    #[test]
+    fn every_uniform_type_has_a_kind_and_a_component_count() {
+        use UniformKind::*;
+        assert_eq!(uniform_shape(0x1406), Some((Float, 1)));
+        assert_eq!(uniform_shape(0x8B5C), Some((Float, 16)));
+        assert_eq!(uniform_shape(0x8B6A), Some((Float, 12)));
+        assert_eq!(uniform_shape(0x8B55), Some((Int, 4)));
+        assert_eq!(uniform_shape(0x8DC8), Some((Unsigned, 4)));
+        assert_eq!(uniform_shape(0x8B59), Some((Bool, 4)));
+        assert_eq!(uniform_shape(0x8DD7), Some((Int, 1)));
+        assert_eq!(uniform_shape(0x1234), None);
+        // No uniform has more components than the buffers `uniform_value` reads into.
+        for ty in 0x1400..0x9000 {
+            if let Some((_, count)) = uniform_shape(ty) {
+                assert!((1..=16).contains(&count), "{ty:#x}");
+            }
+        }
     }
 
     #[test]

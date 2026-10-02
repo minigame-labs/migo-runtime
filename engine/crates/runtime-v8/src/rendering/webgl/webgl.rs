@@ -2261,6 +2261,148 @@ pub(super) mod tests {
         );
     }
 
+    /// Answers the lookups by name and the state queries a program test makes: a uniform's location by the table
+    /// below, and a state query by its name. Returns what was asked: `loc name` for a uniform location, `query extra
+    /// name` for a state query.
+    fn spawn_program_query_responder(
+        render_rx: crossbeam_channel::Receiver<RenderCommand>,
+    ) -> std::thread::JoinHandle<Vec<String>> {
+        std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            while let Ok(command) = render_rx.recv_timeout(Duration::from_secs(1)) {
+                match command {
+                    RenderCommand::FramePacket(_) => {}
+                    RenderCommand::GL(GLCmd::GetUniformLocation { name, resp, .. }) => {
+                        asked.push(format!("loc {name}"));
+                        let names = ["f", "v", "i", "b", "bv", "u", "iv", "uv", "e"];
+                        resp.ok(names
+                            .iter()
+                            .position(|n| *n == name)
+                            .map(|at| at as u32 + 1));
+                    }
+                    RenderCommand::GL(GLCmd::GetState {
+                        query,
+                        extra,
+                        name,
+                        resp,
+                        ..
+                    }) => {
+                        let bits = |f: f32| f.to_bits().to_string();
+                        let answer = match (query, name.as_str()) {
+                            (7, "f") => format!("{{\"v\":[\"f\",[{}]]}}", bits(0.1)),
+                            (7, "v") => format!(
+                                "{{\"v\":[\"f\",[{},{},{},{}]]}}",
+                                bits(1.0),
+                                bits(f32::NAN),
+                                bits(f32::NEG_INFINITY),
+                                bits(-0.0)
+                            ),
+                            (7, "i") => "{\"v\":[\"i\",[4294967295]]}".to_string(),
+                            (7, "b") => "{\"v\":[\"b\",[1]]}".to_string(),
+                            (7, "bv") => "{\"v\":[\"b\",[0,1,1]]}".to_string(),
+                            (7, "u") => "{\"v\":[\"u\",[4294967295]]}".to_string(),
+                            (7, "iv") => "{\"v\":[\"i\",[1,4294967294]]}".to_string(),
+                            (7, "uv") => "{\"v\":[\"u\",[7,8]]}".to_string(),
+                            (7, "e") => "{\"e\":1282}".to_string(),
+                            (8, "color") => "{\"v\":1}".to_string(),
+                            (8, _) => "{\"v\":-1}".to_string(),
+                            other => panic!("unexpected state query {other:?}"),
+                        };
+                        asked.push(format!("{query} {extra} {name}"));
+                        resp.ok(answer);
+                    }
+                    other => panic!("unexpected render command in a program query test: {other:?}"),
+                }
+            }
+            asked
+        })
+    }
+
+    /// `getUniform` is the driver's value, typed as WebGL types it: a float the float the uniform holds (its bits
+    /// cross, so NaN, the infinities and -0 too), a vector or a matrix a typed array, bools booleans. It asks by the
+    /// name the location was looked up by, and only for a location of this program since its last link. `getFragDataLocation` asks by name. A name WebGL refuses or reserves never reaches GL.
+    #[test]
+    fn get_uniform_and_get_frag_data_location_ask_the_driver_and_type_its_answer() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = spawn_program_query_responder(render_rx);
+        runtime
+            .exec_script(
+                "get_uniform.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 198, width: 1, height: 1 }, {});
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const p = gl.createProgram();
+                gl.linkProgram(p);
+                const at = (name) => gl.getUniformLocation(p, name);
+                check(gl.getUniform(p, at("f")) === Math.fround(0.1), "a float is the float the uniform holds");
+                const v = gl.getUniform(p, at("v"));
+                check(v instanceof Float32Array && v.length === 4 && v[0] === 1 && Number.isNaN(v[1]) &&
+                      v[2] === -Infinity && Object.is(v[3], -0), "a vec4 with NaN, -Infinity and -0");
+                check(gl.getUniform(p, at("i")) === -1, "an int");
+                check(gl.getUniform(p, at("b")) === true, "a bool");
+                const bv = gl.getUniform(p, at("bv"));
+                check(Array.isArray(bv) && bv.join() === "false,true,true", "a bvec3 is an Array of booleans");
+                check(gl.getUniform(p, at("u")) === 4294967295, "a uint");
+                const iv = gl.getUniform(p, at("iv"));
+                check(iv instanceof Int32Array && iv.join() === "1,-2", "an ivec2");
+                const uv = gl.getUniform(p, at("uv"));
+                check(uv instanceof Uint32Array && uv.join() === "7,8", "a uvec2");
+                check(gl.getUniform(p, at("e")) === null && gl.getError() === 0x0502, "the driver's error");
+                const stale = at("f");
+                gl.linkProgram(p);
+                check(gl.getUniform(p, stale) === null && gl.getError() === 0x0502, "a location from before the link");
+                const q = gl.createProgram();
+                gl.linkProgram(q);
+                check(gl.getUniform(q, at("f")) === null && gl.getError() === 0x0502, "another program's location");
+                let threw = false;
+                try { gl.getUniform(p, null); } catch (e) { threw = e instanceof TypeError; }
+                check(threw, "a null location is a TypeError");
+                threw = false;
+                try { gl.getUniform(p, {}); } catch (e) { threw = e instanceof TypeError; }
+                check(threw, "a location that is not one is a TypeError");
+                threw = false;
+                try { gl.getUniform(p, q); } catch (e) { threw = e instanceof TypeError; }
+                check(threw, "a program as the location is a TypeError");
+                threw = false;
+                try { gl.getUniform({}, at("f")); } catch (e) { threw = e instanceof TypeError; }
+                check(threw, "a program that is not one is a TypeError");
+                // names
+                check(gl.getUniformLocation(p, "a$b") === null && gl.getError() === 0x0501, "a name with a $");
+                check(gl.getUniformLocation(p, "x".repeat(1025)) === null && gl.getError() === 0x0501, "a name past 1024");
+                check(gl.getUniformLocation(p, "x".repeat(1024)) === null && gl.getError() === 0, "a name of 1024");
+                check(gl.getUniformLocation(p, "webgl_x") === null && gl.getError() === 0, "a reserved name");
+                check(gl.getAttribLocation(p, 'a"') === -1 && gl.getError() === 0x0501, "getAttribLocation checks names");
+                gl.bindAttribLocation(p, 0, "_webgl_a");
+                check(gl.getError() === 0x0502, "binding a reserved name");
+                gl.bindAttribLocation(p, 0, "a\u00e9");
+                check(gl.getError() === 0x0501, "binding a name outside the character set");
+                check(gl.getFragDataLocation(p, "color") === 1, "an output's location");
+                check(gl.getFragDataLocation(p, "nope") === -1, "a name that is no output");
+                check(gl.getFragDataLocation(p, "webgl_color") === -1 && gl.getError() === 0, "a reserved output name");
+                check(gl.getFragDataLocation(p, "c@") === -1 && gl.getError() === 0x0501, "an output name with a @");
+                gl.deleteProgram(q);
+                check(gl.getFragDataLocation(q, "color") === -1 && gl.getError() === 0x0502, "a deleted program");
+                check(gl.getFragDataLocation(q, "c@") === -1 && gl.getError() === 0x0502, "a deleted program, before the name");
+                "#,
+            )
+            .expect("the getUniform script should run");
+        drop(runtime);
+        let asked = responder.join().expect("the responder must not panic");
+        let mut expected: Vec<String> = ["f", "v", "i", "b", "bv", "u", "iv", "uv", "e"]
+            .iter()
+            .flat_map(|name| [format!("loc {name}"), format!("7 0 {name}")])
+            .collect();
+        // after the relink: `at("f")` for the other program's test, then the longest name there is
+        expected.push("loc f".to_string());
+        expected.push(format!("loc {}", "x".repeat(1024)));
+        expected.push("8 0 color".to_string());
+        expected.push("8 0 nope".to_string());
+        assert_eq!(
+            asked, expected,
+            "each query asks by its name, once per link, and nothing refused or reserved reaches the driver"
+        );
+    }
+
     /// `getVertexAttrib` answers from what the calls set: the defaults before anything, each pointer's arguments and
     /// the buffer bound when it was made, the enable flag, the divisor, the constant value (typed as the call that set
     /// it), per vertex array object, and an error and `null` for what it cannot answer.

@@ -684,9 +684,9 @@ pub mod gl_state {
     /// type and colour encoding): which object is attached, and at what level, it already knows.
     pub const FRAMEBUFFER_ATTACHMENT_PARAMETER: u32 = 2;
 
-    // The next four ask a linked program about its uniform blocks. `pname` is the program (its resource id) in all of
-    // them, and the answer is an envelope: `{"v":<value>}`, or `{"e":<GL error>}` when the specification makes the
-    // call an error.
+    // From here on each asks a linked program what only the driver knows. `pname` is the program (its resource id) in
+    // all of them, and the answer is an envelope: `{"v":<value>}`, or `{"e":<GL error>}` when the specification makes
+    // the call an error.
 
     /// `getActiveUniformBlockName`: `extra` is the block index; the value is the name.
     pub const ACTIVE_UNIFORM_BLOCK_NAME: u32 = 3;
@@ -697,10 +697,17 @@ pub mod gl_state {
     pub const UNIFORM_INDICES: u32 = 5;
     /// `getActiveUniforms`: `extra` is the queried pname, `name` the uniform indices joined by `,`.
     pub const ACTIVE_UNIFORMS_PARAMETER: u32 = 6;
+    /// `getUniform`: `name` is the name the location was looked up by, in the link that gave it. The value is
+    /// `[kind, words]`: `kind` is `"f"`, `"i"`, `"u"` or `"b"` (float, int or sampler, unsigned, bool), `words` the
+    /// uniform's components as their 32-bit patterns -- a float's bits, so NaN and the infinities travel as JSON can
+    /// carry them -- one for a scalar, more for a vector or a matrix (column by column).
+    pub const UNIFORM_VALUE: u32 = 7;
+    /// `getFragDataLocation`: `name` is the output's name; the value is its location, -1 for none.
+    pub const FRAG_DATA_LOCATION: u32 = 8;
 
     /// Whether a number is one this build knows.
     pub fn is_known(state: u32) -> bool {
-        (INTERNALFORMAT_SAMPLES..=ACTIVE_UNIFORMS_PARAMETER).contains(&state)
+        (INTERNALFORMAT_SAMPLES..=FRAG_DATA_LOCATION).contains(&state)
     }
 }
 
