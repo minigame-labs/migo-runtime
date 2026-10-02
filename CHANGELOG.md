@@ -61,8 +61,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unsized formats), a negative level, offset, size or layer, a nonzero border and a cube face that is not square
   INVALID_VALUE; `copyBufferSubData` converts its offsets and size as WebIDL's `long long` and refuses one past 2^31,
   which no buffer reaches, rather than wrapping it into range.
+- WebGL 2: `compressedTexImage3D`, `compressedTexSubImage3D`, `waitSync` and `isSync`, and WebGL 2's overloads of
+  `compressedTexImage2D` / `compressedTexSubImage2D`. A compressed upload now takes either a view -- its elements from
+  `srcOffset`, `srcLengthOverride` of them unless that is 0, counted in the view's own element size -- or an
+  `imageSize` / `offset` pair naming a range of the bound PIXEL_UNPACK_BUFFER; the 2D records carry that range too
+  (resource records 198/199 grew two words, 207/208 are new). glow takes `glCompressedTexImage2D/3D`'s data only as a
+  slice, so for the buffer form the renderer resolves those two entry points once and passes the offset where GL reads
+  it. A view range past its end, a negative `imageSize` and a buffer offset that is negative or past 2^31 are
+  INVALID_VALUE. A compressed 3D level is charged to the GPU budget at its image size. `fenceSync` returns a real
+  `WebGLSync` object: `isSync` answers for it, `deleteSync` marks it, and `waitSync` / `clientWaitSync` on a deleted one
+  are INVALID_OPERATION; `waitSync` takes only flags 0 and `TIMEOUT_IGNORED` (INVALID_VALUE otherwise) and a value that
+  is not a `WebGLSync` is a TypeError. Resource record 176 on the Performance+ lane.
 
 ### Fixed
+- WebGL: a `srcOffset` is converted as WebIDL's `unsigned long long` (`clearBuffer*`, the uniform lists, `texImage3D`
+  / `texSubImage3D`, the compressed uploads). `>>> 0` wrapped it modulo 2^32, so an offset of 2^32 read from the start
+  of the list instead of being INVALID_VALUE. `texImage3D` / `texSubImage3D` with a `srcOffset` past the end of the view
+  are INVALID_VALUE, where they uploaded nothing in silence, and their PIXEL_UNPACK_BUFFER offset is refused when it is
+  negative or past 2^31 rather than truncated to 32 bits.
+- WebGL: a device limit the facade asks for (MAX_VERTEX_ATTRIBS, MAX_DRAW_BUFFERS, MAX_COLOR_ATTACHMENTS) is kept only
+  once the context answers: `getVertexAttrib` used to keep the fallback it took from a lost context for good. An index
+  below the minimum every implementation has (8 or 16 attributes, 4 draw buffers, 4 colour attachments) asks nothing.
 - WebGL: `invalidateFramebuffer` checks the attachments it names against the framebuffer bound: the default one
   takes COLOR / DEPTH / STENCIL, a framebuffer object its attachment points, and a colour attachment past
   `MAX_COLOR_ATTACHMENTS` is INVALID_OPERATION; anything else is INVALID_ENUM, where the call used to reach the driver.

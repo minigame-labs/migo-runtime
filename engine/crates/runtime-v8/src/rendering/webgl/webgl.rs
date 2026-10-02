@@ -5,7 +5,7 @@ use tracing::{error, warn};
 
 use crate::rendering::image::ImageCacheState;
 use crate::rendering::webgl::error_state::{self, OpStateDecodeContext, codes};
-use frame_decode::resource::Payload;
+use frame_decode::resource::{CompressedSource, Payload};
 
 use shared::{
     error::EngineError,
@@ -1844,6 +1844,177 @@ pub(super) mod tests {
             sent.is_empty(),
             "a refused call must not reach the renderer: {sent:?}"
         );
+    }
+
+    /// The compressed uploads take both of WebGL 2's overloads: a view, whose elements from `srcOffset` --
+    /// `srcLengthOverride` of them unless that is 0 -- are the bytes, counted in the view's own element size; and an
+    /// `imageSize` / `offset` pair naming a range of the bound PIXEL_UNPACK_BUFFER. WebGL 1's one form sends the view
+    /// whole. `waitSync` sends its sync once its flags and timeout are the one legal pair.
+    #[test]
+    fn compressed_uploads_and_wait_sync_become_the_commands_the_specification_describes() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "compressed_uploads.js",
+                r#"
+                const gl1 = new WebGLRenderingContext({ _rid: 180, width: 1, height: 1 }, {});
+                gl1.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, new Uint8Array(16).fill(1));
+                const gl = new WebGL2RenderingContext({ _rid: 181, width: 1, height: 1 }, {});
+                const bytes = new Uint8Array(48).map((_, k) => k);
+                gl.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, bytes, 16, 16);          // bytes 16..32
+                gl.compressedTexImage2D(0x0de1, 1, 0x9278, 4, 4, 0, new Uint16Array(bytes.buffer), 16);   // bytes 32..48
+                gl.compressedTexImage2D(0x0de1, 2, 0x9278, 4, 4, 0, 16, 64);                // the bound buffer
+                gl.compressedTexSubImage2D(0x0de1, 0, 4, 0, 4, 4, 0x9278, 16, 80);
+                gl.compressedTexImage3D(0x8c1a, 0, 0x9278, 4, 4, 2, 0, bytes, 8, 32);       // bytes 8..40
+                gl.compressedTexImage3D(0x8c1a, 1, 0x9278, 4, 4, 1, 0, 16, 0);
+                gl.compressedTexSubImage3D(0x8c1a, 0, 0, 0, 1, 4, 4, 1, 0x9278, bytes.subarray(0, 16));
+                gl.compressedTexSubImage3D(0x8c1a, 0, 0, 0, 1, 4, 4, 1, 0x9278, 16, 2147483647);
+                const sync = gl.fenceSync(0x9117, 0);
+                if (!gl.isSync(sync)) throw new Error("a fence is a sync");
+                gl.waitSync(sync, 0, -1);
+                if (gl.getError() !== 0) throw new Error("no error: " + gl.getError());
+                gl.flush(); gl1.flush();
+                "#,
+            )
+            .expect("the compressed uploads and waitSync should be accepted");
+        use shared::protocol::render_cmd::CompressedImageData;
+        let describe = |data: &CompressedImageData| match data {
+            CompressedImageData::Bytes(bytes) => format!(
+                "bytes {}..{}",
+                bytes.first().copied().unwrap_or(0),
+                bytes.last().map_or(0, |b| u32::from(*b) + 1)
+            ),
+            CompressedImageData::UnpackBuffer { offset, size } => format!("buffer {offset}+{size}"),
+        };
+        let got: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::CompressedTexImage2D { level, data, .. } => {
+                    Some(format!("2d {level} {}", describe(data)))
+                }
+                GLCmd::CompressedTexSubImage2D { xoffset, data, .. } => {
+                    Some(format!("sub2d {xoffset} {}", describe(data)))
+                }
+                GLCmd::CompressedTexImage3D {
+                    level, depth, data, ..
+                } => Some(format!("3d {level} {depth} {}", describe(data))),
+                GLCmd::CompressedTexSubImage3D { zoffset, data, .. } => {
+                    Some(format!("sub3d {zoffset} {}", describe(data)))
+                }
+                GLCmd::WaitSync { .. } => Some("waitSync".to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                "2d 0 bytes 1..2".to_string(),
+                "2d 0 bytes 16..32".to_string(),
+                "2d 1 bytes 32..48".to_string(),
+                "2d 2 buffer 64+16".to_string(),
+                "sub2d 4 buffer 80+16".to_string(),
+                "3d 0 2 bytes 8..40".to_string(),
+                "3d 1 1 buffer 0+16".to_string(),
+                "sub3d 1 bytes 0..16".to_string(),
+                "sub3d 1 buffer 2147483647+16".to_string(),
+                "waitSync".to_string(),
+            ]
+        );
+    }
+
+    /// What the compressed uploads and the sync calls refuse before anything is sent: a view range past its end and
+    /// an `srcOffset` of 2^32 (which `>>> 0` used to wrap to the start) are INVALID_VALUE, as are a negative
+    /// `imageSize`, a negative buffer offset and one past 2^31; `waitSync` with flags, or any timeout but
+    /// TIMEOUT_IGNORED, is INVALID_VALUE, on a deleted sync INVALID_OPERATION, and on something that is not a sync a
+    /// TypeError. A deleted sync is no longer one, and `clientWaitSync` on it fails. The same `srcOffset` conversion
+    /// holds the uniform lists and `texImage3D` to their ends.
+    #[test]
+    fn a_malformed_compressed_upload_or_sync_call_is_the_specified_error_and_nothing_is_sent() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "malformed_compressed_uploads.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 182, width: 1, height: 1 }, {});
+                const VALUE = 0x0501, OPERATION = 0x0502;
+                const block = new Uint8Array(16);
+                const sync = gl.fenceSync(0x9117, 0);
+                const cases = [
+                    [VALUE, () => gl.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, block, 17)],
+                    [VALUE, () => gl.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, block, 8, 9)],
+                    [VALUE, () => gl.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, block, 4294967296)],
+                    [VALUE, () => gl.compressedTexImage3D(0x8c1a, 0, 0x9278, 4, 4, 1, 0, -1, 0)],
+                    [VALUE, () => gl.compressedTexImage3D(0x8c1a, 0, 0x9278, 4, 4, 1, 0, 16, -4)],
+                    [VALUE, () => gl.compressedTexSubImage3D(0x8c1a, 0, 0, 0, 0, 4, 4, 1, 0x9278, 16, 2147483648)],
+                    [VALUE, () => gl.waitSync(sync, 1, -1)],
+                    [VALUE, () => gl.waitSync(sync, 0, 0)],
+                    [VALUE, () => gl.uniform1uiv({ id: 3 }, new Uint32Array(4), 4294967296)],
+                    [VALUE, () => gl.texImage3D(0x806f, 0, 0x1908, 1, 1, 1, 0, 0x1908, 0x1401, new Uint8Array(4), 5)],
+                ];
+                cases.forEach(([want, call], i) => {
+                    call();
+                    const got = gl.getError();
+                    if (got !== want) throw new Error(`case ${i}: getError ${got}, want ${want}`);
+                });
+                gl.deleteSync(sync);
+                if (gl.isSync(sync)) throw new Error("a deleted sync is not one");
+                gl.waitSync(sync, 0, -1);
+                if (gl.getError() !== OPERATION) throw new Error("waitSync on a deleted sync");
+                if (gl.clientWaitSync(sync, 0, 0) !== 0x911d) throw new Error("clientWaitSync on a deleted sync is WAIT_FAILED");
+                if (gl.getError() !== OPERATION) throw new Error("clientWaitSync on a deleted sync is INVALID_OPERATION");
+                let threw = false;
+                try { gl.waitSync({ _id: 1, _kind: "sync" }, 0, -1); } catch (e) { threw = e instanceof TypeError; }
+                if (!threw) throw new Error("a lookalike is not a WebGLSync");
+                gl.flush();
+                "#,
+            )
+            .expect("the malformed calls should be refused, not thrown (but for the TypeError, which the script catches)");
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter(|cmd| {
+                matches!(
+                    cmd,
+                    GLCmd::CompressedTexImage2D { .. }
+                        | GLCmd::CompressedTexImage3D { .. }
+                        | GLCmd::CompressedTexSubImage3D { .. }
+                        | GLCmd::WaitSync { .. }
+                        | GLCmd::Uniform1uiv { .. }
+                        | GLCmd::TexImage3D { .. }
+                )
+            })
+            .map(|cmd| format!("{cmd:?}"))
+            .collect();
+        assert!(
+            sent.is_empty(),
+            "a refused call must not reach the renderer: {sent:?}"
+        );
+    }
+
+    /// MAX_VERTEX_ATTRIBS is asked only for an index at or past the minimum every implementation has (16 in WebGL 2),
+    /// and the answer kept only once the context gives one: a lost context's non-answer is not cached as the limit.
+    #[test]
+    fn the_vertex_attribute_limit_is_asked_only_past_the_minimum_and_kept_once_answered() {
+        let (mut runtime, _render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "vertex_attrib_limit.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 183, width: 1, height: 1 }, {});
+                let asked = 0, answer = null;
+                gl.getParameter = (pname) => { if (pname === 0x8869) asked += 1; return pname === 0x8869 ? answer : null; };
+                const enabled = (i) => gl.getVertexAttrib(i, 0x8622);
+                enabled(15);
+                if (asked !== 0 || gl.getError() !== 0) throw new Error("index 15 is below the minimum: no question");
+                enabled(20);
+                if (gl.getError() !== 0x0501) throw new Error("no answer: 20 is past the minimum");
+                answer = 32;
+                enabled(20);
+                if (gl.getError() !== 0) throw new Error("the answer, 32, admits 20");
+                enabled(21);
+                if (asked !== 2) throw new Error("asked " + asked + " times; the answer is kept once given");
+                "#,
+            )
+            .expect("the vertex attribute limit script should run");
     }
 
     /// `getVertexAttrib` answers from what the calls set: the defaults before anything, each pointer's arguments and
@@ -5747,6 +5918,8 @@ fn gl_cmd_has_heap_payload(cmd: &GLCmd) -> bool {
                 | GLCmd::TexSubImage2D { .. }
                 | GLCmd::CompressedTexImage2D { .. }
                 | GLCmd::CompressedTexSubImage2D { .. }
+                | GLCmd::CompressedTexImage3D { .. }
+                | GLCmd::CompressedTexSubImage3D { .. }
                 | GLCmd::ShaderSource { .. }
                 | GLCmd::GetUniformLocation { .. }
                 | GLCmd::GetAttribLocation { .. }
@@ -6954,6 +7127,19 @@ pub fn op_pixel_storei(
     );
 }
 
+/// A compressed upload's source from its op's arguments: the bytes, or -- `pbo_offset` not negative, WebGL 2's other
+/// overload -- `pbo_size` bytes of the bound PIXEL_UNPACK_BUFFER from that offset (the bytes are then empty).
+fn compressed_source(data: &[u8], pbo_offset: i32, pbo_size: i32) -> CompressedSource<'_> {
+    if pbo_offset >= 0 {
+        CompressedSource::UnpackBuffer {
+            offset: pbo_offset as u32,
+            size: pbo_size,
+        }
+    } else {
+        CompressedSource::Bytes(Payload::Bytes(data))
+    }
+}
+
 #[op2(fast)]
 pub fn op_compressed_tex_image_2d(
     state: &mut OpState,
@@ -6965,6 +7151,8 @@ pub fn op_compressed_tex_image_2d(
     #[smi] height: i32,
     #[smi] border: i32,
     #[buffer] data: &[u8],
+    #[smi] pbo_offset: i32,
+    #[smi] pbo_size: i32,
 ) {
     let command = frame_decode::resource::compressed_tex_image_2d(
         &mut OpStateDecodeContext(state),
@@ -6975,7 +7163,7 @@ pub fn op_compressed_tex_image_2d(
         width,
         height,
         border,
-        Payload::Bytes(data),
+        compressed_source(data, pbo_offset, pbo_size),
     );
     if let Some(command) = command {
         queue_gl_fire_and_forget(state, command);
@@ -6994,6 +7182,8 @@ pub fn op_compressed_tex_sub_image_2d(
     #[smi] height: i32,
     #[smi] format: u32,
     #[buffer] data: &[u8],
+    #[smi] pbo_offset: i32,
+    #[smi] pbo_size: i32,
 ) {
     let command = frame_decode::resource::compressed_tex_sub_image_2d(
         &mut OpStateDecodeContext(state),
@@ -7005,11 +7195,87 @@ pub fn op_compressed_tex_sub_image_2d(
         width,
         height,
         format,
-        Payload::Bytes(data),
+        compressed_source(data, pbo_offset, pbo_size),
     );
     if let Some(command) = command {
         queue_gl_fire_and_forget(state, command);
     }
+}
+
+/// `compressedTexImage3D` (WebGL 2), with the 2D form's two sources.
+#[op2(fast)]
+pub fn op_compressed_tex_image_3d(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] target: u32,
+    #[smi] level: i32,
+    #[smi] internalformat: u32,
+    #[smi] width: i32,
+    #[smi] height: i32,
+    #[smi] depth: i32,
+    #[smi] border: i32,
+    #[buffer] data: &[u8],
+    #[smi] pbo_offset: i32,
+    #[smi] pbo_size: i32,
+) {
+    let command = frame_decode::resource::compressed_tex_image_3d(
+        &mut OpStateDecodeContext(state),
+        canvas_id,
+        target,
+        level,
+        internalformat,
+        width,
+        height,
+        depth,
+        border,
+        compressed_source(data, pbo_offset, pbo_size),
+    );
+    if let Some(command) = command {
+        queue_gl_fire_and_forget(state, command);
+    }
+}
+
+/// `compressedTexSubImage3D` (WebGL 2).
+#[op2(fast)]
+pub fn op_compressed_tex_sub_image_3d(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] target: u32,
+    #[smi] level: i32,
+    #[smi] xoffset: i32,
+    #[smi] yoffset: i32,
+    #[smi] zoffset: i32,
+    #[smi] width: i32,
+    #[smi] height: i32,
+    #[smi] depth: i32,
+    #[smi] format: u32,
+    #[buffer] data: &[u8],
+    #[smi] pbo_offset: i32,
+    #[smi] pbo_size: i32,
+) {
+    let command = frame_decode::resource::compressed_tex_sub_image_3d(
+        &mut OpStateDecodeContext(state),
+        canvas_id,
+        target,
+        level,
+        xoffset,
+        yoffset,
+        zoffset,
+        width,
+        height,
+        depth,
+        format,
+        compressed_source(data, pbo_offset, pbo_size),
+    );
+    if let Some(command) = command {
+        queue_gl_fire_and_forget(state, command);
+    }
+}
+
+/// `waitSync` (WebGL 2): the facade has checked the flags and the timeout, which have one legal value each.
+#[op2(fast)]
+pub fn op_wait_sync(state: &mut OpState, #[smi] canvas_id: u32, #[smi] sync: u32) {
+    queue_gl_fire_and_forget(state, GLCmd::WaitSync { canvas_id, sync });
 }
 
 // ---------------------------------------------------------------------------
@@ -9001,7 +9267,8 @@ fn tex_upload_3d_source(
 
 /// A 3D upload's pixels from the caller's element offset on: `srcOffset`
 /// counts elements of the view the facade was given, which is why the slice
-/// needs `bytes_per_element`. An offset past the end is no pixels, not an error.
+/// needs `bytes_per_element`. The facade refuses an offset past the end (INVALID_VALUE) before it calls the op; one
+/// that arrives anyway -- a producer that did not -- is no pixels.
 /// The Performance+ producer makes the same slice before it writes the record
 /// (`lane-stream.mjs`), so the bytes that reach the shared builder agree.
 fn tex_upload_3d_pixels(

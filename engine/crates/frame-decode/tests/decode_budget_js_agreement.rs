@@ -245,7 +245,10 @@ impl RenderSink for Staging {
                 } => {
                     self.uploads.push(("texImage2D", data.as_ref().clone()));
                 }
-                GLCmd::CompressedTexImage2D { data, .. } => {
+                GLCmd::CompressedTexImage2D {
+                    data: shared::protocol::render_cmd::CompressedImageData::Bytes(data),
+                    ..
+                } => {
                     self.uploads.push(("compressedTexImage2D", data.clone()));
                 }
                 GLCmd::BufferData {

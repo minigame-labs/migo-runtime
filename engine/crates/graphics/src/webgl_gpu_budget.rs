@@ -543,6 +543,30 @@ impl WebGlGpuBudget {
         )?;
         let bpp = tex_image_bytes_per_pixel(internal_format, format, ty)?;
         let bytes = checked_texel_bytes(&[width, height], bpp)?;
+        self.prepare_level(
+            canvas_id,
+            target,
+            level,
+            bytes,
+            SubresourceInfo {
+                width,
+                height,
+                bytes_per_texel: Some(bpp),
+            },
+        )
+    }
+
+    /// Charge `bytes` for (re)defining one level of the texture bound to `target`: the level's old size is replaced,
+    /// not added to. The bookkeeping every call that defines a level shares -- `texImage2D` / `texImage3D`, the copy,
+    /// and the compressed uploads -- once each has checked its own dimensions and counted its own bytes.
+    fn prepare_level(
+        &mut self,
+        canvas_id: CanvasId,
+        target: u32,
+        level: u32,
+        bytes: u64,
+        info: SubresourceInfo,
+    ) -> Result<PreparedGpuAllocation, GpuAllocationError> {
         let texture = self.bound_texture(canvas_id, target)?;
         let subresource = TextureSubresource { target, level };
         let record = self
@@ -578,11 +602,7 @@ impl WebGlGpuBudget {
                 texture,
                 subresource,
                 bytes,
-                info: SubresourceInfo {
-                    width,
-                    height,
-                    bytes_per_texel: Some(bpp),
-                },
+                info,
             },
         )
     }
@@ -632,42 +652,43 @@ impl WebGlGpuBudget {
             border,
             self.limits.max_2d_dimension,
         )?;
-        let texture = self.bound_texture(canvas_id, target)?;
-        let subresource = TextureSubresource { target, level };
-        let record = self
-            .textures
-            .get_mut(&texture)
-            .ok_or(GpuAllocationError::InvalidOperation)?;
-        if record.owner != canvas_id {
-            return Err(GpuAllocationError::InvalidOperation);
-        }
-        let TextureStorage::Mutable(images) = &mut record.storage else {
-            return Err(GpuAllocationError::InvalidOperation);
-        };
-        let old_object_bytes = images
-            .values()
-            .try_fold(0u64, |sum, value| sum.checked_add(*value))
-            .ok_or(GpuAllocationError::OutOfMemory)?;
-        let old_subresource_bytes = images.get(&subresource).copied().unwrap_or(0);
-        let bytes = u64::from(image_size);
-        let new_object_bytes = old_object_bytes
-            .checked_sub(old_subresource_bytes)
-            .and_then(|base| base.checked_add(bytes))
-            .ok_or(GpuAllocationError::OutOfMemory)?;
-        self.prepare_transition(
+        self.prepare_level(
             canvas_id,
-            old_object_bytes,
-            new_object_bytes,
-            bytes,
-            PreparedKind::TextureImage {
-                texture,
-                subresource,
-                bytes,
-                info: SubresourceInfo {
-                    width,
-                    height,
-                    bytes_per_texel: None,
-                },
+            target,
+            level,
+            u64::from(image_size),
+            SubresourceInfo {
+                width,
+                height,
+                bytes_per_texel: None,
+            },
+        )
+    }
+
+    /// `compressedTexImage3D`: a level of a 2D-array or 3D texture whose size is the call's `imageSize`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_compressed_tex_image_3d(
+        &mut self,
+        canvas_id: CanvasId,
+        target: u32,
+        level: i32,
+        width: i32,
+        height: i32,
+        depth: i32,
+        border: i32,
+        image_size: u32,
+    ) -> Result<PreparedGpuAllocation, GpuAllocationError> {
+        let (width, height, _depth, level) =
+            validate_image_3d_dimensions(target, level, width, height, depth, border, self.limits)?;
+        self.prepare_level(
+            canvas_id,
+            target,
+            level,
+            u64::from(image_size),
+            SubresourceInfo {
+                width,
+                height,
+                bytes_per_texel: None,
             },
         )
     }
@@ -818,46 +839,15 @@ impl WebGlGpuBudget {
             validate_image_3d_dimensions(target, level, width, height, depth, border, self.limits)?;
         let bpp = tex_image_bytes_per_pixel(internal_format, format, ty)?;
         let bytes = checked_texel_bytes(&[width, height, depth], bpp)?;
-        let texture = self.bound_texture(canvas_id, target)?;
-        let subresource = TextureSubresource { target, level };
-        let record = self
-            .textures
-            .get_mut(&texture)
-            .ok_or(GpuAllocationError::InvalidOperation)?;
-        if record.owner != canvas_id {
-            return Err(GpuAllocationError::InvalidOperation);
-        }
-        let TextureStorage::Mutable(images) = &mut record.storage else {
-            return Err(GpuAllocationError::InvalidOperation);
-        };
-        if !images.contains_key(&subresource) {
-            images
-                .try_reserve(1)
-                .map_err(|_| GpuAllocationError::OutOfMemory)?;
-        }
-        let old_object_bytes = images
-            .values()
-            .try_fold(0u64, |total, value| total.checked_add(*value))
-            .ok_or(GpuAllocationError::OutOfMemory)?;
-        let old_subresource_bytes = images.get(&subresource).copied().unwrap_or(0);
-        let new_object_bytes = old_object_bytes
-            .checked_sub(old_subresource_bytes)
-            .and_then(|base| base.checked_add(bytes))
-            .ok_or(GpuAllocationError::OutOfMemory)?;
-        self.prepare_transition(
+        self.prepare_level(
             canvas_id,
-            old_object_bytes,
-            new_object_bytes,
+            target,
+            level,
             bytes,
-            PreparedKind::TextureImage {
-                texture,
-                subresource,
-                bytes,
-                info: SubresourceInfo {
-                    width,
-                    height,
-                    bytes_per_texel: Some(bpp),
-                },
+            SubresourceInfo {
+                width,
+                height,
+                bytes_per_texel: Some(bpp),
             },
         )
     }
@@ -1579,6 +1569,52 @@ mod tests {
 
         assert_eq!(budget.context_usage(1), 128 + 1_032 + 300 + 516 + 256);
         assert_eq!(scope.process_usage(), budget.context_usage(1));
+    }
+
+    /// A compressed level of a 2D-array or 3D texture is charged its `imageSize`, whatever the source of the bytes; a
+    /// second upload into that level replaces the charge, another level adds to it, and the 3D dimension rules hold
+    /// (a 2D target is not a 3D one; a negative depth is refused).
+    #[test]
+    fn compressed_tex_image_3d_charges_the_level_at_its_image_size() {
+        let scope = GpuBudgetTestScope::new(limits(16 * 1024, 32 * 1024));
+        let mut budget = scope.registry();
+        budget.create_texture(1, 31).unwrap();
+        budget.bind_texture(1, TEXTURE_2D_ARRAY, Some(31));
+        let first = budget
+            .prepare_compressed_tex_image_3d(1, TEXTURE_2D_ARRAY, 0, 4, 4, 2, 0, 32)
+            .unwrap();
+        assert_eq!(first.byte_len(), 32);
+        budget.commit(first);
+        let again = budget
+            .prepare_compressed_tex_image_3d(1, TEXTURE_2D_ARRAY, 0, 8, 8, 2, 0, 128)
+            .unwrap();
+        budget.commit(again);
+        assert_eq!(
+            budget.context_usage(1),
+            128,
+            "the level is replaced, not added to"
+        );
+        let level1 = budget
+            .prepare_compressed_tex_image_3d(1, TEXTURE_2D_ARRAY, 1, 4, 4, 2, 0, 32)
+            .unwrap();
+        budget.commit(level1);
+        assert_eq!(
+            budget.context_usage(1),
+            160,
+            "another level adds to the texture"
+        );
+        assert!(
+            budget
+                .prepare_compressed_tex_image_3d(1, TEXTURE_2D, 0, 4, 4, 1, 0, 16)
+                .is_err(),
+            "a 2D target is not a 3D one"
+        );
+        assert!(
+            budget
+                .prepare_compressed_tex_image_3d(1, TEXTURE_2D_ARRAY, 0, 4, 4, -1, 0, 16)
+                .is_err(),
+            "a negative depth is refused"
+        );
     }
 
     /// `copyTexImage2D` charges the level it defines as `texImage2D` would: a sized format by its size, an unsized one

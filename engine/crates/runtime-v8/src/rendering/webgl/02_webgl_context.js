@@ -61,6 +61,8 @@ import {
     op_pixel_storei,
     op_compressed_tex_image_2d,
     op_compressed_tex_sub_image_2d,
+    op_compressed_tex_image_3d,
+    op_compressed_tex_sub_image_3d,
     op_buffer_sub_data,
     op_disable_vertex_attrib_array,
     op_clear_depth,
@@ -151,6 +153,7 @@ import {
     op_sampler_parameteri,
     op_sampler_parameterf,
     op_fence_sync,
+    op_wait_sync,
     op_delete_sync,
     op_client_wait_sync,
     op_draw_buffers,
@@ -439,6 +442,8 @@ const _rawGenerateMipmap     = _makeOrderedRaw(op_generate_mipmap);
 const _rawPixelStorei        = _makeOrderedRaw(op_pixel_storei);
 const _rawCompressedTexImage2D = _makeOrderedRaw(op_compressed_tex_image_2d);
 const _rawCompressedTexSubImage2D= _makeOrderedRaw(op_compressed_tex_sub_image_2d);
+const _rawCompressedTexImage3D= _makeOrderedRaw(op_compressed_tex_image_3d);
+const _rawCompressedTexSubImage3D= _makeOrderedRaw(op_compressed_tex_sub_image_3d);
 const _rawBufferSubData      = _makeOrderedRaw(op_buffer_sub_data);
 const _rawDisableVertexAttribArray= _makeOrderedRaw(op_disable_vertex_attrib_array);
 const _rawClearDepth         = _makeOrderedRaw(op_clear_depth);
@@ -522,6 +527,7 @@ const _rawBindSampler        = _makeOrderedRaw(op_bind_sampler);
 const _rawSamplerParameteri  = _makeOrderedRaw(op_sampler_parameteri);
 const _rawSamplerParameterf  = _makeOrderedRaw(op_sampler_parameterf);
 const _rawFenceSync          = _makeOrderedRaw(op_fence_sync);
+const _rawWaitSync           = _makeOrderedRaw(op_wait_sync);
 const _rawDeleteSync         = _makeOrderedRaw(op_delete_sync);
 const _rawClientWaitSync     = _makeOrderedRaw(op_client_wait_sync);
 const _rawDrawBuffers        = _makeOrderedRaw(op_draw_buffers);
@@ -785,7 +791,13 @@ function ensureNonSharedTypedArray(view, Type) {
 function prepare3DUploadView(canvasId, view, elementOffset, bytesPerElement) {
     const viewBytes = TypedArrayPrototypeGetByteLength(view);
     const start = elementOffset > 0 ? elementOffset * bytesPerElement : 0;
-    const remainingBytes = start <= viewBytes ? viewBytes - start : 0;
+    // `srcOffset` past the end of the view is INVALID_VALUE (WebGL 2), not an upload of nothing; the offset that
+    // reaches the op is then within the view, which keeps it within the op's 32 bits.
+    if (start > viewBytes) {
+        recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
+        return null;
+    }
+    const remainingBytes = viewBytes - start;
     if (!allowWebglUpload(canvasId, remainingBytes)) return null;
 
     // The native op borrows the view until it has made its bounded owned copy.
@@ -891,7 +903,7 @@ function _uniformListPayload(canvasId, name, data, srcOffset, srcLength, unit, T
         throw new TypeError(`Failed to execute '${name}' on 'WebGL2RenderingContext': parameter 3 is not of type '${Type.name.slice(0, -5)}List'.`);
     }
     const length = view.length;
-    const offset = srcOffset >>> 0;
+    const offset = toUnsignedLongLong(srcOffset);
     let count = srcLength >>> 0;
     if (offset > length || (count !== 0 && offset + count > length)) {
         return recordGpuPreflightError(canvasId, GL_INVALID_VALUE) || null;
@@ -1023,6 +1035,57 @@ function toLongLong(value) {
     if (n >= -0x8000000000000000 && n < 0x8000000000000000) return n;
     const r = n % 0x10000000000000000;
     return r >= 0x8000000000000000 ? r - 0x10000000000000000 : (r < -0x8000000000000000 ? r + 0x10000000000000000 : r);
+}
+
+// A WebIDL `unsigned long long` argument (a `srcOffset`): the integer part modulo 2^64, with NaN and the infinities 0.
+// A negative value wraps to one at or past 2^63 -- past the end of any list, which is what an offset is compared
+// with. `>>> 0` wrapped modulo 2^32 instead, so an offset of 2^32 read from the start of the list.
+function toUnsignedLongLong(value) {
+    const n = MathTrunc(+value);
+    if (!NumberIsFinite(n)) return 0;
+    const r = n % 0x10000000000000000;
+    return r < 0 ? r + 0x10000000000000000 : r;
+}
+
+// A GLintptr offset into the bound PIXEL_UNPACK_BUFFER (WebGL 2's buffer overloads of the uploads): a `long long`
+// that may not be negative (INVALID_VALUE). No buffer reaches 2^31 bytes -- the render side holds a buffer's size as a
+// GLint -- so an offset past that is INVALID_VALUE too, and what crosses is exact. -1 when refused, the error recorded.
+function unpackBufferOffset(canvasId, value) {
+    const n = toLongLong(value);
+    if (n < 0 || n > 0x7fffffff) {
+        recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
+        return -1;
+    }
+    return n;
+}
+
+const EMPTY_UPLOAD_BYTES = new Uint8Array(0);
+
+// The source of a WebGL 2 compressed upload, as the op's last three arguments (bytes, PIXEL_UNPACK_BUFFER offset, its
+// size), or null when refused with the error recorded. An ArrayBufferView is the first overload: its elements from
+// `srcOffset`, `srcLengthOverride` of them unless that is 0 (both counted in the view's elements; a range past the
+// end is INVALID_VALUE). Anything else is the second: `imageSize` bytes of the bound buffer from `offset`.
+function compressedUploadSource(canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride) {
+    if (ArrayBufferIsView(dataOrSize)) {
+        const dataView = isDataView(dataOrSize);
+        const unit = dataView ? 1 : dataOrSize.BYTES_PER_ELEMENT;
+        const byteLength = dataView ? DataViewPrototypeGetByteLength(dataOrSize) : TypedArrayPrototypeGetByteLength(dataOrSize);
+        const byteOffset = dataView ? DataViewPrototypeGetByteOffset(dataOrSize) : TypedArrayPrototypeGetByteOffset(dataOrSize);
+        const buffer = dataView ? DataViewPrototypeGetBuffer(dataOrSize) : TypedArrayPrototypeGetBuffer(dataOrSize);
+        const elements = byteLength / unit;
+        const offset = toUnsignedLongLong(srcOffsetOrOffset);
+        const length = srcLengthOverride >>> 0;
+        if (offset > elements || (length !== 0 && offset + length > elements)) {
+            recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
+            return null;
+        }
+        const count = length !== 0 ? length : elements - offset;
+        const bytes = toBoundedUploadBytes(canvasId, new Uint8Array(buffer, byteOffset + offset * unit, count * unit));
+        return bytes === null ? null : [bytes, -1, 0];
+    }
+    // A negative `imageSize` is the decoder's to refuse (INVALID_VALUE), for both lanes.
+    const offset = unpackBufferOffset(canvasId, srcOffsetOrOffset);
+    return offset < 0 ? null : [EMPTY_UPLOAD_BYTES, offset, dataOrSize | 0];
 }
 
 // Channel sizes in bits of a renderbuffer format: [red, green, blue, alpha, depth, stencil].
@@ -1168,6 +1231,7 @@ class WebGLRenderingContext {
         this._currentAttribKind = new Uint8Array(_ATTRIB_SHADOW_SLOTS);
         for (let i = 0; i < _ATTRIB_SHADOW_SLOTS; i++) this._currentAttribF[i * 4 + 3] = 1;
         this._maxVertexAttribs = 0;
+        this._attribMinimum = 8;      // MAX_VERTEX_ATTRIBS is at least this (WebGL 1; WebGL 2 raises it)
         // Scratch for the scalar integer-vector setters (`uniform2i`..`4i`): the stream copies the words as it
         // encodes them, so one array per width serves every call without allocating.
         this._uniformI32Scratch = [null, null, new Uint32Array(2), new Uint32Array(3), new Uint32Array(4)];
@@ -2450,13 +2514,13 @@ class WebGLRenderingContext {
     compressedTexImage2D(target, level, internalformat, width, height, border, data) {
         const u8 = toBoundedUploadBytes(this._canvasId, data);
         if (u8 === null) return;
-        _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, u8);
+        _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, u8, -1, 0);
     }
 
     compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, data) {
         const u8 = toBoundedUploadBytes(this._canvasId, data);
         if (u8 === null) return;
-        _rawCompressedTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, u8);
+        _rawCompressedTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, u8, -1, 0);
     }
 
     // -- Phase 1C: Buffer & Vertex Extensions --
@@ -2519,16 +2583,26 @@ class WebGLRenderingContext {
     vertexAttrib4fv(index, v) { if (this._attribList("vertexAttrib4fv", v, 4)) this._vertexAttribF(index, v[0], v[1], v[2], v[3]); }
 
     // ---- Vertex attribute queries -----------------------------------------------------------------------------------
-    _attribLimit() {
-        if (this._maxVertexAttribs === 0) {
-            const n = this.getParameter(0x8869);   // MAX_VERTEX_ATTRIBS
-            this._maxVertexAttribs = Number.isInteger(n) && n > 0 ? Math.min(n, _ATTRIB_SHADOW_SLOTS) : 16;
+    // A device limit, asked once the context can answer and kept from then on. A context that cannot answer now
+    // (lost) is held to `minimum`, what every implementation of the interface has, and asked again by the next call.
+    // Callers compare against `minimum` first: an index below it needs no answer, so the common call never crosses.
+    _cachedLimit(field, pname, minimum) {
+        if (this[field] === 0) {
+            const n = this.getParameter(pname);
+            if (!NumberIsInteger(n) || n < 1) return minimum;
+            this[field] = n;
         }
-        return this._maxVertexAttribs;
+        return this[field];
+    }
+    // Whether `index` names a vertex attribute: below MAX_VERTEX_ATTRIBS, which is at least 8 in WebGL 1 and 16 in
+    // WebGL 2, and held to the slots the shadow keeps.
+    _isAttribIndex(index) {
+        if (index < this._attribMinimum) return true;
+        return index < _ATTRIB_SHADOW_SLOTS && index < this._cachedLimit("_maxVertexAttribs", 0x8869, this._attribMinimum);
     }
     getVertexAttrib(index, pname) {
         const i = Number(index) >>> 0;
-        if (i >= this._attribLimit()) {
+        if (!this._isAttribIndex(i)) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return null;
         }
@@ -2563,7 +2637,7 @@ class WebGLRenderingContext {
             recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
             return 0;
         }
-        if (i >= this._attribLimit()) {
+        if (!this._isAttribIndex(i)) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return 0;
         }
@@ -3165,6 +3239,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         this._tfRegistry = new Map();
         // `clearBuffer*` fills it with the four values of the record it encodes.
         this._clearBufferScratch = [0, 0, 0, 0];
+        this._attribMinimum = 16;     // WebGL 2's MAX_VERTEX_ATTRIBS is at least this
         this._maxDrawBuffers = 0;
         this._maxColorAttachments = 0;
         // Scratch for `uniform{1,2,3,4}ui`: the stream copies the words as it encodes them.
@@ -3270,17 +3345,6 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // the rest; a list holds the elements the buffer needs (4 for COLOR, 1 otherwise) from `srcOffset`. The arguments are
     // converted first, as WebIDL converts them before the call runs (a value that is not a list is a TypeError ahead of any
     // GL error); then a call that breaks a rule is the error the specification names, in that order, and sends nothing.
-    // A device limit, asked once the context can answer and kept from then on. A context that cannot answer now
-    // (lost) is held to `minimum`, what every WebGL 2 implementation has, and asked again by the next call. Callers
-    // compare against `minimum` first: an index below it needs no answer, so the common call never crosses for one.
-    _cachedLimit(field, pname, minimum) {
-        if (this[field] === 0) {
-            const n = this.getParameter(pname);
-            if (!NumberIsInteger(n) || n < 1) return minimum;
-            this[field] = n;
-        }
-        return this[field];
-    }
     _drawBufferLimit() { return this._cachedLimit("_maxDrawBuffers", 0x8824, 4); }            // MAX_DRAW_BUFFERS
     _colorAttachmentLimit() { return this._cachedLimit("_maxColorAttachments", 0x8cdf, 4); }  // MAX_COLOR_ATTACHMENTS
     // `other` is the buffer besides COLOR the call takes: DEPTH for fv, STENCIL for iv, none (-1) for uiv.
@@ -3295,7 +3359,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         } else {
             throw new TypeError(`Failed to execute '${name}' on 'WebGL2RenderingContext': parameter 3 is not of type '${Type.name.slice(0, -5)}List'.`);
         }
-        const offset = srcOffset >>> 0;
+        const offset = toUnsignedLongLong(srcOffset);
         if (b !== 0x1800 && b !== other) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
             return null;
@@ -3745,10 +3809,32 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // op_alloc_gl_resource_id: direct, no-submit.
         const id = op_alloc_gl_resource_id_webgl2();
         _rawFenceSync(this._canvasId, id, condition, flags);
-        return { _id: id, _kind: 'sync' };
+        return new WebglObject(id, "sync", this._canvasId);
     }
     deleteSync(sync) {
-        if (sync && sync._id) _rawDeleteSync(sync._id);
+        if (!this._isLive(sync, "sync")) return;
+        sync._deleted = true;
+        _rawDeleteSync(sync._id);
+    }
+    isSync(sync) { return this._isLive(sync, "sync"); }
+    // The GL server waits for the fence before it runs what follows. The flags and the timeout each have one legal
+    // value (0, TIMEOUT_IGNORED): anything else is INVALID_VALUE. A sync deleted, or another context's, is
+    // INVALID_OPERATION; a value that is not a WebGLSync is a TypeError.
+    waitSync(sync, flags, timeout) {
+        if (!(sync instanceof WebglObject) || sync._kind !== "sync") {
+            throw new TypeError("Failed to execute 'waitSync' on 'WebGL2RenderingContext': parameter 1 is not of type 'WebGLSync'.");
+        }
+        const f = flags >>> 0;
+        const t = toLongLong(timeout);
+        if (sync._deleted || sync._ownerId !== this._canvasId) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        if (f !== 0 || t !== -1) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        _rawWaitSync(this._canvasId, sync._id);
     }
     /**
      * clientWaitSync(sync, flags, timeout) -- poll only.
@@ -3769,6 +3855,10 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
      */
     clientWaitSync(sync, flags, timeout) {
         if (!sync || !sync._id) return 37149; // WAIT_FAILED
+        if (sync._deleted) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return 37149; // WAIT_FAILED
+        }
         // Per the WebGL 2 specification: a timeout above the maximum is
         // INVALID_OPERATION, and the call returns WAIT_FAILED without doing
         // anything. Rejected here rather than clamped, so content is told rather
@@ -3999,14 +4089,15 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // srcOffset, a PBO offset integer, or null (reserve storage).
         let view = null;
         let bytesPerElement = 1;
-        let elementOffset = Number(srcOffset) || 0;
+        let elementOffset = toUnsignedLongLong(srcOffset);
         let pboOffset = -1;
         if (ArrayIsArray(pixelsOrOffset)
                 && !allowWebglUpload(this._canvasId, pixelsOrOffset.length)) {
             return;
         }
         if (typeof pixelsOrOffset === 'number') {
-            pboOffset = pixelsOrOffset | 0;
+            pboOffset = unpackBufferOffset(this._canvasId, pixelsOrOffset);
+            if (pboOffset < 0) return;
         } else if (pixelsOrOffset && pixelsOrOffset.buffer) {
             bytesPerElement = pixelsOrOffset.BYTES_PER_ELEMENT || 1;
             view = new Uint8Array(
@@ -4040,14 +4131,15 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     ) {
         let view = null;
         let bytesPerElement = 1;
-        let elementOffset = Number(srcOffset) || 0;
+        let elementOffset = toUnsignedLongLong(srcOffset);
         let pboOffset = -1;
         if (ArrayIsArray(pixelsOrOffset)
                 && !allowWebglUpload(this._canvasId, pixelsOrOffset.length)) {
             return;
         }
         if (typeof pixelsOrOffset === 'number') {
-            pboOffset = pixelsOrOffset | 0;
+            pboOffset = unpackBufferOffset(this._canvasId, pixelsOrOffset);
+            if (pboOffset < 0) return;
         } else if (pixelsOrOffset && pixelsOrOffset.buffer) {
             bytesPerElement = pixelsOrOffset.BYTES_PER_ELEMENT || 1;
             view = new Uint8Array(
@@ -4076,6 +4168,29 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             width, height, depth, format, type,
             view, elementOffset, bytesPerElement, pboOffset,
         );
+    }
+    // ---- Compressed uploads (WebGL 2) --------------------------------------------------------------------------------
+    // Each takes a view with `srcOffset` / `srcLengthOverride`, or `imageSize` / `offset` into the bound
+    // PIXEL_UNPACK_BUFFER: see `compressedUploadSource`.
+    compressedTexImage2D(target, level, internalformat, width, height, border, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
+        const source = compressedUploadSource(this._canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride);
+        if (source === null) return;
+        _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, source[0], source[1], source[2]);
+    }
+    compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
+        const source = compressedUploadSource(this._canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride);
+        if (source === null) return;
+        _rawCompressedTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, source[0], source[1], source[2]);
+    }
+    compressedTexImage3D(target, level, internalformat, width, height, depth, border, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
+        const source = compressedUploadSource(this._canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride);
+        if (source === null) return;
+        _rawCompressedTexImage3D(this._canvasId, target, level, internalformat, width, height, depth, border, source[0], source[1], source[2]);
+    }
+    compressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
+        const source = compressedUploadSource(this._canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride);
+        if (source === null) return;
+        _rawCompressedTexSubImage3D(this._canvasId, target, level, xoffset, yoffset, zoffset, width, height, depth, format, source[0], source[1], source[2]);
     }
     texStorage3D(target, levels, internalformat, width, height, depth) {
         if (!preflightTexStorage3D(

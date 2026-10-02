@@ -2,7 +2,7 @@ use glow::{HasContext, NativeUniformLocation};
 use shared::{
     error::{EngineError, EngineResult, ErrorCode},
     protocol::render_cmd::{
-        CanvasId, GLCmd, ProgramId, ShaderType, checked_readback_byte_len,
+        CanvasId, CompressedImageData, GLCmd, ProgramId, ShaderType, checked_readback_byte_len,
         webgl_readback_bytes_per_pixel,
     },
 };
@@ -2167,6 +2167,9 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            // ---------- Compressed uploads, 2D and 3D ----------
+            // The bytes are the call's own, or a range of the bound PIXEL_UNPACK_BUFFER (WebGL 2's other overload).
+            // A level the call defines is charged to the GPU budget at the call's image size.
             GLCmd::CompressedTexImage2D {
                 canvas_id,
                 target,
@@ -2188,20 +2191,38 @@ impl RendererGL {
                         width,
                         height,
                         border,
-                        data.len() as u32,
+                        data.image_size() as u32,
                     )
                     .map_err(gpu_allocation_error)?;
-                unsafe {
-                    gl.compressed_tex_image_2d(
-                        target,
-                        level,
-                        internalformat as i32,
-                        width,
-                        height,
-                        border,
-                        data.len() as i32,
-                        &data,
-                    );
+                match &data {
+                    CompressedImageData::Bytes(bytes) => unsafe {
+                        gl.compressed_tex_image_2d(
+                            target,
+                            level,
+                            internalformat as i32,
+                            width,
+                            height,
+                            border,
+                            bytes.len() as i32,
+                            bytes,
+                        )
+                    },
+                    CompressedImageData::UnpackBuffer { offset, size } => {
+                        let entry = cm.unpack_buffer_compressed_image()?;
+                        // SAFETY: a PIXEL_UNPACK_BUFFER is bound for this overload, so GL reads `data` as an offset.
+                        unsafe {
+                            (entry.tex_image_2d)(
+                                target,
+                                level,
+                                internalformat,
+                                width,
+                                height,
+                                border,
+                                *size,
+                                *offset as usize as *const std::ffi::c_void,
+                            )
+                        }
+                    }
                 }
                 cm.webgl_gpu_budget.commit(prepared);
                 Ok(DamageEffect::NoDamage)
@@ -2228,7 +2249,99 @@ impl RendererGL {
                         width,
                         height,
                         format,
-                        glow::CompressedPixelUnpackData::Slice(&data),
+                        compressed_unpack_data(&data),
+                    );
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::CompressedTexImage3D {
+                canvas_id,
+                target,
+                level,
+                internalformat,
+                width,
+                height,
+                depth,
+                border,
+                data,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let prepared = cm
+                    .webgl_gpu_budget
+                    .prepare_compressed_tex_image_3d(
+                        canvas_id,
+                        target,
+                        level,
+                        width,
+                        height,
+                        depth,
+                        border,
+                        data.image_size() as u32,
+                    )
+                    .map_err(gpu_allocation_error)?;
+                match &data {
+                    CompressedImageData::Bytes(bytes) => unsafe {
+                        gl.compressed_tex_image_3d(
+                            target,
+                            level,
+                            internalformat as i32,
+                            width,
+                            height,
+                            depth,
+                            border,
+                            bytes.len() as i32,
+                            bytes,
+                        )
+                    },
+                    CompressedImageData::UnpackBuffer { offset, size } => {
+                        let entry = cm.unpack_buffer_compressed_image()?;
+                        // SAFETY: as for the 2D call.
+                        unsafe {
+                            (entry.tex_image_3d)(
+                                target,
+                                level,
+                                internalformat,
+                                width,
+                                height,
+                                depth,
+                                border,
+                                *size,
+                                *offset as usize as *const std::ffi::c_void,
+                            )
+                        }
+                    }
+                }
+                cm.webgl_gpu_budget.commit(prepared);
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::CompressedTexSubImage3D {
+                canvas_id,
+                target,
+                level,
+                xoffset,
+                yoffset,
+                zoffset,
+                width,
+                height,
+                depth,
+                format,
+                data,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe {
+                    gl.compressed_tex_sub_image_3d(
+                        target,
+                        level,
+                        xoffset,
+                        yoffset,
+                        zoffset,
+                        width,
+                        height,
+                        depth,
+                        format,
+                        compressed_unpack_data(&data),
                     );
                 }
                 Ok(DamageEffect::NoDamage)
@@ -3842,6 +3955,15 @@ impl RendererGL {
                 );
                 Ok(DamageEffect::NoDamage)
             }
+            // The GL server waits for the fence before it runs what follows; a sync that was never made or is gone is
+            // nothing to wait for (the facade refuses a deleted one before anything is queued).
+            GLCmd::WaitSync { canvas_id, sync } => {
+                cm.make_current_needed(canvas_id)?;
+                if let Some(handle) = cm.syncs.get(&sync).and_then(|meta| meta.gl_handle) {
+                    unsafe { gl.wait_sync(handle, 0, glow::TIMEOUT_IGNORED) };
+                }
+                Ok(DamageEffect::NoDamage)
+            }
             GLCmd::DeleteSync { sync } => {
                 let handle = cm.syncs.remove(&sync).and_then(|meta| meta.gl_handle);
                 if let Some(h) = handle {
@@ -4316,6 +4438,18 @@ pub(crate) fn draw_damage_effect(
     }
 }
 
+/// A compressed sub-image's data as glow takes it: the bytes, or the range of the bound PIXEL_UNPACK_BUFFER.
+fn compressed_unpack_data(data: &CompressedImageData) -> glow::CompressedPixelUnpackData<'_> {
+    match data {
+        CompressedImageData::Bytes(bytes) => glow::CompressedPixelUnpackData::Slice(bytes),
+        CompressedImageData::UnpackBuffer { offset, size } => {
+            glow::CompressedPixelUnpackData::BufferRange(
+                *offset..offset.saturating_add(*size as u32),
+            )
+        }
+    }
+}
+
 /// An attachment named the way the default framebuffer names its buffers (`COLOR`, `DEPTH`, `STENCIL`), as the
 /// attachment of the framebuffer object that stands in for it when the canvas draws into a DrawingBuffer. GL takes
 /// only the first spelling on framebuffer 0 and only the second on an object, and WebGL content uses the first.
@@ -4489,6 +4623,34 @@ mod tests {
     }
 
     // ---- clear_damage_effect tests ----
+
+    /// A compressed sub-image's bytes go to GL as a slice; a range of the bound PIXEL_UNPACK_BUFFER as the buffer range
+    /// `offset..offset + size`, whose length is the `imageSize` GL is given. A size that would carry the end past 2^32
+    /// saturates there rather than wrapping to a short range GL would accept.
+    #[test]
+    fn a_compressed_sub_image_s_data_is_its_bytes_or_its_buffer_range() {
+        let bytes = CompressedImageData::Bytes(vec![1, 2, 3]);
+        assert!(matches!(
+            compressed_unpack_data(&bytes),
+            glow::CompressedPixelUnpackData::Slice(slice) if slice == [1, 2, 3]
+        ));
+        let range = CompressedImageData::UnpackBuffer {
+            offset: 64,
+            size: 16,
+        };
+        assert!(matches!(
+            compressed_unpack_data(&range),
+            glow::CompressedPixelUnpackData::BufferRange(r) if r == (64..80)
+        ));
+        let edge = CompressedImageData::UnpackBuffer {
+            offset: u32::MAX - 4,
+            size: 16,
+        };
+        assert!(matches!(
+            compressed_unpack_data(&edge),
+            glow::CompressedPixelUnpackData::BufferRange(r) if r == (u32::MAX - 4..u32::MAX)
+        ));
+    }
 
     /// An invalidation of the default framebuffer names COLOR / DEPTH / STENCIL; on the DrawingBuffer that stands in
     /// for it those are COLOR_ATTACHMENT0 / DEPTH_ATTACHMENT / STENCIL_ATTACHMENT, which GL requires of an object. Any

@@ -462,6 +462,8 @@
         "op_compile_shader": "stream",
         "op_compressed_tex_image_2d": "stream",
         "op_compressed_tex_sub_image_2d": "stream",
+        "op_compressed_tex_image_3d": "stream",
+        "op_compressed_tex_sub_image_3d": "stream",
         "op_create_buffer": "stream",
         "op_create_context_2d": {
           "lane": "stream",
@@ -505,6 +507,7 @@
         "op_end_query": "stream",
         "op_end_transform_feedback": "stream",
         "op_fence_sync": "stream",
+        "op_wait_sync": "stream",
         "op_fill_text": "stream",
         "op_force_readback_snapshot": "sync",
         "op_frame_end_unified": "stream",
