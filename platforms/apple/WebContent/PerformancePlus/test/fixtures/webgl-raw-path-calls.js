@@ -109,3 +109,14 @@ gl.uniform4iv(location, new Int32Array(large).fill(4));
 gl.uniformMatrix2fv(location, false, new Float32Array(large).fill(0.25));
 gl.uniformMatrix3fv(location, false, new Float32Array(large).fill(0.5));
 gl.uniformMatrix4fv(location, true, new Float32Array(large).fill(0.75));
+// WebGL 2: the unsigned vectors and the non-square matrices (600 is a whole number of every width)
+gl.uniform1uiv(location, new Uint32Array(large).fill(5));
+gl.uniform2uiv(location, new Uint32Array(large).fill(6));
+gl.uniform3uiv(location, new Uint32Array(large).fill(7));
+gl.uniform4uiv(location, new Uint32Array(large).fill(8));
+gl.uniformMatrix2x3fv(location, false, new Float32Array(large).fill(0.125));
+gl.uniformMatrix2x4fv(location, true, new Float32Array(large).fill(0.25));
+gl.uniformMatrix3x2fv(location, false, new Float32Array(large).fill(0.375));
+gl.uniformMatrix3x4fv(location, true, new Float32Array(large).fill(0.5));
+gl.uniformMatrix4x2fv(location, false, new Float32Array(large).fill(0.625));
+gl.uniformMatrix4x3fv(location, true, new Float32Array(large).fill(0.75));

@@ -91,6 +91,16 @@ export const OP_UNIFORM4FV = 263;
 export const OP_UNIFORM_MATRIX2FV = 264;
 export const OP_UNIFORM_MATRIX3FV = 265;
 export const OP_UNIFORM_MATRIX4FV = 266;
+export const OP_UNIFORM_MATRIX2X3FV = 267;
+export const OP_UNIFORM_MATRIX2X4FV = 268;
+export const OP_UNIFORM_MATRIX3X2FV = 269;
+export const OP_UNIFORM_MATRIX3X4FV = 270;
+export const OP_UNIFORM_MATRIX4X2FV = 271;
+export const OP_UNIFORM_MATRIX4X3FV = 272;
+export const OP_UNIFORM1UIV = 273;
+export const OP_UNIFORM2UIV = 274;
+export const OP_UNIFORM3UIV = 275;
+export const OP_UNIFORM4UIV = 276;
 
 // The Canvas2D block. One stream carries both kinds because 2D and GL
 // interleave within a frame and the renderer needs the order they were issued

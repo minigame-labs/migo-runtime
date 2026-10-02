@@ -13,7 +13,7 @@ use shared::{
     op_state::CanvasOpState,
     protocol::{
         render_cmd::{
-            GLCmd, RenderCmdResp, RenderCommand, UniformF32Values, UniformI32Values,
+            GLCmd, RenderCmdResp, RenderCommand, UniformF32Values, UniformI32Values, UniformU32Values,
             checked_readback_byte_len, webgl_readback_bytes_per_pixel,
         },
         send_gl_with_resp_sync,
@@ -1040,6 +1040,32 @@ pub(super) mod tests {
                     value: (0..64).map(|n| n as f32).collect(),
                 },
             ),
+            (
+                "Uniform4uiv spilled",
+                GLCmd::Uniform4uiv {
+                    canvas_id: 1,
+                    location: Some(1),
+                    value: (0..64).collect(),
+                },
+            ),
+            (
+                "UniformMatrix2x3fv spilled",
+                GLCmd::UniformMatrix2x3fv {
+                    canvas_id: 1,
+                    location: Some(1),
+                    transpose: false,
+                    value: (0..66).map(|n| n as f32).collect(),
+                },
+            ),
+            (
+                "UniformMatrix4x3fv spilled",
+                GLCmd::UniformMatrix4x3fv {
+                    canvas_id: 1,
+                    location: Some(1),
+                    transpose: true,
+                    value: (0..72).map(|n| n as f32).collect(),
+                },
+            ),
         ];
 
         for (label, cmd) in &with_payload {
@@ -1300,6 +1326,109 @@ pub(super) mod tests {
             cmd,
             GLCmd::VertexAttribIPointer { index: 9, size: 2, type_: 0x1404, stride: 8, offset: 4, .. }
         )));
+    }
+
+    /// `uniform{1..4}ui[v]` and the six non-square matrices reach the renderer as the commands the specification
+    /// describes: the component form is the `uiv` record of its width, `srcOffset` / `srcLength` select the elements the
+    /// call says, the matrices keep their `transpose`, and a list that is not a whole number of elements -- or too short
+    /// for what `srcOffset` / `srcLength` ask -- is INVALID_VALUE and no command at all.
+    #[test]
+    fn unsigned_and_non_square_uniforms_become_the_commands_the_specification_describes() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "unsigned_and_non_square_uniforms.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 162, width: 1, height: 1 }, {});
+                const loc = { id: 3 };
+                gl.uniform1ui(loc, 7);
+                gl.uniform2ui(loc, 1, 4294967295);
+                gl.uniform3ui(loc, -1, 2.9, 3);
+                gl.uniform4ui(loc, 1, 2, 3, 4);
+                gl.uniform2uiv(loc, new Uint32Array([10, 11, 12, 13]));
+                gl.uniform3uiv(loc, [1, 2, 3, 4, 5, 6, 7], 1, 3);          // elements 1..4
+                gl.uniformMatrix2x3fv(loc, false, new Float32Array([1, 2, 3, 4, 5, 6]));
+                gl.uniformMatrix3x2fv(loc, true, [1, 2, 3, 4, 5, 6]);
+                gl.uniformMatrix4x3fv(loc, false, new Float32Array(24).fill(0.5), 12, 12);
+                gl.flush();
+                "#,
+            )
+            .expect("the unsigned and non-square uniform calls should be accepted");
+        let commands: Vec<GLCmd> = recv_gl_commands(&render_rx).into_iter().collect();
+        let describe = |cmd: &GLCmd| -> String {
+            match cmd {
+                GLCmd::Uniform1uiv { value, .. } => format!("1ui {:?}", value.as_slice()),
+                GLCmd::Uniform2uiv { value, .. } => format!("2ui {:?}", value.as_slice()),
+                GLCmd::Uniform3uiv { value, .. } => format!("3ui {:?}", value.as_slice()),
+                GLCmd::Uniform4uiv { value, .. } => format!("4ui {:?}", value.as_slice()),
+                GLCmd::UniformMatrix2x3fv {
+                    transpose, value, ..
+                } => format!("2x3 {transpose} {}", value.len()),
+                GLCmd::UniformMatrix3x2fv {
+                    transpose, value, ..
+                } => format!("3x2 {transpose} {:?}", value.as_slice()),
+                GLCmd::UniformMatrix4x3fv {
+                    transpose, value, ..
+                } => format!("4x3 {transpose} {} {:?}", value.len(), value.first()),
+                other => format!("unexpected {other:?}"),
+            }
+        };
+        let got: Vec<String> = commands.iter().map(describe).collect();
+        assert_eq!(
+            got,
+            vec![
+                "1ui [7]".to_string(),
+                "2ui [1, 4294967295]".to_string(),
+                "3ui [4294967295, 2, 3]".to_string(),
+                "4ui [1, 2, 3, 4]".to_string(),
+                "2ui [10, 11, 12, 13]".to_string(),
+                "3ui [2, 3, 4]".to_string(),
+                "2x3 false 6".to_string(),
+                "3x2 true [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]".to_string(),
+                "4x3 false 12 Some(0.5)".to_string(),
+            ]
+        );
+    }
+
+    /// A list that cannot be a whole number of uniform elements is INVALID_VALUE and changes nothing; a value that is
+    /// not a list at all is a TypeError, as WebIDL has it. The refusal is the producer's, recorded in the error queue
+    /// `getError` reads, and no command reaches the renderer.
+    #[test]
+    fn a_malformed_unsigned_or_matrix_uniform_list_is_refused_and_nothing_is_sent() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "malformed_uniform_lists.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 163, width: 1, height: 1 }, {});
+                const loc = { id: 3 };
+                gl.uniform2uiv(loc, new Uint32Array([1, 2, 3]));               // 3 is not a whole number of uvec2
+                gl.uniform4uiv(loc, new Uint32Array(0));                        // nothing
+                gl.uniform1uiv(loc, new Uint32Array(4), 5);                     // srcOffset past the end
+                gl.uniform1uiv(loc, new Uint32Array(4), 2, 3);                  // srcOffset + srcLength past the end
+                gl.uniformMatrix2x3fv(loc, false, new Float32Array(7));         // not a whole number of 2x3
+                gl.uniformMatrix4x3fv(loc, false, new Float32Array(11));        // too short for one
+                let threw = 0;
+                for (const call of [
+                    () => gl.uniform2uiv(loc, 5),
+                    () => gl.uniform3uiv(loc, null),
+                    () => gl.uniformMatrix3x4fv(loc, false, "nope"),
+                ]) { try { call(); } catch (e) { if (e instanceof TypeError) threw += 1; } }
+                if (threw !== 3) throw new Error("a non-list is a TypeError: " + threw);
+                const errors = [];
+                for (let e = gl.getError(); e !== 0; e = gl.getError()) errors.push(e);
+                if (errors.length !== 6 || errors.some((e) => e !== 0x0501)) {
+                    throw new Error("six INVALID_VALUE expected, got " + errors.join());
+                }
+                gl.flush();
+                "#,
+            )
+            .expect("the malformed calls should be refused, not thrown (but for the non-lists, which the script catches)");
+        assert!(
+            render_rx.try_recv().is_err()
+                || recv_gl_commands(&render_rx).into_iter().next().is_none(),
+            "a refused call must not reach the renderer"
+        );
     }
 
     /// `getVertexAttrib` answers from what the calls set: the defaults before anything, each pointer's arguments and
@@ -5120,6 +5249,11 @@ pub(crate) fn copy_f32_words(words: &[u32]) -> UniformF32Values {
 }
 
 #[inline]
+pub(crate) fn copy_u32_words(words: &[u32]) -> UniformU32Values {
+    words.iter().copied().collect()
+}
+
+#[inline]
 pub(crate) fn copy_i32_words(words: &[u32]) -> UniformI32Values {
     words
         .iter()
@@ -5150,12 +5284,22 @@ fn gl_cmd_has_heap_payload(cmd: &GLCmd) -> bool {
         | GLCmd::Uniform2iv { value, .. }
         | GLCmd::Uniform3iv { value, .. }
         | GLCmd::Uniform4iv { value, .. } => value.spilled(),
+        GLCmd::Uniform1uiv { value, .. }
+        | GLCmd::Uniform2uiv { value, .. }
+        | GLCmd::Uniform3uiv { value, .. }
+        | GLCmd::Uniform4uiv { value, .. } => value.spilled(),
         GLCmd::Uniform1fv { value, .. }
         | GLCmd::Uniform2fv { value, .. }
         | GLCmd::Uniform3fv { value, .. }
         | GLCmd::Uniform4fv { value, .. }
         | GLCmd::UniformMatrix2fv { value, .. }
         | GLCmd::UniformMatrix3fv { value, .. }
+        | GLCmd::UniformMatrix2x3fv { value, .. }
+        | GLCmd::UniformMatrix2x4fv { value, .. }
+        | GLCmd::UniformMatrix3x2fv { value, .. }
+        | GLCmd::UniformMatrix3x4fv { value, .. }
+        | GLCmd::UniformMatrix4x2fv { value, .. }
+        | GLCmd::UniformMatrix4x3fv { value, .. }
         | GLCmd::UniformMatrix4fv { value, .. } => value.spilled(),
         _ => matches!(
             cmd,
@@ -7015,6 +7159,248 @@ pub fn op_uniform4fv(
         GLCmd::Uniform4fv {
             canvas_id,
             location,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform1uiv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_u32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::Uniform1uiv {
+            canvas_id,
+            location,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform2uiv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_u32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::Uniform2uiv {
+            canvas_id,
+            location,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform3uiv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_u32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::Uniform3uiv {
+            canvas_id,
+            location,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform4uiv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_u32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::Uniform4uiv {
+            canvas_id,
+            location,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform_matrix_2x3fv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    transpose: bool,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_f32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::UniformMatrix2x3fv {
+            canvas_id,
+            location,
+            transpose,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform_matrix_2x4fv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    transpose: bool,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_f32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::UniformMatrix2x4fv {
+            canvas_id,
+            location,
+            transpose,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform_matrix_3x2fv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    transpose: bool,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_f32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::UniformMatrix3x2fv {
+            canvas_id,
+            location,
+            transpose,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform_matrix_3x4fv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    transpose: bool,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_f32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::UniformMatrix3x4fv {
+            canvas_id,
+            location,
+            transpose,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform_matrix_4x2fv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    transpose: bool,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_f32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::UniformMatrix4x2fv {
+            canvas_id,
+            location,
+            transpose,
+            value,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_uniform_matrix_4x3fv(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    location: i32,
+    transpose: bool,
+    #[buffer] value: &[u32],
+) {
+    let location = if location < 0 {
+        None
+    } else {
+        Some(location as u32)
+    };
+    let value = copy_f32_words(value);
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::UniformMatrix4x3fv {
+            canvas_id,
+            location,
+            transpose,
             value,
         },
     );

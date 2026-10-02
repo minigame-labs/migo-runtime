@@ -1,4 +1,4 @@
-//! The WebGL block: opcodes 1..=62 fixed, 256..=266 variable, and the shape of
+//! The WebGL block: opcodes 1..=62 fixed, 256..=276 variable, and the shape of
 //! each record.
 //!
 //! One number per call is all that crosses. The producer writes an opcode and
@@ -98,7 +98,7 @@ pub const OP_VERTEX_ATTRIB_I4I: u32 = 60;
 pub const OP_VERTEX_ATTRIB_I4UI: u32 = 61;
 pub const OP_VERTEX_ATTRIB_I_POINTER: u32 = 62;
 
-// ─── Variable opcode constants (256..=266) ────────────────────────────────────
+// ─── Variable opcode constants (256..=276) ────────────────────────────────────
 
 pub const OP_UNIFORM1IV: u32 = 256;
 pub const OP_UNIFORM1FV: u32 = 257;
@@ -111,6 +111,18 @@ pub const OP_UNIFORM4FV: u32 = 263;
 pub const OP_UNIFORM_MATRIX2FV: u32 = 264;
 pub const OP_UNIFORM_MATRIX3FV: u32 = 265;
 pub const OP_UNIFORM_MATRIX4FV: u32 = 266;
+// The non-square matrices (`uniformMatrix{2x3,2x4,3x2,3x4,4x2,4x3}fv`, WebGL 2) follow the square ones so that every matrix
+// opcode is in one run (264..=272), and the unsigned vectors (`uniform{1,2,3,4}uiv`) close the block.
+pub const OP_UNIFORM_MATRIX2X3FV: u32 = 267;
+pub const OP_UNIFORM_MATRIX2X4FV: u32 = 268;
+pub const OP_UNIFORM_MATRIX3X2FV: u32 = 269;
+pub const OP_UNIFORM_MATRIX3X4FV: u32 = 270;
+pub const OP_UNIFORM_MATRIX4X2FV: u32 = 271;
+pub const OP_UNIFORM_MATRIX4X3FV: u32 = 272;
+pub const OP_UNIFORM1UIV: u32 = 273;
+pub const OP_UNIFORM2UIV: u32 = 274;
+pub const OP_UNIFORM3UIV: u32 = 275;
+pub const OP_UNIFORM4UIV: u32 = 276;
 
 pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
     // Bool word indices reference positions within the record (0 = header).
@@ -409,6 +421,19 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
             element_kind: UniformElementKind::Float,
         },
 
+        OP_UNIFORM1UIV => RecordSpec::VectorUniform {
+            element_kind: UniformElementKind::Uint,
+        },
+        OP_UNIFORM2UIV => RecordSpec::VectorUniform {
+            element_kind: UniformElementKind::Uint,
+        },
+        OP_UNIFORM3UIV => RecordSpec::VectorUniform {
+            element_kind: UniformElementKind::Uint,
+        },
+        OP_UNIFORM4UIV => RecordSpec::VectorUniform {
+            element_kind: UniformElementKind::Uint,
+        },
+
         // Variable matrix uniforms: H C location transpose payload...
         // transpose is at word index 3 (0=H,1=C,2=loc,3=transpose)
         OP_UNIFORM_MATRIX2FV => RecordSpec::MatrixUniform {
@@ -420,6 +445,30 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
             transpose_word_idx: 3,
         },
         OP_UNIFORM_MATRIX4FV => RecordSpec::MatrixUniform {
+            element_kind: UniformElementKind::Float,
+            transpose_word_idx: 3,
+        },
+        OP_UNIFORM_MATRIX2X3FV => RecordSpec::MatrixUniform {
+            element_kind: UniformElementKind::Float,
+            transpose_word_idx: 3,
+        },
+        OP_UNIFORM_MATRIX2X4FV => RecordSpec::MatrixUniform {
+            element_kind: UniformElementKind::Float,
+            transpose_word_idx: 3,
+        },
+        OP_UNIFORM_MATRIX3X2FV => RecordSpec::MatrixUniform {
+            element_kind: UniformElementKind::Float,
+            transpose_word_idx: 3,
+        },
+        OP_UNIFORM_MATRIX3X4FV => RecordSpec::MatrixUniform {
+            element_kind: UniformElementKind::Float,
+            transpose_word_idx: 3,
+        },
+        OP_UNIFORM_MATRIX4X2FV => RecordSpec::MatrixUniform {
+            element_kind: UniformElementKind::Float,
+            transpose_word_idx: 3,
+        },
+        OP_UNIFORM_MATRIX4X3FV => RecordSpec::MatrixUniform {
             element_kind: UniformElementKind::Float,
             transpose_word_idx: 3,
         },

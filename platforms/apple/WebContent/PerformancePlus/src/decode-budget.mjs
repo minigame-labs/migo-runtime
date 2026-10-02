@@ -25,8 +25,9 @@ import {
   OP2D_SET_LINE_DASH,
   OP2D_STROKE_TEXT,
   OP_UNIFORM1IV,
+  OP_UNIFORM4UIV,
   OP_UNIFORM_MATRIX2FV,
-  OP_UNIFORM_MATRIX4FV,
+  OP_UNIFORM_MATRIX4X3FV,
   OPR_BIND_ATTRIB_LOCATION,
   OPR_BUFFER_DATA,
   OPR_BUFFER_SUB_DATA,
@@ -126,8 +127,10 @@ function capacity(count, minimum) {
  * `owned_payload_bytes`, over the same bounds.
  */
 function ownedPayloadBytes(words, start, opcode, wordCount) {
-  if (opcode >= OP_UNIFORM1IV && opcode <= OP_UNIFORM_MATRIX4FV) {
-    const payload = wordCount - (opcode >= OP_UNIFORM_MATRIX2FV ? 4 : 3);
+  // The variable uniform block, 256..=276: vectors take a location (3 words before the payload), matrices a location and a
+  // transpose flag (4). The matrices are one run, 264..=272, inside it; the unsigned vectors close it.
+  if (opcode >= OP_UNIFORM1IV && opcode <= OP_UNIFORM4UIV) {
+    const payload = wordCount - (opcode >= OP_UNIFORM_MATRIX2FV && opcode <= OP_UNIFORM_MATRIX4X3FV ? 4 : 3);
     return payload > UNIFORM_INLINE_WORDS ? capacity(payload, 0) * 4 : 0;
   }
   // A chunk's bytes go to the host's staging, which is bounded on its own, not

@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answered from a per-vertex-array-object shadow of what the calls set. A list that is too short is INVALID_VALUE and
   changes nothing; an integer pointer with FLOAT is INVALID_ENUM. Opcodes 59..62 (the GL block's fixed range is now
   1..=62); in the embedded runtime, the Performance+ producer and the frame decoder alike.
+- WebGL 2: `uniform{1,2,3,4}ui`, `uniform{1,2,3,4}uiv` and the non-square matrices `uniformMatrix{2x3,2x4,3x2,3x4,4x2,4x3}fv`.
+  They were `TypeError: not a function`; an engine that uploads an unsigned-integer uniform (a `uvec` / `uint` the shader
+  takes, an instance or bone index) or a `mat3x4` skinning palette had no way to do it. The unsigned vectors cross as
+  records of their own with the words kept unsigned (a value above 2^31 is not negative), the matrices keep their
+  `transpose` flag, and a list is taken with WebGL 2's `srcOffset` / `srcLength`. A list that is empty, not a whole
+  number of elements, or shorter than `srcOffset` / `srcLength` ask for is INVALID_VALUE and sends nothing; a value
+  that is not a list is a `TypeError`. Opcodes 267..=276 (the variable block is now 256..=276), in the embedded
+  runtime, the Performance+ producer (including its decode-budget estimate) and the frame decoder alike.
 
 ### Fixed
 - iOS (Performance+): `getError()` returns the errors the producer found itself. A call the facade refuses before it is

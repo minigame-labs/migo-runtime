@@ -20,25 +20,6 @@
       ]
     },
     {
-      "reason": "Unsigned and non-square-matrix uniforms. uniform1i/2i/3i/4i, uniform{1..4}f/iv/fv exist; these are the siblings no record was added for (uvec uniforms and mat2x3 and friends: GL needs the unsigned and non-square entry points, so they need new records).",
-      "methods": [
-        "uniform1ui",
-        "uniform2ui",
-        "uniform3ui",
-        "uniform4ui",
-        "uniform1uiv",
-        "uniform2uiv",
-        "uniform3uiv",
-        "uniform4uiv",
-        "uniformMatrix2x3fv",
-        "uniformMatrix2x4fv",
-        "uniformMatrix3x2fv",
-        "uniformMatrix3x4fv",
-        "uniformMatrix4x2fv",
-        "uniformMatrix4x3fv"
-      ]
-    },
-    {
       "reason": "Framebuffer and texture copies, per-buffer clears and 3D/array texture entry points. Each needs a render-stream record and a handler on the render thread.",
       "methods": [
         "copyTexImage2D",

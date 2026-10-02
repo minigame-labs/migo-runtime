@@ -22,6 +22,7 @@ pub type FramebufferId = u32;
 pub type RenderbufferId = u32;
 pub type Context2DId = u32;
 pub type UniformI32Values = SmallVec<[i32; 16]>;
+pub type UniformU32Values = SmallVec<[u32; 16]>;
 pub type UniformF32Values = SmallVec<[f32; 16]>;
 /// WebGL 2 Vertex Array Object id.  Also used by WebGL 1 games that opt
 /// into the `OES_vertex_array_object` extension — the underlying engine
@@ -1280,6 +1281,62 @@ pub enum GLCmd {
         value: UniformF32Values,
     },
     UniformMatrix4fv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        transpose: bool,
+        value: UniformF32Values,
+    },
+    Uniform1uiv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        value: UniformU32Values,
+    },
+    Uniform2uiv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        value: UniformU32Values,
+    },
+    Uniform3uiv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        value: UniformU32Values,
+    },
+    Uniform4uiv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        value: UniformU32Values,
+    },
+    UniformMatrix2x3fv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        transpose: bool,
+        value: UniformF32Values,
+    },
+    UniformMatrix2x4fv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        transpose: bool,
+        value: UniformF32Values,
+    },
+    UniformMatrix3x2fv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        transpose: bool,
+        value: UniformF32Values,
+    },
+    UniformMatrix3x4fv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        transpose: bool,
+        value: UniformF32Values,
+    },
+    UniformMatrix4x2fv {
+        canvas_id: CanvasId,
+        location: Option<u32>,
+        transpose: bool,
+        value: UniformF32Values,
+    },
+    UniformMatrix4x3fv {
         canvas_id: CanvasId,
         location: Option<u32>,
         transpose: bool,
@@ -2628,6 +2685,16 @@ impl GLCmd {
             | GLCmd::Uniform4iv { canvas_id, .. }
             | GLCmd::UniformMatrix2fv { canvas_id, .. }
             | GLCmd::UniformMatrix3fv { canvas_id, .. }
+            | GLCmd::Uniform1uiv { canvas_id, .. }
+            | GLCmd::Uniform2uiv { canvas_id, .. }
+            | GLCmd::Uniform3uiv { canvas_id, .. }
+            | GLCmd::Uniform4uiv { canvas_id, .. }
+            | GLCmd::UniformMatrix2x3fv { canvas_id, .. }
+            | GLCmd::UniformMatrix2x4fv { canvas_id, .. }
+            | GLCmd::UniformMatrix3x2fv { canvas_id, .. }
+            | GLCmd::UniformMatrix3x4fv { canvas_id, .. }
+            | GLCmd::UniformMatrix4x2fv { canvas_id, .. }
+            | GLCmd::UniformMatrix4x3fv { canvas_id, .. }
             | GLCmd::UniformMatrix4fv { canvas_id, .. } => Some(*canvas_id),
 
             // Resource-context commands: shader source/compile, program
@@ -2884,6 +2951,16 @@ impl GLCmd {
             | GLCmd::Uniform4iv { .. }
             | GLCmd::UniformMatrix2fv { .. }
             | GLCmd::UniformMatrix3fv { .. }
+            | GLCmd::Uniform1uiv { .. }
+            | GLCmd::Uniform2uiv { .. }
+            | GLCmd::Uniform3uiv { .. }
+            | GLCmd::Uniform4uiv { .. }
+            | GLCmd::UniformMatrix2x3fv { .. }
+            | GLCmd::UniformMatrix2x4fv { .. }
+            | GLCmd::UniformMatrix3x2fv { .. }
+            | GLCmd::UniformMatrix3x4fv { .. }
+            | GLCmd::UniformMatrix4x2fv { .. }
+            | GLCmd::UniformMatrix4x3fv { .. }
             | GLCmd::UniformMatrix4fv { .. }
             | GLCmd::LinkProgram { .. }
             | GLCmd::DeleteProgram { .. }
@@ -2963,8 +3040,20 @@ impl GLCmd {
             | GLCmd::Uniform4fv { value, .. }
             | GLCmd::UniformMatrix2fv { value, .. }
             | GLCmd::UniformMatrix3fv { value, .. }
+            | GLCmd::UniformMatrix2x3fv { value, .. }
+            | GLCmd::UniformMatrix2x4fv { value, .. }
+            | GLCmd::UniformMatrix3x2fv { value, .. }
+            | GLCmd::UniformMatrix3x4fv { value, .. }
+            | GLCmd::UniformMatrix4x2fv { value, .. }
+            | GLCmd::UniformMatrix4x3fv { value, .. }
             | GLCmd::UniformMatrix4fv { value, .. } => {
                 usize::from(value.spilled()) * value.capacity() * std::mem::size_of::<f32>()
+            }
+            GLCmd::Uniform1uiv { value, .. }
+            | GLCmd::Uniform2uiv { value, .. }
+            | GLCmd::Uniform3uiv { value, .. }
+            | GLCmd::Uniform4uiv { value, .. } => {
+                usize::from(value.spilled()) * value.capacity() * std::mem::size_of::<u32>()
             }
 
             // WebGL 2 framebuffer metadata arrays.
