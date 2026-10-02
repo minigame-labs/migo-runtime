@@ -72,8 +72,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WebGLSync` object: `isSync` answers for it, `deleteSync` marks it, and `waitSync` / `clientWaitSync` on a deleted one
   are INVALID_OPERATION; `waitSync` takes only flags 0 and `TIMEOUT_IGNORED` (INVALID_VALUE otherwise) and a value that
   is not a `WebGLSync` is a TypeError. Resource record 176 on the Performance+ lane.
+- WebGL: `getAttachedShaders`, `detachShader`, `validateProgram` and `sampleCoverage`, and WebGL 2's `isSampler`,
+  `getSamplerParameter`, `getIndexedParameter` and `getSyncParameter`. The queries answer from what the calls did, as
+  `getVertexAttrib` does, so none crosses: what a program has attached (ATTACHED_SHADERS too -- a cached count used to
+  go stale on the next attach), what `samplerParameter*` set (from ES 3.0's initial values), what `bindBufferBase` /
+  `bindBufferRange` bound (uniform buffers on the context, transform feedback buffers on the bound transform feedback
+  object, a deleted buffer unbound from both), and a fence's type, condition and flags (its status is a poll of the
+  fence, as `clientWaitSync` answers). To keep those answers true the calls refuse what GL would: attaching a shader
+  already attached or of a type already attached, detaching one that is not, a deleted program, shader or sampler
+  (INVALID_OPERATION); a sampler parameter it does not have or a value it does not take (INVALID_ENUM; an enum set
+  through `samplerParameterf` takes the nearest integer); an indexed binding point past the maximum and a uniform
+  buffer offset off UNIFORM_BUFFER_OFFSET_ALIGNMENT (INVALID_VALUE -- the driver's error would not have reached
+  `getError`). `createShader` of a type that is not one is INVALID_ENUM and null, where it returned a shader the
+  render side had silently dropped. Samplers are `WebGLSampler` objects. `sampleCoverage` is GL record 71;
+  `detachShader` and `validateProgram` are resource records 177 and 178, and `validateProgram` drops the cached
+  VALIDATE_STATUS. The render side keeps its list of attached shaders (the shader-cache key at link time) in step
+  with a detach.
 
 ### Fixed
+- WebGL 2: a fence signals. Nothing submitted the commands of a context that only draws offscreen -- a frame flushes
+  the canvas it presents -- so a fence made there never reached the GPU and `clientWaitSync` / SYNC_STATUS answered
+  TIMEOUT_EXPIRED / UNSIGNALED for good. A browser flushes at the end of every task; here the task that makes a fence
+  ends (its microtask checkpoint) by flushing each context that made one, once. Within that task the fence answers
+  unsignalled without asking the render side, as the specification requires, so a loop cannot spin on it there.
+  `flush()` and `finish()` now submit the context's commands (GL record 72) as well as sending what was recorded; on a
+  lost context they do nothing. On the Performance+ lane Promise's statics in the engine's primordials are bound to
+  Promise, as deno binds them: `PromiseResolve` threw there.
 - WebGL: a `srcOffset` is converted as WebIDL's `unsigned long long` (`clearBuffer*`, the uniform lists, `texImage3D`
   / `texSubImage3D`, the compressed uploads). `>>> 0` wrapped it modulo 2^32, so an offset of 2^32 read from the start
   of the list instead of being INVALID_VALUE. `texImage3D` / `texSubImage3D` with a `srcOffset` past the end of the view

@@ -1391,6 +1391,7 @@ pub(super) mod tests {
                 GLCmd::UniformMatrix4x3fv {
                     transpose, value, ..
                 } => format!("4x3 {transpose} {} {:?}", value.len(), value.first()),
+                GLCmd::Flush { .. } => "flush".to_string(),
                 other => format!("unexpected {other:?}"),
             }
         };
@@ -1407,6 +1408,7 @@ pub(super) mod tests {
                 "2x3 false 6".to_string(),
                 "3x2 true [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]".to_string(),
                 "4x3 false 12 Some(0.5)".to_string(),
+                "flush".to_string(),
             ]
         );
     }
@@ -1445,10 +1447,10 @@ pub(super) mod tests {
                 "#,
             )
             .expect("the malformed calls should be refused, not thrown (but for the non-lists, which the script catches)");
+        let sent = drain_gl_commands(&render_rx);
         assert!(
-            render_rx.try_recv().is_err()
-                || recv_gl_commands(&render_rx).into_iter().next().is_none(),
-            "a refused call must not reach the renderer"
+            sent.iter().all(|cmd| matches!(cmd, GLCmd::Flush { .. })),
+            "a refused call must not reach the renderer (only the closing flush() does): {sent:?}"
         );
     }
 
@@ -1506,6 +1508,7 @@ pub(super) mod tests {
                     offset,
                     ..
                 } => format!("drawElements {mode} {count} {index_type:#x} {offset}"),
+                GLCmd::Flush { .. } => "flush".to_string(),
                 other => format!("unexpected {other:?}"),
             }
         };
@@ -1521,6 +1524,7 @@ pub(super) mod tests {
                 "fi 0.25 255".to_string(),
                 "fv 0x1800 0 [1.0, 2.0, 3.0, 4.0]".to_string(),
                 "drawElements 4 6 0x1403 2".to_string(),
+                "flush".to_string(),
             ]
         );
     }
@@ -1575,10 +1579,10 @@ pub(super) mod tests {
                 "#,
             )
             .expect("the malformed calls should be refused, not thrown (but for the TypeErrors, which the script catches)");
+        let sent = drain_gl_commands(&render_rx);
         assert!(
-            render_rx.try_recv().is_err()
-                || recv_gl_commands(&render_rx).into_iter().next().is_none(),
-            "a refused call must not reach the renderer"
+            sent.iter().all(|cmd| matches!(cmd, GLCmd::Flush { .. })),
+            "a refused call must not reach the renderer (only the closing flush() does): {sent:?}"
         );
     }
 
@@ -2017,6 +2021,246 @@ pub(super) mod tests {
             .expect("the vertex attribute limit script should run");
     }
 
+    /// What is attached to a program is the facade's to know: `getAttachedShaders` and ATTACHED_SHADERS answer from
+    /// it, follow every attach and detach (a cached count went stale), and refuse what GL would: a shader already
+    /// attached or of a type already attached, detaching one that is not, a deleted program or shader. `createShader`
+    /// of a type that is not one is INVALID_ENUM and null. `validateProgram` drops the cached VALIDATE_STATUS.
+    #[test]
+    fn shader_attachment_is_answered_from_what_the_calls_did() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "shader_attachment.js",
+                r#"
+                const gl = new WebGLRenderingContext({ _rid: 190, width: 1, height: 1 }, {});
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const OPERATION = 0x0502;
+                check(gl.createShader(0x1234) === null && gl.getError() === 0x0500, "a bad type is INVALID_ENUM and null");
+                const p = gl.createProgram(), vs = gl.createShader(0x8b31), fs = gl.createShader(0x8b30), vs2 = gl.createShader(0x8b31);
+                check(gl.getAttachedShaders(p).length === 0 && gl.getProgramParameter(p, 0x8b85) === 0, "nothing attached");
+                gl.attachShader(p, vs);
+                check(gl.getProgramParameter(p, 0x8b85) === 1, "one attached");
+                gl.attachShader(p, fs);
+                const both = gl.getAttachedShaders(p);
+                check(both.length === 2 && both[0] === vs && both[1] === fs && gl.getProgramParameter(p, 0x8b85) === 2, "both, in order");
+                gl.attachShader(p, vs);
+                check(gl.getError() === OPERATION, "attached twice");
+                gl.attachShader(p, vs2);
+                check(gl.getError() === OPERATION, "a second vertex shader");
+                gl.detachShader(p, vs);
+                check(gl.getProgramParameter(p, 0x8b85) === 1 && gl.getAttachedShaders(p)[0] === fs, "detached");
+                gl.detachShader(p, vs);
+                check(gl.getError() === OPERATION, "detaching one not attached");
+                gl.attachShader(p, vs2);
+                check(gl.getError() === 0 && gl.getAttachedShaders(p).length === 2, "the other vertex shader now");
+                gl.deleteShader(fs);
+                check(gl.getAttachedShaders(p).includes(fs), "a deleted shader stays attached until detached");
+                gl.attachShader(p, fs);
+                check(gl.getError() === OPERATION, "a deleted shader cannot be attached");
+                let threw = false;
+                try { gl.attachShader(null, vs); } catch (e) { threw = e instanceof TypeError; }
+                check(threw, "a null program is a TypeError");
+                gl._programParameterCache.set(p.id, new Map([[0x8b83, 1]]));
+                gl.validateProgram(p);
+                check(!gl._programParameterCache.get(p.id).has(0x8b83), "validateProgram drops the cached VALIDATE_STATUS");
+                gl.deleteProgram(p);
+                check(gl.getAttachedShaders(p) === null && gl.getError() === OPERATION, "a deleted program");
+                gl.sampleCoverage(0.5, true);
+                gl.flush();
+                "#,
+            )
+            .expect("the shader attachment script should run");
+        let got: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::AttachShader { .. } => Some("attach".to_string()),
+                GLCmd::DetachShader { .. } => Some("detach".to_string()),
+                GLCmd::ValidateProgram { .. } => Some("validate".to_string()),
+                GLCmd::SampleCoverage { value, invert, .. } => {
+                    Some(format!("coverage {value} {invert}"))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                "attach",
+                "attach",
+                "detach",
+                "attach",
+                "validate",
+                "coverage 0.5 true"
+            ]
+        );
+    }
+
+    /// A sampler is a real `WebGLSampler`: `isSampler` answers for it, `getSamplerParameter` answers what
+    /// `samplerParameter*` set (the table's initial values before), a value a parameter does not take and a parameter
+    /// a sampler does not have are INVALID_ENUM and change nothing, an enum set through the float call takes the
+    /// nearest integer, and a deleted sampler is INVALID_OPERATION to use or bind.
+    #[test]
+    fn sampler_parameters_are_answered_from_what_the_calls_set() {
+        let (mut runtime, _render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "sampler_parameters.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 191, width: 1, height: 1 }, {});
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const s = gl.createSampler();
+                check(gl.isSampler(s) && !gl.isSampler({}) && !gl.isSampler(null), "a sampler is one");
+                check(gl.getSamplerParameter(s, 0x2801) === 0x2702 && gl.getSamplerParameter(s, 0x2800) === 0x2601 &&
+                      gl.getSamplerParameter(s, 0x2802) === 0x2901 && gl.getSamplerParameter(s, 0x884d) === 0x0203 &&
+                      gl.getSamplerParameter(s, 0x813a) === -1000 && gl.getSamplerParameter(s, 0x813b) === 1000, "initial values");
+                gl.samplerParameteri(s, 0x2801, 0x2600);
+                gl.samplerParameterf(s, 0x813a, 2.5);
+                gl.samplerParameterf(s, 0x2800, 9728.2);       // NEAREST, through the float call
+                check(gl.getSamplerParameter(s, 0x2801) === 0x2600 && gl.getSamplerParameter(s, 0x813a) === 2.5 &&
+                      gl.getSamplerParameter(s, 0x2800) === 0x2600, "what was set");
+                gl.samplerParameteri(s, 0x2800, 0x2702);       // MAG_FILTER takes no mipmap filter
+                check(gl.getError() === 0x0500 && gl.getSamplerParameter(s, 0x2800) === 0x2600, "a value it does not take");
+                gl.samplerParameteri(s, 0x1234, 0);
+                check(gl.getError() === 0x0500, "a parameter it does not have");
+                check(gl.getSamplerParameter(s, 0x1234) === null && gl.getError() === 0x0500, "a query of one");
+                gl.deleteSampler(s);
+                check(!gl.isSampler(s), "deleted");
+                gl.samplerParameteri(s, 0x2801, 0x2601);
+                check(gl.getError() === 0x0502, "setting a deleted sampler");
+                gl.bindSampler(0, s);
+                check(gl.getError() === 0x0502, "binding a deleted sampler");
+                check(gl.getSamplerParameter(s, 0x2801) === null && gl.getError() === 0x0502, "querying a deleted sampler");
+                "#,
+            )
+            .expect("the sampler script should run");
+    }
+
+    /// `getIndexedParameter` answers from what `bindBufferBase` / `bindBufferRange` took: uniform buffer bindings on
+    /// the context, transform feedback ones on the bound transform feedback object. An index past the binding points
+    /// and a uniform buffer offset off UNIFORM_BUFFER_OFFSET_ALIGNMENT are INVALID_VALUE before anything is sent; a
+    /// deleted buffer leaves its bindings. `getSyncParameter` answers a fence's type, condition and flags, and in the
+    /// task that made it a fence is unsignalled without a question to the render side.
+    #[test]
+    fn indexed_bindings_and_sync_parameters_are_answered_from_what_the_calls_set() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "indexed_bindings.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 192, width: 1, height: 1 }, {});
+                gl._maxUniformBufferBindings = 36;
+                gl._uniformBufferOffsetAlignment = 256;
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const a = gl.createBuffer(), b = gl.createBuffer();
+                gl.bindBufferBase(0x8a11, 2, a);
+                gl.bindBufferRange(0x8a11, 30, b, 512, 64);
+                check(gl.getIndexedParameter(0x8a28, 2) === a && gl.getIndexedParameter(0x8a29, 2) === 0 &&
+                      gl.getIndexedParameter(0x8a2a, 2) === 0, "a base binding");
+                check(gl.getIndexedParameter(0x8a28, 30) === b && gl.getIndexedParameter(0x8a29, 30) === 512 &&
+                      gl.getIndexedParameter(0x8a2a, 30) === 64, "a range binding");
+                check(gl.getIndexedParameter(0x8a28, 3) === null, "an unbound point");
+                gl.bindBufferRange(0x8a11, 3, a, 100, 64);
+                check(gl.getError() === 0x0501 && gl.getIndexedParameter(0x8a28, 3) === null, "an unaligned offset");
+                gl.bindBufferBase(0x8a11, 36, a);
+                check(gl.getError() === 0x0501, "past MAX_UNIFORM_BUFFER_BINDINGS");
+                check(gl.getIndexedParameter(0x8a28, 36) === null && gl.getError() === 0x0501, "a query past it");
+                check(gl.getIndexedParameter(0x1234, 0) === null && gl.getError() === 0x0500, "not an indexed parameter");
+                // transform feedback bindings belong to the bound transform feedback object
+                gl.bindBufferBase(0x8c8e, 1, a);
+                const tf = gl.createTransformFeedback();
+                gl.bindTransformFeedback(0x8e22, tf);
+                check(gl.getIndexedParameter(0x8c8f, 1) === null, "a new transform feedback object has none");
+                gl.bindBufferRange(0x8c8e, 1, b, 8, 16);
+                check(gl.getIndexedParameter(0x8c8f, 1) === b && gl.getIndexedParameter(0x8c84, 1) === 8, "its own");
+                gl.bindTransformFeedback(0x8e22, null);
+                check(gl.getIndexedParameter(0x8c8f, 1) === a, "the default object's again");
+                gl.deleteBuffer(a);
+                check(gl.getIndexedParameter(0x8a28, 2) === null && gl.getIndexedParameter(0x8c8f, 1) === null, "deleting unbinds");
+                const sync = gl.fenceSync(0x9117, 0);
+                check(gl.getSyncParameter(sync, 0x9112) === 0x9116 && gl.getSyncParameter(sync, 0x9113) === 0x9117 &&
+                      gl.getSyncParameter(sync, 0x9115) === 0, "a fence's type, condition and flags");
+                check(gl.getSyncParameter(sync, 0x1234) === null && gl.getError() === 0x0500, "not a sync parameter");
+                // the task that made it never sees it signalled, and asks the render side nothing (there is none here)
+                check(gl.getSyncParameter(sync, 0x9114) === 0x9118, "UNSIGNALED in its own task");
+                check(gl.clientWaitSync(sync, 0, 0) === 0x911b, "TIMEOUT_EXPIRED in its own task");
+                gl.deleteSync(sync);
+                check(gl.getSyncParameter(sync, 0x9112) === null && gl.getError() === 0x0502, "a deleted sync");
+                gl.flush();
+                "#,
+            )
+            .expect("the indexed binding script should run");
+        let ranges: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::BindBufferRange {
+                    index,
+                    offset,
+                    size,
+                    ..
+                } => Some(format!("{index} {offset} {size}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ranges,
+            vec!["30 512 64", "1 8 16"],
+            "the refused range was not sent"
+        );
+    }
+
+    /// `flush()` is the context's commands submitted: a `Flush` record for its canvas. A task that made a fence ends
+    /// with the same for each context that made one -- once, however many fences -- and with what it recorded sent, so
+    /// the fence reaches the GPU though nothing presents that context; the next task sees the fence as the GPU does.
+    #[test]
+    fn a_fence_s_task_ends_by_flushing_the_contexts_that_made_one() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "fence_task_flush.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 196, width: 1, height: 1 }, {});
+                const other = new WebGL2RenderingContext({ _rid: 197, width: 1, height: 1 }, {});
+                gl.fenceSync(0x9117, 0);
+                gl.fenceSync(0x9117, 0);
+                other.clear(0x4000);
+                "#,
+            )
+            .expect("the fence script should run");
+        // The task ends when the script returns: its microtask checkpoint runs then.
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .map(|cmd| match cmd {
+                GLCmd::FenceSync { canvas_id, .. } => format!("fence {canvas_id}"),
+                GLCmd::Clear { canvas_id, .. } => format!("clear {canvas_id}"),
+                GLCmd::Flush { canvas_id } => format!("flush {canvas_id}"),
+                other => format!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            vec!["fence 196", "fence 196", "clear 197", "flush 196"],
+            "the task's end -- after its last call, not at the fence -- flushes the context that made the fences, once"
+        );
+        runtime
+            .exec_script(
+                "fence_task_flush_next.js",
+                r#"
+                gl.flush();
+                other.flush();
+                "#,
+            )
+            .expect("the next task should run");
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .map(|cmd| format!("{cmd:?}"))
+            .collect();
+        assert_eq!(
+            sent,
+            vec!["Flush { canvas_id: 196 }", "Flush { canvas_id: 197 }"],
+            "flush() is a Flush record of its own canvas"
+        );
+    }
+
     /// `getVertexAttrib` answers from what the calls set: the defaults before anything, each pointer's arguments and
     /// the buffer bound when it was made, the enable flag, the divisor, the constant value (typed as the call that set
     /// it), per vertex array object, and an error and `null` for what it cannot answer.
@@ -2373,6 +2617,8 @@ pub(super) mod tests {
                                 );
                                 expected += 1.0;
                             }
+                            // The explicit `flush()` that drains the remainder.
+                            GLCmd::Flush { .. } => {}
                             other => panic!("unexpected command across auto-flush: {other:?}"),
                         }
                     }
@@ -2467,7 +2713,11 @@ pub(super) mod tests {
             !value.spilled(),
             "a 16-word post-grow uniform payload must stay inline"
         );
-        assert!(it.next().is_none(), "exactly two GL commands expected");
+        assert!(
+            matches!(it.next(), Some(GLCmd::Flush { .. })),
+            "the closing flush() follows the two uniforms"
+        );
+        assert!(it.next().is_none(), "exactly two uniform commands expected");
     }
 
     #[test]
@@ -3571,13 +3821,17 @@ pub(super) mod tests {
             "exactly one op_submit_render_stream call expected, got {submit_calls}"
         );
         assert_eq!(
-            decoded_cmds, 200,
-            "all 200 commands must be decoded in one batch, got {decoded_cmds}"
+            decoded_cmds, 201,
+            "all 200 commands and the closing flush must be decoded in one batch, got {decoded_cmds}"
         );
 
         // Drain the render packet and verify strict order.
         let commands = recv_gl_commands(&render_rx);
-        assert_eq!(commands.len(), 200, "200 GLCmds expected in the packet");
+        assert_eq!(
+            commands.len(),
+            201,
+            "200 GLCmds and the flush expected in the packet"
+        );
 
         // Spot-check first (Viewport) and last (DrawElements).
         assert!(
@@ -3588,8 +3842,13 @@ pub(super) mod tests {
         let last = &commands[199];
         assert!(
             matches!(last, GLCmd::DrawElements { .. }),
-            "last command must be DrawElements, got {:?}",
+            "the last call's command must be DrawElements, got {:?}",
             last
+        );
+        assert!(
+            matches!(&commands[200], GLCmd::Flush { .. }),
+            "flush() closes the batch, got {:?}",
+            &commands[200]
         );
     }
 
@@ -3622,12 +3881,17 @@ pub(super) mod tests {
             "special f32 values must go through stream, not raw path; got {submit_calls} submit calls"
         );
         assert_eq!(
-            decoded, 4,
-            "all 4 special-f32 uniforms must be encoded, got {decoded}"
+            decoded, 5,
+            "all 4 special-f32 uniforms and the closing flush must be encoded, got {decoded}"
         );
 
         let commands = recv_gl_commands(&render_rx);
-        assert_eq!(commands.len(), 4, "4 Uniform1f commands expected");
+        assert_eq!(
+            commands.len(),
+            5,
+            "4 Uniform1f commands and the flush expected"
+        );
+        assert!(matches!(commands[4], GLCmd::Flush { .. }));
 
         // Bit-exact verification for each special value.
         let nan_bits = f32::NAN.to_bits();
@@ -3636,7 +3900,7 @@ pub(super) mod tests {
         let neg_inf_bits = f32::NEG_INFINITY.to_bits();
 
         let expected_bits = [nan_bits, neg_zero_bits, inf_bits, neg_inf_bits];
-        for (i, cmd) in commands.iter().enumerate() {
+        for (i, cmd) in commands[..4].iter().enumerate() {
             match cmd {
                 GLCmd::Uniform1f { x, .. } => {
                     assert_eq!(
@@ -3680,14 +3944,14 @@ pub(super) mod tests {
 
         let (submit_calls, decoded) = crate::rendering::webgl::submit_test_counter::read();
         // The viewport was encoded in the stream; shaderSource triggered a flush (1 submit)
-        // then ran raw.
+        // then ran raw. flush() then submits its own record (1 submit).
         assert_eq!(
-            submit_calls, 1,
-            "one stream submit expected (pending viewport flushed before shaderSource), got {submit_calls}"
+            submit_calls, 2,
+            "two stream submits expected (pending viewport flushed before shaderSource, then flush()), got {submit_calls}"
         );
         assert_eq!(
-            decoded, 1,
-            "one decoded command (the viewport), got {decoded}"
+            decoded, 2,
+            "two decoded commands (the viewport, the flush), got {decoded}"
         );
 
         // The viewport must appear in the render output.
@@ -3729,21 +3993,21 @@ pub(super) mod tests {
 
         let (submit_calls, decoded) = crate::rendering::webgl::submit_test_counter::read();
         // The viewport was encoded in the stream. The oversized uniform triggered a flush
-        // of that stream (1 submit), then ran raw. Then flush() -> 0 submit (stream was empty).
+        // of that stream (1 submit), then ran raw. Then flush() submits its own record (1 submit).
         assert_eq!(
-            submit_calls, 1,
-            "one stream submit for pending viewport before oversized uniform, got {submit_calls}"
+            submit_calls, 2,
+            "a stream submit for the pending viewport before the oversized uniform, then flush()'s, got {submit_calls}"
         );
         assert_eq!(
-            decoded, 1,
-            "only the viewport was decoded via stream, got {decoded}"
+            decoded, 2,
+            "only the viewport and the flush were decoded via stream, got {decoded}"
         );
 
         let commands = recv_gl_commands(&render_rx);
         assert_eq!(
             commands.len(),
-            2,
-            "2 GLCmds expected: Viewport + Uniform1fv"
+            3,
+            "3 GLCmds expected: Viewport + Uniform1fv + Flush"
         );
         assert!(
             matches!(&commands[0], GLCmd::Viewport { .. }),
@@ -3856,7 +4120,11 @@ pub(super) mod tests {
             .expect("mutate-after-call test should not throw");
 
         let commands = recv_gl_commands(&render_rx);
-        assert_eq!(commands.len(), 1, "exactly one command expected");
+        assert_eq!(
+            commands.len(),
+            2,
+            "exactly the uniform and the flush expected"
+        );
         match &commands[0] {
             GLCmd::Uniform4fv { value, .. } => {
                 assert_eq!(
@@ -4202,8 +4470,8 @@ pub(super) mod tests {
 
         // Runtime 2's flush must only see its OWN 1 command (viewport), not runtime1's clear.
         assert_eq!(
-            decoded2, 1,
-            "runtime2 must decode exactly 1 command (its own viewport), got {decoded2}"
+            decoded2, 2,
+            "runtime2 must decode exactly its own viewport and flush, got {decoded2}"
         );
         assert_eq!(calls2, 1, "runtime2 must submit exactly once, got {calls2}");
 
@@ -4211,8 +4479,8 @@ pub(super) mod tests {
         let commands2 = recv_gl_commands(&render_rx2);
         assert_eq!(
             commands2.len(),
-            1,
-            "runtime2's frame packet must contain exactly 1 GL command, not commands from runtime1"
+            2,
+            "runtime2's frame packet must contain exactly its 2 GL commands, not commands from runtime1"
         );
         assert!(
             matches!(commands2[0], GLCmd::Viewport { .. }),
@@ -5356,7 +5624,19 @@ pub(super) mod tests {
 
     #[test]
     fn r2_context_loss_without_main_canvas_discards_offscreen_stream() {
-        let (mut runtime, _render_rx) = new_webgl_runtime();
+        let (host_state, _render_rx) = new_test_host_state();
+        let context_lost = Arc::clone(&host_state.context_lost);
+        let mut runtime = HostJsRuntime::new(
+            1,
+            host_state,
+            &std::env::temp_dir(),
+            #[cfg(feature = "v8-limits")]
+            Default::default(),
+            #[cfg(feature = "code-signing")]
+            false,
+            #[cfg(feature = "code-signing")]
+            None,
+        );
         crate::rendering::webgl::submit_test_counter::reset();
 
         runtime
@@ -5372,7 +5652,10 @@ pub(super) mod tests {
         // Fire the loss the way the host does -- through the handle the runtime
         // retains -- rather than by naming the host-bridge holder. The name is
         // retired once the runtime holds it, and reaching hooks by name is the
-        // thing content is no longer able to do.
+        // thing content is no longer able to do. The render thread marks the
+        // context lost before the event, as it does on a real reset, so the
+        // `flush()` below is a lost context's: nothing.
+        assert!(context_lost.set_lost());
         runtime.dispatch_webgl_context_event("webglcontextlost");
 
         runtime
@@ -6208,6 +6491,24 @@ pub fn op_attach_shader(state: &mut OpState, #[smi] program_id: u32, #[smi] shad
             resp: None,
         },
     );
+}
+
+/// `detachShader`: the facade has checked the shader is attached to the program.
+#[op2(fast)]
+pub fn op_detach_shader(state: &mut OpState, #[smi] program_id: u32, #[smi] shader_id: u32) {
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::DetachShader {
+            program_id,
+            shader_id,
+        },
+    );
+}
+
+/// `validateProgram`.
+#[op2(fast)]
+pub fn op_validate_program(state: &mut OpState, #[smi] program_id: u32) {
+    queue_gl_fire_and_forget(state, GLCmd::ValidateProgram { program_id });
 }
 
 #[op2(fast)]

@@ -181,7 +181,12 @@ export function resolvePrimordial(name) {
     // Statics are copied as they are, as deno does: the ones the engine uses
     // (`ArrayIsArray`, `JSONParse`, `MathMax`, `ReflectApply`, ...) do not read
     // `this`, and a bound copy would add a frame to every call for nothing.
+    // Except Promise's, which do read it (`Promise.resolve` makes a `this`):
+    // deno binds those to Promise (`copyPropsRenamedBound` in its
+    // 00_primordials.js), and an unbound `PromiseResolve` threw "called on
+    // non-object" here alone.
     const value = intrinsic[lowerFirst(rest)];
+    if (typeof value === "function" && intrinsicName === "Promise") return uncurryThis(bind)(value, intrinsic);
     if (value !== undefined) return value;
   }
   throw new TypeError(`primordials: no rule produces ${name}`);

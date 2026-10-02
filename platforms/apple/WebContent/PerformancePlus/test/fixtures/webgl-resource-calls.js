@@ -32,6 +32,9 @@ gl.attachShader(program, fragment);
 gl.bindAttribLocation(program, 0, "p");
 gl.transformFeedbackVaryings(program, ["a", "", "bé"], 0x8c8c); // INTERLEAVED_ATTRIBS
 gl.linkProgram(program);
+gl.validateProgram(program);
+gl.detachShader(program, fragment);
+gl.attachShader(program, fragment);
 gl.uniformBlockBinding(program, 0, 2);
 
 const texture = gl.createTexture();

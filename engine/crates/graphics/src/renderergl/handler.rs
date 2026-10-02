@@ -359,6 +359,25 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            // `gl.flush()` / `gl.finish()`, and the end of a task that made a fence: the context's commands go to the
+            // GPU. Nothing else submits a context the content only draws into offscreen, so on a driver that batches
+            // (ANGLE on Metal) a fence was never submitted and never signalled.
+            GLCmd::Flush { canvas_id } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe { gl.flush() };
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::SampleCoverage {
+                canvas_id,
+                value,
+                invert,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe { gl.sample_coverage(value, invert) };
+                Ok(DamageEffect::NoDamage)
+            }
+
             GLCmd::ClearColor {
                 canvas_id,
                 r,
@@ -1357,6 +1376,36 @@ impl RendererGL {
                         ErrorCode::InvalidOperation,
                         "program/shader handle missing",
                     )));
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
+            // The facade refuses a shader that is not attached; one that the render side does not know (its program or
+            // shader was never created, or is gone) is nothing to detach.
+            GLCmd::DetachShader {
+                program_id,
+                shader_id,
+            } => {
+                let _ = self.bind_for_contextless_gl(cm)?;
+                let handles = cm
+                    .programs
+                    .get(&program_id)
+                    .and_then(|p| p.gl_handle)
+                    .zip(cm.shaders.get(&shader_id).and_then(|s| s.gl_handle));
+                if let Some((ph, sh)) = handles {
+                    unsafe { gl.detach_shader(ph, sh) };
+                }
+                // The shader-cache key at link time is the sources attached now.
+                if let Some(pm) = cm.programs.get_mut(&program_id) {
+                    pm.attached_shaders
+                        .retain(|attached| *attached != shader_id);
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+            GLCmd::ValidateProgram { program_id } => {
+                let _ = self.bind_for_contextless_gl(cm)?;
+                if let Some(ph) = cm.programs.get(&program_id).and_then(|p| p.gl_handle) {
+                    unsafe { gl.validate_program(ph) };
                 }
                 Ok(DamageEffect::NoDamage)
             }

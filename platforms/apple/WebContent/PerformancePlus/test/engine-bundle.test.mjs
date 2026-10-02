@@ -221,6 +221,32 @@ if (packetDir) {
   log(`wrote ${packets.length} engine frames to ${packetDir}`);
 }
 
+// A fence made in a task with no frame reaches the host when that task ends. Nothing else submits a context drawn
+// into offscreen, and a fence never submitted never signals. The task's end is a microtask the fence schedules with
+// `PromiseResolve`, which threw here while Promise's primordials were unbound.
+{
+  const offscreen = migo.createCanvas();
+  const gl2 = offscreen.getContext("webgl2");
+  const before = packets.length;
+  await new Promise((resolveTask) =>
+    setTimeout(() => {
+      gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      resolveTask();
+    }, 0),
+  );
+  await new Promise((resolveSettle) => setTimeout(resolveSettle, 20));
+  const flush = header(opcodes.OP_FLUSH, 2);
+  let flushes = 0;
+  for (const packet of packets.slice(before)) {
+    const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+    for (let at = HEADER_BYTES; at + 8 <= packet.byteLength; at += 4) {
+      if (view.getUint32(at, true) === flush && view.getUint32(at + 4, true) === gl2._canvasId) flushes += 1;
+    }
+  }
+  check(flushes === 1, `the fences' task ended by flushing their context, once, with no frame (${flushes})`);
+}
+
 // WEBGL_lose_context loses its own context and nothing else. Pixi loses a
 // probe context twice while choosing a renderer; when that reset the whole GPU
 // share group, the game's programs vanished mid-startup and a cold start on an

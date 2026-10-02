@@ -612,6 +612,11 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             shader_id: record[2],
             resp: None,
         },
+        OPR_DETACH_SHADER => GLCmd::DetachShader {
+            program_id: c,
+            shader_id: record[2],
+        },
+        OPR_VALIDATE_PROGRAM => GLCmd::ValidateProgram { program_id: c },
         OPR_COMPILE_SHADER => GLCmd::CompileShader { shader_id: c },
         OPR_LINK_PROGRAM => GLCmd::LinkProgram { program_id: c },
         OPR_BEGIN_QUERY => GLCmd::BeginQuery {

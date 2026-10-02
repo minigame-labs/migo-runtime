@@ -759,6 +759,15 @@ pub enum GLCmd {
         /// `None` = fire-and-forget (batched path).
         resp: Option<RenderCmdResp<()>>,
     },
+    /// `detachShader`: the facade has checked the shader is attached.
+    DetachShader {
+        program_id: ProgramId,
+        shader_id: ShaderId,
+    },
+    /// `validateProgram`: its answer is `getProgramParameter(VALIDATE_STATUS)` and the info log.
+    ValidateProgram {
+        program_id: ProgramId,
+    },
 
     GetShaderParameter {
         shader_id: ShaderId,
@@ -1178,6 +1187,16 @@ pub enum GLCmd {
         buffer: u32,
         drawbuffer: i32,
         value: [u32; 4],
+    },
+    /// `flush()` / `finish()`, and the end of a task that made a fence: submit the context's commands.
+    Flush {
+        canvas_id: CanvasId,
+    },
+    /// `sampleCoverage(value, invert)`.
+    SampleCoverage {
+        canvas_id: CanvasId,
+        value: f32,
+        invert: bool,
     },
     /// `clearBufferfi`: DEPTH_STENCIL, whose draw buffer is always 0.
     ClearBufferfi {
@@ -2724,6 +2743,8 @@ impl GLCmd {
             | GLCmd::ClearBufferiv { canvas_id, .. }
             | GLCmd::ClearBufferuiv { canvas_id, .. }
             | GLCmd::ClearBufferfi { canvas_id, .. }
+            | GLCmd::SampleCoverage { canvas_id, .. }
+            | GLCmd::Flush { canvas_id }
             | GLCmd::CopyTexImage2D { canvas_id, .. }
             | GLCmd::CopyTexSubImage2D { canvas_id, .. }
             | GLCmd::CopyTexSubImage3D { canvas_id, .. }
@@ -2922,6 +2943,11 @@ impl GLCmd {
                 shader_id: _,
                 resp: _,
             } => None,
+            GLCmd::DetachShader {
+                program_id: _,
+                shader_id: _,
+            } => None,
+            GLCmd::ValidateProgram { program_id: _ } => None,
             GLCmd::BindAttribLocation {
                 program_id: _,
                 index: _,
@@ -3160,6 +3186,10 @@ impl GLCmd {
             | GLCmd::GetShaderInfoLog { .. }
             | GLCmd::ShaderSource { .. }
             | GLCmd::AttachShader { .. }
+            | GLCmd::DetachShader { .. }
+            | GLCmd::ValidateProgram { .. }
+            | GLCmd::SampleCoverage { .. }
+            | GLCmd::Flush { .. }
             | GLCmd::BindAttribLocation { .. }
             | GLCmd::GetUniformBlockIndex { .. }
             | GLCmd::UniformBlockBinding { .. }

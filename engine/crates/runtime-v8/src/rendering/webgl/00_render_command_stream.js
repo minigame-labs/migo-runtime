@@ -2,7 +2,7 @@
 // stream this runtime's canvas facades encode into. Module state is NOT on
 // globalThis / any canvas / any context object.
 //
-// One buffer carries both blocks: GL records (opcodes 1..=70 fixed, 256..=276
+// One buffer carries both blocks: GL records (opcodes 1..=72 fixed, 256..=276
 // variable) and Canvas2D records (512..). The reason is order. A frame draws
 // its background with 2D, its sprites with GL and its HUD with 2D again, and
 // the renderer must see those in the order they were issued. Two buffers would
@@ -39,7 +39,7 @@ const MAX_STREAM_UNIFORM_WORDS = 512;
 // Buffer size: 8192 u32 words = 32 KiB per backing.
 const BUFFER_WORDS = 8192;
 
-// --- Fixed opcode constants (1..70) ---
+// --- Fixed opcode constants (1..72) ---
 
 const OP_VIEWPORT = 1;
 const OP_CLEAR = 2;
@@ -111,6 +111,8 @@ const OP_COPY_TEX_IMAGE_2D = 67;
 const OP_COPY_TEX_SUB_IMAGE_2D = 68;
 const OP_COPY_TEX_SUB_IMAGE_3D = 69;
 const OP_COPY_BUFFER_SUB_DATA = 70;
+const OP_SAMPLE_COVERAGE = 71;
+const OP_FLUSH = 72;
 
 // --- Variable opcode constants (256..276) ---
 
@@ -698,6 +700,30 @@ function encodeCopyBufferSubData(canvasId, readTarget, writeTarget, readOffset, 
     _u32[base + 5] = writeOffset | 0;
     _u32[base + 6] = size | 0;
     cursor = base + 7;
+    return true;
+}
+
+// 71 SAMPLE_COVERAGE: H C F B (4 words). The bool is 0 or 1, as the envelope requires.
+function encodeSampleCoverage(canvasId, value, invert) {
+    ensureBuffers();
+    ensureFit(4);
+    const base = cursor;
+    _u32[base] = packHeader(OP_SAMPLE_COVERAGE, 4);
+    _u32[base + 1] = canvasId;
+    _f32[base + 2] = value;
+    _u32[base + 3] = invert ? 1 : 0;
+    cursor = base + 4;
+    return true;
+}
+
+// 72 FLUSH: H C (2 words)
+function encodeFlush(canvasId) {
+    ensureBuffers();
+    ensureFit(2);
+    const base = cursor;
+    _u32[base] = packHeader(OP_FLUSH, 2);
+    _u32[base + 1] = canvasId;
+    cursor = base + 2;
     return true;
 }
 
@@ -1784,6 +1810,8 @@ export {
     encodeCopyTexSubImage2D,
     encodeCopyTexSubImage3D,
     encodeCopyBufferSubData,
+    encodeSampleCoverage,
+    encodeFlush,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,

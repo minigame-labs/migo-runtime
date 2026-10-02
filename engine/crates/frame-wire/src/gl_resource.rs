@@ -200,6 +200,10 @@ pub const OPR_FRAMEBUFFER_TEXTURE_LAYER: u32 = 175;
 /// `waitSync(sync, 0, TIMEOUT_IGNORED)` (WebGL 2): `H C sync`. The flags and timeout have one legal value each, which
 /// the facade checks, so neither crosses.
 pub const OPR_WAIT_SYNC: u32 = 176;
+/// `detachShader(program, shader)`: `H program shader`, as `attachShader`.
+pub const OPR_DETACH_SHADER: u32 = 177;
+/// `validateProgram(program)`: `H program`.
+pub const OPR_VALIDATE_PROGRAM: u32 = 178;
 
 /// The shape of one record in this block.
 pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
@@ -301,6 +305,8 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D => fixed(11),
         OPR_FRAMEBUFFER_TEXTURE_LAYER => fixed(7),
         OPR_WAIT_SYNC => fixed(3),
+        OPR_DETACH_SHADER => fixed(3),
+        OPR_VALIDATE_PROGRAM => fixed(2),
         OPR_INVALIDATE_SUB_FRAMEBUFFER => RecordSpec::Words {
             prefix_words: 7,
             max_count: MAX_RESOURCE_WORD_LIST,

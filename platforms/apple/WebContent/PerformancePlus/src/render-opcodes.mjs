@@ -88,6 +88,8 @@ export const OP_COPY_TEX_IMAGE_2D = 67;
 export const OP_COPY_TEX_SUB_IMAGE_2D = 68;
 export const OP_COPY_TEX_SUB_IMAGE_3D = 69;
 export const OP_COPY_BUFFER_SUB_DATA = 70;
+export const OP_SAMPLE_COVERAGE = 71;
+export const OP_FLUSH = 72;
 export const OP_UNIFORM1IV = 256;
 export const OP_UNIFORM1FV = 257;
 export const OP_UNIFORM2IV = 258;
@@ -322,6 +324,8 @@ export const OPR_TEX_IMAGE_2D_FROM_CANVAS2D = 173;
 export const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D = 174;
 export const OPR_FRAMEBUFFER_TEXTURE_LAYER = 175;
 export const OPR_WAIT_SYNC = 176;
+export const OPR_DETACH_SHADER = 177;
+export const OPR_VALIDATE_PROGRAM = 178;
 export const MAX_RESOURCE_WORD_LIST = 64;
 // The most payload words one variable-uniform record carries
 // (`frame_wire::gl::MAX_STREAM_UNIFORM_WORDS`), which is not the engine

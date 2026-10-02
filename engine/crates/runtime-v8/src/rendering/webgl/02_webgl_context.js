@@ -15,6 +15,8 @@ import {
     op_shader_source,
     op_compile_shader,
     op_attach_shader,
+    op_detach_shader,
+    op_validate_program,
     op_get_shader_parameter,
     op_get_shader_info_log,
     op_delete_shader,
@@ -201,6 +203,10 @@ const {
     ArrayBufferPrototypeGetByteLength,
     MathMax,
     MathTrunc,
+    MathRound,
+    PromisePrototypeThen,
+    PromiseResolve,
+    MathFround,
     NumberIsFinite,
     NumberIsInteger,
     ReflectApply,
@@ -241,6 +247,8 @@ import {
     encodeCopyTexSubImage2D,
     encodeCopyTexSubImage3D,
     encodeCopyBufferSubData,
+    encodeSampleCoverage,
+    encodeFlush,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,
@@ -336,6 +344,8 @@ const _rawCreateShader       = _makeOrderedRaw(op_create_shader);
 const _rawShaderSource       = _makeOrderedRaw(op_shader_source);
 const _rawCompileShader      = _makeOrderedRaw(op_compile_shader);
 const _rawAttachShader       = _makeOrderedRaw(op_attach_shader);
+const _rawDetachShader       = _makeOrderedRaw(op_detach_shader);
+const _rawValidateProgram    = _makeOrderedRaw(op_validate_program);
 const _rawGetShaderParameter = _makeOrderedRaw(op_get_shader_parameter);
 const _rawGetShaderInfoLog   = _makeOrderedRaw(op_get_shader_info_log);
 const _rawDeleteShader       = _makeOrderedRaw(op_delete_shader);
@@ -1061,6 +1071,57 @@ function unpackBufferOffset(canvasId, value) {
 
 const EMPTY_UPLOAD_BYTES = new Uint8Array(0);
 
+// The task a fence was made in. WebGL keeps a sync object unsignalled until control has left the task that made it,
+// so a loop cannot spin on one inside a task (`clientWaitSync` and SYNC_STATUS answer from here without crossing). A
+// frame is not that boundary in this runtime: the frame loop runs only while content has asked for a frame, and a
+// fence polled from timers would never come due. The epoch advances in a microtask that the first fence of a task
+// schedules -- once the task's own code has run -- and that microtask also flushes each context that made a fence, as
+// a browser flushes at the end of every task: a fence that is never submitted never signals, and a context drawn into
+// offscreen is submitted by nothing else.
+let _syncTaskEpoch = 0;
+let _syncEpochPending = false;
+const _fencedCanvases = [];
+function _endSyncTask() {
+    _syncEpochPending = false;
+    _syncTaskEpoch++;
+    if (!op_gl_is_context_lost()) for (let k = 0; k < _fencedCanvases.length; k++) encodeFlush(_fencedCanvases[k]);
+    _fencedCanvases.length = 0;
+    _rawGlFlush();
+}
+function syncTaskEpoch(canvasId) {
+    let known = false;
+    for (let k = 0; k < _fencedCanvases.length; k++) if (_fencedCanvases[k] === canvasId) known = true;
+    if (!known) _fencedCanvases[_fencedCanvases.length] = canvasId;
+    if (!_syncEpochPending) {
+        _syncEpochPending = true;
+        PromisePrototypeThen(PromiseResolve(undefined), _endSyncTask);
+    }
+    return _syncTaskEpoch;
+}
+
+// Membership without `Array.prototype.includes`, which content can replace.
+function _listHas(list, value) {
+    for (let k = 0; k < list.length; k++) if (list[k] === value) return true;
+    return false;
+}
+
+// A sampler's parameters (ES 3.0 table 6.10): what each is until set, and the values an enum one may take; MIN_LOD and
+// MAX_LOD take any float. `getSamplerParameter` answers from what `samplerParameter*` set, which is why a value
+// outside these is refused here (INVALID_ENUM) rather than left to the driver: the answer would otherwise be a value
+// the sampler does not have.
+const _WRAP_MODES = [0x2901, 0x812f, 0x8370];                       // REPEAT, CLAMP_TO_EDGE, MIRRORED_REPEAT
+const _SAMPLER_PARAMETERS = new Map([
+    [0x2801, { initial: 0x2702, values: [0x2600, 0x2601, 0x2700, 0x2701, 0x2702, 0x2703] }],   // MIN_FILTER
+    [0x2800, { initial: 0x2601, values: [0x2600, 0x2601] }],                                   // MAG_FILTER
+    [0x2802, { initial: 0x2901, values: _WRAP_MODES }],                                        // WRAP_S
+    [0x2803, { initial: 0x2901, values: _WRAP_MODES }],                                        // WRAP_T
+    [0x8072, { initial: 0x2901, values: _WRAP_MODES }],                                        // WRAP_R
+    [0x884c, { initial: 0, values: [0, 0x884e] }],                                             // COMPARE_MODE: NONE, COMPARE_REF_TO_TEXTURE
+    [0x884d, { initial: 0x0203, values: [0x0200, 0x0201, 0x0202, 0x0203, 0x0204, 0x0205, 0x0206, 0x0207] }],   // COMPARE_FUNC
+    [0x813a, { initial: -1000, values: null }],                                                // TEXTURE_MIN_LOD
+    [0x813b, { initial: 1000, values: null }],                                                 // TEXTURE_MAX_LOD
+]);
+
 // The source of a WebGL 2 compressed upload, as the op's last three arguments (bytes, PIXEL_UNPACK_BUFFER offset, its
 // size), or null when refused with the error recorded. An ArrayBufferView is the first overload: its elements from
 // `srcOffset`, `srcLengthOverride` of them unless that is 0 (both counted in the view's elements; a range past the
@@ -1397,21 +1458,19 @@ class WebGLRenderingContext {
         op_clear(this._canvasId, mask);
     }
 
-    // WebGL `flush()` forces queued commands to begin execution;
-    // `finish()` additionally blocks until they complete.  Our backend
-    // batches GL commands into the unified frame collector and dispatches
-    // them to the render thread on a barrier flush, so both map to a
-    // barrier flush here.  We do not expose a true GPU fence/glFinish
-    // round-trip: Cocos calls finish() on resume (onShow) purely to drain
-    // any commands queued before the surface was lost, which the barrier
-    // flush satisfies.  Defining these is required: without them onShow
-    // throws "finish is not a function" and the resume listener chain aborts.
+    // `flush()`: what is recorded goes to the render side now (a barrier flush of the frame collector), and the
+    // context's commands are submitted there (a record the render side flushes the context for) -- what a fence or a
+    // query waits on. `finish()` is the same: it does not wait for the GPU, which nothing in WebGL can observe but a
+    // fence or a query, and those answer on their own. Cocos calls `finish()` on resume (onShow) to drain what was
+    // queued before the surface was lost. A lost context's flush does nothing.
     flush() {
+        if (this.isContextLost()) return;
+        encodeFlush(this._canvasId);
         _rawGlFlush();
     }
 
     finish() {
-        _rawGlFlush();
+        this.flush();
     }
 
     createProgram() {
@@ -1445,6 +1504,9 @@ class WebGLRenderingContext {
     getProgramParameter(program, pname) {
         const programId = program?.id;
         if (programId === undefined) return 0;
+        // The shaders attached are the facade's to know (see `attachShader`); a cached count went stale on the next
+        // attach or detach.
+        if (pname === 0x8b85) return program._shaders ? program._shaders.length : 0;   // ATTACHED_SHADERS
         let inner = this._programParameterCache.get(programId);
         if (inner) {
             const cached = inner.get(pname);
@@ -1488,9 +1550,16 @@ class WebGLRenderingContext {
     }
 
     createShader(type) {
+        const shaderType = type >>> 0;
+        if (shaderType !== 0x8b31 && shaderType !== 0x8b30) {     // VERTEX_SHADER, FRAGMENT_SHADER
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
         const id = nextResourceId();
-        _rawCreateShader(this._canvasId, id, type);
-        return new WebglObject(id, "shader", this._canvasId);
+        _rawCreateShader(this._canvasId, id, shaderType);
+        const shader = new WebglObject(id, "shader", this._canvasId);
+        shader._type = shaderType;
+        return shader;
     }
 
     shaderSource(shader, src) {
@@ -1532,8 +1601,72 @@ class WebGLRenderingContext {
         return ret;
     }
 
+    // What is attached to a program is kept on it, and `getAttachedShaders` and ATTACHED_SHADERS answer from there.
+    // Attaching a shader already attached, or one of a type already attached, is INVALID_OPERATION; so is detaching
+    // one that is not. A deleted program or shader, or another context's, is INVALID_OPERATION; a value that is not
+    // one is a TypeError.
+    _checkProgramAndShader(name, program, shader) {
+        if (!(program instanceof WebglObject) || program._kind !== "program") {
+            throw new TypeError(`Failed to execute '${name}' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLProgram'.`);
+        }
+        if (!(shader instanceof WebglObject) || shader._kind !== "shader") {
+            throw new TypeError(`Failed to execute '${name}' on 'WebGLRenderingContext': parameter 2 is not of type 'WebGLShader'.`);
+        }
+        if (!this._isLive(program, "program") || !this._isLive(shader, "shader")) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return false;
+        }
+        return true;
+    }
     attachShader(program, shader) {
-        return _rawAttachShader(program?.id, shader?.id);
+        if (!this._checkProgramAndShader("attachShader", program, shader)) return;
+        const attached = program._shaders || (program._shaders = []);
+        for (let k = 0; k < attached.length; k++) {
+            if (attached[k] === shader || attached[k]._type === shader._type) {
+                recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+                return;
+            }
+        }
+        attached.push(shader);
+        _rawAttachShader(program._id, shader._id);
+    }
+    detachShader(program, shader) {
+        if (!this._checkProgramAndShader("detachShader", program, shader)) return;
+        const attached = program._shaders;
+        let at = -1;
+        if (attached) for (let k = 0; k < attached.length; k++) if (attached[k] === shader) at = k;
+        if (at < 0) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        attached.splice(at, 1);
+        _rawDetachShader(program._id, shader._id);
+    }
+    getAttachedShaders(program) {
+        if (!(program instanceof WebglObject) || program._kind !== "program") {
+            throw new TypeError("Failed to execute 'getAttachedShaders' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLProgram'.");
+        }
+        if (!this._isLive(program, "program")) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return null;
+        }
+        return program._shaders ? program._shaders.slice() : [];
+    }
+    // VALIDATE_STATUS and the info log change with it, so the cached VALIDATE_STATUS goes.
+    validateProgram(program) {
+        if (!(program instanceof WebglObject) || program._kind !== "program") {
+            throw new TypeError("Failed to execute 'validateProgram' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLProgram'.");
+        }
+        if (!this._isLive(program, "program")) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        const cached = this._programParameterCache.get(program._id);
+        if (cached) cached.delete(0x8b83);     // VALIDATE_STATUS
+        _rawValidateProgram(program._id);
+    }
+    sampleCoverage(value, invert) {
+        encodeSampleCoverage(this._canvasId, +value, !!invert);
     }
 
     getShaderInfoLog(shader) {
@@ -1724,6 +1857,12 @@ class WebGLRenderingContext {
         // Per WebGL: deleting a bound buffer unbinds it from the current target.
         if (this._arrayBufferBinding === buffer) this._arrayBufferBinding = null;
         if (this._elementArrayBufferBinding === buffer) this._elementArrayBufferBinding = null;
+        // ...and from the indexed bindings of the context and of the bound transform feedback (ES 3.0 2.10.1).
+        if (this._uniformBufferBindings) {
+            for (const bindings of [this._uniformBufferBindings, this._indexedBindings(0x8c8e)]) {
+                for (const [index, binding] of bindings) if (binding.buffer === buffer) bindings.delete(index);
+            }
+        }
         if (buffer && buffer.id !== undefined) _rawDeleteBuffer(buffer.id);
     }
 
@@ -3237,6 +3376,11 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         this._queryRegistry = new Map();
         this._currentQueryByTarget = new Map();
         this._tfRegistry = new Map();
+        this._uniformBufferBindings = new Map();
+        this._defaultTransformFeedbackBindings = new Map();
+        this._maxUniformBufferBindings = 0;
+        this._maxTransformFeedbackBindings = 0;
+        this._uniformBufferOffsetAlignment = 0;
         // `clearBuffer*` fills it with the four values of the record it encodes.
         this._clearBufferScratch = [0, 0, 0, 0];
         this._attribMinimum = 16;     // WebGL 2's MAX_VERTEX_ATTRIBS is at least this
@@ -3635,25 +3779,53 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     uniformBlockBinding(program, uniformBlockIndex, uniformBlockBinding) {
         _rawUniformBlockBinding(program._id, uniformBlockIndex, uniformBlockBinding);
     }
+    // The record is made of the numbers each argument converts to; an argument that is not a Number takes the op
+    // (see `_makeOrderedRaw`), as every call with a fast path does.
     bindBufferBase(target, index, buffer) {
-        // opcode 51: H C U U U. target/index are u32, bufferId is u32 (0 = unbind).
-        const bufferId = buffer ? buffer.id ?? buffer._id : 0;
-        if (typeof target === "number" && typeof index === "number" && typeof bufferId === "number") {
-            encodeBindBufferBase(this._canvasId, target >>> 0, index >>> 0, bufferId >>> 0);
+        const t = Number(target) >>> 0;
+        const i = Number(index) >>> 0;
+        const bound = buffer || null;
+        if ((t === 0x8a11 || t === 0x8c8e) && this._indexedBindingLimit(t, i)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
         }
-        flushRenderCommandStream();
+        if (this._indexedBindTakes(t, bound, 0, 0, false)) this._recordIndexedBind(t, i, bound, 0, 0);
+        const bufferId = bound ? bound.id : 0;
+        // opcode 51: H C U U U. bufferId 0 unbinds.
+        if (typeof target === "number" && typeof index === "number") {
+            encodeBindBufferBase(this._canvasId, t, i, bufferId >>> 0);
+            return;
+        }
         _rawBindBufferBase(this._canvasId, target, index, bufferId);
     }
     bindBufferRange(target, index, buffer, offset, size) {
-        // opcode 52: H C U U U I I.
-        const bufferId = buffer ? buffer.id ?? buffer._id : 0;
-        if (typeof target === "number" && typeof index === "number" &&
-            typeof bufferId === "number" && typeof offset === "number" && typeof size === "number") {
-            encodeBindBufferRange(this._canvasId, target >>> 0, index >>> 0, bufferId >>> 0, offset | 0, size | 0);
+        const t = Number(target) >>> 0;
+        const i = Number(index) >>> 0;
+        const bound = buffer || null;
+        const o = toLongLong(Number(offset));
+        const n = toLongLong(Number(size));
+        if ((t === 0x8a11 || t === 0x8c8e) && this._indexedBindingLimit(t, i)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
         }
-        flushRenderCommandStream();
+        // An offset or size past 2^31 cannot fit any buffer (the render side holds a buffer's size as a GLint).
+        if (bound && (o > 0x7fffffff || n > 0x7fffffff)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        if (bound && t === 0x8a11 && o > 0 &&
+                o % this._cachedLimit("_uniformBufferOffsetAlignment", 0x8a34, 1) !== 0) {    // UNIFORM_BUFFER_OFFSET_ALIGNMENT
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        if (this._indexedBindTakes(t, bound, o, n, true)) this._recordIndexedBind(t, i, bound, o, n);
+        const bufferId = bound ? bound.id : 0;
+        // opcode 52: H C U U U I I.
+        if (typeof target === "number" && typeof index === "number" &&
+                typeof offset === "number" && typeof size === "number") {
+            encodeBindBufferRange(this._canvasId, t, i, bufferId >>> 0, o | 0, n | 0);
+            return;
+        }
         _rawBindBufferRange(this._canvasId, target, index, bufferId, offset, size);
     }
 
@@ -3767,41 +3939,149 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // op_alloc_gl_resource_id: direct, no-submit.
         const id = op_alloc_gl_resource_id_webgl2();
         _rawCreateSampler(this._canvasId, id);
-        return { _id: id, _kind: 'sampler' };
+        return new WebglObject(id, "sampler", this._canvasId);
     }
     deleteSampler(sampler) {
-        if (sampler && sampler._id) _rawDeleteSampler(sampler._id);
+        if (!this._isLive(sampler, "sampler")) return;
+        sampler._deleted = true;
+        _rawDeleteSampler(sampler._id);
     }
+    isSampler(sampler) { return this._isLive(sampler, "sampler"); }
     bindSampler(unit, sampler) {
-        // opcode 15: H C U U. unit is u32, samplerId is u32 (0 = unbind).
+        if (sampler && !this._isLive(sampler, "sampler")) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
         const samplerId = sampler ? sampler._id : 0;
-        if (typeof unit === "number" && typeof samplerId === "number") {
+        // opcode 15: H C U U. unit is u32, samplerId is u32 (0 = unbind).
+        if (typeof unit === "number") {
             encodeBindSampler(this._canvasId, unit >>> 0, samplerId >>> 0);
             return;
         }
-        flushRenderCommandStream();
         _rawBindSampler(this._canvasId, unit, samplerId);
     }
+    // The checks `samplerParameteri` and `samplerParameterf` share: a live sampler of this context
+    // (INVALID_OPERATION), a parameter a sampler has and, for an enum one, a value it takes (INVALID_ENUM). The value to
+    // record, or undefined when refused.
+    _samplerParameterValue(name, sampler, pname, value) {
+        if (!(sampler instanceof WebglObject) || sampler._kind !== "sampler") {
+            throw new TypeError(`Failed to execute '${name}' on 'WebGL2RenderingContext': parameter 1 is not of type 'WebGLSampler'.`);
+        }
+        if (!this._isLive(sampler, "sampler")) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return undefined;
+        }
+        const spec = _SAMPLER_PARAMETERS.get(pname);
+        if (spec === undefined || (spec.values !== null && !_listHas(spec.values, value))) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return undefined;
+        }
+        return value;
+    }
     samplerParameteri(sampler, pname, param) {
-        // opcode 45: H U U I. samplerId is u32, pname is u32, param is i32.
-        // No canvas field: sampler is a global resource identified by its id.
-        if (!sampler || !sampler._id) return;
+        const p = Number(pname) >>> 0;
+        const value = this._samplerParameterValue("samplerParameteri", sampler, p, Number(param) | 0);
+        if (value === undefined) return;
+        (sampler._parameters || (sampler._parameters = new Map())).set(p, value);
+        // opcode 45: H U U I. No canvas field: a sampler is identified by its id.
         if (typeof pname === "number" && typeof param === "number") {
-            encodeSamplerParameteri(sampler._id >>> 0, pname >>> 0, param | 0);
+            encodeSamplerParameteri(sampler._id >>> 0, p, value);
             return;
         }
-        flushRenderCommandStream();
         _rawSamplerParameteri(sampler._id, pname, param);
     }
     samplerParameterf(sampler, pname, param) {
-        // opcode 46: H U U F. samplerId is u32, pname is u32, param is f32.
-        // No canvas field: sampler is a global resource identified by its id.
-        if (!sampler || !sampler._id) return;
+        const p = Number(pname) >>> 0;
+        const f = MathFround(Number(param));
+        // An enum parameter set through the float call takes the nearest integer (ES 3.0 2.3.1).
+        const spec = _SAMPLER_PARAMETERS.get(p);
+        const value = this._samplerParameterValue("samplerParameterf", sampler, p, spec && spec.values !== null ? MathRound(f) : f);
+        if (value === undefined) return;
+        (sampler._parameters || (sampler._parameters = new Map())).set(p, value);
+        // opcode 46: H U U F.
         if (typeof pname === "number" && typeof param === "number") {
-            encodeSamplerParameterf(sampler._id >>> 0, pname >>> 0, param);
+            encodeSamplerParameterf(sampler._id >>> 0, p, f);
             return;
         }
         _rawSamplerParameterf(sampler._id, pname, param);
+    }
+    getSamplerParameter(sampler, pname) {
+        if (!(sampler instanceof WebglObject) || sampler._kind !== "sampler") {
+            throw new TypeError("Failed to execute 'getSamplerParameter' on 'WebGL2RenderingContext': parameter 1 is not of type 'WebGLSampler'.");
+        }
+        if (!this._isLive(sampler, "sampler")) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return null;
+        }
+        const p = pname >>> 0;
+        const spec = _SAMPLER_PARAMETERS.get(p);
+        if (spec === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
+        const value = sampler._parameters ? sampler._parameters.get(p) : undefined;
+        return value === undefined ? spec.initial : value;
+    }
+
+    // ---- Indexed buffer bindings ---------------------------------------------------------------------------------
+    // `getIndexedParameter` answers from what `bindBufferBase` / `bindBufferRange` set: the uniform buffer bindings
+    // are the context's, the transform feedback ones the bound transform feedback object's (ES 3.0 6.2). A bind is
+    // recorded only when it is one the decoder and the driver take. The decoder checks the target, a transform feedback
+    // that is capturing, a range's offset and size and its transform feedback alignment; the index past the binding
+    // points and a uniform buffer offset off UNIFORM_BUFFER_OFFSET_ALIGNMENT only the driver would see, and its
+    // error would not reach `getError`, so those two are INVALID_VALUE here, before anything is encoded.
+    _indexedBindings(target) {
+        if (target === 0x8a11) return this._uniformBufferBindings;
+        const tf = this._currentTransformFeedback;
+        if (tf) {
+            const state = this._tfRegistry.get(tf._id);
+            return state.bindings || (state.bindings = new Map());
+        }
+        return this._defaultTransformFeedbackBindings;
+    }
+    // Whether `index` is past the target's binding points. An index below the minimum every implementation has
+    // (24 uniform buffer bindings, 4 transform feedback ones) asks nothing.
+    _indexedBindingLimit(target, index) {
+        return target === 0x8a11
+            ? index >= 24 && index >= this._cachedLimit("_maxUniformBufferBindings", 0x8a2f, 24)       // MAX_UNIFORM_BUFFER_BINDINGS
+            : index >= 4 && index >= this._cachedLimit("_maxTransformFeedbackBindings", 0x8c8b, 4);   // MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS
+    }
+    _transformFeedbackCaptures() {
+        const tf = this._currentTransformFeedback;
+        if (!tf) return false;
+        const state = this._tfRegistry.get(tf._id);
+        return !!(state && state.active && !state.paused);
+    }
+    // Whether a bind passes what the decoder checks, so the record is made only of what takes effect.
+    _indexedBindTakes(target, buffer, offset, size, range) {
+        if (target !== 0x8a11 && target !== 0x8c8e) return false;
+        if (target === 0x8c8e && this._transformFeedbackCaptures()) return false;
+        if (!range || !buffer) return true;
+        if (offset < 0 || size <= 0) return false;
+        return target !== 0x8c8e || (offset % 4 === 0 && size % 4 === 0);
+    }
+    _recordIndexedBind(target, index, buffer, offset, size) {
+        const bindings = this._indexedBindings(target);
+        if (buffer) bindings.set(index, { buffer, offset, size }); else bindings.delete(index);
+    }
+    getIndexedParameter(target, index) {
+        const t = target >>> 0;
+        const i = index >>> 0;
+        const which = t === 0x8c8f || t === 0x8c84 || t === 0x8c85 ? 0x8c8e     // TRANSFORM_FEEDBACK_BUFFER_{BINDING,START,SIZE}
+            : t === 0x8a28 || t === 0x8a29 || t === 0x8a2a ? 0x8a11              // UNIFORM_BUFFER_{BINDING,START,SIZE}
+            : 0;
+        if (which === 0) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
+        if (this._indexedBindingLimit(which, i)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return null;
+        }
+        const binding = this._indexedBindings(which).get(i);
+        if (t === 0x8c8f || t === 0x8a28) return binding ? binding.buffer : null;
+        if (t === 0x8c84 || t === 0x8a29) return binding ? binding.offset : 0;
+        return binding ? binding.size : 0;
     }
 
     // ---- Fence syncs -------------------------------------------
@@ -3809,7 +4089,9 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // op_alloc_gl_resource_id: direct, no-submit.
         const id = op_alloc_gl_resource_id_webgl2();
         _rawFenceSync(this._canvasId, id, condition, flags);
-        return new WebglObject(id, "sync", this._canvasId);
+        const sync = new WebglObject(id, "sync", this._canvasId);
+        sync._epoch = syncTaskEpoch(this._canvasId);
+        return sync;
     }
     deleteSync(sync) {
         if (!this._isLive(sync, "sync")) return;
@@ -3817,6 +4099,30 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         _rawDeleteSync(sync._id);
     }
     isSync(sync) { return this._isLive(sync, "sync"); }
+    // A fence's type, condition and flags are what `fenceSync` makes (ES 3.0 4.1.1), and its status is a poll of the
+    // fence (`clientWaitSync` with no timeout), as `clientWaitSync` itself answers.
+    getSyncParameter(sync, pname) {
+        if (!(sync instanceof WebglObject) || sync._kind !== "sync") {
+            throw new TypeError("Failed to execute 'getSyncParameter' on 'WebGL2RenderingContext': parameter 1 is not of type 'WebGLSync'.");
+        }
+        if (!this._isLive(sync, "sync")) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return null;
+        }
+        switch (pname >>> 0) {
+            case 0x9112: return 0x9116;                       // OBJECT_TYPE: SYNC_FENCE
+            case 0x9113: return 0x9117;                       // SYNC_CONDITION: SYNC_GPU_COMMANDS_COMPLETE
+            case 0x9115: return 0;                            // SYNC_FLAGS
+            case 0x9114: {                                    // SYNC_STATUS
+                if (sync._epoch === _syncTaskEpoch) return 0x9118;     // UNSIGNALED in the task that made it
+                const result = _rawClientWaitSync(sync._id, 0);
+                return result === 0x911a || result === 0x911c ? 0x9119 : 0x9118;   // ALREADY_SIGNALED / CONDITION_SATISFIED: SIGNALED
+            }
+            default:
+                recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                return null;
+        }
+    }
     // The GL server waits for the fence before it runs what follows. The flags and the timeout each have one legal
     // value (0, TIMEOUT_IGNORED): anything else is INVALID_VALUE. A sync deleted, or another context's, is
     // INVALID_OPERATION; a value that is not a WebGLSync is a TypeError.
@@ -3859,6 +4165,8 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
             return 37149; // WAIT_FAILED
         }
+        // Not in the task that made it (see `syncTaskEpoch`).
+        if (sync._epoch === _syncTaskEpoch) return 0x911b; // TIMEOUT_EXPIRED
         // Per the WebGL 2 specification: a timeout above the maximum is
         // INVALID_OPERATION, and the call returns WAIT_FAILED without doing
         // anything. Rejected here rather than clamped, so content is told rather
