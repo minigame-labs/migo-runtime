@@ -117,6 +117,12 @@ fn a_data_url_is_built_sent_and_read_through_the_service() {
         "a header crosses as the bytes ByteString would have made of it"
     );
     assert_eq!(fields[8], OwnedValue::Null, "no error");
+    // The length is a Number, as serde_v8 writes a `u64` field: the facade divides by it, and a BigInt there throws.
+    assert_eq!(
+        fields[5],
+        OwnedValue::F64(11.0),
+        "a content length crosses as a Number"
+    );
     let response_rid = u32_at(&answer, 4);
 
     // Read as the engine's `ReadableStream` does: a bounded buffer, until the
@@ -155,6 +161,46 @@ fn a_data_url_is_built_sent_and_read_through_the_service() {
         )
         .expect_err("a closed body is not readable");
     assert!(error.message.contains("is not open"), "{}", error.message);
+}
+
+/// What a `#[serde]` struct's `u64` is to content -- a Number while it is a safe integer -- holds for every field the
+/// network answers carry, whatever the length. `downloadFile` divides by the content length and `uploadFile` reports the
+/// bytes sent, and a BigInt in either throws "Invalid mix of BigInt and other type".
+#[test]
+fn the_64_bit_fields_of_the_answers_are_numbers_content_can_divide_by() {
+    let head = |content_length| {
+        fetch_response(fetch_service::FetchAnswer {
+            status: 200,
+            status_text: "OK".to_string(),
+            headers: Vec::new(),
+            url: "https://allowed.example/".to_string(),
+            response_rid: 1,
+            content_length,
+            remote_addr_ip: None,
+            remote_addr_port: None,
+            error: None,
+        })
+    };
+    assert_eq!(array(&head(Some(13)))[5], OwnedValue::F64(13.0));
+    assert_eq!(array(&head(Some(0)))[5], OwnedValue::F64(0.0));
+    assert_eq!(
+        array(&head(Some(5_000_000_000)))[5],
+        OwnedValue::F64(5_000_000_000.0),
+        "past 32 bits and still a Number"
+    );
+    assert_eq!(array(&head(None))[5], OwnedValue::Null, "unknown stays null");
+
+    let sent = |total_bytes_sent| {
+        upload_answer(upload::UploadAnswer {
+            data: String::new(),
+            status_code: 200,
+            headers: Vec::new(),
+            total_bytes_sent,
+            error: None,
+        })
+    };
+    assert_eq!(array(&sent(4096))[3], OwnedValue::F64(4096.0));
+    assert_eq!(array(&sent(0))[3], OwnedValue::F64(0.0));
 }
 
 /// The policy refuses before anything is built, and the producer's `fetch`

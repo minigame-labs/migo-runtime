@@ -37,6 +37,8 @@ pub(crate) mod frame_endpoint;
 #[cfg(feature = "external-frames")]
 mod host_events;
 #[cfg(feature = "external-frames")]
+mod service_answer;
+#[cfg(feature = "external-frames")]
 mod service_args;
 #[cfg(feature = "external-frames")]
 mod service_audio;

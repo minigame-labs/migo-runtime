@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- iOS (Performance+): `downloadFile` works. Every download failed with "Invalid mix of BigInt and other type
+  in division": the host wrote the response's content length as a 64-bit integer, which the producer reads
+  as a BigInt, where the embedded runtime hands the facade a Number (serde_v8's `u64` in a struct) and the
+  download's progress divides by it. `uploadFile` reported the bytes sent as a BigInt for the same reason.
+  The host now writes both as the file-system answers already were -- a Number while it is a safe integer --
+  from one helper they all use, and a test holds each field.
 - Canvas2D: colour strings are read as the specification has them, by one parser. `fillStyle`,
   `strokeStyle` and `shadowColor` read back the serialised colour (`#ff0000`, or
   `rgba(255, 0, 0, 0.5)`) instead of the string that was assigned; a string that is not a
