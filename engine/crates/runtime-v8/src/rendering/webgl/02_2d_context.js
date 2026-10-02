@@ -1338,7 +1338,9 @@ class CanvasRenderingContext2D {
             return;
         }
         if (!_fin4(sx, sy, sw, sh) || !_fin4(dx, dy, dw, dh)) return;
-        encode2dDrawCanvas(this._canvasId, canvas._rid, sx, sy, sw, sh, dx, dy, dw, dh);
+        // A canvas the renderer cannot copy as it is (a WebGL one) names the 2D canvas that holds what it shows.
+        const source = typeof canvas._imageSourceCanvas === 'function' ? canvas._imageSourceCanvas() : canvas;
+        encode2dDrawCanvas(this._canvasId, source._rid, sx, sy, sw, sh, dx, dy, dw, dh);
     }
 
     drawImageBatch(draws) {

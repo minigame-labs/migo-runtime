@@ -832,6 +832,13 @@ function _migoIsHTMLCanvas(source) {
         && typeof source.getContext === "function";
 }
 
+// The id of the 2D canvas whose pixels an upload from `source` reads: the canvas itself for a 2D one, and for a WebGL
+// canvas (p5's filter copies its own WebGL canvas into a framebuffer's texture, three.js reads a second renderer's)
+// the 2D canvas the Canvas keeps holding what it shows now. The renderer copies 2D canvases only.
+function _migoSourceRid(source) {
+    return typeof source._imageSourceCanvas === "function" ? source._imageSourceCanvas()._rid : source._rid;
+}
+
 // Text texture cache HIT: `getImageData` returned a synthetic
 // ImageData carrying `__migo_text_cache_key__` (the offscreen
 // fillText was suppressed).  Route straight to the cached-texture
@@ -2073,7 +2080,7 @@ class WebGLRenderingContext {
                     return;
                 }
                 _rawTexImage2DFromCanvas2d(
-                    this._canvasId, target, level, internalformat, a9._rid, 0, 0, a4 | 0, a5 | 0,
+                    this._canvasId, target, level, internalformat, _migoSourceRid(a9), 0, 0, a4 | 0, a5 | 0,
                 );
                 return;
             }
@@ -2108,7 +2115,7 @@ class WebGLRenderingContext {
                     }
                     _rawTexImage2DFromCanvas2d(
                         this._canvasId, target, level, internalformat,
-                        source._rid, 0, 0, cw, ch,
+                        _migoSourceRid(source), 0, 0, cw, ch,
                     );
                     return;
                 }
@@ -2151,7 +2158,7 @@ class WebGLRenderingContext {
             if (_migoIsHTMLCanvas(pixels) && pixels.width === width && pixels.height === height) {
                 _rawTexSubImage2DFromCanvas2d(
                     this._canvasId, target, level, xoffset, yoffset,
-                    pixels._rid, 0, 0, width | 0, height | 0,
+                    _migoSourceRid(pixels), 0, 0, width | 0, height | 0,
                 );
                 return;
             }
@@ -2182,7 +2189,7 @@ class WebGLRenderingContext {
             if (cw > 0 && ch > 0) {
                 _rawTexSubImage2DFromCanvas2d(
                     this._canvasId, target, level, xoffset, yoffset,
-                    source._rid, 0, 0, cw, ch,
+                    _migoSourceRid(source), 0, 0, cw, ch,
                 );
                 return;
             }

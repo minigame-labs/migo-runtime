@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inflate, JPEG through a decoder that shares no code with the encoder) and is a CI step.
 
 ### Fixed
+- Canvas: a WebGL canvas can be the source of `drawImage(canvas, ...)` on a 2D context and of
+  `texImage2D` / `texSubImage2D` on another WebGL context (or its own), where both read nothing:
+  the renderer copies 2D canvases only, and a WebGL canvas's pixels are a drawing buffer. What the
+  canvas shows now is read back (`readPixels`, ordered after the context's own commands) onto a 2D
+  canvas the Canvas keeps for the purpose, and that is what is drawn or uploaded, right way up.
+  p5.js's `filter()` was the real engine that hit it (it copies its WebGL layer back with
+  `drawImage` and copies its own canvas into a framebuffer texture); its INVERT test is now
+  green. This costs a readback and an upload per use -- right for a screenshot or a filter, not
+  for a per-frame composite; a GPU-side copy is the optimisation if one is needed.
 - iOS (Performance+): a synchronous call (`readPixels`, `getImageData`, `toDataURL`, a WebGL query) no longer
   waits out its 60-second deadline at random, and records are no longer lost. A finished packet shared its
   buffer with the writer until it was sent, and a barrier that waits for the frame window blocks in a
