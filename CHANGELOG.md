@@ -88,8 +88,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `detachShader` and `validateProgram` are resource records 177 and 178, and `validateProgram` drops the cached
   VALIDATE_STATUS. The render side keeps its list of attached shaders (the shader-cache key at link time) in step
   with a detach.
+- WebGL: `getUniform`, and WebGL 2's `getFragDataLocation`. Each asks the driver through the generic state query
+  (`frame_wire::sync::gl_state` 7 and 8; `program_state.rs` answers), so nothing new crosses on either lane. A
+  uniform's value is typed as WebGL types it -- a number or a boolean for a scalar, a Float32Array, Int32Array,
+  Uint32Array or Array of booleans for a vector or a matrix -- and a float crosses as its bits, so it is the float
+  the uniform holds (NaN and the infinities included). A uniform location now belongs to its program and the name
+  it was looked up by until the program links again: `getUniform` with another program's location, or one from before
+  a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL: a name passed to `getUniformLocation`, `getAttribLocation`, `bindAttribLocation` or `getFragDataLocation`
+  is checked as WebGL 1.0 6.20 and 6.21 say before GL is asked: longer than 256 characters (1024 in WebGL 2) or
+  holding a character outside the GLSL ES source character set is INVALID_VALUE, and a name WebGL reserves (`webgl_`,
+  `_webgl_`) finds nothing (`bindAttribLocation`: INVALID_OPERATION). They used to reach the driver.
 - WebGL 2: a fence signals. Nothing submitted the commands of a context that only draws offscreen -- a frame flushes
   the canvas it presents -- so a fence made there never reached the GPU and `clientWaitSync` / SYNC_STATUS answered
   TIMEOUT_EXPIRED / UNSIGNALED for good. A browser flushes at the end of every task; here the task that makes a fence

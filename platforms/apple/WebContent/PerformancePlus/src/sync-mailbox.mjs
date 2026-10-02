@@ -163,6 +163,8 @@ export const GL_STATE_ACTIVE_UNIFORM_BLOCK_NAME = 3;
 export const GL_STATE_ACTIVE_UNIFORM_BLOCK_PARAMETER = 4;
 export const GL_STATE_UNIFORM_INDICES = 5;
 export const GL_STATE_ACTIVE_UNIFORMS_PARAMETER = 6;
+export const GL_STATE_UNIFORM_VALUE = 7;
+export const GL_STATE_FRAG_DATA_LOCATION = 8;
 
 /** Words before a query's name: five fields and the name's byte length. */
 export const GL_QUERY_HEADER_BYTES = 24;

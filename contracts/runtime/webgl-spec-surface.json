@@ -6,10 +6,8 @@
   ],
   "unimplemented_methods": [
     {
-      "reason": "Reads back state the render thread owns and the facade cannot shadow (a uniform's value, a fragment output's location, a buffer's bytes): each needs a synchronous answer path, as getProgramParameter has.",
+      "reason": "Reads back a buffer's bytes, which the render thread owns and the facade cannot shadow: it needs a synchronous answer that carries bytes, as readPixels has.",
       "methods": [
-        "getUniform",
-        "getFragDataLocation",
         "getBufferSubData"
       ]
     },

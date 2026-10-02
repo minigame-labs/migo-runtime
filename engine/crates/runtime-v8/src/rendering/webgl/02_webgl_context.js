@@ -210,6 +210,8 @@ const {
     NumberIsFinite,
     NumberIsInteger,
     ReflectApply,
+    StringPrototypeCharCodeAt,
+    StringPrototypeStartsWith,
 } = primordials;
 
 import { WebglConstants } from "./01_constants.js";
@@ -371,6 +373,8 @@ const GL_STATE_ACTIVE_UNIFORM_BLOCK_NAME = 3;
 const GL_STATE_ACTIVE_UNIFORM_BLOCK_PARAMETER = 4;
 const GL_STATE_UNIFORM_INDICES = 5;
 const GL_STATE_ACTIVE_UNIFORMS_PARAMETER = 6;
+const GL_STATE_UNIFORM_VALUE = 7;
+const GL_STATE_FRAG_DATA_LOCATION = 8;
 
 // --- Producer-side capability shadow ---------------------------------------
 //
@@ -1105,6 +1109,44 @@ function _listHas(list, value) {
     return false;
 }
 
+// The error a name passed to a lookup by name is (WebGL 1.0 6.20, 6.21): INVALID_VALUE past `maxLength` (256 in
+// WebGL 1, 1024 in WebGL 2) or for a character outside the GLSL ES source character set -- the printable ASCII but
+// `"`, `$`, `'`, `@`, `\` and the backquote, and the whitespace controls TAB to CR -- or 0 for a name GL may be asked.
+function _glslNameError(name, maxLength) {
+    if (name.length > maxLength) return GL_INVALID_VALUE;
+    for (let k = 0; k < name.length; k++) {
+        const c = StringPrototypeCharCodeAt(name, k);
+        if (c >= 9 && c <= 13) continue;
+        if (c < 32 || c > 126 || c === 34 || c === 36 || c === 39 || c === 64 || c === 92 || c === 96) {
+            return GL_INVALID_VALUE;
+        }
+    }
+    return 0;
+}
+
+// A name WebGL reserves (`webgl_`, `_webgl_`): a lookup by it finds nothing, and binding it is INVALID_OPERATION.
+function _isReservedGlslName(name) {
+    return StringPrototypeStartsWith(name, "webgl_") || StringPrototypeStartsWith(name, "_webgl_");
+}
+
+// `getUniform`'s answer as WebGL types it, from the renderer's `[kind, words]` (`frame_wire::sync::gl_state::
+// UNIFORM_VALUE`): a scalar is a number or a boolean; a vector or a matrix a Float32Array, an Int32Array, a
+// Uint32Array or, of booleans, an Array. A float travels as its bits, so it is the float the uniform holds.
+function _uniformValue(kind, words) {
+    const count = words.length;
+    if (kind === "b") {
+        if (count === 1) return words[0] !== 0;
+        const flags = [];
+        for (let k = 0; k < count; k++) flags[k] = words[k] !== 0;
+        return flags;
+    }
+    const bits = new Uint32Array(count);
+    for (let k = 0; k < count; k++) bits[k] = words[k];
+    if (kind === "u") return count === 1 ? bits[0] : bits;
+    const typed = kind === "f" ? new Float32Array(bits.buffer) : new Int32Array(bits.buffer);
+    return count === 1 ? typed[0] : typed;
+}
+
 // A sampler's parameters (ES 3.0 table 6.10): what each is until set, and the values an enum one may take; MIN_LOD and
 // MAX_LOD take any float. `getSamplerParameter` answers from what `samplerParameter*` set, which is why a value
 // outside these is refused here (INVALID_ENUM) rather than left to the driver: the answer would otherwise be a value
@@ -1496,8 +1538,10 @@ class WebGLRenderingContext {
         const programId = program?.id;
         _rawLinkProgram(programId);
         if (programId !== undefined) {
-            // Linking can change active attrib/uniform locations and link status.
+            // Linking can change active attrib/uniform locations and link status, and a uniform location from an
+            // earlier link is no longer the program's (`getUniform`).
             this._invalidateProgramCaches(programId);
+            program._links = (program._links | 0) + 1;
         }
     }
 
@@ -1703,10 +1747,17 @@ class WebGLRenderingContext {
         _rawDrawElements(this._canvasId, mode, count, type, offset);
     }
 
+    // A name WebGL refuses is INVALID_VALUE, and a reserved one INVALID_OPERATION (WebGL 1.0 6.20).
     bindAttribLocation(program, index, name) {
         const programId = program?.id;
         if (programId === undefined) return;
-        _rawBindAttribLocation(programId, index >>> 0, name);
+        const key = `${name}`;
+        const error = _glslNameError(key, this._maxNameLength());
+        if (error !== 0 || _isReservedGlslName(key)) {
+            recordGpuPreflightError(this._canvasId, error !== 0 ? error : GL_INVALID_OPERATION);
+            return;
+        }
+        _rawBindAttribLocation(programId, index >>> 0, key);
         // Locations only change on the next link; drop any cached lookups.
         this._attribLocationCache.delete(programId);
     }
@@ -1758,19 +1809,34 @@ class WebGLRenderingContext {
             : { rangeMin: 127, rangeMax: 127, precision: 23 };
     }
 
+    // The longest name a lookup by name takes (WebGL 1.0 6.21; WebGL 2.0 raises it to 1024).
+    _maxNameLength() {
+        return this._isWebGL2() ? 1024 : 256;
+    }
+
+    // A name WebGL refuses is INVALID_VALUE and -1, and a reserved one finds nothing; neither asks GL. Both are checked
+    // only past the cache, which holds nothing but names GL was asked.
     getAttribLocation(program, name) {
         const programId = program?.id;
         if (programId === undefined) return -1;
+        const key = `${name}`;
         let inner = this._attribLocationCache.get(programId);
         if (inner) {
-            const cached = inner.get(name);
+            const cached = inner.get(key);
             if (cached !== undefined) return cached;
-        } else {
+        }
+        const error = _glslNameError(key, this._maxNameLength());
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return -1;
+        }
+        if (_isReservedGlslName(key)) return -1;
+        if (!inner) {
             inner = new Map();
             this._attribLocationCache.set(programId, inner);
         }
-        const location = _rawGetAttribLocation(this._canvasId, programId, name);
-        inner.set(name, location);
+        const location = _rawGetAttribLocation(this._canvasId, programId, key);
+        inner.set(key, location);
         return location;
     }
 
@@ -1908,26 +1974,79 @@ class WebGLRenderingContext {
         return null;
     }
 
+    // A location belongs to the program, under the name it was asked by, until the program links again: `getUniform`
+    // asks the driver by that name. Names are checked as `getAttribLocation` checks them (null for one refused or reserved).
     getUniformLocation(program, name) {
         const programId = program?.id;
         if (programId === undefined) return null;
+        const key = `${name}`;
         let inner = this._uniformLocationCache.get(programId);
         if (inner) {
-            const cached = inner.get(name);
+            const cached = inner.get(key);
             if (cached !== undefined) return cached;
-        } else {
+        }
+        const error = _glslNameError(key, this._maxNameLength());
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return null;
+        }
+        if (_isReservedGlslName(key)) return null;
+        if (!inner) {
             inner = new Map();
             this._uniformLocationCache.set(programId, inner);
         }
-        const id = _rawGetUniformLocation(this._canvasId, programId, name);
+        const id = _rawGetUniformLocation(this._canvasId, programId, key);
         if (id < 0) {
-            inner.set(name, null);
+            inner.set(key, null);
             return null;
         }
-        const location = new WebglObject(id);
-        inner.set(name, location);
+        const location = new WebglObject(id, "uniformLocation", this._canvasId);
+        location._program = program;
+        location._name = key;
+        location._link = program._links | 0;
+        inner.set(key, location);
         return location;
     }
+
+    // The driver's value of the uniform at `location`: what `uniform*` set since the program last linked, or 0. A
+    // location another program gave, or this one before it linked again, is INVALID_OPERATION and null, as are a
+    // deleted program and one that did not link.
+    getUniform(program, location) {
+        if (!(program instanceof WebglObject) || program._kind !== "program") {
+            throw new TypeError("Failed to execute 'getUniform' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLProgram'.");
+        }
+        if (!(location instanceof WebglObject) || location._kind !== "uniformLocation") {
+            throw new TypeError("Failed to execute 'getUniform' on 'WebGLRenderingContext': parameter 2 is not of type 'WebGLUniformLocation'.");
+        }
+        if (location._program !== program || location._link !== (program._links | 0)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return null;
+        }
+        const answer = this._programState("getUniform", program, GL_STATE_UNIFORM_VALUE, 0, location._name);
+        return answer === undefined ? null : _uniformValue(answer[0], answer[1]);
+    }
+    // What a linked program says about itself that only the driver knows (`program_state.rs` answers): its uniform
+    // blocks -- PlayCanvas reads every block's name while it links a shader; engines with a uniform-buffer layer read
+    // the sizes and the offsets -- a uniform's value and a fragment output's location. The answer is `{v}` or `{e}`:
+    // the error is the specification's, raised here so the context's `getError` sees it.
+    _programState(method, program, query, extra, name) {
+        if (!(program instanceof WebglObject) || program._kind !== "program") {
+            throw new TypeError(`${method}: parameter 1 is not of type 'WebGLProgram'.`);
+        }
+        if (program._deleted || program._ownerId !== this._canvasId) {
+            this._pushJsError(WebglConstants.INVALID_OPERATION);
+            return undefined;
+        }
+        let answer;
+        try { answer = JSON.parse(_rawGetGlState(this._canvasId, query, program._id, extra, name)); } catch (_) { return undefined; }
+        if (answer === null || typeof answer !== "object") return undefined;
+        if (answer.e !== undefined) {
+            this._pushJsError(answer.e);
+            return undefined;
+        }
+        return answer.v;
+    }
+
 
     uniform3f(location, x, y, z) {
         // opcode 57: H C I F F F. location is i32, x/y/z are f32.
@@ -3689,26 +3808,26 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         }
         return index;
     }
-    // What a linked program says about its uniform blocks, from the driver (`program_state.rs` answers). PlayCanvas
-    // reads every block's name while it links a shader; engines with a uniform-buffer layer read the sizes and the
-    // offsets. The answer is `{v}` or `{e}`: the error is the specification's, raised here so the context's `getError`
-    // sees it.
-    _programState(method, program, query, extra, name) {
+
+    // The location of a fragment shader output (`layout(location = n) out`), -1 for a name that is not one. Names are
+    // checked as `getAttribLocation` checks them.
+    getFragDataLocation(program, name) {
         if (!(program instanceof WebglObject) || program._kind !== "program") {
-            throw new TypeError(`${method}: parameter 1 is not of type 'WebGLProgram'.`);
+            throw new TypeError("Failed to execute 'getFragDataLocation' on 'WebGL2RenderingContext': parameter 1 is not of type 'WebGLProgram'.");
         }
-        if (program._deleted || program._ownerId !== this._canvasId) {
-            this._pushJsError(WebglConstants.INVALID_OPERATION);
-            return undefined;
+        const key = `${name}`;
+        if (!this._isLive(program, "program")) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return -1;
         }
-        let answer;
-        try { answer = JSON.parse(_rawGetGlState(this._canvasId, query, program._id, extra, name)); } catch (_) { return undefined; }
-        if (answer === null || typeof answer !== "object") return undefined;
-        if (answer.e !== undefined) {
-            this._pushJsError(answer.e);
-            return undefined;
+        const error = _glslNameError(key, this._maxNameLength());
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return -1;
         }
-        return answer.v;
+        if (_isReservedGlslName(key)) return -1;
+        const location = this._programState("getFragDataLocation", program, GL_STATE_FRAG_DATA_LOCATION, 0, key);
+        return location === undefined ? -1 : location;
     }
 
     getActiveUniformBlockName(program, uniformBlockIndex) {
