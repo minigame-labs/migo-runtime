@@ -429,6 +429,8 @@
         "op_active_texture": "stream",
         "op_alloc_gl_resource_id": "local",
         "op_attach_shader": "stream",
+        "op_detach_shader": "stream",
+        "op_validate_program": "stream",
         "op_await_next_frame": "async",
         "op_begin_query": "stream",
         "op_begin_transform_feedback": "stream",

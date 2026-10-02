@@ -256,6 +256,12 @@ export function op_delete_vertex_array(vao) {
 export function op_attach_shader(programId, shaderId) {
   emit(R.OPR_ATTACH_SHADER, smiU32(programId, "program_id"), smiU32(shaderId, "shader_id"));
 }
+export function op_detach_shader(programId, shaderId) {
+  emit(R.OPR_DETACH_SHADER, smiU32(programId, "program_id"), smiU32(shaderId, "shader_id"));
+}
+export function op_validate_program(programId) {
+  emit(R.OPR_VALIDATE_PROGRAM, smiU32(programId, "program_id"));
+}
 export function op_compile_shader(shaderId) {
   emit(R.OPR_COMPILE_SHADER, smiU32(shaderId, "shader_id"));
 }

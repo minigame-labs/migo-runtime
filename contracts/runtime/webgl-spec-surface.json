@@ -6,24 +6,11 @@
   ],
   "unimplemented_methods": [
     {
-      "reason": "Reads back state the render thread owns. Needs a synchronous answer path (as getProgramParameter has) or a JS-side shadow of the state; neither exists for these yet.",
+      "reason": "Reads back state the render thread owns and the facade cannot shadow (a uniform's value, a fragment output's location, a buffer's bytes): each needs a synchronous answer path, as getProgramParameter has.",
       "methods": [
         "getUniform",
-        "getAttachedShaders",
-        "getIndexedParameter",
-        "getSamplerParameter",
-        "getSyncParameter",
         "getFragDataLocation",
-        "isSampler",
         "getBufferSubData"
-      ]
-    },
-    {
-      "reason": "Rarely used state calls: detaching a shader, validating a program, the sample-coverage mask. Cheap to add once the record shape for a no-reply call is copied.",
-      "methods": [
-        "detachShader",
-        "validateProgram",
-        "sampleCoverage"
       ]
     },
     {

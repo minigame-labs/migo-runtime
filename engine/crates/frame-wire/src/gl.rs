@@ -1,4 +1,4 @@
-//! The WebGL block: opcodes 1..=70 fixed, 256..=276 variable, and the shape of
+//! The WebGL block: opcodes 1..=72 fixed, 256..=276 variable, and the shape of
 //! each record.
 //!
 //! One number per call is all that crosses. The producer writes an opcode and
@@ -29,7 +29,7 @@ use crate::stream::{RecordSpec, UniformElementKind};
 /// is refused by this one comparison rather than by arithmetic over the stream.
 pub const MAX_STREAM_UNIFORM_WORDS: u32 = 64 * 1024;
 
-// ─── Fixed opcode constants (1..=70) ─────────────────────────────────────────
+// ─── Fixed opcode constants (1..=72) ─────────────────────────────────────────
 
 pub const OP_VIEWPORT: u32 = 1;
 pub const OP_CLEAR: u32 = 2;
@@ -114,6 +114,12 @@ pub const OP_COPY_TEX_IMAGE_2D: u32 = 67;
 pub const OP_COPY_TEX_SUB_IMAGE_2D: u32 = 68;
 pub const OP_COPY_TEX_SUB_IMAGE_3D: u32 = 69;
 pub const OP_COPY_BUFFER_SUB_DATA: u32 = 70;
+
+// `sampleCoverage(value, invert)`: H C F B.
+pub const OP_SAMPLE_COVERAGE: u32 = 71;
+
+// `flush()` / `finish()`: H C. The context's commands are submitted.
+pub const OP_FLUSH: u32 = 72;
 
 // ─── Variable opcode constants (256..=276) ────────────────────────────────────
 
@@ -310,6 +316,16 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         // H C U U I I I  (readTarget, writeTarget, readOffset, writeOffset, size)
         OP_COPY_BUFFER_SUB_DATA => RecordSpec::Fixed {
             word_count: 7,
+            bool_words: &[],
+        },
+        // H C F B -- bool at word index 3
+        OP_SAMPLE_COVERAGE => RecordSpec::Fixed {
+            word_count: 4,
+            bool_words: &[3],
+        },
+        // H C
+        OP_FLUSH => RecordSpec::Fixed {
+            word_count: 2,
             bool_words: &[],
         },
         OP_DEPTH_FUNC => RecordSpec::Fixed {
