@@ -2,7 +2,7 @@
 // stream this runtime's canvas facades encode into. Module state is NOT on
 // globalThis / any canvas / any context object.
 //
-// One buffer carries both blocks: GL records (opcodes 1..=66 fixed, 256..=276
+// One buffer carries both blocks: GL records (opcodes 1..=70 fixed, 256..=276
 // variable) and Canvas2D records (512..). The reason is order. A frame draws
 // its background with 2D, its sprites with GL and its HUD with 2D again, and
 // the renderer must see those in the order they were issued. Two buffers would
@@ -39,7 +39,7 @@ const MAX_STREAM_UNIFORM_WORDS = 512;
 // Buffer size: 8192 u32 words = 32 KiB per backing.
 const BUFFER_WORDS = 8192;
 
-// --- Fixed opcode constants (1..66) ---
+// --- Fixed opcode constants (1..70) ---
 
 const OP_VIEWPORT = 1;
 const OP_CLEAR = 2;
@@ -107,6 +107,10 @@ const OP_CLEAR_BUFFER_FV = 63;
 const OP_CLEAR_BUFFER_IV = 64;
 const OP_CLEAR_BUFFER_UIV = 65;
 const OP_CLEAR_BUFFER_FI = 66;
+const OP_COPY_TEX_IMAGE_2D = 67;
+const OP_COPY_TEX_SUB_IMAGE_2D = 68;
+const OP_COPY_TEX_SUB_IMAGE_3D = 69;
+const OP_COPY_BUFFER_SUB_DATA = 70;
 
 // --- Variable opcode constants (256..276) ---
 
@@ -619,6 +623,81 @@ function encodeClearBufferfi(canvasId, buffer, drawbuffer, depth, stencil) {
     _f32[base + 4] = depth;
     _u32[base + 5] = stencil | 0;
     cursor = base + 6;
+    return true;
+}
+
+// 67 COPY_TEX_IMAGE_2D: H C U I U I I I I I (10 words)
+function encodeCopyTexImage2D(canvasId, target, level, internalformat, x, y, width, height, border) {
+    ensureBuffers();
+    ensureFit(10);
+    const base = cursor;
+    _u32[base] = packHeader(OP_COPY_TEX_IMAGE_2D, 10);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = target >>> 0;
+    _u32[base + 3] = level | 0;
+    _u32[base + 4] = internalformat >>> 0;
+    _u32[base + 5] = x | 0;
+    _u32[base + 6] = y | 0;
+    _u32[base + 7] = width | 0;
+    _u32[base + 8] = height | 0;
+    _u32[base + 9] = border | 0;
+    cursor = base + 10;
+    return true;
+}
+
+// 68 COPY_TEX_SUB_IMAGE_2D: H C U I I I I I I I (10 words)
+function encodeCopyTexSubImage2D(canvasId, target, level, xoffset, yoffset, x, y, width, height) {
+    ensureBuffers();
+    ensureFit(10);
+    const base = cursor;
+    _u32[base] = packHeader(OP_COPY_TEX_SUB_IMAGE_2D, 10);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = target >>> 0;
+    _u32[base + 3] = level | 0;
+    _u32[base + 4] = xoffset | 0;
+    _u32[base + 5] = yoffset | 0;
+    _u32[base + 6] = x | 0;
+    _u32[base + 7] = y | 0;
+    _u32[base + 8] = width | 0;
+    _u32[base + 9] = height | 0;
+    cursor = base + 10;
+    return true;
+}
+
+// 69 COPY_TEX_SUB_IMAGE_3D: H C U I I I I I I I I (11 words)
+function encodeCopyTexSubImage3D(canvasId, target, level, xoffset, yoffset, zoffset, x, y, width, height) {
+    ensureBuffers();
+    ensureFit(11);
+    const base = cursor;
+    _u32[base] = packHeader(OP_COPY_TEX_SUB_IMAGE_3D, 11);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = target >>> 0;
+    _u32[base + 3] = level | 0;
+    _u32[base + 4] = xoffset | 0;
+    _u32[base + 5] = yoffset | 0;
+    _u32[base + 6] = zoffset | 0;
+    _u32[base + 7] = x | 0;
+    _u32[base + 8] = y | 0;
+    _u32[base + 9] = width | 0;
+    _u32[base + 10] = height | 0;
+    cursor = base + 11;
+    return true;
+}
+
+// 70 COPY_BUFFER_SUB_DATA: H C U U I I I (7 words). The facade has already refused an offset or size outside
+// 0..=0x7fffffff, so the words are exact.
+function encodeCopyBufferSubData(canvasId, readTarget, writeTarget, readOffset, writeOffset, size) {
+    ensureBuffers();
+    ensureFit(7);
+    const base = cursor;
+    _u32[base] = packHeader(OP_COPY_BUFFER_SUB_DATA, 7);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = readTarget >>> 0;
+    _u32[base + 3] = writeTarget >>> 0;
+    _u32[base + 4] = readOffset | 0;
+    _u32[base + 5] = writeOffset | 0;
+    _u32[base + 6] = size | 0;
+    cursor = base + 7;
     return true;
 }
 
@@ -1701,6 +1780,10 @@ export {
     encodeClearBufferiv,
     encodeClearBufferuiv,
     encodeClearBufferfi,
+    encodeCopyTexImage2D,
+    encodeCopyTexSubImage2D,
+    encodeCopyTexSubImage3D,
+    encodeCopyBufferSubData,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,

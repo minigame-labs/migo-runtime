@@ -49,8 +49,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the frame decoder alike. Not yet: INVALID_OPERATION for a clear whose type does not match the draw buffer's
   format (an integer buffer cleared with `clearBufferfv`), which needs the facade to know each attachment's format;
   until then such a clear is what the driver makes of it (OpenGL ES leaves it undefined).
+- WebGL: `copyTexImage2D` and `copyTexSubImage2D` (WebGL 1 and 2), and WebGL 2's `copyTexSubImage3D`,
+  `copyBufferSubData`, `framebufferTextureLayer` and `invalidateSubFramebuffer`. They were `TypeError: not a function`:
+  three.js copies the framebuffer into a texture for its transmission pass every frame, and renders into the layers of
+  array textures. The copies are fixed records of the GL block (opcodes 67..=70; its fixed range is now 1..=70) -- only
+  their arguments cross, the GPU reads the read framebuffer or the buffer -- and `copyTexImage2D` charges the level it
+  defines to the GPU budget as `texImage2D` does. `framebufferTextureLayer` and `invalidateSubFramebuffer` are ops in
+  process and records 175 and 206 of the resource block on the Performance+ lane, with the layer answered back by
+  `getFramebufferAttachmentParameter(..., FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER)`. A target or format a call does not
+  take is INVALID_ENUM (a depth or stencil format for `copyTexImage2D` INVALID_OPERATION; WebGL 1 takes only the five
+  unsized formats), a negative level, offset, size or layer, a nonzero border and a cube face that is not square
+  INVALID_VALUE; `copyBufferSubData` converts its offsets and size as WebIDL's `long long` and refuses one past 2^31,
+  which no buffer reaches, rather than wrapping it into range.
 
 ### Fixed
+- WebGL: `invalidateFramebuffer` checks the attachments it names against the framebuffer bound: the default one
+  takes COLOR / DEPTH / STENCIL, a framebuffer object its attachment points, and a colour attachment past
+  `MAX_COLOR_ATTACHMENTS` is INVALID_OPERATION; anything else is INVALID_ENUM, where the call used to reach the driver.
+  On a canvas that draws into a DrawingBuffer (the framebuffer object that stands in for the default framebuffer),
+  COLOR / DEPTH / STENCIL are now passed as that object's attachments: GL takes only attachment points on an object,
+  so the invalidation the content asked for was an error the driver dropped.
+- iOS (Performance+): the producer's decode-budget estimate charges a gradient's stops. `OP2D_SET_FILL_STYLE_GRADIENT`
+  and `OP2D_SET_STROKE_STYLE_GRADIENT` carry a byte payload the host charges for, and the producer's table of payload
+  records did not list them, so a frame of gradients was estimated below what the host admits it at.
+  `scripts/test-render-opcode-agreement.sh` now holds the producer's payload-prefix tables to the Rust record specs,
+  opcode by opcode, which is how this was found.
 - iOS (Performance+): `getError()` returns the errors the producer found itself. A call the facade refuses before it is
   encoded -- an upload over the budget, `texImage2D` with a nonzero border, a `readPixels` into a short buffer -- is an
   error only the producer can know; it was recorded, and

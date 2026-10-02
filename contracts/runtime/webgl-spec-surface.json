@@ -20,16 +20,10 @@
       ]
     },
     {
-      "reason": "Framebuffer and texture copies, 3D/array texture entry points and the GPU-side wait. Each needs a render-stream record and a handler on the render thread.",
+      "reason": "3D/array compressed texture entry points and the GPU-side wait. Each needs a render-stream record and a handler on the render thread.",
       "methods": [
-        "copyTexImage2D",
-        "copyTexSubImage2D",
-        "copyTexSubImage3D",
-        "copyBufferSubData",
-        "framebufferTextureLayer",
         "compressedTexImage3D",
         "compressedTexSubImage3D",
-        "invalidateSubFramebuffer",
         "waitSync"
       ]
     },

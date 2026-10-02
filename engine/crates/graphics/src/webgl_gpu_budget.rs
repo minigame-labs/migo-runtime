@@ -587,6 +587,31 @@ impl WebGlGpuBudget {
         )
     }
 
+    /// `copyTexImage2D`: the level it (re)defines is a `texImage2D` of the same internal format and size. A sized
+    /// format is its own size; an unsized one (WebGL 1's five) takes the 8-bit components of a canvas, as the read
+    /// framebuffer's colour is converted into it.
+    pub(crate) fn prepare_copy_tex_image_2d(
+        &mut self,
+        canvas_id: CanvasId,
+        target: u32,
+        level: i32,
+        internal_format: u32,
+        width: i32,
+        height: i32,
+    ) -> Result<PreparedGpuAllocation, GpuAllocationError> {
+        self.prepare_tex_image_2d(
+            canvas_id,
+            target,
+            level,
+            internal_format as i32,
+            width,
+            height,
+            0,
+            internal_format,
+            glow::UNSIGNED_BYTE,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_compressed_tex_image_2d(
         &mut self,
@@ -1554,6 +1579,51 @@ mod tests {
 
         assert_eq!(budget.context_usage(1), 128 + 1_032 + 300 + 516 + 256);
         assert_eq!(scope.process_usage(), budget.context_usage(1));
+    }
+
+    /// `copyTexImage2D` charges the level it defines as `texImage2D` would: a sized format by its size, an unsized one
+    /// by its 8-bit components (RGB is padded to four bytes, as the estimate of a `texImage2D` of RGB is), and a second
+    /// copy into the same level replaces the first rather than adding to it.
+    #[test]
+    fn copy_tex_image_2d_charges_the_level_it_defines() {
+        let scope = GpuBudgetTestScope::new(limits(16 * 1024, 32 * 1024));
+        let mut budget = scope.registry();
+        budget.create_texture(1, 11).unwrap();
+        budget.bind_texture(1, TEXTURE_2D, Some(11));
+        for (format, bytes_per_texel) in [
+            (RGBA, 4),
+            (0x1907, 4),
+            (0x1906, 1),
+            (0x190A, 2),
+            (RGBA8, 4),
+            (0x8229, 1),
+        ] {
+            let copy = budget
+                .prepare_copy_tex_image_2d(1, TEXTURE_2D, 0, format, 8, 4)
+                .unwrap();
+            assert_eq!(copy.byte_len(), 32 * bytes_per_texel, "format {format:#x}");
+            budget.commit(copy);
+            assert_eq!(
+                budget.context_usage(1),
+                32 * bytes_per_texel,
+                "format {format:#x} replaces the level"
+            );
+        }
+        let level1 = budget
+            .prepare_copy_tex_image_2d(1, TEXTURE_2D, 1, RGBA, 4, 2)
+            .unwrap();
+        budget.commit(level1);
+        assert_eq!(
+            budget.context_usage(1),
+            32 + 32,
+            "another level adds to the texture"
+        );
+        assert!(
+            budget
+                .prepare_copy_tex_image_2d(1, TEXTURE_2D, 0, 0x1234, 8, 4)
+                .is_err(),
+            "a format the estimate does not know is refused, not charged at zero"
+        );
     }
 
     #[test]

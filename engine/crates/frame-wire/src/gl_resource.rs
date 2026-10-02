@@ -36,7 +36,7 @@ pub const OPR_PAYLOAD_BASE: u32 = 192;
 pub const OPR_END: u32 = 256;
 
 /// The most words a `Words` record may carry. `drawBuffers` and
-/// `invalidateFramebuffer` name attachments, of which GL ES 3.0 has at most 16
+/// `invalidate[Sub]Framebuffer` name attachments, of which GL ES 3.0 has at most 16
 /// colour plus depth and stencil; this is generous and still bounded.
 pub const MAX_RESOURCE_WORD_LIST: u32 = 64;
 
@@ -163,6 +163,9 @@ pub const OPR_TRANSFORM_FEEDBACK_VARYINGS: u32 = 204;
 /// and every packet is checksummed, so a digest over the whole would check
 /// nothing twice.
 pub const OPR_STAGE_PAYLOAD: u32 = 205;
+/// `invalidateSubFramebuffer(target, attachments, x, y, width, height)` (WebGL 2):
+/// `H C target x:I y:I width:I height:I | count attachments`, `invalidateFramebuffer`'s list with a region.
+pub const OPR_INVALIDATE_SUB_FRAMEBUFFER: u32 = 206;
 
 // ─── Uploads whose pixels are already the host's (171..=174) ─────────────────
 //
@@ -182,6 +185,9 @@ pub const OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT: u32 = 172;
 pub const OPR_TEX_IMAGE_2D_FROM_CANVAS2D: u32 = 173;
 // H C target level xoffset yoffset canvas_2d_id x y width height
 pub const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D: u32 = 174;
+/// `framebufferTextureLayer(target, attachment, texture, level, layer)` (WebGL 2):
+/// `H C target attachment texture:I level:I layer:I`, a texture of -1 detaching.
+pub const OPR_FRAMEBUFFER_TEXTURE_LAYER: u32 = 175;
 
 /// The shape of one record in this block.
 pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
@@ -279,6 +285,11 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT => fixed(9),
         OPR_TEX_IMAGE_2D_FROM_CANVAS2D => fixed(10),
         OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D => fixed(11),
+        OPR_FRAMEBUFFER_TEXTURE_LAYER => fixed(7),
+        OPR_INVALIDATE_SUB_FRAMEBUFFER => RecordSpec::Words {
+            prefix_words: 7,
+            max_count: MAX_RESOURCE_WORD_LIST,
+        },
         _ => return None,
     })
 }

@@ -432,6 +432,95 @@ impl RendererGL {
                 ))
             }
 
+            // ---------- Copies from the read framebuffer and between buffers ----------
+            // `copyTexImage2D` (re)defines a level, so it is charged to the GPU budget as a `texImage2D` of the same
+            // internal format and size is; the sub copies and the buffer copy write storage that already exists.
+            GLCmd::CopyTexImage2D {
+                canvas_id,
+                target,
+                level,
+                internalformat,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let prepared = cm
+                    .webgl_gpu_budget
+                    .prepare_copy_tex_image_2d(
+                        canvas_id,
+                        target,
+                        level,
+                        internalformat,
+                        width,
+                        height,
+                    )
+                    .map_err(gpu_allocation_error)?;
+                unsafe {
+                    gl.copy_tex_image_2d(target, level, internalformat, x, y, width, height, 0)
+                };
+                cm.webgl_gpu_budget.commit(prepared);
+                Ok(DamageEffect::NoDamage)
+            }
+            GLCmd::CopyTexSubImage2D {
+                canvas_id,
+                target,
+                level,
+                xoffset,
+                yoffset,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe {
+                    gl.copy_tex_sub_image_2d(target, level, xoffset, yoffset, x, y, width, height)
+                };
+                Ok(DamageEffect::NoDamage)
+            }
+            GLCmd::CopyTexSubImage3D {
+                canvas_id,
+                target,
+                level,
+                xoffset,
+                yoffset,
+                zoffset,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe {
+                    gl.copy_tex_sub_image_3d(
+                        target, level, xoffset, yoffset, zoffset, x, y, width, height,
+                    )
+                };
+                Ok(DamageEffect::NoDamage)
+            }
+            GLCmd::CopyBufferSubData {
+                canvas_id,
+                read_target,
+                write_target,
+                read_offset,
+                write_offset,
+                size,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe {
+                    gl.copy_buffer_sub_data(
+                        read_target,
+                        write_target,
+                        read_offset,
+                        write_offset,
+                        size,
+                    )
+                };
+                Ok(DamageEffect::NoDamage)
+            }
+
             // ---------- Program (stateful) ----------
             GLCmd::UseProgram {
                 canvas_id,
@@ -3121,6 +3210,42 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            GLCmd::FramebufferTextureLayer {
+                canvas_id,
+                target,
+                attachment,
+                texture,
+                level,
+                layer,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                // WebGL spec: modifying the default framebuffer is INVALID_OPERATION.
+                if cm.is_drawing_buffer_bound(canvas_id, gl, target) {
+                    shared::bail!(
+                        ErrorCode::InvalidOperation,
+                        "framebufferTextureLayer on default framebuffer"
+                    );
+                }
+                let tex_handle = if let Some(id) = texture {
+                    let meta = cm.textures.get(&id).ok_or_else(|| {
+                        ee(ErrorCode::NotFound, format!("texture not found: {id:?}"))
+                    })?;
+                    if meta.deleted {
+                        shared::bail!(
+                            ErrorCode::InvalidOperation,
+                            "framebufferTextureLayer on deleted texture"
+                        );
+                    }
+                    meta.gl_handle
+                } else {
+                    None
+                };
+                unsafe {
+                    gl.framebuffer_texture_layer(target, attachment, tex_handle, level, layer)
+                };
+                Ok(DamageEffect::NoDamage)
+            }
+
             GLCmd::FramebufferRenderbuffer {
                 canvas_id,
                 target,
@@ -3581,10 +3706,33 @@ impl RendererGL {
             GLCmd::InvalidateFramebuffer {
                 canvas_id,
                 target,
-                attachments,
+                mut attachments,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                if cm.is_drawing_buffer_bound(canvas_id, gl, target) {
+                    attachments
+                        .iter_mut()
+                        .for_each(|a| *a = drawing_buffer_attachment(*a));
+                }
                 unsafe { gl.invalidate_framebuffer(target, &attachments) };
+                Ok(DamageEffect::NoDamage)
+            }
+            GLCmd::InvalidateSubFramebuffer {
+                canvas_id,
+                target,
+                mut attachments,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                if cm.is_drawing_buffer_bound(canvas_id, gl, target) {
+                    attachments
+                        .iter_mut()
+                        .for_each(|a| *a = drawing_buffer_attachment(*a));
+                }
+                unsafe { gl.invalidate_sub_framebuffer(target, &attachments, x, y, width, height) };
                 Ok(DamageEffect::NoDamage)
             }
             GLCmd::RenderbufferStorageMultisample {
@@ -4168,6 +4316,18 @@ pub(crate) fn draw_damage_effect(
     }
 }
 
+/// An attachment named the way the default framebuffer names its buffers (`COLOR`, `DEPTH`, `STENCIL`), as the
+/// attachment of the framebuffer object that stands in for it when the canvas draws into a DrawingBuffer. GL takes
+/// only the first spelling on framebuffer 0 and only the second on an object, and WebGL content uses the first.
+pub(crate) fn drawing_buffer_attachment(attachment: u32) -> u32 {
+    match attachment {
+        glow::COLOR => glow::COLOR_ATTACHMENT0,
+        glow::DEPTH => glow::DEPTH_ATTACHMENT,
+        glow::STENCIL => glow::STENCIL_ATTACHMENT,
+        other => other,
+    }
+}
+
 /// The `clear` bits a `clearBuffer*` call is the clear of. COLOR is the colour buffer only in draw buffer 0: that is
 /// the one colour buffer a default framebuffer has (WebGL's `drawBuffers` on it takes one entry), and the emulated
 /// default framebuffer presents its COLOR_ATTACHMENT0, which GLES 3 lets no other draw buffer index name. A COLOR clear
@@ -4329,6 +4489,33 @@ mod tests {
     }
 
     // ---- clear_damage_effect tests ----
+
+    /// An invalidation of the default framebuffer names COLOR / DEPTH / STENCIL; on the DrawingBuffer that stands in
+    /// for it those are COLOR_ATTACHMENT0 / DEPTH_ATTACHMENT / STENCIL_ATTACHMENT, which GL requires of an object. Any
+    /// other name -- an object's own attachment points -- passes unchanged.
+    #[test]
+    fn the_default_framebuffer_s_buffer_names_become_the_drawing_buffer_s_attachments() {
+        assert_eq!(
+            drawing_buffer_attachment(glow::COLOR),
+            glow::COLOR_ATTACHMENT0
+        );
+        assert_eq!(
+            drawing_buffer_attachment(glow::DEPTH),
+            glow::DEPTH_ATTACHMENT
+        );
+        assert_eq!(
+            drawing_buffer_attachment(glow::STENCIL),
+            glow::STENCIL_ATTACHMENT
+        );
+        for unchanged in [
+            glow::COLOR_ATTACHMENT0,
+            glow::COLOR_ATTACHMENT3,
+            glow::DEPTH_ATTACHMENT,
+            glow::DEPTH_STENCIL_ATTACHMENT,
+        ] {
+            assert_eq!(drawing_buffer_attachment(unchanged), unchanged);
+        }
+    }
 
     /// A `clearBuffer*` damages what the `clear` of the same buffers does: COLOR in draw buffer 0 is the presented
     /// colour buffer (bounded by the scissor, nothing under an all-off colour mask, nothing off the onscreen default

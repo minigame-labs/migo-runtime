@@ -314,6 +314,135 @@ pub fn validate_clear_buffer<C: GlDecodeContext>(
     true
 }
 
+/// `TEXTURE_2D` or one of the six cube map faces: the targets of a 2D image (`texImage2D`, `copyTexImage2D`, ...).
+#[inline]
+fn is_image_2d_target(target: u32) -> bool {
+    target == 0x0DE1 || (0x8515..=0x851A).contains(&target)
+}
+
+/// The internal formats `copyTexImage2D` takes: WebGL 1's unsized five and OpenGL ES 3.0's colour-renderable sized
+/// formats (table 3.14), with the float ones `EXT_color_buffer_float` makes renderable. A depth or stencil format is
+/// a format the call cannot copy into (INVALID_OPERATION); anything else is not a format (INVALID_ENUM). WebGL 1 takes
+/// only the unsized five: the facade, which knows which interface it is, refuses the rest there.
+fn copy_tex_image_format_error(internalformat: u32) -> Option<u32> {
+    match internalformat {
+        // ALPHA, RGB, RGBA, LUMINANCE, LUMINANCE_ALPHA
+        0x1906 | 0x1907 | 0x1908 | 0x1909 | 0x190A => None,
+        // R8, RG8, RGB8, RGBA4, RGB5_A1, RGBA8, RGB10_A2, RGB565, SRGB8, SRGB8_ALPHA8
+        0x8229 | 0x822B | 0x8051 | 0x8056 | 0x8057 | 0x8058 | 0x8059 | 0x8D62 | 0x8C41 | 0x8C43 => {
+            None
+        }
+        // R8I, R8UI, R16I, R16UI, R32I, R32UI, RG8I, RG8UI, RG16I, RG16UI, RG32I, RG32UI
+        0x8231..=0x823C => None,
+        // RGBA32UI, RGBA16UI, RGBA8UI, RGBA32I, RGBA16I, RGBA8I, RGB10_A2UI
+        0x8D70 | 0x8D76 | 0x8D7C | 0x8D82 | 0x8D88 | 0x8D8E | 0x906F => None,
+        // R16F, RG16F, R32F, RG32F, RGBA32F, RGBA16F, R11F_G11F_B10F (EXT_color_buffer_float)
+        0x822D | 0x822F | 0x822E | 0x8230 | 0x8814 | 0x881A | 0x8C3A => None,
+        // DEPTH_COMPONENT, DEPTH_COMPONENT16/24/32F, DEPTH_STENCIL, DEPTH24_STENCIL8, DEPTH32F_STENCIL8
+        0x1902 | 0x81A5 | 0x81A6 | 0x8CAC | 0x84F9 | 0x88F0 | 0x8CAD => {
+            Some(codes::INVALID_OPERATION)
+        }
+        _ => Some(codes::INVALID_ENUM),
+    }
+}
+
+/// Validate a `copyTexImage2D` call: the target is a 2D image (INVALID_ENUM), the internal format one the call
+/// takes (INVALID_ENUM, or INVALID_OPERATION for depth and stencil), the level, width and height not negative and
+/// the border 0 (INVALID_VALUE), and a cube face square (INVALID_VALUE). That the read framebuffer has a format the
+/// copy can convert from is the driver's to judge.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn validate_copy_tex_image_2d<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    target: u32,
+    level: i32,
+    internalformat: u32,
+    width: i32,
+    height: i32,
+    border: i32,
+) -> bool {
+    let error = if !is_image_2d_target(target) {
+        Some(codes::INVALID_ENUM)
+    } else if let Some(code @ codes::INVALID_ENUM) = copy_tex_image_format_error(internalformat) {
+        Some(code)
+    } else if level < 0
+        || width < 0
+        || height < 0
+        || border != 0
+        || (target != 0x0DE1 && width != height)
+    {
+        Some(codes::INVALID_VALUE)
+    } else {
+        copy_tex_image_format_error(internalformat)
+    };
+    match error {
+        Some(code) => {
+            context.push_error(canvas_id, code);
+            false
+        }
+        None => true,
+    }
+}
+
+/// Validate a `copyTexSubImage2D` (`three_d` false: a 2D image target) or `copyTexSubImage3D` (`three_d` true:
+/// `TEXTURE_3D` or `TEXTURE_2D_ARRAY`) call: a target of the other kind is INVALID_ENUM, a negative level, offset,
+/// width or height INVALID_VALUE. Whether the rectangle fits the level is the driver's to judge.
+#[inline]
+pub fn validate_copy_tex_sub_image<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    three_d: bool,
+    target: u32,
+    level: i32,
+    offsets_and_size: &[i32],
+) -> bool {
+    let target_ok = if three_d {
+        target == 0x806F || target == 0x8C1A
+    } else {
+        is_image_2d_target(target)
+    };
+    if !target_ok {
+        context.push_error(canvas_id, codes::INVALID_ENUM);
+        return false;
+    }
+    if level < 0 || offsets_and_size.iter().any(|v| *v < 0) {
+        context.push_error(canvas_id, codes::INVALID_VALUE);
+        return false;
+    }
+    true
+}
+
+/// Validate a `copyBufferSubData` call: both targets are buffer binding points (INVALID_ENUM), and the offsets and
+/// size are not negative (INVALID_VALUE). That they fit the buffers bound there, and that a copy within one buffer
+/// does not overlap, is the driver's to judge.
+#[inline]
+pub fn validate_copy_buffer_sub_data<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    read_target: u32,
+    write_target: u32,
+    read_offset: i32,
+    write_offset: i32,
+    size: i32,
+) -> bool {
+    let is_target = |t: u32| {
+        matches!(
+            t,
+            0x8892 | 0x8893 | 0x8F36 | 0x8F37 | 0x8C8E | 0x8A11 | 0x88EB | 0x88EC
+        )
+    };
+    if !is_target(read_target) || !is_target(write_target) {
+        context.push_error(canvas_id, codes::INVALID_ENUM);
+        return false;
+    }
+    if read_offset < 0 || write_offset < 0 || size < 0 {
+        context.push_error(canvas_id, codes::INVALID_VALUE);
+        return false;
+    }
+    true
+}
+
 /// Validate the parameters of a `viewport` / `scissor` call.  Width
 /// and height must be non-negative.  Emits `INVALID_VALUE` on
 /// violation.

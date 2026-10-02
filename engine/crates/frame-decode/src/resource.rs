@@ -573,6 +573,14 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             texture: signed_id(record[5]),
             level: i(record[6]),
         },
+        OPR_FRAMEBUFFER_TEXTURE_LAYER => GLCmd::FramebufferTextureLayer {
+            canvas_id: c,
+            target: record[2],
+            attachment: record[3],
+            texture: signed_id(record[4]),
+            level: i(record[5]),
+            layer: i(record[6]),
+        },
         OPR_RENDERBUFFER_STORAGE => GLCmd::RenderbufferStorage {
             canvas_id: c,
             target: record[2],
@@ -757,6 +765,15 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             canvas_id: c,
             target: record[2],
             attachments: record[4..].to_vec(),
+        },
+        OPR_INVALIDATE_SUB_FRAMEBUFFER => GLCmd::InvalidateSubFramebuffer {
+            canvas_id: c,
+            target: record[2],
+            x: i(record[3]),
+            y: i(record[4]),
+            width: i(record[5]),
+            height: i(record[6]),
+            attachments: record[8..].to_vec(),
         },
         // The uploads whose pixels the host already holds. The ops drop a
         // snapshot id of 0 and a zero-area canvas source before they queue

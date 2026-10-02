@@ -21,7 +21,9 @@ import {
   OP2D_FILL_TEXT,
   OP2D_PUT_IMAGE_DATA,
   OP2D_SELECT_CANVAS,
+  OP2D_SET_FILL_STYLE_GRADIENT,
   OP2D_SET_FONT,
+  OP2D_SET_STROKE_STYLE_GRADIENT,
   OP2D_SET_LINE_DASH,
   OP2D_STROKE_TEXT,
   OP_UNIFORM1IV,
@@ -35,6 +37,7 @@ import {
   OPR_COMPRESSED_TEX_SUB_IMAGE_2D,
   OPR_DRAW_BUFFERS,
   OPR_INVALIDATE_FRAMEBUFFER,
+  OPR_INVALIDATE_SUB_FRAMEBUFFER,
   OPR_SHADER_SOURCE,
   OPR_STAGE_PAYLOAD,
   OPR_TEX_IMAGE_2D,
@@ -86,17 +89,21 @@ export const PAYLOAD_PREFIX_WORDS = new Map([
 export const WORD_LIST_PREFIX_WORDS = new Map([
   [OPR_DRAW_BUFFERS, 2],
   [OPR_INVALIDATE_FRAMEBUFFER, 3],
+  [OPR_INVALIDATE_SUB_FRAMEBUFFER, 7],
 ]);
 /**
  * The 2D payload records' shapes, from engine/crates/frame-wire/src/canvas2d.rs:
- * a font or a text is a string the decode copies out, pixels are bytes it copies out, a dash list or an image
- * batch a vector of the record's own words.
+ * a font or a text is a string the decode copies out, pixels and a gradient's stops are bytes it copies out, a dash
+ * list or an image batch a vector of the record's own words. scripts/test-render-opcode-agreement.sh holds these
+ * tables to the Rust specs, opcode by opcode.
  */
 export const CANVAS2D_PAYLOAD_PREFIX_WORDS = new Map([
   [OP2D_SET_FONT, 1],
   [OP2D_FILL_TEXT, 4],
   [OP2D_STROKE_TEXT, 4],
   [OP2D_PUT_IMAGE_DATA, 5],
+  [OP2D_SET_FILL_STYLE_GRADIENT, 8],
+  [OP2D_SET_STROKE_STYLE_GRADIENT, 8],
 ]);
 export const CANVAS2D_WORD_LIST_PREFIX_WORDS = new Map([
   [OP2D_SET_LINE_DASH, 1],
