@@ -6,12 +6,6 @@
   ],
   "unimplemented_methods": [
     {
-      "reason": "Reads back a buffer's bytes, which the render thread owns and the facade cannot shadow: it needs a synchronous answer that carries bytes, as readPixels has.",
-      "methods": [
-        "getBufferSubData"
-      ]
-    },
-    {
       "reason": "`drawingBufferStorage` is a recent addition to the WebGL 2 interface that browsers do not ship; recorded so the list is the whole difference from the IDL, not a judgement that it will be written.",
       "methods": [
         "drawingBufferStorage"

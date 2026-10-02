@@ -325,6 +325,25 @@ export function encodeReadPixelsToBufferParams({ canvasId, x, y, width, height, 
   return bytes;
 }
 
+/// `getBufferSubData` (`frame_wire::sync::SYNC_OP_GET_BUFFER_SUB_DATA`): bytes of the buffer bound to a target,
+/// answered with exactly the bytes asked for.
+export const SYNC_OP_GET_BUFFER_SUB_DATA = 13;
+
+/// Serialised size of its arguments.
+export const GET_BUFFER_SUB_DATA_PARAM_BYTES = 24;
+
+/** Encode a buffer read's arguments: canvas, target, the offset as an i64, the size, a reserved zero word. */
+export function encodeGetBufferSubDataParams({ canvasId, target, offset, size }) {
+  const bytes = new Uint8Array(GET_BUFFER_SUB_DATA_PARAM_BYTES);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, canvasId, true);
+  view.setUint32(4, target, true);
+  view.setBigInt64(8, offset, true);
+  view.setUint32(16, size, true);
+  view.setUint32(20, 0, true);
+  return bytes;
+}
+
 export const SYNC_OP_CANVAS2D_IMAGE_DATA = 9;
 
 /// The pixels of a snapshot the host captured

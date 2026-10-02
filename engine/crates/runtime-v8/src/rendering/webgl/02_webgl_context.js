@@ -127,6 +127,7 @@ import {
     op_renderbuffer_storage,
     op_read_pixels,
     op_read_pixels_to_buffer,
+    op_get_buffer_sub_data,
     op_hint,
 
     // WebGL 2.0 additions
@@ -502,6 +503,7 @@ const _UNIFORM_UI_ENCODERS = [null, encodeUniform1uiv, encodeUniform2uiv, encode
 const _UNIFORM_UI_RAW = [null, _rawUniform1uiv, _rawUniform2uiv, _rawUniform3uiv, _rawUniform4uiv];
 const _rawReadPixels         = _makeOrderedRaw(op_read_pixels);
 const _rawReadPixelsToBuffer = _makeOrderedRaw(op_read_pixels_to_buffer);
+const _rawGetBufferSubData   = _makeOrderedRaw(op_get_buffer_sub_data);
 const _rawCreateFramebuffer  = _makeOrderedRaw(op_create_framebuffer);
 const _rawDeleteFramebuffer  = _makeOrderedRaw(op_delete_framebuffer);
 const _rawBindFramebuffer    = _makeOrderedRaw(op_bind_framebuffer);
@@ -1166,24 +1168,30 @@ const _SAMPLER_PARAMETERS = new Map([
 // size), or null when refused with the error recorded. An ArrayBufferView is the first overload: its elements from
 // `srcOffset`, `srcLengthOverride` of them unless that is 0 (both counted in the view's elements; a range past the
 // end is INVALID_VALUE). Anything else is the second: `imageSize` bytes of the bound buffer from `offset`.
-// The bytes of WebGL 2's `srcOffset` / `length` pair over `view`, both counted in its elements (a DataView's are
-// bytes): `length` elements from `srcOffset`, or the rest when it is 0. A range past the view is INVALID_VALUE and
-// null, as is one past the upload budget (`toBoundedUploadBytes`).
-function viewElementBytes(canvasId, view, srcOffset, length) {
+// The bytes of WebGL 2's `offset` / `length` pair over `view`, both counted in its elements (a DataView's are
+// bytes): `length` elements from `offset`, or the rest when it is 0, as a Uint8Array over the view's memory. A range
+// past the view is INVALID_VALUE and null.
+function viewElementRange(canvasId, view, offset, length) {
     const dataView = isDataView(view);
     const unit = dataView ? 1 : view.BYTES_PER_ELEMENT;
     const byteLength = dataView ? DataViewPrototypeGetByteLength(view) : TypedArrayPrototypeGetByteLength(view);
     const byteOffset = dataView ? DataViewPrototypeGetByteOffset(view) : TypedArrayPrototypeGetByteOffset(view);
     const buffer = dataView ? DataViewPrototypeGetBuffer(view) : TypedArrayPrototypeGetBuffer(view);
     const elements = byteLength / unit;
-    const offset = toUnsignedLongLong(srcOffset);
+    const first = toUnsignedLongLong(offset);
     const count = length >>> 0;
-    if (offset > elements || (count !== 0 && offset + count > elements)) {
+    if (first > elements || (count !== 0 && first + count > elements)) {
         recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
         return null;
     }
-    const taken = count !== 0 ? count : elements - offset;
-    return toBoundedUploadBytes(canvasId, new Uint8Array(buffer, byteOffset + offset * unit, taken * unit));
+    const taken = count !== 0 ? count : elements - first;
+    return new Uint8Array(buffer, byteOffset + first * unit, taken * unit);
+}
+
+// `viewElementRange` as the source of an upload: also null past the upload budget (`toBoundedUploadBytes`).
+function viewElementBytes(canvasId, view, srcOffset, length) {
+    const range = viewElementRange(canvasId, view, srcOffset, length);
+    return range === null ? null : toBoundedUploadBytes(canvasId, range);
 }
 
 function compressedUploadSource(canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride) {
@@ -3720,7 +3728,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         this._tfRegistry = new Map();
         this._uniformBufferBindings = new Map();
         // The default transform feedback object's buffers; one the content made keeps its own in `_tfRegistry`.
-        this._defaultTransformFeedback = { bindings: new Map(), genericBuffer: null };
+        this._defaultTransformFeedback = { bindings: new Map(), genericBuffer: null, active: false, paused: false };
         this._copyReadBufferBinding = null;
         this._copyWriteBufferBinding = null;
         this._pixelPackBufferBinding = null;
@@ -4311,6 +4319,36 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // ranges of one buffer that overlap are INVALID_VALUE; no buffer bound, or an element-array buffer and one of
     // other data, INVALID_OPERATION. Every range then lies inside a buffer, whose size the render side holds as a
     // GLint, so the words that cross are exact.
+    // `getBufferSubData(target, srcByteOffset, dstBuffer, dstOffset, length)`: `length` elements of `dstBuffer` from
+    // `dstOffset` (the rest when 0) are filled with the bound buffer's bytes from `srcByteOffset`. A target the context
+    // does not have is INVALID_ENUM; nothing bound, or TRANSFORM_FEEDBACK_BUFFER while transform feedback is active,
+    // INVALID_OPERATION; a negative offset or a range past the view or the buffer INVALID_VALUE (WebGL 2.0 3.7.3). It
+    // waits for the GPU work that writes the buffer, as the specification says it may.
+    getBufferSubData(target, srcByteOffset, dstBuffer, dstOffset = 0, length = 0) {
+        const t = Number(target) >>> 0;
+        const offset = toLongLong(srcByteOffset);
+        if (!ArrayBufferIsView(dstBuffer)) {
+            throw new TypeError("Failed to execute 'getBufferSubData' on 'WebGL2RenderingContext': parameter 3 is not of type 'ArrayBufferView'.");
+        }
+        const bound = this._boundBuffer(t);
+        let error = 0;
+        if (bound === undefined) error = GL_INVALID_ENUM;
+        else if (bound === null || (t === 0x8c8e && this._transformFeedbackState().active)) error = GL_INVALID_OPERATION;
+        else if (offset < 0) error = GL_INVALID_VALUE;
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
+        const destination = viewElementRange(this._canvasId, dstBuffer, dstOffset, length);
+        if (destination === null) return;
+        const bytes = TypedArrayPrototypeGetByteLength(destination);
+        if (offset + bytes > (bound._size || 0)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        _rawGetBufferSubData(this._canvasId, t, offset, destination);
+    }
+
     copyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size) {
         const rt = Number(readTarget) >>> 0;
         const wt = Number(writeTarget) >>> 0;
@@ -4448,10 +4486,8 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             : index >= 4 && index >= this._cachedLimit("_maxTransformFeedbackBindings", 0x8c8b, 4);   // MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS
     }
     _transformFeedbackCaptures() {
-        const tf = this._currentTransformFeedback;
-        if (!tf) return false;
-        const state = this._tfRegistry.get(tf._id);
-        return !!(state && state.active && !state.paused);
+        const state = this._transformFeedbackState();
+        return state.active === true && state.paused !== true;
     }
     // Whether a bind passes what the decoder checks, so the record is made only of what takes effect.
     _indexedBindTakes(target, buffer, offset, size, range) {
@@ -4701,42 +4737,27 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         }
         _rawBindTransformFeedback(this._canvasId, target, tf ? tf._id : 0);
     }
+    // Whether transform feedback is active and paused is the bound object's state -- the default object's too.
     beginTransformFeedback(primitiveMode) {
-        if (this._currentTransformFeedback && this._currentTransformFeedback._id) {
-            const state = this._tfRegistry.get(this._currentTransformFeedback._id);
-            if (state && !state.deleted) {
-                state.active = true;
-                state.paused = false;
-            }
-        }
+        const state = this._transformFeedbackState();
+        state.active = true;
+        state.paused = false;
         _rawBeginTransformFeedback(this._canvasId, primitiveMode);
     }
     endTransformFeedback() {
-        if (this._currentTransformFeedback && this._currentTransformFeedback._id) {
-            const state = this._tfRegistry.get(this._currentTransformFeedback._id);
-            if (state) {
-                state.active = false;
-                state.paused = false;
-            }
-        }
+        const state = this._transformFeedbackState();
+        state.active = false;
+        state.paused = false;
         _rawEndTransformFeedback(this._canvasId);
     }
     pauseTransformFeedback() {
-        if (this._currentTransformFeedback && this._currentTransformFeedback._id) {
-            const state = this._tfRegistry.get(this._currentTransformFeedback._id);
-            if (state && state.active && !state.deleted) {
-                state.paused = true;
-            }
-        }
+        const state = this._transformFeedbackState();
+        if (state.active) state.paused = true;
         _rawPauseTransformFeedback(this._canvasId);
     }
     resumeTransformFeedback() {
-        if (this._currentTransformFeedback && this._currentTransformFeedback._id) {
-            const state = this._tfRegistry.get(this._currentTransformFeedback._id);
-            if (state && state.active && !state.deleted) {
-                state.paused = false;
-            }
-        }
+        const state = this._transformFeedbackState();
+        if (state.active) state.paused = false;
         _rawResumeTransformFeedback(this._canvasId);
     }
     /**

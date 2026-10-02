@@ -621,6 +621,13 @@ impl SyncPath {
                 deadline_nanos,
                 now_nanos,
             ),
+            frame_wire::sync::SYNC_OP_GET_BUFFER_SUB_DATA => self.get_buffer_sub_data(
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
             SYNC_OP_AWAIT_WINDOW => self.await_window(
                 params,
                 max_reply_bytes,
@@ -1380,6 +1387,57 @@ impl SyncPath {
         let mut pixels = pixels;
         pixels.splice(0..0, header);
         Ok(pixels)
+    }
+
+    /// `SYNC_OP_GET_BUFFER_SUB_DATA`: bytes of the buffer bound to a target, answered with exactly the bytes asked
+    /// for. The renderer's failure -- no buffer, a range outside it -- is [`SyncError::OperationFailed`], which the
+    /// producer records as the INVALID_OPERATION the in-process op pushes.
+    fn get_buffer_sub_data(
+        &self,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        let read = frame_wire::sync::GetBufferSubDataParams::decode(params)?;
+        if read.size > max_reply_bytes {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        // The calls that wrote the buffer, before the read.
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        let Some(dispatch) = self.dispatch.get() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let command = shared::protocol::render_cmd::RenderCommand::GL(
+            shared::protocol::render_cmd::GLCmd::GetBufferSubData {
+                canvas_id: read.canvas_id,
+                target: read.target,
+                offset: read.offset,
+                size: read.size,
+                resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(tx),
+            },
+        );
+        if sender.send_blocking_bounded(command).is_err() {
+            return Err(SyncError::SessionEnded);
+        }
+        match rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(bytes)) if bytes.len() == read.size as usize => Ok(bytes),
+            Ok(_) => Err(SyncError::OperationFailed),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => Err(SyncError::TimedOut),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => Err(SyncError::SessionEnded),
+        }
     }
 
     /// `SYNC_OP_READ_PIXELS_TO_BUFFER`: `readPixels` into the bound
@@ -5116,6 +5174,92 @@ mod sync_tests {
             );
             drop(sender);
         }
+    }
+
+    /// A buffer read reaches the renderer with its target and range, and is answered with the renderer's bytes; the
+    /// renderer's failure, or an answer of another length, is `OperationFailed`, and a read past the reply the
+    /// producer reserved is refused before the renderer is asked.
+    #[test]
+    fn a_buffer_read_answers_the_renderer_s_bytes() {
+        use shared::error::ErrorCode;
+        use shared::protocol::render_cmd::{GLCmd, RenderCommand};
+
+        for (answer, expected) in [
+            (Some(vec![1u8, 2, 3, 4]), Ok(vec![1u8, 2, 3, 4])),
+            (Some(vec![1u8, 2, 3]), Err(SyncError::OperationFailed)),
+            (None, Err(SyncError::OperationFailed)),
+        ] {
+            let (sender, commands) = new_render_channel();
+            let path = path_with_dispatch(&sender);
+            let renderer = std::thread::spawn(move || {
+                let Ok(RenderCommand::GL(GLCmd::GetBufferSubData {
+                    canvas_id,
+                    target,
+                    offset,
+                    size,
+                    resp,
+                })) = commands.recv()
+                else {
+                    panic!("the barrier sent something other than a buffer read");
+                };
+                match answer {
+                    Some(bytes) => resp.send(Ok(bytes)),
+                    None => resp.err_code(ErrorCode::InvalidOperation),
+                }
+                (u32::from(canvas_id), target, offset, size)
+            });
+            let params = frame_wire::sync::GetBufferSubDataParams {
+                canvas_id: 3,
+                target: 0x8f36,
+                offset: 12,
+                size: 4,
+            };
+            let mut request = request(frame_wire::sync::SYNC_OP_GET_BUFFER_SUB_DATA, 4);
+            request.deadline_nanos = NOW + 30_000_000_000;
+            request.triggering_sequence = 0;
+            post(&path, request, &params.encode(), NOW).expect("posted");
+            assert_eq!(
+                renderer.join().expect("the stand-in renderer answered"),
+                (3, 0x8f36, 12, 4),
+                "the read reached the renderer as it was asked"
+            );
+            let snapshot = path.snapshot(NOW);
+            match expected {
+                Ok(bytes) => {
+                    assert_eq!((snapshot.state, snapshot.error), (SyncState::Ready, None));
+                    let mut out = [0u8; 4];
+                    assert_eq!(path.take_reply(&mut out), Ok(4));
+                    assert_eq!(out.to_vec(), bytes);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        (snapshot.state, snapshot.error),
+                        (SyncState::Failed, Some(error))
+                    )
+                }
+            }
+            drop(sender);
+        }
+
+        let path = path();
+        let params = frame_wire::sync::GetBufferSubDataParams {
+            canvas_id: 3,
+            target: 0x8f36,
+            offset: 0,
+            size: 8,
+        };
+        post(
+            &path,
+            request(frame_wire::sync::SYNC_OP_GET_BUFFER_SUB_DATA, 4),
+            &params.encode(),
+            NOW,
+        )
+        .expect("posted");
+        let snapshot = path.snapshot(NOW);
+        assert_eq!(
+            (snapshot.state, snapshot.error),
+            (SyncState::Failed, Some(SyncError::ReplyTooLarge))
+        );
     }
 
     /// The arguments a pack-buffer readback cannot carry are refused before the

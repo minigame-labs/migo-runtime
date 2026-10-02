@@ -425,6 +425,33 @@ pub(crate) fn read_webgl_pixels_to_buffer(
     Ok(())
 }
 
+/// `getBufferSubData`: `size` bytes of the buffer bound to `target`, from `offset`, read by mapping the range -- GLES
+/// has no glGetBufferSubData. Mapping for reading waits for the GPU work that writes the buffer, as the WebGL call
+/// must. No buffer bound, or a range outside it, is the driver's error, and InvalidOperation here; the driver's error
+/// is drained so that it is not a later call's verdict.
+pub(crate) fn read_webgl_buffer_range(
+    gl: &glow::Context,
+    target: u32,
+    offset: i64,
+    size: u32,
+) -> EngineResult<Vec<u8>> {
+    let (Ok(offset), Ok(length)) = (i32::try_from(offset), i32::try_from(size)) else {
+        return Err(EngineError::new(ErrorCode::InvalidArgument));
+    };
+    // SAFETY: a non-null mapping is `length` readable bytes until `unmap_buffer`, and nothing else runs on this GL
+    // context in between.
+    unsafe {
+        let mapped = gl.map_buffer_range(target, offset, length, glow::MAP_READ_BIT);
+        if mapped.is_null() {
+            drain_gl_errors(gl);
+            return Err(EngineError::new(ErrorCode::InvalidOperation));
+        }
+        let bytes = std::slice::from_raw_parts(mapped, size as usize).to_vec();
+        gl.unmap_buffer(target);
+        Ok(bytes)
+    }
+}
+
 /// Checked, initialized CPU storage prepared before selecting a GL source.
 pub(crate) struct Rgba8Readback {
     width: u32,

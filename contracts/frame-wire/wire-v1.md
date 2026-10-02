@@ -182,6 +182,17 @@ the pattern is collected; the pattern then names the id like an image the host d
 meaning, and a stream that never writes either draws as before. Same version audit as
 above. Until this record existed `createPattern` returned null for a canvas.
 
+### Amendment, 2026-10-03: buffer reads, and the operations table brought up to date
+
+`GET_BUFFER_SUB_DATA` (13) joins the synchronous operations for WebGL 2's `getBufferSubData`: 24 bytes of
+parameters -- `canvas_id u32, target u32, offset i64, size u32`, a reserved zero word -- answered with exactly `size`
+bytes of the buffer bound to `target`. The producer's facade has checked the target, the binding and the range
+against the buffer's size before it asks, and a read longer than one reply (`MAX_REPLY_BYTES`) is asked as several
+consecutive ranges of the same buffer; the producer is blocked between them, so nothing it records can change the
+buffer. A renderer that cannot answer is `OPERATION_FAILED`, which the producer records as the INVALID_OPERATION the
+in-process op pushes. Additive, like the four operations before it (9 to 12), which shipped without rows in the table
+under *Operations*; they have them now.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.
@@ -771,6 +782,11 @@ which is a change worth noticing rather than absorbing.
 | 6 | `CANVAS2D_METRICS` | a 2D query record (below) | 48 bytes: twelve `f32`, the `TextMetrics` fields |
 | 7 | `CANVAS2D_NUMBER` | a 2D query record | 8 bytes, a little-endian `f64` |
 | 8 | `SERVICE` | `op` u32, then the op's arguments as values | `outcome` u32, then one value, or a class string and a message string |
+| 9 | `CANVAS2D_IMAGE_DATA` | 24 bytes: canvas id, x, y, width, height, reserved | `width * height * 4` bytes of RGBA8 rows |
+| 10 | `CANVAS2D_SNAPSHOT` | the same 24 bytes, naming a snapshot and the size it was captured at | `width * height * 4` bytes of RGBA8 rows |
+| 11 | `CANVAS2D_FONT` | a 2D query record | the family key's UTF-8 bytes (at most 4096), empty when the font did not load |
+| 12 | `READ_PIXELS_TO_BUFFER` | 40 bytes: canvas id, x, y, width, height, format, type, offset i64, reserved | 4 bytes: the WebGL error the call raised, or zero |
+| 13 | `GET_BUFFER_SUB_DATA` | 24 bytes: canvas id, target, offset i64, size, reserved | `size` bytes of the buffer bound to the target |
 
 **The WebGL queries.** `getShaderParameter`, `getUniformLocation`, `getError`
 and the twelve others are calls whose return value *is* the answer, asked about

@@ -2606,6 +2606,84 @@ pub(super) mod tests {
         );
     }
 
+    /// `getBufferSubData` asks the renderer for exactly the bytes the destination range holds, from the bound buffer,
+    /// and writes the answer there; everything the specification refuses is refused before anything is asked.
+    #[test]
+    fn get_buffer_sub_data_reads_the_bound_buffer_into_the_destination_range() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            while let Ok(command) = render_rx.recv_timeout(Duration::from_secs(1)) {
+                match command {
+                    RenderCommand::FramePacket(_) => {}
+                    RenderCommand::GL(GLCmd::GetBufferSubData {
+                        target,
+                        offset,
+                        size,
+                        resp,
+                        ..
+                    }) => {
+                        asked.push(format!("{target:#x} {offset} {size}"));
+                        // At offset 13 the renderer answers a byte short.
+                        let answered = if offset == 13 { size - 1 } else { size };
+                        resp.ok((0..answered).map(|k| (offset as u32 + k) as u8).collect());
+                    }
+                    other => panic!("unexpected render command in a buffer read test: {other:?}"),
+                }
+            }
+            asked
+        });
+        runtime
+            .exec_script(
+                "get_buffer_sub_data.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 201, width: 1, height: 1 }, {});
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const err = (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const b = gl.createBuffer();
+                gl.bindBuffer(0x8f36, b);
+                gl.bufferData(0x8f36, 64, 0x88e4);
+                const shorts = new Uint16Array(8).fill(0xffff);
+                gl.getBufferSubData(0x8f36, 4, shorts, 2, 3);
+                check(Array.from(shorts).join() === [0xffff, 0xffff, 0x0504, 0x0706, 0x0908, 0xffff, 0xffff, 0xffff].join(),
+                      "elements 2..4 hold bytes 4..9: " + Array.from(shorts).join());
+                const rest = new Uint8Array(4);
+                gl.getBufferSubData(0x8f36, 60, rest);
+                check(Array.from(rest).join() === "60,61,62,63", "a length of 0 reads to the end of the view");
+                const view = new DataView(new ArrayBuffer(6), 2);
+                gl.getBufferSubData(0x8f36, 10, view, 1);
+                check(view.getUint8(1) === 10 && view.getUint8(3) === 12, "a DataView's elements are bytes");
+                gl.getBufferSubData(0x8f36, 64, new Uint8Array(0)); err(0, "nothing to read at the end");
+                const short = new Uint8Array(2).fill(7);
+                gl.getBufferSubData(0x8f36, 13, short);
+                check(gl.getError() === 0x0502 && short.join() === "7,7", "an answer of another length is INVALID_OPERATION and writes nothing");
+                // refused before anything is asked
+                gl.getBufferSubData(0x8f37, 0, new Uint8Array(4)); err(0x0502, "nothing bound");
+                gl.getBufferSubData(0x1234, 0, new Uint8Array(4)); err(0x0500, "a target that is not one");
+                gl.getBufferSubData(0x8f36, -1, new Uint8Array(4)); err(0x0501, "a negative offset");
+                gl.getBufferSubData(0x8f36, 0, new Uint8Array(4), 5); err(0x0501, "a dstOffset past the view");
+                gl.getBufferSubData(0x8f36, 0, new Uint8Array(4), 2, 3); err(0x0501, "a range past the view");
+                gl.getBufferSubData(0x8f36, 60, new Uint8Array(8)); err(0x0501, "a range past the buffer");
+                gl.bindBuffer(0x8c8e, b);
+                gl.beginTransformFeedback(0x0000);
+                gl.getBufferSubData(0x8c8e, 0, new Uint8Array(4)); err(0x0502, "transform feedback active on its target");
+                gl.endTransformFeedback();
+                let threw = false;
+                try { gl.getBufferSubData(0x8f36, 0, new ArrayBuffer(4)); } catch (e) { threw = e instanceof TypeError && /ArrayBufferView/.test(e.message); }
+                check(threw, "the destination is a view");
+                const gl1 = new WebGLRenderingContext({ _rid: 202, width: 1, height: 1 }, {});
+                check(gl1.getBufferSubData === undefined, "WebGL 1 has no getBufferSubData");
+                "#,
+            )
+            .expect("the buffer read script should run");
+        drop(runtime);
+        assert_eq!(
+            responder.join().expect("the responder must not panic"),
+            vec!["0x8f36 4 6", "0x8f36 60 4", "0x8f36 10 3", "0x8f36 13 2"],
+            "each read asks for exactly the destination's bytes, and nothing refused is asked"
+        );
+    }
+
     /// `getVertexAttrib` answers from what the calls set: the defaults before anything, each pointer's arguments and
     /// the buffer bound when it was made, the enable flag, the divisor, the constant value (typed as the call that set
     /// it), per vertex array object, and an error and `null` for what it cannot answer.
@@ -9247,6 +9325,39 @@ pub fn op_read_pixels_to_buffer(
                 _ => codes::INVALID_OPERATION,
             },
         );
+    }
+}
+
+/// `getBufferSubData`: the facade has checked the target, the binding and the range against the buffer's size, and
+/// passes the destination's bytes; the renderer's bytes are copied into them. A read the renderer cannot answer is
+/// INVALID_OPERATION, and the destination is left as it was.
+#[op2(fast)]
+pub fn op_get_buffer_sub_data(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] target: u32,
+    #[smi] offset: i32,
+    #[buffer] destination: &mut [u8],
+) {
+    let Ok(size) = u32::try_from(destination.len()) else {
+        error_state::push_error(state, canvas_id, codes::INVALID_VALUE);
+        return;
+    };
+    if size == 0 {
+        return;
+    }
+    let result = send_gl_sync_with_flush(state, |resp| {
+        RenderCommand::GL(GLCmd::GetBufferSubData {
+            canvas_id,
+            target,
+            offset: i64::from(offset),
+            size,
+            resp,
+        })
+    });
+    match result {
+        Ok(bytes) if bytes.len() == destination.len() => destination.copy_from_slice(&bytes),
+        _ => error_state::push_error(state, canvas_id, codes::INVALID_OPERATION),
     }
 }
 

@@ -21,8 +21,9 @@ import { DOWN_FRAME_VERDICT, encodeBytes } from "../src/downlink.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "../src/engine-host.mjs";
 import { FrameSession } from "../src/frame-session.mjs";
 import { drainProducerError } from "../src/lane-local.mjs";
-import { op_read_pixels, op_read_pixels_to_buffer } from "../src/lane-sync.mjs";
+import { op_get_buffer_sub_data, op_read_pixels, op_read_pixels_to_buffer } from "../src/lane-sync.mjs";
 import {
+  MAX_REPLY_BYTES,
   READ_PIXELS_LAYOUT_BYTES,
   SYNC_ERROR_OPERATION_FAILED,
   SYNC_OP_READ_PIXELS,
@@ -335,5 +336,57 @@ check(
   "an empty rectangle reads nothing and records nothing",
 );
 
-console.log(failures === 0 ? "PASS (readPixels)" : `FAIL (${failures})`);
+// ---- getBufferSubData: the bytes, in reads of at most one reply ------------------
+//
+// The host plays a buffer whose byte at offset `k` is `k & 0xff`, and records each read.
+
+const reads = [];
+sync.call = (request) => {
+  const params = new DataView(request.params.buffer, request.params.byteOffset, request.params.byteLength);
+  const offset = Number(params.getBigInt64(8, true));
+  const size = params.getUint32(16, true);
+  reads.push({ operation: request.operation, maxReplyBytes: request.maxReplyBytes, offset, size, target: params.getUint32(4, true) });
+  if (failWith !== null) {
+    const error = failWith;
+    failWith = null;
+    throw error;
+  }
+  const reply = new Uint8Array(size);
+  for (let k = 0; k < size; k += 1) reply[k] = (offset + k) & 0xff;
+  return reply;
+};
+
+const head = new Uint8Array(8);
+op_get_buffer_sub_data(1, 0x8f36, 100, head);
+check(
+  reads.length === 1 && reads[0].operation === 13 && reads[0].maxReplyBytes === 8 &&
+    reads[0].offset === 100 && reads[0].size === 8 && reads[0].target === 0x8f36,
+  "a buffer read asks for its range, reserving exactly its bytes",
+);
+check(head.every((byte, k) => byte === ((100 + k) & 0xff)), "and the bytes land in the destination");
+
+reads.length = 0;
+const long = new Uint8Array(MAX_REPLY_BYTES + 5);
+op_get_buffer_sub_data(1, 0x8892, 3, long);
+check(
+  reads.length === 2 && reads[0].offset === 3 && reads[0].size === MAX_REPLY_BYTES &&
+    reads[1].offset === 3 + MAX_REPLY_BYTES && reads[1].size === 5,
+  "a read longer than one reply is asked as consecutive ranges",
+);
+check(
+  long[0] === 3 && long[MAX_REPLY_BYTES] === ((3 + MAX_REPLY_BYTES) & 0xff) &&
+    long[MAX_REPLY_BYTES + 4] === ((3 + MAX_REPLY_BYTES + 4) & 0xff),
+  "each range lands where it belongs",
+);
+
+reads.length = 0;
+const untouched = new Uint8Array(4).fill(0xee);
+failWith = new SyncRequestError(SYNC_ERROR_OPERATION_FAILED);
+op_get_buffer_sub_data(2, 0x8892, 0, untouched);
+check(
+  JSON.stringify(errorsOf(2)) === JSON.stringify([GL_INVALID_OPERATION]) && untouched.every((byte) => byte === 0xee),
+  "a read the host cannot answer is INVALID_OPERATION, and the destination is left as it was",
+);
+
+console.log(failures === 0 ? "PASS (readPixels, getBufferSubData)" : `FAIL (${failures})`);
 process.exit(failures === 0 ? 0 : 1);
