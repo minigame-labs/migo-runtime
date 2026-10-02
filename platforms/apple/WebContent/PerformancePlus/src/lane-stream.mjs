@@ -1373,6 +1373,18 @@ export function op_vertex_attrib_divisor(canvasId, index, divisor) {
 export function op_vertex_attrib_pointer(canvasId, index, size, type, normalized, stride, offset) {
   emit(R.OP_VERTEX_ATTRIB_POINTER, smiU32(canvasId, "canvas_id"), smiU32(index, "index"), toI32(size, "size"), smiU32(type, "type_"), toBool(normalized, "normalized"), toI32(stride, "stride"), toI32(offset, "offset"));
 }
+export function op_vertex_attrib_4f(canvasId, index, x, y, z, w) {
+  emit(R.OP_VERTEX_ATTRIB_4F, smiU32(canvasId, "canvas_id"), smiU32(index, "index"), f32BitsOf(x, "x"), f32BitsOf(y, "y"), f32BitsOf(z, "z"), f32BitsOf(w, "w"));
+}
+export function op_vertex_attrib_i4i(canvasId, index, x, y, z, w) {
+  emit(R.OP_VERTEX_ATTRIB_I4I, smiU32(canvasId, "canvas_id"), smiU32(index, "index"), toI32(x, "x"), toI32(y, "y"), toI32(z, "z"), toI32(w, "w"));
+}
+export function op_vertex_attrib_i4ui(canvasId, index, x, y, z, w) {
+  emit(R.OP_VERTEX_ATTRIB_I4UI, smiU32(canvasId, "canvas_id"), smiU32(index, "index"), smiU32(x, "x"), smiU32(y, "y"), smiU32(z, "z"), smiU32(w, "w"));
+}
+export function op_vertex_attrib_i_pointer(canvasId, index, size, type, stride, offset) {
+  emit(R.OP_VERTEX_ATTRIB_I_POINTER, smiU32(canvasId, "canvas_id"), smiU32(index, "index"), toI32(size, "size"), smiU32(type, "type_"), toI32(stride, "stride"), toI32(offset, "offset"));
+}
 export function op_viewport(canvasId, x, y, width, height) {
   emit(R.OP_VIEWPORT, smiU32(canvasId, "canvas_id"), toI32(x, "x"), toI32(y, "y"), smiU32(width, "width"), smiU32(height, "height"));
 }

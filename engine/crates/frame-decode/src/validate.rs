@@ -240,6 +240,35 @@ pub fn validate_vertex_attrib_pointer<C: GlDecodeContext>(
     true
 }
 
+/// Validate the parameters of a `vertexAttribIPointer` call: the same shape as `vertexAttribPointer`, but only the
+/// integer types are accepted (there is nothing to convert them to).
+#[inline]
+pub fn validate_vertex_attrib_ipointer<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    size: i32,
+    type_: u32,
+    stride: i32,
+    offset: i32,
+) -> bool {
+    if !(1..=4).contains(&size) {
+        context.push_error(canvas_id, codes::INVALID_VALUE);
+        return false;
+    }
+    match type_ {
+        0x1400 | 0x1401 | 0x1402 | 0x1403 | 0x1404 | 0x1405 => {} // BYTE .. UNSIGNED_INT
+        _ => {
+            context.push_error(canvas_id, codes::INVALID_ENUM);
+            return false;
+        }
+    }
+    if !(0..=255).contains(&stride) || offset < 0 {
+        context.push_error(canvas_id, codes::INVALID_VALUE);
+        return false;
+    }
+    true
+}
+
 /// Validate the parameters of a `viewport` / `scissor` call.  Width
 /// and height must be non-negative.  Emits `INVALID_VALUE` on
 /// violation.

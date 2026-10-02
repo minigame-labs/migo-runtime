@@ -433,6 +433,25 @@ pub fn validate_vertex_attrib_pointer(
 }
 
 #[inline]
+pub fn validate_vertex_attrib_ipointer(
+    state: &mut OpState,
+    canvas_id: u32,
+    size: i32,
+    type_: u32,
+    stride: i32,
+    offset: i32,
+) -> bool {
+    frame_decode::validate::validate_vertex_attrib_ipointer(
+        &mut OpStateDecodeContext(state),
+        canvas_id,
+        size,
+        type_,
+        stride,
+        offset,
+    )
+}
+
+#[inline]
 pub fn validate_viewport_like(
     state: &mut OpState,
     canvas_id: u32,

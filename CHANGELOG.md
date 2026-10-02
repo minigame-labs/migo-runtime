@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when nothing is transparent, with per-row filters and LZ77 matching; JPEG is 4:4:4 with Huffman tables
   built for the image. `scripts/test-canvas-image-encode.sh` decodes what they write (PNG through Node's
   inflate, JPEG through a decoder that shares no code with the encoder) and is a CI step.
+- WebGL: `vertexAttrib{1,2,3,4}f`, `vertexAttrib{1,2,3,4}fv`, `getVertexAttrib` and `getVertexAttribOffset` on WebGL 1 and 2,
+  and `vertexAttribI4i`, `vertexAttribI4iv`, `vertexAttribI4ui`, `vertexAttribI4uiv`, `vertexAttribIPointer` and
+  `isVertexArray` on WebGL 2. They were `TypeError: not a function`: three.js writes the default value of an attribute a
+  geometry lacks (a `ShaderMaterial` with `defaultAttributeValues`) with `vertexAttrib*fv`, and engines read an
+  attribute's array state back with `getVertexAttrib`. All four arities of the constant-value call cross as one record
+  (the components a call leaves out are 0, 0, 0, 1), the integer forms as two, and the integer pointer as a fourth; the
+  render side keeps `vertexAttribPointer` and `vertexAttribIPointer` apart when it skips a repeated call. The queries are
+  answered from a per-vertex-array-object shadow of what the calls set. A list that is too short is INVALID_VALUE and
+  changes nothing; an integer pointer with FLOAT is INVALID_ENUM. Opcodes 59..62 (the GL block's fixed range is now
+  1..=62); in the embedded runtime, the Performance+ producer and the frame decoder alike.
 
 ### Fixed
 - iOS (Performance+): `getError()` returns the errors the producer found itself. A call the facade refuses before it is

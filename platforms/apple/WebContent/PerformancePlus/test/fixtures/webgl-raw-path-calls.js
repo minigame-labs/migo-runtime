@@ -73,6 +73,12 @@ gl.samplerParameterf(sampler, 0x813an, 0.5);
 gl.enableVertexAttribArray(0n);
 gl.vertexAttribPointer(0n, 3n, 0x1406n, false, 12n, 0n); // FLOAT
 gl.vertexAttribDivisor(0n, 1n);
+// constant attribute values, and the integer variants (the BigInt makes each take the op)
+gl.vertexAttrib4f(1n, 0.1, 0.2, 0.3, 1n);
+gl.vertexAttrib2f(1n, 0.5, 0.25);            // an op argument is a BigInt only where the call has one: this one is the encoded path
+gl.vertexAttribI4i(2n, 1n, -2n, 3n, 4n);
+gl.vertexAttribI4ui(2n, 1n, 2n, 3n, 4n);
+gl.vertexAttribIPointer(2n, 2n, 0x1404n, 0n, 0n); // INT
 gl.disableVertexAttribArray(1n);
 gl.drawArrays(0x0004n, 0n, 3n); // TRIANGLES
 gl.drawArraysInstanced(0x0004n, 0n, 3n, 2n);

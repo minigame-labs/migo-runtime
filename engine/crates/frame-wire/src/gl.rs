@@ -1,4 +1,4 @@
-//! The WebGL block: opcodes 1..=58 fixed, 256..=266 variable, and the shape of
+//! The WebGL block: opcodes 1..=62 fixed, 256..=266 variable, and the shape of
 //! each record.
 //!
 //! One number per call is all that crosses. The producer writes an opcode and
@@ -29,7 +29,7 @@ use crate::stream::{RecordSpec, UniformElementKind};
 /// is refused by this one comparison rather than by arithmetic over the stream.
 pub const MAX_STREAM_UNIFORM_WORDS: u32 = 64 * 1024;
 
-// ─── Fixed opcode constants (1..=58) ─────────────────────────────────────────
+// ─── Fixed opcode constants (1..=62) ─────────────────────────────────────────
 
 pub const OP_VIEWPORT: u32 = 1;
 pub const OP_CLEAR: u32 = 2;
@@ -89,6 +89,14 @@ pub const OP_UNIFORM1F: u32 = 55;
 pub const OP_UNIFORM2F: u32 = 56;
 pub const OP_UNIFORM3F: u32 = 57;
 pub const OP_UNIFORM4F: u32 = 58;
+
+// `vertexAttrib{1,2,3,4}f[v]` all cross as one record (the components a call leaves out are 0, 0, 0, 1 as the
+// specification has them, written by the encoder), `vertexAttribI4{i,ui}[v]` as one each, and `vertexAttribIPointer`
+// is `vertexAttribPointer` without a `normalized` word.
+pub const OP_VERTEX_ATTRIB_4F: u32 = 59;
+pub const OP_VERTEX_ATTRIB_I4I: u32 = 60;
+pub const OP_VERTEX_ATTRIB_I4UI: u32 = 61;
+pub const OP_VERTEX_ATTRIB_I_POINTER: u32 = 62;
 
 // ─── Variable opcode constants (256..=266) ────────────────────────────────────
 
@@ -213,6 +221,26 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         },
         OP_BLEND_COLOR => RecordSpec::Fixed {
             word_count: 6,
+            bool_words: &[],
+        },
+        // H C U F F F F
+        OP_VERTEX_ATTRIB_4F => RecordSpec::Fixed {
+            word_count: 7,
+            bool_words: &[],
+        },
+        // H C U I I I I
+        OP_VERTEX_ATTRIB_I4I => RecordSpec::Fixed {
+            word_count: 7,
+            bool_words: &[],
+        },
+        // H C U U U U U
+        OP_VERTEX_ATTRIB_I4UI => RecordSpec::Fixed {
+            word_count: 7,
+            bool_words: &[],
+        },
+        // H C U I U I I  (index, size, type, stride, offset)
+        OP_VERTEX_ATTRIB_I_POINTER => RecordSpec::Fixed {
+            word_count: 7,
             bool_words: &[],
         },
         OP_DEPTH_FUNC => RecordSpec::Fixed {

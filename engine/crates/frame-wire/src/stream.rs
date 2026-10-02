@@ -1130,8 +1130,8 @@ mod tests {
     // ── Opcode table completeness ─────────────────────────────────────────────
 
     #[test]
-    fn all_fixed_opcodes_1_to_58_have_specs() {
-        for op in 1u32..=58 {
+    fn all_fixed_opcodes_1_to_62_have_specs() {
+        for op in 1u32..=62 {
             assert!(
                 super::record_spec(op).is_some(),
                 "opcode {} should have a spec",
@@ -1155,8 +1155,8 @@ mod tests {
     /// from the resource block, which owns 128..=255 and is checked by its own
     /// module.
     #[test]
-    fn opcodes_between_59_and_127_return_none() {
-        for op in 59u32..=127 {
+    fn opcodes_between_63_and_127_return_none() {
+        for op in 63u32..=127 {
             assert!(
                 super::record_spec(op).is_none(),
                 "opcode {} should not have a spec",
@@ -1244,6 +1244,10 @@ mod tests {
             (OP_UNIFORM2F, 5),
             (OP_UNIFORM3F, 6),
             (OP_UNIFORM4F, 7),
+            (OP_VERTEX_ATTRIB_4F, 7),
+            (OP_VERTEX_ATTRIB_I4I, 7),
+            (OP_VERTEX_ATTRIB_I4UI, 7),
+            (OP_VERTEX_ATTRIB_I_POINTER, 7),
         ];
         for &(op, expected_wc) in expected {
             match super::record_spec(op) {

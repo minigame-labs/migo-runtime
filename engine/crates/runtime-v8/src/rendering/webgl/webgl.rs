@@ -1240,6 +1240,152 @@ pub(super) mod tests {
         assert_eq!(value.as_slice(), &[1.5, -2.25, 0.0, 7.75]);
     }
 
+    /// `vertexAttrib*` and the integer attribute calls reach the renderer as the commands the specification
+    /// describes: every arity of the float form is one `VertexAttrib4f` with the components it left out at 0, 0, 0, 1,
+    /// the array forms read the front of their list and ignore the rest, and `vertexAttribIPointer` is a pointer call
+    /// without a `normalized`.
+    #[test]
+    fn vertex_attrib_calls_become_the_commands_the_specification_describes() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "vertex_attrib_calls.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 160, width: 1, height: 1 }, {});
+                gl.vertexAttrib1f(1, 0.5);
+                gl.vertexAttrib2f(2, 0.25, 0.75);
+                gl.vertexAttrib3f(3, 1, 2, 3);
+                gl.vertexAttrib4f(4, 5, 6, 7, 8);
+                gl.vertexAttrib2fv(5, [9, 10]);
+                gl.vertexAttrib3fv(6, new Float32Array([11, 12, 13, 99]));
+                gl.vertexAttribI4i(7, -1, 2, -3, 4);
+                gl.vertexAttribI4uiv(8, new Uint32Array([1, 2, 3, 4]));
+                gl.vertexAttribIPointer(9, 2, 0x1404, 8, 4);
+                gl.flush();
+                "#,
+            )
+            .expect("the vertex attribute calls should be accepted");
+
+        let commands: Vec<GLCmd> = recv_gl_commands(&render_rx).into_iter().collect();
+        let constant = |index: u32, v: [f32; 4]| (index, v);
+        let got: Vec<(u32, [f32; 4])> = commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::VertexAttrib4f {
+                    index, x, y, z, w, ..
+                } => Some(constant(*index, [*x, *y, *z, *w])),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, [0.5, 0.0, 0.0, 1.0]),
+                (2, [0.25, 0.75, 0.0, 1.0]),
+                (3, [1.0, 2.0, 3.0, 1.0]),
+                (4, [5.0, 6.0, 7.0, 8.0]),
+                (5, [9.0, 10.0, 0.0, 1.0]),
+                (6, [11.0, 12.0, 13.0, 1.0]),
+            ]
+        );
+        assert!(commands.iter().any(|cmd| matches!(
+            cmd,
+            GLCmd::VertexAttribI4i { index: 7, x: -1, y: 2, z: -3, w: 4, .. }
+        )));
+        assert!(commands.iter().any(|cmd| matches!(
+            cmd,
+            GLCmd::VertexAttribI4ui { index: 8, x: 1, y: 2, z: 3, w: 4, .. }
+        )));
+        assert!(commands.iter().any(|cmd| matches!(
+            cmd,
+            GLCmd::VertexAttribIPointer { index: 9, size: 2, type_: 0x1404, stride: 8, offset: 4, .. }
+        )));
+    }
+
+    /// `getVertexAttrib` answers from what the calls set: the defaults before anything, each pointer's arguments and
+    /// the buffer bound when it was made, the enable flag, the divisor, the constant value (typed as the call that set
+    /// it), per vertex array object, and an error and `null` for what it cannot answer.
+    #[test]
+    fn get_vertex_attrib_answers_from_what_the_calls_set() {
+        let (mut runtime, _render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "get_vertex_attrib.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 161, width: 1, height: 1 }, {});
+                gl._maxVertexAttribs = 16;       // what the renderer would answer for MAX_VERTEX_ATTRIBS
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+                // defaults
+                check(gl.getVertexAttrib(0, 0x8622) === false, "enabled by default");
+                check(gl.getVertexAttrib(0, 0x8623) === 4, "size 4 by default");
+                check(gl.getVertexAttrib(0, 0x8625) === 0x1406, "FLOAT by default");
+                check(gl.getVertexAttrib(0, 0x886a) === false, "not normalised by default");
+                check(gl.getVertexAttrib(0, 0x8624) === 0, "stride 0");
+                check(gl.getVertexAttrib(0, 0x889f) === null, "no buffer");
+                check(same(gl.getVertexAttrib(0, 0x8626), [0, 0, 0, 1]), "current value 0,0,0,1");
+                check(gl.getVertexAttrib(0, 0x8626) instanceof Float32Array, "float by default");
+                check(gl.getVertexAttrib(0, 0x88fd) === false && gl.getVertexAttrib(0, 0x88fe) === 0, "not integer, divisor 0");
+
+                // a pointer, with the buffer bound at the time of the call
+                const buf = gl.createBuffer();
+                gl.bindBuffer(0x8892, buf);
+                gl.enableVertexAttribArray(3);
+                gl.vertexAttribPointer(3, 2, 0x1401, true, 12, 4);   // UNSIGNED_BYTE, normalised
+                gl.bindBuffer(0x8892, null);                          // binding it away afterwards changes nothing
+                gl.vertexAttribDivisor(3, 2);
+                check(gl.getVertexAttrib(3, 0x8622) === true, "enabled");
+                check(gl.getVertexAttrib(3, 0x8623) === 2, "size");
+                check(gl.getVertexAttrib(3, 0x8625) === 0x1401, "type");
+                check(gl.getVertexAttrib(3, 0x886a) === true, "normalised");
+                check(gl.getVertexAttrib(3, 0x8624) === 12, "stride");
+                check(gl.getVertexAttrib(3, 0x889f) === buf, "buffer binding");
+                check(gl.getVertexAttrib(3, 0x88fe) === 2, "divisor");
+                check(gl.getVertexAttribOffset(3, 0x8645) === 4, "offset");
+                gl.disableVertexAttribArray(3);
+                check(gl.getVertexAttrib(3, 0x8622) === false, "disabled again");
+
+                // an integer pointer
+                gl.vertexAttribIPointer(4, 3, 0x1404, 0, 0);
+                check(gl.getVertexAttrib(4, 0x88fd) === true, "integer");
+                check(gl.getVertexAttrib(4, 0x886a) === false, "an integer attribute is never normalised");
+
+                // a refused pointer leaves what was there
+                gl.vertexAttribPointer(5, 9, 0x1406, false, 0, 0);    // size 9: refused
+                check(gl.getVertexAttrib(5, 0x8623) === 4, "a refused pointer is not recorded");
+
+                // constant values, typed as the call that set them
+                gl.vertexAttrib3f(6, 1, 2, 3);
+                check(same(gl.getVertexAttrib(6, 0x8626), [1, 2, 3, 1]), "constant float");
+                gl.vertexAttribI4i(6, -1, 2, -3, 4);
+                check(gl.getVertexAttrib(6, 0x8626) instanceof Int32Array && same(gl.getVertexAttrib(6, 0x8626), [-1, 2, -3, 4]), "constant int");
+                gl.vertexAttribI4ui(6, 4294967295, 2, 3, 4);
+                check(gl.getVertexAttrib(6, 0x8626) instanceof Uint32Array && gl.getVertexAttrib(6, 0x8626)[0] === 4294967295, "constant uint");
+
+                // per vertex array object: a new one starts from the defaults, the default one is kept
+                const vao = gl.createVertexArray();
+                gl.bindVertexArray(vao);
+                check(gl.getVertexAttrib(3, 0x889f) === null && gl.getVertexAttrib(3, 0x8623) === 4, "a new vertex array object starts from the defaults");
+                gl.enableVertexAttribArray(0);
+                gl.bindVertexArray(null);
+                check(gl.getVertexAttrib(0, 0x8622) === false, "the default vertex array object is untouched");
+                check(gl.getVertexAttrib(3, 0x889f) === buf, "and kept what it had");
+                check(gl.isVertexArray(vao) === true, "a vertex array object is one");
+                gl.bindVertexArray(vao);
+                gl.deleteVertexArray(vao);
+                check(gl.isVertexArray(vao) === false, "a deleted one is not");
+                check(gl.getVertexAttrib(0, 0x8622) === false, "deleting the bound one binds the default");
+
+                // what it cannot answer
+                check(gl.getVertexAttrib(16, 0x8622) === null, "an index past MAX_VERTEX_ATTRIBS");
+                check(gl.getVertexAttrib(0, 0x1234) === null, "an unknown name");
+                check(gl.getVertexAttribOffset(0, 0x1234) === 0, "an unknown name for the offset");
+                "#,
+            )
+            .expect("getVertexAttrib should answer from the calls");
+    }
+
     #[test]
     fn uniform_array_is_copied_when_the_op_is_called() {
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -5485,6 +5631,104 @@ pub fn op_enable_vertex_attrib_array(
     #[smi] index: u32,
 ) {
     queue_gl_fire_and_forget(state, GLCmd::EnableVertexAttribArray { canvas_id, index });
+}
+
+#[op2(fast)]
+pub fn op_vertex_attrib_4f(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] index: u32,
+    x: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+) {
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::VertexAttrib4f {
+            canvas_id,
+            index,
+            x,
+            y,
+            z,
+            w,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_vertex_attrib_i4i(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] index: u32,
+    #[smi] x: i32,
+    #[smi] y: i32,
+    #[smi] z: i32,
+    #[smi] w: i32,
+) {
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::VertexAttribI4i {
+            canvas_id,
+            index,
+            x,
+            y,
+            z,
+            w,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_vertex_attrib_i4ui(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] index: u32,
+    #[smi] x: u32,
+    #[smi] y: u32,
+    #[smi] z: u32,
+    #[smi] w: u32,
+) {
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::VertexAttribI4ui {
+            canvas_id,
+            index,
+            x,
+            y,
+            z,
+            w,
+        },
+    );
+}
+
+#[op2(fast)]
+pub fn op_vertex_attrib_i_pointer(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] index: u32,
+    #[smi] size: i32,
+    #[smi] type_: u32,
+    #[smi] stride: i32,
+    #[smi] offset: i32,
+) {
+    // Host-side validation, as for `vertexAttribPointer`: a refused call raises its error and is not forwarded.
+    if !crate::rendering::webgl::error_state::validate_vertex_attrib_ipointer(
+        state, canvas_id, size, type_, stride, offset,
+    ) {
+        return;
+    }
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::VertexAttribIPointer {
+            canvas_id,
+            index,
+            size,
+            type_,
+            stride,
+            offset,
+        },
+    );
 }
 
 #[op2(fast)]

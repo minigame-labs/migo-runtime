@@ -2,7 +2,7 @@
 // stream this runtime's canvas facades encode into. Module state is NOT on
 // globalThis / any canvas / any context object.
 //
-// One buffer carries both blocks: GL records (opcodes 1..=58 fixed, 256..=266
+// One buffer carries both blocks: GL records (opcodes 1..=62 fixed, 256..=266
 // variable) and Canvas2D records (512..). The reason is order. A frame draws
 // its background with 2D, its sprites with GL and its HUD with 2D again, and
 // the renderer must see those in the order they were issued. Two buffers would
@@ -39,7 +39,7 @@ const MAX_STREAM_UNIFORM_WORDS = 512;
 // Buffer size: 8192 u32 words = 32 KiB per backing.
 const BUFFER_WORDS = 8192;
 
-// --- Fixed opcode constants (1..58) ---
+// --- Fixed opcode constants (1..62) ---
 
 const OP_VIEWPORT = 1;
 const OP_CLEAR = 2;
@@ -99,6 +99,10 @@ const OP_UNIFORM1F = 55;
 const OP_UNIFORM2F = 56;
 const OP_UNIFORM3F = 57;
 const OP_UNIFORM4F = 58;
+const OP_VERTEX_ATTRIB_4F = 59;
+const OP_VERTEX_ATTRIB_I4I = 60;
+const OP_VERTEX_ATTRIB_I4UI = 61;
+const OP_VERTEX_ATTRIB_I_POINTER = 62;
 
 // --- Variable opcode constants (256..266) ---
 
@@ -470,6 +474,71 @@ function encodeVertexAttribDivisor(canvasId, index, divisor) {
     _u32[base + 2] = index >>> 0;
     _u32[base + 3] = divisor >>> 0;
     cursor = base + 4;
+    return true;
+}
+
+// 59 VERTEX_ATTRIB_4F: H C U F F F F (7 words). The facade has already filled the components a
+// `vertexAttrib{1,2,3}f` call leaves out (0, 0, 0, 1).
+function encodeVertexAttrib4f(canvasId, index, x, y, z, w) {
+    ensureBuffers();
+    ensureFit(7);
+    const base = cursor;
+    _u32[base] = packHeader(OP_VERTEX_ATTRIB_4F, 7);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = index >>> 0;
+    _f32[base + 3] = x;
+    _f32[base + 4] = y;
+    _f32[base + 5] = z;
+    _f32[base + 6] = w;
+    cursor = base + 7;
+    return true;
+}
+
+// 60 VERTEX_ATTRIB_I4I: H C U I I I I (7 words)
+function encodeVertexAttribI4i(canvasId, index, x, y, z, w) {
+    ensureBuffers();
+    ensureFit(7);
+    const base = cursor;
+    _u32[base] = packHeader(OP_VERTEX_ATTRIB_I4I, 7);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = index >>> 0;
+    _u32[base + 3] = x | 0;
+    _u32[base + 4] = y | 0;
+    _u32[base + 5] = z | 0;
+    _u32[base + 6] = w | 0;
+    cursor = base + 7;
+    return true;
+}
+
+// 61 VERTEX_ATTRIB_I4UI: H C U U U U U (7 words)
+function encodeVertexAttribI4ui(canvasId, index, x, y, z, w) {
+    ensureBuffers();
+    ensureFit(7);
+    const base = cursor;
+    _u32[base] = packHeader(OP_VERTEX_ATTRIB_I4UI, 7);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = index >>> 0;
+    _u32[base + 3] = x >>> 0;
+    _u32[base + 4] = y >>> 0;
+    _u32[base + 5] = z >>> 0;
+    _u32[base + 6] = w >>> 0;
+    cursor = base + 7;
+    return true;
+}
+
+// 62 VERTEX_ATTRIB_I_POINTER: H C U I U I I (7 words)
+function encodeVertexAttribIPointer(canvasId, index, size, type, stride, offset) {
+    ensureBuffers();
+    ensureFit(7);
+    const base = cursor;
+    _u32[base] = packHeader(OP_VERTEX_ATTRIB_I_POINTER, 7);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = index >>> 0;
+    _u32[base + 3] = size | 0;
+    _u32[base + 4] = type >>> 0;
+    _u32[base + 5] = stride | 0;
+    _u32[base + 6] = offset | 0;
+    cursor = base + 7;
     return true;
 }
 
@@ -1504,6 +1573,10 @@ export {
     encodeDisableVertexAttribArray,
     encodeVertexAttribPointer,
     encodeVertexAttribDivisor,
+    encodeVertexAttrib4f,
+    encodeVertexAttribI4i,
+    encodeVertexAttribI4ui,
+    encodeVertexAttribIPointer,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,

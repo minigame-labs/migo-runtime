@@ -552,6 +552,63 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            GLCmd::VertexAttrib4f {
+                canvas_id,
+                index,
+                x,
+                y,
+                z,
+                w,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe { gl.vertex_attrib_4_f32(index, x, y, z, w) };
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::VertexAttribI4i {
+                canvas_id,
+                index,
+                x,
+                y,
+                z,
+                w,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe { gl.vertex_attrib_4_i32(index, x, y, z, w) };
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::VertexAttribI4ui {
+                canvas_id,
+                index,
+                x,
+                y,
+                z,
+                w,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe { gl.vertex_attrib_4_u32(index, x, y, z, w) };
+                Ok(DamageEffect::NoDamage)
+            }
+
+            GLCmd::VertexAttribIPointer {
+                canvas_id,
+                index,
+                size,
+                type_,
+                stride,
+                offset,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let state = cm.gl_state.entry(canvas_id).or_default();
+                if st::update_vertex_attrib_ipointer(state, index, size, type_, stride, offset) {
+                    unsafe {
+                        gl.vertex_attrib_pointer_i32(index, size, type_, stride, offset);
+                    }
+                }
+                Ok(DamageEffect::NoDamage)
+            }
+
             GLCmd::GetUniformLocation {
                 canvas_id,
                 program_id,
