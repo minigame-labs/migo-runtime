@@ -7336,13 +7336,20 @@ mod recovery_source_guards {
         pool.insert(13, snapshot_entry_at(3));
         let mut finished = finished_snapshot_ids(pool.iter(), 3);
         finished.sort_unstable();
-        assert_eq!(finished, vec![10, 11], "only the frames that ended are drained");
+        assert_eq!(
+            finished,
+            vec![10, 11],
+            "only the frames that ended are drained"
+        );
 
         // The frame ends: its snapshots become drainable at the next present, and not before.
         let mut after = finished_snapshot_ids(pool.iter(), 4);
         after.sort_unstable();
         assert_eq!(after, vec![10, 11, 12, 13]);
-        assert!(finished_snapshot_ids(pool.iter(), 0).is_empty(), "nothing has ended yet");
+        assert!(
+            finished_snapshot_ids(pool.iter(), 0).is_empty(),
+            "nothing has ended yet"
+        );
     }
 
     /// A present puts back the framebuffer bindings the content had.
@@ -7370,10 +7377,18 @@ mod recovery_source_guards {
         let blit = at("blit_to_surface(");
         let restore = at("restore_framebuffer_bindings(");
         let commit = at("commit_present_outcome(");
-        assert!(read < blit, "the bindings are read before the blit rebinds them");
-        assert!(blit < restore && restore < commit, "they are restored after the blit, on the failed-swap path too");
         assert!(
-            !code.iter().any(|line| line.contains("bind_default_framebuffer")),
+            read < blit,
+            "the bindings are read before the blit rebinds them"
+        );
+        assert!(
+            blit < restore && restore < commit,
+            "they are restored after the blit, on the failed-swap path too"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|line| line.contains("bind_default_framebuffer")),
             "the present must not re-point the content's framebuffer at the default"
         );
     }
@@ -7398,7 +7413,12 @@ mod recovery_source_guards {
             .1
             .trim_end_matches(';')
             .split('*')
-            .map(|factor| factor.trim().parse::<usize>().expect("a plain product of integers"))
+            .map(|factor| {
+                factor
+                    .trim()
+                    .parse::<usize>()
+                    .expect("a plain product of integers")
+            })
             .product();
         assert!(
             product * 2 <= super::CanvasManager::MAX_LIVE_CANVAS2D_SNAPSHOT_BYTES,
@@ -7416,11 +7436,13 @@ mod recovery_source_guards {
             .find("FrameOp::Present =>")
             .expect("execute_frame_op handles the Present op");
         let rest = &op[present..];
-        let arm = &rest[..rest.find("FrameOp::Materialize").expect("the arm after Present")];
+        let arm = &rest[..rest
+            .find("FrameOp::Materialize")
+            .expect("the arm after Present")];
         // A line of code, not a comment that mentions it.
         assert!(
-            arm.lines()
-                .any(|line| !line.trim_start().starts_with("//") && line.contains("cm.end_snapshot_frame()")),
+            arm.lines().any(|line| !line.trim_start().starts_with("//")
+                && line.contains("cm.end_snapshot_frame()")),
             "the Present op ends the snapshot epoch: a frame's snapshots are drained after it, not before"
         );
         let drain = function_body(MGR, "pub(crate) fn drain_canvas2d_snapshots(");
@@ -7458,7 +7480,9 @@ mod recovery_source_guards {
         );
         let guard = &drain[..flush];
         assert!(
-            guard.rfind("if registered_upload").is_some_and(|at| at > register),
+            guard
+                .rfind("if registered_upload")
+                .is_some_and(|at| at > register),
             "the flush runs only when this drain took an upload"
         );
     }

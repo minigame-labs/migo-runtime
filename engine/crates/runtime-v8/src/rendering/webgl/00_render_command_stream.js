@@ -2,7 +2,7 @@
 // stream this runtime's canvas facades encode into. Module state is NOT on
 // globalThis / any canvas / any context object.
 //
-// One buffer carries both blocks: GL records (opcodes 1..=62 fixed, 256..=276
+// One buffer carries both blocks: GL records (opcodes 1..=66 fixed, 256..=276
 // variable) and Canvas2D records (512..). The reason is order. A frame draws
 // its background with 2D, its sprites with GL and its HUD with 2D again, and
 // the renderer must see those in the order they were issued. Two buffers would
@@ -39,7 +39,7 @@ const MAX_STREAM_UNIFORM_WORDS = 512;
 // Buffer size: 8192 u32 words = 32 KiB per backing.
 const BUFFER_WORDS = 8192;
 
-// --- Fixed opcode constants (1..62) ---
+// --- Fixed opcode constants (1..66) ---
 
 const OP_VIEWPORT = 1;
 const OP_CLEAR = 2;
@@ -103,6 +103,10 @@ const OP_VERTEX_ATTRIB_4F = 59;
 const OP_VERTEX_ATTRIB_I4I = 60;
 const OP_VERTEX_ATTRIB_I4UI = 61;
 const OP_VERTEX_ATTRIB_I_POINTER = 62;
+const OP_CLEAR_BUFFER_FV = 63;
+const OP_CLEAR_BUFFER_IV = 64;
+const OP_CLEAR_BUFFER_UIV = 65;
+const OP_CLEAR_BUFFER_FI = 66;
 
 // --- Variable opcode constants (256..276) ---
 
@@ -549,6 +553,72 @@ function encodeVertexAttribIPointer(canvasId, index, size, type, stride, offset)
     _u32[base + 5] = stride | 0;
     _u32[base + 6] = offset | 0;
     cursor = base + 7;
+    return true;
+}
+
+// 63 CLEAR_BUFFER_FV: H C U I F F F F (8 words). COLOR uses all four values, DEPTH the first; the facade pads with 0.
+function encodeClearBufferfv(canvasId, buffer, drawbuffer, v0, v1, v2, v3) {
+    ensureBuffers();
+    ensureFit(8);
+    const base = cursor;
+    _u32[base] = packHeader(OP_CLEAR_BUFFER_FV, 8);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = buffer >>> 0;
+    _u32[base + 3] = drawbuffer | 0;
+    _f32[base + 4] = v0;
+    _f32[base + 5] = v1;
+    _f32[base + 6] = v2;
+    _f32[base + 7] = v3;
+    cursor = base + 8;
+    return true;
+}
+
+// 64 CLEAR_BUFFER_IV: H C U I I I I I (8 words)
+function encodeClearBufferiv(canvasId, buffer, drawbuffer, v0, v1, v2, v3) {
+    ensureBuffers();
+    ensureFit(8);
+    const base = cursor;
+    _u32[base] = packHeader(OP_CLEAR_BUFFER_IV, 8);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = buffer >>> 0;
+    _u32[base + 3] = drawbuffer | 0;
+    _u32[base + 4] = v0 | 0;
+    _u32[base + 5] = v1 | 0;
+    _u32[base + 6] = v2 | 0;
+    _u32[base + 7] = v3 | 0;
+    cursor = base + 8;
+    return true;
+}
+
+// 65 CLEAR_BUFFER_UIV: H C U I U U U U (8 words)
+function encodeClearBufferuiv(canvasId, buffer, drawbuffer, v0, v1, v2, v3) {
+    ensureBuffers();
+    ensureFit(8);
+    const base = cursor;
+    _u32[base] = packHeader(OP_CLEAR_BUFFER_UIV, 8);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = buffer >>> 0;
+    _u32[base + 3] = drawbuffer | 0;
+    _u32[base + 4] = v0 >>> 0;
+    _u32[base + 5] = v1 >>> 0;
+    _u32[base + 6] = v2 >>> 0;
+    _u32[base + 7] = v3 >>> 0;
+    cursor = base + 8;
+    return true;
+}
+
+// 66 CLEAR_BUFFER_FI: H C U I F I (6 words)
+function encodeClearBufferfi(canvasId, buffer, drawbuffer, depth, stencil) {
+    ensureBuffers();
+    ensureFit(6);
+    const base = cursor;
+    _u32[base] = packHeader(OP_CLEAR_BUFFER_FI, 6);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = buffer >>> 0;
+    _u32[base + 3] = drawbuffer | 0;
+    _f32[base + 4] = depth;
+    _u32[base + 5] = stencil | 0;
+    cursor = base + 6;
     return true;
 }
 
@@ -1627,6 +1697,10 @@ export {
     encodeVertexAttribI4i,
     encodeVertexAttribI4ui,
     encodeVertexAttribIPointer,
+    encodeClearBufferfv,
+    encodeClearBufferiv,
+    encodeClearBufferuiv,
+    encodeClearBufferfi,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,

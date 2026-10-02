@@ -269,6 +269,51 @@ pub fn validate_vertex_attrib_ipointer<C: GlDecodeContext>(
     true
 }
 
+/// Which `clearBuffer*` call a record is. What the buffer enum may be depends on the type of the values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClearBufferKind {
+    /// `clearBufferfv`: COLOR or DEPTH.
+    Float,
+    /// `clearBufferiv`: COLOR or STENCIL.
+    Int,
+    /// `clearBufferuiv`: COLOR only.
+    Uint,
+    /// `clearBufferfi`: DEPTH_STENCIL only.
+    DepthStencil,
+}
+
+/// Validate the buffer and draw buffer of a `clearBuffer*` call: the buffer enum is `INVALID_ENUM` unless the kind
+/// takes it, and the draw buffer is `INVALID_VALUE` when it is negative or, for anything but COLOR, not 0. COLOR's
+/// upper bound (`MAX_DRAW_BUFFERS`) is a limit of the device, which the facade knows and this does not.
+#[inline]
+pub fn validate_clear_buffer<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    kind: ClearBufferKind,
+    buffer: u32,
+    drawbuffer: i32,
+) -> bool {
+    const COLOR: u32 = 0x1800;
+    const DEPTH: u32 = 0x1801;
+    const STENCIL: u32 = 0x1802;
+    const DEPTH_STENCIL: u32 = 0x84F9;
+    let allowed = match kind {
+        ClearBufferKind::Float => buffer == COLOR || buffer == DEPTH,
+        ClearBufferKind::Int => buffer == COLOR || buffer == STENCIL,
+        ClearBufferKind::Uint => buffer == COLOR,
+        ClearBufferKind::DepthStencil => buffer == DEPTH_STENCIL,
+    };
+    if !allowed {
+        context.push_error(canvas_id, codes::INVALID_ENUM);
+        return false;
+    }
+    if drawbuffer < 0 || (buffer != COLOR && drawbuffer != 0) {
+        context.push_error(canvas_id, codes::INVALID_VALUE);
+        return false;
+    }
+    true
+}
+
 /// Validate the parameters of a `viewport` / `scissor` call.  Width
 /// and height must be non-negative.  Emits `INVALID_VALUE` on
 /// violation.

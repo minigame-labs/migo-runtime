@@ -188,7 +188,11 @@ fn the_64_bit_fields_of_the_answers_are_numbers_content_can_divide_by() {
         OwnedValue::F64(5_000_000_000.0),
         "past 32 bits and still a Number"
     );
-    assert_eq!(array(&head(None))[5], OwnedValue::Null, "unknown stays null");
+    assert_eq!(
+        array(&head(None))[5],
+        OwnedValue::Null,
+        "unknown stays null"
+    );
 
     let sent = |total_bytes_sent| {
         upload_answer(upload::UploadAnswer {

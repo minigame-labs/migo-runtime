@@ -75,7 +75,10 @@ fn an_unsigned_vector_record_keeps_its_words_unsigned() {
         assert!(text.starts_with(name), "{name}: {text}");
         for i in 0..2 * width {
             let word = 0x8000_0000u64 + i as u64;
-            assert!(text.contains(&word.to_string()), "{name}: word {i} ({word}) is there, unsigned: {text}");
+            assert!(
+                text.contains(&word.to_string()),
+                "{name}: word {i} ({word}) is there, unsigned: {text}"
+            );
         }
         assert!(!text.contains('-'), "{name}: nothing is negative: {text}");
         assert!(text.contains("location: Some(5)"), "{name}: {text}");
@@ -99,8 +102,14 @@ fn a_non_square_matrix_record_keeps_its_transpose_and_its_floats() {
             assert_eq!(commands.len(), 1, "{name}: {commands:?}");
             let text = &commands[0];
             assert!(text.starts_with(name), "{name}: {text}");
-            assert!(text.contains(&format!("transpose: {}", transpose == 1)), "{name}: {text}");
-            assert!(text.contains("0.5") && text.contains(&format!("{}.5", per_matrix - 1)), "{name}: {text}");
+            assert!(
+                text.contains(&format!("transpose: {}", transpose == 1)),
+                "{name}: {text}"
+            );
+            assert!(
+                text.contains("0.5") && text.contains(&format!("{}.5", per_matrix - 1)),
+                "{name}: {text}"
+            );
         }
     }
 }

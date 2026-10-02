@@ -328,10 +328,15 @@ fn the_capture_image_record_decodes_to_its_own_command() {
     let FrameOp::CanvasBatch(batch) = &ops[0] else {
         panic!("expected a canvas batch");
     };
-    assert_eq!(batch.canvas_id, 3, "the copy is of the canvas the record is under");
+    assert_eq!(
+        batch.canvas_id, 3,
+        "the copy is of the canvas the record is under"
+    );
     assert!(matches!(
         batch.commands[0],
-        Canvas2DCmd::CaptureImage { image_id: 0x1234_5678 }
+        Canvas2DCmd::CaptureImage {
+            image_id: 0x1234_5678
+        }
     ));
     assert!(matches!(batch.commands[1], Canvas2DCmd::Save));
 

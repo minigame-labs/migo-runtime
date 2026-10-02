@@ -13,8 +13,8 @@ use shared::{
     op_state::CanvasOpState,
     protocol::{
         render_cmd::{
-            GLCmd, RenderCmdResp, RenderCommand, UniformF32Values, UniformI32Values, UniformU32Values,
-            checked_readback_byte_len, webgl_readback_bytes_per_pixel,
+            GLCmd, RenderCmdResp, RenderCommand, UniformF32Values, UniformI32Values,
+            UniformU32Values, checked_readback_byte_len, webgl_readback_bytes_per_pixel,
         },
         send_gl_with_resp_sync,
     },
@@ -1316,15 +1316,36 @@ pub(super) mod tests {
         );
         assert!(commands.iter().any(|cmd| matches!(
             cmd,
-            GLCmd::VertexAttribI4i { index: 7, x: -1, y: 2, z: -3, w: 4, .. }
+            GLCmd::VertexAttribI4i {
+                index: 7,
+                x: -1,
+                y: 2,
+                z: -3,
+                w: 4,
+                ..
+            }
         )));
         assert!(commands.iter().any(|cmd| matches!(
             cmd,
-            GLCmd::VertexAttribI4ui { index: 8, x: 1, y: 2, z: 3, w: 4, .. }
+            GLCmd::VertexAttribI4ui {
+                index: 8,
+                x: 1,
+                y: 2,
+                z: 3,
+                w: 4,
+                ..
+            }
         )));
         assert!(commands.iter().any(|cmd| matches!(
             cmd,
-            GLCmd::VertexAttribIPointer { index: 9, size: 2, type_: 0x1404, stride: 8, offset: 4, .. }
+            GLCmd::VertexAttribIPointer {
+                index: 9,
+                size: 2,
+                type_: 0x1404,
+                stride: 8,
+                offset: 4,
+                ..
+            }
         )));
     }
 
@@ -1429,6 +1450,171 @@ pub(super) mod tests {
                 || recv_gl_commands(&render_rx).into_iter().next().is_none(),
             "a refused call must not reach the renderer"
         );
+    }
+
+    /// `clearBuffer{fv,iv,uiv,fi}` and `drawRangeElements` reach the renderer as the commands the specification
+    /// describes: COLOR carries the four values from `srcOffset`, DEPTH and STENCIL the first (the rest 0, so the
+    /// record has one shape), each list keeps its type (an unsigned word above 2^31 stays unsigned), a typed array of
+    /// another type is read as the sequence WebIDL makes of it, and `drawRangeElements` is the `drawElements` it hints.
+    #[test]
+    fn clear_buffer_and_draw_range_calls_become_the_commands_the_specification_describes() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "clear_buffer_calls.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 164, width: 1, height: 1 }, {});
+                gl._maxDrawBuffers = 4;          // what the renderer would answer for MAX_DRAW_BUFFERS
+                gl.clearBufferfv(0x1800, 1, [0.25, 0.5, 0.75, 1]);
+                gl.clearBufferfv(0x1801, 0, new Float32Array([9, 0.5]), 1);
+                gl.clearBufferiv(0x1802, 0, new Int32Array([7]));
+                gl.clearBufferiv(0x1800, 0, [-1, 2, -3, 4]);
+                gl.clearBufferuiv(0x1800, 3, new Uint32Array([0, 1, 2, 4294967295, 5]), 1);
+                gl.clearBufferfi(0x84F9, 0, 0.25, 255);
+                gl.clearBufferfv(0x1800, 0, new Int32Array([1, 2, 3, 4]));
+                gl.drawRangeElements(4, 0, 5, 6, 0x1403, 2);
+                gl.flush();
+                "#,
+            )
+            .expect("the clearBuffer and drawRangeElements calls should be accepted");
+        let commands: Vec<GLCmd> = recv_gl_commands(&render_rx).into_iter().collect();
+        let describe = |cmd: &GLCmd| -> String {
+            match cmd {
+                GLCmd::ClearBufferfv {
+                    buffer,
+                    drawbuffer,
+                    value,
+                    ..
+                } => format!("fv {buffer:#x} {drawbuffer} {value:?}"),
+                GLCmd::ClearBufferiv {
+                    buffer,
+                    drawbuffer,
+                    value,
+                    ..
+                } => format!("iv {buffer:#x} {drawbuffer} {value:?}"),
+                GLCmd::ClearBufferuiv {
+                    buffer,
+                    drawbuffer,
+                    value,
+                    ..
+                } => format!("uiv {buffer:#x} {drawbuffer} {value:?}"),
+                GLCmd::ClearBufferfi { depth, stencil, .. } => format!("fi {depth} {stencil}"),
+                GLCmd::DrawElements {
+                    mode,
+                    count,
+                    index_type,
+                    offset,
+                    ..
+                } => format!("drawElements {mode} {count} {index_type:#x} {offset}"),
+                other => format!("unexpected {other:?}"),
+            }
+        };
+        let got: Vec<String> = commands.iter().map(describe).collect();
+        assert_eq!(
+            got,
+            vec![
+                "fv 0x1800 1 [0.25, 0.5, 0.75, 1.0]".to_string(),
+                "fv 0x1801 0 [0.5, 0.0, 0.0, 0.0]".to_string(),
+                "iv 0x1802 0 [7, 0, 0, 0]".to_string(),
+                "iv 0x1800 0 [-1, 2, -3, 4]".to_string(),
+                "uiv 0x1800 3 [1, 2, 4294967295, 5]".to_string(),
+                "fi 0.25 255".to_string(),
+                "fv 0x1800 0 [1.0, 2.0, 3.0, 4.0]".to_string(),
+                "drawElements 4 6 0x1403 2".to_string(),
+            ]
+        );
+    }
+
+    /// A `clearBuffer*` call that breaks a rule of its call is the error the specification names and sends nothing: a
+    /// buffer the call does not take is INVALID_ENUM (checked first), a draw buffer that is negative, at or past
+    /// MAX_DRAW_BUFFERS for COLOR, or not 0 for anything else is INVALID_VALUE, and so is a list with fewer elements
+    /// than the buffer needs after `srcOffset`. `drawRangeElements` with `end` below `start` is INVALID_VALUE. A value
+    /// that is not a list -- or a depth that is not a number -- is a TypeError, raised before any of those: WebIDL
+    /// converts the arguments before the call runs.
+    #[test]
+    fn a_malformed_clear_buffer_or_draw_range_call_is_the_specified_error_and_nothing_is_sent() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "malformed_clear_buffer_calls.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 165, width: 1, height: 1 }, {});
+                gl._maxDrawBuffers = 4;
+                const ENUM = 0x0500, VALUE = 0x0501;
+                const cases = [
+                    [ENUM, () => gl.clearBufferfv(0x1802, 0, [1])],                       // fv: COLOR or DEPTH
+                    [ENUM, () => gl.clearBufferiv(0x1801, 0, [1])],                       // iv: COLOR or STENCIL
+                    [ENUM, () => gl.clearBufferuiv(0x1801, 0, [1, 2, 3, 4])],             // uiv: COLOR only
+                    [ENUM, () => gl.clearBufferfi(0x1801, 0, 1, 0)],                      // fi: DEPTH_STENCIL only
+                    [ENUM, () => gl.clearBufferfv(0x1234, 9, [])],                        // the enum comes first
+                    [VALUE, () => gl.clearBufferfv(0x1800, 4, [0, 0, 0, 0])],             // = MAX_DRAW_BUFFERS
+                    [VALUE, () => gl.clearBufferiv(0x1800, -1, [0, 0, 0, 0])],
+                    [VALUE, () => gl.clearBufferfv(0x1801, 1, [0])],                      // DEPTH: draw buffer 0
+                    [VALUE, () => gl.clearBufferfi(0x84F9, 1, 1, 0)],
+                    [VALUE, () => gl.clearBufferfv(0x1800, 0, [0, 0, 0])],                // COLOR needs 4
+                    [VALUE, () => gl.clearBufferuiv(0x1800, 0, new Uint32Array(4), 1)],   // 3 left after srcOffset
+                    [VALUE, () => gl.clearBufferiv(0x1802, 0, new Int32Array(1), 2)],     // srcOffset past the end
+                    [VALUE, () => gl.clearBufferfv(0x1801, 0, [])],                       // DEPTH needs 1
+                    [VALUE, () => gl.drawRangeElements(4, 5, 4, 3, 0x1403, 0)],           // end < start
+                ];
+                cases.forEach(([want, call], i) => {
+                    call();
+                    const got = gl.getError();
+                    if (got !== want) throw new Error(`case ${i}: getError ${got}, want ${want}`);
+                });
+                let threw = 0;
+                for (const call of [
+                    () => gl.clearBufferfv(0x1234, 0, 5),            // a TypeError ahead of the bad enum
+                    () => gl.clearBufferiv(0x1800, 0, null),
+                    () => gl.clearBufferuiv(0x1800, 9, "nope"),      // ahead of the bad draw buffer
+                    () => gl.clearBufferfi(0x1234, 0, 1n, 0),        // a BigInt is not a GLfloat
+                ]) { try { call(); } catch (e) { if (e instanceof TypeError) threw += 1; } }
+                if (threw !== 4) throw new Error("a non-list is a TypeError: " + threw);
+                if (gl.getError() !== 0) throw new Error("a TypeError records no GL error");
+                gl.flush();
+                "#,
+            )
+            .expect("the malformed calls should be refused, not thrown (but for the TypeErrors, which the script catches)");
+        assert!(
+            render_rx.try_recv().is_err()
+                || recv_gl_commands(&render_rx).into_iter().next().is_none(),
+            "a refused call must not reach the renderer"
+        );
+    }
+
+    /// MAX_DRAW_BUFFERS is asked of the context once it can answer, and kept only then: a context that cannot answer
+    /// (lost) holds COLOR to the minimum every WebGL 2 implementation has, 4, and is asked again by the next call, so
+    /// a device with 8 is not held to 4 for the rest of the context's life by one call made while it was lost.
+    #[test]
+    fn the_draw_buffer_limit_is_kept_only_once_the_context_answers() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "draw_buffer_limit.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 166, width: 1, height: 1 }, {});
+                let asked = 0, answer = null;
+                gl.getParameter = (pname) => { if (pname === 0x8824) asked += 1; return pname === 0x8824 ? answer : null; };
+                const color = (drawbuffer) => gl.clearBufferfv(0x1800, drawbuffer, [0, 0, 0, 1]);
+                color(4);
+                if (gl.getError() !== 0x0501) throw new Error("no answer: draw buffer 4 is past the minimum");
+                answer = 8;
+                color(7);
+                if (gl.getError() !== 0) throw new Error("the answer, 8, admits draw buffer 7");
+                color(7);
+                if (asked !== 2) throw new Error("asked " + asked + " times; the answer is kept once given");
+                gl.flush();
+                "#,
+            )
+            .expect("the draw buffer limit script should run");
+        let drawbuffers: Vec<i32> = recv_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::ClearBufferfv { drawbuffer, .. } => Some(*drawbuffer),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drawbuffers, vec![7, 7]);
     }
 
     /// `getVertexAttrib` answers from what the calls set: the defaults before anything, each pointer's arguments and
@@ -4077,7 +4263,12 @@ pub(super) mod tests {
                 Canvas2DCmd::SetShadowColor { color } => Some(("shadow", color)),
                 _ => None,
             })
-            .map(|(kind, c)| (kind, [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()]))
+            .map(|(kind, c)| {
+                (
+                    kind,
+                    [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()],
+                )
+            })
             .collect();
         let bits = |r: u8, g: u8, b: u8, a: u8| {
             [
@@ -4466,7 +4657,13 @@ pub(super) mod tests {
                         resp.ok(Vec::new());
                     }
                     Ok(RenderCommand::Canvas2D {
-                        cmd: Canvas2DCmd::GetImageData { width, height, resp, .. },
+                        cmd:
+                            Canvas2DCmd::GetImageData {
+                                width,
+                                height,
+                                resp,
+                                ..
+                            },
                         ..
                     }) => {
                         events.push("direct-read");
@@ -4514,7 +4711,9 @@ pub(super) mod tests {
                     }
                     RenderCommand::FramePacket(packet) => {
                         for op in packet.into_ops().iter() {
-                            let FrameOp::CanvasBatch(batch) = op else { continue };
+                            let FrameOp::CanvasBatch(batch) = op else {
+                                continue;
+                            };
                             for command in batch.commands.iter() {
                                 match command {
                                     Canvas2DCmd::CaptureImage { image_id } => {
@@ -4569,7 +4768,11 @@ pub(super) mod tests {
             .expect("the frames must carry the records");
 
         // The `repeat-x` pattern and the two that read "repeat" (`""` and `null`).
-        assert_eq!(copies.len(), 3, "one copy per pattern made; copies={copies:?}");
+        assert_eq!(
+            copies.len(),
+            3,
+            "one copy per pattern made; copies={copies:?}"
+        );
         assert!(
             copies.iter().all(|(canvas, _)| *canvas != 1),
             "the copy is of the tile, not of the canvas the pattern is for; copies={copies:?}"
@@ -4606,7 +4809,9 @@ pub(super) mod tests {
             .expect("capture must execute");
         end_test_frame(&mut runtime);
         handle.join().expect("responder must not panic");
-        let events = events_rx.recv_timeout(Duration::from_secs(2)).expect("events");
+        let events = events_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("events");
 
         assert_eq!(
             events,
@@ -4644,7 +4849,9 @@ pub(super) mod tests {
             .expect("uploads must execute");
         end_test_frame(&mut runtime);
         handle.join().expect("responder must not panic");
-        let events = events_rx.recv_timeout(Duration::from_secs(2)).expect("events");
+        let events = events_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("events");
 
         assert_eq!(
             events,
@@ -4683,7 +4890,9 @@ pub(super) mod tests {
             .expect("reads must execute");
         end_test_frame(&mut runtime);
         handle.join().expect("responder must not panic");
-        let events = events_rx.recv_timeout(Duration::from_secs(5)).expect("events");
+        let events = events_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("events");
 
         assert_eq!(
             events.iter().filter(|e| **e == "direct-read").count(),

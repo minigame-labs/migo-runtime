@@ -32,8 +32,8 @@ use futures::channel::oneshot;
 use migo_io::scheduler::IoScheduler;
 use migo_io::storage_ops::{self, StorageInfo};
 use migo_io::task::{IoRequest, PriorityClass, RequestKind};
-use shared::error::{EngineError, ErrorCode};
 use parking_lot::Mutex;
+use shared::error::{EngineError, ErrorCode};
 use shared::vfs::GamePaths;
 
 use crate::error::{ServiceError, detail_or_message, message_and_detail};
@@ -607,7 +607,12 @@ mod tests {
             // Holds the first store's line until the second store's write has run.
             done_rx
                 .recv_timeout(std::time::Duration::from_secs(10))
-                .map_err(|_| EngineError::from_detail(ErrorCode::Internal, "the other store waited".to_string()))
+                .map_err(|_| {
+                    EngineError::from_detail(
+                        ErrorCode::Internal,
+                        "the other store waited".to_string(),
+                    )
+                })
         });
         let free = run_mutate(scheduler, Some(&two), move |_| {
             let _ = done_tx.send(());
@@ -626,10 +631,16 @@ mod tests {
     fn a_finished_line_leaves_nothing_behind() {
         let scheduler = Arc::new(IoScheduler::new(1));
         let paths = paths("storage-pruned");
-        runtime().block_on(run_mutate(scheduler, Some(&paths), |_| Ok(()))).expect("applied");
+        runtime()
+            .block_on(run_mutate(scheduler, Some(&paths), |_| Ok(())))
+            .expect("applied");
         let dir = storage_dir(Some(&paths)).expect("dir");
         assert!(
-            MUTATION_CHAINS.lock().get(&dir).and_then(Weak::upgrade).is_none(),
+            MUTATION_CHAINS
+                .lock()
+                .get(&dir)
+                .and_then(Weak::upgrade)
+                .is_none(),
             "a chain with nothing in flight is not kept alive"
         );
     }

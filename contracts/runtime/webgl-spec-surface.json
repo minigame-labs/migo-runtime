@@ -20,7 +20,7 @@
       ]
     },
     {
-      "reason": "Framebuffer and texture copies, per-buffer clears and 3D/array texture entry points. Each needs a render-stream record and a handler on the render thread.",
+      "reason": "Framebuffer and texture copies, 3D/array texture entry points and the GPU-side wait. Each needs a render-stream record and a handler on the render thread.",
       "methods": [
         "copyTexImage2D",
         "copyTexSubImage2D",
@@ -30,11 +30,6 @@
         "compressedTexImage3D",
         "compressedTexSubImage3D",
         "invalidateSubFramebuffer",
-        "drawRangeElements",
-        "clearBufferfv",
-        "clearBufferiv",
-        "clearBufferuiv",
-        "clearBufferfi",
         "waitSync"
       ]
     },

@@ -1,4 +1,4 @@
-//! The WebGL block: opcodes 1..=62 fixed, 256..=276 variable, and the shape of
+//! The WebGL block: opcodes 1..=66 fixed, 256..=276 variable, and the shape of
 //! each record.
 //!
 //! One number per call is all that crosses. The producer writes an opcode and
@@ -29,7 +29,7 @@ use crate::stream::{RecordSpec, UniformElementKind};
 /// is refused by this one comparison rather than by arithmetic over the stream.
 pub const MAX_STREAM_UNIFORM_WORDS: u32 = 64 * 1024;
 
-// ─── Fixed opcode constants (1..=62) ─────────────────────────────────────────
+// ─── Fixed opcode constants (1..=66) ─────────────────────────────────────────
 
 pub const OP_VIEWPORT: u32 = 1;
 pub const OP_CLEAR: u32 = 2;
@@ -97,6 +97,14 @@ pub const OP_VERTEX_ATTRIB_4F: u32 = 59;
 pub const OP_VERTEX_ATTRIB_I4I: u32 = 60;
 pub const OP_VERTEX_ATTRIB_I4UI: u32 = 61;
 pub const OP_VERTEX_ATTRIB_I_POINTER: u32 = 62;
+
+// `clearBufferfv`, `clearBufferiv` and `clearBufferuiv` (WebGL 2) cross as one record each: the buffer enum, the draw
+// buffer, and four value words (COLOR uses all four, DEPTH and STENCIL the first; the encoder writes zeros for the
+// rest). `clearBufferfi` carries the depth and the stencil.
+pub const OP_CLEAR_BUFFER_FV: u32 = 63;
+pub const OP_CLEAR_BUFFER_IV: u32 = 64;
+pub const OP_CLEAR_BUFFER_UIV: u32 = 65;
+pub const OP_CLEAR_BUFFER_FI: u32 = 66;
 
 // ─── Variable opcode constants (256..=276) ────────────────────────────────────
 
@@ -253,6 +261,26 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         // H C U I U I I  (index, size, type, stride, offset)
         OP_VERTEX_ATTRIB_I_POINTER => RecordSpec::Fixed {
             word_count: 7,
+            bool_words: &[],
+        },
+        // H C U I F F F F  (buffer, drawbuffer, value[4])
+        OP_CLEAR_BUFFER_FV => RecordSpec::Fixed {
+            word_count: 8,
+            bool_words: &[],
+        },
+        // H C U I I I I I
+        OP_CLEAR_BUFFER_IV => RecordSpec::Fixed {
+            word_count: 8,
+            bool_words: &[],
+        },
+        // H C U I U U U U
+        OP_CLEAR_BUFFER_UIV => RecordSpec::Fixed {
+            word_count: 8,
+            bool_words: &[],
+        },
+        // H C U I F I  (buffer, drawbuffer, depth, stencil)
+        OP_CLEAR_BUFFER_FI => RecordSpec::Fixed {
+            word_count: 6,
             bool_words: &[],
         },
         OP_DEPTH_FUNC => RecordSpec::Fixed {

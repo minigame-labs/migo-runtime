@@ -759,6 +759,9 @@ mod canvas2d_colour_table {
         assert_eq!(get("orange"), [255, 165, 0, 255]);
         assert_eq!(get("lightgoldenrodyellow"), [250, 250, 210, 255]);
         let mut seen = std::collections::HashSet::new();
-        assert!(table.iter().all(|(n, _)| seen.insert(n.clone())), "a name is declared twice");
+        assert!(
+            table.iter().all(|(n, _)| seen.insert(n.clone())),
+            "a name is declared twice"
+        );
     }
 }

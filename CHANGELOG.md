@@ -35,6 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   number of elements, or shorter than `srcOffset` / `srcLength` ask for is INVALID_VALUE and sends nothing; a value
   that is not a list is a `TypeError`. Opcodes 267..=276 (the variable block is now 256..=276), in the embedded
   runtime, the Performance+ producer (including its decode-budget estimate) and the frame decoder alike.
+- WebGL 2: `clearBufferfv`, `clearBufferiv`, `clearBufferuiv`, `clearBufferfi` and `drawRangeElements`. They were
+  `TypeError: not a function`; three.js, Babylon.js and PlayCanvas clear a render target with an integer colour format
+  with `clearBufferuiv` / `clearBufferiv` (`clear` writes floats, which an integer buffer cannot take), and PlayCanvas
+  clears each colour attachment of a multiple-render-target framebuffer by its draw buffer. Each clear crosses as one
+  fixed record (opcodes 63..=66; the GL block's fixed range is now 1..=66) with its values typed as the call types
+  them, and it honours the scissor and the write masks as `clear` does; on the shown canvas it damages what the
+  `clear` of the same buffers would (COLOR in draw buffer 0 only). A buffer the call does not take is INVALID_ENUM, a
+  draw buffer that is negative, at or past `MAX_DRAW_BUFFERS` for COLOR, or other than 0 for DEPTH / STENCIL /
+  DEPTH_STENCIL is INVALID_VALUE, and so is a list with fewer elements than the buffer needs after `srcOffset`; a value
+  that is not a list is a `TypeError`, raised before any of them. `drawRangeElements` draws what `drawElements` does
+  (its range is a hint), and an `end` below `start` is INVALID_VALUE. In the embedded runtime, the Performance+ producer
+  and the frame decoder alike. Not yet: INVALID_OPERATION for a clear whose type does not match the draw buffer's
+  format (an integer buffer cleared with `clearBufferfv`), which needs the facade to know each attachment's format;
+  until then such a clear is what the driver makes of it (OpenGL ES leaves it undefined).
 
 ### Fixed
 - iOS (Performance+): `getError()` returns the errors the producer found itself. A call the facade refuses before it is

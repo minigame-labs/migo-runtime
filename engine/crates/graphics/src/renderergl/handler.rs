@@ -289,6 +289,16 @@ impl RendererGL {
         clear_damage_effect(bit_field, is_onscreen_default_fbo, scissor, color_mask)
     }
 
+    /// The damage a `clearBuffer*` does: that of the `clear` of the same buffers (see [`clear_buffer_bits`]).
+    fn damage_for_clear_buffer(
+        cm: &CanvasManager,
+        canvas_id: CanvasId,
+        buffer: u32,
+        drawbuffer: i32,
+    ) -> DamageEffect {
+        Self::damage_for_clear(cm, canvas_id, clear_buffer_bits(buffer, drawbuffer))
+    }
+
     /// Process a single GL command.
     ///
     /// PERF: Per-command `make_current_needed` overhead.
@@ -359,6 +369,67 @@ impl RendererGL {
                 cm.make_current_needed(canvas_id)?;
                 unsafe { gl.clear_color(r, g, b, a) };
                 Ok(DamageEffect::NoDamage)
+            }
+
+            // ---------- clearBuffer* (WebGL 2) ----------
+            // The draw-buffer-specific clears. Like `clear`, they honour the scissor and the write masks, and one that
+            // lands in the onscreen default framebuffer changes what is shown; only COLOR in draw buffer 0 does
+            // (a default framebuffer has no other colour buffer, and depth / stencil are never presented).
+            GLCmd::ClearBufferfv {
+                canvas_id,
+                buffer,
+                drawbuffer,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let components = if buffer == glow::COLOR { 4 } else { 1 };
+                unsafe {
+                    gl.clear_buffer_f32_slice(buffer, drawbuffer as u32, &value[..components])
+                };
+                Ok(Self::damage_for_clear_buffer(
+                    cm, canvas_id, buffer, drawbuffer,
+                ))
+            }
+            GLCmd::ClearBufferiv {
+                canvas_id,
+                buffer,
+                drawbuffer,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                let components = if buffer == glow::COLOR { 4 } else { 1 };
+                unsafe {
+                    gl.clear_buffer_i32_slice(buffer, drawbuffer as u32, &value[..components])
+                };
+                Ok(Self::damage_for_clear_buffer(
+                    cm, canvas_id, buffer, drawbuffer,
+                ))
+            }
+            GLCmd::ClearBufferuiv {
+                canvas_id,
+                buffer,
+                drawbuffer,
+                value,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe { gl.clear_buffer_u32_slice(buffer, drawbuffer as u32, &value) };
+                Ok(Self::damage_for_clear_buffer(
+                    cm, canvas_id, buffer, drawbuffer,
+                ))
+            }
+            GLCmd::ClearBufferfi {
+                canvas_id,
+                depth,
+                stencil,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                unsafe { gl.clear_buffer_depth_stencil(glow::DEPTH_STENCIL, 0, depth, stencil) };
+                Ok(Self::damage_for_clear_buffer(
+                    cm,
+                    canvas_id,
+                    glow::DEPTH_STENCIL,
+                    0,
+                ))
             }
 
             // ---------- Program (stateful) ----------
@@ -4097,6 +4168,20 @@ pub(crate) fn draw_damage_effect(
     }
 }
 
+/// The `clear` bits a `clearBuffer*` call is the clear of. COLOR is the colour buffer only in draw buffer 0: that is
+/// the one colour buffer a default framebuffer has (WebGL's `drawBuffers` on it takes one entry), and the emulated
+/// default framebuffer presents its COLOR_ATTACHMENT0, which GLES 3 lets no other draw buffer index name. A COLOR clear
+/// of another draw buffer writes a user framebuffer's attachment or nothing; depth and stencil are never presented.
+pub(crate) fn clear_buffer_bits(buffer: u32, drawbuffer: i32) -> u32 {
+    match buffer {
+        glow::COLOR if drawbuffer == 0 => glow::COLOR_BUFFER_BIT,
+        glow::DEPTH => glow::DEPTH_BUFFER_BIT,
+        glow::STENCIL => glow::STENCIL_BUFFER_BIT,
+        glow::DEPTH_STENCIL => glow::DEPTH_BUFFER_BIT | glow::STENCIL_BUFFER_BIT,
+        _ => 0,
+    }
+}
+
 pub(crate) fn clear_damage_effect(
     bit_field: u32,
     is_onscreen_default_fbo: bool,
@@ -4244,6 +4329,50 @@ mod tests {
     }
 
     // ---- clear_damage_effect tests ----
+
+    /// A `clearBuffer*` damages what the `clear` of the same buffers does: COLOR in draw buffer 0 is the presented
+    /// colour buffer (bounded by the scissor, nothing under an all-off colour mask, nothing off the onscreen default
+    /// framebuffer); COLOR in any other draw buffer, DEPTH, STENCIL and DEPTH_STENCIL change nothing that is shown.
+    #[test]
+    fn clear_buffer_damages_what_the_clear_of_the_same_buffers_does() {
+        let color0 = clear_buffer_bits(glow::COLOR, 0);
+        assert_eq!(color0, COLOR);
+        assert_eq!(
+            clear_damage_effect(color0, true, OFF, ALL_ON),
+            DamageEffect::FullSurface
+        );
+        assert_eq!(
+            clear_damage_effect(color0, true, on(1, 2, 3, 4), ALL_ON),
+            DamageEffect::OnscreenRect {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4
+            }
+        );
+        assert_eq!(
+            clear_damage_effect(color0, true, OFF, ALL_OFF),
+            DamageEffect::NoDamage
+        );
+        assert_eq!(
+            clear_damage_effect(color0, false, OFF, ALL_ON),
+            DamageEffect::NoDamage
+        );
+        for (buffer, drawbuffer) in [
+            (glow::COLOR, 1),
+            (glow::COLOR, 7),
+            (glow::DEPTH, 0),
+            (glow::STENCIL, 0),
+            (glow::DEPTH_STENCIL, 0),
+        ] {
+            assert_eq!(
+                clear_damage_effect(clear_buffer_bits(buffer, drawbuffer), true, OFF, ALL_ON),
+                DamageEffect::NoDamage,
+                "buffer {buffer:#x} draw buffer {drawbuffer}"
+            );
+        }
+        assert_eq!(clear_buffer_bits(glow::DEPTH_STENCIL, 0), DEPTH | STENCIL);
+    }
 
     #[test]
     fn color_clear_with_scissor_produces_onscreen_rect() {
