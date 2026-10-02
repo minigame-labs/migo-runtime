@@ -1617,6 +1617,235 @@ pub(super) mod tests {
         assert_eq!(drawbuffers, vec![7, 7]);
     }
 
+    /// Every GL command the packets sent so far carry, in order, across however many packets and batches the
+    /// stream and the ordered ops were split into.
+    fn drain_gl_commands(render_rx: &crossbeam_channel::Receiver<RenderCommand>) -> Vec<GLCmd> {
+        let mut commands = Vec::new();
+        while let Ok(command) = render_rx.try_recv() {
+            if let RenderCommand::FramePacket(packet) = command {
+                for op in packet.into_ops() {
+                    if let FrameOp::GlBatch(payload) = op {
+                        commands.extend(payload.commands);
+                    }
+                }
+            }
+        }
+        commands
+    }
+
+    /// The copies, `framebufferTextureLayer` and `invalidateSubFramebuffer` reach the renderer as the commands the
+    /// specification describes: WebGL 2 takes a sized format for `copyTexImage2D`, `copyBufferSubData`'s offsets and
+    /// size are `long long` (the integer part of what was passed), a layer attachment answers its level and layer
+    /// back, and the invalidations name the default framebuffer's buffers as COLOR / DEPTH and an object's by their
+    /// attachment points.
+    #[test]
+    fn copy_and_framebuffer_layer_calls_become_the_commands_the_specification_describes() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "copy_calls.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 170, width: 1, height: 1 }, {});
+                gl._maxColorAttachments = 4;     // what the renderer would answer for MAX_COLOR_ATTACHMENTS
+                gl.copyTexImage2D(0x0de1, 0, 0x8058, 1, 2, 3, 4, 0);       // RGBA8: a WebGL 2 format
+                gl.copyTexSubImage2D(0x0de1, 1, 2, 3, -4, 5, 6, 7);
+                gl.copyTexSubImage3D(0x806f, 0, 1, 2, 3, 4, 5, 6, 7);
+                gl.copyBufferSubData(0x8f36, 0x8f37, 8, 16, 2147483647);
+                gl.copyBufferSubData(0x8f36, 0x8f37, 0.9, "4", 1.5);
+                const fb = gl.createFramebuffer();
+                gl.bindFramebuffer(0x8d40, fb);
+                const tex = gl.createTexture();
+                gl.framebufferTextureLayer(0x8d40, 0x8ce0, tex, 1, 3);
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                check(gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd1) === tex, "the object is the texture");
+                check(gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd2) === 1, "level 1");
+                check(gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd4) === 3, "layer 3");
+                gl.invalidateSubFramebuffer(0x8d40, [0x8ce0, 0x8d00], 1, 2, 3, 4);
+                gl.invalidateFramebuffer(0x8ca9, [0x8ce3]);
+                gl.bindFramebuffer(0x8d40, null);
+                gl.invalidateFramebuffer(0x8d40, [0x1800, 0x1801, 0x1802]);
+                check(gl.getError() === 0, "no error: " + gl.getError());
+                gl.flush();
+                "#,
+            )
+            .expect("the copy and framebuffer calls should be accepted");
+        let got: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::CopyTexImage2D {
+                    target,
+                    level,
+                    internalformat,
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } => Some(format!(
+                    "copyTexImage2D {target:#x} {level} {internalformat:#x} {x} {y} {width} {height}"
+                )),
+                GLCmd::CopyTexSubImage2D {
+                    target,
+                    level,
+                    xoffset,
+                    yoffset,
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } => Some(format!(
+                    "copyTexSubImage2D {target:#x} {level} {xoffset} {yoffset} {x} {y} {width} {height}"
+                )),
+                GLCmd::CopyTexSubImage3D {
+                    target,
+                    level,
+                    xoffset,
+                    yoffset,
+                    zoffset,
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } => Some(format!(
+                    "copyTexSubImage3D {target:#x} {level} {xoffset} {yoffset} {zoffset} {x} {y} {width} {height}"
+                )),
+                GLCmd::CopyBufferSubData {
+                    read_target,
+                    write_target,
+                    read_offset,
+                    write_offset,
+                    size,
+                    ..
+                } => Some(format!(
+                    "copyBufferSubData {read_target:#x} {write_target:#x} {read_offset} {write_offset} {size}"
+                )),
+                GLCmd::FramebufferTextureLayer {
+                    target,
+                    attachment,
+                    texture,
+                    level,
+                    layer,
+                    ..
+                } => Some(format!(
+                    "framebufferTextureLayer {target:#x} {attachment:#x} {} {level} {layer}",
+                    texture.is_some()
+                )),
+                GLCmd::InvalidateSubFramebuffer {
+                    target,
+                    attachments,
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } => Some(format!(
+                    "invalidateSubFramebuffer {target:#x} {attachments:x?} {x} {y} {width} {height}"
+                )),
+                GLCmd::InvalidateFramebuffer {
+                    target,
+                    attachments,
+                    ..
+                } => Some(format!("invalidateFramebuffer {target:#x} {attachments:x?}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                "copyTexImage2D 0xde1 0 0x8058 1 2 3 4".to_string(),
+                "copyTexSubImage2D 0xde1 1 2 3 -4 5 6 7".to_string(),
+                "copyTexSubImage3D 0x806f 0 1 2 3 4 5 6 7".to_string(),
+                "copyBufferSubData 0x8f36 0x8f37 8 16 2147483647".to_string(),
+                "copyBufferSubData 0x8f36 0x8f37 0 4 1".to_string(),
+                "framebufferTextureLayer 0x8d40 0x8ce0 true 1 3".to_string(),
+                "invalidateSubFramebuffer 0x8d40 [8ce0, 8d00] 1 2 3 4".to_string(),
+                "invalidateFramebuffer 0x8ca9 [8ce3]".to_string(),
+                "invalidateFramebuffer 0x8d40 [1800, 1801, 1802]".to_string(),
+            ]
+        );
+    }
+
+    /// What the facade refuses before anything is encoded: WebGL 1's `copyTexImage2D` with a sized format
+    /// (INVALID_ENUM: WebGL 1 has only the five unsized ones), a `copyBufferSubData` offset or size that is negative or
+    /// past 2^31 -- which no buffer reaches -- (INVALID_VALUE, not wrapped into range), an invalidation of a target
+    /// that is not a framebuffer binding, of a name the bound framebuffer does not have (INVALID_ENUM) or of a colour
+    /// attachment past MAX_COLOR_ATTACHMENTS (INVALID_OPERATION), a negative invalidation rectangle and a negative
+    /// layer or level (INVALID_VALUE). None reaches the renderer; the call whose list is not a list throws.
+    #[test]
+    fn a_malformed_copy_or_invalidation_is_the_specified_error_and_nothing_is_sent() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "malformed_copy_calls.js",
+                r#"
+                const gl1 = new WebGLRenderingContext({ _rid: 171, width: 1, height: 1 }, {});
+                const gl = new WebGL2RenderingContext({ _rid: 172, width: 1, height: 1 }, {});
+                gl._maxColorAttachments = 4;
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                const cases = [
+                    [gl1, ENUM, () => gl1.copyTexImage2D(0x0de1, 0, 0x8058, 0, 0, 4, 4, 0)],          // RGBA8 in WebGL 1
+                    [gl, VALUE, () => gl.copyBufferSubData(0x8f36, 0x8f37, -1, 0, 4)],
+                    [gl, VALUE, () => gl.copyBufferSubData(0x8f36, 0x8f37, 0, 0, 2147483648)],          // 2^31
+                    [gl, VALUE, () => gl.copyBufferSubData(0x8f36, 0x8f37, 4294967296, 0, 4)],          // not 0 mod 2^32
+                    [gl, ENUM, () => gl.invalidateFramebuffer(0x0de1, [0x1800])],                       // not a binding
+                    [gl, ENUM, () => gl.invalidateFramebuffer(0x8d40, [0x8ce0])],                       // the default has no COLOR_ATTACHMENT0
+                    [gl, VALUE, () => gl.invalidateSubFramebuffer(0x8d40, [0x1800], 0, 0, -1, 4)],
+                    [gl, ENUM, () => gl.framebufferTextureLayer(0x0de1, 0x8ce0, null, 0, 0)],
+                    [gl, VALUE, () => gl.framebufferTextureLayer(0x8d40, 0x8ce0, null, 0, -1)],
+                ];
+                cases.forEach(([ctx, want, call], i) => {
+                    call();
+                    const got = ctx.getError();
+                    if (got !== want) throw new Error(`case ${i}: getError ${got}, want ${want}`);
+                });
+                gl.bindFramebuffer(0x8d40, gl.createFramebuffer());
+                gl.flush();
+                globalThis.__gl = gl;
+                "#,
+            )
+            .expect("the malformed calls should be refused, not thrown");
+        drain_gl_commands(&render_rx);
+        runtime
+            .exec_script(
+                "malformed_copy_calls_on_an_object.js",
+                r#"{
+                const gl = globalThis.__gl;
+                const ENUM = 0x0500, OPERATION = 0x0502;
+                gl.invalidateFramebuffer(0x8d40, [0x1800]);              // an object has no COLOR
+                if (gl.getError() !== ENUM) throw new Error("COLOR on an object");
+                gl.invalidateFramebuffer(0x8d40, [0x8ce4]);              // COLOR_ATTACHMENT4 of 4
+                if (gl.getError() !== OPERATION) throw new Error("past MAX_COLOR_ATTACHMENTS");
+                let threw = false;
+                try { gl.invalidateSubFramebuffer(0x8d40, 5, 0, 0, 1, 1); } catch (e) { threw = e instanceof TypeError; }
+                if (!threw) throw new Error("a non-list is a TypeError");
+                try { gl.copyBufferSubData(0x8f36, 0x8f37, 1n, 0, 4); threw = false; } catch (e) { threw = e instanceof TypeError; }
+                if (!threw) throw new Error("a BigInt offset is a TypeError");
+                gl.flush();
+                }"#,
+            )
+            .expect("the calls on an object should be refused, not thrown");
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter(|cmd| {
+                matches!(
+                    cmd,
+                    GLCmd::CopyTexImage2D { .. }
+                        | GLCmd::CopyBufferSubData { .. }
+                        | GLCmd::InvalidateFramebuffer { .. }
+                        | GLCmd::InvalidateSubFramebuffer { .. }
+                        | GLCmd::FramebufferTextureLayer { .. }
+                )
+            })
+            .map(|cmd| format!("{cmd:?}"))
+            .collect();
+        assert!(
+            sent.is_empty(),
+            "a refused call must not reach the renderer: {sent:?}"
+        );
+    }
+
     /// `getVertexAttrib` answers from what the calls set: the defaults before anything, each pointer's arguments and
     /// the buffer bound when it was made, the enable flag, the divisor, the constant value (typed as the call that set
     /// it), per vertex array object, and an error and `null` for what it cannot answer.
@@ -5524,6 +5753,7 @@ fn gl_cmd_has_heap_payload(cmd: &GLCmd) -> bool {
                 | GLCmd::BindAttribLocation { .. }
                 | GLCmd::GetUniformBlockIndex { .. }
                 | GLCmd::InvalidateFramebuffer { .. }
+                | GLCmd::InvalidateSubFramebuffer { .. }
                 | GLCmd::DrawBuffers { .. }
                 | GLCmd::TransformFeedbackVaryings { .. }
                 | GLCmd::TexImage3D { .. }
@@ -7735,6 +7965,36 @@ pub fn op_framebuffer_texture_2d(
     );
 }
 
+/// `framebufferTextureLayer` (WebGL 2): one layer of a 3D or 2D-array texture as an attachment; a texture id below 0
+/// detaches.
+#[op2(fast)]
+pub fn op_framebuffer_texture_layer(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] target: u32,
+    #[smi] attachment: u32,
+    texture: i32,
+    #[smi] level: i32,
+    #[smi] layer: i32,
+) {
+    let texture = if texture < 0 {
+        None
+    } else {
+        Some(texture as u32)
+    };
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::FramebufferTextureLayer {
+            canvas_id,
+            target,
+            attachment,
+            texture,
+            level,
+            layer,
+        },
+    );
+}
+
 #[op2(fast)]
 pub fn op_framebuffer_renderbuffer(
     state: &mut OpState,
@@ -8357,6 +8617,32 @@ pub fn op_invalidate_framebuffer(
             canvas_id,
             target,
             attachments,
+        },
+    );
+}
+
+/// `invalidateSubFramebuffer` (WebGL 2): `op_invalidate_framebuffer` within a rectangle.
+#[op2(fast)]
+pub fn op_invalidate_sub_framebuffer(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] target: u32,
+    #[buffer(copy)] attachments: Vec<u32>,
+    #[smi] x: i32,
+    #[smi] y: i32,
+    #[smi] width: i32,
+    #[smi] height: i32,
+) {
+    queue_gl_fire_and_forget(
+        state,
+        GLCmd::InvalidateSubFramebuffer {
+            canvas_id,
+            target,
+            attachments,
+            x,
+            y,
+            width,
+            height,
         },
     );
 }

@@ -35,10 +35,11 @@ use frame_wire::gl::{
     OP_BIND_VERTEX_ARRAY, OP_BLEND_COLOR, OP_BLEND_EQUATION, OP_BLEND_EQUATION_SEPARATE,
     OP_BLEND_FUNC, OP_BLEND_FUNC_SEPARATE, OP_CLEAR, OP_CLEAR_BUFFER_FI, OP_CLEAR_BUFFER_FV,
     OP_CLEAR_BUFFER_IV, OP_CLEAR_BUFFER_UIV, OP_CLEAR_COLOR, OP_CLEAR_DEPTH, OP_CLEAR_STENCIL,
-    OP_COLOR_MASK, OP_CULL_FACE, OP_DEPTH_FUNC, OP_DEPTH_MASK, OP_DEPTH_RANGE, OP_DISABLE,
-    OP_DISABLE_VERTEX_ATTRIB_ARRAY, OP_DRAW_ARRAYS, OP_DRAW_ARRAYS_INSTANCED, OP_DRAW_ELEMENTS,
-    OP_DRAW_ELEMENTS_INSTANCED, OP_ENABLE, OP_ENABLE_VERTEX_ATTRIB_ARRAY, OP_FRONT_FACE,
-    OP_GENERATE_MIPMAP, OP_HINT, OP_LINE_WIDTH, OP_PIXEL_STORE_I, OP_POLYGON_OFFSET,
+    OP_COLOR_MASK, OP_COPY_BUFFER_SUB_DATA, OP_COPY_TEX_IMAGE_2D, OP_COPY_TEX_SUB_IMAGE_2D,
+    OP_COPY_TEX_SUB_IMAGE_3D, OP_CULL_FACE, OP_DEPTH_FUNC, OP_DEPTH_MASK, OP_DEPTH_RANGE,
+    OP_DISABLE, OP_DISABLE_VERTEX_ATTRIB_ARRAY, OP_DRAW_ARRAYS, OP_DRAW_ARRAYS_INSTANCED,
+    OP_DRAW_ELEMENTS, OP_DRAW_ELEMENTS_INSTANCED, OP_ENABLE, OP_ENABLE_VERTEX_ATTRIB_ARRAY,
+    OP_FRONT_FACE, OP_GENERATE_MIPMAP, OP_HINT, OP_LINE_WIDTH, OP_PIXEL_STORE_I, OP_POLYGON_OFFSET,
     OP_READ_BUFFER, OP_SAMPLER_PARAMETER_F, OP_SAMPLER_PARAMETER_I, OP_SCISSOR, OP_STENCIL_FUNC,
     OP_STENCIL_FUNC_SEPARATE, OP_STENCIL_MASK, OP_STENCIL_MASK_SEPARATE, OP_STENCIL_OP,
     OP_STENCIL_OP_SEPARATE, OP_TEX_PARAMETER_F, OP_TEX_PARAMETER_I, OP_UNIFORM_MATRIX2FV,
@@ -72,7 +73,8 @@ pub use validate::{ClearBufferKind, GlDecodeContext, ImageUpload, TransformFeedb
 
 use validate::{
     validate_bind_buffer_base, validate_bind_buffer_range, validate_bind_buffer_target,
-    validate_clear_buffer, validate_vertex_attrib_ipointer, validate_vertex_attrib_pointer,
+    validate_clear_buffer, validate_copy_buffer_sub_data, validate_copy_tex_image_2d,
+    validate_copy_tex_sub_image, validate_vertex_attrib_ipointer, validate_vertex_attrib_pointer,
     validate_viewport_like,
 };
 
@@ -557,6 +559,118 @@ fn decode_record<C: GlDecodeContext>(
                 canvas_id,
                 depth: f(record[4]),
                 stencil: i(record[5]),
+            })
+        }
+
+        // ── 67..70: the copies ──────────────────────────────────────────────────────
+        // H C U I U I I I I I (target, level, internalformat, x, y, width, height, border)
+        OP_COPY_TEX_IMAGE_2D => {
+            let canvas_id = record[1];
+            let (target, level, internalformat) = (record[2], i(record[3]), record[4]);
+            let (width, height) = (i(record[7]), i(record[8]));
+            if !validate_copy_tex_image_2d(
+                context,
+                canvas_id,
+                target,
+                level,
+                internalformat,
+                width,
+                height,
+                i(record[9]),
+            ) {
+                return None;
+            }
+            Some(GLCmd::CopyTexImage2D {
+                canvas_id,
+                target,
+                level,
+                internalformat,
+                x: i(record[5]),
+                y: i(record[6]),
+                width,
+                height,
+            })
+        }
+        // H C U I I I I I I I (target, level, xoffset, yoffset, x, y, width, height)
+        OP_COPY_TEX_SUB_IMAGE_2D => {
+            let canvas_id = record[1];
+            let (target, level) = (record[2], i(record[3]));
+            let (xoffset, yoffset) = (i(record[4]), i(record[5]));
+            let (width, height) = (i(record[8]), i(record[9]));
+            if !validate_copy_tex_sub_image(
+                context,
+                canvas_id,
+                false,
+                target,
+                level,
+                &[xoffset, yoffset, width, height],
+            ) {
+                return None;
+            }
+            Some(GLCmd::CopyTexSubImage2D {
+                canvas_id,
+                target,
+                level,
+                xoffset,
+                yoffset,
+                x: i(record[6]),
+                y: i(record[7]),
+                width,
+                height,
+            })
+        }
+        // H C U I I I I I I I I (target, level, xoffset, yoffset, zoffset, x, y, width, height)
+        OP_COPY_TEX_SUB_IMAGE_3D => {
+            let canvas_id = record[1];
+            let (target, level) = (record[2], i(record[3]));
+            let (xoffset, yoffset, zoffset) = (i(record[4]), i(record[5]), i(record[6]));
+            let (width, height) = (i(record[9]), i(record[10]));
+            if !validate_copy_tex_sub_image(
+                context,
+                canvas_id,
+                true,
+                target,
+                level,
+                &[xoffset, yoffset, zoffset, width, height],
+            ) {
+                return None;
+            }
+            Some(GLCmd::CopyTexSubImage3D {
+                canvas_id,
+                target,
+                level,
+                xoffset,
+                yoffset,
+                zoffset,
+                x: i(record[7]),
+                y: i(record[8]),
+                width,
+                height,
+            })
+        }
+        // H C U U I I I (readTarget, writeTarget, readOffset, writeOffset, size)
+        OP_COPY_BUFFER_SUB_DATA => {
+            let canvas_id = record[1];
+            let (read_target, write_target) = (record[2], record[3]);
+            let (read_offset, write_offset, size) = (i(record[4]), i(record[5]), i(record[6]));
+            if !validate_copy_buffer_sub_data(
+                context,
+                canvas_id,
+                read_target,
+                write_target,
+                read_offset,
+                write_offset,
+                size,
+            ) {
+                return None;
+            }
+            Some(GLCmd::CopyBufferSubData {
+                canvas_id,
+                read_target,
+                write_target,
+                read_offset,
+                write_offset,
+                size,
             })
         }
 

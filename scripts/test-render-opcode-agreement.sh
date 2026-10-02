@@ -28,7 +28,10 @@
 # bytes were staged ahead of it, and MAX_WEBGL_UPLOAD_BYTES, the producer's copy
 # of the one-upload ceiling it refuses above rather than staging for nothing.
 #
-# Host-only: reads the tables and those two constants.
+# And the prefix of every payload record, which the producer's decode-budget
+# estimate reads its length at (see below).
+#
+# Host-only: reads the tables and those constants.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -288,6 +291,49 @@ if None not in upload_ceilings.values():
         problems.append(f"MAX_WEBGL_UPLOAD_BYTES disagrees: {upload_ceilings}")
     else:
         print(f"  - MAX_WEBGL_UPLOAD_BYTES agrees: {upload_ceilings['rust']}")
+
+# The payload records' prefixes: the words before a byte payload's length or a word list's count. The producer's
+# decode-budget estimate (decode-budget.mjs) reads that length at the prefix it has for the opcode, so a prefix that
+# disagrees with the Rust spec reads another word as the length and misestimates that record alone. The interop run
+# checks only the records its calls happen to emit: an OPR_INVALIDATE_SUB_FRAMEBUFFER prefix of 6 for 7 walked past
+# every gate (2026-10-02). So the tables are compared whole, opcode by opcode, in both directions.
+def rust_shapes(path):
+    text = Path(path).read_text(encoding="utf-8")
+    shapes = {"Bytes": {}, "Words": {}}
+    for names, kind, prefix in re.findall(
+        r"((?:OP2?D?R?_[A-Z0-9_]+(?:\s*\|\s*)?)+)\s*=>\s*(?:\{\s*return Some\()?RecordSpec::(Bytes|Words)\s*\{\s*prefix_words:\s*(\d+)",
+        text,
+    ):
+        for name in re.split(r"\s*\|\s*", names.strip()):
+            shapes[kind][name] = int(prefix)
+    for name, prefix in re.findall(r"(OPR_[A-Z0-9_]+)\s*=>\s*(?:bytes|upload)\((\d+)", text):
+        shapes["Bytes"][name] = int(prefix)
+    return shapes
+def js_map(text, name):
+    found = re.search(r"export const " + name + r" = new Map\(\[(.*?)\]\);", text, re.S)
+    if not found:
+        problems.append(f"decode-budget.mjs declares no {name}")
+        return {}
+    return {op: int(v) for op, v in re.findall(r"\[(OP[A-Z0-9_]+), (\d+)\]", found.group(1))}
+budget_text = Path("platforms/apple/WebContent/PerformancePlus/src/decode-budget.mjs").read_text(encoding="utf-8")
+for rust_path, label, bytes_map, words_map in (
+    ("engine/crates/frame-wire/src/gl_resource.rs", "res", "PAYLOAD_PREFIX_WORDS", "WORD_LIST_PREFIX_WORDS"),
+    ("engine/crates/frame-wire/src/canvas2d.rs", "2d", "CANVAS2D_PAYLOAD_PREFIX_WORDS", "CANVAS2D_WORD_LIST_PREFIX_WORDS"),
+):
+    shapes = rust_shapes(rust_path)
+    for kind, js_name in (("Bytes", bytes_map), ("Words", words_map)):
+        rust, js = shapes[kind], js_map(budget_text, js_name)
+        if not rust:
+            problems.append(f"{label}: no {kind} record parsed out of {rust_path}; the pattern no longer matches")
+            continue
+        for op in sorted(set(rust) | set(js)):
+            if rust.get(op) != js.get(op):
+                problems.append(
+                    f"{label}: {op}'s {kind.lower()} prefix is {rust.get(op)} in {rust_path} "
+                    f"and {js.get(op)} in decode-budget.mjs {js_name}"
+                )
+        if all(rust.get(op) == js.get(op) for op in set(rust) | set(js)):
+            print(f"  - {label} {kind.lower()} prefixes agree with decode-budget.mjs on all {len(rust)}")
 
 print()
 if problems:

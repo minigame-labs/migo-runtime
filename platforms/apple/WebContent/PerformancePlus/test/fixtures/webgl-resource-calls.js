@@ -58,6 +58,9 @@ gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, texture, 0); // COLOR_ATTACHMENT
 gl.framebufferTexture2D(0x8d40, 0x8ce1, 0x0de1, null, 0);
 gl.drawBuffers([0x8ce0, 0]); // COLOR_ATTACHMENT0, NONE
 gl.invalidateFramebuffer(0x8d40, [0x8ce0]);
+gl.invalidateSubFramebuffer(0x8d40, [0x8ce0, 0x8d00], 1, 2, 3, 4); // COLOR_ATTACHMENT0, DEPTH_ATTACHMENT
+gl.framebufferTextureLayer(0x8d40, 0x8ce1, volume, 0, 1); // COLOR_ATTACHMENT1, layer 1 of the 3D texture
+gl.framebufferTextureLayer(0x8d40, 0x8ce1, null, 0, 0);
 gl.blitFramebuffer(0, 0, 4, 4, 4, 4, -4, -4, 0x4000, 0x2600); // COLOR_BUFFER_BIT, NEAREST
 
 const query = gl.createQuery();

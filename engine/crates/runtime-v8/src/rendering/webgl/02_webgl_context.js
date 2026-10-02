@@ -113,6 +113,7 @@ import {
     op_delete_framebuffer,
     op_bind_framebuffer,
     op_framebuffer_texture_2d,
+    op_framebuffer_texture_layer,
     op_framebuffer_renderbuffer,
     op_check_framebuffer_status,
     op_create_renderbuffer,
@@ -142,6 +143,7 @@ import {
     op_tex_storage_2d,
     op_blit_framebuffer,
     op_invalidate_framebuffer,
+    op_invalidate_sub_framebuffer,
     op_renderbuffer_storage_multisample,
     op_create_sampler,
     op_delete_sampler,
@@ -232,6 +234,10 @@ import {
     encodeClearBufferiv,
     encodeClearBufferuiv,
     encodeClearBufferfi,
+    encodeCopyTexImage2D,
+    encodeCopyTexSubImage2D,
+    encodeCopyTexSubImage3D,
+    encodeCopyBufferSubData,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,
@@ -482,6 +488,7 @@ const _rawCreateFramebuffer  = _makeOrderedRaw(op_create_framebuffer);
 const _rawDeleteFramebuffer  = _makeOrderedRaw(op_delete_framebuffer);
 const _rawBindFramebuffer    = _makeOrderedRaw(op_bind_framebuffer);
 const _rawFramebufferTexture2D= _makeOrderedRaw(op_framebuffer_texture_2d);
+const _rawFramebufferTextureLayer= _makeOrderedRaw(op_framebuffer_texture_layer);
 const _rawFramebufferRenderbuffer= _makeOrderedRaw(op_framebuffer_renderbuffer);
 const _rawCheckFramebufferStatus= _makeOrderedRaw(op_check_framebuffer_status);
 const _rawCreateRenderbuffer = _makeOrderedRaw(op_create_renderbuffer);
@@ -507,6 +514,7 @@ const _rawBindBufferRange    = _makeOrderedRaw(op_bind_buffer_range);
 const _rawTexStorage2D       = _makeOrderedRaw(op_tex_storage_2d);
 const _rawBlitFramebuffer    = _makeOrderedRaw(op_blit_framebuffer);
 const _rawInvalidateFramebuffer= _makeOrderedRaw(op_invalidate_framebuffer);
+const _rawInvalidateSubFramebuffer= _makeOrderedRaw(op_invalidate_sub_framebuffer);
 const _rawRenderbufferStorageMultisample= _makeOrderedRaw(op_renderbuffer_storage_multisample);
 const _rawCreateSampler      = _makeOrderedRaw(op_create_sampler);
 const _rawDeleteSampler      = _makeOrderedRaw(op_delete_sampler);
@@ -1005,6 +1013,16 @@ function toGLenumSequence(value) {
         throw new TypeError("Failed to convert value to 'sequence<GLenum>'");
     }
     return Uint32Array.from(value);
+}
+
+// A WebIDL `long long` argument (GLintptr, GLsizeiptr): the integer part, wrapped modulo 2^64 into the signed range,
+// with NaN and the infinities 0. A BigInt or a Symbol is a TypeError, as WebIDL's ToNumber makes it.
+function toLongLong(value) {
+    const n = MathTrunc(+value);
+    if (!NumberIsFinite(n)) return 0;
+    if (n >= -0x8000000000000000 && n < 0x8000000000000000) return n;
+    const r = n % 0x10000000000000000;
+    return r >= 0x8000000000000000 ? r - 0x10000000000000000 : (r < -0x8000000000000000 ? r + 0x10000000000000000 : r);
 }
 
 // Channel sizes in bits of a renderbuffer format: [red, green, blue, alpha, depth, stencil].
@@ -2919,6 +2937,22 @@ class WebGLRenderingContext {
         flushRenderCommandStream();
         _rawBindFramebuffer(this._canvasId, target, fbId);
     }
+    // ---- Copies from the read framebuffer ----------------------------------------------------------------------------
+    // The read framebuffer -- the drawing buffer, or the content's own -- into the bound texture, on the GPU: only the
+    // arguments cross. The rules that need no state (the target, the format, a negative size or offset, the border, a
+    // square cube face) are the decoder's, for both lanes; WebGL 1 takes only the five unsized formats.
+    copyTexImage2D(target, level, internalformat, x, y, width, height, border) {
+        const format = internalformat >>> 0;
+        if (format < 0x1906 || format > 0x190a) {         // ALPHA, RGB, RGBA, LUMINANCE, LUMINANCE_ALPHA
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        encodeCopyTexImage2D(this._canvasId, target, level, format, x, y, width, height, border);
+    }
+    copyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height) {
+        encodeCopyTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, x, y, width, height);
+    }
+
     framebufferTexture2D(target, attachment, textarget, texture, level) {
         this._noteAttachment(target, attachment, texture ? { type: 0x1702, object: texture, level: level | 0, face: textarget } : null);
         _rawFramebufferTexture2D(this._canvasId, target, attachment, textarget, texture ? texture.id : -1, level);
@@ -3132,6 +3166,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // `clearBuffer*` fills it with the four values of the record it encodes.
         this._clearBufferScratch = [0, 0, 0, 0];
         this._maxDrawBuffers = 0;
+        this._maxColorAttachments = 0;
         // Scratch for `uniform{1,2,3,4}ui`: the stream copies the words as it encodes them.
         this._uniformU32Scratch = [null, new Uint32Array(1), new Uint32Array(2), new Uint32Array(3), new Uint32Array(4)];
         this._currentTransformFeedback = null;
@@ -3235,16 +3270,19 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // the rest; a list holds the elements the buffer needs (4 for COLOR, 1 otherwise) from `srcOffset`. The arguments are
     // converted first, as WebIDL converts them before the call runs (a value that is not a list is a TypeError ahead of any
     // GL error); then a call that breaks a rule is the error the specification names, in that order, and sends nothing.
-    _drawBufferLimit() {
-        if (this._maxDrawBuffers === 0) {
-            const n = this.getParameter(0x8824);   // MAX_DRAW_BUFFERS
-            // Only an answer is kept: a context that cannot answer now (lost) is held to the minimum every WebGL 2
-            // implementation has, and asked again by the next call.
-            if (!NumberIsInteger(n) || n < 1) return 4;
-            this._maxDrawBuffers = n;
+    // A device limit, asked once the context can answer and kept from then on. A context that cannot answer now
+    // (lost) is held to `minimum`, what every WebGL 2 implementation has, and asked again by the next call. Callers
+    // compare against `minimum` first: an index below it needs no answer, so the common call never crosses for one.
+    _cachedLimit(field, pname, minimum) {
+        if (this[field] === 0) {
+            const n = this.getParameter(pname);
+            if (!NumberIsInteger(n) || n < 1) return minimum;
+            this[field] = n;
         }
-        return this._maxDrawBuffers;
+        return this[field];
     }
+    _drawBufferLimit() { return this._cachedLimit("_maxDrawBuffers", 0x8824, 4); }            // MAX_DRAW_BUFFERS
+    _colorAttachmentLimit() { return this._cachedLimit("_maxColorAttachments", 0x8cdf, 4); }  // MAX_COLOR_ATTACHMENTS
     // `other` is the buffer besides COLOR the call takes: DEPTH for fv, STENCIL for iv, none (-1) for uiv.
     _clearBufferValues(name, other, Type, buffer, drawbuffer, values, srcOffset) {
         const b = buffer >>> 0;
@@ -3263,7 +3301,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             return null;
         }
         const color = b === 0x1800;
-        if (d < 0 || (color ? d >= this._drawBufferLimit() : d !== 0)) {
+        if (d < 0 || (color ? d >= 4 && d >= this._drawBufferLimit() : d !== 0)) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return null;
         }
@@ -3568,11 +3606,88 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         _rawBlitFramebuffer(this._canvasId, srcX0, srcY0, srcX1, srcY1,
                              dstX0, dstY0, dstX1, dstY1, mask, filter);
     }
+    // The attachments `invalidateFramebuffer` / `invalidateSubFramebuffer` name, against the framebuffer the target has
+    // bound: the default one names its buffers COLOR / DEPTH / STENCIL, an object its attachment points. A name that
+    // framebuffer does not have is INVALID_ENUM, a colour attachment past MAX_COLOR_ATTACHMENTS INVALID_OPERATION, a
+    // target that is not a framebuffer binding INVALID_ENUM. The list as the op takes it, or null when refused.
+    _invalidationList(target, attachments) {
+        const list = toGLenumSequence(attachments);
+        const t = target >>> 0;
+        if (t !== 0x8d40 && t !== 0x8ca9 && t !== 0x8ca8) {   // FRAMEBUFFER, DRAW_FRAMEBUFFER, READ_FRAMEBUFFER
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
+        const fb = t === 0x8ca8 ? this._readFramebufferBinding : this._framebufferBinding;
+        for (let k = 0; k < list.length; k++) {
+            const a = list[k];
+            let error = 0;
+            if (!fb) {
+                if (a < 0x1800 || a > 0x1802) error = GL_INVALID_ENUM;                             // COLOR, DEPTH, STENCIL
+            } else if (a >= 0x8ce0 && a <= 0x8cef) {                                               // COLOR_ATTACHMENT0..15
+                if (a - 0x8ce0 >= 4 && a - 0x8ce0 >= this._colorAttachmentLimit()) error = GL_INVALID_OPERATION;
+            } else if (a !== 0x8d00 && a !== 0x8d20 && a !== 0x821a) {                            // DEPTH, STENCIL, DEPTH_STENCIL
+                error = GL_INVALID_ENUM;
+            }
+            if (error !== 0) {
+                recordGpuPreflightError(this._canvasId, error);
+                return null;
+            }
+        }
+        return list;
+    }
     invalidateFramebuffer(target, attachments) {
-        // WebGL spec accepts a sequence<GLenum>; normalise to Uint32Array
-        // for the op boundary.
-        const buf = toGLenumSequence(attachments);
-        _rawInvalidateFramebuffer(this._canvasId, target, buf);
+        const list = this._invalidationList(target, attachments);
+        if (list !== null) _rawInvalidateFramebuffer(this._canvasId, target >>> 0, list);
+    }
+    invalidateSubFramebuffer(target, attachments, x, y, width, height) {
+        const list = this._invalidationList(target, attachments);
+        if (list === null) return;
+        const w = width | 0;
+        const h = height | 0;
+        if (w < 0 || h < 0) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        _rawInvalidateSubFramebuffer(this._canvasId, target >>> 0, list, x | 0, y | 0, w, h);
+    }
+    // One layer of a 3D or 2D-array texture as an attachment. A target that is not a framebuffer binding is
+    // INVALID_ENUM, a negative level or layer INVALID_VALUE. The layer is what FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER answers.
+    framebufferTextureLayer(target, attachment, texture, level, layer) {
+        const t = target >>> 0;
+        const lv = level | 0;
+        const ly = layer | 0;
+        if (t !== 0x8d40 && t !== 0x8ca9 && t !== 0x8ca8) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        if (lv < 0 || ly < 0) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        this._noteAttachment(t, attachment, texture ? { type: 0x1702, object: texture, level: lv, face: 0, layer: ly } : null);
+        _rawFramebufferTextureLayer(this._canvasId, t, attachment >>> 0, texture ? texture.id : -1, lv, ly);
+    }
+
+    // ---- Copies (WebGL 2) -------------------------------------------------------------------------------------------
+    // WebGL 2 takes the sized colour formats too, so the decoder's list is the whole rule.
+    copyTexImage2D(target, level, internalformat, x, y, width, height, border) {
+        encodeCopyTexImage2D(this._canvasId, target, level, internalformat, x, y, width, height, border);
+    }
+    copyTexSubImage3D(target, level, xoffset, yoffset, zoffset, x, y, width, height) {
+        encodeCopyTexSubImage3D(this._canvasId, target, level, xoffset, yoffset, zoffset, x, y, width, height);
+    }
+    // The offsets and size are `long long`. No buffer reaches 2^31 bytes (the render side holds a buffer's size as a
+    // GLint), so one past that cannot fit any buffer and is INVALID_VALUE here, like a negative one; the words that
+    // cross are then exact.
+    copyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size) {
+        const r = toLongLong(readOffset);
+        const w = toLongLong(writeOffset);
+        const n = toLongLong(size);
+        if (!(r >= 0 && r <= 0x7fffffff && w >= 0 && w <= 0x7fffffff && n >= 0 && n <= 0x7fffffff)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        encodeCopyBufferSubData(this._canvasId, readTarget, writeTarget, r, w, n);
     }
     renderbufferStorageMultisample(target, samples, internalformat, width, height) {
         if (!preflightRenderbuffer(

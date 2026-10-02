@@ -84,6 +84,10 @@ export const OP_CLEAR_BUFFER_FV = 63;
 export const OP_CLEAR_BUFFER_IV = 64;
 export const OP_CLEAR_BUFFER_UIV = 65;
 export const OP_CLEAR_BUFFER_FI = 66;
+export const OP_COPY_TEX_IMAGE_2D = 67;
+export const OP_COPY_TEX_SUB_IMAGE_2D = 68;
+export const OP_COPY_TEX_SUB_IMAGE_3D = 69;
+export const OP_COPY_BUFFER_SUB_DATA = 70;
 export const OP_UNIFORM1IV = 256;
 export const OP_UNIFORM1FV = 257;
 export const OP_UNIFORM2IV = 258;
@@ -301,6 +305,7 @@ export const OPR_DRAW_BUFFERS = 202;
 export const OPR_INVALIDATE_FRAMEBUFFER = 203;
 export const OPR_TRANSFORM_FEEDBACK_VARYINGS = 204;
 export const OPR_STAGE_PAYLOAD = 205;
+export const OPR_INVALIDATE_SUB_FRAMEBUFFER = 206;
 
 // The byte_length of an upload whose bytes were staged ahead of it in
 // OPR_STAGE_PAYLOAD chunks: no bytes follow in the record. Declared beside
@@ -313,6 +318,7 @@ export const OPR_TEX_IMAGE_2D_FROM_SNAPSHOT = 171;
 export const OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT = 172;
 export const OPR_TEX_IMAGE_2D_FROM_CANVAS2D = 173;
 export const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D = 174;
+export const OPR_FRAMEBUFFER_TEXTURE_LAYER = 175;
 export const MAX_RESOURCE_WORD_LIST = 64;
 // The most payload words one variable-uniform record carries
 // (`frame_wire::gl::MAX_STREAM_UNIFORM_WORDS`), which is not the engine

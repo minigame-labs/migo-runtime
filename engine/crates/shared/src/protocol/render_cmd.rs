@@ -1126,6 +1126,72 @@ pub enum GLCmd {
         depth: f32,
         stencil: i32,
     },
+    /// `copyTexImage2D`: (re)defines the bound texture's level from the read framebuffer's rectangle. The border
+    /// the call takes is always 0 (the decoder refuses another), so it does not travel.
+    CopyTexImage2D {
+        canvas_id: CanvasId,
+        target: u32,
+        level: i32,
+        internalformat: u32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
+    /// `copyTexSubImage2D`: the read framebuffer's rectangle into part of the bound texture's level.
+    CopyTexSubImage2D {
+        canvas_id: CanvasId,
+        target: u32,
+        level: i32,
+        xoffset: i32,
+        yoffset: i32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
+    /// `copyTexSubImage3D`: the read framebuffer's rectangle into one layer (`zoffset`) of a 3D or 2D-array texture.
+    CopyTexSubImage3D {
+        canvas_id: CanvasId,
+        target: u32,
+        level: i32,
+        xoffset: i32,
+        yoffset: i32,
+        zoffset: i32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
+    /// `copyBufferSubData`: bytes from the buffer bound to one target into the buffer bound to another (or the same
+    /// one, at a range that does not overlap). The offsets and the size are below 2^31: no buffer is larger.
+    CopyBufferSubData {
+        canvas_id: CanvasId,
+        read_target: u32,
+        write_target: u32,
+        read_offset: i32,
+        write_offset: i32,
+        size: i32,
+    },
+    /// `framebufferTextureLayer`: one layer of a 3D / 2D-array texture (or `None` to detach) as an attachment.
+    FramebufferTextureLayer {
+        canvas_id: CanvasId,
+        target: u32,
+        attachment: u32,
+        texture: Option<u32>,
+        level: i32,
+        layer: i32,
+    },
+    /// `invalidateSubFramebuffer`: `InvalidateFramebuffer` within a rectangle.
+    InvalidateSubFramebuffer {
+        canvas_id: CanvasId,
+        target: u32,
+        attachments: Vec<u32>,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
 
     // ========== Phase 2A: Blend/Depth/Stencil/Cull State ==========
     BlendFunc {
@@ -2599,6 +2665,12 @@ impl GLCmd {
             | GLCmd::ClearBufferiv { canvas_id, .. }
             | GLCmd::ClearBufferuiv { canvas_id, .. }
             | GLCmd::ClearBufferfi { canvas_id, .. }
+            | GLCmd::CopyTexImage2D { canvas_id, .. }
+            | GLCmd::CopyTexSubImage2D { canvas_id, .. }
+            | GLCmd::CopyTexSubImage3D { canvas_id, .. }
+            | GLCmd::CopyBufferSubData { canvas_id, .. }
+            | GLCmd::FramebufferTextureLayer { canvas_id, .. }
+            | GLCmd::InvalidateSubFramebuffer { canvas_id, .. }
             | GLCmd::CreateProgram { canvas_id, .. }
             | GLCmd::CreateShader { canvas_id, .. }
             | GLCmd::UseProgram { canvas_id, .. }
@@ -2871,6 +2943,12 @@ impl GLCmd {
             | GLCmd::ClearBufferiv { .. }
             | GLCmd::ClearBufferuiv { .. }
             | GLCmd::ClearBufferfi { .. }
+            | GLCmd::CopyTexImage2D { .. }
+            | GLCmd::CopyTexSubImage2D { .. }
+            | GLCmd::CopyTexSubImage3D { .. }
+            | GLCmd::CopyBufferSubData { .. }
+            | GLCmd::FramebufferTextureLayer { .. }
+            | GLCmd::InvalidateSubFramebuffer { .. }
             | GLCmd::CreateProgram { .. }
             | GLCmd::CreateShader { .. }
             | GLCmd::UseProgram { .. }
@@ -3092,7 +3170,8 @@ impl GLCmd {
             }
 
             // WebGL 2 framebuffer metadata arrays.
-            GLCmd::InvalidateFramebuffer { attachments, .. } => {
+            GLCmd::InvalidateFramebuffer { attachments, .. }
+            | GLCmd::InvalidateSubFramebuffer { attachments, .. } => {
                 attachments.capacity() * std::mem::size_of::<u32>()
             }
             GLCmd::DrawBuffers { buffers, .. } => buffers.capacity() * std::mem::size_of::<u32>(),

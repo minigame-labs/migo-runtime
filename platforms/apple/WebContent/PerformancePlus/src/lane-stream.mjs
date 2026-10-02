@@ -329,6 +329,17 @@ export function op_framebuffer_texture_2d(canvasId, target, attachment, textarge
     toI32(level, "level"),
   );
 }
+export function op_framebuffer_texture_layer(canvasId, target, attachment, texture, level, layer) {
+  emit(
+    R.OPR_FRAMEBUFFER_TEXTURE_LAYER,
+    smiU32(canvasId, "canvas_id"),
+    smiU32(target, "target"),
+    smiU32(attachment, "attachment"),
+    toI32(texture, "texture"),
+    toI32(level, "level"),
+    toI32(layer, "layer"),
+  );
+}
 export function op_renderbuffer_storage(canvasId, target, internalformat, width, height) {
   emit(
     R.OPR_RENDERBUFFER_STORAGE,
@@ -602,6 +613,20 @@ export function op_invalidate_framebuffer(canvasId, target, attachments) {
     u32ArrayOf(attachments, "attachments"),
     canvas,
     smiU32(target, "target"),
+  );
+}
+export function op_invalidate_sub_framebuffer(canvasId, target, attachments, x, y, width, height) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  emitWords(
+    canvas,
+    R.OPR_INVALIDATE_SUB_FRAMEBUFFER,
+    u32ArrayOf(attachments, "attachments"),
+    canvas,
+    smiU32(target, "target"),
+    toI32(x, "x"),
+    toI32(y, "y"),
+    toI32(width, "width"),
+    toI32(height, "height"),
   );
 }
 export function op_transform_feedback_varyings(canvasId, program, varyingsJoined, bufferMode) {

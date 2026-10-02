@@ -360,7 +360,7 @@ ceiling. The embedded runtime's `validate_stream` retains its separate
 ### Payload records
 
 The opcode tables are code, not this document -- `engine/crates/frame-wire/src/`
-`gl.rs` (1..=66 fixed, 256..=276 uniform arrays), `gl_resource.rs` (128..=191
+`gl.rs` (1..=70 fixed, 256..=276 uniform arrays), `gl_resource.rs` (128..=191
 fixed, 192..=255 carrying a payload) and `canvas2d.rs` (512..) -- and
 `scripts/test-render-opcode-agreement.sh` holds every encoder to them. What the
 envelope checks of a record is its shape, and two shapes carry data:
