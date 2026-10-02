@@ -1003,11 +1003,30 @@ fn command_check_answers() -> serde_json::Value {
     })
 }
 
+/// The answers with every object's keys in sorted order. `serde_json` keeps keys in insertion order when its
+/// `preserve_order` feature is on, and `deno_core` turns it on: a `cargo test` that builds this crate next to
+/// `migo-runtime-v8` serialised the same answers in another order and failed against the committed file.
+fn sorted_keys(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let sorted: std::collections::BTreeMap<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(key, v)| (key, sorted_keys(v)))
+                .collect();
+            serde_json::Value::Object(sorted.into_iter().collect())
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(sorted_keys).collect())
+        }
+        other => other,
+    }
+}
+
 #[test]
 fn the_producer_s_command_checks_answer_as_these_do() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../platforms/apple/WebContent/PerformancePlus/test/fixtures/audio-check-answers.json");
-    let answers = command_check_answers();
+    let answers = sorted_keys(command_check_answers());
     let text = serde_json::to_string_pretty(&answers).unwrap() + "\n";
     if std::env::var_os("MIGO_AUDIO_CHECKS_BLESS").is_some() {
         fs::write(&path, text).unwrap();

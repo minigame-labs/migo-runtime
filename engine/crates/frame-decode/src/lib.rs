@@ -33,11 +33,12 @@ use frame_wire::gl::{
     OP_ACTIVE_TEXTURE, OP_BIND_BUFFER, OP_BIND_BUFFER_BASE, OP_BIND_BUFFER_RANGE,
     OP_BIND_FRAMEBUFFER, OP_BIND_RENDERBUFFER, OP_BIND_SAMPLER, OP_BIND_TEXTURE,
     OP_BIND_VERTEX_ARRAY, OP_BLEND_COLOR, OP_BLEND_EQUATION, OP_BLEND_EQUATION_SEPARATE,
-    OP_BLEND_FUNC, OP_BLEND_FUNC_SEPARATE, OP_CLEAR, OP_CLEAR_COLOR, OP_CLEAR_DEPTH,
-    OP_CLEAR_STENCIL, OP_COLOR_MASK, OP_CULL_FACE, OP_DEPTH_FUNC, OP_DEPTH_MASK, OP_DEPTH_RANGE,
-    OP_DISABLE, OP_DISABLE_VERTEX_ATTRIB_ARRAY, OP_DRAW_ARRAYS, OP_DRAW_ARRAYS_INSTANCED,
-    OP_DRAW_ELEMENTS, OP_DRAW_ELEMENTS_INSTANCED, OP_ENABLE, OP_ENABLE_VERTEX_ATTRIB_ARRAY,
-    OP_FRONT_FACE, OP_GENERATE_MIPMAP, OP_HINT, OP_LINE_WIDTH, OP_PIXEL_STORE_I, OP_POLYGON_OFFSET,
+    OP_BLEND_FUNC, OP_BLEND_FUNC_SEPARATE, OP_CLEAR, OP_CLEAR_BUFFER_FI, OP_CLEAR_BUFFER_FV,
+    OP_CLEAR_BUFFER_IV, OP_CLEAR_BUFFER_UIV, OP_CLEAR_COLOR, OP_CLEAR_DEPTH, OP_CLEAR_STENCIL,
+    OP_COLOR_MASK, OP_CULL_FACE, OP_DEPTH_FUNC, OP_DEPTH_MASK, OP_DEPTH_RANGE, OP_DISABLE,
+    OP_DISABLE_VERTEX_ATTRIB_ARRAY, OP_DRAW_ARRAYS, OP_DRAW_ARRAYS_INSTANCED, OP_DRAW_ELEMENTS,
+    OP_DRAW_ELEMENTS_INSTANCED, OP_ENABLE, OP_ENABLE_VERTEX_ATTRIB_ARRAY, OP_FRONT_FACE,
+    OP_GENERATE_MIPMAP, OP_HINT, OP_LINE_WIDTH, OP_PIXEL_STORE_I, OP_POLYGON_OFFSET,
     OP_READ_BUFFER, OP_SAMPLER_PARAMETER_F, OP_SAMPLER_PARAMETER_I, OP_SCISSOR, OP_STENCIL_FUNC,
     OP_STENCIL_FUNC_SEPARATE, OP_STENCIL_MASK, OP_STENCIL_MASK_SEPARATE, OP_STENCIL_OP,
     OP_STENCIL_OP_SEPARATE, OP_TEX_PARAMETER_F, OP_TEX_PARAMETER_I, OP_UNIFORM_MATRIX2FV,
@@ -67,11 +68,12 @@ pub use budget::{
     producer_estimated_bytes, validate_frame_budget,
 };
 pub use staging::StagedPayload;
-pub use validate::{GlDecodeContext, ImageUpload, TransformFeedbackPhase};
+pub use validate::{ClearBufferKind, GlDecodeContext, ImageUpload, TransformFeedbackPhase};
 
 use validate::{
     validate_bind_buffer_base, validate_bind_buffer_range, validate_bind_buffer_target,
-    validate_vertex_attrib_ipointer, validate_vertex_attrib_pointer, validate_viewport_like,
+    validate_clear_buffer, validate_vertex_attrib_ipointer, validate_vertex_attrib_pointer,
+    validate_viewport_like,
 };
 
 /// Reinterpret uniform words as floats. The producer wrote the bit patterns;
@@ -486,6 +488,75 @@ fn decode_record<C: GlDecodeContext>(
                 type_,
                 stride,
                 offset,
+            })
+        }
+
+        // ── 63..66: CLEAR_BUFFER_{FV,IV,UIV,FI} ─────────────────────────────────────
+        // H C U I (4 value words) | H C U I F I. COLOR takes all four values, DEPTH and STENCIL the first.
+        OP_CLEAR_BUFFER_FV => {
+            let (canvas_id, buffer, drawbuffer) = (record[1], record[2], i(record[3]));
+            if !validate_clear_buffer(
+                context,
+                canvas_id,
+                ClearBufferKind::Float,
+                buffer,
+                drawbuffer,
+            ) {
+                return None;
+            }
+            Some(GLCmd::ClearBufferfv {
+                canvas_id,
+                buffer,
+                drawbuffer,
+                value: [f(record[4]), f(record[5]), f(record[6]), f(record[7])],
+            })
+        }
+        OP_CLEAR_BUFFER_IV => {
+            let (canvas_id, buffer, drawbuffer) = (record[1], record[2], i(record[3]));
+            if !validate_clear_buffer(context, canvas_id, ClearBufferKind::Int, buffer, drawbuffer)
+            {
+                return None;
+            }
+            Some(GLCmd::ClearBufferiv {
+                canvas_id,
+                buffer,
+                drawbuffer,
+                value: [i(record[4]), i(record[5]), i(record[6]), i(record[7])],
+            })
+        }
+        OP_CLEAR_BUFFER_UIV => {
+            let (canvas_id, buffer, drawbuffer) = (record[1], record[2], i(record[3]));
+            if !validate_clear_buffer(
+                context,
+                canvas_id,
+                ClearBufferKind::Uint,
+                buffer,
+                drawbuffer,
+            ) {
+                return None;
+            }
+            Some(GLCmd::ClearBufferuiv {
+                canvas_id,
+                buffer,
+                drawbuffer,
+                value: [record[4], record[5], record[6], record[7]],
+            })
+        }
+        OP_CLEAR_BUFFER_FI => {
+            let (canvas_id, buffer, drawbuffer) = (record[1], record[2], i(record[3]));
+            if !validate_clear_buffer(
+                context,
+                canvas_id,
+                ClearBufferKind::DepthStencil,
+                buffer,
+                drawbuffer,
+            ) {
+                return None;
+            }
+            Some(GLCmd::ClearBufferfi {
+                canvas_id,
+                depth: f(record[4]),
+                stencil: i(record[5]),
             })
         }
 

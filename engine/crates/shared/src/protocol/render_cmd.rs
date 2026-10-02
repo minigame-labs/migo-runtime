@@ -1099,6 +1099,33 @@ pub enum GLCmd {
         canvas_id: CanvasId,
         s: i32,
     },
+    /// `clearBufferfv`: COLOR (four components) or DEPTH (the first).
+    ClearBufferfv {
+        canvas_id: CanvasId,
+        buffer: u32,
+        drawbuffer: i32,
+        value: [f32; 4],
+    },
+    /// `clearBufferiv`: COLOR (four components) or STENCIL (the first).
+    ClearBufferiv {
+        canvas_id: CanvasId,
+        buffer: u32,
+        drawbuffer: i32,
+        value: [i32; 4],
+    },
+    /// `clearBufferuiv`: COLOR.
+    ClearBufferuiv {
+        canvas_id: CanvasId,
+        buffer: u32,
+        drawbuffer: i32,
+        value: [u32; 4],
+    },
+    /// `clearBufferfi`: DEPTH_STENCIL, whose draw buffer is always 0.
+    ClearBufferfi {
+        canvas_id: CanvasId,
+        depth: f32,
+        stencil: i32,
+    },
 
     // ========== Phase 2A: Blend/Depth/Stencil/Cull State ==========
     BlendFunc {
@@ -2568,6 +2595,10 @@ impl GLCmd {
             | GLCmd::ClearColor { canvas_id, .. }
             | GLCmd::ClearDepth { canvas_id, .. }
             | GLCmd::ClearStencil { canvas_id, .. }
+            | GLCmd::ClearBufferfv { canvas_id, .. }
+            | GLCmd::ClearBufferiv { canvas_id, .. }
+            | GLCmd::ClearBufferuiv { canvas_id, .. }
+            | GLCmd::ClearBufferfi { canvas_id, .. }
             | GLCmd::CreateProgram { canvas_id, .. }
             | GLCmd::CreateShader { canvas_id, .. }
             | GLCmd::UseProgram { canvas_id, .. }
@@ -2836,6 +2867,10 @@ impl GLCmd {
             | GLCmd::ClearColor { .. }
             | GLCmd::ClearDepth { .. }
             | GLCmd::ClearStencil { .. }
+            | GLCmd::ClearBufferfv { .. }
+            | GLCmd::ClearBufferiv { .. }
+            | GLCmd::ClearBufferuiv { .. }
+            | GLCmd::ClearBufferfi { .. }
             | GLCmd::CreateProgram { .. }
             | GLCmd::CreateShader { .. }
             | GLCmd::UseProgram { .. }

@@ -14,10 +14,20 @@ fn tiny_wire_records_cannot_expand_past_the_decoded_frame_budget() {
     assert!(validate_frame_budget(&stream, BUDGET).is_err());
 }
 
+/// Each switch between the blocks starts a batch, and a batch is charged its minimum capacity however few commands
+/// it holds, plus the frame op that carries it. The floor is computed from this build's sizes rather than compared
+/// with a fixed budget: `size_of::<GLCmd>()` depends on the features `migo-shared` is built with (96 bytes alone, 88
+/// alongside `migo-runtime-v8`), and 2000 pairs against 4 MiB passed with one and failed with the other.
 #[test]
 fn alternating_batches_include_their_minimum_allocations_and_frame_ops() {
+    use shared::FrameOp;
+    use shared::command_vec_pool::{
+        CANVAS_COMMAND_VEC_INITIAL_CAPACITY, GL_COMMAND_VEC_INITIAL_CAPACITY,
+    };
+    use shared::protocol::render_cmd::{Canvas2DCmd, GLCmd};
+    const PAIRS: usize = 2000;
     let mut words = vec![MAGIC, STREAM_VERSION, pack_header(OP2D_SELECT_CANVAS, 2), 7];
-    for _ in 0..2000 {
+    for _ in 0..PAIRS {
         words.extend([
             pack_header(OP2D_SAVE, 1),
             pack_header(OP_CLEAR, 3),
@@ -26,7 +36,18 @@ fn alternating_batches_include_their_minimum_allocations_and_frame_ops() {
         ]);
     }
     let stream = validate_frame_stream(&words, words.len() as u32).unwrap();
-    assert!(validate_frame_budget(&stream, BUDGET).is_err());
+    let floor = PAIRS
+        * (GL_COMMAND_VEC_INITIAL_CAPACITY * size_of::<GLCmd>()
+            + CANVAS_COMMAND_VEC_INITIAL_CAPACITY * size_of::<Canvas2DCmd>()
+            + 2 * size_of::<FrameOp>());
+    // the wire is a small fraction of what decoding it allocates
+    assert!(
+        words.len() * 4 * 8 < floor,
+        "{} wire bytes, floor {floor}",
+        words.len() * 4
+    );
+    assert!(validate_frame_budget(&stream, floor).is_err());
+    assert!(validate_frame_budget(&stream, BUDGET.max(2 * floor)).is_ok());
 }
 
 #[test]

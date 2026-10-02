@@ -228,6 +228,10 @@ import {
     encodeVertexAttribI4i,
     encodeVertexAttribI4ui,
     encodeVertexAttribIPointer,
+    encodeClearBufferfv,
+    encodeClearBufferiv,
+    encodeClearBufferuiv,
+    encodeClearBufferfi,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,
@@ -876,7 +880,7 @@ function _uniformListPayload(canvasId, name, data, srcOffset, srcLength, unit, T
     } else if (ArrayIsArray(data)) {
         view = new Type(data);
     } else {
-        throw new TypeError(`Failed to execute '${name}' on 'WebGL2RenderingContext': parameter 3 is not of type '${Type.name}List'.`);
+        throw new TypeError(`Failed to execute '${name}' on 'WebGL2RenderingContext': parameter 3 is not of type '${Type.name.slice(0, -5)}List'.`);
     }
     const length = view.length;
     const offset = srcOffset >>> 0;
@@ -3125,6 +3129,9 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         this._queryRegistry = new Map();
         this._currentQueryByTarget = new Map();
         this._tfRegistry = new Map();
+        // `clearBuffer*` fills it with the four values of the record it encodes.
+        this._clearBufferScratch = [0, 0, 0, 0];
+        this._maxDrawBuffers = 0;
         // Scratch for `uniform{1,2,3,4}ui`: the stream copies the words as it encodes them.
         this._uniformU32Scratch = [null, new Uint32Array(1), new Uint32Array(2), new Uint32Array(3), new Uint32Array(4)];
         this._currentTransformFeedback = null;
@@ -3220,6 +3227,91 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             _rawVertexAttribIPointer(this._canvasId, index, size, type, stride, offset);
         }
         this._shadowAttribPointer(index, size, type, false, true, stride, offset);
+    }
+
+    // ---- clearBuffer* and drawRangeElements (WebGL 2) ---------------------------------------------------------------
+    // The draw-buffer-specific clears. What the buffer enum may be depends on the type of the values (fv: COLOR or DEPTH,
+    // iv: COLOR or STENCIL, uiv: COLOR, fi: DEPTH_STENCIL); the draw buffer is below MAX_DRAW_BUFFERS for COLOR and 0 for
+    // the rest; a list holds the elements the buffer needs (4 for COLOR, 1 otherwise) from `srcOffset`. The arguments are
+    // converted first, as WebIDL converts them before the call runs (a value that is not a list is a TypeError ahead of any
+    // GL error); then a call that breaks a rule is the error the specification names, in that order, and sends nothing.
+    _drawBufferLimit() {
+        if (this._maxDrawBuffers === 0) {
+            const n = this.getParameter(0x8824);   // MAX_DRAW_BUFFERS
+            // Only an answer is kept: a context that cannot answer now (lost) is held to the minimum every WebGL 2
+            // implementation has, and asked again by the next call.
+            if (!NumberIsInteger(n) || n < 1) return 4;
+            this._maxDrawBuffers = n;
+        }
+        return this._maxDrawBuffers;
+    }
+    // `other` is the buffer besides COLOR the call takes: DEPTH for fv, STENCIL for iv, none (-1) for uiv.
+    _clearBufferValues(name, other, Type, buffer, drawbuffer, values, srcOffset) {
+        const b = buffer >>> 0;
+        const d = drawbuffer | 0;
+        let list = values;
+        if (isTypedArray(list)) {
+            if (!(list instanceof Type)) list = new Type(list);
+        } else if (ArrayIsArray(list)) {
+            list = new Type(list);
+        } else {
+            throw new TypeError(`Failed to execute '${name}' on 'WebGL2RenderingContext': parameter 3 is not of type '${Type.name.slice(0, -5)}List'.`);
+        }
+        const offset = srcOffset >>> 0;
+        if (b !== 0x1800 && b !== other) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
+        const color = b === 0x1800;
+        if (d < 0 || (color ? d >= this._drawBufferLimit() : d !== 0)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return null;
+        }
+        if (offset > list.length || list.length - offset < (color ? 4 : 1)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return null;
+        }
+        // The components a buffer does not use are 0, so the record has one shape.
+        const v = this._clearBufferScratch;
+        v[0] = list[offset];
+        v[1] = color ? list[offset + 1] : 0;
+        v[2] = color ? list[offset + 2] : 0;
+        v[3] = color ? list[offset + 3] : 0;
+        return v;
+    }
+    clearBufferfv(buffer, drawbuffer, values, srcOffset = 0) {
+        const v = this._clearBufferValues("clearBufferfv", 0x1801, Float32Array, buffer, drawbuffer, values, srcOffset);
+        if (v !== null) encodeClearBufferfv(this._canvasId, buffer, drawbuffer, v[0], v[1], v[2], v[3]);
+    }
+    clearBufferiv(buffer, drawbuffer, values, srcOffset = 0) {
+        const v = this._clearBufferValues("clearBufferiv", 0x1802, Int32Array, buffer, drawbuffer, values, srcOffset);
+        if (v !== null) encodeClearBufferiv(this._canvasId, buffer, drawbuffer, v[0], v[1], v[2], v[3]);
+    }
+    clearBufferuiv(buffer, drawbuffer, values, srcOffset = 0) {
+        const v = this._clearBufferValues("clearBufferuiv", -1, Uint32Array, buffer, drawbuffer, values, srcOffset);
+        if (v !== null) encodeClearBufferuiv(this._canvasId, buffer, drawbuffer, v[0], v[1], v[2], v[3]);
+    }
+    clearBufferfi(buffer, drawbuffer, depth, stencil) {
+        const b = buffer >>> 0;
+        const d = drawbuffer | 0;
+        const z = +depth;                        // GLfloat: the record rounds it to a float32
+        const s = stencil | 0;
+        if (b !== 0x84F9) {                      // DEPTH_STENCIL
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+        } else if (d !== 0) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+        } else {
+            encodeClearBufferfi(this._canvasId, b, d, z, s);
+        }
+    }
+    // `start` and `end` are the range of indices the call may read, a hint the driver may use; the call draws what
+    // `drawElements` would. An `end` below `start` is INVALID_VALUE.
+    drawRangeElements(mode, start, end, count, type, offset) {
+        if ((end >>> 0) < (start >>> 0)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
+        this.drawElements(mode, count, type, offset);
     }
 
     // ---- Unsigned integer uniforms and the non-square matrices (WebGL 2) --------------------------------------------

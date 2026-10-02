@@ -1494,7 +1494,15 @@ mod tests {
     #[test]
     fn an_integer_pointer_is_never_a_repeat_of_a_float_pointer_with_the_same_arguments() {
         let mut s = fresh_state();
-        assert!(update_vertex_attrib_pointer(&mut s, 2, 2, glow::INT, false, 8, 0));
+        assert!(update_vertex_attrib_pointer(
+            &mut s,
+            2,
+            2,
+            glow::INT,
+            false,
+            8,
+            0
+        ));
         assert!(
             update_vertex_attrib_ipointer(&mut s, 2, 2, glow::INT, 8, 0),
             "the integer form of the same arguments must reach the driver"
