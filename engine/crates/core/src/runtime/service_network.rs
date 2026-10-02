@@ -39,6 +39,7 @@ use migo_services::network::websocket::{self as websocket, WsEvent};
 use parking_lot::Mutex;
 use shared::op_state::NetworkPolicy;
 
+use super::service_answer::{serde_optional_u64, serde_u64};
 use super::service_args::{
     boolean, exactly, not_a, optional_bytes, optional_string, string, strings, u32_of, wrong_type,
 };
@@ -586,7 +587,7 @@ fn fetch_response(answer: fetch_service::FetchAnswer) -> OwnedValue {
         ),
         OwnedValue::Str(answer.url),
         OwnedValue::U32(answer.response_rid),
-        optional_u64(answer.content_length),
+        serde_optional_u64(answer.content_length),
         match answer.remote_addr_ip {
             Some(ip) => OwnedValue::Str(ip),
             None => OwnedValue::Null,
@@ -637,7 +638,7 @@ fn upload_answer(answer: upload::UploadAnswer) -> OwnedValue {
                 })
                 .collect(),
         ),
-        OwnedValue::U64(answer.total_bytes_sent),
+        serde_u64(answer.total_bytes_sent),
         match answer.error {
             Some(error) => OwnedValue::Str(error),
             None => OwnedValue::Null,
@@ -735,14 +736,6 @@ fn header_strings(
             other => Err(wrong_type(op, index, "header pair", &other)),
         })
         .collect()
-}
-
-/// `Option<u64>` as serde_v8 gives it: a Number, or null.
-fn optional_u64(value: Option<u64>) -> OwnedValue {
-    match value {
-        Some(value) => OwnedValue::U64(value),
-        None => OwnedValue::Null,
-    }
 }
 
 /// `Vec<(ByteString, ByteString)>`: the header list, as pairs of byte strings.

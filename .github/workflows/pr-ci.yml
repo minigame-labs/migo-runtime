@@ -714,6 +714,12 @@ jobs:
       - name: Frame wire JavaScript encoder against the golden corpus
         run: bash scripts/test-frame-wire-js-encoder.sh
 
+      # The encoder behind `canvas.toDataURL()` is JavaScript that runs in the
+      # embedded runtime and in WebContent alike, so no Rust test reaches it.
+      # Read back by Node's zlib and by a decoder that shares nothing with it.
+      - name: Canvas image encoder reads back
+        run: bash scripts/test-canvas-image-encode.sh
+
       # Two parsers for `ctx.font`, and two text codecs, each held to one
       # corpus: the op boundary answers both on the producer, so the conversion
       # exists twice in this repository and a difference is a font that never

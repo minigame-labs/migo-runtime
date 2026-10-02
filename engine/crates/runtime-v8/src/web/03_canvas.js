@@ -10,6 +10,7 @@ import {
     flushRenderCommandStream,
     discardRenderCommandStream,
 } from "ext:host_v8_webgl/00_render_command_stream.js";
+import { encodeImage, encodeDataUrl } from "ext:host_v8_web/04_image_encode.js";
 const { SafeFinalizationRegistry } = primordials;
 
 const registry = new SafeFinalizationRegistry((rid) => {
@@ -165,6 +166,71 @@ class Canvas {
             try { on.call(this, event); } catch (_e) { /* swallow */ }
         }
         return !event.defaultPrevented;
+    }
+    // The canvas's pixels, RGBA8 and not premultiplied, rows top to bottom: what `toDataURL` encodes. A canvas that
+    // has never had a context is transparent. Read in bands, so that no single read is more than a lane can answer.
+    _readAllPixels() {
+        const w = this._width, h = this._height;
+        const out = new Uint8Array(w * h * 4);
+        const context = this._context;
+        if (!context) return out;
+        const rowBytes = w * 4;
+        const rowsPerBand = Math.max(1, Math.floor((4 * 1024 * 1024) / rowBytes));
+        if (this._contextKind === '2d') {
+            for (let y = 0; y < h; y += rowsPerBand) {
+                const rows = Math.min(rowsPerBand, h - y);
+                out.set(context.getImageData(0, y, w, rows).data, y * rowBytes);
+            }
+            return out;
+        }
+        // WebGL: the drawing buffer, whatever framebuffer the content has bound, read bottom row first and put back
+        // top row first. The buffer holds premultiplied alpha unless the context said otherwise.
+        const gl = context;
+        const previous = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        try {
+            const band = new Uint8Array(rowsPerBand * rowBytes);
+            for (let y = 0; y < h; y += rowsPerBand) {
+                const rows = Math.min(rowsPerBand, h - y);
+                // rows [y, y + rows) counted from the top are rows [h - y - rows, h - y) counted from the bottom
+                gl.readPixels(0, h - y - rows, w, rows, gl.RGBA, gl.UNSIGNED_BYTE, band);
+                for (let r = 0; r < rows; r++) {
+                    out.set(band.subarray((rows - 1 - r) * rowBytes, (rows - r) * rowBytes), (y + r) * rowBytes);
+                }
+            }
+        } finally {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, previous);
+        }
+        const attributes = gl.getContextAttributes();
+        if (attributes === null || attributes.alpha !== false) {
+            if (attributes === null || attributes.premultipliedAlpha !== false) {
+                for (let i = 0; i < out.length; i += 4) {
+                    const a = out[i + 3];
+                    if (a !== 0 && a !== 255) {
+                        out[i] = Math.min(255, Math.round(out[i] * 255 / a));
+                        out[i + 1] = Math.min(255, Math.round(out[i + 1] * 255 / a));
+                        out[i + 2] = Math.min(255, Math.round(out[i + 2] * 255 / a));
+                    }
+                }
+            }
+        } else {
+            // alpha: false -- the buffer is opaque whatever it holds
+            for (let i = 3; i < out.length; i += 4) out[i] = 255;
+        }
+        return out;
+    }
+    // `canvas.toDataURL(type, quality)`: a PNG, or a JPEG for "image/jpeg" (with `quality` in [0, 1]); a type this
+    // does not encode is answered with a PNG. A canvas with no pixels is "data:,".
+    toDataURL(type, quality) {
+        const w = this._width, h = this._height;
+        if (w === 0 || h === 0) return "data:,";
+        return encodeDataUrl(this._readAllPixels(), w, h, type, quality);
+    }
+    // The encoded bytes, for the adapter's `toBlob`: `{ mime, bytes }`, or `null` for a canvas with no pixels.
+    _encode(type, quality) {
+        const w = this._width, h = this._height;
+        if (w === 0 || h === 0) return null;
+        return encodeImage(this._readAllPixels(), w, h, type, quality);
     }
     getContext(contextType, options) {
         if (this._context) {

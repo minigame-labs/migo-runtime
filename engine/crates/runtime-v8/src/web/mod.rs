@@ -21,6 +21,7 @@ extension!(
         dir "src/web",
         "02_timers.js",
         "03_canvas.js",
+        "04_image_encode.js",
         "06_stream.js",
         "12_performance.js",
     ],

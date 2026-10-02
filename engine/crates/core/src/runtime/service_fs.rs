@@ -4,8 +4,8 @@
 //! already converted by deno_core's rule for its parameter (see
 //! `service_args`), the work is the same `migo_services::fs` function the
 //! embedded op calls, and the answer is encoded as the value serde_v8 would
-//! have handed JavaScript -- see [`serde_u64`] for the one place that takes
-//! care. Structured answers (a stat, a saved-file list, zip entries) travel as
+//! have handed JavaScript -- see [`serde_u64`](super::service_answer::serde_u64)
+//! for the one place that takes care. Structured answers (a stat, a saved-file list, zip entries) travel as
 //! arrays in the struct's field order; the producer rebuilds the object with
 //! the same keys in the same order, so content sees what it sees in process.
 
@@ -17,23 +17,11 @@ use migo_services::ServiceError;
 use migo_services::fs::{self, FsEnv};
 use shared::protocol::io_cmd::{FileStat, SavedFileInfo, StatResult, ZipEntryData, ZipEntryResult};
 
+use super::service_answer::serde_u64;
 use super::service_args::{
     boolean, exactly, not_a, optional_bytes, optional_string, optional_u64, string, u32_of, u64_of,
 };
 use super::service_ops::id;
-
-/// The largest integer a JavaScript Number holds exactly: 2^53 - 1.
-const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
-
-/// A `u64` inside a `#[serde]` answer, as serde_v8 serializes one: a Number
-/// while it is a safe integer, a BigInt past that.
-fn serde_u64(value: u64) -> OwnedValue {
-    if value <= MAX_SAFE_INTEGER {
-        OwnedValue::F64(value as f64)
-    } else {
-        OwnedValue::U64(value)
-    }
-}
 
 /// `FileStat`, in its field order: mode, size, atime, mtime, is_file,
 /// is_directory.
@@ -494,19 +482,6 @@ pub(crate) fn env(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_u64_is_a_number_while_it_is_safe_and_a_bigint_past_it() {
-        assert_eq!(serde_u64(0), OwnedValue::F64(0.0));
-        assert_eq!(
-            serde_u64(MAX_SAFE_INTEGER),
-            OwnedValue::F64(MAX_SAFE_INTEGER as f64)
-        );
-        assert_eq!(
-            serde_u64(MAX_SAFE_INTEGER + 1),
-            OwnedValue::U64(MAX_SAFE_INTEGER + 1)
-        );
-    }
 
     #[test]
     fn every_numbered_file_op_is_answered_in_exactly_one_shape() {

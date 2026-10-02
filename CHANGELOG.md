@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Canvas: `toDataURL(type, quality)` on every canvas, 2D and WebGL. It writes a PNG, or a baseline JPEG for
+  `image/jpeg` (`quality` in [0, 1], default 0.92); any other type is answered with a PNG, an empty canvas with
+  `data:,`, and a canvas that was never given a context is a transparent image. The encoders are JavaScript
+  in the engine's own web layer, so the embedded runtime and the iOS Performance+ producer run one
+  implementation and no native encoder is linked in. A WebGL canvas is read from its drawing buffer, right
+  way up, with alpha un-premultiplied unless the context asked for premultiplied. PNG is written as RGB
+  when nothing is transparent, with per-row filters and LZ77 matching; JPEG is 4:4:4 with Huffman tables
+  built for the image. `scripts/test-canvas-image-encode.sh` decodes what they write (PNG through Node's
+  inflate, JPEG through a decoder that shares no code with the encoder) and is a CI step.
+
 ### Fixed
+- iOS (Performance+): `downloadFile` works. Every download failed with "Invalid mix of BigInt and other type
+  in division": the host wrote the response's content length as a 64-bit integer, which the producer reads
+  as a BigInt, where the embedded runtime hands the facade a Number (serde_v8's `u64` in a struct) and the
+  download's progress divides by it. `uploadFile` reported the bytes sent as a BigInt for the same reason.
+  The host now writes both as the file-system answers already were -- a Number while it is a safe integer --
+  from one helper they all use, and a test holds each field.
 - Canvas2D: colour strings are read as the specification has them, by one parser. `fillStyle`,
   `strokeStyle` and `shadowColor` read back the serialised colour (`#ff0000`, or
   `rgba(255, 0, 0, 0.5)`) instead of the string that was assigned; a string that is not a
