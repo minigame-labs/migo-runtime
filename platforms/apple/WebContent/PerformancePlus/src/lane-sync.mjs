@@ -102,6 +102,9 @@ import {
   SYNC_OP_READ_PIXELS,
   SYNC_OP_READ_PIXELS_TO_BUFFER,
   READ_PIXELS_TO_BUFFER_REPLY_BYTES,
+  SYNC_OP_GET_BUFFER_SUB_DATA,
+  MAX_REPLY_BYTES,
+  encodeGetBufferSubDataParams,
   encodeCanvas2DPixelsParams,
   encodeReadPixelsToBufferParams,
   decodeReadPixelsLayout,
@@ -1106,6 +1109,39 @@ export function op_read_pixels(canvasId, x, y, width, height, format, type_, pix
  * binding and the buffer's size, and its verdict comes back as the error to
  * record.
  */
+/// `getBufferSubData`. The facade has checked the target, the binding and the range against the buffer's size; the
+/// host is asked for the bytes, in reads of at most one reply each, and they are copied into `destination` -- the
+/// destination's bytes, as the in-process op is given them. A read the host cannot answer is the INVALID_OPERATION the
+/// op pushes, and what was not read is left as it was.
+export function op_get_buffer_sub_data(canvasId, target, offset, destination) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const glTarget = smiU32(target, "target");
+  const from = toI32(offset, "offset");
+  const bytes = bytesOf(destination, "destination");
+  for (let done = 0; done < bytes.byteLength; ) {
+    const size = Math.min(MAX_REPLY_BYTES, bytes.byteLength - done);
+    let reply;
+    try {
+      reply = ask(
+        SYNC_OP_GET_BUFFER_SUB_DATA,
+        size,
+        encodeGetBufferSubDataParams({ canvasId: canvas, target: glTarget, offset: BigInt(from + done), size }),
+      );
+    } catch (error) {
+      if (error && error.code === SYNC_ERROR_OPERATION_FAILED) {
+        recordProducerError(canvas, GL_INVALID_OPERATION);
+        return;
+      }
+      throw error;
+    }
+    if (reply.byteLength !== size) {
+      throw new RangeError(`a buffer read of ${size} bytes was answered with ${reply.byteLength}`);
+    }
+    bytes.set(reply, done);
+    done += size;
+  }
+}
+
 export function op_read_pixels_to_buffer(canvasId, x, y, width, height, format, type_, offset) {
   const canvas = smiU32(canvasId, "canvas_id");
   const left = toI32(x, "x");

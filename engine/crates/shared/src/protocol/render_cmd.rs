@@ -1602,6 +1602,15 @@ pub enum GLCmd {
         offset: i64,
         resp: RenderCmdResp<()>,
     },
+    /// `getBufferSubData`: `size` bytes of the buffer bound to `target`, from `offset`. The facade has checked the
+    /// range against the buffer's size; the renderer maps it for reading, which waits for the GPU work writing it.
+    GetBufferSubData {
+        canvas_id: CanvasId,
+        target: u32,
+        offset: i64,
+        size: u32,
+        resp: RenderCmdResp<Vec<u8>>,
+    },
     Hint {
         canvas_id: CanvasId,
         target: u32,
@@ -2812,6 +2821,7 @@ impl GLCmd {
             | GLCmd::RenderbufferStorageMultisample { canvas_id, .. }
             | GLCmd::ReadPixels { canvas_id, .. }
             | GLCmd::ReadPixelsToBuffer { canvas_id, .. }
+            | GLCmd::GetBufferSubData { canvas_id, .. }
             | GLCmd::GetParameter { canvas_id, .. }
             | GLCmd::GetState { canvas_id, .. }
             | GLCmd::BlitFramebuffer { canvas_id, .. }
@@ -3098,6 +3108,7 @@ impl GLCmd {
             | GLCmd::RenderbufferStorageMultisample { .. }
             | GLCmd::ReadPixels { .. }
             | GLCmd::ReadPixelsToBuffer { .. }
+            | GLCmd::GetBufferSubData { .. }
             | GLCmd::GetParameter { .. }
             | GLCmd::GetState { .. }
             | GLCmd::BlitFramebuffer { .. }

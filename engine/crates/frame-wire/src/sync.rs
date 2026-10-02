@@ -348,6 +348,64 @@ impl ReadPixelsToBufferParams {
     }
 }
 
+/// `getBufferSubData`: bytes of the buffer bound to a target, `H canvas target offset:I64 size`, answered with
+/// exactly `size` bytes.
+///
+/// The facade has checked the target, that a buffer is bound and that the range lies inside it, against the sizes it
+/// holds, so the renderer is asked only for a range it has. A read larger than one reply is asked as several, each a
+/// range of the same buffer: the producer is blocked between them, so nothing it records can change the buffer.
+pub const SYNC_OP_GET_BUFFER_SUB_DATA: u32 = 13;
+
+/// Serialised size of [`GetBufferSubDataParams`].
+pub const GET_BUFFER_SUB_DATA_PARAMS_BYTES: usize = 24;
+
+/// What a buffer read names: the canvas whose context bound the buffer, the target it is bound to, and the range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetBufferSubDataParams {
+    pub canvas_id: u32,
+    pub target: u32,
+    /// A `GLintptr`; a negative one is refused by the caller before it asks.
+    pub offset: i64,
+    pub size: u32,
+}
+
+impl GetBufferSubDataParams {
+    pub fn encode(&self) -> [u8; GET_BUFFER_SUB_DATA_PARAMS_BYTES] {
+        let mut out = [0u8; GET_BUFFER_SUB_DATA_PARAMS_BYTES];
+        out[0..4].copy_from_slice(&self.canvas_id.to_le_bytes());
+        out[4..8].copy_from_slice(&self.target.to_le_bytes());
+        out[8..16].copy_from_slice(&self.offset.to_le_bytes());
+        out[16..20].copy_from_slice(&self.size.to_le_bytes());
+        out
+    }
+
+    /// Decode and validate: the length, the reserved word, and a range with bytes in it that starts inside a
+    /// buffer -- no buffer reaches 2^31 bytes, so neither does an offset into one.
+    pub fn decode(bytes: &[u8]) -> Result<Self, SyncError> {
+        if bytes.len() != GET_BUFFER_SUB_DATA_PARAMS_BYTES {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        if word(20) != 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let mut offset = [0u8; 8];
+        offset.copy_from_slice(&bytes[8..16]);
+        let params = Self {
+            canvas_id: word(0),
+            target: word(4),
+            offset: i64::from_le_bytes(offset),
+            size: word(16),
+        };
+        if params.size == 0 || !(0..=i64::from(i32::MAX)).contains(&params.offset) {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(params)
+    }
+}
+
 /// Serialised size of [`Canvas2DPixelsParams`].
 pub const CANVAS2D_PIXELS_PARAMS_BYTES: usize = 24;
 
@@ -1673,6 +1731,54 @@ impl SyncMailbox {
 
 #[cfg(test)]
 mod sync_call_tests {
+    /// The bytes a buffer read is, fixed: `sync-mailbox.test.mjs` holds the producer's encoder to the same bytes, so
+    /// the two sides agree through this vector rather than through a reading of the same table.
+    #[test]
+    fn a_buffer_read_is_these_bytes() {
+        let params = GetBufferSubDataParams {
+            canvas_id: 7,
+            target: 0x8f36,
+            offset: 0x0102_0304,
+            size: 0x00a0_b0c0,
+        };
+        let golden: [u8; GET_BUFFER_SUB_DATA_PARAMS_BYTES] = [
+            7, 0, 0, 0, 0x36, 0x8f, 0, 0, 4, 3, 2, 1, 0, 0, 0, 0, 0xc0, 0xb0, 0xa0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(params.encode(), golden);
+        assert_eq!(GetBufferSubDataParams::decode(&golden), Ok(params));
+    }
+
+    #[test]
+    fn a_buffer_read_this_host_cannot_answer_is_refused() {
+        let ok = GetBufferSubDataParams {
+            canvas_id: 1,
+            target: 0x8892,
+            offset: 0,
+            size: 4,
+        };
+        let mut reserved = ok.encode();
+        reserved[20] = 1;
+        for bytes in [
+            GetBufferSubDataParams { size: 0, ..ok }.encode().to_vec(),
+            GetBufferSubDataParams { offset: -1, ..ok }
+                .encode()
+                .to_vec(),
+            GetBufferSubDataParams {
+                offset: 1 << 31,
+                ..ok
+            }
+            .encode()
+            .to_vec(),
+            reserved.to_vec(),
+            ok.encode()[..23].to_vec(),
+        ] {
+            assert_eq!(
+                GetBufferSubDataParams::decode(&bytes),
+                Err(SyncError::UnsupportedOperation)
+            );
+        }
+    }
+
     use super::*;
 
     fn body(max_reply_bytes: u32, timeout_millis: u32, reserved: u32, params: &[u8]) -> Vec<u8> {

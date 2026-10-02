@@ -53,6 +53,9 @@ import {
   GL_RGBA,
   GL_UNSIGNED_BYTE,
   encodeReadPixelsParams,
+  encodeGetBufferSubDataParams,
+  GET_BUFFER_SUB_DATA_PARAM_BYTES,
+  SYNC_OP_GET_BUFFER_SUB_DATA,
   readPixelsReplyBytes,
   READ_PIXELS_LAYOUT_BYTES,
   decodeReadPixelsLayout,
@@ -225,6 +228,15 @@ check("the reply ceiling and the in-flight rule match the document", () => {
 // ---------------------------------------------------------------------------
 // The arguments record
 // ---------------------------------------------------------------------------
+
+// The same bytes `frame_wire::sync`'s `a_buffer_read_is_these_bytes` decodes: the two encoders agree through them.
+check("a buffer read's arguments are the bytes the host decodes", () => {
+  const bytes = encodeGetBufferSubDataParams({ canvasId: 7, target: 0x8f36, offset: 0x01020304n, size: 0x00a0b0c0 });
+  assertEqual(bytes.byteLength, GET_BUFFER_SUB_DATA_PARAM_BYTES, "params length");
+  const golden = [7, 0, 0, 0, 0x36, 0x8f, 0, 0, 4, 3, 2, 1, 0, 0, 0, 0, 0xc0, 0xb0, 0xa0, 0, 0, 0, 0, 0];
+  assertEqual(Array.from(bytes).join(), golden.join(), "bytes");
+  assertEqual(SYNC_OP_GET_BUFFER_SUB_DATA, 13, "operation");
+});
 
 check("readPixels' arguments encode as eight little-endian words", () => {
   const bytes = encodeReadPixelsParams({ canvasId: 3, x: 5, y: 7, width: 11, height: 13 });

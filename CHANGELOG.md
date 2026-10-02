@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WebGL 2: `getBufferSubData`. The bound buffer's bytes, read into a range of the destination view (`dstOffset` and
+  `length` in its elements), after the GPU work that writes them -- a copy, transform feedback, a `readPixels` into a
+  pack buffer, which is how three.js reads render targets back asynchronously. The renderer maps the range for reading
+  (GLES has no glGetBufferSubData); the embedded op copies the bytes straight into the destination, and the
+  Performance+ lane asks for them through the new synchronous operation 13, in parts of at most one reply (16 MiB)
+  each. Everything the specification refuses is refused before anything is asked, against the buffer state the facade
+  keeps: no buffer bound or transform feedback active on its target (INVALID_OPERATION), a negative offset or a range
+  past the view or the buffer (INVALID_VALUE).
 - Canvas: `toDataURL(type, quality)` on every canvas, 2D and WebGL. It writes a PNG, or a baseline JPEG for
   `image/jpeg` (`quality` in [0, 1], default 0.92); any other type is answered with a PNG, an empty canvas with
   `data:,`, and a canvas that was never given a context is a transparent image. The encoders are JavaScript

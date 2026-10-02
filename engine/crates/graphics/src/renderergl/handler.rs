@@ -3645,6 +3645,20 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            GLCmd::GetBufferSubData {
+                canvas_id,
+                target,
+                offset,
+                size,
+                resp,
+            } => {
+                cm.make_current_needed(canvas_id)?;
+                resp.send(crate::backend::gl::readback::read_webgl_buffer_range(
+                    gl, target, offset, size,
+                ));
+                Ok(DamageEffect::NoDamage)
+            }
+
             GLCmd::Hint {
                 canvas_id,
                 target,

@@ -508,6 +508,7 @@
         "op_end_query": "stream",
         "op_end_transform_feedback": "stream",
         "op_fence_sync": "stream",
+        "op_get_buffer_sub_data": "sync",
         "op_wait_sync": "stream",
         "op_fill_text": "stream",
         "op_force_readback_snapshot": "sync",

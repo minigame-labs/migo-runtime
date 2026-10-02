@@ -146,6 +146,12 @@
       "producer_answers_locally": "no",
       "note": "The pixels are on the renderer's side by definition. No producer-side answer exists."
     },
+    "GLCmd::GetBufferSubData": {
+      "api": "WebGL2RenderingContext.getBufferSubData",
+      "reply": "always",
+      "producer_answers_locally": "no",
+      "note": "The bytes are the buffer's on the renderer, and a buffer written by the GPU -- transform feedback, copyBufferSubData, a pack-buffer readPixels -- has bytes no producer-side record could hold. The read maps the range, which waits for that GPU work, as the specification says getBufferSubData may."
+    },
     "GLCmd::ReadPixelsToBuffer": {
       "api": "WebGL2RenderingContext.readPixels (with a PIXEL_PACK_BUFFER bound)",
       "reply": "always",
