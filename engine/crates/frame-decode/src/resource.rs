@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use shared::protocol::render_cmd::{
-    GLCmd, MAX_WEBGL_SHADER_SOURCE_BYTES, ShaderType, TexImage3DSource,
+    CompressedImageData, GLCmd, MAX_WEBGL_SHADER_SOURCE_BYTES, ShaderType, TexImage3DSource,
     webgl_upload_is_within_limit,
 };
 
@@ -304,6 +304,49 @@ pub fn tex_sub_image_2d<C: GlDecodeContext>(
     })
 }
 
+/// A compressed upload's source as a call or a record names it: the bytes, or -- WebGL 2's other overload -- `size`
+/// bytes of the bound PIXEL_UNPACK_BUFFER from `offset`.
+#[derive(Clone, Copy, Debug)]
+pub enum CompressedSource<'a> {
+    Bytes(Payload<'a>),
+    UnpackBuffer { offset: u32, size: i32 },
+}
+
+impl<'a> CompressedSource<'a> {
+    /// A record's source: its `pbo_offset` / `pbo_size` words at `prefix - 2` and `prefix - 1`, the bytes after its
+    /// `len` at `prefix` when there is no buffer.
+    pub(crate) fn of_record(record: &'a [u32], prefix: usize, payload: Payload<'a>) -> Self {
+        match record[prefix - 2] as i32 {
+            offset if offset >= 0 => CompressedSource::UnpackBuffer {
+                offset: offset as u32,
+                size: record[prefix - 1] as i32,
+            },
+            _ => CompressedSource::Bytes(payload),
+        }
+    }
+}
+
+/// The data a compressed upload's command owns: its bytes held to the upload ceiling (`OUT_OF_MEMORY` over it), or
+/// the buffer range, whose size may not be negative (`INVALID_VALUE`).
+fn compressed_data<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    source: CompressedSource<'_>,
+) -> Option<CompressedImageData> {
+    match source {
+        CompressedSource::Bytes(payload) => Some(CompressedImageData::Bytes(bounded_upload(
+            context, canvas_id, payload,
+        )?)),
+        CompressedSource::UnpackBuffer { size, .. } if size < 0 => {
+            context.push_error(canvas_id, codes::INVALID_VALUE);
+            None
+        }
+        CompressedSource::UnpackBuffer { offset, size } => {
+            Some(CompressedImageData::UnpackBuffer { offset, size })
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn compressed_tex_image_2d<C: GlDecodeContext>(
     context: &mut C,
@@ -314,7 +357,7 @@ pub fn compressed_tex_image_2d<C: GlDecodeContext>(
     width: i32,
     height: i32,
     border: i32,
-    data: Payload<'_>,
+    source: CompressedSource<'_>,
 ) -> Option<GLCmd> {
     Some(GLCmd::CompressedTexImage2D {
         canvas_id,
@@ -324,7 +367,7 @@ pub fn compressed_tex_image_2d<C: GlDecodeContext>(
         width,
         height,
         border,
-        data: bounded_upload(context, canvas_id, data)?,
+        data: compressed_data(context, canvas_id, source)?,
     })
 }
 
@@ -339,7 +382,7 @@ pub fn compressed_tex_sub_image_2d<C: GlDecodeContext>(
     width: i32,
     height: i32,
     format: u32,
-    data: Payload<'_>,
+    source: CompressedSource<'_>,
 ) -> Option<GLCmd> {
     Some(GLCmd::CompressedTexSubImage2D {
         canvas_id,
@@ -350,7 +393,63 @@ pub fn compressed_tex_sub_image_2d<C: GlDecodeContext>(
         width,
         height,
         format,
-        data: bounded_upload(context, canvas_id, data)?,
+        data: compressed_data(context, canvas_id, source)?,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compressed_tex_image_3d<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    target: u32,
+    level: i32,
+    internalformat: u32,
+    width: i32,
+    height: i32,
+    depth: i32,
+    border: i32,
+    source: CompressedSource<'_>,
+) -> Option<GLCmd> {
+    Some(GLCmd::CompressedTexImage3D {
+        canvas_id,
+        target,
+        level,
+        internalformat,
+        width,
+        height,
+        depth,
+        border,
+        data: compressed_data(context, canvas_id, source)?,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compressed_tex_sub_image_3d<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    target: u32,
+    level: i32,
+    xoffset: i32,
+    yoffset: i32,
+    zoffset: i32,
+    width: i32,
+    height: i32,
+    depth: i32,
+    format: u32,
+    source: CompressedSource<'_>,
+) -> Option<GLCmd> {
+    Some(GLCmd::CompressedTexSubImage3D {
+        canvas_id,
+        target,
+        level,
+        xoffset,
+        yoffset,
+        zoffset,
+        width,
+        height,
+        depth,
+        format,
+        data: compressed_data(context, canvas_id, source)?,
     })
 }
 
@@ -573,6 +672,10 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             texture: signed_id(record[5]),
             level: i(record[6]),
         },
+        OPR_WAIT_SYNC => GLCmd::WaitSync {
+            canvas_id: c,
+            sync: record[2],
+        },
         OPR_FRAMEBUFFER_TEXTURE_LAYER => GLCmd::FramebufferTextureLayer {
             canvas_id: c,
             target: record[2],
@@ -705,7 +808,7 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
                 i(record[5]),
                 i(record[6]),
                 i(record[7]),
-                payload(record, 8),
+                CompressedSource::of_record(record, 10, payload(record, 10)),
             );
         }
         OPR_COMPRESSED_TEX_SUB_IMAGE_2D => {
@@ -719,7 +822,37 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
                 i(record[6]),
                 i(record[7]),
                 record[8],
-                payload(record, 9),
+                CompressedSource::of_record(record, 11, payload(record, 11)),
+            );
+        }
+        OPR_COMPRESSED_TEX_IMAGE_3D => {
+            return compressed_tex_image_3d(
+                context,
+                c,
+                record[2],
+                i(record[3]),
+                record[4],
+                i(record[5]),
+                i(record[6]),
+                i(record[7]),
+                i(record[8]),
+                CompressedSource::of_record(record, 11, payload(record, 11)),
+            );
+        }
+        OPR_COMPRESSED_TEX_SUB_IMAGE_3D => {
+            return compressed_tex_sub_image_3d(
+                context,
+                c,
+                record[2],
+                i(record[3]),
+                i(record[4]),
+                i(record[5]),
+                i(record[6]),
+                i(record[7]),
+                i(record[8]),
+                i(record[9]),
+                record[10],
+                CompressedSource::of_record(record, 13, payload(record, 13)),
             );
         }
         OPR_TEX_IMAGE_3D => {

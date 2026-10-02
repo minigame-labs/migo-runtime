@@ -408,6 +408,22 @@ fn decide_async_upload_reject_action(
 }
 
 #[allow(private_interfaces)]
+/// `glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data)`.
+pub(crate) type CompressedTexImage2DFn =
+    unsafe extern "system" fn(u32, i32, u32, i32, i32, i32, i32, *const std::ffi::c_void);
+/// `glCompressedTexImage3D(target, level, internalformat, width, height, depth, border, imageSize, data)`.
+pub(crate) type CompressedTexImage3DFn =
+    unsafe extern "system" fn(u32, i32, u32, i32, i32, i32, i32, i32, *const std::ffi::c_void);
+
+/// The compressed-image calls whose bytes are a range of the bound PIXEL_UNPACK_BUFFER (WebGL 2's other overload).
+/// glow takes these two calls' data only as a slice; with a buffer bound, the pointer GL takes is the offset into it,
+/// which a slice cannot carry. The sub-image calls need none of this: glow takes a buffer range for them.
+#[derive(Clone, Copy)]
+pub(crate) struct UnpackBufferCompressedImage {
+    pub(crate) tex_image_2d: CompressedTexImage2DFn,
+    pub(crate) tex_image_3d: CompressedTexImage3DFn,
+}
+
 pub(crate) struct CanvasManager {
     egl_provider: std::sync::Arc<dyn EglProvider>,
     egl: egl_ops::EglRuntime,
@@ -879,6 +895,9 @@ pub(crate) struct CanvasManager {
     /// `EGL_ANGLE_window_fixed_size` is advertised, so a window surface may be
     /// one whose buffer the engine sizes; see [`CanvasEntry::window_buffer`].
     has_window_fixed_size: bool,
+    /// `glCompressedTexImage2D` / `glCompressedTexImage3D` for an upload from the bound PIXEL_UNPACK_BUFFER, resolved
+    /// the first time one is made; see [`UnpackBufferCompressedImage`].
+    unpack_buffer_compressed_image: Option<UnpackBufferCompressedImage>,
 
     /// Count of `glClientWaitSync` calls issued by
     /// [`Self::snapshot_canvas2d_region_with_id`] since the last
@@ -1260,7 +1279,39 @@ impl CanvasManager {
             dest_single_sample,
             has_ext_buffer_age,
             has_window_fixed_size,
+            unpack_buffer_compressed_image: None,
         })
+    }
+
+    /// The two compressed-image entry points an upload from the bound PIXEL_UNPACK_BUFFER needs, resolved once. A GL
+    /// ES 3.0 context has both, so a failure here is a context that is not one.
+    pub(crate) fn unpack_buffer_compressed_image(
+        &mut self,
+    ) -> EngineResult<UnpackBufferCompressedImage> {
+        if let Some(entry) = self.unpack_buffer_compressed_image {
+            return Ok(entry);
+        }
+        let tex_image_2d = self.gl_proc_address("glCompressedTexImage2D");
+        let tex_image_3d = self.gl_proc_address("glCompressedTexImage3D");
+        if tex_image_2d.is_null() || tex_image_3d.is_null() {
+            shared::bail!(
+                ErrorCode::Unsupported,
+                "glCompressedTexImage2D / glCompressedTexImage3D did not resolve"
+            );
+        }
+        // SAFETY: both are the GL ES 3.0 entry points of those names, whose signatures these are.
+        let entry = unsafe {
+            UnpackBufferCompressedImage {
+                tex_image_2d: std::mem::transmute::<*const std::ffi::c_void, CompressedTexImage2DFn>(
+                    tex_image_2d,
+                ),
+                tex_image_3d: std::mem::transmute::<*const std::ffi::c_void, CompressedTexImage3DFn>(
+                    tex_image_3d,
+                ),
+            }
+        };
+        self.unpack_buffer_compressed_image = Some(entry);
+        Ok(entry)
     }
 
     fn new_canvas_id(&self) -> CanvasId {

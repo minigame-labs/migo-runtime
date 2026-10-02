@@ -128,9 +128,12 @@ pub const OPR_BUFFER_SUB_DATA: u32 = 195;
 pub const OPR_TEX_IMAGE_2D: u32 = 196;
 // H C target level:I xoffset:I yoffset:I width:I height:I format type | len data
 pub const OPR_TEX_SUB_IMAGE_2D: u32 = 197;
-// H C target level:I internalformat width:I height:I border:I | len data
+// The compressed uploads carry the source WebGL 2's other overload names: `pbo_offset` (-1 for none) and `pbo_size`
+// (that overload's `imageSize`) are the bound PIXEL_UNPACK_BUFFER's range, and `len` is then 0. Otherwise the bytes
+// follow and are the image.
+// H C target level:I internalformat width:I height:I border:I pbo_offset:I pbo_size:I | len data
 pub const OPR_COMPRESSED_TEX_IMAGE_2D: u32 = 198;
-// H C target level:I xoffset:I yoffset:I width:I height:I format | len data
+// H C target level:I xoffset:I yoffset:I width:I height:I format pbo_offset:I pbo_size:I | len data
 pub const OPR_COMPRESSED_TEX_SUB_IMAGE_2D: u32 = 199;
 // H C target level:I internal_format:I width:I height:I depth:I border:I format ty
 //   pbo_offset:I has_pixels:B | len pixels
@@ -166,6 +169,12 @@ pub const OPR_STAGE_PAYLOAD: u32 = 205;
 /// `invalidateSubFramebuffer(target, attachments, x, y, width, height)` (WebGL 2):
 /// `H C target x:I y:I width:I height:I | count attachments`, `invalidateFramebuffer`'s list with a region.
 pub const OPR_INVALIDATE_SUB_FRAMEBUFFER: u32 = 206;
+/// `compressedTexImage3D` (WebGL 2), with `OPR_COMPRESSED_TEX_IMAGE_2D`'s source words:
+/// `H C target level:I internalformat width:I height:I depth:I border:I pbo_offset:I pbo_size:I | len data`.
+pub const OPR_COMPRESSED_TEX_IMAGE_3D: u32 = 207;
+/// `compressedTexSubImage3D` (WebGL 2):
+/// `H C target level:I xoffset:I yoffset:I zoffset:I width:I height:I depth:I format pbo_offset:I pbo_size:I | len data`.
+pub const OPR_COMPRESSED_TEX_SUB_IMAGE_3D: u32 = 208;
 
 // ─── Uploads whose pixels are already the host's (171..=174) ─────────────────
 //
@@ -188,6 +197,9 @@ pub const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D: u32 = 174;
 /// `framebufferTextureLayer(target, attachment, texture, level, layer)` (WebGL 2):
 /// `H C target attachment texture:I level:I layer:I`, a texture of -1 detaching.
 pub const OPR_FRAMEBUFFER_TEXTURE_LAYER: u32 = 175;
+/// `waitSync(sync, 0, TIMEOUT_IGNORED)` (WebGL 2): `H C sync`. The flags and timeout have one legal value each, which
+/// the facade checks, so neither crosses.
+pub const OPR_WAIT_SYNC: u32 = 176;
 
 /// The shape of one record in this block.
 pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
@@ -264,8 +276,10 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_BUFFER_SUB_DATA => upload(4, None),
         OPR_TEX_IMAGE_2D => upload(11, Some(10)),
         OPR_TEX_SUB_IMAGE_2D => upload(10, None),
-        OPR_COMPRESSED_TEX_IMAGE_2D => upload(8, None),
-        OPR_COMPRESSED_TEX_SUB_IMAGE_2D => upload(9, None),
+        OPR_COMPRESSED_TEX_IMAGE_2D => upload(10, None),
+        OPR_COMPRESSED_TEX_SUB_IMAGE_2D => upload(11, None),
+        OPR_COMPRESSED_TEX_IMAGE_3D => upload(11, None),
+        OPR_COMPRESSED_TEX_SUB_IMAGE_3D => upload(13, None),
         OPR_TEX_IMAGE_3D => upload(13, Some(12)),
         OPR_TEX_SUB_IMAGE_3D => upload(14, Some(13)),
         OPR_DRAW_BUFFERS => RecordSpec::Words {
@@ -286,6 +300,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_TEX_IMAGE_2D_FROM_CANVAS2D => fixed(10),
         OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D => fixed(11),
         OPR_FRAMEBUFFER_TEXTURE_LAYER => fixed(7),
+        OPR_WAIT_SYNC => fixed(3),
         OPR_INVALIDATE_SUB_FRAMEBUFFER => RecordSpec::Words {
             prefix_words: 7,
             max_count: MAX_RESOURCE_WORD_LIST,

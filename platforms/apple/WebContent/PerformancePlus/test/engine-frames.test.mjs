@@ -24,7 +24,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { DecodeBudget, MAX_DECODED_FRAME_BYTES } from "../src/decode-budget.mjs";
+import { DecodeBudget, MAX_DECODED_FRAME_BYTES, PAYLOAD_PREFIX_WORDS } from "../src/decode-budget.mjs";
 import { DOWN_FRAME_VERDICT, encodeBytes } from "../src/downlink.mjs";
 import { bindEngineHost, readEngineSessionConfig } from "../src/engine-host.mjs";
 import { appendCanvas2DRecord, appendStream, endFrame, flushToHost } from "../src/engine-frames.mjs";
@@ -415,7 +415,7 @@ const stagedPackets = [];
   op_tex_image_2d(1, 0x0de1, 0, 0x1908, 2048, 1024, 0, 0x1908, 0x1401, patterned(1, 2048 * 1024 * 4));
   stagedUploads.push({ opcode: OPR_TEX_IMAGE_2D, seed: 1, bytes: 2048 * 1024 * 4 });
   // ASTC 4x4 2048x2048 is exactly 4 MiB: one byte more than a record can say.
-  op_compressed_tex_image_2d(1, 0x0de1, 0, 0x93b0, 2048, 2048, 0, patterned(2, 4 * 1024 * 1024));
+  op_compressed_tex_image_2d(1, 0x0de1, 0, 0x93b0, 2048, 2048, 0, patterned(2, 4 * 1024 * 1024), -1, 0);
   stagedUploads.push({ opcode: OPR_COMPRESSED_TEX_IMAGE_2D, seed: 2, bytes: 4 * 1024 * 1024 });
   // A buffer, whose data is nullable: a staged payload is a present one.
   op_buffer_data(1, 0x8892, -1, patterned(3, 5 * 1024 * 1024 + 3), 0x88e4);
@@ -446,7 +446,8 @@ const stagedPackets = [];
       if (staging === null || total !== staging.total || offset !== staging.received) contiguous = false;
       staging.received += length;
     } else if (opcode === OPR_TEX_IMAGE_2D || opcode === OPR_COMPRESSED_TEX_IMAGE_2D || opcode === OPR_BUFFER_DATA) {
-      const prefix = { [OPR_TEX_IMAGE_2D]: 11, [OPR_COMPRESSED_TEX_IMAGE_2D]: 8, [OPR_BUFFER_DATA]: 6 }[opcode];
+      // The table the agreement gate holds to the Rust record specs, not a copy of it that can fall behind.
+      const prefix = PAYLOAD_PREFIX_WORDS.get(opcode);
       const staged = record[prefix] === STAGED_PAYLOAD;
       if (staged && (staging === null || staging.received !== staging.total || record.length !== prefix + 1)) {
         contiguous = false;

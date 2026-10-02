@@ -306,6 +306,8 @@ export const OPR_INVALIDATE_FRAMEBUFFER = 203;
 export const OPR_TRANSFORM_FEEDBACK_VARYINGS = 204;
 export const OPR_STAGE_PAYLOAD = 205;
 export const OPR_INVALIDATE_SUB_FRAMEBUFFER = 206;
+export const OPR_COMPRESSED_TEX_IMAGE_3D = 207;
+export const OPR_COMPRESSED_TEX_SUB_IMAGE_3D = 208;
 
 // The byte_length of an upload whose bytes were staged ahead of it in
 // OPR_STAGE_PAYLOAD chunks: no bytes follow in the record. Declared beside
@@ -319,6 +321,7 @@ export const OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT = 172;
 export const OPR_TEX_IMAGE_2D_FROM_CANVAS2D = 173;
 export const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D = 174;
 export const OPR_FRAMEBUFFER_TEXTURE_LAYER = 175;
+export const OPR_WAIT_SYNC = 176;
 export const MAX_RESOURCE_WORD_LIST = 64;
 // The most payload words one variable-uniform record carries
 // (`frame_wire::gl::MAX_STREAM_UNIFORM_WORDS`), which is not the engine

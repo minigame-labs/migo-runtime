@@ -15,16 +15,7 @@
         "getSyncParameter",
         "getFragDataLocation",
         "isSampler",
-        "isSync",
         "getBufferSubData"
-      ]
-    },
-    {
-      "reason": "3D/array compressed texture entry points and the GPU-side wait. Each needs a render-stream record and a handler on the render thread.",
-      "methods": [
-        "compressedTexImage3D",
-        "compressedTexSubImage3D",
-        "waitSync"
       ]
     },
     {

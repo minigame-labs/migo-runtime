@@ -464,6 +464,33 @@ pub enum RenderCommand {
     },
 }
 
+/// Where a compressed upload's bytes come from: the call's own (a view, from `srcOffset`), or WebGL 2's other overload,
+/// `size` bytes of the bound PIXEL_UNPACK_BUFFER from `offset`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompressedImageData {
+    Bytes(Vec<u8>),
+    UnpackBuffer { offset: u32, size: i32 },
+}
+
+impl CompressedImageData {
+    /// The `imageSize` the call passes GL.
+    #[inline]
+    pub fn image_size(&self) -> i32 {
+        match self {
+            Self::Bytes(bytes) => bytes.len() as i32,
+            Self::UnpackBuffer { size, .. } => *size,
+        }
+    }
+
+    #[inline]
+    fn approx_deep_size_bytes(&self) -> usize {
+        match self {
+            Self::Bytes(bytes) => bytes.capacity(),
+            Self::UnpackBuffer { .. } => 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TexImage3DSource {
     None,
@@ -1066,7 +1093,7 @@ pub enum GLCmd {
         width: i32,
         height: i32,
         border: i32,
-        data: Vec<u8>,
+        data: CompressedImageData,
     },
     CompressedTexSubImage2D {
         canvas_id: CanvasId,
@@ -1077,7 +1104,39 @@ pub enum GLCmd {
         width: i32,
         height: i32,
         format: u32,
-        data: Vec<u8>,
+        data: CompressedImageData,
+    },
+    /// `compressedTexImage3D` (WebGL 2): a level of a 2D-array or 3D texture.
+    CompressedTexImage3D {
+        canvas_id: CanvasId,
+        target: u32,
+        level: i32,
+        internalformat: u32,
+        width: i32,
+        height: i32,
+        depth: i32,
+        border: i32,
+        data: CompressedImageData,
+    },
+    /// `compressedTexSubImage3D` (WebGL 2).
+    CompressedTexSubImage3D {
+        canvas_id: CanvasId,
+        target: u32,
+        level: i32,
+        xoffset: i32,
+        yoffset: i32,
+        zoffset: i32,
+        width: i32,
+        height: i32,
+        depth: i32,
+        format: u32,
+        data: CompressedImageData,
+    },
+    /// `waitSync` (WebGL 2): the GL server waits for the fence before it runs anything after it. Its flags and timeout
+    /// have one legal value each (0, TIMEOUT_IGNORED), checked before anything is queued, so neither travels.
+    WaitSync {
+        canvas_id: CanvasId,
+        sync: u32,
     },
 
     // ========== Phase 1C: Buffer & Vertex Extensions ==========
@@ -2765,6 +2824,9 @@ impl GLCmd {
             | GLCmd::TexStorage2D { canvas_id, .. }
             | GLCmd::CompressedTexImage2D { canvas_id, .. }
             | GLCmd::CompressedTexSubImage2D { canvas_id, .. }
+            | GLCmd::CompressedTexImage3D { canvas_id, .. }
+            | GLCmd::CompressedTexSubImage3D { canvas_id, .. }
+            | GLCmd::WaitSync { canvas_id, .. }
             | GLCmd::TexImage2DFromShared { canvas_id, .. }
             | GLCmd::TexImage2DFromSnapshot { canvas_id, .. }
             | GLCmd::TexImage2DFromTextCache { canvas_id, .. }
@@ -3043,6 +3105,9 @@ impl GLCmd {
             | GLCmd::TexStorage2D { .. }
             | GLCmd::CompressedTexImage2D { .. }
             | GLCmd::CompressedTexSubImage2D { .. }
+            | GLCmd::CompressedTexImage3D { .. }
+            | GLCmd::CompressedTexSubImage3D { .. }
+            | GLCmd::WaitSync { .. }
             | GLCmd::TexImage2DFromShared { .. }
             | GLCmd::TexImage2DFromSnapshot { .. }
             | GLCmd::TexImage2DFromTextCache { .. }
@@ -3136,8 +3201,10 @@ impl GLCmd {
             // is always `Arc<Vec<u8>>` with a concrete payload.
             GLCmd::TexImage2D { data, .. } => data.as_ref().map_or(0, |arc| arc.capacity()),
             GLCmd::TexSubImage2D { data, .. } => data.capacity(),
-            GLCmd::CompressedTexImage2D { data, .. } => data.capacity(),
-            GLCmd::CompressedTexSubImage2D { data, .. } => data.capacity(),
+            GLCmd::CompressedTexImage2D { data, .. }
+            | GLCmd::CompressedTexSubImage2D { data, .. }
+            | GLCmd::CompressedTexImage3D { data, .. }
+            | GLCmd::CompressedTexSubImage3D { data, .. } => data.approx_deep_size_bytes(),
 
             // Uniform array uploads — scalar per element, but a
             // `uniform4fv(bones[100])` is 400 floats = 1.6 KB.
@@ -3357,9 +3424,24 @@ mod approx_size_tests {
             width: 128,
             height: 128,
             border: 0,
-            data: vec![0u8; 64 * 1024],
+            data: CompressedImageData::Bytes(vec![0u8; 64 * 1024]),
         };
         assert!(cmd.approx_deep_size_bytes() >= 64 * 1024);
+        // a range of the bound buffer owns nothing
+        let from_buffer = GLCmd::CompressedTexImage2D {
+            canvas_id: CanvasId::from(1u32),
+            target: 0x0DE1,
+            level: 0,
+            internalformat: 0x8D64,
+            width: 128,
+            height: 128,
+            border: 0,
+            data: CompressedImageData::UnpackBuffer {
+                offset: 0,
+                size: 64 * 1024,
+            },
+        };
+        assert!(from_buffer.approx_deep_size_bytes() < 1024);
     }
 
     #[test]

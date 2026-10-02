@@ -468,7 +468,9 @@ export function op_tex_sub_image_2d(canvasId, target, level, xoffset, yoffset, w
     smiU32(type, "type_"),
   );
 }
-export function op_compressed_tex_image_2d(canvasId, target, level, internalformat, width, height, border, data) {
+// The compressed uploads' last two prefix words name the bound PIXEL_UNPACK_BUFFER's range (WebGL 2's other
+// overload): a pbo_offset of -1 is none, and the bytes follow.
+export function op_compressed_tex_image_2d(canvasId, target, level, internalformat, width, height, border, data, pboOffset, pboSize) {
   const canvas = smiU32(canvasId, "canvas_id");
   emitBytes(
     canvas,
@@ -481,9 +483,11 @@ export function op_compressed_tex_image_2d(canvasId, target, level, internalform
     toI32(width, "width"),
     toI32(height, "height"),
     toI32(border, "border"),
+    toI32(pboOffset, "pbo_offset"),
+    toI32(pboSize, "pbo_size"),
   );
 }
-export function op_compressed_tex_sub_image_2d(canvasId, target, level, xoffset, yoffset, width, height, format, data) {
+export function op_compressed_tex_sub_image_2d(canvasId, target, level, xoffset, yoffset, width, height, format, data, pboOffset, pboSize) {
   const canvas = smiU32(canvasId, "canvas_id");
   emitBytes(
     canvas,
@@ -497,7 +501,50 @@ export function op_compressed_tex_sub_image_2d(canvasId, target, level, xoffset,
     toI32(width, "width"),
     toI32(height, "height"),
     smiU32(format, "format"),
+    toI32(pboOffset, "pbo_offset"),
+    toI32(pboSize, "pbo_size"),
   );
+}
+export function op_compressed_tex_image_3d(canvasId, target, level, internalformat, width, height, depth, border, data, pboOffset, pboSize) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  emitBytes(
+    canvas,
+    R.OPR_COMPRESSED_TEX_IMAGE_3D,
+    bytesOf(data, "data"),
+    canvas,
+    smiU32(target, "target"),
+    toI32(level, "level"),
+    smiU32(internalformat, "internalformat"),
+    toI32(width, "width"),
+    toI32(height, "height"),
+    toI32(depth, "depth"),
+    toI32(border, "border"),
+    toI32(pboOffset, "pbo_offset"),
+    toI32(pboSize, "pbo_size"),
+  );
+}
+export function op_compressed_tex_sub_image_3d(canvasId, target, level, xoffset, yoffset, zoffset, width, height, depth, format, data, pboOffset, pboSize) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  emitBytes(
+    canvas,
+    R.OPR_COMPRESSED_TEX_SUB_IMAGE_3D,
+    bytesOf(data, "data"),
+    canvas,
+    smiU32(target, "target"),
+    toI32(level, "level"),
+    toI32(xoffset, "xoffset"),
+    toI32(yoffset, "yoffset"),
+    toI32(zoffset, "zoffset"),
+    toI32(width, "width"),
+    toI32(height, "height"),
+    toI32(depth, "depth"),
+    smiU32(format, "format"),
+    toI32(pboOffset, "pbo_offset"),
+    toI32(pboSize, "pbo_size"),
+  );
+}
+export function op_wait_sync(canvasId, sync) {
+  emit(R.OPR_WAIT_SYNC, smiU32(canvasId, "canvas_id"), smiU32(sync, "sync"));
 }
 
 const EMPTY = new Uint8Array(0);
