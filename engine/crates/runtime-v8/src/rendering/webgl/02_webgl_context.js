@@ -817,6 +817,52 @@ function defineTextureStorage(texture, target, levels, internalformat, width, he
     texture._immutableLevels = levels;
 }
 
+// WebGL 1 has no mipmaps or repeat of a size that is not a power of two (ES 2.0 3.8.2, "Texture Access"): a texture whose
+// level 0 is not a power of two each way is incomplete unless both its wraps are CLAMP_TO_EDGE and its minification
+// filter reads no mipmap, and an incomplete texture samples as (0, 0, 0, 1). The driver underneath is OpenGL ES 3.0, for
+// which such a texture is complete, so the facade keeps which textures are (`_samplesBlack`) and where each is bound
+// (`_incompleteBindings`), after every call that can change either: a level 0 defined, a wrap or filter set, a bind, a
+// delete. WebGL 2's rules are ES 3.0's own.
+function refreshTextureSampling(ctx, texture) {
+    if (ctx._webgl2 || texture._target === undefined) return;
+    const target = texture._target;
+    const image = ctx._image(texture, target === 0x8513 ? 0x8515 : target, 0);
+    const params = texture._params;
+    const black = image !== undefined && !(_isPowerOfTwo(image.width) && _isPowerOfTwo(image.height)) &&
+        !(params !== null && params.get(0x2802) === 0x812f && params.get(0x2803) === 0x812f &&      // WRAP_S, WRAP_T
+            (params.get(0x2801) === 0x2600 || params.get(0x2801) === 0x2601));                     // NEAREST, LINEAR
+    if (black === texture._samplesBlack) return;
+    texture._samplesBlack = black;
+    const cube = target === 0x8513 ? 1 : 0;
+    for (const [unit, bound] of ctx._textureBindings(target)) {
+        if (bound !== texture) continue;
+        if (black) ctx._incompleteBindings.add(unit * 2 + cube);
+        else ctx._incompleteBindings.delete(unit * 2 + cube);
+    }
+}
+
+// A draw samples nothing where an incomplete texture is bound: for the draw, each such binding holds texture 0, which
+// WebGL never gives an image -- incomplete, and sampled as ES 3.0 has an incomplete texture sampled, (0, 0, 0, 1) --
+// and is put back after it, with the active unit. Only commands cross; the facade's bindings stay.
+// The caller checks `_incompleteBindings` is not empty, so a draw with none pays one size test.
+function withholdIncompleteTextures(ctx) {
+    for (const key of ctx._incompleteBindings) {
+        encodeActiveTexture(ctx._canvasId, key >>> 1);
+        encodeBindTexture(ctx._canvasId, (key & 1) !== 0 ? 0x8513 : 0x0de1, -1);
+    }
+}
+
+function restoreIncompleteTextures(ctx) {
+    for (const key of ctx._incompleteBindings) {
+        const cube = (key & 1) !== 0;
+        const unit = key >>> 1;
+        encodeActiveTexture(ctx._canvasId, unit);
+        encodeBindTexture(ctx._canvasId, cube ? 0x8513 : 0x0de1,
+            (cube ? ctx._textureBindingsCube : ctx._textureBindings2D).get(unit)._id);
+    }
+    encodeActiveTexture(ctx._canvasId, ctx._activeTextureUnit);
+}
+
 // The compressed formats, each [block width, block height, bytes a block, the extension that enables it]. A format is
 // one a call takes only while its extension is enabled (WebGL 1.0 5.14.8).
 const _COMPRESSED_FORMATS = new Map();
@@ -1627,6 +1673,9 @@ class WebGLRenderingContext {
         this._activeTextureUnit = 0x84c0; // TEXTURE0
         this._textureBindings2D = new Map(); // texture unit -> WebglObject|null
         this._textureBindingsCube = new Map(); // texture unit -> WebglObject|null
+        // WebGL 1: every binding of a texture that samples as incomplete, as `unit * 2 + (cube map ? 1 : 0)`; a draw holds
+        // none there (`withholdIncompleteTextures`). Empty in WebGL 2, whose completeness the driver's is.
+        this._incompleteBindings = new Set();
         this._arrayBufferBinding = null;
         this._vertexArrayBinding = null;     // the vertex array object bound, null for the default one
         this._programBinding = null;
@@ -2011,18 +2060,22 @@ class WebGLRenderingContext {
         }
     }
 
+    // Every draw samples no incomplete WebGL 1 texture (`withholdIncompleteTextures`).
     drawArrays(mode, first, count) {
         if (this._programBinding === null) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
             return;
         }
+        const withheld = this._incompleteBindings.size !== 0;
+        if (withheld) withholdIncompleteTextures(this);
         // opcode 47: H C U I I. mode is u32, first/count are i32.
         if (typeof mode === "number" && typeof first === "number" && typeof count === "number") {
             encodeDrawArrays(this._canvasId, mode >>> 0, first | 0, count | 0);
-            return;
+        } else {
+            flushRenderCommandStream();
+            _rawDrawArrays(this._canvasId, mode, first, count);
         }
-        flushRenderCommandStream();
-        _rawDrawArrays(this._canvasId, mode, first, count);
+        if (withheld) restoreIncompleteTextures(this);
     }
 
     // A draw needs a program in use: none is INVALID_OPERATION (ES 3.0 2.12.3), for every draw.
@@ -2040,25 +2093,23 @@ class WebGLRenderingContext {
     }
 
     drawElements(mode, count, type, offset) {
-        // opcode 48: H C U I U I. mode/type are u32, count/offset are i32.
-        if (typeof mode === "number" && typeof count === "number" &&
-            typeof type === "number" && typeof offset === "number") {
-            const c = count | 0, t = type >>> 0, o = offset | 0;
-            const error = this._elementsError(c, t, o);
-            if (error !== 0) {
-                recordGpuPreflightError(this._canvasId, error);
-                return;
-            }
-            encodeDrawElements(this._canvasId, mode >>> 0, c, t, o);
-            return;
-        }
-        const error = this._elementsError(Number(count) | 0, Number(type) >>> 0, Number(offset) | 0);
+        const c = Number(count) | 0, t = Number(type) >>> 0, o = Number(offset) | 0;
+        const error = this._elementsError(c, t, o);
         if (error !== 0) {
             recordGpuPreflightError(this._canvasId, error);
             return;
         }
-        flushRenderCommandStream();
-        _rawDrawElements(this._canvasId, mode, count, type, offset);
+        const withheld = this._incompleteBindings.size !== 0;
+        if (withheld) withholdIncompleteTextures(this);
+        // opcode 48: H C U I U I. mode/type are u32, count/offset are i32.
+        if (typeof mode === "number" && typeof count === "number" &&
+            typeof type === "number" && typeof offset === "number") {
+            encodeDrawElements(this._canvasId, mode >>> 0, c, t, o);
+        } else {
+            flushRenderCommandStream();
+            _rawDrawElements(this._canvasId, mode, count, type, offset);
+        }
+        if (withheld) restoreIncompleteTextures(this);
     }
 
     // A name WebGL refuses is INVALID_VALUE, and a reserved one INVALID_OPERATION (WebGL 1.0 6.20).
@@ -2853,6 +2904,8 @@ class WebGLRenderingContext {
                     recordGpuPreflightError(ctx._canvasId, GL_INVALID_OPERATION);
                     return;
                 }
+                const withheld = ctx._incompleteBindings.size !== 0;
+                if (withheld) withholdIncompleteTextures(ctx);
                 // Encode if all params are numbers; otherwise flush+raw.
                 if (typeof mode === "number" && typeof first === "number" &&
                     typeof count === "number" && typeof primcount === "number") {
@@ -2865,6 +2918,7 @@ class WebGLRenderingContext {
                         ctx._canvasId, mode, first, count, primcount,
                     );
                 }
+                if (withheld) restoreIncompleteTextures(ctx);
             },
             drawElementsInstancedANGLE(mode, count, type, offset, primcount) {
                 const error = ctx._elementsError(Number(count) | 0, Number(type) >>> 0, Number(offset) | 0);
@@ -2872,6 +2926,8 @@ class WebGLRenderingContext {
                     recordGpuPreflightError(ctx._canvasId, error);
                     return;
                 }
+                const withheld = ctx._incompleteBindings.size !== 0;
+                if (withheld) withholdIncompleteTextures(ctx);
                 if (typeof mode === "number" && typeof count === "number" &&
                     typeof type === "number" && typeof offset === "number" &&
                     typeof primcount === "number") {
@@ -2884,6 +2940,7 @@ class WebGLRenderingContext {
                         ctx._canvasId, mode, count, type, offset, primcount,
                     );
                 }
+                if (withheld) restoreIncompleteTextures(ctx);
             },
             vertexAttribDivisorANGLE(index, divisor) {
                 if (typeof index === "number" && typeof divisor === "number") {
@@ -2918,6 +2975,7 @@ class WebGLRenderingContext {
         texture._images = null;         // image key (`_imageKey`) -> TextureImage, once one is defined
         texture._immutableLevels = 0;   // the levels `texStorage*` fixed; 0 while the texture is mutable
         texture._params = null;         // pname -> value, as `texParameter*` set them
+        texture._samplesBlack = false;  // WebGL 1: incomplete by its size and parameters (`refreshTextureSampling`)
         return texture;
     }
 
@@ -3285,7 +3343,12 @@ class WebGLRenderingContext {
         texture._deleted = true;
         if (texture._target !== undefined) {
             const bindings = this._textureBindings(texture._target);
-            for (const [unit, bound] of bindings) if (bound === texture) bindings.delete(unit);
+            const cube = texture._target === 0x8513 ? 1 : 0;
+            for (const [unit, bound] of bindings) {
+                if (bound !== texture) continue;
+                bindings.delete(unit);
+                this._incompleteBindings.delete(unit * 2 + cube);
+            }
         }
         this._detachFromBoundFramebuffers(texture);
         _rawDeleteTexture(texture._id);
@@ -3311,6 +3374,11 @@ class WebGLRenderingContext {
             bound._target = t;
         }
         bindings.set(this._activeTextureUnit, bound);
+        if (!this._webgl2) {
+            const key = this._activeTextureUnit * 2 + (t === 0x8513 ? 1 : 0);
+            if (bound !== null && bound._samplesBlack) this._incompleteBindings.add(key);
+            else this._incompleteBindings.delete(key);
+        }
         const texId = bound ? bound._id : -1;
         // opcode 10: H C U I. target is u32, texId is i32 (negative = unbind).
         if (typeof target === "number") {
@@ -3361,6 +3429,7 @@ class WebGLRenderingContext {
             if (texImageFromData(this, target, level, internalformat, a4, a5, a6, a7, a8, a9, a10, fromBuffer)) {
                 defineTextureImage(texture, target, level,
                     new TextureImage(Number(internalformat) >>> 0, Number(a7) >>> 0, Number(a8) >>> 0, a4, a5, 1, false));
+                if (level === 0) refreshTextureSampling(this, texture);
             }
             return;
         }
@@ -3374,6 +3443,7 @@ class WebGLRenderingContext {
         if (texImageFromSource(this, target, level, internalformat, a4, a5, source)) {
             defineTextureImage(texture, target, level,
                 new TextureImage(Number(internalformat) >>> 0, Number(a4) >>> 0, Number(a5) >>> 0, width, height, 1, false));
+            if (level === 0) refreshTextureSampling(this, texture);
         }
     }
 
@@ -3510,6 +3580,7 @@ class WebGLRenderingContext {
             return false;
         }
         (texture._params || (texture._params = new Map())).set(pname, value);
+        if (pname >= 0x2801 && pname <= 0x2803) refreshTextureSampling(this, texture);   // MIN_FILTER, WRAP_S, WRAP_T
         return true;
     }
 
@@ -3635,6 +3706,7 @@ class WebGLRenderingContext {
         )) return;
         _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, u8, -1, 0);
         defineCompressedTextureImage(texture, target, level, internalformat, width, height, 1);
+        if (level === 0) refreshTextureSampling(this, texture);
     }
 
     compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, data) {
@@ -4265,6 +4337,7 @@ class WebGLRenderingContext {
         defineTextureImage(texture, t, l, sized === undefined
             ? new TextureImage(i, i, _UBYTE, w, h, 1, false)
             : new TextureImage(i, sized[0], sized[1][0], w, h, 1, false));
+        if (l === 0) refreshTextureSampling(this, texture);
     }
 
     // The internal format first (INVALID_ENUM for one the call does not take: WebGL 1 has the five unsized ones only),
