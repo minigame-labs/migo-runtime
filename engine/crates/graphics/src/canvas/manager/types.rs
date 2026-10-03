@@ -1784,12 +1784,10 @@ pub(super) struct CanvasEntry {
     /// exactly one canvas (the onscreen one) with a DrawingBuffer.
     ///
     /// When bypass is active, the window surface content becomes undefined
-    /// after `eglSwapBuffers` (per EGL spec). To handle games that read from
-    /// the default framebuffer, `CanvasManager::signal_default_fbo_readback()`
-    /// permanently disables bypass when such a readback is detected. This
-    /// re-routes rendering through the DrawingBuffer which preserves content.
-    ///
-    /// Detected by a nonempty `ReadPixels` on the onscreen default READ FBO.
+    /// after `eglSwapBuffers` (per EGL spec), which a drawing buffer that is not
+    /// preserved may be: it is cleared before the content next uses it
+    /// (`CanvasManager::settle_owed_clear`). One that is preserved is never
+    /// bypassed.
     ///
     /// Set by `CanvasManager::evaluate_bypass()` after canvas lifecycle events.
     pub bypass_drawing_buffer: bool,

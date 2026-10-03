@@ -304,8 +304,6 @@ impl Host {
             &init_options,
             surface_control,
             vsync_rx,
-            // Content reads in the task that drew, flushed behind the draws.
-            graphics::DefaultFramebufferReads::WithinTheirFrame,
         )?;
         let SessionShell {
             t_start,

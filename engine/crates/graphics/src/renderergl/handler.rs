@@ -388,6 +388,7 @@ impl RendererGL {
         if let Some(canvas_id) = cmd.touches_canvas() {
             cm.ensure_gl_initial_state(canvas_id)?;
         }
+        cm.settle_owed_clear(&cmd)?;
         match cmd {
             // ---------- Per-canvas stateful calls ----------
             GLCmd::Viewport {
@@ -444,7 +445,7 @@ impl RendererGL {
                 alpha,
                 depth,
                 stencil,
-                preserve_drawing_buffer: _,
+                preserve_drawing_buffer,
             } => {
                 cm.declare_webgl_context(
                     canvas_id,
@@ -454,6 +455,7 @@ impl RendererGL {
                             depth,
                             stencil,
                         },
+                        preserve: preserve_drawing_buffer,
                     },
                 )?;
                 Ok(DamageEffect::NoDamage)
@@ -3756,12 +3758,6 @@ impl RendererGL {
                     format,
                     type_,
                     destination_byte_length,
-                    || {
-                        if canvas_id == CanvasId::from(1u32) {
-                            cm.signal_default_fbo_readback()?;
-                        }
-                        Ok(())
-                    },
                 ));
                 Ok(DamageEffect::NoDamage)
             }

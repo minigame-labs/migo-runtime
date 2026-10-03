@@ -21,7 +21,6 @@ gl.scissor(1n, 2n, 3n, 4n);
 gl.clearColor(0.25, 0.5, 0.75, 1n);
 gl.clearDepth(1n);
 gl.clearStencil(3n);
-gl.clear(0x4000n);
 gl.enable(0x0b71n); // DEPTH_TEST
 gl.disable(0x0b44n); // CULL_FACE
 gl.colorMask(true, false, true, 1n);

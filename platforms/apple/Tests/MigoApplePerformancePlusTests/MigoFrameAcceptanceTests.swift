@@ -22,15 +22,19 @@ import XCTest
     /// into `MigoFrameChannel`, the engine executes it, and the pixels come back
     /// through the barrier -- the path a blocked `readPixels` in WebContent takes.
     ///
-    /// **Why there are two tests, and why the second waits.** Every packet on this
-    /// lane ends a frame, so the producer's read of frame N reaches the host after
-    /// frame N was submitted -- and possibly after it was presented. With
-    /// DrawingBuffer bypass on, a present leaves the window surface undefined, and
-    /// the first read snapshots that surface. Measured on the iOS simulator from an
-    /// identical frame: a read that beat the present by 2 ms saw blue, and a present
-    /// that beat the read by 2 ms left `[0,0,0,0]`. The first test is the ordering
-    /// that happened to work; the second makes the other ordering the only one, and
-    /// is red for as long as this lane's sessions can enter bypass.
+    /// **Why there are two tests, and why the second waits.** Every packet of this
+    /// fixture ends a frame, so the read of frame N reaches the host after frame N
+    /// was submitted -- and possibly after it was presented. With DrawingBuffer
+    /// bypass on, a present leaves the window surface undefined. Measured on the iOS
+    /// simulator from an identical frame: a read that beat the present by 2 ms saw
+    /// blue, and a present that beat the read by 2 ms left `[0,0,0,0]`. The first
+    /// test is the ordering that happened to work; the second makes the other
+    /// ordering the only one. The fixture declares no WebGL context, so its drawing
+    /// buffer is one nothing said may be cleared: it is kept across the present and
+    /// never bypassed, and the second test is red if it were. (Content that declares
+    /// a context reads in the task that drew, through a barrier that does not
+    /// present; a read after the present sees what the context's
+    /// `preserveDrawingBuffer` says it should.)
     ///
     /// **The fixture is the same file, not a copy.** It lives in
     /// `MigoAppleFrameHarness`, and both this and `MigoExternalFramePixelTests`

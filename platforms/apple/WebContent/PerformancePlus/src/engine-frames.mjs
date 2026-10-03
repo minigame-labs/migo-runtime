@@ -64,6 +64,8 @@ let canvasSelected = false;
 // which is the producer's stream state: after a barrier the producer still
 // knows which canvas is current, and it is the packet that has forgotten.
 let selectionInPacket = false;
+// Whether a barrier has sent some of this frame ahead of its end (see `endFrame`).
+let barrierInFrame = false;
 // Presenting packets finished but not yet admitted by the window, oldest first.
 // At most one in practice, because the frame clock waits on it; a queue so an
 // extra frame end outside the clock cannot overwrite a held one.
@@ -340,11 +342,18 @@ function writeImageRun() {
   return appendCanvas2DRecordNow(imageRunCanvas, imageRunRecord, 2, imageRun.subarray(0, words));
 }
 
-/** End the frame: send its packet, or hold it until the window opens. */
+/**
+ * End the frame: send its packet, or hold it until the window opens. A frame
+ * with nothing left to carry sends one all the same when a barrier sent some of
+ * it ahead: the host presents a frame when its presenting packet arrives, not
+ * when a barrier runs, so a frame that drew and then asked a question would
+ * otherwise never be presented.
+ */
 export function endFrame() {
   writeImageRun();
   const frame = currentWriter();
-  if (frame.wordCount === 0) return;
+  if (frame.wordCount === 0 && !barrierInFrame) return;
+  barrierInFrame = false;
   const host = engineHost();
   const packet = finishPacket(frame, host, true);
 
@@ -401,6 +410,7 @@ function releaseBuffer(frame, packet, host) {
 
 /** Send the packet so far as a barrier, blocking for the window if it is shut. */
 function sendBarrier(frame) {
+  barrierInFrame = true;
   const host = engineHost();
   drainHeldSynchronously(host);
   const packet = finishPacket(frame, host, false);

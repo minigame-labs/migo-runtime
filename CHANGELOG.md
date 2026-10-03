@@ -115,6 +115,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL: a drawing buffer is cleared after it has been presented unless the context asked for it to be preserved
+  (`preserveDrawingBuffer`, WebGL 1.0 2.2) -- colour to transparent black, depth to 1, stencil to 0. It was never
+  cleared: a frame that did not clear began on the frame before, a read after the present returned the presented frame,
+  and under bypass (drawing straight into the window) a swap left the window's buffer undefined and content drew over
+  whatever it held. The clear is owed from the end of a frame that drew into the screen -- when a browser hands the
+  buffer to its compositor, so what content finds in its buffer depends on its own frames and never on when the render
+  thread swapped -- until the content next draws into, clears or reads the default framebuffer, and made then, with the
+  content's state put back: a frame that begins with a clear of its own pays only for the buffers that clear does not
+  overwrite (one with no scissor, write mask or rasterizer discard in its way), and a frame that only reads leaves the
+  screen as it was. A preserved buffer is never bypassed. This replaces the latch that turned bypass off for good at the
+  first `readPixels` of the screen's default framebuffer (and the external-frame sessions' version of it, set from the
+  start), which kept a frame's contents across its present so that a read arriving after it saw them: such a read now
+  sees the cleared buffer, as the specification has it, and an in-frame read no longer costs a full-screen copy every
+  frame after it. `clear` with a bit that names no buffer is INVALID_VALUE and clears nothing; it was sent. The bypass
+  presentation probe asks for the window's buffers (`stencil: true`), which bypass has required since the drawing
+  buffer took the context's attributes.
+- Presentation: a frame is presented whole. A barrier -- the packet a synchronous call sends mid-frame so that it sees
+  what was recorded before it -- presented the GL work it carried at the next tick, half a frame, whenever content asked
+  a question between draws; Canvas2D barriers already did not. The frame's end presents what its barriers drew, in
+  Canvas2D and WebGL alike, and when everything it drew went ahead in barriers its end is still sent (an empty
+  presenting packet, in the embedded runtime and the Performance+ producer, where a frame with nothing left to carry
+  sent none and was never presented). And a finished frame is presented before anything that arrives behind it runs: a
+  task that drew between a frame's end and the tick that swaps it put its draws into the frame being shown. In the
+  steady state nothing arrives in between, and frames are still presented on the frame clock.
 - Canvas2D / WebGL: Skia's GL work runs in its own context. Skia does its GL work in whatever EGL context is current,
   and a cleanup is GL work -- it deletes textures and framebuffers -- but the periodic purge of every 2D context's
   unused resources (every 250 ms), the low-memory trim, and the re-capping of every context's share of the resource

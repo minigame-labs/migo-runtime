@@ -420,7 +420,10 @@ export class FramePacketWriter {
    * executes it and the frame goes on.
    */
   finish(sequence, frameId, present = true) {
-    if (this.#used === 0) throw new Error("finish() on a frame with no commands");
+    // A frame with no commands is a stream that is only its header, which the
+    // host takes as an empty stream: what a frame whose drawing all went ahead
+    // in barriers sends to end it.
+    if (this.#used === 0) this.#used = STREAM_HEADER_WORDS;
     const words = this.#words;
     const payloadWord = STREAM_PAYLOAD_OFFSET / 4;
     words[payloadWord] = this.#magic;
