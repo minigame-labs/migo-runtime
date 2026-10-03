@@ -112,6 +112,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL: the drawing buffer has exactly the buffers the context's attributes ask for (WebGL 1.0 5.2), and
+  `getContextAttributes()` says what it has. It used to be RGBA8 with a 24-bit depth and an 8-bit stencil buffer
+  whatever was asked: a context without stencil (the default) had one, so a stencil test that cannot fail without a
+  stencil buffer failed; `depth: false` kept a depth buffer; `alpha: false` read back the alpha it drew; the stencil
+  attribute was reported true by default and antialiasing on, though the buffer is single-sampled. Each context's
+  constructor now encodes its attributes ahead of its first command (frame-wire GL record 73, `WEBGL_CONTEXT`: alpha,
+  depth, stencil, preserveDrawingBuffer bits), and the renderer allocates the colour buffer RGBA8 or RGB8 and the
+  depth/stencil buffer as DEPTH24_STENCIL8, DEPTH_COMPONENT24, STENCIL_INDEX8 or none. The screen canvas's buffer takes
+  the format (and keeps it across a recreated surface and a GPU reset); an offscreen WebGL canvas, which drew into its
+  pbuffer's own framebuffer -- the EGL config's buffers, at the canvas's size -- gets a DrawingBuffer as its default
+  framebuffer and its pbuffer shrinks to one pixel. Bypass (drawing straight into the window) is taken only for a
+  context whose buffers are the window's own. Antialiasing, which the implementation may decline, is declined and
+  reported off; stencil defaults to false. `WebGL2RenderingContext`'s constructor dropped its options entirely, so a
+  WebGL 2 context ignored every attribute: it passes them on. A DrawingBuffer's same-size `canvas.width` assignment
+  now clears it, as the specification resets the buffer on every assignment (the screen canvas's did not).
 - WebGL: a draw reads no vertex outside the buffers of the attributes the program in use consumes, as the
   specification has it (WebGL 1.0 6.4-6.6, kept by WebGL 2): a consumed attribute enabled as an array with no buffer, or
   whose buffer does not hold every vertex the draw reads at the attribute's offset and stride -- or every instance an

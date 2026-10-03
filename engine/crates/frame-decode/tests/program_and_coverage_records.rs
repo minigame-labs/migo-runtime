@@ -2,7 +2,7 @@
 //! command.
 
 use frame_decode::{GlDecodeContext, RenderSink, decode_render_stream_into};
-use frame_wire::gl::{OP_FLUSH, OP_SAMPLE_COVERAGE};
+use frame_wire::gl::{OP_FLUSH, OP_SAMPLE_COVERAGE, OP_WEBGL_CONTEXT};
 use frame_wire::gl_resource::{OPR_DETACH_SHADER, OPR_VALIDATE_PROGRAM};
 use frame_wire::stream::{MAGIC, STREAM_VERSION, pack_header, validate_stream};
 use shared::command_vec_pool::PooledVec;
@@ -117,4 +117,34 @@ fn flush_names_its_canvas() {
         "{:?}",
         r.commands
     );
+}
+
+/// A WebGL context's record names the buffers its drawing buffer has, one bit each: alpha 1, depth 2, stencil 4,
+/// preserveDrawingBuffer 8.
+#[test]
+fn a_webgl_context_record_names_its_drawing_buffer() {
+    for (bits, want) in [
+        (0b0011, (true, true, false, false)),
+        (0b1100, (false, false, true, true)),
+        (0b0000, (false, false, false, false)),
+    ] {
+        let r = decode_one(OP_WEBGL_CONTEXT, &[9, bits]);
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        match r.commands.as_slice() {
+            [
+                GLCmd::WebglContext {
+                    canvas_id: 9,
+                    alpha,
+                    depth,
+                    stencil,
+                    preserve_drawing_buffer,
+                },
+            ] => assert_eq!(
+                (*alpha, *depth, *stencil, *preserve_drawing_buffer),
+                want,
+                "{bits:#b}"
+            ),
+            other => panic!("expected one WebglContext, got {other:?}"),
+        }
+    }
 }

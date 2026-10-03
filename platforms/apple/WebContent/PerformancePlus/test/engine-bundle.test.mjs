@@ -152,7 +152,10 @@ check(canvas.width === 64 && canvas.height === 48, "the main canvas has the surf
 const gl = canvas.getContext("webgl");
 check(gl && typeof gl.clear === "function", "the engine's own WebGL context was created");
 const attributes = gl.getContextAttributes();
-check(attributes.stencil === true && attributes.powerPreference === "default", "context attributes read back");
+check(
+  attributes.stencil === false && attributes.antialias === false && attributes.powerPreference === "default",
+  "context attributes read back: the specification's defaults, antialiasing declined",
+);
 
 await new Promise((resolveFrame) => {
   requestAnimationFrame(() => {
@@ -180,9 +183,13 @@ const bits = (value) => {
   return f32.getUint32(0, true);
 };
 const header = (op, words) => ((words << 12) | op) >>> 0;
-const expectedStream = (r, g, b, a) => [
+// The first frame's stream begins with the record the context's constructor encoded: its drawing buffer's attributes
+// (alpha and depth, the defaults).
+const contextRecord = [header(opcodes.OP_WEBGL_CONTEXT, 3), 1, 0b0011];
+const expectedStream = (r, g, b, a, first) => [
   opcodes.MAGIC,
   opcodes.STREAM_VERSION,
+  ...(first ? contextRecord : []),
   header(opcodes.OP_CLEAR_COLOR, 6),
   1,
   bits(r),
@@ -208,10 +215,10 @@ packets.forEach((packet, index) => {
   const offset = view.getUint32(HEADER_BYTES + 4, true);
   const length = view.getUint32(HEADER_BYTES + 8, true);
   const words = Array.from({ length: length / 4 }, (_, i) => view.getUint32(offset + i * 4, true));
-  const expected = index === 0 ? expectedStream(0, 0, 1, 1) : expectedStream(1, 0, 0, 1);
+  const expected = index === 0 ? expectedStream(0, 0, 1, 1, true) : expectedStream(1, 0, 0, 1, false);
   check(
     words.length === expected.length && words.every((word, i) => word === expected[i]),
-    `packet ${index + 1}: the stream is exactly the facade's clearColor + clear`,
+    `packet ${index + 1}: the stream is exactly the facade's ${index === 0 ? "context record, " : ""}clearColor + clear`,
   );
 });
 

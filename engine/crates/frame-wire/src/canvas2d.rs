@@ -23,7 +23,7 @@
 //! a barrier protocol; one stream with two opcode ranges needs neither, and the
 //! order is the order.
 //!
-//! The ranges are load-bearing, not cosmetic. GL owns `1..=72` fixed and
+//! The ranges are load-bearing, not cosmetic. GL owns `1..=73` fixed and
 //! `256..=276` variable; 2D owns `512..`. A reader classifies a record by its
 //! opcode alone, and the gap between the blocks is what makes an opcode added
 //! to the wrong one a rejection rather than a record read with the wrong shape.

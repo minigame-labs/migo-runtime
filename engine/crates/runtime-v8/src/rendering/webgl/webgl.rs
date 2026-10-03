@@ -795,7 +795,11 @@ pub(super) mod tests {
         {
             RenderCommand::FramePacket(packet) => {
                 for op in packet.into_ops() {
-                    if let FrameOp::GlBatch(payload) = op {
+                    if let FrameOp::GlBatch(mut payload) = op {
+                        // As `drain_gl_commands`: the context's creation record is not what these tests count.
+                        payload
+                            .commands
+                            .retain(|cmd| !matches!(cmd, GLCmd::WebglContext { .. }));
                         return payload.commands;
                     }
                 }
@@ -1656,13 +1660,40 @@ pub(super) mod tests {
 
     /// Every GL command the packets sent so far carry, in order, across however many packets and batches the
     /// stream and the ordered ops were split into.
+    /// A frame's ops without the GL batches that hold nothing but contexts' creation records, or `None` when nothing
+    /// else is left: an interleaving test creates its context in the script it measures, and the constructor's record
+    /// is flushed on its own, ahead of the synchronous canvas query the 2D calls make, in a packet of its own.
+    fn without_creation_only_batches(ops: shared::FrameOps) -> Option<Vec<FrameOp>> {
+        let ops: Vec<FrameOp> = ops
+            .into_iter()
+            .filter(|op| match op {
+                FrameOp::GlBatch(payload) => !payload
+                    .commands
+                    .iter()
+                    .all(|cmd| matches!(cmd, GLCmd::WebglContext { .. })),
+                _ => true,
+            })
+            .collect();
+        ops.iter()
+            .any(|op| matches!(op, FrameOp::GlBatch(_) | FrameOp::CanvasBatch(_)))
+            .then_some(ops)
+    }
+
+    /// Every GL command sent so far, but the record each context's constructor encodes (`GLCmd::WebglContext`): the
+    /// tests that drain are about what a context does once it exists, and the record has a test of its own
+    /// (`a_context_declares_the_drawing_buffer_its_attributes_ask_for`).
     fn drain_gl_commands(render_rx: &crossbeam_channel::Receiver<RenderCommand>) -> Vec<GLCmd> {
         let mut commands = Vec::new();
         while let Ok(command) = render_rx.try_recv() {
             if let RenderCommand::FramePacket(packet) = command {
                 for op in packet.into_ops() {
                     if let FrameOp::GlBatch(payload) = op {
-                        commands.extend(payload.commands);
+                        commands.extend(
+                            payload
+                                .commands
+                                .into_iter()
+                                .filter(|cmd| !matches!(cmd, GLCmd::WebglContext { .. })),
+                        );
                     }
                 }
             }
@@ -3200,6 +3231,72 @@ pub(super) mod tests {
         );
     }
 
+    /// Each context's constructor declares, ahead of any command of its own, the drawing buffer its attributes ask for
+    /// (`GLCmd::WebglContext`): each attribute a dictionary member WebIDL converts to a boolean (so `0` is false and a
+    /// non-empty string true), the specification's default when absent -- alpha and depth on, stencil and
+    /// preserveDrawingBuffer off -- and WebGL 2's constructor passes its options on. `getContextAttributes()` answers
+    /// what the buffer has: those, with antialiasing off, since the drawing buffer is single-sampled.
+    #[test]
+    fn a_context_declares_the_drawing_buffer_its_attributes_ask_for() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "context_attributes.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const plain = new WebGLRenderingContext({ _rid: 240, width: 1, height: 1 }, {});
+                const asked = new WebGLRenderingContext({ _rid: 241, width: 1, height: 1 },
+                    { alpha: 0, depth: false, stencil: 1, preserveDrawingBuffer: "yes", antialias: true });
+                const webgl2 = new WebGL2RenderingContext({ _rid: 242, width: 1, height: 1 }, { stencil: true, alpha: false });
+                const a = plain.getContextAttributes();
+                check(a.alpha === true && a.depth === true && a.stencil === false && a.antialias === false &&
+                      a.premultipliedAlpha === true && a.preserveDrawingBuffer === false, "the defaults: " + JSON.stringify(a));
+                const b = asked.getContextAttributes();
+                check(b.alpha === false && b.depth === false && b.stencil === true && b.preserveDrawingBuffer === true &&
+                      b.antialias === false, "converted as WebIDL converts them: " + JSON.stringify(b));
+                const c = webgl2.getContextAttributes();
+                check(c.stencil === true && c.alpha === false, "WebGL 2 takes its options: " + JSON.stringify(c));
+                plain.flush(); asked.flush(); webgl2.flush();
+                "#,
+            )
+            .expect("the contexts should be created");
+        let mut declared = Vec::new();
+        while let Ok(command) = render_rx.try_recv() {
+            if let RenderCommand::FramePacket(packet) = command {
+                for op in packet.into_ops() {
+                    if let FrameOp::GlBatch(payload) = op {
+                        for cmd in payload.commands {
+                            if let GLCmd::WebglContext {
+                                canvas_id,
+                                alpha,
+                                depth,
+                                stencil,
+                                preserve_drawing_buffer,
+                            } = cmd
+                            {
+                                declared.push((
+                                    canvas_id,
+                                    alpha,
+                                    depth,
+                                    stencil,
+                                    preserve_drawing_buffer,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            declared,
+            vec![
+                (240, true, true, false, false),
+                (241, false, false, true, true),
+                (242, false, true, true, false),
+            ]
+        );
+    }
+
     /// LINK_STATUS is asked as the link's whole result (`gl_state::LINK_RESULT`): whether it linked and the attribute
     /// locations the program consumes, once per link -- `useProgram` and the draws that follow use the cached answer, a
     /// relink asks again -- and the draws judge the attributes in it and no others. A program that did not link answers
@@ -4096,8 +4193,9 @@ pub(super) mod tests {
                                 );
                                 expected += 1.0;
                             }
-                            // The explicit `flush()` that drains the remainder.
-                            GLCmd::Flush { .. } => {}
+                            // The explicit `flush()` that drains the remainder, and the record the context's
+                            // constructor encoded ahead of the burst.
+                            GLCmd::Flush { .. } | GLCmd::WebglContext { .. } => {}
                             other => panic!("unexpected command across auto-flush: {other:?}"),
                         }
                     }
@@ -5378,8 +5476,8 @@ pub(super) mod tests {
             "special f32 values must go through stream, not raw path; got {submit_calls} submit calls"
         );
         assert_eq!(
-            decoded, 5,
-            "all 4 special-f32 uniforms and the closing flush must be encoded, got {decoded}"
+            decoded, 6,
+            "the context's creation record, all 4 special-f32 uniforms and the closing flush must be encoded, got {decoded}"
         );
 
         let commands = recv_gl_commands(&render_rx);
@@ -5447,8 +5545,8 @@ pub(super) mod tests {
             "two stream submits expected (pending viewport flushed before shaderSource, then flush()), got {submit_calls}"
         );
         assert_eq!(
-            decoded, 2,
-            "two decoded commands (the viewport, the flush), got {decoded}"
+            decoded, 3,
+            "three decoded commands (the context's creation record, the viewport, the flush), got {decoded}"
         );
 
         // The viewport must appear in the render output.
@@ -5496,8 +5594,8 @@ pub(super) mod tests {
             "a stream submit for the pending viewport before the oversized uniform, then flush()'s, got {submit_calls}"
         );
         assert_eq!(
-            decoded, 2,
-            "only the viewport and the flush were decoded via stream, got {decoded}"
+            decoded, 3,
+            "only the context's creation record, the viewport and the flush were decoded via stream, got {decoded}"
         );
 
         let commands = recv_gl_commands(&render_rx);
@@ -5656,7 +5754,7 @@ pub(super) mod tests {
         render_rx: crossbeam_channel::Receiver<RenderCommand>,
     ) -> (
         std::thread::JoinHandle<()>,
-        std::sync::mpsc::Receiver<shared::FrameOps>,
+        std::sync::mpsc::Receiver<Vec<FrameOp>>,
     ) {
         use shared::protocol::render_cmd::CanvasCmd;
 
@@ -5673,8 +5771,10 @@ pub(super) mod tests {
                         resp.send(Ok((4, 4)));
                     }
                     Ok(RenderCommand::FramePacket(packet)) => {
-                        let _ = packet_tx.send(packet.into_ops());
-                        return;
+                        if let Some(ops) = without_creation_only_batches(packet.into_ops()) {
+                            let _ = packet_tx.send(ops);
+                            return;
+                        }
                     }
                     Ok(_) => {}
                     Err(_) => return,
@@ -5964,10 +6064,11 @@ pub(super) mod tests {
 
         let (calls2, decoded2) = crate::rendering::webgl::submit_test_counter::read();
 
-        // Runtime 2's flush must only see its OWN 1 command (viewport), not runtime1's clear.
+        // Runtime 2's flush must only see its OWN commands (its context's record, the viewport, the flush), not
+        // runtime1's clear.
         assert_eq!(
-            decoded2, 2,
-            "runtime2 must decode exactly its own viewport and flush, got {decoded2}"
+            decoded2, 3,
+            "runtime2 must decode exactly its own context record, viewport and flush, got {decoded2}"
         );
         assert_eq!(calls2, 1, "runtime2 must submit exactly once, got {calls2}");
 
@@ -6006,7 +6107,7 @@ pub(super) mod tests {
         // Spawn a helper thread that responds to Canvas GetInfo requests
         // (required by the Canvas constructor called inside createCanvas())
         // and forwards the first FramePacket back through a standard channel.
-        let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<shared::FrameOps>(1);
+        let (packet_tx, packet_rx) = std::sync::mpsc::sync_channel::<Vec<FrameOp>>(1);
         let handle = std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
@@ -6019,8 +6120,10 @@ pub(super) mod tests {
                         resp.send(Ok((4, 4)));
                     }
                     Ok(RenderCommand::FramePacket(packet)) => {
-                        let _ = packet_tx.send(packet.into_ops());
-                        return;
+                        if let Some(ops) = without_creation_only_batches(packet.into_ops()) {
+                            let _ = packet_tx.send(ops);
+                            return;
+                        }
                     }
                     Ok(_) => {} // ignore Canvas2D::CreateContext2D, RegisterOffscreen, etc.
                     Err(_) => break,

@@ -50,7 +50,7 @@ use frame_wire::gl::{
     OP_UNIFORM3F, OP_UNIFORM3FV, OP_UNIFORM3IV, OP_UNIFORM3UIV, OP_UNIFORM4F, OP_UNIFORM4FV,
     OP_UNIFORM4IV, OP_UNIFORM4UIV, OP_USE_PROGRAM, OP_VERTEX_ATTRIB_4F, OP_VERTEX_ATTRIB_DIVISOR,
     OP_VERTEX_ATTRIB_I_POINTER, OP_VERTEX_ATTRIB_I4I, OP_VERTEX_ATTRIB_I4UI,
-    OP_VERTEX_ATTRIB_POINTER, OP_VIEWPORT,
+    OP_VERTEX_ATTRIB_POINTER, OP_VIEWPORT, OP_WEBGL_CONTEXT,
 };
 use frame_wire::stream::{ValidatedStream, opcode_of, word_count_of};
 
@@ -578,6 +578,22 @@ fn decode_record<C: GlDecodeContext>(
         OP_FLUSH => Some(GLCmd::Flush {
             canvas_id: record[1],
         }),
+
+        // ── 73: WEBGL_CONTEXT: H C U ─────────────────────────────────────────────
+        OP_WEBGL_CONTEXT => {
+            use frame_wire::gl::{
+                WEBGL_CONTEXT_ALPHA, WEBGL_CONTEXT_DEPTH, WEBGL_CONTEXT_PRESERVE,
+                WEBGL_CONTEXT_STENCIL,
+            };
+            let bits = record[2];
+            Some(GLCmd::WebglContext {
+                canvas_id: record[1],
+                alpha: bits & WEBGL_CONTEXT_ALPHA != 0,
+                depth: bits & WEBGL_CONTEXT_DEPTH != 0,
+                stencil: bits & WEBGL_CONTEXT_STENCIL != 0,
+                preserve_drawing_buffer: bits & WEBGL_CONTEXT_PRESERVE != 0,
+            })
+        }
 
         // ── 67..70: the copies ──────────────────────────────────────────────────────
         // H C U I U I I I I I (target, level, internalformat, x, y, width, height, border)

@@ -790,6 +790,14 @@ pub(crate) struct CanvasManager {
     /// (`DefaultFramebufferReads::AfterTheirPresent`).
     needs_default_fbo_readback: bool,
 
+    /// What each canvas's WebGL context declared of its drawing buffer (`declare_webgl_context`). The screen canvas's
+    /// outlives its surface -- a recreated surface's buffer is made to it -- and an offscreen canvas's goes with the
+    /// canvas. A GPU reset keeps them: the contexts are restored with the attributes they were created with.
+    webgl_buffers: HashMap<CanvasId, drawing_buffer::WebglBufferSpec>,
+    /// The window surface's own buffers (its EGL config): what bypass hands WebGL as its default framebuffer, so bypass
+    /// is taken only for a context that asked for exactly these.
+    surface_format: drawing_buffer::DrawingBufferFormat,
+
     /// Per-frame upload budget gating (device-tier aware).
     /// Gates submission to the upload thread with bandwidth and job-count limits.
     upload_server: Option<crate::upload_server::UploadServer>,
@@ -1135,6 +1143,19 @@ impl CanvasManager {
             })
         });
 
+        // The buffers the window surface's config has: bypass gives WebGL these as its default framebuffer.
+        let surface_format = {
+            let size = |attribute| {
+                egl.get_config_attrib(display, config, attribute)
+                    .unwrap_or(0)
+            };
+            drawing_buffer::DrawingBufferFormat {
+                alpha: size(egl::ALPHA_SIZE) > 0,
+                depth: size(egl::DEPTH_SIZE) > 0,
+                stencil: size(egl::STENCIL_SIZE) > 0,
+            }
+        };
+
         // Query the selected EGL config's multisample state once. The partial
         // DrawingBuffer→surface blit uses identity source/dest coordinates,
         // which is only valid for a single-sample destination; a multisampled
@@ -1260,6 +1281,8 @@ impl CanvasManager {
             // surface the swap has already made undefined.
             needs_default_fbo_readback: default_framebuffer_reads
                 == crate::DefaultFramebufferReads::AfterTheirPresent,
+            webgl_buffers: HashMap::new(),
+            surface_format,
             snapshot_fence_waits: 0,
             upload_server,
             upload_thread,
@@ -2113,6 +2136,19 @@ impl CanvasManager {
         // size), and that is the one that preserves the last frame and avoids a
         // black resume frame; a surface that came back a different size has no
         // frame worth preserving anyway.
+        // A preserved buffer has the format its context declared, unless one was declared while the surface was gone.
+        let wanted_format = self.drawing_buffer_format(id);
+        if let Some(db) = staged_drawing_buffer.as_mut() {
+            if let Err(error) = drawing_buffer::reformat(&self.gl, db, wanted_format) {
+                tracing::error!(
+                    canvas_id = %id,
+                    "preserved DrawingBuffer could not take its context's format, rebuilding it: {error}"
+                );
+                if let Some(db) = staged_drawing_buffer.take() {
+                    drawing_buffer::destroy(&self.gl, db);
+                }
+            }
+        }
         if let Some(db) = staged_drawing_buffer.as_mut() {
             if (db.width, db.height) != (target_w, target_h) {
                 match drawing_buffer::resize(&self.gl, db, target_w, target_h) {
@@ -2189,7 +2225,12 @@ impl CanvasManager {
             }
             (dbw, dbh)
         } else {
-            match drawing_buffer::create(&self.gl, target_w, target_h) {
+            match drawing_buffer::create(
+                &self.gl,
+                target_w,
+                target_h,
+                self.drawing_buffer_format(id),
+            ) {
                 Ok(db) => {
                     if let Some(entry) = self.canvases.get_mut(&id) {
                         entry.info.width = target_w;
@@ -3127,6 +3168,10 @@ impl CanvasManager {
         }
         for spec in &plan.offscreen {
             self.insert_offscreen(spec.id, spec.width, spec.height)?;
+            if let Some(buffer) = self.webgl_buffers.get(&spec.id).copied() {
+                self.make_current_needed(spec.id)?;
+                self.install_offscreen_drawing_buffer(spec.id, buffer.format)?;
+            }
             if let Some(state) = spec.state_2d.clone() {
                 context_2d_impl::init_skia_for_canvas(self, spec.id)?;
                 if let Some(ctx) = self.contexts_2d.get_mut(&spec.id) {
@@ -3197,6 +3242,13 @@ impl CanvasManager {
                 .is_ok();
             if skia_ctx_current {
                 self.bound = BoundContext::Canvas(id);
+            }
+
+            // A WebGL canvas's DrawingBuffer: its texture and renderbuffer are the share group's and outlive the
+            // context, so they are deleted while it is current.
+            self.webgl_buffers.remove(&id);
+            if let (true, Some(db)) = (skia_ctx_current, entry.drawing_buffer) {
+                drawing_buffer::destroy(&self.gl, db);
             }
 
             // Same SkImage-wrapper purge pattern as the onscreen
@@ -3805,6 +3857,135 @@ impl CanvasManager {
         true
     }
 
+    /// A WebGL context was created on canvas `id` with these attributes (`GLCmd::WebglContext`, in stream order before any
+    /// of its own commands): its drawing buffer is made to have exactly the buffers it asked for. The screen canvas's
+    /// buffer, made before any context, takes the format, and bypass is judged again. An offscreen canvas drew into its
+    /// pbuffer's own framebuffer, whose buffers are the EGL config's; it is given a DrawingBuffer as its default
+    /// framebuffer instead, and the pbuffer, never drawn into again, shrinks to one pixel.
+    pub(crate) fn declare_webgl_context(
+        &mut self,
+        id: CanvasId,
+        spec: drawing_buffer::WebglBufferSpec,
+    ) -> EngineResult<()> {
+        self.webgl_buffers.insert(id, spec);
+        let Some(kind) = self.canvases.get(&id).map(|entry| entry.kind) else {
+            return Ok(());
+        };
+        self.make_current_needed(id)?;
+        match kind {
+            SurfaceKind::Window => {
+                let mut reformatted = false;
+                if let Some(db) = self
+                    .canvases
+                    .get_mut(&id)
+                    .and_then(|e| e.drawing_buffer.as_mut())
+                {
+                    reformatted = db.format != spec.format;
+                    drawing_buffer::reformat(&self.gl, db, spec.format)?;
+                }
+                if reformatted {
+                    // New storage: no repair history or plan describes it.
+                    self.damage_history.clear();
+                    self.pending_present_plan = None;
+                    self.damage
+                        .add(crate::damage_effect::DamageEffect::FullSurface);
+                }
+                self.evaluate_bypass();
+            }
+            SurfaceKind::Pbuffer => self.install_offscreen_drawing_buffer(id, spec.format)?,
+        }
+        Ok(())
+    }
+
+    /// Give offscreen canvas `id`, current, a DrawingBuffer of `format` at its size as its default framebuffer, and
+    /// shrink its pbuffer to one pixel. A zero-sized canvas has a one-by-one buffer, as a browser gives it.
+    fn install_offscreen_drawing_buffer(
+        &mut self,
+        id: CanvasId,
+        format: drawing_buffer::DrawingBufferFormat,
+    ) -> EngineResult<()> {
+        let Some(entry) = self.canvases.get_mut(&id) else {
+            return Ok(());
+        };
+        if let Some(db) = entry.drawing_buffer.as_mut() {
+            return drawing_buffer::reformat(&self.gl, db, format);
+        }
+        let (width, height) = (entry.physical_width.max(1), entry.physical_height.max(1));
+        let db = drawing_buffer::create(&self.gl, width, height, format)?;
+        // `create` leaves the new framebuffer bound on both targets: it is the default framebuffer's meaning now, and
+        // the mapping and the dedup shadow say so.
+        entry.applied_default_framebuffer = Some(db.fbo);
+        entry.drawing_buffer = Some(db);
+        entry.default_framebuffer_uninitialised = false;
+        crate::backend::gl::state_tracker::record_default_framebuffer_bind(
+            self.gl_state.entry(id).or_default(),
+        );
+        self.replace_pbuffer(id, 1, 1)
+    }
+
+    /// Replace offscreen canvas `id`'s pbuffer with one of `width` x `height` (`egl_ops::pbuffer_extent`), and leave its
+    /// context current. A surfaceless share group has no pbuffer: its context is made current with none. On a failure
+    /// the resource context is current, so the record of what is current never names a context that is not.
+    fn replace_pbuffer(&mut self, id: CanvasId, width: u32, height: u32) -> EngineResult<()> {
+        let Some((ctx, old_surf)) = self.canvases.get(&id).map(|e| (e.ctx.ctx, e.ctx.surf)) else {
+            return Ok(());
+        };
+        let replaced = (|| {
+            let new_surf = match old_surf {
+                None => None,
+                Some(old_surf) => {
+                    self.egl
+                        .make_current(self.display, None, None, None)
+                        .map_err(|e| format!("make_current(None) failed: {e:?}"))?;
+                    self.egl
+                        .destroy_surface(self.display, old_surf)
+                        .map_err(|e| format!("destroy_surface failed: {e:?}"))?;
+                    let (pbuffer_w, pbuffer_h) = egl_ops::pbuffer_extent(width, height);
+                    let pbuf_attribs = [
+                        egl::WIDTH as i32,
+                        pbuffer_w,
+                        egl::HEIGHT as i32,
+                        pbuffer_h,
+                        egl::NONE as i32,
+                    ];
+                    Some(
+                        self.egl
+                            .create_pbuffer_surface(self.display, self.config, &pbuf_attribs)
+                            .map_err(|e| format!("create_pbuffer_surface failed: {e:?}"))?,
+                    )
+                }
+            };
+            if let Some(entry) = self.canvases.get_mut(&id) {
+                entry.ctx.surf = new_surf;
+            }
+            self.egl
+                .make_current(self.display, new_surf, new_surf, Some(ctx))
+                .map_err(|e| format!("make_current failed: {e:?}"))
+        })();
+        match replaced {
+            Ok(()) => {
+                self.bound = BoundContext::Canvas(id);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.bind_resource();
+                Err(ee(
+                    ErrorCode::RenderBackendError,
+                    format!("replacing canvas {id:?}'s pbuffer: {error}"),
+                ))
+            }
+        }
+    }
+
+    /// The format canvas `id`'s drawing buffer has: what its WebGL context declared, or everything before one did.
+    fn drawing_buffer_format(&self, id: CanvasId) -> drawing_buffer::DrawingBufferFormat {
+        self.webgl_buffers
+            .get(&id)
+            .map_or(drawing_buffer::DrawingBufferFormat::FULL, |spec| {
+                spec.format
+            })
+    }
+
     pub(crate) fn evaluate_bypass(&mut self) {
         let onscreen_id = CanvasId::from(1u32);
         // Bypass requires: single canvas, has DrawingBuffer, no default-FBO
@@ -3846,11 +4027,16 @@ impl CanvasManager {
         let canvas_count = self.canvases.len();
         let onscreen_has_2d_context = self.contexts_2d.contains_key(&onscreen_id);
         let needs_default_fbo_readback = self.needs_default_fbo_readback;
+        // Under bypass the window's own buffers are WebGL's default framebuffer, so they have to be the ones the
+        // context asked for: a stencil buffer it did not ask for would make its stencil test fail where none can.
+        let buffers_are_the_surface_s =
+            self.drawing_buffer_format(onscreen_id) == self.surface_format;
         let can_bypass = can_bypass_drawing_buffer(
             canvas_count,
             needs_default_fbo_readback,
             onscreen_has_2d_context,
             onscreen_db_matches_surface,
+            buffers_are_the_surface_s,
         );
 
         let mut mode_changed = false;
@@ -3866,6 +4052,7 @@ impl CanvasManager {
                     needs_default_fbo_readback,
                     onscreen_has_2d_context,
                     onscreen_db_matches_surface,
+                    buffers_are_the_surface_s,
                     "DrawingBuffer bypass: {} → {}",
                     entry.bypass_drawing_buffer,
                     can_bypass,
@@ -4129,7 +4316,7 @@ impl CanvasManager {
         h: Option<u32>,
         owner: BackingSizeOwner,
     ) -> EngineResult<()> {
-        let (old_w, old_h, kind, ctx_handle, old_surf) = {
+        let (old_w, old_h, kind) = {
             let entry = self.canvases.get(&id).ok_or_else(|| {
                 ee(
                     ErrorCode::NotFound,
@@ -4149,7 +4336,7 @@ impl CanvasManager {
                 (SurfaceKind::Window, Some(db)) => (db.width, db.height),
                 _ => (entry.physical_width, entry.physical_height),
             };
-            (cur_w, cur_h, entry.kind, entry.ctx.ctx, entry.ctx.surf)
+            (cur_w, cur_h, entry.kind)
         };
 
         let new_w = w.unwrap_or(old_w);
@@ -4187,6 +4374,30 @@ impl CanvasManager {
         self.note_canvas_painted(id);
         self.drop_canvas_source_copy(id);
 
+        // An offscreen WebGL canvas's backing is its DrawingBuffer (`install_offscreen_drawing_buffer`); its one-pixel
+        // pbuffer is never drawn into and does not follow the canvas.
+        let offscreen_drawing_buffer = matches!(kind, SurfaceKind::Pbuffer)
+            && self
+                .canvases
+                .get(&id)
+                .is_some_and(|entry| entry.drawing_buffer.is_some());
+        if offscreen_drawing_buffer {
+            self.make_current_needed(id)?;
+            if let Some(entry) = self.canvases.get_mut(&id) {
+                if let Some(ref mut db) = entry.drawing_buffer {
+                    drawing_buffer::reset(&self.gl, db, new_w.max(1), new_h.max(1))?;
+                }
+                entry.physical_width = new_w;
+                entry.physical_height = new_h;
+                entry.info.width = new_w;
+                entry.info.height = new_h;
+            }
+            if saved_bound != BoundContext::Canvas(id) {
+                self.restore_bound(saved_bound)?;
+            }
+            return Ok(());
+        }
+
         // Window surfaces: the EGL surface is controlled by Android SurfaceView.
         // Resize only the DrawingBuffer so canvas.width/height reflects what JS
         // set, and WebGL renders at that resolution. The blit in swap_buffers
@@ -4195,7 +4406,7 @@ impl CanvasManager {
             self.make_current_needed(id)?;
             if let Some(entry) = self.canvases.get_mut(&id) {
                 if let Some(ref mut db) = entry.drawing_buffer {
-                    drawing_buffer::resize(&self.gl, db, new_w, new_h)?;
+                    drawing_buffer::reset(&self.gl, db, new_w, new_h)?;
                 }
                 entry.info.width = new_w;
                 entry.info.height = new_h;
@@ -4248,76 +4459,16 @@ impl CanvasManager {
             return Ok(());
         }
 
-        let was_current = matches!(self.bound, BoundContext::Canvas(cur) if cur == id);
-
-        if was_current {
-            self.egl
-                .make_current(self.display, None, None, None)
-                .map_err(|e| {
-                    ee(
-                        ErrorCode::RenderBackendError,
-                        format!("resize_canvas: make_current(None) failed: {e:?}"),
-                    )
-                })?;
+        // The pbuffer is the canvas's backing store: a new one at the new size, the context current on it. A surfaceless
+        // share group has none -- the offscreen canvas renders into an FBO whose size is what actually changes here,
+        // and the context is current against EGL_NO_SURFACE either way -- so only the recorded metrics move.
+        if matches!(kind, SurfaceKind::Window) {
+            return Err(ee(
+                ErrorCode::InvalidOperation,
+                "window DrawingBuffer resize must not recreate its platform EGLSurface",
+            ));
         }
-
-        // destroy old surface
-        // A surfaceless share group has no pbuffer to swap: the offscreen canvas
-        // renders into an FBO whose size is what actually changes here, and the
-        // context is current against EGL_NO_SURFACE either way. Destroying and
-        // recreating nothing is exactly right; only the recorded metrics move.
-        if let Some(old_surf) = old_surf {
-            self.egl
-                .destroy_surface(self.display, old_surf)
-                .map_err(|e| {
-                    ee(
-                        ErrorCode::RenderBackendError,
-                        format!("resize_canvas: destroy_surface failed: {e:?}"),
-                    )
-                })?;
-        }
-
-        // create new surface
-        let new_surf = match kind {
-            SurfaceKind::Window => {
-                return Err(ee(
-                    ErrorCode::InvalidOperation,
-                    "window DrawingBuffer resize must not recreate its platform EGLSurface",
-                ));
-            }
-            SurfaceKind::Pbuffer if self.surfaceless => None,
-            SurfaceKind::Pbuffer => {
-                let (pbuffer_w, pbuffer_h) = egl_ops::pbuffer_extent(new_w, new_h);
-                let pbuf_attribs = [
-                    egl::WIDTH as i32,
-                    pbuffer_w,
-                    egl::HEIGHT as i32,
-                    pbuffer_h,
-                    egl::NONE as i32,
-                ];
-                Some(
-                    self.egl
-                        .create_pbuffer_surface(self.display, self.config, &pbuf_attribs)
-                        .map_err(|e| {
-                            ee(
-                                ErrorCode::RenderBackendError,
-                                format!("resize_canvas: create_pbuffer_surface failed: {e:?}"),
-                            )
-                        })?,
-                )
-            }
-        };
-
-        self.egl
-            .make_current(self.display, new_surf, new_surf, Some(ctx_handle))
-            .map_err(|e| {
-                ee(
-                    ErrorCode::RenderBackendError,
-                    format!("resize_canvas: make_current(resized surf) failed: {e:?}"),
-                )
-            })?;
-        self.bound = BoundContext::Canvas(id);
-        let _ = was_current;
+        self.replace_pbuffer(id, new_w, new_h)?;
 
         // Keep canvas metrics aligned with JS-requested dimensions. On some
         // devices EGL surface queries may return rotated values for window
@@ -4334,8 +4485,6 @@ impl CanvasManager {
 
             entry.physical_width = actual_w;
             entry.physical_height = actual_h;
-
-            entry.ctx.surf = new_surf;
             entry.info.width = actual_w;
             entry.info.height = actual_h;
         }
@@ -4351,15 +4500,11 @@ impl CanvasManager {
         if !resized_ok {
             self.rebuild_2d_context_preserving_state(id)?;
         }
-        // The new storage is uninitialised. The context is current right now, so a
-        // WebGL canvas that was being drawn to is cleared at once; one that is not
-        // bound again after the restore below is cleared on its next use.
+        // The new storage is uninitialised, and the context is current on it: cleared now.
         if let Some(entry) = self.canvases.get_mut(&id) {
             entry.default_framebuffer_uninitialised = true;
         }
-        if was_current {
-            self.clear_fresh_default_framebuffer(id);
-        }
+        self.clear_fresh_default_framebuffer(id);
 
         if saved_bound != BoundContext::Canvas(id) {
             self.restore_bound(saved_bound)?;
@@ -7127,11 +7272,13 @@ fn can_bypass_drawing_buffer(
     needs_default_fbo_readback: bool,
     onscreen_has_2d_context: bool,
     onscreen_db_matches_surface: bool,
+    buffers_are_the_surface_s: bool,
 ) -> bool {
     canvas_count == 1
         && !needs_default_fbo_readback
         && !onscreen_has_2d_context
         && onscreen_db_matches_surface
+        && buffers_are_the_surface_s
 }
 
 /// The framebuffer name that *is* a canvas's WebGL default framebuffer: the
@@ -7809,7 +7956,9 @@ mod recovery_source_guards {
         let flush = body
             .find("self.flush_2d_before_backing_change(id)")
             .expect("resize_canvas must flush the 2D context before changing its store");
-        for replaced in ["drawing_buffer::resize(", ".destroy_surface("] {
+        // The store is a DrawingBuffer's (`drawing_buffer::resize`) or a pbuffer (`replace_pbuffer`, which destroys
+        // the old surface).
+        for replaced in ["drawing_buffer::reset(", "self.replace_pbuffer("] {
             let at = body
                 .find(replaced)
                 .unwrap_or_else(|| panic!("resize_canvas no longer contains {replaced}"));
@@ -8494,7 +8643,7 @@ mod tests {
         // The canonical bypass case: one onscreen canvas whose DrawingBuffer
         // matches the surface, no 2D context (WebGL), no readback → bypass is
         // safe.
-        assert!(can_bypass_drawing_buffer(1, false, false, true));
+        assert!(can_bypass_drawing_buffer(1, false, false, true, true));
     }
 
     #[test]
@@ -8502,7 +8651,7 @@ mod tests {
         // Regression: a single onscreen Canvas2D canvas. Skia renders into the
         // DrawingBuffer FBO; if bypass skipped the blit those pixels would
         // never reach the window (black screen). Bypass MUST be off.
-        assert!(!can_bypass_drawing_buffer(1, false, true, true));
+        assert!(!can_bypass_drawing_buffer(1, false, true, true, true));
     }
 
     #[test]
@@ -8513,7 +8662,7 @@ mod tests {
         // image in the corner; the DrawingBuffer→surface blit upscales it to
         // fill the window. Bypass MUST be off whenever db != surface (here also
         // false when no DrawingBuffer exists).
-        assert!(!can_bypass_drawing_buffer(1, false, false, false));
+        assert!(!can_bypass_drawing_buffer(1, false, false, false, true));
     }
 
     /// A second canvas keeps the onscreen canvas on the DrawingBuffer blit.
@@ -8535,7 +8684,7 @@ mod tests {
     /// means a mutant names the guard it broke.
     #[test]
     fn a_second_canvas_keeps_the_onscreen_canvas_on_the_drawing_buffer() {
-        assert!(!can_bypass_drawing_buffer(2, false, false, true));
+        assert!(!can_bypass_drawing_buffer(2, false, false, true, true));
     }
 
     /// A latched default-FBO readback means content has to survive
@@ -8543,7 +8692,14 @@ mod tests {
     /// afterwards per the EGL spec. Only the DrawingBuffer preserves it.
     #[test]
     fn a_latched_default_fbo_readback_disables_bypass() {
-        assert!(!can_bypass_drawing_buffer(1, true, false, true));
+        assert!(!can_bypass_drawing_buffer(1, true, false, true, true));
+    }
+
+    /// Bypass hands WebGL the window's own buffers as its default framebuffer, so a context that asked for others -- no
+    /// stencil, no depth, no alpha -- is drawn through its DrawingBuffer, which has exactly those.
+    #[test]
+    fn a_context_whose_buffers_the_window_does_not_have_is_never_bypassed() {
+        assert!(!can_bypass_drawing_buffer(1, false, false, true, false));
     }
 
     // ---- What the default framebuffer resolves to, and who re-points it ----

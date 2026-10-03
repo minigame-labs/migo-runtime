@@ -1320,8 +1320,9 @@ mod wiring_source_guards {
     #[test]
     fn onscreen_drawing_buffer_resize_invalidates_present_state() {
         let resize = function_body(MGR, "pub(crate) fn resize_canvas");
+        // The window's branch: the offscreen one comes first and has no present state.
         let start = resize
-            .find("drawing_buffer::resize")
+            .find("drawing_buffer::reset(&self.gl, db, new_w, new_h)")
             .expect("DrawingBuffer resize policy must exist");
         let end = resize[start..]
             .find("self.evaluate_bypass()")
