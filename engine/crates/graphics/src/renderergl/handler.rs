@@ -3275,6 +3275,25 @@ impl RendererGL {
             }
 
             GLCmd::DeleteFramebuffer { framebuffer_id } => {
+                // Deleting the framebuffer a context has bound leaves it on its default framebuffer, which GL's own
+                // revert to name 0 is not for a canvas drawing into a DrawingBuffer: see the state tracker.
+                if let Some(owner) = cm.framebuffers.get(&framebuffer_id).map(|meta| meta.owner) {
+                    let name = u32::from(framebuffer_id);
+                    if cm
+                        .gl_state
+                        .get(&owner)
+                        .is_some_and(|state| st::binds_framebuffer(state, name))
+                    {
+                        cm.make_current_needed(owner)?;
+                        let default = cm.get_drawing_buffer_fbo(owner);
+                        st::rebind_default_over_deleted_framebuffer(
+                            gl,
+                            cm.gl_state.entry(owner).or_default(),
+                            name,
+                            default,
+                        );
+                    }
+                }
                 let object = cm
                     .framebuffers
                     .get_mut(&framebuffer_id)

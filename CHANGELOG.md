@@ -105,6 +105,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL: texture, framebuffer and renderbuffer objects behave as GL's do. A texture keeps the target it was first
+  bound to (another is INVALID_OPERATION), a call on a texture -- every `tex*` upload, copy, storage and parameter
+  call, `generateMipmap`, `getTexParameter` -- needs one bound (INVALID_OPERATION) to a target the call takes
+  (INVALID_ENUM: a cube map's face for an image, the cube map for a parameter), and `activeTexture` past
+  MAX_COMBINED_TEXTURE_IMAGE_UNITS is INVALID_ENUM. `getParameter` answers TEXTURE_BINDING_3D and
+  TEXTURE_BINDING_2D_ARRAY with the objects (they were the driver's integer names). `bindFramebuffer` takes
+  READ_FRAMEBUFFER / DRAW_FRAMEBUFFER in WebGL 2 only and `bindRenderbuffer` RENDERBUFFER only (INVALID_ENUM), and
+  none of the three binds a deleted object or another context's (INVALID_OPERATION) or a value that is not one
+  (TypeError). A deleted texture leaves every unit and the framebuffers bound, a deleted renderbuffer RENDERBUFFER and
+  the framebuffers bound, a deleted framebuffer its bindings (ES 3.0 D.1.2). `isTexture`, `isFramebuffer` and
+  `isRenderbuffer` are false for an object never bound, as GL answers.
+- WebGL: deleting the framebuffer a context has bound left the draws after it on name 0, not the canvas's drawing
+  buffer, until content bound a framebuffer again: GL reverts a deleted binding to 0, which is not the default
+  framebuffer of a canvas that draws into a DrawingBuffer. The renderer binds the default -- the DrawingBuffer where
+  there is one -- before it deletes the object.
 - WebGL: calls the specification refuses are refused before they reach the driver, whose error never reached
   `getError`. `enable` / `disable` / `isEnabled` of an enum that is not a capability -- RASTERIZER_DISCARD in WebGL 1
   among them -- are INVALID_ENUM; a negative `viewport` size is INVALID_VALUE, as a negative `scissor` size already

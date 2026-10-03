@@ -620,6 +620,37 @@ pub(crate) fn record_default_framebuffer_bind(state: &mut CanvasGLState) {
     state.draws_to_default_fbo = true;
 }
 
+/// Whether the framebuffer the content names `name` is bound, for drawing or for reading, in `state`.
+pub(crate) fn binds_framebuffer(state: &CanvasGLState, name: u32) -> bool {
+    [glow::DRAW_FRAMEBUFFER, glow::READ_FRAMEBUFFER]
+        .into_iter()
+        .any(|target| state.bound_framebuffer.get(target) == Some(Some(name)))
+}
+
+/// Before the framebuffer the content names `name` is deleted, each target it is bound to is pointed at the context's
+/// default framebuffer -- `default`, the DrawingBuffer where there is one -- on the driver and in the shadow (ES 3.0
+/// 4.4.1: deleting a bound framebuffer binds the default). GL does it by binding name 0, which is not the default of a
+/// canvas drawing into a DrawingBuffer: the draws after the delete went to the wrong target until content bound one.
+/// The context must be current.
+pub(crate) fn rebind_default_over_deleted_framebuffer(
+    gl: &glow::Context,
+    state: &mut CanvasGLState,
+    name: u32,
+    default: Option<glow::NativeFramebuffer>,
+) {
+    use glow::HasContext as _;
+    for target in [glow::DRAW_FRAMEBUFFER, glow::READ_FRAMEBUFFER] {
+        if state.bound_framebuffer.get(target) == Some(Some(name)) {
+            // SAFETY: the caller has made the context current, and `default` is its default framebuffer.
+            unsafe { gl.bind_framebuffer(target, default) };
+            state.bound_framebuffer.update(target, None);
+            if target == glow::DRAW_FRAMEBUFFER {
+                state.draws_to_default_fbo = true;
+            }
+        }
+    }
+}
+
 /// `glBindRenderbuffer(RENDERBUFFER, rb)` dedup.  Only one target
 /// (`GL_RENDERBUFFER`) exists in GLES; tracked with a single slot.
 pub(crate) fn update_bind_renderbuffer(state: &mut CanvasGLState, rb: Option<u32>) -> bool {

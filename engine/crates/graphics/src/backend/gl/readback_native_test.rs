@@ -869,3 +869,52 @@ unsafe fn read_copy_texture(
         pixels
     }
 }
+
+/// Deleting the framebuffer content has bound leaves the draws after it on the canvas's drawing buffer: the state
+/// tracker points both targets at the default first, as GL's own revert to name 0 would not for a DrawingBuffer.
+#[test]
+#[ignore = "requires Mesa surfaceless EGL and GLES3"]
+fn deleting_the_bound_framebuffer_leaves_the_draws_on_the_drawing_buffer() {
+    use crate::backend::gl::state_tracker;
+    use crate::canvas::drawing_buffer;
+    let (_scope, gl) = gles3_context();
+    let db = drawing_buffer::create(&gl, 2, 2).unwrap();
+    unsafe {
+        let mut shadow = crate::canvas::CanvasGLState::default();
+        state_tracker::record_default_framebuffer_bind(&mut shadow);
+        let content = gl.create_framebuffer().unwrap();
+        let texture = rgba_texture(&gl, 2, 2, &[0; 16]);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(content));
+        gl.framebuffer_texture_2d(
+            glow::FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(texture),
+            0,
+        );
+        assert!(state_tracker::update_bind_framebuffer(
+            &mut shadow,
+            glow::FRAMEBUFFER,
+            Some(7)
+        ));
+        assert!(state_tracker::binds_framebuffer(&shadow, 7));
+
+        state_tracker::rebind_default_over_deleted_framebuffer(&gl, &mut shadow, 7, Some(db.fbo));
+        gl.delete_framebuffer(content);
+        assert!(!state_tracker::binds_framebuffer(&shadow, 7));
+        assert_eq!(
+            shadow.bound_framebuffer.get(glow::DRAW_FRAMEBUFFER),
+            Some(None),
+            "the shadow names the default"
+        );
+
+        gl.clear_color(1.0, 0.0, 0.0, 1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT);
+        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(db.fbo));
+        assert_eq!(
+            Rgba8Readback::new(1, 1).unwrap().read(&gl),
+            [255, 0, 0, 255],
+            "the clear after the delete reached the drawing buffer"
+        );
+    }
+}

@@ -14,6 +14,7 @@
 // upload, not the canvas.
 
 const gl = new WebGLRenderingContext({ _rid: 130, width: 4, height: 4 }, {});
+gl.bindTexture(gl.TEXTURE_2D, gl.createTexture()); // an upload needs a texture bound
 
 // A canvas element, as cocos hands one over: a numeric `_rid` and a
 // `getContext`. The full form takes its size from the arguments, so the
