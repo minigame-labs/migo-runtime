@@ -112,6 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL 1: a texture whose level 0 is not a power of two each way samples as incomplete -- (0, 0, 0, 1) -- unless both
+  its wraps are CLAMP_TO_EDGE and its minification filter reads no mipmap, as the specification has it (ES 2.0 3.8.2).
+  The driver underneath is OpenGL ES 3.0, for which such a texture is complete, so it used to be sampled. The facade
+  keeps which textures are incomplete and where each is bound, after every call that can change either (a level 0
+  defined, a wrap or filter set, a bind, a delete); a draw holds no texture at those bindings -- texture 0, which WebGL
+  never gives an image, so the driver samples it as incomplete -- and puts them back after it. A draw with none
+  pays one size test; WebGL 2, whose rules are ES 3.0's, withholds nothing.
 - WebGL: the facade keeps a record of every texture image -- each level of a 2D, 3D or 2D-array texture and of each
   face of a cube map, with its internal format, the format and type its data came in, its size and whether it is
   compressed or immutable -- and judges by it, before anything is sent, what used to reach the driver, whose errors

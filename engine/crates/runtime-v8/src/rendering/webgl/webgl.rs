@@ -3196,6 +3196,121 @@ pub(super) mod tests {
         );
     }
 
+    /// WebGL 1 samples a texture whose level 0 is not a power of two as incomplete -- (0, 0, 0, 1) -- unless both wraps
+    /// are CLAMP_TO_EDGE and the minification filter reads no mipmap (ES 2.0 3.8.2); the driver, OpenGL ES 3.0, would
+    /// sample it. So every draw holds no texture where such a texture is bound and puts the binding back after it, with
+    /// the active unit; a texture made complete by its parameters or a power-of-two level 0, unbound or deleted is no
+    /// longer withheld, and a draw with none withheld is the draw alone. WebGL 2 withholds nothing: ES 3.0's rules are
+    /// its own.
+    #[test]
+    fn webgl1_draws_sample_no_incomplete_npot_texture() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "npot_incomplete.js",
+                r#"
+                const T2D = 0x0de1, CUBE = 0x8513, RGBA = 0x1908, UBYTE = 0x1401;
+                const use = (gl) => {
+                    const program = gl.createProgram();
+                    gl.linkProgram(program);
+                    gl._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));   // what the renderer answers for LINK_STATUS
+                    gl.useProgram(program);
+                };
+                const gl = new WebGLRenderingContext({ _rid: 232, width: 1, height: 1 }, {});
+                use(gl);
+                gl.bindBuffer(0x8893, gl.createBuffer());
+                gl.bufferData(0x8893, 6, 0x88e4);
+                const a = gl.createTexture();
+                gl.bindTexture(T2D, a);
+                gl.texImage2D(T2D, 0, RGBA, 3, 3, 0, RGBA, UBYTE, null);
+                gl.drawArrays(4, 0, 3);                                   // 1: REPEAT and a mipmap filter: withheld
+                gl.texParameteri(T2D, 0x2802, 0x812f);
+                gl.texParameteri(T2D, 0x2803, 0x812f);
+                gl.drawArrays(4, 0, 3);                                   // 2: still a mipmap filter: withheld
+                gl.texParameteri(T2D, 0x2801, 0x2601);
+                gl.drawArrays(4, 0, 3);                                   // 3: complete
+                gl.texParameteri(T2D, 0x2803, 0x2901);                    // REPEAT again
+                gl.activeTexture(0x84c3);
+                const c = gl.createTexture();
+                gl.bindTexture(CUBE, c);
+                for (let face = 0x8515; face <= 0x851a; face++) gl.texImage2D(face, 0, RGBA, 3, 3, 0, RGBA, UBYTE, null);
+                gl.drawElements(4, 3, 0x1403, 0);                         // 4: unit 0's 2D and unit 3's cube map
+                gl.getExtension("ANGLE_instanced_arrays").drawArraysInstancedANGLE(4, 0, 3, 2);   // 5: the same
+                gl.deleteTexture(c);
+                gl.activeTexture(0x84c0);
+                gl.texImage2D(T2D, 0, RGBA, 4, 4, 0, RGBA, UBYTE, null);  // a power of two
+                gl.drawArrays(4, 0, 3);                                   // 6: none
+                gl.texImage2D(T2D, 0, RGBA, 5, 4, 0, RGBA, UBYTE, null);
+                gl.bindTexture(T2D, null);
+                gl.drawArrays(4, 0, 3);                                   // 7: unbound: none
+                gl.bindTexture(T2D, a);
+                const gl2 = new WebGL2RenderingContext({ _rid: 233, width: 1, height: 1 }, {});
+                use(gl2);
+                gl2.bindTexture(T2D, gl2.createTexture());
+                gl2.texImage2D(T2D, 0, RGBA, 3, 3, 0, RGBA, UBYTE, null);
+                gl2.drawArrays(4, 0, 3);                                  // 8: WebGL 2: none
+                gl.flush(); gl2.flush();
+                "#,
+            )
+            .expect("the draws should be taken");
+        // The bindings, active units and draws, the textures named by the order they first appear in.
+        let mut names: Vec<String> = Vec::new();
+        let mut name = |texture: String| {
+            let index = names.iter().position(|n| *n == texture).unwrap_or_else(|| {
+                names.push(texture);
+                names.len() - 1
+            });
+            ["A", "C", "B2"][index].to_string()
+        };
+        let got: Vec<String> = drain_gl_commands(&render_rx)
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::ActiveTexture { unit, .. } => Some(format!("unit {}", unit - 0x84C0)),
+                GLCmd::BindTexture {
+                    target, texture, ..
+                } => Some(match texture {
+                    Some(texture) => format!("{target:#x} {}", name(format!("{texture:?}"))),
+                    None => format!("{target:#x} none"),
+                }),
+                GLCmd::DrawArrays { .. } => Some("draw".to_string()),
+                GLCmd::DrawElements { .. } => Some("draw".to_string()),
+                GLCmd::DrawArraysInstanced { .. } => Some("draw".to_string()),
+                _ => None,
+            })
+            .collect();
+        let withheld_2d = [
+            "unit 0",
+            "0xde1 none",
+            "draw",
+            "unit 0",
+            "0xde1 A",
+            "unit 0",
+        ];
+        let mut want: Vec<&str> = vec!["0xde1 A"];
+        want.extend(withheld_2d); // 1
+        want.extend(withheld_2d); // 2
+        want.push("draw"); // 3
+        want.extend(["unit 3", "0x8513 C"]);
+        let withheld_both = [
+            "unit 0",
+            "0xde1 none",
+            "unit 3",
+            "0x8513 none",
+            "draw",
+            "unit 0",
+            "0xde1 A",
+            "unit 3",
+            "0x8513 C",
+            "unit 3",
+        ];
+        want.extend(withheld_both); // 4
+        want.extend(withheld_both); // 5
+        want.extend(["unit 0", "draw"]); // the delete unbinds nothing on unit 0; 6
+        want.extend(["0xde1 none", "draw", "0xde1 A"]); // 7
+        want.extend(["0xde1 B2", "draw"]); // 8
+        assert_eq!(got, want);
+    }
+
     /// WebGL 2's offset overloads of `texImage2D` / `texSubImage2D` upload from the bound PIXEL_UNPACK_BUFFER. Judged as a
     /// browser judges them: no buffer bound, or UNPACK_FLIP_Y_WEBGL / UNPACK_PREMULTIPLY_ALPHA_WEBGL set, is
     /// INVALID_OPERATION before anything else; then the level, formats and size; then the offset -- negative is
