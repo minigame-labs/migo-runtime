@@ -33,6 +33,7 @@ pub struct RenderMetricsSnapshot {
     // ---- render queue / collector / cache observability (v4) ----
     pub render_queue_len: u32,
     pub collector_pending_bytes: u32,
+    /// Retired, always 0: WebGL errors are held one per code and cannot overflow.
     pub webgl_error_overflow: u32,
     pub sk_image_wrappers: u32,
     pub deferred_uploads: u32,
@@ -388,9 +389,6 @@ pub struct DebugStats {
     /// A rising number means the per-frame upload budget is
     /// undersized for the current workload.
     pub deferred_uploads: AtomicU32,
-    // `webgl_error_overflow` remains process-global because its producer does
-    // not currently carry a host identity. The frame collector does, so its
-    // gauge is session-local above.
 }
 
 impl DebugStats {
@@ -446,10 +444,10 @@ impl DebugStats {
             image_cache_trim_bytes: io.image_cache_trim_bytes.load(Ordering::Relaxed),
             render_queue_len: self.render_queue_len.load(Ordering::Relaxed),
             collector_pending_bytes: self.collector_pending_bytes.load(Ordering::Relaxed),
-            // Saturate on the 32-bit snapshot field; the full
-            // 64-bit total stays available via
-            // `webgl_error_overflow_total()`.
-            webgl_error_overflow: webgl_error_overflow_total().min(u32::MAX as u64) as u32,
+            // Retired: WebGL errors are held as flags, one per code, so the
+            // queue that used to overflow cannot. The slot stays so the
+            // layout the platform overlays read is unchanged.
+            webgl_error_overflow: 0,
             sk_image_wrappers: self.sk_image_wrappers.load(Ordering::Relaxed),
             deferred_uploads: self.deferred_uploads.load(Ordering::Relaxed),
             canvas2d_snapshots_taken: self.canvas2d_snapshots_taken.load(Ordering::Relaxed),
@@ -464,33 +462,6 @@ impl DebugStats {
         }
         .as_le_bytes()
     }
-}
-
-// ---------------------------------------------------------------------------
-// Process-global WebGL error-queue overflow counter
-// ---------------------------------------------------------------------------
-//
-// Lives here rather than `runtime-v8` so `DebugStats::snapshot()`
-// can pull the current value without taking a cross-crate
-// dependency.  The producer (WebGL error state) calls
-// `bump_webgl_error_overflow()` every time the per-context queue
-// drops a record; the consumer is the diagnostic snapshot.
-
-static WEBGL_ERROR_OVERFLOW: AtomicU64 = AtomicU64::new(0);
-
-/// Increment the process-global WebGL error-queue overflow counter
-/// by `n`.  Typically called with `1` from the error queue's
-/// overflow path.
-#[inline]
-pub fn bump_webgl_error_overflow(n: u64) {
-    WEBGL_ERROR_OVERFLOW.fetch_add(n, Ordering::Relaxed);
-}
-
-/// Snapshot the current WebGL overflow total.  Used by
-/// `DebugStats::snapshot` and any ad-hoc diagnostic paths.
-#[inline]
-pub fn webgl_error_overflow_total() -> u64 {
-    WEBGL_ERROR_OVERFLOW.load(Ordering::Relaxed)
 }
 
 // ---------------------------------------------------------------------------
@@ -832,17 +803,11 @@ mod tests {
 
     #[test]
     fn v4_queue_and_cache_fields_serialize_at_tail() {
-        // Can't directly reset the WebGL overflow total (atomic
-        // with no `store` exposed — mirrors gauge semantics), so
-        // snapshot the baseline and add to it.
-        let overflow_baseline = webgl_error_overflow_total();
-
         let stats = DebugStats::default();
         stats.render_queue_len.store(321, Ordering::Relaxed);
         stats
             .collector_pending_bytes
             .store(4_000_000, Ordering::Relaxed);
-        bump_webgl_error_overflow(17);
         stats.sk_image_wrappers.store(88, Ordering::Relaxed);
         stats.deferred_uploads.store(5, Ordering::Relaxed);
 
@@ -853,8 +818,11 @@ mod tests {
             u32::from_le_bytes(bytes[100..104].try_into().unwrap()),
             4_000_000
         );
-        let webgl_field = u32::from_le_bytes(bytes[104..108].try_into().unwrap()) as u64;
-        assert_eq!(webgl_field, overflow_baseline + 17);
+        assert_eq!(
+            u32::from_le_bytes(bytes[104..108].try_into().unwrap()),
+            0,
+            "the retired WebGL error-overflow slot"
+        );
         assert_eq!(u32::from_le_bytes(bytes[108..112].try_into().unwrap()), 88);
         assert_eq!(u32::from_le_bytes(bytes[112..116].try_into().unwrap()), 5);
 

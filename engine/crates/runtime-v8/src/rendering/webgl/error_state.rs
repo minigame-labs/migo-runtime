@@ -28,21 +28,6 @@ use std::sync::atomic::Ordering;
 use deno_core::OpState;
 use shared::op_state::HostOpState;
 
-/// Hard cap on the per-context error queue length.
-///
-/// A misbehaving (or adversarial) script can keep issuing illegal
-/// WebGL calls without ever calling `getError()` to drain them.
-/// Without a cap, the queue grows until the process OOMs - a pure
-/// JS-side memory amplification.  256 is well above any realistic
-/// scripted burst (most engines drain every few frames) and costs
-/// ~1 KiB of bare payload per context.
-///
-/// Past the cap we switch to a "sticky overflow" mode: new pushes
-/// are dropped, but an `OUT_OF_MEMORY (0x0505)` sentinel is kept
-/// at the tail so the next `getError()` signals the truncation,
-/// matching the spirit of GL's own `GL_OUT_OF_MEMORY` semantics.
-const MAX_ERRORS_PER_CTX: usize = 256;
-
 /// Pushed by host-side validators; drained by `op_get_error`.
 ///
 /// Separate `HashMap<canvas_id, queue>` (instead of one global queue)
@@ -55,11 +40,6 @@ pub struct WebGLErrorState {
     /// Cached context attributes per canvas.  Returned as-is by
     /// `getContextAttributes()`.
     attrs: HashMap<u32, ContextAttributes>,
-    /// Per-context overflow counter (dropped pushes since last
-    /// drain to `OUT_OF_MEMORY` sentinel).  Not part of the spec;
-    /// used to keep exactly one sentinel in the queue regardless
-    /// of how long the overflow streak is.
-    overflow: HashMap<u32, u64>,
     /// Per-context transform feedback lifecycle.  Used by host-side
     /// validators for `bindBufferBase/Range`.
     transform_feedback: HashMap<u32, TransformFeedback>,
@@ -141,45 +121,20 @@ impl PowerPreference {
 }
 
 impl WebGLErrorState {
-    /// Push a WebGL error code onto the queue for `canvas_id`.
+    /// Record a WebGL error code for `canvas_id`.
     ///
-    /// WebGL spec semantics: if a previous call already recorded the
-    /// same error code, the spec allows us to coalesce, but Chrome /
-    /// Firefox queue them separately; we match the latter so
-    /// conformance scripts that count errors behave identically.
-    ///
-    /// Bounded at `MAX_ERRORS_PER_CTX`, with the last slot reserved for a
-    /// sticky `OUT_OF_MEMORY` sentinel so the next `getError()` reports the
-    /// truncation. A global overflow counter is incremented for every dropped
-    /// record; `render_diagnostics` surfaces the total to the Java debug
-    /// overlay.
-    ///
-    /// Reserving the slot rather than evicting for it is the point: the overflow
-    /// path used to `pop_front()` to make room, which threw away the *oldest
-    /// undrained* error -- a real diagnostic the game had not read yet -- in
-    /// order to report that errors were being thrown away. Normal pushes now
-    /// stop one short, so the sentinel always has somewhere to go and nothing
-    /// genuine is ever displaced.
+    /// GL's errors are flags, one per code (ES 3.0 2.5): a code already
+    /// recorded and not yet read by `getError` is not recorded again, so
+    /// one `getError` clears what any number of calls raised. Chrome keeps
+    /// its synthetic errors the same way, and Firefox keeps only the first.
+    /// Codes of different kinds are each held, oldest first. Held this way the
+    /// queue is as long as the codes there are, so a script that raises errors
+    /// and never reads them cannot grow it.
     pub fn push(&mut self, canvas_id: u32, code: u32) {
         let queue = self.queues.entry(canvas_id).or_default();
-        if queue.len() < MAX_ERRORS_PER_CTX - 1 {
+        if !queue.contains(&code) {
             queue.push_back(code);
-            return;
         }
-        // Overflow path: drop the new code, bump counters, and guarantee an OOM
-        // sentinel is the last element so the next drain signals the truncation.
-        *self.overflow.entry(canvas_id).or_insert(0) += 1;
-        shared::stats::bump_webgl_error_overflow(1);
-        if queue.back().copied() != Some(codes::OUT_OF_MEMORY) {
-            queue.push_back(codes::OUT_OF_MEMORY);
-        }
-    }
-
-    /// Per-context overflow counter (cumulative dropped pushes).
-    #[cfg(test)]
-    #[inline]
-    pub fn overflow_count(&self, canvas_id: u32) -> u64 {
-        self.overflow.get(&canvas_id).copied().unwrap_or(0)
     }
 
     /// Drain the oldest error for `canvas_id`, or return
@@ -686,68 +641,31 @@ mod tests {
     }
 
     #[test]
-    fn queue_is_bounded_and_overflow_is_counted() {
+    fn a_code_already_held_is_not_held_twice() {
         let mut q = WebGLErrorState::default();
-        // Normal pushes stop one short of the cap, because the last slot is
-        // reserved for the sentinel. Filling to that point must not overflow.
-        for _ in 0..MAX_ERRORS_PER_CTX - 1 {
-            q.push(1, codes::INVALID_ENUM);
+        for code in [
+            codes::INVALID_ENUM,
+            codes::INVALID_ENUM,
+            codes::INVALID_VALUE,
+            codes::INVALID_ENUM,
+            codes::INVALID_VALUE,
+        ] {
+            q.push(1, code);
         }
-        assert_eq!(q.overflow_count(1), 0);
-        assert_eq!(q.len(1), MAX_ERRORS_PER_CTX - 1);
-
-        // Push past it; each push is dropped, overflow grows, and the queue
-        // reaches -- and stays at -- the cap once the sentinel is planted.
-        for _ in 0..10 {
-            q.push(1, codes::INVALID_VALUE);
-        }
-        assert_eq!(q.overflow_count(1), 10);
-        assert_eq!(q.len(1), MAX_ERRORS_PER_CTX);
-
-        // Nothing genuine was displaced to make room for the sentinel: the
-        // oldest error is still the first one drained, and every real error
-        // pushed is still there ahead of the sentinel. This is the property the
-        // reserved slot exists for -- the previous overflow path called
-        // `pop_front()`, so the first error the game had not read yet was thrown
-        // away in order to report that errors were being thrown away, and a test
-        // that only looked for the sentinel could not see it.
-        for i in 0..MAX_ERRORS_PER_CTX - 1 {
-            assert_eq!(
-                q.drain_one(1),
-                codes::INVALID_ENUM,
-                "real error {i} was evicted by the sentinel"
-            );
-        }
+        assert_eq!(q.len(1), 2, "one flag per code");
+        assert_eq!(q.drain_one(1), codes::INVALID_ENUM);
+        q.push(1, codes::INVALID_ENUM);
         assert_eq!(
             q.drain_one(1),
-            codes::OUT_OF_MEMORY,
-            "overflow must plant an OUT_OF_MEMORY sentinel at the tail"
+            codes::INVALID_VALUE,
+            "codes of different kinds are each held, oldest first"
+        );
+        assert_eq!(
+            q.drain_one(1),
+            codes::INVALID_ENUM,
+            "a code read is recorded again"
         );
         assert_eq!(q.drain_one(1), codes::NO_ERROR);
-    }
-
-    #[test]
-    fn overflow_only_plants_one_sentinel_per_burst() {
-        let mut q = WebGLErrorState::default();
-        for _ in 0..MAX_ERRORS_PER_CTX - 1 {
-            q.push(1, codes::INVALID_ENUM);
-        }
-        // First overflow plants the sentinel.
-        q.push(1, codes::INVALID_VALUE);
-        // Subsequent overflows must not add more sentinels — they
-        // only increment the counter.
-        for _ in 0..100 {
-            q.push(1, codes::INVALID_VALUE);
-        }
-        assert_eq!(q.len(1), MAX_ERRORS_PER_CTX);
-        // Exactly one OOM at the tail.
-        let mut oom = 0;
-        while q.len(1) > 0 {
-            if q.drain_one(1) == codes::OUT_OF_MEMORY {
-                oom += 1;
-            }
-        }
-        assert_eq!(oom, 1);
     }
 
     #[test]
@@ -865,7 +783,7 @@ mod tests {
         assert!(!validate_vap(&mut q, 1, 0, 0x1406, 0, 0));
         assert!(!validate_vap(&mut q, 1, 5, 0x1406, 0, 0));
         assert_eq!(q.drain_one(1), codes::INVALID_VALUE);
-        assert_eq!(q.drain_one(1), codes::INVALID_VALUE);
+        assert_eq!(q.drain_one(1), codes::NO_ERROR, "one flag per code");
     }
 
     #[test]
@@ -889,7 +807,7 @@ mod tests {
         assert!(!validate_vap(&mut q, 1, 4, 0x1406, 256, 0));
         assert!(!validate_vap(&mut q, 1, 4, 0x1406, -1, 0));
         assert_eq!(q.drain_one(1), codes::INVALID_VALUE);
-        assert_eq!(q.drain_one(1), codes::INVALID_VALUE);
+        assert_eq!(q.drain_one(1), codes::NO_ERROR, "one flag per code");
     }
 
     #[test]
@@ -918,7 +836,6 @@ mod tests {
         assert!(validate(&mut q, 1, 0, 0));
         assert!(validate(&mut q, 1, 100, 200));
         assert_eq!(q.drain_one(1), codes::INVALID_VALUE);
-        assert_eq!(q.drain_one(1), codes::INVALID_VALUE);
-        assert_eq!(q.drain_one(1), 0);
+        assert_eq!(q.drain_one(1), codes::NO_ERROR, "one flag per code");
     }
 }

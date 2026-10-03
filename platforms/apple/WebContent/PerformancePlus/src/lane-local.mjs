@@ -198,9 +198,12 @@ const INVALID_OPERATION = 0x0502;
 const OUT_OF_MEMORY = 0x0505;
 const errorQueues = new Map();
 
+/// GL's errors are flags, one per code: a code already held and not yet read is not recorded again, as the
+/// embedded runtime's `WebGLErrorState::push` holds them.
 function pushError(canvasId, code) {
   let queue = errorQueues.get(canvasId);
   if (!queue) errorQueues.set(canvasId, (queue = []));
+  if (queue.includes(code)) return;
   if (queue.length < MAX_ERRORS_PER_CONTEXT - 1) {
     queue.push(code);
   } else if (queue[queue.length - 1] !== OUT_OF_MEMORY) {

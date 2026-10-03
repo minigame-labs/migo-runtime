@@ -6,7 +6,6 @@ import {
     op_gl_is_context_lost,
     op_gl_lose_context,
     op_create_program,
-    op_use_program,
     op_link_program,
     op_get_program_parameter,
     op_get_program_info_log,
@@ -337,7 +336,6 @@ const _rawEnable             = _makeOrderedRaw(op_enable);
 const _rawDisable            = _makeOrderedRaw(op_disable);
 const _rawGlLoseContext      = _makeOrderedRaw(op_gl_lose_context);
 const _rawCreateProgram      = _makeOrderedRaw(op_create_program);
-const _rawUseProgram         = _makeOrderedRaw(op_use_program);
 const _rawLinkProgram        = _makeOrderedRaw(op_link_program);
 const _rawGetProgramParameter= _makeOrderedRaw(op_get_program_parameter);
 const _rawGetProgramInfoLog  = _makeOrderedRaw(op_get_program_info_log);
@@ -420,6 +418,8 @@ const _CAP_BIT = new Map();
 for (let i = 0; i < _TOGGLEABLE_CAPS.length; i++) {
     _CAP_BIT.set(_TOGGLEABLE_CAPS[i], 1 << i);
 }
+// WebGL 2's only capability: WebGL 1 has no RASTERIZER_DISCARD.
+const _RASTERIZER_DISCARD_BIT = _CAP_BIT.get(WebglConstants.RASTERIZER_DISCARD);
 
 // GL ES initial state: every capability starts disabled except GL_DITHER.
 // Spelled as a lookup rather than a literal so it cannot drift from the order
@@ -1337,7 +1337,6 @@ class WebGLRenderingContext {
         this._transformFeedbackVaryingCache = new Map();
         // shaderId -> Map(pname -> value)
         this._shaderParameterCache = new Map();
-        this._jsErrorQueue = [];
         // Vertex attribute state, for `getVertexAttrib`: the bound vertex array object's per-attribute array state, and the
         // constant values `vertexAttrib*` set (one set for the context, as GL has it; their bits are shared between the
         // float, int and uint views, and `_currentAttribKind` says which the last call wrote).
@@ -1448,10 +1447,6 @@ class WebGLRenderingContext {
         return { size: record.size, type: record.type, name: record.name };
     }
 
-    _pushJsError(code) {
-        this._jsErrorQueue.push(code >>> 0);
-    }
-
     get canvas() {
         return this._canvas;
     }
@@ -1485,11 +1480,12 @@ class WebGLRenderingContext {
         throw new Error("unpackColorSpace not supported");
     }
 
+    // A negative width or height is the decoder's INVALID_VALUE, for both lanes, as for `scissor`.
     viewport(x, y, width, height) {
-        // Encodability: all 4 are i32/u32. Check typeof number before x|0/>>>0.
+        // Encodability: all 4 are i32. Check typeof number before x|0.
         if (typeof x === "number" && typeof y === "number" &&
             typeof width === "number" && typeof height === "number") {
-            encodeViewport(this._canvasId, x | 0, y | 0, width >>> 0, height >>> 0);
+            encodeViewport(this._canvasId, x | 0, y | 0, width | 0, height | 0);
             return;
         }
         // Raw fallback: flush pending stream then call original op.
@@ -1538,16 +1534,24 @@ class WebGLRenderingContext {
         return new WebglObject(id, "program", this._canvasId);
     }
 
+    // A program that did not link, a deleted one or another context's is INVALID_OPERATION, and the program in use
+    // stays in use (ES 3.0 2.12.3). Whether it linked is asked once per link and kept, as `getProgramParameter`
+    // keeps it -- a browser asks its GPU process the same question the same way.
     useProgram(program) {
-        this._programBinding = program || null;
-        const programId = program?.id ?? 0;
-        // useProgram: opcode 8, H C U. programId is u32.
-        if (typeof programId === "number") {
-            encodeUseProgram(this._canvasId, programId >>> 0);
-            return;
+        const bound = program === undefined ? null : program;
+        if (bound !== null) {
+            if (!(bound instanceof WebglObject) || bound._kind !== "program") {
+                throw new TypeError("Failed to execute 'useProgram' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLProgram'.");
+            }
+            if (bound._deleted || bound._ownerId !== this._canvasId ||
+                    !this.getProgramParameter(bound, WebglConstants.LINK_STATUS)) {
+                recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+                return;
+            }
         }
-        flushRenderCommandStream();
-        _rawUseProgram(this._canvasId, program?.id);
+        this._programBinding = bound;
+        // useProgram: opcode 8, H C U. 0 uses none.
+        encodeUseProgram(this._canvasId, bound ? bound._id >>> 0 : 0);
     }
 
     linkProgram(program) {
@@ -1743,6 +1747,10 @@ class WebGLRenderingContext {
     }
 
     drawArrays(mode, first, count) {
+        if (this._programBinding === null) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
         // opcode 47: H C U I I. mode is u32, first/count are i32.
         if (typeof mode === "number" && typeof first === "number" && typeof count === "number") {
             encodeDrawArrays(this._canvasId, mode >>> 0, first | 0, count | 0);
@@ -1752,11 +1760,13 @@ class WebGLRenderingContext {
         _rawDrawArrays(this._canvasId, mode, first, count);
     }
 
+    // A draw needs a program in use: none is INVALID_OPERATION (ES 3.0 2.12.3), for every draw.
     // A draw that reads indices reads `count` of `type` from the bound vertex array object's ELEMENT_ARRAY_BUFFER at
     // `offset`: no buffer bound, or a range past its end, is INVALID_OPERATION (WebGL 1.0 6.6) -- the driver's error
     // would not reach `getError`, and a driver that does not check reads past the buffer. A type, count or offset the
     // call does not take is left to the decoder, which refuses it as the specification says.
     _elementsError(count, type, offset) {
+        if (this._programBinding === null) return GL_INVALID_OPERATION;
         const bytes = type === 0x1403 ? 2 : type === 0x1401 ? 1 : type === 0x1405 ? 4 : 0;   // UNSIGNED_SHORT, _BYTE, _INT
         if (bytes === 0 || count < 0 || offset < 0) return 0;
         const indices = this._attribShadow.elementArrayBuffer;
@@ -2176,14 +2186,14 @@ class WebGLRenderingContext {
             throw new TypeError(`${method}: parameter 1 is not of type 'WebGLProgram'.`);
         }
         if (program._deleted || program._ownerId !== this._canvasId) {
-            this._pushJsError(WebglConstants.INVALID_OPERATION);
+            recordGpuPreflightError(this._canvasId, WebglConstants.INVALID_OPERATION);
             return undefined;
         }
         let answer;
         try { answer = JSON.parse(_rawGetGlState(this._canvasId, query, program._id, extra, name)); } catch (_) { return undefined; }
         if (answer === null || typeof answer !== "object") return undefined;
         if (answer.e !== undefined) {
-            this._pushJsError(answer.e);
+            recordGpuPreflightError(this._canvasId, answer.e);
             return undefined;
         }
         return answer.v;
@@ -2219,18 +2229,25 @@ class WebGLRenderingContext {
         }
     }
 
+    // The capability's bit, or undefined for an enum that is not one of this context's (WebGL 1 has no
+    // RASTERIZER_DISCARD).
+    _capBitOf(cap) {
+        const bit = _CAP_BIT.get(cap);
+        return bit === _RASTERIZER_DISCARD_BIT && !this._isWebGL2() ? undefined : bit;
+    }
+
+    // An enum that is not a capability is INVALID_ENUM and changes nothing; nothing is sent, as the driver's error
+    // would not reach `getError`.
     enable(cap) {
+        const bit = this._capBitOf(Number(cap) >>> 0);
+        if (bit === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        this._freshCapBits();
+        this._capBits |= bit;
         // opcode 6: H C U.
         if (typeof cap === "number") {
-            const bit = _CAP_BIT.get(cap);
-            // An enum outside the toggleable set is GL_INVALID_ENUM: the driver
-            // rejects it and the state does not move, so the shadow must not
-            // move either. The command still goes out, so the driver still
-            // raises the error it would have raised.
-            if (bit !== undefined) {
-                this._freshCapBits();
-                this._capBits |= bit;
-            }
             encodeEnable(this._canvasId, cap >>> 0);
             return;
         }
@@ -2239,13 +2256,15 @@ class WebGLRenderingContext {
     }
 
     disable(cap) {
+        const bit = this._capBitOf(Number(cap) >>> 0);
+        if (bit === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        this._freshCapBits();
+        this._capBits &= ~bit;
         // opcode 7: H C U.
         if (typeof cap === "number") {
-            const bit = _CAP_BIT.get(cap);
-            if (bit !== undefined) {
-                this._freshCapBits();
-                this._capBits &= ~bit;
-            }
             encodeDisable(this._canvasId, cap >>> 0);
             return;
         }
@@ -2254,10 +2273,9 @@ class WebGLRenderingContext {
     }
 
     isEnabled(cap) {
-        const bit = _CAP_BIT.get(cap);
-        // GL_INVALID_ENUM returns GL_FALSE, which is what crossing to the
-        // driver returned for an unknown enum before this shadow existed.
+        const bit = this._capBitOf(Number(cap) >>> 0);
         if (bit === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
             return false;
         }
         this._freshCapBits();
@@ -2334,19 +2352,11 @@ class WebGLRenderingContext {
         return `${prefix} ${version} (${driver})`;
     }
 
+    // One queue per context, of flags -- a code once until it is read (`WebGLErrorState::push`) -- holding what the
+    // facade refused and what the decoder refused. The stream is sent first, so a refusal the decoder makes of a
+    // record already written is in the queue before it is read.
     getError() {
-        // CRITICAL (design s8, s2): flush the stream FIRST, unconditionally,
-        // so that pending stream records are decoded and their validators push
-        // any errors into the host queue BEFORE we observe the error state.
-        // This must happen even when _jsErrorQueue is non-empty, because a
-        // later getError() call needs to find the stream-produced host errors.
         flushRenderCommandStream();
-        // JS-queue priority: return JS errors before host errors (two-level
-        // queue semantics per WebGL 1.0 spec s5.14.3).
-        if (this._jsErrorQueue.length > 0) {
-            return this._jsErrorQueue.shift();
-        }
-        // Drain one entry from the host-side per-context WebGL error queue.
         return op_webgl_get_error(this._canvasId);
     }
 
@@ -2581,6 +2591,10 @@ class WebGLRenderingContext {
             // Published enum from the ANGLE_instanced_arrays spec.
             VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE: 0x88FE,
             drawArraysInstancedANGLE(mode, first, count, primcount) {
+                if (ctx._programBinding === null) {
+                    recordGpuPreflightError(ctx._canvasId, GL_INVALID_OPERATION);
+                    return;
+                }
                 // Encode if all params are numbers; otherwise flush+raw.
                 if (typeof mode === "number" && typeof first === "number" &&
                     typeof count === "number" && typeof primcount === "number") {
@@ -2860,8 +2874,8 @@ class WebGLRenderingContext {
 
     getTexParameter(target, pname) {
         const tex = this._boundTextureFor(target);
-        if (tex === undefined) { this._pushJsError(0x0500); return null; } // INVALID_ENUM
-        if (tex === null) { this._pushJsError(0x0502); return null; }      // INVALID_OPERATION
+        if (tex === undefined) { recordGpuPreflightError(this._canvasId, 0x0500); return null; } // INVALID_ENUM
+        if (tex === null) { recordGpuPreflightError(this._canvasId, 0x0502); return null; }      // INVALID_OPERATION
         const set = tex._params && tex._params.get(pname >>> 0);
         if (set !== undefined) return set;
         switch (pname >>> 0) {
@@ -2871,7 +2885,7 @@ class WebGLRenderingContext {
             case 0x2803: return 0x2901; // TEXTURE_WRAP_T: REPEAT
             default: break;
         }
-        this._pushJsError(0x0500);
+        recordGpuPreflightError(this._canvasId, 0x0500);
         return null;
     }
 
@@ -3541,14 +3555,14 @@ class WebGLRenderingContext {
 
     getFramebufferAttachmentParameter(target, attachment, pname) {
         // FRAMEBUFFER, DRAW_FRAMEBUFFER and READ_FRAMEBUFFER; FRAMEBUFFER is the draw one.
-        if (target !== 0x8d40 && target !== 0x8ca9 && target !== 0x8ca8) { this._pushJsError(0x0500); return null; }
+        if (target !== 0x8d40 && target !== 0x8ca9 && target !== 0x8ca8) { recordGpuPreflightError(this._canvasId, 0x0500); return null; }
         const fb = target === 0x8ca8 ? this._readFramebufferBinding : this._framebufferBinding;
         pname = pname >>> 0;
         attachment = attachment >>> 0;
         if (!fb) return this._defaultFramebufferAttachmentParameter(attachment, pname);
         const isColor = attachment >= 0x8ce0 && attachment < 0x8ce0 + 16;
         if (!isColor && attachment !== 0x8d00 && attachment !== 0x8d20 && attachment !== 0x821a) {
-            this._pushJsError(0x0500);
+            recordGpuPreflightError(this._canvasId, 0x0500);
             return null;
         }
         // DEPTH_STENCIL_ATTACHMENT answers only when one object is both: the same one in each.
@@ -3557,18 +3571,18 @@ class WebGLRenderingContext {
             const depth = fb._attachments && fb._attachments.get(0x8d00);
             const stencil = fb._attachments && fb._attachments.get(0x8d20);
             if (depth && stencil && depth.object === stencil.object) record = depth;
-            else if (depth || stencil) { this._pushJsError(0x0506); return null; }
+            else if (depth || stencil) { recordGpuPreflightError(this._canvasId, 0x0506); return null; }
         } else {
             record = fb._attachments ? fb._attachments.get(attachment) || null : null;
         }
         if (record && record.object && record.object._deleted) record = null;   // deleting detaches
         const validPname = pname === 0x8cd0 || pname === 0x8cd1 || pname === 0x8cd2 || pname === 0x8cd3 ||
             pname === 0x8cd4 || (pname >= 0x8212 && pname <= 0x8217) || pname === 0x8211 || pname === 0x8210;
-        if (!validPname) { this._pushJsError(0x0500); return null; }
+        if (!validPname) { recordGpuPreflightError(this._canvasId, 0x0500); return null; }
         if (!record) {
             if (pname === 0x8cd0) return 0;                        // OBJECT_TYPE: NONE
             if (pname === 0x8cd1) return null;                     // OBJECT_NAME: no object
-            this._pushJsError(0x0502);                             // anything else needs an object
+            recordGpuPreflightError(this._canvasId, 0x0502);                             // anything else needs an object
             return null;
         }
         switch (pname) {
@@ -3604,14 +3618,14 @@ class WebGLRenderingContext {
     }
 
     _invalidAttachmentQuery() {
-        this._pushJsError(0x0500);
+        recordGpuPreflightError(this._canvasId, 0x0500);
         return null;
     }
 
     // The default framebuffer is the drawing buffer: BACK (colour), DEPTH and STENCIL, present as the context attributes
     // asked (WebGL 1.0 6.? / ES 3.0 6.1.13).
     _defaultFramebufferAttachmentParameter(attachment, pname) {
-        if (attachment !== 0x0405 && attachment !== 0x1801 && attachment !== 0x1802) { this._pushJsError(0x0500); return null; }
+        if (attachment !== 0x0405 && attachment !== 0x1801 && attachment !== 0x1802) { recordGpuPreflightError(this._canvasId, 0x0500); return null; }
         const attributes = this.getContextAttributes() || {};
         const exists = attachment === 0x0405 ? true : (attachment === 0x1801 ? attributes.depth !== false : attributes.stencil === true);
         switch (pname) {
@@ -3623,7 +3637,7 @@ class WebGLRenderingContext {
             case 0x8217: return attachment === 0x1802 && exists ? 8 : 0;                        // STENCIL_SIZE
             case 0x8211: return exists ? 0x8c17 : 0;                                              // COMPONENT_TYPE: UNSIGNED_NORMALIZED
             case 0x8210: return exists ? 0x2601 : 0;                                              // COLOR_ENCODING: LINEAR
-            default: this._pushJsError(0x0500); return null;       // an object name, level or face of the default framebuffer: INVALID_ENUM
+            default: recordGpuPreflightError(this._canvasId, 0x0500); return null;       // an object name, level or face of the default framebuffer: INVALID_ENUM
         }
     }
     checkFramebufferStatus(target) {
@@ -3667,9 +3681,9 @@ class WebGLRenderingContext {
     }
 
     getRenderbufferParameter(target, pname) {
-        if (target !== 0x8d41) { this._pushJsError(0x0500); return null; }   // RENDERBUFFER only
+        if (target !== 0x8d41) { recordGpuPreflightError(this._canvasId, 0x0500); return null; }   // RENDERBUFFER only
         const rb = this._renderbufferBinding;
-        if (!rb) { this._pushJsError(0x0502); return null; }
+        if (!rb) { recordGpuPreflightError(this._canvasId, 0x0502); return null; }
         const format = rb._format === undefined ? 0x8056 : rb._format;       // RGBA4 until storage is given
         switch (pname >>> 0) {
             case 0x8d42: return rb._width || 0;       // RENDERBUFFER_WIDTH
@@ -3683,7 +3697,7 @@ class WebGLRenderingContext {
             case 0x8d55: return _renderbufferBits(format, 5); // STENCIL_SIZE
             default: break;
         }
-        this._pushJsError(0x0500);
+        recordGpuPreflightError(this._canvasId, 0x0500);
         return null;
     }
 
@@ -4010,6 +4024,10 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         if (i < _ATTRIB_SHADOW_SLOTS) this._attribShadow.divisor[i] = Number(divisor) >>> 0;
     }
     drawArraysInstanced(mode, first, count, instanceCount) {
+        if (this._programBinding === null) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
         // opcode 49: H C U I I I.
         if (typeof mode === "number" && typeof first === "number" &&
             typeof count === "number" && typeof instanceCount === "number") {
@@ -4043,7 +4061,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // they build a multisampled render target, and Pixi asks it while it creates its renderer.
     getInternalformatParameter(target, internalformat, pname) {
         if (target !== WebglConstants.RENDERBUFFER || pname !== WebglConstants.SAMPLES) {
-            this._pushJsError(WebglConstants.INVALID_ENUM);
+            recordGpuPreflightError(this._canvasId, WebglConstants.INVALID_ENUM);
             return null;
         }
         const json = _rawGetGlState(this._canvasId, GL_STATE_INTERNALFORMAT_SAMPLES, target, internalformat >>> 0, "");
@@ -4144,7 +4162,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         pname = pname >>> 0;
         // UNIFORM_NAME_LENGTH (0x8A39) is the one pname in that run that WebGL leaves out.
         if (pname < WebglConstants.UNIFORM_TYPE || pname > WebglConstants.UNIFORM_IS_ROW_MAJOR || pname === 0x8a39) {
-            this._pushJsError(WebglConstants.INVALID_ENUM);
+            recordGpuPreflightError(this._canvasId, WebglConstants.INVALID_ENUM);
             return null;
         }
         const indices = Array.from(uniformIndices, (i) => i >>> 0);
@@ -4713,7 +4731,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         const state = this._tfRegistry.get(tf._id);
         if (!state || state.deleted) return;
         if (state.active || state.paused) {
-            this._pushJsError(GL_INVALID_OPERATION);
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
             return;
         }
         state.deleted = true;

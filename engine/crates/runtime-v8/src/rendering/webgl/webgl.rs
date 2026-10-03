@@ -1423,12 +1423,19 @@ pub(super) mod tests {
                 r#"
                 const gl = new WebGL2RenderingContext({ _rid: 163, width: 1, height: 1 }, {});
                 const loc = { id: 3 };
-                gl.uniform2uiv(loc, new Uint32Array([1, 2, 3]));               // 3 is not a whole number of uvec2
-                gl.uniform4uiv(loc, new Uint32Array(0));                        // nothing
-                gl.uniform1uiv(loc, new Uint32Array(4), 5);                     // srcOffset past the end
-                gl.uniform1uiv(loc, new Uint32Array(4), 2, 3);                  // srcOffset + srcLength past the end
-                gl.uniformMatrix2x3fv(loc, false, new Float32Array(7));         // not a whole number of 2x3
-                gl.uniformMatrix4x3fv(loc, false, new Float32Array(11));        // too short for one
+                // Each is INVALID_VALUE; read after each, as one flag holds a code once.
+                [
+                    () => gl.uniform2uiv(loc, new Uint32Array([1, 2, 3])),        // 3 is not a whole number of uvec2
+                    () => gl.uniform4uiv(loc, new Uint32Array(0)),                 // nothing
+                    () => gl.uniform1uiv(loc, new Uint32Array(4), 5),              // srcOffset past the end
+                    () => gl.uniform1uiv(loc, new Uint32Array(4), 2, 3),           // srcOffset + srcLength past the end
+                    () => gl.uniformMatrix2x3fv(loc, false, new Float32Array(7)),  // not a whole number of 2x3
+                    () => gl.uniformMatrix4x3fv(loc, false, new Float32Array(11)), // too short for one
+                ].forEach((call, i) => {
+                    call();
+                    const e = gl.getError();
+                    if (e !== 0x0501) throw new Error(`case ${i}: getError ${e}, want INVALID_VALUE`);
+                });
                 let threw = 0;
                 for (const call of [
                     () => gl.uniform2uiv(loc, 5),
@@ -1436,11 +1443,7 @@ pub(super) mod tests {
                     () => gl.uniformMatrix3x4fv(loc, false, "nope"),
                 ]) { try { call(); } catch (e) { if (e instanceof TypeError) threw += 1; } }
                 if (threw !== 3) throw new Error("a non-list is a TypeError: " + threw);
-                const errors = [];
-                for (let e = gl.getError(); e !== 0; e = gl.getError()) errors.push(e);
-                if (errors.length !== 6 || errors.some((e) => e !== 0x0501)) {
-                    throw new Error("six INVALID_VALUE expected, got " + errors.join());
-                }
+                if (gl.getError() !== 0) throw new Error("a TypeError records no GL error");
                 gl.flush();
                 "#,
             )
@@ -1466,6 +1469,10 @@ pub(super) mod tests {
                 const gl = new WebGL2RenderingContext({ _rid: 164, width: 1, height: 1 }, {});
                 gl.bindBuffer(0x8893, gl.createBuffer());     // ELEMENT_ARRAY_BUFFER: six shorts from byte 2
                 gl.bufferData(0x8893, 14, 0x88e4);
+                const program = gl.createProgram();
+                gl.linkProgram(program);
+                gl._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));   // what the renderer answers for LINK_STATUS
+                gl.useProgram(program);
                 gl.flush();
                 "#,
             )
@@ -2511,6 +2518,10 @@ pub(super) mod tests {
                 gl.bindVertexArray(vao);
                 check(gl.getParameter(0x8895) === idx2, "and the vertex array object its own");
                 // a draw reads its indices from it
+                const program = gl.createProgram();
+                gl.linkProgram(program);
+                gl._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));   // what the renderer answers for LINK_STATUS
+                gl.useProgram(program);
                 gl.drawElements(4, 3, 0x1403, 0); err(0, "three shorts of six bytes");
                 gl.drawElements(4, 3, 0x1403, 2); err(0x0502, "past the index buffer");
                 gl.drawElementsInstanced(4, 4, 0x1403, 0, 2); err(0x0502, "an instanced draw past it");
@@ -2681,6 +2692,89 @@ pub(super) mod tests {
             responder.join().expect("the responder must not panic"),
             vec!["0x8f36 4 6", "0x8f36 60 4", "0x8f36 10 3", "0x8f36 13 2"],
             "each read asks for exactly the destination's bytes, and nothing refused is asked"
+        );
+    }
+
+    /// The errors a call is refused with before anything is sent: an enum that is not a capability (INVALID_ENUM --
+    /// RASTERIZER_DISCARD is WebGL 2's), a negative viewport or scissor size (INVALID_VALUE), a program that did not
+    /// link, was deleted or is not one (INVALID_OPERATION, or a TypeError), and a draw with no program in use
+    /// (INVALID_OPERATION). Errors of two kinds are both held.
+    #[test]
+    fn calls_the_specification_refuses_are_refused_before_anything_is_sent() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "error_checks.js",
+                r#"
+                const gl = new WebGLRenderingContext({ _rid: 203, width: 1, height: 1 }, {});
+                const gl2 = new WebGL2RenderingContext({ _rid: 204, width: 1, height: 1 }, {});
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const err = (ctx, want, m) => { const got = ctx.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                gl.enable(0xdead); err(gl, 0x0500, "enable of a non-capability");
+                gl.disable(0xdead); err(gl, 0x0500, "disable of a non-capability");
+                check(gl.isEnabled(0xdead) === false, "isEnabled of a non-capability is false"); err(gl, 0x0500, "and INVALID_ENUM");
+                gl.enable(0x8c89); err(gl, 0x0500, "RASTERIZER_DISCARD in WebGL 1");
+                gl2.enable(0x8c89); err(gl2, 0, "RASTERIZER_DISCARD in WebGL 2");
+                check(gl2.isEnabled(0x8c89) === true, "and it is enabled");
+                gl.viewport(0, 0, -1, 5); err(gl, 0x0501, "a negative viewport width");
+                gl.scissor(0, 0, 5, -1); err(gl, 0x0501, "a negative scissor height");
+                gl.viewport(0n, 0n, -1n, 5n); err(gl, 0x0501, "a negative viewport width on the op's path");
+                gl.enable(0xdead); gl.viewport(0, 0, -1, 5);
+                const first = gl.getError(), second = gl.getError();
+                check([first, second].sort().join() === "1280,1281", "two kinds of error are both held: " + first + "," + second);
+                // useProgram
+                let threw = false;
+                try { gl.useProgram({ id: 1 }); } catch (e) { threw = e instanceof TypeError; }
+                check(threw, "a program that is not one is a TypeError");
+                const linked = gl.createProgram(), unlinked = gl.createProgram(), deleted = gl.createProgram();
+                for (const p of [linked, unlinked, deleted]) gl.linkProgram(p);
+                gl._programParameterCache.set(linked.id, new Map([[0x8b82, 1]]));     // what the renderer answers for LINK_STATUS
+                gl._programParameterCache.set(unlinked.id, new Map([[0x8b82, 0]]));
+                gl.deleteProgram(deleted);
+                gl._programParameterCache.set(deleted.id, new Map([[0x8b82, 1]]));     // it linked; it is deleted
+                gl.drawArrays(4, 0, 3); err(gl, 0x0502, "drawArrays with no program");
+                gl.bindBuffer(0x8893, gl.createBuffer());
+                gl.bufferData(0x8893, 6, 0x88e4);                                    // three shorts to draw from
+                gl.drawElements(4, 3, 0x1403, 0); err(gl, 0x0502, "drawElements with no program");
+                gl.getExtension("ANGLE_instanced_arrays").drawArraysInstancedANGLE(4, 0, 3, 2); err(gl, 0x0502, "an instanced draw with no program");
+                gl2.drawArraysInstanced(4, 0, 3, 2); err(gl2, 0x0502, "drawArraysInstanced with no program");
+                gl.useProgram(unlinked); err(gl, 0x0502, "a program that did not link");
+                check(gl.getParameter(0x8b8d) === null, "and none is in use");
+                gl.useProgram(deleted); err(gl, 0x0502, "a deleted program");
+                gl.useProgram(linked); err(gl, 0, "a linked program");
+                check(gl.getParameter(0x8b8d) === linked, "is in use");
+                gl.useProgram(unlinked); err(gl, 0x0502, "a program that did not link, again");
+                check(gl.getParameter(0x8b8d) === linked, "and the one in use stays in use");
+                gl.drawArrays(4, 0, 3); err(gl, 0, "a draw with a program in use");
+                gl.useProgram(null); err(gl, 0, "null uses none");
+                gl.flush();
+                gl2.flush();
+                "#,
+            )
+            .expect("the error-check script should run");
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::Enable { cap, .. } => Some(format!("enable {cap:#x}")),
+                GLCmd::Disable { cap, .. } => Some(format!("disable {cap:#x}")),
+                GLCmd::Viewport { .. } => Some("viewport".to_string()),
+                GLCmd::Scissor { .. } => Some("scissor".to_string()),
+                GLCmd::UseProgram { program_id, .. } => Some(format!("useProgram {program_id}")),
+                GLCmd::DrawArrays { .. } => Some("drawArrays".to_string()),
+                GLCmd::DrawElements { .. } => Some("drawElements".to_string()),
+                GLCmd::DrawArraysInstanced { .. } => Some("drawArraysInstanced".to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            vec![
+                "enable 0x8c89".to_string(),
+                "useProgram 1".to_string(),
+                "drawArrays".to_string(),
+                "useProgram 0".to_string(),
+            ],
+            "only the calls that were taken are sent"
         );
     }
 
@@ -4184,6 +4278,9 @@ pub(super) mod tests {
                 const ctx = new WebGLRenderingContext({ _rid: 200, width: 1, height: 1 }, {});
                 ctx.bindBuffer(0x8893, ctx.createBuffer());
                 ctx.bufferData(0x8893, 12, 0x88e4);
+                const program = ctx.createProgram();
+                ctx.linkProgram(program);
+                ctx._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));   // what the renderer answers for LINK_STATUS
                 ctx.flush();
                 "#,
             )
@@ -4236,7 +4333,7 @@ pub(super) mod tests {
                 // 18: activeTexture
                 ctx.activeTexture(0x84C0);
                 // 19: useProgram
-                ctx.useProgram({ id: 1 });
+                ctx.useProgram(program);
                 // 20..99: uniform1f (80 calls)
                 for (let i = 0; i < 80; i++) ctx.uniform1f({ id: i }, 1.0 + i);
                 // 100..139: uniform1i (40 calls)
@@ -4466,30 +4563,29 @@ pub(super) mod tests {
     }
 
     // getError() must unconditionally flush the stream first, so that any
-    // pending stream records are decoded (validators push errors into the host
-    // queue) BEFORE getError() drains the queue. The JS _jsErrorQueue has
-    // priority: if both a JS-side and a host-side error exist, two consecutive
-    // getError() calls return JS-error first, then host error.
+    // pending stream records are decoded (validators push errors into the
+    // queue) BEFORE getError() reads it. The facade's own refusals and the
+    // decoder's go into one queue, in the order they were made.
     //
     // This test verifies:
-    //   (a) flushRenderCommandStream runs even when _jsErrorQueue is non-empty.
-    //   (b) JS queue error comes out first.
-    //   (c) Host error (from stream decode) comes out second.
+    //   (a) flushRenderCommandStream runs even when an error is already held.
+    //   (b) The facade's refusal, made first, comes out first.
+    //   (c) The decoder's (from the stream) comes out second.
     #[test]
     fn task5_get_error_flushes_stream_before_drain() {
         let (mut runtime, _render_rx) = new_webgl_runtime();
 
         crate::rendering::webgl::submit_test_counter::reset();
 
-        // Encode a stream record that will fail the decoder's validation (bad texture target).
-        // Also push a JS-side error directly, simulating a prior deleteTransformFeedback
-        // on active TF (which calls _pushJsError without going through the stream).
+        // Encode a stream record that will fail the decoder's validation (bad texture target),
+        // after a refusal the facade records itself: deleteTransformFeedback on an active
+        // transform feedback, which never reaches the stream.
         //
         // Sequence:
-        //   1. Push JS error (INVALID_OPERATION) via deleteTransformFeedback on active TF.
+        //   1. The facade refuses deleteTransformFeedback on an active TF (INVALID_OPERATION).
         //   2. Encode a record the decoder refuses (copyTexSubImage2D, target 0xDEAD).
         //   3. Call getError() → must flush stream first (so its error lands in the host queue),
-        //      then return JS error (0x0502) first.
+        //      then return the facade's refusal (0x0502) first.
         //   4. Call getError() again → returns the host error from the refused record.
         runtime
             .exec_script(
@@ -4497,11 +4593,11 @@ pub(super) mod tests {
                 r#"
                 const ctx = new WebGL2RenderingContext({ _rid: 204, width: 1, height: 1 }, {});
 
-                // Push JS error: deleteTransformFeedback on active TF → INVALID_OPERATION.
+                // The facade refuses deleteTransformFeedback on an active TF: INVALID_OPERATION.
                 const tf = ctx.createTransformFeedback();
                 ctx.bindTransformFeedback(0x8E22, tf);
                 ctx.beginTransformFeedback(0x0004);
-                ctx.deleteTransformFeedback(tf); // JS error: INVALID_OPERATION (0x0502)
+                ctx.deleteTransformFeedback(tf); // INVALID_OPERATION (0x0502), recorded by the facade
 
                 // Encode a record the decoder refuses into the stream (0xDEAD is no
                 // texture target; the facade leaves that rule to the decoder). This
@@ -4510,11 +4606,11 @@ pub(super) mod tests {
 
                 // getError() must:
                 //   1. flush the stream (stream submit happens, the decoder refuses the record -> host error queue)
-                //   2. return JS error first (0x0502)
+                //   2. return the facade's refusal first (0x0502)
                 const e1 = ctx.getError();
-                if (e1 !== 0x0502) throw new Error("first getError must return JS error 0x0502, got: " + e1.toString(16));
+                if (e1 !== 0x0502) throw new Error("first getError must return the facade's refusal 0x0502, got: " + e1.toString(16));
 
-                // getError() again → stream is already flushed, JS queue is empty,
+                // getError() again → the stream is already flushed, the facade's refusal read,
                 // so drain the host error from the refused record.
                 const e2 = ctx.getError();
                 if (e2 === 0) throw new Error("second getError must return the host error from the refused record, got 0");
@@ -6781,17 +6877,23 @@ pub fn op_viewport(
     #[smi] canvas_id: u32,
     #[smi] x: i32,
     #[smi] y: i32,
-    #[smi] width: u32,
-    #[smi] height: u32,
+    #[smi] width: i32,
+    #[smi] height: i32,
 ) {
+    // WebGL spec: negative width/height → INVALID_VALUE.
+    if !crate::rendering::webgl::error_state::validate_viewport_like(
+        state, canvas_id, width, height,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(
         state,
         GLCmd::Viewport {
             canvas_id,
             x,
             y,
-            width,
-            height,
+            width: width as u32,
+            height: height as u32,
         },
     );
 }
@@ -6828,17 +6930,6 @@ pub fn op_create_program(state: &mut OpState, #[smi] canvas_id: u32, #[smi] clie
         GLCmd::CreateProgram {
             canvas_id,
             client_id,
-        },
-    );
-}
-
-#[op2(fast)]
-pub fn op_use_program(state: &mut OpState, #[smi] canvas_id: u32, #[smi] program_id: u32) {
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::UseProgram {
-            canvas_id,
-            program_id,
         },
     );
 }

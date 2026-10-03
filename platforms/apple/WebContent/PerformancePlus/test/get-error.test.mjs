@@ -87,6 +87,16 @@ check(
   "several are returned one per call, oldest first",
 );
 
+// GL's errors are flags: a code raised again before it is read is held once.
+op_webgl_record_error(1, INVALID_ENUM);
+op_webgl_record_error(1, INVALID_VALUE);
+op_webgl_record_error(1, INVALID_ENUM);
+check(
+  [op_webgl_get_error(1), op_webgl_get_error(1)].join() === [INVALID_ENUM, INVALID_VALUE].join(),
+  "a code raised twice before it is read is held once",
+);
+check(op_webgl_get_error(1) === 0, "and nothing is left behind");
+
 // This side's queue is per canvas, as the host's is.
 op_webgl_record_error(2, INVALID_ENUM);
 check(op_webgl_get_error(1) === 0, "another canvas's error is not this canvas's");

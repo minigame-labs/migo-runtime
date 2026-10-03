@@ -14,7 +14,7 @@
 //! what it does with records it must reject.
 
 use frame_decode::{GlDecodeContext, codes, decode_validated_stream};
-use frame_wire::gl::{OP_BIND_BUFFER_BASE, OP_CLEAR, OP_CLEAR_COLOR, OP_SCISSOR};
+use frame_wire::gl::{OP_BIND_BUFFER_BASE, OP_CLEAR, OP_CLEAR_COLOR, OP_SCISSOR, OP_VIEWPORT};
 use frame_wire::stream::{MAGIC, STREAM_VERSION, pack_header, validate_stream};
 use shared::protocol::render_cmd::GLCmd;
 
@@ -96,21 +96,23 @@ fn an_illegal_call_is_skipped_and_reported_rather_than_ending_the_frame() {
     // A negative scissor height. The producer's own shim should have caught it;
     // the decoder cannot assume the producer is correct, because on iOS the
     // producer is content JavaScript in another process.
+    // A negative viewport width likewise: the size is a GLsizei, signed, so the word is read as one.
     let words = stream_of(&[
         record(OP_SCISSOR, &[1, 0, 0, 64, (-1i32) as u32]),
+        record(OP_VIEWPORT, &[2, 0, 0, (-1i32) as u32, 64]),
         record(OP_CLEAR, &[1, 0x4000]),
     ]);
 
     let (commands, context) = decode(&words);
     assert_eq!(
         context.errors,
-        vec![(1, codes::INVALID_VALUE)],
-        "the illegal viewport is reported against its canvas"
+        vec![(1, codes::INVALID_VALUE), (2, codes::INVALID_VALUE)],
+        "each illegal size is reported against its canvas"
     );
     assert_eq!(
         commands.len(),
         1,
-        "the bad call is skipped and the following one still decodes"
+        "the bad calls are skipped and the following one still decodes"
     );
 }
 
