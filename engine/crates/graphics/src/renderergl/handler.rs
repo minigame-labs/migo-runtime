@@ -1757,7 +1757,8 @@ impl RendererGL {
                     | shared::protocol::render_cmd::gl_state::UNIFORM_INDICES
                     | shared::protocol::render_cmd::gl_state::ACTIVE_UNIFORMS_PARAMETER
                     | shared::protocol::render_cmd::gl_state::UNIFORM_VALUE
-                    | shared::protocol::render_cmd::gl_state::FRAG_DATA_LOCATION => {
+                    | shared::protocol::render_cmd::gl_state::FRAG_DATA_LOCATION
+                    | shared::protocol::render_cmd::gl_state::LINK_RESULT => {
                         // `pname` is the program's resource id; a program that is gone or never got a GL handle has
                         // nothing to say, which is the specification's INVALID_OPERATION.
                         match cm.programs.get(&pname).and_then(|meta| meta.gl_handle) {

@@ -373,6 +373,7 @@ const GL_STATE_UNIFORM_INDICES = 5;
 const GL_STATE_ACTIVE_UNIFORMS_PARAMETER = 6;
 const GL_STATE_UNIFORM_VALUE = 7;
 const GL_STATE_FRAG_DATA_LOCATION = 8;
+const GL_STATE_LINK_RESULT = 9;
 
 // --- Producer-side capability shadow ---------------------------------------
 //
@@ -861,6 +862,50 @@ function restoreIncompleteTextures(ctx) {
             (cube ? ctx._textureBindingsCube : ctx._textureBindings2D).get(unit)._id);
     }
     encodeActiveTexture(ctx._canvasId, ctx._activeTextureUnit);
+}
+
+// ---- Vertex ranges -----------------------------------------------------------------------------------------------------
+// A draw may read no vertex outside the buffers of the attributes the program in use consumes (WebGL 1.0 6.6, kept by
+// WebGL 2.0): a vertex past one is INVALID_OPERATION and nothing is drawn. An indexed draw reads the vertices its indices
+// name, so the facade keeps the bytes of every element-array buffer -- WebGL lets such a buffer take data only through
+// `bufferData`, `bufferSubData` and a copy from another element-array buffer, all of which pass here -- and the largest
+// index of each range a draw has read, until the buffer's data changes.
+
+// The bytes of an element-array buffer change: its range cache goes.
+function elementBytesChanged(buffer) {
+    buffer._indexRanges = null;
+}
+
+// The largest index `count` indices of `bytes` per index (1, 2 or 4) from byte `offset` hold, in an element-array
+// buffer; -1 for none. In WebGL 2 the primitive-restart index (all ones) restarts the primitive and reads no vertex.
+function largestIndex(buffer, bytes, offset, count, restart) {
+    let byOffset = buffer._indexRanges === null ? undefined : buffer._indexRanges.get(offset);
+    const key = count * 8 + bytes * 2 + (restart ? 1 : 0);
+    const cached = byOffset === undefined ? undefined : byOffset.get(key);
+    if (cached !== undefined) return cached;
+    const data = buffer._elements;
+    const at = TypedArrayPrototypeGetByteOffset(data) + offset;
+    const view = bytes === 1 ? new Uint8Array(TypedArrayPrototypeGetBuffer(data), at, count)
+        : bytes === 2 ? new Uint16Array(TypedArrayPrototypeGetBuffer(data), at, count)
+            : new Uint32Array(TypedArrayPrototypeGetBuffer(data), at, count);
+    const skip = !restart ? -1 : bytes === 1 ? 0xff : bytes === 2 ? 0xffff : 0xffffffff;
+    let largest = -1;
+    for (let k = 0; k < count; k++) {
+        const index = view[k];
+        if (index > largest && index !== skip) largest = index;
+    }
+    if (buffer._indexRanges === null) buffer._indexRanges = new Map();
+    if (byOffset === undefined) {
+        byOffset = new Map();
+        buffer._indexRanges.set(offset, byOffset);
+    }
+    byOffset.set(key, largest);
+    return largest;
+}
+
+// Bytes of one component of a vertex attribute of `type` (`_attribPointerAccepted`'s types).
+function _attribComponentBytes(type) {
+    return type === 0x1400 || type === 0x1401 ? 1 : type === 0x1402 || type === 0x1403 || type === 0x140b ? 2 : 4;
 }
 
 // The compressed formats, each [block width, block height, bytes a block, the extension that enables it]. A format is
@@ -1902,6 +1947,10 @@ class WebGLRenderingContext {
             inner = new Map();
             this._programParameterCache.set(programId, inner);
         }
+        if (pname === WebglConstants.LINK_STATUS && program instanceof WebglObject && !program._deleted &&
+                program._ownerId === this._canvasId) {
+            return this._linkResult(program);
+        }
         const param = _rawGetProgramParameter(programId, pname);
         inner.set(pname, param);
         if (
@@ -1912,6 +1961,23 @@ class WebGLRenderingContext {
             return Boolean(param);
         }
         return param;
+    }
+
+    // What a link made of a program, asked once per link in place of LINK_STATUS (which every engine and `useProgram`
+    // ask anyway, so it costs no crossing of its own): whether it linked, and every attribute location it consumes,
+    // which a draw's vertex ranges are checked against (`_attribRangeError`). The answer is cached until the next link.
+    _linkResult(program) {
+        const answer = this._programState("getProgramParameter", program, GL_STATE_LINK_RESULT, 0, "");
+        const linked = answer !== undefined && answer[0] === true;
+        let inner = this._programParameterCache.get(program._id);
+        if (inner === undefined) {
+            inner = new Map();
+            this._programParameterCache.set(program._id, inner);
+        }
+        inner.set(WebglConstants.LINK_STATUS, linked ? 1 : 0);
+        program._consumes = linked ? answer[1] : [];
+        program._consumesLink = program._links | 0;
+        return linked;
     }
 
     getProgramInfoLog(program) {
@@ -2062,8 +2128,9 @@ class WebGLRenderingContext {
 
     // Every draw samples no incomplete WebGL 1 texture (`withholdIncompleteTextures`).
     drawArrays(mode, first, count) {
-        if (this._programBinding === null) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        const error = this._drawError(mode, Number(first) | 0, Number(count) | 0, 1, undefined, 0);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
             return;
         }
         const withheld = this._incompleteBindings.size !== 0;
@@ -2078,23 +2145,71 @@ class WebGLRenderingContext {
         if (withheld) restoreIncompleteTextures(this);
     }
 
-    // A draw needs a program in use: none is INVALID_OPERATION (ES 3.0 2.12.3), for every draw.
-    // A draw that reads indices reads `count` of `type` from the bound vertex array object's ELEMENT_ARRAY_BUFFER at
-    // `offset`: no buffer bound, or a range past its end, is INVALID_OPERATION (WebGL 1.0 6.6) -- the driver's error
-    // would not reach `getError`, and a driver that does not check reads past the buffer. A type, count or offset the
-    // call does not take is left to the decoder, which refuses it as the specification says.
-    _elementsError(count, type, offset) {
+    // What every draw is checked for before it is sent, in the order a browser checks it: a mode that is no primitive
+    // is INVALID_ENUM, and so is an index type the context does not take (UNSIGNED_INT needs OES_element_index_uint in
+    // WebGL 1); a negative first, count, instance count or offset INVALID_VALUE; an offset that is not a multiple of the
+    // index size, no program in use (ES 3.0 2.12.3), no element-array buffer or a range of indices past its end
+    // INVALID_OPERATION (WebGL 1.0 6.4, 6.6); then the vertices the draw reads (`_attribRangeError`). `indexType` is
+    // undefined for a draw of arrays. 0 when none is. The decoder checks the arguments again, for the records that do
+    // not come through here.
+    _drawError(mode, first, count, instances, indexType, offset) {
+        if ((Number(mode) >>> 0) > 6) return GL_INVALID_ENUM;              // POINTS .. TRIANGLE_FAN
+        let bytes = 0;
+        if (indexType !== undefined) {
+            const t = Number(indexType) >>> 0;
+            bytes = t === 0x1401 ? 1 : t === 0x1403 ? 2
+                : t === 0x1405 && (this._webgl2 || this._oesElementIndexUint !== undefined) ? 4 : 0;
+            if (bytes === 0) return GL_INVALID_ENUM;
+        }
+        if (first < 0 || count < 0 || instances < 0 || offset < 0) return GL_INVALID_VALUE;
+        if (bytes !== 0 && offset % bytes !== 0) return GL_INVALID_OPERATION;
         if (this._programBinding === null) return GL_INVALID_OPERATION;
-        const bytes = type === 0x1403 ? 2 : type === 0x1401 ? 1 : type === 0x1405 ? 4 : 0;   // UNSIGNED_SHORT, _BYTE, _INT
-        if (bytes === 0 || count < 0 || offset < 0) return 0;
-        const indices = this._attribShadow.elementArrayBuffer;
-        if (indices === null || offset + count * bytes > (indices._size || 0)) return GL_INVALID_OPERATION;
+        let indices = null;
+        if (bytes !== 0) {
+            indices = this._attribShadow.elementArrayBuffer;
+            if (indices === null || offset + count * bytes > (indices._size || 0)) return GL_INVALID_OPERATION;
+        }
+        if (count === 0 || instances === 0) return 0;
+        return this._attribRangeError(first, count, instances, indices, bytes, offset);
+    }
+
+    // Every attribute the program in use consumes that is enabled as an array must have a buffer, and the buffer must
+    // hold each element the draw reads: the vertices `first` .. `first + count - 1` -- an indexed draw's largest index
+    // (`largestIndex`) for the last -- or, for an instanced attribute of divisor d, the instances 0 ..
+    // ceil(instances / d) - 1. Either missing is INVALID_OPERATION (WebGL 1.0 6.5, 6.6).
+    _attribRangeError(first, count, instances, indices, bytes, offset) {
+        const program = this._programBinding;
+        if (program._consumesLink !== (program._links | 0)) this._linkResult(program);
+        const consumed = program._consumes;
+        const shadow = this._attribShadow;
+        let lastVertex = -2;    // not yet known
+        for (let k = 0; k < consumed.length; k++) {
+            const location = consumed[k];
+            if (location >= _ATTRIB_SHADOW_SLOTS || shadow.enabled[location] === 0) continue;
+            const buffer = shadow.buffer[location];
+            if (buffer === null) return GL_INVALID_OPERATION;
+            const divisor = shadow.divisor[location];
+            let last;
+            if (divisor !== 0) {
+                last = MathCeil(instances / divisor) - 1;
+            } else {
+                if (lastVertex === -2) {
+                    lastVertex = indices === null ? first + count - 1
+                        : largestIndex(indices, bytes, offset, count, this._webgl2);
+                }
+                last = lastVertex;
+            }
+            if (last < 0) continue;
+            const element = shadow.size[location] * _attribComponentBytes(shadow.type[location]);
+            const stride = shadow.stride[location] || element;
+            if (shadow.offset[location] + last * stride + element > (buffer._size || 0)) return GL_INVALID_OPERATION;
+        }
         return 0;
     }
 
     drawElements(mode, count, type, offset) {
-        const c = Number(count) | 0, t = Number(type) >>> 0, o = Number(offset) | 0;
-        const error = this._elementsError(c, t, o);
+        const c = Number(count) | 0, t = Number(type) >>> 0, o = toLongLong(Number(offset));
+        const error = this._drawError(mode, 0, c, 1, t, o);
         if (error !== 0) {
             recordGpuPreflightError(this._canvasId, error);
             return;
@@ -2280,7 +2395,10 @@ class WebGLRenderingContext {
     createBuffer() {
         const id = nextResourceId();
         _rawCreateBuffer(this._canvasId, id);
-        return new WebglObject(id, "buffer", this._canvasId);
+        const buffer = new WebglObject(id, "buffer", this._canvasId);
+        buffer._elements = null;        // an element-array buffer's bytes (`largestIndex`), once it has data
+        buffer._indexRanges = null;     // offset -> (count, index size, restart) -> its largest index
+        return buffer;
     }
 
     // ---- Buffers ------------------------------------------------------------------------------------------------
@@ -2392,6 +2510,10 @@ class WebGLRenderingContext {
             if (!allowWebglUpload(this._canvasId, size)) return;
             bound._size = size;
             bound._usage = u;
+            if (bound._webglType === "element") {
+                bound._elements = new Uint8Array(size);
+                elementBytesChanged(bound);
+            }
             return _rawBufferData(this._canvasId, t, size, null, u);
         }
         if (srcOrSize === null || srcOrSize === undefined) {
@@ -2404,6 +2526,10 @@ class WebGLRenderingContext {
         if (u8 === null) return;
         bound._size = TypedArrayPrototypeGetByteLength(u8);
         bound._usage = u;
+        if (bound._webglType === "element") {
+            bound._elements = new Uint8Array(u8);
+            elementBytesChanged(bound);
+        }
         return _rawBufferData(this._canvasId, t, -1, u8, u);
     }
 
@@ -2900,8 +3026,9 @@ class WebGLRenderingContext {
             // Published enum from the ANGLE_instanced_arrays spec.
             VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE: 0x88FE,
             drawArraysInstancedANGLE(mode, first, count, primcount) {
-                if (ctx._programBinding === null) {
-                    recordGpuPreflightError(ctx._canvasId, GL_INVALID_OPERATION);
+                const error = ctx._drawError(mode, Number(first) | 0, Number(count) | 0, Number(primcount) | 0, undefined, 0);
+                if (error !== 0) {
+                    recordGpuPreflightError(ctx._canvasId, error);
                     return;
                 }
                 const withheld = ctx._incompleteBindings.size !== 0;
@@ -2921,7 +3048,7 @@ class WebGLRenderingContext {
                 if (withheld) restoreIncompleteTextures(ctx);
             },
             drawElementsInstancedANGLE(mode, count, type, offset, primcount) {
-                const error = ctx._elementsError(Number(count) | 0, Number(type) >>> 0, Number(offset) | 0);
+                const error = ctx._drawError(mode, 0, Number(count) | 0, Number(primcount) | 0, type, toLongLong(Number(offset)));
                 if (error !== 0) {
                     recordGpuPreflightError(ctx._canvasId, error);
                     return;
@@ -3747,6 +3874,10 @@ class WebGLRenderingContext {
         if (offset < 0 || offset + TypedArrayPrototypeGetByteLength(u8) > (bound._size || 0)) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
+        }
+        if (bound._webglType === "element") {
+            TypedArrayPrototypeSet(bound._elements, u8, offset);
+            elementBytesChanged(bound);
         }
         _rawBufferSubData(this._canvasId, t, offset, u8);
     }
@@ -4908,8 +5039,9 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         if (i < _ATTRIB_SHADOW_SLOTS) this._attribShadow.divisor[i] = Number(divisor) >>> 0;
     }
     drawArraysInstanced(mode, first, count, instanceCount) {
-        if (this._programBinding === null) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        const error = this._drawError(mode, Number(first) | 0, Number(count) | 0, Number(instanceCount) | 0, undefined, 0);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
             return;
         }
         // opcode 49: H C U I I I.
@@ -4922,7 +5054,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         _rawDrawArraysInstanced(this._canvasId, mode, first, count, instanceCount);
     }
     drawElementsInstanced(mode, count, type, offset, instanceCount) {
-        const error = this._elementsError(Number(count) | 0, Number(type) >>> 0, Number(offset) | 0);
+        const error = this._drawError(mode, 0, Number(count) | 0, Number(instanceCount) | 0, type, toLongLong(Number(offset)));
         if (error !== 0) {
             recordGpuPreflightError(this._canvasId, error);
             return;
@@ -5274,6 +5406,11 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         if (error !== 0) {
             recordGpuPreflightError(this._canvasId, error);
             return;
+        }
+        if (write._webglType === "element") {
+            TypedArrayPrototypeSet(write._elements, new Uint8Array(TypedArrayPrototypeGetBuffer(read._elements),
+                TypedArrayPrototypeGetByteOffset(read._elements) + r, n), w);
+            elementBytesChanged(write);
         }
         encodeCopyBufferSubData(this._canvasId, rt, wt, r, w, n);
     }

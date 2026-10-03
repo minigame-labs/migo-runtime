@@ -122,6 +122,10 @@ mod js_agreement {
                 "GL_STATE_FRAG_DATA_LOCATION",
                 frame_wire::sync::gl_state::FRAG_DATA_LOCATION,
             ),
+            (
+                "GL_STATE_LINK_RESULT",
+                frame_wire::sync::gl_state::LINK_RESULT,
+            ),
         ] {
             let prefix = format!("const {name} = ");
             let line = FACADE
