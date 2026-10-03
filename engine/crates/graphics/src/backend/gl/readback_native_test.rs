@@ -8,7 +8,8 @@ use crate::backend::gl::readback_test_gl::native_gles3_context as gles3_context;
 fn drawing_buffer_resize_native_preserves_bindings_and_ignores_unpack_pbo() {
     use crate::canvas::drawing_buffer;
     let (_scope, gl) = gles3_context();
-    let mut db = drawing_buffer::create(&gl, 3, 2).unwrap();
+    let mut db =
+        drawing_buffer::create(&gl, 3, 2, drawing_buffer::DrawingBufferFormat::FULL).unwrap();
     unsafe {
         let custom_read = gl.create_framebuffer().unwrap();
         let custom_draw = gl.create_framebuffer().unwrap();
@@ -73,7 +74,7 @@ fn drawing_buffer_resize_native_preserves_bindings_and_ignores_unpack_pbo() {
         gl.clear(glow::COLOR_BUFFER_BIT);
         let pixels = Rgba8Readback::new(5, 4).unwrap().read(&gl);
         assert!(pixels.chunks_exact(4).all(|p| p == [0, 255, 0, 255]));
-        gl.bind_renderbuffer(glow::RENDERBUFFER, Some(db.depth_stencil_rb));
+        gl.bind_renderbuffer(glow::RENDERBUFFER, db.depth_stencil_rb);
         assert_eq!(
             gl.get_renderbuffer_parameter_i32(glow::RENDERBUFFER, glow::RENDERBUFFER_WIDTH),
             5
@@ -92,12 +93,97 @@ fn drawing_buffer_resize_native_preserves_bindings_and_ignores_unpack_pbo() {
     }
 }
 
+/// A drawing buffer has exactly what its format asks for, on a real driver: an opaque one is RGB8 and reads back alpha 1
+/// whatever was cleared; depth without stencil, stencil without depth, or neither, are the attachments there; and
+/// `reformat` moves between them under the same framebuffer and colour texture names.
+#[test]
+#[ignore = "requires Mesa surfaceless EGL and GLES3"]
+fn drawing_buffer_has_exactly_the_buffers_its_format_asks_for() {
+    use crate::canvas::drawing_buffer::{self, DrawingBufferFormat};
+    let (_scope, gl) = gles3_context();
+    let sizes = |gl: &glow::Context| unsafe {
+        let size = |attachment, pname| {
+            gl.get_framebuffer_attachment_parameter_i32(glow::FRAMEBUFFER, attachment, pname)
+        };
+        [
+            size(
+                glow::COLOR_ATTACHMENT0,
+                glow::FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE,
+            ),
+            size(
+                glow::DEPTH_ATTACHMENT,
+                glow::FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
+            ),
+            size(
+                glow::STENCIL_ATTACHMENT,
+                glow::FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
+            ),
+        ]
+    };
+    const NONE: i32 = glow::NONE as i32;
+    const RENDERBUFFER: i32 = glow::RENDERBUFFER as i32;
+    let opaque = DrawingBufferFormat {
+        alpha: false,
+        depth: true,
+        stencil: false,
+    };
+    let mut db = drawing_buffer::create(&gl, 4, 4, opaque).unwrap();
+    unsafe {
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(db.fbo));
+        assert_eq!(
+            sizes(&gl),
+            [0, RENDERBUFFER, NONE],
+            "RGB8, depth, no stencil"
+        );
+        gl.clear_color(0.5, 0.5, 0.5, 0.25);
+        gl.clear(glow::COLOR_BUFFER_BIT);
+        let pixels = Rgba8Readback::new(4, 4).unwrap().read(&gl);
+        assert!(
+            pixels.chunks_exact(4).all(|p| p[3] == 255),
+            "an opaque buffer reads alpha 1"
+        );
+        let names = (db.fbo, db.color_tex);
+        for (format, want) in [
+            (
+                DrawingBufferFormat {
+                    alpha: true,
+                    depth: false,
+                    stencil: true,
+                },
+                [8, NONE, RENDERBUFFER],
+            ),
+            (DrawingBufferFormat::FULL, [8, RENDERBUFFER, RENDERBUFFER]),
+            (
+                DrawingBufferFormat {
+                    alpha: true,
+                    depth: false,
+                    stencil: false,
+                },
+                [8, NONE, NONE],
+            ),
+        ] {
+            drawing_buffer::reformat(&gl, &mut db, format).unwrap();
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(db.fbo));
+            assert_eq!(sizes(&gl), want, "{format:?}");
+            assert_eq!(
+                gl.check_framebuffer_status(glow::FRAMEBUFFER),
+                glow::FRAMEBUFFER_COMPLETE
+            );
+            assert_eq!((db.fbo, db.color_tex), names, "the names stay");
+        }
+        assert!(db.depth_stencil_rb.is_none());
+        drawing_buffer::destroy(&gl, db);
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+    }
+}
+
 #[test]
 #[ignore = "requires Mesa surfaceless EGL and GLES3"]
 fn drawing_buffer_resize_native_failure_restores_bindings() {
     use crate::canvas::drawing_buffer;
     let (_scope, gl) = gles3_context();
-    let mut db = drawing_buffer::create(&gl, 3, 2).unwrap();
+    let mut db =
+        drawing_buffer::create(&gl, 3, 2, drawing_buffer::DrawingBufferFormat::FULL).unwrap();
     unsafe {
         let custom = gl.create_framebuffer().unwrap();
         let texture = gl.create_texture().unwrap();
@@ -138,7 +224,7 @@ fn drawing_buffer_resize_native_failure_restores_bindings() {
 fn default_snapshot_native_preserves_split_bindings_and_scissor() {
     use crate::canvas::drawing_buffer;
     let (_scope, gl) = gles3_context();
-    let db = drawing_buffer::create(&gl, 3, 2).unwrap();
+    let db = drawing_buffer::create(&gl, 3, 2, drawing_buffer::DrawingBufferFormat::FULL).unwrap();
     unsafe {
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         gl.clear_color(0.0, 1.0, 0.0, 1.0);
@@ -202,7 +288,7 @@ fn default_snapshot_native_preserves_split_bindings_and_scissor() {
 fn default_framebuffer_native_remaps_after_context_return() {
     use crate::canvas::{apply_default_framebuffer, drawing_buffer};
     let (scope, gl) = gles3_context();
-    let db = drawing_buffer::create(&gl, 3, 2).unwrap();
+    let db = drawing_buffer::create(&gl, 3, 2, drawing_buffer::DrawingBufferFormat::FULL).unwrap();
     unsafe {
         let custom = gl.create_framebuffer().unwrap();
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
@@ -878,7 +964,7 @@ fn deleting_the_bound_framebuffer_leaves_the_draws_on_the_drawing_buffer() {
     use crate::backend::gl::state_tracker;
     use crate::canvas::drawing_buffer;
     let (_scope, gl) = gles3_context();
-    let db = drawing_buffer::create(&gl, 2, 2).unwrap();
+    let db = drawing_buffer::create(&gl, 2, 2, drawing_buffer::DrawingBufferFormat::FULL).unwrap();
     unsafe {
         let mut shadow = crate::canvas::CanvasGLState::default();
         state_tracker::record_default_framebuffer_bind(&mut shadow);

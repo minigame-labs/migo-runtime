@@ -113,6 +113,7 @@ const OP_COPY_TEX_SUB_IMAGE_3D = 69;
 const OP_COPY_BUFFER_SUB_DATA = 70;
 const OP_SAMPLE_COVERAGE = 71;
 const OP_FLUSH = 72;
+const OP_WEBGL_CONTEXT = 73;
 
 // --- Variable opcode constants (256..276) ---
 
@@ -724,6 +725,18 @@ function encodeFlush(canvasId) {
     _u32[base] = packHeader(OP_FLUSH, 2);
     _u32[base + 1] = canvasId;
     cursor = base + 2;
+    return true;
+}
+
+// 73 WEBGL_CONTEXT: H C U (3 words). `attributes` are the WEBGL_CONTEXT_* bits (frame_wire::gl).
+function encodeWebglContext(canvasId, attributes) {
+    ensureBuffers();
+    ensureFit(3);
+    const base = cursor;
+    _u32[base] = packHeader(OP_WEBGL_CONTEXT, 3);
+    _u32[base + 1] = canvasId;
+    _u32[base + 2] = attributes;
+    cursor = base + 3;
     return true;
 }
 
@@ -1812,6 +1825,7 @@ export {
     encodeCopyBufferSubData,
     encodeSampleCoverage,
     encodeFlush,
+    encodeWebglContext,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,

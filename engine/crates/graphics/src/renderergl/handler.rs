@@ -438,6 +438,27 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            // A WebGL context was created: its drawing buffer is made to have exactly the buffers it asked for.
+            GLCmd::WebglContext {
+                canvas_id,
+                alpha,
+                depth,
+                stencil,
+                preserve_drawing_buffer: _,
+            } => {
+                cm.declare_webgl_context(
+                    canvas_id,
+                    crate::canvas::drawing_buffer::WebglBufferSpec {
+                        format: crate::canvas::drawing_buffer::DrawingBufferFormat {
+                            alpha,
+                            depth,
+                            stencil,
+                        },
+                    },
+                )?;
+                Ok(DamageEffect::NoDamage)
+            }
+
             GLCmd::SampleCoverage {
                 canvas_id,
                 value,

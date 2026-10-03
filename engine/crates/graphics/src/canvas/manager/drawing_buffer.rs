@@ -10,27 +10,80 @@ use shared::error::{EngineResult, ErrorCode};
 use super::types::ee;
 use crate::backend::gl::readback::CompactPixelUnpackGuard;
 
-/// Intermediate render target for the onscreen canvas.
+/// What a WebGL context asked its drawing buffer to have (WebGL 1.0 5.2, `WebGLContextAttributes`): a colour buffer
+/// with alpha or without, and a depth buffer and a stencil buffer or not. A drawing buffer has exactly these, so what
+/// the content observes -- `getParameter(ALPHA_BITS / DEPTH_BITS / STENCIL_BITS)`, whether a depth or stencil test can
+/// fail, the alpha `readPixels` answers -- is what it asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DrawingBufferFormat {
+    pub alpha: bool,
+    pub depth: bool,
+    pub stencil: bool,
+}
+
+impl DrawingBufferFormat {
+    /// Everything: what a canvas's drawing buffer is before a WebGL context declares otherwise (the screen canvas, which
+    /// a 2D context may also draw into).
+    pub(crate) const FULL: Self = Self {
+        alpha: true,
+        depth: true,
+        stencil: true,
+    };
+
+    /// The colour texture's internal format and the format it is specified with.
+    fn colour(self) -> (u32, u32) {
+        if self.alpha {
+            (glow::RGBA8, glow::RGBA)
+        } else {
+            (glow::RGB8, glow::RGB)
+        }
+    }
+
+    /// The depth/stencil renderbuffer's internal format and the attachment point it takes, or `None` for neither.
+    fn depth_stencil(self) -> Option<(u32, u32)> {
+        match (self.depth, self.stencil) {
+            (true, true) => Some((glow::DEPTH24_STENCIL8, glow::DEPTH_STENCIL_ATTACHMENT)),
+            (true, false) => Some((glow::DEPTH_COMPONENT24, glow::DEPTH_ATTACHMENT)),
+            (false, true) => Some((glow::STENCIL_INDEX8, glow::STENCIL_ATTACHMENT)),
+            (false, false) => None,
+        }
+    }
+}
+
+/// What a WebGL context declared of its drawing buffer when it was created (`GLCmd::WebglContext`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WebglBufferSpec {
+    pub format: DrawingBufferFormat,
+}
+
+/// An engine-owned framebuffer standing in for a WebGL canvas's default framebuffer: the screen canvas's (presented by
+/// a blit to the window surface) and, once a WebGL context declares its attributes, an offscreen canvas's.
 pub(crate) struct DrawingBuffer {
     /// FBO that WebGL commands target when `bindFramebuffer(null)` is called.
     pub fbo: glow::NativeFramebuffer,
-    /// Color attachment (RGBA8 texture).
+    /// Colour attachment: RGBA8, or RGB8 for a context without alpha.
     pub color_tex: glow::NativeTexture,
-    /// Depth + stencil attachment (renderbuffer).
-    pub depth_stencil_rb: glow::NativeRenderbuffer,
+    /// Depth and/or stencil attachment, as `format` asks; `None` when it asks for neither.
+    pub depth_stencil_rb: Option<glow::NativeRenderbuffer>,
+    pub format: DrawingBufferFormat,
     /// Current buffer width in physical pixels.
     pub width: u32,
     /// Current buffer height in physical pixels.
     pub height: u32,
 }
 
-/// Create a new DrawingBuffer at the given dimensions.
+/// Create a new DrawingBuffer of `format` at the given dimensions.
 ///
 /// The caller must ensure an EGL context is current. An Android resume reuses a
 /// preserved context, so the content's pixel-store state and its texture and
 /// renderbuffer bindings can all still be live here; the allocation owns the
 /// former and restores the latter on every path.
-pub(crate) fn create(gl: &glow::Context, width: u32, height: u32) -> EngineResult<DrawingBuffer> {
+pub(crate) fn create(
+    gl: &glow::Context,
+    width: u32,
+    height: u32,
+    format: DrawingBufferFormat,
+) -> EngineResult<DrawingBuffer> {
     let _unpack = CompactPixelUnpackGuard::new(gl, 4);
     let _bindings = ReallocationScope::without_framebuffer(gl);
     unsafe {
@@ -47,84 +100,40 @@ pub(crate) fn create(gl: &glow::Context, width: u32, height: u32) -> EngineResul
                 format!("DrawingBuffer: create_texture failed: {e}"),
             )
         })?;
-        let depth_stencil_rb = gl.create_renderbuffer().map_err(|e| {
-            gl.delete_framebuffer(fbo);
-            gl.delete_texture(color_tex);
-            ee(
-                ErrorCode::RenderBackendError,
-                format!("DrawingBuffer: create_renderbuffer failed: {e}"),
-            )
-        })?;
+        let depth_stencil_rb = match format.depth_stencil() {
+            None => None,
+            Some(_) => Some(gl.create_renderbuffer().map_err(|e| {
+                gl.delete_framebuffer(fbo);
+                gl.delete_texture(color_tex);
+                ee(
+                    ErrorCode::RenderBackendError,
+                    format!("DrawingBuffer: create_renderbuffer failed: {e}"),
+                )
+            })?),
+        };
+        let db = DrawingBuffer {
+            fbo,
+            color_tex,
+            depth_stencil_rb,
+            format,
+            width,
+            height,
+        };
 
-        // Allocate color texture.
         gl.bind_texture(glow::TEXTURE_2D, Some(color_tex));
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::NEAREST as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::NEAREST as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGBA as i32,
-            width as i32,
-            height as i32,
-            0,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(None),
-        );
-
-        // Allocate depth+stencil renderbuffer.
-        gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth_stencil_rb));
-        gl.renderbuffer_storage(
-            glow::RENDERBUFFER,
-            glow::DEPTH24_STENCIL8,
-            width as i32,
-            height as i32,
-        );
-
-        // Assemble FBO.
+        for (pname, value) in [
+            (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
+            (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
+            (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+            (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+        ] {
+            gl.tex_parameter_i32(glow::TEXTURE_2D, pname, value as i32);
+        }
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
-        gl.framebuffer_texture_2d(
-            glow::FRAMEBUFFER,
-            glow::COLOR_ATTACHMENT0,
-            glow::TEXTURE_2D,
-            Some(color_tex),
-            0,
-        );
-        gl.framebuffer_renderbuffer(
-            glow::FRAMEBUFFER,
-            glow::DEPTH_STENCIL_ATTACHMENT,
-            glow::RENDERBUFFER,
-            Some(depth_stencil_rb),
-        );
-
-        let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
-        if status != glow::FRAMEBUFFER_COMPLETE {
+        if let Err(e) = allocate(gl, &db, width, height) {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            gl.delete_framebuffer(fbo);
-            gl.delete_texture(color_tex);
-            gl.delete_renderbuffer(depth_stencil_rb);
-            return Err(ee(
-                ErrorCode::RenderBackendError,
-                format!("DrawingBuffer: framebuffer incomplete (status=0x{status:X})"),
-            ));
+            destroy(gl, db);
+            return Err(e);
         }
 
         // Ensure framebuffer blit path is usable on this context/driver.
@@ -151,9 +160,7 @@ pub(crate) fn create(gl: &glow::Context, width: u32, height: u32) -> EngineResul
         let blit_err = gl.get_error();
         if blit_probe.is_err() || blit_err != glow::NO_ERROR {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            gl.delete_framebuffer(fbo);
-            gl.delete_texture(color_tex);
-            gl.delete_renderbuffer(depth_stencil_rb);
+            destroy(gl, db);
             return Err(ee(
                 ErrorCode::RenderBackendError,
                 if blit_probe.is_err() {
@@ -170,13 +177,70 @@ pub(crate) fn create(gl: &glow::Context, width: u32, height: u32) -> EngineResul
         // that a fresh buffer is the default framebuffer's new meaning.
         clear_to_initial_state(gl, Some(fbo));
 
-        Ok(DrawingBuffer {
-            fbo,
-            color_tex,
-            depth_stencil_rb,
-            width,
-            height,
-        })
+        Ok(db)
+    }
+}
+
+/// Give the buffer's attachments storage of its format at `width` x `height` and attach them to its framebuffer, which
+/// the caller has bound to DRAW_FRAMEBUFFER (FRAMEBUFFER binds both): the colour texture, and the depth/stencil
+/// renderbuffer at the attachment point its format takes, with the others left empty. The framebuffer must then be
+/// complete. `gl` is current, and `db`'s objects are its share group's.
+fn allocate(gl: &glow::Context, db: &DrawingBuffer, width: u32, height: u32) -> EngineResult<()> {
+    let (internal, format) = db.format.colour();
+    unsafe {
+        gl.bind_texture(glow::TEXTURE_2D, Some(db.color_tex));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            internal as i32,
+            width as i32,
+            height as i32,
+            0,
+            format,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(None),
+        );
+        if let (Some(rb), Some((internal, _))) = (db.depth_stencil_rb, db.format.depth_stencil()) {
+            gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
+            gl.renderbuffer_storage(glow::RENDERBUFFER, internal, width as i32, height as i32);
+        }
+    }
+    attach(gl, glow::DRAW_FRAMEBUFFER, db);
+    let status = unsafe { gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER) };
+    if status != glow::FRAMEBUFFER_COMPLETE {
+        return Err(ee(
+            ErrorCode::RenderBackendError,
+            format!(
+                "DrawingBuffer {:?}: framebuffer incomplete (status=0x{status:X})",
+                db.format
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Attach the buffer's own storage to its framebuffer, bound to `target`: the colour texture, nothing at the
+/// depth-stencil point, and the renderbuffer at the point its format takes. Re-attaching after a reallocation is
+/// required on some drivers, and it heals a framebuffer the content's WebGL calls changed the attachments of.
+pub(crate) fn attach(gl: &glow::Context, target: u32, db: &DrawingBuffer) {
+    unsafe {
+        gl.framebuffer_texture_2d(
+            target,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(db.color_tex),
+            0,
+        );
+        // DEPTH_STENCIL detaches both points; the format's renderbuffer then takes the one it uses.
+        gl.framebuffer_renderbuffer(
+            target,
+            glow::DEPTH_STENCIL_ATTACHMENT,
+            glow::RENDERBUFFER,
+            None,
+        );
+        if let (Some(rb), Some((_, point))) = (db.depth_stencil_rb, db.format.depth_stencil()) {
+            gl.framebuffer_renderbuffer(target, point, glow::RENDERBUFFER, Some(rb));
+        }
     }
 }
 
@@ -358,52 +422,8 @@ pub(crate) fn resize(
     let _bindings = ReallocationScope::new(gl);
 
     unsafe {
-        // Re-allocate color texture.
-        gl.bind_texture(glow::TEXTURE_2D, Some(db.color_tex));
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGBA as i32,
-            new_w as i32,
-            new_h as i32,
-            0,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(None),
-        );
-
-        // Re-allocate depth+stencil renderbuffer.
-        gl.bind_renderbuffer(glow::RENDERBUFFER, Some(db.depth_stencil_rb));
-        gl.renderbuffer_storage(
-            glow::RENDERBUFFER,
-            glow::DEPTH24_STENCIL8,
-            new_w as i32,
-            new_h as i32,
-        );
-
-        // Re-attach (required on some drivers after storage reallocation).
         gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(db.fbo));
-        gl.framebuffer_texture_2d(
-            glow::DRAW_FRAMEBUFFER,
-            glow::COLOR_ATTACHMENT0,
-            glow::TEXTURE_2D,
-            Some(db.color_tex),
-            0,
-        );
-        gl.framebuffer_renderbuffer(
-            glow::DRAW_FRAMEBUFFER,
-            glow::DEPTH_STENCIL_ATTACHMENT,
-            glow::RENDERBUFFER,
-            Some(db.depth_stencil_rb),
-        );
-
-        let status = gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER);
-        if status != glow::FRAMEBUFFER_COMPLETE {
-            return Err(ee(
-                ErrorCode::RenderBackendError,
-                format!("DrawingBuffer resize: framebuffer incomplete (status=0x{status:X})"),
-            ));
-        }
+        allocate(gl, db, new_w, new_h)?;
     }
 
     // The reallocated storage is whatever the driver returned.
@@ -414,12 +434,75 @@ pub(crate) fn resize(
     Ok(())
 }
 
+/// A canvas's size was assigned (`canvas.width = ...`): its drawing buffer starts again at that size, cleared to its
+/// initial state, even when the size is the one it already has -- the specification resets the buffer on every
+/// assignment, and `canvas.width = canvas.width` is how content clears one. Only a new size reallocates.
+pub(crate) fn reset(
+    gl: &glow::Context,
+    db: &mut DrawingBuffer,
+    width: u32,
+    height: u32,
+) -> EngineResult<()> {
+    if (db.width, db.height) == (width, height) {
+        clear_to_initial_state(gl, Some(db.fbo));
+        return Ok(());
+    }
+    resize(gl, db, width, height)
+}
+
+/// Give the buffer another format at its size: a WebGL context declared attributes the buffer it already has (the
+/// screen canvas's, made before any context) does not match. The framebuffer and colour texture keep their names, so
+/// a default-framebuffer mapping that names them stays right; the depth/stencil renderbuffer is made or deleted as the
+/// format needs one. The storage is new, and cleared to a drawing buffer's initial state.
+pub(crate) fn reformat(
+    gl: &glow::Context,
+    db: &mut DrawingBuffer,
+    format: DrawingBufferFormat,
+) -> EngineResult<()> {
+    if db.format == format {
+        return Ok(());
+    }
+    let _unpack = CompactPixelUnpackGuard::new(gl, 4);
+    let _bindings = ReallocationScope::new(gl);
+    unsafe {
+        match (db.depth_stencil_rb, format.depth_stencil()) {
+            (None, Some(_)) => {
+                db.depth_stencil_rb = Some(gl.create_renderbuffer().map_err(|e| {
+                    ee(
+                        ErrorCode::RenderBackendError,
+                        format!("DrawingBuffer: create_renderbuffer failed: {e}"),
+                    )
+                })?);
+            }
+            (Some(rb), None) => {
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(db.fbo));
+                gl.framebuffer_renderbuffer(
+                    glow::DRAW_FRAMEBUFFER,
+                    glow::DEPTH_STENCIL_ATTACHMENT,
+                    glow::RENDERBUFFER,
+                    None,
+                );
+                gl.delete_renderbuffer(rb);
+                db.depth_stencil_rb = None;
+            }
+            _ => {}
+        }
+        db.format = format;
+        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(db.fbo));
+        allocate(gl, db, db.width, db.height)?;
+    }
+    clear_to_initial_state(gl, Some(db.fbo));
+    Ok(())
+}
+
 /// Destroy the DrawingBuffer and release all GL resources.
 pub(crate) fn destroy(gl: &glow::Context, db: DrawingBuffer) {
     unsafe {
         gl.delete_framebuffer(db.fbo);
         gl.delete_texture(db.color_tex);
-        gl.delete_renderbuffer(db.depth_stencil_rb);
+        if let Some(rb) = db.depth_stencil_rb {
+            gl.delete_renderbuffer(rb);
+        }
     }
 }
 
@@ -590,21 +673,9 @@ pub(crate) fn blit_to_surface(
             // making it incomplete.
             let status = gl.check_framebuffer_status(glow::READ_FRAMEBUFFER);
             if status != glow::FRAMEBUFFER_COMPLETE {
-                // Try to heal: re-attach original color + depth/stencil.
+                // Try to heal: re-attach its own colour and depth/stencil storage.
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(db.fbo));
-                gl.framebuffer_texture_2d(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::TEXTURE_2D,
-                    Some(db.color_tex),
-                    0,
-                );
-                gl.framebuffer_renderbuffer(
-                    glow::FRAMEBUFFER,
-                    glow::DEPTH_STENCIL_ATTACHMENT,
-                    glow::RENDERBUFFER,
-                    Some(db.depth_stencil_rb),
-                );
+                attach(gl, glow::FRAMEBUFFER, db);
                 let healed = gl.check_framebuffer_status(glow::FRAMEBUFFER);
                 if healed != glow::FRAMEBUFFER_COMPLETE {
                     tracing::warn!(
@@ -752,7 +823,7 @@ mod tests {
     #[ignore = "requires Mesa surfaceless EGL and GLES3"]
     fn reverse_colour_migration_native_preserves_pixels() {
         let (_scope, gl) = gles3_context();
-        let db = create(&gl, 3, 2).expect("drawing buffer");
+        let db = create(&gl, 3, 2, DrawingBufferFormat::FULL).expect("drawing buffer");
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             gl.clear_color(1.0, 0.0, 0.0, 1.0);
@@ -770,7 +841,7 @@ mod tests {
     #[ignore = "requires Mesa surfaceless EGL and GLES3"]
     fn forward_colour_migration_native_preserves_pixels() {
         let (_scope, gl) = gles3_context();
-        let db = create(&gl, 3, 2).expect("drawing buffer");
+        let db = create(&gl, 3, 2, DrawingBufferFormat::FULL).expect("drawing buffer");
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(db.fbo));
             gl.clear_color(0.0, 0.0, 1.0, 1.0);

@@ -90,6 +90,7 @@ export const OP_COPY_TEX_SUB_IMAGE_3D = 69;
 export const OP_COPY_BUFFER_SUB_DATA = 70;
 export const OP_SAMPLE_COVERAGE = 71;
 export const OP_FLUSH = 72;
+export const OP_WEBGL_CONTEXT = 73;
 export const OP_UNIFORM1IV = 256;
 export const OP_UNIFORM1FV = 257;
 export const OP_UNIFORM2IV = 258;

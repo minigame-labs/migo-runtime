@@ -1195,6 +1195,16 @@ pub enum GLCmd {
     Flush {
         canvas_id: CanvasId,
     },
+    /// A WebGL context was created on the canvas with these attributes, which its drawing buffer has to honour: a
+    /// colour buffer with alpha or without, a depth and a stencil buffer or not, its contents kept across a present or
+    /// not. Before every command of the context.
+    WebglContext {
+        canvas_id: CanvasId,
+        alpha: bool,
+        depth: bool,
+        stencil: bool,
+        preserve_drawing_buffer: bool,
+    },
     /// `sampleCoverage(value, invert)`.
     SampleCoverage {
         canvas_id: CanvasId,
@@ -2755,6 +2765,7 @@ impl GLCmd {
             | GLCmd::ClearBufferfi { canvas_id, .. }
             | GLCmd::SampleCoverage { canvas_id, .. }
             | GLCmd::Flush { canvas_id }
+            | GLCmd::WebglContext { canvas_id, .. }
             | GLCmd::CopyTexImage2D { canvas_id, .. }
             | GLCmd::CopyTexSubImage2D { canvas_id, .. }
             | GLCmd::CopyTexSubImage3D { canvas_id, .. }
@@ -3202,6 +3213,7 @@ impl GLCmd {
             | GLCmd::ValidateProgram { .. }
             | GLCmd::SampleCoverage { .. }
             | GLCmd::Flush { .. }
+            | GLCmd::WebglContext { .. }
             | GLCmd::BindAttribLocation { .. }
             | GLCmd::GetUniformBlockIndex { .. }
             | GLCmd::UniformBlockBinding { .. }

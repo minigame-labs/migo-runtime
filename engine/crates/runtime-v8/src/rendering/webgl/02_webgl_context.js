@@ -250,6 +250,7 @@ import {
     encodeCopyBufferSubData,
     encodeSampleCoverage,
     encodeFlush,
+    encodeWebglContext,
     encodeBlendFunc,
     encodeBlendFuncSeparate,
     encodeBlendEquation,
@@ -1735,13 +1736,19 @@ class WebGLRenderingContext {
         this._capBits = _CAP_INITIAL;
         this._capGeneration = _capGeneration;
 
-        // Record the negotiated attributes so `getContextAttributes()`
-        // returns real values instead of bare spec defaults.  We do
-        // not actually negotiate (backend is fixed RGBA8 + depth24 +
-        // stencil8) so depth + stencil always exist -- both default true,
-        // deviating from the WebGL 1.0 s5.2.1 stencil-defaults-false rule so
-        // engine mask systems (Pixi/Cocos) do not skip stencil masking.
+        // The drawing buffer's attributes (WebGL 1.0 5.2), each a dictionary member WebIDL converts to a boolean, or
+        // the specification's default when absent: alpha, depth, premultipliedAlpha and antialias default true,
+        // stencil, preserveDrawingBuffer and the rest false. The renderer gives the drawing buffer exactly the buffers
+        // asked for (`GLCmd::WebglContext`, encoded below ahead of any command of this context), so a context without
+        // stencil has none and its stencil test cannot fail. Antialiasing is a request an implementation may decline,
+        // and this one does -- the drawing buffer is single-sampled -- so the context reports none, as
+        // `getContextAttributes()` must report what the buffer has.
         const opts = this._options;
+        const flag = (value, fallback) => (value === undefined ? fallback : !!value);
+        const alpha = flag(opts.alpha, true);
+        const depth = flag(opts.depth, true);
+        const stencil = flag(opts.stencil, false);
+        const preserveDrawingBuffer = flag(opts.preserveDrawingBuffer, false);
         const powerPref =
             opts.powerPreference === "high-performance"
                 ? 1
@@ -1750,16 +1757,21 @@ class WebGLRenderingContext {
                 : 0;
         op_webgl_record_attributes(
             this._canvasId,
-            opts.alpha !== false, // default true
-            opts.antialias !== false, // default true
-            opts.depth !== false, // default true
-            opts.stencil !== false, // default true: backend is fixed depth24+stencil8, so a stencil buffer always exists (engine mask systems check this attr)
-            opts.premultipliedAlpha !== false, // default true
-            opts.preserveDrawingBuffer === true, // default false
+            alpha,
+            false,
+            depth,
+            stencil,
+            flag(opts.premultipliedAlpha, true),
+            preserveDrawingBuffer,
             powerPref,
-            opts.failIfMajorPerformanceCaveat === true,
-            opts.desynchronized === true,
-            opts.xrCompatible === true,
+            flag(opts.failIfMajorPerformanceCaveat, false),
+            flag(opts.desynchronized, false),
+            flag(opts.xrCompatible, false),
+        );
+        // opcode 73: H C U, the frame_wire::gl::WEBGL_CONTEXT_* bits.
+        encodeWebglContext(
+            this._canvasId,
+            (alpha ? 1 : 0) | (depth ? 2 : 0) | (stencil ? 4 : 0) | (preserveDrawingBuffer ? 8 : 0),
         );
     }
 
@@ -4739,8 +4751,8 @@ Object.assign(WebGLRenderingContext.prototype, WebglConstants);
  * + handler layer as the items above.
  */
 class WebGL2RenderingContext extends WebGLRenderingContext {
-    constructor(canvas) {
-        super(canvas);
+    constructor(canvas, options) {
+        super(canvas, options);
         this._webgl2 = true;
         this._queryRegistry = new Map();
         this._currentQueryByTarget = new Map();

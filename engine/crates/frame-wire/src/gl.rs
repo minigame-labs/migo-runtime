@@ -1,4 +1,4 @@
-//! The WebGL block: opcodes 1..=72 fixed, 256..=276 variable, and the shape of
+//! The WebGL block: opcodes 1..=73 fixed, 256..=276 variable, and the shape of
 //! each record.
 //!
 //! One number per call is all that crosses. The producer writes an opcode and
@@ -29,7 +29,7 @@ use crate::stream::{RecordSpec, UniformElementKind};
 /// is refused by this one comparison rather than by arithmetic over the stream.
 pub const MAX_STREAM_UNIFORM_WORDS: u32 = 64 * 1024;
 
-// ─── Fixed opcode constants (1..=72) ─────────────────────────────────────────
+// ─── Fixed opcode constants (1..=73) ─────────────────────────────────────────
 
 pub const OP_VIEWPORT: u32 = 1;
 pub const OP_CLEAR: u32 = 2;
@@ -120,6 +120,18 @@ pub const OP_SAMPLE_COVERAGE: u32 = 71;
 
 // `flush()` / `finish()`: H C. The context's commands are submitted.
 pub const OP_FLUSH: u32 = 72;
+
+// A WebGL context was created on the canvas: H C U, the attributes its drawing buffer has to honour, as the
+// `WEBGL_CONTEXT_*` bits below. Encoded by the context's constructor, so it precedes every command of the context.
+pub const OP_WEBGL_CONTEXT: u32 = 73;
+/// `alpha`: the colour buffer has an alpha channel.
+pub const WEBGL_CONTEXT_ALPHA: u32 = 1 << 0;
+/// `depth`: there is a depth buffer.
+pub const WEBGL_CONTEXT_DEPTH: u32 = 1 << 1;
+/// `stencil`: there is a stencil buffer.
+pub const WEBGL_CONTEXT_STENCIL: u32 = 1 << 2;
+/// `preserveDrawingBuffer`: the buffer keeps its contents across a present.
+pub const WEBGL_CONTEXT_PRESERVE: u32 = 1 << 3;
 
 // ─── Variable opcode constants (256..=276) ────────────────────────────────────
 
@@ -326,6 +338,11 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         // H C
         OP_FLUSH => RecordSpec::Fixed {
             word_count: 2,
+            bool_words: &[],
+        },
+        // H C U
+        OP_WEBGL_CONTEXT => RecordSpec::Fixed {
+            word_count: 3,
             bool_words: &[],
         },
         OP_DEPTH_FUNC => RecordSpec::Fixed {

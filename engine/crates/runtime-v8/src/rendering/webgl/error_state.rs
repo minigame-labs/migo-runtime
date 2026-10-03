@@ -81,18 +81,15 @@ pub struct ContextAttributes {
 }
 
 impl Default for ContextAttributes {
+    /// What a context created with no attributes has: the WebGL 1.0 defaults (5.2), which the drawing buffer honours
+    /// (a stencil buffer only when asked for), except antialiasing, which this implementation declines -- its drawing
+    /// buffer is single-sampled -- and so reports as off.
     fn default() -> Self {
-        // Defaults mirror the WebGL 1.0 spec (§5.2.1).
         Self {
             alpha: true,
-            antialias: true,
+            antialias: false,
             depth: true,
-            // Our GL backend is fixed-format depth24 + stencil8 (see
-            // `record_context_attrs`), so an actual stencil buffer always
-            // exists. Reporting it (like `depth`) lets engine mask systems
-            // (Pixi/Cocos) use stencil masking instead of warning "does not
-            // have a stencil buffer, masks may not render correctly".
-            stencil: true,
+            stencil: false,
             premultiplied_alpha: true,
             preserve_drawing_buffer: false,
             power_preference: PowerPreference::Default,
@@ -421,16 +418,9 @@ pub fn validate_viewport_like(
     )
 }
 
-/// Record the attrs negotiated for `canvas_id`.  Called once per
-/// `new WebGLRenderingContext(canvas, options)` so
-/// `getContextAttributes()` returns real values instead of spec
-/// defaults.
-///
-/// We accept every WebGL option as-is because our GL backend is
-/// fixed-format (RGBA8, depth24, stencil8) — there's no genuine
-/// negotiation step.  A real browser would clamp on unavailable
-/// features (e.g. MSAA unsupported → antialias=false); our
-/// runtime treats all flags as the game's stated preferences.
+/// Record the attributes `canvas_id`'s context has, for `getContextAttributes()`. Called once per context, by its
+/// constructor, with what the drawing buffer was given: the renderer allocates exactly the alpha, depth and stencil
+/// buffers asked for (`GLCmd::WebglContext`), and antialiasing, which it declines, is recorded as off.
 pub fn record_context_attrs(state: &mut OpState, canvas_id: u32, attrs: ContextAttributes) {
     let q = state.borrow_mut::<WebGLErrorState>();
     q.set_attrs(canvas_id, attrs);
@@ -673,13 +663,12 @@ mod tests {
         let q = WebGLErrorState::default();
         let a = q.get_attrs(1).unwrap_or_default();
         assert!(a.alpha);
-        assert!(a.antialias);
+        assert!(
+            !a.antialias,
+            "antialiasing is declined, and reported as off"
+        );
         assert!(a.depth);
-        // Migo's GL backend is fixed-format depth24 + stencil8, so unlike the
-        // bare WebGL spec default (stencil:false) we deliberately report
-        // stencil:true (see the ContextAttributes Default impl) so Pixi/Cocos
-        // stencil masking works without a "no stencil buffer" warning.
-        assert!(a.stencil);
+        assert!(!a.stencil, "a stencil buffer only when one is asked for");
         assert!(a.premultiplied_alpha);
         assert!(!a.preserve_drawing_buffer);
         assert_eq!(a.power_preference.as_str(), "default");
