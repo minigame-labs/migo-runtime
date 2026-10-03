@@ -7082,9 +7082,11 @@ pub(super) mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("events");
 
+        // The frame's end follows the read: the capture went ahead in a barrier, so the end carries nothing, and it is
+        // sent all the same -- it is what ends the frame, and with it the frame's hold on its snapshots.
         assert_eq!(
             events,
-            vec!["read-snapshot"],
+            vec!["read-snapshot", "present"],
             "the unread snapshot is read while the frame still holds it"
         );
         runtime
@@ -7978,17 +7980,6 @@ pub fn op_clear_color(state: &mut OpState, #[smi] canvas_id: u32, r: f32, g: f32
             g,
             b,
             a,
-        },
-    );
-}
-
-#[op2(fast)]
-pub fn op_clear(state: &mut OpState, #[smi] canvas_id: u32, #[smi] bit_field: u32) {
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::Clear {
-            canvas_id,
-            bit_field,
         },
     );
 }

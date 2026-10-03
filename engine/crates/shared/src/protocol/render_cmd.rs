@@ -379,8 +379,6 @@ pub enum RenderCommand {
 
     Canvas(CanvasCmd),
     GL(GLCmd),
-    /// Batched WebGL commands executed in-order by render thread.
-    GLBatch(GlBatchPayload),
 
     /// Single Canvas2D command (V1 - immediate mode)
     Canvas2D {

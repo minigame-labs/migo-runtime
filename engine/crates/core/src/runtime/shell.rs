@@ -173,9 +173,6 @@ impl SessionShell {
         init_options: &InitOptions,
         surface_control: Arc<shared::surface::SurfaceControl>,
         vsync_rx: Option<crossbeam_channel::Receiver<f64>>,
-        // The one thing about rendering the two executions cannot share: whether
-        // a read of the default framebuffer is answered before its frame presents.
-        default_framebuffer_reads: graphics::DefaultFramebufferReads,
     ) -> EngineResult<Self> {
         // ---- Startup timing instrumentation ----
         let t_start = Instant::now();
@@ -330,7 +327,6 @@ impl SessionShell {
             surface_control,
             report_surface_loss,
             report_surface_installed,
-            default_framebuffer_reads,
         )?;
         // The render-startup budget (`GPU_INIT_TIMEOUT`) starts here. V8
         // construction below consumes this same deadline while the render

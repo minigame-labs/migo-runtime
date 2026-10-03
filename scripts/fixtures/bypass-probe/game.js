@@ -1,25 +1,29 @@
 // DrawingBuffer-bypass probe: the one content shape that keeps bypass latched on.
 //
-// `can_bypass_drawing_buffer` needs all four of: exactly one canvas, no
-// default-FBO readback, no 2D context on the onscreen canvas, and a
-// DrawingBuffer the same size as the surface. Every shipping bundle we have
-// breaks the first one within a second of startup (an offscreen canvas for text
-// or an atlas), so the bypass path only ever ran for a handful of warmup frames
-// and nothing looked at what it presented. This fixture holds all four for the
-// whole run, which makes the captured PNG a verdict on bypass rather than on the
-// blit.
+// `can_bypass_drawing_buffer` needs all five of: exactly one canvas, a drawing
+// buffer that is not preserved, no 2D context on the onscreen canvas, a
+// DrawingBuffer the same size as the surface, and a context that asked for the
+// buffers the window has. Every shipping bundle we have breaks the first one
+// within a second of startup (an offscreen canvas for text or an atlas), so the
+// bypass path only ever ran for a handful of warmup frames and nothing looked at
+// what it presented. This fixture holds all five for the whole run, which makes
+// the captured PNG a verdict on bypass rather than on the blit.
 //
 // Deliberately absent, because each would silently take the probe off the path
 // it exists to exercise:
 //   * `createOffscreenCanvas` / a second `createCanvas` -> canvas_count > 1.
 //   * `getContext("2d")` on this canvas -> Skia targets the DrawingBuffer.
-//   * `readPixels` on the default framebuffer -> latches the readback flag.
+//   * `preserveDrawingBuffer: true` -> only the DrawingBuffer keeps its
+//     contents across a swap.
+//   * the default attributes -> no stencil buffer, which the window has, so
+//     the window's buffers are not the ones the context asked for. Hence
+//     `stencil: true`: the window's config has alpha, depth and stencil.
 //   * `canvas.width = ...` -> DrawingBuffer stops matching the surface.
 //   * `bindFramebuffer` of any kind -> would re-establish the binding under
 //     test. Content that never binds a framebuffer is relying on whatever the
 //     engine left bound, which is exactly the invariant being probed.
 const canvas = migo.createCanvas();
-const gl = canvas.getContext("webgl");
+const gl = canvas.getContext("webgl", { stencil: true });
 
 // A colour no uninitialised buffer plausibly holds, and distinct per channel so
 // a captured pixel says which channel survived: 0x33 / 0xcc / 0x66.

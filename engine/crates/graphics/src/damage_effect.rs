@@ -30,6 +30,31 @@ pub(crate) enum DamageEffect {
     FullSurface,
 }
 
+/// Whether the content's frame has drawn into the screen, carried across the
+/// packets of the frame: a barrier -- sent mid-frame so that a synchronous call
+/// sees what was recorded before it -- runs its batches, and what they drew is
+/// presented with the rest of the frame when it ends (`FrameOp::Present`).
+/// Never on its own: that would put half a frame on the screen whenever content
+/// asked a question mid-frame, and, for a WebGL drawing buffer that is not
+/// preserved, clear the half drawn when the rest arrived.
+#[derive(Debug, Default)]
+pub(crate) struct FrameDrawing(bool);
+
+impl FrameDrawing {
+    /// A batch of the frame ran, and drew into the screen or did not.
+    #[inline]
+    pub(crate) fn batch(&mut self, drew_onscreen: bool) {
+        self.0 |= drew_onscreen;
+    }
+
+    /// The frame ended: whether it drew into the screen, and the next begins
+    /// having drawn nothing.
+    #[inline]
+    pub(crate) fn frame_ended(&mut self) -> bool {
+        std::mem::take(&mut self.0)
+    }
+}
+
 /// Accumulates `DamageEffect`s across an entire frame, then resolves to
 /// `ResolvedDamage` at swap time.
 ///

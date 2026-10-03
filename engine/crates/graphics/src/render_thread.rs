@@ -638,15 +638,21 @@ fn execute_canvas_batch(
                     ?canvas_id,
                     "scissor restore skipped: its canvas could not be made current"
                 );
-                return batch_dirty;
+            } else {
+                let state = cm.gl_state.entry(canvas_id).or_default();
+                dirty_region::restore_scissor(gl, state, borrow);
             }
+        } else {
+            let state = cm.gl_state.entry(canvas_id).or_default();
+            dirty_region::restore_scissor(gl, state, borrow);
         }
-        let state = cm.gl_state.entry(canvas_id).or_default();
-        dirty_region::restore_scissor(gl, state, borrow);
     }
     if batch_dirty {
         cm.mark_2d_dirty(canvas_id);
     }
+    // Presented when the content's frame ends, wherever in it this batch came (`FrameDrawing`).
+    cm.frame_drawing
+        .batch(is_onscreen && (batch_dirty || dirty_rect.is_some()));
 
     let should_mark_present = canvas2d_batch_should_mark_present_dirty(
         canvas_id,
@@ -759,10 +765,13 @@ fn execute_gl_batch(
 /// Execute a FramePacket using caller-provided callbacks for each batch type.
 /// Used by tests to verify packet structure and ordering without a real GL context.
 /// Production code uses `execute_frame_packet` which handles `Materialize` directly.
+/// `frame` carries what the frame's GL batches drew across its packets, as the
+/// `CanvasManager`'s does in production.
 #[cfg(test)]
 pub(crate) fn execute_frame_packet_with_present_tracking<S, FC, FG>(
     packet: FramePacket,
     state: &mut S,
+    frame: &mut crate::damage_effect::FrameDrawing,
     mut on_canvas: FC,
     mut on_gl: FG,
 ) -> bool
@@ -774,13 +783,12 @@ where
 
     for op in packet.into_ops() {
         match op {
-            FrameOp::BeginFrame | FrameOp::Present | FrameOp::Materialize { .. } => {}
+            FrameOp::BeginFrame | FrameOp::Materialize { .. } => {}
+            FrameOp::Present => should_present |= frame.frame_ended(),
             FrameOp::CanvasBatch(payload) => {
                 should_present |= on_canvas(state, payload);
             }
-            FrameOp::GlBatch(payload) => {
-                should_present |= on_gl(state, payload);
-            }
+            FrameOp::GlBatch(payload) => frame.batch(on_gl(state, payload)),
         }
     }
 
@@ -798,7 +806,13 @@ where
     FC: FnMut(&mut S, CanvasBatchPayload) -> bool,
     FG: FnMut(&mut S, GlBatchPayload) -> bool,
 {
-    execute_frame_packet_with_present_tracking(packet, state, on_canvas, on_gl)
+    execute_frame_packet_with_present_tracking(
+        packet,
+        state,
+        &mut Default::default(),
+        on_canvas,
+        on_gl,
+    )
 }
 
 /// Phase reorder: if the packet's CanvasBatches and GlBatches have no
@@ -942,11 +956,7 @@ fn execute_frame_op(
         // Presentation is coalesced by the physical-frame loop in the caller.
         // Skia maintenance also lives there so multiple packets cannot trigger
         // multiple all-context sweeps in one display frame.
-        FrameOp::Present => {
-            // The content frame has ended: what it captured may be drained at the next present.
-            cm.end_snapshot_frame();
-            false
-        }
+        FrameOp::Present => cm.end_content_frame(),
         FrameOp::Materialize { canvas_id } => {
             // Canvas2D → WebGL boundary.  We MUST:
             //   1. Flush Skia so subsequent GL ops see the pixels.
@@ -984,7 +994,11 @@ fn execute_frame_op(
         FrameOp::CanvasBatch(payload) => {
             execute_canvas_batch(cm, gl, renderer_2d, payload, retained_image_ids)
         }
-        FrameOp::GlBatch(payload) => execute_gl_batch(cm, gl, renderer_gl, payload),
+        FrameOp::GlBatch(payload) => {
+            let drew_onscreen = execute_gl_batch(cm, gl, renderer_gl, payload);
+            cm.frame_drawing.batch(drew_onscreen);
+            false
+        }
     }
 }
 
@@ -1829,27 +1843,49 @@ mod tests {
         assert!(!should_present);
     }
 
+    /// A barrier -- a packet without `Present`, sent mid-frame so that a
+    /// synchronous call sees what was recorded before it -- runs its GL work and
+    /// does not present it: that would put half a frame on the screen, and a
+    /// drawing buffer that is not preserved would be cleared under the other
+    /// half. The packet that ends the frame presents what the barrier drew, even
+    /// when it draws nothing itself, and the frame after starts having drawn
+    /// nothing.
     #[test]
-    fn frame_packet_gl_work_requests_present_without_explicit_present_op() {
-        let packet = FramePacketBuilder::new(3, 16.6)
+    fn a_barriers_gl_work_is_presented_by_the_packet_that_ends_the_frame() {
+        let gl_batch = || {
+            FrameOp::GlBatch(shared::protocol::render_cmd::GlBatchPayload {
+                commands: Vec::new().into(),
+            })
+        };
+        let mut frame = crate::damage_effect::FrameDrawing::default();
+        let mut run = |packet| {
+            super::execute_frame_packet_with_present_tracking(
+                packet,
+                &mut (),
+                &mut frame,
+                |(), _payload| panic!("unexpected canvas batch"),
+                |(), _payload| true,
+            )
+        };
+
+        let barrier = FramePacketBuilder::new(3, 16.6)
             .push(FrameOp::BeginFrame)
-            .push(FrameOp::GlBatch(
-                shared::protocol::render_cmd::GlBatchPayload {
-                    commands: Vec::new().into(),
-                },
-            ))
+            .push(gl_batch())
             .finish();
-
-        let should_present = execute_frame_packet_with_present_tracking_for_test(
-            packet,
-            &mut (),
-            |(), _payload| {
-                panic!("unexpected canvas batch");
-            },
-            |(), _payload| true,
+        assert!(!run(barrier), "a barrier presented half a frame");
+        let end = FramePacketBuilder::new(4, 16.6)
+            .push(FrameOp::BeginFrame)
+            .push(FrameOp::Present)
+            .finish();
+        assert!(
+            run(end),
+            "the frame's end did not present what its barrier drew"
         );
-
-        assert!(should_present);
+        let next = FramePacketBuilder::new(5, 16.6)
+            .push(FrameOp::BeginFrame)
+            .push(FrameOp::Present)
+            .finish();
+        assert!(!run(next), "a frame that drew nothing presented");
     }
 
     // ── prepare_batch_scissor tests ──
@@ -2146,32 +2182,6 @@ fn drain_work_counters_record_message_subcommands_and_packet_cpu() {
     );
 }
 
-/// When a read of the onscreen default framebuffer can arrive, relative to the
-/// present of the frame whose pixels it asks for.
-///
-/// DrawingBuffer bypass draws a lone WebGL canvas straight into the window
-/// surface and skips the copy at present, and after `eglSwapBuffers` that
-/// surface's contents are undefined. The first read of the default framebuffer
-/// snapshots the surface into the DrawingBuffer and turns bypass off for good,
-/// which is only a correct snapshot if the frame it reads has not presented yet.
-/// Whether that holds is a property of the execution, not of the content, so
-/// the session says which one it is when it starts the renderer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DefaultFramebufferReads {
-    /// Issued in the same task as the draws it reads and flushed behind them, so
-    /// answered before that frame presents. The embedded execution, where bypass
-    /// stays available.
-    WithinTheirFrame,
-    /// Issued after the frame it reads was submitted. On the external-frame lane
-    /// every packet ends a frame, so the producer's `readPixels` reaches the host
-    /// after the frame it wants may already be on screen, and whether it arrives
-    /// first is a race: measured on the iOS simulator, one run read `[0,0,255,255]`
-    /// and the next `[0,0,0,0]` from an identical frame, the difference being a
-    /// present that landed 2 ms ahead of the read. So the DrawingBuffer is kept
-    /// from the start and bypass never engages.
-    AfterTheirPresent,
-}
-
 impl RenderThread {
     /// Spawn render thread.
     ///
@@ -2248,9 +2258,6 @@ impl RenderThread {
         // Where this thread says why it stopped, for the session that will observe
         // its frame clock closing and otherwise have nothing to tell the host.
         render_exit: Arc<shared::render_exit::RenderExit>,
-        // See `DefaultFramebufferReads`: whether DrawingBuffer bypass can ever be
-        // sound for this session.
-        default_framebuffer_reads: DefaultFramebufferReads,
     ) -> EngineResult<Self> {
         let (cmd_tx, cmd_rx) = CommandSender::new();
         let (surface_control_tx, surface_control_rx) = crossbeam_channel::bounded(1);
@@ -2336,7 +2343,6 @@ impl RenderThread {
                     // id, so both sides of the cache protocol agree while every
                     // other session's GL texture names stay unreachable.
                     text_cache,
-                    default_framebuffer_reads,
                 ) {
                     Ok(c) => c,
                     Err(e) => {
@@ -2770,12 +2776,6 @@ impl RenderThread {
                                 });
                             }
                         },
-                        RenderCommand::GLBatch(payload) => {
-                            if execute_gl_batch(cm, gl, renderer_gl, payload) {
-                                *dirty = true;
-                            }
-                        }
-
                         RenderCommand::Canvas2D { canvas_id, cmd } => {
                             // G-1: retain referenced image ids around
                             // the dispatch so a concurrent `DestroyImage`
@@ -3140,9 +3140,11 @@ impl RenderThread {
                                        paused: &mut bool,
                                        surface_system: &mut SurfaceSystem,
                                        render_binding: &mut RenderSurfaceBinding,
-                                       render_server: &mut RenderServer|
+                                       render_server: &mut RenderServer,
+                                       awaits_present: &mut bool|
                  -> LoopCtl {
                     crate::atrace_scope!(c"migo.render.drain_cmds");
+                    *awaits_present = false;
                     // Drain pending commands with a *dual budget*:
                     // capped by both command count and elapsed CPU
                     // time.  Previously only the count was bounded,
@@ -3181,6 +3183,14 @@ impl RenderThread {
                             budget_exit = true;
                             break;
                         }
+                        // A finished frame awaits its present, and commands wait behind it: the caller
+                        // presents it before they run. Run first, they would put the next frame's work
+                        // into the buffer the present shows -- and the next frame's first use of a
+                        // drawing buffer that is not preserved clears it.
+                        if cm.frame_awaits_present && surface_system.can_present() && render_binding.is_live() && !cmd_rx.is_empty() {
+                            *awaits_present = true;
+                            break;
+                        }
                         match cmd_rx.try_recv() {
                             Ok(cmd) => {
                                 let command_started = Instant::now();
@@ -3189,9 +3199,6 @@ impl RenderThread {
                                         (true, true, packet_subcommand_count(packet))
                                     }
                                     RenderCommand::Canvas2DBatch(payload) => {
-                                        (true, false, payload.commands.len() as u64)
-                                    }
-                                    RenderCommand::GLBatch(payload) => {
                                         (true, false, payload.commands.len() as u64)
                                     }
                                     _ => (false, false, 1),
@@ -3278,88 +3285,21 @@ impl RenderThread {
                     }
                 };
 
-                let present_frame_and_signal_raf = |cm: &mut CanvasManager,
-                                                         renderer_2d: &mut Renderer2d,
-                                                         dirty: &mut bool,
-                                                         _paused: bool,
-                                                         should_present: bool,
-                                                         ts: f64,
-                                                         debug_stats: &shared::stats::DebugStats,
-                                                         frame_count: &mut u32,
-                                                         fps_timer: &mut Instant,
-                                                         last_frame_time: &mut Instant,
-                                                         first_frame_recorded: &mut bool,
-                                                         present_passes: &mut PresentPassCounters,
-                                                         needs_recovery: &mut bool,
-                                                         render_binding: &RenderSurfaceBinding,
-                                                         surface_system: &mut SurfaceSystem| {
-                    crate::atrace_scope!(c"migo.render.present_and_raf");
-                    let _ = ts; // RAF is signalled before the drain now (see signal_raf)
-                    // Drain Canvas2D snapshot textures captured during this
-                    // frame's `getImageData` calls.  By this point the
-                    // FramePacket has already executed every queued
-                    // `TexImage2DFromSnapshot`, so the snapshots are no
-                    // longer referenced by any pending command.  Deleting
-                    // them now keeps the pool tiny under the cocos text-
-                    // rendering pattern (hundreds of getImageData calls per
-                    cm.drain_canvas2d_snapshots();
-                    for _ in 0..cm.take_snapshot_fence_waits() {
-                        present_passes.note_snapshot_wait();
-                    }
-                    let dropped_recoveries = cm.drain_upload_completed();
-                    present_passes.note_pbo_fence();
-                    if dropped_recoveries > 0 {
-                        debug_stats.dropped_upload_recoveries.fetch_add(dropped_recoveries, Ordering::Relaxed);
-                    }
-                    // Capture upload rejections before reset clears the counter.
-                    let rejections = cm.take_upload_frame_rejections();
-                    if rejections > 0 {
-                        debug_stats.upload_frame_rejections.fetch_add(rejections, Ordering::Relaxed);
-                    }
-                    // Reset per-frame upload budget for the new frame.
-                    cm.reset_frame_upload_budget();
-                    // Retry uploads that the previous frame's budget
-                    // rejected.  Draining before the frame's fresh
-                    // draw commands means the backlog claims budget
-                    // first; the budget is monotonic within a frame,
-                    // so a rejection stops the loop and the rest
-                    // waits for the next frame's window.
-                    cm.try_drain_deferred_uploads();
-                    // RAF was already signalled before the drain (see `signal_raf`),
-                    // so JS is producing the next frame in parallel with this swap.
-
-                    // R-3: robustness poll — if the driver flagged a
-                    // GL reset between frames, short-circuit the
-                    // present path and let the next-frame recovery
-                    // handle teardown.  Without this poll, a silently
-                    // reset context would keep emitting "successful"
-                    // GL calls (all no-ops on the wrong state) until
-                    // `eglSwapBuffers` eventually caught it — meaning
-                    // an entire frame's worth of Canvas2D / WebGL
-                    // work gets run against a dead context before the
-                    // user sees the black screen.
-                    if cm.check_graphics_reset_status() {
-                        *needs_recovery = true;
-                        debug_stats
-                            .context_lost_events
-                            .fetch_add(1, Ordering::Relaxed);
-                        let failed = cm.fail_pending_sync_responders(
-                            "GL_KHR_robustness reported context reset",
-                        );
-                        if failed > 0 {
-                            warn!("Aborted {failed} pending sync responder(s) due to robustness-reported reset");
-                        }
-                        cm.abandon_all_2d_contexts();
-                        // Edge-triggered authoritative write (single packed
-                        // atomic): `set_lost` returns true only on the
-                        // false->true transition, so we emit + notify exactly
-                        // once. A sustained / re-detected loss must not keep
-                        // flooding the host with duplicate events.
-                        if context_lost.set_lost() {
-                            events.emit(RenderEvent::ContextLost);
-                        }
-                    }
-
+                // The swap of a frame that awaits it: what the tick runs, and what runs before
+                // a command that arrives behind a finished frame (see `present_awaiting_frame`).
+                let present_frame = |cm: &mut CanvasManager,
+                                     renderer_2d: &mut Renderer2d,
+                                     dirty: &mut bool,
+                                     should_present: bool,
+                                     debug_stats: &shared::stats::DebugStats,
+                                     frame_count: &mut u32,
+                                     last_frame_time: &mut Instant,
+                                     first_frame_recorded: &mut bool,
+                                     present_passes: &mut PresentPassCounters,
+                                     needs_recovery: &mut bool,
+                                     render_binding: &RenderSurfaceBinding,
+                                     surface_system: &mut SurfaceSystem|
+                 -> bool {
                     // Present the completed frame (only if we have a valid surface).
                     // Re-check this exact generation here, immediately before
                     // the swap path: destroy may have retired it after the
@@ -3505,6 +3445,7 @@ impl RenderThread {
                             }
                         };
                         *dirty = false;
+                        cm.frame_awaits_present = false;
 
                         if swap_ok && !*first_frame_recorded {
                             *first_frame_recorded = true;
@@ -3515,6 +3456,113 @@ impl RenderThread {
                     } else {
                         false
                     };
+
+                    if did_swap {
+                        let now = Instant::now();
+                        let frame_dur = now.duration_since(*last_frame_time);
+                        *last_frame_time = now;
+                        debug_stats.frame_time_us.store(frame_dur.as_micros() as u32, Ordering::Relaxed);
+                        *frame_count += 1;
+                    }
+                    did_swap
+                };
+
+                let present_frame_and_signal_raf = |cm: &mut CanvasManager,
+                                                         renderer_2d: &mut Renderer2d,
+                                                         dirty: &mut bool,
+                                                         _paused: bool,
+                                                         should_present: bool,
+                                                         ts: f64,
+                                                         debug_stats: &shared::stats::DebugStats,
+                                                         frame_count: &mut u32,
+                                                         fps_timer: &mut Instant,
+                                                         last_frame_time: &mut Instant,
+                                                         first_frame_recorded: &mut bool,
+                                                         present_passes: &mut PresentPassCounters,
+                                                         needs_recovery: &mut bool,
+                                                         render_binding: &RenderSurfaceBinding,
+                                                         surface_system: &mut SurfaceSystem| {
+                    crate::atrace_scope!(c"migo.render.present_and_raf");
+                    let _ = ts; // RAF is signalled before the drain now (see signal_raf)
+                    // Drain Canvas2D snapshot textures captured during this
+                    // frame's `getImageData` calls.  By this point the
+                    // FramePacket has already executed every queued
+                    // `TexImage2DFromSnapshot`, so the snapshots are no
+                    // longer referenced by any pending command.  Deleting
+                    // them now keeps the pool tiny under the cocos text-
+                    // rendering pattern (hundreds of getImageData calls per
+                    cm.drain_canvas2d_snapshots();
+                    for _ in 0..cm.take_snapshot_fence_waits() {
+                        present_passes.note_snapshot_wait();
+                    }
+                    let dropped_recoveries = cm.drain_upload_completed();
+                    present_passes.note_pbo_fence();
+                    if dropped_recoveries > 0 {
+                        debug_stats.dropped_upload_recoveries.fetch_add(dropped_recoveries, Ordering::Relaxed);
+                    }
+                    // Capture upload rejections before reset clears the counter.
+                    let rejections = cm.take_upload_frame_rejections();
+                    if rejections > 0 {
+                        debug_stats.upload_frame_rejections.fetch_add(rejections, Ordering::Relaxed);
+                    }
+                    // Reset per-frame upload budget for the new frame.
+                    cm.reset_frame_upload_budget();
+                    // Retry uploads that the previous frame's budget
+                    // rejected.  Draining before the frame's fresh
+                    // draw commands means the backlog claims budget
+                    // first; the budget is monotonic within a frame,
+                    // so a rejection stops the loop and the rest
+                    // waits for the next frame's window.
+                    cm.try_drain_deferred_uploads();
+                    // RAF was already signalled before the drain (see `signal_raf`),
+                    // so JS is producing the next frame in parallel with this swap.
+
+                    // R-3: robustness poll — if the driver flagged a
+                    // GL reset between frames, short-circuit the
+                    // present path and let the next-frame recovery
+                    // handle teardown.  Without this poll, a silently
+                    // reset context would keep emitting "successful"
+                    // GL calls (all no-ops on the wrong state) until
+                    // `eglSwapBuffers` eventually caught it — meaning
+                    // an entire frame's worth of Canvas2D / WebGL
+                    // work gets run against a dead context before the
+                    // user sees the black screen.
+                    if cm.check_graphics_reset_status() {
+                        *needs_recovery = true;
+                        debug_stats
+                            .context_lost_events
+                            .fetch_add(1, Ordering::Relaxed);
+                        let failed = cm.fail_pending_sync_responders(
+                            "GL_KHR_robustness reported context reset",
+                        );
+                        if failed > 0 {
+                            warn!("Aborted {failed} pending sync responder(s) due to robustness-reported reset");
+                        }
+                        cm.abandon_all_2d_contexts();
+                        // Edge-triggered authoritative write (single packed
+                        // atomic): `set_lost` returns true only on the
+                        // false->true transition, so we emit + notify exactly
+                        // once. A sustained / re-detected loss must not keep
+                        // flooding the host with duplicate events.
+                        if context_lost.set_lost() {
+                            events.emit(RenderEvent::ContextLost);
+                        }
+                    }
+
+                    present_frame(
+                        cm,
+                        renderer_2d,
+                        dirty,
+                        should_present,
+                        debug_stats,
+                        frame_count,
+                        last_frame_time,
+                        first_frame_recorded,
+                        present_passes,
+                        needs_recovery,
+                        render_binding,
+                        surface_system,
+                    );
 
                     // v4 cache / queue observability: sampled once
                     // per frame; the overlay reads them via
@@ -3535,14 +3583,8 @@ impl RenderThread {
                         cm.perform_deferred_cleanup_all(DEFERRED_CLEANUP_UNUSED_AGE);
                     }
 
-                    // FPS stats.
+                    // FPS window.
                     let now = Instant::now();
-                    if did_swap {
-                        let frame_dur = now.duration_since(*last_frame_time);
-                        *last_frame_time = now;
-                        debug_stats.frame_time_us.store(frame_dur.as_micros() as u32, Ordering::Relaxed);
-                        *frame_count += 1;
-                    }
                     let elapsed = fps_timer.elapsed();
                     if elapsed >= Duration::from_millis(500) {
                         let measured_fps = *frame_count as f32 / elapsed.as_secs_f32();
@@ -3782,16 +3824,24 @@ impl RenderThread {
                             }
 
                             // 2) Drain all pending commands from the previous frame.
-                            match drain_cmds(&mut cm, &gl, &mut canvas_handler, &mut renderer_2d, &mut renderer_gl, &mut fps, &mut frame_scheduler, &mut frame_clock, &mut dirty, &mut paused, &mut surface_system, &mut render_binding, &mut render_server) {
-                                LoopCtl::Continue => {}
-                                LoopCtl::Shutdown => {
-                                    shared::stats::unregister_stats(host_id);
-                                    return Ok(());
+                            // A finished frame that commands wait behind is presented before they run (see `drain_cmds`).
+                            loop {
+                                let mut awaits_present = false;
+                                match drain_cmds(&mut cm, &gl, &mut canvas_handler, &mut renderer_2d, &mut renderer_gl, &mut fps, &mut frame_scheduler, &mut frame_clock, &mut dirty, &mut paused, &mut surface_system, &mut render_binding, &mut render_server, &mut awaits_present) {
+                                    LoopCtl::Continue => {}
+                                    LoopCtl::Shutdown => {
+                                        shared::stats::unregister_stats(host_id);
+                                        return Ok(());
+                                    }
+                                    LoopCtl::Failed(failure) => {
+                                        shared::stats::unregister_stats(host_id);
+                                        return Err(failure);
+                                    }
                                 }
-                                LoopCtl::Failed(failure) => {
-                                    shared::stats::unregister_stats(host_id);
-                                    return Err(failure);
+                                if !awaits_present {
+                                    break;
                                 }
+                                present_frame(&mut cm, &mut renderer_2d, &mut dirty, true, &debug_stats, &mut frame_count, &mut last_frame_time, &mut first_frame_recorded, &mut present_passes, &mut needs_context_recovery, &render_binding, &mut surface_system);
                             }
 
                             // 3) Present (swap) the drained frame.
@@ -3880,16 +3930,24 @@ impl RenderThread {
 
                             // 2) Drain all pending commands (in parallel with JS
                             // producing the next frame, which the signal above woke).
-                            match drain_cmds(&mut cm, &gl, &mut canvas_handler, &mut renderer_2d, &mut renderer_gl, &mut fps, &mut frame_scheduler, &mut frame_clock, &mut dirty, &mut paused, &mut surface_system, &mut render_binding, &mut render_server) {
-                                LoopCtl::Continue => {}
-                                LoopCtl::Shutdown => {
-                                    shared::stats::unregister_stats(host_id);
-                                    return Ok(());
+                            // A finished frame that commands wait behind is presented before they run (see `drain_cmds`).
+                            loop {
+                                let mut awaits_present = false;
+                                match drain_cmds(&mut cm, &gl, &mut canvas_handler, &mut renderer_2d, &mut renderer_gl, &mut fps, &mut frame_scheduler, &mut frame_clock, &mut dirty, &mut paused, &mut surface_system, &mut render_binding, &mut render_server, &mut awaits_present) {
+                                    LoopCtl::Continue => {}
+                                    LoopCtl::Shutdown => {
+                                        shared::stats::unregister_stats(host_id);
+                                        return Ok(());
+                                    }
+                                    LoopCtl::Failed(failure) => {
+                                        shared::stats::unregister_stats(host_id);
+                                        return Err(failure);
+                                    }
                                 }
-                                LoopCtl::Failed(failure) => {
-                                    shared::stats::unregister_stats(host_id);
-                                    return Err(failure);
+                                if !awaits_present {
+                                    break;
                                 }
+                                present_frame(&mut cm, &mut renderer_2d, &mut dirty, true, &debug_stats, &mut frame_count, &mut last_frame_time, &mut first_frame_recorded, &mut present_passes, &mut needs_context_recovery, &render_binding, &mut surface_system);
                             }
 
                             // 3) Present (swap) the drained frame.
@@ -3907,6 +3965,10 @@ impl RenderThread {
                         Wake::Command => {
                             match cmd_rx.try_recv() {
                                 Ok(cmd) => {
+                                    // A finished frame is presented before the command that arrived behind it runs.
+                                    if cm.frame_awaits_present && surface_system.can_present() && render_binding.is_live() {
+                                        present_frame(&mut cm, &mut renderer_2d, &mut dirty, true, &debug_stats, &mut frame_count, &mut last_frame_time, &mut first_frame_recorded, &mut present_passes, &mut needs_context_recovery, &render_binding, &mut surface_system);
+                                    }
                                     match handle_one_cmd(cmd, &mut cm, &gl, &mut canvas_handler, &mut renderer_2d, &mut renderer_gl, &mut fps, &mut frame_scheduler, &mut frame_clock, &mut dirty, &mut paused, has_vsync, &mut surface_system, &mut render_binding, &mut render_server) {
                                         LoopCtl::Continue => {}
                                         LoopCtl::Shutdown => {
@@ -3919,16 +3981,24 @@ impl RenderThread {
                                         }
                                     }
                                     // Drain remaining pending commands.
-                                    match drain_cmds(&mut cm, &gl, &mut canvas_handler, &mut renderer_2d, &mut renderer_gl, &mut fps, &mut frame_scheduler, &mut frame_clock, &mut dirty, &mut paused, &mut surface_system, &mut render_binding, &mut render_server) {
-                                        LoopCtl::Continue => {}
-                                        LoopCtl::Shutdown => {
-                                            shared::stats::unregister_stats(host_id);
-                                            return Ok(());
+                                    // A finished frame that commands wait behind is presented before they run (see `drain_cmds`).
+                                    loop {
+                                        let mut awaits_present = false;
+                                        match drain_cmds(&mut cm, &gl, &mut canvas_handler, &mut renderer_2d, &mut renderer_gl, &mut fps, &mut frame_scheduler, &mut frame_clock, &mut dirty, &mut paused, &mut surface_system, &mut render_binding, &mut render_server, &mut awaits_present) {
+                                            LoopCtl::Continue => {}
+                                            LoopCtl::Shutdown => {
+                                                shared::stats::unregister_stats(host_id);
+                                                return Ok(());
+                                            }
+                                            LoopCtl::Failed(failure) => {
+                                                shared::stats::unregister_stats(host_id);
+                                                return Err(failure);
+                                            }
                                         }
-                                        LoopCtl::Failed(failure) => {
-                                            shared::stats::unregister_stats(host_id);
-                                            return Err(failure);
+                                        if !awaits_present {
+                                            break;
                                         }
+                                        present_frame(&mut cm, &mut renderer_2d, &mut dirty, true, &debug_stats, &mut frame_count, &mut last_frame_time, &mut first_frame_recorded, &mut present_passes, &mut needs_context_recovery, &render_binding, &mut surface_system);
                                     }
                                     // Eager upload drain: LoadImage ops
                                     // submit work to the upload thread

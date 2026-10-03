@@ -1,6 +1,5 @@
 import {
     op_viewport,
-    op_clear,
     op_clear_color,
     op_gl_flush,
     op_gl_is_context_lost,
@@ -577,6 +576,8 @@ const _rawTexStorage3D       = _makeOrderedRaw(op_tex_storage_3d);
 const GL_CURRENT_QUERY = 0x8865;
 const GL_INVALID_ENUM = 0x0500;
 const GL_INVALID_VALUE = 0x0501;
+// COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT | STENCIL_BUFFER_BIT: every buffer `clear` can name.
+const CLEAR_BUFFER_BITS = 0x4000 | 0x0100 | 0x0400;
 const GL_INVALID_OPERATION = 0x0502;
 const MAX_WEBGL_UPLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_WEBGL_SHADER_SOURCE_CODE_UNITS = 1024 * 1024;
@@ -1873,14 +1874,16 @@ class WebGLRenderingContext {
         _rawClearColor(this._canvasId, r, g, b, a);
     }
 
+    // `mask` is a GLbitfield (WebIDL `unsigned long`: a BigInt or a Symbol is a TypeError). A bit naming no buffer is
+    // INVALID_VALUE, and nothing is cleared -- which the render side also counts on: a clear that reaches it is one
+    // that happens.
     clear(mask) {
-        // u32: check number.
-        if (typeof mask === "number") {
-            encodeClear(this._canvasId, mask >>> 0);
+        const bits = +mask >>> 0;
+        if ((bits & ~CLEAR_BUFFER_BITS) !== 0) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
         }
-        flushRenderCommandStream();
-        op_clear(this._canvasId, mask);
+        encodeClear(this._canvasId, bits);
     }
 
     // `flush()`: what is recorded goes to the render side now (a barrier flush of the frame collector), and the

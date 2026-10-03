@@ -532,13 +532,8 @@ pub fn blit_plan(
         // since they clear the whole screen. At 1080x2400 that is the single
         // largest per-frame bandwidth item in the engine.
         //
-        // `blit_from_surface` in `drawing_buffer` has always picked the filter
-        // this way for the reverse copy. The rare path had it right and the
-        // per-frame path did not.
-        //
         // LINEAR is still required when the sizes differ: `glBlitFramebuffer`
-        // rejects a scaling blit asking for NEAREST on some drivers, which is
-        // the reason `blit_from_surface` records for the same choice.
+        // rejects a scaling blit asking for NEAREST on some drivers.
         _ => BlitPlan::Full {
             linear: !db_matches_surface,
         },
@@ -1518,10 +1513,7 @@ mod wiring_source_guards {
         // from exactly one epilogue that every exit path reaches. Counting
         // across the file made adding a second blit look like a second restore
         // inside the first one, which is the thing this actually guards.
-        for signature in [
-            "pub(crate) fn blit_to_surface",
-            "pub(crate) fn blit_from_surface",
-        ] {
+        for signature in ["pub(crate) fn blit_to_surface"] {
             let body = function_body(DB, signature);
             let restores = body.matches("enable(glow::SCISSOR_TEST)").count();
             assert_eq!(
@@ -1534,28 +1526,5 @@ mod wiring_source_guards {
                 "{signature}: a blit must not write through the game's scissor box"
             );
         }
-    }
-
-    /// The snapshot the readback signal documents must actually be taken.
-    ///
-    /// `signal_default_fbo_readback` has described a reverse blit since the flag
-    /// was introduced, and for that whole time the function only set the flag:
-    /// the first `readPixels` on a context that had been bypassing the
-    /// DrawingBuffer returned an empty buffer for pixels the game had just
-    /// drawn. Pinned against the source because the effect needs a GL context.
-    #[test]
-    fn readback_signal_snapshots_the_surface_before_leaving_bypass() {
-        let body = function_body(MGR, "pub(crate) fn signal_default_fbo_readback");
-        let snapshot = body
-            .find("blit_from_surface")
-            .expect("leaving bypass for a readback must snapshot the surface");
-        let latch = body
-            .find("self.needs_default_fbo_readback = true;")
-            .expect("the readback latch must remain");
-        assert!(
-            snapshot < latch,
-            "the snapshot must be taken while bypass is still on, i.e. before the latch \
-             that turns it off"
-        );
     }
 }

@@ -282,7 +282,6 @@ pub(crate) fn read_webgl_pixels(
     format: u32,
     type_: u32,
     destination_byte_length: usize,
-    select_source: impl FnOnce() -> EngineResult<()>,
 ) -> EngineResult<ReadPixelsData> {
     let bpp = webgl_readback_bytes_per_pixel(format, type_)
         .ok_or_else(|| invalid_readback_format_type_error(format, type_))?;
@@ -316,7 +315,6 @@ pub(crate) fn read_webgl_pixels(
         .map_err(|_| EngineError::new(ErrorCode::OutOfMemory))?;
     pixels.resize(layout.compact_bytes, 0);
     if !pixels.is_empty() {
-        select_source()?;
         let _pack = CompactPixelPackGuard::from_saved(gl, pack, 1);
         unsafe {
             let status = gl.check_framebuffer_status(read_framebuffer_target(gl));
@@ -526,87 +524,32 @@ mod tests {
     use crate::backend::gl::readback_test_gl as test_gl;
 
     #[test]
-    fn source_selection_runs_only_after_valid_nonempty_storage() {
+    fn an_empty_or_refused_read_never_reaches_the_driver() {
         let gl = test_gl::context();
         for (width, length, pbo) in [(0, 0, 0), (3, 23, 0), (3, 24, 17)] {
             test_gl::set_bindings(test_gl::Bindings {
                 pack_buffer: pbo,
                 ..Default::default()
             });
-            let mut selected = false;
-            let result = read_webgl_pixels(
-                &gl,
-                0,
-                0,
-                width,
-                2,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                length,
-                || {
-                    selected = true;
-                    Ok(())
-                },
-            );
+            let result =
+                read_webgl_pixels(&gl, 0, 0, width, 2, glow::RGBA, glow::UNSIGNED_BYTE, length);
             assert_eq!(result.is_ok(), width == 0);
-            assert!(!selected);
         }
         assert!(test_gl::reads().is_empty());
         assert_eq!(test_gl::mutations(), 0);
     }
 
     #[test]
-    fn source_selection_failure_does_not_read_or_change_pack_state() {
-        let gl = test_gl::context();
-        let original = test_gl::Bindings {
-            pack: [8, 9, 2, 3],
-            ..Default::default()
-        };
-        test_gl::set_bindings(original);
-        let error = read_webgl_pixels(
-            &gl,
-            0,
-            0,
-            3,
-            2,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            144,
-            || Err(EngineError::new(ErrorCode::RenderBackendError)),
-        )
-        .unwrap_err();
-        assert_eq!(error.code, ErrorCode::RenderBackendError);
-        assert_eq!(test_gl::bindings(), original);
-        assert!(test_gl::reads().is_empty());
-        assert_eq!(test_gl::mutations(), 0);
-    }
-
-    #[test]
-    fn source_selection_precedes_the_read_without_changing_destination_layout() {
+    fn the_read_takes_the_bound_source_without_changing_destination_layout() {
         let gl = test_gl::context();
         test_gl::set_bindings(test_gl::Bindings {
             pack: [8, 9, 2, 3],
+            read_framebuffer: 17,
             draw_framebuffer: 19,
             ..Default::default()
         });
-        let result = read_webgl_pixels(
-            &gl,
-            0,
-            0,
-            3,
-            2,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            144,
-            || {
-                let mut bindings = test_gl::bindings();
-                assert_eq!(bindings.pack, [8, 9, 2, 3]);
-                bindings.read_framebuffer = 17;
-                test_gl::set_bindings(bindings);
-                Ok(())
-            },
-        )
-        .unwrap();
+        let result =
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap();
         assert_eq!(result.pixels.len(), 24);
         assert_eq!(result.layout.required_bytes, 144);
         let reads = test_gl::reads();
@@ -708,18 +651,8 @@ mod tests {
             ..Default::default()
         };
         test_gl::set_bindings(original);
-        let result = read_webgl_pixels(
-            &gl,
-            0,
-            0,
-            3,
-            2,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            144,
-            || Ok(()),
-        )
-        .unwrap();
+        let result =
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap();
         assert_eq!(result.pixels.len(), 24);
         assert_eq!(result.layout.first_byte, 92);
         assert_eq!(result.layout.row_stride, 40);
@@ -742,18 +675,8 @@ mod tests {
                 ..Default::default()
             };
             test_gl::set_bindings(original);
-            let result = read_webgl_pixels(
-                &gl,
-                0,
-                0,
-                3,
-                2,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                144,
-                || Ok(()),
-            )
-            .unwrap();
+            let result =
+                read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap();
             assert_eq!(result.pixels.len(), 24);
             assert_eq!(
                 result.layout.required_bytes,
@@ -1006,22 +929,15 @@ mod tests {
             pack: [8, i32::MAX, i32::MAX, 0],
             ..Default::default()
         });
-        let result = read_webgl_pixels(&gl, 0, 0, 0, 3, glow::RGBA, glow::UNSIGNED_BYTE, 0, || {
-            Ok(())
-        })
-        .unwrap();
+        let result =
+            read_webgl_pixels(&gl, 0, 0, 0, 3, glow::RGBA, glow::UNSIGNED_BYTE, 0).unwrap();
         assert!(result.pixels.is_empty());
         assert_eq!(result.layout.required_bytes, 0);
         test_gl::set_bindings(test_gl::Bindings {
             pack_buffer: 17,
             ..Default::default()
         });
-        assert!(
-            read_webgl_pixels(&gl, 0, 0, 0, 3, glow::RGBA, glow::UNSIGNED_BYTE, 0, || Ok(
-                ()
-            ))
-            .is_err()
-        );
+        assert!(read_webgl_pixels(&gl, 0, 0, 0, 3, glow::RGBA, glow::UNSIGNED_BYTE, 0).is_err());
         assert!(test_gl::reads().is_empty());
         assert_eq!(test_gl::mutations(), 0);
     }
@@ -1033,27 +949,15 @@ mod tests {
             pack: [8, 9, 2, 3],
             ..Default::default()
         });
-        let err = read_webgl_pixels(
-            &gl,
-            0,
-            0,
-            3,
-            2,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            143,
-            || Ok(()),
-        )
-        .unwrap_err();
+        let err =
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 143).unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidOperation);
         test_gl::set_bindings(test_gl::Bindings {
             pack_buffer: 17,
             ..Default::default()
         });
-        let err = read_webgl_pixels(&gl, 0, 0, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, 4, || {
-            Ok(())
-        })
-        .unwrap_err();
+        let err =
+            read_webgl_pixels(&gl, 0, 0, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, 4).unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidOperation);
         assert!(test_gl::reads().is_empty());
         assert_eq!(test_gl::mutations(), 0);
@@ -1071,8 +975,7 @@ mod tests {
                 ..Default::default()
             };
             test_gl::set_bindings(original);
-            let error =
-                read_webgl_pixels(&gl, 0, 0, 1, 1, format, type_, 4, || Ok(())).unwrap_err();
+            let error = read_webgl_pixels(&gl, 0, 0, 1, 1, format, type_, 4).unwrap_err();
             assert_eq!(error.code, ErrorCode::InvalidArgument);
             assert_eq!(error.msg, message);
             assert!(test_gl::reads().is_empty());
@@ -1093,18 +996,8 @@ mod tests {
         ] {
             let gl = test_gl::context();
             test_gl::set_read_error(gl_error);
-            let error = read_webgl_pixels(
-                &gl,
-                0,
-                0,
-                3,
-                2,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                144,
-                || Ok(()),
-            )
-            .unwrap_err();
+            let error = read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144)
+                .unwrap_err();
             assert_eq!(error.code, expected);
             assert_eq!(test_gl::pending_errors(), 0, "queue must be drained");
         }
@@ -1117,17 +1010,7 @@ mod tests {
         // Two stale errors, then nothing for the read itself.
         test_gl::queue_error(glow::INVALID_OPERATION);
         test_gl::queue_error(glow::INVALID_ENUM);
-        let result = read_webgl_pixels(
-            &gl,
-            0,
-            0,
-            3,
-            2,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            144,
-            || Ok(()),
-        );
+        let result = read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144);
         assert!(result.is_ok(), "stale errors were attributed to this read");
         assert_eq!(test_gl::pending_errors(), 0);
     }
@@ -1136,18 +1019,8 @@ mod tests {
     fn webgl_readback_refuses_an_incomplete_framebuffer_before_reading() {
         let gl = test_gl::context();
         test_gl::set_framebuffer_status(glow::FRAMEBUFFER_INCOMPLETE_ATTACHMENT);
-        let error = read_webgl_pixels(
-            &gl,
-            0,
-            0,
-            3,
-            2,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            144,
-            || Ok(()),
-        )
-        .unwrap_err();
+        let error =
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap_err();
         assert_eq!(error.code, ErrorCode::RenderFramebufferIncomplete);
         assert!(
             test_gl::reads().is_empty(),
@@ -1162,10 +1035,8 @@ mod tests {
         let gl = test_gl::context();
         test_gl::set_framebuffer_status(glow::FRAMEBUFFER_INCOMPLETE_ATTACHMENT);
         test_gl::queue_error(glow::INVALID_OPERATION);
-        let result = read_webgl_pixels(&gl, 0, 0, 0, 2, glow::RGBA, glow::UNSIGNED_BYTE, 0, || {
-            Ok(())
-        })
-        .unwrap();
+        let result =
+            read_webgl_pixels(&gl, 0, 0, 0, 2, glow::RGBA, glow::UNSIGNED_BYTE, 0).unwrap();
         assert!(result.pixels.is_empty());
         assert!(test_gl::reads().is_empty());
     }

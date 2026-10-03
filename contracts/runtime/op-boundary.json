@@ -454,7 +454,6 @@
         "op_capture_canvas2d_snapshot": "stream",
         "op_capture_canvas2d_snapshot_for_cache": "stream",
         "op_check_framebuffer_status": "sync",
-        "op_clear": "stream",
         "op_clear_color": "stream",
         "op_clear_depth": "stream",
         "op_clear_stencil": "stream",

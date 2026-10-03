@@ -221,81 +221,21 @@ fn drawing_buffer_resize_native_failure_restores_bindings() {
 
 #[test]
 #[ignore = "requires Mesa surfaceless EGL and GLES3"]
-fn default_snapshot_native_preserves_split_bindings_and_scissor() {
-    use crate::canvas::drawing_buffer;
-    let (_scope, gl) = gles3_context();
-    let db = drawing_buffer::create(&gl, 3, 2, drawing_buffer::DrawingBufferFormat::FULL).unwrap();
-    unsafe {
-        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-        gl.clear_color(0.0, 1.0, 0.0, 1.0);
-        gl.clear(glow::COLOR_BUFFER_BIT);
-        let custom_read = gl.create_framebuffer().unwrap();
-        let custom_draw = gl.create_framebuffer().unwrap();
-        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(custom_read));
-        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(custom_draw));
-        gl.enable(glow::SCISSOR_TEST);
-        gl.scissor(0, 0, 1, 1);
-        assert!(drawing_buffer::blit_from_surface(&gl, &db, 3, 2));
-        assert_eq!(
-            gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING),
-            Some(custom_read)
-        );
-        assert_eq!(
-            gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING),
-            Some(custom_draw)
-        );
-        assert!(gl.is_enabled(glow::SCISSOR_TEST));
-        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(db.fbo));
-        let pixels = Rgba8Readback::new(3, 2).unwrap().read(&gl);
-        assert!(pixels.chunks_exact(4).all(|p| p == [0, 255, 0, 255]));
-        // Incomplete destination: no copy, but restore the same split bindings
-        // and scissor state on the failure path as on the success path.
-        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(db.fbo));
-        gl.framebuffer_texture_2d(
-            glow::DRAW_FRAMEBUFFER,
-            glow::COLOR_ATTACHMENT0,
-            glow::TEXTURE_2D,
-            None,
-            0,
-        );
-        gl.framebuffer_renderbuffer(
-            glow::DRAW_FRAMEBUFFER,
-            glow::DEPTH_STENCIL_ATTACHMENT,
-            glow::RENDERBUFFER,
-            None,
-        );
-        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(custom_read));
-        gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(custom_draw));
-        assert!(!drawing_buffer::blit_from_surface(&gl, &db, 3, 2));
-        assert_eq!(
-            gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING),
-            Some(custom_read)
-        );
-        assert_eq!(
-            gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING),
-            Some(custom_draw)
-        );
-        assert!(gl.is_enabled(glow::SCISSOR_TEST));
-        gl.delete_framebuffer(custom_read);
-        gl.delete_framebuffer(custom_draw);
-        drawing_buffer::destroy(&gl, db);
-        assert_eq!(gl.get_error(), glow::NO_ERROR);
-    }
-}
-
-#[test]
-#[ignore = "requires Mesa surfaceless EGL and GLES3"]
 fn default_framebuffer_native_remaps_after_context_return() {
     use crate::canvas::{apply_default_framebuffer, drawing_buffer};
     let (scope, gl) = gles3_context();
     let db = drawing_buffer::create(&gl, 3, 2, drawing_buffer::DrawingBufferFormat::FULL).unwrap();
     unsafe {
         let custom = gl.create_framebuffer().unwrap();
-        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(db.fbo));
         gl.clear_color(0.0, 1.0, 0.0, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT);
+        // Done before the context is released below: llvmpipe loses a clear still pending when its context is
+        // released and made current again -- 4 runs in 11 read the buffer's initial transparent black, with a
+        // `glFlush` here as without one, and none of 8 with this.
+        gl.finish();
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(custom));
-        assert!(drawing_buffer::blit_from_surface(&gl, &db, 3, 2));
 
         scope
             .api
@@ -373,35 +313,15 @@ fn internal_readback_native_pixels_and_pack_buffer_are_preserved() {
         assert_eq!(restored.buffer, Some(pbo));
         assert_eq!(read_bound_pbo(&gl), [0xA5; 64]);
         assert_eq!(gl.get_error(), glow::NO_ERROR);
-        let rejected = read_webgl_pixels(
-            &gl,
-            0,
-            0,
-            3,
-            2,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            144,
-            || Ok(()),
-        );
+        let rejected = read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144);
         assert!(
             rejected.is_err(),
             "a CPU view cannot be used while a PBO is bound"
         );
         assert_eq!(read_bound_pbo(&gl), [0xA5; 64]);
         gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-        let public = read_webgl_pixels(
-            &gl,
-            0,
-            0,
-            3,
-            2,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            144,
-            || Ok(()),
-        )
-        .unwrap();
+        let public =
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap();
         assert_eq!(public.pixels, pixels);
         assert_eq!(public.layout.first_byte, 92);
         assert_eq!(public.layout.row_stride, 40);
@@ -440,18 +360,9 @@ fn internal_readback_native_pixels_and_pack_buffer_are_preserved() {
         );
         gl.clear_buffer_u32_slice(glow::COLOR, 0, &[10, 20, 30, 40]);
         assert_eq!(gl.get_error(), glow::NO_ERROR);
-        let integer = read_webgl_pixels(
-            &gl,
-            0,
-            0,
-            3,
-            2,
-            glow::RGBA_INTEGER,
-            glow::UNSIGNED_INT,
-            528,
-            || Ok(()),
-        )
-        .unwrap();
+        let integer =
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA_INTEGER, glow::UNSIGNED_INT, 528)
+                .unwrap();
         assert_eq!(integer.pixels.len(), 96);
         assert_eq!(integer.layout.required_bytes, 528);
         for pixel in integer.pixels.chunks_exact(16) {
@@ -566,7 +477,6 @@ fn webgl_readback_native_clips_to_the_framebuffer_and_zeroes_the_rest() {
             glow::RGBA,
             glow::UNSIGNED_BYTE,
             5 * 4 * 4,
-            || Ok(()),
         )
         .unwrap();
         assert_eq!(

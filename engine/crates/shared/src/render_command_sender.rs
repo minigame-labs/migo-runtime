@@ -138,7 +138,6 @@ impl RenderCommand {
             // frame is visibly broken.
             RenderCommand::FramePacket(_)
             | RenderCommand::Canvas2DBatch(_)
-            | RenderCommand::GLBatch(_)
             | RenderCommand::Canvas2D { .. }
             | RenderCommand::GL(_) => CommandClass::Draw,
 
