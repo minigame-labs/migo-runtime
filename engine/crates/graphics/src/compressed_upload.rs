@@ -33,6 +33,44 @@ const GL_COMPRESSED_RGBA_ASTC_6X6_KHR: u32 = 0x93B4;
 /// a test copied from the code it checks can always do.
 const GL_COMPRESSED_RGBA_ASTC_8X8_KHR: u32 = 0x93B7;
 
+/// The block of every compressed format the WebGL extensions offer -- `(width, height, bytes)`, its texels each way and
+/// its size -- or `None` for a format that is not one of them: ETC2/EAC (`WEBGL_compressed_texture_etc`) and the ASTC
+/// LDR profile (`WEBGL_compressed_texture_astc`), linear and sRGB. The facade's `_COMPRESSED_FORMATS` is the same table:
+/// what content may upload, here what it costs and how the KTX2 path lays it out.
+pub(crate) fn compressed_block(format: u32) -> Option<(u32, u32, u64)> {
+    const ASTC_BLOCKS: [(u32, u32); 14] = [
+        (4, 4),
+        (5, 4),
+        (5, 5),
+        (6, 5),
+        (6, 6),
+        (8, 5),
+        (8, 6),
+        (8, 8),
+        (10, 5),
+        (10, 6),
+        (10, 8),
+        (10, 10),
+        (12, 10),
+        (12, 12),
+    ];
+    match format {
+        // R11, SIGNED_R11 (EAC); RGB8, SRGB8, and the two PUNCHTHROUGH_ALPHA1 (ETC2)
+        0x9270 | 0x9271 | 0x9274..=0x9277 => Some((4, 4, 8)),
+        // RG11, SIGNED_RG11 (EAC); RGBA8, SRGB8_ALPHA8 (ETC2)
+        0x9272 | 0x9273 | 0x9278 | 0x9279 => Some((4, 4, 16)),
+        0x93B0..=0x93BD => {
+            let (w, h) = ASTC_BLOCKS[(format - 0x93B0) as usize];
+            Some((w, h, 16))
+        }
+        0x93D0..=0x93DD => {
+            let (w, h) = ASTC_BLOCKS[(format - 0x93D0) as usize];
+            Some((w, h, 16))
+        }
+        _ => None,
+    }
+}
+
 /// Compressed texture format for GPU upload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressedFormat {
@@ -88,21 +126,21 @@ impl CompressedFormat {
         }
     }
 
+    /// The format's block (`compressed_block`): every variant is one of the WebGL formats.
+    fn block(self) -> (u32, u32, u64) {
+        compressed_block(self.gl_internal_format())
+            .expect("every KTX2 format is a WebGL compressed format")
+    }
+
     /// Compressed-block footprint `(width, height)` in texels.
     pub(crate) fn block_dims(self) -> (u32, u32) {
-        match self {
-            Self::Etc2Rgb | Self::Etc2Rgba | Self::Astc4x4 => (4, 4),
-            Self::Astc6x6 => (6, 6),
-            Self::Astc8x8 => (8, 8),
-        }
+        let (w, h, _) = self.block();
+        (w, h)
     }
 
     /// Bytes per compressed block.
     fn bytes_per_block(self) -> u64 {
-        match self {
-            Self::Etc2Rgb => 8,
-            Self::Etc2Rgba | Self::Astc4x4 | Self::Astc6x6 | Self::Astc8x8 => 16,
-        }
+        self.block().2
     }
 
     /// Exact byte length a tightly-packed `width`x`height` level must have in

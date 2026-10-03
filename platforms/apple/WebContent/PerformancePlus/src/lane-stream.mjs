@@ -1289,9 +1289,6 @@ export function op_enable_vertex_attrib_array(canvasId, index) {
 export function op_front_face(canvasId, mode) {
   emit(R.OP_FRONT_FACE, smiU32(canvasId, "canvas_id"), smiU32(mode, "mode"));
 }
-export function op_generate_mipmap(canvasId, target) {
-  emit(R.OP_GENERATE_MIPMAP, smiU32(canvasId, "canvas_id"), smiU32(target, "target"));
-}
 export function op_hint(canvasId, target, mode) {
   emit(R.OP_HINT, smiU32(canvasId, "canvas_id"), smiU32(target, "target"), smiU32(mode, "mode"));
 }
@@ -1333,12 +1330,6 @@ export function op_stencil_op(canvasId, fail, zfail, zpass) {
 }
 export function op_stencil_op_separate(canvasId, face, fail, zfail, zpass) {
   emit(R.OP_STENCIL_OP_SEPARATE, smiU32(canvasId, "canvas_id"), smiU32(face, "face"), smiU32(fail, "fail"), smiU32(zfail, "zfail"), smiU32(zpass, "zpass"));
-}
-export function op_tex_parameterf(canvasId, target, pname, param) {
-  emit(R.OP_TEX_PARAMETER_F, smiU32(canvasId, "canvas_id"), smiU32(target, "target"), smiU32(pname, "pname"), f32BitsOf(param, "param"));
-}
-export function op_tex_parameteri(canvasId, target, pname, param) {
-  emit(R.OP_TEX_PARAMETER_I, smiU32(canvasId, "canvas_id"), smiU32(target, "target"), smiU32(pname, "pname"), toI32(param, "param"));
 }
 export function op_uniform1f(canvasId, location, x) {
   emit(R.OP_UNIFORM1F, smiU32(canvasId, "canvas_id"), toI32(location, "location"), f32BitsOf(x, "x"));

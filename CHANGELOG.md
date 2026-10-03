@@ -112,6 +112,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL: the facade keeps a record of every texture image -- each level of a 2D, 3D or 2D-array texture and of each
+  face of a cube map, with its internal format, the format and type its data came in, its size and whether it is
+  compressed or immutable -- and judges by it, before anything is sent, what used to reach the driver, whose errors
+  never reach `getError`: an upload, copy or compressed upload into an image that is not there (INVALID_OPERATION),
+  past its edge (INVALID_VALUE), from a (format, type) ES 3.0 tables 3.2/3.3 do not have with the image's internal
+  format -- in WebGL 1 another format or type than the image was defined with -- (INVALID_OPERATION); immutable
+  storage defined again by `texImage*`, `copyTexImage2D`, a compressed image or `texStorage*` (INVALID_OPERATION); a
+  WebGL 1 mipmap level of a size that is not a power of two (INVALID_VALUE); `generateMipmap` of a base that is not
+  there, empty, compressed, not colour-renderable and filterable, a WebGL 1 non-power-of-two, or a cube map whose faces
+  are not all there and alike (INVALID_OPERATION), which starts at TEXTURE_BASE_LEVEL in WebGL 2 and whose levels are
+  recorded. An image is recorded when the call that defines it is sent, so `copyTexImage2D` judges the decoder's
+  rules here too, in the decoder's order, and the compressed uploads judge theirs: a format is one only while its
+  extension is enabled (INVALID_ENUM), its data is whole blocks over the size (INVALID_VALUE), an upload into it
+  starts on a block, ends on one or at the edge and is of its format (INVALID_OPERATION), and it is no 3D texture's
+  (INVALID_OPERATION).
+- WebGL 2: `texStorage2D` / `texStorage3D` take the compressed formats of an enabled extension, as three.js allocates a
+  KTX2 texture before `compressedTexSubImage2D` fills it: they were INVALID_ENUM in the facade and refused by the GPU
+  budget, so such a texture stayed black. The budget charges compressed storage in whole blocks, from one table of the
+  WebGL compressed formats (`compressed_upload::compressed_block`) that the KTX2 path now reads too.
+  `WEBGL_compressed_texture_astc` names all 28 formats of the LDR profile and has `getSupportedProfiles()`.
+- WebGL: `texParameteri` / `texParameterf` refuse a parameter the context's textures do not have, or a value an enum one
+  does not take (INVALID_ENUM; WebGL 1 has the filters and the two wraps only), and a negative TEXTURE_BASE_LEVEL or
+  TEXTURE_MAX_LEVEL (INVALID_VALUE); `getTexParameter` answers every WebGL 2 parameter (the LODs as the floats they were
+  set to, TEXTURE_IMMUTABLE_FORMAT and TEXTURE_IMMUTABLE_LEVELS from `texStorage*`). A value is converted as WebIDL
+  converts it and always encoded in the stream: `op_tex_parameteri`, `op_tex_parameterf` and `op_generate_mipmap`,
+  reached only by a non-number argument (and then a TypeError), are gone.
+- WebGL: a renderbuffer takes RGB565, which was INVALID_ENUM, and the formats are the specification's per interface
+  (WebGL 1's six; in WebGL 2 the colour-renderable sized formats that need no extension, depth and stencil);
+  `renderbufferStorage*` with no renderbuffer bound is INVALID_OPERATION. `texStorage*` refuses DEPTH_STENCIL, an
+  unsized format the old list took for a sized one, and a cube map that is not square (INVALID_VALUE).
 - WebGL 2: a 3D upload from a view while UNPACK_FLIP_Y_WEBGL or UNPACK_PREMULTIPLY_ALPHA_WEBGL is set is
   INVALID_OPERATION, as the specification has it (the flags are defined for 2D images); it was uploaded unflipped. An
   upload offset past 2^31 - 1 is INVALID_OPERATION, as a browser answers it; it was INVALID_VALUE.
