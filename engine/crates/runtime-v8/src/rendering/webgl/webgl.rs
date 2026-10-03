@@ -1667,6 +1667,8 @@ pub(super) mod tests {
                 r#"
                 const gl = new WebGL2RenderingContext({ _rid: 170, width: 1, height: 1 }, {});
                 gl._maxColorAttachments = 4;     // what the renderer would answer for MAX_COLOR_ATTACHMENTS
+                gl.bindTexture(0x0de1, gl.createTexture());     // the copies' textures
+                gl.bindTexture(0x806f, gl.createTexture());
                 gl.copyTexImage2D(0x0de1, 0, 0x8058, 1, 2, 3, 4, 0);       // RGBA8: a WebGL 2 format
                 gl.copyTexSubImage2D(0x0de1, 1, 2, 3, -4, 5, 6, 7);
                 gl.copyTexSubImage3D(0x806f, 0, 1, 2, 3, 4, 5, 6, 7);
@@ -1809,6 +1811,7 @@ pub(super) mod tests {
                 const gl1 = new WebGLRenderingContext({ _rid: 171, width: 1, height: 1 }, {});
                 const gl = new WebGL2RenderingContext({ _rid: 172, width: 1, height: 1 }, {});
                 gl._maxColorAttachments = 4;
+                gl1.bindTexture(0x0de1, gl1.createTexture());     // a call on a texture needs one bound
                 const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
                 const read = gl.createBuffer(), write = gl.createBuffer(), indices = gl.createBuffer();
                 const cases = [
@@ -1898,8 +1901,11 @@ pub(super) mod tests {
                 "compressed_uploads.js",
                 r#"
                 const gl1 = new WebGLRenderingContext({ _rid: 180, width: 1, height: 1 }, {});
+                gl1.bindTexture(0x0de1, gl1.createTexture());
                 gl1.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, new Uint8Array(16).fill(1));
                 const gl = new WebGL2RenderingContext({ _rid: 181, width: 1, height: 1 }, {});
+                gl.bindTexture(0x0de1, gl.createTexture());
+                gl.bindTexture(0x8c1a, gl.createTexture());
                 const bytes = new Uint8Array(48).map((_, k) => k);
                 gl.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, bytes, 16, 16);          // bytes 16..32
                 gl.compressedTexImage2D(0x0de1, 1, 0x9278, 4, 4, 0, new Uint16Array(bytes.buffer), 16);   // bytes 32..48
@@ -1976,6 +1982,9 @@ pub(super) mod tests {
                 "malformed_compressed_uploads.js",
                 r#"
                 const gl = new WebGL2RenderingContext({ _rid: 182, width: 1, height: 1 }, {});
+                gl.bindTexture(0x0de1, gl.createTexture());
+                gl.bindTexture(0x8c1a, gl.createTexture());
+                gl.bindTexture(0x806f, gl.createTexture());
                 const VALUE = 0x0501, OPERATION = 0x0502;
                 const block = new Uint8Array(16);
                 const sync = gl.fenceSync(0x9117, 0);
@@ -2775,6 +2784,131 @@ pub(super) mod tests {
                 "useProgram 0".to_string(),
             ],
             "only the calls that were taken are sent"
+        );
+    }
+
+    /// Texture bindings are kept per unit and target: `getParameter` answers the objects, a texture keeps the target
+    /// it was first bound to, a deleted one leaves every unit and the framebuffer bound, and every call on a target's
+    /// texture needs one bound (INVALID_OPERATION) to a target the call takes (INVALID_ENUM). Nothing refused is sent.
+    #[test]
+    fn texture_bindings_are_kept_and_a_call_on_a_texture_needs_one_bound() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "texture_state.js",
+                r#"
+                const gl1 = new WebGLRenderingContext({ _rid: 205, width: 1, height: 1 }, {});
+                const gl = new WebGL2RenderingContext({ _rid: 206, width: 1, height: 1 }, {});
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const err = (ctx, want, m) => { const got = ctx.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const pixel = new Uint8Array(4);
+                // nothing bound
+                gl1.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, pixel); err(gl1, 0x0502, "texImage2D with no texture");
+                gl1.texSubImage2D(0x0de1, 0, 0, 0, 1, 1, 0x1908, 0x1401, pixel); err(gl1, 0x0502, "texSubImage2D with no texture");
+                gl1.texParameteri(0x0de1, 0x2801, 0x2601); err(gl1, 0x0502, "texParameteri with no texture");
+                gl1.generateMipmap(0x0de1); err(gl1, 0x0502, "generateMipmap with no texture");
+                gl1.copyTexImage2D(0x0de1, 0, 0x1908, 0, 0, 1, 1, 0); err(gl1, 0x0502, "copyTexImage2D with no texture");
+                gl1.compressedTexImage2D(0x0de1, 0, 0x83f0, 4, 4, 0, new Uint8Array(8)); err(gl1, 0x0502, "compressedTexImage2D with no texture");
+                check(gl1.getTexParameter(0x0de1, 0x2801) === null, "getTexParameter with no texture"); err(gl1, 0x0502, "and INVALID_OPERATION");
+                gl.texStorage2D(0x0de1, 1, 0x8058, 1, 1); err(gl, 0x0502, "texStorage2D with no texture");
+                gl.texImage3D(0x806f, 0, 0x1908, 1, 1, 1, 0, 0x1908, 0x1401, pixel); err(gl, 0x0502, "texImage3D with no texture");
+                gl.texStorage3D(0x8c1a, 1, 0x8058, 1, 1, 1); err(gl, 0x0502, "texStorage3D with no texture");
+                // targets a call does not take
+                const t2 = gl.createTexture(), cube = gl.createTexture(), volume = gl.createTexture();
+                check(!gl.isTexture(t2), "a texture never bound is not one yet");
+                gl.bindTexture(0x0de1, t2);
+                gl.bindTexture(0x8513, cube);
+                gl.bindTexture(0x806f, volume);
+                check(gl.isTexture(t2), "bound once, it is a texture");
+                gl.texImage2D(0x8513, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, pixel); err(gl, 0x0500, "texImage2D of the cube map rather than a face");
+                gl.texSubImage2D(0x8513, 0, 0, 0, 1, 1, 0x1908, 0x1401, pixel); err(gl, 0x0500, "texSubImage2D of the cube map rather than a face");
+                gl.texImage2D(0x8515, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, pixel); err(gl, 0, "texImage2D of a cube face");
+                gl.texParameteri(0x8515, 0x2801, 0x2601); err(gl, 0x0500, "texParameteri of a face");
+                gl.texParameteri(0x806f, 0x2801, 0x2601); err(gl, 0, "texParameteri of a 3D texture");
+                gl.texStorage2D(0x806f, 1, 0x8058, 1, 1); err(gl, 0x0500, "texStorage2D of a 3D texture");
+                gl.texImage3D(0x0de1, 0, 0x1908, 1, 1, 1, 0, 0x1908, 0x1401, pixel); err(gl, 0x0500, "texImage3D of a 2D texture");
+                gl1.bindTexture(0x806f, gl1.createTexture()); err(gl1, 0x0500, "TEXTURE_3D in WebGL 1");
+                // bindings
+                check(gl.getParameter(0x806a) === volume && gl.getParameter(0x8c1d) === null, "TEXTURE_BINDING_3D and _2D_ARRAY");
+                check(gl1.getParameter(0x806a) === null && gl1.getError() === 0x0500, "no TEXTURE_BINDING_3D in WebGL 1");
+                gl.bindTexture(0x8513, t2); err(gl, 0x0502, "a 2D texture bound to the cube map");
+                let threw = false;
+                try { gl.bindTexture(0x0de1, {}); } catch (e) { threw = e instanceof TypeError; }
+                check(threw, "a value that is not a texture is a TypeError");
+                gl.activeTexture(0x84c0 - 1); err(gl, 0x0500, "a unit below TEXTURE0");
+                gl._maxTextureUnits = 40;     // what the renderer would answer for MAX_COMBINED_TEXTURE_IMAGE_UNITS
+                gl.activeTexture(0x84c0 + 40); err(gl, 0x0500, "a unit past MAX_COMBINED_TEXTURE_IMAGE_UNITS");
+                gl.activeTexture(0x84c1);
+                gl.bindTexture(0x0de1, t2);
+                check(gl.getParameter(0x8069) === t2, "unit 1's binding");
+                gl.activeTexture(0x84c0);
+                check(gl.getParameter(0x8069) === t2, "unit 0's binding");
+                // deletion
+                const fb = gl.createFramebuffer();
+                gl.bindFramebuffer(0x8d40, fb);
+                gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, t2, 0);
+                check(gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd0) === 0x1702, "attached");
+                gl.deleteTexture(t2);
+                check(gl.getParameter(0x8069) === null && !gl.isTexture(t2), "deleting unbinds unit 0");
+                gl.activeTexture(0x84c1);
+                check(gl.getParameter(0x8069) === null, "and unit 1");
+                gl.activeTexture(0x84c0);
+                check(gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd0) === 0, "and the framebuffer bound");
+                const other = gl.createFramebuffer(), kept = gl.createTexture();
+                gl.bindFramebuffer(0x8d40, other);
+                gl.bindTexture(0x0de1, kept);
+                gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, kept, 0);
+                gl.bindFramebuffer(0x8d40, fb);
+                gl.deleteTexture(kept);
+                gl.bindFramebuffer(0x8d40, other);
+                check(gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd1) === kept,
+                      "a framebuffer not bound when the texture was deleted keeps it attached");
+                gl.bindFramebuffer(0x8d40, fb);
+                gl.bindTexture(0x0de1, t2); err(gl, 0x0502, "binding a deleted texture");
+                // framebuffers and renderbuffers
+                const f2 = gl.createFramebuffer(), rb = gl.createRenderbuffer();
+                check(!gl.isFramebuffer(f2) && !gl.isRenderbuffer(rb), "never bound, neither is one yet");
+                gl.bindFramebuffer(0x8ca8, f2);
+                check(gl.isFramebuffer(f2) && gl.getParameter(0x8caa) === f2 && gl.getParameter(0x8ca6) === fb,
+                      "a READ_FRAMEBUFFER bind binds the read point only");
+                gl1.bindFramebuffer(0x8ca8, gl1.createFramebuffer()); err(gl1, 0x0500, "READ_FRAMEBUFFER in WebGL 1");
+                gl.bindRenderbuffer(0x1234, rb); err(gl, 0x0500, "a renderbuffer target that is not one");
+                gl.bindRenderbuffer(0x8d41, rb);
+                check(gl.isRenderbuffer(rb), "bound once, it is a renderbuffer");
+                gl.framebufferRenderbuffer(0x8d40, 0x8d00, 0x8d41, rb);
+                gl.deleteRenderbuffer(rb);
+                check(gl.getParameter(0x8ca7) === null && gl.getFramebufferAttachmentParameter(0x8d40, 0x8d00, 0x8cd0) === 0,
+                      "a deleted renderbuffer leaves RENDERBUFFER and the framebuffer bound");
+                gl.deleteFramebuffer(fb);
+                check(gl.getParameter(0x8ca6) === null && gl.getParameter(0x8caa) === f2,
+                      "deleting the bound draw framebuffer binds the default there, and the read one stays");
+                gl.bindFramebuffer(0x8d40, fb); err(gl, 0x0502, "binding a deleted framebuffer");
+                threw = false;
+                try { gl.bindFramebuffer(0x8d40, {}); } catch (e) { threw = e instanceof TypeError; }
+                check(threw, "a value that is not a framebuffer is a TypeError");
+                gl.flush(); gl1.flush();
+                "#,
+            )
+            .expect("the texture state script should run");
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::TexImage2D { target, .. } => Some(format!("texImage2D {target:#x}")),
+                GLCmd::TexParameteri { target, .. } => Some(format!("texParameteri {target:#x}")),
+                GLCmd::TexStorage2D { .. } => Some("texStorage2D".to_string()),
+                GLCmd::TexStorage3D { .. } => Some("texStorage3D".to_string()),
+                GLCmd::TexImage3D { .. } => Some("texImage3D".to_string()),
+                GLCmd::TexSubImage2D { .. } => Some("texSubImage2D".to_string()),
+                GLCmd::GenerateMipmap { .. } => Some("generateMipmap".to_string()),
+                GLCmd::CopyTexImage2D { .. } => Some("copyTexImage2D".to_string()),
+                GLCmd::CompressedTexImage2D { .. } => Some("compressedTexImage2D".to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            vec!["texImage2D 0x8515", "texParameteri 0x806f"],
+            "only the calls on a bound texture of a target they take are sent"
         );
     }
 
@@ -4577,13 +4711,13 @@ pub(super) mod tests {
 
         crate::rendering::webgl::submit_test_counter::reset();
 
-        // Encode a stream record that will fail the decoder's validation (bad texture target),
+        // Encode a stream record that will fail the decoder's validation (a negative scissor size),
         // after a refusal the facade records itself: deleteTransformFeedback on an active
         // transform feedback, which never reaches the stream.
         //
         // Sequence:
         //   1. The facade refuses deleteTransformFeedback on an active TF (INVALID_OPERATION).
-        //   2. Encode a record the decoder refuses (copyTexSubImage2D, target 0xDEAD).
+        //   2. Encode a record the decoder refuses (scissor with a negative width).
         //   3. Call getError() → must flush stream first (so its error lands in the host queue),
         //      then return the facade's refusal (0x0502) first.
         //   4. Call getError() again → returns the host error from the refused record.
@@ -4599,10 +4733,10 @@ pub(super) mod tests {
                 ctx.beginTransformFeedback(0x0004);
                 ctx.deleteTransformFeedback(tf); // INVALID_OPERATION (0x0502), recorded by the facade
 
-                // Encode a record the decoder refuses into the stream (0xDEAD is no
-                // texture target; the facade leaves that rule to the decoder). This
+                // Encode a record the decoder refuses into the stream (a negative
+                // scissor size: the facade leaves that rule to the decoder). This
                 // record is pending in the stream, not yet submitted.
-                ctx.copyTexSubImage2D(0xDEAD, 0, 0, 0, 0, 0, 1, 1);
+                ctx.scissor(0, 0, -1, 1);
 
                 // getError() must:
                 //   1. flush the stream (stream submit happens, the decoder refuses the record -> host error queue)
@@ -5692,6 +5826,7 @@ pub(super) mod tests {
                     "r2_public_tex_parameterf_string.js",
                     r#"
                     const gl = new WebGLRenderingContext({ _rid: 142, width: 1, height: 1 }, {});
+                    gl.bindTexture(0x0DE1, gl.createTexture());
                     gl.texParameterf(0x0DE1, 0x2801, "1");
                     gl.flush();
                     "#,
@@ -6038,6 +6173,7 @@ pub(super) mod tests {
                 "spent_image_data.js",
                 r#"
                 const gl = new WebGLRenderingContext({ _rid: 149, width: 1, height: 1 }, {});
+                gl.bindTexture(0x0DE1, gl.createTexture());
                 const spentBy2d = createCanvas().getContext("2d").getImageData(0, 0, 1, 1);
                 gl.texImage2D(0x0DE1, 0, 0x1908, 0x1908, 0x1401, spentBy2d);
                 globalThis.spentSix = spentBy2d;

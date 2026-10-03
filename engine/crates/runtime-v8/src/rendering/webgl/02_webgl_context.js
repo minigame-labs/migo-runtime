@@ -657,12 +657,10 @@ function maxMipLevels(dimension) {
     return levels;
 }
 
+// The target is the caller's to have checked (`_textureFor`, "image2D").
 function preflightTexImage2D(canvasId, target, level, internalformat,
                              width, height, border, format, type) {
     const isCubeFace = target >= 0x8515 && target <= 0x851A;
-    if (target !== 0x0DE1 && !isCubeFace) {
-        return recordGpuPreflightError(canvasId, GL_INVALID_ENUM);
-    }
     if (!NumberIsInteger(level) || level < 0 || level >= 15 ||
         !NumberIsInteger(width) || width < 0 ||
         !NumberIsInteger(height) || height < 0 || border !== 0) {
@@ -679,10 +677,8 @@ function preflightTexImage2D(canvasId, target, level, internalformat,
     return true;
 }
 
+// The target is the caller's to have checked (`_textureFor`, "storage2D").
 function preflightTexStorage2D(canvasId, target, levels, internalformat, width, height) {
-    if (target !== 0x0DE1 && target !== 0x8513) {
-        return recordGpuPreflightError(canvasId, GL_INVALID_ENUM);
-    }
     if (!isKnownSizedFormat(internalformat)) {
         return recordGpuPreflightError(canvasId, GL_INVALID_ENUM);
     }
@@ -695,10 +691,8 @@ function preflightTexStorage2D(canvasId, target, levels, internalformat, width, 
     return true;
 }
 
+// The target is the caller's to have checked (`_textureFor`, "image3D").
 function preflightTexStorage3D(canvasId, target, levels, internalformat, width, height, depth) {
-    if (target !== 0x806F && target !== 0x8C1A) {
-        return recordGpuPreflightError(canvasId, GL_INVALID_ENUM);
-    }
     if (!isKnownSizedFormat(internalformat)) {
         return recordGpuPreflightError(canvasId, GL_INVALID_ENUM);
     }
@@ -1350,6 +1344,8 @@ class WebGLRenderingContext {
         for (let i = 0; i < _ATTRIB_SHADOW_SLOTS; i++) this._currentAttribF[i * 4 + 3] = 1;
         this._maxVertexAttribs = 0;
         this._attribMinimum = 8;      // MAX_VERTEX_ATTRIBS is at least this (WebGL 1; WebGL 2 raises it)
+        this._textureUnitMinimum = 8; // MAX_COMBINED_TEXTURE_IMAGE_UNITS is at least this (WebGL 1; WebGL 2 raises it)
+        this._maxTextureUnits = 0;
         // Scratch for the scalar integer-vector setters (`uniform2i`..`4i`): the stream copies the words as it
         // encodes them, so one array per width serves every call without allocating.
         this._uniformI32Scratch = [null, null, new Uint32Array(2), new Uint32Array(3), new Uint32Array(4)];
@@ -1817,11 +1813,11 @@ class WebGLRenderingContext {
             object._ownerId === this._canvasId && !object._deleted;
     }
     isBuffer(object) { return this._isLive(object, "buffer") && object._everBound === true; }
-    isFramebuffer(object) { return this._isLive(object, "framebuffer"); }
+    isFramebuffer(object) { return this._isLive(object, "framebuffer") && object._everBound === true; }
     isProgram(object) { return this._isLive(object, "program"); }
-    isRenderbuffer(object) { return this._isLive(object, "renderbuffer"); }
+    isRenderbuffer(object) { return this._isLive(object, "renderbuffer") && object._everBound === true; }
     isShader(object) { return this._isLive(object, "shader"); }
-    isTexture(object) { return this._isLive(object, "texture"); }
+    isTexture(object) { return this._isLive(object, "texture") && object._target !== undefined; }
 
     isContextLost() {
         // Direct, no submit: op_gl_is_context_lost is host-local.
@@ -2021,15 +2017,7 @@ class WebGLRenderingContext {
     }
 
     deleteBuffer(buffer) {
-        if (buffer === null || buffer === undefined) return;
-        if (!(buffer instanceof WebglObject) || buffer._kind !== "buffer") {
-            throw new TypeError("Failed to execute 'deleteBuffer' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLBuffer'.");
-        }
-        if (buffer._ownerId !== this._canvasId) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
-            return;
-        }
-        if (buffer._deleted) return;
+        if (!this._deletes("deleteBuffer", buffer, "buffer", "WebGLBuffer")) return;
         buffer._deleted = true;
         this._unbindDeletedBuffer(buffer);
         _rawDeleteBuffer(buffer._id);
@@ -2288,6 +2276,13 @@ class WebGLRenderingContext {
         switch (pname) {
             case 0x8069: return this._textureBindings2D.get(this._activeTextureUnit) || null; // TEXTURE_BINDING_2D
             case 0x8514: return this._textureBindingsCube.get(this._activeTextureUnit) || null; // TEXTURE_BINDING_CUBE_MAP
+            // TEXTURE_BINDING_3D, TEXTURE_BINDING_2D_ARRAY: WebGL 2's.
+            case 0x806a: case 0x8c1d: {
+                const bindings = this._textureBindings(pname === 0x806a ? 0x806f : 0x8c1a);
+                if (bindings !== undefined) return bindings.get(this._activeTextureUnit) || null;
+                recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                return null;
+            }
             case 0x8894: return this._arrayBufferBinding; // ARRAY_BUFFER_BINDING
             case 0x8895: return this._attribShadow.elementArrayBuffer; // ELEMENT_ARRAY_BUFFER_BINDING
             // WebGL 2's buffer bindings, by the target each names (COPY_READ_BUFFER_BINDING is COPY_READ_BUFFER, and
@@ -2659,27 +2654,93 @@ class WebGLRenderingContext {
         return new WebglObject(id, "texture", this._canvasId);
     }
 
+    // ---- Texture bindings -----------------------------------------------------------------------------------------
+    // What each unit has bound to each texture target is kept here: `getParameter` answers the objects, and every call
+    // on a target's texture needs one bound. A texture takes the target it is first bound to and keeps it (ES 3.0
+    // 3.8.1): binding it to another is INVALID_OPERATION.
+
+    // The bindings of a texture target this context has (unit -> texture), or undefined. WebGL 2 adds TEXTURE_3D and
+    // TEXTURE_2D_ARRAY.
+    _textureBindings(target) {
+        if (target === 0x0de1) return this._textureBindings2D;
+        if (target === 0x8513) return this._textureBindingsCube;
+        return undefined;
+    }
+
+    // The texture a call works on: undefined -- INVALID_ENUM recorded -- for a target the call does not take, null --
+    // INVALID_OPERATION recorded -- when none is bound to it (ES 3.0 3.8). `kind` is the targets the call takes:
+    // "image2D" an image of a 2D texture or of a cube map's face (texImage2D and its kin), "image3D" one of a 3D or
+    // 2D-array texture, "storage2D" a 2D texture or a cube map (texStorage2D), "object" any texture target the
+    // context has (texParameter, generateMipmap, getTexParameter).
+    _textureFor(target, kind) {
+        const t = Number(target) >>> 0;
+        let bindingTarget = t;
+        if (kind === "image2D") bindingTarget = t === 0x0de1 ? t : t >= 0x8515 && t <= 0x851a ? 0x8513 : 0;
+        else if (kind === "image3D") bindingTarget = t === 0x806f || t === 0x8c1a ? t : 0;
+        else if (kind === "storage2D") bindingTarget = t === 0x0de1 || t === 0x8513 ? t : 0;
+        const bindings = bindingTarget === 0 ? undefined : this._textureBindings(bindingTarget);
+        if (bindings === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return undefined;
+        }
+        const texture = bindings.get(this._activeTextureUnit) || null;
+        if (texture === null) recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        return texture;
+    }
+
+    // A deleted texture leaves every unit of this context and the framebuffers bound to it; a framebuffer not bound
+    // keeps its attachment (ES 3.0 3.8.1, D.1.2).
     deleteTexture(texture) {
-        if (texture instanceof WebglObject) texture._deleted = true;
-        if (texture && texture.id !== undefined) _rawDeleteTexture(texture.id);
+        if (!this._deletes("deleteTexture", texture, "texture", "WebGLTexture")) return;
+        texture._deleted = true;
+        if (texture._target !== undefined) {
+            const bindings = this._textureBindings(texture._target);
+            for (const [unit, bound] of bindings) if (bound === texture) bindings.delete(unit);
+        }
+        this._detachFromBoundFramebuffers(texture);
+        _rawDeleteTexture(texture._id);
     }
 
     bindTexture(target, texture) {
-        const tex = texture || null;
-        if (target === 0x0de1) this._textureBindings2D.set(this._activeTextureUnit, tex); // TEXTURE_2D
-        else if (target === 0x8513) this._textureBindingsCube.set(this._activeTextureUnit, tex); // TEXTURE_CUBE_MAP
-        const texId = tex ? tex.id : -1;
+        const t = Number(target) >>> 0;
+        const bindings = this._textureBindings(t);
+        if (bindings === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        const bound = texture === undefined ? null : texture;
+        if (bound !== null) {
+            if (!(bound instanceof WebglObject) || bound._kind !== "texture") {
+                throw new TypeError("Failed to execute 'bindTexture' on 'WebGLRenderingContext': parameter 2 is not of type 'WebGLTexture'.");
+            }
+            if (bound._deleted || bound._ownerId !== this._canvasId ||
+                    (bound._target !== undefined && bound._target !== t)) {
+                recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+                return;
+            }
+            bound._target = t;
+        }
+        bindings.set(this._activeTextureUnit, bound);
+        const texId = bound ? bound._id : -1;
         // opcode 10: H C U I. target is u32, texId is i32 (negative = unbind).
-        if (typeof target === "number" && typeof texId === "number") {
-            encodeBindTexture(this._canvasId, target >>> 0, texId | 0);
+        if (typeof target === "number") {
+            encodeBindTexture(this._canvasId, t, texId);
             return;
         }
         flushRenderCommandStream();
         op_bind_texture(this._canvasId, target, texId);
     }
 
+    // A unit past MAX_COMBINED_TEXTURE_IMAGE_UNITS is INVALID_ENUM and changes nothing. One below the minimum every
+    // implementation has asks nothing.
     activeTexture(unit) {
-        this._activeTextureUnit = unit;
+        const index = (Number(unit) >>> 0) - 0x84c0;   // TEXTURE0
+        if (index < 0 || (index >= this._textureUnitMinimum &&
+                index >= this._cachedLimit("_maxTextureUnits", 0x8b4d, this._textureUnitMinimum))) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        this._activeTextureUnit = index + 0x84c0;
         // opcode 11: H C U.
         if (typeof unit === "number") {
             encodeActiveTexture(this._canvasId, unit >>> 0);
@@ -2690,6 +2751,7 @@ class WebGLRenderingContext {
     }
 
     texImage2D(target, level, internalformat, a4, a5, a6, a7, a8, a9) {
+        if (!this._textureFor(target, "image2D")) return;
         // 9-arg: (target, level, internalformat, width, height, border, format, type, pixels)
         // 6-arg: (target, level, internalformat, format, type, source)
         if (a7 !== undefined) {
@@ -2784,6 +2846,7 @@ class WebGLRenderingContext {
     }
 
     texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels) {
+        if (!this._textureFor(target, "image2D")) return;
         // 9-arg: (..., width, height, format, type, pixels)
         if (pixels !== undefined) {
             if (pixels == null) return;
@@ -2860,9 +2923,8 @@ class WebGLRenderingContext {
 
     // The texture bound to `target` on the active unit, `undefined` for a target that is not a texture target.
     _boundTextureFor(target) {
-        if (target === 0x0de1) return this._textureBindings2D.get(this._activeTextureUnit) || null;
-        if (target === 0x8513) return this._textureBindingsCube.get(this._activeTextureUnit) || null;
-        return undefined;
+        const bindings = this._textureBindings(Number(target) >>> 0);
+        return bindings === undefined ? undefined : bindings.get(this._activeTextureUnit) || null;
     }
 
     // Record a sampler parameter on the bound texture, so getTexParameter answers what was set.
@@ -2873,9 +2935,8 @@ class WebGLRenderingContext {
     }
 
     getTexParameter(target, pname) {
-        const tex = this._boundTextureFor(target);
-        if (tex === undefined) { recordGpuPreflightError(this._canvasId, 0x0500); return null; } // INVALID_ENUM
-        if (tex === null) { recordGpuPreflightError(this._canvasId, 0x0502); return null; }      // INVALID_OPERATION
+        const tex = this._textureFor(target, "object");
+        if (!tex) return null;
         const set = tex._params && tex._params.get(pname >>> 0);
         if (set !== undefined) return set;
         switch (pname >>> 0) {
@@ -2890,6 +2951,7 @@ class WebGLRenderingContext {
     }
 
     texParameteri(target, pname, param) {
+        if (!this._textureFor(target, "object")) return;
         // opcode 40: H C U U I. target/pname are u32, param is i32.
         if (typeof target === "number" && typeof pname === "number" &&
             typeof param === "number") {
@@ -2902,6 +2964,7 @@ class WebGLRenderingContext {
     }
 
     texParameterf(target, pname, param) {
+        if (!this._textureFor(target, "object")) return;
         // opcode 41: H C U U F. target/pname are u32, param is f32.
         if (typeof target === "number" && typeof pname === "number" &&
             typeof param === "number") {
@@ -2914,6 +2977,7 @@ class WebGLRenderingContext {
     }
 
     generateMipmap(target) {
+        if (!this._textureFor(target, "object")) return;
         // opcode 42: H C U.
         if (typeof target === "number") {
             encodeGenerateMipmap(this._canvasId, target >>> 0);
@@ -2943,12 +3007,14 @@ class WebGLRenderingContext {
     }
 
     compressedTexImage2D(target, level, internalformat, width, height, border, data) {
+        if (!this._textureFor(target, "image2D")) return;
         const u8 = toBoundedUploadBytes(this._canvasId, data);
         if (u8 === null) return;
         _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, u8, -1, 0);
     }
 
     compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, data) {
+        if (!this._textureFor(target, "image2D")) return;
         const u8 = toBoundedUploadBytes(this._canvasId, data);
         if (u8 === null) return;
         _rawCompressedTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, u8, -1, 0);
@@ -3488,27 +3554,60 @@ class WebGLRenderingContext {
         _rawCreateFramebuffer(this._canvasId, id);
         return new WebglObject(id, "framebuffer", this._canvasId);
     }
-    deleteFramebuffer(fb) {
-        if (fb instanceof WebglObject) fb._deleted = true;
-        if (fb && fb.id !== undefined) _rawDeleteFramebuffer(fb.id);
-    }
-    bindFramebuffer(target, fb) {
-        // FRAMEBUFFER binds both points; the other two bind one each. Tracked here
-        // rather than asked of the driver because `getParameter` must return this
-        // context's own wrapper object, not a name.
-        const bound = fb || null;
-        if (target === 36008) {          // READ_FRAMEBUFFER
-            this._readFramebufferBinding = bound;
-        } else if (target === 36009) {   // DRAW_FRAMEBUFFER
-            this._framebufferBinding = bound;
-        } else {                         // FRAMEBUFFER, or an enum the driver rejects
-            this._framebufferBinding = bound;
-            this._readFramebufferBinding = bound;
+    // Whether `object` may be deleted: false for null or one already deleted, a TypeError for a value that is not of
+    // `kind`, INVALID_OPERATION (and false) for another context's.
+    _deletes(method, object, kind, type) {
+        if (object === null || object === undefined) return false;
+        if (!(object instanceof WebglObject) || object._kind !== kind) {
+            throw new TypeError(`Failed to execute '${method}' on 'WebGLRenderingContext': parameter 1 is not of type '${type}'.`);
         }
-        const fbId = fb ? fb.id : -1;
+        if (object._ownerId !== this._canvasId) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return false;
+        }
+        return !object._deleted;
+    }
+    // A deleted framebuffer that is bound leaves its binding to the default framebuffer (ES 3.0 4.4.1).
+    deleteFramebuffer(fb) {
+        if (!this._deletes("deleteFramebuffer", fb, "framebuffer", "WebGLFramebuffer")) return;
+        fb._deleted = true;
+        if (this._framebufferBinding === fb) this._framebufferBinding = null;
+        if (this._readFramebufferBinding === fb) this._readFramebufferBinding = null;
+        _rawDeleteFramebuffer(fb._id);
+    }
+    // Whether binding `object` of `kind` is refused: 0 for null or a live object of this context, INVALID_OPERATION
+    // for a deleted one or another context's; a value that is not one is a TypeError. A bind that takes marks the
+    // object as one (`isFramebuffer` and its siblings are false until then, as GL answers).
+    _bindError(method, object, kind, type) {
+        if (object === null) return 0;
+        if (!(object instanceof WebglObject) || object._kind !== kind) {
+            throw new TypeError(`Failed to execute '${method}' on 'WebGLRenderingContext': parameter 2 is not of type '${type}'.`);
+        }
+        return object._deleted || object._ownerId !== this._canvasId ? GL_INVALID_OPERATION : 0;
+    }
+
+    // FRAMEBUFFER binds both points; WebGL 2's READ_FRAMEBUFFER and DRAW_FRAMEBUFFER one each, and any other target is
+    // INVALID_ENUM. Tracked here rather than asked of the driver because `getParameter` must return this context's own
+    // wrapper object, not a name.
+    bindFramebuffer(target, fb) {
+        const t = Number(target) >>> 0;
+        if (t !== 0x8d40 && !((t === 0x8ca8 || t === 0x8ca9) && this._isWebGL2())) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        const bound = fb === undefined ? null : fb;
+        const error = this._bindError("bindFramebuffer", bound, "framebuffer", "WebGLFramebuffer");
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
+        if (bound !== null) bound._everBound = true;
+        if (t !== 0x8ca9) this._readFramebufferBinding = bound;      // FRAMEBUFFER, READ_FRAMEBUFFER
+        if (t !== 0x8ca8) this._framebufferBinding = bound;          // FRAMEBUFFER, DRAW_FRAMEBUFFER
+        const fbId = bound ? bound._id : -1;
         // opcode 12: H C U I.
-        if (typeof target === "number" && typeof fbId === "number") {
-            encodeBindFramebuffer(this._canvasId, target >>> 0, fbId | 0);
+        if (typeof target === "number") {
+            encodeBindFramebuffer(this._canvasId, t, fbId);
             return;
         }
         flushRenderCommandStream();
@@ -3519,6 +3618,7 @@ class WebGLRenderingContext {
     // arguments cross. The rules that need no state (the target, the format, a negative size or offset, the border, a
     // square cube face) are the decoder's, for both lanes; WebGL 1 takes only the five unsized formats.
     copyTexImage2D(target, level, internalformat, x, y, width, height, border) {
+        if (!this._textureFor(target, "image2D")) return;
         const format = internalformat >>> 0;
         if (format < 0x1906 || format > 0x190a) {         // ALPHA, RGB, RGBA, LUMINANCE, LUMINANCE_ALPHA
             recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
@@ -3527,6 +3627,7 @@ class WebGLRenderingContext {
         encodeCopyTexImage2D(this._canvasId, target, level, format, x, y, width, height, border);
     }
     copyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height) {
+        if (!this._textureFor(target, "image2D")) return;
         encodeCopyTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, x, y, width, height);
     }
 
@@ -3542,6 +3643,15 @@ class WebGLRenderingContext {
     // What is attached where, recorded on the framebuffer it was attached to. `getFramebufferAttachmentParameter` answers the
     // object, its type and its level from here -- the driver's answer would be a GL name, not the wrapper the content holds --
     // and asks the driver only for what the facade cannot know (an attached texture's component sizes).
+    // A deleted texture or renderbuffer leaves the framebuffers bound -- draw and read -- and keeps its place on the
+    // others (ES 3.0 D.1.2).
+    _detachFromBoundFramebuffers(object) {
+        for (const fb of [this._framebufferBinding, this._readFramebufferBinding]) {
+            if (!fb || !fb._attachments) continue;
+            for (const [point, record] of fb._attachments) if (record.object === object) fb._attachments.delete(point);
+        }
+    }
+
     _noteAttachment(target, attachment, record) {
         const fb = target === 0x8ca8 ? this._readFramebufferBinding : this._framebufferBinding;
         if (!fb || !(fb instanceof WebglObject)) return;   // the default framebuffer takes no attachments
@@ -3575,7 +3685,6 @@ class WebGLRenderingContext {
         } else {
             record = fb._attachments ? fb._attachments.get(attachment) || null : null;
         }
-        if (record && record.object && record.object._deleted) record = null;   // deleting detaches
         const validPname = pname === 0x8cd0 || pname === 0x8cd1 || pname === 0x8cd2 || pname === 0x8cd3 ||
             pname === 0x8cd4 || (pname >= 0x8212 && pname <= 0x8217) || pname === 0x8211 || pname === 0x8210;
         if (!validPname) { recordGpuPreflightError(this._canvasId, 0x0500); return null; }
@@ -3648,13 +3757,28 @@ class WebGLRenderingContext {
         _rawCreateRenderbuffer(this._canvasId, id);
         return new WebglObject(id, "renderbuffer", this._canvasId);
     }
+    // A deleted renderbuffer leaves RENDERBUFFER and the framebuffers bound (ES 3.0 4.4.2.1, D.1.2).
     deleteRenderbuffer(rb) {
-        if (rb instanceof WebglObject) rb._deleted = true;
-        if (rb && rb.id !== undefined) _rawDeleteRenderbuffer(rb.id);
+        if (!this._deletes("deleteRenderbuffer", rb, "renderbuffer", "WebGLRenderbuffer")) return;
+        rb._deleted = true;
+        if (this._renderbufferBinding === rb) this._renderbufferBinding = null;
+        this._detachFromBoundFramebuffers(rb);
+        _rawDeleteRenderbuffer(rb._id);
     }
     bindRenderbuffer(target, rb) {
-        this._renderbufferBinding = rb || null;
-        const rbId = rb ? rb.id : -1;
+        if ((Number(target) >>> 0) !== 0x8d41) {            // RENDERBUFFER
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        const bound = rb === undefined ? null : rb;
+        const error = this._bindError("bindRenderbuffer", bound, "renderbuffer", "WebGLRenderbuffer");
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
+        if (bound !== null) bound._everBound = true;
+        this._renderbufferBinding = bound;
+        const rbId = bound ? bound._id : -1;
         // opcode 13: H C U I.
         if (typeof target === "number" && typeof rbId === "number") {
             encodeBindRenderbuffer(this._canvasId, target >>> 0, rbId | 0);
@@ -3743,6 +3867,8 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         this._uniformBufferBindings = new Map();
         // The default transform feedback object's buffers; one the content made keeps its own in `_tfRegistry`.
         this._defaultTransformFeedback = { bindings: new Map(), genericBuffer: null, active: false, paused: false };
+        this._textureBindings3D = new Map();        // texture unit -> WebglObject|null
+        this._textureBindings2DArray = new Map();
         this._copyReadBufferBinding = null;
         this._copyWriteBufferBinding = null;
         this._pixelPackBufferBinding = null;
@@ -3754,11 +3880,18 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // `clearBuffer*` fills it with the four values of the record it encodes.
         this._clearBufferScratch = [0, 0, 0, 0];
         this._attribMinimum = 16;     // WebGL 2's MAX_VERTEX_ATTRIBS is at least this
+        this._textureUnitMinimum = 32;
         this._maxDrawBuffers = 0;
         this._maxColorAttachments = 0;
         // Scratch for `uniform{1,2,3,4}ui`: the stream copies the words as it encodes them.
         this._uniformU32Scratch = [null, new Uint32Array(1), new Uint32Array(2), new Uint32Array(3), new Uint32Array(4)];
         this._currentTransformFeedback = null;
+    }
+
+    _textureBindings(target) {
+        if (target === 0x806f) return this._textureBindings3D;        // TEXTURE_3D
+        if (target === 0x8c1a) return this._textureBindings2DArray;   // TEXTURE_2D_ARRAY
+        return super._textureBindings(target);
     }
 
     // WebGL 2's buffer targets. The generic TRANSFORM_FEEDBACK_BUFFER binding is the bound transform feedback object's,
@@ -4251,6 +4384,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
 
     // ---- Immutable texture storage ------------------------------
     texStorage2D(target, levels, internalformat, width, height) {
+        if (!this._textureFor(target, "storage2D")) return;
         if (!preflightTexStorage2D(
             this._canvasId, target, levels, internalformat, width, height,
         )) return;
@@ -4327,9 +4461,11 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // ---- Copies (WebGL 2) -------------------------------------------------------------------------------------------
     // WebGL 2 takes the sized colour formats too, so the decoder's list is the whole rule.
     copyTexImage2D(target, level, internalformat, x, y, width, height, border) {
+        if (!this._textureFor(target, "image2D")) return;
         encodeCopyTexImage2D(this._canvasId, target, level, internalformat, x, y, width, height, border);
     }
     copyTexSubImage3D(target, level, xoffset, yoffset, zoffset, x, y, width, height) {
+        if (!this._textureFor(target, "image3D")) return;
         encodeCopyTexSubImage3D(this._canvasId, target, level, xoffset, yoffset, zoffset, x, y, width, height);
     }
     // The offsets and size are `long long`, checked against the two buffers bound (ES 3.0 2.10.5, WebGL 2.0 5.1): a
@@ -4806,10 +4942,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         width, height, depth, border,
         format, type, pixelsOrOffset, srcOffset
     ) {
-        if (target !== 0x806F && target !== 0x8C1A) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
-            return;
-        }
+        if (!this._textureFor(target, "image3D")) return;
         const maxXY = target === 0x806F
             ? MAX_WEBGL_GPU_3D_DIMENSION
             : MAX_WEBGL_GPU_2D_DIMENSION;
@@ -4877,6 +5010,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         width, height, depth,
         format, type, pixelsOrOffset, srcOffset
     ) {
+        if (!this._textureFor(target, "image3D")) return;
         let view = null;
         let bytesPerElement = 1;
         let elementOffset = toUnsignedLongLong(srcOffset);
@@ -4921,26 +5055,31 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // Each takes a view with `srcOffset` / `srcLengthOverride`, or `imageSize` / `offset` into the bound
     // PIXEL_UNPACK_BUFFER: see `compressedUploadSource`.
     compressedTexImage2D(target, level, internalformat, width, height, border, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
+        if (!this._textureFor(target, "image2D")) return;
         const source = compressedUploadSource(this._canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride);
         if (source === null) return;
         _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, source[0], source[1], source[2]);
     }
     compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
+        if (!this._textureFor(target, "image2D")) return;
         const source = compressedUploadSource(this._canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride);
         if (source === null) return;
         _rawCompressedTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, source[0], source[1], source[2]);
     }
     compressedTexImage3D(target, level, internalformat, width, height, depth, border, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
+        if (!this._textureFor(target, "image3D")) return;
         const source = compressedUploadSource(this._canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride);
         if (source === null) return;
         _rawCompressedTexImage3D(this._canvasId, target, level, internalformat, width, height, depth, border, source[0], source[1], source[2]);
     }
     compressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
+        if (!this._textureFor(target, "image3D")) return;
         const source = compressedUploadSource(this._canvasId, dataOrSize, srcOffsetOrOffset, srcLengthOverride);
         if (source === null) return;
         _rawCompressedTexSubImage3D(this._canvasId, target, level, xoffset, yoffset, zoffset, width, height, depth, format, source[0], source[1], source[2]);
     }
     texStorage3D(target, levels, internalformat, width, height, depth) {
+        if (!this._textureFor(target, "image3D")) return;
         if (!preflightTexStorage3D(
             this._canvasId, target, levels, internalformat, width, height, depth,
         )) return;
