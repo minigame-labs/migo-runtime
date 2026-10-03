@@ -2,8 +2,8 @@ use glow::{HasContext, NativeUniformLocation};
 use shared::{
     error::{EngineError, EngineResult, ErrorCode},
     protocol::render_cmd::{
-        CanvasId, CompressedImageData, GLCmd, ProgramId, ShaderType, checked_readback_byte_len,
-        webgl_readback_bytes_per_pixel,
+        CanvasId, CompressedImageData, GLCmd, PixelUnpackSource, ProgramId, ShaderType,
+        checked_readback_byte_len, webgl_readback_bytes_per_pixel,
     },
 };
 use smallvec::SmallVec;
@@ -80,6 +80,32 @@ fn refuse_offset_without_unpack_buffer(gl: &glow::Context) -> EngineResult<()> {
         ErrorCode::InvalidOperation,
         "upload from a PIXEL_UNPACK_BUFFER offset with no buffer bound",
     ))
+}
+
+/// What an upload hands the driver: the call's bytes, refused when the driver would read past them
+/// ([`refuse_short_upload`]), or an offset into the PIXEL_UNPACK_BUFFER, refused when none is bound
+/// ([`refuse_offset_without_unpack_buffer`]). The upload's context must be current.
+#[allow(clippy::too_many_arguments)]
+fn unpack_data<'a>(
+    gl: &glow::Context,
+    source: &'a PixelUnpackSource,
+    width: i32,
+    height: i32,
+    depth: i32,
+    format: u32,
+    type_: u32,
+    layout: &unpack_convert::UnpackLayout,
+) -> EngineResult<glow::PixelUnpackData<'a>> {
+    match source {
+        PixelUnpackSource::Bytes(bytes) => {
+            refuse_short_upload(bytes, width, height, depth, format, type_, layout)?;
+            Ok(glow::PixelUnpackData::Slice(Some(bytes)))
+        }
+        PixelUnpackSource::BufferOffset(offset) => {
+            refuse_offset_without_unpack_buffer(gl)?;
+            Ok(glow::PixelUnpackData::BufferOffset(*offset))
+        }
+    }
 }
 
 #[inline]
@@ -1865,18 +1891,20 @@ impl RendererGL {
                 type_,
                 data,
             } => {
-                if let Some(bytes) = &data {
-                    refuse_short_upload(
-                        bytes,
+                cm.make_current_needed(canvas_id)?;
+                let pixels = match &data {
+                    None => glow::PixelUnpackData::Slice(None),
+                    Some(source) => unpack_data(
+                        gl,
+                        source,
                         width,
                         height,
                         1,
                         format,
                         type_,
                         &cm.unpack_layout(canvas_id, false),
-                    )?;
-                }
-                cm.make_current_needed(canvas_id)?;
+                    )?,
+                };
                 let prepared = cm
                     .webgl_gpu_budget
                     .prepare_tex_image_2d(
@@ -1891,20 +1919,20 @@ impl RendererGL {
                         type_,
                     )
                     .map_err(gpu_allocation_error)?;
-                // `UNPACK_FLIP_Y_WEBGL` / `UNPACK_PREMULTIPLY_ALPHA_WEBGL` are applied to the bytes
-                // here, with the layout the driver reads them with; a borrow when neither is on.
-                let converted = match (cm.unpack_conversion(canvas_id), data.as_deref()) {
-                    (Some(state), Some(bytes)) => Some(unpack_convert::convert_upload(
-                        bytes, width, height, format, type_, &state,
-                    )),
+                // `UNPACK_FLIP_Y_WEBGL` / `UNPACK_PREMULTIPLY_ALPHA_WEBGL` are applied to the bytes here, with the
+                // layout the driver reads them with; a borrow when neither is on.
+                let converted = match (&pixels, cm.unpack_conversion(canvas_id)) {
+                    (glow::PixelUnpackData::Slice(Some(bytes)), Some(state)) => Some(
+                        unpack_convert::convert_upload(bytes, width, height, format, type_, &state),
+                    ),
                     _ => None,
                 };
-                let slice = match &converted {
-                    Some(bytes) => Some(&bytes[..]),
-                    None => data.as_deref().map(|v| v.as_slice()),
+                let pixels = match &converted {
+                    Some(bytes) => glow::PixelUnpackData::Slice(Some(bytes)),
+                    None => pixels,
                 };
                 // Use PBO for large uploads (> 64 KB) to avoid GPU pipeline stalls.
-                if let Some(bytes) = slice {
+                if let glow::PixelUnpackData::Slice(Some(bytes)) = pixels {
                     if bytes.len() > 65536 {
                         if let Some(pool) = cm.pbo_pool_mut() {
                             if pool.is_pbo_supported() {
@@ -1937,7 +1965,7 @@ impl RendererGL {
                         border,
                         format,
                         type_,
-                        glow::PixelUnpackData::Slice(slice),
+                        pixels,
                     );
                 }
                 cm.webgl_gpu_budget.commit(prepared);
@@ -2187,7 +2215,9 @@ impl RendererGL {
                 type_,
                 data,
             } => {
-                refuse_short_upload(
+                cm.make_current_needed(canvas_id)?;
+                let pixels = unpack_data(
+                    gl,
                     &data,
                     width,
                     height,
@@ -2196,37 +2226,33 @@ impl RendererGL {
                     type_,
                     &cm.unpack_layout(canvas_id, false),
                 )?;
-                cm.make_current_needed(canvas_id)?;
                 // As in `TexImage2D`: the unpack flags are applied here.
-                let converted = cm.unpack_conversion(canvas_id).map(|state| {
-                    unpack_convert::convert_upload(&data, width, height, format, type_, &state)
-                });
-                let bytes: &[u8] = match &converted {
-                    Some(bytes) => bytes,
-                    None => &data,
+                let converted = match (&pixels, cm.unpack_conversion(canvas_id)) {
+                    (glow::PixelUnpackData::Slice(Some(bytes)), Some(state)) => Some(
+                        unpack_convert::convert_upload(bytes, width, height, format, type_, &state),
+                    ),
+                    _ => None,
+                };
+                let pixels = match &converted {
+                    Some(bytes) => glow::PixelUnpackData::Slice(Some(bytes)),
+                    None => pixels,
                 };
                 // Use PBO for large sub-image uploads (> 64 KB).
-                if bytes.len() > 65536 {
-                    if let Some(pool) = cm.pbo_pool_mut() {
-                        if pool.is_pbo_supported() {
-                            return Self::tex_sub_image_2d_pbo(
-                                cm, gl, target, level, xoffset, yoffset, width, height, format,
-                                type_, bytes,
-                            );
+                if let glow::PixelUnpackData::Slice(Some(bytes)) = pixels {
+                    if bytes.len() > 65536 {
+                        if let Some(pool) = cm.pbo_pool_mut() {
+                            if pool.is_pbo_supported() {
+                                return Self::tex_sub_image_2d_pbo(
+                                    cm, gl, target, level, xoffset, yoffset, width, height, format,
+                                    type_, bytes,
+                                );
+                            }
                         }
                     }
                 }
                 unsafe {
                     gl.tex_sub_image_2d(
-                        target,
-                        level,
-                        xoffset,
-                        yoffset,
-                        width,
-                        height,
-                        format,
-                        type_,
-                        glow::PixelUnpackData::Slice(Some(bytes)),
+                        target, level, xoffset, yoffset, width, height, format, type_, pixels,
                     );
                 }
                 Ok(DamageEffect::NoDamage)
@@ -4363,24 +4389,20 @@ impl RendererGL {
                 ty,
                 data,
             } => {
-                if let shared::protocol::render_cmd::TexImage3DSource::Bytes(bytes) = &data {
-                    refuse_short_upload(
-                        bytes,
+                cm.make_current_needed(canvas_id)?;
+                let pixels = match &data {
+                    None => glow::PixelUnpackData::Slice(None),
+                    Some(source) => unpack_data(
+                        gl,
+                        source,
                         width,
                         height,
                         depth,
                         format,
                         ty,
                         &cm.unpack_layout(canvas_id, true),
-                    )?;
-                }
-                cm.make_current_needed(canvas_id)?;
-                if matches!(
-                    data,
-                    shared::protocol::render_cmd::TexImage3DSource::BufferOffset(_)
-                ) {
-                    refuse_offset_without_unpack_buffer(gl)?;
-                }
+                    )?,
+                };
                 let prepared = cm
                     .webgl_gpu_budget
                     .prepare_tex_image_3d(
@@ -4396,17 +4418,6 @@ impl RendererGL {
                         ty,
                     )
                     .map_err(gpu_allocation_error)?;
-                let pixels = match &data {
-                    shared::protocol::render_cmd::TexImage3DSource::None => {
-                        glow::PixelUnpackData::Slice(None)
-                    }
-                    shared::protocol::render_cmd::TexImage3DSource::Bytes(bytes) => {
-                        glow::PixelUnpackData::Slice(Some(bytes.as_slice()))
-                    }
-                    shared::protocol::render_cmd::TexImage3DSource::BufferOffset(offset) => {
-                        glow::PixelUnpackData::BufferOffset(*offset)
-                    }
-                };
                 unsafe {
                     gl.tex_image_3d(
                         target,
@@ -4438,35 +4449,17 @@ impl RendererGL {
                 ty,
                 data,
             } => {
-                if let shared::protocol::render_cmd::TexImage3DSource::Bytes(bytes) = &data {
-                    refuse_short_upload(
-                        bytes,
-                        width,
-                        height,
-                        depth,
-                        format,
-                        ty,
-                        &cm.unpack_layout(canvas_id, true),
-                    )?;
-                }
                 cm.make_current_needed(canvas_id)?;
-                if matches!(
-                    data,
-                    shared::protocol::render_cmd::TexImage3DSource::BufferOffset(_)
-                ) {
-                    refuse_offset_without_unpack_buffer(gl)?;
-                }
-                let pixels = match &data {
-                    shared::protocol::render_cmd::TexImage3DSource::None => {
-                        glow::PixelUnpackData::Slice(None)
-                    }
-                    shared::protocol::render_cmd::TexImage3DSource::Bytes(bytes) => {
-                        glow::PixelUnpackData::Slice(Some(bytes.as_slice()))
-                    }
-                    shared::protocol::render_cmd::TexImage3DSource::BufferOffset(offset) => {
-                        glow::PixelUnpackData::BufferOffset(*offset)
-                    }
-                };
+                let pixels = unpack_data(
+                    gl,
+                    &data,
+                    width,
+                    height,
+                    depth,
+                    format,
+                    ty,
+                    &cm.unpack_layout(canvas_id, true),
+                )?;
                 unsafe {
                     gl.tex_sub_image_3d(
                         target, level, xoffset, yoffset, zoffset, width, height, depth, format, ty,

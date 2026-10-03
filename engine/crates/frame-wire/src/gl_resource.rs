@@ -124,9 +124,12 @@ pub const OPR_BIND_ATTRIB_LOCATION: u32 = 193;
 pub const OPR_BUFFER_DATA: u32 = 194;
 // H C target offset:I | len data
 pub const OPR_BUFFER_SUB_DATA: u32 = 195;
-// H C target level:I internalformat:I width:I height:I border:I format type has_data:B | len data
+// The `tex*Image*` uploads name their source: `pbo_offset` (-1 for none) is the byte offset into the bound
+// PIXEL_UNPACK_BUFFER the pixels are read from (WebGL 2's offset overloads), and `len` is then 0; otherwise the bytes
+// follow -- or, for an image upload whose `has_data` is 0, there are none and the call allocates storage only.
+// H C target level:I internalformat:I width:I height:I border:I format type pbo_offset:I has_data:B | len data
 pub const OPR_TEX_IMAGE_2D: u32 = 196;
-// H C target level:I xoffset:I yoffset:I width:I height:I format type | len data
+// H C target level:I xoffset:I yoffset:I width:I height:I format type pbo_offset:I | len data
 pub const OPR_TEX_SUB_IMAGE_2D: u32 = 197;
 // The compressed uploads carry the source WebGL 2's other overload names: `pbo_offset` (-1 for none) and `pbo_size`
 // (that overload's `imageSize`) are the bound PIXEL_UNPACK_BUFFER's range, and `len` is then 0. Otherwise the bytes
@@ -138,8 +141,7 @@ pub const OPR_COMPRESSED_TEX_SUB_IMAGE_2D: u32 = 199;
 // H C target level:I internal_format:I width:I height:I depth:I border:I format ty
 //   pbo_offset:I has_pixels:B | len pixels
 pub const OPR_TEX_IMAGE_3D: u32 = 200;
-// H C target level:I xoffset:I yoffset:I zoffset:I width:I height:I depth:I format ty
-//   pbo_offset:I has_pixels:B | len pixels
+// H C target level:I xoffset:I yoffset:I zoffset:I width:I height:I depth:I format ty pbo_offset:I | len pixels
 pub const OPR_TEX_SUB_IMAGE_3D: u32 = 201;
 // H C | count buffers...
 pub const OPR_DRAW_BUFFERS: u32 = 202;
@@ -278,14 +280,14 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_BIND_ATTRIB_LOCATION => bytes(3, None, true),
         OPR_BUFFER_DATA => upload(6, Some(5)),
         OPR_BUFFER_SUB_DATA => upload(4, None),
-        OPR_TEX_IMAGE_2D => upload(11, Some(10)),
-        OPR_TEX_SUB_IMAGE_2D => upload(10, None),
+        OPR_TEX_IMAGE_2D => upload(12, Some(11)),
+        OPR_TEX_SUB_IMAGE_2D => upload(11, None),
         OPR_COMPRESSED_TEX_IMAGE_2D => upload(10, None),
         OPR_COMPRESSED_TEX_SUB_IMAGE_2D => upload(11, None),
         OPR_COMPRESSED_TEX_IMAGE_3D => upload(11, None),
         OPR_COMPRESSED_TEX_SUB_IMAGE_3D => upload(13, None),
         OPR_TEX_IMAGE_3D => upload(13, Some(12)),
-        OPR_TEX_SUB_IMAGE_3D => upload(14, Some(13)),
+        OPR_TEX_SUB_IMAGE_3D => upload(13, None),
         OPR_DRAW_BUFFERS => RecordSpec::Words {
             prefix_words: 2,
             max_count: MAX_RESOURCE_WORD_LIST,

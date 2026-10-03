@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use shared::protocol::render_cmd::GLCmd;
+use shared::protocol::render_cmd::{GLCmd, PixelUnpackSource};
 use tracing::warn;
 
 use super::cache::{ImageCacheKey, SharedImageCache};
@@ -140,7 +140,7 @@ pub fn tex_image_2d_from_image(
             border: 0,
             format,
             type_,
-            data: Some(data),
+            data: Some(PixelUnpackSource::Bytes(data)),
         }),
         miss => {
             log_miss("op_tex_image_2d_from_image", image_id, &miss);
@@ -179,7 +179,7 @@ pub fn tex_sub_image_2d_from_image(
             height,
             format,
             type_,
-            data,
+            data: PixelUnpackSource::Bytes(data),
         }),
         miss => {
             log_miss("op_tex_sub_image_2d_from_image", image_id, &miss);

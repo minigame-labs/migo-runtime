@@ -241,7 +241,8 @@ impl RenderSink for Staging {
         for command in commands.iter() {
             match command {
                 GLCmd::TexImage2D {
-                    data: Some(data), ..
+                    data: Some(shared::protocol::render_cmd::PixelUnpackSource::Bytes(data)),
+                    ..
                 } => {
                     self.uploads.push(("texImage2D", data.as_ref().clone()));
                 }

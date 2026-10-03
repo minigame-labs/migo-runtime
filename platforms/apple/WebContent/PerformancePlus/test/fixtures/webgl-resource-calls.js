@@ -43,21 +43,35 @@ gl.bindTexture(0x0de1, texture); // TEXTURE_2D
 gl.texImage2D(0x0de1, 0, 0x1908, 2, 1, 0, 0x1908, 0x1401, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
 gl.texImage2D(0x0de1, 1, 0x1908, 1, 1, 0, 0x1908, 0x1401, null);
 gl.texSubImage2D(0x0de1, 0, 1, 0, 1, 1, 0x1908, 0x1401, new Uint8Array([9, 9, 9, 9]));
+const unpack = gl.createBuffer();
+gl.bindBuffer(0x88ec, unpack); // PIXEL_UNPACK_BUFFER
+gl.bufferData(0x88ec, 128, 0x88e0); // STREAM_DRAW
+gl.texImage2D(0x0de1, 0, 0x1908, 2, 1, 0, 0x1908, 0x1401, 8); // from the bound PIXEL_UNPACK_BUFFER
+gl.texSubImage2D(0x0de1, 0, 1, 0, 1, 1, 0x1908, 0x1401, 4);
+gl.bindBuffer(0x88ec, null);
 gl.texStorage2D(0x0de1, 1, 0x8058, 4, 4); // RGBA8
 
 const volume = gl.createTexture();
 gl.bindTexture(0x806f, volume); // TEXTURE_3D
 gl.texImage3D(0x806f, 0, 0x1908, 1, 1, 2, 0, 0x1908, 0x1401, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), 2);
-gl.texSubImage3D(0x806f, 0, 0, 0, 0, 1, 1, 1, 0x1908, 0x1401, new Uint16Array([1, 2, 3, 4]), 1);
+gl.texSubImage3D(0x806f, 0, 0, 0, 0, 1, 1, 1, 0x1908, 0x1401, new Uint8Array([1, 2, 3, 4, 5]), 1);
+gl.bindBuffer(0x88ec, unpack);
+gl.texImage3D(0x806f, 0, 0x1908, 1, 1, 2, 0, 0x1908, 0x1401, 16); // from the bound PIXEL_UNPACK_BUFFER
+gl.texSubImage3D(0x806f, 0, 0, 0, 0, 1, 1, 1, 0x1908, 0x1401, 12);
+gl.bindBuffer(0x88ec, null);
 gl.texStorage3D(0x806f, 1, 0x8058, 2, 2, 2);
 const array = gl.createTexture();
 gl.bindTexture(0x8c1a, array); // TEXTURE_2D_ARRAY
 gl.compressedTexImage3D(0x8c1a, 0, 0x9278, 4, 4, 2, 0, new Uint8Array(40).map((_, k) => k), 8, 32); // COMPRESSED_RGBA8_ETC2_EAC
 gl.compressedTexSubImage3D(0x8c1a, 0, 0, 0, 1, 4, 4, 1, 0x9278, new Uint8Array(16).fill(7));
+gl.bindBuffer(0x88ec, unpack);
 gl.compressedTexImage3D(0x8c1a, 1, 0x9278, 4, 4, 1, 0, 16, 64); // from the bound PIXEL_UNPACK_BUFFER
 gl.compressedTexSubImage3D(0x8c1a, 1, 0, 0, 0, 4, 4, 1, 0x9278, 16, 80);
+gl.bindBuffer(0x88ec, null);
 gl.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, new Uint16Array(16), 4, 8);
+gl.bindBuffer(0x88ec, unpack);
 gl.compressedTexSubImage2D(0x0de1, 0, 0, 0, 4, 4, 0x9278, 16, 32);
+gl.bindBuffer(0x88ec, null);
 
 const framebuffer = gl.createFramebuffer();
 gl.bindFramebuffer(0x8d40, framebuffer);
