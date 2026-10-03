@@ -105,6 +105,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL: calls the specification refuses are refused before they reach the driver, whose error never reached
+  `getError`. `enable` / `disable` / `isEnabled` of an enum that is not a capability -- RASTERIZER_DISCARD in WebGL 1
+  among them -- are INVALID_ENUM; a negative `viewport` size is INVALID_VALUE, as a negative `scissor` size already
+  was (the decoder reads the size as the signed GLsizei it is, for both lanes, and so does the op); `useProgram` of a program
+  that did not link, was deleted or is another context's is INVALID_OPERATION and leaves the program in use as it was
+  (whether a program linked is asked once per link and kept, as `getProgramParameter` keeps it), and a value that is
+  not a program is a TypeError; a draw with no program in use is INVALID_OPERATION.
+- WebGL: errors are flags, one per code (ES 3.0 2.5), as Chrome holds its own: a code raised by several calls before
+  `getError` reads it is read once. The queue used to hold every one, so a single `getError` left the same error behind
+  for the next. The facade's own refusals and the decoder's go into that one queue per context (the facade kept a
+  second, ahead of it). Held as flags, the queue cannot grow past the codes there are, so its 256-entry cap, the
+  overflow counter and the OUT_OF_MEMORY it planted are gone; the overflow slot of the debug statistics stays, at 0,
+  so the layout the platform overlays read is unchanged.
 - WebGL 2: `bufferData(target, view, usage, srcOffset, length)` and `bufferSubData(target, dstByteOffset, view,
   srcOffset, length)` upload the elements they name. Both used to ignore `srcOffset` and `length` and upload the whole
   view, so a partial attribute update -- three.js updates ranges of an attribute this way -- wrote the wrong bytes, or

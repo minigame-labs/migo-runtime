@@ -1505,9 +1505,6 @@ export function op_uniform_matrix_4fv(canvasId, location, transpose, value) {
   const valueValue = u32ArrayOf(value, "value");
   emitPayload(canvasIdValue, R.OP_UNIFORM_MATRIX4FV, valueValue, canvasIdValue, locationValue, transposeValue);
 }
-export function op_use_program(canvasId, programId) {
-  emit(R.OP_USE_PROGRAM, smiU32(canvasId, "canvas_id"), smiU32(programId, "program_id"));
-}
 export function op_vertex_attrib_divisor(canvasId, index, divisor) {
   emit(R.OP_VERTEX_ATTRIB_DIVISOR, smiU32(canvasId, "canvas_id"), smiU32(index, "index"), smiU32(divisor, "divisor"));
 }
@@ -1527,7 +1524,7 @@ export function op_vertex_attrib_i_pointer(canvasId, index, size, type, stride, 
   emit(R.OP_VERTEX_ATTRIB_I_POINTER, smiU32(canvasId, "canvas_id"), smiU32(index, "index"), toI32(size, "size"), smiU32(type, "type_"), toI32(stride, "stride"), toI32(offset, "offset"));
 }
 export function op_viewport(canvasId, x, y, width, height) {
-  emit(R.OP_VIEWPORT, smiU32(canvasId, "canvas_id"), toI32(x, "x"), toI32(y, "y"), smiU32(width, "width"), smiU32(height, "height"));
+  emit(R.OP_VIEWPORT, smiU32(canvasId, "canvas_id"), toI32(x, "x"), toI32(y, "y"), toI32(width, "width"), toI32(height, "height"));
 }
 
 /**

@@ -626,7 +626,6 @@
         "op_uniform3uiv": "stream",
         "op_uniform4uiv": "stream",
         "op_uniform_matrix_4fv": "stream",
-        "op_use_program": "stream",
         "op_vertex_attrib_4f": "stream",
         "op_vertex_attrib_divisor": "stream",
         "op_vertex_attrib_i4i": "stream",

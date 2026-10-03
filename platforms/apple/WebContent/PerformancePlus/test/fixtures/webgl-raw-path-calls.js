@@ -80,14 +80,20 @@ gl.vertexAttribI4i(2n, 1n, -2n, 3n, 4n);
 gl.vertexAttribI4ui(2n, 1n, 2n, 3n, 4n);
 gl.vertexAttribIPointer(2n, 2n, 0x1404n, 0n, 0n); // INT
 gl.disableVertexAttribArray(1n);
+// A draw needs a program in use and, for indices, an element array buffer the draw stays inside; the facade refuses
+// one without, before the op. The link status is what the renderer would answer: neither execution has one here.
+const program = gl.createProgram();
+gl.linkProgram(program);
+gl._programParameterCache.set(program.id, new Map([[0x8b82, 1]])); // LINK_STATUS
+gl.useProgram(program);
+gl.bindBuffer(0x8893, gl.createBuffer()); // ELEMENT_ARRAY_BUFFER
+gl.bufferData(0x8893, new Uint16Array([0, 1, 2]), 0x88e4);
 gl.drawArrays(0x0004n, 0n, 3n); // TRIANGLES
 gl.drawArraysInstanced(0x0004n, 0n, 3n, 2n);
 gl.drawElements(0x0004n, 3n, 0x1403n, 0n); // UNSIGNED_SHORT
 gl.drawElementsInstanced(0x0004n, 3n, 0x1403n, 0n, 2n);
 
-// -- program and uniforms --
-const program = gl.createProgram();
-gl.useProgram(program);
+// -- uniforms --
 // `uniform1i`, `uniform1f` and the scalar vector forms are always encodable --
 // the facade coerces them itself -- so the raw path is unreachable for them
 // from here; their records are the same shape as the ones below.

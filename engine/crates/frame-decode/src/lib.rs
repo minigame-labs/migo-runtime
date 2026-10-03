@@ -230,19 +230,23 @@ fn decode_record<C: GlDecodeContext>(
     // SAMPLER_PARAMETER_I/F are exceptions (no canvas).
 
     match opcode {
-        // ── 1: VIEWPORT: H C I I U U ───────────────────────────────────────────
+        // ── 1: VIEWPORT: H C I I I I ───────────────────────────────────────────
+        // The size is a GLsizei, signed: a negative one is INVALID_VALUE (ES 3.0 2.12.1), as for SCISSOR.
         OP_VIEWPORT => {
             let canvas_id = record[1];
             let x = i(record[2]);
             let y = i(record[3]);
-            let width = record[4];
-            let height = record[5];
+            let width = i(record[4]);
+            let height = i(record[5]);
+            if !validate_viewport_like(context, canvas_id, width, height) {
+                return None;
+            }
             Some(GLCmd::Viewport {
                 canvas_id,
                 x,
                 y,
-                width,
-                height,
+                width: width as u32,
+                height: height as u32,
             })
         }
 

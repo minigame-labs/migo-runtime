@@ -252,7 +252,7 @@ function _submitAndSwap() {
 // Hoisting the id looks like free savings and would trade that for a few KB per
 // frame of buffer traffic.
 
-// 1 VIEWPORT: H C I I U U (6 words)
+// 1 VIEWPORT: H C I I I I (6 words)
 function encodeViewport(canvasId, x, y, width, height) {
     ensureBuffers();
     ensureFit(6);
@@ -261,8 +261,8 @@ function encodeViewport(canvasId, x, y, width, height) {
     _u32[base + 1] = canvasId;
     _u32[base + 2] = x | 0;
     _u32[base + 3] = y | 0;
-    _u32[base + 4] = width >>> 0;
-    _u32[base + 5] = height >>> 0;
+    _u32[base + 4] = width | 0;      // GLsizei: the decoder refuses a negative one
+    _u32[base + 5] = height | 0;
     cursor = base + 6;
     return true;
 }
