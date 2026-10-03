@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use shared::protocol::render_cmd::{
-    CompressedImageData, GLCmd, MAX_WEBGL_SHADER_SOURCE_BYTES, ShaderType, TexImage3DSource,
+    CompressedImageData, GLCmd, MAX_WEBGL_SHADER_SOURCE_BYTES, PixelUnpackSource, ShaderType,
     webgl_upload_is_within_limit,
 };
 
@@ -256,12 +256,9 @@ pub fn tex_image_2d<C: GlDecodeContext>(
     border: i32,
     format: u32,
     type_: u32,
-    data: Option<Payload<'_>>,
+    source: Option<PixelSource<'_>>,
 ) -> Option<GLCmd> {
-    let data = match data {
-        Some(bytes) => Some(Arc::new(bounded_upload(context, canvas_id, bytes)?)),
-        None => None,
-    };
+    let data = image_source(context, canvas_id, source)?;
     Some(GLCmd::TexImage2D {
         canvas_id,
         target,
@@ -288,7 +285,7 @@ pub fn tex_sub_image_2d<C: GlDecodeContext>(
     height: i32,
     format: u32,
     type_: u32,
-    data: Payload<'_>,
+    source: PixelSource<'_>,
 ) -> Option<GLCmd> {
     Some(GLCmd::TexSubImage2D {
         canvas_id,
@@ -300,8 +297,137 @@ pub fn tex_sub_image_2d<C: GlDecodeContext>(
         height,
         format,
         type_,
-        data: Arc::new(bounded_upload(context, canvas_id, data)?),
+        data: unpack_source(context, canvas_id, source)?,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn tex_image_3d<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    target: u32,
+    level: i32,
+    internal_format: i32,
+    width: i32,
+    height: i32,
+    depth: i32,
+    border: i32,
+    format: u32,
+    ty: u32,
+    source: Option<PixelSource<'_>>,
+) -> Option<GLCmd> {
+    let data = image_source(context, canvas_id, source)?;
+    Some(GLCmd::TexImage3D {
+        canvas_id,
+        target,
+        level,
+        internal_format,
+        width,
+        height,
+        depth,
+        border,
+        format,
+        ty,
+        data,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn tex_sub_image_3d<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    target: u32,
+    level: i32,
+    xoffset: i32,
+    yoffset: i32,
+    zoffset: i32,
+    width: i32,
+    height: i32,
+    depth: i32,
+    format: u32,
+    ty: u32,
+    source: PixelSource<'_>,
+) -> Option<GLCmd> {
+    Some(GLCmd::TexSubImage3D {
+        canvas_id,
+        target,
+        level,
+        xoffset,
+        yoffset,
+        zoffset,
+        width,
+        height,
+        depth,
+        format,
+        ty,
+        data: unpack_source(context, canvas_id, source)?,
+    })
+}
+
+/// Where a `tex*Image*` upload's pixels come from, as a call or a record names them: the bytes it carries, or the
+/// PIXEL_UNPACK_BUFFER from a byte offset (WebGL 2's offset overloads). An image upload may name neither and allocate
+/// the storage only; a sub-image upload always names one.
+#[derive(Clone, Copy, Debug)]
+pub enum PixelSource<'a> {
+    Bytes(Payload<'a>),
+    UnpackBuffer(u32),
+}
+
+impl<'a> PixelSource<'a> {
+    /// A call's: an offset that is not negative names the buffer, and the bytes are then empty.
+    pub fn of_call(bytes: &'a [u8], pbo_offset: i32) -> Self {
+        match u32::try_from(pbo_offset) {
+            Ok(offset) => PixelSource::UnpackBuffer(offset),
+            Err(_) => PixelSource::Bytes(Payload::Bytes(bytes)),
+        }
+    }
+
+    /// A sub-image record's: its `pbo_offset` word at `prefix - 1`, the bytes after its `len` at `prefix`.
+    pub(crate) fn of_sub_record(record: &'a [u32], prefix: usize, payload: Payload<'a>) -> Self {
+        match u32::try_from(record[prefix - 1] as i32) {
+            Ok(offset) => PixelSource::UnpackBuffer(offset),
+            Err(_) => PixelSource::Bytes(payload),
+        }
+    }
+
+    /// An image record's: `pbo_offset` at `prefix - 2` and `has_data` at `prefix - 1`; neither is storage only.
+    pub(crate) fn of_image_record(
+        record: &'a [u32],
+        prefix: usize,
+        payload: Payload<'a>,
+    ) -> Option<Self> {
+        match u32::try_from(record[prefix - 2] as i32) {
+            Ok(offset) => Some(PixelSource::UnpackBuffer(offset)),
+            Err(_) => (record[prefix - 1] != 0).then_some(PixelSource::Bytes(payload)),
+        }
+    }
+}
+
+/// The source an upload's command owns: its bytes held to the upload ceiling (`OUT_OF_MEMORY`, and `None`, over it or
+/// when they cannot be allocated), or the buffer offset.
+fn unpack_source<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    source: PixelSource<'_>,
+) -> Option<PixelUnpackSource> {
+    Some(match source {
+        PixelSource::Bytes(payload) => {
+            PixelUnpackSource::Bytes(Arc::new(bounded_upload(context, canvas_id, payload)?))
+        }
+        PixelSource::UnpackBuffer(offset) => PixelUnpackSource::BufferOffset(offset),
+    })
+}
+
+/// [`unpack_source`] for an image upload, which may name none: `Some(None)` is storage only.
+fn image_source<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    source: Option<PixelSource<'_>>,
+) -> Option<Option<PixelUnpackSource>> {
+    match source {
+        Some(source) => unpack_source(context, canvas_id, source).map(Some),
+        None => Some(None),
+    }
 }
 
 /// A compressed upload's source as a call or a record names it: the bytes, or -- WebGL 2's other overload -- `size`
@@ -451,26 +577,6 @@ pub fn compressed_tex_sub_image_3d<C: GlDecodeContext>(
         format,
         data: compressed_data(context, canvas_id, source)?,
     })
-}
-
-/// A 3D upload's source: a pixel-unpack buffer offset wins over pixels, and no
-/// pixels reserves storage. The pixels are already the bytes from the caller's
-/// `srcOffset` on. Over the ceiling, or unallocatable, is `OUT_OF_MEMORY`.
-pub fn tex_3d_source<C: GlDecodeContext>(
-    context: &mut C,
-    canvas_id: u32,
-    pixels: Option<Payload<'_>>,
-    pbo_offset: Option<u32>,
-) -> Option<TexImage3DSource> {
-    if let Some(offset) = pbo_offset {
-        return Some(TexImage3DSource::BufferOffset(offset));
-    }
-    match pixels {
-        None => Some(TexImage3DSource::None),
-        Some(bytes) => Some(TexImage3DSource::Bytes(Arc::new(bounded_upload(
-            context, canvas_id, bytes,
-        )?))),
-    }
 }
 
 /// `transformFeedbackVaryings`, whose names arrive joined by U+001F. The vector
@@ -773,7 +879,6 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             return buffer_sub_data(context, c, record[2], i(record[3]), payload(record, 4));
         }
         OPR_TEX_IMAGE_2D => {
-            let data = (record[10] != 0).then(|| payload(record, 11));
             return tex_image_2d(
                 context,
                 c,
@@ -785,7 +890,7 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
                 i(record[7]),
                 record[8],
                 record[9],
-                data,
+                PixelSource::of_image_record(record, 12, payload(record, 12)),
             );
         }
         OPR_TEX_SUB_IMAGE_2D => {
@@ -800,7 +905,7 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
                 i(record[7]),
                 record[8],
                 record[9],
-                payload(record, 10),
+                PixelSource::of_sub_record(record, 11, payload(record, 11)),
             );
         }
         OPR_COMPRESSED_TEX_IMAGE_2D => {
@@ -861,39 +966,37 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             );
         }
         OPR_TEX_IMAGE_3D => {
-            let pbo = (i(record[11]) >= 0).then_some(record[11]);
-            let pixels = (record[12] != 0).then(|| payload(record, 13));
-            GLCmd::TexImage3D {
-                canvas_id: c,
-                target: record[2],
-                level: i(record[3]),
-                internal_format: i(record[4]),
-                width: i(record[5]),
-                height: i(record[6]),
-                depth: i(record[7]),
-                border: i(record[8]),
-                format: record[9],
-                ty: record[10],
-                data: tex_3d_source(context, c, pixels, pbo)?,
-            }
+            return tex_image_3d(
+                context,
+                c,
+                record[2],
+                i(record[3]),
+                i(record[4]),
+                i(record[5]),
+                i(record[6]),
+                i(record[7]),
+                i(record[8]),
+                record[9],
+                record[10],
+                PixelSource::of_image_record(record, 13, payload(record, 13)),
+            );
         }
         OPR_TEX_SUB_IMAGE_3D => {
-            let pbo = (i(record[12]) >= 0).then_some(record[12]);
-            let pixels = (record[13] != 0).then(|| payload(record, 14));
-            GLCmd::TexSubImage3D {
-                canvas_id: c,
-                target: record[2],
-                level: i(record[3]),
-                xoffset: i(record[4]),
-                yoffset: i(record[5]),
-                zoffset: i(record[6]),
-                width: i(record[7]),
-                height: i(record[8]),
-                depth: i(record[9]),
-                format: record[10],
-                ty: record[11],
-                data: tex_3d_source(context, c, pixels, pbo)?,
-            }
+            return tex_sub_image_3d(
+                context,
+                c,
+                record[2],
+                i(record[3]),
+                i(record[4]),
+                i(record[5]),
+                i(record[6]),
+                i(record[7]),
+                i(record[8]),
+                i(record[9]),
+                record[10],
+                record[11],
+                PixelSource::of_sub_record(record, 13, payload(record, 13)),
+            );
         }
         OPR_DRAW_BUFFERS => GLCmd::DrawBuffers {
             canvas_id: c,

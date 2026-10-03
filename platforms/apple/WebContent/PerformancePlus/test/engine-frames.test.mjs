@@ -125,7 +125,7 @@ function randomRecord(selected) {
     case 7: {
       const hasData = pick(2);
       const bytes = hasData ? Array.from({ length: pick(400) }, () => pick(256)) : [];
-      return payloadRecord(OPR_TEX_IMAGE_2D, [1, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, hasData], bytes);
+      return payloadRecord(OPR_TEX_IMAGE_2D, [1, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, -1 >>> 0, hasData], bytes);
     }
     case 8: {
       const count = pick(9);
@@ -412,7 +412,7 @@ const stagedPackets = [];
   const { drainProducerError } = await import("../src/lane-local.mjs");
   const before = sent.length;
   // RGBA 2048x1024, 8 MiB: two packets' worth.
-  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 2048, 1024, 0, 0x1908, 0x1401, patterned(1, 2048 * 1024 * 4));
+  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 2048, 1024, 0, 0x1908, 0x1401, patterned(1, 2048 * 1024 * 4), -1);
   stagedUploads.push({ opcode: OPR_TEX_IMAGE_2D, seed: 1, bytes: 2048 * 1024 * 4 });
   // ASTC 4x4 2048x2048 is exactly 4 MiB: one byte more than a record can say.
   op_compressed_tex_image_2d(1, 0x0de1, 0, 0x93b0, 2048, 2048, 0, patterned(2, 4 * 1024 * 1024), -1, 0);
@@ -421,7 +421,7 @@ const stagedPackets = [];
   op_buffer_data(1, 0x8892, -1, patterned(3, 5 * 1024 * 1024 + 3), 0x88e4);
   stagedUploads.push({ opcode: OPR_BUFFER_DATA, seed: 3, bytes: 5 * 1024 * 1024 + 3 });
   // And one that fits, inline, after them.
-  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 4, 4, 0, 0x1908, 0x1401, patterned(4, 64));
+  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 4, 4, 0, 0x1908, 0x1401, patterned(4, 64), -1);
   stagedUploads.push({ opcode: OPR_TEX_IMAGE_2D, seed: 4, bytes: 64 });
   endFrame();
   stagedPackets.push(...sent.slice(before));
@@ -472,7 +472,7 @@ const stagedPackets = [];
 
   // Above the ceiling one upload has on every lane: refused, nothing sent.
   const beforeRefusal = sent.length;
-  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 4096, 4097, 0, 0x1908, 0x1401, new Uint8Array(4096 * 4097 * 4));
+  op_tex_image_2d(1, 0x0de1, 0, 0x1908, 4096, 4097, 0, 0x1908, 0x1401, new Uint8Array(4096 * 4097 * 4), -1);
   endFrame();
   check(drainProducerError(1) === 0x0505, "an upload above 64 MiB is OUT_OF_MEMORY on the producer");
   check(

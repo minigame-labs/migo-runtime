@@ -3,7 +3,7 @@ use tracing::error;
 
 use crate::rendering::image::ImageCacheState;
 use crate::rendering::webgl::error_state::{self, OpStateDecodeContext, codes};
-use frame_decode::resource::{CompressedSource, Payload};
+use frame_decode::resource::{CompressedSource, Payload, PixelSource};
 
 use shared::{
     error::EngineError,
@@ -60,7 +60,7 @@ pub(super) mod tests {
 
     use super::{
         GlResourceIdAllocator, bind_buffer_base_impl, bind_buffer_range_impl, copy_f32_words,
-        copy_i32_words, gl_cmd_has_heap_payload, prepare_read_pixels, tex_upload_3d_source,
+        copy_i32_words, gl_cmd_has_heap_payload, image_pixel_source, prepare_read_pixels,
     };
     use crate::HostJsRuntime;
     use crate::rendering::webgl::{
@@ -72,7 +72,7 @@ pub(super) mod tests {
         channel::ThreadWakeup,
         device::gpu_caps::GpuCaps,
         op_state::{AudioSender, HostOpState, NetworkPolicy},
-        protocol::render_cmd::{GLCmd, RenderCommand, TexImage3DSource},
+        protocol::render_cmd::{GLCmd, PixelUnpackSource, RenderCommand},
         render_command_sender::CommandSender,
     };
 
@@ -1221,29 +1221,41 @@ pub(super) mod tests {
         );
     }
 
-    /// The facade sends the bytes from the view's `srcOffset` on (`_uploadViewBytes`); the op uploads them as given.
+    /// An upload op's source: an offset that is not negative names the PIXEL_UNPACK_BUFFER and wins over any bytes;
+    /// otherwise the bytes -- which the facade has taken from the view's `srcOffset` on -- or, for an image upload,
+    /// none, which allocates the storage only.
     #[test]
-    fn tex_image_3d_source_is_the_bytes_the_facade_sends() {
-        let mut state = new_webgl_op_state();
-        match tex_upload_3d_source(&mut state, 1, Some(&[4, 5, 6, 7]), -1)
-            .expect("small upload should fit")
-        {
-            TexImage3DSource::Bytes(bytes) => assert_eq!(bytes.as_slice(), &[4, 5, 6, 7]),
-            other => panic!("expected the byte source, got {other:?}"),
-        }
-        match tex_upload_3d_source(&mut state, 1, None, -1).expect("storage only") {
-            TexImage3DSource::None => {}
-            other => panic!("expected no pixels, got {other:?}"),
-        }
+    fn an_upload_op_names_its_bytes_or_the_unpack_buffer() {
+        use frame_decode::resource::{Payload, PixelSource};
+        assert!(matches!(
+            image_pixel_source(Some(&[1, 2]), 24),
+            Some(PixelSource::UnpackBuffer(24))
+        ));
+        assert!(matches!(
+            image_pixel_source(Some(&[1, 2]), -1),
+            Some(PixelSource::Bytes(Payload::Bytes(&[1, 2])))
+        ));
+        assert!(image_pixel_source(None, -1).is_none());
+        assert!(matches!(
+            PixelSource::of_call(&[], 0),
+            PixelSource::UnpackBuffer(0)
+        ));
+        assert!(matches!(
+            PixelSource::of_call(&[7], -1),
+            PixelSource::Bytes(Payload::Bytes(&[7]))
+        ));
     }
 
-    #[test]
-    fn tex_sub_image_3d_source_uses_pbo_offset_when_requested() {
-        let mut state = new_webgl_op_state();
-        match tex_upload_3d_source(&mut state, 1, None, 24).expect("PBO offset has no CPU payload")
-        {
-            TexImage3DSource::BufferOffset(offset) => assert_eq!(offset, 24),
-            other => panic!("expected buffer offset source, got {other:?}"),
+    /// An upload's source as the upload tests print it: the bytes in full up to eight of them, else their count and
+    /// first byte; the buffer offset; or none.
+    fn describe_source(source: Option<&PixelUnpackSource>) -> String {
+        match source {
+            None => "none".to_string(),
+            Some(PixelUnpackSource::Bytes(bytes)) if bytes.len() <= 8 => {
+                format!("{:?}", bytes.as_slice())
+            }
+            Some(PixelUnpackSource::Bytes(bytes)) => format!("{}@{}", bytes.len(), bytes[0]),
+            Some(PixelUnpackSource::BufferOffset(offset)) => format!("buffer {offset}"),
         }
     }
 
@@ -1976,8 +1988,8 @@ pub(super) mod tests {
 
     /// What the compressed uploads and the sync calls refuse before anything is sent: a view range past its end and
     /// an `srcOffset` of 2^32 (which `>>> 0` used to wrap to the start) are INVALID_VALUE, as are a negative
-    /// `imageSize`, a negative buffer offset and one past 2^31; a buffer offset with no PIXEL_UNPACK_BUFFER bound, a
-    /// view with one bound and a range past the buffer are INVALID_OPERATION. `waitSync` with flags, or any timeout but
+    /// `imageSize` and a negative buffer offset; a buffer offset with no PIXEL_UNPACK_BUFFER bound, a view with one
+    /// bound, an offset past 2^31 - 1 and a range past the buffer are INVALID_OPERATION. `waitSync` with flags, or any timeout but
     /// TIMEOUT_IGNORED, is INVALID_VALUE, on a deleted sync INVALID_OPERATION, and on something that is not a sync a
     /// TypeError. A deleted sync is no longer one, and `clientWaitSync` on it fails. The same `srcOffset` conversion
     /// holds the uniform lists to their ends, and `texImage3D`, whose pixels past the view are not enough data
@@ -2008,7 +2020,7 @@ pub(super) mod tests {
                     [OPERATION, () => gl.compressedTexImage3D(0x8c1a, 0, 0x9278, 4, 4, 1, 0, 16, 56)],
                     [VALUE, () => gl.compressedTexImage3D(0x8c1a, 0, 0x9278, 4, 4, 1, 0, -1, 0)],
                     [VALUE, () => gl.compressedTexImage3D(0x8c1a, 0, 0x9278, 4, 4, 1, 0, 16, -4)],
-                    [VALUE, () => gl.compressedTexSubImage3D(0x8c1a, 0, 0, 0, 0, 4, 4, 1, 0x9278, 16, 2147483648)],
+                    [OPERATION, () => gl.compressedTexSubImage3D(0x8c1a, 0, 0, 0, 0, 4, 4, 1, 0x9278, 16, 2147483648)],
                     [VALUE, () => gl.waitSync(sync, 1, -1)],
                     [VALUE, () => gl.waitSync(sync, 0, 0)],
                     [VALUE, () => gl.uniform1uiv({ id: 3 }, new Uint32Array(4), 4294967296)],
@@ -2908,40 +2920,122 @@ pub(super) mod tests {
         let got: Vec<String> = drain_gl_commands(&render_rx)
             .iter()
             .filter_map(|cmd| match cmd {
-                GLCmd::TexImage2D { data, .. } => Some(match data {
-                    Some(bytes) => {
-                        format!("2d {}@{}", bytes.len(), bytes.first().copied().unwrap_or(0))
-                    }
-                    None => "2d none".to_string(),
-                }),
-                GLCmd::TexSubImage2D { data, .. } => Some(format!("sub2d {}", data.len())),
-                GLCmd::TexImage3D { data, .. } => Some(match data {
-                    TexImage3DSource::Bytes(bytes) => format!("3d {:?}", bytes.as_slice()),
-                    TexImage3DSource::None => "3d none".to_string(),
-                    TexImage3DSource::BufferOffset(offset) => format!("3d buffer {offset}"),
-                }),
-                GLCmd::TexSubImage3D { .. } => Some("sub3d".to_string()),
+                GLCmd::TexImage2D { data, .. } => {
+                    Some(format!("2d {}", describe_source(data.as_ref())))
+                }
+                GLCmd::TexSubImage2D { data, .. } => {
+                    Some(format!("sub2d {}", describe_source(Some(data))))
+                }
+                GLCmd::TexImage3D { data, .. } => {
+                    Some(format!("3d {}", describe_source(data.as_ref())))
+                }
+                GLCmd::TexSubImage3D { data, .. } => {
+                    Some(format!("sub3d {}", describe_source(Some(data))))
+                }
                 _ => None,
             })
             .collect();
         assert_eq!(
             got,
             [
-                "2d 4@0",
+                "2d [0, 0, 0, 0]",
                 "2d 21@0",
                 "2d 18@0",
                 "2d none",
                 "2d 16@0",
-                "sub2d 4",
-                "2d 2@0",
-                "2d 4@4",
-                "sub2d 4",
+                "sub2d [0, 0, 0, 0]",
+                "2d [0, 0]",
+                "2d [4, 5, 6, 7]",
+                "sub2d [0, 0, 0, 0]",
                 "2d 28@0",
                 "3d [3, 0, 4, 0]",
                 "3d none",
                 "3d buffer 8",
             ],
             "only the uploads that were taken are sent, each with exactly the bytes it reads"
+        );
+    }
+
+    /// WebGL 2's offset overloads of `texImage2D` / `texSubImage2D` upload from the bound PIXEL_UNPACK_BUFFER. Judged as a
+    /// browser judges them: no buffer bound, or UNPACK_FLIP_Y_WEBGL / UNPACK_PREMULTIPLY_ALPHA_WEBGL set, is
+    /// INVALID_OPERATION before anything else; then the level, formats and size; then the offset -- negative is
+    /// INVALID_VALUE, past 2^31 - 1, not a multiple of the type's size or reading past the buffer INVALID_OPERATION.
+    /// WebGL 1 has no such overload. A 3D upload from a view is INVALID_OPERATION while either flag is set; storage
+    /// only is not a view.
+    #[test]
+    fn uploads_from_an_unpack_buffer_offset_and_the_unpack_flags() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "unpack_buffer_uploads.js",
+                r#"
+                const gl1 = new WebGLRenderingContext({ _rid: 210, width: 1, height: 1 }, {});
+                const gl = new WebGL2RenderingContext({ _rid: 211, width: 1, height: 1 }, {});
+                const err = (ctx, want, m) => { const got = ctx.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const VALUE = 0x0501, OPERATION = 0x0502;
+                const T2D = 0x0de1, RGBA = 0x1908, RGBA8 = 0x8058, UBYTE = 0x1401;
+                gl1.bindTexture(T2D, gl1.createTexture());
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.bindTexture(0x806f, gl.createTexture());
+                let threw = false;
+                try { gl1.texImage2D(T2D, 0, RGBA, 1, 1, 0, RGBA, UBYTE, 0); } catch (e) { threw = e instanceof TypeError; }
+                if (!threw) throw new Error("WebGL 1 has no offset overload: a number is not a view");
+                gl.texImage2D(T2D, 0, RGBA8, 1, 1, 0, RGBA, UBYTE, 0); err(gl, OPERATION, "an offset with no buffer bound");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, UBYTE, 0); err(gl, OPERATION, "a sub offset with no buffer bound");
+                gl.texImage2D(T2D, 16, RGBA8, 1, 1, 0, RGBA, UBYTE, -1); err(gl, OPERATION, "no buffer bound is judged first");
+                gl.bindBuffer(0x88ec, gl.createBuffer());
+                gl.bufferData(0x88ec, 16, 0x88e0);
+                gl.pixelStorei(0x9240, true);
+                gl.texImage2D(T2D, 0, RGBA8, 1, 1, 0, RGBA, UBYTE, 0); err(gl, OPERATION, "an offset with UNPACK_FLIP_Y_WEBGL set");
+                gl.pixelStorei(0x9240, false);
+                gl.pixelStorei(0x9241, true);
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, UBYTE, 0); err(gl, OPERATION, "an offset with UNPACK_PREMULTIPLY_ALPHA_WEBGL set");
+                gl.pixelStorei(0x9241, false);
+                gl.texImage2D(T2D, 16, RGBA8, 1, 1, 0, RGBA, UBYTE, 2147483648); err(gl, VALUE, "the level is judged before the offset");
+                gl.texImage2D(T2D, 0, RGBA8, 1, 1, 0, RGBA, UBYTE, -1); err(gl, VALUE, "a negative offset");
+                gl.texImage2D(T2D, 0, RGBA8, 1, 1, 0, RGBA, UBYTE, 2147483648); err(gl, OPERATION, "an offset past 2^31 - 1");
+                gl.texImage2D(T2D, 0, RGBA8, 2, 2, 0, RGBA, UBYTE, 4); err(gl, OPERATION, "a range past the buffer");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, 0x8033, 1); err(gl, OPERATION, "an offset that is not a multiple of the type's size");
+                gl.texImage2D(T2D, 0, RGBA8, 2, 2, 0, RGBA, UBYTE, 0); err(gl, 0, "the buffer's 16 bytes");          // sent: buffer 0
+                gl.texSubImage2D(T2D, 0, 1, 1, 1, 1, RGBA, UBYTE, 12); err(gl, 0, "its last 4");                      // sent: buffer 12
+                gl.bindBuffer(0x88ec, null);
+                gl.pixelStorei(0x9240, true);
+                gl.texImage3D(0x806f, 0, RGBA, 1, 1, 1, 0, RGBA, UBYTE, new Uint8Array(4)); err(gl, OPERATION, "a 3D view with UNPACK_FLIP_Y_WEBGL set");
+                gl.texSubImage3D(0x806f, 0, 0, 0, 0, 1, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(gl, OPERATION, "a 3D sub view with it set");
+                gl.texImage3D(0x806f, 0, RGBA, 1, 1, 1, 0, RGBA, UBYTE, null); err(gl, 0, "storage only is not a view");   // sent: none
+                gl.pixelStorei(0x9240, false);
+                gl.texImage2D(T2D, 0, RGBA8, 1, 1, 0, RGBA, UBYTE, new Uint8Array(4)); err(gl, 0, "and a 2D view is uploaded flipped");   // sent: bytes
+                gl.flush(); gl1.flush();
+                "#,
+            )
+            .expect("the refused uploads should be refused, not thrown (but for the TypeError, which the script catches)");
+        let got: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::TexImage2D { data, .. } => {
+                    Some(format!("2d {}", describe_source(data.as_ref())))
+                }
+                GLCmd::TexSubImage2D { data, .. } => {
+                    Some(format!("sub2d {}", describe_source(Some(data))))
+                }
+                GLCmd::TexImage3D { data, .. } => {
+                    Some(format!("3d {}", describe_source(data.as_ref())))
+                }
+                GLCmd::TexSubImage3D { data, .. } => {
+                    Some(format!("sub3d {}", describe_source(Some(data))))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "2d buffer 0",
+                "sub2d buffer 12",
+                "3d none",
+                "2d [0, 0, 0, 0]"
+            ],
+            "only the uploads that were taken are sent, each naming its source"
         );
     }
 
@@ -3268,11 +3362,12 @@ pub(super) mod tests {
             .iter()
             .filter_map(|cmd| match cmd {
                 GLCmd::TexImage2D { .. } => Some("past the ceiling".to_string()),
-                GLCmd::TexSubImage2D { data, .. } => Some(format!("sub2d {:?}", data.as_slice())),
-                GLCmd::TexImage3D {
-                    data: TexImage3DSource::Bytes(bytes),
-                    ..
-                } => Some(format!("3d {:?}", bytes.as_slice())),
+                GLCmd::TexSubImage2D { data, .. } => {
+                    Some(format!("sub2d {}", describe_source(Some(data))))
+                }
+                GLCmd::TexImage3D { data, .. } => {
+                    Some(format!("3d {}", describe_source(data.as_ref())))
+                }
                 _ => None,
             })
             .collect();
@@ -7948,7 +8043,9 @@ pub fn op_tex_image_2d(
     #[smi] border: i32,
     #[smi] format: u32,
     #[smi] type_: u32,
+    // `None` allocates the storage only.
     #[buffer] data: Option<&[u8]>,
+    #[smi] pbo_offset: i32,
 ) {
     let command = frame_decode::resource::tex_image_2d(
         &mut OpStateDecodeContext(state),
@@ -7961,7 +8058,7 @@ pub fn op_tex_image_2d(
         border,
         format,
         type_,
-        data.map(Payload::Bytes),
+        image_pixel_source(data, pbo_offset),
     );
     if let Some(command) = command {
         queue_gl_fire_and_forget(state, command);
@@ -8161,6 +8258,7 @@ pub fn op_tex_sub_image_2d(
     #[smi] format: u32,
     #[smi] type_: u32,
     #[buffer] data: &[u8],
+    #[smi] pbo_offset: i32,
 ) {
     let command = frame_decode::resource::tex_sub_image_2d(
         &mut OpStateDecodeContext(state),
@@ -8173,7 +8271,7 @@ pub fn op_tex_sub_image_2d(
         height,
         format,
         type_,
-        Payload::Bytes(data),
+        PixelSource::of_call(data, pbo_offset),
     );
     if let Some(command) = command {
         queue_gl_fire_and_forget(state, command);
@@ -10416,20 +10514,14 @@ pub fn op_transform_feedback_varyings(
 
 // ---- WebGL 2 3D textures -----------------------------------------
 
-/// A 3D upload's source: the facade has already taken the bytes from the view's `srcOffset` on
-/// (`viewElementBytes`), so what arrives is exactly what is uploaded; a pixel-unpack offset wins over pixels.
-fn tex_upload_3d_source(
-    state: &mut OpState,
-    canvas_id: u32,
-    pixels: Option<&[u8]>,
-    pbo_offset: i32,
-) -> Option<shared::protocol::render_cmd::TexImage3DSource> {
-    frame_decode::resource::tex_3d_source(
-        &mut OpStateDecodeContext(state),
-        canvas_id,
-        pixels.map(Payload::Bytes),
-        (pbo_offset >= 0).then_some(pbo_offset as u32),
-    )
+/// An image upload's source as the facade calls its op: an offset that is not negative names the PIXEL_UNPACK_BUFFER
+/// (WebGL 2's offset overloads); otherwise the bytes -- already taken from the view's `srcOffset` on -- or none, which
+/// allocates the storage only.
+fn image_pixel_source(data: Option<&[u8]>, pbo_offset: i32) -> Option<PixelSource<'_>> {
+    if pbo_offset >= 0 {
+        return Some(PixelSource::of_call(&[], pbo_offset));
+    }
+    data.map(|bytes| PixelSource::Bytes(Payload::Bytes(bytes)))
 }
 
 #[op2]
@@ -10446,32 +10538,30 @@ pub fn op_tex_image_3d(
     #[smi] border: i32,
     #[smi] format: u32,
     #[smi] ty: u32,
-    // `None` when the call reserves storage without data.
+    // `None` allocates the storage only.
     #[buffer] pixels: Option<&[u8]>,
     #[smi] pbo_offset: i32,
 ) {
-    let Some(data) = tex_upload_3d_source(state, canvas_id, pixels, pbo_offset) else {
-        return;
-    };
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexImage3D {
-            canvas_id,
-            target,
-            level,
-            internal_format,
-            width,
-            height,
-            depth,
-            border,
-            format,
-            ty,
-            data,
-        },
+    let command = frame_decode::resource::tex_image_3d(
+        &mut OpStateDecodeContext(state),
+        canvas_id,
+        target,
+        level,
+        internal_format,
+        width,
+        height,
+        depth,
+        border,
+        format,
+        ty,
+        image_pixel_source(pixels, pbo_offset),
     );
+    if let Some(command) = command {
+        queue_gl_fire_and_forget(state, command);
+    }
 }
 
-#[op2]
+#[op2(fast)]
 #[allow(clippy::too_many_arguments)]
 pub fn op_tex_sub_image_3d(
     state: &mut OpState,
@@ -10486,29 +10576,27 @@ pub fn op_tex_sub_image_3d(
     #[smi] depth: i32,
     #[smi] format: u32,
     #[smi] ty: u32,
-    #[buffer] pixels: Option<&[u8]>,
+    #[buffer] pixels: &[u8],
     #[smi] pbo_offset: i32,
 ) {
-    let Some(data) = tex_upload_3d_source(state, canvas_id, pixels, pbo_offset) else {
-        return;
-    };
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexSubImage3D {
-            canvas_id,
-            target,
-            level,
-            xoffset,
-            yoffset,
-            zoffset,
-            width,
-            height,
-            depth,
-            format,
-            ty,
-            data,
-        },
+    let command = frame_decode::resource::tex_sub_image_3d(
+        &mut OpStateDecodeContext(state),
+        canvas_id,
+        target,
+        level,
+        xoffset,
+        yoffset,
+        zoffset,
+        width,
+        height,
+        depth,
+        format,
+        ty,
+        PixelSource::of_call(pixels, pbo_offset),
     );
+    if let Some(command) = command {
+        queue_gl_fire_and_forget(state, command);
+    }
 }
 
 #[op2(fast)]

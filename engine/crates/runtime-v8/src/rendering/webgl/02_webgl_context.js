@@ -1173,11 +1173,12 @@ function toUnsignedLongLong(value) {
 
 // A GLintptr offset into the bound PIXEL_UNPACK_BUFFER (WebGL 2's buffer overloads of the uploads): a `long long`
 // that may not be negative (INVALID_VALUE). No buffer reaches 2^31 bytes -- the render side holds a buffer's size as a
-// GLint -- so an offset past that is INVALID_VALUE too, and what crosses is exact. -1 when refused, the error recorded.
+// GLint -- so an offset past that reads past the buffer (INVALID_OPERATION, as a browser answers it), and what crosses
+// is exact. -1 when refused, the error recorded.
 function unpackBufferOffset(canvasId, value) {
     const n = toLongLong(value);
     if (n < 0 || n > 0x7fffffff) {
-        recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
+        recordGpuPreflightError(canvasId, n < 0 ? GL_INVALID_VALUE : GL_INVALID_OPERATION);
         return -1;
     }
     return n;
@@ -2921,27 +2922,42 @@ class WebGLRenderingContext {
         return [EMPTY_UPLOAD_BYTES, offset, size];
     }
 
-    // The offset into the bound PIXEL_UNPACK_BUFFER an upload of WebGL 2's offset overloads reads from, or -1 with the
-    // error recorded: no buffer bound is INVALID_OPERATION (WebGL 2.0 3.7.6), a negative offset INVALID_VALUE, an
-    // offset that is not a multiple of the type's size or a range past the buffer INVALID_OPERATION (ES 3.0 3.7.1).
-    _unpackBufferSource(offset, width, height, depth, format, type, threeD) {
-        const buffer = this._boundBuffer(0x88ec);
-        if (!buffer) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
-            return -1;
-        }
+    // An upload from WebGL 2's offset overloads needs a PIXEL_UNPACK_BUFFER bound, and is refused while
+    // UNPACK_FLIP_Y_WEBGL or UNPACK_PREMULTIPLY_ALPHA_WEBGL is set: those apply to pixels the facade hands over, and a
+    // buffer's never pass through it (WebGL 2.0 3.7.6, 5.35). Both INVALID_OPERATION, judged before the call's other
+    // arguments, as a browser judges them. True when refused, with the error recorded.
+    _refusesUnpackBufferSource() {
+        if (this._boundBuffer(0x88ec) && !this._unpackFlipY && !this._unpackPremultiplyAlpha) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        return true;
+    }
+
+    // The offset into the bound PIXEL_UNPACK_BUFFER an upload of WebGL 2's offset overloads reads from, once
+    // `_refusesUnpackBufferSource` and the call's own checks have passed; -1 with the error recorded when refused: a
+    // negative offset is INVALID_VALUE; one past 2^31 - 1, an unpack region outside the data store, an offset that is
+    // not a multiple of the type's size, or a range past the buffer INVALID_OPERATION (ES 3.0 3.7.1, WebGL 2.0 5.35).
+    _unpackBufferOffset(offset, width, height, depth, format, type, threeD) {
         const n = unpackBufferOffset(this._canvasId, offset);
-        if (n < 0) return -1;
+        if (n < 0 || this._refusesUnpackRegion(width, height, threeD)) return -1;
         const t = Number(type) >>> 0;
         const kind = _UPLOAD_VIEWS.get(t);
         const unit = kind !== undefined ? kind[1] : 8;      // FLOAT_32_UNSIGNED_INT_24_8_REV: two words a pixel
         const needed = _uploadBytes(this._pixelStore, Number(width) | 0, Number(height) | 0, Number(depth) | 0,
             _uploadBytesPerPixel(Number(format) >>> 0, t), threeD);
-        if (n % unit !== 0 || n + needed > (buffer._size || 0)) {
+        if (n % unit !== 0 || n + needed > (this._boundBuffer(0x88ec)._size || 0)) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
             return -1;
         }
         return n;
+    }
+
+    // A 3D upload from a view is refused while UNPACK_FLIP_Y_WEBGL or UNPACK_PREMULTIPLY_ALPHA_WEBGL is set
+    // (INVALID_OPERATION, WebGL 2.0 5.35): the flags are defined for 2D images only. True when refused, with the error
+    // recorded.
+    _refusesUnpackFlagsIn3D() {
+        if (!this._unpackFlipY && !this._unpackPremultiplyAlpha) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        return true;
     }
 
     // A deleted texture leaves every unit of this context and the framebuffers bound to it; a framebuffer not bound
@@ -3007,18 +3023,28 @@ class WebGLRenderingContext {
     }
 
     // 9 arguments: (target, level, internalformat, width, height, border, format, type, pixels), WebGL 2's also with a
-    // `srcOffset` and with a TexImageSource for the pixels; 6: (target, level, internalformat, format, type, source).
-    // Refused before anything is sent: a target with no texture (`_textureFor`), a PIXEL_UNPACK_BUFFER bound, a level
-    // out of range, formats and a type the tables do not have together (`_uploadFormatError`), a size or border out of
-    // range (`preflightTexImage2D`), an unpack region outside the data store, and pixels the upload cannot read
-    // (`_uploadViewBytes`). A value that is none of the overloads' is a TypeError, as WebIDL converts it.
+    // `srcOffset`, with a TexImageSource for the pixels, and with an offset into the bound PIXEL_UNPACK_BUFFER; 6:
+    // (target, level, internalformat, format, type, source). Refused before anything is sent: a target with no texture
+    // (`_textureFor`), a PIXEL_UNPACK_BUFFER bound -- or, for an offset, none bound or an unpack flag set
+    // (`_refusesUnpackBufferSource`) --, a level out of range, formats and a type the tables do not have together
+    // (`_uploadFormatError`), a size or border out of range (`preflightTexImage2D`), an unpack region outside the data
+    // store, and pixels the upload cannot read (`_uploadViewBytes`, `_unpackBufferOffset`). A value that is none of the
+    // overloads' is a TypeError, as WebIDL converts it.
     texImage2D(target, level, internalformat, a4, a5, a6, a7, a8, a9, a10) {
         if (!this._textureFor(target, "image2D")) return;
         if (a7 !== undefined) {
-            if (this._refusesUnpackBufferBound()) return;
+            const fromBuffer = this._isWebGL2() && a9 != null && typeof a9 !== "object";
+            if (fromBuffer ? this._refusesUnpackBufferSource() : this._refusesUnpackBufferBound()) return;
             if (!preflightTexImage2D(
                 this._canvasId, target, level, a4, a5, a6, this._uploadFormatError(internalformat, a7, a8),
             )) return;
+            if (fromBuffer) {
+                const offset = this._unpackBufferOffset(a9, a4, a5, 1, a7, a8, false);
+                if (offset >= 0) {
+                    _rawTexImage2D(this._canvasId, target, level, internalformat, a4, a5, a6, a7, a8, null, offset);
+                }
+                return;
+            }
             // Text texture cache hit takes precedence.
             if (_migoTexImageFromTextCache(this._canvasId, target, level, internalformat, a9)) {
                 return;
@@ -3050,7 +3076,7 @@ class WebGLRenderingContext {
                 return;
             }
             if (a9 == null) {
-                _rawTexImage2D(this._canvasId, target, level, internalformat, a4, a5, a6, a7, a8, null);
+                _rawTexImage2D(this._canvasId, target, level, internalformat, a4, a5, a6, a7, a8, null, -1);
                 return;
             }
             if (!ArrayBufferIsView(a9)) {
@@ -3059,7 +3085,7 @@ class WebGLRenderingContext {
             if (this._refusesUnpackRegion(a4, a5, false)) return;
             const data = this._uploadViewBytes(a9, this._isWebGL2() ? a10 : 0, a4, a5, 1, a7, a8, false);
             if (data === null) return;
-            _rawTexImage2D(this._canvasId, target, level, internalformat, a4, a5, a6, a7, a8, data);
+            _rawTexImage2D(this._canvasId, target, level, internalformat, a4, a5, a6, a7, a8, data, -1);
         } else {
             // The size is the source's.
             if (this._refusesUnpackBufferBound()) return;
@@ -3108,7 +3134,7 @@ class WebGLRenderingContext {
                     if (data === null) return;
                     _rawTexImage2D(
                         this._canvasId, target, level, internalformat,
-                        raw.width, raw.height, 0, a4, a5, data,
+                        raw.width, raw.height, 0, a4, a5, data, -1,
                     );
                     return;
                 }
@@ -3119,17 +3145,28 @@ class WebGLRenderingContext {
     }
 
     // 9 arguments: (target, level, xoffset, yoffset, width, height, format, type, pixels), WebGL 2's also with a
-    // `srcOffset` and with a TexImageSource for the pixels; 7: (target, level, xoffset, yoffset, format, type, source).
-    // Refused as `texImage2D` is, against the (format, type) pairs of either table (`_subUploadFormatError`); null
-    // pixels are INVALID_VALUE.
+    // `srcOffset`, with a TexImageSource for the pixels, and with an offset into the bound PIXEL_UNPACK_BUFFER; 7:
+    // (target, level, xoffset, yoffset, format, type, source). Refused as `texImage2D` is, against the (format, type)
+    // pairs of either table (`_subUploadFormatError`); null pixels are INVALID_VALUE.
     texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels, srcOffset) {
         if (!this._textureFor(target, "image2D")) return;
         if (pixels !== undefined) {
-            if (this._refusesUnpackBufferBound()) return;
+            const fromBuffer = this._isWebGL2() && pixels !== null && typeof pixels !== "object";
+            if (fromBuffer ? this._refusesUnpackBufferSource() : this._refusesUnpackBufferBound()) return;
             if (!preflightTexSubImage(
                 this._canvasId, level, MAX_WEBGL_GPU_2D_LEVELS, this._subUploadFormatError(format, type),
                 xoffset, yoffset, 0, width, height, 1,
             )) return;
+            if (fromBuffer) {
+                const offset = this._unpackBufferOffset(pixels, width, height, 1, format, type, false);
+                if (offset >= 0) {
+                    _rawTexSubImage2D(
+                        this._canvasId, target, level, xoffset, yoffset, width, height, format, type,
+                        EMPTY_UPLOAD_BYTES, offset,
+                    );
+                }
+                return;
+            }
             if (pixels === null) {
                 recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
                 return;
@@ -3158,7 +3195,7 @@ class WebGLRenderingContext {
             if (this._refusesUnpackRegion(width, height, false)) return;
             const data = this._uploadViewBytes(pixels, this._isWebGL2() ? srcOffset : 0, width, height, 1, format, type, false);
             if (data === null) return;
-            _rawTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, type, data);
+            _rawTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, type, data, -1);
             return;
         }
 
@@ -3204,7 +3241,7 @@ class WebGLRenderingContext {
                 if (data === null) return;
                 _rawTexSubImage2D(
                     this._canvasId, target, level, xoffset, yoffset,
-                    raw.width, raw.height, sourceFormat, sourceType, data,
+                    raw.width, raw.height, sourceFormat, sourceType, data, -1,
                 );
                 return;
             }
@@ -5243,7 +5280,8 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // ---- 3D textures -------------------------------------------
     // `pixelsOrOffset` is a view (from its `srcOffset` element on), null (storage only), or an offset into the bound
     // PIXEL_UNPACK_BUFFER. Refused before anything is sent as `texImage2D` is, against UNPACK_IMAGE_HEIGHT and the
-    // skipped rows too; an offset as `_unpackBufferSource` refuses it. A TexImageSource is not uploaded in 3D.
+    // skipped rows too; and a view while an unpack flag is set (`_refusesUnpackFlagsIn3D`). A TexImageSource is not
+    // uploaded in 3D.
     texImage3D(
         target, level, internalformat,
         width, height, depth, border,
@@ -5251,7 +5289,8 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     ) {
         if (!this._textureFor(target, "image3D")) return;
         const fromBuffer = pixelsOrOffset != null && typeof pixelsOrOffset !== "object";
-        if (!fromBuffer && this._refusesUnpackBufferBound()) return;
+        if (fromBuffer ? this._refusesUnpackBufferSource()
+            : this._refusesUnpackBufferBound() || (pixelsOrOffset != null && this._refusesUnpackFlagsIn3D())) return;
         const maxXY = target === 0x806F
             ? MAX_WEBGL_GPU_3D_DIMENSION
             : MAX_WEBGL_GPU_2D_DIMENSION;
@@ -5298,7 +5337,8 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     ) {
         if (!this._textureFor(target, "image3D")) return;
         const fromBuffer = pixelsOrOffset != null && typeof pixelsOrOffset !== "object";
-        if (!fromBuffer && this._refusesUnpackBufferBound()) return;
+        if (fromBuffer ? this._refusesUnpackBufferSource()
+            : this._refusesUnpackBufferBound() || (pixelsOrOffset != null && this._refusesUnpackFlagsIn3D())) return;
         const levels = maxMipLevels(target === 0x806F ? MAX_WEBGL_GPU_3D_DIMENSION : MAX_WEBGL_GPU_2D_DIMENSION);
         const formatError = !fromBuffer && (Number(type) >>> 0) === 0x8dad
             ? GL_INVALID_ENUM : this._subUploadFormatError(format, type);
@@ -5318,13 +5358,13 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             source[0], source[1],
         );
     }
-    // A 3D upload's source as the op's last two arguments -- the bytes (null for none) and the PIXEL_UNPACK_BUFFER
-    // offset (-1 for none) -- or null when refused with the error recorded. `reserves`: null pixels allocate storage.
+    // A 3D upload's source as the op's last two arguments -- the bytes (none: null for storage only, empty with an
+    // offset) and the PIXEL_UNPACK_BUFFER offset (-1 for none) -- or null when refused with the error recorded.
+    // `reserves`: null pixels allocate storage.
     _upload3DSource(pixelsOrOffset, srcOffset, fromBuffer, width, height, depth, format, type, reserves) {
         if (fromBuffer) {
-            if (this._refusesUnpackRegion(width, height, true)) return null;
-            const offset = this._unpackBufferSource(pixelsOrOffset, width, height, depth, format, type, true);
-            return offset < 0 ? null : [null, offset];
+            const offset = this._unpackBufferOffset(pixelsOrOffset, width, height, depth, format, type, true);
+            return offset < 0 ? null : [EMPTY_UPLOAD_BYTES, offset];
         }
         if (pixelsOrOffset === null || pixelsOrOffset === undefined) return reserves ? [null, -1] : null;
         if (!ArrayBufferIsView(pixelsOrOffset)) {

@@ -193,6 +193,18 @@ buffer. A renderer that cannot answer is `OPERATION_FAILED`, which the producer 
 in-process op pushes. Additive, like the four operations before it (9 to 12), which shipped without rows in the table
 under *Operations*; they have them now.
 
+### Amendment, 2026-10-03: texture uploads from a pixel-unpack buffer
+
+`TEX_IMAGE_2D` (196) and `TEX_SUB_IMAGE_2D` (197) gain a `pbo_offset` word after `type`, as `TEX_IMAGE_3D` (200)
+and `TEX_SUB_IMAGE_3D` (201) already had after `ty`. A `pbo_offset` that is not negative names the bound
+PIXEL_UNPACK_BUFFER and the byte offset the pixels are read from -- WebGL 2's offset overloads of `texImage2D` /
+`texSubImage2D` -- and `byte_length` is then 0; -1 means the bytes follow. `TEX_SUB_IMAGE_3D` loses its `has_pixels`
+word: a sub-image upload always has a source, so a record that named none is no longer one a producer can write. The
+layouts are now `... format type pbo_offset has_data | byte_length` (196, 200) and `... format type pbo_offset |
+byte_length` (197, 201). Not additive -- three records' fields move -- and safe under the audit the amendments above
+rest on: the producer is a resource of the same Swift package as the reader, and the in-process JavaScript calls the
+ops, not the records.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.

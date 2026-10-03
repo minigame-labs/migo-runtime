@@ -413,6 +413,8 @@ export function op_bind_attrib_location(programId, index, name) {
   // No canvas among this op's arguments; an upload refusal it cannot have.
   emitBytes(0, R.OPR_BIND_ATTRIB_LOCATION, utf8.encode(stringOf(name, "name")), program, location);
 }
+const EMPTY = new Uint8Array(0);
+
 export function op_buffer_data(canvasId, target, size, data, usage) {
   const canvas = smiU32(canvasId, "canvas_id");
   const bytes = optionalBytesOf(data, "data");
@@ -438,9 +440,15 @@ export function op_buffer_sub_data(canvasId, target, offset, data) {
     toI32(offset, "offset"),
   );
 }
-export function op_tex_image_2d(canvasId, target, level, internalformat, width, height, border, format, type, data) {
+// The `tex*Image*` uploads name their source as the compressed ones do: a `pbo_offset` that is not negative is the
+// bound PIXEL_UNPACK_BUFFER's offset (WebGL 2's offset overloads), and no bytes follow; otherwise the bytes do -- the
+// facade has taken them from the view's `srcOffset` on. An image upload with neither (`has_data` 0) allocates storage
+// only. The bytes are converted whatever the offset, as the in-process op converts every argument.
+export function op_tex_image_2d(canvasId, target, level, internalformat, width, height, border, format, type, data, pboOffset) {
   const canvas = smiU32(canvasId, "canvas_id");
-  const bytes = optionalBytesOf(data, "data");
+  const pbo = toI32(pboOffset, "pbo_offset");
+  const given = optionalBytesOf(data, "data");
+  const bytes = pbo >= 0 ? null : given;
   emitBytes(
     canvas,
     R.OPR_TEX_IMAGE_2D,
@@ -454,15 +462,18 @@ export function op_tex_image_2d(canvasId, target, level, internalformat, width, 
     toI32(border, "border"),
     smiU32(format, "format"),
     smiU32(type, "type_"),
+    pbo,
     bytes === null ? 0 : 1,
   );
 }
-export function op_tex_sub_image_2d(canvasId, target, level, xoffset, yoffset, width, height, format, type, data) {
+export function op_tex_sub_image_2d(canvasId, target, level, xoffset, yoffset, width, height, format, type, data, pboOffset) {
   const canvas = smiU32(canvasId, "canvas_id");
+  const pbo = toI32(pboOffset, "pbo_offset");
+  const bytes = bytesOf(data, "data");
   emitBytes(
     canvas,
     R.OPR_TEX_SUB_IMAGE_2D,
-    bytesOf(data, "data"),
+    pbo >= 0 ? EMPTY : bytes,
     canvas,
     smiU32(target, "target"),
     toI32(level, "level"),
@@ -472,6 +483,7 @@ export function op_tex_sub_image_2d(canvasId, target, level, xoffset, yoffset, w
     toI32(height, "height"),
     smiU32(format, "format"),
     smiU32(type, "type_"),
+    pbo,
   );
 }
 // The compressed uploads' last two prefix words name the bound PIXEL_UNPACK_BUFFER's range (WebGL 2's other
@@ -553,17 +565,6 @@ export function op_wait_sync(canvasId, sync) {
   emit(R.OPR_WAIT_SYNC, smiU32(canvasId, "canvas_id"), smiU32(sync, "sync"));
 }
 
-const EMPTY = new Uint8Array(0);
-
-/**
- * A 3D upload's pixels -- the facade has already taken them from the view's
- * `srcOffset` on -- or null when a pixel-unpack offset is given (which wins) or
- * there are none.
- */
-function pixels3d(pixels, pboOffset) {
-  return pboOffset >= 0 ? null : optionalBytesOf(pixels, "pixels");
-}
-
 export function op_tex_image_3d(
   canvasId,
   target,
@@ -580,7 +581,8 @@ export function op_tex_image_3d(
 ) {
   const canvas = smiU32(canvasId, "canvas_id");
   const pbo = toI32(pboOffset, "pbo_offset");
-  const bytes = pixels3d(pixels, pbo);
+  const given = optionalBytesOf(pixels, "pixels");
+  const bytes = pbo >= 0 ? null : given;
   emitBytes(
     canvas,
     R.OPR_TEX_IMAGE_3D,
@@ -617,11 +619,11 @@ export function op_tex_sub_image_3d(
 ) {
   const canvas = smiU32(canvasId, "canvas_id");
   const pbo = toI32(pboOffset, "pbo_offset");
-  const bytes = pixels3d(pixels, pbo);
+  const bytes = bytesOf(pixels, "pixels");
   emitBytes(
     canvas,
     R.OPR_TEX_SUB_IMAGE_3D,
-    bytes ?? EMPTY,
+    pbo >= 0 ? EMPTY : bytes,
     canvas,
     smiU32(target, "target"),
     toI32(level, "level"),
@@ -634,7 +636,6 @@ export function op_tex_sub_image_3d(
     smiU32(format, "format"),
     smiU32(ty, "ty"),
     pbo,
-    bytes === null ? 0 : 1,
   );
 }
 

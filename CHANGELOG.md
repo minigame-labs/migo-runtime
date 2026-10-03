@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WebGL 2: `texImage2D` and `texSubImage2D` from an offset into the bound PIXEL_UNPACK_BUFFER (`..., format, type,
+  offset)`). The number used to be a TypeError, as WebGL 1 has it. The four `tex*Image*` uploads now name one source
+  -- the call's bytes or the buffer from an offset -- in the command, the ops and the Performance+ records alike, and
+  the renderer hands the driver the offset only with a buffer bound. Refused before anything is sent, in a browser's
+  order: no buffer bound, or UNPACK_FLIP_Y_WEBGL / UNPACK_PREMULTIPLY_ALPHA_WEBGL set, is INVALID_OPERATION before
+  the other arguments are judged; then a negative offset is INVALID_VALUE, and an offset past 2^31 - 1, not a multiple
+  of the type's size or reading past the buffer is INVALID_OPERATION.
 - WebGL 2: `getBufferSubData`. The bound buffer's bytes, read into a range of the destination view (`dstOffset` and
   `length` in its elements), after the GPU work that writes them -- a copy, transform feedback, a `readPixels` into a
   pack buffer, which is how three.js reads render targets back asynchronously. The renderer maps the range for reading
@@ -105,6 +112,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL 2: a 3D upload from a view while UNPACK_FLIP_Y_WEBGL or UNPACK_PREMULTIPLY_ALPHA_WEBGL is set is
+  INVALID_OPERATION, as the specification has it (the flags are defined for 2D images); it was uploaded unflipped. An
+  upload offset past 2^31 - 1 is INVALID_OPERATION, as a browser answers it; it was INVALID_VALUE.
+- Performance+: a sub-image upload's record always names its source. A `texSubImage3D` record could name none, and the
+  renderer then handed the driver a null pointer to read from.
 - WebGL: texture uploads are checked as the specification checks them, before anything is sent; the driver's own
   error never reached `getError`, and an upload from a view shorter than its rows had the driver read past the view.
   In the order a browser judges them: an internal format the context does not have is INVALID_VALUE, a format or a

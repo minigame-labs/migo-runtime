@@ -491,19 +491,21 @@ impl CompressedImageData {
     }
 }
 
+/// Where a `tex*Image*` upload's pixels come from: the bytes the call carried, or the PIXEL_UNPACK_BUFFER bound when
+/// the renderer runs it, from this byte offset (WebGL 2's offset overloads). An image upload with neither -- `None` in
+/// its `Option` -- allocates the storage only; a sub-image upload always has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TexImage3DSource {
-    None,
+pub enum PixelUnpackSource {
     Bytes(std::sync::Arc<Vec<u8>>),
     BufferOffset(u32),
 }
 
-impl TexImage3DSource {
+impl PixelUnpackSource {
     #[inline]
     fn approx_deep_size_bytes(&self) -> usize {
         match self {
             Self::Bytes(bytes) => bytes.capacity(),
-            Self::None | Self::BufferOffset(_) => 0,
+            Self::BufferOffset(_) => 0,
         }
     }
 }
@@ -939,7 +941,8 @@ pub enum GLCmd {
         border: i32,
         format: u32,
         type_: u32,
-        data: Option<Arc<Vec<u8>>>,
+        /// `None` allocates the storage only.
+        data: Option<PixelUnpackSource>,
     },
     /// `glTexImage2D(target, level, internalformat, ..., image)` where
     /// `image` is a previously loaded shared image (uploaded via
@@ -1071,7 +1074,7 @@ pub enum GLCmd {
         height: i32,
         format: u32,
         type_: u32,
-        data: Arc<Vec<u8>>,
+        data: PixelUnpackSource,
     },
     TexParameteri {
         canvas_id: CanvasId,
@@ -1930,10 +1933,8 @@ pub enum GLCmd {
         border: i32,
         format: u32,
         ty: u32,
-        /// RGBA / Luminance / etc. byte stream - `None` reserves
-        /// storage without an upload, matching the WebGL 2
-        /// "size-only" overload.
-        data: TexImage3DSource,
+        /// `None` allocates the storage only.
+        data: Option<PixelUnpackSource>,
     },
     TexSubImage3D {
         canvas_id: CanvasId,
@@ -1947,7 +1948,7 @@ pub enum GLCmd {
         depth: i32,
         format: u32,
         ty: u32,
-        data: TexImage3DSource,
+        data: PixelUnpackSource,
     },
     TexStorage3D {
         canvas_id: CanvasId,
@@ -3240,8 +3241,12 @@ impl GLCmd {
             // Texture uploads (RGBA or compressed block).  `TexImage2D`
             // is optional data (reservation vs upload); `TexSubImage2D`
             // is always `Arc<Vec<u8>>` with a concrete payload.
-            GLCmd::TexImage2D { data, .. } => data.as_ref().map_or(0, |arc| arc.capacity()),
-            GLCmd::TexSubImage2D { data, .. } => data.capacity(),
+            GLCmd::TexImage2D { data, .. } | GLCmd::TexImage3D { data, .. } => data
+                .as_ref()
+                .map_or(0, PixelUnpackSource::approx_deep_size_bytes),
+            GLCmd::TexSubImage2D { data, .. } | GLCmd::TexSubImage3D { data, .. } => {
+                data.approx_deep_size_bytes()
+            }
             GLCmd::CompressedTexImage2D { data, .. }
             | GLCmd::CompressedTexSubImage2D { data, .. }
             | GLCmd::CompressedTexImage3D { data, .. }
@@ -3287,11 +3292,6 @@ impl GLCmd {
             // WebGL 2 transform feedback varying names.
             GLCmd::TransformFeedbackVaryings { varyings, .. } => {
                 varyings.iter().map(|v| v.capacity()).sum()
-            }
-
-            // WebGL 2 3D texture payloads.
-            GLCmd::TexImage3D { data, .. } | GLCmd::TexSubImage3D { data, .. } => {
-                data.approx_deep_size_bytes()
             }
 
             // All other variants are pure scalars / Copy payloads -
@@ -3450,7 +3450,7 @@ mod approx_size_tests {
             height: 256,
             format: 0x1908,
             type_: 0x1401,
-            data,
+            data: PixelUnpackSource::Bytes(data),
         };
         assert!(cmd.approx_deep_size_bytes() >= 256 * 1024);
     }
