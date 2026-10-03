@@ -1686,6 +1686,8 @@ pub(super) mod tests {
                 gl.bindTexture(0x0de1, gl.createTexture());     // the copies' textures
                 gl.bindTexture(0x806f, gl.createTexture());
                 gl.copyTexImage2D(0x0de1, 0, 0x8058, 1, 2, 3, 4, 0);       // RGBA8: a WebGL 2 format
+                gl.texImage2D(0x0de1, 1, 0x1908, 8, 10, 0, 0x1908, 0x1401, null);   // the images the sub-copies go into
+                gl.texImage3D(0x806f, 0, 0x1908, 7, 9, 4, 0, 0x1908, 0x1401, null);
                 gl.copyTexSubImage2D(0x0de1, 1, 2, 3, -4, 5, 6, 7);
                 gl.copyTexSubImage3D(0x806f, 0, 1, 2, 3, 4, 5, 6, 7);
                 gl.bindBuffer(0x8f36, gl.createBuffer());     // COPY_READ_BUFFER and COPY_WRITE_BUFFER, 64 bytes each
@@ -1917,9 +1919,13 @@ pub(super) mod tests {
                 "compressed_uploads.js",
                 r#"
                 const gl1 = new WebGLRenderingContext({ _rid: 180, width: 1, height: 1 }, {});
+                gl1._compressedCapsCache = 1;       // what the renderer would answer: ETC2 is there
+                gl1.getExtension("WEBGL_compressed_texture_etc");
                 gl1.bindTexture(0x0de1, gl1.createTexture());
                 gl1.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, new Uint8Array(16).fill(1));
                 const gl = new WebGL2RenderingContext({ _rid: 181, width: 1, height: 1 }, {});
+                gl._compressedCapsCache = 1;
+                gl.getExtension("WEBGL_compressed_texture_etc");
                 gl.bindTexture(0x0de1, gl.createTexture());
                 gl.bindTexture(0x8c1a, gl.createTexture());
                 const bytes = new Uint8Array(48).map((_, k) => k);
@@ -1929,8 +1935,8 @@ pub(super) mod tests {
                 gl.compressedTexSubImage3D(0x8c1a, 0, 0, 0, 1, 4, 4, 1, 0x9278, bytes.subarray(0, 16));
                 gl.bindBuffer(0x88ec, gl.createBuffer());                                    // PIXEL_UNPACK_BUFFER
                 gl.bufferData(0x88ec, 112, 0x88e0);
-                gl.compressedTexImage2D(0x0de1, 2, 0x9278, 4, 4, 0, 16, 64);                // the bound buffer
-                gl.compressedTexSubImage2D(0x0de1, 0, 4, 0, 4, 4, 0x9278, 16, 80);
+                gl.compressedTexImage2D(0x0de1, 2, 0x9278, 8, 4, 0, 32, 64);                // the bound buffer
+                gl.compressedTexSubImage2D(0x0de1, 2, 4, 0, 4, 4, 0x9278, 16, 80);
                 gl.compressedTexImage3D(0x8c1a, 1, 0x9278, 4, 4, 1, 0, 16, 0);
                 gl.compressedTexSubImage3D(0x8c1a, 0, 0, 0, 1, 4, 4, 1, 0x9278, 16, 96);    // its last 16 bytes
                 const sync = gl.fenceSync(0x9117, 0);
@@ -1977,7 +1983,7 @@ pub(super) mod tests {
                 "2d 1 bytes 32..48".to_string(),
                 "3d 0 2 bytes 8..40".to_string(),
                 "sub3d 1 bytes 0..16".to_string(),
-                "2d 2 buffer 64+16".to_string(),
+                "2d 2 buffer 64+32".to_string(),
                 "sub2d 4 buffer 80+16".to_string(),
                 "3d 1 1 buffer 0+16".to_string(),
                 "sub3d 1 buffer 96+16".to_string(),
@@ -2002,6 +2008,8 @@ pub(super) mod tests {
                 "malformed_compressed_uploads.js",
                 r#"
                 const gl = new WebGL2RenderingContext({ _rid: 182, width: 1, height: 1 }, {});
+                gl._compressedCapsCache = 1;       // what the renderer would answer: ETC2 is there
+                gl.getExtension("WEBGL_compressed_texture_etc");
                 gl.bindTexture(0x0de1, gl.createTexture());
                 gl.bindTexture(0x8c1a, gl.createTexture());
                 gl.bindTexture(0x806f, gl.createTexture());
@@ -2879,7 +2887,8 @@ pub(super) mod tests {
                 gl.texImage2D(T2D, 0, 0x8058, 1, 1, 0, RGBA, UBYTE, new Uint8Array(12).map((_, k) => k), 4); err(gl, 0, "a srcOffset");   // sent: 4..8
                 gl.texImage2D(T2D, 0, 0x8058, 1, 1, 0, RGBA, UBYTE, new Uint8Array(8), 5); err(gl, OPERATION, "not enough data from srcOffset");
                 gl.texImage2D(T2D, 0, 0x8058, 1, 1, 0, RGBA, UBYTE, new Uint8Array(8), 9); err(gl, OPERATION, "a srcOffset past the view");
-                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, 0x1903, 0x1406, new Float32Array(1)); err(gl, 0, "a sub upload of a sized format's pair");   // sent: 4
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, 0x1903, 0x1406, new Float32Array(1)); err(gl, OPERATION, "a pair of another sized format than the image's");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(gl, 0, "a sub upload of the image's pair");   // sent: 4
                 gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGB, 0x8368, new Uint32Array(1)); err(gl, OPERATION, "a pair neither table has");
                 // the unpack region and its bytes
                 gl.pixelStorei(0x0cf2, 4); gl.pixelStorei(0x0cf4, 1);
@@ -2953,6 +2962,237 @@ pub(super) mod tests {
                 "3d buffer 8",
             ],
             "only the uploads that were taken are sent, each with exactly the bytes it reads"
+        );
+    }
+
+    /// The variant names of the texture commands that reached the renderer, in order: what a test of the texture
+    /// image record compares, since a refused call must send nothing.
+    fn texture_commands(render_rx: &crossbeam_channel::Receiver<RenderCommand>) -> Vec<String> {
+        drain_gl_commands(render_rx)
+            .iter()
+            .map(|cmd| format!("{cmd:?}"))
+            .map(|text| text.split([' ', '{', '(']).next().unwrap_or("").to_string())
+            .filter(|name| {
+                name.starts_with("Tex")
+                    || name.starts_with("CompressedTex")
+                    || name.starts_with("CopyTex")
+                    || name == "GenerateMipmap"
+                    || name.starts_with("RenderbufferStorage")
+            })
+            .collect()
+    }
+
+    /// WebGL 1: the facade records every image a call defines and judges what follows by it, before anything is sent
+    /// (ES 2.0 3.7, WebGL 1.0 5.14.8 and "Texture Type in TexSubImage2D Calls"): an upload or copy into an image that is
+    /// not there is INVALID_OPERATION, past its edge INVALID_VALUE, from another format or type than it was defined with
+    /// INVALID_OPERATION; a mipmap level of a size that is not a power of two is INVALID_VALUE, and `generateMipmap`
+    /// of one, or of a cube map whose faces are not all there, INVALID_OPERATION; the levels `generateMipmap` makes are
+    /// there afterwards. The texture parameters are WebGL 1's four, each with its own values, and read back as set; a
+    /// renderbuffer takes WebGL 1's six formats (RGB565 among them) and needs one bound.
+    #[test]
+    fn webgl1_texture_images_judge_the_calls_that_depend_on_them() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "texture_images_webgl1.js",
+                r#"
+                const gl = new WebGLRenderingContext({ _rid: 230, width: 1, height: 1 }, {});
+                const err = (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                const T2D = 0x0de1, CUBE = 0x8513, RGBA = 0x1908, RGB = 0x1907, UBYTE = 0x1401;
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(OPERATION, "an upload into no image");
+                gl.copyTexSubImage2D(T2D, 0, 0, 0, 0, 0, 1, 1); err(OPERATION, "a copy into no image");
+                gl.texImage2D(T2D, 0, RGBA, 4, 4, 0, RGBA, UBYTE, null); err(0, "a 4x4 image");                 // sent
+                gl.texSubImage2D(T2D, 0, 3, 3, 2, 2, RGBA, UBYTE, new Uint8Array(16)); err(VALUE, "past the image's edge");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGB, UBYTE, new Uint8Array(3)); err(OPERATION, "another format than the image's");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, 0x8033, new Uint16Array(1)); err(OPERATION, "another type than the image's");
+                gl.texSubImage2D(T2D, 0, 0, 0, 4, 4, RGBA, UBYTE, new Uint8Array(64)); err(0, "the whole image");   // sent
+                gl.texImage2D(T2D, 1, RGBA, 3, 3, 0, RGBA, UBYTE, null); err(VALUE, "a mipmap of 3x3");
+                gl.copyTexImage2D(T2D, 1, RGBA, 0, 0, 3, 3, 0); err(VALUE, "a copied mipmap of 3x3");
+                gl.generateMipmap(T2D); err(0, "mipmaps of 4x4");                                                  // sent
+                gl.texSubImage2D(T2D, 2, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(0, "level 2 is 1x1");    // sent
+                gl.texSubImage2D(T2D, 2, 0, 0, 2, 1, RGBA, UBYTE, new Uint8Array(8)); err(VALUE, "and no larger");
+                gl.texSubImage2D(T2D, 3, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(OPERATION, "and the last");
+                gl.texImage2D(T2D, 0, RGBA, 3, 3, 0, RGBA, UBYTE, null); err(0, "a 3x3 level 0");                   // sent
+                gl.generateMipmap(T2D); err(OPERATION, "no mipmaps of 3x3");
+                gl.copyTexImage2D(T2D, 0, RGB, 0, 0, 2, 2, 0); err(0, "a copied 2x2");                              // sent
+                gl.copyTexSubImage2D(T2D, 0, 1, 1, 0, 0, 2, 2); err(VALUE, "a copy past its edge");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGB, UBYTE, new Uint8Array(3)); err(0, "RGB / UNSIGNED_BYTE, as copied"); // sent
+                gl.bindTexture(CUBE, gl.createTexture());
+                gl.texImage2D(0x8515, 0, RGBA, 2, 2, 0, RGBA, UBYTE, null); err(0, "one face");                    // sent
+                gl.generateMipmap(CUBE); err(OPERATION, "a cube map with one face");
+                for (let face = 0x8516; face <= 0x851a; face++) gl.texImage2D(face, 0, RGBA, 2, 2, 0, RGBA, UBYTE, null);   // 5 sent
+                gl.generateMipmap(CUBE); err(0, "a cube map with all six");                                       // sent
+                gl.texSubImage2D(0x851a, 1, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(0, "a face's level 1"); // sent
+                // parameters
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                gl.bindTexture(T2D, gl.createTexture());
+                check(gl.getTexParameter(T2D, 0x2801) === 0x2702, "MIN_FILTER starts NEAREST_MIPMAP_LINEAR");
+                gl.texParameteri(T2D, 0x2802, 0x2601); err(ENUM, "a wrap of LINEAR");
+                gl.texParameteri(T2D, 0x8072, 0x2901); err(ENUM, "WRAP_R in WebGL 1");
+                gl.texParameteri(T2D, 0x813c, 1); err(ENUM, "BASE_LEVEL in WebGL 1");
+                gl.texParameterf(T2D, 0x2801, 0x2600); err(0, "MIN_FILTER NEAREST, through the float call");      // sent
+                check(gl.getTexParameter(T2D, 0x2801) === 0x2600, "and it reads back");
+                check(gl.getTexParameter(T2D, 0x8072) === null, "no WRAP_R"); err(ENUM, "WRAP_R is INVALID_ENUM");
+                check(gl.getTexParameter(T2D, 0x912f) === null, "no IMMUTABLE_FORMAT"); err(ENUM, "IMMUTABLE_FORMAT is INVALID_ENUM");
+                // renderbuffers
+                gl.renderbufferStorage(0x8d41, 0x8d62, 4, 4); err(OPERATION, "no renderbuffer bound");
+                gl.bindRenderbuffer(0x8d41, gl.createRenderbuffer());
+                gl.renderbufferStorage(0x8d41, 0x8d62, 4, 4); err(0, "RGB565");                                   // sent
+                gl.renderbufferStorage(0x8d41, 0x8058, 4, 4); err(ENUM, "RGBA8 in WebGL 1");
+                check(gl.getRenderbufferParameter(0x8d41, 0x8d44) === 0x8d62, "the format kept is RGB565's");
+                gl.flush();
+                "#,
+            )
+            .expect("every call should be judged, none thrown");
+        let mut want = vec![
+            "TexImage2D",
+            "TexSubImage2D",
+            "GenerateMipmap",
+            "TexSubImage2D",
+            "TexImage2D",
+            "CopyTexImage2D",
+            "TexSubImage2D",
+        ];
+        want.extend(["TexImage2D"; 6]);
+        want.extend([
+            "GenerateMipmap",
+            "TexSubImage2D",
+            "TexParameterf",
+            "RenderbufferStorage",
+        ]);
+        assert_eq!(
+            texture_commands(&render_rx),
+            want,
+            "only the calls taken reach the renderer"
+        );
+    }
+
+    /// WebGL 2 and the compressed formats: `texStorage*` makes every level of every face and fixes them, so a later
+    /// `texImage*`, `copyTexImage2D`, compressed image or `texStorage*` is INVALID_OPERATION, and the storage reads back
+    /// as immutable; an upload into an image takes a (format, type) ES 3.0 table 3.2 or 3.3 has with its internal
+    /// format (an unsized RGBA takes 4_4_4_4); `generateMipmap` needs a base that is colour-renderable and filterable and
+    /// starts at TEXTURE_BASE_LEVEL; 3D images keep their depth, a 2D array its layers. A compressed format is one only
+    /// while its extension is enabled; its data is whole blocks, uploads into it start on a block and are of its format,
+    /// and it is no 3D texture's. The parameters are read back as set, the LODs as floats.
+    #[test]
+    fn webgl2_and_compressed_texture_images_judge_the_calls_that_depend_on_them() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "texture_images_webgl2.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 231, width: 1, height: 1 }, {});
+                const err = (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                const T2D = 0x0de1, T3D = 0x806f, ARRAY = 0x8c1a, RGBA = 0x1908, UBYTE = 0x1401, RGBA8 = 0x8058;
+                const ETC = 0x9278;
+                // immutable storage
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.texStorage2D(T2D, 3, RGBA8, 8, 8); err(0, "storage");                                           // sent
+                check(gl.getTexParameter(T2D, 0x912f) === true && gl.getTexParameter(T2D, 0x82df) === 3, "immutable, 3 levels");
+                gl.texImage2D(T2D, 0, RGBA8, 8, 8, 0, RGBA, UBYTE, null); err(OPERATION, "texImage2D on immutable storage");
+                gl.copyTexImage2D(T2D, 0, RGBA8, 0, 0, 8, 8, 0); err(OPERATION, "copyTexImage2D on immutable storage");
+                gl.texStorage2D(T2D, 1, RGBA8, 8, 8); err(OPERATION, "storage twice");
+                gl.texSubImage2D(T2D, 2, 0, 0, 2, 2, RGBA, UBYTE, new Uint8Array(16)); err(0, "level 2 is 2x2");  // sent
+                gl.texSubImage2D(T2D, 3, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(OPERATION, "there is no level 3");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, 0x8033, new Uint16Array(1)); err(OPERATION, "4_4_4_4 into RGBA8");
+                gl.generateMipmap(T2D); err(0, "mipmaps of immutable storage");                                    // sent
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.texStorage2D(T2D, 1, 0x84f9, 4, 4); err(ENUM, "DEPTH_STENCIL is not sized");
+                gl.texStorage2D(T2D, 1, 0x8d62, 4, 4); err(0, "RGB565 storage");                                   // sent
+                gl.bindTexture(0x8513, gl.createTexture());
+                gl.texStorage2D(0x8513, 1, RGBA8, 4, 2); err(VALUE, "a cube map that is not square");
+                // mutable images
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.texImage2D(T2D, 0, RGBA, 2, 2, 0, RGBA, UBYTE, null); err(0, "unsized RGBA");                  // sent
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, 0x8033, new Uint16Array(1)); err(0, "4_4_4_4 into unsized RGBA"); // sent
+                gl.texImage2D(T2D, 0, 0x822e, 2, 2, 0, 0x1903, 0x1406, null); err(0, "R32F");                      // sent
+                gl.generateMipmap(T2D); err(OPERATION, "R32F is not filterable");
+                gl.texImage2D(T2D, 1, RGBA8, 4, 4, 0, RGBA, UBYTE, null); err(0, "a level 1 of 4x4");               // sent
+                gl.texParameteri(T2D, 0x813c, -1); err(VALUE, "a negative BASE_LEVEL");
+                gl.texParameteri(T2D, 0x813c, 1); err(0, "BASE_LEVEL 1");                                          // sent
+                gl.generateMipmap(T2D); err(0, "mipmaps from level 1");                                            // sent
+                gl.texSubImage2D(T2D, 3, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(0, "level 3 is 1x1");    // sent
+                gl.texSubImage2D(T2D, 4, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(OPERATION, "and the last");
+                gl.texParameterf(T2D, 0x813a, 0.5); err(0, "MIN_LOD 0.5");                                         // sent
+                check(gl.getTexParameter(T2D, 0x813a) === 0.5 && gl.getTexParameter(T2D, 0x813b) === 1000, "the LODs");
+                gl.texParameteri(T2D, 0x884d, 0x0201); err(0, "COMPARE_FUNC LESS");                                // sent
+                check(gl.getTexParameter(T2D, 0x884d) === 0x0201 && gl.getTexParameter(T2D, 0x82df) === 0, "LESS; mutable");
+                // 3D and 2D arrays
+                gl.bindTexture(ARRAY, gl.createTexture());
+                gl.texImage3D(ARRAY, 0, RGBA, 4, 4, 3, 0, RGBA, UBYTE, null); err(0, "three layers");              // sent
+                gl.texSubImage3D(ARRAY, 0, 0, 0, 2, 4, 4, 1, RGBA, UBYTE, new Uint8Array(64)); err(0, "the last layer"); // sent
+                gl.texSubImage3D(ARRAY, 0, 0, 0, 3, 4, 4, 1, RGBA, UBYTE, new Uint8Array(64)); err(VALUE, "no fourth");
+                gl.bindTexture(T3D, gl.createTexture());
+                gl.texStorage3D(T3D, 2, RGBA8, 4, 4, 4); err(0, "3D storage");                                      // sent
+                gl.texSubImage3D(T3D, 1, 0, 0, 1, 2, 2, 1, RGBA, UBYTE, new Uint8Array(16)); err(0, "level 1 is 2x2x2"); // sent
+                gl.texSubImage3D(T3D, 1, 0, 0, 2, 2, 2, 1, RGBA, UBYTE, new Uint8Array(16)); err(VALUE, "with two slices");
+                gl.copyTexSubImage3D(T3D, 1, 0, 0, 2, 0, 0, 1, 1); err(VALUE, "a copy into no third slice");
+                // renderbuffers
+                gl.bindRenderbuffer(0x8d41, gl.createRenderbuffer());
+                gl.renderbufferStorage(0x8d41, RGBA8, 4, 4); err(0, "RGBA8");                                      // sent
+                gl.renderbufferStorage(0x8d41, 0x822d, 4, 4); err(ENUM, "R16F needs an extension");
+                // compressed
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.compressedTexImage2D(T2D, 0, ETC, 8, 8, 0, new Uint8Array(64)); err(ENUM, "ETC2 before its extension");
+                gl._compressedCapsCache = 3;         // what the renderer would answer: ETC2 and ASTC
+                gl.getExtension("WEBGL_compressed_texture_etc");
+                const astc = gl.getExtension("WEBGL_compressed_texture_astc");
+                check(astc.COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR === 0x93dd && astc.getSupportedProfiles()[0] === "ldr", "ASTC's 28");
+                gl.compressedTexImage2D(T2D, 0, ETC, 8, 8, 0, new Uint8Array(63)); err(VALUE, "a block short");
+                gl.compressedTexImage2D(T2D, 0, ETC, 8, 8, 0, new Uint8Array(64)); err(0, "four blocks");         // sent
+                gl.compressedTexSubImage2D(T2D, 0, 2, 0, 4, 4, ETC, new Uint8Array(16)); err(OPERATION, "not on a block");
+                gl.compressedTexSubImage2D(T2D, 0, 4, 4, 4, 4, 0x9274, new Uint8Array(8)); err(OPERATION, "another format");
+                gl.compressedTexSubImage2D(T2D, 0, 4, 4, 8, 4, ETC, new Uint8Array(32)); err(VALUE, "past the edge");
+                gl.compressedTexSubImage2D(T2D, 0, 4, 4, 4, 4, ETC, new Uint8Array(16)); err(0, "the last block");  // sent
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(OPERATION, "pixels into a compressed image");
+                gl.generateMipmap(T2D); err(OPERATION, "mipmaps of a compressed image");
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.texStorage2D(T2D, 2, 0x93b4, 12, 6); err(0, "ASTC 6x6 storage");                                // sent
+                gl.compressedTexSubImage2D(T2D, 1, 0, 0, 6, 3, 0x93b4, new Uint8Array(16)); err(0, "a block reaching the edge"); // sent
+                gl.compressedTexImage2D(T2D, 0, 0x93b4, 12, 6, 0, new Uint8Array(32)); err(OPERATION, "a compressed image on immutable storage");
+                gl.bindTexture(T3D, gl.createTexture());
+                gl.compressedTexImage3D(T3D, 0, ETC, 4, 4, 1, 0, new Uint8Array(16)); err(OPERATION, "a compressed 3D texture");
+                gl.texStorage3D(T3D, 1, ETC, 4, 4, 1); err(OPERATION, "compressed 3D storage");
+                gl.bindTexture(ARRAY, gl.createTexture());
+                gl.compressedTexImage3D(ARRAY, 0, ETC, 4, 4, 2, 0, new Uint8Array(32)); err(0, "two compressed layers"); // sent
+                gl.compressedTexSubImage3D(ARRAY, 0, 0, 0, 1, 4, 4, 1, ETC, new Uint8Array(16)); err(0, "the second"); // sent
+                gl.flush();
+                "#,
+            )
+            .expect("every call should be judged, none thrown");
+        assert_eq!(
+            texture_commands(&render_rx),
+            [
+                "TexStorage2D",
+                "TexSubImage2D",
+                "GenerateMipmap",
+                "TexStorage2D",
+                "TexImage2D",
+                "TexSubImage2D",
+                "TexImage2D",
+                "TexImage2D",
+                "TexParameteri",
+                "GenerateMipmap",
+                "TexSubImage2D",
+                "TexParameterf",
+                "TexParameteri",
+                "TexImage3D",
+                "TexSubImage3D",
+                "TexStorage3D",
+                "TexSubImage3D",
+                "RenderbufferStorage",
+                "CompressedTexImage2D",
+                "CompressedTexSubImage2D",
+                "TexStorage2D",
+                "CompressedTexSubImage2D",
+                "CompressedTexImage3D",
+                "CompressedTexSubImage3D",
+            ],
+            "only the calls taken reach the renderer"
         );
     }
 
@@ -6096,8 +6336,9 @@ pub(super) mod tests {
                 ),
             ),
             (
+                // WebIDL converts the GLfloat ("1" is 1); 1 is no MIN_FILTER, so the call is INVALID_ENUM, not a throw.
                 "texParameterf string",
-                false,
+                true,
                 accepts(
                     "r2_public_tex_parameterf_string.js",
                     r#"
@@ -8308,49 +8549,6 @@ pub fn op_tex_sub_image_2d_from_image(
     if let Some(command) = command {
         queue_gl_fire_and_forget(state, command);
     }
-}
-
-#[op2(fast)]
-pub fn op_tex_parameteri(
-    state: &mut OpState,
-    #[smi] canvas_id: u32,
-    #[smi] target: u32,
-    #[smi] pname: u32,
-    #[smi] param: i32,
-) {
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexParameteri {
-            canvas_id,
-            target,
-            pname,
-            param,
-        },
-    );
-}
-
-#[op2(fast)]
-pub fn op_tex_parameterf(
-    state: &mut OpState,
-    #[smi] canvas_id: u32,
-    #[smi] target: u32,
-    #[smi] pname: u32,
-    param: f32,
-) {
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexParameterf {
-            canvas_id,
-            target,
-            pname,
-            param,
-        },
-    );
-}
-
-#[op2(fast)]
-pub fn op_generate_mipmap(state: &mut OpState, #[smi] canvas_id: u32, #[smi] target: u32) {
-    queue_gl_fire_and_forget(state, GLCmd::GenerateMipmap { canvas_id, target });
 }
 
 #[op2(fast)]

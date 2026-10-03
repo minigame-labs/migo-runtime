@@ -24,6 +24,8 @@ use std::sync::{Arc, OnceLock};
 
 use shared::protocol::render_cmd::{BufferId, CanvasId, RenderbufferId, TextureId};
 
+use crate::compressed_upload::compressed_block;
+
 const GL_TEXTURE0: u32 = 0x84C0;
 const GL_TEXTURE_2D: u32 = 0x0DE1;
 const GL_TEXTURE_3D: u32 = 0x806F;
@@ -797,10 +799,8 @@ impl WebGlGpuBudget {
         }
         let (width, height, levels) =
             validate_storage_dimensions(levels, width, height, self.limits.max_2d_dimension)?;
-        let bpp =
-            sized_internal_format_bytes(internal_format).ok_or(GpuAllocationError::InvalidEnum)?;
         let faces = if target == GL_TEXTURE_CUBE_MAP { 6 } else { 1 };
-        let bytes = checked_mip_chain_bytes(width, height, 1, levels, false, bpp)?
+        let bytes = checked_storage_bytes(internal_format, width, height, 1, levels, false)?
             .checked_mul(faces)
             .ok_or(GpuAllocationError::OutOfMemory)?;
         let texture = self.bound_texture(canvas_id, target)?;
@@ -867,10 +867,18 @@ impl WebGlGpuBudget {
         }
         let (width, height, depth, levels) =
             validate_storage_3d_dimensions(target, levels, width, height, depth, self.limits)?;
-        let bpp =
-            sized_internal_format_bytes(internal_format).ok_or(GpuAllocationError::InvalidEnum)?;
-        let bytes =
-            checked_mip_chain_bytes(width, height, depth, levels, target == GL_TEXTURE_3D, bpp)?;
+        // No compressed format here has 3D blocks: a 3D texture of one is not storage the driver can make.
+        if target == GL_TEXTURE_3D && compressed_block(internal_format).is_some() {
+            return Err(GpuAllocationError::InvalidOperation);
+        }
+        let bytes = checked_storage_bytes(
+            internal_format,
+            width,
+            height,
+            depth,
+            levels,
+            target == GL_TEXTURE_3D,
+        )?;
         let texture = self.bound_texture(canvas_id, target)?;
         let record = self
             .textures
@@ -1337,6 +1345,38 @@ fn checked_mip_chain_bytes(
     Ok(total)
 }
 
+/// The bytes of immutable storage: `levels` levels from `width` x `height` x `depth`, each half the one before (the
+/// depth too when `mip_depth`), at the sized format's bytes a texel or in whole blocks of a compressed one
+/// (`compressed_block`); another format is not storage (`InvalidEnum`).
+fn checked_storage_bytes(
+    internal_format: u32,
+    width: u32,
+    height: u32,
+    depth: u32,
+    levels: u32,
+    mip_depth: bool,
+) -> Result<u64, GpuAllocationError> {
+    if let Some(bpp) = sized_internal_format_bytes(internal_format) {
+        return checked_mip_chain_bytes(width, height, depth, levels, mip_depth, bpp);
+    }
+    let (block_w, block_h, block_bytes) =
+        compressed_block(internal_format).ok_or(GpuAllocationError::InvalidEnum)?;
+    let (mut width, mut height, mut depth) = (width, height, depth);
+    let mut total = 0u64;
+    for _ in 0..levels {
+        let blocks = [width.div_ceil(block_w), height.div_ceil(block_h), depth];
+        total = total
+            .checked_add(checked_texel_bytes(&blocks, block_bytes)?)
+            .ok_or(GpuAllocationError::OutOfMemory)?;
+        width = (width / 2).max(1);
+        height = (height / 2).max(1);
+        if mip_depth {
+            depth = (depth / 2).max(1);
+        }
+    }
+    Ok(total)
+}
+
 fn tex_image_bytes_per_pixel(
     internal_format: i32,
     format: u32,
@@ -1559,6 +1599,30 @@ mod tests {
         assert_eq!(array.byte_len(), 516);
         budget.commit(array);
 
+        // Compressed storage is whole blocks: ETC2 RGBA8 is 16 bytes a 4x4 block, ASTC 6x6 16 bytes a 6x6 block.
+        budget.create_texture(1, 15).unwrap();
+        budget.bind_texture(1, TEXTURE_2D, Some(15));
+        let etc = budget
+            .prepare_tex_storage_2d(1, TEXTURE_2D, 4, 0x9278, 16, 8)
+            .unwrap();
+        assert_eq!(etc.byte_len(), (8 + 2 + 1 + 1) * 16);
+        budget.commit(etc);
+        budget.create_texture(1, 16).unwrap();
+        budget.bind_texture(1, TEXTURE_2D_ARRAY, Some(16));
+        let astc = budget
+            .prepare_tex_storage_3d(1, TEXTURE_2D_ARRAY, 2, 0x93B4, 13, 7, 3)
+            .unwrap();
+        assert_eq!(astc.byte_len(), (3 * 2 + 1) * 3 * 16);
+        budget.commit(astc);
+        budget.create_texture(1, 17).unwrap();
+        budget.bind_texture(1, TEXTURE_3D, Some(17));
+        assert_eq!(
+            budget
+                .prepare_tex_storage_3d(1, TEXTURE_3D, 1, 0x9278, 4, 4, 4)
+                .unwrap_err(),
+            GpuAllocationError::InvalidOperation
+        );
+
         budget.create_renderbuffer(1, 21).unwrap();
         budget.bind_renderbuffer(1, RENDERBUFFER, Some(21));
         let msaa = budget
@@ -1567,7 +1631,10 @@ mod tests {
         assert_eq!(msaa.byte_len(), 256);
         budget.commit(msaa);
 
-        assert_eq!(budget.context_usage(1), 128 + 1_032 + 300 + 516 + 256);
+        assert_eq!(
+            budget.context_usage(1),
+            128 + 1_032 + 300 + 516 + 192 + 336 + 256
+        );
         assert_eq!(scope.process_usage(), budget.context_usage(1));
     }
 

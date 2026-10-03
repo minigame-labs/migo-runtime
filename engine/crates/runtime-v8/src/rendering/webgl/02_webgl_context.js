@@ -56,9 +56,6 @@ import {
     op_tex_sub_image_2d_from_canvas2d,
     op_tex_sub_image_2d,
     op_tex_sub_image_2d_from_image,
-    op_tex_parameteri,
-    op_tex_parameterf,
-    op_generate_mipmap,
     op_pixel_storei,
     op_compressed_tex_image_2d,
     op_compressed_tex_sub_image_2d,
@@ -202,6 +199,7 @@ const {
     DataViewPrototypeGetByteOffset,
     ArrayBufferPrototypeGetByteLength,
     MathMax,
+    MathMin,
     MathTrunc,
     MathRound,
     MathCeil,
@@ -452,9 +450,6 @@ const _rawTexSubImage2DFromSnapshot= _makeOrderedRaw(op_tex_sub_image_2d_from_sn
 const _rawTexSubImage2DFromCanvas2d= _makeOrderedRaw(op_tex_sub_image_2d_from_canvas2d);
 const _rawTexSubImage2D      = _makeOrderedRaw(op_tex_sub_image_2d);
 const _rawTexSubImage2DFromImage= _makeOrderedRaw(op_tex_sub_image_2d_from_image);
-const _rawTexParameteri      = _makeOrderedRaw(op_tex_parameteri);
-const _rawTexParameterf      = _makeOrderedRaw(op_tex_parameterf);
-const _rawGenerateMipmap     = _makeOrderedRaw(op_generate_mipmap);
 const _rawPixelStorei        = _makeOrderedRaw(op_pixel_storei);
 const _rawCompressedTexImage2D = _makeOrderedRaw(op_compressed_tex_image_2d);
 const _rawCompressedTexSubImage2D= _makeOrderedRaw(op_compressed_tex_sub_image_2d);
@@ -615,33 +610,6 @@ function isKnownUnsizedFormat(format) {
     }
 }
 
-function isKnownSizedFormat(format) {
-    switch (format) {
-        // R / RG
-        case 0x8229: case 0x8F94: case 0x822D: case 0x822E:
-        case 0x8231: case 0x8232: case 0x8233: case 0x8234:
-        case 0x8235: case 0x8236: case 0x822B: case 0x8F95:
-        case 0x822F: case 0x8230: case 0x8237: case 0x8238:
-        case 0x8239: case 0x823A: case 0x823B: case 0x823C:
-        // RGB / RGBA normalized, float and integer
-        case 0x8051: case 0x8056: case 0x8057: case 0x8058:
-        case 0x8059: case 0x8C40: case 0x8C41: case 0x8C42:
-        case 0x8C43: case 0x8C3A: case 0x8C3B: case 0x8C3C:
-        case 0x8C3D: case 0x8C3E: case 0x8C3F: case 0x8814:
-        case 0x8815: case 0x881A: case 0x881B: case 0x8D70:
-        case 0x8D71: case 0x8D76: case 0x8D77: case 0x8D7C:
-        case 0x8D7D: case 0x8D82: case 0x8D83: case 0x8D88:
-        case 0x8D89: case 0x8D8E: case 0x8D8F: case 0x8F96:
-        case 0x8F97: case 0x906F:
-        // Depth / stencil
-        case 0x81A5: case 0x81A6: case 0x8CAC: case 0x88F0:
-        case 0x8CAD: case 0x8D48: case 0x84F9:
-            return true;
-        default:
-            return false;
-    }
-}
-
 function isKnownPixelType(type) {
     switch (type) {
         case 0x1400: case 0x1401: case 0x1402: case 0x1403:
@@ -790,6 +758,123 @@ function _uploadBytes(store, width, height, depth, bpp, threeD) {
     return skipped + (depth - 1) * image + (height - 1) * stride + width * bpp;
 }
 
+// ---- Texture images ---------------------------------------------------------------------------------------------------
+// The context keeps what it knows of every image of every texture -- each level of a 2D, 3D or 2D-array texture and of
+// each face of a cube map -- and judges by it, before anything is sent, what a browser judges by its own record: an
+// upload into an image that is not there, past its edge, or from a format the image was not defined with; immutable
+// storage defined again; mipmaps generated from a base they cannot be. An image is recorded when the call that defines
+// it is sent, after every check of that call has passed, so the record is what the render side holds.
+class TextureImage {
+    // `format` and `type` are those the image's data was given in, which WebGL 1 holds every later upload to (WebGL 1.0,
+    // "Texture Type in TexSubImage2D Calls"); a compressed image's are its internal format and 0.
+    constructor(internalformat, format, type, width, height, depth, compressed) {
+        this.internalformat = internalformat;
+        this.format = format;
+        this.type = type;
+        this.width = width;
+        this.height = height;
+        this.depth = depth;
+        this.compressed = compressed;
+    }
+}
+
+// An image's key in its texture's record: the level, and the face of a cube map a face target names (0 for any other
+// target). Both are the caller's to have checked.
+function _imageKey(target, level) {
+    return level * 8 + (target >= 0x8515 && target <= 0x851a ? target - 0x8515 : 0);
+}
+
+function _isPowerOfTwo(n) {
+    return (n & (n - 1)) === 0;
+}
+
+// The record is changed only by these, at module scope: what is reachable from content -- every method of the context,
+// underscored or not, is -- must not be able to put an image there that no call defined, or to do work its arguments
+// size (WebGL's robustness bundle calls every method with hostile values).
+function defineTextureImage(texture, target, level, image) {
+    (texture._images || (texture._images = new Map())).set(_imageKey(Number(target) >>> 0, level | 0), image);
+}
+
+function defineCompressedTextureImage(texture, target, level, internalformat, width, height, depth) {
+    const i = Number(internalformat) >>> 0;
+    defineTextureImage(texture, target, level, new TextureImage(i, i, 0, width, height, depth, true));
+}
+
+// `texStorage2D` / `texStorage3D` sent: every level of every face, each half the one before (a 2D array keeps its
+// layers), and the texture immutable from now on.
+function defineTextureStorage(texture, target, levels, internalformat, width, height, depth) {
+    const t = Number(target) >>> 0;
+    const i = Number(internalformat) >>> 0;
+    const sized = _SIZED_UPLOADS.get(i);
+    const first = t === 0x8513 ? 0x8515 : t;
+    const last = t === 0x8513 ? 0x851a : t;
+    for (let level = 0; level < levels; level++) {
+        const image = new TextureImage(i, sized === undefined ? i : sized[0], sized === undefined ? 0 : sized[1][0],
+            (width >> level) || 1, (height >> level) || 1, t === 0x806f ? (depth >> level) || 1 : depth,
+            sized === undefined);
+        for (let face = first; face <= last; face++) defineTextureImage(texture, face, level, image);
+    }
+    texture._immutableLevels = levels;
+}
+
+// The compressed formats, each [block width, block height, bytes a block, the extension that enables it]. A format is
+// one a call takes only while its extension is enabled (WebGL 1.0 5.14.8).
+const _COMPRESSED_FORMATS = new Map();
+// WEBGL_compressed_texture_etc: R11, SIGNED_R11, RG11, SIGNED_RG11 (EAC); RGB8, SRGB8, the two PUNCHTHROUGH_ALPHA1,
+// RGBA8 and SRGB8_ALPHA8 (ETC2).
+[8, 8, 16, 16, 8, 8, 8, 8, 16, 16].forEach((bytes, k) => _COMPRESSED_FORMATS.set(0x9270 + k, [4, 4, bytes, "etc"]));
+// WEBGL_compressed_texture_astc: the fourteen block sizes, linear (COMPRESSED_RGBA_ASTC_*) and sRGB.
+[[4, 4], [5, 4], [5, 5], [6, 5], [6, 6], [8, 5], [8, 6], [8, 8], [10, 5], [10, 6], [10, 8], [10, 10], [12, 10], [12, 12]]
+    .forEach(([w, h], k) => {
+        _COMPRESSED_FORMATS.set(0x93b0 + k, [w, h, 16, "astc"]);
+        _COMPRESSED_FORMATS.set(0x93d0 + k, [w, h, 16, "astc"]);
+    });
+
+// The bytes of a compressed image of `width` x `height` x `depth` texels: whole blocks over each layer.
+function _compressedImageBytes(block, width, height, depth) {
+    return MathCeil(width / block[0]) * MathCeil(height / block[1]) * block[2] * depth;
+}
+
+// The sized internal formats that are both colour-renderable and texture-filterable (ES 3.0 table 3.13), which
+// `generateMipmap` takes besides the unsized ones; the float ones would need extensions this runtime does not offer.
+const _MIPMAPPABLE_SIZED_FORMATS = [0x8229, 0x822b, 0x8051, 0x8d62, 0x8056, 0x8057, 0x8058, 0x8059, 0x8c43];
+
+// The internal formats WebGL 2's `copyTexImage2D` takes, as the decoder has them (`copy_tex_image_format_error`): the
+// unsized five and the colour-renderable sized ones are 0, a depth or stencil format INVALID_OPERATION, anything else
+// INVALID_ENUM.
+function _copyTexImageFormatError(internalformat) {
+    switch (internalformat) {
+        case 0x1906: case 0x1907: case 0x1908: case 0x1909: case 0x190a:                       // the unsized five
+        case 0x8229: case 0x822b: case 0x8051: case 0x8056: case 0x8057: case 0x8058: case 0x8059: case 0x8d62:
+        case 0x8c41: case 0x8c43:                                                               // R8 .. SRGB8_ALPHA8
+        case 0x8231: case 0x8232: case 0x8233: case 0x8234: case 0x8235: case 0x8236:
+        case 0x8237: case 0x8238: case 0x8239: case 0x823a: case 0x823b: case 0x823c:           // R*/RG* integer
+        case 0x8d70: case 0x8d76: case 0x8d7c: case 0x8d82: case 0x8d88: case 0x8d8e: case 0x906f:   // RGBA* integer
+        case 0x822d: case 0x822f: case 0x822e: case 0x8230: case 0x8814: case 0x881a: case 0x8c3a:   // the float ones
+            return 0;
+        case 0x1902: case 0x81a5: case 0x81a6: case 0x8cac: case 0x84f9: case 0x88f0: case 0x8cad:   // depth, stencil
+            return GL_INVALID_OPERATION;
+        default:
+            return GL_INVALID_ENUM;
+    }
+}
+
+// The bytes a compressed upload's source (`_compressedUploadSource`: bytes, buffer offset, size) carries.
+function _compressedSourceBytes(source) {
+    return source[1] >= 0 ? source[2] : TypedArrayPrototypeGetByteLength(source[0]);
+}
+
+// The internal formats a renderbuffer takes: WebGL 1's six (WebGL 1.0 5.14.7), and in WebGL 2 every colour-renderable
+// sized format of ES 3.0 table 3.13 that needs no extension, the depth and stencil ones of table 3.14, and WebGL 1's
+// DEPTH_STENCIL.
+const _WEBGL1_RENDERBUFFER_FORMATS = [0x8056, 0x8d62, 0x8057, 0x81a5, 0x8d48, 0x84f9];
+const _WEBGL2_RENDERBUFFER_FORMATS = [
+    0x8229, 0x822b, 0x8051, 0x8d62, 0x8056, 0x8057, 0x8058, 0x8059, 0x906f, 0x8c43,     // R8 .. SRGB8_ALPHA8
+    0x8231, 0x8232, 0x8233, 0x8234, 0x8235, 0x8236, 0x8237, 0x8238, 0x8239, 0x823a, 0x823b, 0x823c,   // R*/RG* integer
+    0x8d8e, 0x8d7c, 0x8d88, 0x8d76, 0x8d82, 0x8d70,                                     // RGBA* integer
+    0x81a5, 0x81a6, 0x8cac, 0x88f0, 0x8cad, 0x8d48, 0x84f9,                             // depth and stencil
+];
+
 // A `texImage2D`'s level, size and border, around the error its formats are (`_uploadFormatError`), in the order a
 // browser judges them: a level out of range is INVALID_VALUE, then the formats' error, then a size or border out of
 // range INVALID_VALUE. True when none is; the error recorded when one is. The target is the caller's to have checked.
@@ -826,25 +911,24 @@ function preflightTexSubImage(canvasId, level, levels, formatError, xoffset, yof
     return true;
 }
 
-// The target is the caller's to have checked (`_textureFor`, "storage2D").
-function preflightTexStorage2D(canvasId, target, levels, internalformat, width, height) {
-    if (!isKnownSizedFormat(internalformat)) {
-        return recordGpuPreflightError(canvasId, GL_INVALID_ENUM);
-    }
+// `texStorage2D`'s levels and size, after the error its internal format is (`_storageFormatError`): no level, a size
+// not above 0 or past the limit, more levels than the size has, or a cube map that is not square is INVALID_VALUE. The
+// target is the caller's to have checked (`_textureFor`, "storage2D").
+function preflightTexStorage2D(canvasId, target, levels, formatError, width, height) {
+    if (formatError !== 0) return recordGpuPreflightError(canvasId, formatError);
     if (!NumberIsInteger(levels) || levels <= 0 ||
         !NumberIsInteger(width) || width <= 0 || width > MAX_WEBGL_GPU_2D_DIMENSION ||
         !NumberIsInteger(height) || height <= 0 || height > MAX_WEBGL_GPU_2D_DIMENSION ||
+        (target === 0x8513 && width !== height) ||
         levels > maxMipLevels(width > height ? width : height)) {
         return recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
     }
     return true;
 }
 
-// The target is the caller's to have checked (`_textureFor`, "image3D").
-function preflightTexStorage3D(canvasId, target, levels, internalformat, width, height, depth) {
-    if (!isKnownSizedFormat(internalformat)) {
-        return recordGpuPreflightError(canvasId, GL_INVALID_ENUM);
-    }
+// As `preflightTexStorage2D`, for a 3D or 2D-array texture (`_textureFor`, "image3D").
+function preflightTexStorage3D(canvasId, target, levels, formatError, width, height, depth) {
+    if (formatError !== 0) return recordGpuPreflightError(canvasId, formatError);
     const maxXY = target === 0x806F ? MAX_WEBGL_GPU_3D_DIMENSION : MAX_WEBGL_GPU_2D_DIMENSION;
     const mipBasis = target === 0x806F
         ? (width > height ? (width > depth ? width : depth) : (height > depth ? height : depth))
@@ -855,18 +939,6 @@ function preflightTexStorage3D(canvasId, target, levels, internalformat, width, 
         !NumberIsInteger(depth) || depth <= 0 ||
         depth > (target === 0x806F ? MAX_WEBGL_GPU_3D_DIMENSION : MAX_WEBGL_GPU_ARRAY_LAYERS) ||
         levels > maxMipLevels(mipBasis)) {
-        return recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
-    }
-    return true;
-}
-
-function preflightRenderbuffer(canvasId, target, internalformat, width, height, samples) {
-    if (target !== 0x8D41 || !isKnownSizedFormat(internalformat)) {
-        return recordGpuPreflightError(canvasId, GL_INVALID_ENUM);
-    }
-    if (!NumberIsInteger(width) || width < 0 || width > MAX_WEBGL_GPU_2D_DIMENSION ||
-        !NumberIsInteger(height) || height < 0 || height > MAX_WEBGL_GPU_2D_DIMENSION ||
-        !NumberIsInteger(samples) || samples < 0 || samples > MAX_WEBGL_GPU_SAMPLES) {
         return recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
     }
     return true;
@@ -1274,6 +1346,13 @@ const _SAMPLER_PARAMETERS = new Map([
     [0x813a, { initial: -1000, values: null }],                                                // TEXTURE_MIN_LOD
     [0x813b, { initial: 1000, values: null }],                                                 // TEXTURE_MAX_LOD
 ]);
+// A texture's parameters (ES 3.0 table 6.13): its sampler's, and the levels it is sampled from, any integer not below 0
+// (a negative one is INVALID_VALUE). WebGL 1 has the filters and the two wraps only. `getTexParameter` answers from what
+// `texParameter*` set, so a value outside these is refused here, as a sampler's is.
+const _TEXTURE_PARAMETERS = new Map(_SAMPLER_PARAMETERS);
+_TEXTURE_PARAMETERS.set(0x813c, { initial: 0, values: null });         // TEXTURE_BASE_LEVEL
+_TEXTURE_PARAMETERS.set(0x813d, { initial: 1000, values: null });      // TEXTURE_MAX_LEVEL
+const _WEBGL1_TEXTURE_PARAMETERS = [0x2800, 0x2801, 0x2802, 0x2803];  // MAG_FILTER, MIN_FILTER, WRAP_S, WRAP_T
 
 // The bytes of WebGL 2's `offset` / `length` pair over `view`, both counted in its elements (a DataView's are
 // bytes): `length` elements from `offset`, or the rest when it is 0, as a Uint8Array over the view's memory. A range
@@ -1406,11 +1485,94 @@ function _attribPointerAccepted(size, type, stride, offset, integer) {
     }
 }
 
+// `texImage2D`'s 9-argument forms once the call's own checks have passed: true when the upload was sent. At module
+// scope, as `defineTextureImage` is: nothing reachable from content sends an upload its checks did not pass.
+function texImageFromData(ctx, target, level, internalformat, width, height, border, format, type, pixels, srcOffset, fromBuffer) {
+    if (fromBuffer) {
+        const offset = ctx._unpackBufferOffset(pixels, width, height, 1, format, type, false);
+        if (offset < 0) return false;
+        _rawTexImage2D(ctx._canvasId, target, level, internalformat, width, height, border, format, type, null, offset);
+        return true;
+    }
+    // Text texture cache hit takes precedence.
+    if (_migoTexImageFromTextCache(ctx._canvasId, target, level, internalformat, pixels)) return true;
+    const snapshotId = pixels && typeof pixels === "object" && (pixels.__migo_snapshot_id__ | 0);
+    if (snapshotId && pixels.width === width && pixels.height === height) {
+        _rawTexImage2DFromSnapshot(ctx._canvasId, target, level, internalformat, format, type, snapshotId);
+        pixels.__migo_snapshot_spent__ = true;
+        return true;
+    }
+    if (_migoIsHTMLCanvas(pixels) && pixels.width === width && pixels.height === height) {
+        const context = pixels._context;
+        if (!(context && typeof context._consumeTextCacheForTexImage === "function"
+                && context._consumeTextCacheForTexImage(ctx._canvasId, target, level, internalformat))) {
+            _rawTexImage2DFromCanvas2d(
+                ctx._canvasId, target, level, internalformat, _migoSourceRid(pixels), 0, 0, width | 0, height | 0,
+            );
+        }
+        return true;
+    }
+    if (pixels == null) {
+        _rawTexImage2D(ctx._canvasId, target, level, internalformat, width, height, border, format, type, null, -1);
+        return true;
+    }
+    if (!ArrayBufferIsView(pixels)) {
+        throw new TypeError("texImage2D: pixels is not an ArrayBufferView");
+    }
+    if (ctx._refusesUnpackRegion(width, height, false)) return false;
+    const data = ctx._uploadViewBytes(pixels, ctx._isWebGL2() ? srcOffset : 0, width, height, 1, format, type, false);
+    if (data === null) return false;
+    _rawTexImage2D(ctx._canvasId, target, level, internalformat, width, height, border, format, type, data, -1);
+    return true;
+}
+
+// `texImage2D`'s 6-argument form once the call's own checks have passed: true when the upload was sent.
+function texImageFromSource(ctx, target, level, internalformat, format, type, source) {
+    if (_migoTexImageFromTextCache(ctx._canvasId, target, level, internalformat, source)) return true;
+    const snapshotId = source && typeof source === "object" ? (source.__migo_snapshot_id__ | 0) : 0;
+    if (snapshotId !== 0) {
+        _rawTexImage2DFromSnapshot(ctx._canvasId, target, level, internalformat, format, type, snapshotId);
+        source.__migo_snapshot_spent__ = true;
+        return true;
+    }
+    if (_migoIsHTMLCanvas(source)) {
+        const cw = source.width | 0;
+        const ch = source.height | 0;
+        if (cw > 0 && ch > 0) {
+            const context = source._context;
+            if (!(context && typeof context._consumeTextCacheForTexImage === "function"
+                    && context._consumeTextCacheForTexImage(ctx._canvasId, target, level, internalformat))) {
+                _rawTexImage2DFromCanvas2d(
+                    ctx._canvasId, target, level, internalformat, _migoSourceRid(source), 0, 0, cw, ch,
+                );
+            }
+            return true;
+        }
+    }
+    const imageId = source && typeof source.rid === "number" ? source.rid : null;
+    if (imageId != null) {
+        _rawTexImage2DFromImage(ctx._canvasId, target, level, internalformat, format, type, imageId);
+        return true;
+    }
+    const raw = sourceToRawRgba(source);
+    if (raw) {
+        const data = toBoundedUploadBytes(ctx._canvasId, raw.data);
+        if (data === null) return false;
+        _rawTexImage2D(ctx._canvasId, target, level, internalformat, raw.width, raw.height, 0, format, type, data, -1);
+        return true;
+    }
+    const kind = source && source.constructor ? source.constructor.name : typeof source;
+    console.warn(`texImage2D 6-argument form unsupported source: ${kind}`);
+    return false;
+}
+
 class WebGLRenderingContext {
     constructor(canvas, options) {
         this._canvas = canvas;
         this._options = options || {};
         this._canvasId = canvas._rid;
+        // Which interface this is, read on every call whose rules differ (`_isWebGL2`); WebGL 2's constructor sets it.
+        this._webgl2 = false;
         // Lost through WEBGL_lose_context: this context only (see getExtension).
         this._lostByExtension = false;
         // Resource IDs are allocated from a runtime-global counter in Rust.
@@ -2668,31 +2830,17 @@ class WebGLRenderingContext {
         };
     }
 
+    // WEBGL_compressed_texture_astc: the LDR profile's 28 formats, the fourteen block sizes each linear and sRGB, which
+    // the uploads take once the extension is enabled (`_COMPRESSED_FORMATS`).
     _buildCompressedAstc() {
-        // ASTC LDR format block.  Included enums are the subset the
-        // compressed upload path accepts (see
-        // `graphics/compressed_upload.rs::CompressedFormat`).  Games
-        // that query the full ASTC enum table get the 4x4 / 6x6 /
-        // 8x8 blocks we actually decode.
-        return {
-            COMPRESSED_RGBA_ASTC_4x4_KHR: 0x93B0,
-            COMPRESSED_RGBA_ASTC_5x4_KHR: 0x93B1,
-            COMPRESSED_RGBA_ASTC_5x5_KHR: 0x93B2,
-            COMPRESSED_RGBA_ASTC_6x5_KHR: 0x93B3,
-            COMPRESSED_RGBA_ASTC_6x6_KHR: 0x93B4,
-            COMPRESSED_RGBA_ASTC_8x5_KHR: 0x93B5,
-            COMPRESSED_RGBA_ASTC_8x6_KHR: 0x93B6,
-            COMPRESSED_RGBA_ASTC_8x8_KHR: 0x93B7,
-            COMPRESSED_RGBA_ASTC_10x5_KHR: 0x93B8,
-            COMPRESSED_RGBA_ASTC_10x6_KHR: 0x93B9,
-            COMPRESSED_RGBA_ASTC_10x8_KHR: 0x93BA,
-            COMPRESSED_RGBA_ASTC_10x10_KHR: 0x93BB,
-            COMPRESSED_RGBA_ASTC_12x10_KHR: 0x93BC,
-            COMPRESSED_RGBA_ASTC_12x12_KHR: 0x93BD,
-            COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR: 0x93D0,
-            COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR: 0x93D4,
-            COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR: 0x93D7,
-        };
+        const extension = { getSupportedProfiles: () => ["ldr"] };
+        const blocks = ["4x4", "5x4", "5x5", "6x5", "6x6", "8x5", "8x6", "8x8", "10x5", "10x6", "10x8", "10x10", "12x10",
+            "12x12"];
+        blocks.forEach((block, k) => {
+            extension[`COMPRESSED_RGBA_ASTC_${block}_KHR`] = 0x93b0 + k;
+            extension[`COMPRESSED_SRGB8_ALPHA8_ASTC_${block}_KHR`] = 0x93d0 + k;
+        });
+        return extension;
     }
 
     _buildAngleInstancedArrays() {
@@ -2766,7 +2914,11 @@ class WebGLRenderingContext {
     createTexture() {
         const id = nextResourceId();
         _rawCreateTexture(this._canvasId, id);
-        return new WebglObject(id, "texture", this._canvasId);
+        const texture = new WebglObject(id, "texture", this._canvasId);
+        texture._images = null;         // image key (`_imageKey`) -> TextureImage, once one is defined
+        texture._immutableLevels = 0;   // the levels `texStorage*` fixed; 0 while the texture is mutable
+        texture._params = null;         // pname -> value, as `texParameter*` set them
+        return texture;
     }
 
     // ---- Texture bindings -----------------------------------------------------------------------------------------
@@ -2801,6 +2953,172 @@ class WebGLRenderingContext {
         const texture = bindings.get(this._activeTextureUnit) || null;
         if (texture === null) recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
         return texture;
+    }
+
+    // ---- Texture images (see `TextureImage`) ----------------------------------------------------------------------
+    // The image of `texture` at a 2D image, face or 3D target and a level, or undefined.
+    _image(texture, target, level) {
+        return texture._images === null ? undefined : texture._images.get(_imageKey(Number(target) >>> 0, level | 0));
+    }
+
+    // An immutable texture's images are fixed (ES 3.0 3.8.4): defining one again is INVALID_OPERATION. True when refused,
+    // with the error recorded.
+    _refusesImmutable(texture) {
+        if (texture._immutableLevels === 0) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        return true;
+    }
+
+    // WebGL 1 has mipmaps of power-of-two sizes only: a level above 0 of another size is INVALID_VALUE (ES 2.0 3.7.1).
+    // True when refused, with the error recorded.
+    _refusesNpotLevel(level, width, height) {
+        if (this._isWebGL2() || level === 0 || (_isPowerOfTwo(width) && _isPowerOfTwo(height))) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+        return true;
+    }
+
+    // An upload into an existing image (ES 3.0 3.8.5): one that is not there, or compressed, or that data in (format,
+    // type) cannot be uploaded into (`_uploadsInto`) is INVALID_OPERATION; a region past its edge INVALID_VALUE. The
+    // offsets and size are the caller's to have checked. True when refused, with the error recorded.
+    _refusesSubImage(texture, target, level, format, type, x, y, z, width, height, depth) {
+        const image = this._image(texture, target, level);
+        const error = image === undefined || image.compressed
+                || !this._uploadsInto(image, Number(format) >>> 0, Number(type) >>> 0) ? GL_INVALID_OPERATION
+            : x + width > image.width || y + height > image.height || z + depth > image.depth ? GL_INVALID_VALUE : 0;
+        if (error === 0) return false;
+        recordGpuPreflightError(this._canvasId, error);
+        return true;
+    }
+
+    // Whether data in (format, type) may be uploaded into `image`: in WebGL 2 when ES 3.0 table 3.2 or 3.3 has the
+    // combination with its internal format; in WebGL 1 when they are the format and type it was defined with.
+    _uploadsInto(image, format, type) {
+        if (!this._isWebGL2()) return format === image.format && type === image.type;
+        const i = image.internalformat;
+        const unsized = _UNSIZED_UPLOAD_TYPES.get(i);
+        if (unsized !== undefined) return format === i && _listHas(unsized, type);
+        const sized = _SIZED_UPLOADS.get(i);
+        return sized !== undefined && sized[0] === format && _listHas(sized[1], type);
+    }
+
+    // A copy from the read framebuffer into an existing image (ES 3.0 3.8.5): a level out of range or a negative offset
+    // or size is INVALID_VALUE; an image that is not there, or compressed, INVALID_OPERATION; a rectangle past its edge,
+    // or a layer past its last, INVALID_VALUE. True when refused, with the error recorded.
+    _refusesCopyIntoImage(texture, target, level, x, y, z, width, height) {
+        let error = 0;
+        if (level < 0 || level >= this._levelLimit(target) || x < 0 || y < 0 || z < 0 || width < 0 || height < 0) {
+            error = GL_INVALID_VALUE;
+        } else {
+            const image = this._image(texture, target, level);
+            error = image === undefined || image.compressed ? GL_INVALID_OPERATION
+                : x + width > image.width || y + height > image.height || z >= image.depth ? GL_INVALID_VALUE : 0;
+        }
+        if (error === 0) return false;
+        recordGpuPreflightError(this._canvasId, error);
+        return true;
+    }
+
+    // How many levels a texture of `target` can have: those of the largest size the context takes for it.
+    _levelLimit(target) {
+        return (Number(target) >>> 0) === 0x806f ? maxMipLevels(MAX_WEBGL_GPU_3D_DIMENSION) : MAX_WEBGL_GPU_2D_LEVELS;
+    }
+
+    // A compressed format's block (`_COMPRESSED_FORMATS`), or undefined when no extension enabled has the format.
+    _compressedFormat(format) {
+        const block = _COMPRESSED_FORMATS.get(Number(format) >>> 0);
+        if (block === undefined) return undefined;
+        return (block[3] === "etc" ? this._webglCompressedEtc : this._webglCompressedAstc) === undefined ? undefined : block;
+    }
+
+    // A compressed image's own rules, before it is defined (WEBGL_compressed_texture_etc / _astc, ES 3.0 3.8.6): a
+    // format no enabled extension has is INVALID_ENUM; a level, size or border out of range INVALID_VALUE, as is a level
+    // above 0 of a size that is not a power of two in WebGL 1; a 3D texture, which none of the formats can be,
+    // INVALID_OPERATION; data of another length than the format's blocks over the size INVALID_VALUE; immutable storage
+    // INVALID_OPERATION. True when the image may be defined; false with the error recorded.
+    _acceptsCompressedImage(texture, target, level, internalformat, width, height, depth, border, byteLength) {
+        const t = Number(target) >>> 0;
+        const block = this._compressedFormat(internalformat);
+        let error = 0;
+        if (block === undefined) {
+            error = GL_INVALID_ENUM;
+        } else if (!NumberIsInteger(level) || level < 0 || level >= this._levelLimit(t)) {
+            error = GL_INVALID_VALUE;
+        } else {
+            const maxAtLevel = ((t === 0x806f ? MAX_WEBGL_GPU_3D_DIMENSION : MAX_WEBGL_GPU_2D_DIMENSION) >>> level) || 1;
+            const maxDepth = t === 0x806f ? maxAtLevel : t === 0x8c1a ? MAX_WEBGL_GPU_ARRAY_LAYERS : 1;
+            if (!NumberIsInteger(width) || width < 0 || width > maxAtLevel ||
+                    !NumberIsInteger(height) || height < 0 || height > maxAtLevel ||
+                    !NumberIsInteger(depth) || depth < 0 || depth > maxDepth ||
+                    (t >= 0x8515 && t <= 0x851a && width !== height) || border !== 0 ||
+                    (!this._isWebGL2() && level > 0 && !(_isPowerOfTwo(width) && _isPowerOfTwo(height)))) {
+                error = GL_INVALID_VALUE;
+            } else if (t === 0x806f) {
+                error = GL_INVALID_OPERATION;
+            } else if (byteLength !== _compressedImageBytes(block, width, height, depth)) {
+                error = GL_INVALID_VALUE;
+            } else if (texture._immutableLevels !== 0) {
+                error = GL_INVALID_OPERATION;
+            }
+        }
+        if (error === 0) return true;
+        recordGpuPreflightError(this._canvasId, error);
+        return false;
+    }
+
+    // Compressed blocks into an existing image (ES 3.0 3.8.6): a format no enabled extension has is INVALID_ENUM; a
+    // level out of range, a negative offset or size, or data of another length than the blocks of the region,
+    // INVALID_VALUE; an image that is not there or not of that format INVALID_OPERATION; a region past its edge
+    // INVALID_VALUE; one that does not start on a block, or ends inside one short of the image's edge,
+    // INVALID_OPERATION. True when the upload may be sent; false with the error recorded.
+    _acceptsCompressedSubImage(texture, target, level, x, y, z, width, height, depth, format, byteLength) {
+        const block = this._compressedFormat(format);
+        let error = 0;
+        if (block === undefined) {
+            error = GL_INVALID_ENUM;
+        } else if (!NumberIsInteger(level) || level < 0 || level >= this._levelLimit(target) ||
+                !NumberIsInteger(x) || x < 0 || !NumberIsInteger(y) || y < 0 || !NumberIsInteger(z) || z < 0 ||
+                !NumberIsInteger(width) || width < 0 || !NumberIsInteger(height) || height < 0 ||
+                !NumberIsInteger(depth) || depth < 0 || byteLength !== _compressedImageBytes(block, width, height, depth)) {
+            error = GL_INVALID_VALUE;
+        } else {
+            const image = this._image(texture, target, level);
+            if (image === undefined || image.internalformat !== (Number(format) >>> 0)) {
+                error = GL_INVALID_OPERATION;
+            } else if (x + width > image.width || y + height > image.height || z + depth > image.depth) {
+                error = GL_INVALID_VALUE;
+            } else if (x % block[0] !== 0 || y % block[1] !== 0 ||
+                    (width % block[0] !== 0 && x + width !== image.width) ||
+                    (height % block[1] !== 0 && y + height !== image.height)) {
+                error = GL_INVALID_OPERATION;
+            }
+        }
+        if (error === 0) return true;
+        recordGpuPreflightError(this._canvasId, error);
+        return false;
+    }
+
+    // The error `texStorage*`'s internal format is: 0 for a sized one (ES 3.0 tables 3.13 and 3.14; DEPTH_STENCIL and
+    // the other unsized ones are not) or a compressed one an enabled extension has, INVALID_ENUM for anything else. A
+    // compressed 3D texture is INVALID_OPERATION: no format here can be one.
+    _storageFormatError(internalformat, target) {
+        const i = Number(internalformat) >>> 0;
+        if (_SIZED_UPLOADS.has(i)) return 0;
+        if (this._compressedFormat(i) === undefined) return GL_INVALID_ENUM;
+        return (Number(target) >>> 0) === 0x806f ? GL_INVALID_OPERATION : 0;
+    }
+
+    // The levels `generateMipmap` and sampling start and stop at: 0 and 1000 in WebGL 1; TEXTURE_BASE_LEVEL and
+    // TEXTURE_MAX_LEVEL in WebGL 2, inside the levels of immutable storage (ES 3.0 3.8.10).
+    _baseLevel(texture) {
+        const set = this._isWebGL2() && texture._params !== null ? texture._params.get(0x813c) : undefined;
+        const base = set === undefined ? 0 : set;
+        return texture._immutableLevels === 0 ? base : MathMin(base, texture._immutableLevels - 1);
+    }
+
+    _maxLevel(texture) {
+        const set = this._isWebGL2() && texture._params !== null ? texture._params.get(0x813d) : undefined;
+        const max = set === undefined ? 1000 : set;
+        return texture._immutableLevels === 0 ? max : MathMin(max, texture._immutableLevels - 1);
     }
 
     // The error an upload's internal format, format and type are (WebGL 1.0 5.14.8; ES 3.0 3.8.3, tables 3.2 and 3.3),
@@ -3024,132 +3342,49 @@ class WebGLRenderingContext {
 
     // 9 arguments: (target, level, internalformat, width, height, border, format, type, pixels), WebGL 2's also with a
     // `srcOffset`, with a TexImageSource for the pixels, and with an offset into the bound PIXEL_UNPACK_BUFFER; 6:
-    // (target, level, internalformat, format, type, source). Refused before anything is sent: a target with no texture
-    // (`_textureFor`), a PIXEL_UNPACK_BUFFER bound -- or, for an offset, none bound or an unpack flag set
-    // (`_refusesUnpackBufferSource`) --, a level out of range, formats and a type the tables do not have together
-    // (`_uploadFormatError`), a size or border out of range (`preflightTexImage2D`), an unpack region outside the data
-    // store, and pixels the upload cannot read (`_uploadViewBytes`, `_unpackBufferOffset`). A value that is none of the
-    // overloads' is a TypeError, as WebIDL converts it.
+    // (target, level, internalformat, format, type, source), the size the source's. Refused before anything is sent: a
+    // target with no texture (`_textureFor`), a PIXEL_UNPACK_BUFFER bound -- or, for an offset, none bound or an unpack
+    // flag set (`_refusesUnpackBufferSource`) --, a level out of range, formats and a type the tables do not have
+    // together (`_uploadFormatError`), a size or border out of range (`preflightTexImage2D`), a WebGL 1 mipmap of a size
+    // that is not a power of two (`_refusesNpotLevel`), immutable storage (`_refusesImmutable`), an unpack region
+    // outside the data store, and pixels the upload cannot read (`_uploadViewBytes`, `_unpackBufferOffset`). The image
+    // is recorded once the upload is sent. A value that is none of the overloads' is a TypeError, as WebIDL converts it.
     texImage2D(target, level, internalformat, a4, a5, a6, a7, a8, a9, a10) {
-        if (!this._textureFor(target, "image2D")) return;
+        const texture = this._textureFor(target, "image2D");
+        if (!texture) return;
         if (a7 !== undefined) {
             const fromBuffer = this._isWebGL2() && a9 != null && typeof a9 !== "object";
             if (fromBuffer ? this._refusesUnpackBufferSource() : this._refusesUnpackBufferBound()) return;
             if (!preflightTexImage2D(
                 this._canvasId, target, level, a4, a5, a6, this._uploadFormatError(internalformat, a7, a8),
-            )) return;
-            if (fromBuffer) {
-                const offset = this._unpackBufferOffset(a9, a4, a5, 1, a7, a8, false);
-                if (offset >= 0) {
-                    _rawTexImage2D(this._canvasId, target, level, internalformat, a4, a5, a6, a7, a8, null, offset);
-                }
-                return;
+            ) || this._refusesNpotLevel(level, a4, a5) || this._refusesImmutable(texture)) return;
+            if (texImageFromData(this, target, level, internalformat, a4, a5, a6, a7, a8, a9, a10, fromBuffer)) {
+                defineTextureImage(texture, target, level,
+                    new TextureImage(Number(internalformat) >>> 0, Number(a7) >>> 0, Number(a8) >>> 0, a4, a5, 1, false));
             }
-            // Text texture cache hit takes precedence.
-            if (_migoTexImageFromTextCache(this._canvasId, target, level, internalformat, a9)) {
-                return;
-            }
-            const snapshotId =
-                a9 && typeof a9 === "object" && (a9.__migo_snapshot_id__ | 0);
-            if (
-                snapshotId &&
-                snapshotId !== 0 &&
-                a9.width === a4 &&
-                a9.height === a5
-            ) {
-                _rawTexImage2DFromSnapshot(
-                    this._canvasId, target, level, internalformat, a7, a8, snapshotId,
-                );
-                a9.__migo_snapshot_spent__ = true;
-                return;
-            }
-            if (_migoIsHTMLCanvas(a9) && a9.width === a4 && a9.height === a5) {
-                const ctx9 = a9._context;
-                if (ctx9 && typeof ctx9._consumeTextCacheForTexImage === "function"
-                        && ctx9._consumeTextCacheForTexImage(
-                            this._canvasId, target, level, internalformat)) {
-                    return;
-                }
-                _rawTexImage2DFromCanvas2d(
-                    this._canvasId, target, level, internalformat, _migoSourceRid(a9), 0, 0, a4 | 0, a5 | 0,
-                );
-                return;
-            }
-            if (a9 == null) {
-                _rawTexImage2D(this._canvasId, target, level, internalformat, a4, a5, a6, a7, a8, null, -1);
-                return;
-            }
-            if (!ArrayBufferIsView(a9)) {
-                throw new TypeError("texImage2D: pixels is not an ArrayBufferView");
-            }
-            if (this._refusesUnpackRegion(a4, a5, false)) return;
-            const data = this._uploadViewBytes(a9, this._isWebGL2() ? a10 : 0, a4, a5, 1, a7, a8, false);
-            if (data === null) return;
-            _rawTexImage2D(this._canvasId, target, level, internalformat, a4, a5, a6, a7, a8, data, -1);
-        } else {
-            // The size is the source's.
-            if (this._refusesUnpackBufferBound()) return;
-            if (!preflightTexImage2D(
-                this._canvasId, target, level, 0, 0, 0, this._uploadFormatError(internalformat, a4, a5),
-            )) return;
-            const source = a6;
-            if (_migoTexImageFromTextCache(this._canvasId, target, level, internalformat, source)) {
-                return;
-            }
-            const snapshotId =
-                source && typeof source === "object"
-                    ? (source.__migo_snapshot_id__ | 0)
-                    : 0;
-            if (snapshotId !== 0) {
-                _rawTexImage2DFromSnapshot(
-                    this._canvasId, target, level, internalformat, a4, a5, snapshotId,
-                );
-                source.__migo_snapshot_spent__ = true;
-                return;
-            }
-            if (_migoIsHTMLCanvas(source)) {
-                const cw = source.width | 0;
-                const ch = source.height | 0;
-                if (cw > 0 && ch > 0) {
-                    const ctx6 = source._context;
-                    if (ctx6 && typeof ctx6._consumeTextCacheForTexImage === "function"
-                            && ctx6._consumeTextCacheForTexImage(
-                                this._canvasId, target, level, internalformat)) {
-                        return;
-                    }
-                    _rawTexImage2DFromCanvas2d(
-                        this._canvasId, target, level, internalformat,
-                        _migoSourceRid(source), 0, 0, cw, ch,
-                    );
-                    return;
-                }
-            }
-            const imageId = source && typeof source.rid === "number" ? source.rid : null;
-            if (imageId != null) {
-                _rawTexImage2DFromImage(this._canvasId, target, level, internalformat, a4, a5, imageId);
-            } else {
-                const raw = sourceToRawRgba(source);
-                if (raw) {
-                    const data = toBoundedUploadBytes(this._canvasId, raw.data);
-                    if (data === null) return;
-                    _rawTexImage2D(
-                        this._canvasId, target, level, internalformat,
-                        raw.width, raw.height, 0, a4, a5, data, -1,
-                    );
-                    return;
-                }
-                const kind = source && source.constructor ? source.constructor.name : typeof source;
-                console.warn(`texImage2D 6-argument form unsupported source: ${kind}`);
-            }
+            return;
+        }
+        const source = a6;
+        const width = source !== null && typeof source === "object" ? source.width | 0 : 0;
+        const height = source !== null && typeof source === "object" ? source.height | 0 : 0;
+        if (this._refusesUnpackBufferBound()) return;
+        if (!preflightTexImage2D(
+            this._canvasId, target, level, width, height, 0, this._uploadFormatError(internalformat, a4, a5),
+        ) || this._refusesNpotLevel(level, width, height) || this._refusesImmutable(texture)) return;
+        if (texImageFromSource(this, target, level, internalformat, a4, a5, source)) {
+            defineTextureImage(texture, target, level,
+                new TextureImage(Number(internalformat) >>> 0, Number(a4) >>> 0, Number(a5) >>> 0, width, height, 1, false));
         }
     }
 
     // 9 arguments: (target, level, xoffset, yoffset, width, height, format, type, pixels), WebGL 2's also with a
     // `srcOffset`, with a TexImageSource for the pixels, and with an offset into the bound PIXEL_UNPACK_BUFFER; 7:
-    // (target, level, xoffset, yoffset, format, type, source). Refused as `texImage2D` is, against the (format, type)
-    // pairs of either table (`_subUploadFormatError`); null pixels are INVALID_VALUE.
+    // (target, level, xoffset, yoffset, format, type, source), the size the source's. Refused as `texImage2D` is,
+    // against the (format, type) pairs of either table (`_subUploadFormatError`), then against the image the upload
+    // goes into (`_refusesSubImage`); null pixels are INVALID_VALUE.
     texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels, srcOffset) {
-        if (!this._textureFor(target, "image2D")) return;
+        const texture = this._textureFor(target, "image2D");
+        if (!texture) return;
         if (pixels !== undefined) {
             const fromBuffer = this._isWebGL2() && pixels !== null && typeof pixels !== "object";
             if (fromBuffer ? this._refusesUnpackBufferSource() : this._refusesUnpackBufferBound()) return;
@@ -3159,43 +3394,44 @@ class WebGLRenderingContext {
             )) return;
             if (fromBuffer) {
                 const offset = this._unpackBufferOffset(pixels, width, height, 1, format, type, false);
-                if (offset >= 0) {
-                    _rawTexSubImage2D(
-                        this._canvasId, target, level, xoffset, yoffset, width, height, format, type,
-                        EMPTY_UPLOAD_BYTES, offset,
-                    );
-                }
+                if (offset < 0 ||
+                    this._refusesSubImage(texture, target, level, format, type, xoffset, yoffset, 0, width, height, 1)) return;
+                _rawTexSubImage2D(
+                    this._canvasId, target, level, xoffset, yoffset, width, height, format, type,
+                    EMPTY_UPLOAD_BYTES, offset,
+                );
                 return;
             }
             if (pixels === null) {
                 recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
                 return;
             }
-            const snapshotId =
-                pixels && typeof pixels === "object"
-                    ? (pixels.__migo_snapshot_id__ | 0)
-                    : 0;
-            if (snapshotId !== 0 && pixels.width === width && pixels.height === height) {
+            const snapshotId = typeof pixels === "object" ? (pixels.__migo_snapshot_id__ | 0) : 0;
+            const fromSnapshot = snapshotId !== 0 && pixels.width === width && pixels.height === height;
+            const fromCanvas = !fromSnapshot && _migoIsHTMLCanvas(pixels) && pixels.width === width && pixels.height === height;
+            let data = null;
+            if (!fromSnapshot && !fromCanvas) {
+                if (!ArrayBufferIsView(pixels)) {
+                    throw new TypeError("texSubImage2D: pixels is not an ArrayBufferView");
+                }
+                if (this._refusesUnpackRegion(width, height, false)) return;
+                data = this._uploadViewBytes(pixels, this._isWebGL2() ? srcOffset : 0, width, height, 1, format, type, false);
+                if (data === null) return;
+            }
+            if (this._refusesSubImage(texture, target, level, format, type, xoffset, yoffset, 0, width, height, 1)) return;
+            if (fromSnapshot) {
                 _rawTexSubImage2DFromSnapshot(
                     this._canvasId, target, level, xoffset, yoffset, format, type, snapshotId,
                 );
                 pixels.__migo_snapshot_spent__ = true;
-                return;
-            }
-            if (_migoIsHTMLCanvas(pixels) && pixels.width === width && pixels.height === height) {
+            } else if (fromCanvas) {
                 _rawTexSubImage2DFromCanvas2d(
                     this._canvasId, target, level, xoffset, yoffset,
                     _migoSourceRid(pixels), 0, 0, width | 0, height | 0,
                 );
-                return;
+            } else {
+                _rawTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, type, data, -1);
             }
-            if (!ArrayBufferIsView(pixels)) {
-                throw new TypeError("texSubImage2D: pixels is not an ArrayBufferView");
-            }
-            if (this._refusesUnpackRegion(width, height, false)) return;
-            const data = this._uploadViewBytes(pixels, this._isWebGL2() ? srcOffset : 0, width, height, 1, format, type, false);
-            if (data === null) return;
-            _rawTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, type, data, -1);
             return;
         }
 
@@ -3206,6 +3442,11 @@ class WebGLRenderingContext {
         if (!preflightTexSubImage(
             this._canvasId, level, MAX_WEBGL_GPU_2D_LEVELS, this._subUploadFormatError(sourceFormat, sourceType),
             xoffset, yoffset, 0, 0, 0, 1,
+        )) return;
+        const sourceWidth = source !== null && typeof source === "object" ? source.width | 0 : 0;
+        const sourceHeight = source !== null && typeof source === "object" ? source.height | 0 : 0;
+        if (this._refusesSubImage(
+            texture, target, level, sourceFormat, sourceType, xoffset, yoffset, 0, sourceWidth, sourceHeight, 1,
         )) return;
         const subSnapshotId =
             source && typeof source === "object"
@@ -3250,70 +3491,107 @@ class WebGLRenderingContext {
         }
     }
 
-    // The texture bound to `target` on the active unit, `undefined` for a target that is not a texture target.
-    _boundTextureFor(target) {
-        const bindings = this._textureBindings(Number(target) >>> 0);
-        return bindings === undefined ? undefined : bindings.get(this._activeTextureUnit) || null;
+    // ---- Texture parameters ----------------------------------------------------------------------------------------
+    // The parameter `pname` of the context's textures (`_TEXTURE_PARAMETERS`; WebGL 1 has four), or undefined.
+    _textureParameter(pname) {
+        return this._isWebGL2() || _listHas(_WEBGL1_TEXTURE_PARAMETERS, pname) ? _TEXTURE_PARAMETERS.get(pname) : undefined;
     }
 
-    // Record a sampler parameter on the bound texture, so getTexParameter answers what was set.
-    _noteTexParameter(target, pname, param) {
-        const tex = this._boundTextureFor(target);
-        if (!tex) return;
-        (tex._params || (tex._params = new Map())).set(pname >>> 0, param);
-    }
-
-    getTexParameter(target, pname) {
-        const tex = this._textureFor(target, "object");
-        if (!tex) return null;
-        const set = tex._params && tex._params.get(pname >>> 0);
-        if (set !== undefined) return set;
-        switch (pname >>> 0) {
-            case 0x2800: return 0x2601; // TEXTURE_MAG_FILTER: LINEAR
-            case 0x2801: return 0x2702; // TEXTURE_MIN_FILTER: NEAREST_MIPMAP_LINEAR
-            case 0x2802: return 0x2901; // TEXTURE_WRAP_S: REPEAT
-            case 0x2803: return 0x2901; // TEXTURE_WRAP_T: REPEAT
-            default: break;
+    // `texParameteri` / `texParameterf` on the bound texture: a parameter the context's textures do not have, or a value
+    // an enum one does not take, is INVALID_ENUM; a negative TEXTURE_BASE_LEVEL or TEXTURE_MAX_LEVEL INVALID_VALUE. The
+    // value is recorded for `getTexParameter` and true returned; false when refused, with the error recorded.
+    _setTexParameter(texture, pname, value) {
+        const spec = this._textureParameter(pname);
+        let error = 0;
+        if (spec === undefined || (spec.values !== null && !_listHas(spec.values, value))) error = GL_INVALID_ENUM;
+        else if ((pname === 0x813c || pname === 0x813d) && value < 0) error = GL_INVALID_VALUE;
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return false;
         }
-        recordGpuPreflightError(this._canvasId, 0x0500);
-        return null;
+        (texture._params || (texture._params = new Map())).set(pname, value);
+        return true;
+    }
+
+    // What `texParameter*` set, or the parameter's initial value; TEXTURE_IMMUTABLE_FORMAT and TEXTURE_IMMUTABLE_LEVELS
+    // (WebGL 2) are what `texStorage*` made of the texture. A parameter the context's textures do not have is
+    // INVALID_ENUM and null.
+    getTexParameter(target, pname) {
+        const texture = this._textureFor(target, "object");
+        if (!texture) return null;
+        const p = Number(pname) >>> 0;
+        if (this._isWebGL2()) {
+            if (p === 0x912f) return texture._immutableLevels !== 0;    // TEXTURE_IMMUTABLE_FORMAT
+            if (p === 0x82df) return texture._immutableLevels;          // TEXTURE_IMMUTABLE_LEVELS
+        }
+        const spec = this._textureParameter(p);
+        if (spec === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
+        const value = texture._params === null ? undefined : texture._params.get(p);
+        return value === undefined ? spec.initial : value;
     }
 
     texParameteri(target, pname, param) {
-        if (!this._textureFor(target, "object")) return;
-        // opcode 40: H C U U I. target/pname are u32, param is i32.
-        if (typeof target === "number" && typeof pname === "number" &&
-            typeof param === "number") {
-            this._noteTexParameter(target, pname, param | 0);
-            encodeTexParameteri(this._canvasId, target >>> 0, pname >>> 0, param | 0);
-            return;
-        }
-        flushRenderCommandStream();
-        _rawTexParameteri(this._canvasId, target, pname, param);
+        const texture = this._textureFor(target, "object");
+        if (!texture) return;
+        const p = Number(pname) >>> 0;
+        const value = Number(param) | 0;
+        if (!this._setTexParameter(texture, p, value)) return;
+        // opcode 40: H C U U I. target/pname are u32, param is i32: the arguments as WebIDL converted them.
+        encodeTexParameteri(this._canvasId, Number(target) >>> 0, p, value);
     }
 
+    // An enum or a level set through the float call takes the nearest integer (ES 3.0 2.3.1); the LODs are floats.
     texParameterf(target, pname, param) {
-        if (!this._textureFor(target, "object")) return;
+        const texture = this._textureFor(target, "object");
+        if (!texture) return;
+        const p = Number(pname) >>> 0;
+        const f = MathFround(Number(param));
+        if (!this._setTexParameter(texture, p, p === 0x813a || p === 0x813b ? f : MathRound(f))) return;
         // opcode 41: H C U U F. target/pname are u32, param is f32.
-        if (typeof target === "number" && typeof pname === "number" &&
-            typeof param === "number") {
-            // The filter and wrap parameters are enums, and read back as such.
-            this._noteTexParameter(target, pname, param | 0);
-            encodeTexParameterf(this._canvasId, target >>> 0, pname >>> 0, param);
-            return;
-        }
-        _rawTexParameterf(this._canvasId, target, pname, param);
+        encodeTexParameterf(this._canvasId, Number(target) >>> 0, p, f);
     }
 
+    // The base image (`_baseLevel`) must be there and not empty -- on every face of a cube map, alike and square --,
+    // uncompressed, of an unsized internal format or a sized one both colour-renderable and filterable
+    // (`_MIPMAPPABLE_SIZED_FORMATS`), and in WebGL 1 a power of two each way; anything else is INVALID_OPERATION (ES
+    // 3.0 3.8.10, ES 2.0 3.7.11). The levels it makes are recorded: each half the one before, down to 1 x 1 or the
+    // maximum level (`_maxLevel`), as immutable storage already has them.
     generateMipmap(target) {
-        if (!this._textureFor(target, "object")) return;
-        // opcode 42: H C U.
-        if (typeof target === "number") {
-            encodeGenerateMipmap(this._canvasId, target >>> 0);
+        const texture = this._textureFor(target, "object");
+        if (!texture) return;
+        const t = Number(target) >>> 0;
+        const first = t === 0x8513 ? 0x8515 : t;
+        const last = t === 0x8513 ? 0x851a : t;
+        const base = this._baseLevel(texture);
+        const image = this._image(texture, first, base);
+        let ok = image !== undefined && !image.compressed && image.width > 0 && image.height > 0 && image.depth > 0 &&
+            (_UNSIZED_UPLOAD_TYPES.has(image.internalformat) || _listHas(_MIPMAPPABLE_SIZED_FORMATS, image.internalformat)) &&
+            (this._isWebGL2() || (_isPowerOfTwo(image.width) && _isPowerOfTwo(image.height))) &&
+            (t !== 0x8513 || image.width === image.height);
+        for (let face = first + 1; ok && face <= last; face++) {
+            const other = this._image(texture, face, base);
+            ok = other !== undefined && other.width === image.width && other.height === image.height &&
+                other.internalformat === image.internalformat && other.type === image.type;
+        }
+        if (!ok) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
             return;
         }
-        flushRenderCommandStream();
-        _rawGenerateMipmap(this._canvasId, target);
+        // opcode 42: H C U.
+        encodeGenerateMipmap(this._canvasId, t);
+        if (texture._immutableLevels !== 0) return;
+        const top = MathMin(this._maxLevel(texture),
+            base + maxMipLevels(MathMax(image.width, image.height, t === 0x806f ? image.depth : 1)) - 1);
+        for (let level = base + 1; level <= top; level++) {
+            const shift = level - base;
+            const mip = new TextureImage(image.internalformat, image.format, image.type,
+                (image.width >> shift) || 1, (image.height >> shift) || 1,
+                t === 0x806f ? (image.depth >> shift) || 1 : image.depth, false);
+            for (let face = first; face <= last; face++) defineTextureImage(texture, face, level, mip);
+        }
     }
 
     // A pname this context does not have is INVALID_ENUM; an alignment other than 1, 2, 4 or 8, or a negative length
@@ -3346,19 +3624,29 @@ class WebGLRenderingContext {
         _rawPixelStorei(this._canvasId, pname, value);
     }
 
+    // The compressed uploads are refused before anything is sent as `_acceptsCompressedImage` and
+    // `_acceptsCompressedSubImage` describe; the image is recorded once one is sent.
     compressedTexImage2D(target, level, internalformat, width, height, border, data) {
-        if (!this._textureFor(target, "image2D")) return;
+        const texture = this._textureFor(target, "image2D");
+        if (!texture) return;
         const u8 = toBoundedUploadBytes(this._canvasId, data);
-        if (u8 === null) return;
+        if (u8 === null || !this._acceptsCompressedImage(
+            texture, target, level, internalformat, width, height, 1, border, TypedArrayPrototypeGetByteLength(u8),
+        )) return;
         _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, u8, -1, 0);
+        defineCompressedTextureImage(texture, target, level, internalformat, width, height, 1);
     }
 
     compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, data) {
-        if (!this._textureFor(target, "image2D")) return;
+        const texture = this._textureFor(target, "image2D");
+        if (!texture) return;
         const u8 = toBoundedUploadBytes(this._canvasId, data);
-        if (u8 === null) return;
+        if (u8 === null || !this._acceptsCompressedSubImage(
+            texture, target, level, xoffset, yoffset, 0, width, height, 1, format, TypedArrayPrototypeGetByteLength(u8),
+        )) return;
         _rawCompressedTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, u8, -1, 0);
     }
+
 
     // -- Phase 1C: Buffer & Vertex Extensions --
 
@@ -3504,7 +3792,7 @@ class WebGLRenderingContext {
         return this._attribShadow.offset[i];
     }
     _isWebGL2() {
-        return typeof WebGL2RenderingContext === "function" && this instanceof WebGL2RenderingContext;
+        return this._webgl2;
     }
     _bindAttribShadow(vao) {
         this._attribShadow = vao ? (vao._attribs || (vao._attribs = new VertexAttribShadow())) : this._attribDefaults;
@@ -3955,19 +4243,50 @@ class WebGLRenderingContext {
     }
     // ---- Copies from the read framebuffer ----------------------------------------------------------------------------
     // The read framebuffer -- the drawing buffer, or the content's own -- into the bound texture, on the GPU: only the
-    // arguments cross. The rules that need no state (the target, the format, a negative size or offset, the border, a
-    // square cube face) are the decoder's, for both lanes; WebGL 1 takes only the five unsized formats.
+    // arguments cross. The decoder checks what needs no state for both lanes (`validate_copy_tex_image_2d`); this side
+    // checks the same, in the same order, and what the decoder cannot know (the levels and sizes the context takes, a
+    // WebGL 1 mipmap that is not a power of two, immutable storage, the image a sub-copy goes into), so that the image
+    // the copy defines is recorded only when the copy is sent. That the read framebuffer's format converts to the
+    // texture's is the driver's to judge.
     copyTexImage2D(target, level, internalformat, x, y, width, height, border) {
-        if (!this._textureFor(target, "image2D")) return;
-        const format = internalformat >>> 0;
-        if (format < 0x1906 || format > 0x190a) {         // ALPHA, RGB, RGBA, LUMINANCE, LUMINANCE_ALPHA
-            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+        const texture = this._textureFor(target, "image2D");
+        if (!texture) return;
+        const t = Number(target) >>> 0;
+        const i = Number(internalformat) >>> 0;
+        const l = level | 0, w = width | 0, h = height | 0;
+        const error = this._copyTexImageError(t, l, i, w, h, border | 0);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
             return;
         }
-        encodeCopyTexImage2D(this._canvasId, target, level, format, x, y, width, height, border);
+        if (this._refusesNpotLevel(l, w, h) || this._refusesImmutable(texture)) return;
+        encodeCopyTexImage2D(this._canvasId, t, l, i, x, y, w, h, 0);
+        const sized = _SIZED_UPLOADS.get(i);
+        defineTextureImage(texture, t, l, sized === undefined
+            ? new TextureImage(i, i, _UBYTE, w, h, 1, false)
+            : new TextureImage(i, sized[0], sized[1][0], w, h, 1, false));
     }
+
+    // The internal format first (INVALID_ENUM for one the call does not take: WebGL 1 has the five unsized ones only),
+    // then the level, size and border (INVALID_VALUE: out of range, or a cube face that is not square), then a depth or
+    // stencil format (INVALID_OPERATION), as the decoder orders them. 0 when none is.
+    _copyTexImageError(target, level, internalformat, width, height, border) {
+        const formatError = this._isWebGL2() ? _copyTexImageFormatError(internalformat)
+            : internalformat >= 0x1906 && internalformat <= 0x190a ? 0 : GL_INVALID_ENUM;
+        if (formatError === GL_INVALID_ENUM) return formatError;
+        const maxAtLevel = (MAX_WEBGL_GPU_2D_DIMENSION >>> level) || 1;
+        if (level < 0 || level >= MAX_WEBGL_GPU_2D_LEVELS || width < 0 || width > maxAtLevel || height < 0 ||
+                height > maxAtLevel || border !== 0 || (target !== 0x0de1 && width !== height)) {
+            return GL_INVALID_VALUE;
+        }
+        return formatError;
+    }
+
     copyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height) {
-        if (!this._textureFor(target, "image2D")) return;
+        const texture = this._textureFor(target, "image2D");
+        if (!texture || this._refusesCopyIntoImage(
+            texture, target, level | 0, xoffset | 0, yoffset | 0, 0, width | 0, height | 0,
+        )) return;
         encodeCopyTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, x, y, width, height);
     }
 
@@ -4127,10 +4446,27 @@ class WebGLRenderingContext {
         flushRenderCommandStream();
         _rawBindRenderbuffer(this._canvasId, target, rbId);
     }
+    // Refused before anything is sent: a target other than RENDERBUFFER is INVALID_ENUM, no renderbuffer bound
+    // INVALID_OPERATION, an internal format the context has no renderbuffer of INVALID_ENUM (`_WEBGL1_RENDERBUFFER_FORMATS`,
+    // `_WEBGL2_RENDERBUFFER_FORMATS`), a size or sample count out of range INVALID_VALUE. 0 when none is.
+    _renderbufferStorageError(target, internalformat, width, height, samples) {
+        if ((Number(target) >>> 0) !== 0x8d41) return GL_INVALID_ENUM;
+        if (this._renderbufferBinding === null) return GL_INVALID_OPERATION;
+        const formats = this._isWebGL2() ? _WEBGL2_RENDERBUFFER_FORMATS : _WEBGL1_RENDERBUFFER_FORMATS;
+        if (!_listHas(formats, Number(internalformat) >>> 0)) return GL_INVALID_ENUM;
+        if (!NumberIsInteger(width) || width < 0 || width > MAX_WEBGL_GPU_2D_DIMENSION ||
+                !NumberIsInteger(height) || height < 0 || height > MAX_WEBGL_GPU_2D_DIMENSION ||
+                !NumberIsInteger(samples) || samples < 0 || samples > MAX_WEBGL_GPU_SAMPLES) {
+            return GL_INVALID_VALUE;
+        }
+        return 0;
+    }
     renderbufferStorage(target, internalformat, width, height) {
-        if (!preflightRenderbuffer(
-            this._canvasId, target, internalformat, width, height, 1,
-        )) return;
+        const error = this._renderbufferStorageError(target, internalformat, width, height, 0);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         this._noteRenderbufferStorage(internalformat, width, height);
         _rawRenderbufferStorage(this._canvasId, target, internalformat, width, height);
     }
@@ -4201,6 +4537,7 @@ Object.assign(WebGLRenderingContext.prototype, WebglConstants);
 class WebGL2RenderingContext extends WebGLRenderingContext {
     constructor(canvas) {
         super(canvas);
+        this._webgl2 = true;
         this._queryRegistry = new Map();
         this._currentQueryByTarget = new Map();
         this._tfRegistry = new Map();
@@ -4724,12 +5061,16 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     // ---- Immutable texture storage ------------------------------
+    // Refused before anything is sent: the internal format (`_storageFormatError`), the levels and size
+    // (`preflightTexStorage2D`), and storage already immutable (`_refusesImmutable`). Every image it makes is recorded.
     texStorage2D(target, levels, internalformat, width, height) {
-        if (!this._textureFor(target, "storage2D")) return;
+        const texture = this._textureFor(target, "storage2D");
+        if (!texture) return;
         if (!preflightTexStorage2D(
-            this._canvasId, target, levels, internalformat, width, height,
-        )) return;
+            this._canvasId, target, levels, this._storageFormatError(internalformat, target), width, height,
+        ) || this._refusesImmutable(texture)) return;
         _rawTexStorage2D(this._canvasId, target, levels, internalformat, width, height);
+        defineTextureStorage(texture, target, levels, internalformat, width, height, 1);
     }
 
     // ---- Framebuffer ops ---------------------------------------
@@ -4800,13 +5141,11 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     // ---- Copies (WebGL 2) -------------------------------------------------------------------------------------------
-    // WebGL 2 takes the sized colour formats too, so the decoder's list is the whole rule.
-    copyTexImage2D(target, level, internalformat, x, y, width, height, border) {
-        if (!this._textureFor(target, "image2D")) return;
-        encodeCopyTexImage2D(this._canvasId, target, level, internalformat, x, y, width, height, border);
-    }
     copyTexSubImage3D(target, level, xoffset, yoffset, zoffset, x, y, width, height) {
-        if (!this._textureFor(target, "image3D")) return;
+        const texture = this._textureFor(target, "image3D");
+        if (!texture || this._refusesCopyIntoImage(
+            texture, target, level | 0, xoffset | 0, yoffset | 0, zoffset | 0, width | 0, height | 0,
+        )) return;
         encodeCopyTexSubImage3D(this._canvasId, target, level, xoffset, yoffset, zoffset, x, y, width, height);
     }
     // The offsets and size are `long long`, checked against the two buffers bound (ES 3.0 2.10.5, WebGL 2.0 5.1): a
@@ -4866,9 +5205,11 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         encodeCopyBufferSubData(this._canvasId, rt, wt, r, w, n);
     }
     renderbufferStorageMultisample(target, samples, internalformat, width, height) {
-        if (!preflightRenderbuffer(
-            this._canvasId, target, internalformat, width, height, samples,
-        )) return;
+        const error = this._renderbufferStorageError(target, internalformat, width, height, samples);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         this._noteRenderbufferStorage(internalformat, width, height);
         _rawRenderbufferStorageMultisample(this._canvasId, target, samples,
                                             internalformat, width, height);
@@ -5281,13 +5622,14 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // `pixelsOrOffset` is a view (from its `srcOffset` element on), null (storage only), or an offset into the bound
     // PIXEL_UNPACK_BUFFER. Refused before anything is sent as `texImage2D` is, against UNPACK_IMAGE_HEIGHT and the
     // skipped rows too; and a view while an unpack flag is set (`_refusesUnpackFlagsIn3D`). A TexImageSource is not
-    // uploaded in 3D.
+    // uploaded in 3D. The image is recorded once the upload is sent.
     texImage3D(
         target, level, internalformat,
         width, height, depth, border,
         format, type, pixelsOrOffset, srcOffset
     ) {
-        if (!this._textureFor(target, "image3D")) return;
+        const texture = this._textureFor(target, "image3D");
+        if (!texture) return;
         const fromBuffer = pixelsOrOffset != null && typeof pixelsOrOffset !== "object";
         if (fromBuffer ? this._refusesUnpackBufferSource()
             : this._refusesUnpackBufferBound() || (pixelsOrOffset != null && this._refusesUnpackFlagsIn3D())) return;
@@ -5319,6 +5661,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
         }
+        if (this._refusesImmutable(texture)) return;
         const source = this._upload3DSource(pixelsOrOffset, srcOffset, fromBuffer, width, height, depth, format, type, true);
         if (source === null) return;
         _rawTexImage3D(
@@ -5326,16 +5669,20 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             width, height, depth, border, format, type,
             source[0], source[1],
         );
+        defineTextureImage(texture, target, level,
+            new TextureImage(Number(internalformat) >>> 0, f, Number(type) >>> 0, width, height, depth, false));
     }
-    // As `texImage3D`, over the (format, type) pairs of either table. Null pixels are INVALID_VALUE, and
-    // FLOAT_32_UNSIGNED_INT_24_8_REV from anything but a buffer INVALID_ENUM (WebGL 2.0 3.7.6).
+    // As `texImage3D`, over the (format, type) pairs of either table, then against the image the upload goes into
+    // (`_refusesSubImage`). Null pixels are INVALID_VALUE, and FLOAT_32_UNSIGNED_INT_24_8_REV from anything but a buffer
+    // INVALID_ENUM (WebGL 2.0 3.7.6).
     texSubImage3D(
         target, level,
         xoffset, yoffset, zoffset,
         width, height, depth,
         format, type, pixelsOrOffset, srcOffset
     ) {
-        if (!this._textureFor(target, "image3D")) return;
+        const texture = this._textureFor(target, "image3D");
+        if (!texture) return;
         const fromBuffer = pixelsOrOffset != null && typeof pixelsOrOffset !== "object";
         if (fromBuffer ? this._refusesUnpackBufferSource()
             : this._refusesUnpackBufferBound() || (pixelsOrOffset != null && this._refusesUnpackFlagsIn3D())) return;
@@ -5350,7 +5697,8 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             return;
         }
         const source = this._upload3DSource(pixelsOrOffset, srcOffset, fromBuffer, width, height, depth, format, type, false);
-        if (source === null) return;
+        if (source === null ||
+            this._refusesSubImage(texture, target, level, format, type, xoffset, yoffset, zoffset, width, height, depth)) return;
         _rawTexSubImage3D(
             this._canvasId, target, level,
             xoffset, yoffset, zoffset,
@@ -5379,39 +5727,57 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // ---- Compressed uploads (WebGL 2) --------------------------------------------------------------------------------
     // Each takes a view with `srcOffset` / `srcLengthOverride`, or `imageSize` / `offset` into the bound
     // PIXEL_UNPACK_BUFFER: see `_compressedUploadSource`.
+    // Then refused as `_acceptsCompressedImage` / `_acceptsCompressedSubImage` describe, the data's length being the
+    // view range's or `imageSize`; an image is recorded once its upload is sent.
     compressedTexImage2D(target, level, internalformat, width, height, border, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
-        if (!this._textureFor(target, "image2D")) return;
+        const texture = this._textureFor(target, "image2D");
+        if (!texture) return;
         const source = this._compressedUploadSource(dataOrSize, srcOffsetOrOffset, srcLengthOverride);
-        if (source === null) return;
+        if (source === null || !this._acceptsCompressedImage(
+            texture, target, level, internalformat, width, height, 1, border, _compressedSourceBytes(source),
+        )) return;
         _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, source[0], source[1], source[2]);
+        defineCompressedTextureImage(texture, target, level, internalformat, width, height, 1);
     }
     compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
-        if (!this._textureFor(target, "image2D")) return;
+        const texture = this._textureFor(target, "image2D");
+        if (!texture) return;
         const source = this._compressedUploadSource(dataOrSize, srcOffsetOrOffset, srcLengthOverride);
-        if (source === null) return;
+        if (source === null || !this._acceptsCompressedSubImage(
+            texture, target, level, xoffset, yoffset, 0, width, height, 1, format, _compressedSourceBytes(source),
+        )) return;
         _rawCompressedTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, width, height, format, source[0], source[1], source[2]);
     }
     compressedTexImage3D(target, level, internalformat, width, height, depth, border, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
-        if (!this._textureFor(target, "image3D")) return;
+        const texture = this._textureFor(target, "image3D");
+        if (!texture) return;
         const source = this._compressedUploadSource(dataOrSize, srcOffsetOrOffset, srcLengthOverride);
-        if (source === null) return;
+        if (source === null || !this._acceptsCompressedImage(
+            texture, target, level, internalformat, width, height, depth, border, _compressedSourceBytes(source),
+        )) return;
         _rawCompressedTexImage3D(this._canvasId, target, level, internalformat, width, height, depth, border, source[0], source[1], source[2]);
+        defineCompressedTextureImage(texture, target, level, internalformat, width, height, depth);
     }
     compressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
-        if (!this._textureFor(target, "image3D")) return;
+        const texture = this._textureFor(target, "image3D");
+        if (!texture) return;
         const source = this._compressedUploadSource(dataOrSize, srcOffsetOrOffset, srcLengthOverride);
-        if (source === null) return;
+        if (source === null || !this._acceptsCompressedSubImage(
+            texture, target, level, xoffset, yoffset, zoffset, width, height, depth, format, _compressedSourceBytes(source),
+        )) return;
         _rawCompressedTexSubImage3D(this._canvasId, target, level, xoffset, yoffset, zoffset, width, height, depth, format, source[0], source[1], source[2]);
     }
     texStorage3D(target, levels, internalformat, width, height, depth) {
-        if (!this._textureFor(target, "image3D")) return;
+        const texture = this._textureFor(target, "image3D");
+        if (!texture) return;
         if (!preflightTexStorage3D(
-            this._canvasId, target, levels, internalformat, width, height, depth,
-        )) return;
+            this._canvasId, target, levels, this._storageFormatError(internalformat, target), width, height, depth,
+        ) || this._refusesImmutable(texture)) return;
         _rawTexStorage3D(
             this._canvasId, target, levels, internalformat,
             width, height, depth,
         );
+        defineTextureStorage(texture, target, levels, internalformat, width, height, depth);
     }
 }
 
