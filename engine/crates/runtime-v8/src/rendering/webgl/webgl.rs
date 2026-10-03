@@ -1488,6 +1488,7 @@ pub(super) mod tests {
                 const program = gl.createProgram();
                 gl.linkProgram(program);
                 gl._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));   // what the renderer answers for LINK_STATUS
+                program._consumes = []; program._consumesLink = program._links | 0;   // and the attribute locations it consumes: none
                 gl.useProgram(program);
                 gl.flush();
                 "#,
@@ -2563,6 +2564,7 @@ pub(super) mod tests {
                 const program = gl.createProgram();
                 gl.linkProgram(program);
                 gl._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));   // what the renderer answers for LINK_STATUS
+                program._consumes = []; program._consumesLink = program._links | 0;   // and the attribute locations it consumes: none
                 gl.useProgram(program);
                 gl.drawElements(4, 3, 0x1403, 0); err(0, "three shorts of six bytes");
                 gl.drawElements(4, 3, 0x1403, 2); err(0x0502, "past the index buffer");
@@ -2771,9 +2773,11 @@ pub(super) mod tests {
                 const linked = gl.createProgram(), unlinked = gl.createProgram(), deleted = gl.createProgram();
                 for (const p of [linked, unlinked, deleted]) gl.linkProgram(p);
                 gl._programParameterCache.set(linked.id, new Map([[0x8b82, 1]]));     // what the renderer answers for LINK_STATUS
+                linked._consumes = []; linked._consumesLink = linked._links | 0;   // and the attribute locations it consumes: none
                 gl._programParameterCache.set(unlinked.id, new Map([[0x8b82, 0]]));
                 gl.deleteProgram(deleted);
                 gl._programParameterCache.set(deleted.id, new Map([[0x8b82, 1]]));     // it linked; it is deleted
+                deleted._consumes = []; deleted._consumesLink = deleted._links | 0;   // and the attribute locations it consumes: none
                 gl.drawArrays(4, 0, 3); err(gl, 0x0502, "drawArrays with no program");
                 gl.bindBuffer(0x8893, gl.createBuffer());
                 gl.bufferData(0x8893, 6, 0x88e4);                                    // three shorts to draw from
@@ -3196,6 +3200,198 @@ pub(super) mod tests {
         );
     }
 
+    /// LINK_STATUS is asked as the link's whole result (`gl_state::LINK_RESULT`): whether it linked and the attribute
+    /// locations the program consumes, once per link -- `useProgram` and the draws that follow use the cached answer, a
+    /// relink asks again -- and the draws judge the attributes in it and no others. A program that did not link answers
+    /// false, and `useProgram` refuses it.
+    #[test]
+    fn link_status_brings_the_attribute_locations_a_program_consumes() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            while let Ok(command) = render_rx.recv_timeout(Duration::from_secs(1)) {
+                match command {
+                    RenderCommand::GL(GLCmd::GetState { query, resp, .. }) => {
+                        asked.push(query);
+                        resp.ok(if asked.len() == 1 {
+                            "{\"v\":[true,[0,2]]}".to_string()
+                        } else {
+                            "{\"v\":[false,[]]}".to_string()
+                        });
+                    }
+                    RenderCommand::GL(_) | RenderCommand::FramePacket(_) => {}
+                    other => panic!("unexpected render command: {other:?}"),
+                }
+            }
+            asked
+        });
+        runtime
+            .exec_script(
+                "link_result.js",
+                r#"
+                const gl = new WebGLRenderingContext({ _rid: 236, width: 1, height: 1 }, {});
+                const err = (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const p = gl.createProgram();
+                gl.linkProgram(p);
+                if (gl.getProgramParameter(p, 0x8b82) !== true) throw new Error("it linked");
+                gl.useProgram(p); err(0, "a linked program is used without asking again");
+                const tiny = gl.createBuffer();
+                gl.bindBuffer(0x8892, tiny);
+                gl.bufferData(0x8892, 8, 0x88e4);
+                gl.enableVertexAttribArray(1);                                   // not consumed, and no buffer
+                gl.drawArrays(4, 0, 3); err(0, "an attribute the program does not consume");
+                gl.enableVertexAttribArray(2);
+                gl.vertexAttribPointer(2, 4, 0x1406, false, 0, 0);               // consumed: 16 bytes a vertex
+                gl.drawArrays(4, 0, 3); err(0x0502, "location 2 is consumed and holds no vertex");
+                gl.linkProgram(p);
+                if (gl.getProgramParameter(p, 0x8b82) !== false) throw new Error("the relink failed");
+                gl.useProgram(p); err(0x0502, "a program that did not link is not used");
+                gl.flush();
+                "#,
+            )
+            .expect("the program calls should run");
+        drop(runtime);
+        assert_eq!(
+            responder.join().unwrap(),
+            vec![
+                frame_wire::sync::gl_state::LINK_RESULT,
+                frame_wire::sync::gl_state::LINK_RESULT
+            ],
+            "one question per link"
+        );
+    }
+
+    /// A draw reads no vertex outside the buffers of the attributes the program in use consumes (WebGL 1.0 6.4-6.6, kept
+    /// by WebGL 2): every consumed attribute enabled as an array needs a buffer, and the buffer must hold the vertices
+    /// `first` .. `first + count - 1` at the attribute's offset and stride -- the largest index, for an indexed draw,
+    /// read from the facade's copy of the element-array buffer and cached until its bytes change -- and the instances
+    /// an instanced attribute reads by its divisor. An attribute the program does not consume is not judged. The mode,
+    /// counts, index type (UNSIGNED_INT needs OES_element_index_uint in WebGL 1) and offset alignment are judged first,
+    /// in a browser's order; in WebGL 2 the primitive-restart index reads no vertex. Only accepted draws are sent.
+    #[test]
+    fn draws_read_no_vertex_outside_the_buffers_of_the_attributes_consumed() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "draw_ranges.js",
+                r#"
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                const ARRAY = 0x8892, ELEMENTS = 0x8893, STATIC = 0x88e4, FLOAT = 0x1406, USHORT = 0x1403, TRIANGLES = 4;
+                const setUp = (gl, consumes) => {
+                    const program = gl.createProgram();
+                    gl.linkProgram(program);
+                    gl._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));   // what the renderer answers for LINK_STATUS
+                    program._consumes = consumes; program._consumesLink = program._links | 0;   // and the locations it consumes
+                    gl.useProgram(program);
+                    return program;
+                };
+                const gl = new WebGLRenderingContext({ _rid: 234, width: 1, height: 1 }, {});
+                const err = (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                setUp(gl, [0, 1]);
+                const vertices = gl.createBuffer();
+                gl.bindBuffer(ARRAY, vertices);
+                gl.bufferData(ARRAY, 24, STATIC);                               // three vec2 of floats
+                gl.enableVertexAttribArray(0);
+                gl.vertexAttribPointer(0, 2, FLOAT, false, 0, 0);
+                gl.drawArrays(TRIANGLES, 0, 3); err(0, "three vertices");                                  // 1
+                gl.drawArrays(TRIANGLES, 1, 3); err(OPERATION, "a fourth vertex");
+                gl.drawArrays(9, 0, 3); err(ENUM, "no primitive");
+                gl.drawArrays(TRIANGLES, -1, 3); err(VALUE, "a negative first");
+                gl.enableVertexAttribArray(1);
+                gl.drawArrays(TRIANGLES, 0, 3); err(OPERATION, "a consumed attribute enabled with no buffer");
+                gl.disableVertexAttribArray(1);
+                const small = gl.createBuffer();
+                gl.bindBuffer(ARRAY, small);
+                gl.bufferData(ARRAY, 4, STATIC);
+                gl.enableVertexAttribArray(2);
+                gl.vertexAttribPointer(2, 4, FLOAT, false, 0, 0);
+                gl.drawArrays(TRIANGLES, 0, 3); err(0, "an attribute the program does not consume");         // 2
+                gl.bindBuffer(ARRAY, vertices);
+                gl.vertexAttribPointer(0, 2, FLOAT, false, 12, 4);            // vertex i at 4 + 12 i, 8 bytes
+                gl.drawArrays(TRIANGLES, 0, 2); err(0, "two vertices at a stride");                         // 3
+                gl.drawArrays(TRIANGLES, 0, 3); err(OPERATION, "the third past the buffer");
+                gl.vertexAttribPointer(0, 2, FLOAT, false, 0, 0);
+                // indexed
+                const indices = gl.createBuffer();
+                gl.bindBuffer(ELEMENTS, indices);
+                gl.bufferData(ELEMENTS, new Uint16Array([0, 1, 5, 0xffff]), STATIC);
+                gl.drawElements(TRIANGLES, 2, USHORT, 0); err(0, "indices 0 and 1");                       // 4
+                gl.drawElements(TRIANGLES, 3, USHORT, 0); err(OPERATION, "index 5");
+                gl.bufferSubData(ELEMENTS, 4, new Uint16Array([2]));
+                gl.drawElements(TRIANGLES, 3, USHORT, 0); err(0, "index 5 replaced by 2");                 // 5
+                gl.drawElements(TRIANGLES, 1, USHORT, 6); err(OPERATION, "0xffff is an index in WebGL 1");
+                gl.drawElements(TRIANGLES, 2, USHORT, 1); err(OPERATION, "an offset off the index size");
+                gl.drawElements(TRIANGLES, 3, 0x1405, 0); err(ENUM, "UNSIGNED_INT before its extension");
+                gl.drawElements(TRIANGLES, 0, USHORT, 0); err(0, "no indices");                              // 6
+                // instanced
+                const ext = gl.getExtension("ANGLE_instanced_arrays");
+                const perInstance = gl.createBuffer();
+                gl.bindBuffer(ARRAY, perInstance);
+                gl.bufferData(ARRAY, 32, STATIC);                              // two vec4 of floats
+                gl.enableVertexAttribArray(1);
+                gl.vertexAttribPointer(1, 4, FLOAT, false, 0, 0);
+                ext.vertexAttribDivisorANGLE(1, 1);
+                ext.drawArraysInstancedANGLE(TRIANGLES, 0, 3, 2); err(0, "two instances");                 // 7
+                ext.drawArraysInstancedANGLE(TRIANGLES, 0, 3, 3); err(OPERATION, "a third instance");
+                ext.vertexAttribDivisorANGLE(1, 2);
+                ext.drawElementsInstancedANGLE(TRIANGLES, 3, USHORT, 0, 4); err(0, "four instances, two each"); // 8
+                ext.drawArraysInstancedANGLE(TRIANGLES, 0, 3, 5); err(OPERATION, "a fifth needs a third element");
+                gl.deleteBuffer(vertices);
+                gl.drawArrays(TRIANGLES, 0, 3); err(OPERATION, "the vertex buffer deleted");
+                // WebGL 2
+                const gl2 = new WebGL2RenderingContext({ _rid: 235, width: 1, height: 1 }, {});
+                const err2 = (want, m) => { const got = gl2.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                setUp(gl2, [0]);
+                gl2.bindBuffer(ARRAY, gl2.createBuffer());
+                gl2.bufferData(ARRAY, 24, STATIC);
+                gl2.enableVertexAttribArray(0);
+                gl2.vertexAttribPointer(0, 2, FLOAT, false, 0, 0);
+                const restart = gl2.createBuffer();
+                gl2.bindBuffer(ELEMENTS, restart);
+                gl2.bufferData(ELEMENTS, new Uint16Array([0, 0xffff, 2]), STATIC);
+                gl2.drawElements(TRIANGLES, 3, USHORT, 0); err2(0, "the restart index reads no vertex");    // 9
+                gl2.drawElements(TRIANGLES, 3, 0x1405, 0); err2(OPERATION, "UNSIGNED_INT past six bytes");
+                const other = gl2.createBuffer();
+                gl2.bindBuffer(ELEMENTS, other);
+                gl2.bufferData(ELEMENTS, new Uint16Array([0, 9, 0]), STATIC);
+                gl2.bindBuffer(0x8f36, other);                                 // COPY_READ_BUFFER
+                gl2.bindBuffer(0x8f37, restart);                               // COPY_WRITE_BUFFER
+                gl2.bindBuffer(ELEMENTS, restart);
+                gl2.copyBufferSubData(0x8f36, 0x8f37, 2, 2, 2);                // index 9 into the restart buffer
+                gl2.drawElements(TRIANGLES, 3, USHORT, 0); err2(OPERATION, "index 9, copied in");
+                gl2.drawArraysInstanced(TRIANGLES, 0, 3, 7); err2(0, "instances of a vertex attribute");    // 10
+                gl.flush(); gl2.flush();
+                "#,
+            )
+            .expect("every draw should be judged, none thrown");
+        let draws: Vec<&str> = drain_gl_commands(&render_rx)
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::DrawArrays { .. } => Some("arrays"),
+                GLCmd::DrawElements { .. } => Some("elements"),
+                GLCmd::DrawArraysInstanced { .. } => Some("arrays instanced"),
+                GLCmd::DrawElementsInstanced { .. } => Some("elements instanced"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            draws,
+            [
+                "arrays",
+                "arrays",
+                "arrays",
+                "elements",
+                "elements",
+                "elements",
+                "arrays instanced",
+                "elements instanced",
+                "elements",
+                "arrays instanced",
+            ],
+            "only the accepted draws are sent"
+        );
+    }
+
     /// WebGL 1 samples a texture whose level 0 is not a power of two as incomplete -- (0, 0, 0, 1) -- unless both wraps
     /// are CLAMP_TO_EDGE and the minification filter reads no mipmap (ES 2.0 3.8.2); the driver, OpenGL ES 3.0, would
     /// sample it. So every draw holds no texture where such a texture is bound and puts the binding back after it, with
@@ -3214,6 +3410,7 @@ pub(super) mod tests {
                     const program = gl.createProgram();
                     gl.linkProgram(program);
                     gl._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));   // what the renderer answers for LINK_STATUS
+                    program._consumes = []; program._consumesLink = program._links | 0;   // and the attribute locations it consumes: none
                     gl.useProgram(program);
                 };
                 const gl = new WebGLRenderingContext({ _rid: 232, width: 1, height: 1 }, {});
@@ -5041,11 +5238,13 @@ pub(super) mod tests {
                 "task5_200_mixed_setup.js",
                 r#"
                 const ctx = new WebGLRenderingContext({ _rid: 200, width: 1, height: 1 }, {});
+                ctx.getExtension("OES_element_index_uint");     // UNSIGNED_INT indices are WebGL 1's only with it
                 ctx.bindBuffer(0x8893, ctx.createBuffer());
                 ctx.bufferData(0x8893, 12, 0x88e4);
                 const program = ctx.createProgram();
                 ctx.linkProgram(program);
                 ctx._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));   // what the renderer answers for LINK_STATUS
+                program._consumes = []; program._consumesLink = program._links | 0;   // and the attribute locations it consumes: none
                 ctx.flush();
                 "#,
             )

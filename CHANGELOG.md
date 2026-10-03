@@ -112,6 +112,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL: a draw reads no vertex outside the buffers of the attributes the program in use consumes, as the
+  specification has it (WebGL 1.0 6.4-6.6, kept by WebGL 2): a consumed attribute enabled as an array with no buffer, or
+  whose buffer does not hold every vertex the draw reads at the attribute's offset and stride -- or every instance an
+  instanced attribute reads by its divisor -- is INVALID_OPERATION and nothing is drawn. It was sent, and a driver
+  without robust access read past the buffer. An indexed draw is judged by its largest index: the facade keeps the
+  bytes of every element-array buffer (WebGL lets one take data only through `bufferData`, `bufferSubData` and copies
+  between element-array buffers) and caches the largest index of each range drawn until they change; in WebGL 2 the
+  primitive-restart index reads no vertex. Which locations a program consumes comes with LINK_STATUS, asked once per
+  link as the link's whole result (`gl_state::LINK_RESULT`), so it costs no crossing of its own. The draw's own
+  arguments are judged first, in a browser's order: a mode that is no primitive, or an index type the context does
+  not take (UNSIGNED_INT needs OES_element_index_uint in WebGL 1), is INVALID_ENUM; a negative first, count, instance
+  count or offset INVALID_VALUE; an offset off the index size INVALID_OPERATION.
 - WebGL 1: a texture whose level 0 is not a power of two each way samples as incomplete -- (0, 0, 0, 1) -- unless both
   its wraps are CLAMP_TO_EDGE and its minification filter reads no mipmap, as the specification has it (ES 2.0 3.8.2).
   The driver underneath is OpenGL ES 3.0, for which such a texture is complete, so it used to be sampled. The facade

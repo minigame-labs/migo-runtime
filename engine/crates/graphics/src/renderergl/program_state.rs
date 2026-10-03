@@ -139,6 +139,9 @@ pub(super) fn answer(
     extra: u32,
     name: &str,
 ) -> String {
+    if query == gl_state::LINK_RESULT {
+        return link_result(gl, program);
+    }
     unsafe {
         if !gl.get_program_link_status(program) {
             return error(INVALID_OPERATION);
@@ -190,6 +193,45 @@ pub(super) fn answer(
             }
             _ => "null".to_string(),
         }
+    }
+}
+
+/// `LINK_RESULT`: whether the program linked, and every attribute location it consumes. An active attribute takes its
+/// location and, for a matrix, one more per further column (ES 3.0 2.11.5); a built-in input such as `gl_VertexID` has
+/// no location and takes none.
+fn link_result(gl: &glow::Context, program: glow::Program) -> String {
+    // SAFETY: `gl` is the current context and `program` one of its programs, which the caller resolved.
+    unsafe {
+        if !gl.get_program_link_status(program) {
+            return value("[false,[]]".to_string());
+        }
+        let count = gl
+            .get_program_parameter_i32(program, glow::ACTIVE_ATTRIBUTES)
+            .max(0) as u32;
+        let mut locations = Vec::new();
+        for index in 0..count {
+            let Some(attribute) = gl.get_active_attribute(program, index) else {
+                continue;
+            };
+            let Some(location) = gl.get_attrib_location(program, &attribute.name) else {
+                continue;
+            };
+            let taken = attribute_columns(attribute.atype) * attribute.size.max(1) as u32;
+            locations.extend((0..taken).map(|column| location + column));
+        }
+        locations.sort_unstable();
+        locations.dedup();
+        value(format!("[true,{}]", array(locations)))
+    }
+}
+
+/// The locations an attribute of `ty` takes: a matrix one per column, anything else one.
+fn attribute_columns(ty: u32) -> u32 {
+    match ty {
+        0x8B5A | 0x8B65 | 0x8B66 => 2, // FLOAT_MAT2, FLOAT_MAT2x3, FLOAT_MAT2x4
+        0x8B5B | 0x8B67 | 0x8B68 => 3, // FLOAT_MAT3, FLOAT_MAT3x2, FLOAT_MAT3x4
+        0x8B5C | 0x8B69 | 0x8B6A => 4, // FLOAT_MAT4, FLOAT_MAT4x2, FLOAT_MAT4x3
+        _ => 1,
     }
 }
 
@@ -316,6 +358,17 @@ fn uniforms_parameter(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A matrix attribute takes one location per column; everything else one.
+    #[test]
+    fn a_matrix_attribute_takes_a_location_per_column() {
+        assert_eq!(attribute_columns(0x8B52), 1); // FLOAT_VEC4
+        assert_eq!(attribute_columns(0x8B5A), 2); // FLOAT_MAT2
+        assert_eq!(attribute_columns(0x8B67), 3); // FLOAT_MAT3x2: three columns of two
+        assert_eq!(attribute_columns(0x8B66), 2); // FLOAT_MAT2x4: two columns of four
+        assert_eq!(attribute_columns(0x8B5C), 4); // FLOAT_MAT4
+        assert_eq!(attribute_columns(0x1404), 1); // INT
+    }
 
     #[test]
     fn json_strings_are_escaped() {

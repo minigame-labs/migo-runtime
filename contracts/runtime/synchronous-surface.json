@@ -78,7 +78,7 @@
       "api": "WebGLRenderingContext.getProgramParameter",
       "reply": "always",
       "producer_answers_locally": "partly",
-      "note": "Cached per program and pname."
+      "note": "Cached per program and pname. LINK_STATUS does not come through here: it is asked once per link as the link's whole result, with the attribute locations the program consumes (GLCmd::GetState, gl_state::LINK_RESULT), which the draws check their vertex ranges against."
     },
     "GLCmd::GetShaderParameter": {
       "api": "WebGLRenderingContext.getShaderParameter",

@@ -762,10 +762,15 @@ pub mod gl_state {
     pub const UNIFORM_VALUE: u32 = 7;
     /// `getFragDataLocation`: `name` is the output's name; the value is its location, -1 for none.
     pub const FRAG_DATA_LOCATION: u32 = 8;
+    /// What a link made of the program, asked once per link in place of LINK_STATUS: the value is `[linked,
+    /// locations]`, `locations` every attribute location the program consumes -- each active attribute's, and those
+    /// its matrix columns take after it -- ascending (empty when it did not link). The facade checks a draw's vertex
+    /// ranges against them (WebGL 1.0 6.6). Not an error for a program that did not link: that is half the answer.
+    pub const LINK_RESULT: u32 = 9;
 
     /// Whether a number is one this build knows.
     pub fn is_known(state: u32) -> bool {
-        (INTERNALFORMAT_SAMPLES..=FRAG_DATA_LOCATION).contains(&state)
+        (INTERNALFORMAT_SAMPLES..=LINK_RESULT).contains(&state)
     }
 }
 
