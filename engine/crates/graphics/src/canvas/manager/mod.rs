@@ -5042,6 +5042,38 @@ impl CanvasManager {
         })
     }
 
+    /// The pixel-store state an upload by `canvas_id`'s context reads its bytes with. A 2D upload
+    /// reads neither UNPACK_IMAGE_HEIGHT nor UNPACK_SKIP_IMAGES, so they are 0 unless `three_d`.
+    pub(crate) fn unpack_layout(
+        &self,
+        canvas_id: CanvasId,
+        three_d: bool,
+    ) -> crate::backend::gl::unpack_convert::UnpackLayout {
+        let Some(state) = self.gl_state.get(&canvas_id) else {
+            return crate::backend::gl::unpack_convert::UnpackLayout {
+                alignment: 4,
+                ..Default::default()
+            };
+        };
+        let shadow = &state.pixel_store_i32;
+        crate::backend::gl::unpack_convert::UnpackLayout {
+            alignment: shadow.value_or(glow::UNPACK_ALIGNMENT, 4),
+            row_length: shadow.value(glow::UNPACK_ROW_LENGTH),
+            image_height: if three_d {
+                shadow.value(glow::UNPACK_IMAGE_HEIGHT)
+            } else {
+                0
+            },
+            skip_images: if three_d {
+                shadow.value(glow::UNPACK_SKIP_IMAGES)
+            } else {
+                0
+            },
+            skip_rows: shadow.value(glow::UNPACK_SKIP_ROWS),
+            skip_pixels: shadow.value(glow::UNPACK_SKIP_PIXELS),
+        }
+    }
+
     /// `UNPACK_FLIP_Y_WEBGL` / `UNPACK_PREMULTIPLY_ALPHA_WEBGL` for an upload whose source is
     /// already a GPU texture.
     ///

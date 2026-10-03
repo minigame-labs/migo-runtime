@@ -38,6 +38,50 @@ fn gpu_allocation_error(error: GpuAllocationError) -> EngineError {
     ee(code, format!("WebGL GPU storage rejected: {error:?}"))
 }
 
+/// An upload whose bytes are fewer than the driver reads with the pixel-store state `layout` -- or of a (format, type)
+/// pair GL has no upload of -- is refused before the driver is asked: the driver reads what the layout says from the
+/// pointer it is given, past the end of a short slice, and on the Performance+ lane the bytes come from another
+/// process. See [`unpack_convert::upload_bytes`].
+fn refuse_short_upload(
+    bytes: &[u8],
+    width: i32,
+    height: i32,
+    depth: i32,
+    format: u32,
+    type_: u32,
+    layout: &unpack_convert::UnpackLayout,
+) -> EngineResult<()> {
+    match unpack_convert::upload_bytes(width, height, depth, format, type_, layout) {
+        Some(needed) if bytes.len() >= needed => Ok(()),
+        Some(needed) => Err(ee(
+            ErrorCode::InvalidOperation,
+            format!(
+                "upload of {} bytes where its rows read {needed}",
+                bytes.len()
+            ),
+        )),
+        None => Err(ee(
+            ErrorCode::InvalidOperation,
+            format!("no upload of format {format:#x}, type {type_:#x} at {width}x{height}x{depth}"),
+        )),
+    }
+}
+
+/// GL reads an upload's data argument as an offset into the bound PIXEL_UNPACK_BUFFER, or -- none bound -- as an
+/// address. An upload that names an offset is refused unless a buffer is bound: the driver would otherwise read host
+/// memory at that address, and on the Performance+ lane the offset comes from another process. The driver is asked,
+/// not the binding shadow, which forgets the binding across Skia's use of the context; only these uploads ask.
+fn refuse_offset_without_unpack_buffer(gl: &glow::Context) -> EngineResult<()> {
+    // SAFETY: a state query on the current context.
+    if unsafe { gl.get_parameter_i32(glow::PIXEL_UNPACK_BUFFER_BINDING) } != 0 {
+        return Ok(());
+    }
+    Err(ee(
+        ErrorCode::InvalidOperation,
+        "upload from a PIXEL_UNPACK_BUFFER offset with no buffer bound",
+    ))
+}
+
 #[inline]
 fn to_native_uniform_location(location: Option<u32>) -> Option<NativeUniformLocation> {
     location.map(NativeUniformLocation)
@@ -1821,6 +1865,17 @@ impl RendererGL {
                 type_,
                 data,
             } => {
+                if let Some(bytes) = &data {
+                    refuse_short_upload(
+                        bytes,
+                        width,
+                        height,
+                        1,
+                        format,
+                        type_,
+                        &cm.unpack_layout(canvas_id, false),
+                    )?;
+                }
                 cm.make_current_needed(canvas_id)?;
                 let prepared = cm
                     .webgl_gpu_budget
@@ -2132,6 +2187,15 @@ impl RendererGL {
                 type_,
                 data,
             } => {
+                refuse_short_upload(
+                    &data,
+                    width,
+                    height,
+                    1,
+                    format,
+                    type_,
+                    &cm.unpack_layout(canvas_id, false),
+                )?;
                 cm.make_current_needed(canvas_id)?;
                 // As in `TexImage2D`: the unpack flags are applied here.
                 let converted = cm.unpack_conversion(canvas_id).map(|state| {
@@ -2232,6 +2296,9 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                if matches!(data, CompressedImageData::UnpackBuffer { .. }) {
+                    refuse_offset_without_unpack_buffer(gl)?;
+                }
                 let prepared = cm
                     .webgl_gpu_budget
                     .prepare_compressed_tex_image_2d(
@@ -2291,6 +2358,9 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                if matches!(data, CompressedImageData::UnpackBuffer { .. }) {
+                    refuse_offset_without_unpack_buffer(gl)?;
+                }
                 unsafe {
                     gl.compressed_tex_sub_image_2d(
                         target,
@@ -2318,6 +2388,9 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                if matches!(data, CompressedImageData::UnpackBuffer { .. }) {
+                    refuse_offset_without_unpack_buffer(gl)?;
+                }
                 let prepared = cm
                     .webgl_gpu_budget
                     .prepare_compressed_tex_image_3d(
@@ -2381,6 +2454,9 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                if matches!(data, CompressedImageData::UnpackBuffer { .. }) {
+                    refuse_offset_without_unpack_buffer(gl)?;
+                }
                 unsafe {
                     gl.compressed_tex_sub_image_3d(
                         target,
@@ -4287,7 +4363,24 @@ impl RendererGL {
                 ty,
                 data,
             } => {
+                if let shared::protocol::render_cmd::TexImage3DSource::Bytes(bytes) = &data {
+                    refuse_short_upload(
+                        bytes,
+                        width,
+                        height,
+                        depth,
+                        format,
+                        ty,
+                        &cm.unpack_layout(canvas_id, true),
+                    )?;
+                }
                 cm.make_current_needed(canvas_id)?;
+                if matches!(
+                    data,
+                    shared::protocol::render_cmd::TexImage3DSource::BufferOffset(_)
+                ) {
+                    refuse_offset_without_unpack_buffer(gl)?;
+                }
                 let prepared = cm
                     .webgl_gpu_budget
                     .prepare_tex_image_3d(
@@ -4345,7 +4438,24 @@ impl RendererGL {
                 ty,
                 data,
             } => {
+                if let shared::protocol::render_cmd::TexImage3DSource::Bytes(bytes) = &data {
+                    refuse_short_upload(
+                        bytes,
+                        width,
+                        height,
+                        depth,
+                        format,
+                        ty,
+                        &cm.unpack_layout(canvas_id, true),
+                    )?;
+                }
                 cm.make_current_needed(canvas_id)?;
+                if matches!(
+                    data,
+                    shared::protocol::render_cmd::TexImage3DSource::BufferOffset(_)
+                ) {
+                    refuse_offset_without_unpack_buffer(gl)?;
+                }
                 let pixels = match &data {
                     shared::protocol::render_cmd::TexImage3DSource::None => {
                         glow::PixelUnpackData::Slice(None)
@@ -4677,6 +4787,74 @@ fn internalformat_samples_json(gl: &glow::Context, target: u32, internalformat: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The renderer refuses the bytes the driver would read past, by the same layout the facade checks with: rows
+    /// padded to UNPACK_ALIGNMENT, UNPACK_ROW_LENGTH in place of the width, the last row unpadded; and a (format,
+    /// type) pair with no layout at all.
+    #[test]
+    fn an_upload_shorter_than_its_layout_or_of_no_layout_is_refused() {
+        use unpack_convert::UnpackLayout;
+        let packed = UnpackLayout {
+            alignment: 4,
+            ..Default::default()
+        };
+        let refused = |bytes: usize, w, h, format, type_, layout: &UnpackLayout| {
+            refuse_short_upload(&vec![0; bytes], w, h, 1, format, type_, layout).map_err(|e| e.code)
+        };
+        let (rgba, rgb, ubyte) = (glow::RGBA, glow::RGB, glow::UNSIGNED_BYTE);
+        assert_eq!(
+            refused(3, 1, 1, rgba, ubyte, &packed),
+            Err(ErrorCode::InvalidOperation)
+        );
+        assert_eq!(refused(4, 1, 1, rgba, ubyte, &packed), Ok(()));
+        assert_eq!(
+            refused(20, 3, 2, rgb, ubyte, &packed),
+            Err(ErrorCode::InvalidOperation)
+        );
+        assert_eq!(refused(21, 3, 2, rgb, ubyte, &packed), Ok(()));
+        let rows_of_four = UnpackLayout {
+            alignment: 4,
+            row_length: 4,
+            skip_pixels: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            refused(27, 2, 2, rgba, ubyte, &rows_of_four),
+            Err(ErrorCode::InvalidOperation)
+        );
+        assert_eq!(refused(28, 2, 2, rgba, ubyte, &rows_of_four), Ok(()));
+        assert_eq!(
+            refused(64, 1, 1, rgba, 0x1234, &packed),
+            Err(ErrorCode::InvalidOperation),
+            "a type with no layout"
+        );
+    }
+
+    /// An upload naming a PIXEL_UNPACK_BUFFER offset reaches the driver only with a buffer bound: without one GL
+    /// would read the offset as an address.
+    #[test]
+    #[ignore = "requires Mesa surfaceless EGL and GLES3"]
+    fn an_upload_from_an_unpack_buffer_offset_needs_a_buffer_bound() {
+        let (_scope, gl) = crate::backend::gl::readback_test_gl::native_gles3_context();
+        assert_eq!(
+            refuse_offset_without_unpack_buffer(&gl).map_err(|e| e.code),
+            Err(ErrorCode::InvalidOperation)
+        );
+        unsafe {
+            let buffer = gl.create_buffer().unwrap();
+            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(buffer));
+            assert_eq!(
+                refuse_offset_without_unpack_buffer(&gl).map_err(|e| e.code),
+                Ok(())
+            );
+            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+            gl.delete_buffer(buffer);
+        }
+        assert_eq!(
+            refuse_offset_without_unpack_buffer(&gl).map_err(|e| e.code),
+            Err(ErrorCode::InvalidOperation)
+        );
+    }
 
     const COLOR: u32 = glow::COLOR_BUFFER_BIT;
     const DEPTH: u32 = glow::DEPTH_BUFFER_BIT;

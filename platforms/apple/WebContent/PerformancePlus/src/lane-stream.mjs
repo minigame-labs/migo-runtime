@@ -556,14 +556,12 @@ export function op_wait_sync(canvasId, sync) {
 const EMPTY = new Uint8Array(0);
 
 /**
- * A 3D upload's pixels from the caller's element offset on -- the slice the Rust
- * op makes before its builder copies -- or null when a pixel-unpack offset is
- * given (which wins) or there are none.
+ * A 3D upload's pixels -- the facade has already taken them from the view's
+ * `srcOffset` on -- or null when a pixel-unpack offset is given (which wins) or
+ * there are none.
  */
-function pixels3d(pixels, srcOffset, bytesPerElement, pboOffset) {
-  if (pboOffset >= 0 || pixels === null) return null;
-  const start = Math.max(bytesPerElement, 1) * srcOffset;
-  return start >= pixels.byteLength ? EMPTY : pixels.subarray(start);
+function pixels3d(pixels, pboOffset) {
+  return pboOffset >= 0 ? null : optionalBytesOf(pixels, "pixels");
 }
 
 export function op_tex_image_3d(
@@ -578,18 +576,11 @@ export function op_tex_image_3d(
   format,
   ty,
   pixels,
-  srcOffset,
-  bytesPerElement,
   pboOffset,
 ) {
   const canvas = smiU32(canvasId, "canvas_id");
   const pbo = toI32(pboOffset, "pbo_offset");
-  const bytes = pixels3d(
-    optionalBytesOf(pixels, "pixels"),
-    smiU32(srcOffset, "src_offset"),
-    smiU32(bytesPerElement, "bytes_per_element"),
-    pbo,
-  );
+  const bytes = pixels3d(pixels, pbo);
   emitBytes(
     canvas,
     R.OPR_TEX_IMAGE_3D,
@@ -622,18 +613,11 @@ export function op_tex_sub_image_3d(
   format,
   ty,
   pixels,
-  srcOffset,
-  bytesPerElement,
   pboOffset,
 ) {
   const canvas = smiU32(canvasId, "canvas_id");
   const pbo = toI32(pboOffset, "pbo_offset");
-  const bytes = pixels3d(
-    optionalBytesOf(pixels, "pixels"),
-    smiU32(srcOffset, "src_offset"),
-    smiU32(bytesPerElement, "bytes_per_element"),
-    pbo,
-  );
+  const bytes = pixels3d(pixels, pbo);
   emitBytes(
     canvas,
     R.OPR_TEX_SUB_IMAGE_3D,
