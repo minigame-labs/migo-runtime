@@ -22,6 +22,60 @@ pub(crate) struct UnpackState {
     pub skip_pixels: i32,
 }
 
+/// The pixel-store state that decides how many bytes an upload reads from its source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct UnpackLayout {
+    pub alignment: i32,
+    pub row_length: i32,
+    /// UNPACK_IMAGE_HEIGHT and UNPACK_SKIP_IMAGES: a 3D upload's; a 2D one reads neither.
+    pub image_height: i32,
+    pub skip_images: i32,
+    pub skip_rows: i32,
+    pub skip_pixels: i32,
+}
+
+/// How many bytes an upload of `width` x `height` x `depth` pixels of (`format`, `type_`) reads from
+/// its source with the pixel-store state `layout` (ES 3.0 3.7.2): rows padded to UNPACK_ALIGNMENT,
+/// UNPACK_ROW_LENGTH and UNPACK_IMAGE_HEIGHT in place of the width and height when set, the skips
+/// in front, the last row unpadded. 0 for an empty upload; `None` for a pair GL has no upload of
+/// (every pair it has is known here) or a size past memory.
+///
+/// The driver reads that many bytes from the pointer it is given, whatever the slice behind it
+/// holds, so an upload whose bytes are fewer is refused before it is asked -- on the Performance+
+/// lane those bytes come from another process.
+pub(crate) fn upload_bytes(
+    width: i32,
+    height: i32,
+    depth: i32,
+    format: u32,
+    type_: u32,
+    layout: &UnpackLayout,
+) -> Option<usize> {
+    let bpp = bytes_per_pixel(format, type_)?;
+    let size = |v: i32| usize::try_from(v).ok();
+    let (width, height, depth) = (size(width)?, size(height)?, size(depth)?);
+    if width == 0 || height == 0 || depth == 0 {
+        return Some(0);
+    }
+    let set_or = |v: i32, default: usize| size(v).filter(|v| *v > 0).unwrap_or(default);
+    let skip = |v: i32| size(v).unwrap_or(0);
+    let alignment = set_or(layout.alignment, 4);
+    let stride = set_or(layout.row_length, width)
+        .checked_mul(bpp)?
+        .div_ceil(alignment)
+        .checked_mul(alignment)?;
+    let image = stride.checked_mul(set_or(layout.image_height, height))?;
+    let skipped = skip(layout.skip_images)
+        .checked_mul(image)?
+        .checked_add(skip(layout.skip_rows).checked_mul(stride)?)?
+        .checked_add(skip(layout.skip_pixels).checked_mul(bpp)?)?;
+    (depth - 1)
+        .checked_mul(image)?
+        .checked_add((height - 1).checked_mul(stride)?)?
+        .checked_add(width.checked_mul(bpp)?)?
+        .checked_add(skipped)
+}
+
 /// Bytes per pixel of a (format, type) pair of `texImage2D`/`texSubImage2D`; `None` for one this
 /// does not know (it is then uploaded as it is).
 fn bytes_per_pixel(format: u32, type_: u32) -> Option<usize> {
@@ -184,6 +238,86 @@ pub(crate) fn premultiply_rgba8(pixels: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    use super::{UnpackLayout, upload_bytes};
+
+    #[test]
+    fn an_upload_reads_the_rows_the_pixel_store_state_lays_out() {
+        let packed = UnpackLayout {
+            alignment: 1,
+            ..UnpackLayout::default()
+        };
+        // 3x2 RGBA8, tight: 24 bytes; aligned to 8: the first row is 16, the last unpadded 12
+        assert_eq!(
+            upload_bytes(3, 2, 1, glow::RGBA, glow::UNSIGNED_BYTE, &packed),
+            Some(24)
+        );
+        let eight = UnpackLayout {
+            alignment: 8,
+            ..UnpackLayout::default()
+        };
+        assert_eq!(
+            upload_bytes(3, 2, 1, glow::RGBA, glow::UNSIGNED_BYTE, &eight),
+            Some(28)
+        );
+        // 1x1 RGB8 with the default alignment of 4 reads 3 bytes: the last row is not padded
+        assert_eq!(
+            upload_bytes(
+                1,
+                1,
+                1,
+                glow::RGB,
+                glow::UNSIGNED_BYTE,
+                &UnpackLayout::default()
+            ),
+            Some(3)
+        );
+        // a row length of 10 and skips of 2 rows, 1 pixel: 2*40 + 4 + 40 + 12
+        let skipped = UnpackLayout {
+            alignment: 4,
+            row_length: 10,
+            skip_rows: 2,
+            skip_pixels: 1,
+            ..UnpackLayout::default()
+        };
+        assert_eq!(
+            upload_bytes(3, 2, 1, glow::RGBA, glow::UNSIGNED_BYTE, &skipped),
+            Some(80 + 4 + 40 + 12)
+        );
+        // 3D: an image height of 4 and one image skipped, 2x2x2 R8 aligned to 1
+        let volume = UnpackLayout {
+            alignment: 1,
+            image_height: 4,
+            skip_images: 1,
+            ..UnpackLayout::default()
+        };
+        assert_eq!(
+            upload_bytes(2, 2, 2, 0x1903, glow::UNSIGNED_BYTE, &volume),
+            Some(8 + 8 + 2 + 2)
+        );
+        // packed types, and the empty upload
+        assert_eq!(upload_bytes(2, 1, 1, glow::RGB, 0x8363, &packed), Some(4));
+        assert_eq!(
+            upload_bytes(0, 5, 1, glow::RGBA, glow::UNSIGNED_BYTE, &packed),
+            Some(0)
+        );
+        // a pair GL has no upload of, and a size past memory
+        assert_eq!(
+            upload_bytes(1, 1, 1, 0x1234, glow::UNSIGNED_BYTE, &packed),
+            None
+        );
+        assert_eq!(
+            upload_bytes(
+                i32::MAX,
+                i32::MAX,
+                i32::MAX,
+                glow::RGBA,
+                glow::FLOAT,
+                &packed
+            ),
+            None
+        );
+    }
+
     use super::*;
 
     #[test]

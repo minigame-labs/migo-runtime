@@ -492,13 +492,21 @@ const UNPACK_COLORSPACE_CONVERSION_WEBGL: u32 = 0x9243;
 /// a canvas snapshot does that per frame — so this is not only a load-time path.
 /// The key space is thirteen spec-fixed values, which an array addresses
 /// directly; it was a `HashMap<u32, i32>`.
+///
+/// It is two things, kept apart: the values content set, which every upload
+/// reads its layout and conversions from, and which of them the driver is known
+/// to hold, which only decides whether a repeat is sent. A Skia boundary forgets
+/// the second, never the first: the scope around Skia restores the driver's
+/// values, and the WebGL-only ones never reach the driver.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct PixelStoreShadow {
     params: [i32; PIXEL_STORE_PNAMES.len()],
-    /// Bit `i` set once `PIXEL_STORE_PNAMES[i]` has been observed. Needed
+    /// Bit `i` set once content has set `PIXEL_STORE_PNAMES[i]`. Needed
     /// separately from the value because zero is a legal `param` and also the
     /// array's initial content.
-    observed: u16,
+    set: u16,
+    /// Bit `i` set while the driver is known to hold `params[i]`.
+    held: u16,
 }
 
 impl PixelStoreShadow {
@@ -518,7 +526,7 @@ impl PixelStoreShadow {
     #[inline]
     pub(crate) fn value_or(&self, pname: u32, default: i32) -> i32 {
         match Self::slot(pname) {
-            Some(i) if self.observed & (1u16 << i) != 0 => self.params[i],
+            Some(i) if self.set & (1u16 << i) != 0 => self.params[i],
             _ => default,
         }
     }
@@ -537,17 +545,20 @@ impl PixelStoreShadow {
             return true;
         };
         let bit = 1u16 << i;
-        if self.observed & bit != 0 && self.params[i] == param {
+        if self.held & bit != 0 && self.params[i] == param {
             return false;
         }
-        self.observed |= bit;
+        self.set |= bit;
+        self.held |= bit;
         self.params[i] = param;
         true
     }
 
+    /// The driver's values are no longer known, so the next `pixelStorei` of
+    /// each is sent; what content set stays what uploads read.
     #[inline]
-    pub(crate) fn forget_all(&mut self) {
-        self.observed = 0;
+    pub(crate) fn forget_driver_values(&mut self) {
+        self.held = 0;
     }
 }
 
@@ -1034,15 +1045,16 @@ impl CanvasGLState {
         self.bound_renderbuffer = None;
         self.vertex_attribs.forget_all();
         // P14 shadows: Skia does not touch stencil state (Ganesh GL
-        // backend leaves stencil disabled by default) or pixelStorei
-        // (those are upload-path knobs not used during draw).
+        // backend leaves stencil disabled by default), and the scope
+        // around Skia restores the pixel-store state it does touch.
         // Still, clearing them on the boundary matches the behaviour
         // of every other tracked slot and keeps the "after boundary,
-        // next call MUST re-issue" contract uniform.
+        // next call MUST re-issue" contract uniform. The pixel store
+        // keeps what content set, which uploads read.
         self.stencil_func.forget_all();
         self.stencil_op.forget_all();
         self.stencil_mask.forget_all();
-        self.pixel_store_i32.forget_all();
+        self.pixel_store_i32.forget_driver_values();
     }
 
     pub fn invalidate_after_external_gl_use(&mut self) {

@@ -105,6 +105,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL: texture uploads are checked as the specification checks them, before anything is sent; the driver's own
+  error never reached `getError`, and an upload from a view shorter than its rows had the driver read past the view.
+  In the order a browser judges them: an internal format the context does not have is INVALID_VALUE, a format or a
+  type INVALID_ENUM (WebGL 1 has the unsized formats and their four types only), and a combination ES 3.0 tables 3.2
+  / 3.3 do not have INVALID_OPERATION (a format other than the internal format in WebGL 1; RGBA8 from RGB in WebGL 2;
+  a depth image in a TEXTURE_3D). Pixels from a view are INVALID_OPERATION when the view is not of the type's kind
+  (a DataView, a Uint16Array for UNSIGNED_BYTE), or holds fewer bytes from its `srcOffset` than the pixel-store state
+  lays the upload over -- rows padded to UNPACK_ALIGNMENT, UNPACK_ROW_LENGTH and UNPACK_IMAGE_HEIGHT in place of the
+  size, the skips in front -- and only those bytes are copied. A sub-rectangle outside its data store (WebGL 2.0 5.35)
+  is INVALID_OPERATION, `texSubImage2D` / `texSubImage3D` of null pixels INVALID_VALUE, an array or another value
+  that is not a view a TypeError. `texSubImage2D` and `texSubImage3D` take the format and type pairs of either table.
+- WebGL 2: `texImage2D` / `texSubImage2D(..., srcData, srcOffset)` upload from `srcOffset`; they uploaded from the
+  start of the view. A `srcOffset` past the data of a 3D upload is INVALID_OPERATION ("not enough data"), as the
+  specification has it; it was INVALID_VALUE.
+- WebGL 2: an upload names its pixels or a PIXEL_UNPACK_BUFFER, never both. With a buffer bound, an upload from a view
+  (or of null pixels) is INVALID_OPERATION; an upload from an offset needs a buffer bound and its range inside the
+  buffer, at a multiple of the type's size (INVALID_OPERATION), for the 3D and the compressed uploads alike. The
+  renderer refuses an offset with no buffer bound as well, asking the driver: GL would read the offset as an address,
+  and on the Performance+ lane it comes from another process. It refuses bytes fewer than the upload's rows read, by
+  the same layout.
+- WebGL: `pixelStorei` refuses what GL does not have -- a pname the context lacks (INVALID_ENUM; the row lengths and
+  skips are WebGL 2's), an alignment other than 1, 2, 4 or 8 or a negative length or skip (INVALID_VALUE), a
+  colour-space conversion other than NONE or BROWSER_DEFAULT_WEBGL (INVALID_ENUM) -- and changes nothing when it does.
+  `getParameter` answers the pixel-store state as it was set, without asking the driver.
+- Renderer: the pixel-store shadow keeps what content set apart from which values the driver is known to hold. A Skia
+  boundary forgot both, so an upload after it would have read its rows -- and its flip and premultiply flags -- as the
+  defaults; today only 2D canvases cross that boundary, so no upload was affected.
 - WebGL: texture, framebuffer and renderbuffer objects behave as GL's do. A texture keeps the target it was first
   bound to (another is INVALID_OPERATION), a call on a texture -- every `tex*` upload, copy, storage and parameter
   call, `generateMipmap`, `getTexParameter` -- needs one bound (INVALID_OPERATION) to a target the call takes

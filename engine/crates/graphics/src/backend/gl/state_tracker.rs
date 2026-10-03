@@ -2907,6 +2907,25 @@ mod tests {
         assert!(update_pixel_store_i32(&mut s, glow::PACK_ALIGNMENT, 1));
     }
 
+    /// A Skia boundary forgets which values the driver holds, so each is sent
+    /// again, but not what content set: an upload after it reads its rows with
+    /// the alignment and row length content chose, and is still flipped.
+    #[test]
+    fn a_skia_boundary_keeps_the_pixel_store_content_set() {
+        let mut s = fresh_state();
+        assert!(update_pixel_store_i32(&mut s, glow::UNPACK_ALIGNMENT, 1));
+        assert!(update_pixel_store_i32(&mut s, glow::UNPACK_ROW_LENGTH, 8));
+        assert!(update_pixel_store_i32(&mut s, 0x9240, 1)); // UNPACK_FLIP_Y_WEBGL
+
+        s.invalidate_after_external_gl_use();
+
+        assert_eq!(s.pixel_store_i32.value_or(glow::UNPACK_ALIGNMENT, 4), 1);
+        assert_eq!(s.pixel_store_i32.value(glow::UNPACK_ROW_LENGTH), 8);
+        assert_eq!(s.pixel_store_i32.value(0x9240), 1);
+        assert!(update_pixel_store_i32(&mut s, glow::UNPACK_ALIGNMENT, 1));
+        assert!(!update_pixel_store_i32(&mut s, glow::UNPACK_ALIGNMENT, 1));
+    }
+
     #[test]
     fn depth_range_dedups_and_reissues_after_external() {
         let mut s = fresh_state();
