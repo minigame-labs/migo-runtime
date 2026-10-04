@@ -14,6 +14,7 @@
 
 import {
     op_submit_render_stream,
+    op_tex_image_source,
 } from "ext:core/ops";
 
 import { primordials } from "ext:core/mod.js";
@@ -1775,6 +1776,51 @@ function flushRenderCommandStream() {
     _submitAndSwap();
 }
 
+// --- TexImageSource uploads (frame_wire::gl_resource::OPR_TEX_IMAGE_SOURCE) ---
+// A `tex*Image*` call whose pixels are a TexImageSource -- a decoded image or ImageBitmap, a canvas, a snapshot of one,
+// `ImageData` -- as one upload, whatever the source and the call: the renderer converts the pixels as the call asks
+// (the selection and the flags of the pixel-store state as it holds them then, the call's format and type). The words
+// are the record's after its header, `tex_source`'s calls and kinds; the pixels are a `TEX_SOURCE_PIXELS` source's
+// RGBA8 rows and empty for the others, which the host holds. One reused word array: the op reads it before returning.
+
+const TEX_SOURCE_CALL_IMAGE_2D = 0;
+const TEX_SOURCE_CALL_SUB_IMAGE_2D = 1;
+const TEX_SOURCE_CALL_IMAGE_3D = 2;
+const TEX_SOURCE_CALL_SUB_IMAGE_3D = 3;
+const TEX_SOURCE_IMAGE = 1;
+const TEX_SOURCE_CANVAS = 2;
+const TEX_SOURCE_SNAPSHOT = 3;
+const TEX_SOURCE_PIXELS = 4;
+const TEX_SOURCE_NO_PIXELS = new Uint8Array(0);
+const _texSourceWords = new Uint32Array(18);
+
+function uploadTexImageSource(
+    canvasId, call, target, level, internalformat, xoffset, yoffset, zoffset, width, height, depth,
+    format, type, destinationFormat, kind, sourceId, sourceWidth, sourceHeight, pixels,
+) {
+    flushRenderCommandStream();
+    const w = _texSourceWords;
+    w[0] = canvasId;
+    w[1] = call;
+    w[2] = target;
+    w[3] = level;
+    w[4] = internalformat;
+    w[5] = xoffset;
+    w[6] = yoffset;
+    w[7] = zoffset;
+    w[8] = width;
+    w[9] = height;
+    w[10] = depth;
+    w[11] = format;
+    w[12] = type;
+    w[13] = destinationFormat;
+    w[14] = kind;
+    w[15] = sourceId;
+    w[16] = sourceWidth;
+    w[17] = sourceHeight;
+    op_tex_image_source(w, pixels === null ? TEX_SOURCE_NO_PIXELS : pixels);
+}
+
 // --- discardRenderCommandStream ---
 // Context-loss path: drop pending commands without submitting.
 // Reset the active cursor to 2. No swap.
@@ -1791,6 +1837,17 @@ function discardRenderCommandStream() {
 // --- Exports ---
 
 export {
+    // TexImageSource uploads
+    uploadTexImageSource,
+    TEX_SOURCE_CALL_IMAGE_2D,
+    TEX_SOURCE_CALL_SUB_IMAGE_2D,
+    TEX_SOURCE_CALL_IMAGE_3D,
+    TEX_SOURCE_CALL_SUB_IMAGE_3D,
+    TEX_SOURCE_IMAGE,
+    TEX_SOURCE_CANVAS,
+    TEX_SOURCE_SNAPSHOT,
+    TEX_SOURCE_PIXELS,
+    TEX_SOURCE_NO_PIXELS,
     // Fixed-arity encoders
     encodeViewport,
     encodeClear,

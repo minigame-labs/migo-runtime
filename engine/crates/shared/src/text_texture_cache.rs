@@ -39,7 +39,7 @@
 //!   `TextCacheKey`, byte- and entry-bounded with LRU eviction on
 //!   insert.
 //! - Pin / refcount: entries currently in flight (JS-side recognized
-//!   a hit and emitted a `TexImage2DFromTextCache` command) are
+//!   a hit and emitted a `TexImageSource` (text-cache source) command) are
 //!   pinned so the LRU cannot evict them out from under the render
 //!   thread before the command executes.  The count is stored on the
 //!   entry, unlike `io::image_cache`'s parallel map: a pin lasts one
@@ -403,7 +403,7 @@ impl TextTextureCache {
                 .rev()
                 .find(|(_, resident)| resident.pins == 0)
                 .map(|(k, _)| k.clone());
-            // Only pinned entries left: a pin means a `TexImage2DFromTextCache`
+            // Only pinned entries left: a pin means a `TexImageSource` (text-cache source)
             // command is still in flight for that texture, so the cache sits over
             // its ceiling until the command executes.
             let Some(k) = victim_key else { break };

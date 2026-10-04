@@ -734,6 +734,8 @@ fn framebuffer_copy_native_preserves_source_and_destination_bindings() {
                     level: 0,
                     xoffset: 1,
                     yoffset: 1,
+                    source_x: 0,
+                    source_y: 0,
                     width: 2,
                     height: 1,
                 }
@@ -771,6 +773,8 @@ fn framebuffer_copy_native_preserves_source_and_destination_bindings() {
                     level: 0,
                     xoffset: 0,
                     yoffset: 0,
+                    source_x: 0,
+                    source_y: 0,
                     width: 1,
                     height: 1,
                 }

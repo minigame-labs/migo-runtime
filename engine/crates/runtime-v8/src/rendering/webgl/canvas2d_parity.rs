@@ -30,10 +30,7 @@ struct Host {
 }
 
 impl frame_decode::GlDecodeContext for Host {
-    fn image_upload(
-        &mut self,
-        _upload: frame_decode::ImageUpload,
-    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+    fn image_source(&mut self, _: u32) -> Option<shared::protocol::render_cmd::TextureSource> {
         None
     }
     fn push_error(&mut self, _canvas_id: u32, _code: u32) {}

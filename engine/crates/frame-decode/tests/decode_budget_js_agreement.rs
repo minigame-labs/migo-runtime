@@ -101,11 +101,7 @@ struct Counting {
 }
 
 impl GlDecodeContext for Counting {
-    fn image_upload(
-        &mut self,
-
-        _upload: frame_decode::ImageUpload,
-    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+    fn image_source(&mut self, _: u32) -> Option<shared::protocol::render_cmd::TextureSource> {
         None
     }
     fn push_error(&mut self, _canvas_id: u32, _code: u32) {
@@ -214,10 +210,7 @@ impl GlDecodeContext for Staging {
         _phase: frame_decode::TransformFeedbackPhase,
     ) {
     }
-    fn image_upload(
-        &mut self,
-        _upload: frame_decode::ImageUpload,
-    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+    fn image_source(&mut self, _: u32) -> Option<shared::protocol::render_cmd::TextureSource> {
         None
     }
     fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {

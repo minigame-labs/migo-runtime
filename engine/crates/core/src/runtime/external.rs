@@ -240,11 +240,11 @@ impl frame_decode::GlDecodeContext for ExternalDecodeContext<'_> {
         self.errors.set_transform_feedback(canvas_id, phase);
     }
 
-    fn image_upload(
+    fn image_source(
         &mut self,
-        upload: frame_decode::ImageUpload,
-    ) -> Option<shared::protocol::render_cmd::GLCmd> {
-        self.services?.image_upload(upload)
+        image_id: u32,
+    ) -> Option<shared::protocol::render_cmd::TextureSource> {
+        self.services?.image_source(image_id)
     }
 
     fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {

@@ -56,6 +56,7 @@
     "_shim_constants": "engine/crates/runtime-v8/src/rendering/webgl/01_constants.js",
     "engine/crates/graphics/src/backend/gl/state_tracker.rs": "Shadows the GL state content sets so redundant calls can be skipped -- which makes it a content boundary, not an internal one. Classified internal at first, and that was wrong: the eight WebGL 2 pixel-store parameters are named here and nowhere else, so the misclassification left the only file that names them unchecked and content could not name them either.",
     "engine/crates/graphics/src/backend/gl/readback.rs": "Pixel transfers, including readPixels into client memory and into a PIXEL_PACK_BUFFER: content chooses the format, type and pack state these paths honour, so their enums are content's.",
+    "engine/crates/graphics/src/canvas/manager/texture_source.rs": "Executes a TexImageSource upload -- an image, a canvas, a snapshot, ImageData -- by the (format, type) content passed to texImage2D/texSubImage2D and the unpack state it set, so the enums it names are content's.",
     "engine/crates/graphics/src/backend/gl/unpack_convert.rs": "Applies UNPACK_FLIP_Y_WEBGL and UNPACK_PREMULTIPLY_ALPHA_WEBGL to the bytes of an upload by the (format, type) content passed to texImage2D/texSubImage2D, so every constant it names is one content names.",
     "engine/crates/graphics/src/renderergl/program_state.rs": "Answers getActiveUniformBlockName/Parameter, getUniformIndices and getActiveUniforms: the pnames it names are the ones content passes, and every one of them is nameable."
   },

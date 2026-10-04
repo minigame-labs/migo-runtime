@@ -1,16 +1,19 @@
-//! Image records: drawing a loaded image in 2D, and uploading one into a
-//! texture. The pixels never cross -- the records name an image the host holds
-//! -- so what these check is that the id arrives exactly and that the upload is
-//! the host's image table's to resolve.
+//! Image records: drawing a loaded image in 2D, and uploading a TexImageSource
+//! into a texture. An image's pixels never cross -- the records name an image
+//! the host holds -- so what these check is that the id arrives exactly and that
+//! the image is the host's image table's to resolve; `ImageData`'s pixels do
+//! cross, and arrive whole or not at all.
 
-use frame_decode::{GlDecodeContext, ImageUpload, decode_render_stream};
+use std::sync::Arc;
+
+use frame_decode::{GlDecodeContext, decode_render_stream};
 use frame_wire::canvas2d::{
     DRAW_IMAGE_BATCH_ENTRY_WORDS, OP2D_DRAW_IMAGE, OP2D_DRAW_IMAGE_BATCH, OP2D_SELECT_CANVAS,
 };
-use frame_wire::gl_resource::{OPR_TEX_IMAGE_2D_FROM_IMAGE, OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE};
+use frame_wire::gl_resource::{OPR_TEX_IMAGE_SOURCE, tex_source};
 use frame_wire::stream::{MAGIC, STREAM_VERSION, pack_header, validate_stream};
 use shared::protocol::FrameOp;
-use shared::protocol::render_cmd::{Canvas2DCmd, GLCmd};
+use shared::protocol::render_cmd::{Canvas2DCmd, GLCmd, SourceUploadCall, TextureSource};
 
 /// A shared image id where an `f32` would round: shared ids start at 2^30,
 /// where consecutive `f32`s are 128 apart.
@@ -18,14 +21,18 @@ const SHARED_ID: u32 = 0x4000_0001;
 
 #[derive(Default)]
 struct ImageContext {
-    uploads: Vec<ImageUpload>,
-    /// Whether the context resolves an upload, the way the host's image table
-    /// does for a live image.
+    /// The image ids the decoder asked the table about.
+    asked: Vec<u32>,
+    /// Whether the context resolves an image, the way the host's image table
+    /// does for a live one.
     resolves: bool,
+    errors: Vec<u32>,
 }
 
 impl GlDecodeContext for ImageContext {
-    fn push_error(&mut self, _canvas_id: u32, _code: u32) {}
+    fn push_error(&mut self, _canvas_id: u32, code: u32) {
+        self.errors.push(code);
+    }
     fn transform_feedback_captures(&self, _canvas_id: u32) -> bool {
         false
     }
@@ -35,10 +42,14 @@ impl GlDecodeContext for ImageContext {
         _phase: frame_decode::TransformFeedbackPhase,
     ) {
     }
-    fn image_upload(&mut self, upload: ImageUpload) -> Option<GLCmd> {
-        self.uploads.push(upload);
-        self.resolves
-            .then(|| GLCmd::DebugLoseContext { canvas_id: 99 })
+    fn image_source(&mut self, image_id: u32) -> Option<TextureSource> {
+        self.asked.push(image_id);
+        self.resolves.then_some(TextureSource::Image {
+            shared_id: Some(image_id),
+            pixels: None,
+            width: 4,
+            height: 2,
+        })
     }
     fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
         None
@@ -147,6 +158,37 @@ fn a_batch_that_is_not_whole_entries_is_dropped_not_misread() {
     assert!(canvas_commands(&ops).is_empty());
 }
 
+/// An `OPR_TEX_IMAGE_SOURCE` record: the 18 words after the header, then the
+/// pixels' length and the pixels, padded to a word.
+fn source_record(fields: [u32; 18], pixels: &[u8]) -> Vec<u32> {
+    let mut words = fields.to_vec();
+    words.push(pixels.len() as u32);
+    for chunk in pixels.chunks(4) {
+        let mut word = [0u8; 4];
+        word[..chunk.len()].copy_from_slice(chunk);
+        words.push(u32::from_le_bytes(word));
+    }
+    record(OPR_TEX_IMAGE_SOURCE, &words)
+}
+
+/// `C call target level internalformat xoffset yoffset zoffset width height depth format type destination_format
+/// kind source_id source_width source_height`, for a 4 x 2 RGBA upload into canvas 1's TEXTURE_2D.
+fn fields(call: u32, kind: u32, source_id: u32) -> [u32; 18] {
+    [
+        1, call, 0x0DE1, 0, 0x1908, 5, 6, 7, 4, 2, 1, 0x1908, 0x1401, 0x8058, kind, source_id, 4, 2,
+    ]
+}
+
+fn uploads(ops: &[FrameOp]) -> Vec<&GLCmd> {
+    ops.iter()
+        .filter_map(|op| match op {
+            FrameOp::GlBatch(batch) => Some(batch.commands.iter()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
 #[test]
 fn a_texture_upload_from_an_image_is_the_image_tables_to_resolve() {
     let mut context = ImageContext {
@@ -155,63 +197,181 @@ fn a_texture_upload_from_an_image_is_the_image_tables_to_resolve() {
     };
     let ops = decode(
         &[
-            record(
-                OPR_TEX_IMAGE_2D_FROM_IMAGE,
-                &[1, 0x0DE1, 0, 0x1908, 0x1908, 0x1401, SHARED_ID],
+            source_record(
+                fields(
+                    tex_source::CALL_IMAGE_2D,
+                    tex_source::SOURCE_IMAGE,
+                    SHARED_ID,
+                ),
+                &[],
             ),
-            record(
-                OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE,
-                &[1, 0x0DE1, 0, 4, 8, 0x1908, 0x1401, SHARED_ID],
+            source_record(
+                fields(
+                    tex_source::CALL_SUB_IMAGE_3D,
+                    tex_source::SOURCE_IMAGE,
+                    SHARED_ID,
+                ),
+                &[],
             ),
         ],
         &mut context,
     );
     assert_eq!(
-        context.uploads,
-        vec![
-            ImageUpload::Full {
-                canvas_id: 1,
-                target: 0x0DE1,
-                level: 0,
-                internalformat: 0x1908,
-                format: 0x1908,
-                type_: 0x1401,
-                image_id: SHARED_ID,
-            },
-            ImageUpload::Sub {
-                canvas_id: 1,
-                target: 0x0DE1,
-                level: 0,
-                xoffset: 4,
-                yoffset: 8,
-                format: 0x1908,
-                type_: 0x1401,
-                image_id: SHARED_ID,
-            },
-        ]
+        context.asked,
+        [SHARED_ID, SHARED_ID],
+        "the id is a word, never rounded"
     );
-    let gl: usize = ops
-        .iter()
-        .map(|op| match op {
-            FrameOp::GlBatch(batch) => batch.commands.len(),
-            _ => 0,
-        })
-        .sum();
-    assert_eq!(gl, 2, "what the table resolved is what the frame carries");
+    let image = TextureSource::Image {
+        shared_id: Some(SHARED_ID),
+        pixels: None,
+        width: 4,
+        height: 2,
+    };
+    match uploads(&ops).as_slice() {
+        [
+            GLCmd::TexImageSource {
+                canvas_id: 1,
+                target: 0x0DE1,
+                call:
+                    SourceUploadCall::Image2D {
+                        internalformat: 0x1908,
+                    },
+                width: 4,
+                height: 2,
+                format: 0x1908,
+                type_: 0x1401,
+                source: first,
+                ..
+            },
+            GLCmd::TexImageSource {
+                call:
+                    SourceUploadCall::SubImage3D {
+                        xoffset: 5,
+                        yoffset: 6,
+                        zoffset: 7,
+                        depth: 1,
+                    },
+                destination_format: 0x8058,
+                source: second,
+                ..
+            },
+        ] => {
+            assert_eq!(first, &image);
+            assert_eq!(second, &image);
+        }
+        other => panic!("expected the two uploads as their calls, got {other:?}"),
+    }
 }
 
 #[test]
 fn an_upload_the_table_cannot_resolve_is_skipped() {
     let ops = decode(
-        &[record(
-            OPR_TEX_IMAGE_2D_FROM_IMAGE,
-            &[1, 0x0DE1, 0, 0x1908, 0x1908, 0x1401, 7],
+        &[source_record(
+            fields(tex_source::CALL_IMAGE_2D, tex_source::SOURCE_IMAGE, 7),
+            &[],
         )],
         &mut ImageContext::default(),
     );
     assert!(
-        ops.iter()
-            .all(|op| !matches!(op, FrameOp::GlBatch(batch) if !batch.commands.is_empty())),
+        uploads(&ops).is_empty(),
         "an image the host does not hold uploads nothing"
     );
+}
+
+#[test]
+fn a_canvas_and_a_snapshot_are_named_and_a_snapshot_of_none_is_nothing() {
+    let mut context = ImageContext::default();
+    let ops = decode(
+        &[
+            source_record(
+                fields(tex_source::CALL_SUB_IMAGE_2D, tex_source::SOURCE_CANVAS, 3),
+                &[],
+            ),
+            source_record(
+                fields(tex_source::CALL_IMAGE_2D, tex_source::SOURCE_SNAPSHOT, 9),
+                &[],
+            ),
+            source_record(
+                fields(tex_source::CALL_IMAGE_2D, tex_source::SOURCE_SNAPSHOT, 0),
+                &[],
+            ),
+        ],
+        &mut context,
+    );
+    let sources: Vec<&TextureSource> = uploads(&ops)
+        .into_iter()
+        .map(|command| match command {
+            GLCmd::TexImageSource { source, .. } => source,
+            other => panic!("not a source upload: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            &TextureSource::Canvas { canvas_2d_id: 3 },
+            &TextureSource::Snapshot { snapshot_id: 9 }
+        ]
+    );
+    assert!(context.errors.is_empty());
+}
+
+#[test]
+fn image_data_s_pixels_arrive_whole_or_the_upload_is_refused() {
+    let rows: Vec<u8> = (0..32).collect();
+    let mut context = ImageContext::default();
+    let ops = decode(
+        &[
+            source_record(
+                fields(tex_source::CALL_IMAGE_2D, tex_source::SOURCE_PIXELS, 0),
+                &rows,
+            ),
+            // A row short of 4 x 2.
+            source_record(
+                fields(tex_source::CALL_IMAGE_2D, tex_source::SOURCE_PIXELS, 0),
+                &rows[..16],
+            ),
+        ],
+        &mut context,
+    );
+    match uploads(&ops).as_slice() {
+        [GLCmd::TexImageSource { source, .. }] => assert_eq!(
+            source,
+            &TextureSource::Pixels {
+                bytes: Arc::new(rows.clone()),
+                width: 4,
+                height: 2,
+            }
+        ),
+        other => panic!("expected the whole upload alone, got {other:?}"),
+    }
+    assert_eq!(
+        context.errors,
+        [0x0502],
+        "the short one is INVALID_OPERATION"
+    );
+}
+
+#[test]
+fn a_record_that_names_no_call_or_no_source_is_invalid_value() {
+    let mut context = ImageContext {
+        resolves: true,
+        ..Default::default()
+    };
+    let mut negative = fields(tex_source::CALL_IMAGE_2D, tex_source::SOURCE_IMAGE, 1);
+    negative[8] = -1i32 as u32;
+    let ops = decode(
+        &[
+            source_record(fields(4, tex_source::SOURCE_IMAGE, 1), &[]),
+            source_record(fields(tex_source::CALL_IMAGE_2D, 5, 1), &[]),
+            source_record(negative, &[]),
+            // Bytes beside an image, which has none of its own to carry.
+            source_record(
+                fields(tex_source::CALL_IMAGE_2D, tex_source::SOURCE_IMAGE, 1),
+                &[1, 2, 3, 4],
+            ),
+        ],
+        &mut context,
+    );
+    assert!(uploads(&ops).is_empty());
+    assert_eq!(context.errors, [0x0501; 4]);
 }

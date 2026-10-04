@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use shared::protocol::render_cmd::{
     CompressedImageData, GLCmd, MAX_WEBGL_SHADER_SOURCE_BYTES, PixelUnpackSource, ShaderType,
-    webgl_upload_is_within_limit,
+    SourceUploadCall, TextureSource, webgl_upload_is_within_limit,
 };
 
 use frame_wire::gl_resource::*;
@@ -401,6 +401,114 @@ impl<'a> PixelSource<'a> {
             Err(_) => (record[prefix - 1] != 0).then_some(PixelSource::Bytes(payload)),
         }
     }
+}
+
+/// A TexImageSource upload ([`OPR_TEX_IMAGE_SOURCE`]). `fields` are the record's words after its header -- `C call
+/// target level internalformat xoffset yoffset zoffset width height depth format type destination_format kind
+/// source_id source_width source_height` -- which the in-process op passes too, and `pixels` are a
+/// [`tex_source::SOURCE_PIXELS`] source's. A call or a kind the record cannot name, a negative size, or bytes beside a
+/// source that has none is INVALID_VALUE; pixels other than their size's RGBA8 rows are INVALID_OPERATION. An image
+/// the host does not hold, or a snapshot id of 0, uploads nothing -- the facade's own paths drop both -- and the
+/// format, the type and the pixels the call selects are the renderer's to convert ([`GLCmd::TexImageSource`]).
+pub fn tex_image_source<C: GlDecodeContext>(
+    context: &mut C,
+    fields: &[u32],
+    pixels: Payload<'_>,
+) -> Option<GLCmd> {
+    let &[
+        c,
+        call,
+        target,
+        level,
+        internalformat,
+        xoffset,
+        yoffset,
+        zoffset,
+        width,
+        height,
+        depth,
+        format,
+        type_,
+        destination_format,
+        kind,
+        source_id,
+        source_width,
+        source_height,
+    ] = fields
+    else {
+        return None;
+    };
+    let (width, height, depth) = (width as i32, height as i32, depth as i32);
+    let call = match call {
+        tex_source::CALL_IMAGE_2D => SourceUploadCall::Image2D {
+            internalformat: internalformat as i32,
+        },
+        tex_source::CALL_SUB_IMAGE_2D => SourceUploadCall::SubImage2D {
+            xoffset: xoffset as i32,
+            yoffset: yoffset as i32,
+        },
+        tex_source::CALL_IMAGE_3D => SourceUploadCall::Image3D {
+            internalformat: internalformat as i32,
+            depth,
+        },
+        tex_source::CALL_SUB_IMAGE_3D => SourceUploadCall::SubImage3D {
+            xoffset: xoffset as i32,
+            yoffset: yoffset as i32,
+            zoffset: zoffset as i32,
+            depth,
+        },
+        _ => {
+            context.push_error(c, codes::INVALID_VALUE);
+            return None;
+        }
+    };
+    let carries_pixels = !matches!(pixels, Payload::Bytes(&[]) | Payload::Words { len: 0, .. });
+    if width < 0 || height < 0 || depth < 0 || (kind != tex_source::SOURCE_PIXELS && carries_pixels)
+    {
+        context.push_error(c, codes::INVALID_VALUE);
+        return None;
+    }
+    let source = match kind {
+        tex_source::SOURCE_IMAGE => context.image_source(source_id)?,
+        tex_source::SOURCE_CANVAS => TextureSource::Canvas {
+            canvas_2d_id: source_id,
+        },
+        tex_source::SOURCE_SNAPSHOT if source_id == 0 => return None,
+        tex_source::SOURCE_SNAPSHOT => TextureSource::Snapshot {
+            snapshot_id: source_id,
+        },
+        tex_source::SOURCE_PIXELS => {
+            let rows = (source_width as usize)
+                .checked_mul(source_height as usize)
+                .and_then(|pixels| pixels.checked_mul(4));
+            let bytes = bounded_upload(context, c, pixels)?;
+            if rows != Some(bytes.len()) {
+                context.push_error(c, codes::INVALID_OPERATION);
+                return None;
+            }
+            TextureSource::Pixels {
+                bytes: Arc::new(bytes),
+                width: source_width,
+                height: source_height,
+            }
+        }
+        _ => {
+            context.push_error(c, codes::INVALID_VALUE);
+            return None;
+        }
+    };
+    Some(GLCmd::TexImageSource {
+        canvas_id: c,
+        target,
+        level: level as i32,
+        call,
+        width,
+        height,
+        format,
+        type_,
+        destination_format,
+        source,
+    })
 }
 
 /// The source an upload's command owns: its bytes held to the upload ceiling (`OUT_OF_MEMORY`, and `None`, over it or
@@ -833,28 +941,12 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             uniform_block_binding: record[3],
         },
         OPR_LOSE_CONTEXT => GLCmd::DebugLoseContext { canvas_id: c },
-        OPR_TEX_IMAGE_2D_FROM_IMAGE => {
-            return context.image_upload(crate::validate::ImageUpload::Full {
-                canvas_id: c,
-                target: record[2],
-                level: i(record[3]),
-                internalformat: i(record[4]),
-                format: record[5],
-                type_: record[6],
-                image_id: record[7],
-            });
-        }
-        OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE => {
-            return context.image_upload(crate::validate::ImageUpload::Sub {
-                canvas_id: c,
-                target: record[2],
-                level: i(record[3]),
-                xoffset: i(record[4]),
-                yoffset: i(record[5]),
-                format: record[6],
-                type_: record[7],
-                image_id: record[8],
-            });
+        OPR_TEX_IMAGE_SOURCE => {
+            return tex_image_source(
+                context,
+                &record[1..tex_source::PREFIX_WORDS],
+                payload(record, tex_source::PREFIX_WORDS),
+            );
         }
 
         OPR_STAGE_PAYLOAD => {
@@ -1016,54 +1108,6 @@ pub(crate) fn decode_record<C: GlDecodeContext>(
             height: i(record[6]),
             attachments: record[8..].to_vec(),
         },
-        // The uploads whose pixels the host already holds. The ops drop a
-        // snapshot id of 0 and a zero-area canvas source before they queue
-        // anything, so a record carrying one is a producer that did not, and
-        // the command is built rather than second-guessed: the renderer makes
-        // the same decision for both lanes.
-        OPR_TEX_IMAGE_2D_FROM_SNAPSHOT => GLCmd::TexImage2DFromSnapshot {
-            canvas_id: c,
-            target: record[2],
-            level: i(record[3]),
-            internalformat: i(record[4]),
-            format: record[5],
-            type_: record[6],
-            snapshot_id: record[7],
-        },
-        OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT => GLCmd::TexSubImage2DFromSnapshot {
-            canvas_id: c,
-            target: record[2],
-            level: i(record[3]),
-            xoffset: i(record[4]),
-            yoffset: i(record[5]),
-            format: record[6],
-            type_: record[7],
-            snapshot_id: record[8],
-        },
-        OPR_TEX_IMAGE_2D_FROM_CANVAS2D => GLCmd::TexImage2DFromCanvas2D {
-            canvas_id: c,
-            target: record[2],
-            level: i(record[3]),
-            internalformat: i(record[4]),
-            canvas_2d_id: record[5],
-            x: i(record[6]),
-            y: i(record[7]),
-            width: record[8],
-            height: record[9],
-        },
-        OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D => GLCmd::TexSubImage2DFromCanvas2D {
-            canvas_id: c,
-            target: record[2],
-            level: i(record[3]),
-            xoffset: i(record[4]),
-            yoffset: i(record[5]),
-            canvas_2d_id: record[6],
-            x: i(record[7]),
-            y: i(record[8]),
-            width: record[9],
-            height: record[10],
-        },
-
         OPR_TRANSFORM_FEEDBACK_VARYINGS => transform_feedback_varyings(
             c,
             record[2],

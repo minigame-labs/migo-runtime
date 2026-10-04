@@ -88,10 +88,7 @@ fn admitted_storage_covers_real_capacities_after_a_larger_pooled_frame() {
         errors: usize,
     }
     impl GlDecodeContext for Sink {
-        fn image_upload(
-            &mut self,
-            _upload: frame_decode::ImageUpload,
-        ) -> Option<shared::protocol::render_cmd::GLCmd> {
+        fn image_source(&mut self, _: u32) -> Option<shared::protocol::render_cmd::TextureSource> {
             None
         }
         fn push_error(&mut self, _: u32, _: u32) {

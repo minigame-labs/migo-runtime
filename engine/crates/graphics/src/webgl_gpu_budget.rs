@@ -11,12 +11,10 @@
 //! and staging residency, and Skia's resource cache for engine-owned backing.
 //! Those files are intentionally not changed here because their ownership and
 //! device-residency semantics require their owning threads (and device data).
-//! The five handler upload paths (`TexImage2DFromShared`,
-//! `TexImage2DFromSnapshot`, `TexImage2DFromTextCache`,
-//! `TexImage2DFromCanvas2D`, and `BufferData`) now use this authority.
-//! Manager-side `TexSubImage2DFromSnapshot` and
-//! `TexSubImage2DFromCanvas2D` mutate existing storage and remain outside
-//! allocation admission; they do not create new resident storage.
+//! The handler's upload paths -- `TexImageSource`'s full calls, whatever their
+//! source, and `BufferData` -- use this authority. Its sub calls mutate existing
+//! storage and remain outside allocation admission; they do not create new
+//! resident storage.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2224,10 +2222,8 @@ mod tests {
         assert_eq!(budget.context_usage(1), 8 + 36);
         assert_eq!(scope.process_usage(), 8 + 36);
 
-        // TexImage2DFromShared: recorded source dimensions are the storage size.
-        // TexImage2DFromSnapshot: manager supplies the retained dimensions.
-        // TexImage2DFromTextCache: the cache key carries its exact dimensions.
-        // TexImage2DFromCanvas2D: command dimensions are the copied region.
+        // A TexImageSource full call is accounted at the command's size, whatever its source: an image, a
+        // snapshot, a cached text texture, a canvas.
         for (name, texture, level, width, height) in [
             ("shared", 3_u32, 0_i32, 2_i32, 3_i32),
             ("snapshot", 4, 0, 2, 3),

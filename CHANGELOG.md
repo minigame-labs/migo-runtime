@@ -132,6 +132,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL: an upload whose pixels are a TexImageSource -- a decoded image or `ImageBitmap`, a canvas, `getImageData`'s
+  snapshot, `ImageData` -- is converted to the call's format and type as WebGL defines it, on both lanes and for every
+  source alike. The renderer copied an 8-bit RGB(A) image of a source it held on the GPU and handed every other
+  combination the source's RGBA8 bytes as though they were already the asked-for format: an RGB, a packed
+  (`UNSIGNED_SHORT_5_6_5`, `4_4_4_4`, `5_5_5_1`, `2_10_10_10_REV`, `10F_11F_11F_REV`), a half-float or float, a
+  LUMINANCE / ALPHA / RG / RED / integer upload came out garbled, an sRGB or float destination of a GPU-held source was
+  refused by the copy, and `ImageData` was read with the content's UNPACK_ALIGNMENT and UNPACK_ROW_LENGTH. Now the
+  pixels are packed as a browser packs them -- a packed type truncated to its bits, `RGB10_A2` as `v * 1023 / 255`
+  rounded down, 8-bit and packed destinations premultiplied in 8 bits, float ones in floating point --, a GPU copy is
+  kept for a source the renderer holds whenever it reproduces that exactly (no flip, no alpha change, a destination of
+  the source's own 8-bit components), and a GPU-held source is read back otherwise, only the rows the call selects. WebGL
+  2's selection applies: `UNPACK_SKIP_PIXELS` / `UNPACK_SKIP_ROWS` and the call's size select a rectangle of the source
+  as `UNPACK_FLIP_Y_WEBGL` leaves it, and a selection past the source is INVALID_OPERATION. `texImage3D` and
+  `texSubImage3D` take a TexImageSource, sliced by `UNPACK_IMAGE_HEIGHT` from `UNPACK_SKIP_IMAGES`; they uploaded
+  nothing. The WebGL 2 table of TexImageSource formats (3.7.6) is enforced in a browser's order -- an internal format
+  outside it INVALID_VALUE, a format or type outside it INVALID_ENUM, a combination it does not list
+  INVALID_OPERATION --, and a value that is no TexImageSource is a TypeError, as is one in WebGL 1's 9-argument form.
+  One record and one op carry every such upload (`TEX_IMAGE_SOURCE`, `op_tex_image_source`), replacing six.
 - WebGL: a framebuffer object's completeness is judged by the facade, from the attachments, texture images and
   renderbuffer storage it records (ES 3.0 4.4.4, WebGL 1.0 6.6): no attachment, an attachment that is not an image its
   point can render to (a LUMINANCE texture, a float format while EXT_color_buffer_float is not enabled, a renderbuffer without

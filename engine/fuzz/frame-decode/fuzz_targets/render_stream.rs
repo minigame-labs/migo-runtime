@@ -21,12 +21,12 @@
 //! words, without the envelope, are the inputs a real producer sends.
 
 use frame_decode::{
-    GlDecodeContext, ImageUpload, StagedPayload, TransformFeedbackPhase, decode_render_stream,
+    GlDecodeContext, StagedPayload, TransformFeedbackPhase, decode_render_stream,
     validate_frame_budget,
 };
 use frame_wire::stream::{MAGIC, STREAM_VERSION, validate_frame_stream};
 use libfuzzer_sys::fuzz_target;
-use shared::protocol::render_cmd::GLCmd;
+use shared::protocol::render_cmd::TextureSource;
 use std::collections::HashSet;
 
 /// The decoded frame the engine admits at most (the budget it gives `validate_frame_budget`).
@@ -53,7 +53,7 @@ impl GlDecodeContext for Host {
             self.capturing.remove(&canvas_id);
         }
     }
-    fn image_upload(&mut self, _upload: ImageUpload) -> Option<GLCmd> {
+    fn image_source(&mut self, _image_id: u32) -> Option<TextureSource> {
         None
     }
     fn staged_payload(&mut self) -> Option<&mut StagedPayload> {

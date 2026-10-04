@@ -45,17 +45,19 @@ pub trait GlDecodeContext {
     /// is read from. Called by begin, pause, resume and end, on both paths.
     fn set_transform_feedback(&mut self, canvas_id: u32, phase: TransformFeedbackPhase);
 
-    /// The command that uploads an image the host loaded into a texture:
-    /// `texImage2D(…, image)` or `texSubImage2D(…, image)`. The pixels are the
-    /// host's -- the image was decoded where the texture lives -- so only the
-    /// host's image table can say what the id names. `None` when it names
-    /// nothing, which the resolver logs; the call is then skipped, as the
-    /// embedded op skips it.
+    /// Where the pixels of an image the host loaded are, for an upload that names
+    /// it: `texImage2D(…, image)` and the rest. The pixels are the host's -- the
+    /// image was decoded where the texture lives -- so only the host's image
+    /// table can say what the id names. `None` when it names nothing, which the
+    /// resolver logs; the call is then skipped, as the embedded op skips it.
     ///
     /// Required, not defaulted: a wrapper that forgot to forward a defaulted
     /// method would drop every upload silently -- which is what the first
     /// version of this did, and what a test caught.
-    fn image_upload(&mut self, upload: ImageUpload) -> Option<shared::protocol::render_cmd::GLCmd>;
+    fn image_source(
+        &mut self,
+        image_id: u32,
+    ) -> Option<shared::protocol::render_cmd::TextureSource>;
 
     /// Where this host stages uploads larger than a record, or `None` if it
     /// takes none. Only a producer in another process sends them -- the
@@ -63,35 +65,9 @@ pub trait GlDecodeContext {
     /// answers `None`, and an upload that names staged bytes there fails as an
     /// allocation GL cannot make.
     ///
-    /// Required for the reason `image_upload` is: a wrapper that forgot to
+    /// Required for the reason `image_source` is: a wrapper that forgot to
     /// forward it would fail every large upload, quietly.
     fn staged_payload(&mut self) -> Option<&mut crate::staging::StagedPayload>;
-}
-
-/// A texture upload whose source is a loaded image, as a record carries it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ImageUpload {
-    /// `texImage2D(target, level, internalformat, format, type, image)`.
-    Full {
-        canvas_id: u32,
-        target: u32,
-        level: i32,
-        internalformat: i32,
-        format: u32,
-        type_: u32,
-        image_id: u32,
-    },
-    /// `texSubImage2D(target, level, xoffset, yoffset, format, type, image)`.
-    Sub {
-        canvas_id: u32,
-        target: u32,
-        level: i32,
-        xoffset: i32,
-        yoffset: i32,
-        format: u32,
-        type_: u32,
-        image_id: u32,
-    },
 }
 
 const GL_TRANSFORM_FEEDBACK_BUFFER: u32 = 0x8C8E;

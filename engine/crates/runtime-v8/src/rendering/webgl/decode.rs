@@ -79,11 +79,11 @@ impl frame_decode::GlDecodeContext for OpStateRenderTarget<'_> {
         );
     }
 
-    fn image_upload(
+    fn image_source(
         &mut self,
-        upload: frame_decode::ImageUpload,
-    ) -> Option<shared::protocol::render_cmd::GLCmd> {
-        crate::rendering::webgl::error_state::image_upload(self.state, upload)
+        image_id: u32,
+    ) -> Option<shared::protocol::render_cmd::TextureSource> {
+        crate::rendering::webgl::error_state::image_source(self.state, image_id)
     }
     fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
         None

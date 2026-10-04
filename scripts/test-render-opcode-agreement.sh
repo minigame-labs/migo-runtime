@@ -31,6 +31,13 @@
 # And the prefix of every payload record, which the producer's decode-budget
 # estimate reads its length at (see below).
 #
+# A value the resource block retires stays named in gl_resource.rs's
+# RETIRED_OPCODES rather than vanishing: the runs below are checked contiguous
+# with the retired values in them, and a live opcode that takes a retired value
+# is refused. The six TexImageSource records (169..=174) were the first retired;
+# without the list their removal read as a gap, and a later record reusing one of
+# their values would have been read by an old producer's records as itself.
+#
 # Host-only: reads the tables and those constants.
 set -euo pipefail
 
@@ -201,8 +208,21 @@ for block, patterns in PATTERNS.items():
               f"{len(variable)} variable-length (256..={variable[-1] if variable else 0})")
     elif block == "res":
         # Two contiguous runs: fixed records from 128, payload records from 192,
-        # and nothing of this block outside 128..=255.
+        # and nothing of this block outside 128..=255. A retired value holds its
+        # place in its run and is never a live opcode's.
+        retired_match = re.search(
+            r"^pub const RETIRED_OPCODES: \[u32; \d+\] = \[([0-9, ]*)\];", text_of["rust resource"], re.M
+        )
+        if retired_match is None:
+            problems.append("res: gl_resource.rs declares no RETIRED_OPCODES; the pattern no longer matches")
+            retired = []
+        else:
+            retired = [int(v) for v in retired_match.group(1).replace(" ", "").split(",") if v]
+        reused = sorted(set(retired) & set(values))
+        if reused:
+            problems.append(f"res: a live opcode takes a retired value: {reused}")
         PAYLOAD_BASE = 192
+        values = sorted(set(values) | set(retired))
         fixed = sorted(v for v in values if v < PAYLOAD_BASE)
         payload = sorted(v for v in values if v >= PAYLOAD_BASE)
         if fixed != list(range(128, 128 + len(fixed))):

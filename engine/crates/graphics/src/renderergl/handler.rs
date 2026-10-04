@@ -3,7 +3,7 @@ use shared::{
     error::{EngineError, EngineResult, ErrorCode},
     protocol::render_cmd::{
         CanvasId, CompressedImageData, GLCmd, PixelUnpackSource, ProgramId, ShaderType,
-        checked_readback_byte_len, webgl_readback_bytes_per_pixel,
+        SourceUploadCall, checked_readback_byte_len, webgl_readback_bytes_per_pixel,
     },
 };
 use smallvec::SmallVec;
@@ -1996,234 +1996,74 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
-            GLCmd::TexImage2DFromShared {
+            GLCmd::TexImageSource {
                 canvas_id,
                 target,
                 level,
-                internalformat,
+                call,
+                width,
+                height,
                 format,
                 type_,
-                source_shared_id,
-                src_width,
-                src_height,
+                destination_format,
+                source,
             } => {
                 cm.make_current_needed(canvas_id)?;
-                let prepared = cm
-                    .webgl_gpu_budget
-                    .prepare_tex_image_2d(
-                        canvas_id,
-                        target,
-                        level,
-                        internalformat,
-                        src_width,
-                        src_height,
-                        0,
-                        format,
-                        type_,
-                    )
-                    .map_err(gpu_allocation_error)?;
-                cm.tex_image_2d_from_shared(
-                    canvas_id,
-                    target,
-                    level,
-                    internalformat,
-                    source_shared_id,
-                    src_width,
-                    src_height,
-                )?;
-                cm.webgl_gpu_budget.commit(prepared);
-                Ok(DamageEffect::NoDamage)
-            }
-
-            GLCmd::TexImage2DFromSnapshot {
-                canvas_id,
-                target,
-                level,
-                internalformat,
-                format,
-                type_,
-                snapshot_id,
-            } => {
-                cm.make_current_needed(canvas_id)?;
-                // The record carries the `format` and `type` the content passed when the facade knows them, and
-                // zeros when it does not (the form of `texImage2D(canvas)` that has no `format`/`type` of its
-                // own to forward). A snapshot is RGBA8 pixels, so for an unsized internal format the format is
-                // the internal format and the type is UNSIGNED_BYTE -- what `TexImage2DFromCanvas2D` already
-                // assumes below. Passing the zeros on made the budget refuse the upload (an unsized format must
-                // equal its format), and every canvas drawn and uploaded in the same frame -- every dynamic
-                // text sprite -- became an empty texture, drawn opaque black.
-                let (format, type_) = canvas_source_upload_format(internalformat, format, type_);
-                let prepared = cm
-                    .canvas2d_snapshot_dimensions(snapshot_id)
-                    .map(|(width, height)| {
+                // A full call defines an image, held to the GPU budget as any other is and committed once it is there.
+                let prepared = match call {
+                    SourceUploadCall::Image2D { internalformat } => Some(
                         cm.webgl_gpu_budget
                             .prepare_tex_image_2d(
                                 canvas_id,
                                 target,
                                 level,
                                 internalformat,
-                                width as i32,
-                                height as i32,
+                                width,
+                                height,
                                 0,
                                 format,
                                 type_,
                             )
-                            .map_err(gpu_allocation_error)
-                    })
-                    .transpose()?;
-                cm.tex_image_2d_from_canvas2d_snapshot(
-                    canvas_id,
-                    target,
-                    level,
-                    internalformat,
-                    snapshot_id,
-                )?;
-                if let Some(prepared) = prepared {
-                    cm.webgl_gpu_budget.commit(prepared);
-                }
-                crate::render_diagnostics::bump_canvas2d_snapshot_upload();
-                Ok(DamageEffect::NoDamage)
-            }
-
-            GLCmd::TexImage2DFromTextCache {
-                canvas_id,
-                target,
-                level,
-                internalformat,
-                key,
-            } => {
-                cm.make_current_needed(canvas_id)?;
-                let prepared = cm
-                    .webgl_gpu_budget
-                    .prepare_tex_image_2d(
-                        canvas_id,
-                        target,
-                        level,
+                            .map_err(gpu_allocation_error)?,
+                    ),
+                    SourceUploadCall::Image3D {
                         internalformat,
-                        key.canvas_w as i32,
-                        key.canvas_h as i32,
-                        0,
-                        internalformat as u32,
-                        glow::UNSIGNED_BYTE,
-                    )
-                    .map_err(gpu_allocation_error)?;
-                let used = cm.tex_image_2d_from_text_cache(
-                    canvas_id,
-                    target,
-                    level,
-                    internalformat,
-                    &key,
-                )?;
-                if used {
-                    cm.webgl_gpu_budget.commit(prepared);
-                    crate::render_diagnostics::hit_text_cache();
-                    crate::render_diagnostics::bump_canvas2d_snapshot_upload();
-                } else {
-                    crate::render_diagnostics::miss_text_cache();
-                    tracing::warn!(
-                        "TexImage2DFromTextCache: entry missing at execution time \
-                         (pin / eviction race?); destination texture unchanged"
-                    );
-                }
-                Ok(DamageEffect::NoDamage)
-            }
-            GLCmd::TexImage2DFromCanvas2D {
-                canvas_id,
-                target,
-                level,
-                internalformat,
-                canvas_2d_id,
-                x,
-                y,
-                width,
-                height,
-            } => {
-                cm.make_current_needed(canvas_id)?;
-                let prepared = if width == 0 || height == 0 {
-                    None
-                } else {
-                    Some(
+                        depth,
+                    } => Some(
                         cm.webgl_gpu_budget
-                            .prepare_tex_image_2d(
+                            .prepare_tex_image_3d(
                                 canvas_id,
                                 target,
                                 level,
                                 internalformat,
-                                width as i32,
-                                height as i32,
+                                width,
+                                height,
+                                depth,
                                 0,
-                                internalformat as u32,
-                                glow::UNSIGNED_BYTE,
+                                format,
+                                type_,
                             )
                             .map_err(gpu_allocation_error)?,
-                    )
+                    ),
+                    SourceUploadCall::SubImage2D { .. } | SourceUploadCall::SubImage3D { .. } => {
+                        None
+                    }
                 };
-                cm.tex_image_2d_from_canvas2d_direct(
-                    canvas_id,
+                let upload = crate::SourceUpload {
                     target,
                     level,
-                    internalformat,
-                    canvas_2d_id,
-                    x,
-                    y,
+                    call,
                     width,
                     height,
-                )?;
-                if let Some(prepared) = prepared {
-                    cm.webgl_gpu_budget.commit(prepared);
+                    format,
+                    type_,
+                    destination_format,
+                };
+                if cm.upload_texture_source(canvas_id, &upload, &source)? {
+                    if let Some(prepared) = prepared {
+                        cm.webgl_gpu_budget.commit(prepared);
+                    }
                 }
-                crate::render_diagnostics::bump_canvas2d_snapshot_upload();
-                Ok(DamageEffect::NoDamage)
-            }
-
-            GLCmd::TexSubImage2DFromCanvas2D {
-                canvas_id,
-                target,
-                level,
-                xoffset,
-                yoffset,
-                canvas_2d_id,
-                x,
-                y,
-                width,
-                height,
-            } => {
-                cm.tex_sub_image_2d_from_canvas2d_direct(
-                    canvas_id,
-                    target,
-                    level,
-                    xoffset,
-                    yoffset,
-                    canvas_2d_id,
-                    x,
-                    y,
-                    width,
-                    height,
-                )?;
-                crate::render_diagnostics::bump_canvas2d_snapshot_upload();
-                Ok(DamageEffect::NoDamage)
-            }
-
-            GLCmd::TexSubImage2DFromSnapshot {
-                canvas_id,
-                target,
-                level,
-                xoffset,
-                yoffset,
-                format,
-                type_,
-                snapshot_id,
-            } => {
-                cm.tex_sub_image_2d_from_canvas2d_snapshot(
-                    canvas_id,
-                    target,
-                    level,
-                    xoffset,
-                    yoffset,
-                    (format, type_),
-                    snapshot_id,
-                )?;
-                crate::render_diagnostics::bump_canvas2d_snapshot_upload();
                 Ok(DamageEffect::NoDamage)
             }
 
@@ -4733,25 +4573,6 @@ pub(crate) fn clear_damage_effect(
     }
 }
 
-/// The `format` and `type` a texture upload from a canvas is accounted under.
-///
-/// What the content passed when the record carries it; otherwise what a canvas is: 8-bit pixels, in the internal
-/// format's own components. A zero is "not forwarded", never a real format (GL has none).
-fn canvas_source_upload_format(internalformat: i32, format: u32, type_: u32) -> (u32, u32) {
-    (
-        if format == 0 {
-            internalformat as u32
-        } else {
-            format
-        },
-        if type_ == 0 {
-            glow::UNSIGNED_BYTE
-        } else {
-            type_
-        },
-    )
-}
-
 /// The renderable color formats whose components are integers, which ES 3.0 does not multisample.
 fn is_integer_color_format(internalformat: u32) -> bool {
     matches!(
@@ -5443,41 +5264,6 @@ mod tests {
              redundant useProgram on a deleted or missing program would then \
              succeed silently, where the first call errored — see this test's \
              doc for why the saved hash lookup is not worth that"
-        );
-    }
-
-    /// A snapshot upload is accounted under the format a canvas is, whatever the record forwarded.
-    ///
-    /// The record carries `format` and `type` as zeros when the facade has none to forward, and the budget refuses an
-    /// unsized internal format that does not equal its format: so every `texImage2D(canvas)` of a canvas drawn in
-    /// the same frame was rejected and left an empty texture. Phaser's Text drew opaque black boxes.
-    #[test]
-    fn a_canvas_source_upload_is_accounted_as_the_8_bit_pixels_it_is() {
-        assert_eq!(
-            canvas_source_upload_format(glow::RGBA as i32, 0, 0),
-            (glow::RGBA, glow::UNSIGNED_BYTE)
-        );
-        assert_eq!(
-            canvas_source_upload_format(glow::RGB as i32, 0, 0),
-            (glow::RGB, glow::UNSIGNED_BYTE)
-        );
-        // What the content did pass is kept.
-        assert_eq!(
-            canvas_source_upload_format(glow::RGBA8 as i32, glow::RGBA, glow::UNSIGNED_BYTE),
-            (glow::RGBA, glow::UNSIGNED_BYTE)
-        );
-        const SRC: &str = include_str!("handler.rs");
-        let arm = &SRC[SRC.find("GLCmd::TexImage2DFromSnapshot {").unwrap()..];
-        let arm = &arm[..arm.find("GLCmd::TexImage2DFromTextCache").unwrap()];
-        let mapped = arm
-            .find("canvas_source_upload_format(")
-            .expect("the arm maps format and type");
-        let prepared = arm
-            .find("prepare_tex_image_2d(")
-            .expect("the arm accounts the allocation");
-        assert!(
-            mapped < prepared,
-            "format and type are mapped before the budget sees them"
         );
     }
 

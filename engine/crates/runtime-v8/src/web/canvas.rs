@@ -155,7 +155,7 @@ pub fn op_resize_canvas(
         ));
     }
     // Route resize through the UnifiedFrameCollector so it interleaves
-    // with `FillText` / `TexImage2DFromCanvas2D` in JS-issue order on
+    // with `FillText` / `TexImageSource` (a canvas source) in JS-issue order on
     // the render thread.  Previously this went through `ctx.tx` as an
     // immediate `CanvasCmd::ResizeCanvas`, which raced with the
     // collector-buffered draw/upload ops: cocos's text-label pattern

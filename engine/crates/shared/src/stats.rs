@@ -246,7 +246,7 @@ pub struct DebugStats {
     /// (`shared::text_texture_cache`).  A hit means a fillText whose
     /// `(text, font, size, color, ...)` tuple was already rendered
     /// earlier in this process — the cached GL texture was reused
-    /// via `TexImage2DFromTextCache`, skipping the entire offscreen
+    /// via `TexImageSource` (text-cache source), skipping the entire offscreen
     /// Canvas2D + snapshot + blit pipeline.  Repeat-shop-open hit
     /// rates above ~80% are the design target.
     pub text_cache_hits: AtomicU32,

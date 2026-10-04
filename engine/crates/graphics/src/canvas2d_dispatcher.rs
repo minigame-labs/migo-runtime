@@ -118,7 +118,7 @@ impl Renderer2d {
                 Ok(false)
             }
             // In-band resize: keeps surface dimension changes serialised
-            // with the surrounding `FillText` / `TexImage2DFromCanvas2D`
+            // with the surrounding `FillText` / `TexImageSource` (a canvas source)
             // commands.  Errors are logged but not propagated — a failed
             // resize leaves the surface at its previous size, matching
             // browser behaviour for the pathological case where the OS
@@ -223,7 +223,7 @@ impl Renderer2d {
                     crate::render_diagnostics::bump_canvas2d_snapshot_fallback();
                     // Cache record path was conditional on a successful
                     // snapshot — if capture failed, drop the key on the
-                    // floor.  The downstream `TexImage2DFromSnapshot`
+                    // floor.  The downstream `TexImageSource` (a snapshot source)
                     // will also fail (and fall back to the JS-side legacy
                     // path), and JS won't see the cache populated; on
                     // the next attempt the cache miss recurs but eventually

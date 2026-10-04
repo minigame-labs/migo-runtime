@@ -1,14 +1,14 @@
-//! WebGL uploads whose source is a loaded image: `texImage2D(…, image)` and
-//! `texSubImage2D(…, image)`.
+//! WebGL uploads whose source is a loaded image: `texImage2D(…, image)`,
+//! `texSubImage2D(…, image)` and their 3D forms.
 //!
-//! The embedded runtime's ops and the external session's frame decoder both
-//! turn such a call into a `GLCmd` here, so an image uploads the same way
-//! whichever execution recorded the call: a GPU-side copy from the image's own
-//! texture when the id names a live alias, the decoded bytes otherwise.
+//! The embedded runtime's op and the external session's frame decoder both
+//! resolve the image here, so an image uploads the same way whichever execution
+//! recorded the call: from the image's own texture or its decoded bytes,
+//! whichever the renderer finds exact and cheapest.
 
 use std::sync::Arc;
 
-use shared::protocol::render_cmd::{GLCmd, PixelUnpackSource};
+use shared::protocol::render_cmd::TextureSource;
 use tracing::warn;
 
 use super::cache::{ImageCacheKey, SharedImageCache};
@@ -93,96 +93,38 @@ fn log_miss(op: &str, image_id: u32, lookup: &RgbaLookup) {
     }
 }
 
-/// `texImage2D(target, level, internalformat, format, type, image)`.
-///
-/// A GPU-side copy from the image's texture when `image_id` is a live alias
-/// (the texture is already in the render thread's store, so the CPU bytes are
-/// never re-read -- what Chrome does for an `HTMLImageElement` it has promoted);
-/// otherwise the decoded bytes. `None`, logged, for an id that names nothing.
-#[allow(clippy::too_many_arguments)]
-pub fn tex_image_2d_from_image(
+/// The source a `tex*Image*` call naming `image_id` uploads from: the image store's texture of it when the id names a
+/// live alias, its decoded bytes when the cache still holds them, and both when both are there
+/// ([`TextureSource::Image`]). `None`, logged, for an id that names neither.
+pub fn texture_source(
     aliases: &SharedImageCache,
     session: i32,
-    canvas_id: u32,
-    target: u32,
-    level: i32,
-    internalformat: i32,
-    format: u32,
-    type_: u32,
     image_id: u32,
-) -> Option<GLCmd> {
+) -> Option<TextureSource> {
     let shared = aliases.lock().shared_for_image_id(image_id);
-    if let Some((source_shared_id, (w, h))) = shared {
-        return Some(GLCmd::TexImage2DFromShared {
-            canvas_id,
-            target,
-            level,
-            internalformat,
-            format,
-            type_,
-            source_shared_id,
-            src_width: w as i32,
-            src_height: h as i32,
-        });
-    }
-    match resolve_cached_image_rgba(aliases, session, image_id) {
-        RgbaLookup::Found {
-            width,
-            height,
-            data,
-        } => Some(GLCmd::TexImage2D {
-            canvas_id,
-            target,
-            level,
-            internalformat,
-            width,
-            height,
-            border: 0,
-            format,
-            type_,
-            data: Some(PixelUnpackSource::Bytes(data)),
+    let lookup = resolve_cached_image_rgba(aliases, session, image_id);
+    match (shared, lookup) {
+        (
+            shared,
+            RgbaLookup::Found {
+                width,
+                height,
+                data,
+            },
+        ) => Some(TextureSource::Image {
+            shared_id: shared.map(|(id, _)| id),
+            pixels: Some(data),
+            width: width as u32,
+            height: height as u32,
         }),
-        miss => {
-            log_miss("op_tex_image_2d_from_image", image_id, &miss);
-            None
-        }
-    }
-}
-
-/// `texSubImage2D(target, level, x, y, format, type, image)`: always the
-/// decoded bytes -- there is no GPU-side sub-copy command.
-#[allow(clippy::too_many_arguments)]
-pub fn tex_sub_image_2d_from_image(
-    aliases: &SharedImageCache,
-    session: i32,
-    canvas_id: u32,
-    target: u32,
-    level: i32,
-    xoffset: i32,
-    yoffset: i32,
-    format: u32,
-    type_: u32,
-    image_id: u32,
-) -> Option<GLCmd> {
-    match resolve_cached_image_rgba(aliases, session, image_id) {
-        RgbaLookup::Found {
-            width,
-            height,
-            data,
-        } => Some(GLCmd::TexSubImage2D {
-            canvas_id,
-            target,
-            level,
-            xoffset,
-            yoffset,
-            width,
-            height,
-            format,
-            type_,
-            data: PixelUnpackSource::Bytes(data),
+        (Some((shared_id, (width, height))), _) => Some(TextureSource::Image {
+            shared_id: Some(shared_id),
+            pixels: None,
+            width: u32::try_from(width).ok()?,
+            height: u32::try_from(height).ok()?,
         }),
-        miss => {
-            log_miss("op_tex_sub_image_2d_from_image", image_id, &miss);
+        (None, miss) => {
+            log_miss("texture_source", image_id, &miss);
             None
         }
     }

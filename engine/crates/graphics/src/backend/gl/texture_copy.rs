@@ -53,6 +53,8 @@ pub(crate) enum TextureCopy {
         level: i32,
         xoffset: i32,
         yoffset: i32,
+        source_x: i32,
+        source_y: i32,
         width: i32,
         height: i32,
     },
@@ -104,10 +106,14 @@ pub(crate) fn copy_texture(
                     level,
                     xoffset,
                     yoffset,
+                    source_x,
+                    source_y,
                     width,
                     height,
                 } => {
-                    gl.copy_tex_sub_image_2d(target, level, xoffset, yoffset, 0, 0, width, height);
+                    gl.copy_tex_sub_image_2d(
+                        target, level, xoffset, yoffset, source_x, source_y, width, height,
+                    );
                 }
             }
         }

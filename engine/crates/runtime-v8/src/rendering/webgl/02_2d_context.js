@@ -7,6 +7,10 @@
 
 import {
     flushRenderCommandStream,
+    uploadTexImageSource,
+    TEX_SOURCE_CALL_IMAGE_2D,
+    TEX_SOURCE_SNAPSHOT,
+    TEX_SOURCE_NO_PIXELS,
     encode2dBeginPath,
     encode2dClosePath,
     encode2dMoveTo,
@@ -63,7 +67,6 @@ import {
     op_text_cache_peek_pin,
     op_text_cache_unpin,
     op_tex_image_2d_from_text_cache,
-    op_tex_image_2d_from_snapshot,
     // Text methods
     op_fill_text,
     op_stroke_text,
@@ -701,8 +704,8 @@ class CanvasRenderingContext2D {
         this._tcKey = null;
     }
 
-    // Called by WebGL `texImage2D(target, ..., canvasElement)` when the
-    // source canvas's 2D context has pending text-cache state.  This is
+    // Called by WebGL `texImage2D(target, level, internalformat, format, type, canvasElement)` -- the whole canvas,
+    // nothing of it skipped -- when the source canvas's 2D context has pending text-cache state.  This is
     // cocos's actual upload path (NOT getImageData), so the
     // hit/record decision has to happen here.  Returns true when it
     // fully issued the upload (caller skips the normal direct path).
@@ -715,7 +718,7 @@ class CanvasRenderingContext2D {
     //         snapshot into the WebGL dest.  Frame-end drain transfers
     //         the snapshot texture into the cache so the next identical
     //         fillText hits.
-    _consumeTextCacheForTexImage(glCanvasId, target, level, internalformat) {
+    _consumeTextCacheForTexImage(glCanvasId, target, level, internalformat, format, type) {
         if (this._tcState === 0 || this._tcKey === null) return false;
         flushRenderCommandStream();
         const k = this._tcKey;
@@ -724,7 +727,7 @@ class CanvasRenderingContext2D {
         this._tcKey = null;
         if (isHit) {
             op_tex_image_2d_from_text_cache(
-                glCanvasId, target, level, internalformat,
+                glCanvasId, target, level, internalformat, format, type,
                 k.text, k.fontRequest, k.fontSize, k.fontWeight,
                 k.italic, k.fillColor, k.textAlign, k.textBaseline,
                 k.canvasW, k.canvasH,
@@ -745,9 +748,10 @@ class CanvasRenderingContext2D {
             k.italic, k.fillColor, k.textAlign, k.textBaseline,
             k.canvasW, k.canvasH,
         );
-        op_tex_image_2d_from_snapshot(
-            glCanvasId, target, level, internalformat,
-            0, 0, snapId,
+        uploadTexImageSource(
+            glCanvasId, TEX_SOURCE_CALL_IMAGE_2D, target, level, internalformat, 0, 0, 0,
+            k.canvasW, k.canvasH, 1, format, type, 0, TEX_SOURCE_SNAPSHOT, snapId, k.canvasW, k.canvasH,
+            TEX_SOURCE_NO_PIXELS,
         );
         return true;
     }
@@ -1802,7 +1806,7 @@ function _migoMakeSnapshotImageData(snapshotId, w, h) {
 // Synthetic ImageData for a text texture cache HIT.  No snapshot was
 // captured (the offscreen fillText was suppressed entirely); the
 // downstream texImage2D detects `__migo_text_cache_key__` and routes
-// to `op_tex_image_2d_from_text_cache`, which copies the cached
+// to `op_tex_image_2d_from_text_cache`, which uploads from the cached
 // texture and unpins the entry.
 //
 // `.data` fallback: a game that actually inspects the bytes of the
