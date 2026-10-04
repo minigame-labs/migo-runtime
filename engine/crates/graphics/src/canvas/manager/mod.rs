@@ -493,12 +493,12 @@ pub(crate) struct CanvasManager {
     /// Per-canvas FBO used as the read source for `glCopyTexImage2D`
     /// when handling `GLCmd::TexImage2DFromShared`.  Lazy-created on
     /// first use because most canvases never trigger the WebGL
-    /// `texImage2D(image)` path; one FBO per canvas because FBO
-    /// names live in their owning context's namespace even when
-    /// textures are shared via EGL share lists.  Deleted in
-    /// `destroy_canvas` / `destroy_all` alongside other per-canvas
-    /// GL objects.
-    image_copy_fbos: HashMap<CanvasId, glow::NativeFramebuffer>,
+    /// `texImage2D(image)` path. Keyed by the EGL context that owns it, because
+    /// a framebuffer name means a different object in every context: canvases on
+    /// the shared offscreen-2D context share that context's one. A context's goes
+    /// with the context -- it is never deleted from another, where its name would
+    /// delete that context's framebuffer of the same name.
+    image_copy_fbos: HashMap<OwningContext, glow::NativeFramebuffer>,
 
     /// Pool of GL textures that mirror Canvas2D regions captured by
     /// [`shared::protocol::render_cmd::Canvas2DCmd::GetImageDataSnapshot`].
@@ -2554,11 +2554,8 @@ impl CanvasManager {
                     .store_mut()
                     .purge_wrappers_for_context(tag);
             }
-            // Rebalance Skia resource-cache caps now that one
-            // fewer context is sharing the aggregate budget.
-            for ctx in self.contexts_2d.values_mut() {
-                ctx.rebalance_resource_cache();
-            }
+            // The other contexts take their larger share of the Skia budget at their next flush or sweep
+            // (`Canvas2DContext::sync_resource_cache_limits`), each with its own context current.
             self.dirty_2d.remove(&id);
             self.gl_state.remove(&id);
 
@@ -2738,18 +2735,66 @@ impl CanvasManager {
     /// game's warning capped every other game's canvases for the
     /// life of the process.
     pub(crate) fn on_trim_memory(&mut self) {
-        for ctx in self.contexts_2d.values_mut() {
+        let unused_age = std::time::Duration::from_millis(200);
+        self.for_each_skia_context(|ctx| {
             ctx.trim_resource_cache();
-        }
-        self.perform_deferred_cleanup_all(std::time::Duration::from_millis(200));
+            ctx.perform_deferred_cleanup(unused_age);
+        });
     }
 
     /// Purge only Skia resources older than `unused_age` in every live 2D
-    /// context. The render thread calls this after a coalesced cadence decision
-    /// or an explicit memory-pressure edge; it never schedules work itself.
+    /// context, and install each context's current share of the cache budget.
+    /// The render thread calls this after a coalesced cadence decision or an
+    /// explicit memory-pressure edge; it never schedules work itself.
     pub(crate) fn perform_deferred_cleanup_all(&mut self, unused_age: std::time::Duration) {
-        for ctx in self.contexts_2d.values_mut() {
+        self.for_each_skia_context(|ctx| {
+            ctx.sync_resource_cache_limits();
             ctx.perform_deferred_cleanup(unused_age);
+        });
+    }
+
+    /// Run `op` on every live `GrDirectContext` with its own EGL context
+    /// current -- once for the shared offscreen-2D context, through any canvas
+    /// on it, and once for each canvas with a context of its own -- under the
+    /// raw-GL scope a flush uses, then put back the binding the caller had.
+    ///
+    /// Skia's GL work runs in whatever context is current, and a purge is GL
+    /// work: it deletes textures and framebuffers. A framebuffer name means a
+    /// different object in every context, so a purge run with another context
+    /// current deleted that context's framebuffer of the same name -- a WebGL
+    /// canvas's DrawingBuffer, the first framebuffer of its context, was one,
+    /// and the canvas drew into its 1x1 pbuffer from then on.
+    fn for_each_skia_context(&mut self, mut op: impl FnMut(&mut Canvas2DContext)) {
+        if self.contexts_2d.is_empty() {
+            return;
+        }
+        let saved = self.bound;
+        let ids: smallvec::SmallVec<[CanvasId; 32]> = self.contexts_2d.keys().copied().collect();
+        let mut shared_swept = false;
+        for id in ids {
+            let shared = self.canvas_uses_shared_2d(id);
+            if shared && std::mem::replace(&mut shared_swept, true) {
+                continue;
+            }
+            if self.make_current_needed(id).is_err() {
+                continue;
+            }
+            let gl: *const glow::Context = &*self.gl;
+            // As the flush does: the shared context has no dedup shadow, since nothing but offscreen 2D drawing
+            // ever binds it.
+            let shadow =
+                (!shared).then(|| self.gl_state.entry(id).or_default() as *mut CanvasGLState);
+            // SAFETY: `self.gl` is not mutated and the shadow is borrowed only through this pointer until the guard
+            // drops, at the end of this iteration.
+            let _gl_scope = unsafe {
+                context_2d_impl::begin_canvas2d_gl_scope(&*gl, shadow.map(|shadow| &mut *shadow))
+            };
+            if let Some(ctx) = self.contexts_2d.get_mut(&id) {
+                op(ctx);
+            }
+        }
+        if let Err(error) = self.restore_bound(saved) {
+            tracing::warn!("Skia sweep could not restore the context it found current: {error}");
         }
     }
 
@@ -3266,10 +3311,8 @@ impl CanvasManager {
                     .store_mut()
                     .purge_wrappers_for_context(tag);
             }
-            // Rebalance Skia caches now that the denominator changed.
-            for ctx in self.contexts_2d.values_mut() {
-                ctx.rebalance_resource_cache();
-            }
+            // The other contexts take their larger share of the Skia budget at their next flush or sweep
+            // (`Canvas2DContext::sync_resource_cache_limits`), each with its own context current.
             self.dirty_2d.remove(&id);
             self.gl_state.remove(&id);
 
@@ -3308,12 +3351,14 @@ impl CanvasManager {
             }
             self.webgl_gpu_budget.release_context(id);
 
-            // Release the GPU-copy FBO for this canvas.  FBO names
-            // are context-local, so it would be unusable after the
-            // owning canvas is gone.
-            if let Some(fbo) = self.image_copy_fbos.remove(&id) {
-                unsafe { self.gl.delete_framebuffer(fbo) };
-            }
+            // Its context is destroyed above, and the framebuffers, vertex arrays, queries and transform feedbacks
+            // that lived in it -- the image-copy framebuffer among them -- went with it. Their names are dropped,
+            // never deleted: in any other context a name deletes that context's object of the same name.
+            self.image_copy_fbos.remove(&OwningContext::Canvas(id));
+            self.framebuffers.retain(|_, meta| meta.owner != id);
+            self.vaos.retain(|_, meta| meta.owner != id);
+            self.queries.retain(|_, meta| meta.owner != id);
+            self.transform_feedbacks.retain(|_, meta| meta.owner != id);
             // A canvas that was drawn from leaves no copy of itself behind.
             self.drop_canvas_source_copy(id);
             self.canvas_generations.remove(&id);
@@ -3384,14 +3429,11 @@ impl CanvasManager {
                     self.gl.delete_texture(h);
                 }
             }
-            for (_id, f) in self.framebuffers.drain() {
-                if let Some(h) = f.gl_handle {
-                    self.gl.delete_framebuffer(h);
-                }
-            }
-            for (_id, fbo) in self.image_copy_fbos.drain() {
-                self.gl.delete_framebuffer(fbo);
-            }
+            // Framebuffers live in the contexts that made them, which are destroyed (the canvases' above, the
+            // shared and resource contexts below) and take them along; deleted here by name they would be the
+            // current context's framebuffers of the same names.
+            self.framebuffers.clear();
+            self.image_copy_fbos.clear();
             if has_current_context {
                 for (_id, copy) in self.canvas_source_cache.drain() {
                     self.gl.delete_texture(copy.tex);
@@ -5443,7 +5485,8 @@ impl CanvasManager {
         &mut self,
         canvas_id: CanvasId,
     ) -> EngineResult<glow::NativeFramebuffer> {
-        if let Some(fbo) = self.image_copy_fbos.get(&canvas_id).copied() {
+        let owner = self.owning_context_of(canvas_id);
+        if let Some(fbo) = self.image_copy_fbos.get(&owner).copied() {
             return Ok(fbo);
         }
         let fbo = unsafe {
@@ -5453,8 +5496,17 @@ impl CanvasManager {
                     .with_detail(e)
             })?
         };
-        self.image_copy_fbos.insert(canvas_id, fbo);
+        self.image_copy_fbos.insert(owner, fbo);
         Ok(fbo)
+    }
+
+    /// The EGL context canvas `id`'s GL work runs in (what `make_current_needed` makes current for it).
+    fn owning_context_of(&self, id: CanvasId) -> OwningContext {
+        if self.canvas_uses_shared_2d(id) {
+            OwningContext::Shared2D
+        } else {
+            OwningContext::Canvas(id)
+        }
     }
 
     // -----------------------------------------------------------------
@@ -7200,6 +7252,14 @@ impl Drop for CanvasManager {
     }
 }
 
+/// The EGL context a per-context GL object -- a framebuffer -- lives in. Its name means a different object in every
+/// other context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum OwningContext {
+    Shared2D,
+    Canvas(CanvasId),
+}
+
 /// Pure decision for whether the onscreen canvas may bypass its DrawingBuffer
 /// (render straight to FBO 0 and skip the DrawingBuffer→window blit at swap).
 ///
@@ -7977,6 +8037,89 @@ mod recovery_source_guards {
     ///
     /// Structural because installing a target needs a real EGL display, which no
     /// host test has: the same reason `startup_ordering` checks this manager's
+    /// Skia's GL work runs in whatever EGL context is current, and a purge is GL work. Every call that can make a
+    /// `GrDirectContext` purge -- a deferred cleanup, a trim, a cap installed by `sync_resource_cache_limits` -- is
+    /// made with that context's own EGL context current: through `for_each_skia_context`, which makes each current
+    /// before it calls in, or from the flush, which already has. A loop over `contexts_2d` calling them with whatever
+    /// happened to be current is the shape that deleted a WebGL canvas's DrawingBuffer: the purge freed Skia's
+    /// framebuffer 1 by name in the WebGL canvas's context, where framebuffer 1 was the DrawingBuffer. Pinned against
+    /// the source because the effect needs two live contexts sharing a group.
+    #[test]
+    fn skia_purges_run_with_their_own_context_current() {
+        const CONTEXT_2D: &str = include_str!("context_2d_impl.rs");
+        let manager = MGR
+            .split_once("mod recovery_source_guards")
+            .expect("this module bounds the production half of the file")
+            .0;
+        let calls = |code: &str| -> usize {
+            [
+                ".perform_deferred_cleanup(",
+                ".trim_resource_cache(",
+                ".sync_resource_cache_limits(",
+            ]
+            .iter()
+            .map(|call| {
+                code.lines()
+                    .filter(|line| !line.trim_start().starts_with("//"))
+                    .map(|line| line.matches(call).count())
+                    .sum::<usize>()
+            })
+            .sum()
+        };
+        let swept = calls(function_body(manager, "pub(crate) fn on_trim_memory("))
+            + calls(function_body(
+                manager,
+                "pub(crate) fn perform_deferred_cleanup_all(",
+            ));
+        assert_eq!(
+            calls(manager),
+            swept,
+            "a purge is reached from the manager only through the sweep's closures"
+        );
+        for sweeper in [
+            "pub(crate) fn on_trim_memory(",
+            "pub(crate) fn perform_deferred_cleanup_all(",
+        ] {
+            assert!(
+                function_body(manager, sweeper).contains("self.for_each_skia_context("),
+                "{sweeper} runs its purges through the sweep"
+            );
+        }
+        let sweep = function_body(manager, "fn for_each_skia_context(");
+        let current = sweep
+            .find("self.make_current_needed(id)")
+            .expect("the sweep makes each context current");
+        let call = sweep.find("op(ctx)").expect("the sweep calls in");
+        assert!(
+            current < call,
+            "each context is current before Skia is called in it"
+        );
+        let flush = function_body(CONTEXT_2D, "pub(super) fn flush_dirty_2d_contexts(");
+        assert_eq!(
+            calls(CONTEXT_2D),
+            calls(flush),
+            "outside the sweep, a cap is installed only by the flush, which has its context current"
+        );
+    }
+
+    /// A framebuffer name means a different object in every context, and a context's framebuffers go with it when
+    /// it is destroyed. So the paths that destroy contexts delete none by name: run from the context they found
+    /// current, they deleted that context's framebuffers of the same names -- the image-copy framebuffer of a
+    /// destroyed canvas was deleted from the resource context.
+    #[test]
+    fn destroying_a_context_deletes_no_framebuffer_by_name_elsewhere() {
+        for destroyer in [
+            "pub(crate) fn destroy_canvas(",
+            "pub(crate) fn destroy_all(",
+        ] {
+            let body = function_body(MGR, destroyer);
+            assert!(
+                !body.contains("delete_framebuffer("),
+                "{destroyer} deletes a framebuffer by name"
+            );
+        }
+    }
+
     /// construction order by reading its source.
     #[test]
     fn every_onscreen_install_re_asserts_the_frame_rate_request() {

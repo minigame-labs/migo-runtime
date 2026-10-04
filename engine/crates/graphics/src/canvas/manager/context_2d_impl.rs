@@ -110,13 +110,11 @@ pub(super) fn init_skia_for_canvas(
         )
     })?;
     cm.contexts_2d.insert(canvas_id, ctx);
-    // Rebalance this Session's contexts now that the process-wide denominator
-    // changed. Other Sessions' contexts pick the new share up at their own next
-    // create or destroy: a Skia context may only be touched from the render thread
-    // that owns it.
-    for ctx in cm.contexts_2d.values_mut() {
-        ctx.rebalance_resource_cache();
-    }
+    // The process-wide denominator changed. Every context takes its new share at
+    // its next flush or sweep, with its own context current
+    // (`Canvas2DContext::sync_resource_cache_limits`) -- this Session's and other
+    // Sessions' alike, since a Skia context may only be touched from the render
+    // thread that owns it, and only with its own EGL context current.
     // A freshly-created onscreen (id=1) 2D context invalidates DrawingBuffer
     // bypass: Skia renders into the DrawingBuffer FBO, which the bypass path
     // (single-canvas WebGL optimization) would skip blitting to the window,
@@ -292,6 +290,7 @@ pub(super) fn flush_dirty_2d_contexts(cm: &mut CanvasManager) -> EngineResult<Ve
             }
         }
         if let Some(ctx) = cm.contexts_2d.get_mut(&group_head) {
+            ctx.sync_resource_cache_limits();
             ctx.reset_gl_state();
         }
         flushed_ids.extend_from_slice(&shared_ids);
@@ -323,6 +322,7 @@ pub(super) fn flush_dirty_2d_contexts(cm: &mut CanvasManager) -> EngineResult<Ve
         let _gl_scope = unsafe { begin_canvas2d_gl_scope(&*gl_ref, Some(&mut *shadow_ref)) };
         if let Some(ctx) = cm.contexts_2d.get_mut(&id) {
             ctx.flush_and_submit();
+            ctx.sync_resource_cache_limits();
             // Drop Skia's internal GL-state tracking so subsequent WebGL
             // / DrawingBuffer-blit code doesn't see stale assumptions.
             ctx.reset_gl_state();

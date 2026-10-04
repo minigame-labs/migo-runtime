@@ -69,9 +69,10 @@ pub enum FboKind {
 ///   keeps a tiny-but-active offscreen canvas above the glyph-atlas
 ///   working set.
 ///
-/// Call [`Canvas2DContext::rebalance_resource_cache`] after any
-/// canvas create / destroy so existing contexts pick up the new
-/// share.  See Skia `GrDirectContext::setResourceCacheLimits`:
+/// Each context installs its new share through
+/// [`Canvas2DContext::sync_resource_cache_limits`] at its next flush or the
+/// manager's sweep, with its own EGL context current: installing a lower cap
+/// purges, and a purge is GL work. See Skia `GrDirectContext::setResourceCacheLimits`:
 /// <https://api.skia.org/classGrDirectContext.html>.
 /// Default aggregate Skia resource cache budget (32 MiB).  Kept
 /// as the process-wide lower bound; individual tiers may raise
@@ -176,10 +177,8 @@ static SKIA_RESOURCE_CACHE_BUDGET_BYTES: std::sync::atomic::AtomicUsize =
 /// deliberately does *not* come through here — see [`low_memory_per_ctx_bytes`].
 ///
 /// Existing contexts pick up the new cap the next time
-/// [`Canvas2DContext::rebalance_resource_cache`] runs (driven by
-/// canvas create / destroy).  To force an immediate rebalance,
-/// the manager can call `rebalance_resource_cache` itself for
-/// every live context.
+/// [`Canvas2DContext::sync_resource_cache_limits`] runs: at each one's next
+/// flush, or the manager's periodic sweep, either with that context current.
 pub fn set_skia_resource_cache_budget(bytes: usize) {
     SKIA_RESOURCE_CACHE_BUDGET_BYTES.store(
         bytes.max(MIN_PER_CTX_BYTES),
@@ -466,6 +465,10 @@ pub struct Canvas2DContext {
     /// scoped to the affected context to avoid under-invalidation on
     /// the other contexts that share the EGL context.
     pub skia_state_stale: u32,
+    /// The resource-cache byte cap installed in `gr_ctx`, so that the share of the
+    /// aggregate budget is installed again only when it has changed
+    /// ([`Self::sync_resource_cache_limits`]).
+    applied_cache_bytes: usize,
     /// Reused atlas partition and geometry scratch for the draw-image fast
     /// path. These buffers belong to the Canvas2D owner, so warm sprite
     /// batches do not allocate on the render thread.
@@ -678,15 +681,16 @@ impl Canvas2DContext {
         // Clamp Ganesh's resource cache so a long-running scene
         // can't silently grow the GPU memory footprint past the
         // 200 MB native-heap target.  Start at the single-context
-        // budget; `rebalance_resource_cache` shrinks the per-cap
+        // budget; `sync_resource_cache_limits` shrinks the per-cap
         // as additional canvases come online.  See
         // `per_ctx_resource_cache_bytes` and
         // <https://api.skia.org/classGrDirectContext.html>.
         // Enrolled before the cap is computed so this context is in its own divisor.
         let counted = LiveContextCount::enrol();
+        let applied_cache_bytes = per_ctx_resource_cache_bytes();
         gr_ctx.set_resource_cache_limits(skia_safe::gpu::ganesh::ResourceCacheLimits {
             max_resources: SKIA_RESOURCE_CACHE_MAX_RESOURCES,
-            max_resource_bytes: per_ctx_resource_cache_bytes(),
+            max_resource_bytes: applied_cache_bytes,
         });
 
         Ok(Self {
@@ -701,6 +705,7 @@ impl Canvas2DContext {
             kind,
             skia_state_stale: 0,
             ctx_tag: alloc_ctx_tag(),
+            applied_cache_bytes,
             atlas_runs: Vec::new(),
             atlas_xforms: Vec::new(),
             atlas_tex: Vec::new(),
@@ -797,6 +802,8 @@ impl Canvas2DContext {
             kind: FboKind::DrawingBuffer,
             skia_state_stale: 0,
             ctx_tag,
+            // What `bind_shared_2d_context` installed when it made the context; a sharer reconciles it like any other.
+            applied_cache_bytes: per_ctx_resource_cache_bytes(),
             atlas_runs: Vec::new(),
             atlas_xforms: Vec::new(),
             atlas_tex: Vec::new(),
@@ -839,19 +846,32 @@ impl Canvas2DContext {
         self.skia_state_stale |= bits;
     }
 
-    /// Re-apply the resource-cache byte cap for the current number
-    /// of live `Canvas2DContext`s.  Called by the manager after any
-    /// canvas create / destroy so the aggregate Skia cache budget
-    /// stays pinned at
-    /// [`SKIA_RESOURCE_CACHE_BUDGET_BYTES`] regardless of how
-    /// many contexts are live.
+    /// Install this context's share of the aggregate resource-cache budget
+    /// ([`SKIA_RESOURCE_CACHE_BUDGET_BYTES`] over the live contexts) if the share
+    /// has changed since it was last installed.
+    ///
+    /// Installing a lower cap makes Skia purge, and a purge is GL work: it runs in
+    /// whatever context is current. So this is called only where this context's
+    /// own EGL context is current -- its flush, and the manager's sweep -- and not
+    /// from the create or destroy of another canvas, which used to re-cap every
+    /// context with some other context current: the purge then deleted that
+    /// context's framebuffers of the same names. A WebGL canvas's DrawingBuffer
+    /// was one. It also makes a create or a destroy cost nothing per live context.
     #[inline]
-    pub fn rebalance_resource_cache(&mut self) {
+    pub fn sync_resource_cache_limits(&mut self) {
+        let share = per_ctx_resource_cache_bytes();
+        if share != self.applied_cache_bytes {
+            self.install_resource_cache_limit(share);
+        }
+    }
+
+    fn install_resource_cache_limit(&mut self, bytes: usize) {
         self.gr_ctx
             .set_resource_cache_limits(skia_safe::gpu::ganesh::ResourceCacheLimits {
                 max_resources: SKIA_RESOURCE_CACHE_MAX_RESOURCES,
-                max_resource_bytes: per_ctx_resource_cache_bytes(),
+                max_resource_bytes: bytes,
             });
+        self.applied_cache_bytes = bytes;
     }
 
     /// Squeeze this context to the low-memory share, then restore the share the
@@ -863,14 +883,12 @@ impl Canvas2DContext {
     /// That is the difference from what this replaced — a *stored* low budget, which
     /// no signal ever lifted and which therefore capped every Session in the process,
     /// not just the one that was asked to trim.
+    ///
+    /// GL work, like any purge: the caller has this context's EGL context current.
     #[inline]
     pub fn trim_resource_cache(&mut self) {
-        self.gr_ctx
-            .set_resource_cache_limits(skia_safe::gpu::ganesh::ResourceCacheLimits {
-                max_resources: SKIA_RESOURCE_CACHE_MAX_RESOURCES,
-                max_resource_bytes: low_memory_per_ctx_bytes(),
-            });
-        self.rebalance_resource_cache();
+        self.install_resource_cache_limit(low_memory_per_ctx_bytes());
+        self.install_resource_cache_limit(per_ctx_resource_cache_bytes());
     }
 
     /// Idempotent lazy reset — issues `reset_context(bits)` only
@@ -1295,6 +1313,8 @@ impl Canvas2DContext {
         // believes is still in force. `resize_canvas_for_surface_change` is
         // that caller.
         self.gr_ctx = new_self.gr_ctx;
+        // The cap the new context was built with, which `sync_resource_cache_limits` corrects at the next flush.
+        self.applied_cache_bytes = new_self.applied_cache_bytes;
         self.surface = new_self.surface;
         self.fbo_id = fbo_id;
         self.width = width;
