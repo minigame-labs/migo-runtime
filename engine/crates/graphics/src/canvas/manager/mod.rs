@@ -1334,6 +1334,7 @@ impl CanvasManager {
             astc: self.device_caps.compressed_format_support.astc,
             ahb: self.device_caps.ahb_available,
             color_buffer_float: self.device_caps.has_color_buffer_float,
+            float_blend: self.device_caps.has_float_blend,
         };
         self.gpu_caps.set(caps);
     }
@@ -3565,6 +3566,40 @@ impl CanvasManager {
                 entry.drawing_buffer.as_ref().map(|db| db.fbo),
             )
         })
+    }
+
+    /// Whether the content's default framebuffer is bound to `target` and is the DrawingBuffer's FBO -- where WebGL's
+    /// BACK is COLOR_ATTACHMENT0, as an FBO takes no BACK. The binding shadow answers when it knows; the driver when
+    /// it does not.
+    pub(crate) fn emulated_default_bound(
+        &self,
+        canvas_id: CanvasId,
+        gl: &glow::Context,
+        target: u32,
+    ) -> bool {
+        if self.get_drawing_buffer_fbo(canvas_id).is_none() {
+            return false;
+        }
+        match self
+            .gl_state
+            .get(&canvas_id)
+            .and_then(|state| state.bound_framebuffer.get(target))
+        {
+            Some(bound) => bound.is_none(),
+            None => self.is_drawing_buffer_bound(canvas_id, gl, target),
+        }
+    }
+
+    /// Record the read buffer the content chose for its default framebuffer while that is the DrawingBuffer's FBO:
+    /// the present's blit names the colour attachment itself while the content's is NONE.
+    pub(crate) fn note_default_read_buffer(&mut self, canvas_id: CanvasId, read_buffer: u32) {
+        if let Some(db) = self
+            .canvases
+            .get_mut(&canvas_id)
+            .and_then(|entry| entry.drawing_buffer.as_mut())
+        {
+            db.content_reads_none = read_buffer == glow::NONE;
+        }
     }
 
     /// Returns true if the framebuffer bound to `target` is the DrawingBuffer

@@ -41,6 +41,7 @@ pub struct GpuCaps {
     astc: AtomicBool,
     ahb: AtomicBool,
     color_buffer_float: AtomicBool,
+    float_blend: AtomicBool,
     /// Set to `true` after `set()` is called.  `wait_ready()` blocks
     /// until this flag is true, ensuring no early snapshot reads
     /// uninitialized (all-false) caps.
@@ -58,6 +59,7 @@ impl Default for GpuCaps {
             astc: AtomicBool::new(false),
             ahb: AtomicBool::new(false),
             color_buffer_float: AtomicBool::new(false),
+            float_blend: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             ready_lock: Mutex::new(false),
@@ -80,6 +82,7 @@ impl GpuCaps {
         self.ahb.store(caps.ahb, Ordering::Release);
         self.color_buffer_float
             .store(caps.color_buffer_float, Ordering::Release);
+        self.float_blend.store(caps.float_blend, Ordering::Release);
         self.ready.store(true, Ordering::Release);
         if let Ok(mut ready) = self.ready_lock.lock() {
             *ready = true;
@@ -179,16 +182,18 @@ impl GpuCaps {
             astc: self.astc.load(Ordering::Acquire),
             ahb: self.ahb.load(Ordering::Acquire),
             color_buffer_float: self.color_buffer_float.load(Ordering::Acquire),
+            float_blend: self.float_blend.load(Ordering::Acquire),
         }
     }
 
     /// The bits `op_webgl_query_gpu_caps` answers content's WebGL with: 0 ETC2/EAC, 1 ASTC LDR, 2 float colour
-    /// buffers (EXT_color_buffer_float). The embedded op and the external session's service both answer these.
+    /// buffers (EXT_color_buffer_float), 3 blending into 32-bit float ones (EXT_float_blend). The embedded op and the external session's service both answer these.
     pub fn webgl_bits(&self) -> u32 {
         let caps = self.snapshot();
         u32::from(caps.etc2)
             | (u32::from(caps.astc) << 1)
             | (u32::from(caps.color_buffer_float) << 2)
+            | (u32::from(caps.float_blend) << 3)
     }
 }
 
@@ -205,6 +210,8 @@ pub struct GpuCapsSnapshot {
     pub ahb: bool,
     /// The float formats are colour-renderable (`GL_EXT_color_buffer_float`).
     pub color_buffer_float: bool,
+    /// 32-bit float colour buffers can be blended into (`GL_EXT_float_blend`).
+    pub float_blend: bool,
 }
 
 #[cfg(test)]
@@ -223,6 +230,7 @@ mod tests {
                 astc: false,
                 ahb: true,
                 color_buffer_float: false,
+                float_blend: false,
             });
         });
         assert!(matches!(
@@ -262,6 +270,7 @@ mod tests {
             astc: false,
             ahb: true,
             color_buffer_float: false,
+            float_blend: false,
         });
         let started = Instant::now() - Duration::from_secs(1);
 
@@ -312,6 +321,7 @@ mod tests {
                 astc: true,
                 ahb: false,
                 color_buffer_float: false,
+                float_blend: false,
             });
         });
 
@@ -330,6 +340,7 @@ mod tests {
             astc: false,
             ahb: true,
             color_buffer_float: false,
+            float_blend: false,
         });
         assert!(caps.snapshot().ahb);
         assert!(caps.disable_ahb());

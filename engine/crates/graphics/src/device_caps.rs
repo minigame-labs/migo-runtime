@@ -20,6 +20,12 @@ fn renders_float_colour_buffers(gles_version: (u32, u32), gl_extensions: &str) -
     gles_version >= (3, 2) || has_extension(gl_extensions, "GL_EXT_color_buffer_float")
 }
 
+/// Whether the driver blends into 32-bit float colour buffers, which WebGL 2's EXT_float_blend needs: desktop GL does,
+/// GL ES only with GL_EXT_float_blend (ES 3.2 did not make it core).
+fn blends_float32(embedded: bool, gl_extensions: &str) -> bool {
+    !embedded || has_extension(gl_extensions, "GL_EXT_float_blend")
+}
+
 #[inline]
 fn ahb_api_supported(android_api: Option<u32>) -> bool {
     android_api.is_some_and(|level| level >= 26)
@@ -59,6 +65,9 @@ pub struct DeviceCapabilities {
     /// The float formats R16F, RG16F, RGBA16F, R32F, RG32F, RGBA32F and R11F_G11F_B10F are colour-renderable:
     /// `GL_EXT_color_buffer_float`, core from ES 3.2. What lets a WebGL 2 context offer EXT_color_buffer_float.
     pub has_color_buffer_float: bool,
+    /// `GL_EXT_float_blend` (or desktop GL): blending into 32-bit float colour buffers. What lets a WebGL 2 context offer
+    /// EXT_float_blend; without it, a draw that would blend into one is INVALID_OPERATION.
+    pub has_float_blend: bool,
 }
 
 /// Coarse device classification that gates optimisation paths.
@@ -128,6 +137,7 @@ impl DeviceCapabilities {
             has_extension(&gl_extensions, "GL_KHR_parallel_shader_compile");
 
         let has_color_buffer_float = renders_float_colour_buffers(gles_version, &gl_extensions);
+        let has_float_blend = blends_float32(gl.version().is_embedded, &gl_extensions);
 
         Self {
             gles_version,
@@ -141,6 +151,7 @@ impl DeviceCapabilities {
             compressed_format_support,
             has_parallel_shader_compile,
             has_color_buffer_float,
+            has_float_blend,
         }
     }
 
@@ -261,6 +272,20 @@ mod tests {
             "GL_EXT_color_buffer_half_float"
         ));
         assert!(!renders_float_colour_buffers((3, 0), ""));
+    }
+
+    #[test]
+    fn float_blending_is_desktop_gl_s_and_an_es_extension() {
+        assert!(blends_float32(false, ""));
+        assert!(blends_float32(
+            true,
+            "GL_EXT_color_buffer_float GL_EXT_float_blend"
+        ));
+        assert!(!blends_float32(
+            true,
+            "GL_EXT_color_buffer_float GL_EXT_float_blend_func"
+        ));
+        assert!(!blends_float32(true, ""));
     }
 
     #[test]

@@ -139,6 +139,7 @@ mod tests {
         let caps = DeviceCapabilities {
             has_parallel_shader_compile: false,
             has_color_buffer_float: false,
+            has_float_blend: false,
             gles_version: (2, 0),
             has_pbo: false,
             has_fence_sync: false,
@@ -163,6 +164,7 @@ mod tests {
         let caps = DeviceCapabilities {
             has_parallel_shader_compile: false,
             has_color_buffer_float: false,
+            has_float_blend: false,
             gles_version: (3, 0),
             has_pbo: true,
             has_fence_sync: true,
@@ -190,6 +192,7 @@ mod tests {
         let caps = DeviceCapabilities {
             has_parallel_shader_compile: false,
             has_color_buffer_float: false,
+            has_float_blend: false,
             gles_version: (2, 0),
             has_pbo: false,
             has_fence_sync: false,
@@ -230,6 +233,7 @@ mod tests {
         let caps = DeviceCapabilities {
             has_parallel_shader_compile: false,
             has_color_buffer_float: false,
+            has_float_blend: false,
             gles_version: (3, 0),
             has_pbo: true,
             has_fence_sync: true,

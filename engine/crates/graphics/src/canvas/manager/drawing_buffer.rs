@@ -88,6 +88,10 @@ pub(crate) struct DrawingBuffer {
     pub width: u32,
     /// Current buffer height in physical pixels.
     pub height: u32,
+    /// The content turned the default framebuffer's read buffer off (`readBuffer(NONE)`): the FBO's own read buffer
+    /// is NONE, which the present's blit reads through, so the blit names COLOR_ATTACHMENT0 for its read and gives
+    /// NONE back. Set by the renderer's `ReadBuffer`, the only place the read buffer of this FBO is changed.
+    pub content_reads_none: bool,
 }
 
 /// Create a new DrawingBuffer of `format` at the given dimensions.
@@ -136,6 +140,7 @@ pub(crate) fn create(
             format,
             width,
             height,
+            content_reads_none: false,
         };
 
         gl.bind_texture(glow::TEXTURE_2D, Some(color_tex));
@@ -295,6 +300,9 @@ pub(crate) const EVERY_BUFFER: u32 =
 struct ClearStateScope<'a> {
     gl: &'a glow::Context,
     draw_framebuffer: Option<glow::NativeFramebuffer>,
+    /// The target's first draw buffer when the content had turned it off: the clear names the colour buffer itself
+    /// (COLOR_ATTACHMENT0 of an FBO, BACK of a surface) and gives this back.
+    draw_buffer: Option<u32>,
     scissor: bool,
     rasterizer_discard: bool,
     /// What the clear of each buffer reads -- its write mask and clear value -- for the buffers cleared.
@@ -311,9 +319,10 @@ impl<'a> ClearStateScope<'a> {
     ) -> Option<Self> {
         unsafe {
             let es3 = gl.version().major >= 3;
-            let scope = Self {
+            let mut scope = Self {
                 gl,
                 draw_framebuffer: gl.get_parameter_framebuffer(glow::DRAW_FRAMEBUFFER_BINDING),
+                draw_buffer: None,
                 scissor: gl.is_enabled(glow::SCISSOR_TEST),
                 rasterizer_discard: es3 && gl.is_enabled(glow::RASTERIZER_DISCARD),
                 color: (buffers & glow::COLOR_BUFFER_BIT != 0).then(|| {
@@ -346,6 +355,19 @@ impl<'a> ClearStateScope<'a> {
             gl.disable(glow::SCISSOR_TEST);
             if es3 {
                 gl.disable(glow::RASTERIZER_DISCARD);
+            }
+            if es3 && scope.color.is_some() {
+                // A cleared colour buffer is the drawing buffer's, whatever draw buffer the content chose.
+                let colour = if target.is_some() {
+                    glow::COLOR_ATTACHMENT0
+                } else {
+                    glow::BACK
+                };
+                let current = gl.get_parameter_i32(glow::DRAW_BUFFER0) as u32;
+                if current != colour {
+                    gl.draw_buffers(&[colour]);
+                    scope.draw_buffer = Some(current);
+                }
             }
             if scope.color.is_some() {
                 gl.color_mask(true, true, true, true);
@@ -387,6 +409,10 @@ impl Drop for ClearStateScope<'_> {
             }
             if self.rasterizer_discard {
                 gl.enable(glow::RASTERIZER_DISCARD);
+            }
+            // While the target is still bound: draw buffers are its state.
+            if let Some(draw_buffer) = self.draw_buffer {
+                gl.draw_buffers(&[draw_buffer]);
             }
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, self.draw_framebuffer);
         }
@@ -623,6 +649,11 @@ pub(crate) fn blit_to_surface(
                 gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
             }
 
+            // The present reads the colour attachment whatever read buffer the content chose for its default
+            // framebuffer; NONE goes back after the blit.
+            if db.content_reads_none {
+                gl.read_buffer(glow::COLOR_ATTACHMENT0);
+            }
             match plan {
                 BlitPlan::Full { linear } => {
                     // Legacy / scaled path: one blit over the whole surface,
@@ -668,6 +699,9 @@ pub(crate) fn blit_to_surface(
                 }
             }
 
+            if db.content_reads_none {
+                gl.read_buffer(glow::NONE);
+            }
             let err = gl.get_error();
             if err != glow::NO_ERROR {
                 tracing::warn!(
