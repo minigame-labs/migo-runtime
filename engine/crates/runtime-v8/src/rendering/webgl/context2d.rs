@@ -316,6 +316,88 @@ pub fn op_put_image_data(
     });
 }
 
+/// `fill(path)`, `stroke(path)` or `clip(path)` with a `Path2D` whose segments are longer than a stream buffer holds:
+/// the command its record would have made, behind everything the stream holds (the facade flushed it first). `kind` is
+/// 0 for fill, 1 for stroke and 2 for clip; `even_odd` the fill rule of a fill or a clip.
+#[op2(fast)]
+pub fn op_canvas2d_draw_path(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] kind: u32,
+    even_odd: bool,
+    #[buffer] words: &[u32],
+) {
+    use frame_wire::canvas2d::{MAX_PATH_WORDS, path2d};
+    if words.len() > MAX_PATH_WORDS as usize || !path2d::is_valid(words) {
+        error!(
+            "canvas2d draw_path: {} words that are not a path's segments",
+            words.len()
+        );
+        return;
+    }
+    let path = words.to_vec();
+    let cmd = match kind {
+        0 => Canvas2DCmd::FillPath { path, even_odd },
+        1 => Canvas2DCmd::StrokePath { path },
+        2 => Canvas2DCmd::ClipPath { path, even_odd },
+        _ => {
+            error!("canvas2d draw_path: kind {kind}");
+            return;
+        }
+    };
+    with_collector(state, |collector| collector.push(canvas_id, cmd));
+}
+
+const OP_HIT_TEST: &str = "canvas2d hit_test";
+
+/// `isPointInPath` / `isPointInStroke`: whether `(x, y)`, in the canvas's coordinate space, is inside the path or its
+/// stroke, answered by the renderer after everything recorded before the call. `flags` are
+/// `frame_wire::sync::canvas2d_hit_test`'s; with `FLAG_PATH` the path is `words`, a `Path2D`'s segments, and without it
+/// the current default path. A request the facade could not have made answers false.
+#[op2(fast)]
+pub fn op_canvas2d_hit_test(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    #[smi] flags: u32,
+    x: f64,
+    y: f64,
+    #[buffer] words: &[u32],
+) -> bool {
+    use frame_wire::canvas2d::{MAX_PATH_WORDS, path2d};
+    use frame_wire::sync::canvas2d_hit_test::*;
+    let has_path = flags & FLAG_PATH != 0;
+    let (x, y) = (x as f32, y as f32);
+    if flags & !FLAG_MASK != 0
+        || flags & FLAG_STROKE != 0 && flags & FLAG_EVEN_ODD != 0
+        || !x.is_finite()
+        || !y.is_finite()
+        || has_path != !words.is_empty()
+        || words.len() > MAX_PATH_WORDS as usize
+        || !path2d::is_valid(words)
+    {
+        return false;
+    }
+    flush_pending_commands_for_state_sync(state, canvas_id);
+    let ctx = state.borrow::<CanvasOpState>();
+    match send_render_with_resp_sync(ctx, OP_HIT_TEST, |resp| RenderCommand::Canvas2D {
+        canvas_id,
+        cmd: Canvas2DCmd::HitTest {
+            path: has_path.then(|| words.to_vec()),
+            x,
+            y,
+            stroke: flags & FLAG_STROKE != 0,
+            even_odd: flags & FLAG_EVEN_ODD != 0,
+            resp,
+        },
+    }) {
+        Ok(hit) => hit,
+        Err(e) => {
+            error!("{OP_HIT_TEST} failed: {e}");
+            false
+        }
+    }
+}
+
 const OP_GET_IMAGE_DATA: &str = "canvas2d get_image_data";
 #[op2]
 #[buffer]

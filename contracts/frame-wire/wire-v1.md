@@ -205,6 +205,28 @@ byte_length` (197, 201). Not additive -- three records' fields move -- and safe 
 rest on: the producer is a resource of the same Swift package as the reader, and the in-process JavaScript calls the
 ops, not the records.
 
+### Amendment, 2026-10-04: rounded rectangles, paths as values, and hit tests
+
+Four records join the 2D block, and `OP2D_END` moves from 573 to 577. `ROUND_RECT` (573) is `roundRect`: `x y w h`,
+then `rx ry` for each corner -- top left, top right, bottom right, bottom left -- the producer having turned the
+`radii` argument into the four corners the specification assigns and refused what it refuses. `FILL_PATH` (574) and
+`CLIP_PATH` (576) are `fill(path, rule)` and `clip(path, rule)` with a `Path2D`: `rule:U count`, then `count` words of
+segments; `STROKE_PATH` (575) is `stroke(path)`: `count`, then the segments. The segments are the `CanvasPath` calls
+content made on the `Path2D`, each an opcode word and its arguments (`frame_wire::canvas2d::path2d`), plus the two a
+path string or `addPath` can make and the canvas calls cannot: an SVG elliptical arc, and another path's segments under
+a matrix, nested at most 32 deep. A reader refuses segments with an unknown opcode, a missing argument, a flag that is
+not 0 or 1 or a float that is not finite, and at most 262144 words travel in one record. The path is drawn through the
+transform current at the record and leaves the current default path alone.
+
+`CANVAS2D_HIT_TEST` (14) joins the synchronous operations for `isPointInPath` and `isPointInStroke`: `canvas_id flags
+x:f32 y:f32 count`, then `count` words of a `Path2D`'s segments when the flags say the question is about one (and none
+when it is about the current default path); the reply is one word, 1 or 0. Its body is bounded by the longest path a
+record may carry rather than by the 4096 bytes of a fixed-argument call (see *A request as one body*): the answer is
+about the path the call names, and a path sent ahead as a frame for a call to come would be state the host keeps for a
+call that may never arrive. Additive: no field moves, no existing value changes meaning, and a stream that never
+writes them draws as before. Same version audit as above. Until these existed `fill(path)` filled the current default
+path instead, `roundRect` threw, and both hit tests answered false.
+
 ### Amendment, 2026-10-05: readbacks of any pixel pair
 
 `READ_PIXELS` (synchronous operation 1) reads the pair the call named, not only RGBA/UNSIGNED_BYTE: the reply is the
@@ -831,6 +853,7 @@ which is a change worth noticing rather than absorbing.
 | 11 | `CANVAS2D_FONT` | a 2D query record | the family key's UTF-8 bytes (at most 4096), empty when the font did not load |
 | 12 | `READ_PIXELS_TO_BUFFER` | 40 bytes: canvas id, x, y, width, height, format, type, offset i64, reserved | 4 bytes: the WebGL error the call raised, or zero |
 | 13 | `GET_BUFFER_SUB_DATA` | 24 bytes: canvas id, target, offset i64, size, reserved | `size` bytes of the buffer bound to the target |
+| 14 | `CANVAS2D_HIT_TEST` | 20 bytes: canvas id, flags (1 stroke, 2 even-odd, 4 a path follows), x f32, y f32, count; then `count` words of a path's segments | 4 bytes: 1 if the point is inside, 0 if not |
 
 **The WebGL queries.** `getShaderParameter`, `getUniformLocation`, `getError`
 and the twelve others are calls whose return value *is* the answer, asked about
@@ -979,10 +1002,14 @@ response, with no record and no relay.
 | 48 | 8 | `service_sequence` | the last service message the producer had sent; the host answers only once it is admitted. `0` when none was sent |
 
 The operation's arguments follow from offset 56, and the whole body is at most
-4096 bytes -- except for `SERVICE`, whose body is bounded by the service
-stream's own message bound (below). Arguments are small by construction --
-anything bulky is a frame -- and the bound is what lets a transport refuse an
-oversized body before it has read it rather than after.
+4096 bytes -- except for the two operations that carry a value of content's
+own: `SERVICE`, whose body is bounded by the service stream's own message bound
+(below), and `CANVAS2D_HIT_TEST`, whose body is bounded by the longest path a 2D
+record may carry (`56 + 20 + 4 * 262144` bytes). Fixed arguments are small by
+construction -- anything bulky is a frame -- and the bound is what lets a
+transport refuse an oversized body before it has read it rather than after; a
+transport that reads a body before it knows the operation bounds it by the
+largest of the three, the service bound.
 
 **`service_sequence`** orders a synchronous call after the service messages
 sent before it, the way `triggering_sequence` orders it after frames: content

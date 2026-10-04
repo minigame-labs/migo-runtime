@@ -17,7 +17,9 @@
 
 import {
   OP2D_BASE,
+  OP2D_CLIP_PATH,
   OP2D_DRAW_IMAGE_BATCH,
+  OP2D_FILL_PATH,
   OP2D_FILL_TEXT,
   OP2D_PUT_IMAGE_DATA,
   OP2D_SELECT_CANVAS,
@@ -25,6 +27,7 @@ import {
   OP2D_SET_FONT,
   OP2D_SET_STROKE_STYLE_GRADIENT,
   OP2D_SET_LINE_DASH,
+  OP2D_STROKE_PATH,
   OP2D_STROKE_TEXT,
   OP_UNIFORM1IV,
   OP_UNIFORM4UIV,
@@ -115,6 +118,9 @@ export const CANVAS2D_PAYLOAD_PREFIX_WORDS = new Map([
 export const CANVAS2D_WORD_LIST_PREFIX_WORDS = new Map([
   [OP2D_SET_LINE_DASH, 1],
   [OP2D_DRAW_IMAGE_BATCH, 1],
+  [OP2D_FILL_PATH, 2],
+  [OP2D_STROKE_PATH, 1],
+  [OP2D_CLIP_PATH, 2],
 ]);
 
 /** What a selected 2D record owns beyond its command. `canvas2d_payload_bytes`. */

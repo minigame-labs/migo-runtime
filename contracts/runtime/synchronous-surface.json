@@ -182,6 +182,12 @@
       "producer_answers_locally": "no",
       "note": "The pixels are on the renderer's side. The snapshot path defers the copy but not the answer."
     },
+    "Canvas2DCmd::HitTest": {
+      "api": "CanvasRenderingContext2D.isPointInPath / isPointInStroke",
+      "reply": "always",
+      "producer_answers_locally": "partly",
+      "note": "A point that is not finite, or a Path2D with no segments, is answered false where it is asked. The rest cross: the answer is about geometry the renderer holds -- the current default path, the transform, the line styles -- and a stroke's outline under joins, caps and dashes, which a second implementation in the facade would answer differently at the edges. Input handlers call it per touch, not per frame."
+    },
     "Canvas2DCmd::ReadSnapshotPixels": {
       "api": "CanvasRenderingContext2D.getImageData (deferred read of a snapshot)",
       "reply": "always",

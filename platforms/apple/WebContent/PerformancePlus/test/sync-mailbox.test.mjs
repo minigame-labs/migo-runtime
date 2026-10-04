@@ -56,6 +56,10 @@ import {
   encodeGetBufferSubDataParams,
   GET_BUFFER_SUB_DATA_PARAM_BYTES,
   SYNC_OP_GET_BUFFER_SUB_DATA,
+  CANVAS2D_HIT_TEST_EVEN_ODD,
+  CANVAS2D_HIT_TEST_PATH,
+  SYNC_OP_CANVAS2D_HIT_TEST,
+  encodeCanvas2DHitTestParams,
   readPixelsReplyBytes,
   READ_PIXELS_LAYOUT_BYTES,
   decodeReadPixelsLayout,
@@ -236,6 +240,23 @@ check("a buffer read's arguments are the bytes the host decodes", () => {
   const golden = [7, 0, 0, 0, 0x36, 0x8f, 0, 0, 4, 3, 2, 1, 0, 0, 0, 0, 0xc0, 0xb0, 0xa0, 0, 0, 0, 0, 0];
   assertEqual(Array.from(bytes).join(), golden.join(), "bytes");
   assertEqual(SYNC_OP_GET_BUFFER_SUB_DATA, 13, "operation");
+});
+
+// The same bytes `frame_wire::sync`'s `a_hit_test_is_these_bytes` decodes.
+check("a hit test's arguments are the bytes the host decodes", () => {
+  const moveTo = [1, 0x3f800000, 0x40000000];
+  const bytes = encodeCanvas2DHitTestParams({
+    canvasId: 7,
+    flags: CANVAS2D_HIT_TEST_PATH | CANVAS2D_HIT_TEST_EVEN_ODD,
+    x: 1.5,
+    y: -2,
+    path: Uint32Array.from(moveTo),
+  });
+  const golden = [
+    7, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0xc0, 0x3f, 0, 0, 0, 0xc0, 3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0x80, 0x3f, 0, 0, 0, 0x40,
+  ];
+  assertEqual(Array.from(bytes).join(), golden.join(), "bytes");
+  assertEqual(SYNC_OP_CANVAS2D_HIT_TEST, 14, "operation");
 });
 
 check("readPixels' arguments encode as eight little-endian words", () => {

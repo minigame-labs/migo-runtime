@@ -266,7 +266,10 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_sync_request(
 
 /*
  * The largest body migo_session_call_sync accepts, arguments included, for
- * every operation but MIGO_SYNC_OP_SERVICE (see MIGO_SERVICE_CALL_MAX_BYTES).
+ * every operation whose arguments are fixed: all but MIGO_SYNC_OP_SERVICE (see
+ * MIGO_SERVICE_CALL_MAX_BYTES) and the 2D hit test, whose body carries a path
+ * and is bounded by the longest one a 2D record may (wire-v1.md, "A request as
+ * one body").
  *
  * A constant of the wire format (contracts/frame-wire/wire-v1.md, "A request as
  * one body"), published here so a transport can refuse a larger body before it
@@ -278,9 +281,9 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_sync_request(
  * A service call made synchronously -- readFileSync, getStorageSync. Its body
  * and its reply are bounded by the service stream's own limits below rather
  * than by the barrier's: a synchronous read answers with the file, and a
- * synchronous write sends one. A transport reading call bodies bounds them by
- * MIGO_SERVICE_CALL_MAX_BYTES and lets the library refuse a non-service call
- * above MIGO_SYNC_CALL_MAX_BYTES.
+ * synchronous write sends one. It is the largest bound of any operation, so a
+ * transport reading call bodies bounds them by MIGO_SERVICE_CALL_MAX_BYTES and
+ * lets the library refuse a call above its own operation's bound.
  */
 #define MIGO_SYNC_OP_SERVICE 8U
 #define MIGO_SERVICE_CALL_MAX_BYTES 67108920U

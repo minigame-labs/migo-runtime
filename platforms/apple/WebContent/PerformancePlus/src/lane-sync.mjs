@@ -49,7 +49,9 @@ import {
   toI64,
   toU32,
   toU64,
+  u32ArrayOf,
 } from "./op-args.mjs";
+import { MAX_PATH_WORDS } from "./render-opcodes.mjs";
 import { arrayBufferAnswer } from "./audio.mjs";
 import { byteStringOf, fetchHandles, udpBound, writeHeaders } from "./network.mjs";
 import { flushToHost } from "./engine-frames.mjs";
@@ -103,6 +105,13 @@ import {
   SYNC_OP_READ_PIXELS_TO_BUFFER,
   READ_PIXELS_TO_BUFFER_REPLY_BYTES,
   SYNC_OP_GET_BUFFER_SUB_DATA,
+  SYNC_OP_CANVAS2D_HIT_TEST,
+  CANVAS2D_HIT_TEST_EVEN_ODD,
+  CANVAS2D_HIT_TEST_FLAGS,
+  CANVAS2D_HIT_TEST_PATH,
+  CANVAS2D_HIT_TEST_REPLY_BYTES,
+  CANVAS2D_HIT_TEST_STROKE,
+  encodeCanvas2DHitTestParams,
   MAX_REPLY_BYTES,
   encodeGetBufferSubDataParams,
   encodeCanvas2DPixelsParams,
@@ -1204,6 +1213,42 @@ function canvas2dPixels(operation, params, replyBytes) {
     if (error && error.code === SYNC_ERROR_OPERATION_FAILED) return EMPTY_PIXELS;
     throw error;
   }
+}
+
+/**
+ * `isPointInPath` / `isPointInStroke`: whether the point is inside the path, or its stroke, answered by the host after
+ * everything recorded before it. A request the in-process op refuses -- flags it does not read, a stroke with a fill
+ * rule, a path the flags do not announce, a point that is not one in `f32` -- answers false here too, unasked; a canvas
+ * the host has no 2D context for answers false as the op's failed render command does.
+ */
+export function op_canvas2d_hit_test(canvasId, flags, x, y, words) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const bits = smiU32(flags, "flags");
+  const px = Math.fround(toF64(x, "x"));
+  const py = Math.fround(toF64(y, "y"));
+  const path = u32ArrayOf(words, "words");
+  if (
+    (bits & ~CANVAS2D_HIT_TEST_FLAGS) !== 0 ||
+    ((bits & CANVAS2D_HIT_TEST_STROKE) !== 0 && (bits & CANVAS2D_HIT_TEST_EVEN_ODD) !== 0) ||
+    ((bits & CANVAS2D_HIT_TEST_PATH) !== 0) !== (path.length > 0) ||
+    path.length > MAX_PATH_WORDS ||
+    !Number.isFinite(px) ||
+    !Number.isFinite(py)
+  ) {
+    return false;
+  }
+  let reply;
+  try {
+    reply = ask(
+      SYNC_OP_CANVAS2D_HIT_TEST,
+      CANVAS2D_HIT_TEST_REPLY_BYTES,
+      encodeCanvas2DHitTestParams({ canvasId: canvas, flags: bits, x: px, y: py, path }),
+    );
+  } catch (error) {
+    if (error && error.code === SYNC_ERROR_OPERATION_FAILED) return false;
+    throw error;
+  }
+  return new DataView(reply.buffer, reply.byteOffset, reply.byteLength).getUint32(0, true) === 1;
 }
 
 /** `getImageData(x, y, w, h)`, for a read the facade did not capture. */

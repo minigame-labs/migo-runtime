@@ -645,6 +645,13 @@ impl SyncPath {
                 deadline_nanos,
                 now_nanos,
             ),
+            frame_wire::sync::SYNC_OP_CANVAS2D_HIT_TEST => self.canvas2d_hit_test(
+                params,
+                max_reply_bytes,
+                triggering_sequence,
+                deadline_nanos,
+                now_nanos,
+            ),
             frame_wire::sync::SYNC_OP_CANVAS2D_IMAGE_DATA
             | frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT => self.canvas2d_pixels(
                 operation,
@@ -1387,6 +1394,72 @@ impl SyncPath {
         let mut pixels = pixels;
         pixels.splice(0..0, header);
         Ok(pixels)
+    }
+
+    /// `SYNC_OP_CANVAS2D_HIT_TEST`: `isPointInPath` / `isPointInStroke`, answered with one word, 1 or 0, by the
+    /// renderer that holds the path, the transform and the line styles -- after the frame that built them, which is
+    /// what the barrier is for. A canvas the renderer has no 2D context for is [`SyncError::OperationFailed`]; the
+    /// producer answers false for it, as the in-process op does.
+    fn canvas2d_hit_test(
+        &self,
+        params: &[u8],
+        max_reply_bytes: u32,
+        triggering_sequence: u64,
+        deadline_nanos: u64,
+        now_nanos: u64,
+    ) -> Result<Vec<u8>, SyncError> {
+        use frame_wire::sync::{
+            CANVAS2D_HIT_TEST_REPLY_BYTES, Canvas2DHitTestParams, canvas2d_hit_test::*,
+        };
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCmdResp, RenderCommand};
+
+        let mut path = Vec::new();
+        let Canvas2DHitTestParams {
+            canvas_id,
+            flags,
+            x,
+            y,
+            ..
+        } = Canvas2DHitTestParams::decode(params, &mut path)?;
+        if max_reply_bytes < CANVAS2D_HIT_TEST_REPLY_BYTES {
+            return Err(SyncError::ReplyTooLarge);
+        }
+
+        let budget = deadline_nanos.saturating_sub(now_nanos);
+        if budget == 0 {
+            return Err(SyncError::TimedOut);
+        }
+        // The path, the transform and the line styles the question is about are records before it.
+        self.wait_for_admission(triggering_sequence, budget)?;
+
+        let Some(dispatch) = self.dispatch.get() else {
+            return Err(SyncError::SessionEnded);
+        };
+        let Some(sender) = dispatch.sender.upgrade() else {
+            return Err(SyncError::SessionEnded);
+        };
+
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let command = RenderCommand::Canvas2D {
+            canvas_id,
+            cmd: Canvas2DCmd::HitTest {
+                path: (flags & FLAG_PATH != 0).then_some(path),
+                x,
+                y,
+                stroke: flags & FLAG_STROKE != 0,
+                even_odd: flags & FLAG_EVEN_ODD != 0,
+                resp: RenderCmdResp::from_sync(tx),
+            },
+        };
+        if sender.send_blocking_bounded(command).is_err() {
+            return Err(SyncError::SessionEnded);
+        }
+        match rx.recv_timeout(std::time::Duration::from_nanos(budget)) {
+            Ok(Ok(hit)) => Ok(u32::from(hit).to_le_bytes().to_vec()),
+            Ok(Err(_)) => Err(SyncError::OperationFailed),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => Err(SyncError::TimedOut),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => Err(SyncError::SessionEnded),
+        }
     }
 
     /// `SYNC_OP_GET_BUFFER_SUB_DATA`: bytes of the buffer bound to a target, answered with exactly the bytes asked
@@ -5098,6 +5171,113 @@ mod sync_tests {
             let mut out = [0u8; 24];
             assert_eq!(path.take_reply(&mut out), Ok(24));
             assert!(out.iter().all(|byte| *byte == 0xab), "{kind}: the rows");
+            drop(sender);
+        }
+    }
+
+    /// A hit test reaches the renderer as the question it asked -- the canvas, the point, stroke or fill and the rule,
+    /// and the `Path2D` it named or none -- and the renderer's verdict, or its failure, is the answer.
+    #[test]
+    fn a_hit_test_reaches_the_renderer_as_its_question_and_answers_its_verdict() {
+        use frame_wire::canvas2d::path2d;
+        use frame_wire::sync::{
+            Canvas2DHitTestParams, SYNC_OP_CANVAS2D_HIT_TEST, canvas2d_hit_test::*,
+        };
+        use shared::protocol::render_cmd::{Canvas2DCmd, RenderCommand};
+
+        let segments = [
+            path2d::RECT,
+            1f32.to_bits(),
+            2f32.to_bits(),
+            3f32.to_bits(),
+            4f32.to_bits(),
+        ];
+        for (flags, segments, verdict) in [
+            (FLAG_PATH | FLAG_EVEN_ODD, &segments[..], Ok(true)),
+            (FLAG_STROKE, &[][..], Ok(false)),
+            (0, &[][..], Err(())),
+        ] {
+            let (sender, commands) = shared::render_command_sender::CommandSender::new();
+            let sender = Arc::new(sender);
+            let dispatch = Arc::new(OnceLock::new());
+            assert!(
+                dispatch
+                    .set(RenderDispatch {
+                        sender: Arc::downgrade(&sender),
+                        words: Mutex::new(Vec::new()),
+                        staged: Mutex::new(frame_decode::StagedPayload::new()),
+                    })
+                    .is_ok()
+            );
+            let sync = SyncPath::new(
+                INITIAL_RUNTIME_GENERATION,
+                dispatch,
+                Admission::new(Arc::new(Mutex::new(FrameIngress::new(
+                    0,
+                    INITIAL_RUNTIME_GENERATION,
+                )))),
+                Arc::new(ExternalGlErrors::default()),
+            );
+
+            let renderer = std::thread::spawn(move || {
+                let Ok(RenderCommand::Canvas2D { canvas_id, cmd }) = commands.recv() else {
+                    panic!("the barrier sent something other than a Canvas2D command");
+                };
+                let Canvas2DCmd::HitTest {
+                    path,
+                    x,
+                    y,
+                    stroke,
+                    even_odd,
+                    resp,
+                } = cmd
+                else {
+                    panic!("the barrier sent {cmd:?}");
+                };
+                resp.send(verdict.map_err(|()| {
+                    shared::error::EngineError::new(shared::error::ErrorCode::InvalidOperation)
+                }));
+                (canvas_id, path, x, y, stroke, even_odd)
+            });
+
+            let params = Canvas2DHitTestParams {
+                canvas_id: 7,
+                flags,
+                x: 2.5,
+                y: -3.5,
+                path: segments,
+            };
+            let mut ask = request(SYNC_OP_CANVAS2D_HIT_TEST, 4);
+            ask.deadline_nanos = NOW + 30_000_000_000;
+            ask.triggering_sequence = 0;
+            post(&sync, ask, &params.encode(), NOW).expect("posted");
+            let seen = renderer.join().expect("the stand-in renderer answered");
+            assert_eq!(
+                seen,
+                (
+                    7,
+                    (flags & FLAG_PATH != 0).then(|| segments.to_vec()),
+                    2.5,
+                    -3.5,
+                    flags & FLAG_STROKE != 0,
+                    flags & FLAG_EVEN_ODD != 0
+                )
+            );
+
+            let snapshot = sync.snapshot(NOW);
+            match verdict {
+                Ok(hit) => {
+                    assert_eq!((snapshot.state, snapshot.error), (SyncState::Ready, None));
+                    let mut out = [0u8; 4];
+                    assert_eq!(sync.take_reply(&mut out), Ok(4));
+                    assert_eq!(u32::from_le_bytes(out), u32::from(hit));
+                }
+                Err(()) => assert_eq!(
+                    (snapshot.state, snapshot.error),
+                    (SyncState::Failed, Some(SyncError::OperationFailed)),
+                    "a canvas the renderer cannot answer for is a failed operation, not an unsupported one"
+                ),
+            }
             drop(sender);
         }
     }

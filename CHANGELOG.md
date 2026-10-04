@@ -55,6 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upload was INVALID_ENUM. Its blocks are uploaded as ETC2 RGB8, which decodes every ETC1 block to the same texels and
   which every GLES 3.0 driver has. An ETC1 image is a 2D one defined whole, by `compressedTexImage2D` or 2D immutable
   storage; a sub-image upload, a 3D call or 3D storage of it is INVALID_OPERATION, as a browser has it.
+- Canvas 2D: `Path2D`, `roundRect`, and `isPointInPath` / `isPointInStroke`. A `Path2D` is built by the `CanvasPath`
+  calls, from another path, or from SVG path data (every command, relative and implicit forms, reflected control
+  points and arcs, read up to the command holding the first error), and `addPath` adds another under a
+  `DOMMatrix2DInit`. `fill`, `stroke` and `clip` take one, resolved as WebIDL resolves their overloads; a fill rule that
+  is not `nonzero` or `evenodd` is now the TypeError a browser raises rather than nonzero. The path travels with each
+  use as the segments its calls made, is drawn through the transform current at the use, and leaves the current
+  default path alone; one longer than a stream buffer goes by op behind a flush. `roundRect` converts its radii -- a
+  number, a point, or a list of one to four -- and checks them in the specification's order, and the renderer scales
+  radii that would overlap and mirrors a negative size. The hit tests are answered by the renderer, which holds the
+  path, the transform and the line styles, after everything recorded before them: points on an edge are inside, a
+  stroke's outline is traced under the line width, caps, joins and dashes, and a singular transform answers false.
+  They were stubs that answered false, `roundRect` threw, and `fill(path)` filled the current default path. On
+  Performance+ the records are new in the 2D block (573 to 576) and the hit test is synchronous operation 14, whose
+  body is bounded by the longest path a record carries rather than the 4096 bytes of a fixed-argument call.
 - WebGL 2: `texImage2D` and `texSubImage2D` from an offset into the bound PIXEL_UNPACK_BUFFER (`..., format, type,
   offset)`). The number used to be a TypeError, as WebGL 1 has it. The four `tex*Image*` uploads now name one source
   -- the call's bytes or the buffer from an offset -- in the command, the ops and the Performance+ records alike, and
@@ -273,6 +287,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   INVALID_OPERATION. The attachment calls are judged before they are recorded: the target and attachment point, a
   texture of the textarget's kind, a level of 0 in WebGL 1, a renderbuffer that has been bound, a 3D or 2D-array
   texture for a layer, and the default framebuffer, which takes none.
+- Canvas 2D: the current default path keeps each point where the transform current when it was added put it, as the
+  specification has it. A path built and then filled after a `translate` was drawn through the later transform. The
+  renderer keeps the path in the space it was built in and moves it once, when it is next used, so a `save()` /
+  `translate()` / `restore()` around a path costs it nothing.
+- Canvas 2D: `ellipse` continues the subpath the line to its start is in. Its arc began a contour of its own, so
+  `moveTo(centre); ellipse(...); closePath(); fill()` filled the chord, not the pie.
 - WebGL: a drawing buffer is cleared after it has been presented unless the context asked for it to be preserved
   (`preserveDrawingBuffer`, WebGL 1.0 2.2) -- colour to transparent black, depth to 1, stencil to 0. It was never
   cleared: a frame that did not clear began on the frame before, a read after the present returned the presented frame,

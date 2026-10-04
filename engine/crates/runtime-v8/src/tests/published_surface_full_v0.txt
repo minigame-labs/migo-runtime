@@ -58,6 +58,7 @@ Number
 Object
 OscillatorNode
 PannerNode
+Path2D
 PeriodicWave
 Promise
 Proxy
@@ -468,6 +469,7 @@ InnerAudioContext
 MediaAudioPlayer
 OscillatorNode
 PannerNode
+Path2D
 PeriodicWave
 ScriptProcessorNode
 Temporal

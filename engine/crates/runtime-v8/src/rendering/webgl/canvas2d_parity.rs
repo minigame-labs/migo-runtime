@@ -116,6 +116,20 @@ fn the_producer_s_snapshot_records_decode_to_the_commands_the_ops_build() {
     );
 }
 
+/// The same question for rounded rectangles and `Path2D`: the radii the facade assigned to the corners, the segments
+/// a path's calls and its SVG data became, a path added to another under a transform, and a path too long for a stream
+/// buffer -- which in process is the path op behind a flush, and on the producer the record the encoder could not
+/// write.
+#[test]
+#[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
+fn the_producer_s_path_records_decode_to_the_commands_the_ops_build() {
+    compare_fixture(
+        "MIGO_CANVAS2D_PATH_PARITY_DIR",
+        "canvas2d-path-calls.js",
+        12,
+    );
+}
+
 fn compare_fixture(directory_var: &str, fixture: &str, least_commands: usize) {
     let directory =
         PathBuf::from(std::env::var(directory_var).unwrap_or_else(|_| {

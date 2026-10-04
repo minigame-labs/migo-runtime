@@ -348,8 +348,136 @@ pub const PUT_IMAGE_DATA_BAND_BYTES: u32 = 1024 * 1024;
 /// (the way a 2D game builds a tiled background) was lost.
 pub const OP2D_CAPTURE_IMAGE: u32 = 572;
 
+// ─── Rounded rectangles and paths as values (573..576) ────────────────────────
+
+/// `roundRect(x, y, w, h, radii)`: `H x y w h:F`, then the radii of the four corners as `rx ry:F` each -- top left, top
+/// right, bottom right, bottom left. The facade has turned `radii` (a number, a `DOMPointInit`, or a list of one to four
+/// of them) into the four corners the specification assigns them to and refused what it refuses; the renderer scales
+/// radii that would overlap, flips the corners of a negative width or height, and starts a new subpath at `(x, y)`.
+pub const OP2D_ROUND_RECT: u32 = 573;
+
+/// `fill(path, fillRule)` with a `Path2D`: `H rule:U count path...` -- `rule` 0 for nonzero and 1 for even-odd, then the
+/// path's segments ([`path2d`]).
+///
+/// A `Path2D` lives in the facade, as the segments content added to it, and travels with each use: its coordinates are
+/// its own, it is drawn through the transform current at this record, and the current default path is not touched. A
+/// path content keeps and draws every frame costs its segments every frame, which a `Path2D` -- a shape, an icon -- has
+/// few of; the alternative, paths the renderer holds by id, would need a lifetime the renderer learns of from a
+/// collector it cannot see.
+pub const OP2D_FILL_PATH: u32 = 574;
+/// `stroke(path)` with a `Path2D`: `H count path...`. See [`OP2D_FILL_PATH`].
+pub const OP2D_STROKE_PATH: u32 = 575;
+/// `clip(path, fillRule)` with a `Path2D`: `H rule:U count path...`. See [`OP2D_FILL_PATH`].
+pub const OP2D_CLIP_PATH: u32 = 576;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 573;
+pub const OP2D_END: u32 = 577;
+
+/// The most words of segments a path carried by value may hold: some 50,000 cubic curves, far above a shape anybody
+/// keeps in a `Path2D` and far below a record that would cost a frame anything.
+pub const MAX_PATH_WORDS: u32 = 1 << 18;
+
+/// The segments of a path carried by value (`OP2D_FILL_PATH`, `OP2D_STROKE_PATH`, `OP2D_CLIP_PATH`, and the hit test's
+/// path, `sync::Canvas2DHitTestParams`): each an opcode word followed by its arguments, floats as `f32` bits and flags as
+/// 0 or 1. They are the `CanvasPath` calls content made on the `Path2D`, in order and with the same arguments, so the
+/// renderer builds the path with the code that builds the current default path, and the two cannot differ.
+pub mod path2d {
+    /// `x y`
+    pub const MOVE_TO: u32 = 1;
+    /// `x y`
+    pub const LINE_TO: u32 = 2;
+    /// `cpx cpy x y`
+    pub const QUADRATIC_CURVE_TO: u32 = 3;
+    /// `cp1x cp1y cp2x cp2y x y`
+    pub const BEZIER_CURVE_TO: u32 = 4;
+    /// `x y radius startAngle endAngle counterclockwise:0|1`
+    pub const ARC: u32 = 5;
+    /// `x1 y1 x2 y2 radius`
+    pub const ARC_TO: u32 = 6;
+    /// `x y radiusX radiusY rotation startAngle endAngle counterclockwise:0|1`
+    pub const ELLIPSE: u32 = 7;
+    /// `x y w h`
+    pub const RECT: u32 = 8;
+    /// `x y w h`, then `rx ry` for each corner as in `OP2D_ROUND_RECT`
+    pub const ROUND_RECT: u32 = 9;
+    pub const CLOSE_PATH: u32 = 10;
+    /// An SVG path's elliptical arc, `A`: `rx ry xAxisRotation(degrees) largeArc:0|1 sweep:0|1 x y`. Not a `CanvasPath`
+    /// call -- the one segment of a path string the canvas calls cannot express.
+    pub const SVG_ARC_TO: u32 = 11;
+    /// `addPath(path, transform)`: `a b c d e f count`, then the other path's segments, copied when `addPath` was called.
+    pub const ADD_PATH: u32 = 12;
+
+    /// How deep `ADD_PATH` may nest: a path added to a path added to a path. Deeper is a producer that built its paths
+    /// out of themselves in a loop, and a reader that followed it would run out of stack.
+    pub const MAX_NESTING: u32 = 32;
+
+    /// The arguments an opcode takes, and which of them are flags (0 or 1) rather than floats. `ADD_PATH` is not here:
+    /// it carries a count and a nested path.
+    pub fn arguments(op: u32) -> Option<(usize, &'static [usize])> {
+        Some(match op {
+            MOVE_TO | LINE_TO => (2, &[]),
+            QUADRATIC_CURVE_TO => (4, &[]),
+            BEZIER_CURVE_TO => (6, &[]),
+            ARC => (6, &[5]),
+            ARC_TO => (5, &[]),
+            ELLIPSE => (8, &[7]),
+            RECT => (4, &[]),
+            ROUND_RECT => (12, &[]),
+            CLOSE_PATH => (0, &[]),
+            SVG_ARC_TO => (7, &[3, 4]),
+            _ => return None,
+        })
+    }
+
+    /// Whether `words` are segments a reader can build a path from: known opcodes with all their arguments, flags that
+    /// are 0 or 1, finite floats -- the facade drops a call with a non-finite argument, as the specification has it, so
+    /// one here is a producer bug -- and `ADD_PATH`s whose counts and nesting hold.
+    pub fn is_valid(words: &[u32]) -> bool {
+        valid_at(words, 0)
+    }
+
+    fn valid_at(words: &[u32], depth: u32) -> bool {
+        let finite = |word: u32| f32::from_bits(word).is_finite();
+        let mut at = 0;
+        while at < words.len() {
+            let op = words[at];
+            at += 1;
+            if op == ADD_PATH {
+                if depth >= MAX_NESTING || words.len() < at + 7 {
+                    return false;
+                }
+                if !words[at..at + 6].iter().all(|w| finite(*w)) {
+                    return false;
+                }
+                let count = words[at + 6] as usize;
+                at += 7;
+                if words.len() - at < count || !valid_at(&words[at..at + count], depth + 1) {
+                    return false;
+                }
+                at += count;
+                continue;
+            }
+            let Some((arity, flags)) = arguments(op) else {
+                return false;
+            };
+            if words.len() - at < arity {
+                return false;
+            }
+            for (i, word) in words[at..at + arity].iter().enumerate() {
+                let ok = if flags.contains(&i) {
+                    *word <= 1
+                } else {
+                    finite(*word)
+                };
+                if !ok {
+                    return false;
+                }
+            }
+            at += arity;
+        }
+        true
+    }
+}
 
 /// The longest dash pattern a record may carry.
 ///
@@ -387,6 +515,22 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OP2D_ELLIPSE => (9, &[8]),
 
         OP2D_FILL | OP2D_STROKE | OP2D_CLIP | OP2D_FILL_EVEN_ODD | OP2D_CLIP_EVEN_ODD => (1, &[]),
+        // x, y, w, h, then rx, ry for each of the four corners
+        OP2D_ROUND_RECT => (13, &[]),
+        // The segments' shape is a fact about their meaning, so the decoder checks it (`path2d::is_valid`), as it does
+        // a fill rule that is not 0 or 1.
+        OP2D_FILL_PATH | OP2D_CLIP_PATH => {
+            return Some(RecordSpec::Words {
+                prefix_words: 2,
+                max_count: MAX_PATH_WORDS,
+            });
+        }
+        OP2D_STROKE_PATH => {
+            return Some(RecordSpec::Words {
+                prefix_words: 1,
+                max_count: MAX_PATH_WORDS,
+            });
+        }
 
         OP2D_FILL_RECT | OP2D_STROKE_RECT | OP2D_CLEAR_RECT => (5, &[]),
 

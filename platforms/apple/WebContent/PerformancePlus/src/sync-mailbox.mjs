@@ -347,6 +347,39 @@ export function encodeGetBufferSubDataParams({ canvasId, target, offset, size })
 
 export const SYNC_OP_CANVAS2D_IMAGE_DATA = 9;
 
+/// `isPointInPath` / `isPointInStroke` (`frame_wire::sync::SYNC_OP_CANVAS2D_HIT_TEST`): a point of a canvas, and the
+/// path it is asked about -- a `Path2D`'s segments, or none for the current default path. One word answers, 1 or 0.
+export const SYNC_OP_CANVAS2D_HIT_TEST = 14;
+
+/// The words before the path: canvas, flags, x, y, count.
+export const CANVAS2D_HIT_TEST_HEADER_BYTES = 20;
+export const CANVAS2D_HIT_TEST_REPLY_BYTES = 4;
+
+/// The flags (`frame_wire::sync::canvas2d_hit_test`): the stroke rather than the fill, the even-odd rule (never with
+/// the stroke), and a path that follows.
+export const CANVAS2D_HIT_TEST_STROKE = 1;
+export const CANVAS2D_HIT_TEST_EVEN_ODD = 2;
+export const CANVAS2D_HIT_TEST_PATH = 4;
+export const CANVAS2D_HIT_TEST_FLAGS = 7;
+
+/**
+ * Encode a hit test's arguments: five little-endian words -- the point as `f32` bits -- then the path's words.
+ * `x` and `y` are the bits the caller narrowed, so the point asked about is the one the caller checked.
+ */
+export function encodeCanvas2DHitTestParams({ canvasId, flags, x, y, path }) {
+  const bytes = new Uint8Array(CANVAS2D_HIT_TEST_HEADER_BYTES + path.length * 4);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, canvasId, true);
+  view.setUint32(4, flags, true);
+  view.setFloat32(8, x, true);
+  view.setFloat32(12, y, true);
+  view.setUint32(16, path.length, true);
+  for (let index = 0; index < path.length; index += 1) {
+    view.setUint32(CANVAS2D_HIT_TEST_HEADER_BYTES + index * 4, path[index], true);
+  }
+  return bytes;
+}
+
 /// The pixels of a snapshot the host captured
 /// (`frame_wire::sync::SYNC_OP_CANVAS2D_SNAPSHOT`).
 export const SYNC_OP_CANVAS2D_SNAPSHOT = 10;

@@ -2125,6 +2125,16 @@ pub enum Canvas2DCmd {
         counterclockwise: bool,
     },
 
+    /// `roundRect(x, y, w, h, radii)`: `radii` the four corners' `rx, ry`, top left, top right, bottom right, bottom
+    /// left, as the facade assigned them.
+    RoundRect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: [f32; 8],
+    },
+
     // ========== Drawing methods ==========
     Fill,
     Stroke,
@@ -2133,6 +2143,31 @@ pub enum Canvas2DCmd {
     FillEvenOdd,
     /// `clip("evenodd")`: `Clip` under the even-odd rule.
     ClipEvenOdd,
+    /// `fill(path, fillRule)` with a `Path2D`: its segments (`frame_wire::canvas2d::path2d`, validated), drawn through
+    /// the current transform. The current default path is not touched.
+    FillPath {
+        path: Vec<u32>,
+        even_odd: bool,
+    },
+    /// `stroke(path)` with a `Path2D`.
+    StrokePath {
+        path: Vec<u32>,
+    },
+    /// `clip(path, fillRule)` with a `Path2D`.
+    ClipPath {
+        path: Vec<u32>,
+        even_odd: bool,
+    },
+    /// `isPointInPath` / `isPointInStroke`: whether `(x, y)`, in the canvas's coordinate space, is inside the path --
+    /// the current default path, or the `Path2D` `path` names -- or inside its stroke under the current line styles.
+    HitTest {
+        path: Option<Vec<u32>>,
+        x: f32,
+        y: f32,
+        stroke: bool,
+        even_odd: bool,
+        resp: RenderCmdResp<bool>,
+    },
 
     // ========== Rectangle methods ==========
     FillRect {
@@ -2424,11 +2459,16 @@ impl Canvas2DCmd {
             | Self::ArcTo { .. }
             | Self::Rect { .. }
             | Self::Ellipse { .. }
+            | Self::RoundRect { .. }
             | Self::Fill
             | Self::Stroke
             | Self::Clip
             | Self::FillEvenOdd
             | Self::ClipEvenOdd
+            | Self::FillPath { .. }
+            | Self::StrokePath { .. }
+            | Self::ClipPath { .. }
+            | Self::HitTest { .. }
             | Self::FillRect { .. }
             | Self::StrokeRect { .. }
             | Self::ClearRect { .. }
@@ -3310,6 +3350,12 @@ impl Canvas2DCmd {
             Canvas2DCmd::DrawImageBatch { draws } => {
                 draws.capacity() * std::mem::size_of::<DrawImageEntry>()
             }
+            Canvas2DCmd::FillPath { path, .. }
+            | Canvas2DCmd::StrokePath { path }
+            | Canvas2DCmd::ClipPath { path, .. } => path.capacity() * std::mem::size_of::<u32>(),
+            Canvas2DCmd::HitTest { path, .. } => path
+                .as_ref()
+                .map_or(0, |path| path.capacity() * std::mem::size_of::<u32>()),
             // Everything else is Copy / scalar-only.
             _ => 0,
         }

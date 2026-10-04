@@ -11,6 +11,8 @@ BigInt
 BigInt64Array
 BigUint64Array
 Boolean
+CanvasGradient
+CanvasRenderingContext2D
 DataView
 Date
 DisposableStack
@@ -36,6 +38,7 @@ Math
 NaN
 Number
 Object
+Path2D
 Promise
 Proxy
 RangeError
@@ -204,9 +207,12 @@ unescape
 updateKeyboard
 uploadFile
 [migo]
+CanvasGradient
+CanvasRenderingContext2D
 FileManager
 Float16Array
 ImageBitmap
+Path2D
 Temporal
 URL
 WebGL2RenderingContext

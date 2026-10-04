@@ -49,6 +49,9 @@ tracing = { workspace = true }
 # whole-workspace build unifies them in and a single-crate build does not,
 # which is the shape where one of the two is silently green.
 shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs"] }
+# The wire's definitions only (no dependencies of its own): the segments of a path carried by value, which the renderer
+# builds paths from.
+migo-frame-wire = { path = "../frame-wire", default-features = false }
 
 parking_lot = "0.12.4"
 bytemuck = { workspace = true }

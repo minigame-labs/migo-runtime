@@ -21,6 +21,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  CANVAS2D_HIT_TEST_CALL_MAX_BYTES,
+  SERVICE_CALL_MAX_BYTES,
   SYNC_ANSWER_HEADER_BYTES,
   SYNC_CALL_HEADER_BYTES,
   SYNC_CALL_MAX_BYTES,
@@ -29,6 +31,7 @@ import {
   SyncTransportError,
   decodeSyncAnswer,
   encodeSyncCall,
+  syncCallMaxBytes,
 } from "../src/sync-call.mjs";
 import {
   MAX_REPLY_BYTES,
@@ -36,7 +39,10 @@ import {
   SYNC_ERROR_BAD_REPLY_RESERVATION,
   SYNC_ERROR_TIMED_OUT,
   SYNC_ERROR_UNSUPPORTED_OPERATION,
+  SYNC_OP_CANVAS2D_HIT_TEST,
+  SYNC_OP_CANVAS2D_NUMBER,
   SYNC_OP_READ_PIXELS,
+  SYNC_OP_SERVICE,
   SYNC_STATE_CANCELLED,
   SYNC_STATE_FAILED,
   SYNC_STATE_PENDING,
@@ -171,6 +177,26 @@ test("a call the host would refuse is refused here, with the host's code", () =>
   // The bounds are inclusive.
   encodeSyncCall({ ...CALL, maxReplyBytes: MAX_REPLY_BYTES, timeoutMillis: SYNC_CALL_MAX_TIMEOUT_MILLIS });
   encodeSyncCall({ ...CALL, params: new Uint8Array(SYNC_CALL_MAX_BYTES - SYNC_CALL_HEADER_BYTES) });
+});
+
+test("a hit test may carry the longest path a record may, and no other fixed call may", () => {
+  // The document's own arithmetic: the call's header, the hit test's, and 262144 words.
+  assert.equal(CANVAS2D_HIT_TEST_CALL_MAX_BYTES, 56 + 20 + 4 * 262144);
+  assert.ok(document.split(/\s+/).join(" ").includes("`56 + 20 + 4 * 262144` bytes"));
+  assert.equal(syncCallMaxBytes(SYNC_OP_CANVAS2D_HIT_TEST), CANVAS2D_HIT_TEST_CALL_MAX_BYTES);
+  assert.equal(syncCallMaxBytes(SYNC_OP_SERVICE), SERVICE_CALL_MAX_BYTES);
+  assert.equal(syncCallMaxBytes(SYNC_OP_CANVAS2D_NUMBER), SYNC_CALL_MAX_BYTES);
+  const longest = CANVAS2D_HIT_TEST_CALL_MAX_BYTES - SYNC_CALL_HEADER_BYTES;
+  encodeSyncCall({ ...CALL, operation: SYNC_OP_CANVAS2D_HIT_TEST, params: new Uint8Array(longest) });
+  for (const [operation, params] of [
+    [SYNC_OP_CANVAS2D_HIT_TEST, new Uint8Array(longest + 1)],
+    [SYNC_OP_CANVAS2D_NUMBER, new Uint8Array(longest)],
+  ]) {
+    assert.throws(
+      () => encodeSyncCall({ ...CALL, operation, params }),
+      (error) => error instanceof SyncRequestError && error.code === SYNC_ERROR_UNSUPPORTED_OPERATION,
+    );
+  }
 });
 
 /** An answer body, written the way the document says. */

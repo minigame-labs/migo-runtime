@@ -270,6 +270,26 @@ impl Renderer2d {
                 resp.ok(metrics);
                 Ok(false)
             }
+            // `isPointInPath` / `isPointInStroke`: geometry the renderer holds -- the path, the transform, the line styles
+            // -- and no GL, so the canvas's context need not be current.
+            Canvas2DCmd::HitTest {
+                path,
+                x,
+                y,
+                stroke,
+                even_odd,
+                resp,
+            } => {
+                match cm.get_2d_context_mut(canvas_id) {
+                    Ok(ctx) => {
+                        resp.ok(ctx
+                            .renderer
+                            .hit_test(path.as_deref(), x, y, stroke, even_odd))
+                    }
+                    Err(e) => resp.err(e),
+                }
+                Ok(false)
+            }
             // `drawImage(canvas)`: the source's pixels, through a texture both canvases can see. See
             // `CanvasManager::draw_canvas_into`.
             Canvas2DCmd::DrawCanvas {

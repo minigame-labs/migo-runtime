@@ -501,6 +501,8 @@
         "op_draw_elements": "stream",
         "op_draw_elements_instanced": "stream",
         "op_draw_image": "stream",
+        "op_canvas2d_draw_path": "stream",
+        "op_canvas2d_hit_test": "sync",
         "op_draw_image_batch": "stream",
         "op_enable": "stream",
         "op_enable_vertex_attrib_array": "stream",
