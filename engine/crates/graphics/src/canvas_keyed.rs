@@ -148,6 +148,17 @@ impl<V> CanvasKeyed<V> {
         self.entries.iter_mut().map(|(_, value)| value)
     }
 
+    /// Every canvas that has a value.
+    #[inline]
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &CanvasId> {
+        self.entries.iter().map(|(id, _)| id)
+    }
+
+    #[inline]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     #[inline]
     pub(crate) fn clear(&mut self) {
         self.entries.clear();

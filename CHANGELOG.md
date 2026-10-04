@@ -112,6 +112,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- Canvas2D / WebGL: Skia's GL work runs in its own context. Skia does its GL work in whatever EGL context is current,
+  and a cleanup is GL work -- it deletes textures and framebuffers -- but the periodic purge of every 2D context's
+  unused resources (every 250 ms), the low-memory trim, and the re-capping of every context's share of the resource
+  cache on each canvas create and destroy were all run with whatever context happened to be current, often a WebGL
+  canvas's. A framebuffer name means a different object in every context, so the purge deleted that context's
+  framebuffer of the same name: on the iPhone a WebGL canvas lost its DrawingBuffer (its context's framebuffer 1)
+  mid-frame and drew into its 1x1 pbuffer from then on, a draw that read back as nothing. Purges and trims now go
+  through one sweep that makes each `GrDirectContext`'s own context current -- the shared offscreen-2D context once,
+  each other canvas's its own -- and a context installs its share of the cache when it is current for its own work
+  (its flush, or the sweep), which also makes a canvas create or destroy cost nothing per live context. The image-copy
+  framebuffer is keyed by the context that owns it, and a destroyed canvas's framebuffers, vertex arrays, queries and
+  transform feedbacks go with its context instead of being deleted by name from the resource context, as teardown's
+  are.
 - WebGL: the drawing buffer has exactly the buffers the context's attributes ask for (WebGL 1.0 5.2), and
   `getContextAttributes()` says what it has. It used to be RGBA8 with a 24-bit depth and an 8-bit stencil buffer
   whatever was asked: a context without stencil (the default) had one, so a stencil test that cannot fail without a
