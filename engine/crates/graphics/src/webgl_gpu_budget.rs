@@ -867,8 +867,11 @@ impl WebGlGpuBudget {
         }
         let (width, height, depth, levels) =
             validate_storage_3d_dimensions(target, levels, width, height, depth, self.limits)?;
-        // No compressed format here has 3D blocks: a 3D texture of one is not storage the driver can make.
-        if target == GL_TEXTURE_3D && compressed_block(internal_format).is_some() {
+        // No compressed format here has 3D blocks: a 3D texture of one is not storage the driver can make; ETC1, which
+        // its extension offers to 2D images alone, is not even a 2D array's.
+        if (target == GL_TEXTURE_3D && compressed_block(internal_format).is_some())
+            || internal_format == crate::compressed_upload::COMPRESSED_RGB_ETC1_WEBGL
+        {
             return Err(GpuAllocationError::InvalidOperation);
         }
         let bytes = checked_storage_bytes(
@@ -1622,6 +1625,22 @@ mod tests {
                 .unwrap_err(),
             GpuAllocationError::InvalidOperation
         );
+        // ETC1 storage is ETC2 RGB8's blocks, 8 bytes a 4x4; a 3D texture or 2D array of it is not storage.
+        budget.create_texture(1, 18).unwrap();
+        budget.bind_texture(1, TEXTURE_2D, Some(18));
+        let etc1 = budget
+            .prepare_tex_storage_2d(1, TEXTURE_2D, 1, 0x8D64, 8, 4)
+            .unwrap();
+        assert_eq!(etc1.byte_len(), 2 * 8);
+        budget.commit(etc1);
+        budget.create_texture(1, 19).unwrap();
+        budget.bind_texture(1, TEXTURE_2D_ARRAY, Some(19));
+        assert_eq!(
+            budget
+                .prepare_tex_storage_3d(1, TEXTURE_2D_ARRAY, 1, 0x8D64, 4, 4, 1)
+                .unwrap_err(),
+            GpuAllocationError::InvalidOperation
+        );
 
         budget.create_renderbuffer(1, 21).unwrap();
         budget.bind_renderbuffer(1, RENDERBUFFER, Some(21));
@@ -1633,7 +1652,7 @@ mod tests {
 
         assert_eq!(
             budget.context_usage(1),
-            128 + 1_032 + 300 + 516 + 192 + 336 + 256
+            128 + 1_032 + 300 + 516 + 192 + 336 + 16 + 256
         );
         assert_eq!(scope.process_usage(), budget.context_usage(1));
     }

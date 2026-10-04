@@ -3195,6 +3195,20 @@ pub(super) mod tests {
                 gl.bindTexture(ARRAY, gl.createTexture());
                 gl.compressedTexImage3D(ARRAY, 0, ETC, 4, 4, 2, 0, new Uint8Array(32)); err(0, "two compressed layers"); // sent
                 gl.compressedTexSubImage3D(ARRAY, 0, 0, 0, 1, 4, 4, 1, ETC, new Uint8Array(16)); err(0, "the second"); // sent
+                // ETC1: its own extension, for compressedTexImage2D alone
+                const ETC1 = 0x8d64;
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.compressedTexImage2D(T2D, 0, ETC1, 4, 4, 0, new Uint8Array(8)); err(ENUM, "ETC1 before its extension");
+                const etc1 = gl.getExtension("WEBGL_compressed_texture_etc1");
+                check(etc1 !== gl.getExtension("WEBGL_compressed_texture_etc") && etc1.COMPRESSED_RGB_ETC1_WEBGL === ETC1 &&
+                    Object.keys(etc1).length === 1, "ETC1's object is its own, with its one format");
+                gl.compressedTexImage2D(T2D, 0, ETC1, 8, 8, 0, new Uint8Array(32)); err(0, "an ETC1 image");     // sent
+                gl.compressedTexSubImage2D(T2D, 0, 0, 0, 4, 4, ETC1, new Uint8Array(8)); err(OPERATION, "no ETC1 sub-image");
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.texStorage2D(T2D, 1, ETC1, 4, 4); err(0, "ETC1 storage");                                  // sent
+                gl.bindTexture(ARRAY, gl.createTexture());
+                gl.compressedTexImage3D(ARRAY, 0, ETC1, 4, 4, 1, 0, new Uint8Array(8)); err(OPERATION, "no ETC1 layers");
+                gl.texStorage3D(ARRAY, 1, ETC1, 4, 4, 1); err(OPERATION, "nor ETC1 layered storage");
                 gl.flush();
                 "#,
             )
@@ -3226,6 +3240,109 @@ pub(super) mod tests {
                 "CompressedTexSubImage2D",
                 "CompressedTexImage3D",
                 "CompressedTexSubImage3D",
+                "CompressedTexImage2D",
+                "TexStorage2D",
+            ],
+            "only the calls taken reach the renderer"
+        );
+    }
+
+    /// WebGL 2's sampler, transform feedback and query objects are the facade's, judged before anything is sent and
+    /// read back from what it recorded (ES 3.0 2.14, 2.15.1, 3.8.2; WebGL 2.0 5.38): SAMPLER_BINDING is the sampler on
+    /// the active unit, and a deleted one is unbound everywhere; TRANSFORM_FEEDBACK_BINDING is the object bound, which
+    /// cannot change while it is active and unpaused; a query is begun on one target for good, one at a time a slot --
+    /// the two occlusion targets share one -- and its result is not available in the task that ended it, the same
+    /// every time it is asked there. An object of another kind is a TypeError.
+    #[test]
+    fn webgl2_samplers_transform_feedbacks_and_queries_are_the_facades() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "webgl2_objects.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 233, width: 1, height: 1 }, {});
+                gl._maxTextureUnits = 32;        // what the renderer would answer for MAX_COMBINED_TEXTURE_IMAGE_UNITS
+                const err = (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const throwsType = (f, m) => { try { f(); } catch (e) { if (e instanceof TypeError) return; throw e; } throw new Error(`${m}: no TypeError`); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                // samplers
+                const s = gl.createSampler();
+                gl.bindSampler(3, s); err(0, "a sampler on unit 3");                                      // sent
+                gl.activeTexture(0x84c0 + 3);
+                check(gl.getParameter(0x8919) === s, "SAMPLER_BINDING is the object on the active unit");
+                gl.activeTexture(0x84c0);
+                check(gl.getParameter(0x8919) === null, "and nothing on unit 0");
+                gl.bindSampler(1000, s); err(VALUE, "a unit past the limit");
+                throwsType(() => gl.bindSampler(0, gl.createTexture()), "a texture is not a sampler");
+                gl.deleteSampler(s);
+                gl.activeTexture(0x84c0 + 3);
+                check(gl.getParameter(0x8919) === null, "a deleted sampler is unbound");
+                gl.bindSampler(0, s); err(OPERATION, "a deleted sampler");
+                // transform feedback
+                const tf = gl.createTransformFeedback();
+                check(!gl.isTransformFeedback(tf), "not a transform feedback until bound");
+                gl.bindTransformFeedback(0x8892, tf); err(ENUM, "a target that is not TRANSFORM_FEEDBACK");
+                gl.bindTransformFeedback(0x8e22, tf); err(0, "bound");                                     // sent
+                check(gl.isTransformFeedback(tf) && gl.getParameter(0x8e25) === tf, "TRANSFORM_FEEDBACK_BINDING");
+                throwsType(() => gl.bindTransformFeedback(0x8e22, {}), "an object that is not one");
+                gl.beginTransformFeedback(0x0000);                                                       // sent
+                gl.bindTransformFeedback(0x8e22, null); err(OPERATION, "rebinding while active");
+                gl.deleteTransformFeedback(tf); err(OPERATION, "deleting an active one");
+                gl.pauseTransformFeedback();                                                             // sent
+                gl.bindTransformFeedback(0x8e22, null); err(0, "rebinding while paused");                 // sent
+                check(gl.getParameter(0x8e25) === null, "the default is null");
+                // queries
+                const q = gl.createQuery(), other = gl.createQuery();
+                check(!gl.isQuery(q), "not a query until begun");
+                gl.beginQuery(0x88bf, q); err(ENUM, "TIME_ELAPSED needs an extension");
+                throwsType(() => gl.beginQuery(0x8c2f, null), "null is not a query");
+                gl.beginQuery(0x8c2f, q); err(0, "an occlusion query");                                   // sent
+                check(gl.isQuery(q) && gl.getQuery(0x8c2f, 0x8865) === q, "CURRENT_QUERY");
+                check(gl.getQuery(0x8d6a, 0x8865) === null, "not for the other occlusion target");
+                gl.beginQuery(0x8d6a, other); err(OPERATION, "the occlusion slot is taken");
+                gl.getQueryParameter(q, 0x8867); err(OPERATION, "an active query has no result");
+                gl.endQuery(0x8d6a); err(OPERATION, "ending the target it was not begun on");
+                gl.endQuery(0x8c2f); err(0, "ended");                                                     // sent
+                gl.endQuery(0x8c2f); err(OPERATION, "nothing active");
+                gl.beginQuery(0x8d6a, q); err(OPERATION, "begun on another target before");
+                check(gl.getQueryParameter(q, 0x8867) === false && gl.getQueryParameter(q, 0x8867) === false &&
+                    gl.getQueryParameter(q, 0x8866) === 0, "not available in the task that ended it, every time");
+                gl.getQueryParameter(q, 0x8865); err(ENUM, "a pname that is not one");
+                gl.getQueryParameter(other, 0x8867); err(OPERATION, "a query never begun");
+                throwsType(() => gl.getQueryParameter(s, 0x8867), "a sampler is not a query");
+                gl.deleteQuery(q);
+                check(!gl.isQuery(q), "deleted");
+                gl.flush();
+                "#,
+            )
+            .expect("every call should be judged, none thrown");
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .map(|cmd| format!("{cmd:?}"))
+            .map(|text| text.split([' ', '{', '(']).next().unwrap_or("").to_string())
+            .filter(|name| {
+                name.contains("Sampler")
+                    || name.contains("TransformFeedback")
+                    || name.contains("Query")
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                "CreateSampler",
+                "BindSampler",
+                "DeleteSampler",
+                "CreateTransformFeedback",
+                "BindTransformFeedback",
+                "BeginTransformFeedback",
+                "PauseTransformFeedback",
+                "BindTransformFeedback",
+                "CreateQuery",
+                "CreateQuery",
+                "BeginQuery",
+                "EndQuery",
+                "DeleteQuery",
             ],
             "only the calls taken reach the renderer"
         );

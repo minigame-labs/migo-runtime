@@ -2362,12 +2362,13 @@ impl RendererGL {
                         data.image_size() as u32,
                     )
                     .map_err(gpu_allocation_error)?;
+                let format = crate::compressed_upload::driver_compressed_format(internalformat);
                 match &data {
                     CompressedImageData::Bytes(bytes) => unsafe {
                         gl.compressed_tex_image_2d(
                             target,
                             level,
-                            internalformat as i32,
+                            format as i32,
                             width,
                             height,
                             border,
@@ -2382,7 +2383,7 @@ impl RendererGL {
                             (entry.tex_image_2d)(
                                 target,
                                 level,
-                                internalformat,
+                                format,
                                 width,
                                 height,
                                 border,
@@ -3989,7 +3990,13 @@ impl RendererGL {
                     )
                     .map_err(gpu_allocation_error)?;
                 unsafe {
-                    gl.tex_storage_2d(target, levels, internal_format, width, height);
+                    gl.tex_storage_2d(
+                        target,
+                        levels,
+                        crate::compressed_upload::driver_compressed_format(internal_format),
+                        width,
+                        height,
+                    );
                 }
                 cm.webgl_gpu_budget.commit(prepared);
                 Ok(DamageEffect::NoDamage)
@@ -4275,11 +4282,23 @@ impl RendererGL {
                 unsafe { gl.end_query(target) };
                 Ok(DamageEffect::NoDamage)
             }
+            // QUERY_RESULT is asked of the driver only once QUERY_RESULT_AVAILABLE says it has one: asked before, the
+            // driver waits for the GPU to finish the query, and this thread with it. A result not yet there is 0, as
+            // the facade answers it.
             GLCmd::GetQueryParameter { query, pname, resp } => {
+                const QUERY_RESULT: u32 = 0x8866;
+                const QUERY_RESULT_AVAILABLE: u32 = 0x8867;
                 let meta = cm.queries.get(&query).cloned();
                 let result: u32 = if let Some(meta) = meta {
                     cm.make_current_needed(meta.owner)?;
                     match meta.gl_handle {
+                        Some(h) if pname == QUERY_RESULT => unsafe {
+                            if gl.get_query_parameter_u32(h, QUERY_RESULT_AVAILABLE) != 0 {
+                                gl.get_query_parameter_u32(h, QUERY_RESULT)
+                            } else {
+                                0
+                            }
+                        },
                         Some(h) => unsafe { gl.get_query_parameter_u32(h, pname) },
                         None => 0,
                     }

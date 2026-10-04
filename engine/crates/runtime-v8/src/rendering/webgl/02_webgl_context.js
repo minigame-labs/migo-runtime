@@ -913,6 +913,9 @@ function _attribComponentBytes(type) {
 // The compressed formats, each [block width, block height, bytes a block, the extension that enables it]. A format is
 // one a call takes only while its extension is enabled (WebGL 1.0 5.14.8).
 const _COMPRESSED_FORMATS = new Map();
+// WEBGL_compressed_texture_etc1: COMPRESSED_RGB_ETC1_WEBGL, a 2D image defined whole -- by compressedTexImage2D or 2D
+// immutable storage; a sub-image upload, a 3D call or 3D storage of it is INVALID_OPERATION, as a browser has it.
+_COMPRESSED_FORMATS.set(0x8d64, [4, 4, 8, "etc1"]);
 // WEBGL_compressed_texture_etc: R11, SIGNED_R11, RG11, SIGNED_RG11 (EAC); RGB8, SRGB8, the two PUNCHTHROUGH_ALPHA1,
 // RGBA8 and SRGB8_ALPHA8 (ETC2).
 [8, 8, 16, 16, 8, 8, 8, 8, 16, 16].forEach((bytes, k) => _COMPRESSED_FORMATS.set(0x9270 + k, [4, 4, bytes, "etc"]));
@@ -1045,9 +1048,12 @@ function allowWebglUpload(canvasId, byteLength) {
     return true;
 }
 
+// An upload's bytes, or null with OUT_OF_MEMORY recorded for one past the bound. Both lanes refuse such an upload on
+// their own, and the check here is not that one repeated: the calls record what an upload changes -- a buffer's size,
+// an element buffer's bytes, a texture's image -- before they send it, and that record must not describe an upload
+// the renderer never received. A plain sequence is judged by its declared length, before the conversion that would
+// allocate it; a view is borrowed, not copied, unless its memory is shared.
 function toBoundedUploadBytes(canvasId, input) {
-    // Plain sequences allocate while converting to Uint8Array, so reject their
-    // declared length before that allocation. Buffer views are zero-copy here.
     if (ArrayIsArray(input) && !allowWebglUpload(canvasId, input.length)) {
         return null;
     }
@@ -1377,6 +1383,14 @@ function syncTaskEpoch(canvasId) {
         PromisePrototypeThen(PromiseResolve(undefined), _endSyncTask);
     }
     return _syncTaskEpoch;
+}
+
+// The slot a query target's active query is kept in: the two occlusion targets share ANY_SAMPLES_PASSED's; undefined
+// for a target that is not a query target (TIME_ELAPSED needs an extension this context does not offer).
+function _querySlot(target) {
+    if (target === 0x8c2f || target === 0x8d6a) return 0x8c2f;    // ANY_SAMPLES_PASSED, _CONSERVATIVE
+    if (target === 0x8c88) return 0x8c88;                         // TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+    return undefined;
 }
 
 // Membership without `Array.prototype.includes`, which content can replace.
@@ -2757,6 +2771,16 @@ class WebGLRenderingContext {
                 recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
                 return null;
             }
+            // SAMPLER_BINDING (WebGL 2): the sampler bound to the active texture unit.
+            case 0x8919:
+                if (this._isWebGL2()) return this._samplerBindings.get(this._activeTextureUnit - 0x84c0) || null;
+                recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                return null;
+            // TRANSFORM_FEEDBACK_BINDING (WebGL 2): the object bound, null for the default one.
+            case 0x8e25:
+                if (this._isWebGL2()) return this._currentTransformFeedback;
+                recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                return null;
             // VERTEX_ARRAY_BINDING (WebGL 2), VERTEX_ARRAY_BINDING_OES (WebGL 1, once the extension is enabled).
             case 0x85b5:
                 if (this._oesVertexArrayObject || this._isWebGL2()) return this._vertexArrayBinding;
@@ -2894,11 +2918,16 @@ class WebGLRenderingContext {
         // Exposing the extensions here lets engines pick the
         // compressed asset path instead of falling back to RGBA,
         // which can save ~16 MiB of heap per 2048^2 texture.
-        if (name === 'WEBGL_compressed_texture_etc' ||
-            name === 'WEBGL_compressed_texture_etc1') {
+        if (name === 'WEBGL_compressed_texture_etc') {
             if (!(this._compressedCaps & 1)) return null;
             return this._webglCompressedEtc ||
                 (this._webglCompressedEtc = this._buildCompressedEtc());
+        }
+        // ETC1 is ETC2 RGB8's subset, so a device with ETC2 has it: the renderer uploads its blocks as ETC2 RGB8.
+        if (name === 'WEBGL_compressed_texture_etc1') {
+            if (!(this._compressedCaps & 1)) return null;
+            return this._webglCompressedEtc1 ||
+                (this._webglCompressedEtc1 = { COMPRESSED_RGB_ETC1_WEBGL: 0x8d64 });
         }
         if (name === 'WEBGL_compressed_texture_astc') {
             if (!(this._compressedCaps & 2)) return null;
@@ -3227,7 +3256,9 @@ class WebGLRenderingContext {
     _compressedFormat(format) {
         const block = _COMPRESSED_FORMATS.get(Number(format) >>> 0);
         if (block === undefined) return undefined;
-        return (block[3] === "etc" ? this._webglCompressedEtc : this._webglCompressedAstc) === undefined ? undefined : block;
+        const extension = block[3] === "etc1" ? this._webglCompressedEtc1
+            : block[3] === "etc" ? this._webglCompressedEtc : this._webglCompressedAstc;
+        return extension === undefined ? undefined : block;
     }
 
     // A compressed image's own rules, before it is defined (WEBGL_compressed_texture_etc / _astc, ES 3.0 3.8.6): a
@@ -3241,6 +3272,8 @@ class WebGLRenderingContext {
         let error = 0;
         if (block === undefined) {
             error = GL_INVALID_ENUM;
+        } else if (block[3] === "etc1" && (t === 0x806f || t === 0x8c1a)) {
+            error = GL_INVALID_OPERATION;
         } else if (!NumberIsInteger(level) || level < 0 || level >= this._levelLimit(t)) {
             error = GL_INVALID_VALUE;
         } else {
@@ -3275,6 +3308,9 @@ class WebGLRenderingContext {
         let error = 0;
         if (block === undefined) {
             error = GL_INVALID_ENUM;
+        } else if (block[3] === "etc1") {
+            // WEBGL_compressed_texture_etc1: an ETC1 image is defined whole or not at all.
+            error = GL_INVALID_OPERATION;
         } else if (!NumberIsInteger(level) || level < 0 || level >= this._levelLimit(target) ||
                 !NumberIsInteger(x) || x < 0 || !NumberIsInteger(y) || y < 0 || !NumberIsInteger(z) || z < 0 ||
                 !NumberIsInteger(width) || width < 0 || !NumberIsInteger(height) || height < 0 ||
@@ -3303,8 +3339,10 @@ class WebGLRenderingContext {
     _storageFormatError(internalformat, target) {
         const i = Number(internalformat) >>> 0;
         if (_SIZED_UPLOADS.has(i)) return 0;
-        if (this._compressedFormat(i) === undefined) return GL_INVALID_ENUM;
-        return (Number(target) >>> 0) === 0x806f ? GL_INVALID_OPERATION : 0;
+        const block = this._compressedFormat(i);
+        if (block === undefined) return GL_INVALID_ENUM;
+        const t = Number(target) >>> 0;
+        return t === 0x806f || (block[3] === "etc1" && t === 0x8c1a) ? GL_INVALID_OPERATION : 0;
     }
 
     // The levels `generateMipmap` and sampling start and stop at: 0 and 1000 in WebGL 1; TEXTURE_BASE_LEVEL and
@@ -4757,12 +4795,11 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     constructor(canvas, options) {
         super(canvas, options);
         this._webgl2 = true;
-        this._queryRegistry = new Map();
-        this._currentQueryByTarget = new Map();
-        this._tfRegistry = new Map();
+        this._currentQueryByTarget = new Map();     // query slot (`_querySlot`) -> the active query
         this._uniformBufferBindings = new Map();
-        // The default transform feedback object's buffers; one the content made keeps its own in `_tfRegistry`.
+        // The default transform feedback object's state; one the content made keeps its own (`createTransformFeedback`).
         this._defaultTransformFeedback = { bindings: new Map(), genericBuffer: null, active: false, paused: false };
+        this._samplerBindings = new Map();          // texture unit index -> the sampler bound to it
         this._textureBindings3D = new Map();        // texture unit -> WebglObject|null
         this._textureBindings2DArray = new Map();
         this._copyReadBufferBinding = null;
@@ -4826,14 +4863,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
     // The bound transform feedback object's buffer state: its indexed bindings and its generic binding.
     _transformFeedbackState() {
-        const tf = this._currentTransformFeedback;
-        if (!tf) return this._defaultTransformFeedback;
-        const state = this._tfRegistry.get(tf._id);
-        if (state.bindings === undefined) {
-            state.bindings = new Map();
-            state.genericBuffer = null;
-        }
-        return state;
+        return this._currentTransformFeedback || this._defaultTransformFeedback;
     }
 
     readPixels(x, y, width, height, format, type, pixels, dstOffset = 0) {
@@ -5447,18 +5477,39 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         _rawCreateSampler(this._canvasId, id);
         return new WebglObject(id, "sampler", this._canvasId);
     }
+    // A deleted sampler is unbound from every unit it was bound to, as GL unbinds it.
     deleteSampler(sampler) {
         if (!this._isLive(sampler, "sampler")) return;
         sampler._deleted = true;
+        for (const [unit, bound] of this._samplerBindings) {
+            if (bound === sampler) this._samplerBindings.delete(unit);
+        }
         _rawDeleteSampler(sampler._id);
     }
     isSampler(sampler) { return this._isLive(sampler, "sampler"); }
+    // `bindSampler(unit, sampler)`: an object that is not a sampler is WebIDL's TypeError; a deleted sampler or another
+    // context's INVALID_OPERATION; a unit past MAX_COMBINED_TEXTURE_IMAGE_UNITS INVALID_VALUE (ES 3.0 3.8.2). The
+    // binding is recorded, so SAMPLER_BINDING answers with the object.
     bindSampler(unit, sampler) {
-        if (sampler && !this._isLive(sampler, "sampler")) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        const index = Number(unit) >>> 0;
+        const bound = sampler === undefined ? null : sampler;
+        if (bound !== null) {
+            if (!(bound instanceof WebglObject) || bound._kind !== "sampler") {
+                throw new TypeError("Failed to execute 'bindSampler' on 'WebGL2RenderingContext': parameter 2 is not of type 'WebGLSampler'.");
+            }
+            if (bound._deleted || bound._ownerId !== this._canvasId) {
+                recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+                return;
+            }
+        }
+        if (index >= this._textureUnitMinimum &&
+                index >= this._cachedLimit("_maxTextureUnits", 0x8b4d, this._textureUnitMinimum)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
         }
-        const samplerId = sampler ? sampler._id : 0;
+        if (bound === null) this._samplerBindings.delete(index);
+        else this._samplerBindings.set(index, bound);
+        const samplerId = bound ? bound._id : 0;
         // opcode 15: H C U U. unit is u32, samplerId is u32 (0 = unbind).
         if (typeof unit === "number") {
             encodeBindSampler(this._canvasId, unit >>> 0, samplerId >>> 0);
@@ -5692,67 +5743,116 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     // ---- Query objects -----------------------------------------
+    // A query is a WebglObject carrying the target it was first begun with (0 before), whether it is active, and the
+    // answer it last gave, by the task it gave it in. The two occlusion targets share one slot: one occlusion query is
+    // active at a time, whichever of them it was begun with (ES 3.0 2.14).
     createQuery() {
         // op_alloc_gl_resource_id: direct, no-submit.
         const id = op_alloc_gl_resource_id_webgl2();
         _rawCreateQuery(this._canvasId, id);
-        const query = { _id: id, _kind: 'query' };
-        this._queryRegistry.set(id, {
-            active: false,
-            boundOnce: false,
-            deleted: false,
-            target: 0,
-        });
+        const query = new WebglObject(id, "query", this._canvasId);
+        query._target = 0;
+        query._active = false;
+        query._endEpoch = -1;       // the task it was last ended in
+        query._answerEpoch = -1;    // the task its answer below was taken in
+        query._available = false;
+        query._result = 0;
         return query;
     }
+    // An active query is ended as it is deleted.
     deleteQuery(query) {
-        if (!query || !query._id) return;
-        const state = this._queryRegistry.get(query._id);
-        if (!state || state.deleted) return;
-        state.deleted = true;
-        state.active = false;
-        if (this._currentQueryByTarget.get(state.target) === query) {
-            this._currentQueryByTarget.delete(state.target);
+        if (!this._isLive(query, "query")) return;
+        query._deleted = true;
+        if (query._active) {
+            query._active = false;
+            this._currentQueryByTarget.delete(_querySlot(query._target));
         }
         _rawDeleteQuery(query._id);
     }
-    isQuery(query) {
-        if (!query || !query._id) return false;
-        const state = this._queryRegistry.get(query._id);
-        return !!(state && state.boundOnce && !state.deleted);
-    }
+    isQuery(query) { return this._isLive(query, "query") && query._target !== 0; }
+    // `beginQuery(target, query)`: a target that is not a query target is INVALID_ENUM; an object that is not a query
+    // WebIDL's TypeError; a deleted query or another context's, one already active, one first begun with another
+    // target, or a target whose slot already has an active query, INVALID_OPERATION.
     beginQuery(target, query) {
-        if (!query || !query._id) return;
-        const state = this._queryRegistry.get(query._id);
-        if (!state || state.deleted) return;
-        state.boundOnce = true;
-        state.target = target;
-        state.active = true;
-        this._currentQueryByTarget.set(target, query);
-        _rawBeginQuery(this._canvasId, target, query._id);
-    }
-    endQuery(target) {
-        const query = this._currentQueryByTarget.get(target);
-        if (query) {
-            const state = this._queryRegistry.get(query._id);
-            if (state) state.active = false;
+        const t = Number(target) >>> 0;
+        const slot = _querySlot(t);
+        if (slot === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
         }
-        this._currentQueryByTarget.delete(target);
-        _rawEndQuery(this._canvasId, target);
+        if (!(query instanceof WebglObject) || query._kind !== "query") {
+            throw new TypeError("Failed to execute 'beginQuery' on 'WebGL2RenderingContext': parameter 2 is not of type 'WebGLQuery'.");
+        }
+        if (query._deleted || query._ownerId !== this._canvasId || query._active ||
+                (query._target !== 0 && query._target !== t) || this._currentQueryByTarget.has(slot)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        query._target = t;
+        query._active = true;
+        query._available = false;      // a use begun again owes a result of its own
+        query._result = 0;
+        query._answerEpoch = -1;
+        this._currentQueryByTarget.set(slot, query);
+        _rawBeginQuery(this._canvasId, t, query._id);
     }
+    // `endQuery(target)`: INVALID_ENUM for a target that is not one, INVALID_OPERATION when no query is active for it.
+    // Its result is not available before the task ends (WebGL 2.0 5.38), which is also when the context is flushed.
+    endQuery(target) {
+        const t = Number(target) >>> 0;
+        const slot = _querySlot(t);
+        if (slot === undefined) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        const query = this._currentQueryByTarget.get(slot);
+        if (query === undefined || query._target !== t) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        query._active = false;
+        query._endEpoch = syncTaskEpoch(this._canvasId);
+        this._currentQueryByTarget.delete(slot);
+        _rawEndQuery(this._canvasId, t);
+    }
+    // CURRENT_QUERY: the query active for `target`, begun with that target.
     getQuery(target, pname) {
-        if (pname !== GL_CURRENT_QUERY) return null;
-        return this._currentQueryByTarget.get(target) || null;
+        const t = Number(target) >>> 0;
+        const slot = _querySlot(t);
+        if (slot === undefined || (Number(pname) >>> 0) !== GL_CURRENT_QUERY) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
+        const query = this._currentQueryByTarget.get(slot);
+        return query !== undefined && query._target === t ? query : null;
     }
-    /**
-     * Synchronous query parameter fetch.  Supported pname values:
-     *   QUERY_RESULT           (0x8866) - u32 sample count / timer delta
-     *   QUERY_RESULT_AVAILABLE (0x8867) - 0 or 1
-     * Callers typically poll AVAILABLE before reading RESULT.
-     */
+    // QUERY_RESULT_AVAILABLE, a boolean, and QUERY_RESULT, the number. A query's result is not available in the task
+    // that ended it, and within one task every ask answers the same (WebGL 2.0 5.38): the answer is taken once a task
+    // and kept, and a result is asked for only once it is available -- QUERY_RESULT is 0 until then rather than a wait
+    // on the GPU. An object that is not a query is a TypeError; a deleted query, another context's, one never begun or
+    // one still active INVALID_OPERATION; another pname INVALID_ENUM.
     getQueryParameter(query, pname) {
-        if (!query || !query._id) return 0;
-        return _rawGetQueryParameter(query._id, pname);
+        if (!(query instanceof WebglObject) || query._kind !== "query") {
+            throw new TypeError("Failed to execute 'getQueryParameter' on 'WebGL2RenderingContext': parameter 1 is not of type 'WebGLQuery'.");
+        }
+        if (query._deleted || query._ownerId !== this._canvasId || query._target === 0 || query._active) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return null;
+        }
+        const p = Number(pname) >>> 0;
+        if (p !== 0x8866 && p !== 0x8867) {      // QUERY_RESULT, QUERY_RESULT_AVAILABLE
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
+        const epoch = syncTaskEpoch(this._canvasId);
+        if (query._answerEpoch !== epoch && query._endEpoch !== epoch && !query._available) {
+            query._answerEpoch = epoch;
+            if (_rawGetQueryParameter(query._id, 0x8867) !== 0) {
+                query._available = true;
+                query._result = _rawGetQueryParameter(query._id, 0x8866);
+            }
+        }
+        return p === 0x8867 ? query._available : query._result;
     }
 
     // ---- Transform Feedback ------------------------------------
@@ -5760,43 +5860,56 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // op_alloc_gl_resource_id: direct, no-submit.
         const id = op_alloc_gl_resource_id_webgl2();
         _rawCreateTransformFeedback(this._canvasId, id);
-        const tf = { _id: id, _kind: 'tf' };
-        this._tfRegistry.set(id, {
-            active: false,
-            boundOnce: false,
-            deleted: false,
-            paused: false,
-        });
+        // The object is its own state: whether it is active and paused, and its buffers, as the default one's are in
+        // `_defaultTransformFeedback`.
+        const tf = new WebglObject(id, "transformFeedback", this._canvasId);
+        tf._everBound = false;
+        tf.active = false;
+        tf.paused = false;
+        tf.bindings = new Map();
+        tf.genericBuffer = null;
         return tf;
     }
+    // One that is active is not deleted (INVALID_OPERATION, ES 3.0 2.15.1); the bound one is replaced by the default.
     deleteTransformFeedback(tf) {
-        if (!tf || !tf._id) return;
-        const state = this._tfRegistry.get(tf._id);
-        if (!state || state.deleted) return;
-        if (state.active || state.paused) {
+        if (!this._isLive(tf, "transformFeedback")) return;
+        if (tf.active) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
             return;
         }
-        state.deleted = true;
+        tf._deleted = true;
         if (this._currentTransformFeedback === tf) {
             this._currentTransformFeedback = null;
         }
         _rawDeleteTransformFeedback(tf._id);
     }
-    isTransformFeedback(tf) {
-        if (!tf || !tf._id) return false;
-        const state = this._tfRegistry.get(tf._id);
-        return !!(state && state.boundOnce && !state.deleted);
-    }
+    isTransformFeedback(tf) { return this._isLive(tf, "transformFeedback") && tf._everBound === true; }
+    // `bindTransformFeedback(target, tf)`: a target other than TRANSFORM_FEEDBACK is INVALID_ENUM; an object that is
+    // not a transform feedback WebIDL's TypeError; a deleted one or another context's INVALID_OPERATION, as is any
+    // binding while the bound one is active and not paused (ES 3.0 2.15.1).
     bindTransformFeedback(target, tf) {
-        this._currentTransformFeedback = tf || null;
-        if (tf && tf._id) {
-            const state = this._tfRegistry.get(tf._id);
-            if (state && !state.deleted) {
-                state.boundOnce = true;
+        const bound = tf === undefined ? null : tf;
+        if ((Number(target) >>> 0) !== 0x8e22) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        if (bound !== null) {
+            if (!(bound instanceof WebglObject) || bound._kind !== "transformFeedback") {
+                throw new TypeError("Failed to execute 'bindTransformFeedback' on 'WebGL2RenderingContext': parameter 2 is not of type 'WebGLTransformFeedback'.");
+            }
+            if (bound._deleted || bound._ownerId !== this._canvasId) {
+                recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+                return;
             }
         }
-        _rawBindTransformFeedback(this._canvasId, target, tf ? tf._id : 0);
+        const current = this._transformFeedbackState();
+        if (current.active && !current.paused) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        this._currentTransformFeedback = bound;
+        if (bound !== null) bound._everBound = true;
+        _rawBindTransformFeedback(this._canvasId, 0x8e22, bound ? bound._id : 0);
     }
     // Whether transform feedback is active and paused is the bound object's state -- the default object's too.
     beginTransformFeedback(primitiveMode) {
