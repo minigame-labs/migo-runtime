@@ -1580,6 +1580,12 @@ class VertexAttribShadow {
     }
 }
 
+// Whether an attribute array is enabled at divisor 0, at any location.
+function _hasEnabledDivisorZero(shadow) {
+    for (let k = 0; k < _ATTRIB_SHADOW_SLOTS; k++) if (shadow.enabled[k] !== 0 && shadow.divisor[k] === 0) return true;
+    return false;
+}
+
 // The arguments `vertexAttribPointer` / `vertexAttribIPointer` accept: what the host's decoder checks, so that the
 // shadow holds what the render side took and not what a refused call asked for.
 function _attribPointerAccepted(size, type, stride, offset, integer) {
@@ -2181,7 +2187,9 @@ class WebGLRenderingContext {
     // INVALID_OPERATION (WebGL 1.0 6.4, 6.6); then the vertices the draw reads (`_attribRangeError`). `indexType` is
     // undefined for a draw of arrays. 0 when none is. The decoder checks the arguments again, for the records that do
     // not come through here.
-    _drawError(mode, first, count, instances, indexType, offset) {
+    // `instancedANGLE`: the call is WebGL 1's `draw*InstancedANGLE`, which draws only with an attribute array enabled at
+    // divisor 0 (ANGLE_instanced_arrays) -- any one, as a browser counts it; WebGL 2's instanced calls have no such rule.
+    _drawError(mode, first, count, instances, indexType, offset, instancedANGLE = false) {
         if ((Number(mode) >>> 0) > 6) return GL_INVALID_ENUM;              // POINTS .. TRIANGLE_FAN
         let bytes = 0;
         if (indexType !== undefined) {
@@ -2199,6 +2207,7 @@ class WebGLRenderingContext {
             if (indices === null || offset + count * bytes > (indices._size || 0)) return GL_INVALID_OPERATION;
         }
         if (count === 0 || instances === 0) return 0;
+        if (instancedANGLE && !_hasEnabledDivisorZero(this._attribShadow)) return GL_INVALID_OPERATION;
         return this._attribRangeError(first, count, instances, indices, bytes, offset);
     }
 
@@ -3070,7 +3079,7 @@ class WebGLRenderingContext {
             // Published enum from the ANGLE_instanced_arrays spec.
             VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE: 0x88FE,
             drawArraysInstancedANGLE(mode, first, count, primcount) {
-                const error = ctx._drawError(mode, Number(first) | 0, Number(count) | 0, Number(primcount) | 0, undefined, 0);
+                const error = ctx._drawError(mode, Number(first) | 0, Number(count) | 0, Number(primcount) | 0, undefined, 0, true);
                 if (error !== 0) {
                     recordGpuPreflightError(ctx._canvasId, error);
                     return;
@@ -3092,7 +3101,7 @@ class WebGLRenderingContext {
                 if (withheld) restoreIncompleteTextures(ctx);
             },
             drawElementsInstancedANGLE(mode, count, type, offset, primcount) {
-                const error = ctx._drawError(mode, 0, Number(count) | 0, Number(primcount) | 0, type, toLongLong(Number(offset)));
+                const error = ctx._drawError(mode, 0, Number(count) | 0, Number(primcount) | 0, type, toLongLong(Number(offset)), true);
                 if (error !== 0) {
                     recordGpuPreflightError(ctx._canvasId, error);
                     return;
@@ -3114,6 +3123,10 @@ class WebGLRenderingContext {
                 if (withheld) restoreIncompleteTextures(ctx);
             },
             vertexAttribDivisorANGLE(index, divisor) {
+                if (!ctx._isAttribIndex(Number(index) >>> 0)) {
+                    recordGpuPreflightError(ctx._canvasId, GL_INVALID_VALUE);
+                    return;
+                }
                 if (typeof index === "number" && typeof divisor === "number") {
                     encodeVertexAttribDivisor(ctx._canvasId, index >>> 0, divisor >>> 0);
                 } else {
@@ -5072,7 +5085,12 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     // ---- Instanced drawing -------------------------------------
+    // An index past MAX_VERTEX_ATTRIBS is INVALID_VALUE.
     vertexAttribDivisor(index, divisor) {
+        if (!this._isAttribIndex(Number(index) >>> 0)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+            return;
+        }
         // opcode 19: H C U U.
         if (typeof index === "number" && typeof divisor === "number") {
             encodeVertexAttribDivisor(this._canvasId, index >>> 0, divisor >>> 0);

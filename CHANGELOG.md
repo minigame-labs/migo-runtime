@@ -144,6 +144,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sent none and was never presented). And a finished frame is presented before anything that arrives behind it runs: a
   task that drew between a frame's end and the tick that swaps it put its draws into the frame being shown. In the
   steady state nothing arrives in between, and frames are still presented on the frame clock.
+- WebGL: `drawArraysInstancedANGLE` and `drawElementsInstancedANGLE` draw only with an attribute array enabled at
+  divisor 0, and are INVALID_OPERATION without one, as ANGLE_instanced_arrays has it in WebGL 1 and a browser enforces
+  it; a plain draw is not held to it. `vertexAttribDivisor` and `vertexAttribDivisorANGLE` refuse an index past
+  MAX_VERTEX_ATTRIBS (INVALID_VALUE) instead of sending it.
 - WebGL 2: sampler, transform feedback and query objects are the facade's, like every other object. SAMPLER_BINDING
   and TRANSFORM_FEEDBACK_BINDING answer with the object bound, not the driver's integer name, and a deleted sampler is
   unbound from every unit; `bindSampler` refuses a unit past the limit (INVALID_VALUE) and `bindTransformFeedback`

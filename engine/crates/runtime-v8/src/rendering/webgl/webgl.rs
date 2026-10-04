@@ -3247,6 +3247,49 @@ pub(super) mod tests {
         );
     }
 
+    /// ANGLE_instanced_arrays: an instanced draw needs an attribute array enabled at divisor 0 -- at any location, as a
+    /// browser counts it -- and is INVALID_OPERATION without one, where a plain draw is not held to it; a divisor for an
+    /// index past MAX_VERTEX_ATTRIBS is INVALID_VALUE, in WebGL 1's extension and WebGL 2 alike.
+    #[test]
+    fn an_angle_instanced_draw_needs_an_array_at_divisor_zero() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "angle_divisor_zero.js",
+                r#"
+                const gl = new WebGLRenderingContext({ _rid: 234, width: 1, height: 1 }, {});
+                gl._maxVertexAttribs = 16;       // what the renderer would answer
+                const err = (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const ext = gl.getExtension("ANGLE_instanced_arrays");
+                const p = gl.createProgram();
+                gl._programParameterCache.set(p.id, new Map([[0x8b82, 1]]));
+                p._consumes = [0]; p._consumesLink = p._links | 0;
+                gl.useProgram(p);
+                gl.bindBuffer(0x8892, gl.createBuffer());
+                gl.bufferData(0x8892, new Float32Array(64), 0x88e4);
+                gl.enableVertexAttribArray(0);
+                gl.vertexAttribPointer(0, 4, 0x1406, false, 0, 0);
+                ext.vertexAttribDivisorANGLE(0, 1);
+                gl.getError();
+                ext.drawArraysInstancedANGLE(4, 0, 3, 2); err(0x0502, "every enabled array is instanced");
+                gl.drawArrays(4, 0, 3); err(0, "a plain draw is not held to it");                            // sent
+                gl.enableVertexAttribArray(5);
+                gl.vertexAttribPointer(5, 4, 0x1406, false, 0, 0);
+                ext.drawArraysInstancedANGLE(4, 0, 3, 2); err(0, "an array at divisor 0 anywhere");          // sent
+                ext.vertexAttribDivisorANGLE(16, 1); err(0x0501, "a divisor past MAX_VERTEX_ATTRIBS");
+                gl.flush();
+                "#,
+            )
+            .expect("every call should be judged, none thrown");
+        let draws: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .map(|cmd| format!("{cmd:?}"))
+            .map(|text| text.split([' ', '{', '(']).next().unwrap_or("").to_string())
+            .filter(|name| name.starts_with("Draw"))
+            .collect();
+        assert_eq!(draws, ["DrawArrays", "DrawArraysInstanced"]);
+    }
+
     /// WebGL 2's sampler, transform feedback and query objects are the facade's, judged before anything is sent and
     /// read back from what it recorded (ES 3.0 2.14, 2.15.1, 3.8.2; WebGL 2.0 5.38): SAMPLER_BINDING is the sampler on
     /// the active unit, and a deleted one is unbound everywhere; TRANSFORM_FEEDBACK_BINDING is the object bound, which
