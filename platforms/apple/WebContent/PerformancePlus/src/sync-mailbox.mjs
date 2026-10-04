@@ -414,9 +414,43 @@ export function encodeReadPixelsParams({
  */
 export const READ_PIXELS_LAYOUT_BYTES = 16;
 
-/** How many bytes `readPixels` over this rectangle answers with, header included. */
-export function readPixelsReplyBytes(width, height) {
-  return READ_PIXELS_LAYOUT_BYTES + width * height * 4;
+/**
+ * `frame_wire::sync::readback_bytes_per_pixel`: the bytes one pixel of a GL
+ * pixel pair takes in a readback, or null for a pair with no size.
+ *
+ * A size, not a verdict -- whether the read framebuffer can be read as the pair
+ * is the host's driver's to say. The interop test holds this copy to the Rust
+ * table, pair by pair (`emit-sync-params.mjs`).
+ */
+export function readbackBytesPerPixel(format, type) {
+  let components;
+  switch (format) {
+    case 0x1908: case 0x8D99: case 0x80E1: components = 4; break;
+    case 0x1907: case 0x8D98: components = 3; break;
+    case 0x8227: case 0x8228: case 0x190A: case 0x84F9: components = 2; break;
+    case 0x1903: case 0x8D94: case 0x1909: case 0x1906: case 0x1902: case 0x1901:
+      components = 1; break;
+    default: return null;
+  }
+  switch (type) {
+    case 0x1400: case 0x1401: return components;
+    case 0x1402: case 0x1403: case 0x140B: case 0x8D61: return components * 2;
+    case 0x1404: case 0x1405: case 0x1406: return components * 4;
+    case 0x8363: case 0x8033: case 0x8034: case 0x8365: case 0x8366: return 2;
+    case 0x8368: case 0x8C3B: case 0x8C3E: case 0x84FA: return 4;
+    case 0x8DAD: return 8;
+    default: return null;
+  }
+}
+
+/**
+ * How many bytes `readPixels` of this rectangle as (`format`, `type`) answers
+ * with, header included: the layout, then the rows compact. Null for a pair
+ * with no size.
+ */
+export function readPixelsReplyBytes(width, height, format, type) {
+  const bytesPerPixel = readbackBytesPerPixel(format, type);
+  return bytesPerPixel === null ? null : READ_PIXELS_LAYOUT_BYTES + width * height * bytesPerPixel;
 }
 
 /** Read the layout header a reply begins with. */

@@ -181,13 +181,6 @@ check(
     asked === null,
   "an empty rectangle reads nothing, records nothing and asks nothing",
 );
-asked = null;
-check(
-  op_read_pixels(1, 0, 0, 1, 1, GL_RGBA, GL_FLOAT, new Float32Array(4), 0) === null &&
-    JSON.stringify(errorsOf(1)) === JSON.stringify([GL_INVALID_OPERATION]) &&
-    asked === null,
-  "a pair this lane's readback does not carry is INVALID_OPERATION, as an unoffered pair is",
-);
 
 // ---- what it asks for, and what it does with the answer ---------------------
 
@@ -243,6 +236,22 @@ check(
     offset[7] === 0x22 &&
     Array.from(offset.subarray(8)).every((byte) => byte === 0xa0),
   "the caller's dstOffset is added to where the host put the rows",
+);
+
+// A float colour buffer is read as RGBA/FLOAT: the pair crosses as the caller
+// named it, and the reservation is the rows of that pair.
+answer = { firstByte: 0, rowBytes: 32, rowStride: 32, height: 1 };
+const floats = new Float32Array(8);
+result = op_read_pixels(1, 0, 0, 2, 1, GL_RGBA, GL_FLOAT, floats, 0);
+check(
+  result !== null &&
+    errorsOf(1).length === 0 &&
+    asked.maxReplyBytes === READ_PIXELS_LAYOUT_BYTES + 2 * 16 &&
+    new DataView(asked.params.buffer).getUint32(20, true) === GL_RGBA &&
+    new DataView(asked.params.buffer).getUint32(24, true) === GL_FLOAT &&
+    result.rowBytes === 32 &&
+    result.data.length === 32,
+  "a pair other than RGBA8 is asked for as itself, and its rows are the pair's size",
 );
 
 // A footprint the view cannot hold is only knowable once the layout arrives.

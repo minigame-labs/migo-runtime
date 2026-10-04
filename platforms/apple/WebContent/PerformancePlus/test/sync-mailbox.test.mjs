@@ -254,7 +254,13 @@ check("readPixels' arguments encode as eight little-endian words", () => {
   // go, because the `PACK_*` state that decides it is the host's and this side
   // never sees `pixelStorei`.
   assertEqual(READ_PIXELS_LAYOUT_BYTES, 16, "layout header size");
-  assertEqual(readPixelsReplyBytes(11, 13), 16 + 11 * 13 * 4, "reply size");
+  assertEqual(readPixelsReplyBytes(11, 13, GL_RGBA, GL_UNSIGNED_BYTE), 16 + 11 * 13 * 4, "reply size");
+  // The rows are the pair's: a float colour buffer read as RGBA/FLOAT is sixteen
+  // bytes a pixel, and a pair with no size has no reply to reserve.
+  assertEqual(readPixelsReplyBytes(11, 13, GL_RGBA, 0x1406), 16 + 11 * 13 * 16, "a float reply's size");
+  assertEqual(readPixelsReplyBytes(11, 13, 0x8d99, 0x1405), 16 + 11 * 13 * 16, "an integer reply's size");
+  assertEqual(readPixelsReplyBytes(11, 13, 0x1907, 0x8363), 16 + 11 * 13 * 2, "a packed reply's size");
+  assertEqual(readPixelsReplyBytes(11, 13, GL_RGBA, 0x1234), null, "a pair with no size");
   const layout = decodeReadPixelsLayout(
     Uint8Array.from([4, 0, 0, 0, 8, 0, 0, 0, 12, 0, 0, 0, 2, 0, 0, 0]),
   );

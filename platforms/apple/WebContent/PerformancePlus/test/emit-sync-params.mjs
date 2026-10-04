@@ -20,8 +20,7 @@ import { join } from "node:path";
 import {
   encodeReadPixelsParams,
   readPixelsReplyBytes,
-  GL_RGBA,
-  GL_UNSIGNED_BYTE,
+  readbackBytesPerPixel,
 } from "../src/sync-mailbox.mjs";
 
 const outputDirectory = process.argv[2];
@@ -42,6 +41,24 @@ function next(bound) {
   return seed % bound;
 }
 
+// Every format and type the readback table names, and one of each it does not:
+// the records cycle through the sized pairs, and `pairs.jsonl` gives the Rust
+// side this copy's size for every combination, so the two tables are compared
+// pair by pair rather than only where the records happened to land.
+const FORMATS = [
+  0x1908, 0x8d99, 0x80e1, 0x1907, 0x8d98, 0x8227, 0x8228, 0x190a, 0x84f9,
+  0x1903, 0x8d94, 0x1909, 0x1906, 0x1902, 0x1901, 0x1234,
+];
+const TYPES = [
+  0x1400, 0x1401, 0x1402, 0x1403, 0x140b, 0x8d61, 0x1404, 0x1405, 0x1406,
+  0x8363, 0x8033, 0x8034, 0x8365, 0x8366, 0x8368, 0x8c3b, 0x8c3e, 0x84fa, 0x8dad, 0x1234,
+];
+const pairs = [];
+for (const format of FORMATS) {
+  for (const type of TYPES) pairs.push({ format, type, bytesPerPixel: readbackBytesPerPixel(format, type) });
+}
+const sized = pairs.filter((pair) => pair.bytesPerPixel !== null);
+
 const manifest = [];
 for (let index = 0; index < count; index += 1) {
   // Rectangles a real producer asks for: a single pixel, a full screen at 4x,
@@ -56,13 +73,17 @@ for (let index = 0; index < count; index += 1) {
     y: next(2) === 0 ? next(512) : -next(512),
     width,
     height,
-    format: GL_RGBA,
-    type: GL_UNSIGNED_BYTE,
+    format: sized[index % sized.length].format,
+    type: sized[index % sized.length].type,
   };
   const bytes = encodeReadPixelsParams(record);
   const name = `params-${String(index).padStart(4, "0")}.bin`;
   writeFileSync(join(outputDirectory, name), bytes);
-  manifest.push({ ...record, file: name, replyBytes: readPixelsReplyBytes(width, height) });
+  manifest.push({
+    ...record,
+    file: name,
+    replyBytes: readPixelsReplyBytes(width, height, record.format, record.type),
+  });
 }
 
 // One flat JSON object per line. A JSON parser is a large thing to add to the
@@ -80,4 +101,11 @@ writeFileSync(
     .join("\n") + "\n",
 );
 
-console.log(`emitted ${manifest.length} params records into ${outputDirectory}`);
+writeFileSync(
+  join(outputDirectory, "pairs.jsonl"),
+  pairs
+    .map((pair) => `{"format":${pair.format},"type":${pair.type},"bytes_per_pixel":${pair.bytesPerPixel ?? -1}}`)
+    .join("\n") + "\n",
+);
+
+console.log(`emitted ${manifest.length} params records and ${pairs.length} pixel pairs into ${outputDirectory}`);

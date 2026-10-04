@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment maps among them -- rely on it; without it, the framebuffer completeness the facade now judges refused
   them. The renderer's WebGL capabilities reach the facade as one bitfield, `op_webgl_query_gpu_caps` (bit 2
   for float colour buffers), on both lanes.
+- Performance+: `readPixels` reads the pair the call names -- RGBA/FLOAT from a float colour buffer, RGBA_INTEGER from
+  an integer one, the driver's own IMPLEMENTATION_COLOR_READ pair -- as the in-process runtime does; it read
+  RGBA/UNSIGNED_BYTE only and refused every other pair as INVALID_OPERATION, so a float or integer framebuffer could not
+  be read at all. The synchronous readback's reply is sized by the pair (`frame_wire::sync::readback_bytes_per_pixel`,
+  the one table both lanes size reads by; the producer's copy is held to it pair by pair).
 - WebGL: `WEBGL_compressed_texture_etc1`, with an object of its own carrying `COMPRESSED_RGB_ETC1_WEBGL`. The name used
   to answer with the ETC2/EAC object, so content asking for ETC1 found ten other formats and not its own, and an ETC1
   upload was INVALID_ENUM. Its blocks are uploaded as ETC2 RGB8, which decodes every ETC1 block to the same texels and

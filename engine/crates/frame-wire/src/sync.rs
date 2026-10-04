@@ -954,10 +954,40 @@ pub struct ReadPixelsParams {
 /// Serialised size of [`ReadPixelsParams`]. Validated, never trusted.
 pub const READ_PIXELS_PARAMS_BYTES: usize = 32;
 
-/// `GL_RGBA`, the only format this host reads back today.
+/// `GL_RGBA`, the format WebGL guarantees a read of from a normalized framebuffer.
 pub const GL_RGBA: u32 = 0x1908;
-/// `GL_UNSIGNED_BYTE`, the only type this host reads back today.
+/// `GL_UNSIGNED_BYTE`, the type that goes with it.
 pub const GL_UNSIGNED_BYTE: u32 = 0x1401;
+
+/// The bytes one pixel of (`format`, `type_`) takes in a readback, or `None` for a pair with no size -- one GL has
+/// no pixel transfer of. A size, not a verdict: whether the read framebuffer can be read as that pair is the driver's
+/// to say (RGBA/UNSIGNED_BYTE from a normalized one, RGBA/FLOAT from a float one, RGBA_INTEGER from an integer one,
+/// and the implementation's own IMPLEMENTATION_COLOR_READ pair), on this lane as in process. The one table: the
+/// in-process op sizes its reads by it too (`webgl_readback_bytes_per_pixel`), and the producer's copy
+/// (`readbackBytesPerPixel` in `sync-mailbox.mjs`) is held to it by the interop test.
+pub const fn readback_bytes_per_pixel(format: u32, type_: u32) -> Option<u32> {
+    let components = match format {
+        0x1908 | 0x8D99 | 0x80E1 => 4, // RGBA | RGBA_INTEGER | BGRA_EXT
+        0x1907 | 0x8D98 => 3,          // RGB | RGB_INTEGER
+        // RG | RG_INTEGER | LUMINANCE_ALPHA | DEPTH_STENCIL
+        0x8227 | 0x8228 | 0x190A | 0x84F9 => 2,
+        // RED | RED_INTEGER | LUMINANCE | ALPHA | DEPTH_COMPONENT | STENCIL_INDEX
+        0x1903 | 0x8D94 | 0x1909 | 0x1906 | 0x1902 | 0x1901 => 1,
+        _ => return None,
+    };
+    Some(match type_ {
+        0x1400 | 0x1401 => components, // BYTE | UNSIGNED_BYTE
+        // SHORT | UNSIGNED_SHORT | HALF_FLOAT | HALF_FLOAT_OES
+        0x1402 | 0x1403 | 0x140B | 0x8D61 => components * 2,
+        0x1404 | 0x1405 | 0x1406 => components * 4, // INT | UNSIGNED_INT | FLOAT
+        0x8363 | 0x8033 | 0x8034 => 2,              // UNSIGNED_SHORT_5_6_5 | 4_4_4_4 | 5_5_5_1
+        0x8365 | 0x8366 => 2, // EXT_read_format_bgra: 4_4_4_4_REV | 1_5_5_5_REV
+        // UNSIGNED_INT_2_10_10_10_REV | 10F_11F_11F_REV | 5_9_9_9_REV | 24_8
+        0x8368 | 0x8C3B | 0x8C3E | 0x84FA => 4,
+        0x8DAD => 8, // FLOAT_32_UNSIGNED_INT_24_8_REV: float + packed uint
+        _ => return None,
+    })
+}
 
 impl ReadPixelsParams {
     /// Decode and validate. Refuses rather than clamps, for the reason
@@ -990,7 +1020,9 @@ impl ReadPixelsParams {
         if params.width <= 0 || params.height <= 0 {
             return Err(SyncError::UnsupportedOperation);
         }
-        if params.format != GL_RGBA || params.type_ != GL_UNSIGNED_BYTE {
+        // A pair with no size cannot be answered with a number of bytes; the producer refuses it before asking
+        // (INVALID_ENUM), so one arriving here is not a read to attempt.
+        if readback_bytes_per_pixel(params.format, params.type_).is_none() {
             return Err(SyncError::UnsupportedOperation);
         }
         Ok(params)
@@ -1006,13 +1038,15 @@ impl ReadPixelsParams {
             .checked_add(READ_PIXELS_LAYOUT_BYTES as u32)
     }
 
-    /// The pixels alone, without the layout that precedes them.
+    /// The pixels alone, without the layout that precedes them: the rows compact, each `width` pixels of the pair
+    /// ([`readback_bytes_per_pixel`]).
     pub fn pixel_bytes(&self) -> Option<u32> {
         let width = u32::try_from(self.width).ok()?;
         let height = u32::try_from(self.height).ok()?;
-        // RGBA8: four bytes per pixel. Checked, because width*height*4 for a
-        // rectangle a producer named can overflow before it is ever refused.
-        width.checked_mul(height)?.checked_mul(4)
+        // Checked, because width*height*bpp for a rectangle a producer named can overflow before it is ever refused.
+        width
+            .checked_mul(height)?
+            .checked_mul(readback_bytes_per_pixel(self.format, self.type_)?)
     }
 }
 
