@@ -448,7 +448,8 @@ fn validated_external_error(code: u32) -> u32 {
         codes::INVALID_ENUM
         | codes::INVALID_VALUE
         | codes::INVALID_OPERATION
-        | codes::OUT_OF_MEMORY => code,
+        | codes::OUT_OF_MEMORY
+        | codes::INVALID_FRAMEBUFFER_OPERATION => code,
         _ => codes::INVALID_OPERATION,
     }
 }
@@ -624,6 +625,7 @@ mod tests {
             codes::INVALID_VALUE,
             codes::INVALID_OPERATION,
             codes::OUT_OF_MEMORY,
+            codes::INVALID_FRAMEBUFFER_OPERATION,
         ] {
             assert_eq!(validated_external_error(code), code);
         }

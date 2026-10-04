@@ -154,7 +154,6 @@ import {
     op_delete_sync,
     op_client_wait_sync,
     op_draw_buffers,
-    op_read_buffer,
     op_alloc_gl_resource_id as op_alloc_gl_resource_id_webgl2,
     op_webgl_query_compressed_caps,
     op_create_query,
@@ -543,7 +542,6 @@ const _rawWaitSync           = _makeOrderedRaw(op_wait_sync);
 const _rawDeleteSync         = _makeOrderedRaw(op_delete_sync);
 const _rawClientWaitSync     = _makeOrderedRaw(op_client_wait_sync);
 const _rawDrawBuffers        = _makeOrderedRaw(op_draw_buffers);
-const _rawReadBuffer         = _makeOrderedRaw(op_read_buffer);
 const _rawCreateQuery        = _makeOrderedRaw(op_create_query);
 const _rawDeleteQuery        = _makeOrderedRaw(op_delete_query);
 const _rawBeginQuery         = _makeOrderedRaw(op_begin_query);
@@ -796,6 +794,7 @@ function _isPowerOfTwo(n) {
 // size (WebGL's robustness bundle calls every method with hostile values).
 function defineTextureImage(texture, target, level, image) {
     (texture._images || (texture._images = new Map())).set(_imageKey(Number(target) >>> 0, level | 0), image);
+    framebufferChanged();
 }
 
 function defineCompressedTextureImage(texture, target, level, internalformat, width, height, depth) {
@@ -935,9 +934,10 @@ function _compressedImageBytes(block, width, height, depth) {
 // `generateMipmap` takes besides the unsized ones; the float ones would need extensions this runtime does not offer.
 const _MIPMAPPABLE_SIZED_FORMATS = [0x8229, 0x822b, 0x8051, 0x8d62, 0x8056, 0x8057, 0x8058, 0x8059, 0x8c43];
 
-// The internal formats WebGL 2's `copyTexImage2D` takes, as the decoder has them (`copy_tex_image_format_error`): the
-// unsized five and the colour-renderable sized ones are 0, a depth or stencil format INVALID_OPERATION, anything else
-// INVALID_ENUM.
+// The internal formats WebGL 2's `copyTexImage2D` takes: the unsized five and the colour-renderable sized ones are 0, a
+// depth or stencil format INVALID_OPERATION, anything else INVALID_ENUM. The decoder (`copy_tex_image_format_error`)
+// takes the float ones too, as a context with EXT_color_buffer_float would; this one offers no such extension, so here
+// they are INVALID_ENUM, as a browser has them without it.
 function _copyTexImageFormatError(internalformat) {
     switch (internalformat) {
         case 0x1906: case 0x1907: case 0x1908: case 0x1909: case 0x190a:                       // the unsized five
@@ -946,13 +946,229 @@ function _copyTexImageFormatError(internalformat) {
         case 0x8231: case 0x8232: case 0x8233: case 0x8234: case 0x8235: case 0x8236:
         case 0x8237: case 0x8238: case 0x8239: case 0x823a: case 0x823b: case 0x823c:           // R*/RG* integer
         case 0x8d70: case 0x8d76: case 0x8d7c: case 0x8d82: case 0x8d88: case 0x8d8e: case 0x906f:   // RGBA* integer
-        case 0x822d: case 0x822f: case 0x822e: case 0x8230: case 0x8814: case 0x881a: case 0x8c3a:   // the float ones
             return 0;
         case 0x1902: case 0x81a5: case 0x81a6: case 0x8cac: case 0x84f9: case 0x88f0: case 0x8cad:   // depth, stencil
             return GL_INVALID_OPERATION;
         default:
             return GL_INVALID_ENUM;
     }
+}
+
+// ---- Framebuffer completeness --------------------------------------------------------------------------------------
+//
+// What a framebuffer object's attachments make it, judged here from what the facade recorded -- the attachments
+// (`_noteAttachment`), each texture's images (`TextureImage`) and each renderbuffer's storage -- by ES 3.0 4.4.4 and
+// WebGL's own rules (WebGL 1.0 6.6, WebGL 2.0 5.?): every call that draws into or reads from a framebuffer that is not
+// complete is INVALID_FRAMEBUFFER_OPERATION before anything is sent. The renderer's driver would refuse the call too,
+// but its error never reaches `getError`, and the facade would have recorded what the call defines as if it had run.
+
+// Each sized internal format: its channel sizes in bits -- red, green, blue, alpha, depth, stencil --, its component
+// type (`_N` unsigned normalized, `_S` signed normalized, `_F` float, `_I` signed integer, `_U` unsigned integer), and
+// flags: colour-renderable (ES 3.0 table 3.13, without the float formats an extension this context does not offer
+// would make renderable) and sRGB.
+const _N = 0, _S = 1, _F = 2, _I = 3, _U = 4;
+const _RENDERABLE = 1, _SRGB = 2;
+const _FORMAT_INFO = new Map([
+    [0x8229, [8, 0, 0, 0, 0, 0, _N, _RENDERABLE]],              // R8
+    [0x822b, [8, 8, 0, 0, 0, 0, _N, _RENDERABLE]],              // RG8
+    [0x8051, [8, 8, 8, 0, 0, 0, _N, _RENDERABLE]],              // RGB8
+    [0x8d62, [5, 6, 5, 0, 0, 0, _N, _RENDERABLE]],              // RGB565
+    [0x8056, [4, 4, 4, 4, 0, 0, _N, _RENDERABLE]],              // RGBA4
+    [0x8057, [5, 5, 5, 1, 0, 0, _N, _RENDERABLE]],              // RGB5_A1
+    [0x8058, [8, 8, 8, 8, 0, 0, _N, _RENDERABLE]],              // RGBA8
+    [0x8059, [10, 10, 10, 2, 0, 0, _N, _RENDERABLE]],           // RGB10_A2
+    [0x906f, [10, 10, 10, 2, 0, 0, _U, _RENDERABLE]],           // RGB10_A2UI
+    [0x8c43, [8, 8, 8, 8, 0, 0, _N, _RENDERABLE | _SRGB]],      // SRGB8_ALPHA8
+    [0x8c41, [8, 8, 8, 0, 0, 0, _N, _SRGB]],                    // SRGB8
+    [0x8f94, [8, 0, 0, 0, 0, 0, _S, 0]],                        // R8_SNORM
+    [0x8f95, [8, 8, 0, 0, 0, 0, _S, 0]],                        // RG8_SNORM
+    [0x8f96, [8, 8, 8, 0, 0, 0, _S, 0]],                        // RGB8_SNORM
+    [0x8f97, [8, 8, 8, 8, 0, 0, _S, 0]],                        // RGBA8_SNORM
+    [0x8232, [8, 0, 0, 0, 0, 0, _U, _RENDERABLE]],              // R8UI
+    [0x8231, [8, 0, 0, 0, 0, 0, _I, _RENDERABLE]],              // R8I
+    [0x8234, [16, 0, 0, 0, 0, 0, _U, _RENDERABLE]],             // R16UI
+    [0x8233, [16, 0, 0, 0, 0, 0, _I, _RENDERABLE]],             // R16I
+    [0x8236, [32, 0, 0, 0, 0, 0, _U, _RENDERABLE]],             // R32UI
+    [0x8235, [32, 0, 0, 0, 0, 0, _I, _RENDERABLE]],             // R32I
+    [0x8238, [8, 8, 0, 0, 0, 0, _U, _RENDERABLE]],              // RG8UI
+    [0x8237, [8, 8, 0, 0, 0, 0, _I, _RENDERABLE]],              // RG8I
+    [0x823a, [16, 16, 0, 0, 0, 0, _U, _RENDERABLE]],            // RG16UI
+    [0x8239, [16, 16, 0, 0, 0, 0, _I, _RENDERABLE]],            // RG16I
+    [0x823c, [32, 32, 0, 0, 0, 0, _U, _RENDERABLE]],            // RG32UI
+    [0x823b, [32, 32, 0, 0, 0, 0, _I, _RENDERABLE]],            // RG32I
+    [0x8d7c, [8, 8, 8, 8, 0, 0, _U, _RENDERABLE]],              // RGBA8UI
+    [0x8d8e, [8, 8, 8, 8, 0, 0, _I, _RENDERABLE]],              // RGBA8I
+    [0x8d76, [16, 16, 16, 16, 0, 0, _U, _RENDERABLE]],          // RGBA16UI
+    [0x8d88, [16, 16, 16, 16, 0, 0, _I, _RENDERABLE]],          // RGBA16I
+    [0x8d70, [32, 32, 32, 32, 0, 0, _U, _RENDERABLE]],          // RGBA32UI
+    [0x8d82, [32, 32, 32, 32, 0, 0, _I, _RENDERABLE]],          // RGBA32I
+    [0x8d7d, [8, 8, 8, 0, 0, 0, _U, 0]],                        // RGB8UI
+    [0x8d8f, [8, 8, 8, 0, 0, 0, _I, 0]],                        // RGB8I
+    [0x8d77, [16, 16, 16, 0, 0, 0, _U, 0]],                     // RGB16UI
+    [0x8d89, [16, 16, 16, 0, 0, 0, _I, 0]],                     // RGB16I
+    [0x8d71, [32, 32, 32, 0, 0, 0, _U, 0]],                     // RGB32UI
+    [0x8d83, [32, 32, 32, 0, 0, 0, _I, 0]],                     // RGB32I
+    [0x822d, [16, 0, 0, 0, 0, 0, _F, 0]],                       // R16F
+    [0x822f, [16, 16, 0, 0, 0, 0, _F, 0]],                      // RG16F
+    [0x881b, [16, 16, 16, 0, 0, 0, _F, 0]],                     // RGB16F
+    [0x881a, [16, 16, 16, 16, 0, 0, _F, 0]],                    // RGBA16F
+    [0x822e, [32, 0, 0, 0, 0, 0, _F, 0]],                       // R32F
+    [0x8230, [32, 32, 0, 0, 0, 0, _F, 0]],                      // RG32F
+    [0x8815, [32, 32, 32, 0, 0, 0, _F, 0]],                     // RGB32F
+    [0x8814, [32, 32, 32, 32, 0, 0, _F, 0]],                    // RGBA32F
+    [0x8c3a, [11, 11, 10, 0, 0, 0, _F, 0]],                     // R11F_G11F_B10F
+    [0x8c3d, [9, 9, 9, 0, 0, 0, _F, 0]],                        // RGB9_E5
+    [0x81a5, [0, 0, 0, 0, 16, 0, _N, 0]],                       // DEPTH_COMPONENT16
+    [0x81a6, [0, 0, 0, 0, 24, 0, _N, 0]],                       // DEPTH_COMPONENT24
+    [0x8cac, [0, 0, 0, 0, 32, 0, _F, 0]],                       // DEPTH_COMPONENT32F
+    [0x88f0, [0, 0, 0, 0, 24, 8, _N, 0]],                       // DEPTH24_STENCIL8
+    [0x8cad, [0, 0, 0, 0, 32, 8, _F, 0]],                       // DEPTH32F_STENCIL8
+    [0x8d48, [0, 0, 0, 0, 0, 8, _U, 0]],                        // STENCIL_INDEX8
+    [0x84f9, [0, 0, 0, 0, 16, 8, _N, 0]],                       // DEPTH_STENCIL (WebGL 1's renderbuffer format)
+]);
+
+// The sized format an image of an unsized internal format has (ES 3.0 table 3.12, WebGL 1's unsized uploads), from
+// the format and type its data was given in; undefined for one no framebuffer can have as a colour, depth or stencil
+// buffer (LUMINANCE, ALPHA and their mix, a float upload, a compressed image).
+function _effectiveFormat(image) {
+    if (image.compressed) return undefined;
+    const i = image.internalformat;
+    if (_FORMAT_INFO.has(i)) return i;
+    switch (i) {
+        case 0x1908:            // RGBA
+            return image.type === _UBYTE ? 0x8058 : image.type === 0x8033 ? 0x8056 : image.type === 0x8034 ? 0x8057 : undefined;
+        case 0x1907:            // RGB
+            return image.type === _UBYTE ? 0x8051 : image.type === 0x8363 ? 0x8d62 : undefined;
+        case 0x1902:            // DEPTH_COMPONENT
+            return image.type === _USHORT ? 0x81a5 : image.type === _UINT ? 0x81a6 : undefined;
+        case 0x84f9:            // DEPTH_STENCIL
+            return image.type === 0x84fa ? 0x88f0 : undefined;     // UNSIGNED_INT_24_8
+        default:
+            return undefined;
+    }
+}
+
+// Bumped by everything that can change what a framebuffer's attachments are: an attachment, a renderbuffer's
+// storage, a texture's image. A framebuffer keeps the status it was last judged to have with the generation it was
+// judged at, so a judgement is made once a change, not once a call.
+let _framebufferGeneration = 0;
+function framebufferChanged() {
+    _framebufferGeneration++;
+}
+
+const GL_FRAMEBUFFER_COMPLETE = 0x8cd5;
+const GL_INVALID_FRAMEBUFFER_OPERATION = 0x0506;
+
+// What one attachment record is: [sized format, width, height, samples], or undefined when it is not an image a
+// framebuffer can use -- a texture level with no image or a zero-sized one, a layer past the image's depth, a
+// renderbuffer with no storage.
+function _attachmentImage(ctx, record) {
+    const object = record.object;
+    if (record.type === 0x8d41) {                       // RENDERBUFFER
+        if (object._format === undefined || !object._width || !object._height) return undefined;
+        return [object._format, object._width, object._height, object._samples | 0];
+    }
+    if (object._target === undefined) return undefined;
+    const target = object._target === 0x8513 ? record.face : object._target;
+    const image = ctx._image(object, target, record.level);
+    if (image === undefined || image.width === 0 || image.height === 0) return undefined;
+    if ((object._target === 0x806f || object._target === 0x8c1a) && (record.layer | 0) >= image.depth) return undefined;
+    const format = _effectiveFormat(image);
+    return format === undefined ? null : [format, image.width, image.height, 0];
+}
+
+// FRAMEBUFFER_COMPLETE, or the first way `fb` is not, in the order a browser finds them: an attachment that is not an
+// image of a format its point can render to (INCOMPLETE_ATTACHMENT), no attachment at all (MISSING_ATTACHMENT), in
+// WebGL 1 attachments of different sizes (DIMENSIONS), depth and stencil attachments that are not one image
+// (UNSUPPORTED), renderbuffers of different sample counts (MULTISAMPLE). The default framebuffer is complete.
+function framebufferStatus(ctx, fb) {
+    if (fb === null) return GL_FRAMEBUFFER_COMPLETE;
+    if (fb._statusGeneration === _framebufferGeneration) return fb._status;
+    let status = GL_FRAMEBUFFER_COMPLETE;
+    let attached = 0, width = -1, height = -1, samples = -1, dimensions = false, multisample = false;
+    if (fb._attachments) {
+        for (const [point, record] of fb._attachments) {
+            attached++;
+            const image = _attachmentImage(ctx, record);
+            const info = image ? _FORMAT_INFO.get(image[0]) : undefined;
+            let renders = false;
+            if (info === undefined) {
+                renders = false;
+            } else if (point === 0x8d00 || point === 0x8d20) {
+                renders = point === 0x8d00 ? info[4] > 0 : info[5] > 0;
+                // WebGL 1.0 6.6: a DEPTH_STENCIL image goes to DEPTH_STENCIL_ATTACHMENT, a depth-only or stencil-only
+                // one to its own point, and no other way round.
+                if (renders && !ctx._webgl2) renders = (record.point === 0x821a) === (info[4] > 0 && info[5] > 0);
+            } else {
+                renders = (info[7] & _RENDERABLE) !== 0;
+            }
+            if (!renders) {
+                status = 0x8cd6;                        // INCOMPLETE_ATTACHMENT
+                break;
+            }
+            if (width < 0) {
+                width = image[1];
+                height = image[2];
+                samples = image[3];
+            } else {
+                if (image[1] !== width || image[2] !== height) dimensions = true;
+                if (image[3] !== samples) multisample = true;
+            }
+        }
+    }
+    if (status === GL_FRAMEBUFFER_COMPLETE) {
+        const depth = fb._attachments && fb._attachments.get(0x8d00);
+        const stencil = fb._attachments && fb._attachments.get(0x8d20);
+        if (attached === 0) status = 0x8cd7;                                    // MISSING_ATTACHMENT
+        else if (dimensions && !ctx._webgl2) status = 0x8cd9;                   // INCOMPLETE_DIMENSIONS
+        else if (depth && stencil && (depth.object !== stencil.object || depth.level !== stencil.level ||
+            depth.face !== stencil.face || (depth.layer | 0) !== (stencil.layer | 0))) status = 0x8cdd;   // UNSUPPORTED
+        else if (multisample) status = 0x8d56;                                 // INCOMPLETE_MULTISAMPLE
+    }
+    fb._status = status;
+    fb._statusGeneration = _framebufferGeneration;
+    return status;
+}
+
+// INVALID_FRAMEBUFFER_OPERATION recorded and true when `fb` is not complete.
+function refusesIncompleteFramebuffer(ctx, fb) {
+    if (framebufferStatus(ctx, fb) === GL_FRAMEBUFFER_COMPLETE) return false;
+    recordGpuPreflightError(ctx._canvasId, GL_INVALID_FRAMEBUFFER_OPERATION);
+    return true;
+}
+
+// The sized format of the colour buffer reads come from: the read framebuffer's read buffer -- the drawing buffer's
+// own format for the default framebuffer -- or 0 when the read buffer is NONE or names no image.
+function readColorFormat(ctx) {
+    const fb = ctx._readFramebufferBinding;
+    if (fb === null) return ctx._defaultReadBuffer === 0 ? 0 : ctx._drawingBufferFormat;
+    const point = fb._readBuffer === undefined ? 0x8ce0 : fb._readBuffer;
+    if (point === 0) return 0;
+    const record = fb._attachments ? fb._attachments.get(point) : undefined;
+    const image = record ? _attachmentImage(ctx, record) : undefined;
+    return image ? image[0] : 0;
+}
+
+// Whether a copy from a read buffer of the sized format `source` may make or fill an image of `internalformat` (ES 3.0
+// 3.8.5, table 3.15, as a browser enforces it): an unsized format takes a linear, unsigned-normalized source that has
+// the components it needs -- luminance is red --; a sized one takes a source with each component it has, of the same
+// component type, colour encoding and size.
+function copyCompatible(source, internalformat) {
+    const src = _FORMAT_INFO.get(source);
+    if (src === undefined) return false;
+    const linearNormalized = src[6] === _N && (src[7] & _SRGB) === 0;
+    switch (internalformat) {
+        case 0x1906: return linearNormalized && src[3] > 0;                     // ALPHA
+        case 0x1909: return linearNormalized && src[0] > 0;                     // LUMINANCE
+        case 0x190a: return linearNormalized && src[0] > 0 && src[3] > 0;       // LUMINANCE_ALPHA
+        case 0x1907: return linearNormalized && src[2] > 0;                     // RGB
+        case 0x1908: return linearNormalized && src[2] > 0 && src[3] > 0;       // RGBA
+        default: break;
+    }
+    const dst = _FORMAT_INFO.get(internalformat);
+    if (dst === undefined || dst[6] !== src[6] || (dst[7] & _SRGB) !== (src[7] & _SRGB)) return false;
+    for (let c = 0; c < 4; c++) if (dst[c] !== 0 && dst[c] !== src[c]) return false;
+    return true;
 }
 
 // The bytes a compressed upload's source (`_compressedUploadSource`: bytes, buffer offset, size) carries.
@@ -1789,6 +2005,10 @@ class WebGLRenderingContext {
             flag(opts.desynchronized, false),
             flag(opts.xrCompatible, false),
         );
+        // What reads of the default framebuffer read from: the drawing buffer's colour format, and READ_BUFFER (BACK, or
+        // NONE once `readBuffer` says so).
+        this._drawingBufferFormat = alpha ? 0x8058 : 0x8051;      // RGBA8, RGB8
+        this._defaultReadBuffer = 0x0405;                         // BACK
         // opcode 73: H C U, the frame_wire::gl::WEBGL_CONTEXT_* bits.
         encodeWebglContext(
             this._canvasId,
@@ -1895,14 +2115,15 @@ class WebGLRenderingContext {
     }
 
     // `mask` is a GLbitfield (WebIDL `unsigned long`: a BigInt or a Symbol is a TypeError). A bit naming no buffer is
-    // INVALID_VALUE, and nothing is cleared -- which the render side also counts on: a clear that reaches it is one
-    // that happens.
+    // INVALID_VALUE, then a draw framebuffer that is not complete INVALID_FRAMEBUFFER_OPERATION, and nothing is cleared
+    // -- which the render side also counts on: a clear that reaches it is one that happens.
     clear(mask) {
         const bits = +mask >>> 0;
         if ((bits & ~CLEAR_BUFFER_BITS) !== 0) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return;
         }
+        if (refusesIncompleteFramebuffer(this, this._framebufferBinding)) return;
         encodeClear(this._canvasId, bits);
     }
 
@@ -2201,6 +2422,7 @@ class WebGLRenderingContext {
         if (first < 0 || count < 0 || instances < 0 || offset < 0) return GL_INVALID_VALUE;
         if (bytes !== 0 && offset % bytes !== 0) return GL_INVALID_OPERATION;
         if (this._programBinding === null) return GL_INVALID_OPERATION;
+        if (framebufferStatus(this, this._framebufferBinding) !== GL_FRAMEBUFFER_COMPLETE) return GL_INVALID_FRAMEBUFFER_OPERATION;
         let indices = null;
         if (bytes !== 0) {
             indices = this._attribShadow.elementArrayBuffer;
@@ -2779,6 +3001,15 @@ class WebGLRenderingContext {
                 if (bound !== undefined) return bound;
                 recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
                 return null;
+            }
+            // READ_BUFFER (WebGL 2): the read framebuffer's, as `readBuffer` recorded it.
+            case 0x0c02: {
+                if (!this._isWebGL2()) {
+                    recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                    return null;
+                }
+                const fb = this._readFramebufferBinding;
+                return fb === null ? this._defaultReadBuffer : fb._readBuffer === undefined ? 0x8ce0 : fb._readBuffer;
             }
             // SAMPLER_BINDING (WebGL 2): the sampler bound to the active texture unit.
             case 0x8919:
@@ -4528,13 +4759,24 @@ class WebGLRenderingContext {
             recordGpuPreflightError(this._canvasId, error);
             return;
         }
-        if (this._refusesNpotLevel(l, w, h) || this._refusesImmutable(texture)) return;
+        if (this._refusesNpotLevel(l, w, h) || this._refusesImmutable(texture) || this._refusesCopyFrom(i)) return;
         encodeCopyTexImage2D(this._canvasId, t, l, i, x, y, w, h, 0);
         const sized = _SIZED_UPLOADS.get(i);
         defineTextureImage(texture, t, l, sized === undefined
             ? new TextureImage(i, i, _UBYTE, w, h, 1, false)
             : new TextureImage(i, sized[0], sized[1][0], w, h, 1, false));
         if (l === 0) refreshTextureSampling(this, texture);
+    }
+
+    // A copy from the read framebuffer: one that is not complete is INVALID_FRAMEBUFFER_OPERATION, a read buffer that is
+    // NONE or names no image -- or one the copy cannot convert into `internalformat` (`copyCompatible`) --
+    // INVALID_OPERATION. True when refused, the error recorded.
+    _refusesCopyFrom(internalformat) {
+        if (refusesIncompleteFramebuffer(this, this._readFramebufferBinding)) return true;
+        const source = readColorFormat(this);
+        if (source !== 0 && copyCompatible(source, internalformat)) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        return true;
     }
 
     // The internal format first (INVALID_ENUM for one the call does not take: WebGL 1 has the five unsized ones only),
@@ -4556,17 +4798,49 @@ class WebGLRenderingContext {
         const texture = this._textureFor(target, "image2D");
         if (!texture || this._refusesCopyIntoImage(
             texture, target, level | 0, xoffset | 0, yoffset | 0, 0, width | 0, height | 0,
-        )) return;
+        ) || this._refusesCopyFrom(this._image(texture, target, level | 0).internalformat)) return;
         encodeCopyTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, x, y, width, height);
     }
 
+    // Refused before anything is sent (`_attachmentFramebuffer`): a textarget that is not TEXTURE_2D or a cube face is
+    // INVALID_ENUM; a texture of another context, a deleted one, or one whose target is not the textarget's
+    // INVALID_OPERATION; a level other than 0 in WebGL 1, or past the texture's levels, INVALID_VALUE.
     framebufferTexture2D(target, attachment, textarget, texture, level) {
-        this._noteAttachment(target, attachment, texture ? { type: 0x1702, object: texture, level: level | 0, face: textarget } : null);
-        _rawFramebufferTexture2D(this._canvasId, target, attachment, textarget, texture ? texture.id : -1, level);
+        const tt = Number(textarget) >>> 0;
+        const object = texture === undefined ? null : texture;
+        const lv = level | 0;
+        const fb = this._attachmentFramebuffer(target, attachment, () => {
+            if (tt !== 0x0de1 && !(tt >= 0x8515 && tt <= 0x851a)) return GL_INVALID_ENUM;
+            if (object !== null) {
+                if (!(object instanceof WebglObject) || object._kind !== "texture") {
+                    throw new TypeError("Failed to execute 'framebufferTexture2D' on 'WebGLRenderingContext': parameter 4 is not of type 'WebGLTexture'.");
+                }
+                if (object._deleted || object._ownerId !== this._canvasId ||
+                        object._target !== (tt === 0x0de1 ? 0x0de1 : 0x8513)) return GL_INVALID_OPERATION;
+            }
+            if (lv < 0 || (this._isWebGL2() ? lv >= this._levelLimit(tt) : lv !== 0)) return GL_INVALID_VALUE;
+            return 0;
+        });
+        if (fb === undefined) return;
+        this._noteAttachment(target, attachment, object ? { type: 0x1702, object, level: lv, face: tt } : null);
+        _rawFramebufferTexture2D(this._canvasId, target, attachment, tt, object ? object.id : -1, lv);
     }
+    // Refused before anything is sent (`_attachmentFramebuffer`): a renderbuffertarget other than RENDERBUFFER is
+    // INVALID_ENUM; a renderbuffer of another context, a deleted one, or one never bound INVALID_OPERATION.
     framebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer) {
-        this._noteAttachment(target, attachment, renderbuffer ? { type: 0x8d41, object: renderbuffer, level: 0, face: 0 } : null);
-        _rawFramebufferRenderbuffer(this._canvasId, target, attachment, renderbuffertarget, renderbuffer ? renderbuffer.id : -1);
+        const object = renderbuffer === undefined ? null : renderbuffer;
+        const fb = this._attachmentFramebuffer(target, attachment, () => {
+            if ((Number(renderbuffertarget) >>> 0) !== 0x8d41) return GL_INVALID_ENUM;
+            if (object === null) return 0;
+            if (!(object instanceof WebglObject) || object._kind !== "renderbuffer") {
+                throw new TypeError("Failed to execute 'framebufferRenderbuffer' on 'WebGLRenderingContext': parameter 4 is not of type 'WebGLRenderbuffer'.");
+            }
+            return object._deleted || object._ownerId !== this._canvasId || object._everBound !== true
+                ? GL_INVALID_OPERATION : 0;
+        });
+        if (fb === undefined) return;
+        this._noteAttachment(target, attachment, object ? { type: 0x8d41, object, level: 0, face: 0 } : null);
+        _rawFramebufferRenderbuffer(this._canvasId, target, attachment, 0x8d41, object ? object.id : -1);
     }
 
     // What is attached where, recorded on the framebuffer it was attached to. `getFramebufferAttachmentParameter` answers the
@@ -4579,17 +4853,56 @@ class WebGLRenderingContext {
             if (!fb || !fb._attachments) continue;
             for (const [point, record] of fb._attachments) if (record.object === object) fb._attachments.delete(point);
         }
+        framebufferChanged();
     }
 
     _noteAttachment(target, attachment, record) {
         const fb = target === 0x8ca8 ? this._readFramebufferBinding : this._framebufferBinding;
         if (!fb || !(fb instanceof WebglObject)) return;   // the default framebuffer takes no attachments
         if (!fb._attachments) fb._attachments = new Map();
+        const a = attachment >>> 0;
+        if (record) record.point = a;
         // DEPTH_STENCIL_ATTACHMENT is both of the others (ES 3.0 4.4.2): record it as both.
-        const points = attachment === 0x821a ? [0x8d00, 0x8d20] : [attachment >>> 0];
+        const points = a === 0x821a ? [0x8d00, 0x8d20] : [a];
         for (const point of points) {
             if (record) fb._attachments.set(point, record); else fb._attachments.delete(point);
         }
+        framebufferChanged();
+    }
+
+    // The framebuffer an attachment call changes, or undefined with the error recorded, in a browser's order: a target
+    // that is not a framebuffer binding (WebGL 1 has FRAMEBUFFER only) or an attachment point the context does not
+    // have is INVALID_ENUM -- in WebGL 1 a colour attachment past the first needs WEBGL_draw_buffers, in WebGL 2 one
+    // past MAX_COLOR_ATTACHMENTS is INVALID_OPERATION --; then `objectError`, the attached object's; then the default
+    // framebuffer bound to the target, which takes no attachments, INVALID_OPERATION.
+    _attachmentFramebuffer(target, attachment, objectError) {
+        const t = Number(target) >>> 0;
+        let error = 0;
+        if (t !== 0x8d40 && !((t === 0x8ca8 || t === 0x8ca9) && this._isWebGL2())) {
+            error = GL_INVALID_ENUM;
+        } else {
+            const a = Number(attachment) >>> 0;
+            const color = a - 0x8ce0;
+            if (a !== 0x8d00 && a !== 0x8d20 && a !== 0x821a) {
+                if (color < 0 || color >= 16) error = GL_INVALID_ENUM;
+                else if (color >= this._colorAttachmentLimit()) error = this._isWebGL2() ? GL_INVALID_OPERATION : GL_INVALID_ENUM;
+            }
+        }
+        if (error === 0) error = objectError();
+        const fb = t === 0x8ca8 ? this._readFramebufferBinding : this._framebufferBinding;
+        if (error === 0 && fb === null) error = GL_INVALID_OPERATION;
+        if (error === 0) return fb;
+        recordGpuPreflightError(this._canvasId, error);
+        return undefined;
+    }
+
+    // How many colour attachment points the context has: MAX_COLOR_ATTACHMENTS in WebGL 2, WEBGL_draw_buffers' in
+    // WebGL 1 once it is enabled, one otherwise.
+    _colorAttachmentLimit() {
+        if (this._isWebGL2() || this._webglDrawBuffers !== undefined) {
+            return this._cachedLimit("_maxColorAttachments", 0x8cdf, 4);
+        }
+        return 1;
     }
 
     getFramebufferAttachmentParameter(target, attachment, pname) {
@@ -4678,8 +4991,25 @@ class WebGLRenderingContext {
             default: recordGpuPreflightError(this._canvasId, 0x0500); return null;       // an object name, level or face of the default framebuffer: INVALID_ENUM
         }
     }
+    // FRAMEBUFFER -- and WebGL 2's READ_FRAMEBUFFER and DRAW_FRAMEBUFFER -- only: another target is INVALID_ENUM and 0.
+    // A framebuffer the facade finds incomplete (`framebufferStatus`) is answered here; one it finds complete is asked
+    // of the driver once a configuration, since an implementation may refuse a combination of formats the rules allow
+    // (FRAMEBUFFER_UNSUPPORTED), and every call that draws or reads is judged by that answer from then on.
     checkFramebufferStatus(target) {
-        return _rawCheckFramebufferStatus(this._canvasId, target);
+        const t = Number(target) >>> 0;
+        if (t !== 0x8d40 && !((t === 0x8ca8 || t === 0x8ca9) && this._isWebGL2())) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return 0;
+        }
+        const fb = t === 0x8ca8 ? this._readFramebufferBinding : this._framebufferBinding;
+        const status = framebufferStatus(this, fb);
+        if (status !== GL_FRAMEBUFFER_COMPLETE || fb === null) return status;
+        if (fb._driverGeneration !== fb._statusGeneration) {
+            fb._driverGeneration = fb._statusGeneration;
+            const driver = _rawCheckFramebufferStatus(this._canvasId, t);
+            if (driver !== 0 && driver !== GL_FRAMEBUFFER_COMPLETE) fb._status = driver;
+        }
+        return fb._status;
     }
     createRenderbuffer() {
         const id = nextResourceId();
@@ -4742,12 +5072,14 @@ class WebGLRenderingContext {
     }
 
     // What getRenderbufferParameter answers, recorded on the renderbuffer bound to RENDERBUFFER.
-    _noteRenderbufferStorage(internalformat, width, height) {
+    _noteRenderbufferStorage(internalformat, width, height, samples = 0) {
         const rb = this._renderbufferBinding;
         if (!rb || typeof internalformat !== "number" || typeof width !== "number" || typeof height !== "number") return;
         rb._format = internalformat >>> 0;
         rb._width = width >>> 0;
         rb._height = height >>> 0;
+        rb._samples = samples >>> 0;
+        framebufferChanged();
     }
 
     getRenderbufferParameter(target, pname) {
@@ -4775,7 +5107,16 @@ class WebGLRenderingContext {
 
     readPixels(x, y, width, height, format, type, pixels) {
         checkReadPixelsDestination(pixels, true);
+        if (this._refusesRead()) return;
         readPixelsIntoView(this._canvasId, x, y, width, height, format, type, pixels, 0);
+    }
+    // A read from a read framebuffer that is not complete is INVALID_FRAMEBUFFER_OPERATION, one whose read buffer is
+    // NONE or names no image INVALID_OPERATION. True when refused, the error recorded.
+    _refusesRead() {
+        if (refusesIncompleteFramebuffer(this, this._readFramebufferBinding)) return true;
+        if (readColorFormat(this) !== 0) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        return true;
     }
     hint(target, mode) {
         // opcode 44: H C U U.
@@ -4885,6 +5226,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // bound buffer and there is no eighth. Anything else must be a view,
         // and `dstData` is not nullable in this version.
         if (typeof pixels === "number") {
+            if (this._refusesRead()) return;
             // GLintptr is a long long: truncate toward zero without wrapping,
             // and let the native side reject a negative offset.
             _rawReadPixelsToBuffer(this._canvasId, x, y, width, height, format, type,
@@ -4892,6 +5234,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             return;
         }
         checkReadPixelsDestination(pixels, false);
+        if (this._refusesRead()) return;
         // ToNumber runs once, before native view metadata is inspected. Unary
         // plus preserves WebIDL's TypeError for BigInt and Symbol inputs.
         readPixelsIntoView(this._canvasId, x, y, width, height, format, type, pixels, +dstOffset);
@@ -4954,7 +5297,6 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // converted first, as WebIDL converts them before the call runs (a value that is not a list is a TypeError ahead of any
     // GL error); then a call that breaks a rule is the error the specification names, in that order, and sends nothing.
     _drawBufferLimit() { return this._cachedLimit("_maxDrawBuffers", 0x8824, 4); }            // MAX_DRAW_BUFFERS
-    _colorAttachmentLimit() { return this._cachedLimit("_maxColorAttachments", 0x8cdf, 4); }  // MAX_COLOR_ATTACHMENTS
     // `other` is the buffer besides COLOR the call takes: DEPTH for fv, STENCIL for iv, none (-1) for uiv.
     _clearBufferValues(name, other, Type, buffer, drawbuffer, values, srcOffset) {
         const b = buffer >>> 0;
@@ -4989,17 +5331,22 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         v[3] = color ? list[offset + 3] : 0;
         return v;
     }
+    // Each after its own checks (`_clearBufferValues`), a draw framebuffer that is not complete being
+    // INVALID_FRAMEBUFFER_OPERATION.
     clearBufferfv(buffer, drawbuffer, values, srcOffset = 0) {
         const v = this._clearBufferValues("clearBufferfv", 0x1801, Float32Array, buffer, drawbuffer, values, srcOffset);
-        if (v !== null) encodeClearBufferfv(this._canvasId, buffer, drawbuffer, v[0], v[1], v[2], v[3]);
+        if (v === null || refusesIncompleteFramebuffer(this, this._framebufferBinding)) return;
+        encodeClearBufferfv(this._canvasId, buffer, drawbuffer, v[0], v[1], v[2], v[3]);
     }
     clearBufferiv(buffer, drawbuffer, values, srcOffset = 0) {
         const v = this._clearBufferValues("clearBufferiv", 0x1802, Int32Array, buffer, drawbuffer, values, srcOffset);
-        if (v !== null) encodeClearBufferiv(this._canvasId, buffer, drawbuffer, v[0], v[1], v[2], v[3]);
+        if (v === null || refusesIncompleteFramebuffer(this, this._framebufferBinding)) return;
+        encodeClearBufferiv(this._canvasId, buffer, drawbuffer, v[0], v[1], v[2], v[3]);
     }
     clearBufferuiv(buffer, drawbuffer, values, srcOffset = 0) {
         const v = this._clearBufferValues("clearBufferuiv", -1, Uint32Array, buffer, drawbuffer, values, srcOffset);
-        if (v !== null) encodeClearBufferuiv(this._canvasId, buffer, drawbuffer, v[0], v[1], v[2], v[3]);
+        if (v === null || refusesIncompleteFramebuffer(this, this._framebufferBinding)) return;
+        encodeClearBufferuiv(this._canvasId, buffer, drawbuffer, v[0], v[1], v[2], v[3]);
     }
     clearBufferfi(buffer, drawbuffer, depth, stencil) {
         const b = buffer >>> 0;
@@ -5342,7 +5689,10 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     // ---- Framebuffer ops ---------------------------------------
+    // A read or draw framebuffer that is not complete is INVALID_FRAMEBUFFER_OPERATION.
     blitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter) {
+        if (refusesIncompleteFramebuffer(this, this._readFramebufferBinding) ||
+                refusesIncompleteFramebuffer(this, this._framebufferBinding)) return;
         _rawBlitFramebuffer(this._canvasId, srcX0, srcY0, srcX1, srcY1,
                              dstX0, dstY0, dstX1, dstY1, mask, filter);
     }
@@ -5392,20 +5742,27 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
     // One layer of a 3D or 2D-array texture as an attachment. A target that is not a framebuffer binding is
     // INVALID_ENUM, a negative level or layer INVALID_VALUE. The layer is what FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER answers.
+    // Refused as `framebufferTexture2D` is, a texture that is not a 3D or 2D-array one being INVALID_OPERATION, and a
+    // level past its levels or a layer past MAX_3D_TEXTURE_SIZE / MAX_ARRAY_TEXTURE_LAYERS INVALID_VALUE.
     framebufferTextureLayer(target, attachment, texture, level, layer) {
-        const t = target >>> 0;
+        const t = Number(target) >>> 0;
+        const object = texture === undefined ? null : texture;
         const lv = level | 0;
         const ly = layer | 0;
-        if (t !== 0x8d40 && t !== 0x8ca9 && t !== 0x8ca8) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
-            return;
-        }
-        if (lv < 0 || ly < 0) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
-            return;
-        }
-        this._noteAttachment(t, attachment, texture ? { type: 0x1702, object: texture, level: lv, face: 0, layer: ly } : null);
-        _rawFramebufferTextureLayer(this._canvasId, t, attachment >>> 0, texture ? texture.id : -1, lv, ly);
+        const fb = this._attachmentFramebuffer(t, attachment, () => {
+            if (object === null) return 0;
+            if (!(object instanceof WebglObject) || object._kind !== "texture") {
+                throw new TypeError("Failed to execute 'framebufferTextureLayer' on 'WebGL2RenderingContext': parameter 3 is not of type 'WebGLTexture'.");
+            }
+            if (object._deleted || object._ownerId !== this._canvasId ||
+                    (object._target !== 0x806f && object._target !== 0x8c1a)) return GL_INVALID_OPERATION;
+            const layers = object._target === 0x806f ? MAX_WEBGL_GPU_3D_DIMENSION : MAX_WEBGL_GPU_ARRAY_LAYERS;
+            if (lv < 0 || lv >= this._levelLimit(object._target) || ly < 0 || ly >= layers) return GL_INVALID_VALUE;
+            return 0;
+        });
+        if (fb === undefined) return;
+        this._noteAttachment(t, attachment, object ? { type: 0x1702, object, level: lv, face: 0, layer: ly } : null);
+        _rawFramebufferTextureLayer(this._canvasId, t, attachment >>> 0, object ? object.id : -1, lv, ly);
     }
 
     // ---- Copies (WebGL 2) -------------------------------------------------------------------------------------------
@@ -5413,7 +5770,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         const texture = this._textureFor(target, "image3D");
         if (!texture || this._refusesCopyIntoImage(
             texture, target, level | 0, xoffset | 0, yoffset | 0, zoffset | 0, width | 0, height | 0,
-        )) return;
+        ) || this._refusesCopyFrom(this._image(texture, target, level | 0).internalformat)) return;
         encodeCopyTexSubImage3D(this._canvasId, target, level, xoffset, yoffset, zoffset, x, y, width, height);
     }
     // The offsets and size are `long long`, checked against the two buffers bound (ES 3.0 2.10.5, WebGL 2.0 5.1): a
@@ -5483,7 +5840,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             recordGpuPreflightError(this._canvasId, error);
             return;
         }
-        this._noteRenderbufferStorage(internalformat, width, height);
+        this._noteRenderbufferStorage(internalformat, width, height, Number(samples) >>> 0);
         _rawRenderbufferStorageMultisample(this._canvasId, target, samples,
                                             internalformat, width, height);
     }
@@ -5750,14 +6107,26 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         const buf = toGLenumSequence(buffers);
         _rawDrawBuffers(this._canvasId, buf);
     }
+    // READ_BUFFER is the read framebuffer's: BACK or NONE for the default one, NONE or a colour attachment below
+    // MAX_COLOR_ATTACHMENTS for an object (ES 3.0 4.3.1). Another of those names is INVALID_OPERATION, anything else
+    // INVALID_ENUM. Recorded, as reads judge their source by it.
     readBuffer(src) {
-        // opcode 53: H C U.
-        if (typeof src === "number") {
-            encodeReadBuffer(this._canvasId, src >>> 0);
+        const b = Number(src) >>> 0;
+        const fb = this._readFramebufferBinding;
+        const color = b - 0x8ce0;
+        let error = 0;
+        if (b !== 0 && b !== 0x0405 && !(color >= 0 && color < 16)) error = GL_INVALID_ENUM;
+        else if (fb === null ? b !== 0 && b !== 0x0405 : b === 0x0405 || (b !== 0 && color >= this._colorAttachmentLimit())) {
+            error = GL_INVALID_OPERATION;
+        }
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
             return;
         }
-        flushRenderCommandStream();
-        _rawReadBuffer(this._canvasId, src);
+        if (fb === null) this._defaultReadBuffer = b;
+        else fb._readBuffer = b;
+        // opcode 53: H C U.
+        encodeReadBuffer(this._canvasId, b);
     }
 
     // ---- Query objects -----------------------------------------

@@ -544,7 +544,6 @@
         "op_pause_transform_feedback": "stream",
         "op_pixel_storei": "stream",
         "op_polygon_offset": "stream",
-        "op_read_buffer": "stream",
         "op_read_pixels": "sync",
         "op_read_pixels_to_buffer": "sync",
         "op_renderbuffer_storage": "stream",

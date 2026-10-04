@@ -1298,9 +1298,6 @@ export function op_pixel_storei(canvasId, pname, param) {
 export function op_polygon_offset(canvasId, factor, units) {
   emit(R.OP_POLYGON_OFFSET, smiU32(canvasId, "canvas_id"), f32BitsOf(factor, "factor"), f32BitsOf(units, "units"));
 }
-export function op_read_buffer(canvasId, src) {
-  emit(R.OP_READ_BUFFER, smiU32(canvasId, "canvas_id"), smiU32(src, "src"));
-}
 export function op_sampler_parameterf(sampler, pname, param) {
   emit(R.OP_SAMPLER_PARAMETER_F, smiU32(sampler, "sampler"), smiU32(pname, "pname"), f32BitsOf(param, "param"));
 }

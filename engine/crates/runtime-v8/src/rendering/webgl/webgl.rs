@@ -1731,6 +1731,7 @@ pub(super) mod tests {
                 const fb = gl.createFramebuffer();
                 gl.bindFramebuffer(0x8d40, fb);
                 const tex = gl.createTexture();
+                gl.bindTexture(0x8c1a, tex);                     // a layer attachment is of a 3D or 2D-array texture
                 gl.framebufferTextureLayer(0x8d40, 0x8ce0, tex, 1, 3);
                 const check = (c, m) => { if (!c) throw new Error(m); };
                 check(gl.getFramebufferAttachmentParameter(0x8d40, 0x8ce0, 0x8cd1) === tex, "the object is the texture");
@@ -1886,7 +1887,8 @@ pub(super) mod tests {
                     [gl, ENUM, () => gl.invalidateFramebuffer(0x8d40, [0x8ce0])],                       // the default has no COLOR_ATTACHMENT0
                     [gl, VALUE, () => gl.invalidateSubFramebuffer(0x8d40, [0x1800], 0, 0, -1, 4)],
                     [gl, ENUM, () => gl.framebufferTextureLayer(0x0de1, 0x8ce0, null, 0, 0)],
-                    [gl, VALUE, () => gl.framebufferTextureLayer(0x8d40, 0x8ce0, null, 0, -1)],
+                    // a layer is judged only for a texture (ES 3.0 4.4.2.4); the default framebuffer takes no attachment
+                    [gl, OPERATION, () => gl.framebufferTextureLayer(0x8d40, 0x8ce0, null, 0, -1)],
                 ];
                 cases.forEach(([ctx, want, call], i) => {
                     call();
@@ -1915,6 +1917,12 @@ pub(super) mod tests {
                 if (!threw) throw new Error("a non-list is a TypeError");
                 try { gl.copyBufferSubData(0x8f36, 0x8f37, 1n, 0, 4); threw = false; } catch (e) { threw = e instanceof TypeError; }
                 if (!threw) throw new Error("a BigInt offset is a TypeError");
+                const layers = gl.createTexture();
+                gl.bindTexture(0x8c1a, layers);                          // a 2D array
+                gl.framebufferTextureLayer(0x8d40, 0x8ce0, layers, 0, -1);
+                if (gl.getError() !== 0x0501) throw new Error("a negative layer of a texture");
+                gl.framebufferTextureLayer(0x8d40, 0x8ce0, gl.createTexture(), 0, 0);
+                if (gl.getError() !== OPERATION) throw new Error("a texture that is not a 3D or 2D-array one");
                 gl.flush();
                 }"#,
             )
@@ -3242,6 +3250,134 @@ pub(super) mod tests {
                 "CompressedTexSubImage3D",
                 "CompressedTexImage2D",
                 "TexStorage2D",
+            ],
+            "only the calls taken reach the renderer"
+        );
+    }
+
+    /// The facade judges a framebuffer object's completeness from what it recorded (ES 3.0 4.4.4, WebGL 1.0 6.6): no
+    /// attachment, an attachment that is not an image its point can render to, WebGL 1's attachments of different
+    /// sizes and its depth and stencil attachments that are not one image are each answered without asking the
+    /// driver; a draw, clear or read with such a framebuffer is INVALID_FRAMEBUFFER_OPERATION and nothing is sent. A
+    /// copy takes only a read buffer it can convert (table 3.15): a destination component the source lacks, another
+    /// component type, colour encoding or size is INVALID_OPERATION, as is a read buffer of NONE. The attachment calls
+    /// are judged before they are recorded.
+    #[test]
+    fn framebuffer_completeness_is_judged_from_what_the_facade_recorded() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "framebuffer_completeness.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const errOf = (gl) => (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502, FB_OPERATION = 0x0506;
+                const FB = 0x8d40, COLOR0 = 0x8ce0, T2D = 0x0de1, RB = 0x8d41, RGBA = 0x1908, UBYTE = 0x1401;
+                // WebGL 1
+                const gl = new WebGLRenderingContext({ _rid: 235, width: 4, height: 4 }, { alpha: false });
+                const err = errOf(gl);
+                const p = gl.createProgram();
+                gl.linkProgram(p);
+                gl._programParameterCache.set(p.id, new Map([[0x8b82, 1]]));      // what the renderer answers for LINK_STATUS
+                p._consumes = []; p._consumesLink = p._links | 0;
+                gl.useProgram(p); err(0, "useProgram");
+                // A configuration the facade finds complete is the driver's to confirm (FRAMEBUFFER_UNSUPPORTED); this test
+                // has no renderer to answer, so a clear has the facade judge the framebuffer and the confirmation is given.
+                const complete = (ctx) => {
+                    ctx.clear(0);
+                    const bound = ctx._framebufferBinding;
+                    bound._driverGeneration = bound._statusGeneration;
+                    return ctx.checkFramebufferStatus(FB) === 0x8cd5;
+                };
+                const fb = gl.createFramebuffer();
+                gl.bindFramebuffer(FB, fb);
+                check(gl.checkFramebufferStatus(FB) === 0x8cd7, "no attachment: MISSING_ATTACHMENT");
+                gl.drawArrays(4, 0, 3); err(FB_OPERATION, "a draw into it");
+                gl.clear(0x4000); err(FB_OPERATION, "a clear of it");
+                gl.clear(0x10); err(VALUE, "a bad mask first");
+                gl.readPixels(0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(FB_OPERATION, "a read from it");
+                const lum = gl.createTexture();
+                gl.bindTexture(T2D, lum);
+                gl.texImage2D(T2D, 0, 0x1909, 4, 4, 0, 0x1909, UBYTE, null);
+                gl.framebufferTexture2D(FB, COLOR0, T2D, lum, 0); err(0, "LUMINANCE attached");       // sent
+                check(gl.checkFramebufferStatus(FB) === 0x8cd6, "LUMINANCE: INCOMPLETE_ATTACHMENT");
+                gl.framebufferTexture2D(FB, COLOR0, T2D, lum, 1); err(VALUE, "WebGL 1 attaches level 0 only");
+                gl.framebufferTexture2D(FB, COLOR0 + 1, T2D, lum, 0); err(ENUM, "COLOR_ATTACHMENT1 needs WEBGL_draw_buffers");
+                gl.framebufferTexture2D(FB, COLOR0, T2D, gl.createTexture(), 0); err(OPERATION, "a texture never bound");
+                gl.framebufferRenderbuffer(FB, 0x8d00, RB, gl.createRenderbuffer()); err(OPERATION, "a renderbuffer never bound");
+                const color = gl.createTexture();
+                gl.bindTexture(T2D, color);
+                gl.texImage2D(T2D, 0, RGBA, 4, 4, 0, RGBA, UBYTE, null);
+                gl.framebufferTexture2D(FB, COLOR0, T2D, color, 0);                                 // sent
+                const depth = gl.createRenderbuffer();
+                gl.bindRenderbuffer(RB, depth);
+                gl.renderbufferStorage(RB, 0x81a5, 8, 8);                                         // DEPTH_COMPONENT16
+                gl.framebufferRenderbuffer(FB, 0x8d00, RB, depth);                                 // sent
+                check(gl.checkFramebufferStatus(FB) === 0x8cd9, "WebGL 1 sizes differ: DIMENSIONS");
+                gl.renderbufferStorage(RB, 0x81a5, 4, 4);
+                check(complete(gl), "the same size: complete");
+                const stencil = gl.createRenderbuffer();
+                gl.bindRenderbuffer(RB, stencil);
+                gl.renderbufferStorage(RB, 0x8d48, 4, 4);                                         // STENCIL_INDEX8
+                gl.framebufferRenderbuffer(FB, 0x8d20, RB, stencil);                               // sent
+                check(gl.checkFramebufferStatus(FB) === 0x8cdd, "depth and stencil apart: UNSUPPORTED");
+                gl.framebufferRenderbuffer(FB, 0x8d20, RB, null);                                  // sent
+                gl.drawArrays(4, 0, 3); err(0, "complete again: drawn");                              // sent
+                // copies from the drawing buffer, which has no alpha
+                gl.bindFramebuffer(FB, null);
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.copyTexImage2D(T2D, 0, 0x1906, 0, 0, 2, 2, 0); err(OPERATION, "ALPHA from a buffer with none");
+                gl.copyTexImage2D(T2D, 0, 0x1907, 0, 0, 2, 2, 0); err(0, "RGB from it");               // sent
+                // WebGL 2
+                const gl2 = new WebGL2RenderingContext({ _rid: 236, width: 4, height: 4 }, {});
+                gl2._maxColorAttachments = 4;
+                const err2 = errOf(gl2);
+                const fb2 = gl2.createFramebuffer();
+                gl2.bindFramebuffer(FB, fb2);
+                const ui = gl2.createRenderbuffer();
+                gl2.bindRenderbuffer(RB, ui);
+                gl2.renderbufferStorage(RB, 0x8d7c, 4, 4);                                        // RGBA8UI
+                gl2.framebufferRenderbuffer(FB, COLOR0, RB, ui);                                   // sent
+                check(complete(gl2), "RGBA8UI is colour-renderable");
+                gl2.bindTexture(T2D, gl2.createTexture());
+                gl2.copyTexImage2D(T2D, 0, 0x8058, 0, 0, 2, 2, 0); err2(OPERATION, "RGBA8 from RGBA8UI");
+                gl2.copyTexImage2D(T2D, 0, 0x8d7c, 0, 0, 2, 2, 0); err2(0, "RGBA8UI from it");         // sent
+                gl2.copyTexImage2D(T2D, 0, 0x881a, 0, 0, 2, 2, 0); err2(ENUM, "a float format needs an extension");
+                gl2.readBuffer(0x0405); err2(OPERATION, "BACK on an object");
+                gl2.readBuffer(0); err2(0, "NONE");                                                // sent
+                check(gl2.getParameter(0x0c02) === 0, "READ_BUFFER is NONE");
+                gl2.copyTexImage2D(T2D, 0, 0x8d7c, 0, 0, 2, 2, 0); err2(OPERATION, "a read buffer of NONE");
+                gl2.bindFramebuffer(FB, null);
+                gl2.readBuffer(COLOR0); err2(OPERATION, "COLOR_ATTACHMENT0 on the default framebuffer");
+                check(gl2.getParameter(0x0c02) === 0x0405, "READ_BUFFER is BACK");
+                gl.flush(); gl2.flush();
+                "#,
+            )
+            .expect("every call should be judged, none thrown");
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .map(|cmd| format!("{cmd:?}"))
+            .map(|text| text.split([' ', '{', '(']).next().unwrap_or("").to_string())
+            .filter(|name| {
+                name.starts_with("Framebuffer")
+                    || name.starts_with("Draw")
+                    || name.starts_with("CopyTex")
+                    || name == "ReadBuffer"
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                "FramebufferTexture2D",
+                "FramebufferTexture2D",
+                "FramebufferRenderbuffer",
+                "FramebufferRenderbuffer",
+                "FramebufferRenderbuffer",
+                "DrawArrays",
+                "CopyTexImage2D",
+                "FramebufferRenderbuffer",
+                "CopyTexImage2D",
+                "ReadBuffer",
             ],
             "only the calls taken reach the renderer"
         );
@@ -11079,11 +11215,6 @@ pub fn op_draw_buffers(
     #[buffer(copy)] buffers: Vec<u32>,
 ) {
     queue_gl_fire_and_forget(state, GLCmd::DrawBuffers { canvas_id, buffers });
-}
-
-#[op2(fast)]
-pub fn op_read_buffer(state: &mut OpState, #[smi] canvas_id: u32, #[smi] src: u32) {
-    queue_gl_fire_and_forget(state, GLCmd::ReadBuffer { canvas_id, src });
 }
 
 // ---- WebGL 2 Query objects ---------------------------------------
