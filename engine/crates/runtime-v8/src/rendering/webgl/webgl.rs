@@ -3689,6 +3689,7 @@ pub(super) mod tests {
                 gl.bindTexture(CUBE, c);
                 for (let face = 0x8515; face <= 0x851a; face++) gl.texImage2D(face, 0, RGBA, 3, 3, 0, RGBA, UBYTE, null);
                 gl.drawElements(4, 3, 0x1403, 0);                         // 4: unit 0's 2D and unit 3's cube map
+                gl.enableVertexAttribArray(1);                            // an array at divisor 0, which an ANGLE instanced draw needs
                 gl.getExtension("ANGLE_instanced_arrays").drawArraysInstancedANGLE(4, 0, 3, 2);   // 5: the same
                 gl.deleteTexture(c);
                 gl.activeTexture(0x84c0);
