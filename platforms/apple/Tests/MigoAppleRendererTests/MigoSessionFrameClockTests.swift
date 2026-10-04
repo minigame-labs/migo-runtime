@@ -32,7 +32,7 @@ final class MigoSessionFrameClockTests: XCTestCase {
 
     func testATickWithNoRequestOutstandingDeliversNothing() {
         let (clock, delivered) = makeClock()
-        clock.tick(targetTimestamp: 1.0)
+        clock.tick(frameStart: 1.0)
         XCTAssertEqual(delivered(), [])
         XCTAssertEqual(clock.currentStatistics.ticks, 1)
         XCTAssertEqual(clock.currentStatistics.idle, 1)
@@ -44,17 +44,17 @@ final class MigoSessionFrameClockTests: XCTestCase {
         // request would present the same content against a newer clock.
         let (clock, delivered) = makeClock()
         clock.requestFrame()
-        clock.tick(targetTimestamp: 2.0)
-        clock.tick(targetTimestamp: 2.016_666_667)
+        clock.tick(frameStart: 2.0)
+        clock.tick(frameStart: 2.016_666_667)
         XCTAssertEqual(delivered(), [2_000_000_000])
         XCTAssertEqual(clock.currentStatistics.delivered, 1)
         XCTAssertEqual(clock.currentStatistics.idle, 1)
     }
 
-    func testTheTimestampDeliveredIsTheTargetNotTheTickCount() {
+    func testTheTimestampDeliveredIsTheFrameStartNotTheTickCount() {
         let (clock, delivered) = makeClock()
         clock.requestFrame()
-        clock.tick(targetTimestamp: 604_800.123_456)
+        clock.tick(frameStart: 604_800.123_456)
         XCTAssertEqual(delivered(), [604_800_123_456_000])
     }
 
@@ -62,8 +62,8 @@ final class MigoSessionFrameClockTests: XCTestCase {
         let (clock, delivered) = makeClock()
         clock.requestFrame()
         clock.requestFrame()
-        clock.tick(targetTimestamp: 3.0)
-        clock.tick(targetTimestamp: 3.016)
+        clock.tick(frameStart: 3.0)
+        clock.tick(frameStart: 3.016)
         XCTAssertEqual(delivered().count, 1, "a queue of frame requests is a queue of stale times")
         XCTAssertEqual(clock.currentStatistics.coalescedRequests, 1)
     }
@@ -75,23 +75,23 @@ final class MigoSessionFrameClockTests: XCTestCase {
         // was drawn" that the host-kit header already records once.
         let (clock, delivered) = makeClock()
         clock.requestFrame()
-        clock.tick(targetTimestamp: .nan)
+        clock.tick(frameStart: .nan)
         XCTAssertEqual(delivered(), [])
         XCTAssertEqual(clock.currentStatistics.unusableTimestamps, 1)
-        clock.tick(targetTimestamp: 4.0)
+        clock.tick(frameStart: 4.0)
         XCTAssertEqual(delivered(), [4_000_000_000], "the outstanding request survived the bad tick")
     }
 
     func testARefusalIsRecordedAndDoesNotRearmTheFrame() {
         let (clock, delivered) = makeClock { _ in MIGO_ERROR_INVALID_STATE }
         clock.requestFrame()
-        clock.tick(targetTimestamp: 5.0)
+        clock.tick(frameStart: 5.0)
         XCTAssertEqual(delivered(), [5_000_000_000])
         XCTAssertEqual(clock.currentStatistics.refused, 1)
         XCTAssertEqual(clock.currentStatistics.lastRefusal, MIGO_ERROR_INVALID_STATE)
         // A refusal means the session cannot take frames right now -- retrying it
         // every vsync would spend the frame budget being told so.
-        clock.tick(targetTimestamp: 5.016)
+        clock.tick(frameStart: 5.016)
         XCTAssertEqual(delivered().count, 1)
     }
 
@@ -101,7 +101,7 @@ final class MigoSessionFrameClockTests: XCTestCase {
         let (clock, delivered) = makeClock()
         clock.requestFrame()
         clock.stop()
-        clock.tick(targetTimestamp: 6.0)
+        clock.tick(frameStart: 6.0)
         XCTAssertEqual(delivered(), [])
         XCTAssertEqual(clock.currentStatistics.idle, 1)
     }
@@ -115,7 +115,7 @@ final class MigoSessionFrameClockTests: XCTestCase {
         autoreleasepool {
             let clock = MigoSessionFrameClock(decision: decision) { _ in MIGO_OK }
             clock.requestFrame()
-            clock.tick(targetTimestamp: 7.0)
+            clock.tick(frameStart: 7.0)
             weakClock = clock
             XCTAssertNotNil(weakClock)
         }

@@ -818,10 +818,7 @@ pub unsafe extern "C" fn migo_session_notify_vsync(
             Ok(ingress) => ingress,
             Err(error) => return error,
         };
-        // The engine measures frame time in milliseconds; the host reports the
-        // platform's nanosecond timestamp, so the conversion belongs here
-        // rather than in every host.
-        match ingress.try_send_vsync(frame_time_nanos as f64 / 1_000_000.0) {
+        match ingress.try_send_vsync(frame_time_nanos) {
             // Frame ticks are level-like and the channel retains an earlier
             // pending tick. Saturation therefore coalesces instead of asking a
             // host to retry an obsolete timestamp.

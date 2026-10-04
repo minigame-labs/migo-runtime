@@ -104,7 +104,7 @@ final class MigoSessionFrameClockABITests: XCTestCase {
         let clock = MigoSessionFrameClock(session: session, decision: decision)
 
         clock.requestFrame()
-        clock.tick(targetTimestamp: 1.0)
+        clock.tick(frameStart: 1.0)
 
         let statistics = clock.currentStatistics
         XCTAssertEqual(statistics.ticks, 1)
@@ -128,7 +128,7 @@ final class MigoSessionFrameClockABITests: XCTestCase {
         let clock = MigoSessionFrameClock(session: session, decision: decision)
 
         clock.requestFrame()
-        clock.tick(targetTimestamp: -1.0)
+        clock.tick(frameStart: -1.0)
 
         let statistics = clock.currentStatistics
         XCTAssertEqual(statistics.unusableTimestamps, 1)
@@ -162,7 +162,7 @@ final class MigoSessionFrameClockABITests: XCTestCase {
             // session's statistics, which the assertions below read.
             let probe = MigoDisplayLink(
                 decision: MigoDisplayLinkPolicy.decide(.init(platform: .macOS, osMajor: 12)),
-                onTick: { _, _ in })
+                onTick: { _ in })
             probe.start()
             let displayAvailable = probe.isRunning
             probe.stop()
@@ -305,7 +305,7 @@ final class MigoSessionFrameClockABITests: XCTestCase {
 
             let before = clock.currentStatistics.refused
             clock.requestFrame()
-            clock.tick(targetTimestamp: 1.0)
+            clock.tick(frameStart: 1.0)
             let after = clock.currentStatistics
             XCTAssertEqual(
                 after.refused, before + 1,
@@ -325,7 +325,7 @@ final class MigoSessionFrameClockABITests: XCTestCase {
         let clock = MigoSessionFrameClock(session: session, decision: decision)
 
         for index in 0..<10 {
-            clock.tick(targetTimestamp: Double(index) / 60.0)
+            clock.tick(frameStart: Double(index) / 60.0)
         }
 
         let statistics = clock.currentStatistics

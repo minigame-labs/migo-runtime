@@ -149,6 +149,12 @@ engine/third_party/angle-apple-*/
 # a few hundred megabytes of them.
 platforms/apple/Frameworks/
 
+# Swift Package Manager's own build directory, for every Swift package under platforms/apple (the root one and
+# core/): object files, the module cache, and an index store `swift build`/Xcode regenerate on every build. Build
+# products, not source -- a few thousand files per package -- and `git add -A` after building locally has committed
+# them by accident before.
+.build/
+
 # Binaries built by the out-of-tree consumer examples. They are proof the
 # package works, not source; tests/c_host/build-with-pkgconfig.sh and the
 # CMake project regenerate them.

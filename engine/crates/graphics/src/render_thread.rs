@@ -144,6 +144,8 @@ struct VsyncFrameDecision {
     should_signal_raf: bool,
     #[cfg_attr(not(test), allow(dead_code))]
     should_present: bool,
+    /// The frame's timestamp for content: when the vsync it is for happened, on the process timeline
+    /// `performance.now()` reads -- the host's frame time, put there as it arrived (`HostIngress::try_send_vsync`).
     raf_time_ms: f64,
 }
 
@@ -1083,7 +1085,7 @@ fn next_vsync_frame_decision(
     VsyncFrameDecision {
         should_signal_raf: decision.should_render,
         should_present: decision.should_render && surface.can_present(),
-        raf_time_ms: decision.raf_time_ms,
+        raf_time_ms: frame_time_ms,
     }
 }
 
@@ -1102,7 +1104,7 @@ where
     VsyncFrameDecision {
         should_signal_raf: decision.should_render,
         should_present: decision.should_render && surface.can_present(),
-        raf_time_ms: decision.raf_time_ms,
+        raf_time_ms: frame_time_ms,
     }
 }
 
@@ -1681,17 +1683,20 @@ mod tests {
         let mut scheduler = FrameScheduler::new(60);
         let mut surface = SurfaceSystem::new();
 
-        let first = next_vsync_frame_decision(&mut scheduler, &surface, 0.0);
+        let first = next_vsync_frame_decision(&mut scheduler, &surface, 2_000.0);
         assert!(first.should_signal_raf);
         assert!(!first.should_present);
-        assert_eq!(first.raf_time_ms, 0.0);
+        assert_eq!(
+            first.raf_time_ms, 2_000.0,
+            "a frame is stamped with its own time on the process timeline, not the scheduler's"
+        );
 
         surface.on_surface_available((1080, 1920));
 
-        let second = next_vsync_frame_decision(&mut scheduler, &surface, 16.667);
+        let second = next_vsync_frame_decision(&mut scheduler, &surface, 2_016.667);
         assert!(second.should_signal_raf);
         assert!(second.should_present);
-        assert!(second.raf_time_ms > 0.0);
+        assert_eq!(second.raf_time_ms, 2_016.667);
     }
 
     #[test]
@@ -2514,7 +2519,6 @@ impl RenderThread {
                 let mut fps: u32 = shared::frame_rate::DEFAULT_FPS;
                 let mut frame_clock = SoftwareFrameClock::new(fps);
                 let mut frame_scheduler = FrameScheduler::new(fps);
-                let mut raf_timeline = crate::frame_scheduler::RafTimeline::default();
 
                 let start_time = Instant::now();
                 let cleanup_cadence = DeferredCleanupCadence::new(start_time.elapsed());
@@ -3877,15 +3881,11 @@ impl RenderThread {
                             vsync_armed.set(false);
                             crate::render_diagnostics::set_render_queue_len(cmd_rx.len() as u32);
 
-                            let mut decision = next_vsync_frame_decision(
+                            let decision = next_vsync_frame_decision(
                                 &mut frame_scheduler,
                                 &surface_system,
                                 frame_time_ms,
                             );
-                            // The scheduler counts from the first vsync; content is handed a
-                            // timestamp on the timeline `performance.now()` counts on.
-                            decision.raf_time_ms = raf_timeline
-                                .align(decision.raf_time_ms, shared::time_origin::elapsed_ms());
 
                             if !decision.should_signal_raf {
                                 // RAF-skipped tick (e.g. game hasn't

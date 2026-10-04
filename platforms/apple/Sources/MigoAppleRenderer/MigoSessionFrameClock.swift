@@ -91,17 +91,17 @@ public final class MigoSessionFrameClock {
 
     init(decision: MigoDisplayLinkPolicy.Decision, notify: @escaping Notify) {
         self.notify = notify
-        var deliver: ((CFTimeInterval, CFTimeInterval) -> Void)?
-        self.link = MigoDisplayLink(decision: decision) { target, duration in
-            deliver?(target, duration)
+        var deliver: ((MigoDisplayLink.Frame) -> Void)?
+        self.link = MigoDisplayLink(decision: decision) { frame in
+            deliver?(frame)
         }
         // Assigned after `self` exists, and captured weakly: `MigoDisplayLink`
         // holds this closure for as long as it lives, and this object holds the
         // link. A strong capture closes that cycle and the clock never
         // deallocates -- the same cycle MigoDisplayLinkProxy exists to break one
         // level down.
-        deliver = { [weak self] target, _ in
-            self?.tick(targetTimestamp: target)
+        deliver = { [weak self] frame in
+            self?.tick(frameStart: frame.timestamp)
         }
     }
 
@@ -161,8 +161,14 @@ public final class MigoSessionFrameClock {
         lock.unlock()
     }
 
-    /// One vsync. Called on the main queue by `MigoDisplayLink`.
-    func tick(targetTimestamp: CFTimeInterval) {
+    /// One vsync, `frameStart` when it happened. Called on the main queue by `MigoDisplayLink`.
+    ///
+    /// The frame's start, not when it is due to appear: `migo_session_notify_vsync`
+    /// takes the frame time AChoreographer reports on Android, which is the vsync the
+    /// frame began at, and the engine stamps the frame with it. The due time is
+    /// still to come when content runs, so a frame stamped with it handed
+    /// `requestAnimationFrame` a time after `performance.now()` in the same callback.
+    func tick(frameStart: CFTimeInterval) {
         lock.lock()
         statistics.ticks += 1
         let wanted = frameRequested
@@ -174,7 +180,7 @@ public final class MigoSessionFrameClock {
         frameRequested = false
         lock.unlock()
 
-        switch MigoVsyncTimestamp.nanoseconds(fromSeconds: targetTimestamp) {
+        switch MigoVsyncTimestamp.nanoseconds(fromSeconds: frameStart) {
         case .failure:
             // The frame stays requested: the engine asked for one and this tick
             // could not carry it, so dropping the request would make the engine

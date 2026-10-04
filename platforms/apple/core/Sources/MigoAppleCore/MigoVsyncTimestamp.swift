@@ -33,9 +33,10 @@ public enum MigoVsyncTimestamp {
 
     /// Nanoseconds for `migo_session_notify_vsync`, or why the tick is not one.
     ///
-    /// Rounded rather than truncated: a display link's target timestamps are
-    /// evenly spaced, and truncation biases every one of them the same direction,
-    /// which shows up as a frame interval a fraction short at every cadence.
+    /// `seconds` is a frame's start on the uptime clock (`MigoDisplayLink.Frame.timestamp`).
+    /// Rounded rather than truncated: a display link's timestamps are evenly
+    /// spaced, and truncation biases every one of them the same direction, which
+    /// shows up as a frame interval a fraction short at every cadence.
     public static func nanoseconds(fromSeconds seconds: CFTimeInterval) -> Result<Int64, Rejection>
     {
         guard seconds.isFinite else { return .failure(Rejection.notFinite) }
