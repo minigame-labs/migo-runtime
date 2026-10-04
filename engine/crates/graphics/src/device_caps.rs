@@ -14,6 +14,12 @@ fn has_extension(extensions: &str, expected: &str) -> bool {
         .any(|extension| extension == expected)
 }
 
+/// Whether the driver renders to the float colour formats -- R16F .. RGBA32F and R11F_G11F_B10F --, which WebGL 2's
+/// EXT_color_buffer_float needs: core in ES 3.2, GL_EXT_color_buffer_float on 3.0 and 3.1.
+fn renders_float_colour_buffers(gles_version: (u32, u32), gl_extensions: &str) -> bool {
+    gles_version >= (3, 2) || has_extension(gl_extensions, "GL_EXT_color_buffer_float")
+}
+
 #[inline]
 fn ahb_api_supported(android_api: Option<u32>) -> bool {
     android_api.is_some_and(|level| level >= 26)
@@ -50,6 +56,9 @@ pub struct DeviceCapabilities {
     /// is no way to ask "is this link done?" that does not block, so the link
     /// queue drains at the end of the batch instead of across frames.
     pub has_parallel_shader_compile: bool,
+    /// The float formats R16F, RG16F, RGBA16F, R32F, RG32F, RGBA32F and R11F_G11F_B10F are colour-renderable:
+    /// `GL_EXT_color_buffer_float`, core from ES 3.2. What lets a WebGL 2 context offer EXT_color_buffer_float.
+    pub has_color_buffer_float: bool,
 }
 
 /// Coarse device classification that gates optimisation paths.
@@ -118,6 +127,8 @@ impl DeviceCapabilities {
         let has_parallel_shader_compile =
             has_extension(&gl_extensions, "GL_KHR_parallel_shader_compile");
 
+        let has_color_buffer_float = renders_float_colour_buffers(gles_version, &gl_extensions);
+
         Self {
             gles_version,
             has_pbo,
@@ -129,6 +140,7 @@ impl DeviceCapabilities {
             has_partial_update,
             compressed_format_support,
             has_parallel_shader_compile,
+            has_color_buffer_float,
         }
     }
 
@@ -234,6 +246,21 @@ mod tests {
             "GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3",
             "GL_OES_EGL_image"
         ));
+    }
+
+    #[test]
+    fn float_colour_buffers_are_core_in_3_2_and_an_extension_before() {
+        assert!(renders_float_colour_buffers((3, 2), ""));
+        assert!(renders_float_colour_buffers((4, 1), ""));
+        assert!(renders_float_colour_buffers(
+            (3, 0),
+            "GL_OES_EGL_image GL_EXT_color_buffer_float"
+        ));
+        assert!(!renders_float_colour_buffers(
+            (3, 1),
+            "GL_EXT_color_buffer_half_float"
+        ));
+        assert!(!renders_float_colour_buffers((3, 0), ""));
     }
 
     #[test]

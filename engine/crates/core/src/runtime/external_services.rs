@@ -524,12 +524,12 @@ impl ServiceContext {
         let _ = self.gpu.set((caps, launched));
     }
 
-    /// `op_webgl_query_compressed_caps`: bit 0 ETC2/EAC, bit 1 ASTC LDR -- the
-    /// embedded op's bits (`runtime-v8`'s `error_state.rs`). Waits for the
+    /// `op_webgl_query_gpu_caps`: `GpuCaps::webgl_bits`, the embedded op's
+    /// answer (`runtime-v8`'s `error_state.rs`). Waits for the
     /// renderer to publish them, as the embedded execution does before it runs
     /// content; a renderer that failed or never answered has none, which is
     /// the embedded op's answer before caps are set.
-    fn compressed_texture_caps(&self) -> u32 {
+    fn webgl_caps(&self) -> u32 {
         let Some((caps, launched)) = self.gpu.get() else {
             return 0;
         };
@@ -539,8 +539,7 @@ impl ServiceContext {
         ) {
             return 0;
         }
-        let snapshot = caps.snapshot();
-        u32::from(snapshot.etc2) | (u32::from(snapshot.astc) << 1)
+        caps.webgl_bits()
     }
 
     /// One device service, or the embedded op's own refusal when the platform
@@ -767,9 +766,9 @@ impl ServiceContext {
             }
             // What content reads about the device: the host's last report,
             // through the same services the embedded ops read.
-            id::op_webgl_query_compressed_caps => {
+            id::op_webgl_query_gpu_caps => {
                 let [] = exactly(op, args)?;
-                Ok(OwnedValue::U32(self.compressed_texture_caps()))
+                Ok(OwnedValue::U32(self.webgl_caps()))
             }
             id::op_get_battery_info => {
                 let [] = exactly(op, args)?;
@@ -2366,21 +2365,35 @@ mod tests {
     fn compressed_texture_caps_are_the_renderer_s_in_the_embedded_bits() {
         let root = std::env::temp_dir().join(format!("migo-gpu-caps-{}", std::process::id()));
         let answer = |context: &ServiceContext| match context
-            .call_sync(id::op_webgl_query_compressed_caps, Vec::new())
+            .call_sync(id::op_webgl_query_gpu_caps, Vec::new())
         {
             Ok(OwnedValue::U32(bits)) => bits,
             other => panic!("a u32, not {other:?}"),
         };
-        for (etc2, astc, bits) in [(true, true, 0b11), (true, false, 0b01), (false, true, 0b10)] {
+        for (etc2, astc, color_buffer_float, bits) in [
+            (true, true, false, 0b011),
+            (true, false, false, 0b001),
+            (false, true, false, 0b010),
+            (true, false, true, 0b101),
+        ] {
             let context = ServiceContext::new(root.join("files"), root.join("cache"));
             let caps = shared::device::gpu_caps::GpuCaps::new();
             context.bind_gpu(Arc::clone(&caps), Instant::now());
             // Published after the call begins waiting: the answer waits for it.
             let publisher = std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(20));
-                caps.set(etc2, astc, false);
+                caps.set(shared::device::gpu_caps::GpuCapsSnapshot {
+                    etc2,
+                    astc,
+                    ahb: false,
+                    color_buffer_float,
+                });
             });
-            assert_eq!(answer(&context), bits, "etc2 {etc2} astc {astc}");
+            assert_eq!(
+                answer(&context),
+                bits,
+                "etc2 {etc2} astc {astc} color_buffer_float {color_buffer_float}"
+            );
             publisher.join().unwrap();
         }
         let failed = ServiceContext::new(root.join("files"), root.join("cache"));

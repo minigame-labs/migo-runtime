@@ -51,7 +51,7 @@ grep -Fq 'get_pixels_with_options' "$DECODER" || fail 'Skia does not decode dire
 grep -Fq 'lock.finish()' "$DECODER" || fail 'decoder publishes before explicit unlock completion'
 
 grep -Fq 'pub ahb: bool' "$GPU_CAPS" || fail 'GPU capability snapshot does not publish AHB import support'
-grep -Fq 'pub fn set(&self, etc2: bool, astc: bool, ahb: bool)' "$GPU_CAPS" || fail 'GPU capabilities are not published atomically as one complete snapshot'
+grep -Fq 'pub fn set(&self, caps: GpuCapsSnapshot)' "$GPU_CAPS" || fail 'GPU capabilities are not published atomically as one complete snapshot'
 grep -Fq 'CompressedFormatSupport::detect(gl)' "$DEVICE_CAPS" || fail 'compressed-format detection still publishes an incomplete capability snapshot'
 grep -Fq 'device_caps.ahb_available' "$CANVAS_MANAGER" || fail 'final AHB import availability is not available at capability publication'
 grep -Fq 'gpu_caps.set(' "$CANVAS_MANAGER" || fail 'CanvasManager does not publish final GPU capabilities'

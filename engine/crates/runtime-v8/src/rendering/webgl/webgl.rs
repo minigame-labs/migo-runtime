@@ -1959,12 +1959,12 @@ pub(super) mod tests {
                 "compressed_uploads.js",
                 r#"
                 const gl1 = new WebGLRenderingContext({ _rid: 180, width: 1, height: 1 }, {});
-                gl1._compressedCapsCache = 1;       // what the renderer would answer: ETC2 is there
+                gl1._gpuCapsCache = 1;       // what the renderer would answer: ETC2 is there
                 gl1.getExtension("WEBGL_compressed_texture_etc");
                 gl1.bindTexture(0x0de1, gl1.createTexture());
                 gl1.compressedTexImage2D(0x0de1, 0, 0x9278, 4, 4, 0, new Uint8Array(16).fill(1));
                 const gl = new WebGL2RenderingContext({ _rid: 181, width: 1, height: 1 }, {});
-                gl._compressedCapsCache = 1;
+                gl._gpuCapsCache = 1;
                 gl.getExtension("WEBGL_compressed_texture_etc");
                 gl.bindTexture(0x0de1, gl.createTexture());
                 gl.bindTexture(0x8c1a, gl.createTexture());
@@ -2048,7 +2048,7 @@ pub(super) mod tests {
                 "malformed_compressed_uploads.js",
                 r#"
                 const gl = new WebGL2RenderingContext({ _rid: 182, width: 1, height: 1 }, {});
-                gl._compressedCapsCache = 1;       // what the renderer would answer: ETC2 is there
+                gl._gpuCapsCache = 1;       // what the renderer would answer: ETC2 is there
                 gl.getExtension("WEBGL_compressed_texture_etc");
                 gl.bindTexture(0x0de1, gl.createTexture());
                 gl.bindTexture(0x8c1a, gl.createTexture());
@@ -3181,7 +3181,7 @@ pub(super) mod tests {
                 // compressed
                 gl.bindTexture(T2D, gl.createTexture());
                 gl.compressedTexImage2D(T2D, 0, ETC, 8, 8, 0, new Uint8Array(64)); err(ENUM, "ETC2 before its extension");
-                gl._compressedCapsCache = 3;         // what the renderer would answer: ETC2 and ASTC
+                gl._gpuCapsCache = 3;         // what the renderer would answer: ETC2 and ASTC
                 gl.getExtension("WEBGL_compressed_texture_etc");
                 const astc = gl.getExtension("WEBGL_compressed_texture_astc");
                 check(astc.COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR === 0x93dd && astc.getSupportedProfiles()[0] === "ldr", "ASTC's 28");
@@ -3378,6 +3378,106 @@ pub(super) mod tests {
                 "FramebufferRenderbuffer",
                 "CopyTexImage2D",
                 "ReadBuffer",
+            ],
+            "only the calls taken reach the renderer"
+        );
+    }
+
+    /// EXT_color_buffer_float is offered to a WebGL 2 context whose renderer renders to float colour buffers (caps bit
+    /// 2), to no other. Until it is enabled a float image is not colour-renderable: a framebuffer with one attached is
+    /// INCOMPLETE_ATTACHMENT, a float renderbuffer or copy INVALID_ENUM, a mipmap of one INVALID_OPERATION. Enabling it
+    /// has the framebuffer judged again, and each call is what the extension makes it; a 32-bit float image is still not
+    /// filterable, so not mipmapped, and a copy takes only a float source of its own sizes.
+    #[test]
+    fn a_float_colour_buffer_is_renderable_once_ext_color_buffer_float_is_enabled() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "ext_color_buffer_float.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const errOf = (gl) => (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const ENUM = 0x0500, OPERATION = 0x0502, FB_OPERATION = 0x0506;
+                const FB = 0x8d40, COLOR0 = 0x8ce0, T2D = 0x0de1, RB = 0x8d41, RGBA = 0x1908, HALF = 0x140b, FLOAT = 0x1406;
+                const RGBA16F = 0x881a, RGBA32F = 0x8814, NAME = 'EXT_color_buffer_float';
+                const gl1 = new WebGLRenderingContext({ _rid: 237, width: 4, height: 4 }, {});
+                gl1._gpuCapsCache = 7;
+                check(gl1.getExtension(NAME) === null, "not to WebGL 1");
+                check(!gl1.getSupportedExtensions().includes(NAME), "nor listed there");
+                const bare = new WebGL2RenderingContext({ _rid: 238, width: 4, height: 4 }, {});
+                bare._gpuCapsCache = 3;
+                check(bare.getExtension(NAME) === null, "not where the renderer has no float colour buffers");
+                check(!bare.getSupportedExtensions().includes(NAME), "nor listed there");
+                const gl = new WebGL2RenderingContext({ _rid: 239, width: 4, height: 4 }, {});
+                gl._gpuCapsCache = 4;
+                gl._maxColorAttachments = 4;
+                const err = errOf(gl);
+                check(gl.getSupportedExtensions().includes(NAME), "listed where the renderer has them");
+                const complete = () => {
+                    gl.clear(0);
+                    const bound = gl._framebufferBinding;
+                    bound._driverGeneration = bound._statusGeneration;
+                    return gl.checkFramebufferStatus(FB) === 0x8cd5;
+                };
+                const fb = gl.createFramebuffer();
+                gl.bindFramebuffer(FB, fb);
+                const half = gl.createTexture();
+                gl.bindTexture(T2D, half);
+                gl.texImage2D(T2D, 0, RGBA16F, 4, 4, 0, RGBA, HALF, null); err(0, "an RGBA16F image");
+                gl.framebufferTexture2D(FB, COLOR0, T2D, half, 0); err(0, "attached");             // sent
+                check(gl.checkFramebufferStatus(FB) === 0x8cd6, "not enabled: INCOMPLETE_ATTACHMENT");
+                gl.clear(0x4000); err(FB_OPERATION, "a clear of it");
+                gl.generateMipmap(T2D); err(OPERATION, "a mipmap of it");
+                const rb = gl.createRenderbuffer();
+                gl.bindRenderbuffer(RB, rb);
+                gl.renderbufferStorage(RB, RGBA32F, 4, 4); err(ENUM, "an RGBA32F renderbuffer");
+                gl.bindFramebuffer(FB, null);
+                const target = gl.createTexture();
+                gl.bindTexture(T2D, target);
+                gl.copyTexImage2D(T2D, 0, RGBA16F, 0, 0, 2, 2, 0); err(ENUM, "a copy into RGBA16F");
+                const ext = gl.getExtension(NAME);
+                check(ext !== null && gl.getExtension(NAME) === ext, "enabled, one object");
+                gl.copyTexImage2D(T2D, 0, RGBA16F, 0, 0, 2, 2, 0); err(OPERATION, "RGBA16F from the drawing buffer's RGBA8");
+                gl.bindFramebuffer(FB, fb);
+                check(complete(), "enabled: the framebuffer with RGBA16F is complete");
+                gl.copyTexImage2D(T2D, 0, RGBA16F, 0, 0, 2, 2, 0); err(0, "RGBA16F from RGBA16F");          // sent
+                gl.copyTexImage2D(T2D, 0, 0x8058, 0, 0, 2, 2, 0); err(OPERATION, "RGBA8 from a float buffer");
+                gl.copyTexImage2D(T2D, 0, RGBA32F, 0, 0, 2, 2, 0); err(OPERATION, "RGBA32F from RGBA16F, another size");
+                gl.bindTexture(T2D, half);
+                gl.generateMipmap(T2D); err(0, "a mipmap of RGBA16F");                                     // sent
+                gl.renderbufferStorage(RB, RGBA32F, 4, 4); err(0, "an RGBA32F renderbuffer");             // sent
+                gl.framebufferRenderbuffer(FB, COLOR0 + 1, RB, rb); err(0, "attached beside it");          // sent
+                check(complete(), "both float attachments: complete");
+                const full = gl.createTexture();
+                gl.bindTexture(T2D, full);
+                gl.texImage2D(T2D, 0, RGBA32F, 4, 4, 0, RGBA, FLOAT, null); err(0, "an RGBA32F image");
+                gl.generateMipmap(T2D); err(OPERATION, "RGBA32F is not filterable");
+                gl.flush();
+                "#,
+            )
+            .expect("every call should be judged, none thrown");
+        let sent: Vec<String> = drain_gl_commands(&render_rx)
+            .iter()
+            .map(|cmd| format!("{cmd:?}"))
+            .map(|text| text.split([' ', '{', '(']).next().unwrap_or("").to_string())
+            .filter(|name| {
+                name.starts_with("Framebuffer")
+                    || name.starts_with("CopyTex")
+                    || name == "GenerateMipmap"
+                    || name == "RenderbufferStorage"
+                    || name == "Clear"
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                "FramebufferTexture2D",
+                "Clear",
+                "CopyTexImage2D",
+                "GenerateMipmap",
+                "RenderbufferStorage",
+                "FramebufferRenderbuffer",
+                "Clear",
             ],
             "only the calls taken reach the renderer"
         );

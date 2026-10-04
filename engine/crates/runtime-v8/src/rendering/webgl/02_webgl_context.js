@@ -155,7 +155,7 @@ import {
     op_client_wait_sync,
     op_draw_buffers,
     op_alloc_gl_resource_id as op_alloc_gl_resource_id_webgl2,
-    op_webgl_query_compressed_caps,
+    op_webgl_query_gpu_caps,
     op_create_query,
     op_delete_query,
     op_begin_query,
@@ -317,7 +317,7 @@ import {
 //
 // Direct / no-submit ops (call without flush):
 //   op_alloc_gl_resource_id, op_gl_is_context_lost, op_webgl_get_context_attributes,
-//   op_webgl_record_attributes, op_webgl_query_compressed_caps.
+//   op_webgl_record_attributes, op_webgl_query_gpu_caps.
 //
 // All others: orderedRaw(op) -> flushRenderCommandStream() then ReflectApply.
 
@@ -931,14 +931,17 @@ function _compressedImageBytes(block, width, height, depth) {
 }
 
 // The sized internal formats that are both colour-renderable and texture-filterable (ES 3.0 table 3.13), which
-// `generateMipmap` takes besides the unsized ones; the float ones would need extensions this runtime does not offer.
+// `generateMipmap` takes besides the unsized ones; and the filterable float ones, colour-renderable once
+// EXT_color_buffer_float is enabled -- R16F, RG16F, RGBA16F, R11F_G11F_B10F. The 32-bit float ones are not filterable
+// without OES_texture_float_linear, which this runtime does not offer.
 const _MIPMAPPABLE_SIZED_FORMATS = [0x8229, 0x822b, 0x8051, 0x8d62, 0x8056, 0x8057, 0x8058, 0x8059, 0x8c43];
+const _MIPMAPPABLE_FLOAT_FORMATS = [0x822d, 0x822f, 0x881a, 0x8c3a];
 
-// The internal formats WebGL 2's `copyTexImage2D` takes: the unsized five and the colour-renderable sized ones are 0, a
-// depth or stencil format INVALID_OPERATION, anything else INVALID_ENUM. The decoder (`copy_tex_image_format_error`)
-// takes the float ones too, as a context with EXT_color_buffer_float would; this one offers no such extension, so here
-// they are INVALID_ENUM, as a browser has them without it.
-function _copyTexImageFormatError(internalformat) {
+// The internal formats WebGL 2's `copyTexImage2D` takes: the unsized five and the colour-renderable sized ones are 0 --
+// the float ones only with EXT_color_buffer_float enabled (`floatRenderable`), INVALID_ENUM without, as a browser has
+// them --, a depth or stencil format INVALID_OPERATION, anything else INVALID_ENUM. The decoder
+// (`copy_tex_image_format_error`) takes the float ones, as a context with the extension does.
+function _copyTexImageFormatError(internalformat, floatRenderable) {
     switch (internalformat) {
         case 0x1906: case 0x1907: case 0x1908: case 0x1909: case 0x190a:                       // the unsized five
         case 0x8229: case 0x822b: case 0x8051: case 0x8056: case 0x8057: case 0x8058: case 0x8059: case 0x8d62:
@@ -947,6 +950,8 @@ function _copyTexImageFormatError(internalformat) {
         case 0x8237: case 0x8238: case 0x8239: case 0x823a: case 0x823b: case 0x823c:           // R*/RG* integer
         case 0x8d70: case 0x8d76: case 0x8d7c: case 0x8d82: case 0x8d88: case 0x8d8e: case 0x906f:   // RGBA* integer
             return 0;
+        case 0x822d: case 0x822f: case 0x822e: case 0x8230: case 0x8814: case 0x881a: case 0x8c3a:   // the float ones
+            return floatRenderable ? 0 : GL_INVALID_ENUM;
         case 0x1902: case 0x81a5: case 0x81a6: case 0x8cac: case 0x84f9: case 0x88f0: case 0x8cad:   // depth, stencil
             return GL_INVALID_OPERATION;
         default:
@@ -958,16 +963,16 @@ function _copyTexImageFormatError(internalformat) {
 //
 // What a framebuffer object's attachments make it, judged here from what the facade recorded -- the attachments
 // (`_noteAttachment`), each texture's images (`TextureImage`) and each renderbuffer's storage -- by ES 3.0 4.4.4 and
-// WebGL's own rules (WebGL 1.0 6.6, WebGL 2.0 5.?): every call that draws into or reads from a framebuffer that is not
+// WebGL's own rules (WebGL 1.0 6.6): every call that draws into or reads from a framebuffer that is not
 // complete is INVALID_FRAMEBUFFER_OPERATION before anything is sent. The renderer's driver would refuse the call too,
 // but its error never reaches `getError`, and the facade would have recorded what the call defines as if it had run.
 
 // Each sized internal format: its channel sizes in bits -- red, green, blue, alpha, depth, stencil --, its component
 // type (`_N` unsigned normalized, `_S` signed normalized, `_F` float, `_I` signed integer, `_U` unsigned integer), and
-// flags: colour-renderable (ES 3.0 table 3.13, without the float formats an extension this context does not offer
-// would make renderable) and sRGB.
+// flags: colour-renderable (ES 3.0 table 3.13), colour-renderable once EXT_color_buffer_float is enabled, and sRGB.
 const _N = 0, _S = 1, _F = 2, _I = 3, _U = 4;
-const _RENDERABLE = 1, _SRGB = 2;
+// `_FLOAT_RENDERABLE`: colour-renderable once EXT_color_buffer_float is enabled.
+const _RENDERABLE = 1, _SRGB = 2, _FLOAT_RENDERABLE = 4;
 const _FORMAT_INFO = new Map([
     [0x8229, [8, 0, 0, 0, 0, 0, _N, _RENDERABLE]],              // R8
     [0x822b, [8, 8, 0, 0, 0, 0, _N, _RENDERABLE]],              // RG8
@@ -1008,15 +1013,15 @@ const _FORMAT_INFO = new Map([
     [0x8d89, [16, 16, 16, 0, 0, 0, _I, 0]],                     // RGB16I
     [0x8d71, [32, 32, 32, 0, 0, 0, _U, 0]],                     // RGB32UI
     [0x8d83, [32, 32, 32, 0, 0, 0, _I, 0]],                     // RGB32I
-    [0x822d, [16, 0, 0, 0, 0, 0, _F, 0]],                       // R16F
-    [0x822f, [16, 16, 0, 0, 0, 0, _F, 0]],                      // RG16F
+    [0x822d, [16, 0, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE]],       // R16F
+    [0x822f, [16, 16, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE]],      // RG16F
     [0x881b, [16, 16, 16, 0, 0, 0, _F, 0]],                     // RGB16F
-    [0x881a, [16, 16, 16, 16, 0, 0, _F, 0]],                    // RGBA16F
-    [0x822e, [32, 0, 0, 0, 0, 0, _F, 0]],                       // R32F
-    [0x8230, [32, 32, 0, 0, 0, 0, _F, 0]],                      // RG32F
+    [0x881a, [16, 16, 16, 16, 0, 0, _F, _FLOAT_RENDERABLE]],    // RGBA16F
+    [0x822e, [32, 0, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE]],       // R32F
+    [0x8230, [32, 32, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE]],      // RG32F
     [0x8815, [32, 32, 32, 0, 0, 0, _F, 0]],                     // RGB32F
-    [0x8814, [32, 32, 32, 32, 0, 0, _F, 0]],                    // RGBA32F
-    [0x8c3a, [11, 11, 10, 0, 0, 0, _F, 0]],                     // R11F_G11F_B10F
+    [0x8814, [32, 32, 32, 32, 0, 0, _F, _FLOAT_RENDERABLE]],    // RGBA32F
+    [0x8c3a, [11, 11, 10, 0, 0, 0, _F, _FLOAT_RENDERABLE]],     // R11F_G11F_B10F
     [0x8c3d, [9, 9, 9, 0, 0, 0, _F, 0]],                        // RGB9_E5
     [0x81a5, [0, 0, 0, 0, 16, 0, _N, 0]],                       // DEPTH_COMPONENT16
     [0x81a6, [0, 0, 0, 0, 24, 0, _N, 0]],                       // DEPTH_COMPONENT24
@@ -1100,7 +1105,7 @@ function framebufferStatus(ctx, fb) {
                 // one to its own point, and no other way round.
                 if (renders && !ctx._webgl2) renders = (record.point === 0x821a) === (info[4] > 0 && info[5] > 0);
             } else {
-                renders = (info[7] & _RENDERABLE) !== 0;
+                renders = colorRenderable(ctx, info);
             }
             if (!renders) {
                 status = 0x8cd6;                        // INCOMPLETE_ATTACHMENT
@@ -1128,6 +1133,12 @@ function framebufferStatus(ctx, fb) {
     fb._status = status;
     fb._statusGeneration = _framebufferGeneration;
     return status;
+}
+
+// Whether a format (`_FORMAT_INFO`'s entry) is colour-renderable in `ctx`: the float ones only with
+// EXT_color_buffer_float enabled.
+function colorRenderable(ctx, info) {
+    return (info[7] & _RENDERABLE) !== 0 || ((info[7] & _FLOAT_RENDERABLE) !== 0 && ctx._extColorBufferFloat !== undefined);
 }
 
 // INVALID_FRAMEBUFFER_OPERATION recorded and true when `fb` is not complete.
@@ -1703,25 +1714,17 @@ function viewElementBytes(canvasId, view, srcOffset, length) {
     return range === null ? null : toBoundedUploadBytes(canvasId, range);
 }
 
-// Channel sizes in bits of a renderbuffer format: [red, green, blue, alpha, depth, stencil].
+// Channel sizes in bits of a renderbuffer format: red, green, blue, alpha, depth, stencil (`_FORMAT_INFO`).
 function _renderbufferBits(format, channel) {
-    let bits;
-    switch (format) {
-        case 0x8056: bits = [4, 4, 4, 4, 0, 0]; break;     // RGBA4
-        case 0x8057: bits = [5, 5, 5, 1, 0, 0]; break;     // RGB5_A1
-        case 0x8d62: bits = [5, 6, 5, 0, 0, 0]; break;     // RGB565
-        case 0x8058: bits = [8, 8, 8, 8, 0, 0]; break;     // RGBA8
-        case 0x8051: bits = [8, 8, 8, 0, 0, 0]; break;     // RGB8
-        case 0x81a5: bits = [0, 0, 0, 0, 16, 0]; break;    // DEPTH_COMPONENT16
-        case 0x81a6: bits = [0, 0, 0, 0, 24, 0]; break;    // DEPTH_COMPONENT24
-        case 0x8cac: bits = [0, 0, 0, 0, 32, 0]; break;    // DEPTH_COMPONENT32F
-        case 0x8d48: bits = [0, 0, 0, 0, 0, 8]; break;     // STENCIL_INDEX8
-        case 0x84f9: bits = [0, 0, 0, 0, 16, 8]; break;    // DEPTH_STENCIL: 16 and 8 is what WebGL reports
-        case 0x88f0: bits = [0, 0, 0, 0, 24, 8]; break;    // DEPTH24_STENCIL8
-        case 0x8cad: bits = [0, 0, 0, 0, 32, 8]; break;    // DEPTH32F_STENCIL8
-        default: bits = [0, 0, 0, 0, 0, 0]; break;
-    }
-    return bits[channel];
+    const info = _FORMAT_INFO.get(format);
+    return info === undefined ? 0 : info[channel];
+}
+
+// FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE of a format: the type its components are read as.
+function _componentType(format) {
+    const info = _FORMAT_INFO.get(format);
+    if (info === undefined) return 0x8c17;                         // UNSIGNED_NORMALIZED
+    return [0x8c17, 0x8f9c, 0x1406, 0x1404, 0x1405][info[6]];      // UNSIGNED_/SIGNED_NORMALIZED, FLOAT, INT, UNSIGNED_INT
 }
 
 class WebglObject {
@@ -3159,20 +3162,29 @@ class WebGLRenderingContext {
         // compressed asset path instead of falling back to RGBA,
         // which can save ~16 MiB of heap per 2048^2 texture.
         if (name === 'WEBGL_compressed_texture_etc') {
-            if (!(this._compressedCaps & 1)) return null;
+            if (!(this._gpuCaps & 1)) return null;
             return this._webglCompressedEtc ||
                 (this._webglCompressedEtc = this._buildCompressedEtc());
         }
         // ETC1 is ETC2 RGB8's subset, so a device with ETC2 has it: the renderer uploads its blocks as ETC2 RGB8.
         if (name === 'WEBGL_compressed_texture_etc1') {
-            if (!(this._compressedCaps & 1)) return null;
+            if (!(this._gpuCaps & 1)) return null;
             return this._webglCompressedEtc1 ||
                 (this._webglCompressedEtc1 = { COMPRESSED_RGB_ETC1_WEBGL: 0x8d64 });
         }
         if (name === 'WEBGL_compressed_texture_astc') {
-            if (!(this._compressedCaps & 2)) return null;
+            if (!(this._gpuCaps & 2)) return null;
             return this._webglCompressedAstc ||
                 (this._webglCompressedAstc = this._buildCompressedAstc());
+        }
+        // WebGL 2: the float formats as colour attachments and renderbuffers, where the driver renders to them.
+        if (name === 'EXT_color_buffer_float') {
+            if (!this._isWebGL2() || !(this._gpuCaps & 4)) return null;
+            if (this._extColorBufferFloat === undefined) {
+                this._extColorBufferFloat = {};
+                framebufferChanged();       // a float attachment that was not renderable now is
+            }
+            return this._extColorBufferFloat;
         }
         // 32-bit element indices are GLES 3.0 core (drawElements honors
         // UNSIGNED_INT), so expose the WebGL 1 extension alias. Without it,
@@ -3199,7 +3211,7 @@ class WebGLRenderingContext {
             'OES_element_index_uint',
             'WEBGL_lose_context',
         ];
-        const caps = this._compressedCaps;
+        const caps = this._gpuCaps;
         if (caps & 1) {
             list.push('WEBGL_compressed_texture_etc');
             list.push('WEBGL_compressed_texture_etc1');
@@ -3207,18 +3219,19 @@ class WebGLRenderingContext {
         if (caps & 2) {
             list.push('WEBGL_compressed_texture_astc');
         }
+        if ((caps & 4) && this._isWebGL2()) {
+            list.push('EXT_color_buffer_float');
+        }
         return list;
     }
 
-    // Compressed-texture caps snapshot.  Lazily read once per
-    // context; the render thread sets the caps before any JS GL
-    // call completes, so caching this is safe.  Bit 0 = ETC2,
-    // bit 1 = ASTC.  See `op_webgl_query_compressed_caps`.
-    get _compressedCaps() {
-        if (this._compressedCapsCache === undefined) {
-            this._compressedCapsCache = op_webgl_query_compressed_caps() | 0;
+    // The renderer's capabilities, read once per context: the render thread publishes them before any JS GL call
+    // completes. Bit 0 ETC2/EAC, bit 1 ASTC, bit 2 float colour buffers (`op_webgl_query_gpu_caps`).
+    get _gpuCaps() {
+        if (this._gpuCapsCache === undefined) {
+            this._gpuCapsCache = op_webgl_query_gpu_caps() | 0;
         }
-        return this._compressedCapsCache;
+        return this._gpuCapsCache;
     }
 
     _buildWebglDrawBuffers() {
@@ -4051,7 +4064,7 @@ class WebGLRenderingContext {
 
     // The base image (`_baseLevel`) must be there and not empty -- on every face of a cube map, alike and square --,
     // uncompressed, of an unsized internal format or a sized one both colour-renderable and filterable
-    // (`_MIPMAPPABLE_SIZED_FORMATS`), and in WebGL 1 a power of two each way; anything else is INVALID_OPERATION (ES
+    // (`_MIPMAPPABLE_SIZED_FORMATS`, `_MIPMAPPABLE_FLOAT_FORMATS`), and in WebGL 1 a power of two each way; anything else is INVALID_OPERATION (ES
     // 3.0 3.8.10, ES 2.0 3.7.11). The levels it makes are recorded: each half the one before, down to 1 x 1 or the
     // maximum level (`_maxLevel`), as immutable storage already has them.
     generateMipmap(target) {
@@ -4063,7 +4076,8 @@ class WebGLRenderingContext {
         const base = this._baseLevel(texture);
         const image = this._image(texture, first, base);
         let ok = image !== undefined && !image.compressed && image.width > 0 && image.height > 0 && image.depth > 0 &&
-            (_UNSIZED_UPLOAD_TYPES.has(image.internalformat) || _listHas(_MIPMAPPABLE_SIZED_FORMATS, image.internalformat)) &&
+            (_UNSIZED_UPLOAD_TYPES.has(image.internalformat) || _listHas(_MIPMAPPABLE_SIZED_FORMATS, image.internalformat) ||
+                (this._extColorBufferFloat !== undefined && _listHas(_MIPMAPPABLE_FLOAT_FORMATS, image.internalformat))) &&
             (this._isWebGL2() || (_isPowerOfTwo(image.width) && _isPowerOfTwo(image.height))) &&
             (t !== 0x8513 || image.width === image.height);
         for (let face = first + 1; ok && face <= last; face++) {
@@ -4783,7 +4797,7 @@ class WebGLRenderingContext {
     // then the level, size and border (INVALID_VALUE: out of range, or a cube face that is not square), then a depth or
     // stencil format (INVALID_OPERATION), as the decoder orders them. 0 when none is.
     _copyTexImageError(target, level, internalformat, width, height, border) {
-        const formatError = this._isWebGL2() ? _copyTexImageFormatError(internalformat)
+        const formatError = this._isWebGL2() ? _copyTexImageFormatError(internalformat, this._extColorBufferFloat !== undefined)
             : internalformat >= 0x1906 && internalformat <= 0x190a ? 0 : GL_INVALID_ENUM;
         if (formatError === GL_INVALID_ENUM) return formatError;
         const maxAtLevel = (MAX_WEBGL_GPU_2D_DIMENSION >>> level) || 1;
@@ -4885,7 +4899,7 @@ class WebGLRenderingContext {
             const color = a - 0x8ce0;
             if (a !== 0x8d00 && a !== 0x8d20 && a !== 0x821a) {
                 if (color < 0 || color >= 16) error = GL_INVALID_ENUM;
-                else if (color >= this._colorAttachmentLimit()) error = this._isWebGL2() ? GL_INVALID_OPERATION : GL_INVALID_ENUM;
+                else if (!this._hasColorAttachment(color)) error = this._isWebGL2() ? GL_INVALID_OPERATION : GL_INVALID_ENUM;
             }
         }
         if (error === 0) error = objectError();
@@ -4894,6 +4908,13 @@ class WebGLRenderingContext {
         if (error === 0) return fb;
         recordGpuPreflightError(this._canvasId, error);
         return undefined;
+    }
+
+    // Whether COLOR_ATTACHMENT`index` is one of the context's points. Below the least every implementation has -- four
+    // in WebGL 2 and with WEBGL_draw_buffers, one otherwise -- without asking the limit.
+    _hasColorAttachment(index) {
+        const minimum = this._isWebGL2() || this._webglDrawBuffers !== undefined ? 4 : 1;
+        return index < minimum || index < this._colorAttachmentLimit();
     }
 
     // How many colour attachment points the context has: MAX_COLOR_ATTACHMENTS in WebGL 2, WEBGL_draw_buffers' in
@@ -4958,8 +4979,11 @@ class WebGLRenderingContext {
                 case 0x8215: return _renderbufferBits(format, 3);  // ALPHA_SIZE
                 case 0x8216: return _renderbufferBits(format, 4);  // DEPTH_SIZE
                 case 0x8217: return _renderbufferBits(format, 5);  // STENCIL_SIZE
-                case 0x8211: return (format === 0x8cac || format === 0x8cad) ? 0x1406 : 0x8c17;   // COMPONENT_TYPE: FLOAT or UNSIGNED_NORMALIZED
-                case 0x8210: return format === 0x8c43 || format === 0x8c41 ? 0x8c40 : 0x2601;     // COLOR_ENCODING: SRGB or LINEAR
+                case 0x8211: return _componentType(format);                                       // COMPONENT_TYPE
+                case 0x8210: {                                                                     // COLOR_ENCODING
+                    const info = _FORMAT_INFO.get(format);
+                    return info !== undefined && (info[7] & _SRGB) !== 0 ? 0x8c40 : 0x2601;       // SRGB or LINEAR
+                }
                 default: return null;
             }
         }
@@ -5052,8 +5076,14 @@ class WebGLRenderingContext {
     _renderbufferStorageError(target, internalformat, width, height, samples) {
         if ((Number(target) >>> 0) !== 0x8d41) return GL_INVALID_ENUM;
         if (this._renderbufferBinding === null) return GL_INVALID_OPERATION;
+        const i = Number(internalformat) >>> 0;
         const formats = this._isWebGL2() ? _WEBGL2_RENDERBUFFER_FORMATS : _WEBGL1_RENDERBUFFER_FORMATS;
-        if (!_listHas(formats, Number(internalformat) >>> 0)) return GL_INVALID_ENUM;
+        if (!_listHas(formats, i)) {
+            const info = this._isWebGL2() ? _FORMAT_INFO.get(i) : undefined;
+            if (info === undefined || (info[7] & _FLOAT_RENDERABLE) === 0 || this._extColorBufferFloat === undefined) {
+                return GL_INVALID_ENUM;
+            }
+        }
         if (!NumberIsInteger(width) || width < 0 || width > MAX_WEBGL_GPU_2D_DIMENSION ||
                 !NumberIsInteger(height) || height < 0 || height > MAX_WEBGL_GPU_2D_DIMENSION ||
                 !NumberIsInteger(samples) || samples < 0 || samples > MAX_WEBGL_GPU_SAMPLES) {
@@ -5714,7 +5744,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             if (!fb) {
                 if (a < 0x1800 || a > 0x1802) error = GL_INVALID_ENUM;                             // COLOR, DEPTH, STENCIL
             } else if (a >= 0x8ce0 && a <= 0x8cef) {                                               // COLOR_ATTACHMENT0..15
-                if (a - 0x8ce0 >= 4 && a - 0x8ce0 >= this._colorAttachmentLimit()) error = GL_INVALID_OPERATION;
+                if (!this._hasColorAttachment(a - 0x8ce0)) error = GL_INVALID_OPERATION;
             } else if (a !== 0x8d00 && a !== 0x8d20 && a !== 0x821a) {                            // DEPTH, STENCIL, DEPTH_STENCIL
                 error = GL_INVALID_ENUM;
             }
@@ -6116,7 +6146,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         const color = b - 0x8ce0;
         let error = 0;
         if (b !== 0 && b !== 0x0405 && !(color >= 0 && color < 16)) error = GL_INVALID_ENUM;
-        else if (fb === null ? b !== 0 && b !== 0x0405 : b === 0x0405 || (b !== 0 && color >= this._colorAttachmentLimit())) {
+        else if (fb === null ? b !== 0 && b !== 0x0405 : b === 0x0405 || (b !== 0 && !this._hasColorAttachment(color))) {
             error = GL_INVALID_OPERATION;
         }
         if (error !== 0) {

@@ -34,7 +34,7 @@ mod webgl;
 use context2d::*;
 pub mod error_state;
 use error_state::{
-    op_webgl_get_context_attributes, op_webgl_get_error, op_webgl_query_compressed_caps,
+    op_webgl_get_context_attributes, op_webgl_get_error, op_webgl_query_gpu_caps,
     op_webgl_record_attributes, op_webgl_record_error, op_webgl_record_out_of_memory,
 };
 use font::*;
@@ -56,7 +56,7 @@ extension!(host_v8_webgl,
         op_webgl_record_out_of_memory,
         op_webgl_get_context_attributes,
         op_webgl_record_attributes,
-        op_webgl_query_compressed_caps,
+        op_webgl_query_gpu_caps,
         op_create_program,
         op_link_program,
         op_get_program_parameter,

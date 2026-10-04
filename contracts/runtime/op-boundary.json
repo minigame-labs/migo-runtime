@@ -630,7 +630,7 @@
         "op_viewport": "stream",
         "op_webgl_get_context_attributes": "local",
         "op_webgl_get_error": "sync",
-        "op_webgl_query_compressed_caps": "sync",
+        "op_webgl_query_gpu_caps": "sync",
         "op_webgl_record_attributes": "local",
         "op_webgl_record_error": "local",
         "op_webgl_record_out_of_memory": "local"

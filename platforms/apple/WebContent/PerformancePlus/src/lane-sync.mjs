@@ -855,8 +855,8 @@ export function op_get_workers_path() {
 // host waits for that within the budget the embedded execution waits before it
 // runs content. The engine's WebGL layer asks once per context and caches it.
 
-export function op_webgl_query_compressed_caps() {
-  return callService(SERVICE_OP.op_webgl_query_compressed_caps);
+export function op_webgl_query_gpu_caps() {
+  return callService(SERVICE_OP.op_webgl_query_gpu_caps);
 }
 
 // ---- the device ---------------------------------------------------------------
