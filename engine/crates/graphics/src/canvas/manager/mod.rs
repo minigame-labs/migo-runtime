@@ -1341,6 +1341,7 @@ impl CanvasManager {
             standard_derivatives: self.device_caps.has_standard_derivatives,
             shader_texture_lod: self.device_caps.has_shader_texture_lod,
             frag_depth: self.device_caps.has_frag_depth,
+            parallel_shader_compile: self.device_caps.has_parallel_shader_compile,
         };
         self.gpu_caps.set(caps);
     }

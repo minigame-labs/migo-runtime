@@ -1246,6 +1246,17 @@ impl RendererGL {
                     return Ok(DamageEffect::NoDamage);
                 };
 
+                if pname == link_queue::COMPLETION_STATUS_KHR {
+                    // KHR_parallel_shader_compile: whether the link is done, asked without waiting for it -- the
+                    // deferred read stays queued. A link already read is done; a pending one is the driver's to
+                    // answer where it compiles in parallel, which is where content is offered the extension.
+                    let done = !meta.link_pending
+                        || !cm.device_caps.has_parallel_shader_compile
+                        || unsafe { gl.get_program_completion_status(ph) };
+                    let _ = resp.send(Ok(i32::from(done)));
+                    return Ok(DamageEffect::NoDamage);
+                }
+
                 if pname == glow::LINK_STATUS || pname == glow::INFO_LOG_LENGTH {
                     // The answer is only available by stalling, so this is the
                     // moment the deferred read has to happen -- and the cache
@@ -1535,6 +1546,17 @@ impl RendererGL {
                             0
                         }
                     },
+                    // KHR_parallel_shader_compile: whether the compile is done, asked without waiting for it, where
+                    // the driver compiles in parallel; elsewhere the compile was done in `glCompileShader`.
+                    link_queue::COMPLETION_STATUS_KHR => {
+                        if !cm.device_caps.has_parallel_shader_compile
+                            || unsafe { gl.get_shader_completion_status(sh) }
+                        {
+                            1
+                        } else {
+                            0
+                        }
+                    }
                     glow::SHADER_TYPE => meta.gl_shader_type as i32,
                     glow::DELETE_STATUS => {
                         if meta.deleted {

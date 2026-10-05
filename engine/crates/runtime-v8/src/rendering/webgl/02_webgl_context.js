@@ -2232,6 +2232,9 @@ const _EXTENSIONS = [
     })],
     ["EXT_texture_filter_anisotropic", _ANY_WEBGL, 16, "_extTextureFilterAnisotropic",
         () => ({ TEXTURE_MAX_ANISOTROPY_EXT: 0x84fe, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 0x84ff })],
+    // Polling whether a compile or link is done without waiting for it (COMPLETION_STATUS_KHR), where the driver compiles
+    // and links in parallel: three.js and Babylon poll it to keep frames coming while their shaders build.
+    ["KHR_parallel_shader_compile", _ANY_WEBGL, 1024, "_khrParallelShaderCompile", () => ({ COMPLETION_STATUS_KHR: 0x91b1 })],
     // 32-bit element indices, ES 3.0 core: without it Pixi and three.js cap batches at 65535 indices.
     ["OES_element_index_uint", _WEBGL1_ONLY, 0, "_oesElementIndexUint", () => ({})],
     // A WebGL 1 framebuffer attachment of a level other than 0, ES 3.0 core.
@@ -2895,6 +2898,7 @@ class WebGLRenderingContext {
         const programId = program._id;
         pname = Number(pname) >>> 0;
         if (pname === 0x8b80) return program._deleted === true;           // DELETE_STATUS: the facade deletes it
+        if (pname === 0x91b1 && this._khrParallelShaderCompile !== undefined) return this._linkCompleted(program);
         if (!_listHas(_PROGRAM_PARAMETERS, pname) && !(this._isWebGL2() && _listHas(_WEBGL2_PROGRAM_PARAMETERS, pname))) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
             return null;
@@ -3001,12 +3005,38 @@ class WebGLRenderingContext {
     compileShader(shader) {
         if (this._objectError("compileShader", 1, shader, "shader") !== 0) return;
         _rawCompileShader(shader._id);
+        shader._compiles = (shader._compiles | 0) + 1;
+    }
+
+    // KHR_parallel_shader_compile's COMPLETION_STATUS_KHR of a program: whether its last link is done, asked of the
+    // renderer without waiting for it, and known without asking once it answered true or LINK_STATUS was read (which
+    // waits) for that link. True on a lost context, as the extension specifies, and for a program never linked.
+    _linkCompleted(program) {
+        const link = program._links | 0;
+        if (link === 0 || program._completedLink === link || this.isContextLost()) return true;
+        const cached = this._programParameterCache.get(program._id);
+        let done = cached !== undefined && cached.has(WebglConstants.LINK_STATUS);
+        if (!done) done = Boolean(_rawGetProgramParameter(program._id, 0x91b1));
+        if (done) program._completedLink = link;
+        return done;
+    }
+
+    // As `_linkCompleted`, for a shader's last compile.
+    _compileCompleted(shader) {
+        const compile = shader._compiles | 0;
+        if (compile === 0 || shader._completedCompile === compile || this.isContextLost()) return true;
+        const done = Boolean(_rawGetShaderParameter(shader._id, 0x91b1));
+        if (done) shader._completedCompile = compile;
+        return done;
     }
 
     getShaderParameter(shader, pname) {
         if (this._objectError("getShaderParameter", 1, shader, "shader") !== 0) return null;
         const shaderId = shader._id;
         if ((Number(pname) >>> 0) === 0x8b80) return shader._deleted === true;   // DELETE_STATUS: the facade deletes it
+        if ((Number(pname) >>> 0) === 0x91b1 && this._khrParallelShaderCompile !== undefined) {
+            return this._compileCompleted(shader);
+        }
         pname = Number(pname) >>> 0;
         if (pname !== 0x8b4f && pname !== 0x8b80 && pname !== 0x8b81) {       // SHADER_TYPE, DELETE_STATUS, COMPILE_STATUS
             recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
