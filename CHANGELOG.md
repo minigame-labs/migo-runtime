@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WebGL: `OES_texture_float_linear`, where the driver filters 32-bit float textures. Without it such a texture is
+  incomplete -- sampled as (0, 0, 0, 1) -- while a filter of it is not NEAREST, as WebGL specifies: the driver
+  underneath filtered it regardless wherever it could. The filters judged are those of the sampler bound to the unit
+  where WebGL 2 has one, else the texture's; the image judged is the base level's; every texture target is judged,
+  as WebGL 1's rule for textures whose size is not a power of two now is too. With the extension and
+  EXT_color_buffer_float, a 32-bit float texture may be mipmapped.
 - WebGL: `EXT_texture_filter_anisotropic`, where the driver filters anisotropically: TEXTURE_MAX_ANISOTROPY_EXT on a
   texture or a sampler, from 1 to MAX_TEXTURE_MAX_ANISOTROPY_EXT (INVALID_VALUE outside it, INVALID_ENUM before the
   extension is enabled). `WEBGL_debug_renderer_info`, whose UNMASKED_VENDOR_WEBGL and UNMASKED_RENDERER_WEBGL are the

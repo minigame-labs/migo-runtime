@@ -3670,6 +3670,110 @@ pub(super) mod tests {
         );
     }
 
+    /// A 32-bit float base image samples as incomplete while a filter of it is not NEAREST and OES_texture_float_linear
+    /// is not enabled -- the filters of the sampler bound to the unit where WebGL 2 has one, of the texture otherwise --,
+    /// on every texture target; a draw withholds such a binding (texture 0 bound for the draw, the facade's put back).
+    /// The base level is the one judged; enabling the extension, deleting a sampler or changing a filter judges again.
+    #[test]
+    fn float_textures_sample_as_incomplete_with_a_linear_filter_until_their_extension_is_enabled() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "float_linear.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const T2D = 0x0de1, ARRAY = 0x8c1a, MIN = 0x2801, MAG = 0x2800, NEAREST = 0x2600, LINEAR = 0x2601;
+                const gl = new WebGL2RenderingContext({ _rid: 260, width: 4, height: 4 }, {});
+                gl._gpuCapsCache = 64 | 4;
+                // The keys as `unit * 4 + kind` with the unit an index, from the facade's enum-keyed ones.
+                const withheld = () => [...gl._incompleteBindings].map((key) => ((key >>> 2) - 0x84c0) * 4 + (key & 3))
+                    .sort((a, b) => a - b).join(",");
+                const t = gl.createTexture();
+                gl.bindTexture(T2D, t);
+                gl.texImage2D(T2D, 0, 0x8814, 4, 4, 0, 0x1908, 0x1406, null);              // RGBA32F
+                gl.texParameteri(T2D, MIN, NEAREST);
+                check(withheld() === "0", "MAG_FILTER is LINEAR until set: unit 0's 2D binding is withheld");
+                gl.texParameteri(T2D, MAG, NEAREST);
+                check(withheld() === "", "NEAREST both ways samples");
+                gl.texParameteri(T2D, MIN, 0x2700);                                          // NEAREST_MIPMAP_NEAREST
+                check(withheld() === "", "and so does NEAREST_MIPMAP_NEAREST");
+                gl.texParameteri(T2D, MIN, 0x2701);                                          // LINEAR_MIPMAP_NEAREST
+                check(withheld() === "0", "a linear minification does not");
+                gl.texParameteri(T2D, MIN, NEAREST);
+                const sampler = gl.createSampler();
+                gl.bindSampler(0, sampler);
+                check(withheld() === "0", "a sampler's initial filters are linear, and a bound sampler's are the ones read");
+                gl.samplerParameteri(sampler, MIN, NEAREST);
+                gl.samplerParameteri(sampler, MAG, NEAREST);
+                check(withheld() === "", "its NEAREST samples");
+                gl.samplerParameteri(sampler, MAG, LINEAR);
+                check(withheld() === "0", "and its LINEAR does not");
+                gl.deleteSampler(sampler);
+                check(withheld() === "", "deleted, the texture's own filters are read again");
+                // Another target, another unit.
+                gl.activeTexture(0x84c0 + 2);
+                const array = gl.createTexture();
+                gl.bindTexture(ARRAY, array);
+                gl.texImage3D(ARRAY, 0, 0x822e, 2, 2, 2, 0, 0x1903, 0x1406, null);            // R32F
+                check(withheld() === String(2 * 4 + 3), "a 2D array's binding at unit 2");
+                // The base level is what is judged.
+                gl.texImage3D(ARRAY, 1, 0x8058, 1, 1, 2, 0, 0x1908, 0x1401, null);            // RGBA8
+                gl.texParameteri(ARRAY, 0x813c, 1);                                            // TEXTURE_BASE_LEVEL
+                check(withheld() === "", "a base level of RGBA8 filters");
+                gl.texParameteri(ARRAY, 0x813c, 0);
+                check(withheld() === String(2 * 4 + 3), "back to the float one");
+                // A draw withholds it.
+                const p = gl.createProgram();
+                gl.linkProgram(p);
+                gl._programParameterCache.set(p.id, new Map([[0x8b82, 1]]));
+                p._consumes = []; p._consumesLink = p._links | 0;
+                gl.useProgram(p);
+                gl.drawArrays(4, 0, 3);
+                // Enabled, every float texture filters.
+                check(gl.getExtension("OES_texture_float_linear") !== null, "offered where the renderer filters floats");
+                check(withheld() === "", "enabled, nothing is withheld");
+                gl.bindTexture(ARRAY, null);
+                gl.bindTexture(ARRAY, array);
+                check(withheld() === "", "nor is a float texture bound after");
+                gl.drawArrays(4, 0, 3);
+                gl.flush();
+                const bare = new WebGL2RenderingContext({ _rid: 261, width: 4, height: 4 }, {});
+                bare._gpuCapsCache = 4;
+                check(bare.getExtension("OES_texture_float_linear") === null, "not where the renderer does not filter floats");
+                "#,
+            )
+            .expect("every binding should be judged");
+        let binds: Vec<(u32, i32)> = drain_gl_commands(&render_rx)
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::BindTexture {
+                    target, texture, ..
+                } if target == 0x8c1a => {
+                    Some((target, texture.map_or(-1, |id| u32::from(id) as i32)))
+                }
+                GLCmd::DrawArrays { .. } => Some((0, 0)),
+                _ => None,
+            })
+            .collect();
+        let drawn: Vec<usize> = binds
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == (0, 0))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(drawn.len(), 2, "two draws: {binds:?}");
+        assert_eq!(
+            binds[drawn[0] - 1].1,
+            -1,
+            "the first draw has the 2D array withheld: {binds:?}"
+        );
+        assert_ne!(
+            binds[drawn[1] - 1],
+            (0x8c1a, -1),
+            "the second, with the extension enabled, does not: {binds:?}"
+        );
+    }
+
     /// Every extension a context offers is the extension table's: a WebGL 1 one that is WebGL 2 core is not offered to
     /// WebGL 2, one the renderer cannot back is not offered at all, a name the registry does not have is answered by
     /// nothing, names compare case-insensitively, the object is the same every call, and a lost context offers none.

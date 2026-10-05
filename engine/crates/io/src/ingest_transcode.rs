@@ -215,6 +215,7 @@ mod tests {
             float_blend: false,
             anisotropic_filtering: false,
             color_buffer_half_float: false,
+            float_filtering: false,
         }
     }
 
@@ -228,6 +229,7 @@ mod tests {
             float_blend: false,
             anisotropic_filtering: false,
             color_buffer_half_float: false,
+            float_filtering: false,
         }
     }
     use crate::ktx2::{VkFormat, parse_ktx2};

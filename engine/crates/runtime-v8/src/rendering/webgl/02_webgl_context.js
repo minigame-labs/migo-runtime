@@ -852,27 +852,92 @@ function defineTextureStorage(texture, target, levels, internalformat, width, he
     texture._immutableLevels = levels;
 }
 
-// WebGL 1 has no mipmaps or repeat of a size that is not a power of two (ES 2.0 3.8.2, "Texture Access"): a texture whose
-// level 0 is not a power of two each way is incomplete unless both its wraps are CLAMP_TO_EDGE and its minification
-// filter reads no mipmap, and an incomplete texture samples as (0, 0, 0, 1). The driver underneath is OpenGL ES 3.0, for
-// which such a texture is complete, so the facade keeps which textures are (`_samplesBlack`) and where each is bound
-// (`_incompleteBindings`), after every call that can change either: a level 0 defined, a wrap or filter set, a bind, a
-// delete. WebGL 2's rules are ES 3.0's own.
-function refreshTextureSampling(ctx, texture) {
-    if (ctx._webgl2 || texture._target === undefined) return;
+// Where WebGL samples a texture as incomplete -- (0, 0, 0, 1) -- that the OpenGL ES 3.0 driver underneath samples as
+// complete, the facade withholds it from the draw. Two rules are WebGL's own:
+//
+// - WebGL 1 has no mipmaps or repeat of a size that is not a power of two (ES 2.0 3.8.2, "Texture Access"): a texture
+//   whose level 0 is not a power of two each way is incomplete unless both its wraps are CLAMP_TO_EDGE and its
+//   minification filter reads no mipmap.
+// - A 32-bit float image is not filterable without OES_texture_float_linear: a texture whose base image is one is
+//   incomplete while a filter of it is not NEAREST -- the sampler's, where WebGL 2 has one bound to the unit, else its
+//   own -- and the extension is not enabled, in either version. The driver filters floats wherever it can.
+//
+// Which bindings are incomplete is kept per unit and target (`_incompleteBindings`, keys `unit * 4 + kind`, `unit` the
+// unit's enum as the binding maps keep it, the kinds `_SAMPLED_TARGETS`'), after every call that can change one: an image of the base level defined, a filter, wrap or base
+// level set on the texture or on a sampler, a texture or a sampler bound, a delete, the extension enabled.
+const _SAMPLED_TARGETS = [0x0de1, 0x8513, 0x806f, 0x8c1a];          // TEXTURE_2D, TEXTURE_CUBE_MAP, TEXTURE_3D, 2D_ARRAY
+const _FLOAT32_FORMATS = [0x822e, 0x8230, 0x8815, 0x8814];          // R32F, RG32F, RGB32F, RGBA32F
+
+// What a filter or wrap of `params` (a texture's or a sampler's) is: what was set, or its initial value.
+function _samplingParameter(params, pname) {
+    const value = params === null || params === undefined ? undefined : params.get(pname);
+    return value === undefined ? _SAMPLER_PARAMETERS.get(pname).initial : value;
+}
+
+// Whether `texture`, bound at `unit`, samples as incomplete by one of WebGL's own rules.
+function samplesBlack(ctx, texture, unit) {
     const target = texture._target;
-    const image = ctx._image(texture, target === 0x8513 ? 0x8515 : target, 0);
     const params = texture._params;
-    const black = image !== undefined && !(_isPowerOfTwo(image.width) && _isPowerOfTwo(image.height)) &&
-        !(params !== null && params.get(0x2802) === 0x812f && params.get(0x2803) === 0x812f &&      // WRAP_S, WRAP_T
-            (params.get(0x2801) === 0x2600 || params.get(0x2801) === 0x2601));                     // NEAREST, LINEAR
-    if (black === texture._samplesBlack) return;
-    texture._samplesBlack = black;
-    const cube = target === 0x8513 ? 1 : 0;
-    for (const [unit, bound] of ctx._textureBindings(target)) {
-        if (bound !== texture) continue;
-        if (black) ctx._incompleteBindings.add(unit * 2 + cube);
-        else ctx._incompleteBindings.delete(unit * 2 + cube);
+    if (!ctx._webgl2) {
+        const image = ctx._image(texture, target === 0x8513 ? 0x8515 : target, 0);
+        const minFilter = _samplingParameter(params, 0x2801);
+        if (image !== undefined && !(_isPowerOfTwo(image.width) && _isPowerOfTwo(image.height)) &&
+                !(_samplingParameter(params, 0x2802) === 0x812f && _samplingParameter(params, 0x2803) === 0x812f &&
+                    (minFilter === 0x2600 || minFilter === 0x2601))) return true;
+    }
+    if (ctx._oesTextureFloatLinear !== undefined) return false;
+    const base = ctx._webgl2 ? _samplingParameterOf(params, 0x813c, 0) : 0;   // TEXTURE_BASE_LEVEL
+    const image = ctx._image(texture, target === 0x8513 ? 0x8515 : target, base);
+    if (image === undefined || image.compressed || !_listHas(_FLOAT32_FORMATS, image.internalformat)) return false;
+    const sampler = ctx._webgl2 ? ctx._samplerBindings.get(unit - 0x84c0) : undefined;
+    const filters = sampler === undefined ? params : sampler._parameters;
+    const minFilter = _samplingParameter(filters, 0x2801);
+    return _samplingParameter(filters, 0x2800) !== 0x2600 || (minFilter !== 0x2600 && minFilter !== 0x2700);
+}
+
+// A texture parameter that is not a sampler's: what was set, or `initial`.
+function _samplingParameterOf(params, pname, initial) {
+    const value = params === null || params === undefined ? undefined : params.get(pname);
+    return value === undefined ? initial : value;
+}
+
+// The binding of `kind` at `unit` judged again.
+function refreshBindingSampling(ctx, unit, kind) {
+    const bindings = ctx._textureBindings(_SAMPLED_TARGETS[kind]);
+    const texture = bindings === undefined ? undefined : bindings.get(unit);
+    const key = unit * 4 + kind;
+    if (texture !== undefined && texture !== null && samplesBlack(ctx, texture, unit)) ctx._incompleteBindings.add(key);
+    else ctx._incompleteBindings.delete(key);
+}
+
+// Every binding of `texture` judged again: its base image, a filter, a wrap or its base level changed.
+function refreshTextureSampling(ctx, texture) {
+    if (texture._target === undefined) return;
+    const kind = _SAMPLED_TARGETS.indexOf(texture._target);
+    for (const [unit, bound] of ctx._textureBindings(texture._target)) {
+        if (bound === texture) refreshBindingSampling(ctx, unit, kind);
+    }
+}
+
+// Every binding of `unit` (an enum, TEXTURE0 + i) judged again: a sampler bound to it, or changed while bound.
+function refreshUnitSampling(ctx, unit) {
+    for (let kind = 0; kind < _SAMPLED_TARGETS.length; kind++) refreshBindingSampling(ctx, unit, kind);
+}
+
+// Every unit `sampler` is bound to judged again when `pname`, a filter of it, changed.
+function refreshSamplerSampling(ctx, sampler, pname) {
+    if (pname !== 0x2800 && pname !== 0x2801) return;
+    for (const [index, bound] of ctx._samplerBindings) {
+        if (bound === sampler) refreshUnitSampling(ctx, 0x84c0 + index);
+    }
+}
+
+// Every binding judged again: OES_texture_float_linear enabled.
+function refreshAllSampling(ctx) {
+    for (let kind = 0; kind < _SAMPLED_TARGETS.length; kind++) {
+        const bindings = ctx._textureBindings(_SAMPLED_TARGETS[kind]);
+        if (bindings === undefined) continue;
+        for (const unit of bindings.keys()) refreshBindingSampling(ctx, unit, kind);
     }
 }
 
@@ -882,18 +947,17 @@ function refreshTextureSampling(ctx, texture) {
 // The caller checks `_incompleteBindings` is not empty, so a draw with none pays one size test.
 function withholdIncompleteTextures(ctx) {
     for (const key of ctx._incompleteBindings) {
-        encodeActiveTexture(ctx._canvasId, key >>> 1);
-        encodeBindTexture(ctx._canvasId, (key & 1) !== 0 ? 0x8513 : 0x0de1, -1);
+        encodeActiveTexture(ctx._canvasId, key >>> 2);
+        encodeBindTexture(ctx._canvasId, _SAMPLED_TARGETS[key & 3], -1);
     }
 }
 
 function restoreIncompleteTextures(ctx) {
     for (const key of ctx._incompleteBindings) {
-        const cube = (key & 1) !== 0;
-        const unit = key >>> 1;
+        const target = _SAMPLED_TARGETS[key & 3];
+        const unit = key >>> 2;
         encodeActiveTexture(ctx._canvasId, unit);
-        encodeBindTexture(ctx._canvasId, cube ? 0x8513 : 0x0de1,
-            (cube ? ctx._textureBindingsCube : ctx._textureBindings2D).get(unit)._id);
+        encodeBindTexture(ctx._canvasId, target, ctx._textureBindings(target).get(unit)._id);
     }
     encodeActiveTexture(ctx._canvasId, ctx._activeTextureUnit);
 }
@@ -965,8 +1029,8 @@ function _compressedImageBytes(block, width, height, depth) {
 
 // The sized internal formats that are both colour-renderable and texture-filterable (ES 3.0 table 3.13), which
 // `generateMipmap` takes besides the unsized ones; and the filterable float ones -- R16F, RG16F, RGBA16F,
-// R11F_G11F_B10F -- while they are colour-renderable (`floatColourRenderable`). The 32-bit float ones are not
-// filterable without OES_texture_float_linear.
+// R11F_G11F_B10F -- while they are colour-renderable (`floatColourRenderable`); the 32-bit float ones too once
+// OES_texture_float_linear makes them filterable.
 const _MIPMAPPABLE_SIZED_FORMATS = [0x8229, 0x822b, 0x8051, 0x8d62, 0x8056, 0x8057, 0x8058, 0x8059, 0x8c43];
 const _MIPMAPPABLE_FLOAT_FORMATS = [0x822d, 0x822f, 0x881a, 0x8c3a];
 
@@ -1906,6 +1970,9 @@ const _EXTENSIONS = [
         () => ({ TEXTURE_MAX_ANISOTROPY_EXT: 0x84fe, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 0x84ff })],
     // 32-bit element indices, ES 3.0 core: without it Pixi and three.js cap batches at 65535 indices.
     ["OES_element_index_uint", _WEBGL1_ONLY, 0, "_oesElementIndexUint", () => ({})],
+    // Linear filtering of 32-bit float textures, where the driver filters them: without it such a texture is incomplete
+    // while a filter of it is not NEAREST (`samplesBlack`).
+    ["OES_texture_float_linear", _ANY_WEBGL, 64, "_oesTextureFloatLinear", enableFloatFiltering],
     // Vertex array objects, ES 3.0 core: Cocos Creator 2.x falls back to a vertexAttribPointer storm per draw without.
     ["OES_vertex_array_object", _WEBGL1_ONLY, 0, "_oesVertexArrayObject", (ctx) => ctx._buildOesVertexArrayObject()],
     // Compressed uploads: ETC2/EAC where the driver decodes them (ES 3.0 core), ETC1 as their subset, ASTC where it has
@@ -1934,6 +2001,14 @@ for (const extension of _EXTENSIONS) _EXTENSIONS_BY_KEY.set(StringPrototypeToLow
 function offersExtension(ctx, extension) {
     const versions = extension[1], needs = extension[2];
     return (versions & (ctx._isWebGL2() ? _WEBGL2_ONLY : _WEBGL1_ONLY)) !== 0 && (needs === 0 || (ctx._gpuCaps & needs) === needs);
+}
+
+// OES_texture_float_linear enabled: a float texture that sampled as incomplete may not now.
+function enableFloatFiltering(ctx) {
+    const extension = {};
+    ctx._oesTextureFloatLinear = extension;
+    refreshAllSampling(ctx);
+    return extension;
 }
 
 // EXT_color_buffer_float or EXT_color_buffer_half_float enabled: a float attachment that was not colour-renderable may
@@ -3373,7 +3448,7 @@ class WebGLRenderingContext {
 
     // The renderer's capabilities, read once per context: the render thread publishes them before any JS GL call
     // completes (`op_webgl_query_gpu_caps`, `GpuCaps::webgl_bits`): bit 0 ETC2/EAC, 1 ASTC, 2 float colour buffers,
-    // 3 blending into 32-bit floats, 4 anisotropic filtering, 5 16-bit float colour buffers.
+    // 3 blending into 32-bit floats, 4 anisotropic filtering, 5 16-bit float colour buffers, 6 filtering 32-bit floats.
     get _gpuCaps() {
         if (this._gpuCapsCache === undefined) {
             this._gpuCapsCache = op_webgl_query_gpu_caps() | 0;
@@ -3549,7 +3624,6 @@ class WebGLRenderingContext {
         texture._images = null;         // image key (`_imageKey`) -> TextureImage, once one is defined
         texture._immutableLevels = 0;   // the levels `texStorage*` fixed; 0 while the texture is mutable
         texture._params = null;         // pname -> value, as `texParameter*` set them
-        texture._samplesBlack = false;  // WebGL 1: incomplete by its size and parameters (`refreshTextureSampling`)
         return texture;
     }
 
@@ -3971,11 +4045,11 @@ class WebGLRenderingContext {
         texture._deleted = true;
         if (texture._target !== undefined) {
             const bindings = this._textureBindings(texture._target);
-            const cube = texture._target === 0x8513 ? 1 : 0;
+            const kind = _SAMPLED_TARGETS.indexOf(texture._target);
             for (const [unit, bound] of bindings) {
                 if (bound !== texture) continue;
                 bindings.delete(unit);
-                this._incompleteBindings.delete(unit * 2 + cube);
+                this._incompleteBindings.delete(unit * 4 + kind);
             }
         }
         this._detachFromBoundFramebuffers(texture);
@@ -4002,11 +4076,7 @@ class WebGLRenderingContext {
             bound._target = t;
         }
         bindings.set(this._activeTextureUnit, bound);
-        if (!this._webgl2) {
-            const key = this._activeTextureUnit * 2 + (t === 0x8513 ? 1 : 0);
-            if (bound !== null && bound._samplesBlack) this._incompleteBindings.add(key);
-            else this._incompleteBindings.delete(key);
-        }
+        refreshBindingSampling(this, this._activeTextureUnit, _SAMPLED_TARGETS.indexOf(t));
         const texId = bound ? bound._id : -1;
         // opcode 10: H C U I. target is u32, texId is i32 (negative = unbind).
         if (typeof target === "number") {
@@ -4077,7 +4147,7 @@ class WebGLRenderingContext {
             }
             defineTextureImage(texture, target, level,
                 new TextureImage(Number(internalformat) >>> 0, Number(a7) >>> 0, Number(a8) >>> 0, a4, a5, 1, false));
-            if (level === 0) refreshTextureSampling(this, texture);
+            refreshTextureSampling(this, texture);
             return;
         }
         const source = requireTexImageSource(a6, "texImage2D");
@@ -4098,7 +4168,7 @@ class WebGLRenderingContext {
         }
         defineTextureImage(texture, target, level,
             new TextureImage(Number(internalformat) >>> 0, Number(a4) >>> 0, Number(a5) >>> 0, width, height, 1, false));
-        if (level === 0) refreshTextureSampling(this, texture);
+        refreshTextureSampling(this, texture);
     }
 
     // 9 arguments: (target, level, xoffset, yoffset, width, height, format, type, pixels), WebGL 2's also with a
@@ -4211,7 +4281,8 @@ class WebGLRenderingContext {
             return false;
         }
         (texture._params || (texture._params = new Map())).set(pname, value);
-        if (pname >= 0x2801 && pname <= 0x2803) refreshTextureSampling(this, texture);   // MIN_FILTER, WRAP_S, WRAP_T
+        // MAG_FILTER, MIN_FILTER, WRAP_S, WRAP_T, TEXTURE_BASE_LEVEL
+        if ((pname >= 0x2800 && pname <= 0x2803) || pname === 0x813c) refreshTextureSampling(this, texture);
         return true;
     }
 
@@ -4271,8 +4342,9 @@ class WebGLRenderingContext {
         const image = this._image(texture, first, base);
         let ok = image !== undefined && !image.compressed && image.width > 0 && image.height > 0 && image.depth > 0 &&
             (_UNSIZED_UPLOAD_TYPES.has(image.internalformat) || _listHas(_MIPMAPPABLE_SIZED_FORMATS, image.internalformat) ||
-                (_listHas(_MIPMAPPABLE_FLOAT_FORMATS, image.internalformat) &&
-                    floatColourRenderable(this, _FORMAT_INFO.get(image.internalformat)))) &&
+                ((_listHas(_MIPMAPPABLE_FLOAT_FORMATS, image.internalformat) ||
+                    (this._oesTextureFloatLinear !== undefined && _listHas(_FLOAT32_FORMATS, image.internalformat))) &&
+                    _FORMAT_INFO.has(image.internalformat) && floatColourRenderable(this, _FORMAT_INFO.get(image.internalformat)))) &&
             (this._isWebGL2() || (_isPowerOfTwo(image.width) && _isPowerOfTwo(image.height))) &&
             (t !== 0x8513 || image.width === image.height);
         for (let face = first + 1; ok && face <= last; face++) {
@@ -4339,7 +4411,7 @@ class WebGLRenderingContext {
         )) return;
         _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, u8, -1, 0);
         defineCompressedTextureImage(texture, target, level, internalformat, width, height, 1);
-        if (level === 0) refreshTextureSampling(this, texture);
+        refreshTextureSampling(this, texture);
     }
 
     compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, data) {
@@ -4974,7 +5046,7 @@ class WebGLRenderingContext {
         defineTextureImage(texture, t, l, sized === undefined
             ? new TextureImage(i, i, _UBYTE, w, h, 1, false)
             : new TextureImage(i, sized[0], sized[1][0], w, h, 1, false));
-        if (l === 0) refreshTextureSampling(this, texture);
+        refreshTextureSampling(this, texture);
     }
 
     // A copy from the read framebuffer: one that is not complete is INVALID_FRAMEBUFFER_OPERATION, a read buffer that is
@@ -5933,6 +6005,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         ) || this._refusesImmutable(texture)) return;
         _rawTexStorage2D(this._canvasId, target, levels, internalformat, width, height);
         defineTextureStorage(texture, target, levels, internalformat, width, height, 1);
+        refreshTextureSampling(this, texture);
     }
 
     // ---- Framebuffer ops ---------------------------------------
@@ -6103,8 +6176,10 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     deleteSampler(sampler) {
         if (!this._isLive(sampler, "sampler")) return;
         sampler._deleted = true;
-        for (const [unit, bound] of this._samplerBindings) {
-            if (bound === sampler) this._samplerBindings.delete(unit);
+        for (const [index, bound] of this._samplerBindings) {
+            if (bound !== sampler) continue;
+            this._samplerBindings.delete(index);
+            refreshUnitSampling(this, 0x84c0 + index);
         }
         _rawDeleteSampler(sampler._id);
     }
@@ -6131,6 +6206,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         }
         if (bound === null) this._samplerBindings.delete(index);
         else this._samplerBindings.set(index, bound);
+        refreshUnitSampling(this, 0x84c0 + index);
         const samplerId = bound ? bound._id : 0;
         // opcode 15: H C U U. unit is u32, samplerId is u32 (0 = unbind).
         if (typeof unit === "number") {
@@ -6166,6 +6242,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         const value = this._samplerParameterValue("samplerParameteri", sampler, p, Number(param) | 0);
         if (value === undefined) return;
         (sampler._parameters || (sampler._parameters = new Map())).set(p, value);
+        refreshSamplerSampling(this, sampler, p);
         // opcode 45: H U U I. No canvas field: a sampler is identified by its id.
         if (typeof pname === "number" && typeof param === "number") {
             encodeSamplerParameteri(sampler._id >>> 0, p, value);
@@ -6181,6 +6258,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         const value = this._samplerParameterValue("samplerParameterf", sampler, p, spec && spec.values !== null ? MathRound(f) : f);
         if (value === undefined) return;
         (sampler._parameters || (sampler._parameters = new Map())).set(p, value);
+        refreshSamplerSampling(this, sampler, p);
         // opcode 46: H U U F.
         if (typeof pname === "number" && typeof param === "number") {
             encodeSamplerParameterf(sampler._id >>> 0, p, f);
@@ -6663,6 +6741,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         }
         defineTextureImage(texture, target, level,
             new TextureImage(Number(internalformat) >>> 0, f, Number(type) >>> 0, width, height, depth, false));
+        refreshTextureSampling(this, texture);
     }
     // As `texImage3D`, over the (format, type) pairs of either table, then against the image the upload goes into
     // (`_refusesSubImage`). Null pixels are INVALID_VALUE, and FLOAT_32_UNSIGNED_INT_24_8_REV from anything but a buffer
@@ -6738,6 +6817,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         )) return;
         _rawCompressedTexImage2D(this._canvasId, target, level, internalformat, width, height, border, source[0], source[1], source[2]);
         defineCompressedTextureImage(texture, target, level, internalformat, width, height, 1);
+        refreshTextureSampling(this, texture);
     }
     compressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
         const texture = this._textureFor(target, "image2D");
@@ -6757,6 +6837,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         )) return;
         _rawCompressedTexImage3D(this._canvasId, target, level, internalformat, width, height, depth, border, source[0], source[1], source[2]);
         defineCompressedTextureImage(texture, target, level, internalformat, width, height, depth);
+        refreshTextureSampling(this, texture);
     }
     compressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, dataOrSize, srcOffsetOrOffset = 0, srcLengthOverride = 0) {
         const texture = this._textureFor(target, "image3D");
@@ -6778,6 +6859,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             width, height, depth,
         );
         defineTextureStorage(texture, target, levels, internalformat, width, height, depth);
+        refreshTextureSampling(this, texture);
     }
 }
 

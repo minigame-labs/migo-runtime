@@ -39,6 +39,12 @@ fn renders_half_float_colour_buffers(float_colour_buffers: bool, gl_extensions: 
     float_colour_buffers || has_extension(gl_extensions, "GL_EXT_color_buffer_half_float")
 }
 
+/// Whether the driver filters 32-bit float textures linearly, which WebGL's OES_texture_float_linear needs: desktop GL
+/// does, GL ES with GL_OES_texture_float_linear.
+fn filters_float32(embedded: bool, gl_extensions: &str) -> bool {
+    !embedded || has_extension(gl_extensions, "GL_OES_texture_float_linear")
+}
+
 #[inline]
 fn ahb_api_supported(android_api: Option<u32>) -> bool {
     android_api.is_some_and(|level| level >= 26)
@@ -87,6 +93,9 @@ pub struct DeviceCapabilities {
     /// The 16-bit float formats are colour-renderable (`GL_EXT_color_buffer_half_float`, or every float format is): what
     /// lets a WebGL 2 context offer EXT_color_buffer_half_float.
     pub has_color_buffer_half_float: bool,
+    /// Linear filtering of 32-bit float textures (`GL_OES_texture_float_linear`): what lets a context offer
+    /// OES_texture_float_linear.
+    pub has_float_filtering: bool,
 }
 
 /// Coarse device classification that gates optimisation paths.
@@ -160,6 +169,7 @@ impl DeviceCapabilities {
         let has_anisotropic_filtering = filters_anisotropically(&gl_extensions);
         let has_color_buffer_half_float =
             renders_half_float_colour_buffers(has_color_buffer_float, &gl_extensions);
+        let has_float_filtering = filters_float32(gl.version().is_embedded, &gl_extensions);
 
         Self {
             gles_version,
@@ -176,6 +186,7 @@ impl DeviceCapabilities {
             has_float_blend,
             has_anisotropic_filtering,
             has_color_buffer_half_float,
+            has_float_filtering,
         }
     }
 
@@ -330,6 +341,16 @@ mod tests {
             false,
             "GL_EXT_color_buffer_float_half"
         ));
+    }
+
+    #[test]
+    fn float_filtering_is_desktop_gl_s_and_an_es_extension() {
+        assert!(filters_float32(false, ""));
+        assert!(filters_float32(
+            true,
+            "GL_OES_texture_float GL_OES_texture_float_linear"
+        ));
+        assert!(!filters_float32(true, "GL_OES_texture_half_float_linear"));
     }
 
     #[test]

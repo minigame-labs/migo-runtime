@@ -2347,6 +2347,7 @@ mod tests {
                     float_blend,
                     anisotropic_filtering: false,
                     color_buffer_half_float: false,
+                    float_filtering: false,
                 });
             });
             assert_eq!(
