@@ -112,6 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
+  JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
+  body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
 - Canvas2D / WebGL: Skia's GL work runs in its own context. Skia does its GL work in whatever EGL context is current,
   and a cleanup is GL work -- it deletes textures and framebuffers -- but the periodic purge of every 2D context's
   unused resources (every 250 ms), the low-memory trim, and the re-capping of every context's share of the resource

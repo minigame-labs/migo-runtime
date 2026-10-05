@@ -1109,10 +1109,6 @@ fn op_worker_post_message(
         return Err(WorkerError::Message("Worker has been terminated".into()));
     }
 
-    info!(
-        "[Worker] main->worker postMessage: {} bytes",
-        json_message.len()
-    );
     let permit = handle
         .tx_to_worker
         .try_reserve(json_message.len())
@@ -1138,14 +1134,8 @@ async fn op_worker_recv_message(
         handle.rx_from_worker.clone()
     };
 
-    info!("[Worker] main waiting for worker message...");
     let mut guard = rx.lock().await;
-    let msg = guard.recv().await;
-    info!(
-        "[Worker] main received from worker: {:?}",
-        msg.as_ref().map(|s| s.len())
-    );
-    Ok(msg)
+    Ok(guard.recv().await)
 }
 
 /// Async op: wait for an error from the worker. Returns null when worker exits.
@@ -1243,10 +1233,6 @@ fn op_worker_inner_post_message(
         )));
     }
 
-    info!(
-        "[Worker] worker->main postMessage: {} bytes",
-        json_message.len()
-    );
     let ctx = state.borrow::<WorkerCtx>();
     let permit = ctx
         .tx_to_main
@@ -1260,13 +1246,9 @@ fn op_worker_inner_post_message(
 
 fn worker_message_to_inbound(message: Option<WorkerMessage>) -> Option<WorkerInbound> {
     match message {
-        Some(WorkerMessage::Message(json)) => {
-            info!("[Worker] worker received from main: {} bytes", json.len());
-            Some(WorkerInbound::Message { data: json })
-        }
+        Some(WorkerMessage::Message(json)) => Some(WorkerInbound::Message { data: json }),
         Some(WorkerMessage::Binary(data)) => {
             // Encode binary as JSON with base64 payload so JS can reconstruct
-            info!("[Worker] worker received binary: {} bytes", data.len());
             let encoded = deno_core::serde_json::json!({
                 "__binary": true,
                 "base64": base64_encode(&data),
@@ -1276,14 +1258,8 @@ fn worker_message_to_inbound(message: Option<WorkerMessage>) -> Option<WorkerInb
                 data: encoded.to_string(),
             })
         }
-        Some(WorkerMessage::Terminate) => {
-            info!("[Worker] worker received Terminate signal");
-            None
-        }
-        None => {
-            info!("[Worker] worker channel closed (None)");
-            None
-        }
+        // Terminate, or the channel closed: the pump ends.
+        Some(WorkerMessage::Terminate) | None => None,
     }
 }
 
@@ -1333,7 +1309,6 @@ async fn op_worker_inner_recv_message(
         }
     };
 
-    info!("[Worker] worker waiting for main message or lifecycle...");
     recv_worker_inbound(&ctx).await
 }
 
@@ -3087,5 +3062,35 @@ mod watchdog_worker_tests {
             src.contains(concat!("fn force_", "terminate")),
             "WorkerHandle::force_terminate must remain"
         );
+    }
+}
+
+#[cfg(test)]
+mod message_path_logging_tests {
+    /// A message crossing between the main thread and the worker is not logged, on either side and in neither language:
+    /// a game posting every frame paid a log line per message -- the worker side logged the whole message body, which
+    /// is content's data -- for output nobody reads. What a worker's lifetime does (created, loaded, exited, failed) is
+    /// still logged, once.
+    #[test]
+    fn the_message_paths_log_nothing() {
+        for (name, source) in [
+            ("01_worker.js", include_str!("01_worker.js")),
+            ("02_worker_inner.js", include_str!("02_worker_inner.js")),
+        ] {
+            assert!(!source.contains("console."), "{name} logs");
+        }
+        let rust = include_str!("mod.rs");
+        for message_log in [
+            concat!("postMessage: {}", " bytes"),
+            concat!("received from main: {}", " bytes"),
+            concat!("received from ", "worker: {:?}"),
+            concat!("waiting for ", "worker message"),
+            concat!("waiting for main ", "message"),
+        ] {
+            assert!(
+                !rust.contains(message_log),
+                "mod.rs logs a message: {message_log}"
+            );
+        }
     }
 }
