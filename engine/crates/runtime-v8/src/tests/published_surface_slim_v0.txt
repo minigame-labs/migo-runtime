@@ -12,6 +12,7 @@ BigInt64Array
 BigUint64Array
 Boolean
 CanvasGradient
+CanvasPattern
 CanvasRenderingContext2D
 DataView
 Date
@@ -26,6 +27,7 @@ Float64Array
 Function
 GameGlobal
 ImageBitmap
+ImageData
 Infinity
 Int16Array
 Int32Array
@@ -52,6 +54,7 @@ SuppressedError
 Symbol
 SyntaxError
 Temporal
+TextMetrics
 TypeError
 URIError
 URL
@@ -208,12 +211,15 @@ updateKeyboard
 uploadFile
 [migo]
 CanvasGradient
+CanvasPattern
 CanvasRenderingContext2D
 FileManager
 Float16Array
 ImageBitmap
+ImageData
 Path2D
 Temporal
+TextMetrics
 URL
 WebGL2RenderingContext
 WebGLRenderingContext

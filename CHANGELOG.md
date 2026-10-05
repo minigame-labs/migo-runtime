@@ -55,6 +55,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upload was INVALID_ENUM. Its blocks are uploaded as ETC2 RGB8, which decodes every ETC1 block to the same texels and
   which every GLES 3.0 driver has. An ETC1 image is a 2D one defined whole, by `compressedTexImage2D` or 2D immutable
   storage; a sub-image upload, a 3D call or 3D storage of it is INVALID_OPERATION, as a browser has it.
+- Canvas 2D: `ImageData`, `TextMetrics` and `CanvasPattern` are interfaces, and globals. `new ImageData(sw, sh,
+  settings)` and `new ImageData(data, sw, sh, settings)` construct as the specification has them -- PixiJS's extract
+  and Egret's render textures call it, and three.js's `image instanceof ImageData` threw while the name was missing --
+  and `createImageData`, `getImageData` and every `ImageData` the engine makes (the snapshot and text-cache readbacks
+  included) are instances. `putImageData` takes an `ImageData` and nothing that only looks like one; the three methods
+  convert their numbers as `[EnforceRange] long` (a non-finite or out-of-range one is a TypeError, where it was
+  truncated) and require their arguments. `ImageDataSettings.colorSpace` is read: an `ImageData` in Display P3 is
+  converted from and to the canvas's sRGB through the primaries, as Chrome converts it. `measureText` answers a
+  read-only `TextMetrics`, a new one each call over cached numbers -- it was a plain object the cache handed out again,
+  so a write to one changed every later measurement of that text. `new CanvasGradient()`, `new CanvasPattern()` and
+  `new TextMetrics()` are TypeErrors, and the four interfaces' members are enumerable on their prototypes.
 - Canvas 2D: `Path2D`, `roundRect`, and `isPointInPath` / `isPointInStroke`. A `Path2D` is built by the `CanvasPath`
   calls, from another path, or from SVG path data (every command, relative and implicit forms, reflected control
   points and arcs, read up to the command holding the first error), and `addPath` adds another under a

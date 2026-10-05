@@ -8656,6 +8656,206 @@ pub(super) mod tests {
         );
     }
 
+    /// `ImageData` is an interface: constructed as the specification's two constructors have it, returned by every
+    /// method that makes one, and the only thing `putImageData` takes. Every expectation is Chrome's except where the
+    /// comment says otherwise; migo-conformance's `canvas2d-spec/image-data-*` asks the same through every platform.
+    #[test]
+    fn image_data_is_the_interface_the_specification_has() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            const outcome = (f) => { try { const v = f(); return v instanceof ImageData ? [v.width, v.height, v.data.length, v.colorSpace].join() : String(v); } catch (e) { return 'threw ' + e.name; } };
+            const cases = [
+                [() => new ImageData(2, 3), '2,3,24,srgb'],
+                [() => new ImageData(2 ** 32 + 1, 1), '1,1,4,srgb'],
+                [() => new ImageData(1.9, 1), '1,1,4,srgb'],
+                [() => new ImageData('2', '2'), '2,2,16,srgb'],
+                [() => new ImageData(0, 1), 'threw IndexSizeError'],
+                [() => new ImageData(1, 0), 'threw IndexSizeError'],
+                [() => new ImageData(1n, 1), 'threw TypeError'],
+                [() => new ImageData(Symbol(), 1), 'threw TypeError'],
+                [() => new ImageData(1), 'threw TypeError'],
+                [() => new ImageData(), 'threw TypeError'],
+                [() => ImageData(1, 1), 'threw TypeError'],
+                [() => new ImageData(1, 1, { colorSpace: 'display-p3' }), '1,1,4,display-p3'],
+                [() => new ImageData(1, 1, { colorSpace: 'bogus' }), 'threw TypeError'],
+                [() => new ImageData(1, 1, 5), 'threw TypeError'],
+                [() => new ImageData(1, 1, null), '1,1,4,srgb'],
+                [() => new ImageData(1, 1, { colorSpace: undefined }), '1,1,4,srgb'],
+                [() => new ImageData(new Uint8ClampedArray(8), 1), '1,2,8,srgb'],
+                [() => new ImageData(new Uint8ClampedArray(8), 1, undefined), '1,2,8,srgb'],
+                [() => new ImageData(new Uint8ClampedArray(8), 2, 1, { colorSpace: 'display-p3' }), '2,1,8,display-p3'],
+                [() => new ImageData(new Uint8ClampedArray(8), 1, 3), 'threw IndexSizeError'],
+                [() => new ImageData(new Uint8ClampedArray(8), 3), 'threw IndexSizeError'],
+                [() => new ImageData(new Uint8ClampedArray(8), 0), 'threw IndexSizeError'],
+                [() => new ImageData(new Uint8ClampedArray(0), 1), 'threw InvalidStateError'],
+                [() => new ImageData(new Uint8ClampedArray(6), 1), 'threw InvalidStateError'],
+                [() => new ImageData(new Uint8Array(4), 1), 'threw IndexSizeError'],
+                [() => new ImageData({ length: 4 }, 1), 'threw IndexSizeError'],
+                [() => { const a = new Uint8ClampedArray(4); return new ImageData(a, 1).data === a; }, 'true'],
+                [() => { const d = new ImageData(1, 1); d.width = 5; return d.width; }, '1'],
+                [() => Object.getOwnPropertyDescriptor(ImageData.prototype, 'width').get.call({}), 'threw TypeError'],
+                [() => Object.prototype.toString.call(new ImageData(1, 1)), '[object ImageData]'],
+                [() => Object.keys(ImageData.prototype).join(' '), 'width height data colorSpace'],
+                [() => ImageData.length, '2'],
+                // A size past what a readback may hold is an allocation that fails: a RangeError (Chrome: IndexSizeError).
+                [() => new ImageData(-1, 1), 'threw RangeError'],
+                [() => ctx.createImageData(2, 3), '2,3,24,srgb'],
+                [() => ctx.createImageData(-2, 2), '2,2,16,srgb'],
+                [() => ctx.createImageData(1, 1, { colorSpace: 'display-p3' }), '1,1,4,display-p3'],
+                [() => ctx.createImageData(new ImageData(3, 1, { colorSpace: 'display-p3' })), '3,1,12,display-p3'],
+                [() => ctx.createImageData(1, 1, { colorSpace: 'x' }), 'threw TypeError'],
+                [() => ctx.createImageData(1, 1, 5), 'threw TypeError'],
+                [() => ctx.createImageData({ width: 1, height: 1, data: new Uint8ClampedArray(4) }), 'threw TypeError'],
+                [() => ctx.createImageData(null), 'threw TypeError'],
+                [() => ctx.createImageData(5), 'threw TypeError'],
+                [() => ctx.createImageData(), 'threw TypeError'],
+                [() => ctx.createImageData(NaN, 1), 'threw TypeError'],
+                [() => ctx.createImageData(2 ** 31, 1), 'threw TypeError'],
+                [() => ctx.createImageData(0, 1), 'threw IndexSizeError'],
+                [() => ctx.getImageData(NaN, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.getImageData(0, 0, 2 ** 31, 1), 'threw TypeError'],
+                [() => ctx.getImageData(0, 0, 1), 'threw TypeError'],
+                [() => ctx.getImageData(0, 0, 1, 1, { colorSpace: 'x' }), 'threw TypeError'],
+                [() => ctx.getImageData(0, 0, 0, 1), 'threw IndexSizeError'],
+                [() => ctx.putImageData({ width: 1, height: 1, data: new Uint8ClampedArray(4) }, 0, 0), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 2 ** 31, 0), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), NaN, 0), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 0, 0, NaN, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 0), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 0, 0, 0, 0, 1), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 0, 0, 0, 0, 1, 1, 'ignored'), 'undefined'],
+                [() => ctx.putImageData(new ImageData(1, 1), -(2 ** 31), 0), 'undefined'],
+                // A buffer transferred away: nothing left to put.
+                [() => { const d = new ImageData(1, 1); d.data.buffer.transfer(); return ctx.putImageData(d, 0, 0); }, 'threw InvalidStateError'],
+                [() => new CanvasGradient(), 'threw TypeError'],
+                [() => new CanvasPattern(), 'threw TypeError'],
+                [() => new TextMetrics(), 'threw TypeError'],
+                [() => Object.prototype.toString.call(ctx.createLinearGradient(0, 0, 1, 1)), '[object CanvasGradient]'],
+                [() => Object.keys(CanvasGradient.prototype).join(' '), 'addColorStop'],
+            ];
+            for (const [f, want] of cases) {
+                const got = outcome(f);
+                if (got !== want) throw new Error(f.toString() + ' gave ' + got + ', want ' + want);
+            }
+        "#;
+        run_2d_frame("image_data_interface.js", script);
+    }
+
+    /// `putImageData` converts an ImageData in Display P3 to the canvas's sRGB on the way to the renderer, and leaves
+    /// one in sRGB as it is. The numbers are Chrome's for an unpremultiplied opaque pixel.
+    #[test]
+    fn put_image_data_converts_display_p3_to_the_canvas_srgb() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            ctx.putImageData(new ImageData(new Uint8ClampedArray([128, 64, 32, 255, 255, 0, 0, 255]), 2, 1, { colorSpace: 'display-p3' }), 1, 2);
+            ctx.putImageData(new ImageData(new Uint8ClampedArray([128, 64, 32, 255]), 1, 1), 0, 0);
+        "#;
+        let ops = run_2d_frame("put_image_data_p3.js", script);
+        let puts: Vec<(i32, i32, u32, u32, Vec<u8>)> = canvas_commands(&ops)
+            .iter()
+            .filter_map(|command| match command {
+                Canvas2DCmd::PutImageData {
+                    x,
+                    y,
+                    width,
+                    height,
+                    pixels,
+                } => Some((*x, *y, *width, *height, pixels.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            puts,
+            vec![
+                (1, 2, 2, 1, vec![138, 59, 21, 255, 255, 0, 0, 255]),
+                (0, 0, 1, 1, vec![128, 64, 32, 255]),
+            ]
+        );
+    }
+
+    /// `getImageData` in Display P3 reads the canvas's sRGB pixels and converts them, and is an ImageData in that colour
+    /// space; in sRGB it is the snapshot the renderer took, an ImageData too. The numbers are Chrome's.
+    #[test]
+    fn get_image_data_converts_to_display_p3_when_asked() {
+        use shared::protocol::render_cmd::CanvasCmd;
+
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        std::thread::spawn(move || {
+            while let Ok(command) = render_rx.recv() {
+                match command {
+                    RenderCommand::Canvas(CanvasCmd::GetInfo { id: _, resp }) => {
+                        resp.send(Ok((64, 64)))
+                    }
+                    RenderCommand::Canvas2D {
+                        cmd: Canvas2DCmd::GetImageData { resp, .. },
+                        ..
+                    } => resp.send(Ok(vec![255, 0, 0, 255, 0, 255, 0, 255, 128, 64, 32, 255])),
+                    RenderCommand::Canvas2D {
+                        cmd: Canvas2DCmd::ReadSnapshotPixels { resp, .. },
+                        ..
+                    } => resp.send(Ok(vec![1, 2, 3, 4])),
+                    _ => {}
+                }
+            }
+        });
+        runtime
+            .exec_script(
+                "get_image_data_p3.js",
+                r#"
+                    const ctx = createCanvas().getContext('2d');
+                    const d = ctx.getImageData(0, 0, 3, 1, { colorSpace: 'display-p3' });
+                    const got = [d instanceof ImageData, d.colorSpace, d.width, d.height, ...d.data].join();
+                    const want = 'true,display-p3,3,1,234,51,35,255,117,251,76,255,120,67,39,255';
+                    if (got !== want) throw new Error('read ' + got + ', want ' + want);
+                    // In sRGB a read is the snapshot the renderer took, an ImageData all the same.
+                    const snapshot = ctx.getImageData(0, 0, 1, 1);
+                    const read = [snapshot instanceof ImageData, snapshot.colorSpace, ...snapshot.data].join();
+                    if (read !== 'true,srgb,1,2,3,4') throw new Error('the snapshot read ' + read);
+                "#,
+            )
+            .expect("script must not throw");
+    }
+
+    /// `measureText` answers a `TextMetrics`: read-only, a new object each call, its members on the prototype.
+    #[test]
+    fn a_measurement_is_a_text_metrics() {
+        let script = r#"
+            'use strict';
+            const ctx = createCanvas().getContext('2d');
+            const a = ctx.measureText('abc');
+            const b = ctx.measureText('abc');
+            if (!(a instanceof TextMetrics)) throw new Error('not a TextMetrics');
+            if (a === b) throw new Error('the same object twice');
+            if (a.width !== b.width) throw new Error('two widths for one text');
+            let threw = false;
+            try { a.width = 1; } catch (e) { threw = e instanceof TypeError; }
+            if (!threw) throw new Error('width was writable');
+            if (Object.keys(a).length !== 0) throw new Error('own members ' + Object.keys(a));
+            const members = Object.keys(TextMetrics.prototype).join(' ');
+            const want = 'width actualBoundingBoxLeft actualBoundingBoxRight fontBoundingBoxAscent fontBoundingBoxDescent'
+                + ' actualBoundingBoxAscent actualBoundingBoxDescent emHeightAscent emHeightDescent hangingBaseline'
+                + ' alphabeticBaseline ideographicBaseline';
+            if (members !== want) throw new Error('members ' + members);
+            if (Object.prototype.toString.call(a) !== '[object TextMetrics]') throw new Error('class string');
+        "#;
+        // Measuring draws nothing, so there is no frame to wait for: the commands are drained, the script is the test.
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        std::thread::spawn(move || {
+            while let Ok(command) = render_rx.recv() {
+                if let RenderCommand::Canvas(shared::protocol::render_cmd::CanvasCmd::GetInfo {
+                    id: _,
+                    resp,
+                }) = command
+                {
+                    resp.send(Ok((64, 64)));
+                }
+            }
+        });
+        runtime
+            .exec_script("text_metrics.js", script)
+            .expect("script must not throw");
+    }
+
     /// The number G2 is about, reported by the runtime rather than inferred
     /// from the shape of the code.
     ///
