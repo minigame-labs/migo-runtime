@@ -4,10 +4,13 @@
 //! error the specification names and nothing forwarded to the renderer, for the arguments that make it invalid:
 //! a size outside 1..=4 or a stride outside 0..=255 (INVALID_VALUE), and a type that is not one of the six integer
 //! types -- FLOAT and HALF_FLOAT among them, because there is nothing to convert an integer attribute to (INVALID_ENUM).
+//! Both pointer records take an offset and a stride only as multiples of the type's size (INVALID_OPERATION, WebGL 1.0
+//! 6.4), and `vertexAttribPointer` the packed 2_10_10_10_REV types of size 4 only (INVALID_OPERATION, ES 3.0 2.8).
 
 use frame_decode::{GlDecodeContext, RenderSink, decode_render_stream_into};
 use frame_wire::gl::{
     OP_VERTEX_ATTRIB_4F, OP_VERTEX_ATTRIB_I_POINTER, OP_VERTEX_ATTRIB_I4I, OP_VERTEX_ATTRIB_I4UI,
+    OP_VERTEX_ATTRIB_POINTER,
 };
 use frame_wire::stream::{MAGIC, STREAM_VERSION, pack_header, validate_stream};
 use shared::command_vec_pool::PooledVec;
@@ -15,6 +18,7 @@ use shared::protocol::render_cmd::{Canvas2DCmd, GLCmd};
 
 const INVALID_ENUM: u32 = 0x0500;
 const INVALID_VALUE: u32 = 0x0501;
+const INVALID_OPERATION: u32 = 0x0502;
 
 #[derive(Default)]
 struct Recorder {
@@ -170,11 +174,78 @@ fn an_integer_pointer_with_a_size_stride_or_offset_out_of_range_is_invalid_value
         );
     }
     // the edges that are fine
-    for (size, stride, offset) in [(1, 0, 0), (4, 255, 0), (3, 12, 1 << 20)] {
+    for (size, stride, offset) in [(1, 0, 0), (4, 252, 0), (3, 12, 1 << 20)] {
         let recorder = ipointer(size, 0x1405, stride, offset);
         assert!(
             recorder.errors.is_empty() && recorder.commands.len() == 1,
             "size {size} stride {stride} offset {offset}"
+        );
+    }
+}
+
+fn pointer(size: i32, type_: u32, stride: i32, offset: i32) -> Recorder {
+    decode(&[record(
+        OP_VERTEX_ATTRIB_POINTER,
+        &[3, 1, size as u32, type_, 0, stride as u32, offset as u32],
+    )])
+}
+
+#[test]
+fn a_pointer_offset_and_stride_are_multiples_of_its_type_s_size() {
+    for (type_, bytes) in [
+        (0x1401u32, 1),
+        (0x1402, 2),
+        (0x140B, 2),
+        (0x1406, 4),
+        (0x1404, 4),
+    ] {
+        let fine = pointer(2, type_, 3 * bytes, 5 * bytes);
+        assert!(
+            fine.errors.is_empty() && fine.commands.len() == 1,
+            "type {type_:#06x}: {:?}",
+            fine.errors
+        );
+        if bytes > 1 {
+            assert_eq!(
+                pointer(2, type_, 0, bytes + 1).errors,
+                vec![(3, INVALID_OPERATION)],
+                "type {type_:#06x} offset"
+            );
+            assert_eq!(
+                pointer(2, type_, bytes + 1, 0).errors,
+                vec![(3, INVALID_OPERATION)],
+                "type {type_:#06x} stride"
+            );
+        }
+    }
+    assert_eq!(
+        ipointer(2, 0x1403, 3, 0).errors,
+        vec![(3, INVALID_OPERATION)],
+        "an integer pointer too"
+    );
+    // A range error is judged before alignment.
+    assert_eq!(pointer(5, 0x1406, 0, 2).errors, vec![(3, INVALID_VALUE)]);
+    assert_eq!(pointer(2, 0x1406, 257, 0).errors, vec![(3, INVALID_VALUE)]);
+}
+
+#[test]
+fn a_packed_pointer_has_four_components() {
+    for type_ in [0x8D9Fu32, 0x8368] {
+        let fine = pointer(4, type_, 8, 4);
+        assert!(
+            fine.errors.is_empty() && fine.commands.len() == 1,
+            "type {type_:#06x}: {:?}",
+            fine.errors
+        );
+        assert_eq!(
+            pointer(3, type_, 0, 0).errors,
+            vec![(3, INVALID_OPERATION)],
+            "type {type_:#06x} of size 3"
+        );
+        assert_eq!(
+            ipointer(4, type_, 0, 0).errors,
+            vec![(3, INVALID_ENUM)],
+            "no integer pointer is packed"
         );
     }
 }

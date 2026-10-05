@@ -167,22 +167,52 @@ pub fn validate_bind_buffer_range<C: GlDecodeContext>(
     true
 }
 
-/// Validate the parameter tuple of `vertexAttribPointer`.  Returns
-/// `true` when the call is legal, `false` after pushing the right
-/// error code.
-///
-/// Rules (WebGL 1.0 s5.14.10, WebGL 2.0 s3.7.8):
-///   * `size` MUST be 1, 2, 3, or 4 → INVALID_VALUE otherwise
-///   * `type` MUST be a legal `GLenum` — `BYTE`, `UNSIGNED_BYTE`,
-///     `SHORT`, `UNSIGNED_SHORT`, `FLOAT`, `HALF_FLOAT` (WebGL 2),
-///     `INT` (WebGL 2), `UNSIGNED_INT` (WebGL 2) → INVALID_ENUM
-///   * `stride` MUST be in `[0, 255]` → INVALID_VALUE
-///   * `offset` MUST be `>= 0` → INVALID_VALUE
-///
-/// Does NOT validate the "ARRAY_BUFFER must be bound" condition —
-/// that requires peeking at render-thread shadow state which isn't
-/// accessible from the JS thread at op dispatch time.  The render
-/// thread will surface it through a later `glGetError` if needed.
+/// The bytes one component of a vertex attribute of `type_` takes -- a packed type its whole word --, or `None` for a
+/// type no attribute has.
+#[inline]
+fn attribute_component_bytes(type_: u32) -> Option<i32> {
+    match type_ {
+        0x1400 | 0x1401 => Some(1),          // BYTE, UNSIGNED_BYTE
+        0x1402 | 0x1403 | 0x140B => Some(2), // SHORT, UNSIGNED_SHORT, HALF_FLOAT
+        0x1404 | 0x1405 | 0x1406 => Some(4), // INT, UNSIGNED_INT, FLOAT
+        0x8D9F | 0x8368 => Some(4),          // INT_2_10_10_10_REV, UNSIGNED_INT_2_10_10_10_REV
+        _ => None,
+    }
+}
+
+/// The rules both pointer calls share once the type is known to be one of theirs, in a browser's order: `size` 1 to 4
+/// (INVALID_VALUE, judged first), `stride` 0 to 255 and `offset` not negative (INVALID_VALUE), a packed type of size 4
+/// only (INVALID_OPERATION, ES 3.0 2.8), and `offset` and `stride` multiples of the type's size (INVALID_OPERATION,
+/// WebGL 1.0 6.4).
+#[inline]
+fn attribute_pointer_error(
+    size: i32,
+    type_: u32,
+    stride: i32,
+    offset: i32,
+    types: fn(u32) -> bool,
+) -> Option<u32> {
+    if !(1..=4).contains(&size) {
+        return Some(codes::INVALID_VALUE);
+    }
+    let bytes = match attribute_component_bytes(type_) {
+        Some(bytes) if types(type_) => bytes,
+        _ => return Some(codes::INVALID_ENUM),
+    };
+    if !(0..=255).contains(&stride) || offset < 0 {
+        return Some(codes::INVALID_VALUE);
+    }
+    if (matches!(type_, 0x8D9F | 0x8368) && size != 4) || offset % bytes != 0 || stride % bytes != 0
+    {
+        return Some(codes::INVALID_OPERATION);
+    }
+    None
+}
+
+/// Validate the parameter tuple of `vertexAttribPointer` (WebGL 1.0 5.14.10, 6.4; WebGL 2.0 3.7.8): every attribute
+/// type WebGL 2 has -- WebGL 1's fewer are the facade's to judge, as it knows the version --, then
+/// [`attribute_pointer_error`]'s rules. That an ARRAY_BUFFER is bound for a non-zero offset is the facade's to judge
+/// too: it keeps the binding.
 #[inline]
 pub fn validate_vertex_attrib_pointer<C: GlDecodeContext>(
     context: &mut C,
@@ -192,28 +222,8 @@ pub fn validate_vertex_attrib_pointer<C: GlDecodeContext>(
     stride: i32,
     offset: i32,
 ) -> bool {
-    if !(1..=4).contains(&size) {
-        context.push_error(canvas_id, codes::INVALID_VALUE);
-        return false;
-    }
-    match type_ {
-        0x1400 | 0x1401 | 0x1402 | 0x1403 | 0x1406 // BYTE/UBYTE/SHORT/USHORT/FLOAT
-        | 0x140B | 0x1404 | 0x1405 // HALF_FLOAT / INT / UNSIGNED_INT
-        => {}
-        _ => {
-            context.push_error(canvas_id, codes::INVALID_ENUM);
-            return false;
-        }
-    }
-    if !(0..=255).contains(&stride) {
-        context.push_error(canvas_id, codes::INVALID_VALUE);
-        return false;
-    }
-    if offset < 0 {
-        context.push_error(canvas_id, codes::INVALID_VALUE);
-        return false;
-    }
-    true
+    let error = attribute_pointer_error(size, type_, stride, offset, |_| true);
+    refuse(context, canvas_id, error)
 }
 
 /// Validate the parameters of a `vertexAttribIPointer` call: the same shape as `vertexAttribPointer`, but only the
@@ -227,22 +237,10 @@ pub fn validate_vertex_attrib_ipointer<C: GlDecodeContext>(
     stride: i32,
     offset: i32,
 ) -> bool {
-    if !(1..=4).contains(&size) {
-        context.push_error(canvas_id, codes::INVALID_VALUE);
-        return false;
-    }
-    match type_ {
-        0x1400 | 0x1401 | 0x1402 | 0x1403 | 0x1404 | 0x1405 => {} // BYTE .. UNSIGNED_INT
-        _ => {
-            context.push_error(canvas_id, codes::INVALID_ENUM);
-            return false;
-        }
-    }
-    if !(0..=255).contains(&stride) || offset < 0 {
-        context.push_error(canvas_id, codes::INVALID_VALUE);
-        return false;
-    }
-    true
+    let error = attribute_pointer_error(size, type_, stride, offset, |t| {
+        (0x1400..=0x1405).contains(&t)
+    });
+    refuse(context, canvas_id, error)
 }
 
 /// Which `clearBuffer*` call a record is. What the buffer enum may be depends on the type of the values.
