@@ -203,6 +203,7 @@ const {
     ReflectApply,
     StringPrototypeCharCodeAt,
     StringPrototypeStartsWith,
+    StringPrototypeToLowerCase,
 } = primordials;
 
 import { WebglConstants } from "./01_constants.js";
@@ -963,17 +964,17 @@ function _compressedImageBytes(block, width, height, depth) {
 }
 
 // The sized internal formats that are both colour-renderable and texture-filterable (ES 3.0 table 3.13), which
-// `generateMipmap` takes besides the unsized ones; and the filterable float ones, colour-renderable once
-// EXT_color_buffer_float is enabled -- R16F, RG16F, RGBA16F, R11F_G11F_B10F. The 32-bit float ones are not filterable
-// without OES_texture_float_linear, which this runtime does not offer.
+// `generateMipmap` takes besides the unsized ones; and the filterable float ones -- R16F, RG16F, RGBA16F,
+// R11F_G11F_B10F -- while they are colour-renderable (`floatColourRenderable`). The 32-bit float ones are not
+// filterable without OES_texture_float_linear.
 const _MIPMAPPABLE_SIZED_FORMATS = [0x8229, 0x822b, 0x8051, 0x8d62, 0x8056, 0x8057, 0x8058, 0x8059, 0x8c43];
 const _MIPMAPPABLE_FLOAT_FORMATS = [0x822d, 0x822f, 0x881a, 0x8c3a];
 
 // The internal formats WebGL 2's `copyTexImage2D` takes: the unsized five and the colour-renderable sized ones are 0 --
-// the float ones only with EXT_color_buffer_float enabled (`floatRenderable`), INVALID_ENUM without, as a browser has
+// a float one only while it is colour-renderable (`floatColourRenderable`), INVALID_ENUM otherwise, as a browser has
 // them --, a depth or stencil format INVALID_OPERATION, anything else INVALID_ENUM. The decoder
 // (`copy_tex_image_format_error`) takes the float ones, as a context with the extension does.
-function _copyTexImageFormatError(internalformat, floatRenderable) {
+function _copyTexImageFormatError(ctx, internalformat) {
     switch (internalformat) {
         case 0x1906: case 0x1907: case 0x1908: case 0x1909: case 0x190a:                       // the unsized five
         case 0x8229: case 0x822b: case 0x8051: case 0x8056: case 0x8057: case 0x8058: case 0x8059: case 0x8d62:
@@ -983,7 +984,7 @@ function _copyTexImageFormatError(internalformat, floatRenderable) {
         case 0x8d70: case 0x8d76: case 0x8d7c: case 0x8d82: case 0x8d88: case 0x8d8e: case 0x906f:   // RGBA* integer
             return 0;
         case 0x822d: case 0x822f: case 0x822e: case 0x8230: case 0x8814: case 0x881a: case 0x8c3a:   // the float ones
-            return floatRenderable ? 0 : GL_INVALID_ENUM;
+            return floatColourRenderable(ctx, _FORMAT_INFO.get(internalformat)) ? 0 : GL_INVALID_ENUM;
         case 0x1902: case 0x81a5: case 0x81a6: case 0x8cac: case 0x84f9: case 0x88f0: case 0x8cad:   // depth, stencil
             return GL_INVALID_OPERATION;
         default:
@@ -1003,8 +1004,9 @@ function _copyTexImageFormatError(internalformat, floatRenderable) {
 // type (`_N` unsigned normalized, `_S` signed normalized, `_F` float, `_I` signed integer, `_U` unsigned integer), and
 // flags: colour-renderable (ES 3.0 table 3.13), colour-renderable once EXT_color_buffer_float is enabled, and sRGB.
 const _N = 0, _S = 1, _F = 2, _I = 3, _U = 4;
-// `_FLOAT_RENDERABLE`: colour-renderable once EXT_color_buffer_float is enabled.
-const _RENDERABLE = 1, _SRGB = 2, _FLOAT_RENDERABLE = 4;
+// `_FLOAT_RENDERABLE`: colour-renderable once EXT_color_buffer_float is enabled; `_HALF_RENDERABLE` too, a 16-bit float
+// one, once EXT_color_buffer_half_float is (`floatColourRenderable`).
+const _RENDERABLE = 1, _SRGB = 2, _FLOAT_RENDERABLE = 4, _HALF_RENDERABLE = 8;
 const _FORMAT_INFO = new Map([
     [0x8229, [8, 0, 0, 0, 0, 0, _N, _RENDERABLE]],              // R8
     [0x822b, [8, 8, 0, 0, 0, 0, _N, _RENDERABLE]],              // RG8
@@ -1045,10 +1047,10 @@ const _FORMAT_INFO = new Map([
     [0x8d89, [16, 16, 16, 0, 0, 0, _I, 0]],                     // RGB16I
     [0x8d71, [32, 32, 32, 0, 0, 0, _U, 0]],                     // RGB32UI
     [0x8d83, [32, 32, 32, 0, 0, 0, _I, 0]],                     // RGB32I
-    [0x822d, [16, 0, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE]],       // R16F
-    [0x822f, [16, 16, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE]],      // RG16F
+    [0x822d, [16, 0, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE | _HALF_RENDERABLE]],       // R16F
+    [0x822f, [16, 16, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE | _HALF_RENDERABLE]],      // RG16F
     [0x881b, [16, 16, 16, 0, 0, 0, _F, 0]],                     // RGB16F
-    [0x881a, [16, 16, 16, 16, 0, 0, _F, _FLOAT_RENDERABLE]],    // RGBA16F
+    [0x881a, [16, 16, 16, 16, 0, 0, _F, _FLOAT_RENDERABLE | _HALF_RENDERABLE]],    // RGBA16F
     [0x822e, [32, 0, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE]],       // R32F
     [0x8230, [32, 32, 0, 0, 0, 0, _F, _FLOAT_RENDERABLE]],      // RG32F
     [0x8815, [32, 32, 32, 0, 0, 0, _F, 0]],                     // RGB32F
@@ -1167,10 +1169,18 @@ function framebufferStatus(ctx, fb) {
     return status;
 }
 
-// Whether a format (`_FORMAT_INFO`'s entry) is colour-renderable in `ctx`: the float ones only with
-// EXT_color_buffer_float enabled.
+// Whether a format (`_FORMAT_INFO`'s entry) is colour-renderable in `ctx`: the float ones only with an extension that
+// makes them so enabled (`floatColourRenderable`).
 function colorRenderable(ctx, info) {
-    return (info[7] & _RENDERABLE) !== 0 || ((info[7] & _FLOAT_RENDERABLE) !== 0 && ctx._extColorBufferFloat !== undefined);
+    return (info[7] & _RENDERABLE) !== 0 || floatColourRenderable(ctx, info);
+}
+
+// Whether a float format (`_FORMAT_INFO`'s entry) is colour-renderable in `ctx`: every one with EXT_color_buffer_float
+// enabled, the 16-bit ones with EXT_color_buffer_half_float.
+function floatColourRenderable(ctx, info) {
+    const flags = info[7];
+    return (flags & _FLOAT_RENDERABLE) !== 0 && (ctx._extColorBufferFloat !== undefined ||
+        ((flags & _HALF_RENDERABLE) !== 0 && ctx._extColorBufferHalfFloat !== undefined));
 }
 
 // INVALID_FRAMEBUFFER_OPERATION recorded and true when `fb` is not complete.
@@ -1720,6 +1730,9 @@ const _TEXTURE_PARAMETERS = new Map(_SAMPLER_PARAMETERS);
 _TEXTURE_PARAMETERS.set(0x813c, { initial: 0, values: null });         // TEXTURE_BASE_LEVEL
 _TEXTURE_PARAMETERS.set(0x813d, { initial: 1000, values: null });      // TEXTURE_MAX_LEVEL
 const _WEBGL1_TEXTURE_PARAMETERS = [0x2800, 0x2801, 0x2802, 0x2803];  // MAG_FILTER, MIN_FILTER, WRAP_S, WRAP_T
+// TEXTURE_MAX_ANISOTROPY_EXT, a texture's and a sampler's once EXT_texture_filter_anisotropic is enabled: a float from 1
+// to MAX_TEXTURE_MAX_ANISOTROPY_EXT.
+const _ANISOTROPY_PARAMETER = { initial: 1, values: null };
 
 // The bytes of WebGL 2's `offset` / `length` pair over `view`, both counted in its elements (a DataView's are
 // bytes): `length` elements from `offset`, or the rest when it is 0, as a Uint8Array over the view's memory. A range
@@ -1869,6 +1882,65 @@ function texImageFromData(ctx, target, level, internalformat, width, height, bor
     if (data === null) return false;
     _rawTexImage2D(ctx._canvasId, target, level, internalformat, width, height, border, format, type, data, -1);
     return true;
+}
+
+// ---- Extensions -------------------------------------------------------------------------------------------------------
+//
+// Every extension a context offers, as the Khronos registry names it: the WebGL versions that have it -- a WebGL 1
+// extension that is WebGL 2 core is not WebGL 2's --, the renderer capabilities it needs (`_gpuCaps` bits, every one
+// of them), the context field that holds its object once it is enabled (what the rest of the facade reads), and how the
+// object is made. `getExtension` and `getSupportedExtensions` both read this, so what is listed is what is answered.
+const _WEBGL1_ONLY = 1, _WEBGL2_ONLY = 2, _ANY_WEBGL = 3;
+const _EXTENSIONS = [
+    // Instanced drawing: the ops are ES 3.0's own. Cocos Creator 2.x's particles and any instancing sprite batcher go
+    // from a draw call per instance to one.
+    ["ANGLE_instanced_arrays", _WEBGL1_ONLY, 0, "_angleInstancedArrays", (ctx) => ctx._buildAngleInstancedArrays()],
+    // The float formats as colour attachments and renderbuffers, where the driver renders to them.
+    ["EXT_color_buffer_float", _WEBGL2_ONLY, 4, "_extColorBufferFloat", enableColourBuffers],
+    // The 16-bit float formats alone, where the driver renders to those.
+    ["EXT_color_buffer_half_float", _WEBGL2_ONLY, 32, "_extColorBufferHalfFloat", enableColourBuffers],
+    // Blending into 32-bit floats, where the driver does: with EXT_color_buffer_float, asked for or not, as a browser
+    // enables it implicitly (`_drawError`).
+    ["EXT_float_blend", _WEBGL2_ONLY, 8, "_extFloatBlend", () => ({})],
+    ["EXT_texture_filter_anisotropic", _ANY_WEBGL, 16, "_extTextureFilterAnisotropic",
+        () => ({ TEXTURE_MAX_ANISOTROPY_EXT: 0x84fe, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 0x84ff })],
+    // 32-bit element indices, ES 3.0 core: without it Pixi and three.js cap batches at 65535 indices.
+    ["OES_element_index_uint", _WEBGL1_ONLY, 0, "_oesElementIndexUint", () => ({})],
+    // Vertex array objects, ES 3.0 core: Cocos Creator 2.x falls back to a vertexAttribPointer storm per draw without.
+    ["OES_vertex_array_object", _WEBGL1_ONLY, 0, "_oesVertexArrayObject", (ctx) => ctx._buildOesVertexArrayObject()],
+    // Compressed uploads: ETC2/EAC where the driver decodes them (ES 3.0 core), ETC1 as their subset, ASTC where it has
+    // GL_KHR_texture_compression_astc_*. A compressed asset saves ~16 MiB of heap per 2048^2 texture over RGBA.
+    ["WEBGL_compressed_texture_astc", _ANY_WEBGL, 2, "_webglCompressedAstc", (ctx) => ctx._buildCompressedAstc()],
+    ["WEBGL_compressed_texture_etc", _ANY_WEBGL, 1, "_webglCompressedEtc", (ctx) => ctx._buildCompressedEtc()],
+    ["WEBGL_compressed_texture_etc1", _ANY_WEBGL, 1, "_webglCompressedEtc1", () => ({ COMPRESSED_RGB_ETC1_WEBGL: 0x8d64 })],
+    // The driver's own vendor and renderer strings, where VENDOR and RENDERER answer a browser's masked ones. Answered
+    // whether or not this is enabled, as browsers now answer them.
+    ["WEBGL_debug_renderer_info", _ANY_WEBGL, 0, "_webglDebugRendererInfo",
+        () => ({ UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 })],
+    // Multiple render targets: WebGL 2's drawBuffers under WebGL 1's names.
+    ["WEBGL_draw_buffers", _WEBGL1_ONLY, 0, "_webglDrawBuffers", (ctx) => ctx._buildWebglDrawBuffers()],
+    // Loses THIS context, as the extension specifies: its isContextLost() turns true and its canvas is sent
+    // webglcontextlost; every other context -- the game's own among them -- is untouched. Engines lose a probe context
+    // with it (Pixi does, twice, while choosing a renderer); the probe's GPU objects go with its canvas.
+    ["WEBGL_lose_context", _ANY_WEBGL, 0, "_webglLoseContext", (ctx) => ({
+        loseContext: () => { ctx._setLostByExtension(true); },
+        restoreContext: () => { ctx._setLostByExtension(false); },
+    })],
+];
+const _EXTENSIONS_BY_KEY = new Map();
+for (const extension of _EXTENSIONS) _EXTENSIONS_BY_KEY.set(StringPrototypeToLowerCase(extension[0]), extension);
+
+// Whether `ctx` offers `extension`: one of its WebGL version's, on a renderer with every capability it needs.
+function offersExtension(ctx, extension) {
+    const versions = extension[1], needs = extension[2];
+    return (versions & (ctx._isWebGL2() ? _WEBGL2_ONLY : _WEBGL1_ONLY)) !== 0 && (needs === 0 || (ctx._gpuCaps & needs) === needs);
+}
+
+// EXT_color_buffer_float or EXT_color_buffer_half_float enabled: a float attachment that was not colour-renderable may
+// be now, so every framebuffer is judged again.
+function enableColourBuffers() {
+    framebufferChanged();
+    return {};
 }
 
 // `drawBuffers` / `drawBuffersWEBGL`: refused as `_drawBuffersError` says, else recorded for the draw framebuffer --
@@ -3190,6 +3262,20 @@ class WebGLRenderingContext {
             // `VERSION` and `SHADING_LANGUAGE_VERSION` begin with the WebGL version, then the driver's own
             // string in parentheses. Content (and libraries) tell WebGL 1 from 2 by this prefix.
             case 0x1f02: return this._webglVersionString(0x1f02, "WebGL");
+            // VENDOR and RENDERER are a browser's masked ones; the driver's are WEBGL_debug_renderer_info's
+            // UNMASKED_VENDOR_WEBGL and UNMASKED_RENDERER_WEBGL, answered whether or not it is enabled, as browsers now
+            // answer them, and asked of the driver once.
+            case 0x1f00: return "WebKit";
+            case 0x1f01: return "WebKit WebGL";
+            case 0x9245: return this._driverString("_unmaskedVendor", 0x1f00);
+            case 0x9246: return this._driverString("_unmaskedRenderer", 0x1f01);
+            // MAX_TEXTURE_MAX_ANISOTROPY_EXT: EXT_texture_filter_anisotropic's, asked of the driver once.
+            case 0x84ff:
+                if (this._extTextureFilterAnisotropic === undefined) {
+                    recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                    return null;
+                }
+                return this._maxAnisotropy();
             case 0x8b8c: return this._webglVersionString(0x8b8c, "WebGL GLSL ES");
             default: break;
         }
@@ -3206,6 +3292,27 @@ class WebGLRenderingContext {
         const json = _rawGetParameter(this._canvasId, pname);
         if (!json) return null;
         try { return JSON.parse(json); } catch (_) { return null; }
+    }
+
+    // The driver's string for `pname`, asked once and kept in `field`.
+    _driverString(field, pname) {
+        if (this[field] === undefined) {
+            let value = "";
+            try { value = JSON.parse(_rawGetParameter(this._canvasId, pname)); } catch (_) { /* none: an empty one */ }
+            this[field] = typeof value === "string" ? value : "";
+        }
+        return this[field];
+    }
+
+    // MAX_TEXTURE_MAX_ANISOTROPY_EXT, asked of the driver once: at least 1 (a driver that offers the extension has 2 or
+    // more).
+    _maxAnisotropy() {
+        if (this._maxAnisotropyCache === undefined) {
+            let value = 1;
+            try { value = JSON.parse(_rawGetParameter(this._canvasId, 0x84ff)); } catch (_) { /* none */ }
+            this._maxAnisotropyCache = typeof value === "number" && value >= 1 ? value : 1;
+        }
+        return this._maxAnisotropyCache;
     }
 
     // `<prefix> <version> (<driver string>)`, with the version of the interface this object is.
@@ -3231,146 +3338,42 @@ class WebGLRenderingContext {
         return op_webgl_get_context_attributes(this._canvasId);
     }
 
+    // The extension `name` names, compared case-insensitively as WebGL compares them, when this context offers it
+    // (`_EXTENSIONS`): made once and the same object on every call, which enables it. Null for one this context does
+    // not offer, and for any on a lost context.
     getExtension(name) {
-        // Our GL backend IS GLES 3.0, so every "extension" that maps
-        // to core GLES3 features we can satisfy by wiring the core
-        // ops behind the OES_/ANGLE_/etc alias the WebGL 1 games
-        // expect.  Cocos Creator 2.x in particular queries
-        // `OES_vertex_array_object` and falls back to a per-draw
-        // `vertexAttribPointer` storm when the extension is absent
-        // -- exposing it here cuts the storm to one bind per
-        // material at the cost of 3 one-line wrappers.
-        if (name === 'OES_vertex_array_object') {
-            return this._oesVertexArrayObject ||
-                (this._oesVertexArrayObject = this._buildOesVertexArrayObject());
-        }
-        // WEBGL_lose_context loses THIS context, as the extension specifies:
-        // its isContextLost() turns true and its canvas is sent
-        // webglcontextlost; every other context -- the game's own among them --
-        // is untouched. Engines call it to release a probe context: Pixi does,
-        // twice, while choosing a renderer. Driving the render thread's
-        // share-group reset from it tore down the game's programs mid-startup,
-        // and a cold start on an iPhone stayed black. The probe's GPU objects go
-        // with its canvas, on the canvas's own destroy path.
-        if (name === 'WEBGL_lose_context') {
-            return this._webglLoseContext ||
-                (this._webglLoseContext = {
-                    loseContext: () => { this._setLostByExtension(true); },
-                    restoreContext: () => { this._setLostByExtension(false); },
-                });
-        }
-        // Migo's own, for verification: a simulated GPU reset -- the whole
-        // share group lost and rebuilt, with webglcontextlost/restored on the
-        // main canvas -- which no device can be made to do on demand. Not in
-        // getSupportedExtensions: no content asks for it by accident.
-        if (name === 'MIGO_debug_gpu_reset') {
+        if (this.isContextLost()) return null;
+        // WebIDL's DOMString: a Symbol is a TypeError.
+        const key = StringPrototypeToLowerCase(`${name}`);
+        // Migo's own, for verification: a simulated GPU reset -- the whole share group lost and rebuilt, with
+        // webglcontextlost/restored on the main canvas -- which no device can be made to do on demand. Not listed: no
+        // content asks for it by accident.
+        if (key === "migo_debug_gpu_reset") {
             return this._migoDebugGpuReset ||
                 (this._migoDebugGpuReset = {
                     reset: () => { _rawGlLoseContext(this._canvasId); },
                 });
         }
-        // Instanced drawing: the ops are already the WebGL2 variants
-        // (ES 3.0 core), so we alias the ANGLE_/EXT_ spellings to the
-        // same bindings.  Cocos Creator 2.x's particle system and
-        // any sprite-batcher that uses instance IDs will go from
-        // N draw calls per frame to 1 -- the single largest
-        // draw-call reduction available for WebGL 1 content on this
-        // runtime.
-        if (name === 'ANGLE_instanced_arrays' ||
-            name === 'EXT_instanced_arrays' ||
-            name === 'WEBGL_instanced_arrays') {
-            return this._angleInstancedArrays ||
-                (this._angleInstancedArrays = this._buildAngleInstancedArrays());
-        }
-        // Multiple render targets.  The underlying op is the WebGL 2
-        // `drawBuffers`; the WebGL 1 alias just re-spells the method
-        // name and enum prefix, so Cocos / three.js deferred paths
-        // can detect support and light up G-buffer rendering.
-        if (name === 'WEBGL_draw_buffers') {
-            return this._webglDrawBuffers ||
-                (this._webglDrawBuffers = this._buildWebglDrawBuffers());
-        }
-        // Compressed texture uploads.  The Rust backend accepts
-        // ETC2/EAC unconditionally (GLES 3.0 core) and ASTC when
-        // the device advertises GL_KHR_texture_compression_astc_*.
-        // Exposing the extensions here lets engines pick the
-        // compressed asset path instead of falling back to RGBA,
-        // which can save ~16 MiB of heap per 2048^2 texture.
-        if (name === 'WEBGL_compressed_texture_etc') {
-            if (!(this._gpuCaps & 1)) return null;
-            return this._webglCompressedEtc ||
-                (this._webglCompressedEtc = this._buildCompressedEtc());
-        }
-        // ETC1 is ETC2 RGB8's subset, so a device with ETC2 has it: the renderer uploads its blocks as ETC2 RGB8.
-        if (name === 'WEBGL_compressed_texture_etc1') {
-            if (!(this._gpuCaps & 1)) return null;
-            return this._webglCompressedEtc1 ||
-                (this._webglCompressedEtc1 = { COMPRESSED_RGB_ETC1_WEBGL: 0x8d64 });
-        }
-        if (name === 'WEBGL_compressed_texture_astc') {
-            if (!(this._gpuCaps & 2)) return null;
-            return this._webglCompressedAstc ||
-                (this._webglCompressedAstc = this._buildCompressedAstc());
-        }
-        // WebGL 2: the float formats as colour attachments and renderbuffers, where the driver renders to them.
-        if (name === 'EXT_color_buffer_float') {
-            if (!this._isWebGL2() || !(this._gpuCaps & 4)) return null;
-            if (this._extColorBufferFloat === undefined) {
-                this._extColorBufferFloat = {};
-                framebufferChanged();       // a float attachment that was not renderable now is
-            }
-            return this._extColorBufferFloat;
-        }
-        // WebGL 2: blending into 32-bit float colour buffers, where the driver does. A context with
-        // EXT_color_buffer_float has it whenever it is offered, asked for or not, as a browser enables it implicitly.
-        if (name === 'EXT_float_blend') {
-            if (!this._isWebGL2() || !(this._gpuCaps & 8)) return null;
-            return this._extFloatBlend || (this._extFloatBlend = {});
-        }
-        // 32-bit element indices are GLES 3.0 core (drawElements honors
-        // UNSIGNED_INT), so expose the WebGL 1 extension alias. Without it,
-        // engines (Pixi, three.js) assume 16-bit-only and cap batches at 65535
-        // indices ("does not support 32 index buffer"), forcing extra draw calls
-        // for large scenes. The extension object carries no methods -- its mere
-        // presence signals support.
-        if (name === 'OES_element_index_uint') {
-            return this._oesElementIndexUint || (this._oesElementIndexUint = {});
-        }
-        return null;
+        const extension = _EXTENSIONS_BY_KEY.get(key);
+        if (extension === undefined || !offersExtension(this, extension)) return null;
+        const [, , , field, build] = extension;
+        if (this[field] === undefined) this[field] = build(this);
+        return this[field];
     }
 
+    // The names of the extensions this context offers (`_EXTENSIONS`), or null for a lost context.
     getSupportedExtensions() {
-        // Mirror the subset `getExtension` actually honours so
-        // engines that probe the list before requesting (three.js,
-        // pixi.js in some configurations) see the expected set.
-        const list = [
-            'OES_vertex_array_object',
-            'ANGLE_instanced_arrays',
-            'EXT_instanced_arrays',
-            'WEBGL_instanced_arrays',
-            'WEBGL_draw_buffers',
-            'OES_element_index_uint',
-            'WEBGL_lose_context',
-        ];
-        const caps = this._gpuCaps;
-        if (caps & 1) {
-            list.push('WEBGL_compressed_texture_etc');
-            list.push('WEBGL_compressed_texture_etc1');
-        }
-        if (caps & 2) {
-            list.push('WEBGL_compressed_texture_astc');
-        }
-        if ((caps & 4) && this._isWebGL2()) {
-            list.push('EXT_color_buffer_float');
-        }
-        if ((caps & 8) && this._isWebGL2()) {
-            list.push('EXT_float_blend');
+        if (this.isContextLost()) return null;
+        const list = [];
+        for (const extension of _EXTENSIONS) {
+            if (offersExtension(this, extension)) list.push(extension[0]);
         }
         return list;
     }
 
     // The renderer's capabilities, read once per context: the render thread publishes them before any JS GL call
-    // completes. Bit 0 ETC2/EAC, bit 1 ASTC, bit 2 float colour buffers (`op_webgl_query_gpu_caps`).
+    // completes (`op_webgl_query_gpu_caps`, `GpuCaps::webgl_bits`): bit 0 ETC2/EAC, 1 ASTC, 2 float colour buffers,
+    // 3 blending into 32-bit floats, 4 anisotropic filtering, 5 16-bit float colour buffers.
     get _gpuCaps() {
         if (this._gpuCapsCache === undefined) {
             this._gpuCapsCache = op_webgl_query_gpu_caps() | 0;
@@ -4177,7 +4180,20 @@ class WebGLRenderingContext {
     // ---- Texture parameters ----------------------------------------------------------------------------------------
     // The parameter `pname` of the context's textures (`_TEXTURE_PARAMETERS`; WebGL 1 has four), or undefined.
     _textureParameter(pname) {
+        if (pname === 0x84fe) return this._extTextureFilterAnisotropic === undefined ? undefined : _ANISOTROPY_PARAMETER;
         return this._isWebGL2() || _listHas(_WEBGL1_TEXTURE_PARAMETERS, pname) ? _TEXTURE_PARAMETERS.get(pname) : undefined;
+    }
+
+    // A sampler's parameter `pname` (`_SAMPLER_PARAMETERS`, and TEXTURE_MAX_ANISOTROPY_EXT once
+    // EXT_texture_filter_anisotropic is enabled), or undefined.
+    _samplerParameter(pname) {
+        if (pname === 0x84fe) return this._extTextureFilterAnisotropic === undefined ? undefined : _ANISOTROPY_PARAMETER;
+        return _SAMPLER_PARAMETERS.get(pname);
+    }
+
+    // A value TEXTURE_MAX_ANISOTROPY_EXT does not take: below 1 or past MAX_TEXTURE_MAX_ANISOTROPY_EXT.
+    _refusesAnisotropy(pname, value) {
+        return pname === 0x84fe && !(value >= 1 && value <= this._maxAnisotropy());
     }
 
     // `texParameteri` / `texParameterf` on the bound texture: a parameter the context's textures do not have, or a value
@@ -4187,7 +4203,9 @@ class WebGLRenderingContext {
         const spec = this._textureParameter(pname);
         let error = 0;
         if (spec === undefined || (spec.values !== null && !_listHas(spec.values, value))) error = GL_INVALID_ENUM;
-        else if ((pname === 0x813c || pname === 0x813d) && value < 0) error = GL_INVALID_VALUE;
+        else if (((pname === 0x813c || pname === 0x813d) && value < 0) || this._refusesAnisotropy(pname, value)) {
+            error = GL_INVALID_VALUE;
+        }
         if (error !== 0) {
             recordGpuPreflightError(this._canvasId, error);
             return false;
@@ -4233,7 +4251,7 @@ class WebGLRenderingContext {
         if (!texture) return;
         const p = Number(pname) >>> 0;
         const f = MathFround(Number(param));
-        if (!this._setTexParameter(texture, p, p === 0x813a || p === 0x813b ? f : MathRound(f))) return;
+        if (!this._setTexParameter(texture, p, p === 0x813a || p === 0x813b || p === 0x84fe ? f : MathRound(f))) return;
         // opcode 41: H C U U F. target/pname are u32, param is f32.
         encodeTexParameterf(this._canvasId, Number(target) >>> 0, p, f);
     }
@@ -4253,7 +4271,8 @@ class WebGLRenderingContext {
         const image = this._image(texture, first, base);
         let ok = image !== undefined && !image.compressed && image.width > 0 && image.height > 0 && image.depth > 0 &&
             (_UNSIZED_UPLOAD_TYPES.has(image.internalformat) || _listHas(_MIPMAPPABLE_SIZED_FORMATS, image.internalformat) ||
-                (this._extColorBufferFloat !== undefined && _listHas(_MIPMAPPABLE_FLOAT_FORMATS, image.internalformat))) &&
+                (_listHas(_MIPMAPPABLE_FLOAT_FORMATS, image.internalformat) &&
+                    floatColourRenderable(this, _FORMAT_INFO.get(image.internalformat)))) &&
             (this._isWebGL2() || (_isPowerOfTwo(image.width) && _isPowerOfTwo(image.height))) &&
             (t !== 0x8513 || image.width === image.height);
         for (let face = first + 1; ok && face <= last; face++) {
@@ -4973,7 +4992,7 @@ class WebGLRenderingContext {
     // then the level, size and border (INVALID_VALUE: out of range, or a cube face that is not square), then a depth or
     // stencil format (INVALID_OPERATION), as the decoder orders them. 0 when none is.
     _copyTexImageError(target, level, internalformat, width, height, border) {
-        const formatError = this._isWebGL2() ? _copyTexImageFormatError(internalformat, this._extColorBufferFloat !== undefined)
+        const formatError = this._isWebGL2() ? _copyTexImageFormatError(this, internalformat)
             : internalformat >= 0x1906 && internalformat <= 0x190a ? 0 : GL_INVALID_ENUM;
         if (formatError === GL_INVALID_ENUM) return formatError;
         const maxAtLevel = (MAX_WEBGL_GPU_2D_DIMENSION >>> level) || 1;
@@ -5278,7 +5297,7 @@ class WebGLRenderingContext {
         const formats = this._isWebGL2() ? _WEBGL2_RENDERBUFFER_FORMATS : _WEBGL1_RENDERBUFFER_FORMATS;
         if (!_listHas(formats, i)) {
             const info = this._isWebGL2() ? _FORMAT_INFO.get(i) : undefined;
-            if (info === undefined || (info[7] & _FLOAT_RENDERABLE) === 0 || this._extColorBufferFloat === undefined) {
+            if (info === undefined || !floatColourRenderable(this, info)) {
                 return GL_INVALID_ENUM;
             }
         }
@@ -6131,9 +6150,13 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
             return undefined;
         }
-        const spec = _SAMPLER_PARAMETERS.get(pname);
+        const spec = this._samplerParameter(pname);
         if (spec === undefined || (spec.values !== null && !_listHas(spec.values, value))) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return undefined;
+        }
+        if (this._refusesAnisotropy(pname, value)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
             return undefined;
         }
         return value;
@@ -6154,7 +6177,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         const p = Number(pname) >>> 0;
         const f = MathFround(Number(param));
         // An enum parameter set through the float call takes the nearest integer (ES 3.0 2.3.1).
-        const spec = _SAMPLER_PARAMETERS.get(p);
+        const spec = this._samplerParameter(p);
         const value = this._samplerParameterValue("samplerParameterf", sampler, p, spec && spec.values !== null ? MathRound(f) : f);
         if (value === undefined) return;
         (sampler._parameters || (sampler._parameters = new Map())).set(p, value);
@@ -6174,7 +6197,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
             return null;
         }
         const p = pname >>> 0;
-        const spec = _SAMPLER_PARAMETERS.get(p);
+        const spec = this._samplerParameter(p);
         if (spec === undefined) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
             return null;

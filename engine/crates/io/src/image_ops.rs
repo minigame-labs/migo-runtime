@@ -1905,6 +1905,8 @@ mod tests {
             ahb: true,
             color_buffer_float: false,
             float_blend: false,
+            anisotropic_filtering: false,
+            color_buffer_half_float: false,
         });
         let cpu_backing_required = Arc::new(AtomicBool::new(false));
         let decode_policy = ImageDecodePolicy::PreferGpuNative {
