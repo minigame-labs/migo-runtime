@@ -157,6 +157,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL: a program or shader is deleted as GL deletes it, once nothing uses it, as browsers have it: the current program
+  stays and answers every call until another is made current -- though it is not made current again nor takes a shader
+  (INVALID_OPERATION) -- and a shader stays while attached to a program that is there; `isProgram` and `isShader`
+  answer whether it is. Once gone, every program or shader call that takes it is INVALID_VALUE (it was
+  INVALID_OPERATION, or no error at all, or a stale answer); another context's is INVALID_OPERATION; a value that is
+  no program or shader, null among them, is a TypeError, where calls took it silently. Deleting another context's
+  object is INVALID_OPERATION. The renderer deletes a program or shader when it goes, and not before: it dropped the
+  program in use at once, so the draws until another was made current, and every query of it, named a program it no
+  longer had (on Performance+ the queries threw).
 - WebGL: the calls a browser refuses are refused, each with its error, where they reached the driver or were taken: an
   attribute index past MAX_VERTEX_ATTRIBS on every attribute call (INVALID_VALUE); WebGL 2's attribute types in WebGL 1
   (INVALID_ENUM); an attribute offset or stride off its type's size, a packed type not of size 4, an offset into no
