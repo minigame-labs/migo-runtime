@@ -603,6 +603,101 @@ pub(super) mod tests {
         );
     }
 
+    /// `blitFramebuffer` refuses what a browser refuses, in its order: a filter of none (INVALID_ENUM), a mask of other
+    /// bits (INVALID_VALUE), LINEAR with depth or stencil (INVALID_OPERATION), a framebuffer not complete
+    /// (INVALID_FRAMEBUFFER_OPERATION), then the images: the same image read and written, integer data with LINEAR or
+    /// against other data, depth or stencil of other formats or that the read framebuffer lacks, a multisampled draw
+    /// framebuffer, and from a multisampled read framebuffer another format or rectangle (INVALID_OPERATION). Only a
+    /// blit taken reaches the renderer.
+    #[test]
+    fn blit_framebuffer_refuses_what_a_browser_refuses() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "blit_rules.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 330, width: 8, height: 8 }, { depth: true, stencil: true });
+                gl._gpuCapsCache = 4;
+                gl.getExtension("EXT_color_buffer_float");                  // RGBA16F renders
+                const errOf = (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502, FB_OP = 0x0506;
+                const FB = 0x8d40, RB = 0x8d41, READ = 0x8ca8, DRAW = 0x8ca9, COLOR0 = 0x8ce0, COLOR = 0x4000, DEPTH = 0x100, STENCIL = 0x400;
+                const NEAREST = 0x2600, LINEAR = 0x2601;
+                const rb = (format, samples = 0) => {
+                    const r = gl.createRenderbuffer();
+                    gl.bindRenderbuffer(RB, r);
+                    if (samples) gl.renderbufferStorageMultisample(RB, samples, format, 8, 8); else gl.renderbufferStorage(RB, format, 8, 8);
+                    return r;
+                };
+                const fbo = (colour, depth, point = 0x8d00) => {
+                    const f = gl.createFramebuffer();
+                    gl.bindFramebuffer(FB, f);
+                    if (colour) gl.framebufferRenderbuffer(FB, COLOR0, RB, colour);
+                    if (depth) gl.framebufferRenderbuffer(FB, point, RB, depth);
+                    f._driverGeneration = undefined;
+                    return f;
+                };
+                const blit = (r, d, mask, filter, rect = [0, 0, 8, 8, 0, 0, 8, 8]) => {
+                    gl.bindFramebuffer(READ, r); gl.bindFramebuffer(DRAW, d);
+                    gl.blitFramebuffer(...rect, mask, filter);
+                };
+                const A = fbo(rb(0x8058)), B = fbo(rb(0x8058));
+                blit(A, B, COLOR, NEAREST); errOf(0, "RGBA8 to RGBA8");
+                blit(A, B, COLOR, LINEAR); errOf(0, "and linearly");
+                blit(A, B, 0x10, NEAREST); errOf(VALUE, "a mask of another bit");
+                blit(A, B, 0x10, 0x1234); errOf(ENUM, "a filter of none, first");
+                blit(A, B, 0, NEAREST); errOf(0, "nothing");
+                blit(A, B, DEPTH, LINEAR); errOf(OPERATION, "depth linearly");
+                blit(A, A, COLOR, NEAREST); errOf(OPERATION, "an image onto itself");
+                blit(A, A, COLOR, NEAREST, [0, 0, 4, 4, 4, 4, 8, 8]); errOf(OPERATION, "even between rectangles apart");
+                blit(null, null, COLOR, NEAREST); errOf(OPERATION, "the drawing buffer onto itself");
+                blit(null, A, COLOR, NEAREST); errOf(0, "the drawing buffer into another");
+                const shared = rb(0x8058);
+                blit(fbo(shared), fbo(shared), COLOR, NEAREST); errOf(OPERATION, "one image through two framebuffers");
+                const I = fbo(rb(0x8d8e)), I2 = fbo(rb(0x8d8e)), U = fbo(rb(0x8d7c));
+                blit(I, I2, COLOR, NEAREST); errOf(0, "integers to integers");
+                blit(I, I2, COLOR, LINEAR); errOf(OPERATION, "integers linearly");
+                blit(I, U, COLOR, NEAREST); errOf(OPERATION, "signed to unsigned integers");
+                blit(I, B, COLOR, NEAREST); errOf(OPERATION, "integers to normalized");
+                blit(A, I, COLOR, NEAREST); errOf(OPERATION, "normalized to integers");
+                const D24 = fbo(rb(0x8058), rb(0x81a6)), D24b = fbo(rb(0x8058), rb(0x81a6)), D16 = fbo(rb(0x8058), rb(0x81a5));
+                const DS = fbo(rb(0x8058), rb(0x88f0), 0x821a), DS2 = fbo(rb(0x8058), rb(0x88f0), 0x821a);
+                blit(D24, D24b, DEPTH, NEAREST); errOf(0, "depth to depth of its format");
+                blit(D24, D16, DEPTH, NEAREST); errOf(OPERATION, "depth to another format");
+                blit(D24, DS, DEPTH, NEAREST); errOf(OPERATION, "depth to depth-stencil");
+                blit(DS, DS2, STENCIL, NEAREST); errOf(0, "stencil to stencil");
+                blit(DS, DS2, STENCIL, LINEAR); errOf(OPERATION, "stencil linearly");
+                blit(D24, A, DEPTH, NEAREST); errOf(0, "depth to a framebuffer without it");
+                blit(A, D24, DEPTH, NEAREST); errOf(OPERATION, "depth from a framebuffer without it");
+                blit(null, DS, DEPTH, NEAREST); errOf(0, "the drawing buffer's depth-stencil, of DS's format");
+                blit(DS, null, DEPTH | STENCIL, NEAREST); errOf(0, "and back");
+                const MS = fbo(rb(0x8058, 4)), MS2 = fbo(rb(0x8058, 4)), MSF = fbo(rb(0x881a, 4)), F = fbo(rb(0x881a));
+                blit(MS, B, COLOR, NEAREST); errOf(0, "resolving");
+                blit(MS, B, COLOR, LINEAR); errOf(0, "resolving linearly");
+                blit(MS, B, COLOR, NEAREST, [0, 0, 8, 8, 0, 0, 4, 4]); errOf(OPERATION, "resolving into another rectangle");
+                blit(MS, F, COLOR, NEAREST); errOf(OPERATION, "resolving into another format");
+                blit(MS, MS2, COLOR, NEAREST); errOf(OPERATION, "into a multisampled framebuffer");
+                blit(A, MS, COLOR, NEAREST); errOf(OPERATION, "into one from a single-sampled one");
+                blit(gl.createFramebuffer(), B, COLOR, NEAREST); errOf(FB_OP, "from a framebuffer not complete");
+                blit(gl.createFramebuffer(), B, 0x10, NEAREST); errOf(VALUE, "the mask first");
+                blit(fbo(null, rb(0x81a5)), B, COLOR, NEAREST); errOf(OPERATION, "colour from a framebuffer without it");
+                gl.bindFramebuffer(READ, A); gl.readBuffer(0);
+                blit(A, B, COLOR, NEAREST); errOf(OPERATION, "colour from read buffer NONE");
+                gl.bindFramebuffer(READ, A); gl.readBuffer(COLOR0);
+                gl.bindFramebuffer(DRAW, B); gl.drawBuffers([0]);
+                blit(A, B, COLOR, NEAREST); errOf(0, "into draw buffer NONE");
+                gl.bindFramebuffer(DRAW, B); gl.drawBuffers([COLOR0]);
+                gl.flush();
+                "#,
+            )
+            .expect("every blit should be judged as a browser judges it");
+        let blits = drain_gl_commands(&render_rx)
+            .into_iter()
+            .filter(|cmd| matches!(cmd, GLCmd::BlitFramebuffer { .. }))
+            .count();
+        assert_eq!(blits, 13, "only the 13 blits taken reach the renderer");
+    }
+
     /// WebGL 1's HALF_FLOAT_OES is ES 3.0's HALF_FLOAT to the driver: a read of it reaches the renderer as one, into
     /// the Uint16Array it was given.
     #[test]
