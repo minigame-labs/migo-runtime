@@ -1338,6 +1338,9 @@ impl CanvasManager {
             anisotropic_filtering: self.device_caps.has_anisotropic_filtering,
             color_buffer_half_float: self.device_caps.has_color_buffer_half_float,
             float_filtering: self.device_caps.has_float_filtering,
+            standard_derivatives: self.device_caps.has_standard_derivatives,
+            shader_texture_lod: self.device_caps.has_shader_texture_lod,
+            frag_depth: self.device_caps.has_frag_depth,
         };
         self.gpu_caps.set(caps);
     }
@@ -3569,6 +3572,47 @@ impl CanvasManager {
                 entry.drawing_buffer.as_ref().map(|db| db.fbo),
             )
         })
+    }
+
+    /// The swizzle WebGL 1's upload of a luminance or alpha float at level 0 of the texture bound to `target` reads it
+    /// through (`webgl1_formats::driver_format`), `None` -- the identity -- for any other level-0 upload: set on the
+    /// texture when it changes, which is when an upload of one kind follows one of the other.
+    pub(crate) fn set_webgl1_swizzle(
+        &mut self,
+        canvas_id: CanvasId,
+        target: u32,
+        swizzle: Option<crate::backend::gl::webgl1_formats::Swizzle>,
+    ) {
+        let Ok(id) = self.webgl_gpu_budget.bound_texture(canvas_id, target) else {
+            return;
+        };
+        let Some(meta) = self.textures.get_mut(&id) else {
+            return;
+        };
+        if meta.swizzle == swizzle {
+            return;
+        }
+        meta.swizzle = swizzle;
+        let parameter_target = if (0x8515..=0x851A).contains(&target) {
+            glow::TEXTURE_CUBE_MAP
+        } else {
+            target
+        };
+        let channels = swizzle.unwrap_or(crate::backend::gl::webgl1_formats::IDENTITY);
+        for (pname, channel) in [
+            glow::TEXTURE_SWIZZLE_R,
+            glow::TEXTURE_SWIZZLE_G,
+            glow::TEXTURE_SWIZZLE_B,
+            glow::TEXTURE_SWIZZLE_A,
+        ]
+        .into_iter()
+        .zip(channels)
+        {
+            unsafe {
+                self.gl
+                    .tex_parameter_i32(parameter_target, pname, channel as i32)
+            };
+        }
     }
 
     /// Whether the content's default framebuffer is bound to `target` and is the DrawingBuffer's FBO -- where WebGL's

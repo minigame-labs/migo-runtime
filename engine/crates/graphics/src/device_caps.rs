@@ -96,6 +96,12 @@ pub struct DeviceCapabilities {
     /// Linear filtering of 32-bit float textures (`GL_OES_texture_float_linear`): what lets a context offer
     /// OES_texture_float_linear.
     pub has_float_filtering: bool,
+    /// The ESSL 1.00 extensions a WebGL 1 shader names in `#extension` and the driver compiles as it is:
+    /// `GL_OES_standard_derivatives`, `GL_EXT_shader_texture_lod`, `GL_EXT_frag_depth`. What lets a WebGL 1 context
+    /// offer OES_standard_derivatives, EXT_shader_texture_lod and EXT_frag_depth.
+    pub has_standard_derivatives: bool,
+    pub has_shader_texture_lod: bool,
+    pub has_frag_depth: bool,
 }
 
 /// Coarse device classification that gates optimisation paths.
@@ -170,6 +176,9 @@ impl DeviceCapabilities {
         let has_color_buffer_half_float =
             renders_half_float_colour_buffers(has_color_buffer_float, &gl_extensions);
         let has_float_filtering = filters_float32(gl.version().is_embedded, &gl_extensions);
+        let has_standard_derivatives = has_extension(&gl_extensions, "GL_OES_standard_derivatives");
+        let has_shader_texture_lod = has_extension(&gl_extensions, "GL_EXT_shader_texture_lod");
+        let has_frag_depth = has_extension(&gl_extensions, "GL_EXT_frag_depth");
 
         Self {
             gles_version,
@@ -187,6 +196,9 @@ impl DeviceCapabilities {
             has_anisotropic_filtering,
             has_color_buffer_half_float,
             has_float_filtering,
+            has_standard_derivatives,
+            has_shader_texture_lod,
+            has_frag_depth,
         }
     }
 

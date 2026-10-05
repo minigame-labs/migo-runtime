@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WebGL 1: `OES_texture_float` and `OES_texture_half_float` -- FLOAT and HALF_FLOAT_OES uploads of each unsized format,
+  held as ES 3.0's 32- and 16-bit float formats, luminance and alpha through a swizzle so they sample as (l, l, l, 1)
+  and (0, 0, 0, a) -- with `OES_texture_half_float_linear`, and `WEBGL_color_buffer_float` and
+  `EXT_color_buffer_half_float` enabled with them where the renderer renders to floats, as browsers enable them: RGBA
+  float attachments and RGBA32F_EXT / RGBA16F_EXT renderbuffers, read as FLOAT, HALF_FLOAT_OES or the implementation's
+  pair and never as bytes, blended into as EXT_float_blend has it. `WEBGL_depth_texture`: DEPTH_COMPONENT and
+  DEPTH_STENCIL images of TEXTURE_2D's level 0 made without data, never sub-uploaded, copied or mipmapped, sampled as
+  luminance through any filter (the driver is given NEAREST, the filtering ES 3.0 has for depth). `EXT_sRGB`: sRGB
+  textures, attachments and SRGB8_ALPHA8 renderbuffers. `EXT_blend_minmax`, `OES_fbo_render_mipmap`, and
+  `OES_standard_derivatives`, `EXT_shader_texture_lod` and `EXT_frag_depth` where the driver compiles them. Each adds
+  nothing before it is enabled: its formats, types, renderbuffer formats, attachment queries (COMPONENT_TYPE,
+  COLOR_ENCODING), equations, hint and levels are refused as a browser refuses them.
 - WebGL: `OES_texture_float_linear`, where the driver filters 32-bit float textures. Without it such a texture is
   incomplete -- sampled as (0, 0, 0, 1) -- while a filter of it is not NEAREST, as WebGL specifies: the driver
   underneath filtered it regardless wherever it could. The filters judged are those of the sampler bound to the unit
@@ -145,6 +157,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL: an attachment of a texture level is complete only as ES 3.0 4.4.4.2 has it -- from the base level to the last
+  a full chain has, a level other than the base only of a mipmap-complete texture, a cube map's face only of a
+  cube-complete one -- and setting TEXTURE_BASE_LEVEL or TEXTURE_MAX_LEVEL judges framebuffers again; the facade had
+  called such framebuffers complete. A copy into a depth or depth-stencil image is INVALID_OPERATION; it was let
+  through to the driver. IMPLEMENTATION_COLOR_READ_FORMAT and _TYPE of a read framebuffer that cannot be read are
+  INVALID_OPERATION and null, as they are in browsers.
+- WebGL 1: `blendEquation`, `blendEquationSeparate` and `hint` refuse what they do not take (INVALID_ENUM): MIN and MAX
+  before EXT_blend_minmax, an unknown equation, target or mode reached the driver, which took MIN and MAX and logged the
+  rest. `readPixels` takes WebGL 1's formats and types only, and a view of another type than the type is
+  INVALID_OPERATION before the read buffer is judged, as browsers order them. `getFramebufferAttachmentParameter`
+  answers WebGL 1's targets, attachment points and parameters only (READ_FRAMEBUFFER, the attachment sizes and
+  TEXTURE_LAYER are WebGL 2's; a colour attachment past the context's is INVALID_ENUM), refuses the default framebuffer
+  (INVALID_OPERATION), and COMPONENT_TYPE of DEPTH_STENCIL_ATTACHMENT is INVALID_OPERATION in either version.
 - WebGL: every extension a context offers is one table's -- the registry's names, the WebGL versions that have each and
   the renderer capability each needs -- which both `getExtension` and `getSupportedExtensions` read. A WebGL 2 context
   offered WebGL 1's ANGLE_instanced_arrays, OES_vertex_array_object, WEBGL_draw_buffers and OES_element_index_uint,

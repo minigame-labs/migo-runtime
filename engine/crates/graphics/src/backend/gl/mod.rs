@@ -33,3 +33,4 @@ pub mod text_attrs;
 pub(crate) mod texture_copy;
 pub(crate) mod uniform_cache;
 pub(crate) mod unpack_convert;
+pub(crate) mod webgl1_formats;

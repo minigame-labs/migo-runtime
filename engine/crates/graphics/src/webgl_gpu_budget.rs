@@ -1130,7 +1130,9 @@ impl WebGlGpuBudget {
         bytes
     }
 
-    fn bound_texture(
+    /// The texture bound to the image target `target` (a cube map's face is its cube map) at the active unit of
+    /// `canvas_id`.
+    pub(crate) fn bound_texture(
         &self,
         canvas_id: CanvasId,
         target: u32,

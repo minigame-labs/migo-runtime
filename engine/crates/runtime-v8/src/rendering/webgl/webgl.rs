@@ -253,6 +253,55 @@ pub(super) mod tests {
         assert_eq!(responder.join().unwrap(), [0, 8, 12, 64]);
     }
 
+    /// WebGL 1's HALF_FLOAT_OES is ES 3.0's HALF_FLOAT to the driver: a read of it reaches the renderer as one, into
+    /// the Uint16Array it was given.
+    #[test]
+    fn a_webgl1_half_float_read_reaches_the_renderer_as_half_float() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            loop {
+                match render_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    RenderCommand::GL(GLCmd::ReadPixels {
+                        format,
+                        type_,
+                        resp,
+                        ..
+                    }) => {
+                        resp.ok(shared::protocol::render_cmd::ReadPixelsData {
+                            pixels: (1..=8).collect(),
+                            layout: shared::protocol::pixel_pack::PixelPackLayout::new(
+                                1, 1, 8, 4, 0, 0, 0,
+                            )
+                            .unwrap(),
+                        });
+                        break (format, type_);
+                    }
+                    RenderCommand::FramePacket(_) => {}
+                    other => panic!("unexpected readback command: {other:?}"),
+                }
+            }
+        });
+        runtime
+            .exec_script(
+                "webgl1_half_float_read.js",
+                r#"
+                const gl = new WebGLRenderingContext({ _rid: 272, width: 2, height: 2 }, {});
+                gl._gpuCapsCache = 32;
+                const half = gl.getExtension("OES_texture_half_float");
+                const pixels = new Uint16Array(4);
+                gl.readPixels(0, 0, 1, 1, gl.RGBA, half.HALF_FLOAT_OES, pixels);
+                if (gl.getError() !== 0) throw new Error("the read was refused");
+                if (pixels[0] !== 0x0201 || pixels[3] !== 0x0807) throw new Error(`read ${pixels}`);
+                "#,
+            )
+            .expect("the read should be made");
+        assert_eq!(
+            responder.join().unwrap(),
+            (0x1908, 0x140b),
+            "RGBA / HALF_FLOAT reaches the renderer"
+        );
+    }
+
     #[test]
     fn read_pixels_dst_offset_is_in_view_elements_and_adds_to_pack_skips() {
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -3809,10 +3858,19 @@ pub(super) mod tests {
                 const gl1 = new WebGLRenderingContext({ _rid: 251, width: 4, height: 4 }, {});
                 gl1._gpuCapsCache = 63;
                 check(same(gl1.getSupportedExtensions(), [
-                    "ANGLE_instanced_arrays", "EXT_texture_filter_anisotropic", "OES_element_index_uint", "OES_vertex_array_object",
-                    "WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1",
-                    "WEBGL_debug_renderer_info", "WEBGL_draw_buffers", "WEBGL_lose_context",
+                    "ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_color_buffer_half_float", "EXT_float_blend", "EXT_sRGB",
+                    "EXT_texture_filter_anisotropic", "OES_element_index_uint", "OES_fbo_render_mipmap", "OES_texture_float",
+                    "OES_texture_half_float", "OES_texture_half_float_linear", "OES_vertex_array_object",
+                    "WEBGL_color_buffer_float", "WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc",
+                    "WEBGL_compressed_texture_etc1", "WEBGL_debug_renderer_info", "WEBGL_depth_texture", "WEBGL_draw_buffers",
+                    "WEBGL_lose_context",
                 ]), `WebGL 1 lists ${gl1.getSupportedExtensions()}`);
+                for (const [name, bit] of [["OES_standard_derivatives", 128], ["EXT_shader_texture_lod", 256], ["EXT_frag_depth", 512]]) {
+                    check(gl1.getExtension(name) === null, `${name} needs the renderer to compile it`);
+                    const compiles = new WebGLRenderingContext({ _rid: 254, width: 4, height: 4 }, {});
+                    compiles._gpuCapsCache = bit;
+                    check(compiles.getExtension(name) !== null, `${name} where the renderer compiles it`);
+                }
                 check(gl1.getExtension("EXT_color_buffer_float") === null, "a WebGL 2 extension is not WebGL 1's");
                 const bare = new WebGL2RenderingContext({ _rid: 252, width: 4, height: 4 }, {});
                 bare._gpuCapsCache = 0;
@@ -3869,6 +3927,283 @@ pub(super) mod tests {
                 "#,
             )
             .expect("every extension should be the table's");
+    }
+
+    /// WebGL 1's texture extensions take exactly what their specifications add, and nothing before they are enabled:
+    /// OES_texture_float's FLOAT and OES_texture_half_float's HALF_FLOAT_OES uploads of each unsized format, filtered
+    /// only with their linear extensions, rendered to as RGBA (implicitly WEBGL_color_buffer_float and
+    /// EXT_color_buffer_half_float, where the renderer has them) and read back as FLOAT or HALF_FLOAT_OES;
+    /// WEBGL_depth_texture's images of TEXTURE_2D's level 0 without data, never sub-uploaded, copied or mipmapped;
+    /// EXT_sRGB's images and SRGB8_ALPHA8 renderbuffers; the float renderbuffers, the attachment queries, render to
+    /// mipmap, MIN and MAX, and the derivative hint. WebGL 2's enums are not WebGL 1's.
+    #[test]
+    fn webgl1_texture_extensions_take_what_their_specifications_add() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "webgl1_extensions.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const errOf = (gl) => (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                const T2D = 0x0de1, FB = 0x8d40, RB = 0x8d41, COLOR0 = 0x8ce0, DEPTH_AT = 0x8d00, DS_AT = 0x821a;
+                const RGBA = 0x1908, RGB = 0x1907, L = 0x1909, A = 0x1906, UBYTE = 0x1401, USHORT = 0x1403, UINT = 0x1405;
+                const FLOAT = 0x1406, HALF = 0x8d61, DEPTH = 0x1902, DS = 0x84f9, U248 = 0x84fa, SRGB = 0x8c40, SRGBA = 0x8c42;
+                const MIN = 0x2801, MAG = 0x2800, NEAREST = 0x2600, LINEAR = 0x2601;
+                const gl = new WebGLRenderingContext({ _rid: 270, width: 4, height: 4 }, {});
+                gl._gpuCapsCache = 4 | 32;
+                const err = errOf(gl);
+                // The facade's verdict on the draw framebuffer, the driver's not asked.
+                const status = () => {
+                    gl.clear(0); gl.getError();
+                    const fb = gl._framebufferBinding;
+                    fb._driverGeneration = fb._statusGeneration;
+                    return gl.checkFramebufferStatus(FB);
+                };
+                const withheld = () => gl._incompleteBindings.size;
+                const bound2D = () => gl._textureBindings2D.get(gl._activeTextureUnit);
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.texImage2D(T2D, 0, RGBA, 1, 1, 0, RGBA, FLOAT, null); err(ENUM, "FLOAT before OES_texture_float");
+                gl.texImage2D(T2D, 0, RGBA, 1, 1, 0, RGBA, HALF, null); err(ENUM, "HALF_FLOAT_OES before OES_texture_half_float");
+                gl.texImage2D(T2D, 0, DEPTH, 1, 1, 0, DEPTH, USHORT, null); err(VALUE, "DEPTH_COMPONENT before WEBGL_depth_texture");
+                gl.texImage2D(T2D, 0, SRGBA, 1, 1, 0, SRGBA, UBYTE, null); err(VALUE, "SRGB_ALPHA_EXT before EXT_sRGB");
+                const rb = gl.createRenderbuffer();
+                gl.bindRenderbuffer(RB, rb);
+                gl.renderbufferStorage(RB, 0x8814, 1, 1); err(ENUM, "RGBA32F_EXT before WEBGL_color_buffer_float");
+                gl.renderbufferStorage(RB, 0x8c43, 1, 1); err(ENUM, "SRGB8_ALPHA8_EXT before EXT_sRGB");
+                gl.blendEquation(0x8007); err(ENUM, "MIN before EXT_blend_minmax");
+                gl.blendEquationSeparate(0x8006, 0x8008); err(ENUM, "MAX before it");
+                gl.blendEquation(0x1234); err(ENUM, "no equation");
+                gl.hint(0x8b8b, 0x1102); err(ENUM, "the derivative hint before OES_standard_derivatives");
+                check(gl.getParameter(0x8b8b) === null, "nor is it a parameter"); err(ENUM, "INVALID_ENUM");
+                gl.hint(0x8192, 0x1234); err(ENUM, "no hint mode");
+                gl.hint(0x8192, 0x1102); err(0, "GENERATE_MIPMAP_HINT NICEST");
+                gl.readPixels(0, 0, 1, 1, RGBA, FLOAT, new Float32Array(4)); err(ENUM, "a FLOAT read before a float extension");
+                gl.readPixels(0, 0, 1, 1, L, UBYTE, new Uint8Array(4)); err(ENUM, "LUMINANCE is no read format");
+                gl.readPixels(0, 0, 1, 1, RGBA, USHORT, new Uint16Array(4)); err(ENUM, "UNSIGNED_SHORT is no read type");
+                const fb = gl.createFramebuffer();
+                gl.bindFramebuffer(FB, fb);
+                gl.readPixels(0, 0, 1, 1, RGBA, UBYTE, new Float32Array(4)); err(OPERATION, "a view of another type before the read buffer");
+                check(gl.getParameter(0x8b9b) === null, "an incomplete framebuffer has no read format"); err(OPERATION, "INVALID_OPERATION");
+                gl.framebufferTexture2D(FB, COLOR0, T2D, bound2D(), 1); err(VALUE, "level 1 before OES_fbo_render_mipmap");
+                check(gl.getFramebufferAttachmentParameter(FB, COLOR0, 0x8211) === null, "COMPONENT_TYPE before a float buffer");
+                err(ENUM, "INVALID_ENUM");
+                check(gl.getFramebufferAttachmentParameter(FB, COLOR0, 0x8210) === null, "COLOR_ENCODING before EXT_sRGB");
+                err(ENUM, "INVALID_ENUM");
+                gl.getFramebufferAttachmentParameter(FB, COLOR0, 0x8212); err(ENUM, "RED_SIZE is WebGL 2's");
+                gl.getFramebufferAttachmentParameter(FB, COLOR0, 0x8cd4); err(ENUM, "so is TEXTURE_LAYER");
+                gl.getFramebufferAttachmentParameter(0x8ca8, COLOR0, 0x8cd0); err(ENUM, "and READ_FRAMEBUFFER");
+                gl.getFramebufferAttachmentParameter(FB, COLOR0 + 1, 0x8cd0); err(ENUM, "one colour attachment");
+                gl.bindFramebuffer(FB, null);
+                gl.getFramebufferAttachmentParameter(FB, COLOR0, 0x8cd0); err(OPERATION, "the default framebuffer is not queried");
+                gl.getFramebufferAttachmentParameter(FB, 0x0405, 0x8cd0); err(ENUM, "BACK is WebGL 2's");
+
+                check(gl.getExtension("OES_texture_float") !== null, "OES_texture_float");
+                check(gl.getExtension("OES_texture_half_float").HALF_FLOAT_OES === HALF, "OES_texture_half_float");
+                check(gl.getExtension("WEBGL_depth_texture").UNSIGNED_INT_24_8_WEBGL === U248, "WEBGL_depth_texture");
+                const srgb = gl.getExtension("EXT_sRGB");
+                check(srgb.SRGB_ALPHA_EXT === SRGBA && srgb.SRGB8_ALPHA8_EXT === 0x8c43, "EXT_sRGB");
+                check(gl.getExtension("EXT_blend_minmax").MIN_EXT === 0x8007, "EXT_blend_minmax");
+                check(gl.getExtension("OES_fbo_render_mipmap") !== null, "OES_fbo_render_mipmap");
+                check(gl.getExtension("OES_standard_derivatives") === null, "derivatives only where the renderer compiles them");
+                check(gl.getExtension("OES_texture_float_linear") === null, "float filtering only where the renderer filters");
+                // Uploads.
+                gl.texImage2D(T2D, 0, RGBA, 1, 1, 0, RGBA, FLOAT, new Float32Array(4)); err(0, "RGBA FLOAT");
+                gl.texImage2D(T2D, 0, A, 1, 1, 0, A, FLOAT, new Float32Array(1)); err(0, "ALPHA FLOAT");
+                gl.texImage2D(T2D, 0, RGBA, 1, 1, 0, RGBA, FLOAT, new Uint8Array(4)); err(OPERATION, "FLOAT from a Uint8Array");
+                gl.texImage2D(T2D, 0, RGBA, 1, 1, 0, RGBA, HALF, new Uint16Array(4)); err(0, "RGBA HALF_FLOAT_OES");
+                gl.texImage2D(T2D, 0, RGBA, 1, 1, 0, RGBA, 0x140b, null); err(ENUM, "WebGL 2's HALF_FLOAT");
+                gl.texImage2D(T2D, 0, RGB, 1, 1, 0, RGBA, FLOAT, null); err(OPERATION, "internal format and format differ");
+                gl.texImage2D(T2D, 0, SRGB, 1, 1, 0, SRGB, FLOAT, null); err(OPERATION, "sRGB is UNSIGNED_BYTE's");
+                gl.texImage2D(T2D, 0, L, 2, 2, 0, L, FLOAT, null); err(0, "LUMINANCE FLOAT");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, L, FLOAT, new Float32Array(1)); err(0, "a sub-image of its format and type");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, L, UBYTE, new Uint8Array(1)); err(OPERATION, "of another type");
+                // Depth images: TEXTURE_2D's level 0, without data.
+                gl.texImage2D(T2D, 0, DEPTH, 2, 2, 0, DEPTH, USHORT, new Uint16Array(4)); err(OPERATION, "a depth image with data");
+                gl.texImage2D(T2D, 1, DEPTH, 1, 1, 0, DEPTH, USHORT, null); err(OPERATION, "at level 1");
+                gl.texImage2D(T2D, 0, DEPTH, -1, 1, 0, DEPTH, USHORT, null); err(VALUE, "a size out of range is judged first");
+                gl.texImage2D(T2D, 0, DEPTH, 1, 1, 0, DEPTH, UBYTE, null); err(OPERATION, "DEPTH_COMPONENT of UNSIGNED_BYTE");
+                gl.texImage2D(T2D, 0, DS, 1, 1, 0, DS, UINT, null); err(OPERATION, "DEPTH_STENCIL of UNSIGNED_INT");
+                gl.texImage2D(T2D, 0, RGBA, 1, 1, 0, RGBA, USHORT, null); err(OPERATION, "RGBA of UNSIGNED_SHORT");
+                gl.bindTexture(0x8513, gl.createTexture());
+                gl.texImage2D(0x8515, 0, DEPTH, 1, 1, 0, DEPTH, USHORT, null); err(OPERATION, "a cube face");
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.copyTexImage2D(T2D, 0, DEPTH, 0, 0, 1, 1, 0); err(OPERATION, "a depth copy");
+                gl.copyTexImage2D(T2D, 0, SRGBA, 0, 0, 1, 1, 0); err(ENUM, "an sRGB copy");
+                gl.texImage2D(T2D, 0, DEPTH, 2, 2, 0, DEPTH, UINT, null); err(0, "a DEPTH_COMPONENT image");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, DEPTH, UINT, new Uint32Array(1)); err(OPERATION, "a depth sub-image");
+                gl.copyTexSubImage2D(T2D, 0, 0, 0, 0, 0, 1, 1); err(OPERATION, "a copy into a depth image");
+                gl.generateMipmap(T2D); err(OPERATION, "a depth image's mipmaps");
+                gl.texImage2D(T2D, 0, DS, 2, 2, 0, DS, U248, null);
+                gl.copyTexSubImage2D(T2D, 0, 0, 0, 0, 0, 1, 1); err(OPERATION, "a copy into a depth-stencil image");
+                gl.texImage2D(T2D, 0, SRGBA, 2, 2, 0, SRGBA, UBYTE, null); err(0, "SRGB_ALPHA_EXT");
+                gl.texSubImage2D(T2D, 0, 0, 0, 1, 1, RGBA, UBYTE, new Uint8Array(4)); err(OPERATION, "RGBA into sRGB");
+                gl.copyTexSubImage2D(T2D, 0, 0, 0, 0, 0, 1, 1); err(OPERATION, "a copy of linear colour into sRGB");
+                gl.generateMipmap(T2D); err(OPERATION, "an sRGB image's mipmaps");
+                gl.texImage2D(T2D, 0, RGBA, 2, 2, 0, RGBA, FLOAT, null);
+                gl.copyTexSubImage2D(T2D, 0, 0, 0, 0, 0, 1, 1); err(OPERATION, "a copy of normalized colour into RGBA32F");
+                gl.generateMipmap(T2D); err(OPERATION, "a float image's mipmaps: 32-bit floats do not filter here");
+                gl.texImage2D(T2D, 0, RGBA, 2, 2, 0, RGBA, HALF, null);
+                gl.generateMipmap(T2D); err(OPERATION, "nor half-floats before OES_texture_half_float_linear");
+                // Sampling: a float image filtered LINEAR is incomplete until its linear extension is enabled.
+                gl.texParameteri(T2D, MIN, LINEAR);
+                check(withheld() === 1, "a half-float image filtered LINEAR is withheld");
+                check(gl.getExtension("OES_texture_half_float_linear") !== null, "OES_texture_half_float_linear");
+                check(withheld() === 0, "until OES_texture_half_float_linear");
+                gl.generateMipmap(T2D); err(0, "and then its mipmaps are made: RGBA16F renders and filters");
+                gl.texImage2D(T2D, 0, RGBA, 2, 2, 0, RGBA, FLOAT, null);
+                check(withheld() === 1, "a float one still is");
+                // Framebuffers: RGBA floats render, as their colour-buffer extensions enabled with them make them.
+                gl.bindFramebuffer(FB, fb);
+                gl.framebufferRenderbuffer(FB, COLOR0, RB, rb);
+                check(gl.getFramebufferAttachmentParameter(FB, COLOR0, 0x8211) === 0x8c17, "COMPONENT_TYPE is a parameter now");
+                check(gl.getFramebufferAttachmentParameter(FB, COLOR0, 0x8210) === 0x2601, "and COLOR_ENCODING");
+                gl.framebufferTexture2D(FB, COLOR0, T2D, bound2D(), 0);
+                check(status() === 0x8cd5, "RGBA FLOAT is renderable");
+                // Blending into it takes EXT_float_blend, which this renderer cannot back.
+                const program = gl.createProgram();
+                gl.linkProgram(program);
+                gl._programParameterCache.set(program.id, new Map([[0x8b82, 1]]));
+                program._consumes = []; program._consumesLink = program._links | 0;
+                gl.useProgram(program);
+                gl.enable(0x0be2);
+                gl.drawArrays(4, 0, 3); err(OPERATION, "blending into RGBA32F without float blending");
+                gl.disable(0x0be2);
+                gl.drawArrays(4, 0, 3); err(0, "drawing into it without blending");
+                check(gl.getExtension("EXT_float_blend") === null, "no EXT_float_blend here");
+                gl.texImage2D(T2D, 0, RGB, 2, 2, 0, RGB, FLOAT, null);
+                check(status() === 0x8cd6, "RGB FLOAT is not, here");
+                gl.texImage2D(T2D, 0, L, 2, 2, 0, L, HALF, null);
+                check(status() === 0x8cd6, "nor is LUMINANCE HALF_FLOAT_OES, anywhere");
+                gl.texImage2D(T2D, 0, RGBA, 2, 2, 0, RGBA, HALF, null);
+                check(status() === 0x8cd5, "RGBA HALF_FLOAT_OES is");
+                gl.texImage2D(T2D, 0, SRGBA, 2, 2, 0, SRGBA, UBYTE, null);
+                check(status() === 0x8cd5, "SRGB_ALPHA_EXT is");
+                gl.texImage2D(T2D, 0, SRGB, 2, 2, 0, SRGB, UBYTE, null);
+                check(status() === 0x8cd6, "SRGB_EXT is not");
+                gl.framebufferTexture2D(FB, COLOR0, T2D, bound2D(), 1); err(0, "level 1 with OES_fbo_render_mipmap");
+                // A level other than the base attaches of a mipmap-complete texture only (ES 3.0 4.4.4.2).
+                const chain = gl.createTexture();
+                gl.bindTexture(T2D, chain);
+                gl.texImage2D(T2D, 0, RGBA, 4, 4, 0, RGBA, UBYTE, null);
+                gl.texImage2D(T2D, 1, RGBA, 2, 2, 0, RGBA, UBYTE, null);
+                gl.framebufferTexture2D(FB, COLOR0, T2D, chain, 1);
+                check(status() === 0x8cd6, "level 1 of a texture that is not mipmap complete is no attachment");
+                gl.texImage2D(T2D, 2, RGBA, 1, 1, 0, RGBA, UBYTE, null);
+                check(status() === 0x8cd5, "of one that is, it is");
+                gl.texImage2D(T2D, 2, RGBA, 1, 1, 0, RGBA, FLOAT, null);
+                check(status() === 0x8cd6, "nor of one whose levels' types differ");
+                gl.framebufferTexture2D(FB, COLOR0, T2D, null, 0);
+                // WebGL 2: a cube map's face of one that is cube complete; a level from the base level up.
+                const gl2 = new WebGL2RenderingContext({ _rid: 273, width: 4, height: 4 }, {});
+                const status2 = () => {
+                    gl2.clear(0); gl2.getError();
+                    const bound = gl2._framebufferBinding;
+                    bound._driverGeneration = bound._statusGeneration;
+                    return gl2.checkFramebufferStatus(FB);
+                };
+                gl2.bindFramebuffer(FB, gl2.createFramebuffer());
+                const cube = gl2.createTexture();
+                gl2.bindTexture(0x8513, cube);
+                gl2.texImage2D(0x8515, 0, 0x8058, 2, 2, 0, RGBA, UBYTE, null);
+                gl2.framebufferTexture2D(FB, COLOR0, 0x8515, cube, 0);
+                check(status2() === 0x8cd6, "a face of a cube map that is not cube complete is no attachment");
+                for (let face = 0x8516; face <= 0x851a; face++) gl2.texImage2D(face, 0, 0x8058, 2, 2, 0, RGBA, UBYTE, null);
+                check(status2() === 0x8cd5, "of one that is, it is");
+                const based = gl2.createTexture();
+                gl2.bindTexture(T2D, based);
+                gl2.texImage2D(T2D, 0, 0x8058, 2, 2, 0, RGBA, UBYTE, null);
+                gl2.texImage2D(T2D, 1, 0x8058, 1, 1, 0, RGBA, UBYTE, null);
+                gl2.framebufferTexture2D(FB, COLOR0, T2D, based, 0);
+                check(status2() === 0x8cd5, "the base level attaches");
+                gl2.texParameteri(T2D, 0x813c, 1);
+                check(status2() === 0x8cd6, "a level below the base level does not, judged again once the base level is set");
+                gl2.framebufferTexture2D(FB, COLOR0, T2D, based, 1);
+                check(status2() === 0x8cd5, "the new base level does");
+                const depth = gl.createTexture();
+                gl.bindTexture(T2D, depth);
+                gl.texImage2D(T2D, 0, DS, 2, 2, 0, DS, U248, null); err(0, "a DEPTH_STENCIL image");
+                gl.framebufferTexture2D(FB, COLOR0, T2D, null, 0);
+                gl.framebufferTexture2D(FB, DS_AT, T2D, depth, 0);
+                check(status() === 0x8cd5, "a DEPTH_STENCIL image at DEPTH_STENCIL_ATTACHMENT");
+                gl.getFramebufferAttachmentParameter(FB, DS_AT, 0x8211); err(OPERATION, "DEPTH_STENCIL_ATTACHMENT has no one COMPONENT_TYPE");
+                gl.framebufferTexture2D(FB, DS_AT, T2D, null, 0);
+                gl.framebufferTexture2D(FB, DEPTH_AT, T2D, depth, 0);
+                check(status() === 0x8cd6, "nor at DEPTH_ATTACHMENT");
+                // Renderbuffers.
+                gl.renderbufferStorage(RB, 0x8814, 1, 1); err(0, "RGBA32F_EXT");
+                gl.renderbufferStorage(RB, 0x881a, 1, 1); err(0, "RGBA16F_EXT");
+                gl.renderbufferStorage(RB, 0x881b, 1, 1); err(ENUM, "RGB16F_EXT: nothing here renders to it");
+                gl.renderbufferStorage(RB, 0x822d, 1, 1); err(ENUM, "R16F is WebGL 2's");
+                gl.renderbufferStorage(RB, 0x8c43, 1, 1); err(0, "SRGB8_ALPHA8_EXT");
+                // Reads, blends, hints.
+                gl.bindFramebuffer(FB, null);
+                gl.readPixels(0, 0, 1, 1, RGBA, FLOAT, new Uint8Array(4)); err(OPERATION, "FLOAT is a read type now: a Uint8Array is not its view");
+                gl.blendEquation(0x8008); err(0, "MAX");
+                gl.blendEquationSeparate(0x8007, 0x800b); err(0, "MIN and FUNC_REVERSE_SUBTRACT");
+
+                // A derivative-compiling, float-filtering renderer.
+                const full = new WebGLRenderingContext({ _rid: 271, width: 4, height: 4 }, {});
+                full._gpuCapsCache = 4 | 64 | 128;
+                const ferr = errOf(full);
+                check(full.getExtension("OES_standard_derivatives").FRAGMENT_SHADER_DERIVATIVE_HINT_OES === 0x8b8b, "derivatives");
+                full.hint(0x8b8b, 0x1102); ferr(0, "the derivative hint");
+                full.getExtension("OES_texture_float");
+                full.getExtension("OES_texture_float_linear");
+                full.bindTexture(T2D, full.createTexture());
+                full.texImage2D(T2D, 0, RGBA, 2, 2, 0, RGBA, FLOAT, null);
+                full.generateMipmap(T2D); ferr(0, "RGBA FLOAT renders and filters");
+                full.texImage2D(T2D, 0, L, 2, 2, 0, L, FLOAT, null);
+                full.generateMipmap(T2D); ferr(OPERATION, "LUMINANCE FLOAT filters but does not render");
+                // A depth texture is filtered NEAREST by the driver, whatever it is set to.
+                full.getExtension("WEBGL_depth_texture");
+                const dt = full.createTexture();
+                full.bindTexture(T2D, dt);
+                full.texParameteri(T2D, MAG, NEAREST);
+                full.texImage2D(T2D, 0, DEPTH, 2, 2, 0, DEPTH, USHORT, null);
+                full.texParameteri(T2D, MIN, LINEAR);
+                full.texParameterf(T2D, MAG, LINEAR);
+                check(full.getTexParameter(T2D, MIN) === LINEAR && full.getTexParameter(T2D, MAG) === LINEAR, "answered as set");
+                full.texImage2D(T2D, 0, RGBA, 2, 2, 0, RGBA, UBYTE, null);
+                full.flush();
+                "#,
+            )
+            .expect("WebGL 1's extensions should take what they add");
+        let filters: Vec<(u32, f32)> = drain_gl_commands(&render_rx)
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::TexParameteri {
+                    canvas_id,
+                    pname,
+                    param,
+                    ..
+                } if canvas_id == 271 && (pname == 0x2800 || pname == 0x2801) => {
+                    Some((pname, param as f32))
+                }
+                GLCmd::TexParameterf {
+                    canvas_id,
+                    pname,
+                    param,
+                    ..
+                } if canvas_id == 271 && (pname == 0x2800 || pname == 0x2801) => {
+                    Some((pname, param))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            filters,
+            [
+                (0x2800, 9728.0), // MAG NEAREST, as set
+                (0x2801, 9984.0), // the depth image defined: MIN's NEAREST_MIPMAP_LINEAR as NEAREST_MIPMAP_NEAREST
+                (0x2800, 9728.0), // MAG NEAREST
+                (0x2801, 9728.0), // MIN LINEAR as NEAREST
+                (0x2800, 9728.0), // MAG LINEAR as NEAREST
+                (0x2801, 9729.0), // an RGBA image defined: MIN as set
+                (0x2800, 9729.0), // MAG as set
+            ],
+            "the driver filters a depth texture NEAREST, and as set once it is not one"
+        );
     }
 
     /// EXT_color_buffer_float is offered to a WebGL 2 context whose renderer renders to float colour buffers (caps bit

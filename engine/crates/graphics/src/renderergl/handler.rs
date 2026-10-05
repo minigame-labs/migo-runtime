@@ -1827,6 +1827,7 @@ impl RendererGL {
                                     gl_handle: Some(tex),
                                     owner_canvas: Some(owner),
                                     deleted: false,
+                                    swizzle: None,
                                 },
                             );
                         }
@@ -1918,6 +1919,17 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                // WebGL 1's unsized float, half-float, depth and sRGB uploads, as ES 3.0 takes them.
+                let mapped = crate::backend::gl::webgl1_formats::driver_format(
+                    internalformat,
+                    format,
+                    type_,
+                );
+                let (internalformat, format, type_) = mapped
+                    .map_or((internalformat, format, type_), |driver| {
+                        (driver.internalformat, driver.format, driver.type_)
+                    });
+                let swizzle = mapped.and_then(|driver| driver.swizzle);
                 let pixels = match &data {
                     None => glow::PixelUnpackData::Slice(None),
                     Some(source) => unpack_data(
@@ -1976,6 +1988,9 @@ impl RendererGL {
                                     bytes,
                                 )?;
                                 cm.webgl_gpu_budget.commit(prepared);
+                                if level == 0 {
+                                    cm.set_webgl1_swizzle(canvas_id, target, swizzle);
+                                }
                                 return Ok(effect);
                             }
                         }
@@ -1995,6 +2010,9 @@ impl RendererGL {
                     );
                 }
                 cm.webgl_gpu_budget.commit(prepared);
+                if level == 0 {
+                    cm.set_webgl1_swizzle(canvas_id, target, swizzle);
+                }
                 Ok(DamageEffect::NoDamage)
             }
 
@@ -2013,21 +2031,33 @@ impl RendererGL {
                 cm.make_current_needed(canvas_id)?;
                 // A full call defines an image, held to the GPU budget as any other is and committed once it is there.
                 let prepared = match call {
-                    SourceUploadCall::Image2D { internalformat } => Some(
-                        cm.webgl_gpu_budget
-                            .prepare_tex_image_2d(
-                                canvas_id,
-                                target,
-                                level,
+                    SourceUploadCall::Image2D { internalformat } => {
+                        // Sized as the driver stores it (`webgl1_formats` for WebGL 1's unsized floats and sRGB).
+                        let (internalformat, format, type_) =
+                            crate::backend::gl::webgl1_formats::driver_format(
                                 internalformat,
-                                width,
-                                height,
-                                0,
                                 format,
                                 type_,
                             )
-                            .map_err(gpu_allocation_error)?,
-                    ),
+                            .map_or((internalformat, format, type_), |driver| {
+                                (driver.internalformat, driver.format, driver.type_)
+                            });
+                        Some(
+                            cm.webgl_gpu_budget
+                                .prepare_tex_image_2d(
+                                    canvas_id,
+                                    target,
+                                    level,
+                                    internalformat,
+                                    width,
+                                    height,
+                                    0,
+                                    format,
+                                    type_,
+                                )
+                                .map_err(gpu_allocation_error)?,
+                        )
+                    }
                     SourceUploadCall::Image3D {
                         internalformat,
                         depth,
@@ -2082,6 +2112,8 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                let (format, type_) =
+                    crate::backend::gl::webgl1_formats::driver_sub_format(format, type_);
                 let pixels = unpack_data(
                     gl,
                     &data,

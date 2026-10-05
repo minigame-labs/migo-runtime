@@ -1908,6 +1908,9 @@ mod tests {
             anisotropic_filtering: false,
             color_buffer_half_float: false,
             float_filtering: false,
+            standard_derivatives: false,
+            shader_texture_lod: false,
+            frag_depth: false,
         });
         let cpu_backing_required = Arc::new(AtomicBool::new(false));
         let decode_policy = ImageDecodePolicy::PreferGpuNative {
