@@ -41,12 +41,19 @@ const bare = ctx.createLinearGradient(0, 0, 1, 1);
 bare.addColorStop(0.5, "red");
 ctx.fillStyle = bare;
 
-// Patterns. The image is a loaded one as the facade reads it -- its shared id is
-// what crosses, and no pixel does.
-const image = { loaded: true, rid: 0x40000003, width: 16, height: 16 };
+// Patterns. The image is the engine's own, as a decode leaves it -- loaded, its
+// shared id, its size -- without a decoder to run: its shared id is what
+// crosses, and no pixel does.
+const image = createImage();
+image._loaded = true;
+image.complete = true;
+image._shared_img_id = 0x40000003;
+image.width = image.naturalWidth = 16;
+image.height = image.naturalHeight = 16;
 ctx.fillStyle = ctx.createPattern(image, "repeat");
 ctx.strokeStyle = ctx.createPattern(image, "repeat-x");
 ctx.fillStyle = ctx.createPattern(image, "repeat-y");
 ctx.strokeStyle = ctx.createPattern(image, "no-repeat");
-// No repetition given is `repeat`, which is what a browser does.
-ctx.fillStyle = ctx.createPattern(image);
+// A null repetition is "repeat" (WebIDL's [LegacyNullToEmptyString]); no
+// repetition at all is a TypeError, in a browser and here.
+ctx.fillStyle = ctx.createPattern(image, null);

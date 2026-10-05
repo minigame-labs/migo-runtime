@@ -42,7 +42,7 @@ use raf::*;
 use webgl::*;
 
 extension!(host_v8_webgl,
-    deps = [host_v8_console, host_v8_base],
+    deps = [host_v8_console, host_v8_base, host_v8_image],
     ops = [
         op_viewport,
         op_clear_color,

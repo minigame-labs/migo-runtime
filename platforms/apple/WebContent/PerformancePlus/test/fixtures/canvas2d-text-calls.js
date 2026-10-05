@@ -45,11 +45,22 @@ ctx.setLineDash([5, 5]);
 ctx.setLineDash([10, 3, 2, 3]);
 ctx.setLineDash([]);
 
-// Images: a loaded image as the facade reads one -- `loaded`, its shared id,
-// its size. The ids sit above 2^30, where consecutive f32 values are 128 apart:
-// the batch used to carry its ids as floats and name another image.
-const image = { loaded: true, rid: 0x40000001, width: 32, height: 16 };
-const other = { loaded: true, rid: 0x40000002, width: 8, height: 8 };
+// Images: the engine's own, as a decode leaves one -- loaded, its shared id,
+// its natural size -- without a decoder to run. (A look-alike object is not an
+// image source: the context refuses it with a TypeError.) The ids sit above
+// 2^30, where consecutive f32 values are 128 apart: the batch used to carry its
+// ids as floats and name another image.
+const decoded = (sharedId, width, height) => {
+  const image = createImage();
+  image._loaded = true;
+  image.complete = true;
+  image._shared_img_id = sharedId;
+  image.width = image.naturalWidth = width;
+  image.height = image.naturalHeight = height;
+  return image;
+};
+const image = decoded(0x40000001, 32, 16);
+const other = decoded(0x40000002, 8, 8);
 ctx.drawImage(image, 4, 8);
 ctx.drawImage(image, 0, 0, 64, 32);
 ctx.drawImage(other, 1, 2, 3, 4, 5, 6, 7, 8);
