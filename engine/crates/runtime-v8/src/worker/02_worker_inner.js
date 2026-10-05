@@ -13,20 +13,15 @@ import { createListenerGroup } from "ext:host_v8_base/02_async.js";
 const messageListeners = createListenerGroup("[Worker-JS] onMessage");
 
 async function _startMessagePump() {
-    console.log("[Worker-JS] message pump started, listeners:", messageListeners.size());
     while (true) {
         let event;
         try {
             event = await op_worker_inner_recv_message();
-        } catch (e) {
-            console.error("[Worker-JS] recv error:", e);
-            break;
+        } catch (_) {
+            break;                  // the main side is gone: nothing more comes
         }
         // null/undefined means Terminate signal received
-        if (event === null || event === undefined) {
-            console.log("[Worker-JS] received null/terminate, exiting pump");
-            break;
-        }
+        if (event === null || event === undefined) break;
 
         if (event.type === "lifecycle") {
             timersInternal._internalSetTimerBackgrounded(
@@ -37,8 +32,6 @@ async function _startMessagePump() {
         }
 
         const json = event.data;
-
-        console.log("[Worker-JS] received message, listeners:", messageListeners.size());
 
         let message;
         try {
@@ -53,9 +46,7 @@ async function _startMessagePump() {
 
 const worker = {
     postMessage(message) {
-        const serialized = JSON.stringify(message);
-        console.log("[Worker-JS] postMessage to main:", serialized);
-        op_worker_inner_post_message(serialized);
+        op_worker_inner_post_message(JSON.stringify(message));
     },
 
     onMessage(listener) {
@@ -63,7 +54,6 @@ const worker = {
             throw new TypeError("listener must be a function");
         }
         messageListeners.on(listener);
-        console.log("[Worker-JS] onMessage listener registered, total:", messageListeners.size());
     },
 
     connectSocket: websocket.connectSocket,

@@ -78,7 +78,6 @@ class WorkerInstance {
 
     async #init(scriptPath) {
         try {
-            console.log("[Main-Worker] creating worker for:", scriptPath);
             await op_worker_create(scriptPath);
             if (this.#terminated) {
                 try {
@@ -88,20 +87,15 @@ class WorkerInstance {
                 this.#pendingMessageBytes = 0;
                 return;
             }
-            console.log("[Main-Worker] worker created, flushing pending msgs:", this.#pendingMessages.length);
-
             // Flush any messages queued before the worker was ready
             for (let index = 0; index < this.#pendingMessages.length; index++) {
-                const msg = this.#pendingMessages[index];
-                console.log("[Main-Worker] flushing pending message:", msg.length, "bytes");
-                op_worker_post_message(msg);
+                op_worker_post_message(this.#pendingMessages[index]);
             }
             this.#pendingMessages.length = 0;
             this.#pendingMessageBytes = 0;
             this.#ready = true;
 
             // Start error pump first so worker errors are caught immediately
-            console.log("[Main-Worker] starting error and message pumps");
             this.#pumpErrors();
             this.#pumpMessages();
         } catch (e) {
@@ -121,21 +115,14 @@ class WorkerInstance {
     }
 
     async #pumpMessages() {
-        console.log("[Main-Worker] pumpMessages started, listeners:", this.#messageListeners.size());
         while (!this.#terminated) {
             let json;
             try {
                 json = await op_worker_recv_message();
-            } catch (e) {
-                console.error("[Main-Worker] pumpMessages recv error:", e);
-                break;
+            } catch (_) {
+                break;              // the worker is gone (terminated): nothing more comes
             }
-            if (json === null || json === undefined) {
-                console.log("[Main-Worker] pumpMessages received null, exiting");
-                break;
-            }
-
-            console.log("[Main-Worker] received from worker:", json.length, "bytes, listeners:", this.#messageListeners.size());
+            if (json === null || json === undefined) break;
 
             let message;
             try {
@@ -180,7 +167,6 @@ class WorkerInstance {
         const json = JSONStringify(message);
         if (!this.#ready) {
             const jsonBytes = utf8ByteLength(json);
-            console.log("[Main-Worker] queueing pre-ready message:", jsonBytes, "bytes");
             if (jsonBytes > MAX_WORKER_MESSAGE_BYTES) {
                 throw new RangeError(
                     `Worker message too large: ${jsonBytes} bytes (max ${MAX_WORKER_MESSAGE_BYTES} bytes)`,
@@ -196,12 +182,10 @@ class WorkerInstance {
                 throw new Error("Worker message queue byte limit exceeded");
             }
             // Queue until worker thread is ready
-            console.log("[Main-Worker] worker not ready, queueing message");
             ArrayPrototypePush(this.#pendingMessages, json);
             this.#pendingMessageBytes += jsonBytes;
             return;
         }
-        console.log("[Main-Worker] postMessage to worker:", json.length, "UTF-16 code units");
         op_worker_post_message(json);
     }
 
