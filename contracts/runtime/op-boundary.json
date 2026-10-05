@@ -556,10 +556,7 @@
         "op_scissor": "stream", 
         "op_set_fill_style_gradient": "stream",
         "op_set_fill_style_pattern": "stream",
-        "op_set_font": {
-          "lane": "stream",
-          "local_answer": "whether the font shorthand parses, by a producer-side parser held to shared::css_font_shorthand's corpus"
-        },
+        "op_set_font": "stream",
         "op_set_line_dash": "stream",
         "op_set_preferred_fps": "command", 
         "op_put_image_data": "stream", 

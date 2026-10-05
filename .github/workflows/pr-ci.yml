@@ -720,14 +720,11 @@ jobs:
       - name: Canvas image encoder reads back
         run: bash scripts/test-canvas-image-encode.sh
 
-      # Two parsers for `ctx.font`, and two text codecs, each held to one
-      # corpus: the op boundary answers both on the producer, so the conversion
-      # exists twice in this repository and a difference is a font that never
-      # applies or a save file one platform cannot read.
-      - name: Producer-local parsers agree with the engine's
-        run: |
-          bash scripts/test-css-font-agreement.sh
-          bash scripts/test-text-codec-agreement.sh
+      # Two text codecs held to one corpus: the op boundary answers the codec
+      # on the producer, so the conversion exists twice in this repository and a
+      # difference is a save file one platform cannot read.
+      - name: Producer-local text codec agrees with the engine's
+        run: bash scripts/test-text-codec-agreement.sh
 
       # The engine's own JavaScript API layer, staged for the Performance+
       # producer and run: content draws through migo.createCanvas() and the

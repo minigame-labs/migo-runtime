@@ -5,7 +5,7 @@
 //! Draw commands are collected by `UnifiedFrameCollector` (see `frame_collector.rs`)
 //! and sent as a single interleaved `FramePacket` per frame.
 //!
-//! Sync operations (`op_measure_text`, `op_get_image_data`) use
+//! Sync operations (`op_measure_text_flat`, `op_get_image_data`) use
 //! `RenderCommand::Canvas2D` for synchronous request/response.
 //! `op_create_context_2d` is fire-and-forget: render thread FIFO
 //! ordering is sufficient to serialise it before subsequent draws.
@@ -17,8 +17,8 @@ use shared::{
     op_state::CanvasOpState,
     protocol::{
         render_cmd::{
-            Canvas2DCmd, GradientType, MAX_DRAW_IMAGE_BATCH_ENTRIES, RenderCommand, TextAlign,
-            TextBaseline, TextMetrics, checked_canvas_rgba_byte_len,
+            Canvas2DCmd, CanvasFont, GradientType, MAX_DRAW_IMAGE_BATCH_ENTRIES, RenderCommand,
+            TextAlign, TextBaseline, TextMetrics, checked_canvas_rgba_byte_len,
         },
         send_render_with_resp_sync,
     },
@@ -118,17 +118,8 @@ fn fallback_text_metrics(text: &str, font_size: f32) -> TextMetrics {
 /// order to have a `usize` available in the timeout branch. Counting first and
 /// moving the original costs nothing.
 fn fallback_text_metrics_for_glyph_count(glyphs: usize, font_size: f32) -> TextMetrics {
-    // `font_size` gets passed in from the canvas state; we don't
-    // know the live value here because measureText doesn't carry
-    // font state over the wire.  We default to the Canvas 2D
-    // baseline of 10 px if the caller hasn't plumbed the real
-    // value through.  Call sites that *do* know the size should
-    // plumb it through `fallback_text_metrics_for_state` below.
-    let size = if font_size.is_finite() && font_size > 0.0 {
-        font_size
-    } else {
-        10.0
-    };
+    // The font's own size, which the facade sends with every measurement.
+    let size = font_size.max(0.0);
     let glyph_estimate = glyphs.max(1) as f32;
     let width = glyph_estimate * size * 0.55;
     let ascent = size * 0.8;
@@ -149,55 +140,8 @@ fn fallback_text_metrics_for_glyph_count(glyphs: usize, font_size: f32) -> TextM
     }
 }
 
-#[op2]
-#[serde]
-pub fn op_measure_text(
-    state: &mut OpState,
-    #[smi] canvas_id: u32,
-    #[string] text: String,
-) -> TextMetrics {
-    // Flush pending commands so the render thread has the latest font state.
-    flush_pending_commands_for_state_sync(state, canvas_id);
-    let ctx = state.borrow::<CanvasOpState>();
-    // P0-1 (drop-safety) + P1-4 (measure has 4 ms deadline): the fallback needs
-    // to reason about the text if the render thread times out, but the command
-    // must own the `String` to carry it across the thread boundary.
-    //
-    // A count, not a clone. `fallback_text_metrics` reads exactly
-    // `chars().count()` from the string, so cloning the whole thing bought a
-    // heap allocation the length of the label on every call — including the
-    // ones that succeed — to have a `usize` in a branch usually not taken.
-    let glyphs = text.chars().count();
-    match send_render_with_resp_sync(ctx, OP_MEASURE_TEXT, |resp| RenderCommand::Canvas2D {
-        canvas_id,
-        cmd: Canvas2DCmd::MeasureText { text, resp },
-    }) {
-        Ok(m) => m,
-        Err(e) => {
-            // P2-5: do not collapse to zero metrics on failure.
-            // Zero width made auto-layout code stack every label
-            // at (0, 0), producing the visible "text missing"
-            // symptom even before the P0 responder bug was
-            // fixed.  A conservative estimate keeps layouts
-            // roughly correct until the next frame succeeds.
-            error!("{OP_MEASURE_TEXT} failed: {e}; returning estimated metrics");
-            fallback_text_metrics_for_glyph_count(glyphs, 10.0)
-        }
-    }
-}
-
-/// R-7: flat-buffer variant of `op_measure_text` that skips
-/// serde_v8's per-property V8 object construction.
-///
-/// The 12 f32 fields of [`TextMetrics`] are written little-endian
-/// into a `Vec<u8>` which `op2`'s `#[buffer]` attribute hands back
-/// as an `ArrayBuffer` — JS code then re-interprets it as a
-/// `Float32Array` and reads the fields by index.  On the hot
-/// measure path (hundreds of calls per frame for UI-heavy scenes)
-/// this saves the ~12 `v8::Object::set` invocations and the
-/// matching string interning that `#[serde]` emits, cutting the
-/// native-side overhead from ~30 μs to ~5 μs per call in the
-/// cache-hit case.
+/// `measureText`: the twelve `f32` of [`TextMetrics`], little-endian, which the facade reads through a
+/// `Float32Array` -- no V8 object built field by field on a path UI layout calls hundreds of times a frame.
 ///
 /// Layout (byte offsets, little-endian):
 ///
@@ -210,54 +154,35 @@ pub fn op_measure_text(
 /// 14: alphabetic_baseline         40: ideographic_baseline
 /// ```
 ///
-/// Kept alongside the `#[serde]` variant above so downstream
-/// callers can switch gradually; the JS side prefers the flat op
-/// and falls back to the serde op for older hosts.
+/// The font is the context's, as the facade read it and `op_set_font` sent it. With the host's measurer installed the
+/// measurement runs here, on the JS thread, with that font: no channel crossing and no barrier. Without one it is the
+/// render thread's, which by then has applied the same font.
 #[op2]
 #[buffer]
 pub fn op_measure_text_flat(
     state: &mut OpState,
     #[smi] canvas_id: u32,
     #[string] text: String,
-    #[string] css_font: String,
+    size: f32,
+    #[smi] weight: u32,
+    italic: bool,
+    #[string] families: &str,
 ) -> Vec<u8> {
-    // F-2 + G-2: fast lane.  When the host has published a
-    // `SharedTextMeasurer` on `CanvasOpState`, the measurement
-    // runs inline on the JS thread via a mutex-guarded
-    // TextContext — no command channel trip, no `flush`
-    // barrier, no serde round-trip.  Cache-hit cost drops from
-    // ~30 μs to ~5 μs; cache-miss cost (shaping via Skia) is
-    // unchanged because that's the real work either way.
-    //
-    // G-2: the JS side now hands us the raw CSS `font` string
-    // and the single source of truth for parsing lives in
-    // `shared::css_font`.  This eliminates the previous
-    // JS/Rust parser duplication where `_parseCssFont` in JS
-    // could disagree with `SetFont` parsing on the render
-    // side, producing silent measure-vs-paint divergence.
-    //
-    // Falls back to the render-thread RPC when the measurer is
-    // absent (headless tests, embedders that haven't wired it)
-    // so behaviour stays identical.
     {
         let ctx = state.borrow::<CanvasOpState>();
-        if let Some(m) = ctx.text_measurer.as_ref() {
-            let metrics = m.measure_css(&text, &css_font);
+        if let (Some(m), Some(font)) = (
+            ctx.text_measurer.as_ref(),
+            CanvasFont::from_parts(size, weight, italic, families),
+        ) {
+            let metrics = m.measure(&text, &font.families, font.size, font.weight, font.italic);
             return encode_text_metrics(&metrics);
         }
     }
 
-    // Fallback: cross-thread sync-op path, identical to the
-    // legacy `op_measure_text` behaviour.  `canvas_id` is used
-    // to pick up the per-canvas font state which the render
-    // thread already knows; we ignore `css_font` in this
-    // branch because the server side re-reads them from
-    // `ctx.renderer.state.text`.
     flush_pending_commands_for_state_sync(state, canvas_id);
     let ctx = state.borrow::<CanvasOpState>();
-    // Count rather than clone — see `op_measure_text`. `css_font` needs
-    // neither: the closure below moves only `text`, so it is still in hand at
-    // the fallback and the clone it used to take was pure waste.
+    // A count, not a clone: the estimate below reads the length, and the
+    // command must own the `String` to carry it across the thread boundary.
     let glyphs = text.chars().count();
     let metrics =
         match send_render_with_resp_sync(ctx, OP_MEASURE_TEXT, |resp| RenderCommand::Canvas2D {
@@ -266,9 +191,11 @@ pub fn op_measure_text_flat(
         }) {
             Ok(m) => m,
             Err(e) => {
-                error!("{OP_MEASURE_TEXT} (flat) failed: {e}; returning estimated metrics");
-                let parsed = shared::css_font::parse_css_font(&css_font);
-                fallback_text_metrics_for_glyph_count(glyphs, parsed.size)
+                // Not zero metrics: a zero width stacks every label laid out
+                // from it at the same place. An estimate keeps the layout
+                // roughly right until the next frame's measurement succeeds.
+                error!("{OP_MEASURE_TEXT} failed: {e}; returning estimated metrics");
+                fallback_text_metrics_for_glyph_count(glyphs, size)
             }
         };
     encode_text_metrics(&metrics)
@@ -1279,28 +1206,25 @@ pub fn op_set_stroke_style_pattern(
     });
 }
 
-/// Set the 2D context's font, or report that the value was not a font.
-///
-/// WHATWG: assigning an unparseable value to `ctx.font` is a no-op, and the
-/// previous font stays in effect. That rule was enforced on the render thread
-/// only -- it rejected the shorthand and kept the old state -- while the JS
-/// thread went on measuring with the best-effort parse of the same string. The
-/// result was the one divergence the two font parsers exist to prevent: for
-/// `64px ""`, `measureText` answered for 64 px and `fillText` painted at the
-/// font before it. The check moves here, ahead of both, so an invalid value
-/// never reaches either side and `ctx.font` never reports one.
-///
-/// @return whether the value was applied; the caller keeps its previous font
-///         when this is false.
+/// `ctx.font = ...`, as the facade read it: the size in CSS pixels, the weight, whether it slants, and the family names
+/// joined by NUL (see [`CanvasFont::from_parts`]). Whether the string was a font is the facade's answer, given before
+/// this is called -- an assignment that is not one never gets here -- so a measurement and the `fillText` after it
+/// resolve the same font on both threads.
 #[op2(fast)]
-pub fn op_set_font(state: &mut OpState, #[smi] canvas_id: u32, #[string] font: String) -> bool {
-    if shared::css_font_shorthand::parse_font_shorthand(&font).is_none() {
-        return false;
-    }
+pub fn op_set_font(
+    state: &mut OpState,
+    #[smi] canvas_id: u32,
+    size: f32,
+    #[smi] weight: u32,
+    italic: bool,
+    #[string] families: &str,
+) {
+    let Some(font) = CanvasFont::from_parts(size, weight, italic, families) else {
+        return;
+    };
     with_collector(state, |collector| {
         collector.set_font(canvas_id, font);
     });
-    true
 }
 
 #[op2(fast)]
@@ -1546,7 +1470,7 @@ mod tests {
     /// `usize` would be available in the timeout branch.
     ///
     /// The clone is gone, and the gate is on the arithmetic rather than the op,
-    /// because driving `op_measure_text` needs a `deno_core` runtime and a
+    /// because driving `op_measure_text_flat` needs a `deno_core` runtime and a
     /// render thread. What that leaves uncovered is stated rather than implied:
     /// this proves the estimate itself is allocation-free, and that the ops no
     /// longer clone is visible in their source — `glyphs` is a `usize`, and the

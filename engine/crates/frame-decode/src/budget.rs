@@ -55,8 +55,9 @@ pub mod producer_bounds {
     /// (a `Vec`, an `Arc<Vec>`, a `String`) and allocator slack. Charged once per
     /// payload, on top of `byte_length` or `count * 4`.
     pub const PAYLOAD_OVERHEAD_BYTES: usize = 64;
-    /// Bounds `size_of::<String>()`: one per name in `transformFeedbackVaryings`,
-    /// charged per payload byte plus one because a name can be empty.
+    /// Bounds `size_of::<String>()`: one per name in `transformFeedbackVaryings`
+    /// and per family in a 2D font, charged per payload byte plus one because a
+    /// name can be empty.
     pub const STRING_BYTES: usize = 24;
 }
 
@@ -374,16 +375,24 @@ fn owned_payload_bytes(record: &[u32], opcode: u32) -> usize {
     }
 }
 
-/// What a 2D record owns beyond the command: a font or a text as a `String`, a
-/// dash list as a `Vec<f32>`, an image batch as a `Vec<DrawImageEntry>` -- whose
-/// entries are the record's own nine words each, so every word-list record owns
-/// its words' bytes. Unselected 2D records are refused, not decoded, and are not
-/// charged; neither are they by the caller.
+/// What a 2D record owns beyond the command: a text as a `String`, a font's
+/// family names as one `String` each, a dash list as a `Vec<f32>`, an image
+/// batch as a `Vec<DrawImageEntry>` -- whose entries are the record's own nine
+/// words each, so every word-list record owns its words' bytes. Unselected 2D
+/// records are refused, not decoded, and are not charged; neither are they by the
+/// caller.
 fn canvas2d_payload_bytes(record: &[u32], opcode: u32) -> usize {
-    use producer_bounds::PAYLOAD_OVERHEAD_BYTES;
+    use producer_bounds::{PAYLOAD_OVERHEAD_BYTES, STRING_BYTES};
     match frame_wire::canvas2d::record_spec(opcode) {
         Some(RecordSpec::Bytes { prefix_words, .. }) => {
-            (record[prefix_words as usize] as usize).saturating_add(PAYLOAD_OVERHEAD_BYTES)
+            let len = record[prefix_words as usize] as usize;
+            if opcode == frame_wire::canvas2d::OP2D_SET_FONT {
+                // The names are NUL-separated, so as many as one per byte, plus one.
+                len.saturating_add(STRING_BYTES.saturating_mul(len + 1))
+                    .saturating_add(PAYLOAD_OVERHEAD_BYTES)
+            } else {
+                len.saturating_add(PAYLOAD_OVERHEAD_BYTES)
+            }
         }
         Some(RecordSpec::Words { prefix_words, .. }) => (record.len() - prefix_words as usize - 1)
             .saturating_mul(size_of::<u32>())

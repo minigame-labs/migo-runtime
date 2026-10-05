@@ -287,6 +287,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   INVALID_OPERATION. The attachment calls are judged before they are recorded: the target and attachment point, a
   texture of the textarget's kind, a level of 0 in WebGL 1, a renderbuffer that has been bound, a 3D or 2D-array
   texture for a layer, and the default framebuffer, which takes none.
+- Canvas 2D: `ctx.font` is read as Chrome reads it, by one parser in the facade. A shorthand needs a size and a family
+  (`20px` alone is ignored, `0px serif` is a font); each of style, `small-caps`, weight and stretch is given at most once,
+  `normal` standing for any; sizes in px, pt, pc, in, cm, mm, Q, em, rem, ex, ch, ic, %, the absolute keywords and
+  `larger`/`smaller` -- relative ones against the canvas default 10px, where `em` and `%` used to be 16px; families as
+  strings, identifier sequences and generic keywords, escapes and comments included; CSS-wide keywords refused. `font`
+  reads back the font serialised (`italic bold small-caps 16px "Noto Sans", serif`, the size to six digits) rather than
+  the string assigned. The renderer and the measurer are sent what the facade read -- size, weight, slant and the family
+  names -- never text, so `measureText` and `fillText` cannot read one string two ways. Gone: the two Rust parsers
+  (`shared::css_font_shorthand`, `shared::css_font`), the Performance+ producer's port of the first, and the corpus
+  gate that held the port to it (`scripts/test-css-font-agreement.sh`); on Performance+ the font record (550) carries
+  the fields, and its family names are charged to the decode budget one `String` each. Not read, so ignored: math
+  functions, `var()`, viewport, container, line-height and `cap` units. A system font keyword is the platform UI face
+  at 16px (`16px system-ui`).
 - Canvas 2D: the current default path keeps each point where the transform current when it was added put it, as the
   specification has it. A path built and then filled after a `translate` was drawn through the later transform. The
   renderer keeps the path in the space it was built in and moves it once, when it is next used, so a `save()` /

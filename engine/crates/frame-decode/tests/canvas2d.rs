@@ -722,3 +722,62 @@ fn a_path_record_that_is_not_a_path_drops_its_command() {
     let stream = stream_of(&[record(OP2D_SELECT_CANVAS, &[1]), lying]);
     assert!(validate_stream(&stream, stream.len() as u32).is_err());
 }
+
+fn font_record(size: f32, weight: u32, slants: u32, families: &[u8]) -> Vec<u32> {
+    let mut words = vec![size.to_bits(), weight, slants, families.len() as u32];
+    for chunk in families.chunks(4) {
+        let mut word = [0u8; 4];
+        word[..chunk.len()].copy_from_slice(chunk);
+        words.push(u32::from_le_bytes(word));
+    }
+    record(OP2D_SET_FONT, &words)
+}
+
+/// A font crosses as what the facade read: the size, the weight, whether it
+/// slants, and the family names joined by NUL -- an empty name included. A record
+/// whose fields no font has (a weight outside 1..=1000, a slant word that is not 0
+/// or 1, a size that is not one in 0..=10000) decodes to nothing, and the font
+/// stays what it was. Text that is not UTF-8 is the structural validator's to
+/// refuse, with the stream.
+#[test]
+fn a_font_record_is_the_font_the_facade_read() {
+    let words = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[2]),
+        font_record(13.3333, 700, 1, b"Noto Sans\0\0serif"),
+        font_record(12.0, 0, 0, b"serif"),
+        font_record(12.0, 1001, 0, b"serif"),
+        font_record(12.0, 400, 2, b"serif"),
+        font_record(f32::NAN, 400, 0, b"serif"),
+        font_record(-1.0, 400, 0, b"serif"),
+        font_record(10_000.5, 400, 0, b"serif"),
+        font_record(0.0, 1, 0, b""),
+    ]);
+
+    let (ops, context) = decode(&words);
+    assert!(context.errors.is_empty());
+    let FrameOp::CanvasBatch(batch) = &ops[0] else {
+        panic!("expected a canvas batch");
+    };
+    let fonts: Vec<(f32, u16, bool, Vec<String>)> = batch
+        .commands
+        .iter()
+        .map(|command| match command {
+            Canvas2DCmd::SetFont { font } => {
+                (font.size, font.weight, font.italic, font.families.to_vec())
+            }
+            other => panic!("expected only fonts, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        fonts,
+        vec![
+            (
+                13.3333,
+                700,
+                true,
+                vec!["Noto Sans".to_owned(), String::new(), "serif".to_owned()]
+            ),
+            (0.0, 1, false, vec![String::new()]),
+        ]
+    );
+}

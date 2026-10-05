@@ -259,6 +259,19 @@ host-held source, took no 3D call, and read `ImageData` with the content's align
 six records go -- and safe under the audit the amendments above rest on: the producer is a resource of the same Swift
 package as the reader, and the in-process JavaScript calls the ops, not the records.
 
+### Amendment, 2026-10-05: the font record carries the font
+
+`SET_FONT` (550) carries the font, not the shorthand: `size:F weight:U slants:U byte_length | utf8`, the bytes the
+family names joined by NUL -- a name CSS has read never holds one, and a name may be empty. The facade is the only
+reader of `ctx.font` (it has to answer at once whether the string was a font, and `font` reads back its serialisation),
+so what crosses is what it read: the size in CSS pixels, the weight (1 to 1000), whether the face slants (0 or 1), and
+the families, generic keywords in lower case. A reader refuses a weight outside 1..=1000, a slant word that is not 0 or
+1 and a size that is not one in 0..=10000, and parses nothing; the decode budget charges the names a `String` each, as
+many as one per byte plus one. Not additive -- the record's fields change -- and safe under the audit the amendments
+above rest on: the producer is a resource of the same Swift package as the reader, and the in-process JavaScript calls
+the op, not the record. Until this the producer kept a port of the host's shorthand parser, held to it by a corpus,
+and the host parsed the string again.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.
