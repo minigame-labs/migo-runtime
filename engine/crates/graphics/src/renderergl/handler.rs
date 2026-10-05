@@ -1708,8 +1708,19 @@ impl RendererGL {
                         | glow::POLYGON_OFFSET_FACTOR
                         | glow::POLYGON_OFFSET_UNITS
                         | glow::SAMPLE_COVERAGE_VALUE
-                        | glow::MAX_TEXTURE_MAX_ANISOTROPY_EXT => {
+                        | glow::MAX_TEXTURE_MAX_ANISOTROPY_EXT
+                        | glow::MAX_TEXTURE_LOD_BIAS => {
                             let val = gl.get_parameter_f32(pname);
+                            format!("{}", val)
+                        }
+                        // GLint64 params: past what a GLint holds on some drivers (MAX_ELEMENT_INDEX is 2^32 - 1 on
+                        // many), which the integer query clamps.
+                        glow::MAX_ELEMENT_INDEX
+                        | glow::MAX_SERVER_WAIT_TIMEOUT
+                        | glow::MAX_UNIFORM_BLOCK_SIZE
+                        | glow::MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS
+                        | glow::MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS => {
+                            let val = gl.get_parameter_i64(pname);
                             format!("{}", val)
                         }
                         // Float32Array[4] params
@@ -1717,6 +1728,12 @@ impl RendererGL {
                             let mut buf = [0f32; 4];
                             gl.get_parameter_f32_slice(pname, &mut buf);
                             format!("[{},{},{},{}]", buf[0], buf[1], buf[2], buf[3])
+                        }
+                        // Int32Array[2] param
+                        glow::MAX_VIEWPORT_DIMS => {
+                            let mut buf = [0i32; 2];
+                            gl.get_parameter_i32_slice(pname, &mut buf);
+                            format!("[{},{}]", buf[0], buf[1])
                         }
                         // Int32Array[4] params
                         glow::VIEWPORT | glow::SCISSOR_BOX => {

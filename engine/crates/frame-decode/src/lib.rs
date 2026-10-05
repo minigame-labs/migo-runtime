@@ -74,9 +74,11 @@ pub use validate::{ClearBufferKind, GlDecodeContext, TransformFeedbackPhase};
 
 use validate::{
     validate_bind_buffer_base, validate_bind_buffer_range, validate_bind_buffer_target,
-    validate_clear_buffer, validate_copy_buffer_sub_data, validate_copy_tex_image_2d,
-    validate_copy_tex_sub_image, validate_vertex_attrib_ipointer, validate_vertex_attrib_pointer,
-    validate_viewport_like,
+    validate_blend_func, validate_clear_buffer, validate_copy_buffer_sub_data,
+    validate_copy_tex_image_2d, validate_copy_tex_sub_image, validate_cull_face,
+    validate_depth_func, validate_depth_range, validate_front_face, validate_line_width,
+    validate_stencil_func, validate_stencil_mask_separate, validate_stencil_op,
+    validate_vertex_attrib_ipointer, validate_vertex_attrib_pointer, validate_viewport_like,
 };
 
 /// Reinterpret uniform words as floats. The producer wrote the bit patterns;
@@ -710,6 +712,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 20: BLEND_FUNC: H C U U ─────────────────────────────────────────────
         OP_BLEND_FUNC => {
             let canvas_id = record[1];
+            if !validate_blend_func(context, canvas_id, [record[2], record[3]], None) {
+                return None;
+            }
             Some(GLCmd::BlendFunc {
                 canvas_id,
                 sfactor: record[2],
@@ -720,6 +725,14 @@ fn decode_record<C: GlDecodeContext>(
         // ── 21: BLEND_FUNC_SEPARATE: H C U U U U ────────────────────────────────
         OP_BLEND_FUNC_SEPARATE => {
             let canvas_id = record[1];
+            if !validate_blend_func(
+                context,
+                canvas_id,
+                [record[2], record[3]],
+                Some([record[4], record[5]]),
+            ) {
+                return None;
+            }
             Some(GLCmd::BlendFuncSeparate {
                 canvas_id,
                 src_rgb: record[2],
@@ -763,6 +776,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 25: DEPTH_FUNC: H C U ───────────────────────────────────────────────
         OP_DEPTH_FUNC => {
             let canvas_id = record[1];
+            if !validate_depth_func(context, canvas_id, record[2]) {
+                return None;
+            }
             Some(GLCmd::DepthFunc {
                 canvas_id,
                 func: record[2],
@@ -781,6 +797,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 27: DEPTH_RANGE: H C F F ─────────────────────────────────────────────
         OP_DEPTH_RANGE => {
             let canvas_id = record[1];
+            if !validate_depth_range(context, canvas_id, f(record[2]), f(record[3])) {
+                return None;
+            }
             Some(GLCmd::DepthRange {
                 canvas_id,
                 near: f(record[2]),
@@ -791,6 +810,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 28: STENCIL_FUNC: H C U I U ─────────────────────────────────────────
         OP_STENCIL_FUNC => {
             let canvas_id = record[1];
+            if !validate_stencil_func(context, canvas_id, None, record[2]) {
+                return None;
+            }
             Some(GLCmd::StencilFunc {
                 canvas_id,
                 func: record[2],
@@ -802,6 +824,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 29: STENCIL_FUNC_SEPARATE: H C U U I U ──────────────────────────────
         OP_STENCIL_FUNC_SEPARATE => {
             let canvas_id = record[1];
+            if !validate_stencil_func(context, canvas_id, Some(record[2]), record[3]) {
+                return None;
+            }
             Some(GLCmd::StencilFuncSeparate {
                 canvas_id,
                 face: record[2],
@@ -814,6 +839,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 30: STENCIL_OP: H C U U U ───────────────────────────────────────────
         OP_STENCIL_OP => {
             let canvas_id = record[1];
+            if !validate_stencil_op(context, canvas_id, None, [record[2], record[3], record[4]]) {
+                return None;
+            }
             Some(GLCmd::StencilOp {
                 canvas_id,
                 fail: record[2],
@@ -825,6 +853,14 @@ fn decode_record<C: GlDecodeContext>(
         // ── 31: STENCIL_OP_SEPARATE: H C U U U U ────────────────────────────────
         OP_STENCIL_OP_SEPARATE => {
             let canvas_id = record[1];
+            if !validate_stencil_op(
+                context,
+                canvas_id,
+                Some(record[2]),
+                [record[3], record[4], record[5]],
+            ) {
+                return None;
+            }
             Some(GLCmd::StencilOpSeparate {
                 canvas_id,
                 face: record[2],
@@ -846,6 +882,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 33: STENCIL_MASK_SEPARATE: H C U U ──────────────────────────────────
         OP_STENCIL_MASK_SEPARATE => {
             let canvas_id = record[1];
+            if !validate_stencil_mask_separate(context, canvas_id, record[2]) {
+                return None;
+            }
             Some(GLCmd::StencilMaskSeparate {
                 canvas_id,
                 face: record[2],
@@ -856,6 +895,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 34: CULL_FACE: H C U ────────────────────────────────────────────────
         OP_CULL_FACE => {
             let canvas_id = record[1];
+            if !validate_cull_face(context, canvas_id, record[2]) {
+                return None;
+            }
             Some(GLCmd::CullFace {
                 canvas_id,
                 mode: record[2],
@@ -865,6 +907,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 35: FRONT_FACE: H C U ───────────────────────────────────────────────
         OP_FRONT_FACE => {
             let canvas_id = record[1];
+            if !validate_front_face(context, canvas_id, record[2]) {
+                return None;
+            }
             Some(GLCmd::FrontFace {
                 canvas_id,
                 mode: record[2],
@@ -906,6 +951,9 @@ fn decode_record<C: GlDecodeContext>(
         // ── 38: LINE_WIDTH: H C F ────────────────────────────────────────────────
         OP_LINE_WIDTH => {
             let canvas_id = record[1];
+            if !validate_line_width(context, canvas_id, f(record[2])) {
+                return None;
+            }
             Some(GLCmd::LineWidth {
                 canvas_id,
                 width: f(record[2]),

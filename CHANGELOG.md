@@ -157,6 +157,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL: every state setter refuses what WebGL refuses, and the state stays as it was: a comparison function, face,
+  stencil operation or blend factor that is none (INVALID_ENUM), a constant colour factor with a constant alpha one
+  among the colour factors (INVALID_OPERATION), SRC_ALPHA_SATURATE as a WebGL 1 destination factor (INVALID_ENUM), a
+  line width not above 0 (INVALID_VALUE), a depth range from far to near (INVALID_OPERATION). These reached the driver,
+  whose error never reaches `getError`. The rules are the decoder's, for the stream and the raw call alike.
+- WebGL: `getParameter` answers its version's parameters and the enabled extensions' only -- WebGL 2's in a WebGL 1
+  context, MAX_DRAW_BUFFERS and MAX_COLOR_ATTACHMENTS without WEBGL_draw_buffers, and any parameter of no WebGL are
+  INVALID_ENUM and null, where the driver answered a number -- and as WebGL types each: Float32Array, Int32Array and
+  booleans where it answered plain arrays, MAX_VIEWPORT_DIMS as both dimensions where it answered one, the GLint64
+  limits (MAX_ELEMENT_INDEX and the rest) whole, the stencil masks as the GLuint set where a driver clamps them, and
+  COMPRESSED_TEXTURE_FORMATS as the formats of the compressed-texture extensions enabled.
 - WebGL: an attachment of a texture level is complete only as ES 3.0 4.4.4.2 has it -- from the base level to the last
   a full chain has, a level other than the base only of a mipmap-complete texture, a cube map's face only of a
   cube-complete one -- and setting TEXTURE_BASE_LEVEL or TEXTURE_MAX_LEVEL judges framebuffers again; the facade had

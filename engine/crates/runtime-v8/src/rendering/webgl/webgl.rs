@@ -253,6 +253,144 @@ pub(super) mod tests {
         assert_eq!(responder.join().unwrap(), [0, 8, 12, 64]);
     }
 
+    /// Every state setter refuses what WebGL refuses, on the stream and on the raw call a non-number argument takes
+    /// alike: a comparison function, face, stencil operation or blend factor that is none (INVALID_ENUM), a constant
+    /// colour factor with a constant alpha one (INVALID_OPERATION), SRC_ALPHA_SATURATE as a WebGL 1 destination factor
+    /// (INVALID_ENUM), a line width not above 0 (INVALID_VALUE), a depth range from far to near (INVALID_OPERATION).
+    /// The stencil masks are answered as set, GLuint, and a refused call leaves them.
+    #[test]
+    fn state_setters_refuse_what_webgl_refuses_and_stencil_masks_are_answered_as_set() {
+        let (mut runtime, _render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "state_setters.js",
+                r#"
+                const errOf = (gl) => (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                for (const [gl, name] of [[new WebGLRenderingContext({ _rid: 290, width: 4, height: 4 }, {}), "WebGL 1"],
+                        [new WebGL2RenderingContext({ _rid: 291, width: 4, height: 4 }, {}), "WebGL 2"]]) {
+                    const err = errOf(gl);
+                    // Each as numbers -- the stream -- and as BigInts -- the raw call.
+                    for (const n of [(v) => v, (v) => BigInt(v)]) {
+                        const way = `${name}, ${typeof n(1)}`;
+                        gl.depthFunc(n(0x1234)); err(ENUM, `depthFunc of no function, ${way}`);
+                        gl.depthFunc(n(0x0203)); err(0, `depthFunc LEQUAL, ${way}`);
+                        gl.cullFace(n(0x0900)); err(ENUM, `cullFace CW, ${way}`);
+                        gl.frontFace(n(0x0405)); err(ENUM, `frontFace BACK, ${way}`);
+                        gl.stencilFunc(n(0x1234), n(1), n(0xff)); err(ENUM, `stencilFunc of no function, ${way}`);
+                        gl.stencilFuncSeparate(n(0x0900), n(0x0207), n(1), n(0xff)); err(ENUM, `stencilFuncSeparate of no face, ${way}`);
+                        gl.stencilOp(n(0x1e00), n(0x1234), n(0x1e00)); err(ENUM, `stencilOp of no operation, ${way}`);
+                        gl.stencilOpSeparate(n(0x0406), n(0x1e00), n(0x1e00), n(0x1e00)); err(ENUM, `stencilOpSeparate of no face, ${way}`);
+                        gl.stencilMaskSeparate(n(0x1234), n(1)); err(ENUM, `stencilMaskSeparate of no face, ${way}`);
+                        gl.blendFunc(n(0x1234), n(1)); err(ENUM, `blendFunc of no factor, ${way}`);
+                        gl.blendFunc(n(0x8001), n(0x8003)); err(OPERATION, `CONSTANT_COLOR with CONSTANT_ALPHA, ${way}`);
+                        gl.blendFuncSeparate(n(1), n(1), n(0x8001), n(0x8003)); err(0, `the constant rule is the colour factors', ${way}`);
+                        gl.blendFuncSeparate(n(1), n(1), n(1), n(0x0309)); err(ENUM, `blendFuncSeparate of no factor, ${way}`);
+                        gl.blendFunc(n(1), n(0x0308)); err(name === "WebGL 1" ? ENUM : 0, `SRC_ALPHA_SATURATE as a destination, ${way}`);
+                        gl.blendFunc(n(0x0308), n(1)); err(0, `SRC_ALPHA_SATURATE as a source, ${way}`);
+                        gl.lineWidth(n(0)); err(VALUE, `lineWidth 0, ${way}`);
+                        gl.depthRange(n(1), n(0)); err(OPERATION, `depthRange far to near, ${way}`);
+                        gl.depthRange(n(0), n(1)); err(0, `depthRange near to far, ${way}`);
+                    }
+                    gl.lineWidth(NaN); err(VALUE, `lineWidth NaN, ${name}`);
+                    // The stencil masks, GLuint, as set.
+                    check(gl.getParameter(gl.STENCIL_VALUE_MASK) === 4294967295 && gl.getParameter(gl.STENCIL_BACK_WRITEMASK) === 4294967295,
+                        `all ones until set, ${name}`);
+                    gl.stencilFunc(gl.ALWAYS, 300, 0xabcdef01);
+                    gl.stencilFuncSeparate(gl.BACK, gl.LESS, -5, 0x0f);
+                    gl.stencilFuncSeparate(gl.BACK, 0x1234, 1, 0x77); gl.getError();
+                    gl.stencilMask(0x1234);
+                    gl.stencilMaskSeparate(gl.FRONT, -2);
+                    gl.stencilMaskSeparate(0x1234, 5); gl.getError();
+                    const masks = [gl.STENCIL_VALUE_MASK, gl.STENCIL_BACK_VALUE_MASK, gl.STENCIL_WRITEMASK, gl.STENCIL_BACK_WRITEMASK]
+                        .map((p) => gl.getParameter(p));
+                    check(JSON.stringify(masks) === JSON.stringify([0xabcdef01, 0x0f, 4294967294, 0x1234]), `masks as set, ${name}: ${masks}`);
+                    gl.flush();
+                }
+                "#,
+            )
+            .expect("every setter should be judged");
+    }
+
+    /// getParameter answers its version's parameters and the enabled extensions' only (INVALID_ENUM and null for any
+    /// other), as the types WebGL gives them: the driver's arrays as Float32Array, Int32Array or booleans, its booleans
+    /// as booleans; COMPRESSED_TEXTURE_FORMATS the formats of the compressed-texture extensions enabled.
+    #[test]
+    fn get_parameter_answers_its_versions_parameters_as_webgl_types_them() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            while let Ok(command) = render_rx.recv_timeout(Duration::from_secs(5)) {
+                if let RenderCommand::GL(GLCmd::GetParameter { pname, resp, .. }) = command {
+                    asked.push(pname);
+                    resp.ok(match pname {
+                        0x0d3a => "[4096,8192]",            // MAX_VIEWPORT_DIMS
+                        0x0b70 => "[0,1]",                  // DEPTH_RANGE
+                        0x0c23 => "[true,false,true,true]", // COLOR_WRITEMASK
+                        0x0b72 => "true",                   // DEPTH_WRITEMASK
+                        0x8e24 => "0",                      // TRANSFORM_FEEDBACK_ACTIVE
+                        0x8d6b => "4294967295",             // MAX_ELEMENT_INDEX
+                        _ => "7",
+                    }
+                    .to_string());
+                }
+            }
+            asked
+        });
+        runtime
+            .exec_script(
+                "get_parameter.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const refused = (gl, pname, m) => {
+                    const value = gl.getParameter(pname);
+                    const error = gl.getError();
+                    check(value === null && error === 0x0500, `${m}: ${value}, getError ${error}`);
+                };
+                const gl1 = new WebGLRenderingContext({ _rid: 292, width: 4, height: 4 }, {});
+                gl1._gpuCapsCache = 3;
+                for (const [pname, m] of [[0x8073, "MAX_3D_TEXTURE_SIZE"], [0x8d57, "MAX_SAMPLES"], [0x8d6b, "MAX_ELEMENT_INDEX"],
+                        [0x9247, "MAX_CLIENT_WAIT_TIMEOUT_WEBGL"], [0x8c89, "RASTERIZER_DISCARD"], [0x8cdf, "MAX_COLOR_ATTACHMENTS"],
+                        [0x8824, "MAX_DRAW_BUFFERS"], [0x1234, "no parameter"]]) {
+                    refused(gl1, pname, `${m} is no WebGL 1 parameter`);
+                }
+                const d = gl1.getParameter(0x0d3a);
+                check(d instanceof Int32Array && d.length === 2 && d[0] === 4096 && d[1] === 8192, `MAX_VIEWPORT_DIMS ${d}`);
+                const r = gl1.getParameter(0x0b70);
+                check(r instanceof Float32Array && r.length === 2 && r[1] === 1, `DEPTH_RANGE ${r}`);
+                const w = gl1.getParameter(0x0c23);
+                check(Array.isArray(w) && JSON.stringify(w) === "[true,false,true,true]", `COLOR_WRITEMASK ${w}`);
+                check(gl1.getParameter(0x0b72) === true, "DEPTH_WRITEMASK");
+                check(gl1.getParameter(0x0d33) === 7, "MAX_TEXTURE_SIZE");
+                check(gl1.getParameter("3379") === 7, "a pname converted as WebIDL converts it");
+                check(gl1.getParameter(0x86a3) instanceof Uint32Array && gl1.getParameter(0x86a3).length === 0,
+                    "no compressed formats before an extension");
+                gl1.getExtension("WEBGL_compressed_texture_etc1");
+                check(JSON.stringify(Array.from(gl1.getParameter(0x86a3))) === JSON.stringify([0x8d64]), "ETC1's once enabled");
+                gl1._webglDrawBuffers = {};
+                check(gl1.getParameter(0x8824) === 7, "MAX_DRAW_BUFFERS with WEBGL_draw_buffers");
+                const gl2 = new WebGL2RenderingContext({ _rid: 293, width: 4, height: 4 }, {});
+                check(gl2.getParameter(0x8d6b) === 4294967295, "MAX_ELEMENT_INDEX, past a GLint");
+                check(gl2.getParameter(0x8e24) === false, "TRANSFORM_FEEDBACK_ACTIVE");
+                check(gl2.getParameter(0x9247) === 0, "MAX_CLIENT_WAIT_TIMEOUT_WEBGL");
+                check(gl2.getParameter(0x8b8b) === 7, "FRAGMENT_SHADER_DERIVATIVE_HINT, WebGL 2's");
+                refused(gl1, 0x8b8b, "FRAGMENT_SHADER_DERIVATIVE_HINT before OES_standard_derivatives");
+                gl1._oesStandardDerivatives = {};
+                check(gl1.getParameter(0x8b8b) === 7, "FRAGMENT_SHADER_DERIVATIVE_HINT with it");
+                refused(gl2, 0x1234, "no parameter");
+                refused(gl2, 0x0b22, "desktop GL's LINE_WIDTH_RANGE is no WebGL parameter");
+                "#,
+            )
+            .expect("every parameter should be answered or refused");
+        drop(runtime);
+        let asked = responder.join().unwrap();
+        assert!(
+            !asked.contains(&0x1234) && !asked.contains(&0x8073) && !asked.contains(&0x9247),
+            "a refused parameter is not asked of the driver: {asked:x?}"
+        );
+    }
+
     /// WebGL 1's HALF_FLOAT_OES is ES 3.0's HALF_FLOAT to the driver: a read of it reaches the renderer as one, into
     /// the Uint16Array it was given.
     #[test]
@@ -1683,7 +1821,7 @@ pub(super) mod tests {
                 r#"
                 const gl = new WebGL2RenderingContext({ _rid: 166, width: 1, height: 1 }, {});
                 let asked = 0, answer = null;
-                gl.getParameter = (pname) => { if (pname === 0x8824) asked += 1; return pname === 0x8824 ? answer : null; };
+                gl._driverParameter = (pname) => { if (pname === 0x8824) asked += 1; return pname === 0x8824 ? answer : null; };
                 const color = (drawbuffer) => gl.clearBufferfv(0x1800, drawbuffer, [0, 0, 0, 1]);
                 color(4);
                 if (gl.getError() !== 0x0501) throw new Error("no answer: draw buffer 4 is past the minimum");
@@ -2171,7 +2309,7 @@ pub(super) mod tests {
                 r#"
                 const gl = new WebGL2RenderingContext({ _rid: 183, width: 1, height: 1 }, {});
                 let asked = 0, answer = null;
-                gl.getParameter = (pname) => { if (pname === 0x8869) asked += 1; return pname === 0x8869 ? answer : null; };
+                gl._driverParameter = (pname) => { if (pname === 0x8869) asked += 1; return pname === 0x8869 ? answer : null; };
                 const enabled = (i) => gl.getVertexAttrib(i, 0x8622);
                 enabled(15);
                 if (asked !== 0 || gl.getError() !== 0) throw new Error("index 15 is below the minimum: no question");
@@ -9801,13 +9939,9 @@ pub fn op_disable(state: &mut OpState, #[smi] canvas_id: u32, #[smi] cap: u32) {
 ///
 /// Frequent calls (e.g. inside a draw loop) will significantly degrade
 /// frame rate.  Games should cache parameter values on the JS side
-/// when possible.
-///
-/// Note: `gl.getError()` is currently stubbed to always return 0 on the JS
-/// side (`02_webgl_context.js`), so it does not hit this path.  If a real
-/// implementation is ever needed, consider maintaining a last-error cache
-/// on the render thread updated by each GL call, and reading it via a
-/// lock-free atomic instead of a sync round-trip.
+/// when possible. Only the parameters the facade does not answer itself
+/// cross (`_DRIVER_PARAMETERS` in `02_webgl_context.js`), and it types the
+/// answer as WebGL has it.
 #[op2]
 #[string]
 pub fn op_get_parameter(state: &mut OpState, #[smi] canvas_id: u32, #[smi] pname: u32) -> String {
@@ -10207,6 +10341,14 @@ pub fn op_blend_func(
     #[smi] sfactor: u32,
     #[smi] dfactor: u32,
 ) {
+    if !frame_decode::validate::validate_blend_func(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        [sfactor, dfactor],
+        None,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(
         state,
         GLCmd::BlendFunc {
@@ -10226,6 +10368,14 @@ pub fn op_blend_func_separate(
     #[smi] src_alpha: u32,
     #[smi] dst_alpha: u32,
 ) {
+    if !frame_decode::validate::validate_blend_func(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        [src_rgb, dst_rgb],
+        Some([src_alpha, dst_alpha]),
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(
         state,
         GLCmd::BlendFuncSeparate {
@@ -10276,6 +10426,13 @@ pub fn op_blend_color(state: &mut OpState, #[smi] canvas_id: u32, r: f32, g: f32
 
 #[op2(fast)]
 pub fn op_depth_func(state: &mut OpState, #[smi] canvas_id: u32, #[smi] func: u32) {
+    if !frame_decode::validate::validate_depth_func(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        func,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(state, GLCmd::DepthFunc { canvas_id, func });
 }
 
@@ -10286,6 +10443,14 @@ pub fn op_depth_mask(state: &mut OpState, #[smi] canvas_id: u32, flag: bool) {
 
 #[op2(fast)]
 pub fn op_depth_range(state: &mut OpState, #[smi] canvas_id: u32, near: f32, far: f32) {
+    if !frame_decode::validate::validate_depth_range(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        near,
+        far,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(
         state,
         GLCmd::DepthRange {
@@ -10304,6 +10469,14 @@ pub fn op_stencil_func(
     #[smi] ref_: i32,
     #[smi] mask: u32,
 ) {
+    if !frame_decode::validate::validate_stencil_func(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        None,
+        func,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(
         state,
         GLCmd::StencilFunc {
@@ -10324,6 +10497,14 @@ pub fn op_stencil_func_separate(
     #[smi] ref_: i32,
     #[smi] mask: u32,
 ) {
+    if !frame_decode::validate::validate_stencil_func(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        Some(face),
+        func,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(
         state,
         GLCmd::StencilFuncSeparate {
@@ -10344,6 +10525,14 @@ pub fn op_stencil_op(
     #[smi] zfail: u32,
     #[smi] zpass: u32,
 ) {
+    if !frame_decode::validate::validate_stencil_op(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        None,
+        [fail, zfail, zpass],
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(
         state,
         GLCmd::StencilOp {
@@ -10364,6 +10553,14 @@ pub fn op_stencil_op_separate(
     #[smi] zfail: u32,
     #[smi] zpass: u32,
 ) {
+    if !frame_decode::validate::validate_stencil_op(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        Some(face),
+        [fail, zfail, zpass],
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(
         state,
         GLCmd::StencilOpSeparate {
@@ -10388,6 +10585,13 @@ pub fn op_stencil_mask_separate(
     #[smi] face: u32,
     #[smi] mask: u32,
 ) {
+    if !frame_decode::validate::validate_stencil_mask_separate(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        face,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(
         state,
         GLCmd::StencilMaskSeparate {
@@ -10400,11 +10604,25 @@ pub fn op_stencil_mask_separate(
 
 #[op2(fast)]
 pub fn op_cull_face(state: &mut OpState, #[smi] canvas_id: u32, #[smi] mode: u32) {
+    if !frame_decode::validate::validate_cull_face(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        mode,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(state, GLCmd::CullFace { canvas_id, mode });
 }
 
 #[op2(fast)]
 pub fn op_front_face(state: &mut OpState, #[smi] canvas_id: u32, #[smi] mode: u32) {
+    if !frame_decode::validate::validate_front_face(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        mode,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(state, GLCmd::FrontFace { canvas_id, mode });
 }
 
@@ -10458,6 +10676,13 @@ pub fn op_scissor(
 
 #[op2(fast)]
 pub fn op_line_width(state: &mut OpState, #[smi] canvas_id: u32, width: f32) {
+    if !frame_decode::validate::validate_line_width(
+        &mut crate::rendering::webgl::error_state::OpStateDecodeContext(state),
+        canvas_id,
+        width,
+    ) {
+        return;
+    }
     queue_gl_fire_and_forget(state, GLCmd::LineWidth { canvas_id, width });
 }
 
