@@ -8,7 +8,7 @@ import android.view.WindowManager;
  * Screen brightness and keep-screen-on utilities.
  * <p>
  * Controls window-level brightness and FLAG_KEEP_SCREEN_ON.
- * Compatible with Android API 21+.
+ * Compatible with Android API 26+.
  *
  * @hide
  */

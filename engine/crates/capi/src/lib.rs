@@ -797,12 +797,6 @@ const MIGO_LIFECYCLE_CREATED: u32 = 0;
 const MIGO_LIFECYCLE_RUNNING: u32 = 1;
 const MIGO_LIFECYCLE_PAUSED: u32 = 2;
 
-/// Drive the engine's show/hide channel — the same one Android's `onShow` /
-/// `onHide` use, so a desktop host produces the lifecycle the content already
-/// expects instead of a second, divergent notion of "paused".
-///
-/// `send_critical_command_to_host` matches Android: lifecycle must not be
-/// dropped when the command queue is saturated.
 /// Report that a frame boundary arrived, in response to `on_request_frame`.
 ///
 /// # Safety

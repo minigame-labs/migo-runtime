@@ -30,7 +30,7 @@ If applicable, add screenshots or logs to help explain the problem.
 
 ## Environment
 
-- **Platform**: [Android / Linux / Windows / OpenHarmony — the four Migo targets]
+- **Platform**: [Android / iOS / macOS / Linux / Windows / HarmonyOS NEXT / OpenHarmony]
 - **OS version**: [e.g., Android 13, HarmonyOS 4.2, Windows 11, Ubuntu 22.04]
 - **Device / SoC**: [e.g., Pixel 7, Mate 30 Pro; desktop CPU/GPU for Linux/Windows]
 - **Migo version**: [e.g., 0.9.x — the AAR / `.so` / `.dll` filename carries it]

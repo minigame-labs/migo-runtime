@@ -416,8 +416,8 @@ what they share):
   ran as a prior CI step) rather than locating Visual Studio itself.
 - **`scripts/build-windows-sdk.sh`** — this project's WSL2 dev-machine
   path, where the toolchain lives on a native Windows disk reached by
-  crossing a WSL/Windows boundary (`wslpath`, a synced
-  `/mnt/c/migo-win` worktree, `cmd.exe`-dispatched batch files) that a
+  crossing a WSL/Windows boundary (`wslpath`, a synced Windows-side
+  worktree under `/mnt/c/...`, `cmd.exe`-dispatched batch files) that a
   CI runner's checkout, already on native NTFS, does not have.
 
 **Requirements** (native, e.g. CI):

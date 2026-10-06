@@ -24,7 +24,7 @@ import java.util.List;
  * <p>
  * Uses ZXing-compatible Intent ({@code com.google.zxing.client.android.SCAN})
  * to delegate scanning to an installed barcode scanner app.
- * Compatible with Android API 21+.
+ * Compatible with Android API 26+.
  *
  * @hide
  */

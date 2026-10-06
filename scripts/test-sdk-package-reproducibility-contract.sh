@@ -3,7 +3,8 @@
 # must say nothing about who built it.
 #
 # The `migo-sdk-<os>-<arch>.tar.gz` on every release up to v0.9.1 was a `tar` typed on the
-# release machine, and the published Linux archive shows what that costs: `xg/xg` as
+# release machine, and the published Linux archive shows what that costs: the
+# release user's own user/group as
 # the owner of every entry and the build machine's wall clock as every mtime. The
 # attestation beside it swears to a `package_sha256` that nobody receiving it can
 # arrive at independently, which is the one thing an attestation is for.

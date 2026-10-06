@@ -31,7 +31,7 @@
 //!
 //! - **WebAudio API**: Supports `AudioContext`, `AudioBufferSourceNode`, `GainNode`
 //! - **InnerAudioContext**: audio player with streaming support
-//! - **Format Support**: MP3, OGG/Vorbis, WAV, FLAC (via symphonia)
+//! - **Format Support**: MP3 (minimp3-sys), OGG/Vorbis (lewton), WAV (hound)
 //! - **Streaming**: Edge-download-edge-play for large audio files
 //! - **Caching**: LRU cache for decoded audio to avoid repeated decoding
 //! - **Resampling**: Automatic sample rate conversion for device compatibility
@@ -66,6 +66,7 @@
 //! - **Android**: Uses Oboe (AAudio/OpenSL ES) via cpal
 //! - **Linux**: Uses ALSA via cpal
 //! - **macOS/iOS**: Uses CoreAudio via cpal
+//! - **OpenHarmony**: Uses OHAudio via a hand-declared backend (`output_ohaudio.rs`)
 //!
 //! ## Module Structure
 //!

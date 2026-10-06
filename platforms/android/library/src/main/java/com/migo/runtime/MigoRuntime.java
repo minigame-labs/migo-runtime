@@ -569,7 +569,7 @@ public final class MigoRuntime {
     }
 
     private void enterImmersiveMode(Activity activity) {
-        // Use DisplayCompat for API 21+ compatibility
+        // Use DisplayCompat for API 26+ compatibility
         DisplayCompat.enterImmersiveMode(activity);
     }
 
