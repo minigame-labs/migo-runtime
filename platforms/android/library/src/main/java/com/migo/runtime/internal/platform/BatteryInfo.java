@@ -10,7 +10,7 @@ import android.os.PowerManager;
  * Battery information utilities.
  * <p>
  * Reads battery level, charging status, and low power mode from
- * Android system services. Compatible with API 21+.
+ * Android system services. Compatible with API 26+.
  *
  * @hide
  */

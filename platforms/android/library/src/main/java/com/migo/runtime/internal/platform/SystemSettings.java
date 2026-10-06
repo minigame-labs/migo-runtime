@@ -11,7 +11,7 @@ import android.provider.Settings;
 /**
  * System settings and state utilities.
  * <p>
- * Compatible with Android API 21+.
+ * Compatible with Android API 26+.
  *
  * @hide
  */
@@ -61,7 +61,7 @@ public final class SystemSettings {
                 LocationManager lm = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
                 return lm != null && lm.isLocationEnabled();
             } else {
-                // API 21-27: Check individual providers
+                // API 26-27: Check individual providers
                 LocationManager lm = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
                 if (lm == null) return false;
                 

@@ -6,7 +6,7 @@ use shared::protocol::host_cmd::{TouchPoint, TouchType};
 /// Cache of V8 `Global<Function>` handles for JS callbacks that the host
 /// thread dispatches into frequently (touch, sensors, audio, etc.).
 ///
-/// All callback fields (27 total) are `Option<v8::Global<v8::Function>>`.
+/// All callback fields (40 total) are `Option<v8::Global<v8::Function>>`.
 /// They are populated during `reload()` by looking up `_internal*` functions
 /// from the V8 global scope. A `None` value means the corresponding JS
 /// function was not found (e.g., the extension is not loaded or the game
@@ -14,6 +14,7 @@ use shared::protocol::host_cmd::{TouchPoint, TouchType};
 ///
 /// ## Field groups
 ///
+/// - **Host bridge** (1): `dispatch_hook_fn`
 /// - **Touch / Input** (1): `enqueue_touch_event_fn`
 /// - **Audio** (1): `enqueue_inner_audio_event_fn`
 /// - **Recorder** (2): `recorder_event_fn`, `recorder_frame_fn`
@@ -22,7 +23,12 @@ use shared::protocol::host_cmd::{TouchPoint, TouchType};
 /// - **Bluetooth / Beacon** (4): adapter state, device found, beacon update, beacon service
 /// - **BLE GATT** (3): connection state, characteristic value, MTU
 /// - **System** (1): `memory_warning_fn`
+/// - **WebGL** (1): `webgl_context_event_fn`
+/// - **Focus** (1): `focus_changed_fn`
 /// - **Keyboard** (6): input, height, confirm, complete, key down, key up
+/// - **Gamepad** (3): connected, disconnected, state
+/// - **Composition** (3): start, update, end
+/// - **Mouse / Wheel** (4): down, move, up, wheel
 /// - **Video** (1): `video_event_fn`
 pub(crate) struct JsBindings {
     main_js_context: v8::Global<v8::Context>,

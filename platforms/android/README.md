@@ -350,7 +350,7 @@ The library includes ProGuard rules. If you need to add custom rules:
 ## Requirements
 
 - **Minimum SDK**: 26 (Android 8.0 Oreo)
-- **Target SDK**: 34 (Android 14)
+- **Target SDK**: 36 (Android 16)
 - **Supported ABIs**: arm64-v8a, x86_64
 
 ## License

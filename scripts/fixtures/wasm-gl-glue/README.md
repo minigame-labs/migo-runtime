@@ -36,7 +36,7 @@ emsdk 装成过一次，`src/main.c` **编译成功并在 Migo 上跑到了 `mai
    没问题，对测启动是错的**：base64 解码取代了流式编译。
 2. **Emscripten 用 `document.querySelector('#canvas')` 找渲染目标，Migo 没有 DOM。**
    但 Migo 的 canvas 暴露了 `getContext`，而那正是 Emscripten GL 层唯一真正调用的东西，
-   所以一个两方法的 `document` 替身就够（见 `shim.js`）。
+   所以一个两方法的 `document` 替身就够（见 `pre.js`）。
 
 ### 四层地板里，只有一层是引擎的
 

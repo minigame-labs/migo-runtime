@@ -186,9 +186,9 @@ win_to_unix_path() {
 #
 # A cold Skia build downloads a prebuilt binaries tarball from GitHub, and
 # rusty-skia's fetch runs on the Windows side where a WSL-local proxy
-# (127.0.0.1:10808 as WSL sees it) is not reachable -- the download then hangs
+# (loopback as WSL sees it) is not reachable -- the download then hangs
 # rather than failing. The probe passes this through as `MIGO_WIN_PROXY` /
-# `HTTPS_PROXY`. Most local proxy clients (v2rayN, Clash) also listen on the
+# `HTTPS_PROXY`. Most local proxy clients also listen on the
 # Windows loopback, so try the usual ports and keep the first that answers.
 #
 # Skipped entirely once `$MIGO_WIN_PROXY` is set by the caller, and once the

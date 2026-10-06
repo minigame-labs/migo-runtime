@@ -27,6 +27,7 @@ typedef struct MigoEngineConfig {
     const char *files_dir_utf8;
     const char *cache_dir_utf8;
     const char *code_cache_dir_utf8;
+    uint8_t code_signing_public_key[32];
 } MigoEngineConfig;
 ```
 
@@ -42,6 +43,7 @@ Fields:
 | `files_dir_utf8` | `const char *` | Root directory for persistent files (NUL-terminated UTF-8); corresponds to the platform app documents directory (Android `getFilesDir()`, iOS `NSDocumentDirectory`). Created automatically if absent. | borrowed, copied before `create` returns |
 | `cache_dir_utf8` | `const char *` | Root directory for evictable caches (NUL-terminated UTF-8); the OS may reclaim this under low-storage conditions. Created automatically if absent. | borrowed, copied before `create` returns |
 | `code_cache_dir_utf8` | `const char *` | Root directory for compiled bytecode caches (NUL-terminated UTF-8); shared across all Sessions under this Engine with cross-Session LRU eviction. Created automatically if absent. | borrowed, copied before `create` returns |
+| `code_signing_public_key` | `uint8_t[32]` | Raw 32-byte Ed25519 public key used to verify content packages when signature enforcement is on; all zero means "no key" (see [`MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT`](#migoengineflags)). Appended after v1 — the library zero-extends a caller that passes the shorter record. | — |
 
 The three storage roots belong to the host: the engine only reads and writes within them and never chooses paths independently. Each Session's actual data lives under `<root>/migo/games/<content_id>/`, so Sessions with different `content_id` values are naturally isolated.
 
@@ -55,14 +57,16 @@ typedef uint64_t MigoEngineFlags;
 
 `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT` opts in to loading content packages that have no signature receipt. This is an explicit opt-in, not the default—signature checking exists to prevent silently accepting unsigned content, so the default is to reject it.
 
-Clearing this flag enables signature enforcement, but the current C ABI has no mechanism to pass an Ed25519 public key (that configuration is only reachable through the Android SDK's `RuntimeConfig.Builder.setCodeSigningPubkey`). With a missing public key, signature enforcement is fail-closed: every module load fails with `MIGO_ERROR_INTERNAL` and the following log message:
+Clearing this flag turns on signature enforcement, which verifies content packages against `code_signing_public_key`. A signed package carries two files: `manifest.json` (`{"version": 1, "entry": "game.js", "timestamp": <unix seconds>, "files": {"<path>": "<sha256 hex>", ...}}`) and `manifest.sig` (the 64-byte Ed25519 signature over the raw bytes of `manifest.json`). The engine verifies the package fully on first start and seals the result; later starts are not re-hashed.
+
+Enforcement is fail-closed: with neither this flag set nor a public key provided, every module load fails with `MIGO_ERROR_INTERNAL` and the following log message:
 
 ```text
 code signing enabled but public key is missing
 (set InitOptions.code_signing_pubkey (hex Ed25519 public key))
 ```
 
-Therefore, **hosts using this C ABI currently have only one configuration that successfully loads content: setting this flag**. This is a known gap, not a design decision. A production path that does not depend on this flag will be provided once the ABI gains a public key delivery mechanism.
+Setting both this flag and a public key is self-contradictory; `migo_engine_create` rejects that combination with `MIGO_ERROR_INVALID_ARGUMENT`.
 
 ## migo\_engine\_create
 
@@ -83,7 +87,7 @@ Params:
 Returns:
 
 * `MIGO_OK`: Engine created successfully; `*out_engine` is valid.
-* `MIGO_ERROR_INVALID_ARGUMENT`: `out_engine` or `config` is `NULL`; `config->struct_size` is smaller than the minimum legal record size; a string field is `NULL`; `flags` contains unrecognized bits. On failure, `*out_engine` is `NULL`.
+* `MIGO_ERROR_INVALID_ARGUMENT`: `out_engine` or `config` is `NULL`; `config->struct_size` is smaller than the minimum legal record size; a string field is `NULL`; `flags` contains unrecognized bits; or `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT` is set together with a non-zero `code_signing_public_key`. On failure, `*out_engine` is `NULL`.
 * `MIGO_ERROR_UNSUPPORTED_ABI`: `config->abi_version` does not match the current library build, or `struct_size` declares a record larger than this build knows about. On failure, `*out_engine` is `NULL`.
 * `MIGO_ERROR_INTERNAL`: A storage root directory does not exist and the file system refused to create it (insufficient permissions, read-only mount point, path component is not a directory)—the path strings themselves are well-formed, so this is not an argument error. On failure, `*out_engine` is `NULL`.
 

@@ -169,17 +169,6 @@ impl Drop for HostThread {
     }
 }
 
-/// Start a Host, with or without the window Surface it will render into.
-///
-/// `surface` is `None` for a warm start: the host and render threads come up
-/// and do every part of GPU bring-up that does not name a window -- EGL display
-/// and config, the pbuffer resource context, the 709-entry GLES dispatch table,
-/// capability detection, Skia, the system font scan -- and then park. The
-/// Surface arrives later through the ordinary `UpdateSurface` path, which
-/// installs it exactly as an initial Surface would have been installed.
-///
-/// The point is not to make bring-up cheaper but to move it off a critical
-
 /// Everything a session's thread body is handed. Built by
 /// [`spawn_session_thread`], consumed by whichever execution mode the product
 /// compiled in.

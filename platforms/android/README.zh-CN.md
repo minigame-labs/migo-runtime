@@ -426,7 +426,7 @@ String message = ErrorCode.getMessage(code);
 ## 系统要求
 
 - **最低 SDK**: 26 (Android 8.0 Oreo)
-- **目标 SDK**: 34 (Android 14)
+- **目标 SDK**: 36 (Android 16)
 - **支持的 ABI**: arm64-v8a, x86_64
 
 ## 许可证
