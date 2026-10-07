@@ -161,7 +161,7 @@ impl FromNormalizedF32 for u16 {
 /// a thread the platform schedules as real-time -- `SCHED_FIFO` on Android -- and
 /// an allocation there is not slow, it is a missed deadline heard as a dropout,
 /// because the allocator can block behind a thread that is not real-time
-/// scheduled at all. Section 7.3 requires that to be enforced by a test, and a
+/// scheduled at all. The allocation gate enforces this with a test, and a
 /// closure handed to `build_output_stream` cannot be reached without a device.
 ///
 /// The type is also what removes the duplication: three near-identical callbacks
@@ -265,7 +265,7 @@ mod tests {
         )
     }
 
-    /// Section 7.3's steady-state allocation gate, on the hardware callback.
+    /// The steady-state allocation gate, on the hardware callback.
     ///
     /// One iteration is one device callback plus the refill that keeps the ring
     /// from draining, which is the pair that actually repeats forever. Both
@@ -278,8 +278,8 @@ mod tests {
         let (mut native_producer, mut native) = filled_callback(ring_samples);
         let (mut converted_producer, mut converted) = filled_callback(ring_samples);
 
-        // The reservoir is built before the measured window, per Section 7.3's
-        // rule that a burst body must not take from a pool it does not control.
+        // The reservoir is built before the measured window, so the burst body
+        // does not take from a pool it does not control.
         let refill = vec![0.25f32; CALLBACK_SAMPLES];
         let mut native_out = vec![0.0f32; CALLBACK_SAMPLES];
         let mut converted_out = vec![0i16; CALLBACK_SAMPLES];

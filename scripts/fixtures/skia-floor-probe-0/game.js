@@ -1,4 +1,4 @@
-// T6 (device verification queue, 2026-08-27) control: zero offscreen
+// Control: zero offscreen
 // canvases, same heartbeat as skia-floor-probe-N. Isolates the process's
 // fixed PSS/Graphics overhead so the N=30/80 runs can be read as a delta
 // caused by context count, not as an absolute figure.

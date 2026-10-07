@@ -1,13 +1,13 @@
-// T6 (device verification queue, 2026-08-27), same as skia-floor-probe-30 but
-// at 80 offscreen contexts -- the count render_thread's own reorder fixture
-// uses, on the record that "nothing bounds how many canvases a game draws to
-// in one frame". 80 contexts * 4 MiB floor = 320 MiB, 3.3x TierA's 96 MiB
-// aggregate ceiling, if the overshoot materialises at all (it is a ceiling,
-// not a reservation -- see the script this fixture is read by).
+// Same as skia-floor-probe-30 but at 80 offscreen contexts -- the count
+// render_thread's own reorder fixture uses, on the record that "nothing bounds
+// how many canvases a game draws to in one frame". 80 contexts * 4 MiB floor =
+// 320 MiB, 3.3x TierA's 96 MiB aggregate ceiling, if the overshoot materialises
+// at all (it is a ceiling, not a reservation -- see the script this fixture is
+// read by).
 //
-// Also the fixture scripts/measure-skia-floor-frametime.sh uses to answer the
-// *other* half of T6: does the floor earn its keep, by comparing frame time
-// against a build with MIN_PER_CTX_BYTES forced to 0.
+// Also used by scripts/measure-skia-floor-cpu.sh to answer the other half:
+// does the floor earn its keep, by comparing render-thread CPU% against a build
+// with MIN_PER_CTX_BYTES forced to 0?
 const N = 80;
 
 const canvas = migo.createCanvas();

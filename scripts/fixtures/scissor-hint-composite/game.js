@@ -1,4 +1,4 @@
-// T7 (device verification queue, 2026-08-27) test half: identical to
+// Test half: identical to
 // scissor-hint-baseline, except once per frame -- midway through the
 // batch -- globalCompositeOperation is set to a non-source-over mode and
 // immediately set back to 'source-over' before the next draw.

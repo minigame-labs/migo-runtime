@@ -368,7 +368,8 @@ mod imp {
                 rfu0: 0,
                 rfu1: 0,
             };
-            let mut out = ptr::null_mut();
+            // SAFETY: `c_desc` and `out` are valid pointers for the duration
+            // of the allocation call, and the returned handle is checked below.
             let status = unsafe { sys::AHardwareBuffer_allocate(&c_desc, &mut out) };
             if status != 0 || out.is_null() {
                 return Err(AhbError::AllocateFailed { status });
@@ -388,6 +389,8 @@ mod imp {
                 rfu0: 0,
                 rfu1: 0,
             };
+            // SAFETY: `out` is the live handle returned by the successful
+            // allocation above, and `described` is writable local storage.
             unsafe { sys::AHardwareBuffer_describe(out, &mut described) };
             if described.width != desc.width
                 || described.height != desc.height
@@ -420,6 +423,8 @@ mod imp {
                 return Err(AhbError::NullHandle);
             }
             let ahb = ptr as *mut sys::AHardwareBuffer;
+            // SAFETY: the caller's contract guarantees `ptr` identifies a
+            // live AHB; acquire adds this wrapper's owned reference.
             unsafe { sys::AHardwareBuffer_acquire(ahb) };
             Ok(Self {
                 inner: Arc::new(AhbBox {
@@ -472,11 +477,12 @@ mod imp {
         /// `AHardwareBuffer_release`.  For tightly-controlled
         /// hand-offs, e.g. when transferring across an unsafe ABI.
         pub fn into_raw(self) -> *mut c_void {
-            // We can't move out of an Arc easily; clone-and-leak is
-            // the standard pattern. Safety: caller takes over the
-            // refcount we held.
             let ptr = self.raw();
-            // Acquire one extra ref before the Arc drops below.
+            // We can't move out of an Arc easily; clone-and-leak is
+            // the standard pattern. The extra reference is transferred
+            // to the raw-pointer caller before `self` is dropped.
+            // SAFETY: `ptr` is a live AHB handle and this extra reference is
+            // transferred to the raw-pointer caller before `self` is dropped.
             unsafe { sys::AHardwareBuffer_acquire(ptr as *mut sys::AHardwareBuffer) };
             drop(self);
             ptr
@@ -491,6 +497,9 @@ mod imp {
             let (stride_bytes, len_bytes) = checked_layout(&self.desc)?;
             let cpu_lock = self.inner.cpu_lock.lock();
             let mut addr: *mut c_void = ptr::null_mut();
+            // SAFETY: `self.inner.ptr` is a live owned AHB reference, usage and
+            // layout were validated above, and `addr` points to writable local
+            // storage for the driver to fill.
             let status = unsafe {
                 sys::AHardwareBuffer_lock(
                     self.inner.ptr,
@@ -506,6 +515,8 @@ mod imp {
             if addr.is_null() {
                 // A successful lock owns a matching unlock even if a broken
                 // driver failed to return the promised address.
+                // SAFETY: the successful lock owns a matching unlock, and the
+                // AHB pointer remains live through `self.inner`.
                 unsafe {
                     let _ = sys::AHardwareBuffer_unlock(self.inner.ptr, ptr::null_mut());
                 }
@@ -582,7 +593,8 @@ mod imp {
             }
             // Mark consumed before entering the driver: retrying an unlock
             // after an error has undefined ownership semantics.
-            self.locked = false;
+            // SAFETY: the lock was acquired on this AHB and has not been
+            // unlocked yet; the null fence is valid per the API 26 contract.
             let status = unsafe {
                 // API 26 contract: a null fence makes unlock block until CPU
                 // writes and cache maintenance are complete.

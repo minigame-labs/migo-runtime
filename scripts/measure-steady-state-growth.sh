@@ -3,8 +3,8 @@
 # Measure resident memory across a long-running workload.
 # Location: scripts/measure-steady-state-growth.sh
 #
-# Specification Section 7.3: "resident memory does not grow across a defined
-# long-running workload". The in-process gates
+# The runtime's memory contract is that resident memory does not grow across a
+# defined long-running workload. The in-process gates
 # (`migo_alloc_probe::assert_no_steady_state_growth`) hold individual cycles to
 # net zero; this holds the whole process to a flat trend, which is the only
 # instrument that can see growth outside the Rust heap — GPU allocations, the V8

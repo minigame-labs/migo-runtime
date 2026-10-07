@@ -58,9 +58,9 @@ impl ParsedFont {
 /// syntactically invalid (no parseable size).  Callers should keep the
 /// previous `font` on `None` to mirror browser behaviour.
 ///
-/// G-2 note: a second CSS-font parser lives in
+/// A second CSS-font parser lives in
 /// [`crate::css_font::parse_css_font`] for the JS-thread
-/// `measureText` fast path (F-2).  The two parsers are kept in
+/// `measureText` fast path.  The two parsers are kept in
 /// sync via [`tests::shared_and_render_agree_on_canonical_inputs`]
 /// which pins the matrix of inputs where the two must produce
 /// equivalent outputs.  We kept two implementations rather than
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(f.families, fam(&["PingFang SC"]));
     }
 
-    /// G-2: the render side (`font_parse::parse_font_shorthand`)
+    /// The render-side parser (`font_parse::parse_font_shorthand`)
     /// and the JS-thread fast path (`shared::css_font::
     /// parse_css_font`) must agree on the matrix of real-world
     /// CSS font shorthands users write in canvas games.  A mismatch

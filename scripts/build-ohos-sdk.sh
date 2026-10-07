@@ -409,12 +409,12 @@ done
 # else can tell that an import postdates the declared floor.
 info "running the API floor gate"
 # The two-sysroot half was opt-in, which made it a check nobody ran: the floor
-# comparison alone answers "does this archive import anything the floor lacks", and only
-# a *newer* sysroot can answer "did any of these symbols arrive after the floor". The
-# newer SDK is discovered rather than demanded, for the reason recorded under item T.8:
-# a machine without one has to report the reduced check honestly, not fail as though the
-# change under test broke something. An explicit MIGO_OHOS_NEWER_SYSROOT still wins, so a
-# caller can point at an SDK outside these locations.
+# comparison alone answers "does this archive import anything the floor lacks",
+# and only a *newer* sysroot can answer "did any of these symbols arrive after
+# the floor". The newer SDK is discovered rather than demanded: a machine
+# without one has to report the reduced check honestly, not fail as though the
+# change under test broke something. An explicit MIGO_OHOS_NEWER_SYSROOT still
+# wins, so a caller can point at an SDK outside these locations.
 if [[ -z "${MIGO_OHOS_NEWER_SYSROOT:-}" ]]; then
     # The rule -- select on the SDK's own declared apiVersion, never on its directory
     # name -- and the reasoning for it live in the selector, which is exercised by

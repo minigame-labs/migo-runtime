@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 # ============================================================
-# T6 (device verification queue, 2026-08-27), second half: does the Skia
-# per-context resource-cache floor earn its keep, i.e. does a lower cap make
-# Skia thrash?
+# Does the Skia per-context resource-cache floor earn its keep, i.e. does a
+# lower cap make Skia thrash?
 # Location: scripts/measure-skia-floor-cpu.sh
 #
-# Frame time is the wrong instrument here and this repo has already paid for
-# that lesson once (JITLESS.md / jitless-cost-measured): at 60 vsyncs/s a
-# fixture that never asks for more than 60 draws/s reads as flat regardless of
-# how much render-thread work each frame costs, because vsync is the ceiling,
-# not the workload. So this measures render-thread CPU% instead --
+# Frame time is the wrong instrument here: at 60 vsyncs/s a fixture that never
+# asks for more than 60 draws/s reads as flat regardless of how much
+# render-thread work each frame costs, because vsync is the ceiling, not the
+# workload. So this measures render-thread CPU% instead --
 # /proc/<pid>/stat (utime+stime) delta, median of three 2s windows -- the same
-# instrument migo-bench/scripts/lib.sh's capture_cpu uses and for the same
-# reason (a single window occasionally lands on a stalled moment).
+# instrument used by the other render measurements, for the same reason (a
+# single window occasionally lands on a stalled moment).
 #
 # Run this once against the shipped build (MIN_PER_CTX_BYTES = 4 MiB) and
 # once against a build with it forced to 0 (aggregate/n honoured exactly, no

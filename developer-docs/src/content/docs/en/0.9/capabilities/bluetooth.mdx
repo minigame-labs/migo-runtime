@@ -1,0 +1,189 @@
+---
+title: Bluetooth / BLE / Beacon
+sidebar:
+  order: 3
+description: "The migo.* Bluetooth capability group: Classic Bluetooth discovery and pairing, BLE GATT read/write/notifications, iBeacon scanning, and related event subscriptions. Android is currently the only host implementation; other platforms return a not supported error."
+audience: content-developer
+platforms:
+  - android
+sourcePaths:
+  - engine/crates/runtime-v8/src/system/01_bluetooth.js
+  - engine/crates/runtime-v8/src/system/mod.rs
+  - platforms/android/library/src/main/java/com/migo/runtime/internal/platform/BluetoothManager.java
+  - platforms/android/library/src/main/java/com/migo/runtime/internal/platform/BluetoothPermissionPolicy.java
+  - platforms/android/library/src/main/java/com/migo/runtime/internal/platform/Permissions.java
+---
+
+The Bluetooth capability group covers three related but distinct layers:
+
+- **Classic Bluetooth**: adapter lifecycle, device discovery, and pairing.
+- **BLE (Bluetooth Low Energy)**: GATT connections, service/characteristic reads, writes and notifications, RSSI, and MTU negotiation.
+- **Beacon (iBeacon)**: beacon scanning over BLE, independent of general device discovery.
+
+Operation APIs are exposed under the `migo.*` namespace and return a Promise; they also support `options.success` / `options.fail` callbacks. Event APIs use the `on*` / `off*` listener pattern described below.
+
+---
+
+## Adapter management
+
+`openBluetoothAdapter` initializes the Bluetooth module and acquires exclusive adapter access. Android's device-discovery path requires the adapter to be open; Beacon and GATT operations perform their own availability and permission checks.
+
+| API | Description | Main options fields |
+| --- | --- | --- |
+| `migo.openBluetoothAdapter` | Initializes the Bluetooth module and acquires exclusive adapter access | `mode` (default `'central'`) |
+| `migo.closeBluetoothAdapter` | Releases the adapter, stops all discovery, and closes all GATT connections | — |
+| `migo.getBluetoothAdapterState` | Returns `{ available, discovering }` | — |
+| `migo.openSystemBluetoothSetting` | Opens the system Bluetooth settings page outside the game | — |
+
+On Android, `openBluetoothAdapter` checks BLUETOOTH_CONNECT and acquires the adapter lock through `ExclusiveDeviceArbiter`. Only one session can hold the adapter at a time; if another game already holds it, the call fails with `fail in use by another game`.
+
+```js
+// Open the adapter → discover devices → close it
+migo.openBluetoothAdapter({
+  mode: 'central',
+  success() {
+    console.log('Bluetooth ready');
+  },
+  fail(err) {
+    console.error('openBluetoothAdapter failed:', err);
+  },
+});
+```
+
+---
+
+## Device discovery
+
+| API | Description | Main options fields |
+| --- | --- | --- |
+| `migo.startBluetoothDevicesDiscovery` | Starts scanning for nearby devices; stops automatically after 30 seconds | `services` (UUID filter array), `allowDuplicatesKey` (boolean, default `false`), `interval` (ms, default `0`), `powerLevel` (`'low'`/`'medium'`/`'high'`, default `'medium'`) |
+| `migo.stopBluetoothDevicesDiscovery` | Stops scanning and cancels the automatic-stop timer | — |
+| `migo.getBluetoothDevices` | Returns all devices discovered by this session | — |
+| `migo.getConnectedBluetoothDevices` | Returns currently connected devices matching the requested UUIDs | `services` (UUID array; empty returns all connected devices) |
+
+**Note:** `startBluetoothDevicesDiscovery` has a built-in 30-second automatic stop. When the timer expires it silently invokes the underlying stop operation and does not call `fail`. Call it again after stopping if a longer scan is needed.
+
+New devices are delivered through `onBluetoothDeviceFound` (see Event subscriptions below).
+
+---
+
+## Pairing
+
+| API | Description | Main options fields |
+| --- | --- | --- |
+| `migo.makeBluetoothPair` | Starts pairing with a specified device | `deviceId` (required), `pin` (pairing PIN), `timeout` (ms, default `20000`) |
+| `migo.isBluetoothDevicePaired` | Checks whether the device is paired with the system | `deviceId` (required) |
+
+---
+
+## BLE GATT connections
+
+| API | Description | Main options fields |
+| --- | --- | --- |
+| `migo.createBLEConnection` | Establishes a GATT connection | `deviceId` (required), `timeout` (ms; `0` means the system default, default `0`) |
+| `migo.closeBLEConnection` | Closes a GATT connection | `deviceId` (required) |
+
+---
+
+## BLE GATT services and characteristics
+
+| API | Description | Main options fields |
+| --- | --- | --- |
+| `migo.getBLEDeviceServices` | Gets the device's GATT services | `deviceId` (required) |
+| `migo.getBLEDeviceCharacteristics` | Gets the characteristics for a service | `deviceId` (required), `serviceId` (required) |
+| `migo.readBLECharacteristicValue` | Reads a characteristic; the result is delivered through `onBLECharacteristicValueChange` | `deviceId`, `serviceId`, `characteristicId` (all required) |
+| `migo.writeBLECharacteristicValue` | Writes a characteristic value | `deviceId`, `serviceId`, `characteristicId` (all required), `value` (`ArrayBuffer` / `ArrayBufferView` / hex string), `writeType` (`'write'` or `'writeNoResponse'`, default `'write'`) |
+| `migo.notifyBLECharacteristicValueChange` | Subscribes or unsubscribes from characteristic notifications | `deviceId`, `serviceId`, `characteristicId` (all required), `state` (`true` to subscribe, `false` to unsubscribe, default `false`) |
+
+The resolved value of `readBLECharacteristicValue` does not contain the characteristic data. The subsequent `onBLECharacteristicValueChange` event carries it in its `value` field as an `ArrayBuffer`.
+
+---
+
+## BLE RSSI and MTU
+
+| API | Description | Main options fields |
+| --- | --- | --- |
+| `migo.getBLEDeviceRSSI` | Gets the signal strength of a connected device | `deviceId` (required) |
+| `migo.setBLEMTU` | Requests an MTU size negotiation | `deviceId` (required), `mtu` (default `23`) |
+| `migo.getBLEMTU` | Gets the currently negotiated MTU | `deviceId` (required) |
+
+---
+
+## Beacon (iBeacon)
+
+| API | Description | Main options fields |
+| --- | --- | --- |
+| `migo.startBeaconDiscovery` | Starts iBeacon scanning | `uuids` (Beacon UUID array), `ignoreBluetoothAvailable` (boolean, default `false`) |
+| `migo.stopBeaconDiscovery` | Stops iBeacon scanning | — |
+| `migo.getBeacons` | Returns the Beacons currently discovered (`{ beacons }`) | — |
+
+---
+
+## Event subscriptions
+
+Register and remove every event listener with its matching `on*` / `off*` pair.
+
+| Event pair | When it fires | Callback argument |
+| --- | --- | --- |
+| `migo.onBluetoothAdapterStateChange` / `migo.offBluetoothAdapterStateChange` | Adapter availability or discovery state changes | `{ available: boolean, discovering: boolean }` |
+| `migo.onBluetoothDeviceFound` / `migo.offBluetoothDeviceFound` | A scan finds new devices (may fire more than once) | `{ devices: Device[] }` |
+| `migo.onBLEConnectionStateChange` / `migo.offBLEConnectionStateChange` | BLE GATT connection state changes | `{ deviceId: string, connected: boolean }` |
+| `migo.onBLECharacteristicValueChange` / `migo.offBLECharacteristicValueChange` | A characteristic read completes or a notification arrives | `{ deviceId, serviceId, characteristicId, value: ArrayBuffer }` |
+| `migo.onBLEMTUChange` / `migo.offBLEMTUChange` | MTU negotiation completes | `{ deviceId: string, mtu: number }` |
+| `migo.onBeaconUpdate` / `migo.offBeaconUpdate` | The Beacon list updates | `{ beacons: Beacon[] }` |
+| `migo.onBeaconServiceChange` / `migo.offBeaconServiceChange` | Beacon service availability changes | `{ available: boolean, discovering: boolean }` |
+
+```js
+// Subscribe to characteristic notifications
+function handleCharacteristicChange(event) {
+  const { deviceId, serviceId, characteristicId, value } = event;
+  const bytes = new Uint8Array(value);
+  console.log('Characteristic value:', bytes);
+}
+
+migo.onBLECharacteristicValueChange(handleCharacteristicChange);
+
+// Remove the listener when it is no longer needed
+migo.offBLECharacteristicValueChange(handleCharacteristicChange);
+```
+
+---
+
+## Android permissions and prerequisites
+
+Android checks permissions when Bluetooth operations that require them are called, but **does not initiate runtime permission requests**. The host app must request and obtain the permissions at an appropriate time, normally before `openBluetoothAdapter`.
+
+| Operation category | Android API < 31 | Android API ≥ 31 (Android 12+) |
+| --- | --- | --- |
+| Connection (adapter and GATT) | The policy requires no additional runtime connection permission | `android.permission.BLUETOOTH_CONNECT` |
+| Scanning (discovery and Beacon) | `android.permission.ACCESS_FINE_LOCATION` | `android.permission.BLUETOOTH_SCAN` |
+
+The permission checks come from `BluetoothPermissionPolicy.canConnect` and `BluetoothPermissionPolicy.canScan`.
+
+When permission is missing, the relevant API fails and the error identifies the missing permission, for example:
+
+```text
+startBluetoothDevicesDiscovery:fail permission denied (BLUETOOTH_SCAN)
+```
+
+---
+
+## Other-platform fallback
+
+The Linux, Windows, OpenHarmony, and Apple (iOS / macOS) hosts do not provide a Bluetooth service implementation. On these platforms, Bluetooth operation APIs backed by `op_*` reject their Promises:
+
+```text
+<apiName>:fail not supported
+```
+
+Event APIs only register or remove listeners; without a host Bluetooth service, there is no platform event source.
+
+For example, on a non-Android platform `openBluetoothAdapter` rejects with `"openBluetoothAdapter:fail not supported"`. This is the common Rust-side `op_*` behavior when `services.bluetooth()` is unavailable (`engine/crates/runtime-v8/src/system/mod.rs`).
+
+---
+
+## Known caveats
+
+- **Exclusive adapter access:** When multiple Migo games run on the same device, only the first session to open the adapter has access. A later `openBluetoothAdapter` call receives `fail in use by another game` until the first session calls `closeBluetoothAdapter`.
+- **Discovery timeout:** `startBluetoothDevicesDiscovery` has a built-in 30-second limit. Discovery stops silently when it expires; no callback is fired.
+- **Asynchronous characteristic reads:** A successful `readBLECharacteristicValue` Promise only means that the command was submitted. The actual value arrives later through `onBLECharacteristicValueChange`.

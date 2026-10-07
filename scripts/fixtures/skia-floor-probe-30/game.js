@@ -1,5 +1,5 @@
-// T6 (device verification queue, 2026-08-27): does the per-context Skia
-// resource-cache floor's overshoot actually cost PSS?
+// Does the per-context Skia resource-cache floor's overshoot actually cost
+// PSS?
 //
 // `backend/gl/surface.rs` caps each Canvas2DContext's Ganesh cache at
 // max(aggregate / live_contexts, MIN_PER_CTX_BYTES), and the 4 MiB floor

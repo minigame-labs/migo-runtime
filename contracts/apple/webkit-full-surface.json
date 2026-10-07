@@ -13,7 +13,7 @@
     "fact stated in one file is a fact somebody can check against a submission.",
     "",
     "PROVENANCE IS THE POINT, AND IT WAS MISSING FROM THE DESIGN THIS REPLACES.",
-    "The plan's D18 said the iOS tier keeps canvas, WebGL, audio, input, storage,",
+    "The plan said the iOS tier keeps canvas, WebGL, audio, input, storage,",
     "network and lifecycle and defaults camera, bluetooth, payment, sensors and",
     "clipboard off. Read as a list of switches that is not implementable, because",
     "the first seven are not ours to switch: in this lane WebKit runs the",
@@ -92,7 +92,7 @@
     "web_audio": {
       "provenance": "web_platform",
       "default_enabled": true,
-      "reason": "Web Audio and HTMLAudioElement. Content that depends on browser audio modules is one of the cases D9 lists as running better here than in Performance+."
+      "reason": "Web Audio and HTMLAudioElement. Content that depends on browser audio modules is one of the cases listed as running better here than in Performance+."
     },
     "pointer_input": {
       "provenance": "web_platform",
@@ -161,7 +161,7 @@
     "clipboard_write": {
       "provenance": "web_platform",
       "default_enabled": true,
-      "reason": "WebKit allows a clipboard write in response to a user gesture and this lane does not change that. Listed because D18 named the clipboard as default-off: it cannot be, on this route, and a contract that said otherwise would be describing a switch nobody has. A native clipboard bridge is what is absent -- see clipboard_read."
+      "reason": "WebKit allows a clipboard write in response to a user gesture and this lane does not change that. Listed because the design named the clipboard as default-off: it cannot be, on this route, and a contract that said otherwise would be describing a switch nobody has. A native clipboard bridge is what is absent -- see clipboard_read."
     },
     "clipboard_read": {
       "provenance": "absent",

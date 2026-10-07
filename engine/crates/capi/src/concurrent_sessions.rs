@@ -2,15 +2,14 @@
 //!
 //! Every concurrent-session property was previously true by reading: no test
 //! anywhere created two Sessions, so nothing would have failed if a shared
-//! process-global had crept back in. Section 6.4 of the four-platform design makes
-//! multi-game support a product guarantee and says it is "gated rather than
-//! assumed", which is what this module starts.
+//! process-global had crept back in. Multi-game support is a product guarantee
+//! and is gated rather than assumed, which is what this module starts.
 //!
 //! What these can and cannot reach: `migo_session_create` produces a Session
 //! without an attached surface, so no Host and therefore no V8 isolate exists yet.
 //! Isolate separation and per-game storage rooting are therefore *not* covered
-//! here — claiming otherwise would be the same inspection-as-test mistake Section
-//! 7.3 warns about. What is reachable is the Session lifecycle itself: coexistence,
+//! here -- claiming otherwise would be the same inspection-as-test mistake a
+//! documented coverage boundary warns about. What is reachable is the Session lifecycle itself: coexistence,
 //! the Engine's refusal to be destroyed under live Sessions, independent teardown,
 //! and driving two Sessions from two host threads.
 
@@ -94,7 +93,7 @@ fn two_sessions_coexist_on_one_engine() {
     assert_eq!(unsafe { migo_engine_destroy(engine) }, MIGO_OK);
 }
 
-/// Section 6.4 lists this among the properties that become gated requirements.
+/// This is one of the product's gated concurrency requirements.
 #[test]
 fn engine_destruction_is_refused_while_either_session_is_live() {
     let engine = create_engine("engine-destroy-refused");
@@ -144,10 +143,10 @@ fn destroying_one_session_leaves_the_other_usable() {
     assert_eq!(unsafe { migo_engine_destroy(engine) }, MIGO_OK);
 }
 
-/// Section 6.4 requires that two Sessions may be driven concurrently from two host
-/// threads. The barrier makes the two creations actually overlap rather than
-/// merely happen on different threads, which is what a lock held across session
-/// construction would show up as.
+/// Two Sessions may be driven concurrently from two host threads. The barrier
+/// makes the two creations actually overlap rather than merely happen on
+/// different threads, which is what a lock held across session construction
+/// would show up as.
 #[test]
 fn two_sessions_are_created_concurrently_from_two_host_threads() {
     let engine = EnginePtr(create_engine("two-host-threads"));
@@ -191,8 +190,8 @@ fn two_sessions_are_created_concurrently_from_two_host_threads() {
     assert_eq!(unsafe { migo_engine_destroy(engine.get()) }, MIGO_OK);
 }
 
-/// Section 6.4 asks whether a process may create more than one Engine. It may, and
-/// two Engines must not share the live-session accounting that gates destruction.
+/// A process may create more than one Engine. Two Engines must not share the
+/// live-session accounting that gates destruction.
 #[test]
 fn two_engines_account_for_their_own_sessions() {
     let first = create_engine("two-engines-first");
@@ -212,14 +211,12 @@ fn two_engines_account_for_their_own_sessions() {
     assert_eq!(unsafe { migo_engine_destroy(first) }, MIGO_OK);
 }
 
-// ── Storage roots (task 0.20) ───────────────────────────────────────────────
+// -- Storage roots ------------------------------------------------------------
 //
 // The three roots live on the Engine, so every Session of one Engine starts from
 // the same three directories and the split between two games happens *below*
 // them, at the game identity. That is a decision rather than an oversight, and
-// Section 6.4 requires a decision of this shape to be documented rather than
-// left to the absence of a prohibition -- so what the header now states, these
-// execute.
+// the public header documents this rule; these tests execute it.
 //
 // What they reach and what they do not: `migo_session_create` binds no game
 // identity, so the identity half of the split is covered where it lives, by
@@ -271,13 +268,12 @@ fn every_session_of_one_engine_starts_from_the_roots_the_host_named() {
     assert_eq!(unsafe { migo_engine_destroy(engine) }, MIGO_OK);
 }
 
-/// Section 7.3's "no steady-state growth", for the cycle the process measurement
-/// cannot reach.
+/// The process-level measurement cannot reach this session create/destroy cycle.
 ///
 /// `scripts/measure-steady-state-growth.sh` watches resident memory over a long
-/// *render* workload, which never creates or destroys a Session; task 0.51 named
-/// session create/destroy as a cycle with no gate of its own. It is the shape the cycle
-/// gate exists for: a Session legitimately allocates for a living, so no burst can be
+/// *render* workload, which never creates or destroys a Session; session
+/// create/destroy is a separate cycle with no gate of its own. It is the shape
+/// this cycle gate exists for: a Session legitimately allocates for a living, so no burst can be
 /// written over it, and anything it retains is retained for the life of the process.
 ///
 /// **The engine, the config and the scratch paths are built once, outside the

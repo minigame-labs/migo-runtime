@@ -9,7 +9,7 @@
 //!   <font-family>+
 //! ```
 //!
-//! Before G-2 the parser existed in two places — a hand-rolled JS
+//! Before this parser was centralised, the logic existed in two places — a hand-rolled JS
 //! implementation in `02_2d_context.js` (fast-path measure) and
 //! a separate Rust implementation scattered through the render
 //! backend.  Keeping them in sync by hand meant fontStyle / fontWeight

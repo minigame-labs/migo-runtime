@@ -19,8 +19,6 @@
 //! The consumer (typically the `core` runtime) translates the variant into
 //! a JS-visible error event or a `performance.mark` entry as it sees fit.
 //!
-//! Audit rationale: P1-1 "Render 线程 RenderEvent 回流 channel" and P2-10
-//! "raf 背压连续 3 帧触发 RenderEvent".
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

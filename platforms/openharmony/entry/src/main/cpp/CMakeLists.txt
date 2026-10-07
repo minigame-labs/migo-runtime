@@ -57,7 +57,6 @@ endif()
 # OpenHarmony's arrangement is the same shape with the SDK's libc++ in that second role.
 # It is safe for a narrower reason: no std exception object crosses the V8/Skia boundary,
 # since each side throws and catches internally and the surface between them is a C ABI.
-# See ledger item 1.4, which is open on resolving it to one provider.
 target_link_options(migohost PRIVATE
     -Wl,--gc-sections
     -Wl,--allow-multiple-definition

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
-# T3 (device verification queue, 2026-08-27): did removing PboPool::acquire's
-# glClientWaitSync wait change upload throughput, and does it corrupt
-# anything?
+# Did removing PboPool::acquire's glClientWaitSync wait change upload throughput,
+# and does it corrupt anything?
 # Location: scripts/measure-pbo-stream-burst.sh
 #
 # Runs scripts/fixtures/pbo-stream-burst (64 x 512x512 texImage2D uploads,

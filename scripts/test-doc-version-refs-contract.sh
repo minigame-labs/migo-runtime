@@ -13,7 +13,7 @@
 # The fix is not to bump them each release -- that is the checklist this repo
 # removes everywhere else. `CHANGELOG.md` and `README.md` already use
 # `migo-<version>-...`; this gate makes that the rule for every instructional
-# doc. Section 14 of the four-platform delivery design requires README, build
+# document. The release documentation contract requires README, build
 # documentation, and platform documentation to describe the same version.
 #
 # Scope: tracked Markdown and Gradle/Groovy/Kotlin files, excluding the

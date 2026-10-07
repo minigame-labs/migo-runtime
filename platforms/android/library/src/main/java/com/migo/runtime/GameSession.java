@@ -346,7 +346,7 @@ public final class GameSession implements Closeable {
                     ErrorCode.getMessage(ErrorCode.ERR_ENTRY_NOT_FOUND) + ": entryPoint is null or empty");
         }
 
-        // Optional: Validate code directory and entry point exist (for better error messages)
+        // Validate the code directory and entry point early for clearer errors.
         File codeDir = paths.getCodeDir();
         if (!codeDir.exists() || !codeDir.isDirectory()) {
             throw new MigoException(ErrorCode.ERR_CODE_DIR_NOT_FOUND,

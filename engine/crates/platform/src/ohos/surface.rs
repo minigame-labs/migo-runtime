@@ -5,6 +5,8 @@
 //! window handle, reference counted by the platform. What differs is only the
 //! spelling of the reference-count calls.
 
+// Some native-window helpers are exported for OpenHarmony/C-ABI call sites
+// that are compiled in a different target configuration than this module.
 #![allow(dead_code)]
 
 use shared::surface::Surface;

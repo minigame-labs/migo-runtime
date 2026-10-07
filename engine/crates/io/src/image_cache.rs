@@ -1168,7 +1168,7 @@ mod tests {
         assert_eq!(s.size_bytes, 0);
     }
 
-    /// H-5: pin count prevents eviction even under LRU pressure.
+    /// Pin count prevents eviction even under LRU pressure.
     /// Regression test for the hxddd black-block bug: before the
     /// pin mechanism, a scene-load burst of 200 one-shot sprites
     /// would evict pinned-but-still-active textures and make them
@@ -1215,7 +1215,7 @@ mod tests {
         );
     }
 
-    /// H-5: `trim(Background)` is allowed to drop unpinned
+    /// `trim(Background)` is allowed to drop unpinned
     /// entries but must keep pinned ones.  This protects live
     /// avatar / HUD textures through an `onTrimMemory` storm.
     #[test]
@@ -1240,7 +1240,7 @@ mod tests {
         assert!(cache.contains(&pinned));
     }
 
-    /// H-5: pinning an absent key is valid (records intent), and
+    /// Pinning an absent key is valid (records intent), and
     /// a subsequent `insert` of that key arrives pre-pinned.
     #[test]
     fn pin_absent_key_is_honoured_on_later_insert() {

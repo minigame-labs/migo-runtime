@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
-# T6 (device verification queue, 2026-08-27), first half: does the Skia
-# per-context resource-cache floor's overshoot on many-canvas scenes actually
-# materialise as held PSS?
+# Does the Skia per-context resource-cache floor's overshoot on many-canvas
+# scenes actually materialise as held PSS?
 # Location: scripts/measure-skia-floor-pss.sh
 #
 # backend/gl/surface.rs caps each Canvas2DContext's Ganesh cache at

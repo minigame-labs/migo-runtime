@@ -3,11 +3,11 @@
 # Shared plumbing for a device-side fixture probe.
 # Location: scripts/lib/device-fixture-runner.sh
 #
-# There is no scripted device fixture runner today (per the T1 device
-# verification queue): scripts/verify-*.sh read a pixel from the host player
-# via MIGO_PLAYER_PNG, which does not exist on Android. This gives a device
-# caller the same three assertions -- frame count, dominant colour, distinct
-# colour count -- against the demo app's own DebugMigoGameActivity, deployed
+# There is no scripted device fixture runner today: scripts/verify-*.sh read a
+# pixel from the host player via MIGO_PLAYER_PNG, which does not exist on
+# Android. This gives a device caller the same three assertions -- frame count,
+# dominant colour, distinct colour count -- against the demo app's own
+# DebugMigoGameActivity, deployed
 # and driven the way scripts/prescreen-run.sh already does it (run-as tar into
 # files/migo/games/<id>/code, then `am start` with the real SDK extras).
 #

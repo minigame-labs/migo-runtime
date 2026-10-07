@@ -1,5 +1,5 @@
-// T6 (device verification queue, 2026-08-27): the "animates many of them"
-// regime the static-label variants (skia-floor-probe-30/-80) cannot exercise.
+// The "animates many of them" regime that the static-label variants
+// (skia-floor-probe-30/-80) cannot exercise.
 // Same 80 offscreen contexts, but every canvas's text changes every frame --
 // a different pseudo-random printable-ASCII run each time, so neither the
 // rasterised text blob nor (over a run) the covered glyph set stays constant.

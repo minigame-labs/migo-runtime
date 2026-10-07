@@ -21,10 +21,9 @@ pub type HostTx = crate::host_channel::HostCommandSender;
 
 /// Receiver for RAF (requestAnimationFrame) frame signals from the render thread.
 ///
-/// On Android: backed by eventfd (low-latency epoll wake).
-/// Other platforms: backed by tokio mpsc channel.
+/// Other platforms: backed by a one-frame slot and `tokio::sync::Notify`.
 ///
-/// The concrete type is `graphics::raf_signal::RafReceiver` which handles
+/// The concrete type is [`crate::raf_signal::RafReceiver`], which handles
 /// both variants internally.  Wrapped in Arc for restart survival.
 pub type RafRx = Arc<crate::raf_signal::RafReceiver>;
 
@@ -238,7 +237,7 @@ pub struct HostOpState {
     /// Mount table for `/code` path resolution (set after EvaluateModule).
     pub mount_table: Option<Arc<MountTable>>,
     pub render_tx: RenderTx,
-    /// F-2: optional shared-measurer handle, cloned at startup
+    /// Optional shared-measurer handle, cloned at startup
     /// from `RenderThread::text_measurer()`.  Forwarded into
     /// `CanvasOpState::with_text_measurer` so JS-side
     /// `op_measure_text_flat` can measure without a cross-thread
@@ -417,7 +416,7 @@ impl fmt::Debug for HostOpState {
 #[derive(Clone)]
 pub struct CanvasOpState {
     pub tx: RenderTx,
-    /// F-2: optional shared-measurer handle.  When present, JS
+    /// Optional shared-measurer handle.  When present, JS
     /// ops (`op_measure_text_flat`, `op_get_text_line_height`)
     /// call the trait directly and skip the `RenderCommand::
     /// Canvas2D { MeasureText }` round-trip entirely.  The

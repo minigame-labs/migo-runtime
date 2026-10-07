@@ -19,7 +19,7 @@
 # plus the `plan_share_group_restore` unit tests, which run anywhere.
 #
 # Prerequisites: bash scripts/dev-setup-skia.sh (once), and MIGO_HOST_V8_DIR or
-# ../rusty_v8_src per CLAUDE.md §10.
+# ../rusty_v8_src, as resolved by scripts/lib/host-v8.sh.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
