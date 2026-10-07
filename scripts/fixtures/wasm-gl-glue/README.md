@@ -1,14 +1,14 @@
 # 这个 fixture 是为了回答哪个问题
 
-MigoGLX（P3-G）的开始条件有两条：拿到真实 Unity/Emscripten 导出，**且**实测 JS glue
-是热点。计划里写着「全仓一个 `.wasm` 都没有，今天连热点都测不出来」——这就是那个缺口。
+MigoGLX 的开始条件有两条：拿到真实 Unity/Emscripten 导出，**且**实测 JS glue
+是热点。此前全仓一个 `.wasm` 都没有，连热点都测不出来——这就是那个缺口。
 
 `src/main.c` 是自己写的 Emscripten WebGL2 程序（不需要 Unity 授权、不用别人的游戏），
 每帧发 2000 次小 draw、每次带两个 uniform 更新，刻意做成 glue 密集的形状。
 
 ## ★ 已有的 profiling 数据回答不了这个问题
 
-`docs`/memory 里有一条现成结论：三类游戏的瓶颈类型学中 **WebGL 类是 JS/IC-bound**。
+已有 profiling 数据里有一条现成结论：三类游戏的瓶颈类型学中 **WebGL 类是 JS/IC-bound**。
 **不能拿它当「glue 是热点」的证据**——那批内容（Pixi / Phaser）是**手写 JS**，
 根本没有 WASM→JS glue 这一层。它的热点在 JS 引擎自身。
 
@@ -50,7 +50,7 @@ emsdk 装成过一次，`src/main.c` **编译成功并在 Migo 上跑到了 `mai
 | 4 | `gl2 instanceof WebGLRenderingContext` 返回 `true` | 🔴 **引擎**——违反 WebIDL，已修 |
 
 前三层是「宿主要给什么」，第四层是「引擎给错了什么」。只有第四层是缺陷，
-已修并由 `migo-conformance/tests/webgl-context-identity` 钉住（真机 92/92）。
+已修并由 conformance 套件的 `tests/webgl-context-identity` 钉住（真机 92/92）。
 
 **这个次序对项目决策有意义**：MigoGLX 是关于 glue 有多快的；而在它之前，
 导出连载入和拿到画布都做不到。先解决地板，再谈天花板。

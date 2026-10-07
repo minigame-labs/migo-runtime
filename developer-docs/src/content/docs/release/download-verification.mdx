@@ -6,6 +6,7 @@ description: 下载 Migo 发布制品，使用发布标签和 SHA-256 校验和�
 audience: host-integrator
 platforms:
   - android
+  - apple
   - linux
   - windows
 sourcePaths:
@@ -44,6 +45,32 @@ Get-FileHash .\migo-<version>-android.aar -Algorithm SHA256
 
 将输出的摘要与发布页或 `SHA256SUMS` 中同名文件的摘要逐字比较。文件名、大小或下载
 时间相同都不能替代摘要校验；摘要不匹配时删除制品并重新从官方 release 下载。
+
+## 校验 attestation
+
+每个正式制品（AAR、各运行时压缩包、Apple SDK zip 等）在发布页同时提供同名的
+`<制品>.attestation.json`。它记录制品文件名、字节大小、SHA-256 摘要以及构建收据
+（package index）的指纹，校验目标是"拿到的字节就是 CI 构建时记录的那些字节"。
+
+最小校验：比对 attestation 记录的摘要与实际计算的摘要：
+
+```bash
+sha256sum migo-<version>-apple-sdk.zip
+python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['package_sha256'])" \
+  migo-<version>-apple-sdk.zip.attestation.json
+```
+
+两行输出必须一致。完整校验（连同构建收据指纹、尺寸、文件名）使用源码树里的
+artifact-manifest 工具：
+
+```bash
+cargo run --manifest-path tools/artifact-manifest/Cargo.toml -- \
+  verify-attestation <制品>.attestation.json <制品> <package-index.json>
+```
+
+其中 `<package-index.json>` 是制品内部或随附的构建收据（例如 Apple SDK zip 里的
+`Frameworks/MigoEngine.xcframework/migo-build.json`，先解出再校验）。验证通过时工具
+输出制品的 SHA-256 摘要，失败时以非零退出码报告不一致的字段。
 
 ## 校验发布标签
 

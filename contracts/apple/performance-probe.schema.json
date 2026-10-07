@@ -125,7 +125,7 @@
       "so holding it fixed would split every arm into fragments below the",
       "sample floor and reject everything. It stays required and reported.",
       "",
-      "jit_enabled is here because of A24: Lockdown Mode disables JIT for web",
+      "jit_enabled is here because Lockdown Mode disables JIT for web",
       "content, so 'WebContent has JIT' is a device state to probe, not an",
       "invariant to assume. Two otherwise identical records that differ in it",
       "are measuring two different engines."
@@ -167,7 +167,7 @@
       "matrix isolates it.",
       "",
       "transport_owner joined this list on 2026-09-09, after the 2026-09-07",
-      "adversarial review turned A22 from settled into falsified. `WebSocket`",
+      "adversarial review falsified the assumption. `WebSocket`",
       "is exposed to Workers, so a Window relay is not a requirement of the",
       "API -- it is a consequence of a Worker blocked in Atomics.wait being",
       "unable to service its own socket. That admits a third topology nobody",
@@ -177,9 +177,9 @@
       "merely lose a label: it pools two different architectures into one arm",
       "of a comparison against scheme_request."
     ],
-    "agent": "Where content JavaScript runs: the Window, or a Dedicated Worker. A22 is why this no longer implies who owns the socket -- see transport_owner. A21 is why a Window win is no longer excluded on capability grounds alone: synchronous XHR is a second public blocking primitive, so `Window cannot serve synchronous content` is a claim the capability gate settles, not a premise.",
-    "transport": "The wire mechanism: a loopback WebSocket, a custom-scheme binary request, a synchronous-XHR RPC, or a hybrid split by direction. sync_xhr_rpc is here because A21 named it as an arm of the pure-transport gate; leaving it out of the enum would have made the one arm that tests A21 unrecordable.",
-    "transport_owner": "Which JavaScript context owns the transport: the same context that runs content (same_context), a Window relaying for it (window_relay), or a second I/O Worker (io_worker). This is what tells the five arms of measurement gate 2 apart.",
+    "agent": "Where content JavaScript runs: the Window, or a Dedicated Worker. This no longer implies who owns the socket -- see transport_owner. A Window is no longer excluded on capability grounds alone: synchronous XHR is a second public blocking primitive, so `Window cannot serve synchronous content` is a claim the capability gate settles, not a premise.",
+    "transport": "The wire mechanism: a loopback WebSocket, a custom-scheme binary request, a synchronous-XHR RPC, or a hybrid split by direction. sync_xhr_rpc is here because it is an arm of the pure-transport gate; leaving it out of the enum would have made one arm unrecordable.",
+    "transport_owner": "Which JavaScript context owns the transport: the same context that runs content (same_context), a Window relaying for it (window_relay), or a second I/O Worker (io_worker). This is what tells the five arms of the measurement gate apart.",
     "clock": "Worker rAF where feature detection finds it, Window rAF relayed, or a host CADisplayLink relayed.",
     "layout": "The WKWebView host shape."
   }

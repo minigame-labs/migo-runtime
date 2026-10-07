@@ -1,4 +1,4 @@
-// T7 (device verification queue, 2026-08-27) baseline half: many small
+// Baseline half: many small
 // fillRects clustered in a small region every frame, all default
 // source-over. The scissor hint should stay tight to the cluster (the union
 // of 300 small rects in a ~250x250 region), never widening to the full

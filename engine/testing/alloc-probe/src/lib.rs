@@ -1,7 +1,7 @@
-//! Counting allocator and burst assertion for Section 7.3's steady-state
+//! Counting allocator and burst assertion for the steady-state
 //! allocation gate.
 //!
-//! Section 7.3 of the four-platform delivery design requires, for every steady hot
+//! The steady-state allocation gate requires, for every steady hot
 //! path, "a test that counts actual allocations during a burst of events and fails
 //! when the count is non-zero". Greping the sources for `with_capacity` asserts that
 //! the code was *written* not to allocate, which cannot observe an allocation and so
@@ -202,7 +202,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
     }
 }
 
-/// One measured run of a cycle, for Section 7.3's steady-state *growth*
+/// One measured run of a cycle, for the steady-state *growth*
 /// requirement — "resident memory does not grow across a defined long-running
 /// workload".
 ///

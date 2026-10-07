@@ -204,11 +204,11 @@ _v8_changed_paths() {
     done
 }
 
-# The declared patch set, read from a build lock. One reader, because a second copy
-# of "where the declaration lives" is how the declaration and the thing that applies
-# it drift -- the defect task 1.1b removed for Android by collapsing three statements
-# into one, and which the Windows lock still had in the other direction: it declared
-# three `required_patches` that nothing read, while the build named its own literals.
+# The declared patch set is read from a build lock. One reader, because a second
+# copy of "where the declaration lives" is how the declaration and the thing
+# that applies it drift -- an earlier Android defect was fixed by collapsing
+# three statements into one, while the Windows lock still declared three
+# `required_patches` that nothing read and the build named as literals.
 #
 # Prints one entry per line. A caller must use a command substitution rather than
 # `mapfile < <(...)`: a process substitution's exit status is not what `||` observes,

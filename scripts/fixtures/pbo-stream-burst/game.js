@@ -1,6 +1,5 @@
-// T3 (device verification queue, 2026-08-27): did removing PboPool::acquire's
-// glClientWaitSync wait change upload throughput, and does it corrupt
-// anything?
+// Does removing PboPool::acquire's glClientWaitSync wait change upload
+// throughput, and does it corrupt anything?
 //
 // Simulates a level-load / texture-streaming burst: 64 textures, each
 // 512x512 RGBA (1 MiB), uploaded back-to-back via texImage2D with a fresh

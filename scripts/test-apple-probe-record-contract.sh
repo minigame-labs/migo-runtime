@@ -7,11 +7,11 @@
 # about the artifact it named. The probe harness has a sharper version of the
 # same shape, because its failure is not caught by a build at all.
 #
-# G0 is a lab session on borrowed devices. The decision tool refuses the WHOLE
-# RUN when one required field is missing -- deliberately, because a sample
-# nobody can characterise cannot be averaged in. So a harness that omits one
-# field produces a folder of JSON that looks like a successful day and decides
-# nothing, and it says so hours after the phones have gone back.
+# A lab session on borrowed devices is one input to the decision tool. It
+# refuses the whole run when one required field is missing -- deliberately,
+# because a sample nobody can characterise cannot be averaged in. So a harness
+# that omits one field produces a folder of JSON that looks like a successful
+# day and decides nothing, and it says so hours after the phones have gone back.
 #
 # This gate makes the schema and the encoder answer to each other before the
 # devices are booked:
@@ -272,8 +272,8 @@ if problems:
         print(f"  * {problem}", file=sys.stderr)
     print(file=sys.stderr)
     print(
-        "  Why this matters: G0 is a lab session on borrowed devices, and the decision "
-        "tool\n  refuses the whole run over one missing field. A disagreement found here "
+        "  Why this matters: a lab session on borrowed devices is one input to the decision "
+        "tool\n  and it refuses the whole run over one missing field. A disagreement found here "
         "costs a\n  commit; the same disagreement found on lab day costs the devices.",
         file=sys.stderr)
     raise SystemExit(1)

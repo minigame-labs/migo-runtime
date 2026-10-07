@@ -522,24 +522,6 @@ public class MigoGameActivity extends Activity
     }
 
     /**
-     * Go full-screen before the surface exists, not after.
-     * <p>
-     * Immersive mode is on by default, and {@code createSession} applies it --
-     * which is after the window has already been laid out with the system bars
-     * and after the surface was created at that smaller size. Hiding the bars
-     * then resizes the window, so every launch produced a second
-     * {@code surfaceChanged} and made the engine tear down and rebuild its
-     * GPU-side surface while the game was still starting. Measured on a Mate 30
-     * Pro, the surface went 2235x1080 -> 2340x1080 some 66 ms after the first
-     * one, all of it on the path to first frame.
-     * <p>
-     * Applying the same flags here, before {@code setContentView}, means the
-     * first surface is already the final one. {@code createSession} still calls
-     * it for hosts that embed {@link MigoGameView} instead of subclassing this
-     * activity; the operation is idempotent window state, so the second call
-     * changes nothing.
-     */
-    /**
      * Start the session on the next main-thread message rather than inside the
      * surface callback.
      * <p>
@@ -580,6 +562,24 @@ public class MigoGameActivity extends Activity
         }
     }
 
+    /**
+     * Go full-screen before the surface exists, not after.
+     * <p>
+     * Immersive mode is on by default, and {@code createSession} applies it --
+     * which is after the window has already been laid out with the system bars
+     * and after the surface was created at that smaller size. Hiding the bars
+     * then resizes the window, so every launch produced a second
+     * {@code surfaceChanged} and made the engine tear down and rebuild its
+     * GPU-side surface while the game was still starting. Measured on a Mate 30
+     * Pro, the surface went 2235x1080 -> 2340x1080 some 66 ms after the first
+     * one, all of it on the path to first frame.
+     * <p>
+     * Applying the same flags here, before {@code setContentView}, means the
+     * first surface is already the final one. {@code createSession} still calls
+     * it for hosts that embed {@link MigoGameView} instead of subclassing this
+     * activity; the operation is idempotent window state, so the second call
+     * changes nothing.
+     */
     private void applyStartupImmersiveMode() {
         if (config != null && config.isImmersiveMode()) {
             DisplayCompat.enterImmersiveMode(this);

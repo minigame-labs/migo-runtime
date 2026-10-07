@@ -1,13 +1,14 @@
 # Resolving the pinned Android NDK on the PowerShell entry points.
 # Location: scripts/lib/AndroidNdk.psm1
 #
-# The counterpart of scripts/lib/android-ndk.sh, and it exists because the pin that
-# task 1.1a added was enforced on the shell path only. `build-android-so.ps1` took
-# $env:ANDROID_NDK_HOME as given and checked nothing, so a Windows build could link
-# the pinned V8 archive with any NDK -- and the NDK's compiler, sysroot and linker
-# are all recorded in the component manifest as part of the artifact's identity.
-# The enumeration that was supposed to prevent exactly this globbed `*.sh`, so no
-# gate could see the entry points that are not shell scripts.
+# The counterpart of scripts/lib/android-ndk.sh, and it exists because the
+# pinned NDK requirement was enforced on the shell path only.
+# The PowerShell path accepted `$env:ANDROID_NDK_HOME` without checking it, so a
+# Windows build could link the pinned V8 archive with any NDK -- and the NDK's
+# compiler, sysroot and linker are all recorded in the component manifest as
+# part of the artifact's identity. The enumeration meant to prevent exactly
+# this globbed `*.sh`, so no gate could see the entry points that are not shell
+# scripts.
 #
 # Selection is by the NDK's own Pkg.Revision rather than by directory name, for the
 # same reason as the shell version: a directory called `ndk/23.2.8568313` is just a

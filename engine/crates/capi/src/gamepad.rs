@@ -1,6 +1,6 @@
 //! Gamepads, inbound.
 //!
-//! mainstream mini-game platforms have no gamepad API, so the shape here is the Web one Migo replaces: a
+//! Mainstream mini-game platforms have no gamepad API, so the shape here is the Web one Migo replaces: a
 //! host announces a pad, pushes samples while it is connected, and withdraws
 //! it. Content polls `getGamepads()` -- the Web API is polled, not evented --
 //! so a sample updates stored state rather than being delivered to a listener.

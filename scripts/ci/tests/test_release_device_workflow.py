@@ -24,7 +24,8 @@ class ReleaseDeviceWorkflowTest(unittest.TestCase):
 
     def test_android_device_evidence_job_is_shaped_and_wired_correctly(self):
         # The job was introduced needing a `self-hosted, android-device` runner
-        # (none is registered) and `../migo-test-suite`'s install.sh/run.sh (that
+        # (none is registered) and the sibling device-test-suite checkout's
+        # install.sh/run.sh (that
         # repo ships neither), while gating `publish`. So the first tagged release
         # after it landed could not publish -- the job queued forever. It is now
         # opt-in: it runs, and gates the release, only where MIGO_DEVICE_EVIDENCE

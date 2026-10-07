@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================
-# T7 (device verification queue, 2026-08-27): does the Canvas2D scissor
-# hint's new fail-safe poisoning (any SetCompositeOperation call widens the
-# segment's scissor to the full canvas, even one that nets out to a no-op)
-# cost anything on a tiled GPU?
+# Does the Canvas2D scissor hint's new fail-safe poisoning (any
+# SetCompositeOperation call widens the segment's scissor to the full canvas,
+# even one that nets out to a no-op) cost anything on a tiled GPU?
 # Location: scripts/measure-scissor-hint.sh
 #
 # Runs scripts/fixtures/scissor-hint-baseline (tight cluster-sized scissor

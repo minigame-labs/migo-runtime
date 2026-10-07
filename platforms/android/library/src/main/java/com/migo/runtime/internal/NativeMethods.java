@@ -809,9 +809,8 @@ public final class NativeMethods {
     }
 
     /**
-     * The value of a characteristic that reported none, shared rather than
-     * built: this is a notification path, and Section 6.1 requires it not to
-     * allocate.
+     * Shared empty value for characteristics that report no payload. This
+     * notification path must not allocate.
      */
     private static final byte[] NO_BLE_VALUE = new byte[0];
 

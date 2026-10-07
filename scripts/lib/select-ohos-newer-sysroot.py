@@ -5,9 +5,9 @@ Usage: select-ohos-newer-sysroot.py <floor-sdk-home>
 
 Prints the path of a newer SDK's ``native/sysroot`` and exits 0. Prints nothing
 and exits 0 when no candidate qualifies -- "none installed" is a normal, honest
-outcome that the caller reports rather than a failure, for the reason recorded
-under ledger item T.8: a machine without a second SDK must report the reduced
-check, not fail as though the change under test broke something.
+outcome that the caller reports rather than a failure: a machine without a
+second SDK must report the reduced check, not fail as though the change under
+test broke something.
 
 WHY THE CHOICE IS ON apiVersion AND NOT ON THE DIRECTORY NAME
 ------------------------------------------------------------

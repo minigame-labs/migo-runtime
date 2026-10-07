@@ -5,7 +5,7 @@ import static org.junit.Assert.fail;
 import java.lang.reflect.Method;
 
 /**
- * Section 7.3's steady-state allocation gate, for the paths that allocate inside
+ * Steady-state allocation gate for paths that allocate inside
  * the JVM.
  *
  * <p>The Rust probe in {@code engine/testing/alloc-probe} counts what reaches the
@@ -100,8 +100,8 @@ public final class AllocationProbe {
         if (allocated != 0) {
             fail(path + ": " + allocated + " byte(s) allocated over " + measured
                     + " measured iteration(s) (" + observed + " observed, " + control
-                    + " for the instrument itself). Section 7.3 requires zero"
-                    + " steady-state allocation on this path.");
+                    + " for the instrument itself). The path must have zero"
+                    + " steady-state allocation.");
         }
     }
 
