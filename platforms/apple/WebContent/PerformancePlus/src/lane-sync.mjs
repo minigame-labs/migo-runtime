@@ -110,6 +110,7 @@ import {
   decodeReadPixelsLayout,
   encodeReadPixelsParams,
   readPixelsReplyBytes,
+  readbackBytesPerPixel,
 } from "./sync-mailbox.mjs";
 
 /// How long a query waits before the frame channel is treated as stalled. The
@@ -855,8 +856,8 @@ export function op_get_workers_path() {
 // host waits for that within the budget the embedded execution waits before it
 // runs content. The engine's WebGL layer asks once per context and caches it.
 
-export function op_webgl_query_compressed_caps() {
-  return callService(SERVICE_OP.op_webgl_query_compressed_caps);
+export function op_webgl_query_gpu_caps() {
+  return callService(SERVICE_OP.op_webgl_query_gpu_caps);
 }
 
 // ---- the device ---------------------------------------------------------------
@@ -887,14 +888,12 @@ export function op_get_network_type() {
 // The host owns the state and the framebuffer, and answers with the layout in
 // front of the rows (`frame_wire::sync::ReadPixelsLayout`).
 //
-// TWO DIFFERENCES FROM THE IN-PROCESS OP, both stated rather than hidden:
+// The pair is the caller's, as in process: the host reads it and its driver
+// says whether the read framebuffer can be read so -- RGBA/UNSIGNED_BYTE from a
+// normalized one, RGBA/FLOAT from a float one, RGBA_INTEGER from an integer one.
 //
-//   * The pair. This lane's synchronous operation carries `RGBA`/`UNSIGNED_BYTE`,
-//     which is the pair WebGL 1 guarantees for every framebuffer and what
-//     content overwhelmingly reads. Another pair is refused here with
-//     `INVALID_OPERATION` -- which is what the specification says for a pair an
-//     implementation does not offer -- where the embedded runtime would ask the
-//     renderer and might answer it.
+// ONE DIFFERENCE FROM THE IN-PROCESS OP, stated rather than hidden:
+//
 //   * When the destination is measured. In process the renderer refuses a
 //     footprint that overruns the view before the read; here the footprint is
 //     not known until the layout arrives, so the refusal is after. Content sees
@@ -908,40 +907,8 @@ const GL_INVALID_VALUE = 0x0501;
 const GL_INVALID_OPERATION = 0x0502;
 const GL_OUT_OF_MEMORY = 0x0505;
 
-/// The pair the host's synchronous readback carries.
-const READ_PIXELS_FORMAT = 0x1908;
-const READ_PIXELS_TYPE = 0x1401;
-
 /// `shared::protocol::render_cmd::MAX_SYNC_READBACK_BYTES`.
 const MAX_SYNC_READBACK_BYTES = 64 * 1024 * 1024;
-
-/**
- * `webgl_readback_bytes_per_pixel`: the byte width of a recognised GL pixel
- * representation, or null for an enum with no inferred width.
- *
- * A storage-size calculation, not validation -- a known representation need not
- * be a legal `readPixels` pair, which is what the refusal below is for.
- */
-function readbackBytesPerPixel(format, type) {
-  let components;
-  switch (format) {
-    case 0x1908: case 0x8D99: case 0x80E1: components = 4; break;
-    case 0x1907: case 0x8D98: components = 3; break;
-    case 0x8227: case 0x8228: case 0x190A: case 0x84F9: components = 2; break;
-    case 0x1903: case 0x8D94: case 0x1909: case 0x1906: case 0x1902: case 0x1901:
-      components = 1; break;
-    default: return null;
-  }
-  switch (type) {
-    case 0x1400: case 0x1401: return components;
-    case 0x1402: case 0x1403: case 0x140B: case 0x8D61: return components * 2;
-    case 0x1404: case 0x1405: case 0x1406: return components * 4;
-    case 0x8363: case 0x8033: case 0x8034: case 0x8365: case 0x8366: return 2;
-    case 0x8368: case 0x8C3B: case 0x8C3E: case 0x84FA: return 4;
-    case 0x8DAD: return 8;
-    default: return null;
-  }
-}
 
 /**
  * `read_pixels_view_layout`: the destination's byte length and element size, or
@@ -1044,16 +1011,11 @@ export function op_read_pixels(canvasId, x, y, width, height, format, type_, pix
   // refuses off the wire.
   if (columns === 0 || rows === 0) return null;
 
-  if (glFormat !== READ_PIXELS_FORMAT || glType !== READ_PIXELS_TYPE) {
-    recordProducerError(canvas, GL_INVALID_OPERATION);
-    return null;
-  }
-
   let reply;
   try {
     reply = ask(
       SYNC_OP_READ_PIXELS,
-      readPixelsReplyBytes(columns, rows),
+      readPixelsReplyBytes(columns, rows, glFormat, glType),
       encodeReadPixelsParams({
         canvasId: canvas,
         x: left,

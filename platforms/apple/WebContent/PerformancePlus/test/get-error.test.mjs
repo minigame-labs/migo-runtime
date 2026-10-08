@@ -97,6 +97,14 @@ check(
 );
 check(op_webgl_get_error(1) === 0, "and nothing is left behind");
 
+// The facade's own judgement of a framebuffer is one of WebGL's errors, kept as it is rather than read as another.
+op_webgl_record_error(1, 0x0506);
+op_webgl_record_error(1, 0xdead);
+check(
+  [op_webgl_get_error(1), op_webgl_get_error(1)].join() === [0x0506, INVALID_OPERATION].join(),
+  "INVALID_FRAMEBUFFER_OPERATION is recorded as itself, and a code that is not WebGL's as INVALID_OPERATION",
+);
+
 // This side's queue is per canvas, as the host's is.
 op_webgl_record_error(2, INVALID_ENUM);
 check(op_webgl_get_error(1) === 0, "another canvas's error is not this canvas's");

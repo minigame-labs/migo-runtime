@@ -40,6 +40,7 @@ pub struct GpuCaps {
     etc2: AtomicBool,
     astc: AtomicBool,
     ahb: AtomicBool,
+    color_buffer_float: AtomicBool,
     /// Set to `true` after `set()` is called.  `wait_ready()` blocks
     /// until this flag is true, ensuring no early snapshot reads
     /// uninitialized (all-false) caps.
@@ -56,6 +57,7 @@ impl Default for GpuCaps {
             etc2: AtomicBool::new(false),
             astc: AtomicBool::new(false),
             ahb: AtomicBool::new(false),
+            color_buffer_float: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             ready_lock: Mutex::new(false),
@@ -71,11 +73,13 @@ impl GpuCaps {
         Arc::new(Self::default())
     }
 
-    /// Called by the render thread after GL context init.
-    pub fn set(&self, etc2: bool, astc: bool, ahb: bool) {
-        self.etc2.store(etc2, Ordering::Release);
-        self.astc.store(astc, Ordering::Release);
-        self.ahb.store(ahb, Ordering::Release);
+    /// Called by the render thread after GL context init, with every capability at once.
+    pub fn set(&self, caps: GpuCapsSnapshot) {
+        self.etc2.store(caps.etc2, Ordering::Release);
+        self.astc.store(caps.astc, Ordering::Release);
+        self.ahb.store(caps.ahb, Ordering::Release);
+        self.color_buffer_float
+            .store(caps.color_buffer_float, Ordering::Release);
         self.ready.store(true, Ordering::Release);
         if let Ok(mut ready) = self.ready_lock.lock() {
             *ready = true;
@@ -174,7 +178,17 @@ impl GpuCaps {
             etc2: self.etc2.load(Ordering::Acquire),
             astc: self.astc.load(Ordering::Acquire),
             ahb: self.ahb.load(Ordering::Acquire),
+            color_buffer_float: self.color_buffer_float.load(Ordering::Acquire),
         }
+    }
+
+    /// The bits `op_webgl_query_gpu_caps` answers content's WebGL with: 0 ETC2/EAC, 1 ASTC LDR, 2 float colour
+    /// buffers (EXT_color_buffer_float). The embedded op and the external session's service both answer these.
+    pub fn webgl_bits(&self) -> u32 {
+        let caps = self.snapshot();
+        u32::from(caps.etc2)
+            | (u32::from(caps.astc) << 1)
+            | (u32::from(caps.color_buffer_float) << 2)
     }
 }
 
@@ -189,11 +203,13 @@ pub struct GpuCapsSnapshot {
     pub astc: bool,
     /// The renderer can import an API-26 AHardwareBuffer as a texture.
     pub ahb: bool,
+    /// The float formats are colour-renderable (`GL_EXT_color_buffer_float`).
+    pub color_buffer_float: bool,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GpuCaps, GpuCapsReadyState, remaining_wait};
+    use super::{GpuCaps, GpuCapsReadyState, GpuCapsSnapshot, remaining_wait};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -202,7 +218,12 @@ mod tests {
         let worker = caps.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(10));
-            worker.set(true, false, true);
+            worker.set(GpuCapsSnapshot {
+                etc2: true,
+                astc: false,
+                ahb: true,
+                color_buffer_float: false,
+            });
         });
         assert!(matches!(
             caps.wait_ready(Duration::from_secs(1)),
@@ -236,7 +257,12 @@ mod tests {
     #[test]
     fn wait_ready_until_observes_already_published_caps_after_deadline() {
         let caps = GpuCaps::new();
-        caps.set(true, false, true);
+        caps.set(GpuCapsSnapshot {
+            etc2: true,
+            astc: false,
+            ahb: true,
+            color_buffer_float: false,
+        });
         let started = Instant::now() - Duration::from_secs(1);
 
         assert!(matches!(
@@ -281,7 +307,12 @@ mod tests {
         let started = Instant::now();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(10));
-            publisher.set(false, true, false);
+            publisher.set(GpuCapsSnapshot {
+                etc2: false,
+                astc: true,
+                ahb: false,
+                color_buffer_float: false,
+            });
         });
 
         assert!(matches!(
@@ -294,7 +325,12 @@ mod tests {
     #[test]
     fn ahb_can_be_disabled_after_a_runtime_import_failure() {
         let caps = GpuCaps::new();
-        caps.set(false, false, true);
+        caps.set(GpuCapsSnapshot {
+            etc2: false,
+            astc: false,
+            ahb: true,
+            color_buffer_float: false,
+        });
         assert!(caps.snapshot().ahb);
         assert!(caps.disable_ahb());
         assert!(!caps.snapshot().ahb);

@@ -345,15 +345,32 @@ fn read_pixels_params_refuse_an_empty_rectangle() {
 }
 
 #[test]
-fn read_pixels_params_refuse_a_format_this_host_does_not_read_back() {
-    // GL_RGB / GL_UNSIGNED_SHORT_5_6_5. Answering these by pretending they were
-    // RGBA8 would hand the producer a buffer whose bytes mean something else.
+fn read_pixels_params_size_the_answer_by_the_pair() {
+    // A float colour buffer is read as RGBA/FLOAT, an integer one as RGBA_INTEGER, and the driver's own pair may be
+    // packed: each is answered in rows of its own size, which is what the producer reserved.
+    for (format, type_, bytes_per_pixel) in [
+        (GL_RGBA, 0x1406, 16), // RGBA / FLOAT
+        (0x8D99, 0x1405, 16),  // RGBA_INTEGER / UNSIGNED_INT
+        (GL_RGBA, 0x140B, 8),  // RGBA / HALF_FLOAT
+        (0x1907, 0x8363, 2),   // RGB / UNSIGNED_SHORT_5_6_5
+        (0x1907, GL_UNSIGNED_BYTE, 3),
+    ] {
+        let params = ReadPixelsParams::decode(&read_pixels_bytes(4, 3, format, type_))
+            .expect("a pair with a size is read as itself");
+        assert_eq!(params.pixel_bytes(), Some(4 * 3 * bytes_per_pixel));
+        assert_eq!(params.reply_bytes(), Some(4 * 3 * bytes_per_pixel + 16));
+    }
+}
+
+#[test]
+fn read_pixels_params_refuse_a_pair_with_no_size() {
+    // Nothing could say how many bytes the answer is: the producer refuses such a pair as INVALID_ENUM before it asks.
     assert_eq!(
-        ReadPixelsParams::decode(&read_pixels_bytes(4, 3, 0x1907, GL_UNSIGNED_BYTE)),
+        ReadPixelsParams::decode(&read_pixels_bytes(4, 3, 0x1234, GL_UNSIGNED_BYTE)),
         Err(SyncError::UnsupportedOperation)
     );
     assert_eq!(
-        ReadPixelsParams::decode(&read_pixels_bytes(4, 3, GL_RGBA, 0x8363)),
+        ReadPixelsParams::decode(&read_pixels_bytes(4, 3, GL_RGBA, 0x1234)),
         Err(SyncError::UnsupportedOperation)
     );
 }

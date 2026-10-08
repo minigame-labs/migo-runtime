@@ -18,8 +18,8 @@
 use std::{fs, path::PathBuf};
 
 use frame_wire::sync::{
-    Canvas2DQueryParams, GL_QUERY_HEADER_BYTES, GL_RGBA, GL_UNSIGNED_BYTE, GlQueryParams,
-    ReadPixelsParams, canvas2d_query, gl_query,
+    Canvas2DQueryParams, GL_QUERY_HEADER_BYTES, GlQueryParams, ReadPixelsParams, canvas2d_query,
+    gl_query,
 };
 
 /// One flat JSON object's value for `key`.
@@ -106,11 +106,6 @@ fn read_pixels_arguments_from_the_javascript_producer_decode_unchanged() {
             number(entry, "type"),
             "{name} type"
         );
-        assert_eq!(
-            params.format, GL_RGBA,
-            "{name} format is the one this host reads back"
-        );
-        assert_eq!(params.type_, GL_UNSIGNED_BYTE, "{name} type");
 
         // And the size the two sides will independently compute for the answer.
         // The producer sizes the buffer it reads from and the host sizes the
@@ -125,6 +120,28 @@ fn read_pixels_arguments_from_the_javascript_producer_decode_unchanged() {
     }
 
     println!("decoded {decoded} JavaScript-encoded readPixels argument records");
+
+    // The producer sizes its reservation by its own copy of the readback table, and the host sizes the readback by
+    // this one: a pair the two size differently is an answer that is truncated or over-read. Every combination of the
+    // formats and types the table names, and one of each it does not.
+    let pairs = fs::read_to_string(directory.join("pairs.jsonl"))
+        .expect("the emitter writes pairs.jsonl beside the records");
+    let mut compared = 0usize;
+    for line in pairs.lines().filter(|line| !line.trim().is_empty()) {
+        let (format, type_) = (number(line, "format") as u32, number(line, "type") as u32);
+        let javascript = number(line, "bytes_per_pixel");
+        let rust = frame_wire::sync::readback_bytes_per_pixel(format, type_).map_or(-1, i64::from);
+        assert_eq!(
+            rust, javascript,
+            "format {format:#x} type {type_:#x}: the producer and the host size a pixel differently"
+        );
+        compared += 1;
+    }
+    assert!(
+        compared >= 300,
+        "the emitter writes every combination of 16 formats and 20 types; {compared} arrived"
+    );
+    println!("the two readback tables agree on {compared} pixel pairs");
 }
 
 /// A string-valued field, for 64-bit values the manifest writes as strings.

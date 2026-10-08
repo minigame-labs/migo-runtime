@@ -448,7 +448,8 @@ fn validated_external_error(code: u32) -> u32 {
         codes::INVALID_ENUM
         | codes::INVALID_VALUE
         | codes::INVALID_OPERATION
-        | codes::OUT_OF_MEMORY => code,
+        | codes::OUT_OF_MEMORY
+        | codes::INVALID_FRAMEBUFFER_OPERATION => code,
         _ => codes::INVALID_OPERATION,
     }
 }
@@ -460,32 +461,15 @@ pub fn op_webgl_record_error(state: &mut OpState, #[smi] canvas_id: u32, #[smi] 
     push_error(state, canvas_id, validated_external_error(code));
 }
 
-/// Snapshot the compressed-texture caps the render thread detected
-/// during GL context init.  Returned as a bitfield so a single fast
-/// op replaces multiple boolean round-trips:
-///
-/// * bit 0 = ETC2 / EAC (GLES 3.0 core; always true on our runtime)
-/// * bit 1 = ASTC LDR (GL_KHR_texture_compression_astc_ldr / _hdr)
-///
-/// JS uses this to decide which `WEBGL_compressed_texture_*`
-/// extensions to advertise in `getExtension()` /
-/// `getSupportedExtensions()`.  Returns `0` (no compression) if the
-/// caps haven't been set yet (e.g. a very early JS call before the
-/// render thread has created a GL context).
+/// The renderer's capabilities that decide which WebGL extensions a context offers, as the bits of
+/// `GpuCaps::webgl_bits`: 0 ETC2/EAC, 1 ASTC LDR, 2 float colour buffers (EXT_color_buffer_float). One fast op for
+/// all of them. `0` before the render thread has published them.
 #[deno_core::op2(fast)]
-pub fn op_webgl_query_compressed_caps(state: &mut OpState) -> u32 {
+pub fn op_webgl_query_gpu_caps(state: &mut OpState) -> u32 {
     let Some(host) = state.try_borrow::<shared::op_state::HostOpState>() else {
         return 0;
     };
-    let snap = host.gpu_caps.snapshot();
-    let mut bits = 0u32;
-    if snap.etc2 {
-        bits |= 1 << 0;
-    }
-    if snap.astc {
-        bits |= 1 << 1;
-    }
-    bits
+    host.gpu_caps.webgl_bits()
 }
 
 /// Serializable mirror of `ContextAttributes` with camelCase field
@@ -624,6 +608,7 @@ mod tests {
             codes::INVALID_VALUE,
             codes::INVALID_OPERATION,
             codes::OUT_OF_MEMORY,
+            codes::INVALID_FRAMEBUFFER_OPERATION,
         ] {
             assert_eq!(validated_external_error(code), code);
         }

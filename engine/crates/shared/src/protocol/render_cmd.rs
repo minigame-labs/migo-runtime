@@ -118,29 +118,11 @@ pub fn checked_readback_byte_len(width: i32, height: i32, bytes_per_pixel: usize
 /// Unknown enums have no inferred width and must be rejected before allocation.
 /// This is a storage-size calculation, not framebuffer/context/extension
 /// validation: a known representation need not be a legal readPixels pair.
+/// The table is `frame_wire::sync::readback_bytes_per_pixel`, which the
+/// Performance+ lane's readback is sized by too.
 #[inline]
 pub fn webgl_readback_bytes_per_pixel(format: u32, type_: u32) -> Option<usize> {
-    let components = match format {
-        0x1908 | 0x8D99 | 0x80E1 => 4, // RGBA | RGBA_INTEGER | BGRA_EXT
-        0x1907 | 0x8D98 => 3,          // RGB | RGB_INTEGER
-        // RG | RG_INTEGER | LUMINANCE_ALPHA | DEPTH_STENCIL
-        0x8227 | 0x8228 | 0x190A | 0x84F9 => 2,
-        // RED | RED_INTEGER | LUMINANCE | ALPHA | DEPTH_COMPONENT | STENCIL_INDEX
-        0x1903 | 0x8D94 | 0x1909 | 0x1906 | 0x1902 | 0x1901 => 1,
-        _ => return None,
-    };
-    Some(match type_ {
-        0x1400 | 0x1401 => components, // BYTE | UNSIGNED_BYTE
-        // SHORT | UNSIGNED_SHORT | HALF_FLOAT | HALF_FLOAT_OES
-        0x1402 | 0x1403 | 0x140B | 0x8D61 => components * 2,
-        0x1404 | 0x1405 | 0x1406 => components * 4, // INT | UNSIGNED_INT | FLOAT
-        0x8363 | 0x8033 | 0x8034 => 2,              // UNSIGNED_SHORT_5_6_5 | 4_4_4_4 | 5_5_5_1
-        0x8365 | 0x8366 => 2, // EXT_read_format_bgra: 4_4_4_4_REV | 1_5_5_5_REV
-        // UNSIGNED_INT_2_10_10_10_REV | 10F_11F_11F_REV | 5_9_9_9_REV | 24_8
-        0x8368 | 0x8C3B | 0x8C3E | 0x84FA => 4,
-        0x8DAD => 8, // FLOAT_32_UNSIGNED_INT_24_8_REV: float + packed uint
-        _ => return None,
-    })
+    frame_wire::sync::readback_bytes_per_pixel(format, type_).map(|bytes| bytes as usize)
 }
 
 /// Size of one datum of a GL pixel type: the whole pixel for a packed type,

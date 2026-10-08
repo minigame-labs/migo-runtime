@@ -1351,11 +1351,13 @@ impl CanvasManager {
     /// context construction prevents a successful caps snapshot from racing a
     /// subsequent initial-surface failure.
     pub(crate) fn publish_gpu_caps(&self) {
-        self.gpu_caps.set(
-            self.device_caps.compressed_format_support.etc2,
-            self.device_caps.compressed_format_support.astc,
-            self.device_caps.ahb_available,
-        );
+        let caps = shared::device::gpu_caps::GpuCapsSnapshot {
+            etc2: self.device_caps.compressed_format_support.etc2,
+            astc: self.device_caps.compressed_format_support.astc,
+            ahb: self.device_caps.ahb_available,
+            color_buffer_float: self.device_caps.has_color_buffer_float,
+        };
+        self.gpu_caps.set(caps);
     }
 
     // ==================== Canvas Lifecycle ====================

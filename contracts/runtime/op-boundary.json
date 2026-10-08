@@ -544,7 +544,6 @@
         "op_pause_transform_feedback": "stream",
         "op_pixel_storei": "stream",
         "op_polygon_offset": "stream",
-        "op_read_buffer": "stream",
         "op_read_pixels": "sync",
         "op_read_pixels_to_buffer": "sync",
         "op_renderbuffer_storage": "stream",
@@ -631,7 +630,7 @@
         "op_viewport": "stream",
         "op_webgl_get_context_attributes": "local",
         "op_webgl_get_error": "sync",
-        "op_webgl_query_compressed_caps": "sync",
+        "op_webgl_query_gpu_caps": "sync",
         "op_webgl_record_attributes": "local",
         "op_webgl_record_error": "local",
         "op_webgl_record_out_of_memory": "local"

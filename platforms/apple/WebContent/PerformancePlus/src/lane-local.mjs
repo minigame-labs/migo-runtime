@@ -196,6 +196,7 @@ const INVALID_ENUM = 0x0500;
 const INVALID_VALUE = 0x0501;
 const INVALID_OPERATION = 0x0502;
 const OUT_OF_MEMORY = 0x0505;
+const INVALID_FRAMEBUFFER_OPERATION = 0x0506;
 const errorQueues = new Map();
 
 /// GL's errors are flags, one per code: a code already held and not yet read is not recorded again, as the
@@ -229,7 +230,11 @@ export function op_webgl_record_error(canvasId, code) {
   const canvas = smiU32(canvasId, "canvas_id");
   const error = smiU32(code, "code");
   const valid =
-    error === INVALID_ENUM || error === INVALID_VALUE || error === INVALID_OPERATION || error === OUT_OF_MEMORY;
+    error === INVALID_ENUM ||
+    error === INVALID_VALUE ||
+    error === INVALID_OPERATION ||
+    error === OUT_OF_MEMORY ||
+    error === INVALID_FRAMEBUFFER_OPERATION;
   pushError(canvas, valid ? error : INVALID_OPERATION);
 }
 

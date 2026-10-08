@@ -45,7 +45,6 @@ gl.stencilOpSeparate(0x0404n, 0x1e00n, 0x1e00n, 0x1e00n);
 gl.hint(0x8192n, 0x1101n); // GENERATE_MIPMAP_HINT, NICEST
 gl.pixelStorei(0x0cf5n, 4n); // UNPACK_ALIGNMENT
 gl.activeTexture(0x84c1n); // TEXTURE1
-gl.readBuffer(0x8ce0n); // COLOR_ATTACHMENT0
 
 // -- binding --
 const buffer = gl.createBuffer();

@@ -1899,7 +1899,12 @@ mod tests {
     fn queued_image_job_observes_live_caps_at_worker_start() {
         let scheduler = Arc::new(IoScheduler::new(54));
         let caps = GpuCaps::new();
-        caps.set(false, false, true);
+        caps.set(shared::device::gpu_caps::GpuCapsSnapshot {
+            etc2: false,
+            astc: false,
+            ahb: true,
+            color_buffer_float: false,
+        });
         let cpu_backing_required = Arc::new(AtomicBool::new(false));
         let decode_policy = ImageDecodePolicy::PreferGpuNative {
             cpu_backing_required: Arc::clone(&cpu_backing_required),

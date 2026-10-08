@@ -205,6 +205,16 @@ byte_length` (197, 201). Not additive -- three records' fields move -- and safe 
 rest on: the producer is a resource of the same Swift package as the reader, and the in-process JavaScript calls the
 ops, not the records.
 
+### Amendment, 2026-10-05: readbacks of any pixel pair
+
+`READ_PIXELS` (synchronous operation 1) reads the pair the call named, not only RGBA/UNSIGNED_BYTE: the reply is the
+16-byte layout (`first_byte`, `row_bytes`, `row_stride`, `height`, u32 each) and then `width * height * bpp` bytes of
+compact rows, `bpp` being what `frame_wire::sync::readback_bytes_per_pixel` gives the pair. A pair it gives no size for
+is refused; whether the read framebuffer can be read as a sized pair is the renderer's driver's to say, as it is in
+process. A WebGL 2 float colour buffer is read as RGBA/FLOAT and an integer one as RGBA_INTEGER, which the producer
+refused before. Additive for every record a producer wrote before -- RGBA/UNSIGNED_BYTE answers as it did -- and the
+producer is a resource of the same Swift package as the reader.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.
@@ -786,7 +796,7 @@ which is a change worth noticing rather than absorbing.
 
 | Value | Name | Parameters | Reply |
 |---:|---|---|---|
-| 1 | `READ_PIXELS` | 32 bytes: canvas id, x, y, width, height, format, type, reserved | `width * height * 4` bytes of RGBA8 rows |
+| 1 | `READ_PIXELS` | 32 bytes: canvas id, x, y, width, height, format, type, reserved | the 16-byte layout, then `width * height * bpp` bytes of compact rows of the pair |
 | 2 | `AWAIT_WINDOW` | none | 16 bytes: `remaining_credits` u32, a zero u32, `accepted_sequence` u64 |
 | 3 | `GL_QUERY_SCALAR` | a query record (below) | 4 bytes, little-endian, read as `i32` or `u32` by the query |
 | 4 | `GL_QUERY_TEXT` | a query record | the UTF-8 bytes, and nothing else |

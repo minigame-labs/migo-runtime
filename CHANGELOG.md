@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WebGL 2: `EXT_color_buffer_float`, offered where the renderer's driver renders to float colour buffers (ES 3.2, or
+  `GL_EXT_color_buffer_float`). Enabled, R16F, RG16F, RGBA16F, R32F, RG32F, RGBA32F and R11F_G11F_B10F are
+  colour-renderable: a framebuffer with such an attachment is complete, a renderbuffer and a copy may have such a
+  format, and a 16-bit float or R11F_G11F_B10F texture may be mipmapped. three.js's half-float render targets -- PMREM
+  environment maps among them -- rely on it; without it, the framebuffer completeness the facade now judges refused
+  them. The renderer's WebGL capabilities reach the facade as one bitfield, `op_webgl_query_gpu_caps` (bit 2
+  for float colour buffers), on both lanes.
+- Performance+: `readPixels` reads the pair the call names -- RGBA/FLOAT from a float colour buffer, RGBA_INTEGER from
+  an integer one, the driver's own IMPLEMENTATION_COLOR_READ pair -- as the in-process runtime does; it read
+  RGBA/UNSIGNED_BYTE only and refused every other pair as INVALID_OPERATION, so a float or integer framebuffer could not
+  be read at all. The synchronous readback's reply is sized by the pair (`frame_wire::sync::readback_bytes_per_pixel`,
+  the one table both lanes size reads by; the producer's copy is held to it pair by pair).
 - WebGL: `WEBGL_compressed_texture_etc1`, with an object of its own carrying `COMPRESSED_RGB_ETC1_WEBGL`. The name used
   to answer with the ETC2/EAC object, so content asking for ETC1 found ten other formats and not its own, and an ETC1
   upload was INVALID_ENUM. Its blocks are uploaded as ETC2 RGB8, which decodes every ETC1 block to the same texels and
@@ -120,6 +132,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL: a framebuffer object's completeness is judged by the facade, from the attachments, texture images and
+  renderbuffer storage it records (ES 3.0 4.4.4, WebGL 1.0 6.6): no attachment, an attachment that is not an image its
+  point can render to (a LUMINANCE texture, a float format while EXT_color_buffer_float is not enabled, a renderbuffer without
+  storage), WebGL 1's attachments of different sizes or a depth and a stencil attachment that are not one image, and
+  renderbuffers of different sample counts. `checkFramebufferStatus` answers those without crossing, and asks the
+  driver once a configuration the rules allow, for the combinations an implementation may still refuse. A draw, clear,
+  `clearBuffer*`, `readPixels`, copy or blit with a framebuffer that is not complete is INVALID_FRAMEBUFFER_OPERATION
+  and nothing is sent: the driver refused such a call too, but its error never reached `getError`, and the facade had
+  recorded what the call defined as if it had run. INVALID_FRAMEBUFFER_OPERATION is now recorded as itself; the
+  facade's error queue turned it into INVALID_OPERATION. A copy takes only a read buffer it can convert (ES 3.0 table
+  3.15, as a browser enforces it) -- a component the destination has and the source lacks, another component type,
+  colour encoding or component size is INVALID_OPERATION -- and a float destination is INVALID_ENUM without
+  EXT_color_buffer_float enabled. `readBuffer` is recorded and checked (BACK or NONE for the
+  default framebuffer, NONE or a colour attachment for an object) and READ_BUFFER answers from it; a read from NONE is
+  INVALID_OPERATION. The attachment calls are judged before they are recorded: the target and attachment point, a
+  texture of the textarget's kind, a level of 0 in WebGL 1, a renderbuffer that has been bound, a 3D or 2D-array
+  texture for a layer, and the default framebuffer, which takes none.
 - WebGL: a drawing buffer is cleared after it has been presented unless the context asked for it to be preserved
   (`preserveDrawingBuffer`, WebGL 1.0 2.2) -- colour to transparent black, depth to 1, stencil to 0. It was never
   cleared: a frame that did not clear began on the frame before, a read after the present returned the presented frame,
