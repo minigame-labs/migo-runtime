@@ -161,6 +161,7 @@ const {
     StringPrototypeSlice,
     SymbolIterator,
     TypedArrayPrototypeGetLength,
+    TypedArrayPrototypeGetSymbolToStringTag,
     TypedArrayPrototypeSet,
     TypedArrayPrototypeSubarray,
     Uint32Array,
@@ -181,11 +182,10 @@ const MAX_CANVAS_SURFACE_PIXELS = 8192 * 8192;
 const MAX_SYNC_CANVAS_RGBA_BYTES = 64 * 1024 * 1024;
 const MAX_DRAW_IMAGE_BATCH_ENTRIES = 65_536;
 
+// The size of an image the engine makes for content: `width` and `height` in pixels, already integers, non-zero. A
+// negative one counts from the other corner, so its magnitude is the size. Past the implementation limit -- what a
+// synchronous readback may hold -- it is a RangeError, as an allocation that fails is.
 function checkedImageDataDimensions(width, height) {
-    // These parameters are WebIDL `long`s. Bitwise conversion implements the
-    // required signed 32-bit conversion, including NaN/Infinity -> 0.
-    width |= 0;
-    height |= 0;
     if (width === 0 || height === 0) {
         throw domException(
             "ImageData width and height must be non-zero",
@@ -203,8 +203,217 @@ function checkedImageDataDimensions(width, height) {
     return { width, height, bytes };
 }
 
+// WebIDL's `[EnforceRange] long`: a number that is finite and, truncated, a signed 32-bit integer -- anything else is a
+// TypeError, a Symbol or a BigInt included (`+` throws for both).
+function _enforceRangeLong(value, context) {
+    const x = +value;
+    if (x - x !== 0) throw new TypeError(`${context}: Value is not of type 'long'.`);
+    const n = Math.trunc(x);
+    if (n < -2147483648 || n > 2147483647) {
+        throw new TypeError(`${context}: Value is outside the 'long' value range.`);
+    }
+    return n === 0 ? 0 : n;
+}
+
+// WebIDL's `unsigned long`: ToNumber, then modulo 2^32 with NaN and the infinities 0.
+function _unsignedLong(value) {
+    return (+value) >>> 0;
+}
+
+// An `ImageDataSettings` dictionary's colour space, or `undefined` when it names none. `undefined` and `null` are the
+// empty dictionary; any other value that is not an object is not a dictionary.
+function _imageDataColorSpace(settings, context) {
+    if (settings === undefined || settings === null) return undefined;
+    if (typeof settings !== 'object' && typeof settings !== 'function') {
+        throw new TypeError(`${context}: The provided value is not of type 'ImageDataSettings'.`);
+    }
+    const colorSpace = settings.colorSpace;
+    if (colorSpace === undefined) return undefined;
+    const name = `${colorSpace}`;
+    if (name !== 'srgb' && name !== 'display-p3') {
+        throw new TypeError(`${context}: The provided value '${name}' is not a valid enum value of type PredefinedColorSpace.`);
+    }
+    return name;
+}
+
+// ---- Display P3 ----
+//
+// A canvas here is sRGB. An `ImageData` in Display P3 is read from it, and written to it, converted: the two share the
+// sRGB transfer function and differ in primaries, so a byte is decoded to linear light, the three channels are mapped
+// through the 3x3 matrix between the primaries, clipped to the gamut written to, and encoded again. Alpha is not a
+// colour and is not touched, and the bytes are unpremultiplied, as an ImageData's are.
+const _SRGB_TO_LINEAR = new Float64Array(256);
+for (let i = 0; i < 256; i++) {
+    const c = i / 255;
+    _SRGB_TO_LINEAR[i] = c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+function _linearToByte(l) {
+    if (!(l > 0)) return 0;
+    if (l >= 1) return 255;
+    return Math.round((l <= 0.0031308 ? 12.92 * l : 1.055 * l ** (1 / 2.4) - 0.055) * 255);
+}
+// Linear sRGB to linear Display P3, and back.
+const _SRGB_TO_P3 = [0.8224621, 0.177538, 0, 0.0331941, 0.9668058, 0, 0.0170827, 0.0723974, 0.9105199];
+const _P3_TO_SRGB = [1.2249401, -0.2249404, 0, -0.0420569, 1.0420571, 0, -0.0196376, -0.0786361, 1.0982735];
+function _convertPrimaries(bytes, m) {
+    for (let i = 0; i < bytes.length; i += 4) {
+        const r = _SRGB_TO_LINEAR[bytes[i]];
+        const g = _SRGB_TO_LINEAR[bytes[i + 1]];
+        const b = _SRGB_TO_LINEAR[bytes[i + 2]];
+        bytes[i] = _linearToByte(m[0] * r + m[1] * g + m[2] * b);
+        bytes[i + 1] = _linearToByte(m[3] * r + m[4] * g + m[5] * b);
+        bytes[i + 2] = _linearToByte(m[6] * r + m[7] * g + m[8] * b);
+    }
+    return bytes;
+}
+
+// The interface members WebIDL defines on a prototype are enumerable, and an instance's class string is the
+// interface's name; a JavaScript class makes neither so. Applied to each interface this file exposes.
+function _exposeInterface(cls, name) {
+    const proto = cls.prototype;
+    for (const key of Object.getOwnPropertyNames(proto)) {
+        if (key === 'constructor' || key.charCodeAt(0) === 95 /* _ */) continue;
+        const descriptor = Object.getOwnPropertyDescriptor(proto, key);
+        descriptor.enumerable = true;
+        Object.defineProperty(proto, key, descriptor);
+    }
+    Object.defineProperty(proto, Symbol.toStringTag, { value: name, configurable: true });
+}
+
+// ==================== ImageData ====================
+//
+// The pixels `getImageData` reads and `putImageData` writes, and what `new ImageData` makes: a width, a height, the
+// RGBA bytes (unpremultiplied, row by row) and the colour space they are in. A class of its own because content
+// constructs it and tests for it -- PixiJS's extract and Egret's render textures call `new ImageData`, three.js asks
+// `image instanceof ImageData` -- and because `putImageData` takes nothing else: its argument is checked for being one,
+// not for looking like one.
+//
+// The engine's own (a readback, a blank image) are built through `_IMAGE_DATA`, which content cannot name. Two of them
+// hold no bytes yet: a `getImageData` the renderer answered with a snapshot, and one answered from the text cache. Their
+// `data` is read back the first time it is asked for, by the function they were made with (see
+// `_migoMakeSnapshotImageData`).
+const _IMAGE_DATA = Symbol('ImageData');
+let _imageDataFields;
+class ImageData {
+    #width;
+    #height;
+    #data;
+    #colorSpace;
+    #materialize = null;
+
+    // (sw, sh, settings) or (data, sw, sh, settings): two parameters as WebIDL counts them, the rest from `arguments`.
+    constructor(source, sw) {
+        const argc = arguments.length;
+        if (source === _IMAGE_DATA) {
+            this.#width = sw;
+            this.#height = arguments[2];
+            this.#data = arguments[3];
+            this.#colorSpace = arguments[4];
+            this.#materialize = arguments[5] ?? null;
+            return;
+        }
+        const context = "Failed to construct 'ImageData'";
+        if (argc < 2) throw new TypeError(`${context}: 2 arguments required, but only ${argc} present.`);
+        if (ArrayBuffer.isView(source) && TypedArrayPrototypeGetSymbolToStringTag(source) === 'Uint8ClampedArray') {
+            const width = _unsignedLong(sw);
+            const height = arguments[2] === undefined ? undefined : _unsignedLong(arguments[2]);
+            const colorSpace = _imageDataColorSpace(arguments[3], context);
+            const length = TypedArrayPrototypeGetLength(source);
+            if (length === 0) throw domException(`${context}: The input data has zero elements.`, 'InvalidStateError');
+            if (length % 4 !== 0) {
+                throw domException(`${context}: The input data length is not a multiple of 4.`, 'InvalidStateError');
+            }
+            if (width === 0) throw domException(`${context}: The source width is zero or not a number.`, 'IndexSizeError');
+            const pixels = length / 4;
+            if (pixels % width !== 0) {
+                throw domException(`${context}: The input data length is not a multiple of (4 * width).`, 'IndexSizeError');
+            }
+            if (height !== undefined && height * width !== pixels) {
+                throw domException(
+                    `${context}: The input data length is not equal to (4 * width * height).`, 'IndexSizeError');
+            }
+            // The array is the image's, not a copy of it.
+            this.#width = width;
+            this.#height = pixels / width;
+            this.#data = source;
+            this.#colorSpace = colorSpace ?? 'srgb';
+            return;
+        }
+        const width = _unsignedLong(source);
+        const height = _unsignedLong(sw);
+        const colorSpace = _imageDataColorSpace(arguments[2], context);
+        if (width === 0) throw domException(`${context}: The source width is zero or not a number.`, 'IndexSizeError');
+        if (height === 0) throw domException(`${context}: The source height is zero or not a number.`, 'IndexSizeError');
+        const dimensions = checkedImageDataDimensions(width, height);
+        this.#width = width;
+        this.#height = height;
+        this.#data = new Uint8ClampedArray(dimensions.bytes);
+        this.#colorSpace = colorSpace ?? 'srgb';
+    }
+
+    get width() { return this.#width; }
+    get height() { return this.#height; }
+    get data() {
+        const materialize = this.#materialize;
+        if (materialize !== null) {
+            this.#materialize = null;
+            materialize(this, this.#data);
+        }
+        return this.#data;
+    }
+    get colorSpace() { return this.#colorSpace; }
+
+    static {
+        // What `putImageData` and `createImageData(imagedata)` read of one, by its own fields, so a prototype content
+        // replaced is not asked: `[width, height, data, colorSpace]`, or `null` for a value that is not an ImageData.
+        _imageDataFields = (value) => {
+            if (value === null || typeof value !== 'object' || !(#data in value)) return null;
+            const materialize = value.#materialize;
+            if (materialize !== null) {
+                value.#materialize = null;
+                materialize(value, value.#data);
+            }
+            return [value.#width, value.#height, value.#data, value.#colorSpace];
+        };
+    }
+}
+_exposeInterface(ImageData, 'ImageData');
+
+// ==================== TextMetrics ====================
+//
+// `measureText`'s answer: the twelve numbers `op_measure_text_flat` returns, read through getters, so a measurement is
+// read-only as it is in a browser. A new object each call, over numbers that may be shared: the measure cache keeps the
+// numbers, not the object content was handed.
+const _TEXT_METRICS = Symbol('TextMetrics');
+class TextMetrics {
+    #m;
+    constructor() {
+        if (arguments[0] !== _TEXT_METRICS) throw new TypeError("Illegal constructor");
+        this.#m = arguments[1];
+    }
+    get width() { return this.#m[0]; }
+    get actualBoundingBoxLeft() { return this.#m[1]; }
+    get actualBoundingBoxRight() { return this.#m[2]; }
+    get fontBoundingBoxAscent() { return this.#m[9]; }
+    get fontBoundingBoxDescent() { return this.#m[6]; }
+    get actualBoundingBoxAscent() { return this.#m[7]; }
+    get actualBoundingBoxDescent() { return this.#m[8]; }
+    get emHeightAscent() { return this.#m[3]; }
+    get emHeightDescent() { return this.#m[4]; }
+    get hangingBaseline() { return this.#m[10]; }
+    get alphabeticBaseline() { return this.#m[5]; }
+    get ideographicBaseline() { return this.#m[11]; }
+}
+_exposeInterface(TextMetrics, 'TextMetrics');
+
+// The constructions only this file makes: a gradient or a pattern comes from the context, never from `new`.
+const _CANVAS_STYLE = Symbol('canvas style');
+
 class CanvasGradient {
-    constructor(type, canvasId, x0, y0, r0, x1, y1, r1) {
+    // (type, canvasId, x0, y0, r0, x1, y1, r1), after the token: no parameters, as WebIDL counts them.
+    constructor() {
+        if (arguments[0] !== _CANVAS_STYLE) throw new TypeError("Illegal constructor");
+        const [, type, canvasId, x0, y0, r0, x1, y1, r1] = arguments;
         this._type = type;
         this._canvasId = canvasId;
         this._x0 = x0;
@@ -256,9 +465,13 @@ class CanvasGradient {
         );
     }
 }
+_exposeInterface(CanvasGradient, 'CanvasGradient');
 
 class CanvasPattern {
-    constructor(canvasId, imageRid, repetition) {
+    // (canvasId, imageRid, repetition), after the token.
+    constructor() {
+        if (arguments[0] !== _CANVAS_STYLE) throw new TypeError("Illegal constructor");
+        const [, canvasId, imageRid, repetition] = arguments;
         this._canvasId = canvasId;
         this._imageRid = imageRid;
         var rep = repetition == null ? 'repeat' : String(repetition);
@@ -277,6 +490,7 @@ class CanvasPattern {
         op_set_stroke_style_pattern(this._canvasId, this._imageRid, this._repeatX, this._repeatY);
     }
 }
+_exposeInterface(CanvasPattern, 'CanvasPattern');
 
 // ==================== Path2D ====================
 //
@@ -1997,7 +2211,7 @@ class CanvasRenderingContext2D {
         const font = this._font;
         const key = font.text + '\x1f' + s;
         const hit = this._measureCache.get(key);
-        if (hit !== undefined) return hit;
+        if (hit !== undefined) return new TextMetrics(_TEXT_METRICS, hit);
         // R-7: a flat buffer, not a V8 object built field by field
         // on the hot measure path.  Layout is fixed little-endian f32
         // at the offsets documented on `op_measure_text_flat`; the
@@ -2007,21 +2221,7 @@ class CanvasRenderingContext2D {
         // and the `fillText` after it resolve the same face.
         flushRenderCommandStream();
         const buf = op_measure_text_flat(this._canvasId, s, font.size, font.weight, font.italic, font.families);
-        const f = new Float32Array(buf.buffer, buf.byteOffset, 12);
-        const metrics = {
-            width: f[0],
-            actualBoundingBoxLeft: f[1],
-            actualBoundingBoxRight: f[2],
-            emHeightAscent: f[3],
-            emHeightDescent: f[4],
-            alphabeticBaseline: f[5],
-            fontBoundingBoxDescent: f[6],
-            actualBoundingBoxAscent: f[7],
-            actualBoundingBoxDescent: f[8],
-            fontBoundingBoxAscent: f[9],
-            hangingBaseline: f[10],
-            ideographicBaseline: f[11],
-        };
+        const metrics = new Float32Array(buf.buffer, buf.byteOffset, 12);
         // Cap the cache at 256 entries to match the render-side
         // LRU budget; oldest-inserted drops when full.  `Map`
         // iteration follows insertion order so this is O(1).
@@ -2030,7 +2230,7 @@ class CanvasRenderingContext2D {
             if (first !== undefined) this._measureCache.delete(first);
         }
         this._measureCache.set(key, metrics);
-        return metrics;
+        return new TextMetrics(_TEXT_METRICS, metrics);
     }
 
     // ==================== Style Properties ====================
@@ -2414,7 +2614,20 @@ class CanvasRenderingContext2D {
         op_draw_image_batch(this._canvasId, new Uint8Array(buffer.buffer));
     }
 
-    getImageData(sx, sy, sw, sh) {
+    // `getImageData(sx, sy, sw, sh, settings)`: four `[EnforceRange] long`s, and the colour space the pixels are wanted
+    // in -- the canvas's, sRGB, unless the settings name Display P3, which is converted to on the CPU and so takes none
+    // of the snapshot paths below.
+    getImageData(sx, sy, sw, sh, settings) {
+        const context = "Failed to execute 'getImageData' on 'CanvasRenderingContext2D'";
+        if (arguments.length < 4) {
+            throw new TypeError(`${context}: 4 arguments required, but only ${arguments.length} present.`);
+        }
+        let x = _enforceRangeLong(sx, context);
+        let y = _enforceRangeLong(sy, context);
+        const rawWidth = _enforceRangeLong(sw, context);
+        const rawHeight = _enforceRangeLong(sh, context);
+        const colorSpace = _imageDataColorSpace(settings, context) ?? 'srgb';
+        const srgb = colorSpace === 'srgb';
         // Zero-readback fast path.  Two layers of optimisation:
         //
         // 1. Snapshot id is allocated JS-side from a process-local
@@ -2433,10 +2646,6 @@ class CanvasRenderingContext2D {
         // distinct text sprites in one frame) stays correct rather
         // than silently dropping snapshots.  Counter resets on
         // frame-end (see the module-private frame-end hook registry below).
-        let x = sx | 0;
-        let y = sy | 0;
-        const rawWidth = sw | 0;
-        const rawHeight = sh | 0;
         const dimensions = checkedImageDataDimensions(rawWidth, rawHeight);
         const w = dimensions.width;
         const h = dimensions.height;
@@ -2444,7 +2653,7 @@ class CanvasRenderingContext2D {
         // direction; the returned pixels themselves are never flipped.
         if (rawWidth < 0) x += rawWidth;
         if (rawHeight < 0) y += rawHeight;
-        const snapshotInBounds = x >= 0 && y >= 0
+        const snapshotInBounds = srgb && x >= 0 && y >= 0
             && x + w <= this._canvas.width
             && y + h <= this._canvas.height;
         flushRenderCommandStream();
@@ -2456,7 +2665,7 @@ class CanvasRenderingContext2D {
             const k = this._tcKey;
             const fullCanvas =
                 x === 0 && y === 0 && w === k.canvasW && h === k.canvasH;
-            if (fullCanvas && this._tcState === 2) {
+            if (fullCanvas && srgb && this._tcState === 2) {
                 // HIT: no snapshot -- hand back a cache-marked
                 // ImageData.  The pin is now owned by the upcoming
                 // texImage2D (it unpins after the GPU copy).
@@ -2494,59 +2703,62 @@ class CanvasRenderingContext2D {
             _migoSnapshotCharge(w, h);
             return _migoMakeSnapshotImageData(snapshotId, w, h);
         }
-        // Fall back to legacy CPU path (zero-area, GLES 2, or budget
-        // exhausted).  Behaviour preserved bit-exactly.
-        const data = op_get_image_data(this._canvasId, x, y, w, h);
-        return { width: w, height: h, data: new Uint8ClampedArray(data) };
+        // Fall back to legacy CPU path (zero-area, GLES 2, budget
+        // exhausted, or a colour space to convert to).
+        const data = new Uint8ClampedArray(op_get_image_data(this._canvasId, x, y, w, h));
+        if (!srgb) _convertPrimaries(data, _SRGB_TO_P3);
+        return new ImageData(_IMAGE_DATA, w, h, data, colorSpace);
     }
 
-    // `createImageData(imageData)` is a blank image of that image's size.
-    createImageData(sw, sh) {
-        if (sw !== null && typeof sw === 'object'
-                && typeof sw.width === 'number' && typeof sw.height === 'number') {
-            sh = sw.height;
-            sw = sw.width;
+    // `createImageData(sw, sh, settings)` is a blank image of that size -- two `[EnforceRange] long`s, a negative one
+    // counting from the other corner -- in the canvas's colour space or the one the settings name;
+    // `createImageData(imagedata)` is a blank image of that one's size and colour space.
+    createImageData(sw, sh, settings) {
+        const context = "Failed to execute 'createImageData' on 'CanvasRenderingContext2D'";
+        const argc = arguments.length;
+        if (argc === 0) throw new TypeError(`${context}: 1 argument required, but only 0 present.`);
+        if (argc === 1) {
+            const fields = _imageDataFields(sw);
+            if (fields === null) throw new TypeError(`${context}: parameter 1 is not of type 'ImageData'.`);
+            const dimensions = checkedImageDataDimensions(fields[0], fields[1]);
+            return new ImageData(_IMAGE_DATA, dimensions.width, dimensions.height,
+                new Uint8ClampedArray(dimensions.bytes), fields[3]);
         }
-        const dimensions = checkedImageDataDimensions(sw, sh);
-        return {
-            width: dimensions.width,
-            height: dimensions.height,
-            data: new Uint8ClampedArray(dimensions.bytes),
-        };
+        const width = _enforceRangeLong(sw, context);
+        const height = _enforceRangeLong(sh, context);
+        const colorSpace = _imageDataColorSpace(settings, context) ?? 'srgb';
+        const dimensions = checkedImageDataDimensions(width, height);
+        return new ImageData(_IMAGE_DATA, dimensions.width, dimensions.height,
+            new Uint8ClampedArray(dimensions.bytes), colorSpace);
     }
 
     // `putImageData(imageData, dx, dy)` and `putImageData(imageData, dx, dy, dirtyX, dirtyY, dirtyWidth, dirtyHeight)`:
     // the pixels of `imageData` -- or only its dirty rectangle -- replace the canvas's at (dx, dy). The call ignores the
     // transform, the clip, `globalAlpha`, the composite operation and the shadow (HTML Standard, "putImageData"). The
-    // algorithm below is the specification's; the arguments are WebIDL `long`s (a non-finite one is 0).
+    // algorithm below is the specification's; the arguments are an ImageData and WebIDL `[EnforceRange] long`s, and
+    // pixels in Display P3 are converted to the canvas's sRGB on the way.
     putImageData(imageData, dx, dy, dirtyX, dirtyY, dirtyWidth, dirtyHeight) {
+        const context = "Failed to execute 'putImageData' on 'CanvasRenderingContext2D'";
         const argc = arguments.length;
-        if (argc !== 3 && argc !== 7) {
-            throw new TypeError(
-                `putImageData: 3 or 7 arguments required, but ${argc} present.`);
+        // WebIDL's overloads take three arguments or seven; one past seven is ignored, a count between is neither.
+        if (argc < 3) throw new TypeError(`${context}: 3 arguments required, but only ${argc} present.`);
+        if (argc > 3 && argc < 7) {
+            throw new TypeError(`${context}: Valid arities are: [3, 7], but ${argc} arguments provided.`);
         }
-        if (imageData === null || typeof imageData !== 'object'
-                || typeof imageData.width !== 'number' || typeof imageData.height !== 'number'
-                || imageData.data === null || typeof imageData.data !== 'object') {
-            throw new TypeError("putImageData: parameter 1 is not of type 'ImageData'.");
-        }
-        const width = imageData.width | 0;
-        const height = imageData.height | 0;
-        const data = imageData.data;
-        if (width <= 0 || height <= 0 || data.length < width * height * 4) {
-            throw new TypeError("putImageData: parameter 1 is not of type 'ImageData'.");
-        }
-        dx |= 0;
-        dy |= 0;
+        const fields = _imageDataFields(imageData);
+        if (fields === null) throw new TypeError(`${context}: parameter 1 is not of type 'ImageData'.`);
+        dx = _enforceRangeLong(dx, context);
+        dy = _enforceRangeLong(dy, context);
+        const [width, height, data, colorSpace] = fields;
         let x = 0;
         let y = 0;
         let w = width;
         let h = height;
-        if (argc === 7) {
-            x = dirtyX | 0;
-            y = dirtyY | 0;
-            w = dirtyWidth | 0;
-            h = dirtyHeight | 0;
+        if (argc >= 7) {
+            x = _enforceRangeLong(dirtyX, context);
+            y = _enforceRangeLong(dirtyY, context);
+            w = _enforceRangeLong(dirtyWidth, context);
+            h = _enforceRangeLong(dirtyHeight, context);
             // A negative width or height names the rectangle from its other corner.
             if (w < 0) { x += w; w = -w; }
             if (h < 0) { y += h; h = -h; }
@@ -2555,6 +2767,10 @@ class CanvasRenderingContext2D {
             if (y < 0) { h += y; y = 0; }
             if (x + w > width) w = width - x;
             if (y + h > height) h = height - y;
+        }
+        // A buffer content transferred away holds nothing to put.
+        if (TypedArrayPrototypeGetLength(data) === 0) {
+            throw domException(`${context}: The source data has been detached.`, 'InvalidStateError');
         }
         if (w <= 0 || h <= 0) return;
         // Where it lands, and the part of that inside the canvas: pixels past the edge are not sent.
@@ -2572,7 +2788,7 @@ class CanvasRenderingContext2D {
         // The rows of the rectangle, contiguous: the ImageData's own bytes when the rectangle is whole rows, a copy of the
         // rows otherwise.
         let pixels;
-        if (w === width) {
+        if (w === width && colorSpace === 'srgb') {
             pixels = new Uint8Array(data.buffer, data.byteOffset + srcY * width * 4, w * h * 4);
         } else {
             pixels = new Uint8Array(w * h * 4);
@@ -2581,6 +2797,7 @@ class CanvasRenderingContext2D {
                 const from = ((srcY + row) * width + srcX) * 4;
                 pixels.set(new Uint8Array(data.buffer, data.byteOffset + from, rowBytes), row * rowBytes);
             }
+            if (colorSpace !== 'srgb') _convertPrimaries(pixels, _P3_TO_SRGB);
         }
         // Not a stream record: the bytes go in the frame as a command, behind everything the stream already holds.
         this._barrier();
@@ -2657,13 +2874,13 @@ class CanvasRenderingContext2D {
 
     // ==================== Gradient ====================
     createLinearGradient(x0, y0, x1, y1) {
-        return new CanvasGradient('linear', this._canvasId, x0, y0, 0, x1, y1, 0);
+        return new CanvasGradient(_CANVAS_STYLE, 'linear', this._canvasId, x0, y0, 0, x1, y1, 0);
     }
     createRadialGradient(x0, y0, r0, x1, y1, r1) {
-        return new CanvasGradient('radial', this._canvasId, x0, y0, r0, x1, y1, r1);
+        return new CanvasGradient(_CANVAS_STYLE, 'radial', this._canvasId, x0, y0, r0, x1, y1, r1);
     }
     createConicGradient(startAngle, cx, cy) {
-        return new CanvasGradient('conic', this._canvasId, cx, cy, 0, startAngle, 0, 0);
+        return new CanvasGradient(_CANVAS_STYLE, 'conic', this._canvasId, cx, cy, 0, startAngle, 0, 0);
     }
 
     // ==================== Line Dash ====================
@@ -2717,12 +2934,12 @@ class CanvasRenderingContext2D {
             flushRenderCommandStream();
             const imageId = op_create_image();
             encode2dCaptureImage(image._rid, imageId);
-            const pattern = new CanvasPattern(this._canvasId, imageId, rep);
+            const pattern = new CanvasPattern(_CANVAS_STYLE, this._canvasId, imageId, rep);
             _patternCopies.register(pattern, imageId);
             return pattern;
         }
         if (!image || !image.loaded) return null;
-        return new CanvasPattern(this._canvasId, image.rid, rep);
+        return new CanvasPattern(_CANVAS_STYLE, this._canvasId, image.rid, rep);
     }
 }
 
@@ -2791,9 +3008,7 @@ function _migoNextSnapshotId() {
 // when it can no longer be avoided. `texImage2D(imageData)` within the frame, which is the
 // pattern this exists for, spends the snapshot and costs nothing.
 function _migoMakeSnapshotImageData(snapshotId, w, h) {
-    const placeholder = new Uint8ClampedArray(w * h * 4);
-    let _populated = false;
-    const imageData = { width: w, height: h };
+    const imageData = new ImageData(_IMAGE_DATA, w, h, new Uint8ClampedArray(w * h * 4), 'srgb', _readBackSnapshot);
     Object.defineProperty(imageData, '__migo_snapshot_id__', {
         value: snapshotId,
         enumerable: false,
@@ -2809,28 +3024,22 @@ function _migoMakeSnapshotImageData(snapshotId, w, h) {
         configurable: true,
     });
     _migoFrameSnapshotImageData.push(imageData);
-    Object.defineProperty(imageData, 'data', {
-        get() {
-            if (!_populated) {
-                _populated = true;
-                const sid = imageData.__migo_snapshot_id__ | 0;
-                if (sid !== 0) {
-                    flushRenderCommandStream();
-                    const real = op_force_readback_snapshot(sid);
-                    if (real && real.length === placeholder.length) {
-                        placeholder.set(real);
-                    }
-                    // JS now owns the buffer; subsequent uploads must
-                    // pick up any in-place mutations from this point on.
-                    imageData.__migo_snapshot_id__ = 0;
-                }
-            }
-            return placeholder;
-        },
-        enumerable: true,
-        configurable: true,
-    });
     return imageData;
+}
+
+// A snapshot `ImageData`'s bytes, on the first read of its `data`: the renderer's readback, unless a `texImage2D` has
+// already taken the snapshot and left nothing to read.
+function _readBackSnapshot(imageData, placeholder) {
+    const sid = imageData.__migo_snapshot_id__ | 0;
+    if (sid === 0) return;
+    flushRenderCommandStream();
+    const real = op_force_readback_snapshot(sid);
+    if (real && real.length === placeholder.length) {
+        placeholder.set(real);
+    }
+    // JS now owns the buffer; subsequent uploads must
+    // pick up any in-place mutations from this point on.
+    imageData.__migo_snapshot_id__ = 0;
 }
 
 // Synthetic ImageData for a text texture cache HIT.  No snapshot was
@@ -2848,46 +3057,36 @@ function _migoMakeSnapshotImageData(snapshotId, w, h) {
 // read `.data` for these labels (otherwise the pre-existing snapshot
 // fast path wouldn't help either), so this stays cold in practice.
 function _migoMakeTextCacheImageData(ctx, k, w, h) {
-    const placeholder = new Uint8ClampedArray(w * h * 4);
-    let _populated = false;
-    const imageData = { width: w, height: h };
+    // The bytes on the first read of `data`: the text drawn after all, and read back (see above).
+    const imageData = new ImageData(_IMAGE_DATA, w, h, new Uint8ClampedArray(w * h * 4), 'srgb', (self, placeholder) => {
+        const key = self.__migo_text_cache_key__;
+        if (key) {
+            ctx._barrier();
+            op_text_cache_unpin(
+                key.text, key.fontRequest, key.fontSize, key.fontWeight,
+                key.italic, key.fillColor, key.textAlign, key.textBaseline,
+                key.canvasW, key.canvasH,
+            );
+            op_fill_text(
+                ctx._canvasId,
+                key.text,
+                key._x || 0,
+                key._y || 0,
+                key._mw == null ? Infinity : key._mw,
+            );
+            const sid = _migoNextSnapshotId();
+            op_capture_canvas2d_snapshot(ctx._canvasId, 0, 0, w, h, sid);
+            const real = op_force_readback_snapshot(sid);
+            if (real && real.length === placeholder.length) {
+                placeholder.set(real);
+            }
+            self.__migo_text_cache_key__ = null;
+        }
+    });
     Object.defineProperty(imageData, '__migo_text_cache_key__', {
         value: k,
         enumerable: false,
         writable: true,
-        configurable: true,
-    });
-    Object.defineProperty(imageData, 'data', {
-        get() {
-            if (!_populated) {
-                _populated = true;
-                const key = imageData.__migo_text_cache_key__;
-                if (key) {
-                    ctx._barrier();
-                    op_text_cache_unpin(
-                        key.text, key.fontRequest, key.fontSize, key.fontWeight,
-                        key.italic, key.fillColor, key.textAlign, key.textBaseline,
-                        key.canvasW, key.canvasH,
-                    );
-                    op_fill_text(
-                        ctx._canvasId,
-                        key.text,
-                        key._x || 0,
-                        key._y || 0,
-                        key._mw == null ? Infinity : key._mw,
-                    );
-                    const sid = _migoNextSnapshotId();
-                    op_capture_canvas2d_snapshot(ctx._canvasId, 0, 0, w, h, sid);
-                    const real = op_force_readback_snapshot(sid);
-                    if (real && real.length === placeholder.length) {
-                        placeholder.set(real);
-                    }
-                    imageData.__migo_text_cache_key__ = null;
-                }
-            }
-            return placeholder;
-        },
-        enumerable: true,
         configurable: true,
     });
     return imageData;
@@ -2943,4 +3142,4 @@ frameEndHooks.push(() => {
 // game script can run.
 globalThis._internalFrameEnd = frameEndAll;
 
-export { CanvasRenderingContext2D, CanvasGradient, Path2D, frameEndAll };
+export { CanvasRenderingContext2D, CanvasGradient, CanvasPattern, ImageData, Path2D, TextMetrics, frameEndAll };

@@ -71,7 +71,12 @@ const WindowGlobalScope = {
     // the WebGL fixture already does.
     CanvasRenderingContext2D: core.propNonEnumerable(context2d.CanvasRenderingContext2D),
     CanvasGradient: core.propNonEnumerable(context2d.CanvasGradient),
+    CanvasPattern: core.propNonEnumerable(context2d.CanvasPattern),
+    // Content constructs it -- PixiJS's extract, Egret's render textures -- and asks `instanceof ImageData` (three.js),
+    // and `putImageData` takes nothing else.
+    ImageData: core.propNonEnumerable(context2d.ImageData),
     Path2D: core.propNonEnumerable(context2d.Path2D),
+    TextMetrics: core.propNonEnumerable(context2d.TextMetrics),
 
     performance: core.propNonEnumerable(performance.performance),
     getPerformance: core.propNonEnumerable(performance.getPerformance),
