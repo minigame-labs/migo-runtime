@@ -33,10 +33,26 @@ const GL_COMPRESSED_RGBA_ASTC_6X6_KHR: u32 = 0x93B4;
 /// a test copied from the code it checks can always do.
 const GL_COMPRESSED_RGBA_ASTC_8X8_KHR: u32 = 0x93B7;
 
+/// `COMPRESSED_RGB_ETC1_WEBGL` (`WEBGL_compressed_texture_etc1`), which GLES 3.0 has no token for.
+pub(crate) const COMPRESSED_RGB_ETC1_WEBGL: u32 = 0x8D64;
+
+/// The format the driver is handed for `format`: itself, except ETC1, which is uploaded as ETC2 RGB8. ETC2 is ETC1
+/// extended -- the extra modes are encodings an ETC1 block cannot contain, since ETC1 never lets a differential
+/// colour overflow -- so an ETC1 block decodes to the same texels as ETC2 RGB8, which every GLES 3.0 driver has. The
+/// texture's own format, as the facade records it, stays ETC1.
+pub(crate) fn driver_compressed_format(format: u32) -> u32 {
+    if format == COMPRESSED_RGB_ETC1_WEBGL {
+        GL_COMPRESSED_RGB8_ETC2
+    } else {
+        format
+    }
+}
+
 /// The block of every compressed format the WebGL extensions offer -- `(width, height, bytes)`, its texels each way and
-/// its size -- or `None` for a format that is not one of them: ETC2/EAC (`WEBGL_compressed_texture_etc`) and the ASTC
-/// LDR profile (`WEBGL_compressed_texture_astc`), linear and sRGB. The facade's `_COMPRESSED_FORMATS` is the same table:
-/// what content may upload, here what it costs and how the KTX2 path lays it out.
+/// its size -- or `None` for a format that is not one of them: ETC1 (`WEBGL_compressed_texture_etc1`), ETC2/EAC
+/// (`WEBGL_compressed_texture_etc`) and the ASTC LDR profile (`WEBGL_compressed_texture_astc`), linear and sRGB. The
+/// facade's `_COMPRESSED_FORMATS` is the same table: what content may upload, here what it costs and how the KTX2 path
+/// lays it out.
 pub(crate) fn compressed_block(format: u32) -> Option<(u32, u32, u64)> {
     const ASTC_BLOCKS: [(u32, u32); 14] = [
         (4, 4),
@@ -55,6 +71,7 @@ pub(crate) fn compressed_block(format: u32) -> Option<(u32, u32, u64)> {
         (12, 12),
     ];
     match format {
+        COMPRESSED_RGB_ETC1_WEBGL => Some((4, 4, 8)),
         // R11, SIGNED_R11 (EAC); RGB8, SRGB8, and the two PUNCHTHROUGH_ALPHA1 (ETC2)
         0x9270 | 0x9271 | 0x9274..=0x9277 => Some((4, 4, 8)),
         // RG11, SIGNED_RG11 (EAC); RGBA8, SRGB8_ALPHA8 (ETC2)
@@ -488,6 +505,29 @@ mod tests {
     /// The previous version of this test asserted `Astc8x8 == 0x93B9`, copied
     /// from the constant it was checking. `0x93B9` is the 10x6 token, and the
     /// test confirmed the mistake for as long as both existed.
+    /// ETC1 costs ETC2 RGB8's block -- 8 bytes a 4x4 -- and is uploaded under ETC2 RGB8's token, which decodes its
+    /// blocks to the same texels; every other format goes to the driver as it is.
+    #[test]
+    fn etc1_is_uploaded_as_etc2_rgb8() {
+        assert_eq!(compressed_block(COMPRESSED_RGB_ETC1_WEBGL), Some((4, 4, 8)));
+        assert_eq!(
+            compressed_block(COMPRESSED_RGB_ETC1_WEBGL),
+            compressed_block(GL_COMPRESSED_RGB8_ETC2)
+        );
+        assert_eq!(
+            driver_compressed_format(COMPRESSED_RGB_ETC1_WEBGL),
+            GL_COMPRESSED_RGB8_ETC2
+        );
+        for format in [
+            GL_COMPRESSED_RGB8_ETC2,
+            GL_COMPRESSED_RGBA8_ETC2_EAC,
+            0x93B0,
+            0x93DD,
+        ] {
+            assert_eq!(driver_compressed_format(format), format);
+        }
+    }
+
     #[test]
     fn the_astc_tokens_follow_the_block_size_order_the_extension_defines() {
         const ASTC_BLOCK_SIZES: [(u32, u32); 14] = [

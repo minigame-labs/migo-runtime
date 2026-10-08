@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WebGL: `WEBGL_compressed_texture_etc1`, with an object of its own carrying `COMPRESSED_RGB_ETC1_WEBGL`. The name used
+  to answer with the ETC2/EAC object, so content asking for ETC1 found ten other formats and not its own, and an ETC1
+  upload was INVALID_ENUM. Its blocks are uploaded as ETC2 RGB8, which decodes every ETC1 block to the same texels and
+  which every GLES 3.0 driver has. An ETC1 image is a 2D one defined whole, by `compressedTexImage2D` or 2D immutable
+  storage; a sub-image upload, a 3D call or 3D storage of it is INVALID_OPERATION, as a browser has it.
 - WebGL 2: `texImage2D` and `texSubImage2D` from an offset into the bound PIXEL_UNPACK_BUFFER (`..., format, type,
   offset)`). The number used to be a TypeError, as WebGL 1 has it. The four `tex*Image*` uploads now name one source
   -- the call's bytes or the buffer from an offset -- in the command, the ops and the Performance+ records alike, and
@@ -139,6 +144,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sent none and was never presented). And a finished frame is presented before anything that arrives behind it runs: a
   task that drew between a frame's end and the tick that swaps it put its draws into the frame being shown. In the
   steady state nothing arrives in between, and frames are still presented on the frame clock.
+- WebGL: `drawArraysInstancedANGLE` and `drawElementsInstancedANGLE` draw only with an attribute array enabled at
+  divisor 0, and are INVALID_OPERATION without one, as ANGLE_instanced_arrays has it in WebGL 1 and a browser enforces
+  it; a plain draw is not held to it. `vertexAttribDivisor` and `vertexAttribDivisorANGLE` refuse an index past
+  MAX_VERTEX_ATTRIBS (INVALID_VALUE) instead of sending it.
+- WebGL 2: sampler, transform feedback and query objects are the facade's, like every other object. SAMPLER_BINDING
+  and TRANSFORM_FEEDBACK_BINDING answer with the object bound, not the driver's integer name, and a deleted sampler is
+  unbound from every unit; `bindSampler` refuses a unit past the limit (INVALID_VALUE) and `bindTransformFeedback`
+  another target (INVALID_ENUM) or a change while the bound object is active and not paused (INVALID_OPERATION). A
+  transform feedback or query object was a plain object any `{_id}` could pass for, and an object of another kind is
+  now WebIDL's TypeError. A query is begun on one target for good, one at a time a slot -- the two occlusion targets
+  share one -- and `endQuery` with nothing active is INVALID_OPERATION, as is asking an active or never-begun query for
+  its result. QUERY_RESULT_AVAILABLE is a boolean, false in the task that ended the query and the same every time it is
+  asked within a task (WebGL 2.0 5.38); QUERY_RESULT is 0 until it is available, and the renderer asks the driver for a
+  result only once it is, where it used to wait for the GPU to finish the query on the render thread.
 - Canvas2D / WebGL: Skia's GL work runs in its own context. Skia does its GL work in whatever EGL context is current,
   and a cleanup is GL work -- it deletes textures and framebuffers -- but the periodic purge of every 2D context's
   unused resources (every 250 ms), the low-memory trim, and the re-capping of every context's share of the resource
