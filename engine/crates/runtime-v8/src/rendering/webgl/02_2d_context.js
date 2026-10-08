@@ -96,6 +96,7 @@ import {
     op_canvas2d_hit_test,
 } from "ext:core/ops";
 import { domException } from "ext:host_v8_base/06_dom_exception.js";
+import { isImage, isImageBitmap } from "ext:host_v8_image/01_image.js";
 import { primordials } from "ext:core/mod.js";
 
 // Line cap constants
@@ -424,20 +425,24 @@ class CanvasGradient {
         this._r1 = r1;
         this._stops = [];
     }
+    // `addColorStop(offset, color)`: a `double` and a DOMString, then the specification's order -- an offset outside
+    // 0..1 is an IndexSizeError, a colour that does not parse a SyntaxError.
     addColorStop(offset, color) {
-        var off = Number(offset);
-        if (!Number.isFinite(off) || off < 0 || off > 1) {
-            throw new RangeError("Failed to execute 'addColorStop': offset must be between 0 and 1");
+        _requireArguments(arguments.length, 2, 'addColorStop', 'CanvasGradient');
+        const off = _double(offset, 'addColorStop', 'CanvasGradient');
+        const text = _domString(color);
+        if (off < 0 || off > 1) {
+            throw domException("Failed to execute 'addColorStop' on 'CanvasGradient': The provided value (" + off +
+                ") is outside the range (0.0, 1.0).", "IndexSizeError");
         }
-        if (typeof color !== 'string') {
-            throw new TypeError("Failed to execute 'addColorStop': color must be a string");
-        }
-        var entry = _cssColour(color);
+        const entry = _cssColour(text);
         if (entry === null) {
-            throw domException("Failed to execute 'addColorStop': the value provided ('" + color + "') could not be parsed as a color.", "SyntaxError");
+            throw domException("Failed to execute 'addColorStop' on 'CanvasGradient': The value provided ('" + text +
+                "') could not be parsed as a color.", "SyntaxError");
         }
-        var parsed = entry.rgba;
+        const parsed = entry.rgba;
         this._stops.push({ offset: off, r: parsed[0], g: parsed[1], b: parsed[2], a: parsed[3] });
+        // Stable: stops at one offset keep the order they were added in.
         this._stops.sort(function (a, b) { return a.offset - b.offset; });
     }
     // Called internally when this gradient is assigned to fillStyle.
@@ -471,15 +476,12 @@ class CanvasPattern {
     // (canvasId, imageRid, repetition), after the token.
     constructor() {
         if (arguments[0] !== _CANVAS_STYLE) throw new TypeError("Illegal constructor");
+        // The repetition is one of the four names: `createPattern` checked it.
         const [, canvasId, imageRid, repetition] = arguments;
         this._canvasId = canvasId;
         this._imageRid = imageRid;
-        var rep = repetition == null ? 'repeat' : String(repetition);
-        if (rep !== 'repeat' && rep !== 'repeat-x' && rep !== 'repeat-y' && rep !== 'no-repeat') {
-            throw new TypeError("Failed to execute 'createPattern': invalid repetition value");
-        }
-        this._repeatX = rep === 'repeat' || rep === 'repeat-x';
-        this._repeatY = rep === 'repeat' || rep === 'repeat-y';
+        this._repeatX = repetition === 'repeat' || repetition === 'repeat-x';
+        this._repeatY = repetition === 'repeat' || repetition === 'repeat-y';
     }
     _applyFill() {
         flushRenderCommandStream();
@@ -534,6 +536,79 @@ function _requireArguments(given, required, method, owner) {
         throw new TypeError("Failed to execute '" + method + "' on '" + owner + "': " + required +
             " argument" + (required === 1 ? "" : "s") + " required, but only " + given + " present.");
     }
+}
+
+// An overloaded call with a count no overload takes (`drawImage` with four arguments).
+function _arityError(given, arities, method, owner) {
+    return new TypeError("Failed to execute '" + method + "' on '" + owner + "': Valid arities are: [" + arities +
+        "], but " + given + " arguments provided.");
+}
+
+// WebIDL's DOMString: a string is itself, anything else is converted -- and a Symbol refuses, with a TypeError.
+function _domString(value) {
+    return typeof value === 'string' ? value : `${value}`;
+}
+
+// WebIDL's `double`: a finite number, or a TypeError. The factories take these (the gradients, `addColorStop`) and throw
+// where the drawing calls, which take `unrestricted double`, draw nothing.
+function _double(value, method, owner) {
+    const x = +value;
+    if (x - x !== 0) {
+        throw new TypeError("Failed to execute '" + method + "' on '" + owner + "': The provided double value is non-finite.");
+    }
+    return x;
+}
+
+// WebIDL's `sequence<unrestricted double>`: an object content can iterate, each item a number. A string is not an
+// object, and an object with no iterator is not a sequence.
+function _numberSequence(value, method, owner) {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+        throw new TypeError("Failed to execute '" + method + "' on '" + owner +
+            "': The provided value cannot be converted to a sequence.");
+    }
+    const out = [];
+    for (const item of value) ArrayPrototypePush(out, +item);
+    return out;
+}
+
+// ---- Image arguments ----
+//
+// `drawImage` and `createPattern` take a CanvasImageSource: here an image, an ImageBitmap or a canvas, each the engine's
+// own (the image classes by their private fields, a canvas by its renderer id). Anything else -- `null`, an ImageData,
+// an object with the right names -- is a TypeError, as the WebIDL union has it. What is then done with one is the
+// specification's "check the usability of the image argument": a broken image or a closed bitmap is an
+// InvalidStateError, as is a canvas with no pixels; an image not yet loaded draws nothing.
+const _SOURCE_IMAGE = 1;    // an image or a bitmap: its renderer id is drawn
+const _SOURCE_CANVAS = 2;   // a canvas: the renderer copies it in stream order
+
+function _imageSourceKind(image, method) {
+    if (isImage(image) || isImageBitmap(image)) return _SOURCE_IMAGE;
+    if (image !== null && typeof image === 'object' && typeof image.getContext === 'function'
+            && typeof image._rid === 'number') {
+        return _SOURCE_CANVAS;
+    }
+    throw new TypeError("Failed to execute '" + method + "' on 'CanvasRenderingContext2D': The provided value is not " +
+        "of type '(HTMLCanvasElement or HTMLImageElement or ImageBitmap)'.");
+}
+
+// Whether the image can be drawn now: `false` for an image still loading, a throw for one that never will be.
+function _imageUsable(image, kind, method) {
+    const context = "Failed to execute '" + method + "' on 'CanvasRenderingContext2D': ";
+    if (kind === _SOURCE_CANVAS) {
+        if (image.width === 0 || image.height === 0) {
+            throw domException(context + "The image argument is a canvas element with a width or height of 0.",
+                "InvalidStateError");
+        }
+        return true;
+    }
+    if (isImageBitmap(image)) {
+        if (image.rid === 0) throw domException(context + "The image source is detached.", "InvalidStateError");
+        return true;
+    }
+    if (image.error) {
+        throw domException(context + "The HTMLImageElement provided is in the 'broken' state.", "InvalidStateError");
+    }
+    return image.loaded === true;
 }
 
 function _negativeRadius(value) {
@@ -641,13 +716,17 @@ function _cornerRadii(radii, out, method) {
 
 // A `DOMMatrix2DInit`, validated and fixed up as the specification's "create a DOMMatrix from the 2D dictionary" does,
 // into `out` as `a b c d e f`. Its members are read in WebIDL's order.
-function _matrix2DInit(init, out) {
+// `setTransform(transform)`'s matrix, read into the same six numbers every call.
+const _setTransformMatrix = [1, 0, 0, 1, 0, 0];
+
+function _matrix2DInit(init, out, method, owner) {
     if (init === undefined || init === null) {
         out[0] = 1; out[1] = 0; out[2] = 0; out[3] = 1; out[4] = 0; out[5] = 0;
         return;
     }
     if (typeof init !== 'object' && typeof init !== 'function') {
-        throw new TypeError("Failed to execute 'addPath' on 'Path2D': The provided value is not of type 'DOMMatrix2DInit'.");
+        throw new TypeError("Failed to execute '" + method + "' on '" + owner +
+            "': The provided value is not of type 'DOMMatrix2DInit'.");
     }
     const a = _member(init.a), b = _member(init.b), c = _member(init.c);
     const d = _member(init.d), e = _member(init.e), f = _member(init.f);
@@ -659,7 +738,8 @@ function _matrix2DInit(init, out) {
         (d !== undefined && m22 !== undefined && !_sameValueZero(d, m22)) ||
         (e !== undefined && m41 !== undefined && !_sameValueZero(e, m41)) ||
         (f !== undefined && m42 !== undefined && !_sameValueZero(f, m42))) {
-        throw new TypeError("Failed to execute 'addPath' on 'Path2D': Property mismatch on matrix initialization.");
+        throw new TypeError("Failed to execute '" + method + "' on '" + owner +
+            "': Property mismatch on matrix initialization.");
     }
     out[0] = m11 ?? a ?? 1;
     out[1] = m12 ?? b ?? 0;
@@ -1087,7 +1167,7 @@ class Path2D {
             throw new TypeError("Failed to execute 'addPath' on 'Path2D': parameter 1 is not of type 'Path2D'.");
         }
         const m = _addPathMatrix;
-        _matrix2DInit(transform, m);
+        _matrix2DInit(transform, m, 'addPath', 'Path2D');
         if (!_fin6(m[0], m[1], m[2], m[3], m[4], m[5])) return;
         const count = path.#length;
         if (count === 0) return;
@@ -1784,6 +1864,7 @@ class CanvasRenderingContext2D {
         this._font = _DEFAULT_FONT;
         this._textAlign = 'start';
         this._textBaseline = 'alphabetic';
+        this._direction = 'inherit';
         this._imageSmoothing = true;
         this._imageSmoothingQuality = 'low';
 
@@ -1960,22 +2041,32 @@ class CanvasRenderingContext2D {
         encode2dClosePath(this._canvasId);
     }
 
+    // The CanvasPath calls take their arguments as Path2D's do (WebIDL's `unrestricted double`, converted in order,
+    // a Symbol or a BigInt a TypeError, a missing one a TypeError); a call with one that is not finite adds nothing.
     moveTo(x, y) {
+        _requireArguments(arguments.length, 2, 'moveTo', 'CanvasRenderingContext2D');
+        x = +x; y = +y;
         if (!_fin2(x, y)) return;
         encode2dMoveTo(this._canvasId, x, y);
     }
 
     lineTo(x, y) {
+        _requireArguments(arguments.length, 2, 'lineTo', 'CanvasRenderingContext2D');
+        x = +x; y = +y;
         if (!_fin2(x, y)) return;
         encode2dLineTo(this._canvasId, x, y);
     }
 
     quadraticCurveTo(cpx, cpy, x, y) {
+        _requireArguments(arguments.length, 4, 'quadraticCurveTo', 'CanvasRenderingContext2D');
+        cpx = +cpx; cpy = +cpy; x = +x; y = +y;
         if (!_fin4(cpx, cpy, x, y)) return;
         encode2dQuadraticCurveTo(this._canvasId, cpx, cpy, x, y);
     }
 
     bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y) {
+        _requireArguments(arguments.length, 6, 'bezierCurveTo', 'CanvasRenderingContext2D');
+        cp1x = +cp1x; cp1y = +cp1y; cp2x = +cp2x; cp2y = +cp2y; x = +x; y = +y;
         if (!_fin6(cp1x, cp1y, cp2x, cp2y, x, y)) return;
         encode2dBezierCurveTo(this._canvasId, cp1x, cp1y, cp2x, cp2y, x, y);
     }
@@ -1983,18 +2074,25 @@ class CanvasRenderingContext2D {
     // A negative radius is an error the content is told about; any non-finite argument is a silent no-op, and is
     // checked first.
     arc(x, y, radius, startAngle, endAngle, counterclockwise = false) {
+        _requireArguments(arguments.length, 5, 'arc', 'CanvasRenderingContext2D');
+        x = +x; y = +y; radius = +radius; startAngle = +startAngle; endAngle = +endAngle;
+        const ccw = !!counterclockwise;
         if (!_fin6(x, y, radius, startAngle, endAngle, 0)) return;
-        if (radius < 0) throw domException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
-        encode2dArc(this._canvasId, x, y, radius, startAngle, endAngle, counterclockwise);
+        if (radius < 0) throw _negativeRadius(radius);
+        encode2dArc(this._canvasId, x, y, radius, startAngle, endAngle, ccw);
     }
 
     arcTo(x1, y1, x2, y2, radius) {
+        _requireArguments(arguments.length, 5, 'arcTo', 'CanvasRenderingContext2D');
+        x1 = +x1; y1 = +y1; x2 = +x2; y2 = +y2; radius = +radius;
         if (!_fin6(x1, y1, x2, y2, radius, 0)) return;
-        if (radius < 0) throw domException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
+        if (radius < 0) throw _negativeRadius(radius);
         encode2dArcTo(this._canvasId, x1, y1, x2, y2, radius);
     }
 
     rect(x, y, width, height) {
+        _requireArguments(arguments.length, 4, 'rect', 'CanvasRenderingContext2D');
+        x = +x; y = +y; width = +width; height = +height;
         if (!_fin4(x, y, width, height)) return;
         encode2dRect(this._canvasId, x, y, width, height);
     }
@@ -2011,11 +2109,13 @@ class CanvasRenderingContext2D {
     }
 
     ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise = false) {
+        _requireArguments(arguments.length, 7, 'ellipse', 'CanvasRenderingContext2D');
+        x = +x; y = +y; radiusX = +radiusX; radiusY = +radiusY; rotation = +rotation;
+        startAngle = +startAngle; endAngle = +endAngle;
+        const ccw = !!counterclockwise;
         if (!_fin6(x, y, radiusX, radiusY, rotation, startAngle) || !_fin1(endAngle)) return;
-        if (radiusX < 0 || radiusY < 0) {
-            throw domException("The radius provided (" + (radiusX < 0 ? radiusX : radiusY) + ") is negative.", "IndexSizeError");
-        }
-        encode2dEllipse(this._canvasId, x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise);
+        if (radiusX < 0 || radiusY < 0) throw _negativeRadius(radiusX < 0 ? radiusX : radiusY);
+        encode2dEllipse(this._canvasId, x, y, radiusX, radiusY, rotation, startAngle, endAngle, ccw);
     }
 
     // ==================== Drawing Methods ====================
@@ -2124,23 +2224,32 @@ class CanvasRenderingContext2D {
     // ==================== Rectangle Methods ====================
 
     fillRect(x, y, width, height) {
+        _requireArguments(arguments.length, 4, 'fillRect', 'CanvasRenderingContext2D');
+        x = +x; y = +y; width = +width; height = +height;
         this._abandonPendingTextCache();
         encode2dFillRect(this._canvasId, x, y, width, height);
     }
 
     strokeRect(x, y, width, height) {
+        _requireArguments(arguments.length, 4, 'strokeRect', 'CanvasRenderingContext2D');
+        x = +x; y = +y; width = +width; height = +height;
         this._abandonPendingTextCache();
         encode2dStrokeRect(this._canvasId, x, y, width, height);
     }
 
     clearRect(x, y, width, height) {
+        _requireArguments(arguments.length, 4, 'clearRect', 'CanvasRenderingContext2D');
+        x = +x; y = +y; width = +width; height = +height;
         this._abandonPendingTextCache();
         encode2dClearRect(this._canvasId, x, y, width, height);
     }
 
     // ==================== Text Methods ====================
 
+    // `fillText(text, x, y, maxWidth)`: a DOMString and `unrestricted double`s, `maxWidth` optional.
     fillText(text, x, y, maxWidth = Infinity) {
+        _requireArguments(arguments.length, 3, 'fillText', 'CanvasRenderingContext2D');
+        text = _domString(text); x = +x; y = +y; maxWidth = +maxWidth;
         // Non-finite position: nothing is drawn. A maxWidth that is NaN or not positive draws nothing either
         // (Infinity, the default, is "no limit").
         if (!_fin2(x, y) || maxWidth !== maxWidth || !(maxWidth > 0)) return;
@@ -2174,18 +2283,21 @@ class CanvasRenderingContext2D {
             this._tcKey = args;
         }
         this._barrier();
-        op_fill_text(this._canvasId, String(text), x, y, maxWidth);
+        op_fill_text(this._canvasId, text, x, y, maxWidth);
     }
 
     strokeText(text, x, y, maxWidth = Infinity) {
+        _requireArguments(arguments.length, 3, 'strokeText', 'CanvasRenderingContext2D');
+        text = _domString(text); x = +x; y = +y; maxWidth = +maxWidth;
         if (!_fin2(x, y) || maxWidth !== maxWidth || !(maxWidth > 0)) return;
         this._abandonPendingTextCache();
         this._barrier();
-        op_stroke_text(this._canvasId, String(text), x, y, maxWidth);
+        op_stroke_text(this._canvasId, text, x, y, maxWidth);
     }
 
     measureText(text) {
-        const s = String(text);
+        _requireArguments(arguments.length, 1, 'measureText', 'CanvasRenderingContext2D');
+        const s = _domString(text);
         // R-10 + F-2: JS-side measure cache in front of the
         // native op.  Cross-thread RPC into the render thread
         // costs 30-50 us round-trip even on the cache-hit
@@ -2258,7 +2370,7 @@ class CanvasRenderingContext2D {
             value._applyFill();
         } else {
             // A string that is not a colour leaves the style as it was; what reads back is the serialised colour.
-            const entry = _cssColour(typeof value === 'string' ? value : String(value));
+            const entry = _cssColour(_domString(value));
             if (entry === null || entry.text === this._fillStyle) return;
             this._fillStyle = entry.text;
             const rgba = entry.rgba;
@@ -2277,7 +2389,7 @@ class CanvasRenderingContext2D {
             this._strokeStyle = value;
             value._applyStroke();
         } else {
-            const entry = _cssColour(typeof value === 'string' ? value : String(value));
+            const entry = _cssColour(_domString(value));
             if (entry === null || entry.text === this._strokeStyle) return;
             this._strokeStyle = entry.text;
             const rgba = entry.rgba;
@@ -2298,8 +2410,11 @@ class CanvasRenderingContext2D {
         encode2dSetLineWidth(this._canvasId, v);
     }
 
+    // The keyword attributes are WebIDL enums: the value is converted to a string (a Symbol is a TypeError), and one
+    // that is not a keyword is ignored.
     get lineCap() { return this._lineCap; }
     set lineCap(value) {
+        value = _domString(value);
         if (this._lineCap === value) return;
         if (!Object.prototype.hasOwnProperty.call(LINE_CAP_MAP, value)) return;
         this._lineCap = value;
@@ -2308,6 +2423,7 @@ class CanvasRenderingContext2D {
 
     get lineJoin() { return this._lineJoin; }
     set lineJoin(value) {
+        value = _domString(value);
         if (this._lineJoin === value) return;
         if (!Object.prototype.hasOwnProperty.call(LINE_JOIN_MAP, value)) return;
         this._lineJoin = value;
@@ -2336,7 +2452,7 @@ class CanvasRenderingContext2D {
     get font() { return this._font.text; }
     set font(value) {
         // A string that is not a font leaves the font as it was; what reads back is the serialised font.
-        const font = _cssFont(typeof value === 'string' ? value : `${value}`);
+        const font = _cssFont(_domString(value));
         if (font === null || font.text === this._font.text) return;
         this._font = font;
         this._barrier();
@@ -2345,6 +2461,7 @@ class CanvasRenderingContext2D {
 
     get textAlign() { return this._textAlign; }
     set textAlign(value) {
+        value = _domString(value);
         if (this._textAlign === value) return;
         if (!Object.prototype.hasOwnProperty.call(TEXT_ALIGN_MAP, value)) return;
         this._textAlign = value;
@@ -2354,6 +2471,7 @@ class CanvasRenderingContext2D {
 
     get textBaseline() { return this._textBaseline; }
     set textBaseline(value) {
+        value = _domString(value);
         if (this._textBaseline === value) return;
         if (!Object.prototype.hasOwnProperty.call(TEXT_BASELINE_MAP, value)) return;
         this._textBaseline = value;
@@ -2361,12 +2479,14 @@ class CanvasRenderingContext2D {
         op_set_text_baseline(this._canvasId, TEXT_BASELINE_MAP[value]);
     }
 
-    get direction() { return this._direction || 'inherit'; }
+    get direction() { return this._direction; }
     set direction(value) {
+        value = _domString(value);
         if (this._direction === value) return;
+        if (!Object.prototype.hasOwnProperty.call(TEXT_DIRECTION_MAP, value)) return;
         this._direction = value;
         this._barrier();
-        op_set_text_direction(this._canvasId, TEXT_DIRECTION_MAP[value] ?? 0);
+        op_set_text_direction(this._canvasId, TEXT_DIRECTION_MAP[value]);
     }
 
     // ==================== State Methods ====================
@@ -2390,7 +2510,7 @@ class CanvasRenderingContext2D {
         this._textBaseline = 'alphabetic';
         this._imageSmoothing = true;
         this._imageSmoothingQuality = 'low';
-        this._direction = undefined;
+        this._direction = 'inherit';
         this._tm = [1, 0, 0, 1, 0, 0];
         this._stateStack = [];
         this._compositeOp = null;
@@ -2414,6 +2534,9 @@ class CanvasRenderingContext2D {
             font: this._font,
             textAlign: this._textAlign,
             textBaseline: this._textBaseline,
+            // Drawing state like the rest: the renderer's `restore()` gives it back, so this side must too, or a setter
+            // after a restore compares against the inner value and sends nothing.
+            direction: this._direction,
             imageSmoothing: this._imageSmoothing,
             imageSmoothingQuality: this._imageSmoothingQuality,
             tm: this._tm.slice(),
@@ -2442,6 +2565,7 @@ class CanvasRenderingContext2D {
                 _font: state.font,
                 _textAlign: state.textAlign,
                 _textBaseline: state.textBaseline,
+                _direction: state.direction,
                 _imageSmoothing: state.imageSmoothing,
                 _imageSmoothingQuality: state.imageSmoothingQuality,
                 _tm: state.tm,
@@ -2460,6 +2584,8 @@ class CanvasRenderingContext2D {
     // ==================== Transform Methods ====================
 
     translate(x, y) {
+        _requireArguments(arguments.length, 2, 'translate', 'CanvasRenderingContext2D');
+        x = +x; y = +y;
         if (!_fin2(x, y)) return;
         const m = this._tm;
         m[4] += m[0] * x + m[2] * y;
@@ -2468,6 +2594,8 @@ class CanvasRenderingContext2D {
     }
 
     rotate(angle) {
+        _requireArguments(arguments.length, 1, 'rotate', 'CanvasRenderingContext2D');
+        angle = +angle;
         if (!_fin1(angle)) return;
         const cos = Math.cos(angle), sin = Math.sin(angle);
         const m = this._tm;
@@ -2480,13 +2608,26 @@ class CanvasRenderingContext2D {
     }
 
     scale(x, y) {
+        _requireArguments(arguments.length, 2, 'scale', 'CanvasRenderingContext2D');
+        x = +x; y = +y;
         if (!_fin2(x, y)) return;
         this._tm[0] *= x; this._tm[1] *= x;
         this._tm[2] *= y; this._tm[3] *= y;
         encode2dScale(this._canvasId, x, y);
     }
 
+    // `setTransform(a, b, c, d, e, f)` and `setTransform(transform)`, the second taking a DOMMatrix2DInit (a DOMMatrix
+    // is one) or nothing, which is the identity. A matrix with a value that is not finite changes nothing.
     setTransform(a, b, c, d, e, f) {
+        const given = arguments.length;
+        if (given > 1 && given < 6) throw _arityError(given, '0, 1, 6', 'setTransform', 'CanvasRenderingContext2D');
+        if (given <= 1) {
+            const m = _setTransformMatrix;
+            _matrix2DInit(a, m, 'setTransform', 'CanvasRenderingContext2D');
+            [a, b, c, d, e, f] = m;
+        } else {
+            a = +a; b = +b; c = +c; d = +d; e = +e; f = +f;
+        }
         if (!_fin6(a, b, c, d, e, f)) return;
         this._tm[0] = a; this._tm[1] = b;
         this._tm[2] = c; this._tm[3] = d;
@@ -2502,6 +2643,8 @@ class CanvasRenderingContext2D {
     }
 
     transform(a, b, c, d, e, f) {
+        _requireArguments(arguments.length, 6, 'transform', 'CanvasRenderingContext2D');
+        a = +a; b = +b; c = +c; d = +d; e = +e; f = +f;
         if (!_fin6(a, b, c, d, e, f)) return;
         // Multiply current matrix: CTM = CTM * [a b c d e f]
         const m = this._tm;
@@ -2522,63 +2665,42 @@ class CanvasRenderingContext2D {
 
     // ==================== Image Methods ====================
 
-    drawImage(image, ...args) {
-        this._abandonPendingTextCache();
-        // A canvas is an image source too: its pixels are read by the renderer when the record runs, in stream order.
-        if (image && typeof image.getContext === 'function' && typeof image._rid === 'number') {
-            this._drawCanvas(image, args);
-            return;
-        }
-        if (!image || !image.loaded) return;
-
-        this._barrier();
-
-        let sx, sy, sw, sh, dx, dy, dw, dh;
-
-        if (args.length === 2) {
-            [dx, dy] = args;
-            sx = sy = 0;
-            sw = image.width;
-            sh = image.height;
-            dw = sw;
-            dh = sh;
-        } else if (args.length === 4) {
-            [dx, dy, dw, dh] = args;
-            sx = sy = 0;
-            sw = image.width;
-            sh = image.height;
-        } else if (args.length === 8) {
-            [sx, sy, sw, sh, dx, dy, dw, dh] = args;
+    // `drawImage(image, dx, dy)`, `(image, dx, dy, dw, dh)` and `(image, sx, sy, sw, sh, dx, dy, dw, dh)`: three, five or
+    // nine arguments (more than nine are the nine), the image a CanvasImageSource (see `_imageSourceKind`) and the rest
+    // `unrestricted double`s, converted before the image's usability is checked. An argument that is not finite draws
+    // nothing; so does an image still loading.
+    drawImage(image, a1, a2, a3, a4, a5, a6, a7, a8) {
+        const given = arguments.length;
+        _requireArguments(given, 3, 'drawImage', 'CanvasRenderingContext2D');
+        if (given !== 3 && given !== 5 && given < 9) throw _arityError(given, '3, 5, 9', 'drawImage', 'CanvasRenderingContext2D');
+        const kind = _imageSourceKind(image, 'drawImage');
+        a1 = +a1; a2 = +a2;
+        if (given >= 5) { a3 = +a3; a4 = +a4; }
+        if (given >= 9) { a5 = +a5; a6 = +a6; a7 = +a7; a8 = +a8; }
+        if (!_imageUsable(image, kind, 'drawImage')) return;
+        // The image's own size, which the shorter forms draw whole: a canvas's or a bitmap's pixels, an image's natural
+        // size (its `width` is content's to change and does not resize what is drawn).
+        const natural = isImage(image);
+        const w = natural ? image.naturalWidth : image.width;
+        const h = natural ? image.naturalHeight : image.height;
+        let sx = 0, sy = 0, sw = w, sh = h, dx, dy, dw = w, dh = h;
+        if (given === 3) {
+            dx = a1; dy = a2;
+        } else if (given === 5) {
+            dx = a1; dy = a2; dw = a3; dh = a4;
         } else {
-            return;
-        }
-
-        op_draw_image(this._canvasId, image.rid, sx, sy, sw, sh, dx, dy, dw, dh);
-    }
-
-    // drawImage(canvas, dx, dy) / (canvas, dx, dy, dw, dh) / (canvas, sx, sy, sw, sh, dx, dy, dw, dh). A canvas with no
-    // pixels cannot be drawn: the specification throws, and so do we. Any non-finite argument is a silent no-op.
-    _drawCanvas(canvas, args) {
-        const w = canvas.width, h = canvas.height;
-        if (w === 0 || h === 0) {
-            throw domException("The image argument is a canvas element with a width or height of 0.", "InvalidStateError");
-        }
-        let sx, sy, sw, sh, dx, dy, dw, dh;
-        if (args.length === 2) {
-            [dx, dy] = args;
-            sx = sy = 0; sw = w; sh = h; dw = w; dh = h;
-        } else if (args.length === 4) {
-            [dx, dy, dw, dh] = args;
-            sx = sy = 0; sw = w; sh = h;
-        } else if (args.length === 8) {
-            [sx, sy, sw, sh, dx, dy, dw, dh] = args;
-        } else {
-            return;
+            sx = a1; sy = a2; sw = a3; sh = a4; dx = a5; dy = a6; dw = a7; dh = a8;
         }
         if (!_fin4(sx, sy, sw, sh) || !_fin4(dx, dy, dw, dh)) return;
-        // A canvas the renderer cannot copy as it is (a WebGL one) names the 2D canvas that holds what it shows.
-        const source = typeof canvas._imageSourceCanvas === 'function' ? canvas._imageSourceCanvas() : canvas;
-        encode2dDrawCanvas(this._canvasId, source._rid, sx, sy, sw, sh, dx, dy, dw, dh);
+        this._abandonPendingTextCache();
+        if (kind === _SOURCE_CANVAS) {
+            // A canvas the renderer cannot copy as it is (a WebGL one) names the 2D canvas that holds what it shows.
+            const source = typeof image._imageSourceCanvas === 'function' ? image._imageSourceCanvas() : image;
+            encode2dDrawCanvas(this._canvasId, source._rid, sx, sy, sw, sh, dx, dy, dw, dh);
+            return;
+        }
+        this._barrier();
+        op_draw_image(this._canvasId, image.rid, sx, sy, sw, sh, dx, dy, dw, dh);
     }
 
     drawImageBatch(draws) {
@@ -2589,7 +2711,9 @@ class CanvasRenderingContext2D {
 
         this._barrier();
 
-        const validDraws = draws.filter(d => d.image && d.image.loaded);
+        // An image that has loaded, or a bitmap still open; anything else draws nothing.
+        const validDraws = draws.filter(d => d !== null && typeof d === 'object'
+            && (isImage(d.image) ? d.image.loaded === true : isImageBitmap(d.image) && d.image.rid !== 0));
         if (validDraws.length === 0) return;
 
         const buffer = new Float32Array(validDraws.length * 9);
@@ -2823,12 +2947,14 @@ class CanvasRenderingContext2D {
     // value that is not one of the three is ignored, as it is in a browser.
     get imageSmoothingQuality() { return this._imageSmoothingQuality; }
     set imageSmoothingQuality(value) {
+        value = _domString(value);
         if (value === 'low' || value === 'medium' || value === 'high') this._imageSmoothingQuality = value;
     }
 
     // ==================== Compositing ====================
     get globalCompositeOperation() { return this._compositeOp || 'source-over'; }
     set globalCompositeOperation(value) {
+        value = _domString(value);
         if (this._compositeOp === value) return;
         var idx = _COMPOSITE_OPS.indexOf(value);
         if (idx !== -1) {
@@ -2849,7 +2975,7 @@ class CanvasRenderingContext2D {
     }
     get shadowColor() { return this._shadowColor || 'rgba(0, 0, 0, 0)'; }
     set shadowColor(value) {
-        const entry = _cssColour(typeof value === 'string' ? value : String(value));
+        const entry = _cssColour(_domString(value));
         if (entry === null || entry.text === (this._shadowColor || 'rgba(0, 0, 0, 0)')) return;
         this._shadowColor = entry.text;
         const rgba = entry.rgba;
@@ -2873,13 +2999,38 @@ class CanvasRenderingContext2D {
     }
 
     // ==================== Gradient ====================
+    // The factories take WebIDL `double`s: an argument that is not finite is a TypeError, as is a missing one, and a
+    // negative radius an IndexSizeError.
     createLinearGradient(x0, y0, x1, y1) {
+        const method = 'createLinearGradient';
+        _requireArguments(arguments.length, 4, method, 'CanvasRenderingContext2D');
+        x0 = _double(x0, method, 'CanvasRenderingContext2D');
+        y0 = _double(y0, method, 'CanvasRenderingContext2D');
+        x1 = _double(x1, method, 'CanvasRenderingContext2D');
+        y1 = _double(y1, method, 'CanvasRenderingContext2D');
         return new CanvasGradient(_CANVAS_STYLE, 'linear', this._canvasId, x0, y0, 0, x1, y1, 0);
     }
     createRadialGradient(x0, y0, r0, x1, y1, r1) {
+        const method = 'createRadialGradient';
+        _requireArguments(arguments.length, 6, method, 'CanvasRenderingContext2D');
+        x0 = _double(x0, method, 'CanvasRenderingContext2D');
+        y0 = _double(y0, method, 'CanvasRenderingContext2D');
+        r0 = _double(r0, method, 'CanvasRenderingContext2D');
+        x1 = _double(x1, method, 'CanvasRenderingContext2D');
+        y1 = _double(y1, method, 'CanvasRenderingContext2D');
+        r1 = _double(r1, method, 'CanvasRenderingContext2D');
+        if (r0 < 0 || r1 < 0) {
+            throw domException("Failed to execute 'createRadialGradient' on 'CanvasRenderingContext2D': The " +
+                (r0 < 0 ? "r0" : "r1") + " provided is less than 0.", "IndexSizeError");
+        }
         return new CanvasGradient(_CANVAS_STYLE, 'radial', this._canvasId, x0, y0, r0, x1, y1, r1);
     }
     createConicGradient(startAngle, cx, cy) {
+        const method = 'createConicGradient';
+        _requireArguments(arguments.length, 3, method, 'CanvasRenderingContext2D');
+        startAngle = _double(startAngle, method, 'CanvasRenderingContext2D');
+        cx = _double(cx, method, 'CanvasRenderingContext2D');
+        cy = _double(cy, method, 'CanvasRenderingContext2D');
         return new CanvasGradient(_CANVAS_STYLE, 'conic', this._canvasId, cx, cy, 0, startAngle, 0, 0);
     }
 
@@ -2890,12 +3041,11 @@ class CanvasRenderingContext2D {
     // A list with a negative or non-finite entry is rejected whole; an odd-length list is stored (and reported by
     // `getLineDash`) repeated to an even one, so `[5]` is `[5, 5]`.
     setLineDash(segments) {
-        if (segments === null || typeof segments !== 'object' || typeof segments.length !== 'number') return;
-        const list = [];
-        for (let i = 0; i < segments.length; i++) {
-            const v = +segments[i];
+        _requireArguments(arguments.length, 1, 'setLineDash', 'CanvasRenderingContext2D');
+        const list = _numberSequence(segments, 'setLineDash', 'CanvasRenderingContext2D');
+        for (let i = 0; i < list.length; i++) {
+            const v = list[i];
             if (!(v >= 0) || v === Infinity) return;
-            list.push(v);
         }
         if (list.length % 2 === 1) {
             for (let i = 0, n = list.length; i < n; i++) list.push(list[i]);
@@ -2914,32 +3064,30 @@ class CanvasRenderingContext2D {
         encode2dSetLineDashOffset(this._canvasId, v);
     }
 
-    // `createPattern(image, repetition)`: `image` is a decoded image or a canvas, and a pattern from a canvas is
-    // the canvas as it is now -- what it draws afterwards does not reach the pattern.
+    // `createPattern(image, repetition)`: `image` is an image, an ImageBitmap or a canvas, and a pattern from a canvas
+    // is the canvas as it is now -- what it draws afterwards does not reach the pattern. In the specification's order:
+    // the image's usability first (an image still loading is a null pattern, whatever the repetition), then the
+    // repetition -- `null` and "" are "repeat", anything else not one of the four names a SyntaxError.
     createPattern(image, repetition) {
-        // The repetition is checked first, as the specification's steps do: "" and null mean "repeat", anything
-        // that is not one of the four names is a SyntaxError.
-        const rep = repetition == null || repetition === '' ? 'repeat' : String(repetition);
+        _requireArguments(arguments.length, 2, 'createPattern', 'CanvasRenderingContext2D');
+        const kind = _imageSourceKind(image, 'createPattern');
+        let rep = repetition === null ? '' : _domString(repetition);
+        if (!_imageUsable(image, kind, 'createPattern')) return null;
+        if (rep === '') rep = 'repeat';
         if (rep !== 'repeat' && rep !== 'repeat-x' && rep !== 'repeat-y' && rep !== 'no-repeat') {
-            throw domException("The provided repetition value '" + rep + "' is not a valid repetition.", "SyntaxError");
+            throw domException("Failed to execute 'createPattern' on 'CanvasRenderingContext2D': The provided " +
+                "repetition value '" + rep + "' is not a valid repetition.", "SyntaxError");
         }
-        if (image && typeof image.getContext === 'function' && typeof image._rid === 'number') {
-            const w = image.width, h = image.height;
-            if (w === 0 || h === 0) {
-                throw domException("The image argument is a canvas element with a width or height of 0.", "InvalidStateError");
-            }
-            // A copy that belongs to the pattern: the canvas is selected for the record so it runs in the
-            // canvas's own stream, after everything drawn to it so far. The id is allocated after what the stream
-            // holds, as every op in this file is.
-            flushRenderCommandStream();
-            const imageId = op_create_image();
-            encode2dCaptureImage(image._rid, imageId);
-            const pattern = new CanvasPattern(_CANVAS_STYLE, this._canvasId, imageId, rep);
-            _patternCopies.register(pattern, imageId);
-            return pattern;
-        }
-        if (!image || !image.loaded) return null;
-        return new CanvasPattern(_CANVAS_STYLE, this._canvasId, image.rid, rep);
+        if (kind === _SOURCE_IMAGE) return new CanvasPattern(_CANVAS_STYLE, this._canvasId, image.rid, rep);
+        // A copy that belongs to the pattern: the canvas is selected for the record so it runs in the canvas's own
+        // stream, after everything drawn to it so far. The id is allocated after what the stream holds, as every op in
+        // this file is.
+        flushRenderCommandStream();
+        const imageId = op_create_image();
+        encode2dCaptureImage(image._rid, imageId);
+        const pattern = new CanvasPattern(_CANVAS_STYLE, this._canvasId, imageId, rep);
+        _patternCopies.register(pattern, imageId);
+        return pattern;
     }
 }
 

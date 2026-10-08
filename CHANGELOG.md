@@ -298,6 +298,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   INVALID_OPERATION. The attachment calls are judged before they are recorded: the target and attachment point, a
   texture of the textarget's kind, a level of 0 in WebGL 1, a renderbuffer that has been bound, a 3D or 2D-array
   texture for a layer, and the default framebuffer, which takes none.
+- Canvas 2D: the context's arguments are converted as WebIDL converts them. Every method counts its required arguments
+  (`fillRect(0, 0, 1)`, `translate(1)`, `fillText("x", 0)` are TypeErrors; `drawImage` takes three, five or nine);
+  numbers are converted in order, so a BigInt or a Symbol is a TypeError where it was a silent no-op, and a Symbol for
+  a string (`fillText`, `fillStyle`, a keyword attribute) is one too. The gradient factories and `addColorStop` take
+  `double`s: one that is not finite is a TypeError, a negative radius and an offset outside 0..1 IndexSizeErrors (the
+  offset was a RangeError), and a colour stop of `null` is the SyntaxError of a colour that does not parse.
+  `setLineDash` takes any iterable and refuses anything else -- an array-like object was read by its `length`. An image
+  argument (`drawImage`, `createPattern`) is the engine's image, ImageBitmap or canvas: `null`, an ImageData or an
+  object with the right names is a TypeError, a broken image or a closed bitmap an InvalidStateError, an image still
+  loading draws nothing and is a null pattern -- and an ImageBitmap is drawn, which it never was (it was asked whether
+  it had `loaded`). `drawImage(image, dx, dy)` draws the image at its natural size. `createPattern`'s repetition is
+  read as the specification reads it: `null` is "repeat", `undefined` a SyntaxError, and a missing one a TypeError.
+  `setTransform()` and `setTransform(transform)` take a DOMMatrix2DInit. `direction` ignores what is not one of its
+  three keywords and is saved and restored with the rest of the drawing state. `new ImageBitmap()` is a TypeError.
 - Canvas 2D: `ctx.font` is read as Chrome reads it, by one parser in the facade. A shorthand needs a size and a family
   (`20px` alone is ignored, `0px serif` is a font); each of style, `small-caps`, weight and stretch is given at most once,
   `normal` standing for any; sizes in px, pt, pc, in, cm, mm, Q, em, rem, ex, ch, ic, %, the absolute keywords and

@@ -8004,6 +8004,13 @@ pub(super) mod tests {
         runtime
             .exec_script(name, source)
             .expect("script must not throw");
+        // The script's microtasks ran when it returned; what they found wrong they left in `failure`.
+        runtime
+            .exec_script(
+                "microtask_failures.js",
+                "if (globalThis.failure !== undefined) throw new Error(String(globalThis.failure));",
+            )
+            .expect("the script's promises must not record a failure");
         end_test_frame(&mut runtime);
         handle.join().expect("helper thread should not panic");
         packet_rx
@@ -8856,6 +8863,174 @@ pub(super) mod tests {
             .expect("script must not throw");
     }
 
+    /// The 2D context's arguments are converted as WebIDL converts them -- counted, a Symbol or a BigInt where a number
+    /// or a string is wanted a TypeError, a `double` that is not finite a TypeError, a sequence iterated, an image source
+    /// checked -- and its keyword attributes ignore what is not a keyword. Every expectation is Chrome's except where the
+    /// comment says otherwise; migo-conformance's `canvas2d-spec/arguments-*` asks the same through every platform.
+    #[test]
+    fn canvas2d_arguments_are_converted_as_webidl_has_them() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            // Canvases as the context reads one -- a renderer id and a size -- without a render thread to make them.
+            const tile = { _rid: 900, width: 2, height: 2, getContext() { return null; } };
+            const empty = { _rid: 901, width: 0, height: 0, getContext() { return null; } };
+            const name = (v) => v === undefined ? 'undefined' : v === null ? 'null'
+                : v instanceof CanvasGradient ? 'CanvasGradient' : v instanceof CanvasPattern ? 'CanvasPattern'
+                : Array.isArray(v) ? '[' + v.join() + ']' : String(v);
+            const outcome = (f) => { try { return name(f()); } catch (e) { return 'threw ' + e.name; } };
+            const gradient = () => ctx.createLinearGradient(0, 0, 1, 1);
+            const matrix = () => { const m = ctx.getTransform(); return [m.a, m.d, m.e]; };
+            const cases = [
+                // Counted: a call short of its required arguments, or between two overloads, is a TypeError.
+                [() => ctx.fillRect(0, 0, 1), 'threw TypeError'],
+                [() => ctx.strokeRect(0, 0, 1), 'threw TypeError'],
+                [() => ctx.clearRect(0, 0, 1), 'threw TypeError'],
+                [() => ctx.moveTo(1), 'threw TypeError'],
+                [() => ctx.lineTo(1), 'threw TypeError'],
+                [() => ctx.quadraticCurveTo(0, 0, 1), 'threw TypeError'],
+                [() => ctx.bezierCurveTo(0, 0, 1, 1, 0), 'threw TypeError'],
+                [() => ctx.arc(0, 0, 1, 0), 'threw TypeError'],
+                [() => ctx.arcTo(0, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.rect(0, 0, 1), 'threw TypeError'],
+                [() => ctx.ellipse(0, 0, 1, 1, 0, 0), 'threw TypeError'],
+                [() => ctx.translate(1), 'threw TypeError'],
+                [() => ctx.scale(2), 'threw TypeError'],
+                [() => ctx.rotate(), 'threw TypeError'],
+                [() => ctx.transform(1, 2, 3, 4, 5), 'threw TypeError'],
+                [() => ctx.setTransform(1, 2, 3), 'threw TypeError'],
+                [() => ctx.fillText(), 'threw TypeError'],
+                [() => ctx.fillText('x', 0), 'threw TypeError'],
+                [() => ctx.strokeText('x', 0), 'threw TypeError'],
+                [() => ctx.measureText(), 'threw TypeError'],
+                [() => ctx.setLineDash(), 'threw TypeError'],
+                [() => ctx.createLinearGradient(0, 0, 1), 'threw TypeError'],
+                [() => ctx.createRadialGradient(0, 0, 1, 0, 0), 'threw TypeError'],
+                [() => ctx.createConicGradient(0, 0), 'threw TypeError'],
+                [() => gradient().addColorStop(0.5), 'threw TypeError'],
+                [() => ctx.createPattern(tile), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 0), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 0, 0, 1), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 0, 0, 1, 1, 0), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 0, 0, 1, 1, 0, 0, 1, 1, 'ignored'), 'undefined'],
+                [() => ctx.fillText('x', 0, 0, undefined), 'undefined'],
+                // Converted: a BigInt or a Symbol is not a number, a Symbol not a string.
+                [() => ctx.fillRect(1n, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.moveTo(Symbol(), 0), 'threw TypeError'],
+                [() => ctx.arc(0, 0, -1, 0, 1n), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 1n, 0), 'threw TypeError'],
+                [() => ctx.fillText(Symbol(), 0, 0), 'threw TypeError'],
+                [() => { ctx.fillStyle = Symbol(); }, 'threw TypeError'],
+                [() => { ctx.lineCap = Symbol(); }, 'threw TypeError'],
+                [() => { ctx.globalCompositeOperation = Symbol(); }, 'threw TypeError'],
+                // A keyword attribute ignores what is not one of its keywords; `direction` is drawing state.
+                [() => { ctx.direction = 5; return ctx.direction; }, 'inherit'],
+                [() => { ctx.direction = 'rtl'; ctx.direction = 'up'; return ctx.direction; }, 'rtl'],
+                [() => { ctx.direction = 'ltr'; ctx.save(); ctx.direction = 'rtl'; ctx.restore(); return ctx.direction; }, 'ltr'],
+                // The factories' `double`s: not finite is a TypeError; a negative radius an IndexSizeError.
+                [() => ctx.createLinearGradient('a', 0, 1, 1), 'threw TypeError'],
+                [() => ctx.createLinearGradient(Infinity, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.createLinearGradient('1', 0, 1, 1), 'CanvasGradient'],
+                [() => ctx.createLinearGradient(1n, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.createRadialGradient(0, 0, 1, 0, 0, -1), 'threw IndexSizeError'],
+                [() => ctx.createRadialGradient(0, 0, -1, 0, NaN, 1), 'threw TypeError'],
+                [() => ctx.createConicGradient(NaN, 0, 0), 'threw TypeError'],
+                [() => gradient().addColorStop(-0.1, 'red'), 'threw IndexSizeError'],
+                [() => gradient().addColorStop(Infinity, 'red'), 'threw TypeError'],
+                [() => gradient().addColorStop(NaN, 'nope'), 'threw TypeError'],
+                [() => gradient().addColorStop(2, 'nope'), 'threw IndexSizeError'],
+                [() => gradient().addColorStop(0.5, null), 'threw SyntaxError'],
+                [() => gradient().addColorStop('0.5', 'red'), 'undefined'],
+                // A dash list is a sequence: iterated, its items numbers; one that is not finite or is negative leaves
+                // the list as it was.
+                [() => ctx.setLineDash(null), 'threw TypeError'],
+                [() => ctx.setLineDash('x'), 'threw TypeError'],
+                [() => ctx.setLineDash({ length: 2, 0: 1, 1: 2 }), 'threw TypeError'],
+                [() => ctx.setLineDash([1, 1n]), 'threw TypeError'],
+                [() => { ctx.setLineDash(new Set([3, 4])); return ctx.getLineDash(); }, '[3,4]'],
+                [() => { ctx.setLineDash(new Float32Array([1, 2])); return ctx.getLineDash(); }, '[1,2]'],
+                [() => { ctx.setLineDash([1, '2']); return ctx.getLineDash(); }, '[1,2]'],
+                [() => { ctx.setLineDash([7, 7]); ctx.setLineDash([1, 'x']); return ctx.getLineDash(); }, '[7,7]'],
+                // An image argument is an image, a bitmap or a canvas, the engine's own.
+                [() => ctx.drawImage(null, 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage(undefined, 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage({}, 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage({}, NaN), 'threw TypeError'],
+                [() => ctx.drawImage(ctx.createImageData(1, 1), 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage({ rid: 1, loaded: true, width: 1, height: 1 }, 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage(empty, 0, 0), 'threw InvalidStateError'],
+                [() => ctx.drawImage(empty, NaN, 0), 'threw InvalidStateError'],
+                [() => ctx.drawImage(migo.createImage(), 0, 0), 'undefined'],
+                [() => ctx.createPattern(null, 'repeat'), 'threw TypeError'],
+                [() => ctx.createPattern({}, 'repeat'), 'threw TypeError'],
+                [() => ctx.createPattern(tile, undefined), 'threw SyntaxError'],
+                [() => ctx.createPattern(tile, 'REPEAT'), 'threw SyntaxError'],
+                [() => ctx.createPattern(tile, null), 'CanvasPattern'],
+                [() => ctx.createPattern(tile, ''), 'CanvasPattern'],
+                [() => ctx.createPattern(empty, 'bogus'), 'threw InvalidStateError'],
+                // The specification checks an image's usability before the repetition, so one still loading is a null
+                // pattern whatever the repetition (Chrome: a SyntaxError).
+                [() => ctx.createPattern(migo.createImage(), 'bogus'), 'null'],
+                [() => new ImageBitmap(), 'threw TypeError'],
+                // `setTransform(transform)`: a DOMMatrix2DInit, nothing for the identity, a mismatched pair a TypeError.
+                [() => { ctx.setTransform(2, 0, 0, 2, 0, 0); ctx.setTransform(); return matrix(); }, '[1,1,0]'],
+                [() => { ctx.setTransform(2, 0, 0, 2, 0, 0); ctx.setTransform(null); return matrix(); }, '[1,1,0]'],
+                [() => { ctx.setTransform({ m11: 2, m22: 3 }); return matrix(); }, '[2,3,0]'],
+                [() => { ctx.setTransform({ a: 2, d: 3, e: 4 }); return matrix(); }, '[2,3,4]'],
+                [() => ctx.setTransform({ a: 1, m11: 2 }), 'threw TypeError'],
+                [() => ctx.setTransform(5), 'threw TypeError'],
+                [() => { ctx.setTransform(2, 0, 0, 2, 0, 0); ctx.setTransform({ a: NaN }); return matrix(); }, '[2,2,0]'],
+            ];
+            for (const [f, want] of cases) {
+                const got = outcome(f);
+                if (got !== want) throw new Error(f.toString() + ' gave ' + got + ', want ' + want);
+            }
+        "#;
+        run_2d_frame("canvas2d_arguments.js", script);
+    }
+
+    /// A bitmap is drawn like the image it came from: `drawImage(bitmap)` and a pattern of one name its renderer id, and a
+    /// closed one is an InvalidStateError. (It used to be asked whether it had `loaded`, which a bitmap never has, so
+    /// it drew nothing.)
+    #[test]
+    fn an_image_bitmap_is_drawn() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            const image = migo.createImage();
+            // An image as a decode leaves it, without the decode: loaded, its renderer id, its size. No `src`, so the
+            // bitmap shares the id.
+            image._loaded = true;
+            image.complete = true;
+            image._shared_img_id = 0x40000003;
+            image.width = image.naturalWidth = 3;
+            image.height = image.naturalHeight = 2;
+            createImageBitmap(image).then((bitmap) => {
+                ctx.drawImage(bitmap, 4, 5);
+                ctx.fillStyle = ctx.createPattern(bitmap, 'repeat');
+                bitmap.close();
+                let threw = null;
+                try { ctx.drawImage(bitmap, 0, 0); } catch (e) { threw = e.name; }
+                if (threw !== 'InvalidStateError') globalThis.failure = 'a closed bitmap drew: ' + threw;
+            }).catch((e) => { globalThis.failure = e; });
+        "#;
+        let ops = run_2d_frame("image_bitmap.js", script);
+        let commands = canvas_commands(&ops);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Canvas2DCmd::DrawImage { image_id, dx, dy, dw, dh, .. }
+                    if *image_id == 0x40000003 && *dx == 4.0 && *dy == 5.0 && *dw == 3.0 && *dh == 2.0
+            )),
+            "the bitmap was not drawn: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Canvas2DCmd::SetFillStylePattern { image_id, .. } if *image_id == 0x40000003
+            )),
+            "no pattern of the bitmap: {commands:?}"
+        );
+    }
+
     /// The number G2 is about, reported by the runtime rather than inferred
     /// from the shape of the code.
     ///
@@ -9326,7 +9501,9 @@ pub(super) mod tests {
                 empty.width = 0;
                 const noPixels = named(() => ctx.createPattern(empty, "repeat"));
                 if (noPixels !== "InvalidStateError") throw new Error("empty canvas: " + noPixels);
-                if (ctx.createPattern({}, "repeat") !== null) throw new Error("not a source");
+                // Not an image source at all: a TypeError, as the WebIDL union has it (it used to be a null pattern).
+                const notASource = named(() => ctx.createPattern({}, "repeat"));
+                if (notASource !== "TypeError") throw new Error("not a source: " + notASource);
                 "#,
             )
             .expect("patterns must execute");
