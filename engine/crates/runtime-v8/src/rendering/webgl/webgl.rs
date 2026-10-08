@@ -490,6 +490,119 @@ pub(super) mod tests {
         );
     }
 
+    /// A program or shader is deleted as GL deletes it, once nothing uses it: the current program stays, answering every
+    /// call, until another is made current -- though it is not made current again nor takes a shader -- and a shader
+    /// stays while it is attached to a program that is there. Once gone, a call that takes it is INVALID_VALUE and
+    /// `isProgram` / `isShader` answer false; another context's is INVALID_OPERATION; null is a TypeError.
+    #[test]
+    fn programs_and_shaders_go_when_nothing_uses_them() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "object_lifetimes.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const errOf = (gl) => (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const VALUE = 0x0501, OPERATION = 0x0502;
+                const gl = new WebGLRenderingContext({ _rid: 320, width: 1, height: 1 }, {});
+                const other = new WebGLRenderingContext({ _rid: 321, width: 1, height: 1 }, {});
+                const err = errOf(gl);
+                const vs = gl.createShader(0x8b31), fs = gl.createShader(0x8b30);
+                const p = gl.createProgram();
+                gl.attachShader(p, vs); gl.attachShader(p, fs);
+                gl._programParameterCache.set(p.id, new Map([[0x8b82, 1]]));       // LINK_STATUS: linked
+                p._links = 1;
+                gl.useProgram(p); err(0, "the program in use");
+                gl.deleteProgram(p); err(0, "deleted while in use");
+                check(gl.isProgram(p) && gl.getParameter(gl.CURRENT_PROGRAM) === p, "it stays, and current");
+                check(gl.getAttachedShaders(p).length === 2, "with its shaders"); err(0, "answering");
+                gl.linkProgram(p); err(0, "it may be linked");
+                gl.useProgram(p); err(OPERATION, "not made current again");
+                gl.attachShader(p, gl.createShader(0x8b31)); err(OPERATION, "nor takes a shader");
+                gl.deleteShader(vs);
+                check(gl.isShader(vs), "a deleted shader attached to it stays"); err(0, "and answers");
+                gl.shaderSource(vs, "void main(){}"); err(0, "and takes a source");
+                check(gl.getShaderSource(vs) === "void main(){}", "and answers it");
+                gl.useProgram(null);
+                check(!gl.isProgram(p) && !gl.isShader(vs) && gl.isShader(fs), "now the program is gone, and its deleted shader");
+                check(gl.getAttachedShaders(p) === null, "a gone program"); err(VALUE, "INVALID_VALUE");
+                check(gl.getProgramParameter(p, 0x8b80) === null, "answers nothing"); err(VALUE, "INVALID_VALUE");
+                check(gl.getAttribLocation(p, "a") === -1, "-1"); err(VALUE, "INVALID_VALUE");
+                check(gl.getUniformLocation(p, "u") === null, "null"); err(VALUE, "INVALID_VALUE");
+                gl.linkProgram(p); err(VALUE, "is not linked");
+                gl.validateProgram(p); err(VALUE, "nor validated");
+                gl.bindAttribLocation(p, 0, "a"); err(VALUE, "nor bound to");
+                check(gl.getShaderSource(vs) === null, "a gone shader has no source"); err(VALUE, "INVALID_VALUE");
+                check(gl.getShaderParameter(vs, 0x8b81) === null, "nor a parameter"); err(VALUE, "INVALID_VALUE");
+                gl.compileShader(vs); err(VALUE, "nor compiles");
+                gl.deleteProgram(p); err(0, "deleting it again does nothing");
+                // A deleted program in use takes no shader, even of a type it lacks.
+                const half = gl.createProgram();
+                gl.attachShader(half, gl.createShader(0x8b30));
+                gl._programParameterCache.set(half.id, new Map([[0x8b82, 1]]));
+                half._links = 1;
+                gl.useProgram(half); gl.deleteProgram(half);
+                gl.attachShader(half, gl.createShader(0x8b31)); err(OPERATION, "a deleted program in use takes no shader");
+                gl.useProgram(null);
+                // What the driver answers about a program is asked of none that is gone or another context's.
+                const gl2 = new WebGL2RenderingContext({ _rid: 322, width: 1, height: 1 }, {});
+                const gone = gl2.createProgram();
+                gl2.deleteProgram(gone);
+                check(gl2.getActiveUniformBlockName(gone, 0) === null, "a gone program has no blocks");
+                errOf(gl2)(VALUE, "INVALID_VALUE");
+                check(gl2.getActiveUniformBlockName(new WebGL2RenderingContext({ _rid: 323, width: 1, height: 1 }, {}).createProgram(), 0) === null,
+                    "another context's has none here");
+                errOf(gl2)(OPERATION, "INVALID_OPERATION");
+                // A shader deleted while attached to a program not in use stays until detached.
+                const q = gl.createProgram(), s = gl.createShader(0x8b30);
+                gl.attachShader(q, s); gl.deleteShader(s);
+                check(gl.isShader(s), "attached, it stays");
+                gl.detachShader(q, s); err(0, "detached");
+                check(!gl.isShader(s), "then it goes");
+                gl.attachShader(q, s); err(VALUE, "a gone shader is attached to nothing");
+                // A program not in use goes when deleted, and a deleted shader it held with it.
+                const r = gl.createProgram(), t = gl.createShader(0x8b31);
+                gl.attachShader(r, t); gl.deleteShader(t);
+                check(gl.isShader(t), "attached to a program, a deleted shader stays");
+                gl.deleteProgram(r);
+                check(!gl.isProgram(r) && !gl.isShader(t), "the program goes, and the shader with it");
+                // Another context's object, and null.
+                const foreign = other.createProgram();
+                gl.linkProgram(foreign); err(OPERATION, "another context's program");
+                check(gl.getProgramParameter(foreign, 0x8b82) === null, "answers nothing here"); err(OPERATION, "INVALID_OPERATION");
+                check(!gl.isProgram(foreign), "and is no program here");
+                gl.deleteProgram(foreign); err(OPERATION, "nor deleted here");
+                check(other.isProgram(foreign), "it is still the other's");
+                for (const call of [() => gl.getProgramParameter(null, 0x8b82), () => gl.linkProgram(null), () => gl.getShaderSource(null),
+                        () => gl.getAttribLocation(null, "a"), () => gl.shaderSource(null, "x"), () => gl.compileShader({})]) {
+                    let threw = false;
+                    try { call(); } catch (e) { threw = e instanceof TypeError; }
+                    check(threw, `not a program or shader is a TypeError: ${call}`);
+                }
+                gl.deleteProgram(null); gl.deleteShader(null); err(0, "deleting null does nothing");
+                gl.flush();
+                "#,
+            )
+            .expect("programs and shaders should go as GL deletes them");
+        // The renderer deletes what is gone, when it goes: the first program deleted is the one that was in use, once
+        // another was made current, and the first shader deleted is the one attached to it, after it.
+        let commands = drain_gl_commands(&render_rx);
+        let first = |pick: &dyn Fn(&GLCmd) -> bool| commands.iter().position(pick);
+        let in_use =
+            first(&|cmd| matches!(cmd, GLCmd::UseProgram { program_id, .. } if *program_id != 0))
+                .expect("a program was made current");
+        let none = first(&|cmd| matches!(cmd, GLCmd::UseProgram { program_id: 0, .. }))
+            .expect("then none was");
+        let program = first(&|cmd| matches!(cmd, GLCmd::DeleteProgram { .. }))
+            .expect("a program was deleted");
+        let shader =
+            first(&|cmd| matches!(cmd, GLCmd::DeleteShader { .. })).expect("a shader was deleted");
+        assert!(
+            in_use < none && none < program && program < shader,
+            "use {in_use}, none {none}, program deleted {program}, shader deleted {shader}: nothing in use is deleted"
+        );
+    }
+
     /// WebGL 1's HALF_FLOAT_OES is ES 3.0's HALF_FLOAT to the driver: a read of it reaches the renderer as one, into
     /// the Uint16Array it was given.
     #[test]
@@ -2427,7 +2540,7 @@ pub(super) mod tests {
 
     /// What is attached to a program is the facade's to know: `getAttachedShaders` and ATTACHED_SHADERS answer from
     /// it, follow every attach and detach (a cached count went stale), and refuse what GL would: a shader already
-    /// attached or of a type already attached, detaching one that is not, a deleted program or shader. `createShader`
+    /// attached or of a type already attached, detaching one that is not, a program or shader that is gone. `createShader`
     /// of a type that is not one is INVALID_ENUM and null. `validateProgram` drops the cached VALIDATE_STATUS.
     #[test]
     fn shader_attachment_is_answered_from_what_the_calls_did() {
@@ -2460,7 +2573,7 @@ pub(super) mod tests {
                 gl.deleteShader(fs);
                 check(gl.getAttachedShaders(p).includes(fs), "a deleted shader stays attached until detached");
                 gl.attachShader(p, fs);
-                check(gl.getError() === OPERATION, "a deleted shader cannot be attached");
+                check(gl.getError() === OPERATION, "a deleted shader still attached is attached once");
                 let threw = false;
                 try { gl.attachShader(null, vs); } catch (e) { threw = e instanceof TypeError; }
                 check(threw, "a null program is a TypeError");
@@ -2468,7 +2581,8 @@ pub(super) mod tests {
                 gl.validateProgram(p);
                 check(!gl._programParameterCache.get(p.id).has(0x8b83), "validateProgram drops the cached VALIDATE_STATUS");
                 gl.deleteProgram(p);
-                check(gl.getAttachedShaders(p) === null && gl.getError() === OPERATION, "a deleted program");
+                check(gl.getAttachedShaders(p) === null && gl.getError() === 0x0501, "a deleted program is gone: INVALID_VALUE");
+                check(!gl.isShader(fs) && gl.isShader(vs2) === true, "and with it the deleted shader it held");
                 gl.sampleCoverage(0.5, true);
                 gl.flush();
                 "#,
@@ -2787,8 +2901,8 @@ pub(super) mod tests {
                 check(gl.getFragDataLocation(p, "webgl_color") === -1 && gl.getError() === 0, "a reserved output name");
                 check(gl.getFragDataLocation(p, "c@") === -1 && gl.getError() === 0x0501, "an output name with a @");
                 gl.deleteProgram(q);
-                check(gl.getFragDataLocation(q, "color") === -1 && gl.getError() === 0x0502, "a deleted program");
-                check(gl.getFragDataLocation(q, "c@") === -1 && gl.getError() === 0x0502, "a deleted program, before the name");
+                check(gl.getFragDataLocation(q, "color") === -1 && gl.getError() === 0x0501, "a deleted program");
+                check(gl.getFragDataLocation(q, "c@") === -1 && gl.getError() === 0x0501, "a deleted program, before the name");
                 "#,
             )
             .expect("the getUniform script should run");
@@ -5818,7 +5932,8 @@ pub(super) mod tests {
                 "webgl2_tf_varying.js",
                 r#"
                 const ctx = new WebGL2RenderingContext({ _rid: 11, width: 1, height: 1 }, {});
-                const program = { _id: 17, _kind: "program" };
+                const program = ctx.createProgram();
+                program._id = 17;                       // the id the responder answers for
                 const info = ctx.getTransformFeedbackVarying(program, 0);
                 if (!info) throw new Error("expected transform feedback varying metadata");
                 if (info.name !== "v_pos") throw new Error("varying name mismatch");

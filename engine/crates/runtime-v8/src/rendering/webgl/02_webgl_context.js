@@ -2020,6 +2020,41 @@ function _hasEnabledDivisorZero(shadow) {
 const _PROGRAM_PARAMETERS = [0x8b80, 0x8b82, 0x8b83, 0x8b85, 0x8b89, 0x8b86];
 const _WEBGL2_PROGRAM_PARAMETERS = [0x8c7f, 0x8c83, 0x8a36];
 
+// ---- Program and shader objects ------------------------------------------------------------------------------------
+// GL deletes a program or a shader when asked only once nothing uses it (ES 3.0 2.12.3, 2.12.1): a program deleted while
+// it is the current program stays until another is made current; a shader deleted while attached stays until it is
+// detached or its program goes. Until then it answers every call as before -- DELETE_STATUS true -- but a deleted
+// program is not made current again and takes no shader (INVALID_OPERATION), as a browser has it. Once gone, a call
+// that takes it is INVALID_VALUE (`_objectError`), and `isProgram` / `isShader` answer false. The renderer is told to
+// delete it then, and not before: its table of programs and shaders is the one every call and draw names it by, so
+// it holds an object exactly as long as GL does.
+
+// Whether `program` is gone: deleted, and not the current program.
+function programGone(ctx, program) {
+    return program._deleted === true && ctx._programBinding !== program;
+}
+
+// Whether `shader` is gone: deleted, and attached to no program that is there.
+function shaderGone(shader) {
+    return shader._deleted === true && !(shader._attachments > 0);
+}
+
+// `program` went: GL detaches its shaders -- a deleted one of them goes with it -- and the renderer deletes it.
+function programGoes(ctx, program) {
+    _rawDeleteProgram(program._id);
+    ctx._invalidateProgramCaches(program._id);
+    const attached = program._shaders;
+    program._shaders = [];
+    if (attached) for (let k = 0; k < attached.length; k++) shaderReleased(attached[k]);
+}
+
+// `shader` was detached from a program, or its program went: a deleted shader attached to no other goes, and the
+// renderer deletes it.
+function shaderReleased(shader) {
+    shader._attachments--;
+    if (shaderGone(shader)) _rawDeleteShader(shader._id);
+}
+
 // The arguments `vertexAttribPointer` / `vertexAttribIPointer` accept: what the host's decoder checks
 // (`attribute_pointer_error`), so that the shadow holds what the render side took and not what a refused call asked
 // for -- a size of 1 to 4, a type of the call's, a stride of 0 to 255 and an offset not negative, a packed type of size
@@ -2725,8 +2760,8 @@ class WebGLRenderingContext {
         return new WebglObject(id, "program", this._canvasId);
     }
 
-    // A program that did not link, a deleted one or another context's is INVALID_OPERATION, and the program in use
-    // stays in use (ES 3.0 2.12.3). Whether it linked is asked once per link and kept, as `getProgramParameter`
+    // A program that did not link, a deleted one -- even the current one, as a browser has it -- or another context's is
+    // INVALID_OPERATION, and the program in use stays in use (ES 3.0 2.12.3). Whether it linked is asked once per link and kept, as `getProgramParameter`
     // keeps it -- a browser asks its GPU process the same question the same way.
     useProgram(program) {
         const bound = program === undefined ? null : program;
@@ -2740,26 +2775,28 @@ class WebGLRenderingContext {
                 return;
             }
         }
+        const previous = this._programBinding;
         this._programBinding = bound;
         // useProgram: opcode 8, H C U. 0 uses none.
         encodeUseProgram(this._canvasId, bound ? bound._id >>> 0 : 0);
+        // A deleted program that was current is gone now (`programGone`), and is deleted after it stopped being used.
+        if (previous !== null && previous !== bound && previous._deleted === true) programGoes(this, previous);
     }
 
     linkProgram(program) {
-        const programId = program?.id;
-        _rawLinkProgram(programId);
-        if (programId !== undefined) {
-            // Linking can change active attrib/uniform locations and link status, and a uniform location from an
-            // earlier link is no longer the program's (`getUniform`).
-            this._invalidateProgramCaches(programId);
-            program._links = (program._links | 0) + 1;
-        }
+        if (this._objectError("linkProgram", 1, program, "program") !== 0) return;
+        _rawLinkProgram(program._id);
+        // Linking can change active attrib/uniform locations and link status, and a uniform location from an
+        // earlier link is no longer the program's (`getUniform`).
+        this._invalidateProgramCaches(program._id);
+        program._links = (program._links | 0) + 1;
     }
 
     getProgramParameter(program, pname) {
-        const programId = program?.id;
-        if (programId === undefined) return 0;
+        if (this._objectError("getProgramParameter", 1, program, "program") !== 0) return null;
+        const programId = program._id;
         pname = Number(pname) >>> 0;
+        if (pname === 0x8b80) return program._deleted === true;           // DELETE_STATUS: the facade deletes it
         if (!_listHas(_PROGRAM_PARAMETERS, pname) && !(this._isWebGL2() && _listHas(_WEBGL2_PROGRAM_PARAMETERS, pname))) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
             return null;
@@ -2784,8 +2821,7 @@ class WebGLRenderingContext {
             inner = new Map();
             this._programParameterCache.set(programId, inner);
         }
-        if (pname === WebglConstants.LINK_STATUS && program instanceof WebglObject && !program._deleted &&
-                program._ownerId === this._canvasId) {
+        if (pname === WebglConstants.LINK_STATUS) {
             return this._linkResult(program);
         }
         const param = _rawGetProgramParameter(programId, pname);
@@ -2818,16 +2854,24 @@ class WebGLRenderingContext {
     }
 
     getProgramInfoLog(program) {
-        return _rawGetProgramInfoLog(program?.id);
+        if (this._objectError("getProgramInfoLog", 1, program, "program") !== 0) return null;
+        return _rawGetProgramInfoLog(program._id);
     }
 
+    // Deleting null, or what is already deleted, does nothing; another context's object is INVALID_OPERATION. A program
+    // that is not the current one goes now; the current one when another is made current (`useProgram`).
     deleteProgram(program) {
-        if (program instanceof WebglObject) program._deleted = true;
-        const programId = program?.id;
-        _rawDeleteProgram(programId);
-        if (programId !== undefined) {
-            this._invalidateProgramCaches(programId);
+        if (program === null || program === undefined) return;
+        if (!(program instanceof WebglObject) || program._kind !== "program") {
+            throw new TypeError(`Failed to execute 'deleteProgram' on '${this._isWebGL2() ? "WebGL2RenderingContext" : "WebGLRenderingContext"}': parameter 1 is not of type 'WebGLProgram'.`);
         }
+        if (program._ownerId !== this._canvasId) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        if (program._deleted) return;
+        program._deleted = true;
+        if (this._programBinding !== program) programGoes(this, program);
     }
 
     createShader(type) {
@@ -2844,23 +2888,27 @@ class WebGLRenderingContext {
     }
 
     shaderSource(shader, src) {
+        if (this._objectError("shaderSource", 1, shader, "shader") !== 0) return;
         if (!allowWebglShaderSource(this._canvasId, src)) return;
         // What getShaderSource answers: the string the content gave, as a string.
-        if (shader) shader._source = String(src);
-        return _rawShaderSource(this._canvasId, shader?.id, src);
+        shader._source = String(src);
+        _rawShaderSource(this._canvasId, shader._id, src);
     }
 
     getShaderSource(shader) {
-        return shader && shader._source !== undefined ? shader._source : "";
+        if (this._objectError("getShaderSource", 1, shader, "shader") !== 0) return null;
+        return shader._source !== undefined ? shader._source : "";
     }
 
     compileShader(shader) {
-        _rawCompileShader(shader?.id);
+        if (this._objectError("compileShader", 1, shader, "shader") !== 0) return;
+        _rawCompileShader(shader._id);
     }
 
     getShaderParameter(shader, pname) {
-        const shaderId = shader?.id;
-        if (shaderId === undefined) return 0;
+        if (this._objectError("getShaderParameter", 1, shader, "shader") !== 0) return null;
+        const shaderId = shader._id;
+        if ((Number(pname) >>> 0) === 0x8b80) return shader._deleted === true;   // DELETE_STATUS: the facade deletes it
         pname = Number(pname) >>> 0;
         if (pname !== 0x8b4f && pname !== 0x8b80 && pname !== 0x8b81) {       // SHADER_TYPE, DELETE_STATUS, COMPILE_STATUS
             recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
@@ -2887,37 +2935,42 @@ class WebGLRenderingContext {
         return ret;
     }
 
-    // What is attached to a program is kept on it, and `getAttachedShaders` and ATTACHED_SHADERS answer from there.
-    // Attaching a shader already attached, or one of a type already attached, is INVALID_OPERATION; so is detaching
-    // one that is not. A deleted program or shader, or another context's, is INVALID_OPERATION; a value that is not
-    // one is a TypeError.
-    _checkProgramAndShader(name, program, shader) {
-        if (!(program instanceof WebglObject) || program._kind !== "program") {
-            throw new TypeError(`Failed to execute '${name}' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLProgram'.`);
+    // The program or shader a call takes as its parameter `position`, of `kind` ("program" or "shader"): a value that is
+    // not one -- null among them -- is a TypeError, as WebIDL has it; another context's INVALID_OPERATION; one that is
+    // gone (`programGone`, `shaderGone`) INVALID_VALUE. 0 when the call may use it, else the error, recorded.
+    _objectError(method, position, object, kind) {
+        if (!(object instanceof WebglObject) || object._kind !== kind) {
+            throw new TypeError(`Failed to execute '${method}' on '${this._isWebGL2() ? "WebGL2RenderingContext" : "WebGLRenderingContext"}': parameter ${position} is not of type '${kind === "program" ? "WebGLProgram" : "WebGLShader"}'.`);
         }
-        if (!(shader instanceof WebglObject) || shader._kind !== "shader") {
-            throw new TypeError(`Failed to execute '${name}' on 'WebGLRenderingContext': parameter 2 is not of type 'WebGLShader'.`);
-        }
-        if (!this._isLive(program, "program") || !this._isLive(shader, "shader")) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
-            return false;
-        }
-        return true;
+        const error = object._ownerId !== this._canvasId ? GL_INVALID_OPERATION
+            : (kind === "program" ? programGone(this, object) : shaderGone(object)) ? GL_INVALID_VALUE : 0;
+        if (error !== 0) recordGpuPreflightError(this._canvasId, error);
+        return error;
     }
+
+    // What is attached to a program is kept on it, and `getAttachedShaders` and ATTACHED_SHADERS answer from there, and
+    // on each shader how many programs it is attached to (`shaderGone`). The program and the shader as
+    // `_objectError` judges them; then attaching to a deleted program, a shader already attached, or one of a type
+    // already attached is INVALID_OPERATION, and so is detaching one that is not.
     attachShader(program, shader) {
-        if (!this._checkProgramAndShader("attachShader", program, shader)) return;
+        if (this._objectError("attachShader", 1, program, "program") !== 0 ||
+            this._objectError("attachShader", 2, shader, "shader") !== 0) return;
         const attached = program._shaders || (program._shaders = []);
-        for (let k = 0; k < attached.length; k++) {
-            if (attached[k] === shader || attached[k]._type === shader._type) {
-                recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
-                return;
-            }
+        let refused = program._deleted === true;
+        for (let k = 0; k < attached.length && !refused; k++) {
+            refused = attached[k] === shader || attached[k]._type === shader._type;
+        }
+        if (refused) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
         }
         attached.push(shader);
+        shader._attachments = (shader._attachments | 0) + 1;
         _rawAttachShader(program._id, shader._id);
     }
     detachShader(program, shader) {
-        if (!this._checkProgramAndShader("detachShader", program, shader)) return;
+        if (this._objectError("detachShader", 1, program, "program") !== 0 ||
+            this._objectError("detachShader", 2, shader, "shader") !== 0) return;
         const attached = program._shaders;
         let at = -1;
         if (attached) for (let k = 0; k < attached.length; k++) if (attached[k] === shader) at = k;
@@ -2927,26 +2980,15 @@ class WebGLRenderingContext {
         }
         attached.splice(at, 1);
         _rawDetachShader(program._id, shader._id);
+        shaderReleased(shader);
     }
     getAttachedShaders(program) {
-        if (!(program instanceof WebglObject) || program._kind !== "program") {
-            throw new TypeError("Failed to execute 'getAttachedShaders' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLProgram'.");
-        }
-        if (!this._isLive(program, "program")) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
-            return null;
-        }
+        if (this._objectError("getAttachedShaders", 1, program, "program") !== 0) return null;
         return program._shaders ? program._shaders.slice() : [];
     }
     // VALIDATE_STATUS and the info log change with it, so the cached VALIDATE_STATUS goes.
     validateProgram(program) {
-        if (!(program instanceof WebglObject) || program._kind !== "program") {
-            throw new TypeError("Failed to execute 'validateProgram' on 'WebGLRenderingContext': parameter 1 is not of type 'WebGLProgram'.");
-        }
-        if (!this._isLive(program, "program")) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
-            return;
-        }
+        if (this._objectError("validateProgram", 1, program, "program") !== 0) return;
         const cached = this._programParameterCache.get(program._id);
         if (cached) cached.delete(0x8b83);     // VALIDATE_STATUS
         _rawValidateProgram(program._id);
@@ -2956,16 +2998,24 @@ class WebGLRenderingContext {
     }
 
     getShaderInfoLog(shader) {
-        return _rawGetShaderInfoLog(shader?.id);
+        if (this._objectError("getShaderInfoLog", 1, shader, "shader") !== 0) return null;
+        return _rawGetShaderInfoLog(shader._id);
     }
 
+    // As `deleteProgram`: a shader attached to a program goes once it is attached to none (`shaderGone`).
     deleteShader(shader) {
-        if (shader instanceof WebglObject) shader._deleted = true;
-        const shaderId = shader?.id;
-        _rawDeleteShader(shaderId);
-        if (shaderId !== undefined) {
-            this._shaderParameterCache.delete(shaderId);
+        if (shader === null || shader === undefined) return;
+        if (!(shader instanceof WebglObject) || shader._kind !== "shader") {
+            throw new TypeError(`Failed to execute 'deleteShader' on '${this._isWebGL2() ? "WebGL2RenderingContext" : "WebGLRenderingContext"}': parameter 1 is not of type 'WebGLShader'.`);
         }
+        if (shader._ownerId !== this._canvasId) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return;
+        }
+        if (shader._deleted) return;
+        shader._deleted = true;
+        this._shaderParameterCache.delete(shader._id);
+        if (shaderGone(shader)) _rawDeleteShader(shader._id);
     }
 
     // Every draw samples no incomplete WebGL 1 texture (`withholdIncompleteTextures`).
@@ -3082,8 +3132,8 @@ class WebGLRenderingContext {
     // A name WebGL refuses is INVALID_VALUE, a reserved one -- GLSL's gl_ and WebGL's webgl_ and _webgl_ -- INVALID_OPERATION
     // (WebGL 1.0 6.20, ES 3.0 2.11.5), then an index past MAX_VERTEX_ATTRIBS INVALID_VALUE.
     bindAttribLocation(program, index, name) {
-        const programId = program?.id;
-        if (programId === undefined) return;
+        if (this._objectError("bindAttribLocation", 1, program, "program") !== 0) return;
+        const programId = program._id;
         const key = `${name}`;
         const error = _glslNameError(key, this._maxNameLength());
         if (error !== 0 || _isReservedGlslName(key) || StringPrototypeStartsWith(key, "gl_")) {
@@ -3103,9 +3153,15 @@ class WebGLRenderingContext {
     }
     isBuffer(object) { return this._isLive(object, "buffer") && object._everBound === true; }
     isFramebuffer(object) { return this._isLive(object, "framebuffer") && object._everBound === true; }
-    isProgram(object) { return this._isLive(object, "program"); }
+    isProgram(object) {
+        return object instanceof WebglObject && object._kind === "program" && object._ownerId === this._canvasId &&
+            !programGone(this, object);
+    }
     isRenderbuffer(object) { return this._isLive(object, "renderbuffer") && object._everBound === true; }
-    isShader(object) { return this._isLive(object, "shader"); }
+    isShader(object) {
+        return object instanceof WebglObject && object._kind === "shader" && object._ownerId === this._canvasId &&
+            !shaderGone(object);
+    }
     isTexture(object) { return this._isLive(object, "texture") && object._target !== undefined; }
 
     isContextLost() {
@@ -3161,8 +3217,8 @@ class WebGLRenderingContext {
     // A name WebGL refuses is INVALID_VALUE and -1, and a reserved one finds nothing; neither asks GL. Both are checked
     // only past the cache, which holds nothing but names GL was asked.
     getAttribLocation(program, name) {
-        const programId = program?.id;
-        if (programId === undefined) return -1;
+        if (this._objectError("getAttribLocation", 1, program, "program") !== 0) return -1;
+        const programId = program._id;
         const key = `${name}`;
         let inner = this._attribLocationCache.get(programId);
         if (inner) {
@@ -3186,16 +3242,16 @@ class WebGLRenderingContext {
     }
 
     getActiveAttrib(program, index) {
-        const programId = program?.id;
-        if (programId === undefined) return null;
+        if (this._objectError("getActiveAttrib", 1, program, "program") !== 0) return null;
+        const programId = program._id;
         return this._activeInfo(
             this._activeAttribCache, _rawGetActiveAttrib, programId, index >>> 0,
         );
     }
 
     getActiveUniform(program, index) {
-        const programId = program?.id;
-        if (programId === undefined) return null;
+        if (this._objectError("getActiveUniform", 1, program, "program") !== 0) return null;
+        const programId = program._id;
         return this._activeInfo(
             this._activeUniformCache, _rawGetActiveUniform, programId, index >>> 0,
         );
@@ -3456,8 +3512,8 @@ class WebGLRenderingContext {
     // A location belongs to the program, under the name it was asked by, until the program links again: `getUniform`
     // asks the driver by that name. Names are checked as `getAttribLocation` checks them (null for one refused or reserved).
     getUniformLocation(program, name) {
-        const programId = program?.id;
-        if (programId === undefined) return null;
+        if (this._objectError("getUniformLocation", 1, program, "program") !== 0) return null;
+        const programId = program._id;
         const key = `${name}`;
         let inner = this._uniformLocationCache.get(programId);
         if (inner) {
@@ -3498,6 +3554,7 @@ class WebGLRenderingContext {
         if (!(location instanceof WebglObject) || location._kind !== "uniformLocation") {
             throw new TypeError("Failed to execute 'getUniform' on 'WebGLRenderingContext': parameter 2 is not of type 'WebGLUniformLocation'.");
         }
+        if (this._objectError("getUniform", 1, program, "program") !== 0) return null;
         if (location._program !== program || location._link !== (program._links | 0)) {
             recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
             return null;
@@ -3510,13 +3567,7 @@ class WebGLRenderingContext {
     // the sizes and the offsets -- a uniform's value and a fragment output's location. The answer is `{v}` or `{e}`:
     // the error is the specification's, raised here so the context's `getError` sees it.
     _programState(method, program, query, extra, name) {
-        if (!(program instanceof WebglObject) || program._kind !== "program") {
-            throw new TypeError(`${method}: parameter 1 is not of type 'WebGLProgram'.`);
-        }
-        if (program._deleted || program._ownerId !== this._canvasId) {
-            recordGpuPreflightError(this._canvasId, WebglConstants.INVALID_OPERATION);
-            return undefined;
-        }
+        if (this._objectError(method, 1, program, "program") !== 0) return undefined;
         let answer;
         try { answer = JSON.parse(_rawGetGlState(this._canvasId, query, program._id, extra, name)); } catch (_) { return undefined; }
         if (answer === null || typeof answer !== "object") return undefined;
@@ -6418,11 +6469,11 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
 
     // ---- Uniform Buffer Objects --------------------------------
     getUniformBlockIndex(program, name) {
-        const programId = program?.id;
         // The same sentinel a lookup that finds no block returns, so one check
         // covers both. `-1` would be a third answer this API never otherwise
         // produces, and a GLuint return type cannot carry it anyway.
-        if (programId === undefined) return WebglConstants.INVALID_INDEX;
+        if (this._objectError("getUniformBlockIndex", 1, program, "program") !== 0) return WebglConstants.INVALID_INDEX;
+        const programId = program._id;
         let inner = this._uniformBlockIndexCache.get(programId);
         let index = inner && inner.get(name);
         if (index === undefined) {
@@ -6439,14 +6490,8 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // The location of a fragment shader output (`layout(location = n) out`), -1 for a name that is not one. Names are
     // checked as `getAttribLocation` checks them.
     getFragDataLocation(program, name) {
-        if (!(program instanceof WebglObject) || program._kind !== "program") {
-            throw new TypeError("Failed to execute 'getFragDataLocation' on 'WebGL2RenderingContext': parameter 1 is not of type 'WebGLProgram'.");
-        }
+        if (this._objectError("getFragDataLocation", 1, program, "program") !== 0) return -1;
         const key = `${name}`;
-        if (!this._isLive(program, "program")) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
-            return -1;
-        }
         const error = _glslNameError(key, this._maxNameLength());
         if (error !== 0) {
             recordGpuPreflightError(this._canvasId, error);
@@ -6502,9 +6547,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     getActiveUniforms(program, uniformIndices, pname) {
-        if (!(program instanceof WebglObject) || program._kind !== "program") {
-            throw new TypeError("getActiveUniforms: parameter 1 is not of type 'WebGLProgram'.");
-        }
+        if (this._objectError("getActiveUniforms", 1, program, "program") !== 0) return null;
         pname = pname >>> 0;
         // UNIFORM_NAME_LENGTH (0x8A39) is the one pname in that run that WebGL leaves out.
         if (pname < WebglConstants.UNIFORM_TYPE || pname > WebglConstants.UNIFORM_IS_ROW_MAJOR || pname === 0x8a39) {
@@ -6523,6 +6566,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     uniformBlockBinding(program, uniformBlockIndex, uniformBlockBinding) {
+        if (this._objectError("uniformBlockBinding", 1, program, "program") !== 0) return;
         _rawUniformBlockBinding(program._id, uniformBlockIndex, uniformBlockBinding);
     }
     // The record is made of the numbers each argument converts to; an argument that is not a Number takes the op
@@ -7269,7 +7313,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
      * it can't legally appear in GLSL identifiers.
      */
     transformFeedbackVaryings(program, varyings, bufferMode) {
-        if (!program || !program._id) return;
+        if (this._objectError("transformFeedbackVaryings", 1, program, "program") !== 0) return;
         // INTERLEAVED_ATTRIBS or SEPARATE_ATTRIBS, else INVALID_ENUM; separate, no more varyings than
         // MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS, else INVALID_VALUE (ES 3.0 2.11.8).
         const mode = Number(bufferMode) >>> 0;
@@ -7285,7 +7329,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         _rawTransformFeedbackVaryings(this._canvasId, program._id, joined, bufferMode);
     }
     getTransformFeedbackVarying(program, index) {
-        if (!program || !program._id) return null;
+        if (this._objectError("getTransformFeedbackVarying", 1, program, "program") !== 0) return null;
         return this._activeInfo(
             this._transformFeedbackVaryingCache,
             _fetchTransformFeedbackVarying,
