@@ -2020,6 +2020,101 @@ function _hasEnabledDivisorZero(shadow) {
 const _PROGRAM_PARAMETERS = [0x8b80, 0x8b82, 0x8b83, 0x8b85, 0x8b89, 0x8b86];
 const _WEBGL2_PROGRAM_PARAMETERS = [0x8c7f, 0x8c83, 0x8a36];
 
+// ---- blitFramebuffer ---------------------------------------------------------------------------------------------------
+// The images a blit reads and writes. The default framebuffer's are the drawing buffer's -- one colour image, one
+// depth-stencil one, single-sampled -- each one image whoever names it.
+const _DEFAULT_COLOUR_IMAGE = {}, _DEFAULT_DEPTH_STENCIL_IMAGE = {};
+
+// What a blit reads from or writes to at `point` (COLOR_ATTACHMENTi, DEPTH_ATTACHMENT, STENCIL_ATTACHMENT) of `fb`:
+// the object, its level, face and layer, its sized format and samples; null for no image there.
+function blitImage(ctx, fb, point) {
+    if (fb === null) {
+        if (point === 0x8ce0) {
+            return { object: _DEFAULT_COLOUR_IMAGE, level: 0, face: 0, layer: 0, format: ctx._drawingBufferFormat, samples: 0 };
+        }
+        const format = ctx._drawingBufferDepthStencil;
+        const info = format === 0 ? undefined : _FORMAT_INFO.get(format);
+        if (info === undefined || (point === 0x8d00 ? info[4] : info[5]) === 0) return null;
+        return { object: _DEFAULT_DEPTH_STENCIL_IMAGE, level: 0, face: 0, layer: 0, format, samples: 0 };
+    }
+    const record = fb._attachments ? fb._attachments.get(point) : undefined;
+    const image = record ? _attachmentImage(ctx, record) : undefined;
+    if (!image) return null;
+    return { object: record.object, level: record.level | 0, face: record.face | 0, layer: record.layer | 0,
+        format: image[0], samples: image[3] };
+}
+
+function _sameImage(a, b) {
+    return a.object === b.object && a.level === b.level && a.face === b.face && a.layer === b.layer;
+}
+
+// The colour image a blit reads: the read buffer's, null for NONE or for no image there.
+function blitReadColour(ctx, fb) {
+    if (fb === null) return ctx._defaultReadBuffer === 0 ? null : blitImage(ctx, null, 0x8ce0);
+    const point = fb._readBuffer === undefined ? 0x8ce0 : fb._readBuffer;
+    return point === 0 ? null : blitImage(ctx, fb, point);
+}
+
+// The colour images a blit writes: each draw buffer's that has one.
+function blitDrawColours(ctx, fb) {
+    const images = [];
+    if (fb === null) {
+        if (ctx._defaultDrawBuffer !== 0) images.push(blitImage(ctx, null, 0x8ce0));
+        return images;
+    }
+    const buffers = fb._drawBuffers === undefined ? [0x8ce0] : fb._drawBuffers;
+    for (let k = 0; k < buffers.length; k++) {
+        const image = buffers[k] === 0 ? null : blitImage(ctx, fb, buffers[k]);
+        if (image !== null) images.push(image);
+    }
+    return images;
+}
+
+// Whether `fb` is multisampled: an object one with an image of samples (a complete one has them alike).
+function blitSamples(ctx, fb) {
+    if (fb === null || !fb._attachments) return 0;
+    for (const record of fb._attachments.values()) {
+        const image = _attachmentImage(ctx, record);
+        if (image && image[3] > 0) return image[3];
+    }
+    return 0;
+}
+
+// The INVALID_OPERATION ES 3.0 4.3.3 and WebGL 2.0 5.38 have for a blit whose arguments are sound and whose framebuffers
+// are complete, else 0: a multisampled draw framebuffer; for colour, no read image, a draw image that is the read one,
+// integer data with LINEAR, or integer and other data (or signed and unsigned integers) between them; for depth or
+// stencil, a draw buffer the read framebuffer lacks or of another format, or the same image; and from a multisampled
+// read framebuffer, a draw image of another format or a rectangle that is not the read one.
+function blitImagesError(ctx, mask, filter, sameRectangles) {
+    const read = ctx._readFramebufferBinding, draw = ctx._framebufferBinding;
+    if (blitSamples(ctx, draw) > 0) return GL_INVALID_OPERATION;
+    const multisampled = blitSamples(ctx, read) > 0;
+    if (multisampled && !sameRectangles) return GL_INVALID_OPERATION;
+    if ((mask & 0x4000) !== 0) {                                                      // COLOR_BUFFER_BIT
+        const source = blitReadColour(ctx, read);
+        if (source === null) return GL_INVALID_OPERATION;
+        const sourceType = _FORMAT_INFO.get(source.format)[6];
+        if (filter === 0x2601 && (sourceType === _I || sourceType === _U)) return GL_INVALID_OPERATION;
+        const targets = blitDrawColours(ctx, draw);
+        for (let k = 0; k < targets.length; k++) {
+            const target = targets[k];
+            const targetType = _FORMAT_INFO.get(target.format)[6];
+            const integer = sourceType === _I || sourceType === _U;
+            if (_sameImage(source, target) || (integer || targetType === _I || targetType === _U ? targetType !== sourceType
+                : false) || (multisampled && target.format !== source.format)) return GL_INVALID_OPERATION;
+        }
+    }
+    for (const [bit, point] of _BLIT_DEPTH_STENCIL) {
+        if ((mask & bit) === 0) continue;
+        const target = blitImage(ctx, draw, point);
+        if (target === null) continue;
+        const source = blitImage(ctx, read, point);
+        if (source === null || source.format !== target.format || _sameImage(source, target)) return GL_INVALID_OPERATION;
+    }
+    return 0;
+}
+const _BLIT_DEPTH_STENCIL = [[0x0100, 0x8d00], [0x0400, 0x8d20]];       // DEPTH_BUFFER_BIT, STENCIL_BUFFER_BIT
+
 // ---- Program and shader objects ------------------------------------------------------------------------------------
 // GL deletes a program or a shader when asked only once nothing uses it (ES 3.0 2.12.3, 2.12.1): a program deleted while
 // it is the current program stays until another is made current; a shader deleted while attached stays until it is
@@ -2618,6 +2713,9 @@ class WebGLRenderingContext {
         // What reads of the default framebuffer read from: the drawing buffer's colour format, and READ_BUFFER (BACK, or
         // NONE once `readBuffer` says so).
         this._drawingBufferFormat = alpha ? 0x8058 : 0x8051;      // RGBA8, RGB8
+        // Its depth and stencil buffer's, as the renderer makes it (`drawing_buffer.rs`): DEPTH24_STENCIL8,
+        // DEPTH_COMPONENT24, STENCIL_INDEX8, or none.
+        this._drawingBufferDepthStencil = depth && stencil ? 0x88f0 : depth ? 0x81a6 : stencil ? 0x8d48 : 0;
         this._defaultReadBuffer = 0x0405;                         // BACK
         this._defaultDrawBuffer = 0x0405;                         // BACK: DRAW_BUFFER0 of the default framebuffer
         // opcode 73: H C U, the frame_wire::gl::WEBGL_CONTEXT_* bits.
@@ -6655,9 +6753,25 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
 
     // ---- Framebuffer ops ---------------------------------------
     // A read or draw framebuffer that is not complete is INVALID_FRAMEBUFFER_OPERATION.
+    // The read framebuffer's images into the draw framebuffer's (ES 3.0 4.3.3, WebGL 2.0 5.38), refused before anything
+    // is sent in a browser's order: a filter that is neither NEAREST nor LINEAR (INVALID_ENUM); a mask of other bits
+    // than the three buffers' (INVALID_VALUE); LINEAR with depth or stencil (INVALID_OPERATION); a framebuffer that is not
+    // complete (INVALID_FRAMEBUFFER_OPERATION); then what the images themselves refuse (`blitImagesError`).
     blitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter) {
-        if (refusesIncompleteFramebuffer(this, this._readFramebufferBinding) ||
-                refusesIncompleteFramebuffer(this, this._framebufferBinding)) return;
+        const m = Number(mask) >>> 0, f = Number(filter) >>> 0;
+        let error = f !== 0x2600 && f !== 0x2601 ? GL_INVALID_ENUM
+            : (m & ~0x4500) !== 0 ? GL_INVALID_VALUE
+            : f === 0x2601 && (m & 0x0500) !== 0 ? GL_INVALID_OPERATION : 0;
+        if (error === 0) {
+            if (refusesIncompleteFramebuffer(this, this._readFramebufferBinding) ||
+                    refusesIncompleteFramebuffer(this, this._framebufferBinding)) return;
+            error = blitImagesError(this, m, f, (srcX0 | 0) === (dstX0 | 0) && (srcY0 | 0) === (dstY0 | 0) &&
+                (srcX1 | 0) === (dstX1 | 0) && (srcY1 | 0) === (dstY1 | 0));
+        }
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         _rawBlitFramebuffer(this._canvasId, srcX0, srcY0, srcX1, srcY1,
                              dstX0, dstY0, dstX1, dstY1, mask, filter);
     }

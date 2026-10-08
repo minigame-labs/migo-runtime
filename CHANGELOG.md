@@ -157,6 +157,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL 2: `blitFramebuffer` refuses what ES 3.0 4.3.3 and WebGL 2.0 5.38 refuse, in a browser's order, before anything
+  reaches the driver, whose errors never reach `getError`: a filter of none (INVALID_ENUM), a mask of other bits
+  (INVALID_VALUE), LINEAR with depth or stencil (INVALID_OPERATION); then, framebuffers complete, the same image read
+  and written -- one framebuffer, two framebuffers sharing an image, or the drawing buffer onto itself --, integer
+  data with LINEAR or against other data, depth or stencil of another format or that the read framebuffer lacks, colour
+  from no read image, a multisampled draw framebuffer, and from a multisampled read framebuffer another format or
+  rectangle (INVALID_OPERATION). Only the framebuffers' completeness was judged.
 - WebGL: a program or shader is deleted as GL deletes it, once nothing uses it, as browsers have it: the current program
   stays and answers every call until another is made current -- though it is not made current again nor takes a shader
   (INVALID_OPERATION) -- and a shader stays while attached to a program that is there; `isProgram` and `isShader`
