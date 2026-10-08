@@ -368,6 +368,7 @@ mod imp {
                 rfu0: 0,
                 rfu1: 0,
             };
+            let mut out = ptr::null_mut();
             // SAFETY: `c_desc` and `out` are valid pointers for the duration
             // of the allocation call, and the returned handle is checked below.
             let status = unsafe { sys::AHardwareBuffer_allocate(&c_desc, &mut out) };
@@ -593,6 +594,7 @@ mod imp {
             }
             // Mark consumed before entering the driver: retrying an unlock
             // after an error has undefined ownership semantics.
+            self.locked = false;
             // SAFETY: the lock was acquired on this AHB and has not been
             // unlocked yet; the null fence is valid per the API 26 contract.
             let status = unsafe {
