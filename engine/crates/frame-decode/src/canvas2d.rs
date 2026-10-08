@@ -140,6 +140,7 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
 
         OP2D_SAVE => Canvas2DCmd::Save,
         OP2D_RESTORE => Canvas2DCmd::Restore,
+        OP2D_RESET => Canvas2DCmd::Reset,
         OP2D_SET_TRANSFORM => Canvas2DCmd::SetTransform {
             a: f(record[1]),
             b: f(record[2]),

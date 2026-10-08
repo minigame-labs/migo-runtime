@@ -1535,6 +1535,12 @@ const OP2D_ROUND_RECT = 573;
 const OP2D_FILL_PATH = 574;
 const OP2D_STROKE_PATH = 575;
 const OP2D_CLIP_PATH = 576;
+
+// --- The context's default state ---
+//
+// `reset()`: the bitmap transparent black and every piece of state at its default, without the surface being made
+// again -- which is what assigning the canvas's size costs, and a context reset every frame would pay every frame.
+const OP2D_RESET = 577;
 // The longest 2D record a buffer holds: all of it but the stream header and the canvas selection `begin2d` reserves.
 const MAX_STREAM_2D_RECORD_WORDS = BUFFER_WORDS - 2 - 2;
 
@@ -1667,6 +1673,7 @@ function encode2dClipEvenOdd(canvasId) { _encode2dNullary(OP2D_CLIP_EVEN_ODD, ca
 function encode2dSave(canvasId) { _encode2dNullary(OP2D_SAVE, canvasId); }
 function encode2dRestore(canvasId) { _encode2dNullary(OP2D_RESTORE, canvasId); }
 function encode2dResetTransform(canvasId) { _encode2dNullary(OP2D_RESET_TRANSFORM, canvasId); }
+function encode2dReset(canvasId) { _encode2dNullary(OP2D_RESET, canvasId); }
 
 function encode2dMoveTo(canvasId, x, y) { _encode2dPair(OP2D_MOVE_TO, canvasId, x, y); }
 function encode2dLineTo(canvasId, x, y) { _encode2dPair(OP2D_LINE_TO, canvasId, x, y); }
@@ -2024,6 +2031,7 @@ export {
     encode2dRestore,
     encode2dSetTransform,
     encode2dResetTransform,
+    encode2dReset,
     encode2dTranslate,
     encode2dRotate,
     encode2dScale,

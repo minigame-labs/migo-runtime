@@ -39,6 +39,7 @@ import {
     encode2dRestore,
     encode2dSetTransform,
     encode2dResetTransform,
+    encode2dReset,
     encode2dTranslate,
     encode2dRotate,
     encode2dScale,
@@ -94,6 +95,8 @@ import {
     // Path2D
     op_canvas2d_draw_path,
     op_canvas2d_hit_test,
+    // Context loss, which the 2D context shares with every other on the GPU
+    op_gl_is_context_lost,
 } from "ext:core/ops";
 import { domException } from "ext:host_v8_base/06_dom_exception.js";
 import { isImage, isImageBitmap } from "ext:host_v8_image/01_image.js";
@@ -235,6 +238,36 @@ function _imageDataColorSpace(settings, context) {
         throw new TypeError(`${context}: The provided value '${name}' is not a valid enum value of type PredefinedColorSpace.`);
     }
     return name;
+}
+
+// `getContext("2d", settings)`'s CanvasRenderingContext2DSettings, converted as WebIDL converts a dictionary: `undefined`
+// and `null` are the empty one, any other value that is not an object is not one, and the members are read in their
+// order -- alpha, colorSpace, colorType, desynchronized, willReadFrequently -- a keyword that is not one of the enum's a
+// TypeError. Only `willReadFrequently` is kept: it is a hint, and the one this context can report as asked. A canvas
+// here is sRGB, 8 bits a channel and has alpha, whatever is asked, and `getContextAttributes` says what it is.
+function _contextSettings(settings) {
+    const context = "Failed to execute 'getContext' on 'HTMLCanvasElement'";
+    if (settings === undefined || settings === null) return { willReadFrequently: false };
+    if (typeof settings !== 'object' && typeof settings !== 'function') {
+        throw new TypeError(`${context}: The provided value is not of type 'CanvasRenderingContext2DSettings'.`);
+    }
+    void !!settings.alpha;
+    const colorSpace = settings.colorSpace;
+    if (colorSpace !== undefined) {
+        const name = _domString(colorSpace);
+        if (name !== 'srgb' && name !== 'display-p3') {
+            throw new TypeError(`${context}: The provided value '${name}' is not a valid enum value of type PredefinedColorSpace.`);
+        }
+    }
+    const colorType = settings.colorType;
+    if (colorType !== undefined) {
+        const name = _domString(colorType);
+        if (name !== 'unorm8' && name !== 'float16') {
+            throw new TypeError(`${context}: The provided value '${name}' is not a valid enum value of type CanvasColorType.`);
+        }
+    }
+    void !!settings.desynchronized;
+    return { willReadFrequently: !!settings.willReadFrequently };
 }
 
 // ---- Display P3 ----
@@ -1844,9 +1877,11 @@ function _cssFont(raw) {
 const _DEFAULT_FONT = _cssFont('10px sans-serif');
 
 class CanvasRenderingContext2D {
-    constructor(canvas) {
+    // `settings`: `getContext("2d", settings)`'s dictionary, read when the context is made.
+    constructor(canvas, settings = undefined) {
         this._canvas = canvas;
         this._canvasId = canvas._rid;
+        this._willReadFrequently = _contextSettings(settings).willReadFrequently;
 
         // Create native 2D context on the render thread
         flushRenderCommandStream();
@@ -1887,6 +1922,35 @@ class CanvasRenderingContext2D {
     }
 
     get canvas() { return this._canvas; }
+
+    // `reset()`: the context's default state again -- the bitmap transparent black, the state stack and the clips gone,
+    // every attribute and the transform at its default, the current path empty. What assigning the canvas's size does,
+    // without the surface being made again: a context reset every frame would otherwise reallocate it every frame.
+    reset() {
+        this._abandonPendingTextCache();
+        encode2dReset(this._canvasId);
+        this._resetShadowState();
+    }
+
+    // Whether the GPU the canvas draws with is lost and not yet restored. A 2D canvas shares it with every other context,
+    // so it is lost when they are. Barriered: draws already encoded and still sitting in the stream buffer must reach
+    // the collector before this host-local read, or this call would overtake them.
+    isContextLost() {
+        this._barrier();
+        return op_gl_is_context_lost();
+    }
+
+    // What this context is: sRGB with alpha, 8 bits a channel, never desynchronized -- whatever `getContext` asked for,
+    // which is why these are not echoed back -- and the `willReadFrequently` hint as it was given.
+    getContextAttributes() {
+        return {
+            alpha: true,
+            colorSpace: 'srgb',
+            colorType: 'unorm8',
+            desynchronized: false,
+            willReadFrequently: this._willReadFrequently,
+        };
+    }
 
     // ==================== Text texture cache ====================
 
