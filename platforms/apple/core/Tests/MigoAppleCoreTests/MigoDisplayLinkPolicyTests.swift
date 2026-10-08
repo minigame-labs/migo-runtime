@@ -153,7 +153,7 @@ final class MigoDisplayLinkPolicyTests: XCTestCase {
         autoreleasepool {
             let link = MigoDisplayLink(
                 decision: Policy.decide(.init(platform: .macOS, osMajor: 14)),
-                onTick: { _, _ in })
+                onTick: { _ in })
             observed = link
             proxy = MigoDisplayLinkProxy(owner: link)
         }
@@ -173,7 +173,7 @@ final class MigoDisplayLinkPolicyTests: XCTestCase {
         autoreleasepool {
             let link = MigoDisplayLink(
                 decision: Policy.decide(.init(platform: .macOS, osMajor: 12)),
-                onTick: { _, _ in })
+                onTick: { _ in })
             observed = link
             link.start()
         }
@@ -184,7 +184,7 @@ final class MigoDisplayLinkPolicyTests: XCTestCase {
         // The legacy path retains a context and releases it in `stop`. A second
         // release would be an over-release, which is a crash rather than an error.
         let link = MigoDisplayLink(
-            decision: Policy.decide(.init(platform: .macOS, osMajor: 12)), onTick: { _, _ in })
+            decision: Policy.decide(.init(platform: .macOS, osMajor: 12)), onTick: { _ in })
         link.stop()
         link.stop()
         XCTAssertFalse(link.isRunning)

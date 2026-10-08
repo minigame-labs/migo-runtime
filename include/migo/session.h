@@ -568,9 +568,17 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_battery_status(MigoSession *sessi
 /*
  * Report that a frame boundary arrived, in response to on_request_frame.
  *
- * frame_time_nanos is the platform's frame timestamp -- AChoreographer's
- * callback argument on Android. Calling this without having been asked is
- * harmless but pointless: the engine renders at most one frame per request.
+ * frame_time_nanos is when the frame began -- the vsync it is for, as
+ * AChoreographer's callback argument reports it on Android -- on the platform's
+ * monotonic clock: CLOCK_MONOTONIC on Android, Linux and OpenHarmony
+ * (Choreographer, std::chrono::steady_clock), the uptime clock on Apple
+ * platforms in nanoseconds (CACurrentMediaTime, a display link's `timestamp`),
+ * the performance counter on Windows. Not when the frame is due to appear: the
+ * engine hands the time to requestAnimationFrame on the timeline
+ * performance.now() reads, and a time still to come there is a frame timestamp
+ * after the callback that receives it. A time later than the call itself is
+ * taken as the call's own. Calling this without having been asked is harmless
+ * but pointless: the engine renders at most one frame per request.
  *
  * Returns MIGO_ERROR_INVALID_STATE when no surface is attached, and
  * MIGO_ERROR_INVALID_ARGUMENT when frame_time_nanos is negative. The timestamp

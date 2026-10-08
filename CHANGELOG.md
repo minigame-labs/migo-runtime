@@ -331,6 +331,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its result. QUERY_RESULT_AVAILABLE is a boolean, false in the task that ended the query and the same every time it is
   asked within a task (WebGL 2.0 5.38); QUERY_RESULT is 0 until it is available, and the renderer asks the driver for a
   result only once it is, where it used to wait for the GPU to finish the query on the render thread.
+- `requestAnimationFrame`'s timestamp is when the frame began, on the timeline `performance.now()` reads, and never
+  after the callback that receives it. Apple's display link reported when the frame is due to appear, still to come,
+  and the engine anchored the host's clock to the process clock at the first frame it handled, so a first frame
+  handled late -- a loaded machine, a long startup -- put every later timestamp that far ahead: under load a callback
+  read a timestamp 25 ms after its own `performance.now()`. The host's frame time is now the frame's start
+  (`CADisplayLink.timestamp`; `CVDisplayLink`'s host times, which are on the uptime clock where its video times are on
+  the display's own), and the engine converts it as it arrives, through a reading of the same monotonic clock taken
+  then, so a frame keeps the time it began however long it waited. `migo_session_notify_vsync` documents the clock
+  each platform reports on.
 - Canvas2D / WebGL: Skia's GL work runs in its own context. Skia does its GL work in whatever EGL context is current,
   and a cleanup is GL work -- it deletes textures and framebuffers -- but the periodic purge of every 2D context's
   unused resources (every 250 ms), the low-memory trim, and the re-capping of every context's share of the resource

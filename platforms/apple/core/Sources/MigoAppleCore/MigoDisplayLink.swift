@@ -40,11 +40,11 @@ final class MigoDisplayLinkProxy: NSObject {
         guard let owner else { return }
         #if os(iOS)
             if let link = sender as? CADisplayLink {
-                owner.deliver(targetTimestamp: link.targetTimestamp, duration: link.duration)
+                owner.deliver(.init(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp))
             }
         #elseif os(macOS)
             if #available(macOS 14.0, *), let link = sender as? CADisplayLink {
-                owner.deliver(targetTimestamp: link.targetTimestamp, duration: link.duration)
+                owner.deliver(.init(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp))
             }
         #endif
     }
@@ -74,10 +74,27 @@ final class MigoDisplayLinkProxy: NSObject {
 /// nobody has taken.
 public final class MigoDisplayLink {
 
-    /// One vsync. `targetTimestamp` is when the frame being drawn is due to appear,
-    /// which is the one a presenter should pace against -- `timestamp` is when the
-    /// previous frame appeared, and pacing against that is pacing one frame late.
-    public typealias Tick = (_ targetTimestamp: CFTimeInterval, _ duration: CFTimeInterval) -> Void
+    /// One vsync, both of its times on the uptime clock `CACurrentMediaTime` reads -- whichever mechanism
+    /// delivered it.
+    public struct Frame: Equatable, Sendable {
+        /// When the vsync this frame begins at happened: the frame's start. It is what an engine stamps the
+        /// frame with, as AChoreographer's frame time is on Android, so content handed it reads a time at or
+        /// before the moment its callback runs.
+        public let timestamp: CFTimeInterval
+        /// When the frame being drawn is due to appear: what a presenter paces against. Pacing against
+        /// `timestamp`, the previous frame's appearance, is pacing one frame late.
+        public let targetTimestamp: CFTimeInterval
+
+        public init(timestamp: CFTimeInterval, targetTimestamp: CFTimeInterval) {
+            self.timestamp = timestamp
+            self.targetTimestamp = targetTimestamp
+        }
+
+        /// The time between the two: a frame's worth, at the link's current rate.
+        public var duration: CFTimeInterval { max(0, targetTimestamp - timestamp) }
+    }
+
+    public typealias Tick = (Frame) -> Void
 
     public let decision: MigoDisplayLinkPolicy.Decision
     private let onTick: Tick
@@ -94,8 +111,8 @@ public final class MigoDisplayLink {
 
     /// One delivery point, so both platforms and both macOS mechanisms hand the tick
     /// over the same way.
-    fileprivate func deliver(targetTimestamp: CFTimeInterval, duration: CFTimeInterval) {
-        onTick(targetTimestamp, duration)
+    fileprivate func deliver(_ frame: Frame) {
+        onTick(frame)
     }
 
     // MARK: - iOS
@@ -226,22 +243,38 @@ public final class MigoDisplayLink {
                     // and a callback can be in flight on the display's own thread at
                     // that moment. A weak read that comes back nil is the answer.
                     guard let owner = proxy.owner else { return kCVReturnSuccess }
-                    let outputTime = inOutputTime.pointee
-                    let nowTime = inNow.pointee
-                    guard outputTime.videoTimeScale != 0, nowTime.videoTimeScale != 0 else {
+                    // On the host clock, not the video clock: a video time counts from a
+                    // base of the display's own, and a frame stamped with one is on no
+                    // clock anything else reads. A host time is mach_absolute_time, which
+                    // over the host clock's frequency is `CACurrentMediaTime` -- the clock
+                    // `CADisplayLink` reports on, so both mechanisms hand over one kind of
+                    // time. The output's host time is the target. The frame's start is the
+                    // vsync `inNow` names, taken back from the target by the video times'
+                    // difference -- a duration, which needs only their scale -- rather than
+                    // `inNow`'s own host time, which is when the callback fired and moves
+                    // with the scheduler instead of keeping to the display's grid.
+                    let output = inOutputTime.pointee
+                    let now = inNow.pointee
+                    let frequency = CVGetHostClockFrequency()
+                    let hostValid = CVTimeStampFlags.hostTimeValid.rawValue
+                    let videoValid = CVTimeStampFlags.videoTimeValid.rawValue
+                    guard output.flags & hostValid != 0, output.flags & videoValid != 0,
+                        now.flags & videoValid != 0, output.videoTimeScale > 0,
+                        output.videoTimeScale == now.videoTimeScale, frequency > 0
+                    else {
                         return kCVReturnSuccess
                     }
-                    let target =
-                        CFTimeInterval(outputTime.videoTime)
-                        / CFTimeInterval(outputTime.videoTimeScale)
-                    let now =
-                        CFTimeInterval(nowTime.videoTime) / CFTimeInterval(nowTime.videoTimeScale)
-                    let duration = max(0, target - now)
+                    let target = CFTimeInterval(output.hostTime) / frequency
+                    let ahead =
+                        CFTimeInterval(output.videoTime - now.videoTime)
+                        / CFTimeInterval(output.videoTimeScale)
+                    let frame = MigoDisplayLink.Frame(
+                        timestamp: target - max(0, ahead), targetTimestamp: target)
                     // Hopped to the main queue. This callback runs on a real-time
                     // thread the system drops frames to protect, and doing renderer
                     // work there is how a display link becomes the glitch source.
                     DispatchQueue.main.async {
-                        owner.deliver(targetTimestamp: target, duration: duration)
+                        owner.deliver(frame)
                     }
                     return kCVReturnSuccess
                 }, context.toOpaque())
