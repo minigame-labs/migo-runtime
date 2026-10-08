@@ -1969,8 +1969,19 @@ impl RendererGL {
                         (driver.internalformat, driver.format, driver.type_)
                     });
                 let swizzle = mapped.and_then(|driver| driver.swizzle);
+                // No data defines (or redefines) the image to transparent black (ES 3.0 3.7.2, WebGL 1.0/2.0): a
+                // driver that reuses this texture object's storage at a level it previously held at a smaller size
+                // is not trusted to clear the bytes outside the old image's footprint, so an explicit zero buffer
+                // is uploaded instead of a null pointer.
+                let zero_pixels;
                 let pixels = match &data {
-                    None => glow::PixelUnpackData::Slice(None),
+                    None => {
+                        let len =
+                            unpack_convert::upload_bytes(width, height, 1, format, type_, &cm.unpack_layout(canvas_id, false))
+                                .unwrap_or(0);
+                        zero_pixels = vec![0u8; len];
+                        glow::PixelUnpackData::Slice(Some(zero_pixels.as_slice()))
+                    }
                     Some(source) => unpack_data(
                         gl,
                         source,
@@ -4367,8 +4378,23 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
+                // Same guarantee as `TexImage2D`'s null path: no data defines the image to transparent black, and
+                // the driver is not trusted to clear a reused texture object's storage at a different size.
+                let zero_pixels;
                 let pixels = match &data {
-                    None => glow::PixelUnpackData::Slice(None),
+                    None => {
+                        let len = unpack_convert::upload_bytes(
+                            width,
+                            height,
+                            depth,
+                            format,
+                            ty,
+                            &cm.unpack_layout(canvas_id, true),
+                        )
+                        .unwrap_or(0);
+                        zero_pixels = vec![0u8; len];
+                        glow::PixelUnpackData::Slice(Some(zero_pixels.as_slice()))
+                    }
                     Some(source) => unpack_data(
                         gl,
                         source,

@@ -159,6 +159,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- WebGL: `texImage2D`/`texImage3D` with no data zero-fills the image's storage instead of handing the driver a null
+  pointer and trusting it to initialize to transparent black (ES 3.0 3.7.2, WebGL 1.0/2.0): reusing a texture object's
+  storage at a level it previously held a smaller image at left that image's bytes visible at the equivalent offsets
+  of the new one.
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
