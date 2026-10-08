@@ -1626,6 +1626,9 @@ pub(crate) struct TextureMeta {
     pub gl_handle: Option<NativeTexture>,
     pub owner_canvas: Option<CanvasId>,
     pub deleted: bool,
+    /// The swizzle the texture is read through, when WebGL 1's luminance or alpha float made it a red or red-green one
+    /// (`webgl1_formats`); `None` for the identity, which every texture starts with.
+    pub swizzle: Option<crate::backend::gl::webgl1_formats::Swizzle>,
 }
 
 /// WebGL framebuffer object. A container object, so its name is local to the

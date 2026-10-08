@@ -2348,6 +2348,9 @@ mod tests {
                     anisotropic_filtering: false,
                     color_buffer_half_float: false,
                     float_filtering: false,
+                    standard_derivatives: false,
+                    shader_texture_lod: false,
+                    frag_depth: false,
                 });
             });
             assert_eq!(

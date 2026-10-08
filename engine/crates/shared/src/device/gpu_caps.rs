@@ -45,6 +45,9 @@ pub struct GpuCaps {
     anisotropic_filtering: AtomicBool,
     color_buffer_half_float: AtomicBool,
     float_filtering: AtomicBool,
+    standard_derivatives: AtomicBool,
+    shader_texture_lod: AtomicBool,
+    frag_depth: AtomicBool,
     /// Set to `true` after `set()` is called.  `wait_ready()` blocks
     /// until this flag is true, ensuring no early snapshot reads
     /// uninitialized (all-false) caps.
@@ -66,6 +69,9 @@ impl Default for GpuCaps {
             anisotropic_filtering: AtomicBool::new(false),
             color_buffer_half_float: AtomicBool::new(false),
             float_filtering: AtomicBool::new(false),
+            standard_derivatives: AtomicBool::new(false),
+            shader_texture_lod: AtomicBool::new(false),
+            frag_depth: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             ready_lock: Mutex::new(false),
@@ -95,6 +101,11 @@ impl GpuCaps {
             .store(caps.color_buffer_half_float, Ordering::Release);
         self.float_filtering
             .store(caps.float_filtering, Ordering::Release);
+        self.standard_derivatives
+            .store(caps.standard_derivatives, Ordering::Release);
+        self.shader_texture_lod
+            .store(caps.shader_texture_lod, Ordering::Release);
+        self.frag_depth.store(caps.frag_depth, Ordering::Release);
         self.ready.store(true, Ordering::Release);
         if let Ok(mut ready) = self.ready_lock.lock() {
             *ready = true;
@@ -198,13 +209,17 @@ impl GpuCaps {
             anisotropic_filtering: self.anisotropic_filtering.load(Ordering::Acquire),
             color_buffer_half_float: self.color_buffer_half_float.load(Ordering::Acquire),
             float_filtering: self.float_filtering.load(Ordering::Acquire),
+            standard_derivatives: self.standard_derivatives.load(Ordering::Acquire),
+            shader_texture_lod: self.shader_texture_lod.load(Ordering::Acquire),
+            frag_depth: self.frag_depth.load(Ordering::Acquire),
         }
     }
 
     /// The bits `op_webgl_query_gpu_caps` answers content's WebGL with: 0 ETC2/EAC, 1 ASTC LDR, 2 float colour
     /// buffers (EXT_color_buffer_float), 3 blending into 32-bit float ones (EXT_float_blend), 4 anisotropic filtering
     /// (EXT_texture_filter_anisotropic), 5 16-bit float colour buffers (EXT_color_buffer_half_float), 6 linear filtering
-    /// of 32-bit float textures (OES_texture_float_linear). The embedded op and the external session's service both answer these.
+    /// of 32-bit float textures (OES_texture_float_linear), 7-9 the ESSL 1.00 shader extensions WebGL 1's
+    /// OES_standard_derivatives, EXT_shader_texture_lod and EXT_frag_depth name. The embedded op and the external session's service both answer these.
     pub fn webgl_bits(&self) -> u32 {
         let caps = self.snapshot();
         u32::from(caps.etc2)
@@ -214,6 +229,9 @@ impl GpuCaps {
             | (u32::from(caps.anisotropic_filtering) << 4)
             | (u32::from(caps.color_buffer_half_float) << 5)
             | (u32::from(caps.float_filtering) << 6)
+            | (u32::from(caps.standard_derivatives) << 7)
+            | (u32::from(caps.shader_texture_lod) << 8)
+            | (u32::from(caps.frag_depth) << 9)
     }
 }
 
@@ -238,6 +256,10 @@ pub struct GpuCapsSnapshot {
     pub color_buffer_half_float: bool,
     /// 32-bit float textures can be filtered linearly (`GL_OES_texture_float_linear`).
     pub float_filtering: bool,
+    /// The driver compiles ESSL 1.00's `GL_OES_standard_derivatives`, `GL_EXT_shader_texture_lod`, `GL_EXT_frag_depth`.
+    pub standard_derivatives: bool,
+    pub shader_texture_lod: bool,
+    pub frag_depth: bool,
 }
 
 #[cfg(test)]
@@ -260,6 +282,9 @@ mod tests {
                 anisotropic_filtering: false,
                 color_buffer_half_float: false,
                 float_filtering: false,
+                standard_derivatives: false,
+                shader_texture_lod: false,
+                frag_depth: false,
             });
         });
         assert!(matches!(
@@ -303,6 +328,9 @@ mod tests {
             anisotropic_filtering: false,
             color_buffer_half_float: false,
             float_filtering: false,
+            standard_derivatives: false,
+            shader_texture_lod: false,
+            frag_depth: false,
         });
         let started = Instant::now() - Duration::from_secs(1);
 
@@ -357,6 +385,9 @@ mod tests {
                 anisotropic_filtering: false,
                 color_buffer_half_float: false,
                 float_filtering: false,
+                standard_derivatives: false,
+                shader_texture_lod: false,
+                frag_depth: false,
             });
         });
 
@@ -379,6 +410,9 @@ mod tests {
             anisotropic_filtering: false,
             color_buffer_half_float: false,
             float_filtering: false,
+            standard_derivatives: false,
+            shader_texture_lod: false,
+            frag_depth: false,
         });
         assert!(caps.snapshot().ahb);
         assert!(caps.disable_ahb());

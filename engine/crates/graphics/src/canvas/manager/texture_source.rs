@@ -24,6 +24,7 @@ use super::{
 use crate::backend::gl::readback::CompactPixelUnpackGuard;
 use crate::backend::gl::texture_copy::{TextureCopy, copy_texture, read_texture_rgba8};
 use crate::backend::gl::unpack_convert::{SourceAlpha, SourceConversion, SourceRect, pack_source};
+use crate::backend::gl::webgl1_formats;
 use shared::error::EngineResult;
 
 /// A `tex*Image*` call whose pixels are a TexImageSource, as the command carries it: everything but the source.
@@ -216,6 +217,14 @@ impl CanvasManager {
             }
         };
         if uploaded {
+            if let SourceUploadCall::Image2D { internalformat } = upload.call {
+                if upload.level == 0 {
+                    let swizzle =
+                        webgl1_formats::driver_format(internalformat, upload.format, upload.type_)
+                            .and_then(|driver| driver.swizzle);
+                    self.set_webgl1_swizzle(canvas_id, upload.target, swizzle);
+                }
+            }
             self.mark_all_2d_contexts_stale_bits(
                 crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
             );
@@ -476,7 +485,13 @@ impl CanvasManager {
         rect: &SourceRect,
         conversion: &SourceConversion,
     ) -> bool {
-        let Some(packed) = pack_source(rgba, width, height, rect, conversion) else {
+        // Packed as WebGL names the format (EXT_sRGB's as the bytes they hold), uploaded as the driver takes it
+        // (`webgl1_formats`).
+        let packing = SourceConversion {
+            format: webgl1_formats::source_pack_format(conversion.format),
+            ..*conversion
+        };
+        let Some(packed) = pack_source(rgba, width, height, rect, &packing) else {
             tracing::warn!(
                 "TexImageSource: {}x{} as format 0x{:X} type 0x{:X} from a {width}x{height} source cannot be packed",
                 upload.width,
@@ -491,17 +506,22 @@ impl CanvasManager {
         let _volume = upload.is_3d().then(|| TightVolumeUnpack::new(gl));
         let pixels = glow::PixelUnpackData::Slice(Some(&packed));
         let (w, h) = (upload.width, upload.height);
+        let (format, type_) = webgl1_formats::driver_sub_format(upload.format, upload.type_);
+        let driver_internalformat = |internalformat: i32| {
+            webgl1_formats::driver_format(internalformat, upload.format, upload.type_)
+                .map_or(internalformat, |driver| driver.internalformat)
+        };
         unsafe {
             match upload.call {
                 SourceUploadCall::Image2D { internalformat } => gl.tex_image_2d(
                     upload.target,
                     upload.level,
-                    internalformat,
+                    driver_internalformat(internalformat),
                     w,
                     h,
                     0,
-                    upload.format,
-                    upload.type_,
+                    format,
+                    type_,
                     pixels,
                 ),
                 SourceUploadCall::SubImage2D { xoffset, yoffset } => gl.tex_sub_image_2d(
@@ -511,8 +531,8 @@ impl CanvasManager {
                     yoffset,
                     w,
                     h,
-                    upload.format,
-                    upload.type_,
+                    format,
+                    type_,
                     pixels,
                 ),
                 SourceUploadCall::Image3D {
@@ -521,13 +541,13 @@ impl CanvasManager {
                 } => gl.tex_image_3d(
                     upload.target,
                     upload.level,
-                    internalformat,
+                    driver_internalformat(internalformat),
                     w,
                     h,
                     depth,
                     0,
-                    upload.format,
-                    upload.type_,
+                    format,
+                    type_,
                     pixels,
                 ),
                 SourceUploadCall::SubImage3D {
@@ -544,8 +564,8 @@ impl CanvasManager {
                     w,
                     h,
                     depth,
-                    upload.format,
-                    upload.type_,
+                    format,
+                    type_,
                     pixels,
                 ),
             }

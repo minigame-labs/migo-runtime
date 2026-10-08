@@ -738,17 +738,20 @@ const _SOURCE_PAIRS = new Set();
 for (const [format, types] of _UNSIZED_UPLOAD_TYPES) for (const type of types) _SOURCE_PAIRS.add(format * 0x10000 + type);
 for (const [, [format, types]] of _SOURCE_UPLOADS) for (const type of types) _SOURCE_PAIRS.add(format * 0x10000 + type);
 
-// The view an upload of each type reads (WebGL 1.0 5.14.8, WebGL 2.0 3.7.6): its `Symbol.toStringTag` and bytes per
-// element. UNSIGNED_BYTE also takes a Uint8ClampedArray. FLOAT_32_UNSIGNED_INT_24_8_REV has none: it is uploaded from
-// a buffer or not at all.
+// The view an upload of each type reads, and a read of it writes (WebGL 1.0 5.14.8 and 5.14.12, WebGL 2.0 3.7.6): its
+// `Symbol.toStringTag` and bytes per element. UNSIGNED_BYTE also takes a Uint8ClampedArray. FLOAT_32_UNSIGNED_INT_24_8_REV
+// has none: it is uploaded from a buffer or not at all. EXT_read_format_bgra's reversed shorts are only ever read.
 const _UPLOAD_VIEWS = new Map([
     [_UBYTE, ["Uint8Array", 1]],
     [_BYTE, ["Int8Array", 1]],
     [_USHORT, ["Uint16Array", 2]],
     [_HALF, ["Uint16Array", 2]],
+    [0x8d61, ["Uint16Array", 2]],          // HALF_FLOAT_OES (WebGL 1's OES_texture_half_float)
     [0x8363, ["Uint16Array", 2]],          // UNSIGNED_SHORT_5_6_5
     [0x8033, ["Uint16Array", 2]],          // UNSIGNED_SHORT_4_4_4_4
     [0x8034, ["Uint16Array", 2]],          // UNSIGNED_SHORT_5_5_5_1
+    [0x8365, ["Uint16Array", 2]],          // UNSIGNED_SHORT_4_4_4_4_REV_EXT
+    [0x8366, ["Uint16Array", 2]],          // UNSIGNED_SHORT_1_5_5_5_REV_EXT
     [_SHORT, ["Int16Array", 2]],
     [_UINT, ["Uint32Array", 4]],
     [0x8368, ["Uint32Array", 4]],          // UNSIGNED_INT_2_10_10_10_REV
@@ -767,11 +770,12 @@ function _uploadBytesPerPixel(format, type) {
         case 0x8dad: return 8;
         default: break;
     }
-    const size = type === _UBYTE || type === _BYTE ? 1 : type === _USHORT || type === _SHORT || type === _HALF ? 2
+    const size = type === _UBYTE || type === _BYTE ? 1
+        : type === _USHORT || type === _SHORT || type === _HALF || type === 0x8d61 ? 2
         : type === _UINT || type === _INT || type === _FLOAT ? 4 : 0;
     switch (format) {
-        case 0x1908: case 0x8d99: return 4 * size;                          // RGBA, RGBA_INTEGER
-        case 0x1907: case 0x8d98: return 3 * size;                          // RGB, RGB_INTEGER
+        case 0x1908: case 0x8d99: case 0x8c42: return 4 * size;             // RGBA, RGBA_INTEGER, SRGB_ALPHA_EXT
+        case 0x1907: case 0x8d98: case 0x8c40: return 3 * size;             // RGB, RGB_INTEGER, SRGB_EXT
         case 0x190a: case 0x8227: case 0x8228: return 2 * size;             // LUMINANCE_ALPHA, RG, RG_INTEGER
         case 0x1909: case 0x1906: case 0x1903: case 0x8d94: case 0x1902: return size;   // LUMINANCE, ALPHA, RED, RED_INTEGER, DEPTH_COMPONENT
         default: return 0;
@@ -826,8 +830,35 @@ function _isPowerOfTwo(n) {
 // underscored or not, is -- must not be able to put an image there that no call defined, or to do work its arguments
 // size (WebGL's robustness bundle calls every method with hostile values).
 function defineTextureImage(texture, target, level, image) {
-    (texture._images || (texture._images = new Map())).set(_imageKey(Number(target) >>> 0, level | 0), image);
+    const images = texture._images || (texture._images = new Map());
+    const key = _imageKey(Number(target) >>> 0, level | 0);
+    const wasDepth = _isDepthImage(images.get(key));
+    images.set(key, image);
     framebufferChanged();
+    if (key === 0 && (Number(target) >>> 0) === 0x0de1 && _isDepthImage(image) !== wasDepth) {
+        // TEXTURE_2D's level 0 turned a WEBGL_depth_texture image or stopped being one: the driver's filters follow
+        // (`_driverFilter`). The texture is the one bound, as every call that defines an image has it.
+        encodeTexParameteri(texture._ownerId, 0x0de1, 0x2801,
+            _driverFilter(texture, 0x2801, _samplingParameter(texture._params, 0x2801)));
+        encodeTexParameteri(texture._ownerId, 0x0de1, 0x2800,
+            _driverFilter(texture, 0x2800, _samplingParameter(texture._params, 0x2800)));
+    }
+}
+
+// WEBGL_depth_texture's images, WebGL 1's unsized DEPTH_COMPONENT and DEPTH_STENCIL (WebGL 2 has sized ones only).
+function _isDepthImage(image) {
+    return image != null && (image.internalformat === 0x1902 || image.internalformat === 0x84f9);
+}
+
+// The filter the driver is given for `value`, a filter (`pname`) of `texture`. WebGL 1 samples a WEBGL_depth_texture
+// image through any filter, where ES 3.0 samples a depth texture whose filters are not NEAREST as incomplete when it
+// does not compare: while TEXTURE_2D's level 0 is one, the driver is given NEAREST -- NEAREST_MIPMAP_NEAREST for a
+// mipmap minification filter --, the filtering ES 3.0 has for depth without a comparison. What `getTexParameter`
+// answers is what was set.
+function _driverFilter(texture, pname, value) {
+    if (!_isDepthImage(texture._images && texture._images.get(0))) return value;
+    if (pname === 0x2800 || value === 0x2600 || value === 0x2601) return 0x2600;     // NEAREST
+    return 0x2700;                                                                      // NEAREST_MIPMAP_NEAREST
 }
 
 function defineCompressedTextureImage(texture, target, level, internalformat, width, height, depth) {
@@ -858,9 +889,10 @@ function defineTextureStorage(texture, target, levels, internalformat, width, he
 // - WebGL 1 has no mipmaps or repeat of a size that is not a power of two (ES 2.0 3.8.2, "Texture Access"): a texture
 //   whose level 0 is not a power of two each way is incomplete unless both its wraps are CLAMP_TO_EDGE and its
 //   minification filter reads no mipmap.
-// - A 32-bit float image is not filterable without OES_texture_float_linear: a texture whose base image is one is
-//   incomplete while a filter of it is not NEAREST -- the sampler's, where WebGL 2 has one bound to the unit, else its
-//   own -- and the extension is not enabled, in either version. The driver filters floats wherever it can.
+// - A 32-bit float image is not filterable without OES_texture_float_linear, nor a WebGL 1 HALF_FLOAT_OES one without
+//   OES_texture_half_float_linear (`_unfilterable`): a texture whose base image is one is incomplete while a filter of
+//   it is not NEAREST -- the sampler's, where WebGL 2 has one bound to the unit, else its own. The driver filters
+//   floats wherever it can.
 //
 // Which bindings are incomplete is kept per unit and target (`_incompleteBindings`, keys `unit * 4 + kind`, `unit` the
 // unit's enum as the binding maps keep it, the kinds `_SAMPLED_TARGETS`'), after every call that can change one: an image of the base level defined, a filter, wrap or base
@@ -885,14 +917,22 @@ function samplesBlack(ctx, texture, unit) {
                 !(_samplingParameter(params, 0x2802) === 0x812f && _samplingParameter(params, 0x2803) === 0x812f &&
                     (minFilter === 0x2600 || minFilter === 0x2601))) return true;
     }
-    if (ctx._oesTextureFloatLinear !== undefined) return false;
     const base = ctx._webgl2 ? _samplingParameterOf(params, 0x813c, 0) : 0;   // TEXTURE_BASE_LEVEL
     const image = ctx._image(texture, target === 0x8513 ? 0x8515 : target, base);
-    if (image === undefined || image.compressed || !_listHas(_FLOAT32_FORMATS, image.internalformat)) return false;
+    if (image === undefined || !_unfilterable(ctx, image)) return false;
     const sampler = ctx._webgl2 ? ctx._samplerBindings.get(unit - 0x84c0) : undefined;
     const filters = sampler === undefined ? params : sampler._parameters;
     const minFilter = _samplingParameter(filters, 0x2801);
     return _samplingParameter(filters, 0x2800) !== 0x2600 || (minFilter !== 0x2600 && minFilter !== 0x2700);
+}
+
+// Whether `image` is one `ctx` cannot filter: a 32-bit float one -- WebGL 2's sized ones, WebGL 1's FLOAT uploads --
+// without OES_texture_float_linear, a WebGL 1 HALF_FLOAT_OES one without OES_texture_half_float_linear.
+function _unfilterable(ctx, image) {
+    if (image.compressed) return false;
+    if (!ctx._webgl2 && image.type === 0x8d61) return ctx._oesTextureHalfFloatLinear === undefined;
+    return ctx._oesTextureFloatLinear === undefined &&
+        (_listHas(_FLOAT32_FORMATS, image.internalformat) || (!ctx._webgl2 && image.type === _FLOAT));
 }
 
 // A texture parameter that is not a sampler's: what was set, or `initial`.
@@ -932,7 +972,7 @@ function refreshSamplerSampling(ctx, sampler, pname) {
     }
 }
 
-// Every binding judged again: OES_texture_float_linear enabled.
+// Every binding judged again: OES_texture_float_linear or OES_texture_half_float_linear enabled.
 function refreshAllSampling(ctx) {
     for (let kind = 0; kind < _SAMPLED_TARGETS.length; kind++) {
         const bindings = ctx._textureBindings(_SAMPLED_TARGETS[kind]);
@@ -1028,11 +1068,8 @@ function _compressedImageBytes(block, width, height, depth) {
 }
 
 // The sized internal formats that are both colour-renderable and texture-filterable (ES 3.0 table 3.13), which
-// `generateMipmap` takes besides the unsized ones; and the filterable float ones -- R16F, RG16F, RGBA16F,
-// R11F_G11F_B10F -- while they are colour-renderable (`floatColourRenderable`); the 32-bit float ones too once
-// OES_texture_float_linear makes them filterable.
+// `generateMipmap` takes besides the unsized ones and the float ones it can render and filter (`_mipmappable`).
 const _MIPMAPPABLE_SIZED_FORMATS = [0x8229, 0x822b, 0x8051, 0x8d62, 0x8056, 0x8057, 0x8058, 0x8059, 0x8c43];
-const _MIPMAPPABLE_FLOAT_FORMATS = [0x822d, 0x822f, 0x881a, 0x8c3a];
 
 // The internal formats WebGL 2's `copyTexImage2D` takes: the unsized five and the colour-renderable sized ones are 0 --
 // a float one only while it is colour-renderable (`floatColourRenderable`), INVALID_ENUM otherwise, as a browser has
@@ -1130,18 +1167,25 @@ const _FORMAT_INFO = new Map([
     [0x84f9, [0, 0, 0, 0, 16, 8, _N, 0]],                       // DEPTH_STENCIL (WebGL 1's renderbuffer format)
 ]);
 
-// The sized format an image of an unsized internal format has (ES 3.0 table 3.12, WebGL 1's unsized uploads), from
-// the format and type its data was given in; undefined for one no framebuffer can have as a colour, depth or stencil
-// buffer (LUMINANCE, ALPHA and their mix, a float upload, a compressed image).
+// The sized format an image of an unsized internal format has (ES 3.0 table 3.12, WebGL 1's unsized uploads and its
+// extensions' -- RGBA and RGB floats and half-floats, sRGB, depth), from the format and type its data was given in;
+// undefined for one no framebuffer can have as a colour, depth or stencil buffer (LUMINANCE, ALPHA and their mix, of
+// any type, a compressed image).
 function _effectiveFormat(image) {
     if (image.compressed) return undefined;
     const i = image.internalformat;
     if (_FORMAT_INFO.has(i)) return i;
     switch (i) {
         case 0x1908:            // RGBA
-            return image.type === _UBYTE ? 0x8058 : image.type === 0x8033 ? 0x8056 : image.type === 0x8034 ? 0x8057 : undefined;
+            return image.type === _UBYTE ? 0x8058 : image.type === 0x8033 ? 0x8056 : image.type === 0x8034 ? 0x8057
+                : image.type === _FLOAT ? 0x8814 : image.type === 0x8d61 ? 0x881a : undefined;
         case 0x1907:            // RGB
-            return image.type === _UBYTE ? 0x8051 : image.type === 0x8363 ? 0x8d62 : undefined;
+            return image.type === _UBYTE ? 0x8051 : image.type === 0x8363 ? 0x8d62
+                : image.type === _FLOAT ? 0x8815 : image.type === 0x8d61 ? 0x881b : undefined;
+        case 0x8c42:            // SRGB_ALPHA_EXT
+            return 0x8c43;
+        case 0x8c40:            // SRGB_EXT
+            return 0x8c41;
         case 0x1902:            // DEPTH_COMPONENT
             return image.type === _USHORT ? 0x81a5 : image.type === _UINT ? 0x81a6 : undefined;
         case 0x84f9:            // DEPTH_STENCIL
@@ -1164,7 +1208,8 @@ const GL_INVALID_FRAMEBUFFER_OPERATION = 0x0506;
 
 // What one attachment record is: [sized format, width, height, samples], or undefined when it is not an image a
 // framebuffer can use -- a texture level with no image or a zero-sized one, a layer past the image's depth, a
-// renderbuffer with no storage.
+// renderbuffer with no storage --, null when it is one no framebuffer can use: of a format nothing renders, or a level
+// its texture does not let be attached (`_attachableLevel`).
 function _attachmentImage(ctx, record) {
     const object = record.object;
     if (record.type === 0x8d41) {                       // RENDERBUFFER
@@ -1177,7 +1222,47 @@ function _attachmentImage(ctx, record) {
     if (image === undefined || image.width === 0 || image.height === 0) return undefined;
     if ((object._target === 0x806f || object._target === 0x8c1a) && (record.layer | 0) >= image.depth) return undefined;
     const format = _effectiveFormat(image);
-    return format === undefined ? null : [format, image.width, image.height, 0];
+    return format === undefined || !_attachableLevel(ctx, object, record.level) ? null
+        : [format, image.width, image.height, 0];
+}
+
+// Whether `level` of `texture` may be attached (ES 3.0 4.4.4.2): any of immutable storage's; otherwise one from the base
+// level to the last a full chain from it has (or TEXTURE_MAX_LEVEL), and one other than the base only of a texture
+// that is mipmap complete. A cube map's faces must be cube complete.
+function _attachableLevel(ctx, texture, level) {
+    if (texture._immutableLevels !== 0) return true;
+    const base = ctx._baseLevel(texture);
+    const target = texture._target;
+    const first = target === 0x8513 ? 0x8515 : target;
+    const top = ctx._image(texture, first, base);
+    if (top === undefined || level < base) return false;
+    const threeD = target === 0x806f;
+    const last = MathMin(ctx._maxLevel(texture),
+        base + maxMipLevels(MathMax(top.width, top.height, threeD ? top.depth : 1)) - 1);
+    if (level > last) return false;
+    if (level === base) return target !== 0x8513 || _levelsComplete(ctx, texture, top, base, base);
+    return _levelsComplete(ctx, texture, top, base, last);
+}
+
+// Whether every face of `texture` has, from `base` to `last`, the image a chain from `top` (the first face's base
+// image) has: each half the one before, of `top`'s format.
+function _levelsComplete(ctx, texture, top, base, last) {
+    const target = texture._target;
+    const first = target === 0x8513 ? 0x8515 : target;
+    const lastFace = target === 0x8513 ? 0x851a : target;
+    const threeD = target === 0x806f;
+    for (let face = first; face <= lastFace; face++) {
+        for (let level = base; level <= last; level++) {
+            const image = ctx._image(texture, face, level);
+            const shift = level - base;
+            if (image === undefined || image.compressed !== top.compressed ||
+                    image.internalformat !== top.internalformat ||
+                    (!_FORMAT_INFO.has(top.internalformat) && image.type !== top.type) ||
+                    image.width !== ((top.width >> shift) || 1) || image.height !== ((top.height >> shift) || 1) ||
+                    image.depth !== (threeD ? (top.depth >> shift) || 1 : top.depth)) return false;
+        }
+    }
+    return true;
 }
 
 // FRAMEBUFFER_COMPLETE, or the first way `fb` is not, in the order a browser finds them: an attachment that is not an
@@ -1240,11 +1325,12 @@ function colorRenderable(ctx, info) {
 }
 
 // Whether a float format (`_FORMAT_INFO`'s entry) is colour-renderable in `ctx`: every one with EXT_color_buffer_float
-// enabled, the 16-bit ones with EXT_color_buffer_half_float.
+// enabled, the 16-bit ones with EXT_color_buffer_half_float, and in WebGL 1 -- whose only 32-bit one that renders is
+// RGBA32F -- the 32-bit ones with WEBGL_color_buffer_float.
 function floatColourRenderable(ctx, info) {
     const flags = info[7];
     return (flags & _FLOAT_RENDERABLE) !== 0 && (ctx._extColorBufferFloat !== undefined ||
-        ((flags & _HALF_RENDERABLE) !== 0 && ctx._extColorBufferHalfFloat !== undefined));
+        ((flags & _HALF_RENDERABLE) !== 0 ? ctx._extColorBufferHalfFloat : ctx._webglColorBufferFloat) !== undefined);
 }
 
 // INVALID_FRAMEBUFFER_OPERATION recorded and true when `fb` is not complete.
@@ -1283,7 +1369,9 @@ function copyCompatible(source, internalformat) {
         default: break;
     }
     const dst = _FORMAT_INFO.get(internalformat);
-    if (dst === undefined || dst[6] !== src[6] || (dst[7] & _SRGB) !== (src[7] & _SRGB)) return false;
+    if (dst === undefined || dst[4] > 0 || dst[5] > 0 || dst[6] !== src[6] || (dst[7] & _SRGB) !== (src[7] & _SRGB)) {
+        return false;
+    }
     for (let c = 0; c < 4; c++) if (dst[c] !== 0 && dst[c] !== src[c]) return false;
     return true;
 }
@@ -1293,7 +1381,8 @@ function _compressedSourceBytes(source) {
     return source[1] >= 0 ? source[2] : TypedArrayPrototypeGetByteLength(source[0]);
 }
 
-// The internal formats a renderbuffer takes: WebGL 1's six (WebGL 1.0 5.14.7), and in WebGL 2 every colour-renderable
+// The internal formats a renderbuffer takes: WebGL 1's six (WebGL 1.0 5.14.7) and its extensions' (`renderbufferStorage`),
+// and in WebGL 2 every colour-renderable
 // sized format of ES 3.0 table 3.13 that needs no extension, the depth and stencil ones of table 3.14, and WebGL 1's
 // DEPTH_STENCIL.
 const _WEBGL1_RENDERBUFFER_FORMATS = [0x8056, 0x8d62, 0x8057, 0x81a5, 0x8d48, 0x84f9];
@@ -1863,6 +1952,14 @@ function checkReadPixelsDestination(pixels, nullable) {
     throw new TypeError("readPixels: dstData must be an ArrayBufferView");
 }
 
+// INVALID_OPERATION for a readPixels view of another type than `type` writes (`_UPLOAD_VIEWS`), else 0.
+function _readViewError(view, type) {
+    const kind = _UPLOAD_VIEWS.get(type);
+    const tag = TypedArrayPrototypeGetSymbolToStringTag(view);
+    return kind !== undefined && (tag === kind[0] || (type === _UBYTE && tag === "Uint8ClampedArray"))
+        ? 0 : GL_INVALID_OPERATION;
+}
+
 // The native result already includes the validated destination byte offset.
 // Reuse the original view and compact payload; an offset needs no subarray or
 // additional pixel storage.
@@ -1959,24 +2056,58 @@ const _EXTENSIONS = [
     // Instanced drawing: the ops are ES 3.0's own. Cocos Creator 2.x's particles and any instancing sprite batcher go
     // from a draw call per instance to one.
     ["ANGLE_instanced_arrays", _WEBGL1_ONLY, 0, "_angleInstancedArrays", (ctx) => ctx._buildAngleInstancedArrays()],
+    // WebGL 1's MIN and MAX blend equations, ES 3.0 core.
+    ["EXT_blend_minmax", _WEBGL1_ONLY, 0, "_extBlendMinmax", () => ({ MIN_EXT: 0x8007, MAX_EXT: 0x8008 })],
     // The float formats as colour attachments and renderbuffers, where the driver renders to them.
     ["EXT_color_buffer_float", _WEBGL2_ONLY, 4, "_extColorBufferFloat", enableColourBuffers],
-    // The 16-bit float formats alone, where the driver renders to those.
-    ["EXT_color_buffer_half_float", _WEBGL2_ONLY, 32, "_extColorBufferHalfFloat", enableColourBuffers],
+    // The 16-bit float formats alone, where the driver renders to those: WebGL 2's R16F, RG16F and RGBA16F, WebGL 1's
+    // half-float textures and RGBA16F_EXT / RGB16F_EXT renderbuffers.
+    ["EXT_color_buffer_half_float", _ANY_WEBGL, 32, "_extColorBufferHalfFloat", (ctx) => enableColourBuffers(ctx, {
+        RGBA16F_EXT: 0x881a, RGB16F_EXT: 0x881b, FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT: 0x8211,
+        UNSIGNED_NORMALIZED_EXT: 0x8c17,
+    })],
     // Blending into 32-bit floats, where the driver does: with EXT_color_buffer_float, asked for or not, as a browser
     // enables it implicitly (`_drawError`).
-    ["EXT_float_blend", _WEBGL2_ONLY, 8, "_extFloatBlend", () => ({})],
+    ["EXT_float_blend", _ANY_WEBGL, 8, "_extFloatBlend", () => ({})],
+    // gl_FragDepthEXT in a WebGL 1 fragment shader, where the driver compiles ESSL 1.00's GL_EXT_frag_depth.
+    ["EXT_frag_depth", _WEBGL1_ONLY, 512, "_extFragDepth", () => ({})],
+    // texture2DLodEXT and its kin in WebGL 1 shaders, where the driver compiles GL_EXT_shader_texture_lod.
+    ["EXT_shader_texture_lod", _WEBGL1_ONLY, 256, "_extShaderTextureLod", () => ({})],
+    // WebGL 1's sRGB textures and renderbuffers, ES 3.0's SRGB8 and SRGB8_ALPHA8.
+    ["EXT_sRGB", _WEBGL1_ONLY, 0, "_extSrgb", () => ({
+        SRGB_EXT: 0x8c40, SRGB_ALPHA_EXT: 0x8c42, SRGB8_ALPHA8_EXT: 0x8c43, FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING_EXT: 0x8210,
+    })],
     ["EXT_texture_filter_anisotropic", _ANY_WEBGL, 16, "_extTextureFilterAnisotropic",
         () => ({ TEXTURE_MAX_ANISOTROPY_EXT: 0x84fe, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 0x84ff })],
     // 32-bit element indices, ES 3.0 core: without it Pixi and three.js cap batches at 65535 indices.
     ["OES_element_index_uint", _WEBGL1_ONLY, 0, "_oesElementIndexUint", () => ({})],
+    // A WebGL 1 framebuffer attachment of a level other than 0, ES 3.0 core.
+    ["OES_fbo_render_mipmap", _WEBGL1_ONLY, 0, "_oesFboRenderMipmap", () => ({})],
+    // dFdx, dFdy and fwidth in WebGL 1 fragment shaders, where the driver compiles GL_OES_standard_derivatives.
+    ["OES_standard_derivatives", _WEBGL1_ONLY, 128, "_oesStandardDerivatives", () => ({ FRAGMENT_SHADER_DERIVATIVE_HINT_OES: 0x8b8b })],
+    // WebGL 1's float textures, uploaded as ES 3.0's 32-bit float ones; WEBGL_color_buffer_float with them where the
+    // renderer has it, as a browser enables it implicitly.
+    ["OES_texture_float", _WEBGL1_ONLY, 0, "_oesTextureFloat", (ctx) => enableFloatTextures(ctx, 4, "_webglColorBufferFloat",
+        () => webglColorBufferFloat(ctx), {})],
     // Linear filtering of 32-bit float textures, where the driver filters them: without it such a texture is incomplete
     // while a filter of it is not NEAREST (`samplesBlack`).
     ["OES_texture_float_linear", _ANY_WEBGL, 64, "_oesTextureFloatLinear", enableFloatFiltering],
+    // WebGL 1's half-float textures (HALF_FLOAT_OES), uploaded as ES 3.0's 16-bit float ones; EXT_color_buffer_half_float
+    // with them where the renderer has it, as a browser enables it implicitly.
+    ["OES_texture_half_float", _WEBGL1_ONLY, 0, "_oesTextureHalfFloat", (ctx) => enableFloatTextures(ctx, 32,
+        "_extColorBufferHalfFloat", () => enableColourBuffers(ctx, {
+            RGBA16F_EXT: 0x881a, RGB16F_EXT: 0x881b, FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT: 0x8211,
+            UNSIGNED_NORMALIZED_EXT: 0x8c17,
+        }), { HALF_FLOAT_OES: 0x8d61 })],
+    // Linear filtering of WebGL 1's half-float textures, which ES 3.0 filters: without it such a texture is incomplete
+    // while a filter of it is not NEAREST (`samplesBlack`).
+    ["OES_texture_half_float_linear", _WEBGL1_ONLY, 0, "_oesTextureHalfFloatLinear", enableFloatFiltering],
     // Vertex array objects, ES 3.0 core: Cocos Creator 2.x falls back to a vertexAttribPointer storm per draw without.
     ["OES_vertex_array_object", _WEBGL1_ONLY, 0, "_oesVertexArrayObject", (ctx) => ctx._buildOesVertexArrayObject()],
     // Compressed uploads: ETC2/EAC where the driver decodes them (ES 3.0 core), ETC1 as their subset, ASTC where it has
     // GL_KHR_texture_compression_astc_*. A compressed asset saves ~16 MiB of heap per 2048^2 texture over RGBA.
+    // WebGL 1's RGBA32F renderbuffers and float textures as colour attachments, where the driver renders to them.
+    ["WEBGL_color_buffer_float", _WEBGL1_ONLY, 4, "_webglColorBufferFloat", (ctx) => webglColorBufferFloat(ctx)],
     ["WEBGL_compressed_texture_astc", _ANY_WEBGL, 2, "_webglCompressedAstc", (ctx) => ctx._buildCompressedAstc()],
     ["WEBGL_compressed_texture_etc", _ANY_WEBGL, 1, "_webglCompressedEtc", (ctx) => ctx._buildCompressedEtc()],
     ["WEBGL_compressed_texture_etc1", _ANY_WEBGL, 1, "_webglCompressedEtc1", () => ({ COMPRESSED_RGB_ETC1_WEBGL: 0x8d64 })],
@@ -1984,6 +2115,9 @@ const _EXTENSIONS = [
     // whether or not this is enabled, as browsers now answer them.
     ["WEBGL_debug_renderer_info", _ANY_WEBGL, 0, "_webglDebugRendererInfo",
         () => ({ UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 })],
+    // WebGL 1's depth and depth-stencil textures: ES 3.0's DEPTH_COMPONENT16 / 24 and DEPTH24_STENCIL8, a 2D level 0
+    // without data, never sub-uploaded, copied or mipmapped.
+    ["WEBGL_depth_texture", _WEBGL1_ONLY, 0, "_webglDepthTexture", () => ({ UNSIGNED_INT_24_8_WEBGL: 0x84fa })],
     // Multiple render targets: WebGL 2's drawBuffers under WebGL 1's names.
     ["WEBGL_draw_buffers", _WEBGL1_ONLY, 0, "_webglDrawBuffers", (ctx) => ctx._buildWebglDrawBuffers()],
     // Loses THIS context, as the extension specifies: its isContextLost() turns true and its canvas is sent
@@ -2003,19 +2137,33 @@ function offersExtension(ctx, extension) {
     return (versions & (ctx._isWebGL2() ? _WEBGL2_ONLY : _WEBGL1_ONLY)) !== 0 && (needs === 0 || (ctx._gpuCaps & needs) === needs);
 }
 
-// OES_texture_float_linear enabled: a float texture that sampled as incomplete may not now.
+// OES_texture_float_linear or OES_texture_half_float_linear enabled: a float texture that sampled as incomplete may
+// not now. The table stores the object in its field; it is set here first so the judgement sees it.
 function enableFloatFiltering(ctx) {
     const extension = {};
-    ctx._oesTextureFloatLinear = extension;
+    ctx[ctx._enabling] = extension;
     refreshAllSampling(ctx);
     return extension;
 }
 
-// EXT_color_buffer_float or EXT_color_buffer_half_float enabled: a float attachment that was not colour-renderable may
-// be now, so every framebuffer is judged again.
-function enableColourBuffers() {
+// OES_texture_float or OES_texture_half_float enabled, and with it the colour-buffer extension in `field` where the
+// renderer has `caps`, made by `make`.
+function enableFloatTextures(ctx, caps, field, make, extension) {
+    if ((ctx._gpuCaps & caps) === caps && ctx[field] === undefined) ctx[field] = make();
+    return extension;
+}
+
+// WEBGL_color_buffer_float enabled: RGBA32F is colour-renderable, so every framebuffer is judged again.
+function webglColorBufferFloat() {
     framebufferChanged();
-    return {};
+    return { RGBA32F_EXT: 0x8814, FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT: 0x8211, UNSIGNED_NORMALIZED_EXT: 0x8c17 };
+}
+
+// EXT_color_buffer_float or EXT_color_buffer_half_float enabled: a float attachment that was not colour-renderable may
+// be now, so every framebuffer is judged again. `constants` are WebGL 1's names for what it adds (WebGL 2 has them).
+function enableColourBuffers(ctx, constants) {
+    framebufferChanged();
+    return ctx === undefined || ctx._isWebGL2() || constants === undefined ? {} : constants;
 }
 
 // `drawBuffers` / `drawBuffersWEBGL`: refused as `_drawBuffersError` says, else recorded for the draw framebuffer --
@@ -2688,9 +2836,10 @@ class WebGLRenderingContext {
         if (this._programBinding === null) return GL_INVALID_OPERATION;
         if (framebufferStatus(this, this._framebufferBinding) !== GL_FRAMEBUFFER_COMPLETE) return GL_INVALID_FRAMEBUFFER_OPERATION;
         // Blending into a 32-bit float colour buffer takes EXT_float_blend: INVALID_OPERATION where the driver has none.
-        // Only a float attachment EXT_color_buffer_float made complete can be one.
+        // Only a float attachment EXT_color_buffer_float -- WebGL 1's WEBGL_color_buffer_float -- made complete can be one.
         const fb = this._framebufferBinding;
-        if (fb !== null && this._extColorBufferFloat !== undefined && this.isEnabled(0x0be2) &&
+        if (fb !== null && (this._extColorBufferFloat !== undefined || this._webglColorBufferFloat !== undefined) &&
+                this.isEnabled(0x0be2) &&
                 (this._gpuCaps & 8) === 0 && drawsIntoFloat32(this, fb)) return GL_INVALID_OPERATION;
         let indices = null;
         if (bytes !== 0) {
@@ -3352,6 +3501,24 @@ class WebGLRenderingContext {
                 }
                 return this._maxAnisotropy();
             case 0x8b8c: return this._webglVersionString(0x8b8c, "WebGL GLSL ES");
+            // FRAGMENT_SHADER_DERIVATIVE_HINT: WebGL 2's, OES_standard_derivatives' in WebGL 1.
+            case 0x8b8b:
+                if (this._isWebGL2() || this._oesStandardDerivatives !== undefined) break;
+                recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                return null;
+            // IMPLEMENTATION_COLOR_READ_FORMAT / _TYPE: the driver's pair for the read buffer, which must be one a read
+            // can be made from (INVALID_OPERATION otherwise, as `_refusesRead` judges it); WebGL 1 names a 16-bit float
+            // HALF_FLOAT_OES.
+            case 0x8b9a: case 0x8b9b: {
+                if (framebufferStatus(this, this._readFramebufferBinding) !== GL_FRAMEBUFFER_COMPLETE ||
+                        readColorFormat(this) === 0) {
+                    recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+                    return null;
+                }
+                let value = null;
+                try { value = JSON.parse(_rawGetParameter(this._canvasId, pname)); } catch (_) { /* none */ }
+                return value === _HALF && !this._isWebGL2() ? 0x8d61 : value;
+            }
             default: break;
         }
         // A capability queried through getParameter is the same GLboolean
@@ -3432,7 +3599,10 @@ class WebGLRenderingContext {
         const extension = _EXTENSIONS_BY_KEY.get(key);
         if (extension === undefined || !offersExtension(this, extension)) return null;
         const [, , , field, build] = extension;
-        if (this[field] === undefined) this[field] = build(this);
+        if (this[field] === undefined) {
+            this._enabling = field;
+            this[field] = build(this);
+        }
         return this[field];
     }
 
@@ -3843,6 +4013,12 @@ class WebGLRenderingContext {
     _uploadFormatError(internalformat, format, type) {
         const i = Number(internalformat) >>> 0;
         const webgl2 = this._isWebGL2();
+        if (!webgl2) {
+            const f = Number(format) >>> 0, t = Number(type) >>> 0;
+            if (!this._webgl1Format(i)) return GL_INVALID_VALUE;
+            if (!this._webgl1Format(f) || !this._webgl1Type(t)) return GL_INVALID_ENUM;
+            return i === f && this._webgl1Takes(f, t) ? 0 : GL_INVALID_OPERATION;
+        }
         const unsized = _UNSIZED_UPLOAD_TYPES.get(i);
         const sized = webgl2 ? _SIZED_UPLOADS.get(i) : undefined;
         if (unsized === undefined && sized === undefined) return GL_INVALID_VALUE;
@@ -3853,14 +4029,57 @@ class WebGLRenderingContext {
         return sized[0] === f && _listHas(sized[1], t) ? 0 : GL_INVALID_OPERATION;
     }
 
-    // INVALID_ENUM for a format or a type this context has none of, else 0. HALF_FLOAT_OES is WebGL 1's, on an
-    // extension this runtime does not offer.
+    // INVALID_ENUM for a format or a type this context has none of, else 0. HALF_FLOAT_OES is WebGL 1's.
     _formatAndTypeError(format, type) {
         const f = Number(format) >>> 0, t = Number(type) >>> 0;
         if (this._isWebGL2()) {
             return isKnownUnsizedFormat(f) && isKnownPixelType(t) && t !== 0x8d61 ? 0 : GL_INVALID_ENUM;
         }
-        return _UNSIZED_UPLOAD_TYPES.has(f) && _listHas(_WEBGL1_UPLOAD_TYPES, t) ? 0 : GL_INVALID_ENUM;
+        return this._webgl1Format(f) && this._webgl1Type(t) ? 0 : GL_INVALID_ENUM;
+    }
+
+    // WebGL 1's formats -- each its own internal format -- with the extensions enabled: the unsized five, and
+    // DEPTH_COMPONENT and DEPTH_STENCIL with WEBGL_depth_texture, SRGB_EXT and SRGB_ALPHA_EXT with EXT_sRGB.
+    _webgl1Format(format) {
+        if (_UNSIZED_UPLOAD_TYPES.has(format)) return true;
+        if (format === 0x1902 || format === 0x84f9) return this._webglDepthTexture !== undefined;
+        if (format === 0x8c40 || format === 0x8c42) return this._extSrgb !== undefined;
+        return false;
+    }
+
+    // WebGL 1's types with the extensions enabled: the core four, FLOAT with OES_texture_float, HALF_FLOAT_OES with
+    // OES_texture_half_float, UNSIGNED_SHORT, UNSIGNED_INT and UNSIGNED_INT_24_8_WEBGL with WEBGL_depth_texture.
+    _webgl1Type(type) {
+        if (_listHas(_WEBGL1_UPLOAD_TYPES, type)) return true;
+        if (type === _FLOAT) return this._oesTextureFloat !== undefined;
+        if (type === 0x8d61) return this._oesTextureHalfFloat !== undefined;
+        if (type === _USHORT || type === _UINT || type === 0x84fa) return this._webglDepthTexture !== undefined;
+        return false;
+    }
+
+    // Whether WebGL 1 uploads `format` as `type`: a colour format its core types, and FLOAT and HALF_FLOAT_OES with their
+    // extensions; DEPTH_COMPONENT UNSIGNED_SHORT or UNSIGNED_INT, DEPTH_STENCIL UNSIGNED_INT_24_8_WEBGL; the sRGB
+    // formats UNSIGNED_BYTE.
+    _webgl1Takes(format, type) {
+        const core = _UNSIZED_UPLOAD_TYPES.get(format);
+        if (core !== undefined) {
+            return _listHas(core, type) || (type === _FLOAT && this._oesTextureFloat !== undefined) ||
+                (type === 0x8d61 && this._oesTextureHalfFloat !== undefined);
+        }
+        if (format === 0x1902) return type === _USHORT || type === _UINT;
+        if (format === 0x84f9) return type === 0x84fa;
+        if (format === 0x8c40 || format === 0x8c42) return type === _UBYTE;
+        return false;
+    }
+
+    // WEBGL_depth_texture's depth image: of TEXTURE_2D, at level 0, without data -- INVALID_OPERATION otherwise, as a
+    // browser has it. True when refused, with the error recorded.
+    _refusesDepthImage(target, level, format, pixels) {
+        const f = Number(format) >>> 0;
+        if (this._isWebGL2() || (f !== 0x1902 && f !== 0x84f9)) return false;
+        if ((Number(target) >>> 0) === 0x0de1 && level === 0 && pixels == null) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        return true;
     }
 
     // As `_uploadFormatError`, for a TexImageSource: WebGL 2 takes the internal formats, formats and types of its table
@@ -3915,7 +4134,9 @@ class WebGLRenderingContext {
         if (error !== 0) return error;
         const f = Number(format) >>> 0, t = Number(type) >>> 0;
         if (this._isWebGL2()) return _WEBGL2_SUB_UPLOADS.has(f * 0x10000 + t) ? 0 : GL_INVALID_OPERATION;
-        return _listHas(_UNSIZED_UPLOAD_TYPES.get(f), t) ? 0 : GL_INVALID_OPERATION;
+        // A WEBGL_depth_texture image takes no sub-image upload.
+        if (f === 0x1902 || f === 0x84f9) return GL_INVALID_OPERATION;
+        return this._webgl1Takes(f, t) ? 0 : GL_INVALID_OPERATION;
     }
 
     // WebGL 2's PIXEL_UNPACK_BUFFER: an upload is from it (the offset overloads) or from the call's own data, never
@@ -4112,7 +4333,8 @@ class WebGLRenderingContext {
     // target with no texture (`_textureFor`), a PIXEL_UNPACK_BUFFER bound -- or, for an offset, none bound or an unpack
     // flag set (`_refusesUnpackBufferSource`) --, a level out of range, formats and a type the tables do not have
     // together (`_uploadFormatError`; a TexImageSource's own table, `_sourceUploadFormatError`), a size or border out of
-    // range (`preflightTexImage2D`), a WebGL 1 mipmap of a size that is not a power of two (`_refusesNpotLevel`),
+    // range (`preflightTexImage2D`), a WEBGL_depth_texture image that is not TEXTURE_2D's level 0 without data
+    // (`_refusesDepthImage`), a WebGL 1 mipmap of a size that is not a power of two (`_refusesNpotLevel`),
     // immutable storage (`_refusesImmutable`), an unpack region outside the data store or a selection outside the
     // source (`_refusesSourceSelection`), and pixels the upload cannot read (`_uploadViewBytes`, `_unpackBufferOffset`).
     // The image is recorded once the upload is sent. A value that is none of the overloads' is a TypeError, as WebIDL
@@ -4132,7 +4354,8 @@ class WebGLRenderingContext {
                 ? this._sourceUploadFormatError(internalformat, a7, a8)
                 : this._uploadFormatError(internalformat, a7, a8);
             if (!preflightTexImage2D(this._canvasId, target, level, a4, a5, a6, formatError) ||
-                this._refusesNpotLevel(level, a4, a5) || this._refusesImmutable(texture)) return;
+                this._refusesDepthImage(target, level, a7, a9) || this._refusesNpotLevel(level, a4, a5) ||
+                this._refusesImmutable(texture)) return;
             if (source !== null) {
                 if (this._refusesSourceSelection(source, a4, a5, 1, false)) return;
                 const whole = a4 === source.width && a5 === source.height && this._selectsFromSourceOrigin();
@@ -4157,7 +4380,8 @@ class WebGLRenderingContext {
         const width = source.width, height = source.height;
         if (!preflightTexImage2D(
             this._canvasId, target, level, width, height, 0, this._sourceUploadFormatError(internalformat, a4, a5),
-        ) || this._refusesNpotLevel(level, width, height) || this._refusesImmutable(texture)) return;
+        ) || this._refusesDepthImage(target, level, a4, source) || this._refusesNpotLevel(level, width, height) ||
+            this._refusesImmutable(texture)) return;
         if (this._refusesSourceSelection(source, width, height, 1, false)) return;
         const whole = this._selectsFromSourceOrigin();
         if (!(whole && _migoTexImageFromTextCache(this._canvasId, target, level, internalformat, a4, a5, a6)) &&
@@ -4247,6 +4471,23 @@ class WebGLRenderingContext {
         );
     }
 
+    // Whether mipmaps can be made of `image`: uncompressed, and a core unsized upload, or of a sized format both
+    // colour-renderable and filterable -- `_MIPMAPPABLE_SIZED_FORMATS`, or a float one while an extension makes it
+    // renderable (`floatColourRenderable`) and it is filterable (`_unfilterable`). WebGL 1's RGBA and RGB float images
+    // are their sized formats (`_effectiveFormat`) under the same rule, so a luminance or alpha float one never is, as
+    // no framebuffer renders it; its sRGB and depth ones are neither unsized uploads nor sized formats, so never, as
+    // EXT_sRGB and WEBGL_depth_texture have it.
+    _mipmappable(image) {
+        if (image.compressed) return false;
+        const i = image.internalformat;
+        const unsized = _UNSIZED_UPLOAD_TYPES.get(i);
+        if ((unsized !== undefined && _listHas(unsized, image.type)) || _listHas(_MIPMAPPABLE_SIZED_FORMATS, i)) return true;
+        const sized = _effectiveFormat(image);
+        const info = sized === undefined ? undefined : _FORMAT_INFO.get(sized);
+        return info !== undefined && (info[7] & _FLOAT_RENDERABLE) !== 0 && floatColourRenderable(this, info) &&
+            !_unfilterable(this, image);
+    }
+
     // ---- Texture parameters ----------------------------------------------------------------------------------------
     // The parameter `pname` of the context's textures (`_TEXTURE_PARAMETERS`; WebGL 1 has four), or undefined.
     _textureParameter(pname) {
@@ -4283,6 +4524,8 @@ class WebGLRenderingContext {
         (texture._params || (texture._params = new Map())).set(pname, value);
         // MAG_FILTER, MIN_FILTER, WRAP_S, WRAP_T, TEXTURE_BASE_LEVEL
         if ((pname >= 0x2800 && pname <= 0x2803) || pname === 0x813c) refreshTextureSampling(this, texture);
+        // TEXTURE_BASE_LEVEL, TEXTURE_MAX_LEVEL: which of its levels attach (`_attachableLevel`).
+        if (pname === 0x813c || pname === 0x813d) framebufferChanged();
         return true;
     }
 
@@ -4313,7 +4556,8 @@ class WebGLRenderingContext {
         const value = Number(param) | 0;
         if (!this._setTexParameter(texture, p, value)) return;
         // opcode 40: H C U U I. target/pname are u32, param is i32: the arguments as WebIDL converted them.
-        encodeTexParameteri(this._canvasId, Number(target) >>> 0, p, value);
+        encodeTexParameteri(this._canvasId, Number(target) >>> 0, p,
+            p === 0x2800 || p === 0x2801 ? _driverFilter(texture, p, value) : value);
     }
 
     // An enum or a level set through the float call takes the nearest integer (ES 3.0 2.3.1); the LODs are floats.
@@ -4324,13 +4568,13 @@ class WebGLRenderingContext {
         const f = MathFround(Number(param));
         if (!this._setTexParameter(texture, p, p === 0x813a || p === 0x813b || p === 0x84fe ? f : MathRound(f))) return;
         // opcode 41: H C U U F. target/pname are u32, param is f32.
-        encodeTexParameterf(this._canvasId, Number(target) >>> 0, p, f);
+        encodeTexParameterf(this._canvasId, Number(target) >>> 0, p,
+            p === 0x2800 || p === 0x2801 ? _driverFilter(texture, p, MathRound(f)) : f);
     }
 
     // The base image (`_baseLevel`) must be there and not empty -- on every face of a cube map, alike and square --,
-    // uncompressed, of an unsized internal format or a sized one both colour-renderable and filterable
-    // (`_MIPMAPPABLE_SIZED_FORMATS`, `_MIPMAPPABLE_FLOAT_FORMATS`), and in WebGL 1 a power of two each way; anything else is INVALID_OPERATION (ES
-    // 3.0 3.8.10, ES 2.0 3.7.11). The levels it makes are recorded: each half the one before, down to 1 x 1 or the
+    // of a format mipmaps can be made of (`_mipmappable`), and in WebGL 1 a power of two each way; anything else is
+    // INVALID_OPERATION (ES 3.0 3.8.10, ES 2.0 3.7.11). The levels it makes are recorded: each half the one before, down to 1 x 1 or the
     // maximum level (`_maxLevel`), as immutable storage already has them.
     generateMipmap(target) {
         const texture = this._textureFor(target, "object");
@@ -4340,11 +4584,7 @@ class WebGLRenderingContext {
         const last = t === 0x8513 ? 0x851a : t;
         const base = this._baseLevel(texture);
         const image = this._image(texture, first, base);
-        let ok = image !== undefined && !image.compressed && image.width > 0 && image.height > 0 && image.depth > 0 &&
-            (_UNSIZED_UPLOAD_TYPES.has(image.internalformat) || _listHas(_MIPMAPPABLE_SIZED_FORMATS, image.internalformat) ||
-                ((_listHas(_MIPMAPPABLE_FLOAT_FORMATS, image.internalformat) ||
-                    (this._oesTextureFloatLinear !== undefined && _listHas(_FLOAT32_FORMATS, image.internalformat))) &&
-                    _FORMAT_INFO.has(image.internalformat) && floatColourRenderable(this, _FORMAT_INFO.get(image.internalformat)))) &&
+        let ok = image !== undefined && image.width > 0 && image.height > 0 && image.depth > 0 && this._mipmappable(image) &&
             (this._isWebGL2() || (_isPowerOfTwo(image.width) && _isPowerOfTwo(image.height))) &&
             (t !== 0x8513 || image.width === image.height);
         for (let face = first + 1; ok && face <= last; face++) {
@@ -4666,7 +4906,21 @@ class WebGLRenderingContext {
             _rawBlendFuncSeparate(this._canvasId, srcRGB, dstRGB, srcAlpha, dstAlpha);
         }
     }
+    // FUNC_ADD, FUNC_SUBTRACT and FUNC_REVERSE_SUBTRACT; MIN and MAX in WebGL 2 or with EXT_blend_minmax enabled.
+    // Anything else is INVALID_ENUM, before anything is sent: the driver takes MIN and MAX in either version.
+    _blendEquationError(mode) {
+        switch (Number(mode) >>> 0) {
+            case 0x8006: case 0x800a: case 0x800b: return 0;
+            case 0x8007: case 0x8008: return this._isWebGL2() || this._extBlendMinmax !== undefined ? 0 : GL_INVALID_ENUM;
+            default: return GL_INVALID_ENUM;
+        }
+    }
     blendEquation(mode) {
+        const error = this._blendEquationError(mode);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         if (typeof mode === "number") {
             encodeBlendEquation(this._canvasId, mode >>> 0);
         } else {
@@ -4675,6 +4929,11 @@ class WebGLRenderingContext {
         }
     }
     blendEquationSeparate(modeRGB, modeAlpha) {
+        const error = this._blendEquationError(modeRGB) || this._blendEquationError(modeAlpha);
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         if (typeof modeRGB === "number" && typeof modeAlpha === "number") {
             encodeBlendEquationSeparate(this._canvasId, modeRGB >>> 0, modeAlpha >>> 0);
         } else {
@@ -5062,10 +5321,13 @@ class WebGLRenderingContext {
 
     // The internal format first (INVALID_ENUM for one the call does not take: WebGL 1 has the five unsized ones only),
     // then the level, size and border (INVALID_VALUE: out of range, or a cube face that is not square), then a depth or
-    // stencil format (INVALID_OPERATION), as the decoder orders them. 0 when none is.
+    // stencil format (INVALID_OPERATION: WebGL 1's with WEBGL_depth_texture enabled, as it specifies), as the decoder
+    // orders them. 0 when none is.
     _copyTexImageError(target, level, internalformat, width, height, border) {
         const formatError = this._isWebGL2() ? _copyTexImageFormatError(this, internalformat)
-            : internalformat >= 0x1906 && internalformat <= 0x190a ? 0 : GL_INVALID_ENUM;
+            : internalformat >= 0x1906 && internalformat <= 0x190a ? 0
+            : (internalformat === 0x1902 || internalformat === 0x84f9) && this._webglDepthTexture !== undefined
+                ? GL_INVALID_OPERATION : GL_INVALID_ENUM;
         if (formatError === GL_INVALID_ENUM) return formatError;
         const maxAtLevel = (MAX_WEBGL_GPU_2D_DIMENSION >>> level) || 1;
         if (level < 0 || level >= MAX_WEBGL_GPU_2D_LEVELS || width < 0 || width > maxAtLevel || height < 0 ||
@@ -5079,13 +5341,28 @@ class WebGLRenderingContext {
         const texture = this._textureFor(target, "image2D");
         if (!texture || this._refusesCopyIntoImage(
             texture, target, level | 0, xoffset | 0, yoffset | 0, 0, width | 0, height | 0,
-        ) || this._refusesCopyFrom(this._image(texture, target, level | 0).internalformat)) return;
+        ) || this._refusesCopyFrom(this._copyDestination(this._image(texture, target, level | 0)))) return;
         encodeCopyTexSubImage2D(this._canvasId, target, level, xoffset, yoffset, x, y, width, height);
+    }
+
+    // The format a copy into `image` fills (`copyCompatible`): its internal format, but for WebGL 1's float and sRGB
+    // images the sized format each is, as the driver has it -- RGBA32F and the like, R32F or R16F for luminance -- and
+    // none for an alpha or luminance-alpha float one, whose alpha a copy cannot fill: the driver holds it in red or green.
+    _copyDestination(image) {
+        const i = image.internalformat;
+        if (this._isWebGL2()) return i;
+        const float = image.type === _FLOAT;
+        if (float || image.type === 0x8d61) {
+            if (i === 0x1909) return float ? 0x822e : 0x822d;                // LUMINANCE: R32F, R16F
+            return i === 0x1906 || i === 0x190a ? 0 : _effectiveFormat(image);
+        }
+        return i === 0x8c40 || i === 0x8c42 ? _effectiveFormat(image) : i;  // SRGB_EXT, SRGB_ALPHA_EXT
     }
 
     // Refused before anything is sent (`_attachmentFramebuffer`): a textarget that is not TEXTURE_2D or a cube face is
     // INVALID_ENUM; a texture of another context, a deleted one, or one whose target is not the textarget's
-    // INVALID_OPERATION; a level other than 0 in WebGL 1, or past the texture's levels, INVALID_VALUE.
+    // INVALID_OPERATION; a level other than 0 in WebGL 1 without OES_fbo_render_mipmap, or past the texture's levels,
+    // INVALID_VALUE.
     framebufferTexture2D(target, attachment, textarget, texture, level) {
         const tt = Number(textarget) >>> 0;
         const object = texture === undefined ? null : texture;
@@ -5099,7 +5376,8 @@ class WebGLRenderingContext {
                 if (object._deleted || object._ownerId !== this._canvasId ||
                         object._target !== (tt === 0x0de1 ? 0x0de1 : 0x8513)) return GL_INVALID_OPERATION;
             }
-            if (lv < 0 || (this._isWebGL2() ? lv >= this._levelLimit(tt) : lv !== 0)) return GL_INVALID_VALUE;
+            if (lv < 0 || (this._isWebGL2() || this._oesFboRenderMipmap !== undefined ? lv >= this._levelLimit(tt)
+                : lv !== 0)) return GL_INVALID_VALUE;
             return 0;
         });
         if (fb === undefined) return;
@@ -5215,16 +5493,30 @@ class WebGLRenderingContext {
         return 1;
     }
 
+    // In the order a browser judges a query: the target (FRAMEBUFFER, and WebGL 2's DRAW_FRAMEBUFFER and
+    // READ_FRAMEBUFFER), the attachment point (a colour one past the context's is INVALID_ENUM), in WebGL 1 a framebuffer
+    // bound (ES 2.0 6.1.3: the default one has no attachments to query, INVALID_OPERATION), then the pname -- WebGL 1
+    // has the object's type, name, level and face, and COMPONENT_TYPE with WEBGL_color_buffer_float or
+    // EXT_color_buffer_half_float and COLOR_ENCODING with EXT_sRGB enabled; COMPONENT_TYPE of DEPTH_STENCIL_ATTACHMENT
+    // is INVALID_OPERATION, its two buffers' types may differ (ES 3.0 6.1.13).
     getFramebufferAttachmentParameter(target, attachment, pname) {
-        // FRAMEBUFFER, DRAW_FRAMEBUFFER and READ_FRAMEBUFFER; FRAMEBUFFER is the draw one.
-        if (target !== 0x8d40 && target !== 0x8ca9 && target !== 0x8ca8) { recordGpuPreflightError(this._canvasId, 0x0500); return null; }
+        const webgl2 = this._isWebGL2();
+        if (target !== 0x8d40 && !(webgl2 && (target === 0x8ca9 || target === 0x8ca8))) {
+            recordGpuPreflightError(this._canvasId, 0x0500);
+            return null;
+        }
         const fb = target === 0x8ca8 ? this._readFramebufferBinding : this._framebufferBinding;
         pname = pname >>> 0;
         attachment = attachment >>> 0;
-        if (!fb) return this._defaultFramebufferAttachmentParameter(attachment, pname);
-        const isColor = attachment >= 0x8ce0 && attachment < 0x8ce0 + 16;
+        if (!fb && webgl2) return this._defaultFramebufferAttachmentParameter(attachment, pname);
+        const color = attachment - 0x8ce0;
+        const isColor = color >= 0 && color < this._colorAttachmentLimit();
         if (!isColor && attachment !== 0x8d00 && attachment !== 0x8d20 && attachment !== 0x821a) {
             recordGpuPreflightError(this._canvasId, 0x0500);
+            return null;
+        }
+        if (!fb) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
             return null;
         }
         // DEPTH_STENCIL_ATTACHMENT answers only when one object is both: the same one in each.
@@ -5237,9 +5529,15 @@ class WebGLRenderingContext {
         } else {
             record = fb._attachments ? fb._attachments.get(attachment) || null : null;
         }
-        const validPname = pname === 0x8cd0 || pname === 0x8cd1 || pname === 0x8cd2 || pname === 0x8cd3 ||
-            pname === 0x8cd4 || (pname >= 0x8212 && pname <= 0x8217) || pname === 0x8211 || pname === 0x8210;
+        const validPname = pname === 0x8cd0 || pname === 0x8cd1 || pname === 0x8cd2 || pname === 0x8cd3 || (webgl2
+            ? pname === 0x8cd4 || (pname >= 0x8212 && pname <= 0x8217) || pname === 0x8211 || pname === 0x8210
+            : (pname === 0x8211 && (this._webglColorBufferFloat !== undefined || this._extColorBufferHalfFloat !== undefined)) ||
+                (pname === 0x8210 && this._extSrgb !== undefined));
         if (!validPname) { recordGpuPreflightError(this._canvasId, 0x0500); return null; }
+        if (pname === 0x8211 && attachment === 0x821a) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return null;
+        }
         if (!record) {
             if (pname === 0x8cd0) return 0;                        // OBJECT_TYPE: NONE
             if (pname === 0x8cd1) return null;                     // OBJECT_NAME: no object
@@ -5366,12 +5664,14 @@ class WebGLRenderingContext {
         if ((Number(target) >>> 0) !== 0x8d41) return GL_INVALID_ENUM;
         if (this._renderbufferBinding === null) return GL_INVALID_OPERATION;
         const i = Number(internalformat) >>> 0;
-        const formats = this._isWebGL2() ? _WEBGL2_RENDERBUFFER_FORMATS : _WEBGL1_RENDERBUFFER_FORMATS;
-        if (!_listHas(formats, i)) {
-            const info = this._isWebGL2() ? _FORMAT_INFO.get(i) : undefined;
-            if (info === undefined || !floatColourRenderable(this, info)) {
-                return GL_INVALID_ENUM;
-            }
+        const webgl2 = this._isWebGL2();
+        if (!_listHas(webgl2 ? _WEBGL2_RENDERBUFFER_FORMATS : _WEBGL1_RENDERBUFFER_FORMATS, i)) {
+            // A float format while it is colour-renderable; WebGL 1 names two, RGBA32F_EXT and RGBA16F_EXT, and has
+            // EXT_sRGB's SRGB8_ALPHA8_EXT. RGB16F_EXT is not offered: no framebuffer here renders to it.
+            const info = _FORMAT_INFO.get(i);
+            const offered = !webgl2 && i === 0x8c43 ? this._extSrgb !== undefined
+                : (webgl2 || i === 0x8814 || i === 0x881a) && info !== undefined && floatColourRenderable(this, info);
+            if (!offered) return GL_INVALID_ENUM;
         }
         if (!NumberIsInteger(width) || width < 0 || width > MAX_WEBGL_GPU_2D_DIMENSION ||
                 !NumberIsInteger(height) || height < 0 || height > MAX_WEBGL_GPU_2D_DIMENSION ||
@@ -5424,10 +5724,34 @@ class WebGLRenderingContext {
 
     // -- Phase 3B: Misc --
 
+    // WebGL 1's formats and types first (`_readPixelsEnumError`), then a view that is not of the type, then the read
+    // buffer (`_refusesRead`), in a browser's order; which pairs the read buffer can be read as is the driver's to say.
+    // HALF_FLOAT_OES is ES 3.0's HALF_FLOAT to the driver.
     readPixels(x, y, width, height, format, type, pixels) {
         checkReadPixelsDestination(pixels, true);
+        const t = Number(type) >>> 0;
+        const error = this._readPixelsEnumError(format, t) || (pixels == null ? 0 : _readViewError(pixels, t));
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         if (this._refusesRead()) return;
-        readPixelsIntoView(this._canvasId, x, y, width, height, format, type, pixels, 0);
+        readPixelsIntoView(this._canvasId, x, y, width, height, format, t === 0x8d61 ? _HALF : type, pixels, 0);
+    }
+    // WebGL 1's read formats ALPHA, RGB and RGBA; its types UNSIGNED_BYTE and the three packed shorts, FLOAT with
+    // OES_texture_float or OES_texture_half_float and HALF_FLOAT_OES with the latter; and what a driver's
+    // IMPLEMENTATION_COLOR_READ pair may be besides (EXT_read_format_bgra's BGRA_EXT and its two reversed shorts).
+    // INVALID_ENUM for anything else.
+    _readPixelsEnumError(format, type) {
+        const f = Number(format) >>> 0;
+        if (f !== 0x1906 && f !== 0x1907 && f !== 0x1908 && f !== 0x80e1) return GL_INVALID_ENUM;
+        switch (type) {
+            case _UBYTE: case 0x8363: case 0x8033: case 0x8034: case 0x8365: case 0x8366: return 0;
+            case _FLOAT:
+                return this._oesTextureFloat !== undefined || this._oesTextureHalfFloat !== undefined ? 0 : GL_INVALID_ENUM;
+            case 0x8d61: return this._oesTextureHalfFloat !== undefined ? 0 : GL_INVALID_ENUM;
+            default: return GL_INVALID_ENUM;
+        }
     }
     // A read from a read framebuffer that is not complete is INVALID_FRAMEBUFFER_OPERATION, one whose read buffer is
     // NONE or names no image INVALID_OPERATION. True when refused, the error recorded.
@@ -5437,7 +5761,15 @@ class WebGLRenderingContext {
         recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
         return true;
     }
+    // GENERATE_MIPMAP_HINT, and FRAGMENT_SHADER_DERIVATIVE_HINT in WebGL 2 or with OES_standard_derivatives enabled;
+    // FASTEST, NICEST or DONT_CARE. Anything else is INVALID_ENUM, before anything is sent.
     hint(target, mode) {
+        const t = Number(target) >>> 0, m = Number(mode) >>> 0;
+        if (!(t === 0x8192 || (t === 0x8b8b && (this._isWebGL2() || this._oesStandardDerivatives !== undefined))) ||
+                (m !== 0x1100 && m !== 0x1101 && m !== 0x1102)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
         // opcode 44: H C U U.
         if (typeof target === "number" && typeof mode === "number") {
             encodeHint(this._canvasId, target >>> 0, mode >>> 0);
