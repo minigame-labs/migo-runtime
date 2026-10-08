@@ -1295,7 +1295,11 @@ pub(super) mod tests {
     pub(in crate::rendering::webgl) fn new_webgl_runtime()
     -> (HostJsRuntime, crossbeam_channel::Receiver<RenderCommand>) {
         let (host_state, render_rx) = new_test_host_state();
-        let runtime = HostJsRuntime::new(
+        (runtime_over(host_state), render_rx)
+    }
+
+    fn runtime_over(host_state: HostOpState) -> HostJsRuntime {
+        HostJsRuntime::new(
             1,
             host_state,
             &std::env::temp_dir(),
@@ -1305,8 +1309,7 @@ pub(super) mod tests {
             false,
             #[cfg(feature = "code-signing")]
             None,
-        );
-        (runtime, render_rx)
+        )
     }
 
     pub(in crate::rendering::webgl) fn end_test_frame(runtime: &mut HostJsRuntime) {
@@ -8297,6 +8300,358 @@ pub(super) mod tests {
             vec![
                 ("fill", bits(10, 20, 30, 128)),
                 ("stroke", bits(0, 255, 0, 255)),
+            ]
+        );
+    }
+
+    /// What a font shorthand means, as Chrome has a canvas read it.
+    ///
+    /// The facade is the only reader of `ctx.font`: the renderer and the measurer are sent the font it read. So this is
+    /// the whole of what a canvas does with a shorthand -- which are fonts, and what `font` reads back. Every expected
+    /// value is Chrome's for a canvas it is not rendering, except where the comment says otherwise. migo-conformance's
+    /// `canvas2d-spec/font-*` asks the same through every platform.
+    #[test]
+    fn font_shorthands_read_as_chrome_reads_them() {
+        // (assigned, what `font` reads back, or None when the assignment is ignored)
+        let cases: &[(&str, Option<&str>)] = &[
+            ("10px sans-serif", Some("10px sans-serif")),
+            ("bold 20px Arial", Some("bold 20px Arial")),
+            (
+                "italic small-caps bold 16px/2 cursive",
+                Some("italic bold small-caps 16px cursive"),
+            ),
+            (
+                "small-caps italic bold condensed 12px serif",
+                Some("italic bold small-caps 12px serif"),
+            ),
+            ("  12px   serif  ", Some("12px serif")),
+            ("\t12px\nserif\r", Some("12px serif")),
+            ("BOLD 12PX SERIF", Some("bold 12px serif")),
+            ("12px SANS-SERIF", Some("12px sans-serif")),
+            (
+                "12px cursive, Fantasy, MONOSPACE",
+                Some("12px cursive, fantasy, monospace"),
+            ),
+            // A size and a family are both required.
+            ("20px", None),
+            ("bold", None),
+            ("italic 12px", None),
+            ("12px/1.5", None),
+            ("bogus", None),
+            ("", None),
+            // Sizes: zero and fractions are fonts, negatives are not; relative sizes resolve against 10px.
+            ("bold 0px serif", Some("bold 0px serif")),
+            ("0 serif", Some("0px serif")),
+            ("-5px serif", None),
+            ("12 serif", None),
+            ("12.px serif", None),
+            ("0.1px serif", Some("0.1px serif")),
+            ("1.23456789px serif", Some("1.23457px serif")),
+            ("1e1px serif", Some("10px serif")),
+            ("+12px serif", Some("12px serif")),
+            (".5px serif", Some("0.5px serif")),
+            ("123456789px serif", Some("10000px serif")),
+            ("12pt serif", Some("16px serif")),
+            ("10pt serif", Some("13.3333px serif")),
+            ("10pc serif", Some("160px serif")),
+            ("1in serif", Some("96px serif")),
+            ("2.54cm serif", Some("96px serif")),
+            ("40Q serif", Some("37.7953px serif")),
+            ("1em serif", Some("10px serif")),
+            ("2rem serif", Some("20px serif")),
+            ("50% serif", Some("5px serif")),
+            ("1000% serif", Some("100px serif")),
+            ("-1% serif", None),
+            ("3ch serif", Some("15px serif")),
+            ("1ic serif", Some("10px serif")),
+            ("medium serif", Some("16px serif")),
+            ("xx-small serif", Some("9px serif")),
+            ("XX-LARGE serif", Some("32px serif")),
+            ("xxx-large serif", Some("48px serif")),
+            ("larger serif", Some("12px serif")),
+            ("smaller serif", Some("8.33333px serif")),
+            // Line height: read and dropped, and still has to be one.
+            ("12px/1.5 serif", Some("12px serif")),
+            ("12px / 1.5 serif", Some("12px serif")),
+            ("12px/normal serif", Some("12px serif")),
+            ("12px/20px serif", Some("12px serif")),
+            ("12px/0 serif", Some("12px serif")),
+            ("12px/ serif", None),
+            ("12px/-1 serif", None),
+            ("12px/-1px serif", None),
+            // Weights.
+            ("700 12px serif", Some("bold 12px serif")),
+            ("400 12px serif", Some("12px serif")),
+            ("100 12px serif", Some("100 12px serif")),
+            ("1000 12px serif", Some("1000 12px serif")),
+            ("550.7 12px serif", Some("550 12px serif")),
+            ("1001 12px serif", None),
+            ("0 12px serif", None),
+            ("bolder 12px serif", Some("bold 12px serif")),
+            ("lighter 12px serif", Some("100 12px serif")),
+            // The four optional components: each once, `normal` for any, four at most.
+            ("normal normal normal normal 12px serif", Some("12px serif")),
+            ("normal normal normal normal normal 12px serif", None),
+            ("bold bold 12px serif", None),
+            ("italic oblique 12px serif", None),
+            ("bold 700 12px serif", None),
+            ("small-caps small-caps 12px serif", None),
+            ("condensed expanded 12px serif", None),
+            ("normal italic 12px serif", Some("italic 12px serif")),
+            ("bold italic 12px serif", Some("italic bold 12px serif")),
+            ("condensed 12px serif", Some("12px serif")),
+            ("all-small-caps 12px serif", None),
+            ("oblique 12px serif", Some("italic 12px serif")),
+            ("OBLIQUE 12px serif", Some("italic 12px serif")),
+            ("oblique 14deg 12px serif", Some("italic 12px serif")),
+            ("oblique -14deg 12px serif", Some("12px serif")),
+            ("oblique 0deg 12px serif", Some("12px serif")),
+            ("oblique 91deg 12px serif", None),
+            ("italic 10deg 12px serif", None),
+            // Chrome reads back only its default angle as italic and drops the rest; a face that slants reads back
+            // as one here.
+            ("oblique 20deg 12px serif", Some("italic 12px serif")),
+            // Families: identifiers, sequences, strings, keywords, escapes.
+            ("12px A  B, C   D", Some("12px \"A B\", \"C D\"")),
+            ("12px Noto Sans CJK SC", Some("12px \"Noto Sans CJK SC\"")),
+            (
+                "small-caps 30px 'My Font', serif",
+                Some("small-caps 30px \"My Font\", serif"),
+            ),
+            (
+                "12px \"\u{5fae}\u{8f6f}\u{96c5}\u{9ed1}\", sans-serif",
+                Some("12px \u{5fae}\u{8f6f}\u{96c5}\u{9ed1}, sans-serif"),
+            ),
+            ("12px  \"x\" , y ", Some("12px x, y")),
+            ("12px 'A\"B'", Some("12px \"A\\\"B\"")),
+            ("12px \"\"", Some("12px \"\"")),
+            ("12px 'serif'", Some("12px \"serif\"")),
+            ("12px \"inherit\"", Some("12px \"inherit\"")),
+            ("12px foo serif", Some("12px \"foo serif\"")),
+            ("12px foo inherit", Some("12px \"foo inherit\"")),
+            ("12px inherit foo", Some("12px \"inherit foo\"")),
+            ("12px a/**/b", Some("12px \"a b\"")),
+            ("12px a\\:b", Some("12px \"a:b\"")),
+            ("12px 'a\\", Some("12px a")),
+            ("12px -foo", Some("12px -foo")),
+            ("12px --foo", Some("12px \"--foo\"")),
+            ("12px \\31 23", Some("12px \"123\"")),
+            ("12px a\\62 c", Some("12px abc")),
+            ("12px \\41 rial", Some("12px Arial")),
+            ("12px a\\ b", Some("12px \"a b\"")),
+            ("12px A\\, B", Some("12px \"A, B\"")),
+            ("12px \"a\\\nb\"", Some("12px ab")),
+            ("12px 'abc", Some("12px abc")),
+            ("12px \"a\tb\"", Some("12px \"a\\9 b\"")),
+            ("12px \"\u{1}\"", Some("12px \"\\1 \"")),
+            ("12px \"a\\\\b\"", Some("12px \"a\\\\b\"")),
+            ("12px serif\u{0}x", Some("12px serif\u{fffd}x")),
+            ("12px \\", Some("12px \u{fffd}")),
+            ("12px/*a comment*/serif", Some("12px serif")),
+            (
+                "20px cursive,fantasy,monospace,sans-serif,serif,UnquotedFont,\"QuotedFont\\\\\\\",\"",
+                Some(
+                    "20px cursive, fantasy, monospace, sans-serif, serif, UnquotedFont, \"QuotedFont\\\\\\\",\"",
+                ),
+            ),
+            ("12px serif,", None),
+            ("12px ,serif", None),
+            ("12px serif,,monospace", None),
+            ("12px 'a' 'b'", None),
+            ("12px a 'b'", None),
+            ("12px 3D", None),
+            ("12px -1x", None),
+            ("12px serif bold", None),
+            ("12px sans-serif serif", None),
+            ("12px inherit", None),
+            ("12px Inherit", None),
+            ("12px default", None),
+            ("12px 'a\nb'", None),
+            ("12px serif !important", None),
+            ("12px serif;", None),
+            ("inherit", None),
+            ("10px {bogus}", None),
+            ("var(--x) serif", None),
+            ("12px var(--f)", None),
+            ("1em serif; background: green; margin: 10px", None),
+            ("12px\u{a0}serif", None),
+            // Not read here, so ignored: math functions, and units whose length needs a viewport, a container or the
+            // font's own metrics.
+            ("calc(10px + 2px) serif", None),
+            ("10vw serif", None),
+            ("1lh serif", None),
+            ("1cap serif", None),
+            // A system font is the platform's UI face at the default size (Chrome names Arial).
+            ("caption", Some("16px system-ui")),
+            ("  Menu  ", Some("16px system-ui")),
+            ("bold caption", None),
+            ("caption, serif", None),
+            ("12px caption", Some("12px caption")),
+        ];
+
+        let mut script = String::from("const ctx = createCanvas().getContext('2d');\n");
+        for (input, expected) in cases {
+            let want = expected.unwrap_or("13px Sentinel");
+            script.push_str(&format!(
+                "ctx.font = '13px Sentinel'; ctx.font = {input}; if (ctx.font !== {want}) throw new Error({label} + ' read back as ' + ctx.font + ', want ' + {want});\n",
+                input = js_string(input),
+                want = js_string(want),
+                label = js_string(input),
+            ));
+        }
+        // Every shorthand reads back as Chrome reads it, or the script throws naming the one that did not.
+        run_2d_frame("font_shorthands.js", &script);
+    }
+
+    /// The renderer is sent the font the facade read -- never the shorthand -- and only when it changes: an invalid
+    /// string sends nothing, and neither does one that reads as the font already set.
+    #[test]
+    fn a_font_reaches_the_renderer_as_what_the_facade_read() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            ctx.font = "italic bold 12pt 'Noto Sans', serif";
+            ctx.font = 'bogus';
+            ctx.font = 'italic 700 16px "Noto Sans",SERIF';
+            ctx.font = '1em monospace';
+            ctx.font = '13.333333px ""';
+        "#;
+        let ops = run_2d_frame("font_records.js", script);
+        let fonts: Vec<(f32, u16, bool, Vec<String>)> = canvas_commands(&ops)
+            .iter()
+            .filter_map(|command| match command {
+                Canvas2DCmd::SetFont { font } => {
+                    Some((font.size, font.weight, font.italic, font.families.to_vec()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fonts,
+            vec![
+                (
+                    16.0,
+                    700,
+                    true,
+                    vec!["Noto Sans".to_owned(), "serif".to_owned()]
+                ),
+                (10.0, 400, false, vec!["monospace".to_owned()]),
+                // The size is the one `font` reads back, six significant digits, and an empty name is a name.
+                (13.3333, 400, false, vec![String::new()]),
+            ]
+        );
+    }
+
+    /// `measureText` measures the font `fillText` draws: the host's measurer is handed the facade's font, the whole
+    /// family list included, and a font that is not one changes nothing it is handed.
+    #[test]
+    fn a_measurement_is_of_the_font_the_facade_read() {
+        use shared::protocol::render_cmd::{CanvasCmd, TextMetrics};
+        use shared::text_measurer::TextMeasurer;
+
+        #[derive(Default)]
+        struct Recorder(std::sync::Mutex<Vec<(String, Vec<String>, f32, u16, bool)>>);
+        impl TextMeasurer for Recorder {
+            fn measure(
+                &self,
+                text: &str,
+                families: &std::sync::Arc<Vec<String>>,
+                font_size: f32,
+                weight: u16,
+                italic: bool,
+            ) -> TextMetrics {
+                self.0.lock().unwrap().push((
+                    text.to_owned(),
+                    families.to_vec(),
+                    font_size,
+                    weight,
+                    italic,
+                ));
+                TextMetrics {
+                    width: text.len() as f32,
+                    actual_bounding_box_left: 0.0,
+                    actual_bounding_box_right: 0.0,
+                    actual_bounding_box_ascent: 0.0,
+                    actual_bounding_box_descent: 0.0,
+                    font_bounding_box_ascent: 0.0,
+                    font_bounding_box_descent: 0.0,
+                    em_height_ascent: 0.0,
+                    em_height_descent: 0.0,
+                    hanging_baseline: 0.0,
+                    alphabetic_baseline: 0.0,
+                    ideographic_baseline: 0.0,
+                }
+            }
+            fn line_height(
+                &self,
+                _families: &std::sync::Arc<Vec<String>>,
+                _font_size: f32,
+                _weight: u16,
+                _italic: bool,
+            ) -> f32 {
+                0.0
+            }
+            fn register_font(&self, _aliases: &[String], _bytes: &[u8]) -> Option<String> {
+                None
+            }
+        }
+
+        let recorder = std::sync::Arc::new(Recorder::default());
+        let (mut host_state, render_rx) = new_test_host_state();
+        host_state.text_measurer = Some(recorder.clone());
+        let mut runtime = runtime_over(host_state);
+        std::thread::spawn(move || {
+            while let Ok(command) = render_rx.recv() {
+                if let RenderCommand::Canvas(CanvasCmd::GetInfo { id: _, resp }) = command {
+                    resp.send(Ok((64, 64)));
+                }
+            }
+        });
+        runtime
+            .exec_script(
+                "font_measure.js",
+                r#"
+                    const ctx = createCanvas().getContext('2d');
+                    if (ctx.measureText('ab').width !== 2) throw new Error('the measurer was not asked');
+                    ctx.font = "bold 2em 'Microsoft YaHei', \"Noto Serif\", serif";
+                    ctx.measureText('cde');
+                    ctx.font = 'not a font';
+                    ctx.measureText('f');
+                "#,
+            )
+            .expect("script must not throw");
+        let seen = recorder.0.lock().unwrap();
+        assert_eq!(
+            *seen,
+            vec![
+                (
+                    "ab".to_owned(),
+                    vec!["sans-serif".to_owned()],
+                    10.0,
+                    400,
+                    false
+                ),
+                (
+                    "cde".to_owned(),
+                    vec![
+                        "Microsoft YaHei".to_owned(),
+                        "Noto Serif".to_owned(),
+                        "serif".to_owned()
+                    ],
+                    20.0,
+                    700,
+                    false
+                ),
+                (
+                    "f".to_owned(),
+                    vec![
+                        "Microsoft YaHei".to_owned(),
+                        "Noto Serif".to_owned(),
+                        "serif".to_owned()
+                    ],
+                    20.0,
+                    700,
+                    false
+                ),
             ]
         );
     }

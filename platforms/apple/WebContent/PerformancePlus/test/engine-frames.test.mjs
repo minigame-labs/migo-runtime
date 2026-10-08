@@ -36,6 +36,7 @@ import {
   OP2D_FILL_TEXT,
   OP2D_SAVE,
   OP2D_SELECT_CANVAS,
+  OP2D_SET_FONT,
   OP2D_SET_LINE_DASH,
   OP_CLEAR,
   OP_UNIFORM1UIV,
@@ -102,12 +103,24 @@ function payloadRecord(opcode, prefix, bytes) {
   return words;
 }
 const ascii = (length) => Array.from({ length }, () => 0x20 + pick(0x5f));
+const F32 = new Float32Array(1);
+const F32_BITS = new Uint32Array(F32.buffer);
+const f32Bits = (value) => {
+  F32[0] = value;
+  return F32_BITS[0];
+};
 
 /** One random record, as words. */
 function randomRecord(selected) {
-  switch (pick(selected ? 15 : 10)) {
-    // The 2D payload records, which own what they carry: a text, a dash list,
-    // an image batch of whole nine-word entries.
+  switch (pick(selected ? 16 : 10)) {
+    // The 2D payload records, which own what they carry: a text, a font's family
+    // names, a dash list, an image batch of whole nine-word entries.
+    case 15: {
+      // A font as the facade sends one: a size, a weight, a slant, and the names
+      // joined by NUL -- an empty one included now and then.
+      const names = [...ascii(pick(12)), 0, ...ascii(pick(12)), ...(pick(2) ? [0] : [])];
+      return payloadRecord(OP2D_SET_FONT, [f32Bits(pick(10_001) / 4), 1 + pick(1000), pick(2)], names);
+    }
     case 12:
       return payloadRecord(OP2D_FILL_TEXT, [next(), next(), next()], ascii(pick(80)));
     case 13: {

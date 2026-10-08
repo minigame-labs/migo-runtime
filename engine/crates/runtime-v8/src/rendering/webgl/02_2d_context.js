@@ -1213,16 +1213,341 @@ function _styleRgba(style) {
     return entry === null ? [0, 0, 0, 255] : entry.rgba;
 }
 
-// G-2: CSS `font` parsing used to live here as `_parseCssFont`
-// and in Rust as a separate implementation.  Both parsers could
-// subtly drift (different weight ladders, different unit
-// conversions), producing silent "measureText disagrees with
-// fillText" bugs.  The JS-side parser has been removed; the
-// authoritative implementation is now
-// `shared::css_font::parse_css_font` on the Rust side.  The JS
-// layer only needs to pass the raw `this._font` string through
-// to `op_measure_text_flat`, which parses it once through the
-// `SharedTextMeasurer::measure_css` trait.
+// ---- CSS font shorthand ----
+//
+// The one parser, for the reason colours have one: `ctx.font = s` has to answer at once whether `s` is a font -- an
+// invalid shorthand is ignored and keeps the previous font -- and `font` reads back the serialised font, not the string
+// that was assigned. The renderer and the measurer are only ever sent the font this reads, never text: a size in CSS
+// pixels, a weight, whether it slants, and the family list.
+//
+// There used to be three: `shared::css_font_shorthand`, which the op and the renderer ran; a lenient `shared::css_font`
+// the measurer fell back to; and a port of the first in the Performance+ producer, held to it by a corpus. All three
+// read a language of their own -- `20px` with no family was a font, `0px` was not, `em` and `%` were 16px -- and the
+// getter returned the string as assigned.
+//
+// The grammar is CSS Fonts 4's `font` as a canvas takes it: up to four of a font-style (`italic`, or `oblique` and an
+// optional angle), `small-caps`, a font-weight (`bold`, `bolder`, `lighter`, or 1 to 1000) and a font-stretch keyword,
+// each at most once and `normal` standing for any of them; a size; an optional `/` line-height, read and dropped; and a
+// list of families, each a string, a sequence of identifiers or a generic keyword. A system font keyword alone is the
+// platform's UI face at the default 16px. Tokens are CSS Syntax 3's, escapes, comments and an unterminated final
+// string included.
+//
+// A canvas here has no element and no style, so relative sizes resolve against the canvas default font, 10px, as a
+// browser resolves them for a canvas it is not rendering: `em`, `rem` and `%` against 10px, `larger` and `smaller` a
+// factor of 1.2 from it. `ex`, `ch` and `ic` take CSS Values' values for a font whose metrics cannot be read, which is
+// the case here: 0.5em, 0.5em and 1em. Math functions, `var()`, and viewport, container, line-height and `cap` units
+// are not read: a shorthand with one is invalid here, so ignored. A size past 10000px is 10000px, as in Chrome.
+//
+// The serialisation is Chrome's: style, weight, `small-caps`, size, families. `italic` for a style that slants
+// (`oblique` with no angle or a positive one); a weight of 400 is left out, 700 is `bold`, any other the integer; the
+// size in up to six significant digits; a family as an identifier when it is one and no keyword, else as a string. A
+// stretch keyword is read and, as in Chrome, neither serialised nor drawn; `small-caps` is serialised and not drawn,
+// for the renderer has no small-capitals synthesis. A font's fields are those of its serialisation -- the size is
+// rounded to what the text says -- so two assignments that read back alike draw and measure alike.
+
+// The canvas default font's size, which relative sizes resolve against.
+const _FONT_BASE_PX = 10;
+const _FONT_SIZE_LIMIT = 10000;
+const _FONT_GENERIC = new Set([
+    'serif', 'sans-serif', 'cursive', 'fantasy', 'monospace', 'system-ui', 'emoji', 'math', 'fangsong',
+    'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded',
+]);
+// The CSS-wide keywords and `default`: never a family name unless quoted.
+const _FONT_RESERVED = new Set(['inherit', 'initial', 'unset', 'revert', 'revert-layer', 'default']);
+const _FONT_SYSTEM = new Set(['caption', 'icon', 'menu', 'message-box', 'small-caption', 'status-bar']);
+const _FONT_STRETCH = new Set([
+    'ultra-condensed', 'extra-condensed', 'condensed', 'semi-condensed',
+    'semi-expanded', 'expanded', 'extra-expanded', 'ultra-expanded',
+]);
+const _FONT_ABSOLUTE_SIZE = new Map([
+    ['xx-small', 9], ['x-small', 10], ['small', 13], ['medium', 16],
+    ['large', 18], ['x-large', 24], ['xx-large', 32], ['xxx-large', 48],
+]);
+// CSS pixels per unit.
+const _FONT_LENGTH = new Map([
+    ['px', 1], ['pt', 4 / 3], ['pc', 16], ['in', 96], ['cm', 96 / 2.54], ['mm', 96 / 25.4], ['q', 96 / 101.6],
+    ['em', _FONT_BASE_PX], ['rem', _FONT_BASE_PX], ['ic', _FONT_BASE_PX], ['ric', _FONT_BASE_PX],
+    ['ex', _FONT_BASE_PX / 2], ['rex', _FONT_BASE_PX / 2], ['ch', _FONT_BASE_PX / 2], ['rch', _FONT_BASE_PX / 2],
+]);
+// Degrees per unit.
+const _FONT_ANGLE = new Map([['deg', 1], ['grad', 0.9], ['rad', 180 / Math.PI], ['turn', 360]]);
+const _FONT_COMMA = { type: ',' };
+const _FONT_SLASH = { type: '/' };
+
+function _asciiLower(text) {
+    return text.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
+}
+
+function _isCssDigit(c) { return c >= 0x30 && c <= 0x39; }
+function _isCssHex(c) { return _isCssDigit(c) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66); }
+function _isCssIdentStart(c) { return (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x5f || c >= 0x80; }
+function _isCssIdentChar(c) { return _isCssIdentStart(c) || _isCssDigit(c) || c === 0x2d; }
+function _isCssSpace(c) { return c === 0x20 || c === 0x09 || c === 0x0a; }
+
+// The shorthand's tokens, whitespace and comments dropped (nothing in the grammar depends on them once the tokens are
+// cut), or `null` for input with a token no font has: a function, a bad string, `!`, `;`, a bracket.
+function _fontTokens(input) {
+    // CSS Syntax's preprocessing: one newline, and U+FFFD for NUL and for a lone surrogate.
+    const s = input.replace(/\r\n?|\f/g, '\n')
+        .replace(/\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+    const n = s.length;
+    const at = (k) => s.charCodeAt(k); // NaN past the end, which no class test accepts
+    const validEscape = (k) => at(k) === 0x5c && at(k + 1) !== 0x0a;
+    const startsIdent = (k) => at(k) === 0x2d
+        ? _isCssIdentStart(at(k + 1)) || at(k + 1) === 0x2d || validEscape(k + 1)
+        : _isCssIdentStart(at(k)) || validEscape(k);
+    const startsNumber = (k) => {
+        const c = at(k) === 0x2b || at(k) === 0x2d ? at(++k) : at(k);
+        return _isCssDigit(c) || (c === 0x2e && _isCssDigit(at(k + 1)));
+    };
+    let i = 0;
+    // An escape, from the code point after its backslash.
+    const escape = () => {
+        if (i >= n) return '\uFFFD';
+        if (_isCssHex(at(i))) {
+            const begin = i;
+            while (i - begin < 6 && _isCssHex(at(i))) i++;
+            const cp = parseInt(s.slice(begin, i), 16);
+            if (_isCssSpace(at(i))) i++;
+            return cp === 0 || (cp >= 0xd800 && cp <= 0xdfff) || cp > 0x10ffff ? '\uFFFD' : String.fromCodePoint(cp);
+        }
+        const cp = s.codePointAt(i);
+        i += cp > 0xffff ? 2 : 1;
+        return String.fromCodePoint(cp);
+    };
+    const name = () => {
+        let out = '';
+        for (;;) {
+            if (_isCssIdentChar(at(i))) out += s[i++];
+            else if (validEscape(i)) { i++; out += escape(); }
+            else return out;
+        }
+    };
+    const tokens = [];
+    while (i < n) {
+        const c = at(i);
+        if (_isCssSpace(c)) { i++; continue; }
+        if (c === 0x2f && at(i + 1) === 0x2a) {
+            const end = s.indexOf('*/', i + 2);
+            i = end < 0 ? n : end + 2;
+            continue;
+        }
+        if (c === 0x22 || c === 0x27) {
+            i++;
+            let out = '';
+            // The end of the input ends a string too: a parse error, and still a string.
+            while (i < n) {
+                const d = at(i);
+                if (d === c) { i++; break; }
+                if (d === 0x0a) return null;
+                if (d !== 0x5c) { out += s[i++]; continue; }
+                i++;
+                if (i >= n) continue;
+                if (at(i) === 0x0a) { i++; continue; }
+                out += escape();
+            }
+            tokens.push({ type: 'string', value: out });
+            continue;
+        }
+        if (startsNumber(i)) {
+            const begin = i;
+            if (at(i) === 0x2b || at(i) === 0x2d) i++;
+            while (_isCssDigit(at(i))) i++;
+            if (at(i) === 0x2e && _isCssDigit(at(i + 1))) {
+                i += 2;
+                while (_isCssDigit(at(i))) i++;
+            }
+            if ((at(i) === 0x45 || at(i) === 0x65) && (_isCssDigit(at(i + 1))
+                    || ((at(i + 1) === 0x2b || at(i + 1) === 0x2d) && _isCssDigit(at(i + 2))))) {
+                i += _isCssDigit(at(i + 1)) ? 1 : 2;
+                while (_isCssDigit(at(i))) i++;
+            }
+            const value = +s.slice(begin, i);
+            if (startsIdent(i)) tokens.push({ type: 'dimension', value, unit: _asciiLower(name()) });
+            else if (at(i) === 0x25) { i++; tokens.push({ type: 'percentage', value }); }
+            else tokens.push({ type: 'number', value });
+            continue;
+        }
+        if (startsIdent(i)) {
+            const value = name();
+            if (at(i) === 0x28) return null;
+            tokens.push({ type: 'ident', value });
+            continue;
+        }
+        if (c === 0x2c) { tokens.push(_FONT_COMMA); i++; continue; }
+        if (c === 0x2f) { tokens.push(_FONT_SLASH); i++; continue; }
+        return null;
+    }
+    return tokens;
+}
+
+// `{ size, weight, italic, smallCaps, families: [{ generic, name }] }`, or `null` for a string that is not a font.
+function _parseCssFont(input) {
+    const tokens = _fontTokens(input);
+    if (tokens === null || tokens.length === 0) return null;
+    if (tokens.length === 1 && tokens[0].type === 'ident' && _FONT_SYSTEM.has(_asciiLower(tokens[0].value))) {
+        return { size: 16, weight: 400, italic: false, smallCaps: false, families: [{ generic: true, name: 'system-ui' }] };
+    }
+    let i = 0;
+    // `null` until given; `normal` gives none of them and still counts as one of the four.
+    let slant = null, smallCaps = null, weight = null, stretch = null;
+    for (let given = 0; given < 4 && i < tokens.length; given++) {
+        const t = tokens[i];
+        if (t.type === 'number') {
+            if (weight !== null || !(t.value >= 1 && t.value <= 1000)) break;
+            weight = t.value;
+            i++;
+            continue;
+        }
+        if (t.type !== 'ident') break;
+        const k = _asciiLower(t.value);
+        if (k === 'normal') {
+            i++;
+        } else if (k === 'italic' || k === 'oblique') {
+            if (slant !== null) break;
+            slant = true;
+            i++;
+            const angle = k === 'oblique' ? tokens[i] : undefined;
+            if (angle !== undefined && angle.type === 'dimension' && _FONT_ANGLE.has(angle.unit)) {
+                const degrees = angle.value * _FONT_ANGLE.get(angle.unit);
+                if (!(degrees >= -90 && degrees <= 90)) return null;
+                slant = degrees > 0;
+                i++;
+            }
+        } else if (k === 'small-caps') {
+            if (smallCaps !== null) break;
+            smallCaps = true;
+            i++;
+        } else if (k === 'bold' || k === 'bolder' || k === 'lighter') {
+            // `bolder` and `lighter` are relative to the inherited weight, the default font's 400.
+            if (weight !== null) break;
+            weight = k === 'lighter' ? 100 : 700;
+            i++;
+        } else if (_FONT_STRETCH.has(k)) {
+            if (stretch !== null) break;
+            stretch = k;
+            i++;
+        } else {
+            break;
+        }
+    }
+
+    const t = tokens[i++];
+    let size;
+    if (t === undefined) {
+        return null;
+    } else if (t.type === 'dimension') {
+        const pxPerUnit = _FONT_LENGTH.get(t.unit);
+        if (pxPerUnit === undefined || !(t.value >= 0)) return null;
+        size = t.value * pxPerUnit;
+    } else if (t.type === 'percentage') {
+        if (!(t.value >= 0)) return null;
+        size = t.value / 100 * _FONT_BASE_PX;
+    } else if (t.type === 'number') {
+        if (t.value !== 0) return null;
+        size = 0;
+    } else if (t.type === 'ident') {
+        const k = _asciiLower(t.value);
+        size = k === 'larger' ? _FONT_BASE_PX * 1.2 : k === 'smaller' ? _FONT_BASE_PX / 1.2 : _FONT_ABSOLUTE_SIZE.get(k);
+        if (size === undefined) return null;
+    } else {
+        return null;
+    }
+
+    if (tokens[i] === _FONT_SLASH) {
+        const h = tokens[i + 1];
+        if (h === undefined) return null;
+        const lineHeight = (h.type === 'ident' && _asciiLower(h.value) === 'normal')
+            || ((h.type === 'number' || h.type === 'percentage') && h.value >= 0)
+            || (h.type === 'dimension' && _FONT_LENGTH.has(h.unit) && h.value >= 0);
+        if (!lineHeight) return null;
+        i += 2;
+    }
+
+    const families = [];
+    for (;;) {
+        const f = tokens[i];
+        if (f === undefined) return null;
+        if (f.type === 'string') {
+            families.push({ generic: false, name: f.value });
+            i++;
+        } else if (f.type === 'ident') {
+            let end = i + 1;
+            while (end < tokens.length && tokens[end].type === 'ident') end++;
+            const head = _asciiLower(f.value);
+            // A CSS-wide keyword alone is that keyword, never a name; a generic keyword is a family of its own,
+            // never the start of one.
+            if (end - i === 1 && _FONT_RESERVED.has(head)) return null;
+            if (_FONT_GENERIC.has(head)) {
+                if (end - i > 1) return null;
+                families.push({ generic: true, name: head });
+            } else {
+                let familyName = f.value;
+                for (let k = i + 1; k < end; k++) familyName += ' ' + tokens[k].value;
+                families.push({ generic: false, name: familyName });
+            }
+            i = end;
+        } else {
+            return null;
+        }
+        if (i === tokens.length) break;
+        if (tokens[i] !== _FONT_COMMA) return null;
+        i++;
+    }
+
+    return {
+        // Rounded to the digits the serialisation keeps, so the font is a function of its text.
+        size: +Math.min(size, _FONT_SIZE_LIMIT).toPrecision(6),
+        weight: weight === null ? 400 : Math.trunc(weight),
+        italic: slant === true,
+        smallCaps: smallCaps === true,
+        families,
+    };
+}
+
+// A family name as CSS writes it: bare when it reads back as the same single identifier, else a string.
+const _CSS_IDENT = /^-?[A-Za-z_\u0080-\uFFFF][\w\-\u0080-\uFFFF]*$/;
+function _serializeFontFamily(family) {
+    if (family.generic) return family.name;
+    const lower = _asciiLower(family.name);
+    if (_CSS_IDENT.test(family.name) && !_FONT_GENERIC.has(lower) && !_FONT_RESERVED.has(lower)) return family.name;
+    return '"' + family.name.replace(/["\\]/g, '\\$&')
+        .replace(/[\u0001-\u001f\u007f]/g, (c) => '\\' + c.charCodeAt(0).toString(16) + ' ') + '"';
+}
+
+function _serializeCssFont(font) {
+    let text = font.italic ? 'italic ' : '';
+    if (font.weight !== 400) text += (font.weight === 700 ? 'bold' : String(font.weight)) + ' ';
+    if (font.smallCaps) text += 'small-caps ';
+    text += font.size + 'px ';
+    for (let i = 0; i < font.families.length; i++) {
+        text += (i === 0 ? '' : ', ') + _serializeFontFamily(font.families[i]);
+    }
+    return text;
+}
+
+// Assignments repeat the same few strings (a label sets its font before every draw), so each string is read once.
+// `{ text, size, weight, italic, families }`, `families` the names joined by NUL -- which no name holds, CSS having
+// replaced it -- as the ops and the record take them; or `null` for a string that is not a font.
+const _fontCache = new Map();
+const _FONT_CACHE_LIMIT = 256;
+function _cssFont(raw) {
+    let entry = _fontCache.get(raw);
+    if (entry !== undefined) return entry;
+    const font = _parseCssFont(raw);
+    entry = font === null ? null : Object.freeze({
+        text: _serializeCssFont(font),
+        size: font.size,
+        weight: font.weight,
+        italic: font.italic,
+        families: font.families.map((family) => family.name).join('\u0000'),
+    });
+    if (_fontCache.size >= _FONT_CACHE_LIMIT) _fontCache.clear();
+    _fontCache.set(raw, entry);
+    return entry;
+}
+
+const _DEFAULT_FONT = _cssFont('10px sans-serif');
 
 class CanvasRenderingContext2D {
     constructor(canvas) {
@@ -1242,7 +1567,7 @@ class CanvasRenderingContext2D {
         this._lineJoin = 'miter';
         this._miterLimit = 10;
         this._globalAlpha = 1;
-        this._font = '10px sans-serif';
+        this._font = _DEFAULT_FONT;
         this._textAlign = 'start';
         this._textBaseline = 'alphabetic';
         this._imageSmoothing = true;
@@ -1274,11 +1599,8 @@ class CanvasRenderingContext2D {
     // return null when the state is outside the cacheable whitelist
     // (anything that moves / recolours / blends the glyph run beyond
     // the keyed fields).  Font identity is carried entirely by the
-    // raw `font` string -- JS deliberately does not re-parse CSS font
-    // (see the G-2 note above), so size/weight/italic stay 0/false in
-    // the key; the render-thread resolves the string authoritatively
-    // and identical strings always render identically within a
-    // process generation.
+    // serialised `font`, which is a function of the font drawn, so
+    // size/weight/italic stay 0/false in the key.
     _buildTextCacheArgs(text) {
         const tm = this._tm;
         if (tm[0] !== 1 || tm[1] !== 0 || tm[2] !== 0
@@ -1302,7 +1624,7 @@ class CanvasRenderingContext2D {
             | (rgba[3] & 255)) >>> 0;
         return {
             text: String(text),
-            fontRequest: this._font,
+            fontRequest: this._font.text,
             fontSize: 0,
             fontWeight: 0,
             italic: false,
@@ -1661,10 +1983,9 @@ class CanvasRenderingContext2D {
         // caching locally turns the hot case into a `Map.get`,
         // ~100 ns.
         //
-        // Cache key: `${font}\x1f${text}`.  `\x1f` is an ASCII
-        // unit-separator that cannot appear in a valid CSS font
-        // shorthand or in any canvas-drawable text snippet we
-        // care about, so no key collisions.  Epoch-invalidated
+        // Cache key: `${font}\x1f${text}`, the font serialised.  `\x1f`
+        // is a control character a serialised font escapes, so no
+        // key collisions.  Epoch-invalidated
         // against the global `__migoFontEpoch` set by
         // `op_load_font`; see `registerFontFamily` in the bundled
         // loader.
@@ -1673,23 +1994,19 @@ class CanvasRenderingContext2D {
             this._measureCacheEpoch = epoch;
             this._measureCache = new Map();
         }
-        const key = this._font + '\x1f' + s;
+        const font = this._font;
+        const key = font.text + '\x1f' + s;
         const hit = this._measureCache.get(key);
         if (hit !== undefined) return hit;
-        // R-7: prefer the flat-buffer op so we skip serde_v8's
-        // 12-field V8 object construction on the hot measure
-        // path.  Layout is fixed little-endian f32 at the offsets
-        // documented on `op_measure_text_flat`; the Float32Array
-        // view is zero-copy.  Keep the old serde op as fallback
-        // for older snapshots -- the engine exposes both.
+        // R-7: a flat buffer, not a V8 object built field by field
+        // on the hot measure path.  Layout is fixed little-endian f32
+        // at the offsets documented on `op_measure_text_flat`; the
+        // Float32Array view is zero-copy.
         //
-        // G-2: pass the raw CSS font string; Rust-side
-        // `SharedTextMeasurer::measure_css` parses it through the
-        // shared `css_font::parse_css_font` implementation, which
-        // is also what the render-thread `SetFont` handler uses
-        // so the two sides can't disagree.
+        // The font crosses as `op_set_font` sends it, so a measurement
+        // and the `fillText` after it resolve the same face.
         flushRenderCommandStream();
-        const buf = op_measure_text_flat(this._canvasId, s, this._font);
+        const buf = op_measure_text_flat(this._canvasId, s, font.size, font.weight, font.italic, font.families);
         const f = new Float32Array(buf.buffer, buf.byteOffset, 12);
         const metrics = {
             width: f[0],
@@ -1816,24 +2133,14 @@ class CanvasRenderingContext2D {
         encode2dSetGlobalAlpha(this._canvasId, v);
     }
 
-    get font() { return this._font; }
+    get font() { return this._font.text; }
     set font(value) {
-        if (this._font === value) return;
-        // G-2: no JS-side parsing needed.  `op_set_font` parses on
-        // the Rust side via `shared::css_font_shorthand::
-        // parse_font_shorthand`, the same function the render
-        // thread uses for `Canvas2DCmd::SetFont`.  One parser, one
-        // source of truth.
-        //
-        // It also answers whether the value was a font at all.
-        // WHATWG makes an unparseable assignment a no-op, and this
-        // is where that has to be decided: `_font` is the string
-        // `measureText` is later measured from, so accepting one
-        // the render thread will reject is how the same `ctx.font`
-        // comes to measure at one size and paint at another.
+        // A string that is not a font leaves the font as it was; what reads back is the serialised font.
+        const font = _cssFont(typeof value === 'string' ? value : `${value}`);
+        if (font === null || font.text === this._font.text) return;
+        this._font = font;
         this._barrier();
-        if (!op_set_font(this._canvasId, value)) return;
-        this._font = value;
+        op_set_font(this._canvasId, font.size, font.weight, font.italic, font.families);
     }
 
     get textAlign() { return this._textAlign; }
@@ -1878,7 +2185,7 @@ class CanvasRenderingContext2D {
         this._lineJoin = 'miter';
         this._miterLimit = 10;
         this._globalAlpha = 1;
-        this._font = '10px sans-serif';
+        this._font = _DEFAULT_FONT;
         this._textAlign = 'start';
         this._textBaseline = 'alphabetic';
         this._imageSmoothing = true;

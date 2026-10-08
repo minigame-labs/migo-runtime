@@ -194,7 +194,6 @@ extension!(host_v8_webgl,
 
         // 2D Context (sync ops)
         op_create_context_2d,
-        op_measure_text,
         op_measure_text_flat,
         op_get_image_data,
         op_capture_canvas2d_snapshot,

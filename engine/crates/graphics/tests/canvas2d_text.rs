@@ -23,7 +23,7 @@ use common::harness::{read_pixels_rgba8, with_raster_surface};
 
 use shared::protocol::color::Color as ProtoColor;
 use shared::protocol::render_cmd::Canvas2DCmd::{self, *};
-use shared::protocol::render_cmd::{TextAlign, TextBaseline};
+use shared::protocol::render_cmd::{CanvasFont, TextAlign, TextBaseline};
 
 use graphics::backend::gl::canvas::{Canvas2DRenderer, DrawEnv};
 use graphics::backend::gl::paint::NullPatternResolver;
@@ -52,13 +52,19 @@ fn apply_env(
     }
 }
 
-/// `SetFont` is just a CSS-font string at the protocol layer; until the
-/// parser arrives (tracked by a separate protocol PR) tests modify
-/// `Canvas2DRenderer::state.text` directly.  This helper keeps that local
-/// to tests so production code never reaches into private state.
-fn set_font(ctx: &mut Canvas2DRenderer, size: f32) {
-    ctx.state.text.families = std::sync::Arc::new(vec!["test-noto".into(), "sans-serif".into()]);
-    ctx.state.text.size = size;
+/// What a facade's `ctx.font = "<size>px test-noto, sans-serif"` sends.
+fn set_font(ctx: &mut Canvas2DRenderer, env: &DrawEnv<'_, NullPatternResolver>, size: f32) {
+    ctx.apply_env(
+        env,
+        &SetFont {
+            font: CanvasFont {
+                size,
+                weight: 400,
+                italic: false,
+                families: std::sync::Arc::new(vec!["test-noto".into(), "sans-serif".into()]),
+            },
+        },
+    );
 }
 
 #[test]
@@ -74,7 +80,7 @@ fn fill_text_draws_non_empty_pixels() {
                 resolver: &resolver,
             };
             let mut ctx = Canvas2DRenderer::new();
-            set_font(&mut ctx, 20.0);
+            set_font(&mut ctx, &env, 20.0);
             apply_env(
                 &mut ctx,
                 &env,
@@ -148,7 +154,7 @@ fn text_align_shifts_x_anchor() {
                     resolver: &resolver,
                 };
                 let mut ctx = Canvas2DRenderer::new();
-                set_font(&mut ctx, 18.0);
+                set_font(&mut ctx, &env, 18.0);
                 apply_env(
                     &mut ctx,
                     &env,
@@ -225,7 +231,7 @@ fn text_baseline_shifts_y_anchor() {
                     resolver: &resolver,
                 };
                 let mut ctx = Canvas2DRenderer::new();
-                set_font(&mut ctx, 18.0);
+                set_font(&mut ctx, &env, 18.0);
                 apply_env(
                     &mut ctx,
                     &env,
@@ -282,7 +288,7 @@ fn stroke_text_produces_outline_not_fill() {
                 resolver: &resolver,
             };
             let mut ctx = Canvas2DRenderer::new();
-            set_font(&mut ctx, 24.0);
+            set_font(&mut ctx, &env, 24.0);
             apply_env(
                 &mut ctx,
                 &env,
@@ -344,7 +350,7 @@ fn max_width_scales_long_text_horizontally() {
                 resolver: &resolver,
             };
             let mut ctx = Canvas2DRenderer::new();
-            set_font(&mut ctx, 24.0);
+            set_font(&mut ctx, &env, 24.0);
             apply_env(
                 &mut ctx,
                 &env,

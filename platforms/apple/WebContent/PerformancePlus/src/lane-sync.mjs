@@ -36,6 +36,7 @@ import {
 } from "./files.mjs";
 import {
   bytesOf,
+  f32BitsOf,
   optionalBytesOf,
   optionalSmiU32,
   optionalStringOf,
@@ -334,11 +335,16 @@ export function op_webgl_get_error(canvasId) {
  *
  * The measurement is of the canvas's *current* font, which is a record in the
  * frame being built -- so the barrier goes first, as it does for every query
- * here, and the renderer measures against the font it has by then applied. The
- * shorthand crosses too, because the op takes it and a host with a JS-thread
- * measurer installed uses it; this host measures on the render thread.
+ * here, and the renderer measures against the font it has by then applied: the
+ * one these arguments describe, which is why they do not cross. (A host with a
+ * JS-thread measurer measures with them; this host measures on the render
+ * thread.)
  */
-export function op_measure_text_flat(canvasId, text, cssFont) {
+export function op_measure_text_flat(canvasId, text, size, weight, italic, families) {
+  f32BitsOf(size, "size");
+  smiU32(weight, "weight");
+  toBool(italic, "italic");
+  stringOf(families, "families");
   const reply = ask(
     SYNC_OP_CANVAS2D_METRICS,
     TEXT_METRICS_BYTES,
@@ -346,7 +352,6 @@ export function op_measure_text_flat(canvasId, text, cssFont) {
       kind: CANVAS2D_QUERY_MEASURE_TEXT,
       canvasId: smiU32(canvasId, "canvas_id"),
       text: stringOf(text, "text"),
-      font: stringOf(cssFont, "css_font"),
     }),
   );
   return decodeMetricsReply(reply);

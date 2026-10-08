@@ -6,8 +6,8 @@
 // records the host decodes. The Canvas2D commands of both, in order, must be
 // equal -- see engine/crates/runtime-v8/src/rendering/webgl/canvas2d_parity.rs.
 //
-// The arguments are the ones that tell two implementations apart: a font
-// shorthand in every accepted form and one that must be refused, text outside
+// The arguments are the ones that tell two implementations apart: fonts the
+// facade read from shorthands of every form and one it refused, text outside
 // ASCII, a `maxWidth` left out (which is `Infinity`), alignment and baseline
 // keywords at both ends of their tables, and a dash pattern.
 
@@ -22,8 +22,11 @@ const ctx = new CanvasRenderingContext2D({ _rid: 1, width: 64, height: 64 });
 ctx.font = "16px sans-serif";
 ctx.font = "italic bold 24px 'Noto Sans CJK SC', serif";
 ctx.font = "12pt Times";
-// Refused by both parsers: no size. The font stays what it was, and neither
-// side records anything.
+// The family names cross joined by NUL: an empty one, one with an escaped comma
+// in it, and a size the facade rounds to the six digits `font` reads back.
+ctx.font = "13.333333px '', A\\, B, monospace";
+// Not a font (no size): the facade ignores it, the font stays what it was, and
+// neither side records anything.
 ctx.font = "not-a-font";
 
 ctx.textAlign = "start";
