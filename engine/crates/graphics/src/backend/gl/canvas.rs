@@ -734,6 +734,17 @@ impl Canvas2DRenderer {
                 false
             }
 
+            // `reset()`: the specification's "reset the rendering context to its default state". The SkCanvas's saves go
+            // with the state stack -- they hold the clips and the transforms -- and the bitmap is cleared under the
+            // identity with no clip, so all of it is transparent black.
+            Reset => {
+                canvas.restore_to_count(1);
+                canvas.reset_matrix();
+                canvas.clear(skia_safe::Color::TRANSPARENT);
+                self.reset();
+                true
+            }
+
             // ---- CTM mutators -------------------------------------
             //
             // Every branch below does TWO things:

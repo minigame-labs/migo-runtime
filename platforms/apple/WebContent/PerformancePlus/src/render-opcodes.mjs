@@ -220,6 +220,8 @@ export const OP2D_ROUND_RECT = 573;
 export const OP2D_FILL_PATH = 574;
 export const OP2D_STROKE_PATH = 575;
 export const OP2D_CLIP_PATH = 576;
+// `reset()`: `H`, the context's default state again.
+export const OP2D_RESET = 577;
 /** The most words of segments one path record carries (frame_wire::canvas2d::MAX_PATH_WORDS). */
 export const MAX_PATH_WORDS = 1 << 18;
 /** The most pixel bytes one record carries; a larger ImageData is written as bands of rows. */

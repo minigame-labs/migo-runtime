@@ -372,8 +372,13 @@ pub const OP2D_STROKE_PATH: u32 = 575;
 /// `clip(path, fillRule)` with a `Path2D`: `H rule:U count path...`. See [`OP2D_FILL_PATH`].
 pub const OP2D_CLIP_PATH: u32 = 576;
 
+/// `reset()`: `H`. The context's default state again -- the bitmap transparent black, the state stack empty, every
+/// attribute and the transform at its default, the current path empty -- without the surface being made again, which
+/// is what assigning the canvas's size does.
+pub const OP2D_RESET: u32 = 577;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 577;
+pub const OP2D_END: u32 = 578;
 
 /// The most words of segments a path carried by value may hold: some 50,000 cubic curves, far above a shape anybody
 /// keeps in a `Path2D` and far below a record that would cost a frame anything.
@@ -536,7 +541,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
 
         OP2D_FILL_RECT | OP2D_STROKE_RECT | OP2D_CLEAR_RECT => (5, &[]),
 
-        OP2D_SAVE | OP2D_RESTORE | OP2D_RESET_TRANSFORM => (1, &[]),
+        OP2D_SAVE | OP2D_RESTORE | OP2D_RESET_TRANSFORM | OP2D_RESET => (1, &[]),
         OP2D_SET_TRANSFORM => (7, &[]),
         OP2D_TRANSLATE | OP2D_SCALE => (3, &[]),
         OP2D_ROTATE => (2, &[]),

@@ -2356,6 +2356,9 @@ pub enum Canvas2DCmd {
     // ========== State methods ==========
     Save,
     Restore,
+    /// `reset()`: the context's default state -- the bitmap transparent black, the state stack and every clip gone,
+    /// every attribute and the transform at its default, the current path empty.
+    Reset,
 
     // ========== Transform methods ==========
     SetTransform {
@@ -2545,6 +2548,7 @@ impl Canvas2DCmd {
             | Self::SetTextDirection { .. }
             | Self::Save
             | Self::Restore
+            | Self::Reset
             | Self::SetTransform { .. }
             | Self::ResetTransform
             | Self::Translate { .. }

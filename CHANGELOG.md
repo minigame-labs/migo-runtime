@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Canvas 2D: `reset()`, `isContextLost()` and `getContextAttributes()`. `reset()` puts the context back to its default
+  state -- the bitmap transparent black, the state stack and every clip gone, every attribute and the transform at its
+  default, the current path empty -- without the surface being made again, which is what assigning the canvas's size
+  costs and a context reset every frame would otherwise pay every frame. `isContextLost()` answers the GPU's lost state,
+  which a 2D canvas shares with every other context. `getContextAttributes()` answers what `getContext("2d", settings)`
+  was given: sRGB, 8 bits a channel, alpha, never desynchronized, and the `willReadFrequently` hint as it was asked for.
+  `getContext("2d", settings)`'s dictionary is read as WebIDL reads a dictionary: `undefined` and `null` are the empty
+  one, any other non-object value is a TypeError, and `colorSpace` / `colorType` refuse a value outside their enums.
 - WebGL: `KHR_parallel_shader_compile`, where the driver compiles and links in parallel (`GL_KHR_parallel_shader_compile`):
   COMPLETION_STATUS_KHR of a shader or program is asked of the renderer without waiting for the compile or link -- the
   renderer's deferred link read stays queued -- and is kept once true, or once LINK_STATUS was read, so polling content

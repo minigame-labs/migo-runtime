@@ -272,6 +272,15 @@ above rest on: the producer is a resource of the same Swift package as the reade
 the op, not the record. Until this the producer kept a port of the host's shorthand parser, held to it by a corpus,
 and the host parsed the string again.
 
+### Amendment, 2026-10-09: `reset()`
+
+`RESET` (577) joins the 2D block, and `OP2D_END` moves from 577 to 578: `H`, no arguments. It is `reset()`: the
+context's default state again -- the bitmap transparent black, the state stack and every clip gone, every attribute
+and the transform at its default, the current path empty -- without the surface being made again, which is what
+assigning the canvas's size costs and a context reset every frame would otherwise pay every frame. Additive: no field
+moves, no existing value changes meaning, and a stream that never writes it draws as before. Same version audit as
+above. Until this existed content had no way to ask for the specification's `reset()` at all.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.
