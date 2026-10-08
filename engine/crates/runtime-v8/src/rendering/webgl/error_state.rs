@@ -420,7 +420,8 @@ pub fn op_webgl_record_error(state: &mut OpState, #[smi] canvas_id: u32, #[smi] 
 }
 
 /// The renderer's capabilities that decide which WebGL extensions a context offers, as the bits of
-/// `GpuCaps::webgl_bits`: 0 ETC2/EAC, 1 ASTC LDR, 2 float colour buffers (EXT_color_buffer_float). One fast op for
+/// `GpuCaps::webgl_bits`: 0 ETC2/EAC, 1 ASTC LDR, 2 float colour buffers (EXT_color_buffer_float), 3 blending into
+/// 32-bit float ones (EXT_float_blend). One fast op for
 /// all of them. `0` before the render thread has published them.
 #[deno_core::op2(fast)]
 pub fn op_webgl_query_gpu_caps(state: &mut OpState) -> u32 {

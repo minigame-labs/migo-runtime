@@ -132,6 +132,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL: the default framebuffer's draw and read buffers. Where the engine's drawing buffer stands in for the default
+  framebuffer -- an FBO, which takes no BACK --, `drawBuffers([BACK])` and `readBuffer(BACK)` reached the driver as BACK
+  and were refused there, unseen: once content had turned either to NONE it could not turn it back, and drew or read
+  nothing until the context was lost. BACK now names the drawing buffer's colour attachment. The engine's own use of
+  that buffer no longer depends on the content's choice: the present reads the colour attachment, and the clear a
+  present owes clears it, whatever read or draw buffer the content set. `drawBuffers` (and WEBGL_draw_buffers'
+  `drawBuffersWEBGL`) is judged before anything is sent, in a browser's order -- a value that is not NONE, BACK or a
+  colour attachment the context has INVALID_ENUM, more than MAX_DRAW_BUFFERS INVALID_VALUE, anything but BACK or NONE
+  alone for the default framebuffer and anything but COLOR_ATTACHMENTi or NONE at place i for an object
+  INVALID_OPERATION -- and recorded per framebuffer, which is what `DRAW_BUFFERi` answers without crossing (the driver
+  answered COLOR_ATTACHMENT0 for the default framebuffer's, which is BACK).
+- WebGL 2: `EXT_float_blend`, offered where the renderer's driver blends into 32-bit float colour buffers (desktop GL,
+  or GL ES with `GL_EXT_float_blend`) and enabled with EXT_color_buffer_float there, as a browser enables it. Where it
+  cannot, a draw with blending on and a 32-bit float image among its draw buffers is INVALID_OPERATION, as the
+  extension specifies; the driver refused it unseen, or blended undefined values.
 - WebGL: an upload whose pixels are a TexImageSource -- a decoded image or `ImageBitmap`, a canvas, `getImageData`'s
   snapshot, `ImageData` -- is converted to the call's format and type as WebGL defines it, on both lanes and for every
   source alike. The renderer copied an 8-bit RGB(A) image of a source it held on the GPU and handed every other

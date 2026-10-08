@@ -1871,6 +1871,48 @@ function texImageFromData(ctx, target, level, internalformat, width, height, bor
     return true;
 }
 
+// `drawBuffers` / `drawBuffersWEBGL`: refused as `_drawBuffersError` says, else recorded for the draw framebuffer --
+// what DRAW_BUFFERi answers and a float-blend judgement reads (`drawsIntoFloat32`) -- and sent. Buffers past the list
+// are NONE. The renderer turns BACK into the colour attachment of the FBO that stands in for the default framebuffer.
+function drawBuffersOf(ctx, buffers) {
+    // A copy: the content's own array may change after the call.
+    const sequence = toGLenumSequence(buffers);
+    const list = new Array(sequence.length);
+    for (let i = 0; i < sequence.length; i++) list[i] = sequence[i];
+    const error = ctx._drawBuffersError(list);
+    if (error !== 0) {
+        recordGpuPreflightError(ctx._canvasId, error);
+        return;
+    }
+    const fb = ctx._framebufferBinding;
+    if (fb === null) {
+        ctx._defaultDrawBuffer = list[0];
+    } else {
+        fb._drawBuffers = list;
+        fb._float32Generation = -1;
+    }
+    _rawDrawBuffers(ctx._canvasId, sequence);
+}
+
+// Whether an active draw buffer of the framebuffer object `fb` holds a 32-bit float image -- what blending needs
+// EXT_float_blend for. Judged once a change of the framebuffers (`_framebufferGeneration`) or of `fb`'s draw buffers.
+function drawsIntoFloat32(ctx, fb) {
+    if (fb._float32Generation === _framebufferGeneration) return fb._float32;
+    const buffers = fb._drawBuffers;
+    const n = buffers === undefined ? 1 : buffers.length;
+    let found = false;
+    for (let i = 0; i < n && !found; i++) {
+        const point = buffers === undefined ? 0x8ce0 : buffers[i];
+        if (point === 0) continue;
+        const record = fb._attachments ? fb._attachments.get(point) : undefined;
+        const image = record ? _attachmentImage(ctx, record) : undefined;
+        found = image !== undefined && (image[0] === 0x822e || image[0] === 0x8230 || image[0] === 0x8814);
+    }
+    fb._float32 = found;
+    fb._float32Generation = _framebufferGeneration;
+    return found;
+}
+
 // ---- TexImageSource uploads ----------------------------------------------------------------------------------------
 //
 // A TexImageSource -- a decoded image or ImageBitmap, a canvas, a snapshot of a 2D canvas (`getImageData`'s), other
@@ -2083,6 +2125,7 @@ class WebGLRenderingContext {
         // NONE once `readBuffer` says so).
         this._drawingBufferFormat = alpha ? 0x8058 : 0x8051;      // RGBA8, RGB8
         this._defaultReadBuffer = 0x0405;                         // BACK
+        this._defaultDrawBuffer = 0x0405;                         // BACK: DRAW_BUFFER0 of the default framebuffer
         // opcode 73: H C U, the frame_wire::gl::WEBGL_CONTEXT_* bits.
         encodeWebglContext(
             this._canvasId,
@@ -2497,6 +2540,11 @@ class WebGLRenderingContext {
         if (bytes !== 0 && offset % bytes !== 0) return GL_INVALID_OPERATION;
         if (this._programBinding === null) return GL_INVALID_OPERATION;
         if (framebufferStatus(this, this._framebufferBinding) !== GL_FRAMEBUFFER_COMPLETE) return GL_INVALID_FRAMEBUFFER_OPERATION;
+        // Blending into a 32-bit float colour buffer takes EXT_float_blend: INVALID_OPERATION where the driver has none.
+        // Only a float attachment EXT_color_buffer_float made complete can be one.
+        const fb = this._framebufferBinding;
+        if (fb !== null && this._extColorBufferFloat !== undefined && this.isEnabled(0x0be2) &&
+                (this._gpuCaps & 8) === 0 && drawsIntoFloat32(this, fb)) return GL_INVALID_OPERATION;
         let indices = null;
         if (bytes !== 0) {
             indices = this._attribShadow.elementArrayBuffer;
@@ -3085,6 +3133,22 @@ class WebGLRenderingContext {
                 const fb = this._readFramebufferBinding;
                 return fb === null ? this._defaultReadBuffer : fb._readBuffer === undefined ? 0x8ce0 : fb._readBuffer;
             }
+            // DRAW_BUFFER0..15 (WebGL 2, WEBGL_draw_buffers): the draw framebuffer's, as `drawBuffers` recorded it --
+            // BACK then NONE for the default framebuffer, COLOR_ATTACHMENT0 then NONE for an object until it is set.
+            // Past MAX_DRAW_BUFFERS, or without either, INVALID_ENUM.
+            case 0x8825: case 0x8826: case 0x8827: case 0x8828: case 0x8829: case 0x882a: case 0x882b: case 0x882c:
+            case 0x882d: case 0x882e: case 0x882f: case 0x8830: case 0x8831: case 0x8832: case 0x8833: case 0x8834: {
+                const index = pname - 0x8825;
+                if ((!this._isWebGL2() && this._webglDrawBuffers === undefined) ||
+                        (index >= 4 && index >= this._drawBufferLimit())) {
+                    recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                    return null;
+                }
+                const fb = this._framebufferBinding;
+                if (fb === null) return index === 0 ? this._defaultDrawBuffer : 0;
+                if (fb._drawBuffers === undefined) return index === 0 ? 0x8ce0 : 0;
+                return index < fb._drawBuffers.length ? fb._drawBuffers[index] : 0;
+            }
             // SAMPLER_BINDING (WebGL 2): the sampler bound to the active texture unit.
             case 0x8919:
                 if (this._isWebGL2()) return this._samplerBindings.get(this._activeTextureUnit - 0x84c0) || null;
@@ -3257,6 +3321,12 @@ class WebGLRenderingContext {
             }
             return this._extColorBufferFloat;
         }
+        // WebGL 2: blending into 32-bit float colour buffers, where the driver does. A context with
+        // EXT_color_buffer_float has it whenever it is offered, asked for or not, as a browser enables it implicitly.
+        if (name === 'EXT_float_blend') {
+            if (!this._isWebGL2() || !(this._gpuCaps & 8)) return null;
+            return this._extFloatBlend || (this._extFloatBlend = {});
+        }
         // 32-bit element indices are GLES 3.0 core (drawElements honors
         // UNSIGNED_INT), so expose the WebGL 1 extension alias. Without it,
         // engines (Pixi, three.js) assume 16-bit-only and cap batches at 65535
@@ -3292,6 +3362,9 @@ class WebGLRenderingContext {
         }
         if ((caps & 4) && this._isWebGL2()) {
             list.push('EXT_color_buffer_float');
+        }
+        if ((caps & 8) && this._isWebGL2()) {
+            list.push('EXT_float_blend');
         }
         return list;
     }
@@ -3348,8 +3421,7 @@ class WebGLRenderingContext {
             MAX_COLOR_ATTACHMENTS_WEBGL: 0x8CDF,
             MAX_DRAW_BUFFERS_WEBGL: 0x8824,
             drawBuffersWEBGL(buffers) {
-                const buf = toGLenumSequence(buffers);
-                _rawDrawBuffers(ctx._canvasId, buf);
+                drawBuffersOf(ctx, buffers);
             },
         };
         return obj;
@@ -5021,6 +5093,28 @@ class WebGLRenderingContext {
         return index < minimum || index < this._colorAttachmentLimit();
     }
 
+    // A value that is not NONE, BACK or a colour attachment the context has is INVALID_ENUM; more values than
+    // MAX_DRAW_BUFFERS INVALID_VALUE; for the default framebuffer anything but BACK or NONE alone, and for an object
+    // anything but COLOR_ATTACHMENTi or NONE at place i, INVALID_OPERATION. 0 when none is.
+    _drawBuffersError(list) {
+        const n = list.length;
+        for (let i = 0; i < n; i++) {
+            const b = list[i];
+            const color = b - 0x8ce0;
+            if (b !== 0 && b !== 0x0405 && !(color >= 0 && color < 16 && this._hasColorAttachment(color))) {
+                return GL_INVALID_ENUM;
+            }
+        }
+        if (n > 4 && n > this._drawBufferLimit()) return GL_INVALID_VALUE;
+        if (this._framebufferBinding === null) {
+            return n === 1 && (list[0] === 0 || list[0] === 0x0405) ? 0 : GL_INVALID_OPERATION;
+        }
+        for (let i = 0; i < n; i++) {
+            if (list[i] !== 0 && list[i] !== 0x8ce0 + i) return GL_INVALID_OPERATION;
+        }
+        return 0;
+    }
+
     // How many colour attachment points the context has: MAX_COLOR_ATTACHMENTS in WebGL 2, WEBGL_draw_buffers' in
     // WebGL 1 once it is enabled, one otherwise.
     _colorAttachmentLimit() {
@@ -6237,10 +6331,11 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     // ---- Draw / read buffer selection --------------------------
+    // The draw framebuffer's draw buffers (ES 3.0 4.2.1, judged as a browser judges them): `drawBuffersOf`.
     drawBuffers(buffers) {
-        const buf = toGLenumSequence(buffers);
-        _rawDrawBuffers(this._canvasId, buf);
+        drawBuffersOf(this, buffers);
     }
+
     // READ_BUFFER is the read framebuffer's: BACK or NONE for the default one, NONE or a colour attachment below
     // MAX_COLOR_ATTACHMENTS for an object (ES 3.0 4.3.1). Another of those names is INVALID_OPERATION, anything else
     // INVALID_ENUM. Recorded, as reads judge their source by it.

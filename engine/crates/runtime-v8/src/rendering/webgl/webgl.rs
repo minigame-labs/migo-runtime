@@ -3542,6 +3542,134 @@ pub(super) mod tests {
         );
     }
 
+    /// `drawBuffers` is judged as a browser judges it -- a value that is not NONE, BACK or a colour attachment the
+    /// context has INVALID_ENUM, more than MAX_DRAW_BUFFERS INVALID_VALUE, anything but BACK or NONE alone for the
+    /// default framebuffer and anything but COLOR_ATTACHMENTi or NONE at place i for an object INVALID_OPERATION -- and
+    /// recorded per framebuffer, which is what DRAW_BUFFERi answers without crossing; WebGL 1's WEBGL_draw_buffers
+    /// alike. Blending into a 32-bit float draw buffer is INVALID_OPERATION where the renderer cannot (caps bit 3),
+    /// and EXT_float_blend is offered where it can.
+    #[test]
+    fn draw_buffers_are_judged_and_recorded_per_framebuffer_and_float_blending_needs_the_renderer()
+    {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "draw_buffers.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const errOf = (gl) => (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                const NONE = 0, BACK = 0x0405, CA0 = 0x8ce0, CA1 = 0x8ce1, DB0 = 0x8825, DB1 = 0x8826, FB = 0x8d40;
+                const gl = new WebGL2RenderingContext({ _rid: 242, width: 4, height: 4 }, {});
+                gl._maxColorAttachments = 8; gl._maxDrawBuffers = 8;
+                const err = errOf(gl);
+                check(gl.getParameter(DB0) === BACK && gl.getParameter(DB1) === NONE, "the default framebuffer draws to BACK");
+                gl.drawBuffers([NONE]); err(0, "NONE alone");                                             // sent
+                check(gl.getParameter(DB0) === NONE, "recorded");
+                gl.drawBuffers([BACK]); err(0, "BACK alone");                                             // sent
+                gl.drawBuffers([CA0]); err(OPERATION, "a colour attachment of the default framebuffer");
+                gl.drawBuffers([BACK, NONE]); err(OPERATION, "two of the default framebuffer");
+                gl.drawBuffers([]); err(OPERATION, "none of the default framebuffer");
+                gl.drawBuffers([0x1234]); err(ENUM, "no draw buffer at all");
+                const fb = gl.createFramebuffer();
+                gl.bindFramebuffer(FB, fb);
+                check(gl.getParameter(DB0) === CA0 && gl.getParameter(DB1) === NONE, "an object draws to COLOR_ATTACHMENT0");
+                const list = new Uint32Array([CA0, CA1]);
+                gl.drawBuffers(list); err(0, "CA0, CA1");                                                  // sent
+                list[1] = NONE;
+                check(gl.getParameter(DB1) === CA1, "recorded, and not the content's array");
+                gl.drawBuffers([CA1]); err(OPERATION, "CA1 at place 0");
+                gl.drawBuffers([BACK]); err(OPERATION, "BACK of an object");
+                gl.drawBuffers(new Array(9).fill(NONE)); err(VALUE, "more than MAX_DRAW_BUFFERS");
+                gl.drawBuffers([CA0 + 8]); err(ENUM, "an attachment past MAX_COLOR_ATTACHMENTS");
+                check(gl.getParameter(DB0 + 8) === null, "DRAW_BUFFER8 past MAX_DRAW_BUFFERS"); err(ENUM, "is INVALID_ENUM");
+                gl.bindFramebuffer(FB, null);
+                check(gl.getParameter(DB0) === BACK, "the default framebuffer kept its own");
+                gl.bindFramebuffer(FB, fb);
+                check(gl.getParameter(DB1) === CA1, "and the object its own");
+                const gl1 = new WebGLRenderingContext({ _rid: 243, width: 4, height: 4 }, {});
+                check(gl1.getParameter(DB0) === null, "WebGL 1 without WEBGL_draw_buffers"); errOf(gl1)(ENUM, "has no DRAW_BUFFER0");
+                const ext = gl1.getExtension("WEBGL_draw_buffers");
+                gl1._maxColorAttachments = 4; gl1._maxDrawBuffers = 4;
+                ext.drawBuffersWEBGL([CA0]); errOf(gl1)(OPERATION, "WebGL 1's default framebuffer too");
+                ext.drawBuffersWEBGL([BACK]); errOf(gl1)(0, "BACK");                                       // sent
+                check(gl1.getParameter(ext.DRAW_BUFFER0_WEBGL) === BACK, "answered from the record");
+                // Blending into 32-bit floats.
+                const program = (ctx) => {
+                    const p = ctx.createProgram();
+                    ctx.linkProgram(p);
+                    ctx._programParameterCache.set(p.id, new Map([[0x8b82, 1]]));
+                    p._consumes = []; p._consumesLink = p._links | 0;
+                    ctx.useProgram(p);
+                };
+                const complete = (ctx) => {
+                    ctx.clear(0);
+                    const bound = ctx._framebufferBinding;
+                    bound._driverGeneration = bound._statusGeneration;
+                    return ctx.checkFramebufferStatus(FB) === 0x8cd5;
+                };
+                const floats = (caps, internalformat, type) => {
+                    const ctx = new WebGL2RenderingContext({ _rid: 244 + caps, width: 4, height: 4 }, {});
+                    ctx._gpuCapsCache = caps; ctx._maxColorAttachments = 8; ctx._maxDrawBuffers = 8;
+                    ctx.getExtension("EXT_color_buffer_float");
+                    program(ctx);
+                    ctx.bindFramebuffer(FB, ctx.createFramebuffer());
+                    const t = ctx.createTexture();
+                    ctx.bindTexture(0x0de1, t);
+                    ctx.texImage2D(0x0de1, 0, internalformat, 4, 4, 0, 0x1908, type, null);
+                    ctx.framebufferTexture2D(FB, CA0, 0x0de1, t, 0);
+                    check(complete(ctx), "the float attachment is complete");
+                    ctx.enable(0x0be2);
+                    return ctx;
+                };
+                const plain = floats(4, 0x8814, 0x1406);
+                const perr = errOf(plain);
+                plain.drawArrays(4, 0, 3); perr(OPERATION, "blending into RGBA32F without float blending");
+                plain.disable(0x0be2);
+                plain.drawArrays(4, 0, 3); perr(0, "not blending");                                         // sent
+                plain.enable(0x0be2);
+                plain.drawBuffers([NONE]);
+                plain.drawArrays(4, 0, 3); perr(0, "blending into no draw buffer");                         // sent
+                check(plain.getExtension("EXT_float_blend") === null, "and no EXT_float_blend");
+                const half = floats(4, 0x881a, 0x140b);
+                half.drawArrays(4, 0, 3); errOf(half)(0, "blending into RGBA16F needs nothing");             // sent
+                const blending = floats(12, 0x8814, 0x1406);
+                blending.drawArrays(4, 0, 3); errOf(blending)(0, "where the renderer blends floats");        // sent
+                check(blending.getExtension("EXT_float_blend") !== null &&
+                    blending.getSupportedExtensions().includes("EXT_float_blend"), "EXT_float_blend is offered there");
+                gl.flush(); gl1.flush(); plain.flush(); half.flush(); blending.flush();
+                "#,
+            )
+            .expect("every call should be judged");
+        let commands = drain_gl_commands(&render_rx);
+        let draw_buffers: Vec<Vec<u32>> = commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::DrawBuffers { buffers, .. } => Some(buffers.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            draw_buffers,
+            vec![
+                vec![0],
+                vec![0x0405],
+                vec![0x8ce0, 0x8ce1],
+                vec![0x0405],
+                vec![0]
+            ],
+            "only the draw buffers taken reach the renderer"
+        );
+        let draws = commands
+            .iter()
+            .filter(|cmd| matches!(cmd, GLCmd::DrawArrays { .. }))
+            .count();
+        assert_eq!(
+            draws, 4,
+            "the blend into RGBA32F without float blending is not drawn"
+        );
+    }
+
     /// EXT_color_buffer_float is offered to a WebGL 2 context whose renderer renders to float colour buffers (caps bit
     /// 2), to no other. Until it is enabled a float image is not colour-renderable: a framebuffer with one attached is
     /// INCOMPLETE_ATTACHMENT, a float renderbuffer or copy INVALID_ENUM, a mipmap of one INVALID_OPERATION. Enabling it

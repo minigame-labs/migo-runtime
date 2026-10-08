@@ -2326,11 +2326,12 @@ mod tests {
             Ok(OwnedValue::U32(bits)) => bits,
             other => panic!("a u32, not {other:?}"),
         };
-        for (etc2, astc, color_buffer_float, bits) in [
-            (true, true, false, 0b011),
-            (true, false, false, 0b001),
-            (false, true, false, 0b010),
-            (true, false, true, 0b101),
+        for (etc2, astc, color_buffer_float, float_blend, bits) in [
+            (true, true, false, false, 0b0011),
+            (true, false, false, false, 0b0001),
+            (false, true, false, false, 0b0010),
+            (true, false, true, false, 0b0101),
+            (true, false, true, true, 0b1101),
         ] {
             let context = ServiceContext::new(root.join("files"), root.join("cache"));
             let caps = shared::device::gpu_caps::GpuCaps::new();
@@ -2343,12 +2344,13 @@ mod tests {
                     astc,
                     ahb: false,
                     color_buffer_float,
+                    float_blend,
                 });
             });
             assert_eq!(
                 answer(&context),
                 bits,
-                "etc2 {etc2} astc {astc} color_buffer_float {color_buffer_float}"
+                "etc2 {etc2} astc {astc} color_buffer_float {color_buffer_float} float_blend {float_blend}"
             );
             publisher.join().unwrap();
         }

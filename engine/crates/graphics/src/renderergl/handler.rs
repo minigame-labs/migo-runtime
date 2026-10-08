@@ -4065,14 +4065,41 @@ impl RendererGL {
                 Ok(DamageEffect::NoDamage)
             }
 
+            // The content's default framebuffer is the DrawingBuffer's FBO unless the canvas bypasses it, and an FBO
+            // takes no BACK: there, WebGL's BACK is its COLOR_ATTACHMENT0. The facade has held both calls to what
+            // the bound framebuffer takes (BACK or NONE alone for the default one).
             GLCmd::DrawBuffers { canvas_id, buffers } => {
                 cm.make_current_needed(canvas_id)?;
-                unsafe { gl.draw_buffers(&buffers) };
+                if cm.emulated_default_bound(canvas_id, gl, glow::DRAW_FRAMEBUFFER) {
+                    let translated: SmallVec<[u32; 4]> = buffers
+                        .iter()
+                        .map(|&buffer| {
+                            if buffer == glow::BACK {
+                                glow::COLOR_ATTACHMENT0
+                            } else {
+                                buffer
+                            }
+                        })
+                        .collect();
+                    unsafe { gl.draw_buffers(&translated) };
+                } else {
+                    unsafe { gl.draw_buffers(&buffers) };
+                }
                 Ok(DamageEffect::NoDamage)
             }
             GLCmd::ReadBuffer { canvas_id, src } => {
                 cm.make_current_needed(canvas_id)?;
-                unsafe { gl.read_buffer(src) };
+                if cm.emulated_default_bound(canvas_id, gl, glow::READ_FRAMEBUFFER) {
+                    let read = if src == glow::BACK {
+                        glow::COLOR_ATTACHMENT0
+                    } else {
+                        src
+                    };
+                    unsafe { gl.read_buffer(read) };
+                    cm.note_default_read_buffer(canvas_id, read);
+                } else {
+                    unsafe { gl.read_buffer(src) };
+                }
                 Ok(DamageEffect::NoDamage)
             }
 

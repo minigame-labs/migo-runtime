@@ -212,6 +212,7 @@ mod tests {
             astc: false,
             ahb: false,
             color_buffer_float: false,
+            float_blend: false,
         }
     }
 
@@ -222,6 +223,7 @@ mod tests {
             astc: true,
             ahb: false,
             color_buffer_float: false,
+            float_blend: false,
         }
     }
     use crate::ktx2::{VkFormat, parse_ktx2};
