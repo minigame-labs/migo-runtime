@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WebGL: `KHR_parallel_shader_compile`, where the driver compiles and links in parallel (`GL_KHR_parallel_shader_compile`):
+  COMPLETION_STATUS_KHR of a shader or program is asked of the renderer without waiting for the compile or link -- the
+  renderer's deferred link read stays queued -- and is kept once true, or once LINK_STATUS was read, so polling content
+  (three.js, Babylon) keeps its frames while shaders build. True for one never compiled or linked and on a lost context;
+  INVALID_ENUM and null before the extension is enabled.
 - WebGL 1: `OES_texture_float` and `OES_texture_half_float` -- FLOAT and HALF_FLOAT_OES uploads of each unsized format,
   held as ES 3.0's 32- and 16-bit float formats, luminance and alpha through a swizzle so they sample as (l, l, l, 1)
   and (0, 0, 0, a) -- with `OES_texture_half_float_linear`, and `WEBGL_color_buffer_float` and

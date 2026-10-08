@@ -698,6 +698,77 @@ pub(super) mod tests {
         assert_eq!(blits, 13, "only the 13 blits taken reach the renderer");
     }
 
+    /// KHR_parallel_shader_compile is offered where the driver compiles in parallel (caps bit 10). COMPLETION_STATUS_KHR is
+    /// a boolean asked of the renderer without waiting, and asked no more once it answered true for that link or
+    /// compile, or LINK_STATUS was read; a program never linked or a shader never compiled is done; before the
+    /// extension is enabled the parameter is INVALID_ENUM and null.
+    #[test]
+    fn completion_status_is_polled_without_waiting_and_kept_once_done() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            let mut program_polls = 0;
+            let mut asked = Vec::new();
+            while let Ok(command) = render_rx.recv_timeout(Duration::from_secs(2)) {
+                match command {
+                    RenderCommand::GL(GLCmd::GetProgramParameter { pname, resp, .. }) => {
+                        asked.push(format!("program {pname:#x}"));
+                        program_polls += 1;
+                        // The first poll finds the link still running, the second done.
+                        resp.ok(if pname == 0x91B1 && program_polls == 1 {
+                            0
+                        } else {
+                            1
+                        });
+                    }
+                    RenderCommand::GL(GLCmd::GetShaderParameter { pname, resp, .. }) => {
+                        asked.push(format!("shader {pname:#x}"));
+                        resp.ok(1);
+                    }
+                    _ => {}
+                }
+            }
+            asked
+        });
+        runtime
+            .exec_script(
+                "completion_status.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const COMPLETION = 0x91b1;
+                const bare = new WebGL2RenderingContext({ _rid: 350, width: 1, height: 1 }, {});
+                bare._gpuCapsCache = 0;
+                check(bare.getExtension("KHR_parallel_shader_compile") === null, "not where the driver compiles serially");
+                const gl = new WebGLRenderingContext({ _rid: 351, width: 1, height: 1 }, {});
+                gl._gpuCapsCache = 1024;
+                const p = gl.createProgram(), s = gl.createShader(0x8b31);
+                check(gl.getProgramParameter(p, COMPLETION) === null && gl.getError() === 0x0500, "INVALID_ENUM before it is enabled");
+                const ext = gl.getExtension("KHR_parallel_shader_compile");
+                check(ext !== null && ext.COMPLETION_STATUS_KHR === COMPLETION, "offered, with its constant");
+                check(gl.getProgramParameter(p, COMPLETION) === true, "a program never linked is done");
+                check(gl.getShaderParameter(s, COMPLETION) === true, "a shader never compiled is done");
+                gl.compileShader(s);
+                check(gl.getShaderParameter(s, COMPLETION) === true, "the driver says the compile is done");
+                check(gl.getShaderParameter(s, COMPLETION) === true, "and it is kept");
+                gl.linkProgram(p);
+                check(gl.getProgramParameter(p, COMPLETION) === false, "the link is still running");
+                check(gl.getProgramParameter(p, COMPLETION) === true, "then done");
+                check(gl.getProgramParameter(p, COMPLETION) === true, "and kept");
+                gl.linkProgram(p);
+                gl._programParameterCache.set(p.id, new Map([[0x8b82, 1]]));      // LINK_STATUS read for the new link
+                check(gl.getProgramParameter(p, COMPLETION) === true, "a link whose status was read is done");
+                check(gl.getError() === 0, "no error");
+                "#,
+            )
+            .expect("completion status should be polled");
+        drop(runtime);
+        let asked = responder.join().expect("the responder");
+        assert_eq!(
+            asked,
+            ["shader 0x91b1", "program 0x91b1", "program 0x91b1"],
+            "polled while not known done, and no more"
+        );
+    }
+
     /// WebGL 1's HALF_FLOAT_OES is ES 3.0's HALF_FLOAT to the driver: a read of it reaches the renderer as one, into
     /// the Uint16Array it was given.
     #[test]

@@ -48,6 +48,7 @@ pub struct GpuCaps {
     standard_derivatives: AtomicBool,
     shader_texture_lod: AtomicBool,
     frag_depth: AtomicBool,
+    parallel_shader_compile: AtomicBool,
     /// Set to `true` after `set()` is called.  `wait_ready()` blocks
     /// until this flag is true, ensuring no early snapshot reads
     /// uninitialized (all-false) caps.
@@ -72,6 +73,7 @@ impl Default for GpuCaps {
             standard_derivatives: AtomicBool::new(false),
             shader_texture_lod: AtomicBool::new(false),
             frag_depth: AtomicBool::new(false),
+            parallel_shader_compile: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             ready_lock: Mutex::new(false),
@@ -106,6 +108,8 @@ impl GpuCaps {
         self.shader_texture_lod
             .store(caps.shader_texture_lod, Ordering::Release);
         self.frag_depth.store(caps.frag_depth, Ordering::Release);
+        self.parallel_shader_compile
+            .store(caps.parallel_shader_compile, Ordering::Release);
         self.ready.store(true, Ordering::Release);
         if let Ok(mut ready) = self.ready_lock.lock() {
             *ready = true;
@@ -212,6 +216,7 @@ impl GpuCaps {
             standard_derivatives: self.standard_derivatives.load(Ordering::Acquire),
             shader_texture_lod: self.shader_texture_lod.load(Ordering::Acquire),
             frag_depth: self.frag_depth.load(Ordering::Acquire),
+            parallel_shader_compile: self.parallel_shader_compile.load(Ordering::Acquire),
         }
     }
 
@@ -219,7 +224,8 @@ impl GpuCaps {
     /// buffers (EXT_color_buffer_float), 3 blending into 32-bit float ones (EXT_float_blend), 4 anisotropic filtering
     /// (EXT_texture_filter_anisotropic), 5 16-bit float colour buffers (EXT_color_buffer_half_float), 6 linear filtering
     /// of 32-bit float textures (OES_texture_float_linear), 7-9 the ESSL 1.00 shader extensions WebGL 1's
-    /// OES_standard_derivatives, EXT_shader_texture_lod and EXT_frag_depth name. The embedded op and the external session's service both answer these.
+    /// OES_standard_derivatives, EXT_shader_texture_lod and EXT_frag_depth name, 10 a driver that compiles and links
+    /// in parallel (KHR_parallel_shader_compile). The embedded op and the external session's service both answer these.
     pub fn webgl_bits(&self) -> u32 {
         let caps = self.snapshot();
         u32::from(caps.etc2)
@@ -232,6 +238,7 @@ impl GpuCaps {
             | (u32::from(caps.standard_derivatives) << 7)
             | (u32::from(caps.shader_texture_lod) << 8)
             | (u32::from(caps.frag_depth) << 9)
+            | (u32::from(caps.parallel_shader_compile) << 10)
     }
 }
 
@@ -260,12 +267,45 @@ pub struct GpuCapsSnapshot {
     pub standard_derivatives: bool,
     pub shader_texture_lod: bool,
     pub frag_depth: bool,
+    /// The driver compiles and links in parallel, and answers `GL_COMPLETION_STATUS_KHR` without waiting for it
+    /// (`GL_KHR_parallel_shader_compile`).
+    pub parallel_shader_compile: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{GpuCaps, GpuCapsReadyState, GpuCapsSnapshot, remaining_wait};
     use std::time::{Duration, Instant};
+
+    /// Each capability is the bit the facade's extension table reads it at (`_EXTENSIONS` in `02_webgl_context.js`),
+    /// and no other: a capability moved or doubled offers content an extension the renderer cannot back.
+    #[test]
+    fn each_webgl_capability_is_its_own_bit() {
+        type Set = fn(&mut GpuCapsSnapshot);
+        let bits: [(u32, Set); 11] = [
+            (0, |c| c.etc2 = true),
+            (1, |c| c.astc = true),
+            (2, |c| c.color_buffer_float = true),
+            (3, |c| c.float_blend = true),
+            (4, |c| c.anisotropic_filtering = true),
+            (5, |c| c.color_buffer_half_float = true),
+            (6, |c| c.float_filtering = true),
+            (7, |c| c.standard_derivatives = true),
+            (8, |c| c.shader_texture_lod = true),
+            (9, |c| c.frag_depth = true),
+            (10, |c| c.parallel_shader_compile = true),
+        ];
+        for (bit, set) in bits {
+            let caps = GpuCaps::new();
+            let mut snapshot = GpuCapsSnapshot::default();
+            set(&mut snapshot);
+            caps.set(snapshot);
+            assert_eq!(caps.webgl_bits(), 1 << bit, "capability of bit {bit}");
+        }
+        let none = GpuCaps::new();
+        none.set(GpuCapsSnapshot::default());
+        assert_eq!(none.webgl_bits(), 0);
+    }
 
     #[test]
     fn wait_ready_observes_set() {
@@ -285,6 +325,7 @@ mod tests {
                 standard_derivatives: false,
                 shader_texture_lod: false,
                 frag_depth: false,
+                parallel_shader_compile: false,
             });
         });
         assert!(matches!(
@@ -331,6 +372,7 @@ mod tests {
             standard_derivatives: false,
             shader_texture_lod: false,
             frag_depth: false,
+            parallel_shader_compile: false,
         });
         let started = Instant::now() - Duration::from_secs(1);
 
@@ -388,6 +430,7 @@ mod tests {
                 standard_derivatives: false,
                 shader_texture_lod: false,
                 frag_depth: false,
+                parallel_shader_compile: false,
             });
         });
 
@@ -413,6 +456,7 @@ mod tests {
             standard_derivatives: false,
             shader_texture_lod: false,
             frag_depth: false,
+            parallel_shader_compile: false,
         });
         assert!(caps.snapshot().ahb);
         assert!(caps.disable_ahb());

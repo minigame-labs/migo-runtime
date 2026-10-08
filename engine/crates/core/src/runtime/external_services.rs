@@ -2351,6 +2351,7 @@ mod tests {
                     standard_derivatives: false,
                     shader_texture_lod: false,
                     frag_depth: false,
+                    parallel_shader_compile: false,
                 });
             });
             assert_eq!(

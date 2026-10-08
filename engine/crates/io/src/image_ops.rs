@@ -1911,6 +1911,7 @@ mod tests {
             standard_derivatives: false,
             shader_texture_lod: false,
             frag_depth: false,
+            parallel_shader_compile: false,
         });
         let cpu_backing_required = Arc::new(AtomicBool::new(false));
         let decode_policy = ImageDecodePolicy::PreferGpuNative {

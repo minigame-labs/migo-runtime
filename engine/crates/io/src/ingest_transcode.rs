@@ -219,6 +219,7 @@ mod tests {
             standard_derivatives: false,
             shader_texture_lod: false,
             frag_depth: false,
+            parallel_shader_compile: false,
         }
     }
 
@@ -236,6 +237,7 @@ mod tests {
             standard_derivatives: false,
             shader_texture_lod: false,
             frag_depth: false,
+            parallel_shader_compile: false,
         }
     }
     use crate::ktx2::{VkFormat, parse_ktx2};
