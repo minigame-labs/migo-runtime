@@ -435,3 +435,186 @@ pub fn validate_viewport_like<C: GlDecodeContext>(
     }
     true
 }
+
+// ---- Fixed-function state ----------------------------------------------------------------------------------------
+//
+// What each state setter takes (ES 3.0 4.1, 4.2, 3.6, 2.13, and WebGL 1.0 6.13 / 6.24): a value it does not take is
+// an error and the state stays as it was, as a browser has it. The driver would refuse most of these too, but its
+// error never reaches `getError`, and a shadow the facade keeps of the state would believe the call.
+
+/// A comparison function: NEVER .. ALWAYS (depthFunc, stencilFunc).
+#[inline]
+fn is_comparison(func: u32) -> bool {
+    (0x0200..=0x0207).contains(&func)
+}
+
+/// FRONT, BACK or FRONT_AND_BACK (cullFace and the stencil calls' face).
+#[inline]
+fn is_face(face: u32) -> bool {
+    matches!(face, 0x0404 | 0x0405 | 0x0408)
+}
+
+/// KEEP, ZERO, REPLACE, INCR, DECR, INVERT, INCR_WRAP, DECR_WRAP.
+#[inline]
+fn is_stencil_op(op: u32) -> bool {
+    matches!(
+        op,
+        0x1E00 | 0 | 0x1E01 | 0x1E02 | 0x1E03 | 0x150A | 0x8507 | 0x8508
+    )
+}
+
+/// ZERO, ONE, the source and destination colour and alpha factors and their complements, SRC_ALPHA_SATURATE, and the
+/// constant colour and alpha factors and their complements. WebGL 1 takes SRC_ALPHA_SATURATE as a source factor only,
+/// which the facade judges: it knows the version.
+#[inline]
+fn is_blend_factor(factor: u32) -> bool {
+    matches!(factor, 0 | 1 | 0x0300..=0x0308 | 0x8001..=0x8004)
+}
+
+/// CONSTANT_COLOR or ONE_MINUS_CONSTANT_COLOR.
+#[inline]
+fn is_constant_colour(factor: u32) -> bool {
+    factor == 0x8001 || factor == 0x8002
+}
+
+/// CONSTANT_ALPHA or ONE_MINUS_CONSTANT_ALPHA.
+#[inline]
+fn is_constant_alpha(factor: u32) -> bool {
+    factor == 0x8003 || factor == 0x8004
+}
+
+#[inline]
+fn refuse<C: GlDecodeContext>(context: &mut C, canvas_id: u32, error: Option<u32>) -> bool {
+    match error {
+        Some(code) => {
+            context.push_error(canvas_id, code);
+            false
+        }
+        None => true,
+    }
+}
+
+/// `depthFunc`: a comparison function, else INVALID_ENUM.
+#[inline]
+pub fn validate_depth_func<C: GlDecodeContext>(context: &mut C, canvas_id: u32, func: u32) -> bool {
+    refuse(
+        context,
+        canvas_id,
+        (!is_comparison(func)).then_some(codes::INVALID_ENUM),
+    )
+}
+
+/// `cullFace`: FRONT, BACK or FRONT_AND_BACK, else INVALID_ENUM.
+#[inline]
+pub fn validate_cull_face<C: GlDecodeContext>(context: &mut C, canvas_id: u32, mode: u32) -> bool {
+    refuse(
+        context,
+        canvas_id,
+        (!is_face(mode)).then_some(codes::INVALID_ENUM),
+    )
+}
+
+/// `frontFace`: CW or CCW, else INVALID_ENUM.
+#[inline]
+pub fn validate_front_face<C: GlDecodeContext>(context: &mut C, canvas_id: u32, mode: u32) -> bool {
+    refuse(
+        context,
+        canvas_id,
+        (!matches!(mode, 0x0900 | 0x0901)).then_some(codes::INVALID_ENUM),
+    )
+}
+
+/// `stencilFunc` and `stencilFuncSeparate` (whose `face` is `Some`): a face and a comparison function, else
+/// INVALID_ENUM.
+#[inline]
+pub fn validate_stencil_func<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    face: Option<u32>,
+    func: u32,
+) -> bool {
+    let valid = face.is_none_or(is_face) && is_comparison(func);
+    refuse(context, canvas_id, (!valid).then_some(codes::INVALID_ENUM))
+}
+
+/// `stencilOp` and `stencilOpSeparate` (whose `face` is `Some`): a face and three stencil operations, else
+/// INVALID_ENUM.
+#[inline]
+pub fn validate_stencil_op<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    face: Option<u32>,
+    ops: [u32; 3],
+) -> bool {
+    let valid = face.is_none_or(is_face) && ops.iter().all(|&op| is_stencil_op(op));
+    refuse(context, canvas_id, (!valid).then_some(codes::INVALID_ENUM))
+}
+
+/// `stencilMaskSeparate`: a face, else INVALID_ENUM.
+#[inline]
+pub fn validate_stencil_mask_separate<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    face: u32,
+) -> bool {
+    refuse(
+        context,
+        canvas_id,
+        (!is_face(face)).then_some(codes::INVALID_ENUM),
+    )
+}
+
+/// `blendFunc` (`alpha` `None`) and `blendFuncSeparate`: blend factors, else INVALID_ENUM; then a constant colour
+/// factor with a constant alpha one among the colour factors is INVALID_OPERATION (WebGL 1.0 6.13: some
+/// implementations cannot blend with both).
+#[inline]
+pub fn validate_blend_func<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    rgb: [u32; 2],
+    alpha: Option<[u32; 2]>,
+) -> bool {
+    let [src, dst] = rgb;
+    let factors_valid = is_blend_factor(src)
+        && is_blend_factor(dst)
+        && alpha.is_none_or(|[s, d]| is_blend_factor(s) && is_blend_factor(d));
+    let error = if !factors_valid {
+        Some(codes::INVALID_ENUM)
+    } else if (is_constant_colour(src) && is_constant_alpha(dst))
+        || (is_constant_alpha(src) && is_constant_colour(dst))
+    {
+        Some(codes::INVALID_OPERATION)
+    } else {
+        None
+    };
+    refuse(context, canvas_id, error)
+}
+
+/// `lineWidth`: a width above 0, else INVALID_VALUE (NaN is not one).
+#[inline]
+pub fn validate_line_width<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    width: f32,
+) -> bool {
+    refuse(
+        context,
+        canvas_id,
+        (width.is_nan() || width <= 0.0).then_some(codes::INVALID_VALUE),
+    )
+}
+
+/// `depthRange`: a near value past the far one is INVALID_OPERATION (WebGL 1.0 6.12).
+#[inline]
+pub fn validate_depth_range<C: GlDecodeContext>(
+    context: &mut C,
+    canvas_id: u32,
+    near: f32,
+    far: f32,
+) -> bool {
+    refuse(
+        context,
+        canvas_id,
+        (near > far).then_some(codes::INVALID_OPERATION),
+    )
+}

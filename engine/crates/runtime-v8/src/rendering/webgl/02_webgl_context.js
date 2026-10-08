@@ -2128,6 +2128,144 @@ const _EXTENSIONS = [
         restoreContext: () => { ctx._setLostByExtension(false); },
     })],
 ];
+// ---- getParameter -----------------------------------------------------------------------------------------------------
+// The parameters getParameter asks the driver for (WebGL 1.0 5.14.3, WebGL 2.0 3.7.2), each with the versions that
+// have it and the type WebGL gives its answer: a number, a boolean, a Float32Array, an Int32Array, or booleans. The
+// rest of what it answers -- the bindings, the pixel-store state, the capabilities, the strings, the stencil masks,
+// the compressed formats, the extensions' -- is this facade's own. A parameter of neither, or of the other version,
+// is INVALID_ENUM and null.
+const _P_NUMBER = 0, _P_BOOLEAN = 1, _P_FLOAT32 = 2, _P_INT32 = 3, _P_BOOLEANS = 4;
+const _DRIVER_PARAMETERS = new Map([
+    [0x0b21, [_ANY_WEBGL, _P_NUMBER]],      // LINE_WIDTH
+    [0x0b45, [_ANY_WEBGL, _P_NUMBER]],      // CULL_FACE_MODE
+    [0x0b46, [_ANY_WEBGL, _P_NUMBER]],      // FRONT_FACE
+    [0x0b70, [_ANY_WEBGL, _P_FLOAT32]],     // DEPTH_RANGE
+    [0x0b72, [_ANY_WEBGL, _P_BOOLEAN]],     // DEPTH_WRITEMASK
+    [0x0b73, [_ANY_WEBGL, _P_NUMBER]],      // DEPTH_CLEAR_VALUE
+    [0x0b74, [_ANY_WEBGL, _P_NUMBER]],      // DEPTH_FUNC
+    [0x0b91, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_CLEAR_VALUE
+    [0x0b92, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_FUNC
+    [0x0b94, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_FAIL
+    [0x0b95, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_PASS_DEPTH_FAIL
+    [0x0b96, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_PASS_DEPTH_PASS
+    [0x0b97, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_REF
+    [0x0ba2, [_ANY_WEBGL, _P_INT32]],       // VIEWPORT
+    [0x0c10, [_ANY_WEBGL, _P_INT32]],       // SCISSOR_BOX
+    [0x0c22, [_ANY_WEBGL, _P_FLOAT32]],     // COLOR_CLEAR_VALUE
+    [0x0c23, [_ANY_WEBGL, _P_BOOLEANS]],    // COLOR_WRITEMASK
+    [0x0d33, [_ANY_WEBGL, _P_NUMBER]],      // MAX_TEXTURE_SIZE
+    [0x0d3a, [_ANY_WEBGL, _P_INT32]],       // MAX_VIEWPORT_DIMS
+    [0x0d50, [_ANY_WEBGL, _P_NUMBER]],      // SUBPIXEL_BITS
+    [0x0d52, [_ANY_WEBGL, _P_NUMBER]],      // RED_BITS
+    [0x0d53, [_ANY_WEBGL, _P_NUMBER]],      // GREEN_BITS
+    [0x0d54, [_ANY_WEBGL, _P_NUMBER]],      // BLUE_BITS
+    [0x0d55, [_ANY_WEBGL, _P_NUMBER]],      // ALPHA_BITS
+    [0x0d56, [_ANY_WEBGL, _P_NUMBER]],      // DEPTH_BITS
+    [0x0d57, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_BITS
+    [0x2a00, [_ANY_WEBGL, _P_NUMBER]],      // POLYGON_OFFSET_UNITS
+    [0x8005, [_ANY_WEBGL, _P_FLOAT32]],     // BLEND_COLOR
+    [0x8009, [_ANY_WEBGL, _P_NUMBER]],      // BLEND_EQUATION (_RGB)
+    [0x8038, [_ANY_WEBGL, _P_NUMBER]],      // POLYGON_OFFSET_FACTOR
+    [0x8073, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_3D_TEXTURE_SIZE
+    [0x80a8, [_ANY_WEBGL, _P_NUMBER]],      // SAMPLE_BUFFERS
+    [0x80a9, [_ANY_WEBGL, _P_NUMBER]],      // SAMPLES
+    [0x80aa, [_ANY_WEBGL, _P_NUMBER]],      // SAMPLE_COVERAGE_VALUE
+    [0x80ab, [_ANY_WEBGL, _P_BOOLEAN]],     // SAMPLE_COVERAGE_INVERT
+    [0x80c8, [_ANY_WEBGL, _P_NUMBER]],      // BLEND_DST_RGB
+    [0x80c9, [_ANY_WEBGL, _P_NUMBER]],      // BLEND_SRC_RGB
+    [0x80ca, [_ANY_WEBGL, _P_NUMBER]],      // BLEND_DST_ALPHA
+    [0x80cb, [_ANY_WEBGL, _P_NUMBER]],      // BLEND_SRC_ALPHA
+    [0x80e8, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_ELEMENTS_VERTICES
+    [0x80e9, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_ELEMENTS_INDICES
+    [0x8192, [_ANY_WEBGL, _P_NUMBER]],      // GENERATE_MIPMAP_HINT
+    [0x846d, [_ANY_WEBGL, _P_FLOAT32]],     // ALIASED_POINT_SIZE_RANGE
+    [0x846e, [_ANY_WEBGL, _P_FLOAT32]],     // ALIASED_LINE_WIDTH_RANGE
+    [0x84e0, [_ANY_WEBGL, _P_NUMBER]],      // ACTIVE_TEXTURE
+    [0x84e8, [_ANY_WEBGL, _P_NUMBER]],      // MAX_RENDERBUFFER_SIZE
+    [0x84fd, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_TEXTURE_LOD_BIAS
+    [0x851c, [_ANY_WEBGL, _P_NUMBER]],      // MAX_CUBE_MAP_TEXTURE_SIZE
+    [0x8800, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_BACK_FUNC
+    [0x8801, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_BACK_FAIL
+    [0x8802, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_BACK_PASS_DEPTH_FAIL
+    [0x8803, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_BACK_PASS_DEPTH_PASS
+    [0x8824, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_DRAW_BUFFERS (WEBGL_draw_buffers' in WebGL 1)
+    [0x883d, [_ANY_WEBGL, _P_NUMBER]],      // BLEND_EQUATION_ALPHA
+    [0x8869, [_ANY_WEBGL, _P_NUMBER]],      // MAX_VERTEX_ATTRIBS
+    [0x8872, [_ANY_WEBGL, _P_NUMBER]],      // MAX_TEXTURE_IMAGE_UNITS
+    [0x88ff, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_ARRAY_TEXTURE_LAYERS
+    [0x8904, [_WEBGL2_ONLY, _P_NUMBER]],    // MIN_PROGRAM_TEXEL_OFFSET
+    [0x8905, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_PROGRAM_TEXEL_OFFSET
+    [0x8a2b, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_VERTEX_UNIFORM_BLOCKS
+    [0x8a2d, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_FRAGMENT_UNIFORM_BLOCKS
+    [0x8a2e, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_COMBINED_UNIFORM_BLOCKS
+    [0x8a2f, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_UNIFORM_BUFFER_BINDINGS
+    [0x8a30, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_UNIFORM_BLOCK_SIZE (GLint64)
+    [0x8a31, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS (GLint64)
+    [0x8a33, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS (GLint64)
+    [0x8a34, [_WEBGL2_ONLY, _P_NUMBER]],    // UNIFORM_BUFFER_OFFSET_ALIGNMENT
+    [0x8b49, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_FRAGMENT_UNIFORM_COMPONENTS
+    [0x8b4a, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_VERTEX_UNIFORM_COMPONENTS
+    [0x8b4b, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_VARYING_COMPONENTS
+    [0x8b4c, [_ANY_WEBGL, _P_NUMBER]],      // MAX_VERTEX_TEXTURE_IMAGE_UNITS
+    [0x8b4d, [_ANY_WEBGL, _P_NUMBER]],      // MAX_COMBINED_TEXTURE_IMAGE_UNITS
+    [0x8c80, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS
+    [0x8c8a, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS
+    [0x8c8b, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS
+    [0x8ca3, [_ANY_WEBGL, _P_NUMBER]],      // STENCIL_BACK_REF
+    [0x8cdf, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_COLOR_ATTACHMENTS (WEBGL_draw_buffers' in WebGL 1)
+    [0x8d57, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_SAMPLES
+    [0x8d6b, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_ELEMENT_INDEX (GLint64)
+    [0x8dfb, [_ANY_WEBGL, _P_NUMBER]],      // MAX_VERTEX_UNIFORM_VECTORS
+    [0x8dfc, [_ANY_WEBGL, _P_NUMBER]],      // MAX_VARYING_VECTORS
+    [0x8dfd, [_ANY_WEBGL, _P_NUMBER]],      // MAX_FRAGMENT_UNIFORM_VECTORS
+    [0x8e23, [_WEBGL2_ONLY, _P_BOOLEAN]],   // TRANSFORM_FEEDBACK_PAUSED
+    [0x8e24, [_WEBGL2_ONLY, _P_BOOLEAN]],   // TRANSFORM_FEEDBACK_ACTIVE
+    [0x9111, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_SERVER_WAIT_TIMEOUT (GLint64)
+    [0x9122, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_VERTEX_OUTPUT_COMPONENTS
+    [0x9125, [_WEBGL2_ONLY, _P_NUMBER]],    // MAX_FRAGMENT_INPUT_COMPONENTS
+]);
+
+// The driver's answer (JSON) as WebGL types it, or null for none.
+function _typedParameter(json, kind) {
+    let value = null;
+    try { value = JSON.parse(json); } catch (_) { return null; }
+    switch (kind) {
+        case _P_BOOLEAN: return typeof value === "boolean" ? value : typeof value === "number" ? value !== 0 : null;
+        case _P_FLOAT32: return ArrayIsArray(value) ? new Float32Array(value) : null;
+        case _P_INT32: return ArrayIsArray(value) ? new Int32Array(value) : null;
+        case _P_BOOLEANS: return ArrayIsArray(value) ? [value[0] === true, value[1] === true, value[2] === true, value[3] === true]
+            : null;
+        default: return typeof value === "number" ? value : null;
+    }
+}
+
+// The stencil masks as set, which getParameter answers -- WebGL's are GLuint, which a driver answering GLint may
+// clamp: the value masks of the front and back faces, then their write masks, all ones until set. A call the decoder
+// refuses (`validate_stencil_func`, `validate_stencil_mask_separate`: a face that is not FRONT, BACK or
+// FRONT_AND_BACK, a function that is no comparison) leaves them as they were. A rebuilt GL context is at its initial
+// state, so its masks are all ones again.
+function stencilMasksOf(ctx) {
+    if (ctx._stencilGeneration !== _capGeneration) {
+        for (let k = 0; k < 4; k++) ctx._stencilMasks[k] = 0xffffffff;
+        ctx._stencilGeneration = _capGeneration;
+    }
+    return ctx._stencilMasks;
+}
+// Whether `func` is a comparison function, NEVER .. ALWAYS, as the decoder judges it.
+function _isComparison(func) {
+    const f = Number(func) >>> 0;
+    return f >= 0x0200 && f <= 0x0207;
+}
+// `mask` for the faces `face` names, at `front` (the front face's index) and the back face's after it.
+function noteStencilMask(ctx, face, front, mask) {
+    const f = Number(face) >>> 0;
+    if (f !== 0x0404 && f !== 0x0405 && f !== 0x0408) return;
+    const masks = stencilMasksOf(ctx);
+    const m = Number(mask) >>> 0;
+    if (f !== 0x0405) masks[front] = m;
+    if (f !== 0x0404) masks[front + 1] = m;
+}
+
 const _EXTENSIONS_BY_KEY = new Map();
 for (const extension of _EXTENSIONS) _EXTENSIONS_BY_KEY.set(StringPrototypeToLowerCase(extension[0]), extension);
 
@@ -2383,6 +2521,9 @@ class WebGLRenderingContext {
         // Producer-side capability shadow; see _TOGGLEABLE_CAPS above.
         this._capBits = _CAP_INITIAL;
         this._capGeneration = _capGeneration;
+        // The stencil masks as set (`stencilMasksOf`), filled on first use.
+        this._stencilMasks = new Uint32Array(4);
+        this._stencilGeneration = -1;
 
         // The drawing buffer's attributes (WebGL 1.0 5.2), each a dictionary member WebIDL converts to a boolean, or
         // the specification's default when absent: alpha, depth, premultipliedAlpha and antialias default true,
@@ -3395,6 +3536,7 @@ class WebGLRenderingContext {
     }
 
     getParameter(pname) {
+        pname = Number(pname) >>> 0;
         // Binding-state queries return the JS-side wrapper object (or null), per
         // the WebGL spec, so `bindX(target, getParameter(X_BINDING))` round-trips.
         switch (pname) {
@@ -3470,7 +3612,24 @@ class WebGLRenderingContext {
             // WebGL-only limit this context chooses, not something the driver
             // knows -- asking it would have crossed for a constant. Zero: see
             // `clientWaitSync`.
-            case 0x9247: return 0;
+            case 0x9247:
+                if (this._isWebGL2()) return 0;
+                recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+                return null;
+            // The stencil masks: GLuint, as set (`stencilMasksOf`).
+            case 0x0b93: return stencilMasksOf(this)[0];       // STENCIL_VALUE_MASK
+            case 0x8ca4: return stencilMasksOf(this)[1];       // STENCIL_BACK_VALUE_MASK
+            case 0x0b98: return stencilMasksOf(this)[2];       // STENCIL_WRITEMASK
+            case 0x8ca5: return stencilMasksOf(this)[3];       // STENCIL_BACK_WRITEMASK
+            // COMPRESSED_TEXTURE_FORMATS: the formats of the compressed-texture extensions enabled, as a browser lists
+            // them.
+            case 0x86a3: {
+                const formats = [];
+                for (const format of _COMPRESSED_FORMATS.keys()) {
+                    if (this._compressedFormat(format) !== undefined) formats.push(format);
+                }
+                return new Uint32Array(formats);
+            }
             // The two flags are booleans in WebGL.
             case 0x9240: return this._unpackFlipY === true;
             case 0x9241: return this._unpackPremultiplyAlpha === true;
@@ -3503,7 +3662,9 @@ class WebGLRenderingContext {
             case 0x8b8c: return this._webglVersionString(0x8b8c, "WebGL GLSL ES");
             // FRAGMENT_SHADER_DERIVATIVE_HINT: WebGL 2's, OES_standard_derivatives' in WebGL 1.
             case 0x8b8b:
-                if (this._isWebGL2() || this._oesStandardDerivatives !== undefined) break;
+                if (this._isWebGL2() || this._oesStandardDerivatives !== undefined) {
+                    return _typedParameter(_rawGetParameter(this._canvasId, pname), _P_NUMBER);
+                }
                 recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
                 return null;
             // IMPLEMENTATION_COLOR_READ_FORMAT / _TYPE: the driver's pair for the read buffer, which must be one a read
@@ -3528,12 +3689,18 @@ class WebGLRenderingContext {
         // with the engine's own scissor use, so `isEnabled(BLEND)` and
         // `getParameter(BLEND)` could return different booleans for the same
         // context. They go through one shadow.
-        if (_CAP_BIT.has(pname)) {
+        if (this._capBitOf(pname) !== undefined) {
             return this.isEnabled(pname);
         }
-        const json = _rawGetParameter(this._canvasId, pname);
-        if (!json) return null;
-        try { return JSON.parse(json); } catch (_) { return null; }
+        // The driver's, typed as WebGL has it (`_DRIVER_PARAMETERS`); MAX_COLOR_ATTACHMENTS and MAX_DRAW_BUFFERS are
+        // WEBGL_draw_buffers' in WebGL 1.
+        const spec = _DRIVER_PARAMETERS.get(pname);
+        if (spec === undefined || ((spec[0] & (this._isWebGL2() ? _WEBGL2_ONLY : _WEBGL1_ONLY)) === 0 &&
+                !((pname === 0x8cdf || pname === 0x8824) && this._webglDrawBuffers !== undefined))) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
+        return _typedParameter(_rawGetParameter(this._canvasId, pname), spec[1]);
     }
 
     // The driver's string for `pname`, asked once and kept in `field`.
@@ -4755,9 +4922,15 @@ class WebGLRenderingContext {
     // A device limit, asked once the context can answer and kept from then on. A context that cannot answer now
     // (lost) is held to `minimum`, what every implementation of the interface has, and asked again by the next call.
     // Callers compare against `minimum` first: an index below it needs no answer, so the common call never crosses.
+    // A limit the driver answers, as a number, or null when it answers none (a lost context). Not `getParameter`: a
+    // limit the facade reads is no content's query, and records no error.
+    _driverParameter(pname) {
+        return _typedParameter(_rawGetParameter(this._canvasId, pname), _P_NUMBER);
+    }
+
     _cachedLimit(field, pname, minimum) {
         if (this[field] === 0) {
-            const n = this.getParameter(pname);
+            const n = this._driverParameter(pname);
             if (!NumberIsInteger(n) || n < 1) return minimum;
             this[field] = n;
         }
@@ -4889,7 +5062,17 @@ class WebGLRenderingContext {
 
     // -- Phase 2A: Blend/Depth/Stencil/Cull State --
 
+    // WebGL 1 takes SRC_ALPHA_SATURATE as a source factor only (ES 2.0 4.1.6): as a destination one it is INVALID_ENUM,
+    // judged here because it depends on the version. What else the factors may be is the decoder's to judge
+    // (`validate_blend_func`), for the stream and the raw call alike.
+    _refusesDestinationFactor(dst, dstAlpha) {
+        if (this._isWebGL2() || ((Number(dst) >>> 0) !== 0x0308 &&
+                (dstAlpha === undefined || (Number(dstAlpha) >>> 0) !== 0x0308))) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+        return true;
+    }
     blendFunc(sfactor, dfactor) {
+        if (this._refusesDestinationFactor(dfactor, undefined)) return;
         if (typeof sfactor === "number" && typeof dfactor === "number") {
             encodeBlendFunc(this._canvasId, sfactor >>> 0, dfactor >>> 0);
         } else {
@@ -4898,6 +5081,7 @@ class WebGLRenderingContext {
         }
     }
     blendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha) {
+        if (this._refusesDestinationFactor(dstRGB, dstAlpha)) return;
         if (typeof srcRGB === "number" && typeof dstRGB === "number" &&
             typeof srcAlpha === "number" && typeof dstAlpha === "number") {
             encodeBlendFuncSeparate(this._canvasId, srcRGB >>> 0, dstRGB >>> 0, srcAlpha >>> 0, dstAlpha >>> 0);
@@ -4973,6 +5157,7 @@ class WebGLRenderingContext {
         }
     }
     stencilFunc(func, ref_, mask) {
+        if (_isComparison(func)) noteStencilMask(this, 0x0408, 0, mask);
         if (typeof func === "number" && typeof ref_ === "number" && typeof mask === "number") {
             encodeStencilFunc(this._canvasId, func >>> 0, ref_ | 0, mask >>> 0);
         } else {
@@ -4981,6 +5166,7 @@ class WebGLRenderingContext {
         }
     }
     stencilFuncSeparate(face, func, ref_, mask) {
+        if (_isComparison(func)) noteStencilMask(this, face, 0, mask);
         if (typeof face === "number" && typeof func === "number" &&
             typeof ref_ === "number" && typeof mask === "number") {
             encodeStencilFuncSeparate(this._canvasId, face >>> 0, func >>> 0, ref_ | 0, mask >>> 0);
@@ -5007,6 +5193,7 @@ class WebGLRenderingContext {
         }
     }
     stencilMask(mask) {
+        noteStencilMask(this, 0x0408, 2, mask);
         if (typeof mask === "number") {
             encodeStencilMask(this._canvasId, mask >>> 0);
         } else {
@@ -5015,6 +5202,7 @@ class WebGLRenderingContext {
         }
     }
     stencilMaskSeparate(face, mask) {
+        noteStencilMask(this, face, 2, mask);
         if (typeof face === "number" && typeof mask === "number") {
             encodeStencilMaskSeparate(this._canvasId, face >>> 0, mask >>> 0);
         } else {
