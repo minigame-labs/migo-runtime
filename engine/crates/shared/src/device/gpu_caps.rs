@@ -44,6 +44,7 @@ pub struct GpuCaps {
     float_blend: AtomicBool,
     anisotropic_filtering: AtomicBool,
     color_buffer_half_float: AtomicBool,
+    float_filtering: AtomicBool,
     /// Set to `true` after `set()` is called.  `wait_ready()` blocks
     /// until this flag is true, ensuring no early snapshot reads
     /// uninitialized (all-false) caps.
@@ -64,6 +65,7 @@ impl Default for GpuCaps {
             float_blend: AtomicBool::new(false),
             anisotropic_filtering: AtomicBool::new(false),
             color_buffer_half_float: AtomicBool::new(false),
+            float_filtering: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             ready_lock: Mutex::new(false),
@@ -91,6 +93,8 @@ impl GpuCaps {
             .store(caps.anisotropic_filtering, Ordering::Release);
         self.color_buffer_half_float
             .store(caps.color_buffer_half_float, Ordering::Release);
+        self.float_filtering
+            .store(caps.float_filtering, Ordering::Release);
         self.ready.store(true, Ordering::Release);
         if let Ok(mut ready) = self.ready_lock.lock() {
             *ready = true;
@@ -193,12 +197,14 @@ impl GpuCaps {
             float_blend: self.float_blend.load(Ordering::Acquire),
             anisotropic_filtering: self.anisotropic_filtering.load(Ordering::Acquire),
             color_buffer_half_float: self.color_buffer_half_float.load(Ordering::Acquire),
+            float_filtering: self.float_filtering.load(Ordering::Acquire),
         }
     }
 
     /// The bits `op_webgl_query_gpu_caps` answers content's WebGL with: 0 ETC2/EAC, 1 ASTC LDR, 2 float colour
     /// buffers (EXT_color_buffer_float), 3 blending into 32-bit float ones (EXT_float_blend), 4 anisotropic filtering
-    /// (EXT_texture_filter_anisotropic), 5 16-bit float colour buffers (EXT_color_buffer_half_float). The embedded op and the external session's service both answer these.
+    /// (EXT_texture_filter_anisotropic), 5 16-bit float colour buffers (EXT_color_buffer_half_float), 6 linear filtering
+    /// of 32-bit float textures (OES_texture_float_linear). The embedded op and the external session's service both answer these.
     pub fn webgl_bits(&self) -> u32 {
         let caps = self.snapshot();
         u32::from(caps.etc2)
@@ -207,6 +213,7 @@ impl GpuCaps {
             | (u32::from(caps.float_blend) << 3)
             | (u32::from(caps.anisotropic_filtering) << 4)
             | (u32::from(caps.color_buffer_half_float) << 5)
+            | (u32::from(caps.float_filtering) << 6)
     }
 }
 
@@ -229,6 +236,8 @@ pub struct GpuCapsSnapshot {
     pub anisotropic_filtering: bool,
     /// The 16-bit float formats are colour-renderable (`GL_EXT_color_buffer_half_float`).
     pub color_buffer_half_float: bool,
+    /// 32-bit float textures can be filtered linearly (`GL_OES_texture_float_linear`).
+    pub float_filtering: bool,
 }
 
 #[cfg(test)]
@@ -250,6 +259,7 @@ mod tests {
                 float_blend: false,
                 anisotropic_filtering: false,
                 color_buffer_half_float: false,
+                float_filtering: false,
             });
         });
         assert!(matches!(
@@ -292,6 +302,7 @@ mod tests {
             float_blend: false,
             anisotropic_filtering: false,
             color_buffer_half_float: false,
+            float_filtering: false,
         });
         let started = Instant::now() - Duration::from_secs(1);
 
@@ -345,6 +356,7 @@ mod tests {
                 float_blend: false,
                 anisotropic_filtering: false,
                 color_buffer_half_float: false,
+                float_filtering: false,
             });
         });
 
@@ -366,6 +378,7 @@ mod tests {
             float_blend: false,
             anisotropic_filtering: false,
             color_buffer_half_float: false,
+            float_filtering: false,
         });
         assert!(caps.snapshot().ahb);
         assert!(caps.disable_ahb());
