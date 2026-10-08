@@ -213,6 +213,15 @@ export const OP2D_CLIP_EVEN_ODD = 569;
 export const OP2D_PUT_IMAGE_DATA = 571;
 // `createPattern(canvas)`: `H image_id:U` under the selection of the canvas it copies.
 export const OP2D_CAPTURE_IMAGE = 572;
+// `roundRect`: `H x y w h`, then the four corners' `rx ry`.
+export const OP2D_ROUND_RECT = 573;
+// `fill(path, rule)` / `clip(path, rule)` with a `Path2D`: `H rule count`, then the segments; `stroke(path)`: `H count`,
+// then the segments (frame_wire::canvas2d::path2d).
+export const OP2D_FILL_PATH = 574;
+export const OP2D_STROKE_PATH = 575;
+export const OP2D_CLIP_PATH = 576;
+/** The most words of segments one path record carries (frame_wire::canvas2d::MAX_PATH_WORDS). */
+export const MAX_PATH_WORDS = 1 << 18;
 /** The most pixel bytes one record carries; a larger ImageData is written as bands of rows. */
 export const PUT_IMAGE_DATA_BAND_BYTES = 1024 * 1024;
 

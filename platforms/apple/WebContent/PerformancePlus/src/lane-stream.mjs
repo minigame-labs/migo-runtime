@@ -1038,6 +1038,28 @@ export function op_set_stroke_style_pattern(canvasId, imageId, repeatX, repeatY)
   );
 }
 
+/**
+ * `fill(path)`, `stroke(path)` or `clip(path)` with a `Path2D` longer than the engine's stream buffer holds: the record
+ * its encoder would have written, behind what the facade flushed. A kind the op does not know, or a path longer than a
+ * record carries, is dropped as the op drops it; the segments themselves the host's decoder checks.
+ */
+const PATH_RECORDS = [R.OP2D_FILL_PATH, R.OP2D_STROKE_PATH, R.OP2D_CLIP_PATH];
+export function op_canvas2d_draw_path(canvasId, kind, evenOdd, words) {
+  const canvas = smiU32(canvasId, "canvas_id");
+  const which = smiU32(kind, "kind");
+  const rule = toBool(evenOdd, "even_odd") ? 1 : 0;
+  const path = u32ArrayOf(words, "words");
+  if (which >= PATH_RECORDS.length || path.length > R.MAX_PATH_WORDS) return;
+  const opcode = PATH_RECORDS[which];
+  const headerWords = opcode === R.OP2D_STROKE_PATH ? 2 : 3;
+  record[0] = (((headerWords + path.length) << 12) | opcode) >>> 0;
+  if (headerWords === 3) record[1] = rule;
+  record[headerWords - 1] = path.length;
+  if (!appendCanvas2DRecord(canvas, record, headerWords, path)) {
+    recordProducerError(canvas, OUT_OF_MEMORY);
+  }
+}
+
 export function op_set_line_dash(canvasId, segments) {
   const canvas = smiU32(canvasId, "canvas_id");
   const bytes = bytesOf(segments, "segments");

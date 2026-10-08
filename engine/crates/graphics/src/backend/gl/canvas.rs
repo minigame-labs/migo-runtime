@@ -19,7 +19,10 @@ use shared::protocol::render_cmd::{Canvas2DCmd, GradientType, TextAlign, TextBas
 use skia_safe::{Canvas, ClipOp, Matrix, Paint, PaintCap, PaintJoin, PathFillType, Rect as SkRect};
 
 use super::blend_mode::blend_mode_from_code;
-use super::paint::{PatternResolver, build_clear_paint, build_fill_paint, build_stroke_paint};
+use super::paint::{
+    PatternResolver, build_clear_paint, build_fill_paint, build_stroke_geometry_paint,
+    build_stroke_paint,
+};
 use super::path::CanvasPath;
 use super::state::{Canvas2DState, Shadow, StateStack, StyleKind};
 use super::text::TextContext;
@@ -37,6 +40,33 @@ pub struct DrawEnv<'e, R: PatternResolver> {
     pub canvas: &'e Canvas,
     pub text: Option<&'e TextContext>,
     pub resolver: &'e R,
+}
+
+/// What the current default path's points are relative to.
+///
+/// The specification transforms each point by the matrix current when it is added, so a path built under one transform
+/// and filled under another fills where it was built. The path is kept in the current user space -- the space Skia draws
+/// it in, so the common case costs nothing -- and a change of transform while it holds points is owed to it as one
+/// matrix, paid when the path is next added to or used: `fill(); restore(); beginPath()`, the common shape, never pays.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PathSpace {
+    /// The current user space.
+    User,
+    /// The user space of an earlier transform, this matrix to canvas coordinates.
+    Earlier(Matrix),
+    /// Canvas coordinates: the transform is singular, so there is no user space to keep the path in.
+    Canvas,
+}
+
+/// A `Path2D`'s segments built into a path, under a fill rule.
+fn path2d(segments: &[u32], even_odd: bool) -> skia_safe::Path {
+    let mut built = CanvasPath::new();
+    built.append_segments(segments);
+    built.snapshot().with_fill_type(if even_odd {
+        PathFillType::EvenOdd
+    } else {
+        PathFillType::Winding
+    })
 }
 
 /// Owns the Canvas2D state for one `CanvasRenderingContext2D`.
@@ -59,6 +89,8 @@ pub struct Canvas2DRenderer {
     pub state: Canvas2DState,
     pub stack: StateStack,
     pub path: CanvasPath,
+    /// What the current default path's points are relative to (see [`PathSpace`]).
+    path_space: PathSpace,
     /// Single-slot `SkPaint` cache keyed by the compact
     /// [`ImagePaintKey`] encoding of the draw-relevant state
     /// (anti-alias flag, blend mode, global alpha quantised to
@@ -133,8 +165,137 @@ impl Canvas2DRenderer {
             state: Canvas2DState::default(),
             stack: StateStack::new(),
             path: CanvasPath::new(),
+            path_space: PathSpace::User,
             image_paint_cache: None,
         }
+    }
+
+    /// The current transformation matrix as Skia's.
+    fn ctm(&self) -> Matrix {
+        let [a, b, c, d, e, f] = self.state.ctm;
+        Matrix::new_all(a, c, e, b, d, f, 0.0, 0.0, 1.0)
+    }
+
+    /// The transform is about to change: a path that holds points stays where they are, in the space of the transform
+    /// they were added under, until it is next used (`settle_path`).
+    fn transform_changing(&mut self) {
+        if self.path_space == PathSpace::User && self.path.verb_count() > 0 {
+            self.path_space = PathSpace::Earlier(self.ctm());
+        }
+    }
+
+    /// The transform changed: back to the one the path's points are in -- a `restore()` after a `save()` and a
+    /// `translate()` -- leaves nothing owed.
+    fn transform_changed(&mut self) {
+        if self.path_space == PathSpace::Earlier(self.ctm()) {
+            self.path_space = PathSpace::User;
+        }
+    }
+
+    /// Bring the current default path into the current user space, which is where Skia draws it, or into canvas
+    /// coordinates when the transform cannot be inverted.
+    fn settle_path(&mut self) {
+        let ctm = self.ctm();
+        match self.path_space {
+            PathSpace::User => {}
+            PathSpace::Earlier(earlier) => match ctm.invert() {
+                Some(inverse) => {
+                    self.path.transform(&Matrix::concat(&inverse, &earlier));
+                    self.path_space = PathSpace::User;
+                }
+                None => {
+                    self.path.transform(&earlier);
+                    self.path_space = PathSpace::Canvas;
+                }
+            },
+            PathSpace::Canvas => {
+                if let Some(inverse) = ctm.invert() {
+                    self.path.transform(&inverse);
+                    self.path_space = PathSpace::User;
+                }
+            }
+        }
+    }
+
+    /// Add to the current default path: each point through the transform current now, as the specification has it.
+    /// `continues` says whether the segment goes on from the current point (a line, a curve, an arc) rather than starting
+    /// subpaths of its own (`moveTo`, `rect`, `roundRect`).
+    fn build_path(&mut self, continues: bool, add: impl FnOnce(&mut CanvasPath)) {
+        self.settle_path();
+        if self.path_space == PathSpace::Canvas {
+            // The transform is singular, so there is no user space to add in: the segment is made in user space and
+            // moved to canvas coordinates, where the path is kept until the transform can be inverted again.
+            let mut segment = CanvasPath::new();
+            add(&mut segment);
+            let ctm = self.ctm();
+            self.path.append_transformed(&segment, &ctm, continues);
+        } else {
+            add(&mut self.path);
+        }
+    }
+
+    /// Ready the current default path to be drawn or clipped with, in the current user space; false when the transform
+    /// is singular, under which the path draws nothing and clips nothing.
+    fn path_for_use(&mut self) -> bool {
+        self.settle_path();
+        self.path_space == PathSpace::User
+    }
+
+    /// `isPointInPath` / `isPointInStroke`: whether `(x, y)` -- canvas coordinates, not through the transform -- is
+    /// inside the path, under `even_odd` or nonzero, or inside the outline of its stroke under the current line styles.
+    /// The path is the current default path, or `segments` -- a `Path2D` -- drawn through the transform. Points on an edge
+    /// count as inside. A singular transform answers false, as there is no path to be inside of.
+    pub fn hit_test(
+        &mut self,
+        segments: Option<&[u32]>,
+        x: f32,
+        y: f32,
+        stroke: bool,
+        even_odd: bool,
+    ) -> bool {
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        let ctm = self.ctm();
+        if ctm.invert().is_none() {
+            return false;
+        }
+        let path = match segments {
+            Some(words) => {
+                let mut built = CanvasPath::new();
+                built.append_segments(words);
+                built.snapshot()
+            }
+            None => {
+                if !self.path_for_use() {
+                    return false;
+                }
+                self.path.snapshot()
+            }
+        };
+        let mut area = if stroke {
+            // The stroke is traced in user space -- the line width is in user units -- and then moved to the canvas,
+            // as it is drawn. `ctm` sets how finely its curves are cut.
+            let mut outline = skia_safe::Path::default();
+            if !skia_safe::path_utils::fill_path_with_paint(
+                &path,
+                &build_stroke_geometry_paint(&self.state),
+                &mut outline,
+                None,
+                ctm,
+            ) {
+                return false;
+            }
+            outline
+        } else {
+            path.with_fill_type(if even_odd {
+                PathFillType::EvenOdd
+            } else {
+                PathFillType::Winding
+            })
+        };
+        area = area.with_transform(&ctm);
+        area.contains((x, y))
     }
 
     /// Look up or build the `SkPaint` used for `drawImage` /
@@ -202,6 +363,7 @@ impl Canvas2DRenderer {
             // ---- Path building -------------------------------------
             BeginPath => {
                 self.path.reset();
+                self.path_space = PathSpace::User;
                 false
             }
             ClosePath => {
@@ -209,15 +371,15 @@ impl Canvas2DRenderer {
                 false
             }
             MoveTo { x, y } => {
-                self.path.move_to(*x, *y);
+                self.build_path(false, |path| path.move_to(*x, *y));
                 false
             }
             LineTo { x, y } => {
-                self.path.line_to(*x, *y);
+                self.build_path(true, |path| path.line_to(*x, *y));
                 false
             }
             QuadraticCurveTo { cpx, cpy, x, y } => {
-                self.path.quadratic_to(*cpx, *cpy, *x, *y);
+                self.build_path(true, |path| path.quadratic_to(*cpx, *cpy, *x, *y));
                 false
             }
             BezierCurveTo {
@@ -228,7 +390,9 @@ impl Canvas2DRenderer {
                 x,
                 y,
             } => {
-                self.path.bezier_to(*cp1x, *cp1y, *cp2x, *cp2y, *x, *y);
+                self.build_path(true, |path| {
+                    path.bezier_to(*cp1x, *cp1y, *cp2x, *cp2y, *x, *y)
+                });
                 false
             }
             Arc {
@@ -239,8 +403,9 @@ impl Canvas2DRenderer {
                 end_angle,
                 counterclockwise,
             } => {
-                self.path
-                    .arc(*x, *y, *radius, *start_angle, *end_angle, *counterclockwise);
+                self.build_path(true, |path| {
+                    path.arc(*x, *y, *radius, *start_angle, *end_angle, *counterclockwise)
+                });
                 false
             }
             ArcTo {
@@ -250,11 +415,15 @@ impl Canvas2DRenderer {
                 y2,
                 radius,
             } => {
-                self.path.arc_to(*x1, *y1, *x2, *y2, *radius);
+                self.build_path(true, |path| path.arc_to(*x1, *y1, *x2, *y2, *radius));
                 false
             }
             Rect { x, y, w, h } => {
-                self.path.rect(*x, *y, *w, *h);
+                self.build_path(false, |path| path.rect(*x, *y, *w, *h));
+                false
+            }
+            RoundRect { x, y, w, h, radii } => {
+                self.build_path(false, |path| path.round_rect(*x, *y, *w, *h, *radii));
                 false
             }
             Ellipse {
@@ -267,20 +436,23 @@ impl Canvas2DRenderer {
                 end_angle,
                 counterclockwise,
             } => {
-                self.path.ellipse(
-                    *x,
-                    *y,
-                    *radius_x,
-                    *radius_y,
-                    *rotation,
-                    *start_angle,
-                    *end_angle,
-                    *counterclockwise,
-                );
+                self.build_path(true, |path| {
+                    path.ellipse(
+                        *x,
+                        *y,
+                        *radius_x,
+                        *radius_y,
+                        *rotation,
+                        *start_angle,
+                        *end_angle,
+                        *counterclockwise,
+                    )
+                });
                 false
             }
 
             // ---- Path-based drawing -------------------------------
+            Fill | FillEvenOdd | Stroke | Clip | ClipEvenOdd if !self.path_for_use() => false,
             Fill => {
                 let paint = build_fill_paint(&self.state, resolver);
                 let path = self.path.snapshot();
@@ -308,6 +480,28 @@ impl Canvas2DRenderer {
             ClipEvenOdd => {
                 let path = self.path.snapshot().with_fill_type(PathFillType::EvenOdd);
                 canvas.clip_path(&path, ClipOp::Intersect, true);
+                false
+            }
+            // A `Path2D`: its own coordinates, drawn through the transform; the current default path is not touched. A
+            // singular transform draws and clips nothing.
+            FillPath { .. } | StrokePath { .. } | ClipPath { .. }
+                if self.ctm().invert().is_none() =>
+            {
+                false
+            }
+            FillPath { path, even_odd } => {
+                let paint = build_fill_paint(&self.state, resolver);
+                let path = path2d(path, *even_odd);
+                canvas.draw_path(&path, &paint);
+                true
+            }
+            StrokePath { path } => {
+                let paint = build_stroke_paint(&self.state, resolver);
+                canvas.draw_path(&path2d(path, false), &paint);
+                true
+            }
+            ClipPath { path, even_odd } => {
+                canvas.clip_path(&path2d(path, *even_odd), ClipOp::Intersect, true);
                 false
             }
 
@@ -526,10 +720,12 @@ impl Canvas2DRenderer {
             Restore => {
                 // Pop both sides.  Canvas spec: silent no-op when the
                 // stack is empty.
+                self.transform_changing();
                 let popped_attrs = self.stack.pop(&mut self.state);
                 if popped_attrs {
                     canvas.restore();
                 }
+                self.transform_changed();
                 false
             }
 
@@ -545,20 +741,26 @@ impl Canvas2DRenderer {
             // The shadow and SkCanvas MUST stay in sync; save/restore
             // handles this naturally via `Canvas2DState::clone`.
             SetTransform { a, b, c, d, e, f } => {
+                self.transform_changing();
                 self.state.ctm_set([*a, *b, *c, *d, *e, *f]);
                 let m = Matrix::new_all(*a, *c, *e, *b, *d, *f, 0.0, 0.0, 1.0);
                 canvas.set_matrix(&skia_safe::M44::from(m));
+                self.transform_changed();
                 false
             }
             ResetTransform => {
+                self.transform_changing();
                 self.state.ctm_reset();
                 canvas.reset_matrix();
+                self.transform_changed();
                 false
             }
             Translate { x, y } => {
                 // Translate matrix is [1, 0, 0, 1, tx, ty].
+                self.transform_changing();
                 self.state.ctm_concat([1.0, 0.0, 0.0, 1.0, *x, *y]);
                 canvas.translate((*x, *y));
+                self.transform_changed();
                 false
             }
             Rotate { angle } => {
@@ -566,16 +768,20 @@ impl Canvas2DRenderer {
                 // exact shear values are what the axis-aligned test
                 // relies on, so we compute them once here.
                 let (s, c_) = (angle.sin(), angle.cos());
+                self.transform_changing();
                 self.state.ctm_concat([c_, s, -s, c_, 0.0, 0.0]);
                 canvas.rotate(angle.to_degrees(), None);
+                self.transform_changed();
                 false
             }
             Scale { x, y } => {
                 // Scale matrix is [sx, 0, 0, sy, 0, 0]; uniform or
                 // mirrored scales keep shear terms at zero so
                 // `ctm_is_axis_aligned()` stays true.
+                self.transform_changing();
                 self.state.ctm_concat([*x, 0.0, 0.0, *y, 0.0, 0.0]);
                 canvas.scale((*x, *y));
+                self.transform_changed();
                 false
             }
 
@@ -603,6 +809,14 @@ impl Canvas2DRenderer {
                     .expect("StrokeText routed without the shared TextContext");
                 text_ctx.stroke_text(canvas, text, *x, *y, *max_width, &self.state, resolver);
                 true
+            }
+            HitTest { .. } => {
+                // A reply variant, like `MeasureText` below: the dispatcher answers it (`hit_test`).
+                tracing::warn!(
+                    "Canvas2DCmd::HitTest reached `apply_env` -- dispatcher layering regressed \
+                     (expected intercept in canvas2d_dispatcher)"
+                );
+                false
             }
             MeasureText { .. } => {
                 // Sync reply variant — routed through `canvas2d_dispatcher`
@@ -711,6 +925,7 @@ impl Canvas2DRenderer {
         // pathological allocation for the next context.
         self.stack = StateStack::new();
         self.path.shrink();
+        self.path_space = PathSpace::User;
     }
 
     /// Apply a Canvas2D shadow to the given paint if the current shadow is
@@ -986,5 +1201,361 @@ mod put_image_data_tests {
             },
         );
         assert_eq!(read(&mut surface, 0, 0), [0, 0, 0, 0]);
+    }
+}
+
+#[cfg(test)]
+mod path_semantics_tests {
+    use super::*;
+    use crate::backend::gl::paint::NullPatternResolver;
+    use frame_wire::canvas2d::path2d;
+
+    fn apply(renderer: &mut Canvas2DRenderer, surface: &mut skia_safe::Surface, cmd: Canvas2DCmd) {
+        let env = DrawEnv {
+            canvas: surface.canvas(),
+            text: None,
+            resolver: &NullPatternResolver,
+        };
+        renderer.apply_env(&env, &cmd);
+    }
+
+    fn run(cmds: Vec<Canvas2DCmd>) -> (Canvas2DRenderer, skia_safe::Surface) {
+        let mut surface = skia_safe::surfaces::raster_n32_premul((200, 200)).unwrap();
+        let mut renderer = Canvas2DRenderer::new();
+        for cmd in cmds {
+            apply(&mut renderer, &mut surface, cmd);
+        }
+        (renderer, surface)
+    }
+
+    fn alpha(surface: &mut skia_safe::Surface, x: i32, y: i32) -> u8 {
+        let info = skia_safe::ImageInfo::new(
+            (1, 1),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Unpremul,
+            None,
+        );
+        let mut px = [0u8; 4];
+        assert!(surface.read_pixels(&info, &mut px, 4, (x, y)));
+        px[3]
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Canvas2DCmd {
+        Canvas2DCmd::Rect { x, y, w, h }
+    }
+
+    /// Segments of a `Path2D`, as the facade encodes them: floats as their bits, flags as 0 or 1.
+    fn segments(ops: &[(u32, &[f32])]) -> Vec<u32> {
+        let mut words = Vec::new();
+        for (op, args) in ops {
+            words.push(*op);
+            let flags = path2d::arguments(*op).map_or(&[][..], |(_, flags)| flags);
+            words.extend(args.iter().enumerate().map(|(i, a)| {
+                if flags.contains(&i) {
+                    *a as u32
+                } else {
+                    a.to_bits()
+                }
+            }));
+        }
+        assert!(path2d::is_valid(&words));
+        words
+    }
+
+    /// Each point of the current default path goes through the transform current when it was added: a rectangle added
+    /// at the origin and filled after a translate fills at the origin.
+    #[test]
+    fn a_path_stays_where_the_transform_was_when_it_was_built() {
+        let (mut renderer, mut surface) = run(vec![
+            Canvas2DCmd::BeginPath,
+            rect(0.0, 0.0, 10.0, 10.0),
+            Canvas2DCmd::Translate { x: 50.0, y: 0.0 },
+            rect(0.0, 0.0, 10.0, 10.0),
+            Canvas2DCmd::Fill,
+        ]);
+        assert_eq!(
+            alpha(&mut surface, 5, 5),
+            255,
+            "the first rectangle, built at the origin"
+        );
+        assert_eq!(
+            alpha(&mut surface, 55, 5),
+            255,
+            "the second, built after the translate"
+        );
+        assert_eq!(alpha(&mut surface, 105, 5), 0, "nothing translated twice");
+        assert!(renderer.hit_test(None, 5.0, 5.0, false, false));
+        assert!(renderer.hit_test(None, 55.0, 5.0, false, false));
+        assert!(!renderer.hit_test(None, 105.0, 5.0, false, false));
+    }
+
+    /// A transform that comes back before the path is used owes it nothing, and one that does not is paid once.
+    #[test]
+    fn a_save_and_restore_around_a_path_costs_it_nothing() {
+        let (mut renderer, _) = run(vec![
+            Canvas2DCmd::BeginPath,
+            rect(10.0, 10.0, 10.0, 10.0),
+            Canvas2DCmd::Save,
+            Canvas2DCmd::Scale { x: 3.0, y: 3.0 },
+            Canvas2DCmd::Restore,
+        ]);
+        assert_eq!(renderer.path_space, PathSpace::User);
+        assert!(renderer.hit_test(None, 15.0, 15.0, false, false));
+        let (mut renderer, _) = run(vec![
+            Canvas2DCmd::BeginPath,
+            rect(10.0, 10.0, 10.0, 10.0),
+            Canvas2DCmd::Scale { x: 3.0, y: 3.0 },
+        ]);
+        assert!(matches!(renderer.path_space, PathSpace::Earlier(_)));
+        assert!(
+            renderer.hit_test(None, 15.0, 15.0, false, false),
+            "still where it was built"
+        );
+        assert!(!renderer.hit_test(None, 45.0, 45.0, false, false));
+        assert_eq!(renderer.path_space, PathSpace::User, "paid when used");
+    }
+
+    /// Under a singular transform there is no path to be inside of, and nothing is drawn; the points added meanwhile
+    /// are kept where the transform put them, and the path is usable again once the transform is.
+    #[test]
+    fn a_singular_transform_draws_and_hits_nothing() {
+        let (mut renderer, mut surface) = run(vec![
+            Canvas2DCmd::BeginPath,
+            rect(0.0, 0.0, 20.0, 20.0),
+            Canvas2DCmd::Scale { x: 0.0, y: 0.0 },
+            Canvas2DCmd::Fill,
+        ]);
+        assert_eq!(alpha(&mut surface, 5, 5), 0);
+        assert!(!renderer.hit_test(None, 5.0, 5.0, false, false));
+        apply(&mut renderer, &mut surface, Canvas2DCmd::ResetTransform);
+        assert!(
+            renderer.hit_test(None, 5.0, 5.0, false, false),
+            "the rectangle, still where it was built"
+        );
+    }
+
+    /// A point on an edge is inside; the even-odd rule leaves the hole of two nested rectangles empty, nonzero fills it.
+    #[test]
+    fn hit_tests_take_edges_and_the_fill_rule() {
+        let (mut renderer, _) = run(vec![
+            Canvas2DCmd::BeginPath,
+            rect(0.0, 0.0, 100.0, 100.0),
+            rect(25.0, 25.0, 50.0, 50.0),
+        ]);
+        assert!(
+            renderer.hit_test(None, 0.0, 50.0, false, false),
+            "the left edge"
+        );
+        assert!(
+            renderer.hit_test(None, 50.0, 50.0, false, false),
+            "nonzero: the hole is filled"
+        );
+        assert!(
+            !renderer.hit_test(None, 50.0, 50.0, false, true),
+            "even-odd: the hole is empty"
+        );
+        assert!(renderer.hit_test(None, 10.0, 50.0, false, true));
+        assert!(!renderer.hit_test(None, f32::NAN, 50.0, false, false));
+    }
+
+    /// A stroke's outline is the line styles' -- width, caps -- traced in user space and then transformed.
+    #[test]
+    fn a_stroke_is_hit_by_its_outline_under_the_line_styles() {
+        let (mut renderer, _) = run(vec![
+            Canvas2DCmd::SetLineWidth { width: 10.0 },
+            Canvas2DCmd::BeginPath,
+            Canvas2DCmd::MoveTo { x: 20.0, y: 50.0 },
+            Canvas2DCmd::LineTo { x: 120.0, y: 50.0 },
+        ]);
+        assert!(renderer.hit_test(None, 70.0, 54.0, true, false));
+        assert!(!renderer.hit_test(None, 70.0, 56.0, true, false));
+        assert!(
+            !renderer.hit_test(None, 17.0, 50.0, true, false),
+            "butt caps end at the end"
+        );
+        let (mut renderer, _) = run(vec![
+            Canvas2DCmd::SetLineWidth { width: 10.0 },
+            Canvas2DCmd::SetLineCap { cap: 2 },
+            Canvas2DCmd::Scale { x: 2.0, y: 2.0 },
+            Canvas2DCmd::BeginPath,
+            Canvas2DCmd::MoveTo { x: 20.0, y: 50.0 },
+            Canvas2DCmd::LineTo { x: 60.0, y: 50.0 },
+        ]);
+        assert!(
+            renderer.hit_test(None, 80.0, 109.0, true, false),
+            "a width of 10 under a scale of 2 is 20"
+        );
+        assert!(
+            renderer.hit_test(None, 32.0, 100.0, true, false),
+            "square caps reach past the end"
+        );
+    }
+
+    /// A `Path2D` is in its own coordinates and drawn through the transform current when it is used; the current default
+    /// path is not touched.
+    #[test]
+    fn a_path2d_is_drawn_through_the_transform_of_its_use() {
+        let square = segments(&[(path2d::RECT, &[0.0, 0.0, 10.0, 10.0])]);
+        let (mut renderer, mut surface) = run(vec![
+            Canvas2DCmd::BeginPath,
+            rect(150.0, 150.0, 10.0, 10.0),
+            Canvas2DCmd::Translate { x: 100.0, y: 0.0 },
+            Canvas2DCmd::FillPath {
+                path: square.clone(),
+                even_odd: false,
+            },
+        ]);
+        assert_eq!(alpha(&mut surface, 105, 5), 255);
+        assert_eq!(alpha(&mut surface, 5, 5), 0);
+        assert!(renderer.hit_test(Some(&square), 105.0, 5.0, false, false));
+        assert!(!renderer.hit_test(Some(&square), 5.0, 5.0, false, false));
+        assert!(
+            renderer.hit_test(None, 155.0, 155.0, false, false),
+            "the default path is where it was"
+        );
+    }
+
+    /// `roundRect` cuts its corners, scales radii that would overlap, and mirrors a negative size without moving it.
+    #[test]
+    fn round_rects_cut_corners_and_mirror() {
+        let radii = [20.0; 8];
+        let (mut renderer, _) = run(vec![
+            Canvas2DCmd::BeginPath,
+            Canvas2DCmd::RoundRect {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+                radii,
+            },
+        ]);
+        assert!(
+            !renderer.hit_test(None, 2.0, 2.0, false, false),
+            "the corner is cut"
+        );
+        assert!(renderer.hit_test(None, 50.0, 2.0, false, false));
+        let (mut renderer, _) = run(vec![
+            Canvas2DCmd::BeginPath,
+            Canvas2DCmd::RoundRect {
+                x: 100.0,
+                y: 0.0,
+                w: -100.0,
+                h: 100.0,
+                radii: [80.0; 8],
+            },
+        ]);
+        assert!(
+            renderer.hit_test(None, 50.0, 50.0, false, false),
+            "a negative width spans to the left"
+        );
+        assert!(
+            !renderer.hit_test(None, 1.0, 1.0, false, false),
+            "radii of 80 are scaled to 50 and meet"
+        );
+    }
+
+    /// An SVG arc and `addPath` with a transform, as a `Path2D` built from a path string and another path has them.
+    #[test]
+    fn svg_arcs_and_added_paths_build() {
+        let half_disc = segments(&[
+            (path2d::MOVE_TO, &[0.0, 50.0]),
+            (
+                path2d::SVG_ARC_TO,
+                &[50.0, 50.0, 0.0, 0.0, 1.0, 100.0, 50.0],
+            ),
+            (path2d::CLOSE_PATH, &[]),
+        ]);
+        let (mut renderer, _) = run(vec![]);
+        assert!(
+            renderer.hit_test(Some(&half_disc), 50.0, 20.0, false, false),
+            "sweep 1 bows upwards"
+        );
+        assert!(!renderer.hit_test(Some(&half_disc), 50.0, 80.0, false, false));
+        let mut added = vec![path2d::ADD_PATH];
+        added.extend(
+            [1.0f32, 0.0, 0.0, 1.0, 0.0, 100.0]
+                .iter()
+                .map(|v| v.to_bits()),
+        );
+        added.push(half_disc.len() as u32);
+        added.extend(&half_disc);
+        assert!(path2d::is_valid(&added));
+        assert!(
+            renderer.hit_test(Some(&added), 50.0, 120.0, false, false),
+            "moved down by its transform"
+        );
+        assert!(!renderer.hit_test(Some(&added), 50.0, 20.0, false, false));
+    }
+
+    /// After `addPath` the path goes on from the added path's last point, in its last subpath, as every engine has it: a
+    /// line drawn next extends an open subpath into a bigger shape, and after a closed one starts a subpath at its start.
+    #[test]
+    fn the_next_segment_after_an_added_path_goes_on_from_its_last_point() {
+        let elbow = segments(&[
+            (path2d::MOVE_TO, &[0.0, 0.0]),
+            (path2d::LINE_TO, &[100.0, 0.0]),
+            (path2d::LINE_TO, &[100.0, 100.0]),
+        ]);
+        let mut words = vec![path2d::ADD_PATH];
+        words.extend(
+            [1.0f32, 0.0, 0.0, 1.0, 0.0, 0.0]
+                .iter()
+                .map(|v| v.to_bits()),
+        );
+        words.push(elbow.len() as u32);
+        words.extend(&elbow);
+        words.extend(segments(&[(path2d::LINE_TO, &[0.0, 100.0])]));
+        let (mut renderer, _) = run(vec![]);
+        assert!(
+            renderer.hit_test(Some(&words), 90.0, 50.0, false, false),
+            "the added triangle"
+        );
+        assert!(
+            renderer.hit_test(Some(&words), 10.0, 50.0, false, false),
+            "the line after it extends the added subpath to a square's fourth corner"
+        );
+
+        let square = segments(&[(path2d::RECT, &[0.0, 0.0, 50.0, 50.0])]);
+        let mut words = vec![path2d::ADD_PATH];
+        words.extend(
+            [1.0f32, 0.0, 0.0, 1.0, 100.0, 100.0]
+                .iter()
+                .map(|v| v.to_bits()),
+        );
+        words.push(square.len() as u32);
+        words.extend(&square);
+        words.extend(segments(&[
+            (path2d::LINE_TO, &[200.0, 100.0]),
+            (path2d::LINE_TO, &[200.0, 0.0]),
+        ]));
+        assert!(
+            renderer.hit_test(Some(&words), 110.0, 95.0, false, false),
+            "after a closed subpath the next one starts at its first point, (100, 100) under the transform -- not at its \
+             last, (100, 150)"
+        );
+    }
+
+    /// An ellipse's arc continues the subpath the line to its start is in, so a pie closes through the centre.
+    #[test]
+    fn an_ellipse_continues_its_subpath() {
+        let (mut renderer, _) = run(vec![
+            Canvas2DCmd::BeginPath,
+            Canvas2DCmd::MoveTo { x: 50.0, y: 50.0 },
+            Canvas2DCmd::Ellipse {
+                x: 50.0,
+                y: 50.0,
+                radius_x: 40.0,
+                radius_y: 40.0,
+                rotation: 0.0,
+                start_angle: 0.0,
+                end_angle: std::f32::consts::FRAC_PI_2,
+                counterclockwise: false,
+            },
+            Canvas2DCmd::ClosePath,
+        ]);
+        assert!(
+            renderer.hit_test(None, 60.0, 60.0, false, false),
+            "inside the pie, on the centre's side of the chord"
+        );
     }
 }

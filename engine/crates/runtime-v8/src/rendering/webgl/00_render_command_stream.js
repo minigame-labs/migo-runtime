@@ -1525,6 +1525,19 @@ const OP2D_PUT_IMAGE_DATA = 571;
 const OP2D_CAPTURE_IMAGE = 572;
 const OP2D_CLIP_EVEN_ODD = 569;
 
+// --- Rounded rectangles and paths as values ---
+//
+// A `Path2D` is the facade's: the segments content added to it, which travel with each fill, stroke or clip of it
+// (`frame_wire::canvas2d::OP2D_FILL_PATH`). A path longer than a buffer holds after its header, its selection and the
+// record's own leading words -- some 1,300 curves -- cannot be a record of this stream; its encoder answers false and
+// the facade sends it by op behind a flush, as an oversized uniform array goes.
+const OP2D_ROUND_RECT = 573;
+const OP2D_FILL_PATH = 574;
+const OP2D_STROKE_PATH = 575;
+const OP2D_CLIP_PATH = 576;
+// The longest 2D record a buffer holds: all of it but the stream header and the canvas selection `begin2d` reserves.
+const MAX_STREAM_2D_RECORD_WORDS = BUFFER_WORDS - 2 - 2;
+
 // --- 2D canvas selection ---
 //
 // `Canvas2DCmd` carries no canvas id -- the id lives on the batch -- so the
@@ -1723,6 +1736,44 @@ function encode2dEllipse(canvasId, x, y, radiusX, radiusY, rotation, startAngle,
     _f32[base + 7] = endAngle;
     _u32[base + 8] = counterclockwise ? 1 : 0;
     cursor = base + 9;
+}
+
+// 573 ROUND_RECT: H F F F F, then the four corners' rx ry (13 words). `radii` holds the eight radii in the record's
+// order -- top left, top right, bottom right, bottom left -- as the facade assigned them.
+function encode2dRoundRect(canvasId, x, y, w, h, radii) {
+    const base = begin2d(canvasId, 13);
+    _u32[base] = packHeader(OP2D_ROUND_RECT, 13);
+    _f32[base + 1] = x;
+    _f32[base + 2] = y;
+    _f32[base + 3] = w;
+    _f32[base + 4] = h;
+    for (let i = 0; i < 8; i++) _f32[base + 5 + i] = radii[i];
+    cursor = base + 13;
+}
+
+// 574 FILL_PATH / 576 CLIP_PATH: H rule count, then the segments; 575 STROKE_PATH: H count, then the segments. `lead`
+// is the words before the segments, `segments` the path's Uint32Array, exactly as long as its segments. False when the
+// record is longer than a buffer holds, and nothing is written.
+function _encode2dPath(opcode, lead, canvasId, rule, segments) {
+    const count = TypedArrayPrototypeGetLength(segments);
+    const wc = lead + count;
+    if (wc > MAX_STREAM_2D_RECORD_WORDS) return false;
+    const base = begin2d(canvasId, wc);
+    _u32[base] = packHeader(opcode, wc);
+    if (lead === 3) _u32[base + 1] = rule;
+    _u32[base + lead - 1] = count;
+    TypedArrayPrototypeSet(_u32, segments, base + lead);
+    cursor = base + wc;
+    return true;
+}
+function encode2dFillPath(canvasId, evenOdd, segments) {
+    return _encode2dPath(OP2D_FILL_PATH, 3, canvasId, evenOdd ? 1 : 0, segments);
+}
+function encode2dStrokePath(canvasId, segments) {
+    return _encode2dPath(OP2D_STROKE_PATH, 2, canvasId, 0, segments);
+}
+function encode2dClipPath(canvasId, evenOdd, segments) {
+    return _encode2dPath(OP2D_CLIP_PATH, 3, canvasId, evenOdd ? 1 : 0, segments);
 }
 
 // 531 SET_TRANSFORM: H F F F F F F (7 words)
@@ -1955,6 +2006,10 @@ export {
     encode2dArcTo,
     encode2dRect,
     encode2dEllipse,
+    encode2dRoundRect,
+    encode2dFillPath,
+    encode2dStrokePath,
+    encode2dClipPath,
     encode2dFill,
     encode2dStroke,
     encode2dClip,

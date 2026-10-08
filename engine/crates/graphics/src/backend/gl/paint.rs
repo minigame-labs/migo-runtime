@@ -248,6 +248,25 @@ pub fn build_stroke_paint<R: PatternResolver>(state: &Canvas2DState, resolver: &
     paint
 }
 
+/// The stroke's geometry and nothing else -- width, cap, join, miter limit and dashes, as `build_stroke_paint` sets
+/// them: what `isPointInStroke` outlines the path with. No colour, shader or shadow; none of them moves an edge.
+pub fn build_stroke_geometry_paint(state: &Canvas2DState) -> Paint {
+    let mut paint = Paint::default();
+    paint.set_style(skia_safe::paint::Style::Stroke);
+    paint.set_stroke_width(state.line_width.max(0.0));
+    paint.set_stroke_cap(state.line_cap);
+    paint.set_stroke_join(state.line_join);
+    paint.set_stroke_miter(state.miter_limit);
+    if !state.line_dash.is_empty() {
+        if let Some(effect) =
+            super::effect_cache::get_or_build_dash(&state.line_dash, state.line_dash_offset)
+        {
+            paint.set_path_effect(effect);
+        }
+    }
+    paint
+}
+
 /// `clearRect`'s Paint: writes transparent black with blend mode Clear,
 /// which sets the destination to fully transparent regardless of current
 /// state.

@@ -166,6 +166,25 @@ printf '%s\n' "$styles" | grep -qE '[0-9]+ Canvas2D commands agree' \
     || { printf '%s\n' "$styles" >&2; fail "the style parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$styles" | grep -E '[0-9]+ Canvas2D commands agree'
 
+# Rounded rectangles and paths as values: the corners the facade assigned the
+# radii to, the segments a Path2D's calls and its SVG data became, and a path too
+# long for a stream buffer -- the path op behind a flush in process, a record the
+# producer writes itself.
+PATH_PARITY="$WORK/path-parity"
+node platforms/apple/WebContent/PerformancePlus/test/engine-resource-parity.mjs "$STAGED" "$PATH_PARITY" \
+    fixtures/canvas2d-path-calls.js \
+    || fail "the Canvas2D path calls did not run on the producer"
+status=0
+paths="$(cd engine && MIGO_CANVAS2D_PATH_PARITY_DIR="$PATH_PARITY" cargo test -p migo-runtime-v8 --lib \
+    the_producer_s_path_records -- --ignored --nocapture 2>&1)" || status=$?
+if (( status != 0 )); then
+    printf '%s\n' "$paths" >&2
+    fail "the producer's path records do not decode to the commands the in-process ops build"
+fi
+printf '%s\n' "$paths" | grep -qE '[0-9]+ Canvas2D commands agree' \
+    || { printf '%s\n' "$paths" >&2; fail "the path parity check did not report agreeing; it may not have run"; }
+printf '%s\n' "$paths" | grep -E '[0-9]+ Canvas2D commands agree'
+
 # The uploads whose pixels the host already holds: a snapshot of a 2D canvas, or
 # the canvas itself. Which one a `texImage2D` becomes is decided in JavaScript
 # from the shape of the source, so both lanes have to decide the same way.

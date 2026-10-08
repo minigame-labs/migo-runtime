@@ -21,6 +21,10 @@ import {
     encode2dArcTo,
     encode2dRect,
     encode2dEllipse,
+    encode2dRoundRect,
+    encode2dFillPath,
+    encode2dStrokePath,
+    encode2dClipPath,
     encode2dFill,
     encode2dStroke,
     encode2dClip,
@@ -87,6 +91,9 @@ import {
     op_set_fill_style_pattern,
     op_set_stroke_style_pattern,
     op_put_image_data,
+    // Path2D
+    op_canvas2d_draw_path,
+    op_canvas2d_hit_test,
 } from "ext:core/ops";
 import { domException } from "ext:host_v8_base/06_dom_exception.js";
 import { primordials } from "ext:core/mod.js";
@@ -140,7 +147,24 @@ const _COMPOSITE_OPS = [
 
 // The canvas copies `createPattern(canvas)` made are the renderer's image-store entries; one goes when the
 // pattern that holds it is collected.
-const { SafeFinalizationRegistry } = primordials;
+const {
+    SafeFinalizationRegistry,
+    ArrayBuffer,
+    ArrayIsArray,
+    ArrayPrototypePush,
+    Float32Array,
+    Float64Array,
+    MathAbs,
+    MathFround,
+    ReflectApply,
+    StringPrototypeCharCodeAt,
+    StringPrototypeSlice,
+    SymbolIterator,
+    TypedArrayPrototypeGetLength,
+    TypedArrayPrototypeSet,
+    TypedArrayPrototypeSubarray,
+    Uint32Array,
+} = primordials;
 const _patternCopies = new SafeFinalizationRegistry((imageId) => {
     try {
         // Whatever the stream still holds that names this copy goes first: a destroy that overtook the pattern's
@@ -251,6 +275,621 @@ class CanvasPattern {
     _applyStroke() {
         flushRenderCommandStream();
         op_set_stroke_style_pattern(this._canvasId, this._imageRid, this._repeatX, this._repeatY);
+    }
+}
+
+// ==================== Path2D ====================
+//
+// A `Path2D` is the CanvasPath calls content made on it, kept as the segments the renderer builds a path from
+// (`frame_wire::canvas2d::path2d`): each an opcode word and its arguments, floats as `f32` bits and flags as 0 or 1. It
+// travels with each use -- a fill, a stroke, a clip, a hit test -- and the renderer builds it with the code that builds
+// the current default path, so the two cannot differ. Its arguments are checked as the context's are: a call with an
+// argument that is not finite adds nothing, a negative radius throws.
+
+// `frame_wire::canvas2d::path2d`'s opcodes and bounds, held to it by render_stream_js_agreement.rs.
+const SEG_MOVE_TO = 1;
+const SEG_LINE_TO = 2;
+const SEG_QUADRATIC_CURVE_TO = 3;
+const SEG_BEZIER_CURVE_TO = 4;
+const SEG_ARC = 5;
+const SEG_ARC_TO = 6;
+const SEG_ELLIPSE = 7;
+const SEG_RECT = 8;
+const SEG_ROUND_RECT = 9;
+const SEG_CLOSE_PATH = 10;
+const SEG_SVG_ARC_TO = 11;
+const SEG_ADD_PATH = 12;
+const MAX_PATH_WORDS = 262144;
+const MAX_PATH_NESTING = 32;
+
+// `isPointInPath` / `isPointInStroke`'s flags, `frame_wire::sync::canvas2d_hit_test`'s.
+const HIT_TEST_STROKE = 1;
+const HIT_TEST_EVEN_ODD = 2;
+const HIT_TEST_PATH = 4;
+
+// The largest finite `f32`. A coordinate past it would be an infinity on the wire, which the reader refuses, so it is
+// clamped to the largest the wire carries -- what a browser's float path does with it.
+const F32_MAX = 3.4028234663852886e38;
+function _f32Clamp(v) { return v > F32_MAX ? F32_MAX : v < -F32_MAX ? -F32_MAX : v; }
+
+const _NO_SEGMENTS = new Uint32Array(0);
+
+// WebIDL's "n arguments required" for a method whose required arguments were not all passed.
+function _requireArguments(given, required, method, owner) {
+    if (given < required) {
+        throw new TypeError("Failed to execute '" + method + "' on '" + owner + "': " + required +
+            " argument" + (required === 1 ? "" : "s") + " required, but only " + given + " present.");
+    }
+}
+
+function _negativeRadius(value) {
+    return domException("The radius provided (" + value + ") is negative.", "IndexSizeError");
+}
+
+// A `Path2D` argument, or WebIDL's TypeError for anything else.
+function _path2DArgument(value, method) {
+    if (_isPath2D(value)) return value;
+    throw new TypeError("Failed to execute '" + method + "' on 'CanvasRenderingContext2D': parameter 1 is not of type 'Path2D'.");
+}
+
+// `CanvasFillRule`: undefined is the default, "nonzero"; anything else is converted to a string and must be one of the
+// two names.
+function _fillRule(value, method) {
+    if (value === undefined || value === 'nonzero') return false;
+    if (value === 'evenodd') return true;
+    const name = `${value}`;
+    if (name === 'nonzero') return false;
+    if (name === 'evenodd') return true;
+    throw new TypeError("Failed to execute '" + method + "' on 'CanvasRenderingContext2D': The provided value '" +
+        name + "' is not a valid enum value of type CanvasFillRule.");
+}
+
+// `roundRect`'s radii as WebIDL converts `(unrestricted double or DOMPointInit or sequence<(unrestricted double or
+// DOMPointInit)>)`, before any of them is checked: a number, a point `{x, y}`, or a list of those.
+function _radiusOf(value) {
+    if (value === undefined || value === null || typeof value === 'object' || typeof value === 'function') {
+        return _domPointInit(value);
+    }
+    return +value;
+}
+
+// A dictionary member: absent, or converted to a number.
+const _member = (value) => (value === undefined ? undefined : +value);
+const _sameValueZero = (a, b) => a === b || (a !== a && b !== b);
+
+// A `DOMPointInit`, its members read and converted in WebIDL's order -- w, x, y, z -- of which the radii use x and y.
+function _domPointInit(value) {
+    if (value === undefined || value === null) return { x: 0, y: 0 };
+    _member(value.w);
+    const x = _member(value.x) ?? 0;
+    const y = _member(value.y) ?? 0;
+    _member(value.z);
+    return { x, y };
+}
+
+function _convertRadii(radii) {
+    if (radii === null || (typeof radii !== 'object' && typeof radii !== 'function')) return _radiusOf(radii);
+    const method = radii[SymbolIterator];
+    if (method === undefined || method === null) return _domPointInit(radii);
+    if (typeof method !== 'function') throw new TypeError("The provided radii are not iterable.");
+    const iterator = ReflectApply(method, radii, []);
+    if (iterator === null || (typeof iterator !== 'object' && typeof iterator !== 'function')) {
+        throw new TypeError("The radii's iterator is not an object.");
+    }
+    const next = iterator.next;
+    const list = [];
+    for (;;) {
+        const step = ReflectApply(next, iterator, []);
+        if (step === null || (typeof step !== 'object' && typeof step !== 'function')) {
+            throw new TypeError("The radii's iterator result is not an object.");
+        }
+        if (step.done) return list;
+        ArrayPrototypePush(list, _radiusOf(step.value));
+    }
+}
+
+// Which radius each corner takes -- top left, top right, bottom right, bottom left -- for a list of one to four.
+const _CORNERS = [null, [0, 0, 0, 0], [0, 1, 0, 1], [0, 1, 2, 1], [0, 1, 2, 3]];
+
+// The corners' `rx ry` into `out` from converted radii, by the specification's steps in its order: a list of other than
+// one to four is a RangeError; then, radius by radius, one that is not finite makes the call do nothing (false) and a
+// negative one is a RangeError.
+function _cornerRadii(radii, out, method) {
+    if (typeof radii === 'number') {
+        if (radii - radii !== 0) return false;
+        if (radii < 0) throw new RangeError("Failed to execute '" + method + "': Radius value " + radii + " is negative.");
+        for (let i = 0; i < 8; i++) out[i] = radii;
+        return true;
+    }
+    const list = ArrayIsArray(radii) ? radii : [radii];
+    const size = list.length;
+    if (size < 1 || size > 4) {
+        throw new RangeError("Failed to execute '" + method + "': " + size +
+            " radii provided. Between one and four radii are necessary.");
+    }
+    for (let i = 0; i < size; i++) {
+        const radius = list[i];
+        const x = typeof radius === 'number' ? radius : radius.x;
+        const y = typeof radius === 'number' ? radius : radius.y;
+        if (!_fin2(x, y)) return false;
+        if (x < 0 || y < 0) {
+            throw new RangeError("Failed to execute '" + method + "': Radius value " + (x < 0 ? x : y) + " is negative.");
+        }
+    }
+    const corners = _CORNERS[size];
+    for (let corner = 0; corner < 4; corner++) {
+        const radius = list[corners[corner]];
+        out[corner * 2] = typeof radius === 'number' ? radius : radius.x;
+        out[corner * 2 + 1] = typeof radius === 'number' ? radius : radius.y;
+    }
+    return true;
+}
+
+// A `DOMMatrix2DInit`, validated and fixed up as the specification's "create a DOMMatrix from the 2D dictionary" does,
+// into `out` as `a b c d e f`. Its members are read in WebIDL's order.
+function _matrix2DInit(init, out) {
+    if (init === undefined || init === null) {
+        out[0] = 1; out[1] = 0; out[2] = 0; out[3] = 1; out[4] = 0; out[5] = 0;
+        return;
+    }
+    if (typeof init !== 'object' && typeof init !== 'function') {
+        throw new TypeError("Failed to execute 'addPath' on 'Path2D': The provided value is not of type 'DOMMatrix2DInit'.");
+    }
+    const a = _member(init.a), b = _member(init.b), c = _member(init.c);
+    const d = _member(init.d), e = _member(init.e), f = _member(init.f);
+    const m11 = _member(init.m11), m12 = _member(init.m12), m21 = _member(init.m21);
+    const m22 = _member(init.m22), m41 = _member(init.m41), m42 = _member(init.m42);
+    if ((a !== undefined && m11 !== undefined && !_sameValueZero(a, m11)) ||
+        (b !== undefined && m12 !== undefined && !_sameValueZero(b, m12)) ||
+        (c !== undefined && m21 !== undefined && !_sameValueZero(c, m21)) ||
+        (d !== undefined && m22 !== undefined && !_sameValueZero(d, m22)) ||
+        (e !== undefined && m41 !== undefined && !_sameValueZero(e, m41)) ||
+        (f !== undefined && m42 !== undefined && !_sameValueZero(f, m42))) {
+        throw new TypeError("Failed to execute 'addPath' on 'Path2D': Property mismatch on matrix initialization.");
+    }
+    out[0] = m11 ?? a ?? 1;
+    out[1] = m12 ?? b ?? 0;
+    out[2] = m21 ?? c ?? 0;
+    out[3] = m22 ?? d ?? 1;
+    out[4] = m41 ?? e ?? 0;
+    out[5] = m42 ?? f ?? 0;
+}
+
+// SVG 2 path data (https://www.w3.org/TR/SVG2/paths.html#PathDataBNF), scanned a token at a time.
+class _SvgPathScanner {
+    constructor(text) {
+        this.text = text;
+        this.at = 0;
+        this.end = text.length;
+    }
+    skipSpace() {
+        const text = this.text;
+        while (this.at < this.end) {
+            const c = StringPrototypeCharCodeAt(text, this.at);
+            if (c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x0C && c !== 0x0D) return;
+            this.at++;
+        }
+    }
+    // `comma_wsp?`: space, then at most one comma and the space after it. True when there was a comma.
+    skipSeparator() {
+        this.skipSpace();
+        if (this.at < this.end && StringPrototypeCharCodeAt(this.text, this.at) === 0x2C) {
+            this.at++;
+            this.skipSpace();
+            return true;
+        }
+        return false;
+    }
+    peek() {
+        return this.at < this.end ? StringPrototypeCharCodeAt(this.text, this.at) : -1;
+    }
+    // A number, or NaN where there is none -- a digit must follow a point and an exponent's sign -- or where it is one
+    // no `f32` holds.
+    number() {
+        const text = this.text;
+        const start = this.at;
+        let at = start;
+        let c = StringPrototypeCharCodeAt(text, at);
+        if (c === 0x2B || c === 0x2D) c = StringPrototypeCharCodeAt(text, ++at);
+        let digits = 0;
+        while (c >= 0x30 && c <= 0x39) { digits++; c = StringPrototypeCharCodeAt(text, ++at); }
+        if (c === 0x2E) {
+            c = StringPrototypeCharCodeAt(text, ++at);
+            let fraction = 0;
+            while (c >= 0x30 && c <= 0x39) { fraction++; c = StringPrototypeCharCodeAt(text, ++at); }
+            if (fraction === 0) return NaN;
+            digits += fraction;
+        }
+        if (digits === 0) return NaN;
+        if (c === 0x45 || c === 0x65) {
+            c = StringPrototypeCharCodeAt(text, ++at);
+            if (c === 0x2B || c === 0x2D) c = StringPrototypeCharCodeAt(text, ++at);
+            if (!(c >= 0x30 && c <= 0x39)) return NaN;
+            while (c >= 0x30 && c <= 0x39) c = StringPrototypeCharCodeAt(text, ++at);
+        }
+        const value = +StringPrototypeSlice(text, start, at);
+        if (!(MathAbs(MathFround(value)) <= F32_MAX)) return NaN;
+        this.at = at;
+        return value;
+    }
+    // An arc's flag: one character, 0 or 1; -1 for anything else.
+    flag() {
+        const c = this.peek();
+        if (c !== 0x30 && c !== 0x31) return -1;
+        this.at++;
+        return c - 0x30;
+    }
+}
+
+// Arguments per command, by the upper-case letter's code; a letter with none here is not a command.
+const _SVG_ARGUMENTS = { 0x4D: 2, 0x4C: 2, 0x48: 1, 0x56: 1, 0x43: 6, 0x53: 4, 0x51: 4, 0x54: 2, 0x41: 7, 0x5A: 0 };
+const _svgArguments = new Float64Array(7);
+const _startsNumber = (c) => (c >= 0x30 && c <= 0x39) || c === 0x2B || c === 0x2D || c === 0x2E;
+
+// `roundRect`'s corners, written by `_cornerRadii` and read straight after by one encoder.
+const _roundRectRadii = new Float64Array(8);
+
+// The friends of Path2D: the brand check and the segments, for the context that draws with one.
+let _isPath2D = null;
+let _segmentsOf = null;
+const _addPathMatrix = new Float64Array(6);
+
+class Path2D {
+    // The segments in a buffer that grows by doubling: `#words` and `#floats` are the same bytes, `#length` words of
+    // them used.
+    #words = null;
+    #floats = null;
+    #length = 0;
+    // How deep the paths added to this one nest.
+    #depth = 0;
+    // Exactly the used words, made when a draw asks and dropped when a segment is added: a path kept and drawn every
+    // frame costs no allocation per draw.
+    #view = null;
+
+    static #friends = (
+        _isPath2D = (value) => value !== null && typeof value === 'object' && #words in value,
+        _segmentsOf = (path) => path.#segments(),
+        0
+    );
+
+    // `new Path2D()`, `new Path2D(path)` -- a copy -- or `new Path2D(d)`, SVG path data, as far as its first error.
+    constructor(path = undefined) {
+        if (path === undefined) return;
+        if (_isPath2D(path)) {
+            const count = path.#length;
+            if (count === 0) return;
+            const at = this.#reserve(count);
+            TypedArrayPrototypeSet(this.#words, TypedArrayPrototypeSubarray(path.#words, 0, count), at);
+            this.#depth = path.#depth;
+            return;
+        }
+        this.#parse(`${path}`);
+    }
+
+    // Room for `count` more words; where they start. Past the bound a record carries, a RangeError: a path that long
+    // could not be drawn.
+    #reserve(count) {
+        const at = this.#length;
+        const need = at + count;
+        if (need > MAX_PATH_WORDS) {
+            throw new RangeError("The Path2D would exceed the implementation limit of " + MAX_PATH_WORDS + " words.");
+        }
+        if (this.#words === null || need > TypedArrayPrototypeGetLength(this.#words)) {
+            let capacity = this.#words === null ? 64 : TypedArrayPrototypeGetLength(this.#words) * 2;
+            while (capacity < need) capacity *= 2;
+            if (capacity > MAX_PATH_WORDS) capacity = MAX_PATH_WORDS;
+            const buffer = new ArrayBuffer(capacity * 4);
+            const words = new Uint32Array(buffer);
+            if (this.#words !== null) TypedArrayPrototypeSet(words, TypedArrayPrototypeSubarray(this.#words, 0, at), 0);
+            this.#words = words;
+            this.#floats = new Float32Array(buffer);
+        }
+        this.#length = need;
+        this.#view = null;
+        return at;
+    }
+
+    #segments() {
+        if (this.#view === null) {
+            this.#view = this.#words === null ? _NO_SEGMENTS : TypedArrayPrototypeSubarray(this.#words, 0, this.#length);
+        }
+        return this.#view;
+    }
+
+    #segment2(op, x, y) {
+        const at = this.#reserve(3);
+        this.#words[at] = op;
+        const f = this.#floats;
+        f[at + 1] = _f32Clamp(x);
+        f[at + 2] = _f32Clamp(y);
+    }
+
+    #segment4(op, a, b, c, d) {
+        const at = this.#reserve(5);
+        this.#words[at] = op;
+        const f = this.#floats;
+        f[at + 1] = _f32Clamp(a);
+        f[at + 2] = _f32Clamp(b);
+        f[at + 3] = _f32Clamp(c);
+        f[at + 4] = _f32Clamp(d);
+    }
+
+    #segment6(op, a, b, c, d, e, g) {
+        const at = this.#reserve(7);
+        this.#words[at] = op;
+        const f = this.#floats;
+        f[at + 1] = _f32Clamp(a);
+        f[at + 2] = _f32Clamp(b);
+        f[at + 3] = _f32Clamp(c);
+        f[at + 4] = _f32Clamp(d);
+        f[at + 5] = _f32Clamp(e);
+        f[at + 6] = _f32Clamp(g);
+    }
+
+    // SVG path data, read up to the command that holds its first error: that command and everything after it are not
+    // part of the path, as an SVG path element draws.
+    #parse(text) {
+        const scan = new _SvgPathScanner(text);
+        const a = _svgArguments;
+        let command = 0;
+        // The current point, the current subpath's start, and the control point an S or a T reflects.
+        let cx = 0, cy = 0, sx = 0, sy = 0, px = 0, py = 0;
+        let previous = 0;
+        for (;;) {
+            scan.skipSpace();
+            const c = scan.peek();
+            if (c < 0) return;
+            if (c < 0x80 && _SVG_ARGUMENTS[c & ~0x20] !== undefined) {
+                command = c;
+                scan.at++;
+            } else if (command !== 0 && (command & ~0x20) !== 0x5A && _startsNumber(c)) {
+                // Arguments with no letter repeat the command before them; a moveto's repeat as linetos.
+                if (command === 0x4D) command = 0x4C;
+                else if (command === 0x6D) command = 0x6C;
+            } else {
+                return;
+            }
+            const upper = command & ~0x20;
+            // The path begins with a moveto, or it has no segments.
+            if (previous === 0 && upper !== 0x4D) return;
+            const relative = command !== upper;
+            const ox = relative ? cx : 0;
+            const oy = relative ? cy : 0;
+            const count = _SVG_ARGUMENTS[upper];
+            for (let i = 0; i < count; i++) {
+                if (i === 0) scan.skipSpace(); else scan.skipSeparator();
+                if (upper === 0x41 && (i === 3 || i === 4)) {
+                    const flag = scan.flag();
+                    if (flag < 0) return;
+                    a[i] = flag;
+                } else {
+                    const value = scan.number();
+                    if (value !== value) return;
+                    a[i] = value;
+                }
+            }
+            switch (upper) {
+                case 0x4D: // M
+                    cx = sx = ox + a[0];
+                    cy = sy = oy + a[1];
+                    this.#segment2(SEG_MOVE_TO, cx, cy);
+                    break;
+                case 0x4C: // L
+                    cx = ox + a[0];
+                    cy = oy + a[1];
+                    this.#segment2(SEG_LINE_TO, cx, cy);
+                    break;
+                case 0x48: // H
+                    cx = ox + a[0];
+                    this.#segment2(SEG_LINE_TO, cx, cy);
+                    break;
+                case 0x56: // V
+                    cy = oy + a[0];
+                    this.#segment2(SEG_LINE_TO, cx, cy);
+                    break;
+                case 0x43: // C
+                case 0x53: { // S
+                    let x1, y1, k = 0;
+                    if (upper === 0x43) {
+                        x1 = ox + a[0];
+                        y1 = oy + a[1];
+                        k = 2;
+                    } else if (previous === 0x43 || previous === 0x53) {
+                        x1 = 2 * cx - px;
+                        y1 = 2 * cy - py;
+                    } else {
+                        x1 = cx;
+                        y1 = cy;
+                    }
+                    px = ox + a[k];
+                    py = oy + a[k + 1];
+                    cx = ox + a[k + 2];
+                    cy = oy + a[k + 3];
+                    this.#segment6(SEG_BEZIER_CURVE_TO, x1, y1, px, py, cx, cy);
+                    break;
+                }
+                case 0x51: // Q
+                case 0x54: { // T
+                    let k = 0;
+                    if (upper === 0x51) {
+                        px = ox + a[0];
+                        py = oy + a[1];
+                        k = 2;
+                    } else if (previous === 0x51 || previous === 0x54) {
+                        px = 2 * cx - px;
+                        py = 2 * cy - py;
+                    } else {
+                        px = cx;
+                        py = cy;
+                    }
+                    cx = ox + a[k];
+                    cy = oy + a[k + 1];
+                    this.#segment4(SEG_QUADRATIC_CURVE_TO, px, py, cx, cy);
+                    break;
+                }
+                case 0x41: { // A
+                    cx = ox + a[5];
+                    cy = oy + a[6];
+                    const at = this.#reserve(8);
+                    this.#words[at] = SEG_SVG_ARC_TO;
+                    const f = this.#floats;
+                    f[at + 1] = _f32Clamp(a[0]);
+                    f[at + 2] = _f32Clamp(a[1]);
+                    f[at + 3] = _f32Clamp(a[2]);
+                    this.#words[at + 4] = a[3];
+                    this.#words[at + 5] = a[4];
+                    f[at + 6] = _f32Clamp(cx);
+                    f[at + 7] = _f32Clamp(cy);
+                    break;
+                }
+                default: { // Z
+                    const at = this.#reserve(1);
+                    this.#words[at] = SEG_CLOSE_PATH;
+                    cx = sx;
+                    cy = sy;
+                }
+            }
+            previous = upper;
+            // A comma after a command's arguments promises another set of them.
+            if (upper !== 0x5A && scan.skipSeparator() && !_startsNumber(scan.peek())) return;
+        }
+    }
+
+    // ---- CanvasPath ----
+
+    closePath() {
+        const at = this.#reserve(1);
+        this.#words[at] = SEG_CLOSE_PATH;
+    }
+
+    moveTo(x, y) {
+        _requireArguments(arguments.length, 2, 'moveTo', 'Path2D');
+        x = +x; y = +y;
+        if (!_fin2(x, y)) return;
+        this.#segment2(SEG_MOVE_TO, x, y);
+    }
+
+    lineTo(x, y) {
+        _requireArguments(arguments.length, 2, 'lineTo', 'Path2D');
+        x = +x; y = +y;
+        if (!_fin2(x, y)) return;
+        this.#segment2(SEG_LINE_TO, x, y);
+    }
+
+    quadraticCurveTo(cpx, cpy, x, y) {
+        _requireArguments(arguments.length, 4, 'quadraticCurveTo', 'Path2D');
+        cpx = +cpx; cpy = +cpy; x = +x; y = +y;
+        if (!_fin4(cpx, cpy, x, y)) return;
+        this.#segment4(SEG_QUADRATIC_CURVE_TO, cpx, cpy, x, y);
+    }
+
+    bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y) {
+        _requireArguments(arguments.length, 6, 'bezierCurveTo', 'Path2D');
+        cp1x = +cp1x; cp1y = +cp1y; cp2x = +cp2x; cp2y = +cp2y; x = +x; y = +y;
+        if (!_fin6(cp1x, cp1y, cp2x, cp2y, x, y)) return;
+        this.#segment6(SEG_BEZIER_CURVE_TO, cp1x, cp1y, cp2x, cp2y, x, y);
+    }
+
+    arcTo(x1, y1, x2, y2, radius) {
+        _requireArguments(arguments.length, 5, 'arcTo', 'Path2D');
+        x1 = +x1; y1 = +y1; x2 = +x2; y2 = +y2; radius = +radius;
+        if (!_fin6(x1, y1, x2, y2, radius, 0)) return;
+        if (radius < 0) throw _negativeRadius(radius);
+        const at = this.#reserve(6);
+        this.#words[at] = SEG_ARC_TO;
+        const f = this.#floats;
+        f[at + 1] = _f32Clamp(x1);
+        f[at + 2] = _f32Clamp(y1);
+        f[at + 3] = _f32Clamp(x2);
+        f[at + 4] = _f32Clamp(y2);
+        f[at + 5] = _f32Clamp(radius);
+    }
+
+    rect(x, y, w, h) {
+        _requireArguments(arguments.length, 4, 'rect', 'Path2D');
+        x = +x; y = +y; w = +w; h = +h;
+        if (!_fin4(x, y, w, h)) return;
+        this.#segment4(SEG_RECT, x, y, w, h);
+    }
+
+    roundRect(x, y, w, h, radii = 0) {
+        _requireArguments(arguments.length, 4, 'roundRect', 'Path2D');
+        x = +x; y = +y; w = +w; h = +h;
+        const converted = typeof radii === 'number' ? radii : _convertRadii(radii);
+        if (!_fin4(x, y, w, h)) return;
+        if (!_cornerRadii(converted, _roundRectRadii, 'roundRect')) return;
+        const at = this.#reserve(13);
+        this.#words[at] = SEG_ROUND_RECT;
+        const f = this.#floats;
+        f[at + 1] = _f32Clamp(x);
+        f[at + 2] = _f32Clamp(y);
+        f[at + 3] = _f32Clamp(w);
+        f[at + 4] = _f32Clamp(h);
+        for (let i = 0; i < 8; i++) f[at + 5 + i] = _f32Clamp(_roundRectRadii[i]);
+    }
+
+    arc(x, y, radius, startAngle, endAngle, counterclockwise = false) {
+        _requireArguments(arguments.length, 5, 'arc', 'Path2D');
+        x = +x; y = +y; radius = +radius; startAngle = +startAngle; endAngle = +endAngle;
+        const ccw = !!counterclockwise;
+        if (!_fin6(x, y, radius, startAngle, endAngle, 0)) return;
+        if (radius < 0) throw _negativeRadius(radius);
+        const at = this.#reserve(7);
+        this.#words[at] = SEG_ARC;
+        const f = this.#floats;
+        f[at + 1] = _f32Clamp(x);
+        f[at + 2] = _f32Clamp(y);
+        f[at + 3] = _f32Clamp(radius);
+        f[at + 4] = _f32Clamp(startAngle);
+        f[at + 5] = _f32Clamp(endAngle);
+        this.#words[at + 6] = ccw ? 1 : 0;
+    }
+
+    ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise = false) {
+        _requireArguments(arguments.length, 7, 'ellipse', 'Path2D');
+        x = +x; y = +y; radiusX = +radiusX; radiusY = +radiusY;
+        rotation = +rotation; startAngle = +startAngle; endAngle = +endAngle;
+        const ccw = !!counterclockwise;
+        if (!_fin6(x, y, radiusX, radiusY, rotation, startAngle) || !_fin1(endAngle)) return;
+        if (radiusX < 0 || radiusY < 0) throw _negativeRadius(radiusX < 0 ? radiusX : radiusY);
+        const at = this.#reserve(9);
+        this.#words[at] = SEG_ELLIPSE;
+        const f = this.#floats;
+        f[at + 1] = _f32Clamp(x);
+        f[at + 2] = _f32Clamp(y);
+        f[at + 3] = _f32Clamp(radiusX);
+        f[at + 4] = _f32Clamp(radiusY);
+        f[at + 5] = _f32Clamp(rotation);
+        f[at + 6] = _f32Clamp(startAngle);
+        f[at + 7] = _f32Clamp(endAngle);
+        this.#words[at + 8] = ccw ? 1 : 0;
+    }
+
+    // `addPath(path, transform)`: a copy of `path`'s segments, taken now, under the transform. A transform with a
+    // member that is not finite adds nothing; an empty path adds nothing.
+    addPath(path, transform = undefined) {
+        _requireArguments(arguments.length, 1, 'addPath', 'Path2D');
+        if (!_isPath2D(path)) {
+            throw new TypeError("Failed to execute 'addPath' on 'Path2D': parameter 1 is not of type 'Path2D'.");
+        }
+        const m = _addPathMatrix;
+        _matrix2DInit(transform, m);
+        if (!_fin6(m[0], m[1], m[2], m[3], m[4], m[5])) return;
+        const count = path.#length;
+        if (count === 0) return;
+        const depth = path.#depth + 1;
+        if (depth > MAX_PATH_NESTING) {
+            throw new RangeError("The Path2D would nest paths deeper than the implementation limit of " +
+                MAX_PATH_NESTING + ".");
+        }
+        const at = this.#reserve(8 + count);
+        this.#words[at] = SEG_ADD_PATH;
+        const f = this.#floats;
+        for (let i = 0; i < 6; i++) f[at + 1 + i] = _f32Clamp(m[i]);
+        this.#words[at + 7] = count;
+        // After the reserve: a path added to itself has its words in the buffer the reserve may have replaced.
+        TypedArrayPrototypeSet(this.#words, TypedArrayPrototypeSubarray(path.#words, 0, count), at + 8);
+        if (depth > this.#depth) this.#depth = depth;
     }
 }
 
@@ -824,6 +1463,17 @@ class CanvasRenderingContext2D {
         encode2dRect(this._canvasId, x, y, width, height);
     }
 
+    // `roundRect(x, y, w, h, radii)`: the radii are converted, then the rectangle checked, then the radii -- the
+    // specification's order, which decides whether a call with a bad rectangle and bad radii throws.
+    roundRect(x, y, w, h, radii = 0) {
+        _requireArguments(arguments.length, 4, 'roundRect', 'CanvasRenderingContext2D');
+        x = +x; y = +y; w = +w; h = +h;
+        const converted = typeof radii === 'number' ? radii : _convertRadii(radii);
+        if (!_fin4(x, y, w, h)) return;
+        if (!_cornerRadii(converted, _roundRectRadii, 'roundRect')) return;
+        encode2dRoundRect(this._canvasId, x, y, w, h, _roundRectRadii);
+    }
+
     ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise = false) {
         if (!_fin6(x, y, radiusX, radiusY, rotation, startAngle) || !_fin1(endAngle)) return;
         if (radiusX < 0 || radiusY < 0) {
@@ -834,28 +1484,105 @@ class CanvasRenderingContext2D {
 
     // ==================== Drawing Methods ====================
 
-    // `fill("evenodd")` fills under the even-odd rule; no argument, or "nonzero", is the default. A Path2D argument is
-    // not supported (there is no Path2D) and is ignored as it always was.
-    fill(pathOrFillRule) {
-        this._abandonPendingTextCache();
-        if (pathOrFillRule === 'evenodd') {
-            encode2dFillEvenOdd(this._canvasId);
+    // `fill(fillRule)` and `fill(path, fillRule)`, told apart as WebIDL tells overloads apart: two arguments, or a
+    // `Path2D` first, is the second. A fill rule that is not one of the two names is a TypeError.
+    fill(pathOrFillRule = undefined, fillRule = undefined) {
+        let path = null;
+        let evenOdd;
+        if (arguments.length >= 2 || _isPath2D(pathOrFillRule)) {
+            path = _path2DArgument(pathOrFillRule, 'fill');
+            evenOdd = _fillRule(fillRule, 'fill');
         } else {
-            encode2dFill(this._canvasId);
+            evenOdd = _fillRule(pathOrFillRule, 'fill');
         }
+        this._abandonPendingTextCache();
+        if (path === null) {
+            if (evenOdd) encode2dFillEvenOdd(this._canvasId);
+            else encode2dFill(this._canvasId);
+            return;
+        }
+        const segments = _segmentsOf(path);
+        if (TypedArrayPrototypeGetLength(segments) === 0) return;
+        if (!encode2dFillPath(this._canvasId, evenOdd, segments)) this._drawPathByOp(0, evenOdd, segments);
     }
 
-    stroke(path) {
+    // `stroke()` and `stroke(path)`: an argument, even undefined, is the path.
+    stroke(path = undefined) {
+        const given = arguments.length !== 0 ? _path2DArgument(path, 'stroke') : null;
         this._abandonPendingTextCache();
-        encode2dStroke(this._canvasId);
+        if (given === null) {
+            encode2dStroke(this._canvasId);
+            return;
+        }
+        const segments = _segmentsOf(given);
+        if (TypedArrayPrototypeGetLength(segments) === 0) return;
+        if (!encode2dStrokePath(this._canvasId, segments)) this._drawPathByOp(1, false, segments);
     }
 
-    clip(pathOrFillRule) {
-        if (pathOrFillRule === 'evenodd') {
-            encode2dClipEvenOdd(this._canvasId);
+    // `clip(fillRule)` and `clip(path, fillRule)`, as `fill`. An empty path is still a clip: it clips everything.
+    clip(pathOrFillRule = undefined, fillRule = undefined) {
+        let path = null;
+        let evenOdd;
+        if (arguments.length >= 2 || _isPath2D(pathOrFillRule)) {
+            path = _path2DArgument(pathOrFillRule, 'clip');
+            evenOdd = _fillRule(fillRule, 'clip');
         } else {
-            encode2dClip(this._canvasId);
+            evenOdd = _fillRule(pathOrFillRule, 'clip');
         }
+        if (path === null) {
+            if (evenOdd) encode2dClipEvenOdd(this._canvasId);
+            else encode2dClip(this._canvasId);
+            return;
+        }
+        const segments = _segmentsOf(path);
+        if (!encode2dClipPath(this._canvasId, evenOdd, segments)) this._drawPathByOp(2, evenOdd, segments);
+    }
+
+    // A `Path2D` longer than a stream buffer holds, drawn by op behind what the stream holds. `kind` is 0 fill, 1 stroke,
+    // 2 clip.
+    _drawPathByOp(kind, evenOdd, segments) {
+        this._barrier();
+        op_canvas2d_draw_path(this._canvasId, kind, evenOdd, segments);
+    }
+
+    // `isPointInPath(x, y, fillRule)` and `isPointInPath(path, x, y, fillRule)`: three arguments are the second form
+    // when the first is a `Path2D`, four always are. The point is in canvas coordinates, not through the transform.
+    isPointInPath(a, b, c = undefined, d = undefined) {
+        const given = arguments.length;
+        _requireArguments(given, 2, 'isPointInPath', 'CanvasRenderingContext2D');
+        let path = null;
+        let x, y, rule;
+        if (given === 2 || (given === 3 && !_isPath2D(a))) {
+            x = +a; y = +b; rule = c;
+        } else {
+            path = _path2DArgument(a, 'isPointInPath');
+            x = +b; y = +c; rule = d;
+        }
+        return this._hitTest(path, x, y, false, _fillRule(rule, 'isPointInPath'));
+    }
+
+    // `isPointInStroke(x, y)` and `isPointInStroke(path, x, y)`: under the current line styles and transform.
+    isPointInStroke(a, b, c = undefined) {
+        const given = arguments.length;
+        _requireArguments(given, 2, 'isPointInStroke', 'CanvasRenderingContext2D');
+        if (given === 2) return this._hitTest(null, +a, +b, true, false);
+        const path = _path2DArgument(a, 'isPointInStroke');
+        return this._hitTest(path, +b, +c, true, false);
+    }
+
+    // Asked of the renderer, which holds the path, the transform and the line styles, after everything recorded before.
+    // A point that is not finite, or a `Path2D` with nothing in it, is outside without asking.
+    _hitTest(path, x, y, stroke, evenOdd) {
+        if (!_fin2(x, y)) return false;
+        let segments = _NO_SEGMENTS;
+        let flags = stroke ? HIT_TEST_STROKE : evenOdd ? HIT_TEST_EVEN_ODD : 0;
+        if (path !== null) {
+            segments = _segmentsOf(path);
+            if (TypedArrayPrototypeGetLength(segments) === 0) return false;
+            flags |= HIT_TEST_PATH;
+        }
+        this._barrier();
+        return op_canvas2d_hit_test(this._canvasId, flags, x, y, segments);
     }
 
     // ==================== Rectangle Methods ====================
@@ -1663,10 +2390,6 @@ class CanvasRenderingContext2D {
         encode2dSetLineDashOffset(this._canvasId, v);
     }
 
-    // ==================== Other stubs ====================
-    isPointInPath() { return false; }
-    isPointInStroke() { return false; }
-
     // `createPattern(image, repetition)`: `image` is a decoded image or a canvas, and a pattern from a canvas is
     // the canvas as it is now -- what it draws afterwards does not reach the pattern.
     createPattern(image, repetition) {
@@ -1913,4 +2636,4 @@ frameEndHooks.push(() => {
 // game script can run.
 globalThis._internalFrameEnd = frameEndAll;
 
-export { CanvasRenderingContext2D, CanvasGradient, frameEndAll };
+export { CanvasRenderingContext2D, CanvasGradient, Path2D, frameEndAll };

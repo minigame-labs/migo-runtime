@@ -615,3 +615,110 @@ fn a_resize_that_names_no_dimension_or_an_unknown_one_is_refused() {
         );
     }
 }
+
+/// `roundRect` is one record of thirteen words: the rectangle, then the four corners' radii in the order the facade
+/// assigned them.
+#[test]
+fn the_round_rect_record_decodes_with_its_corners_in_order() {
+    let words: Vec<u32> = (1..=12).map(|v| (v as f32).to_bits()).collect();
+    let stream = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[2]),
+        record(OP2D_ROUND_RECT, &words),
+    ]);
+    let (ops, context) = decode(&stream);
+    assert!(context.errors.is_empty());
+    let FrameOp::CanvasBatch(batch) = &ops[0] else {
+        panic!("expected a canvas batch");
+    };
+    assert!(matches!(
+        batch.commands[0],
+        Canvas2DCmd::RoundRect { x: 1.0, y: 2.0, w: 3.0, h: 4.0, radii }
+            if radii == [5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+    ));
+    let short = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[2]),
+        record(OP2D_ROUND_RECT, &words[..11]),
+    ]);
+    assert!(
+        validate_stream(&short, short.len() as u32).is_err(),
+        "thirteen words, no fewer"
+    );
+}
+
+/// A `Path2D` filled, stroked or clipped is its segments after the record's own words: the fill rule (fill and clip)
+/// and the count. The segments come out as they went in, and the current default path is not part of it.
+#[test]
+fn the_path_records_carry_their_segments_and_rule() {
+    let segments = vec![
+        path2d::MOVE_TO,
+        1f32.to_bits(),
+        2f32.to_bits(),
+        path2d::CLOSE_PATH,
+    ];
+    let count = segments.len() as u32;
+    let with = |lead: &[u32]| {
+        let mut words = lead.to_vec();
+        words.push(count);
+        words.extend(&segments);
+        words
+    };
+    let stream = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[4]),
+        record(OP2D_FILL_PATH, &with(&[1])),
+        record(OP2D_STROKE_PATH, &with(&[])),
+        record(OP2D_CLIP_PATH, &with(&[0])),
+        record(OP2D_CLIP_PATH, &[0, 0]),
+    ]);
+    let (ops, context) = decode(&stream);
+    assert!(context.errors.is_empty());
+    let FrameOp::CanvasBatch(batch) = &ops[0] else {
+        panic!("expected a canvas batch");
+    };
+    assert!(
+        matches!(&batch.commands[0], Canvas2DCmd::FillPath { path, even_odd: true } if *path == segments)
+    );
+    assert!(matches!(&batch.commands[1], Canvas2DCmd::StrokePath { path } if *path == segments));
+    assert!(
+        matches!(&batch.commands[2], Canvas2DCmd::ClipPath { path, even_odd: false } if *path == segments)
+    );
+    assert!(
+        matches!(&batch.commands[3], Canvas2DCmd::ClipPath { path, even_odd: false } if path.is_empty()),
+        "an empty path is still a clip -- of everything"
+    );
+}
+
+/// Segments a path cannot be built from, or a fill rule that is not 0 or 1, drop that one command; the records
+/// around it decode. A count that disagrees with the record's length is a record the validator refuses.
+#[test]
+fn a_path_record_that_is_not_a_path_drops_its_command() {
+    let unfinished = [path2d::LINE_TO, 1f32.to_bits()];
+    let infinite = [path2d::LINE_TO, f32::INFINITY.to_bits(), 0];
+    let bad_flag = [path2d::ARC, 0, 0, 0, 0, 0, 2];
+    let unknown = [99];
+    let valid = [path2d::LINE_TO, 1f32.to_bits(), 1f32.to_bits()];
+    let path = |rule: u32, segments: &[u32]| {
+        let mut words = vec![rule, segments.len() as u32];
+        words.extend(segments);
+        record(OP2D_FILL_PATH, &words)
+    };
+    let stream = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[1]),
+        path(0, &unfinished),
+        path(0, &infinite),
+        path(0, &bad_flag),
+        path(0, &unknown),
+        path(2, &valid),
+        record(OP2D_SAVE, &[]),
+    ]);
+    let (ops, _) = decode(&stream);
+    let FrameOp::CanvasBatch(batch) = &ops[0] else {
+        panic!("expected a canvas batch");
+    };
+    assert_eq!(batch.commands.len(), 1, "{:?}", batch.commands);
+    assert!(matches!(batch.commands[0], Canvas2DCmd::Save));
+
+    let mut lying = path(0, &valid);
+    lying[2] += 1;
+    let stream = stream_of(&[record(OP2D_SELECT_CANVAS, &[1]), lying]);
+    assert!(validate_stream(&stream, stream.len() as u32).is_err());
+}

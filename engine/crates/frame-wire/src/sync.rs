@@ -356,6 +356,100 @@ impl ReadPixelsToBufferParams {
 /// range of the same buffer: the producer is blocked between them, so nothing it records can change the buffer.
 pub const SYNC_OP_GET_BUFFER_SUB_DATA: u32 = 13;
 
+/// `isPointInPath` / `isPointInStroke`: whether a point of a canvas is inside a path, or inside the stroke of one --
+/// the canvas's current default path, or a `Path2D` carried in the request, which is why its body is bounded by
+/// [`CANVAS2D_HIT_TEST_CALL_MAX_BYTES`] rather than [`SYNC_CALL_MAX_BYTES`]. Params: [`Canvas2DHitTestParams`]; the
+/// reply is one word, 1 or 0. Answered after everything recorded before it, by the renderer that holds the path, the
+/// transform and the line styles, so the answer is about the path that would be drawn.
+pub const SYNC_OP_CANVAS2D_HIT_TEST: u32 = 14;
+
+/// Serialised size of a [`SYNC_OP_CANVAS2D_HIT_TEST`] reply.
+pub const CANVAS2D_HIT_TEST_REPLY_BYTES: u32 = 4;
+
+/// The flags of a [`Canvas2DHitTestParams`].
+pub mod canvas2d_hit_test {
+    /// `isPointInStroke` rather than `isPointInPath`.
+    pub const FLAG_STROKE: u32 = 1 << 0;
+    /// `isPointInPath(..., "evenodd")`. Never with `FLAG_STROKE`: a stroke has no fill rule.
+    pub const FLAG_EVEN_ODD: u32 = 1 << 1;
+    /// The request carries a `Path2D`; without it the question is about the current default path.
+    pub const FLAG_PATH: u32 = 1 << 2;
+    pub const FLAG_MASK: u32 = FLAG_STROKE | FLAG_EVEN_ODD | FLAG_PATH;
+}
+
+/// What a hit test names: `canvas flags x:F y:F count`, then `count` words of a path's segments
+/// (`canvas2d::path2d`) when `FLAG_PATH` is set and none otherwise.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Canvas2DHitTestParams<'a> {
+    pub canvas_id: u32,
+    pub flags: u32,
+    /// The point, in the canvas's coordinate space -- not through the transform.
+    pub x: f32,
+    pub y: f32,
+    pub path: &'a [u32],
+}
+
+/// The words before a [`Canvas2DHitTestParams`]'s path.
+pub const CANVAS2D_HIT_TEST_HEADER_BYTES: usize = 20;
+
+impl<'a> Canvas2DHitTestParams<'a> {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(CANVAS2D_HIT_TEST_HEADER_BYTES + self.path.len() * 4);
+        for word in [
+            self.canvas_id,
+            self.flags,
+            self.x.to_bits(),
+            self.y.to_bits(),
+            self.path.len() as u32,
+        ]
+        .into_iter()
+        .chain(self.path.iter().copied())
+        {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        out
+    }
+
+    /// Decode and validate: flags this build reads and a combination that means something, a finite point, a count that
+    /// agrees with the body, and segments a reader can build -- present exactly when `FLAG_PATH` says so. The path words
+    /// are returned in `scratch`, which the caller reuses.
+    pub fn decode(bytes: &[u8], scratch: &'a mut Vec<u32>) -> Result<Self, SyncError> {
+        use canvas2d_hit_test::*;
+        if bytes.len() < CANVAS2D_HIT_TEST_HEADER_BYTES || bytes.len() % 4 != 0 {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        let word = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let flags = word(4);
+        let count = word(16) as usize;
+        let (x, y) = (f32::from_bits(word(8)), f32::from_bits(word(12)));
+        let has_path = flags & FLAG_PATH != 0;
+        if flags & !FLAG_MASK != 0
+            || flags & FLAG_STROKE != 0 && flags & FLAG_EVEN_ODD != 0
+            || !x.is_finite()
+            || !y.is_finite()
+            || count > crate::canvas2d::MAX_PATH_WORDS as usize
+            || bytes.len() != CANVAS2D_HIT_TEST_HEADER_BYTES + count * 4
+            || has_path != (count > 0)
+        {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        scratch.clear();
+        scratch.extend((0..count).map(|i| word(CANVAS2D_HIT_TEST_HEADER_BYTES + i * 4)));
+        if !crate::canvas2d::path2d::is_valid(scratch) {
+            return Err(SyncError::UnsupportedOperation);
+        }
+        Ok(Self {
+            canvas_id: word(0),
+            flags,
+            x,
+            y,
+            path: scratch,
+        })
+    }
+}
+
 /// Serialised size of [`GetBufferSubDataParams`].
 pub const GET_BUFFER_SUB_DATA_PARAMS_BYTES: usize = 24;
 
@@ -1149,15 +1243,42 @@ pub struct SyncCall<'a> {
 pub const SYNC_CALL_HEADER_BYTES: usize = 56;
 
 /// The largest body a [`SyncCall`] may be, arguments included, for every
-/// operation but [`SYNC_OP_SERVICE`] (which is bounded by
-/// [`SERVICE_CALL_MAX_BYTES`]).
+/// operation whose arguments are fixed: all but the two that carry a value of
+/// content's own ([`sync_call_max_bytes`]).
 ///
-/// Arguments are small by construction -- `readPixels` takes 32 bytes, and
-/// anything bulky travels as a frame -- so this is a bound on what a producer
-/// can make a transport assemble, not a guess at traffic. It is a constant of
-/// the format rather than of a transport so that every transport refuses the
-/// same bodies, and refuses them before reading them.
+/// Fixed arguments are small by construction -- `readPixels` takes 32 bytes,
+/// and anything bulky travels as a frame -- so this is a bound on what a
+/// producer can make a transport assemble, not a guess at traffic. It is a
+/// constant of the format rather than of a transport so that every transport
+/// refuses the same bodies.
 pub const SYNC_CALL_MAX_BYTES: usize = 4096;
+
+/// The largest body a [`SyncCall`] for `operation` may be, header included.
+///
+/// Two operations carry what content handed them rather than a fixed record:
+/// [`SYNC_OP_SERVICE`] a service message (a synchronous file write carries the
+/// file) and [`SYNC_OP_CANVAS2D_HIT_TEST`] a `Path2D`. Neither can travel as a
+/// frame ahead of the call -- the answer is about the value the call names, and
+/// a value left with the host for a call to come is state with no owner when
+/// the call does not -- so each is bounded by its value's own bound. Every
+/// other operation is held to [`SYNC_CALL_MAX_BYTES`]. A transport reading
+/// bodies before it knows their operation bounds them by the largest of these,
+/// [`SERVICE_CALL_MAX_BYTES`].
+pub const fn sync_call_max_bytes(operation: u32) -> usize {
+    match operation {
+        SYNC_OP_SERVICE => SERVICE_CALL_MAX_BYTES,
+        SYNC_OP_CANVAS2D_HIT_TEST => CANVAS2D_HIT_TEST_CALL_MAX_BYTES,
+        _ => SYNC_CALL_MAX_BYTES,
+    }
+}
+
+/// The most a [`SYNC_OP_CANVAS2D_HIT_TEST`] call body may be: the call's
+/// header, the hit test's own, and the longest path a record may carry.
+pub const CANVAS2D_HIT_TEST_CALL_MAX_BYTES: usize = SYNC_CALL_HEADER_BYTES
+    + CANVAS2D_HIT_TEST_HEADER_BYTES
+    + crate::canvas2d::MAX_PATH_WORDS as usize * 4;
+
+const _: () = assert!(CANVAS2D_HIT_TEST_CALL_MAX_BYTES <= SERVICE_CALL_MAX_BYTES);
 
 /// The longest a producer may ask to wait. A minute: longer than any readback
 /// a device can take, and short enough that a producer blocked on a host that
@@ -1249,7 +1370,7 @@ impl<'a> SyncCall<'a> {
             return Err(SyncError::UnsupportedOperation);
         }
         let operation = u32_at(bytes, SYNC_CALL_OFF_OPERATION);
-        if operation != SYNC_OP_SERVICE && bytes.len() > SYNC_CALL_MAX_BYTES {
+        if bytes.len() > sync_call_max_bytes(operation) {
             return Err(SyncError::UnsupportedOperation);
         }
         // Zero now so a later version can give the word a meaning without an
@@ -1787,6 +1908,133 @@ mod sync_call_tests {
         assert_eq!(GetBufferSubDataParams::decode(&golden), Ok(params));
     }
 
+    /// The same bytes the producer's `encodeCanvas2DHitTestParams` writes (sync-mailbox.test.mjs): the two encoders
+    /// agree through them.
+    #[test]
+    fn a_hit_test_is_these_bytes() {
+        use canvas2d_hit_test::*;
+        let path = [
+            crate::canvas2d::path2d::MOVE_TO,
+            1f32.to_bits(),
+            2f32.to_bits(),
+        ];
+        let params = Canvas2DHitTestParams {
+            canvas_id: 7,
+            flags: FLAG_PATH | FLAG_EVEN_ODD,
+            x: 1.5,
+            y: -2.0,
+            path: &path,
+        };
+        let golden = [
+            7, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0xc0, 0x3f, 0, 0, 0, 0xc0, 3, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+            0x80, 0x3f, 0, 0, 0, 0x40,
+        ];
+        assert_eq!(params.encode(), golden);
+        let mut scratch = Vec::new();
+        assert_eq!(
+            Canvas2DHitTestParams::decode(&golden, &mut scratch),
+            Ok(params)
+        );
+        let current = Canvas2DHitTestParams {
+            flags: FLAG_STROKE,
+            path: &[],
+            ..params
+        };
+        assert_eq!(
+            Canvas2DHitTestParams::decode(&current.encode(), &mut scratch),
+            Ok(current),
+            "the current default path: no path, and no words"
+        );
+    }
+
+    /// Each refusal is a request the facade cannot make: what reaches the renderer is a question it can answer.
+    #[test]
+    fn a_hit_test_the_facade_could_not_have_asked_is_refused() {
+        use canvas2d_hit_test::*;
+        let path = [
+            crate::canvas2d::path2d::LINE_TO,
+            1f32.to_bits(),
+            2f32.to_bits(),
+        ];
+        let ok = Canvas2DHitTestParams {
+            canvas_id: 1,
+            flags: FLAG_PATH,
+            x: 0.0,
+            y: 0.0,
+            path: &path,
+        };
+        let mut scratch = Vec::new();
+        assert!(Canvas2DHitTestParams::decode(&ok.encode(), &mut scratch).is_ok());
+        let mut short = ok.encode();
+        short.pop();
+        let mut long = ok.encode();
+        long.extend_from_slice(&[0; 4]);
+        let unfinished = [crate::canvas2d::path2d::LINE_TO, 1f32.to_bits()];
+        let infinite = [crate::canvas2d::path2d::LINE_TO, f32::INFINITY.to_bits(), 0];
+        for (bytes, why) in [
+            (
+                Canvas2DHitTestParams {
+                    flags: 8 | FLAG_PATH,
+                    ..ok
+                }
+                .encode(),
+                "a flag this build does not read",
+            ),
+            (
+                Canvas2DHitTestParams {
+                    flags: FLAG_PATH | FLAG_STROKE | FLAG_EVEN_ODD,
+                    ..ok
+                }
+                .encode(),
+                "a stroke has no fill rule",
+            ),
+            (
+                Canvas2DHitTestParams { x: f32::NAN, ..ok }.encode(),
+                "a point that is not one",
+            ),
+            (
+                Canvas2DHitTestParams {
+                    y: f32::INFINITY,
+                    ..ok
+                }
+                .encode(),
+                "a point that is not one",
+            ),
+            (
+                Canvas2DHitTestParams { flags: 0, ..ok }.encode(),
+                "a path the flags do not announce",
+            ),
+            (
+                Canvas2DHitTestParams { path: &[], ..ok }.encode(),
+                "a path announced and absent",
+            ),
+            (
+                Canvas2DHitTestParams {
+                    path: &unfinished,
+                    ..ok
+                }
+                .encode(),
+                "a segment without its arguments",
+            ),
+            (
+                Canvas2DHitTestParams {
+                    path: &infinite,
+                    ..ok
+                }
+                .encode(),
+                "a coordinate that is not finite",
+            ),
+            (short, "fewer words than the count"),
+            (long, "more words than the count"),
+        ] {
+            assert_eq!(
+                Canvas2DHitTestParams::decode(&bytes, &mut scratch),
+                Err(SyncError::UnsupportedOperation),
+                "{why}"
+            );
+        }
+    }
+
     #[test]
     fn a_buffer_read_this_host_cannot_answer_is_refused() {
         let ok = GetBufferSubDataParams {
@@ -1941,6 +2189,43 @@ mod sync_call_tests {
             SyncCall::decode(&body_for(SYNC_OP_READ_PIXELS, 16, 250, 0, &large)),
             Err(SyncError::UnsupportedOperation),
             "the barrier's own operations keep their bound"
+        );
+    }
+
+    #[test]
+    fn a_hit_test_may_carry_the_longest_path_a_record_may_and_no_more() {
+        let longest = CANVAS2D_HIT_TEST_CALL_MAX_BYTES - SYNC_CALL_HEADER_BYTES;
+        assert!(
+            SyncCall::decode(&body_for(
+                SYNC_OP_CANVAS2D_HIT_TEST,
+                16,
+                250,
+                0,
+                &vec![0; longest]
+            ))
+            .is_ok(),
+            "a Path2D as long as a fill may draw can be hit-tested"
+        );
+        assert_eq!(
+            SyncCall::decode(&body_for(
+                SYNC_OP_CANVAS2D_HIT_TEST,
+                16,
+                250,
+                0,
+                &vec![0; longest + 1]
+            )),
+            Err(SyncError::UnsupportedOperation)
+        );
+        assert_eq!(
+            SyncCall::decode(&body_for(
+                SYNC_OP_CANVAS2D_NUMBER,
+                16,
+                250,
+                0,
+                &vec![0; longest]
+            )),
+            Err(SyncError::UnsupportedOperation),
+            "the bound is the hit test's, not every 2D query's"
         );
     }
 

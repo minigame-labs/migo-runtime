@@ -144,6 +144,50 @@ mod js_agreement {
         }
     }
 
+    /// A `Path2D`'s segments are written by the 2D facade with opcodes, bounds and hit-test flags it declares by hand
+    /// (`SEG_*`, `MAX_PATH_*`, `HIT_TEST_*` in `02_2d_context.js`); this reads them back against
+    /// `frame_wire::canvas2d::path2d` and `frame_wire::sync::canvas2d_hit_test`, so a renumbering on either side is a red
+    /// test and not a path that the reader refuses, or builds as another.
+    #[test]
+    fn the_2d_facade_writes_path_segments_by_the_numbers_the_wire_defines() {
+        use frame_wire::canvas2d::{MAX_PATH_WORDS, path2d};
+        use frame_wire::sync::canvas2d_hit_test;
+        const FACADE: &str = include_str!("02_2d_context.js");
+        for (name, wire) in [
+            ("SEG_MOVE_TO", path2d::MOVE_TO),
+            ("SEG_LINE_TO", path2d::LINE_TO),
+            ("SEG_QUADRATIC_CURVE_TO", path2d::QUADRATIC_CURVE_TO),
+            ("SEG_BEZIER_CURVE_TO", path2d::BEZIER_CURVE_TO),
+            ("SEG_ARC", path2d::ARC),
+            ("SEG_ARC_TO", path2d::ARC_TO),
+            ("SEG_ELLIPSE", path2d::ELLIPSE),
+            ("SEG_RECT", path2d::RECT),
+            ("SEG_ROUND_RECT", path2d::ROUND_RECT),
+            ("SEG_CLOSE_PATH", path2d::CLOSE_PATH),
+            ("SEG_SVG_ARC_TO", path2d::SVG_ARC_TO),
+            ("SEG_ADD_PATH", path2d::ADD_PATH),
+            ("MAX_PATH_WORDS", MAX_PATH_WORDS),
+            ("MAX_PATH_NESTING", path2d::MAX_NESTING),
+            ("HIT_TEST_STROKE", canvas2d_hit_test::FLAG_STROKE),
+            ("HIT_TEST_EVEN_ODD", canvas2d_hit_test::FLAG_EVEN_ODD),
+            ("HIT_TEST_PATH", canvas2d_hit_test::FLAG_PATH),
+        ] {
+            let prefix = format!("const {name} = ");
+            let line = FACADE
+                .lines()
+                .find(|line| line.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("the 2D facade declares {name}"));
+            let value: u32 = line
+                .strip_prefix(&prefix)
+                .unwrap()
+                .trim_end_matches(';')
+                .trim()
+                .parse()
+                .unwrap_or_else(|_| panic!("{name} is a number"));
+            assert_eq!(value, wire, "{name}");
+        }
+    }
+
     #[test]
     fn js_module_buffers_null_at_module_load() {
         let js = include_str!("00_render_command_stream.js");
@@ -287,27 +331,49 @@ mod canvas2d_agreement {
         names
     }
 
+    /// How long a record an encoder writes: a fixed count, or -- for a record whose segments follow -- the words
+    /// before them, which its wrapper passes as a literal.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Length {
+        Fixed(u32),
+        Leading(u32),
+    }
+
     /// The word count a body claims: `packHeader(<anything>, N)` and
     /// `cursor = base + N` must be the same N, or the encoder writes one length
     /// into the header and advances by another -- which desynchronises the
     /// stream from the record *after* it, so the record that looks wrong is
-    /// never the one that is.
-    fn word_count_of(body: &str) -> u32 {
+    /// never the one that is. `None` for a variable record, whose header and
+    /// advance must then name the same variable.
+    fn word_count_of(body: &str) -> Option<u32> {
         let header = after(body, "packHeader(").expect("an encoder packs a header");
         let header = header
             .split_once(", ")
             .expect("packHeader takes an opcode and a count")
             .1;
-        let claimed = leading_number(header).expect("the word count is a literal");
-
         let advance = after(body, "cursor = base + ").expect("an encoder advances the cursor");
+        let Some(claimed) = leading_number(header) else {
+            let word = |text: &str| -> String {
+                text.chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect()
+            };
+            assert_eq!(
+                word(header),
+                word(advance),
+                "an encoder writes a header claiming `{}` words and advances `{}`",
+                word(header),
+                word(advance)
+            );
+            return None;
+        };
         let advanced = leading_number(advance).expect("the cursor advance is a literal");
 
         assert_eq!(
             claimed, advanced,
             "an encoder writes a header claiming {claimed} words and advances {advanced}"
         );
-        claimed
+        Some(claimed)
     }
 
     fn after<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
@@ -321,10 +387,10 @@ mod canvas2d_agreement {
     }
 
     /// Each 2D opcode, and the encoder that writes it.
-    fn encoders_by_opcode() -> HashMap<u32, (String, u32)> {
+    fn encoders_by_opcode() -> HashMap<u32, (String, Length)> {
         let declared = declared_opcodes();
         // Shared bodies first: the one-line wrappers name a helper, not a header.
-        let mut helper_words: HashMap<String, u32> = HashMap::new();
+        let mut helper_words: HashMap<String, Option<u32>> = HashMap::new();
         for name in encoder_names() {
             if !name.starts_with('_') {
                 continue;
@@ -344,8 +410,18 @@ mod canvas2d_agreement {
                 let call = format!("{helper}(OP2D_");
                 let at = body.find(&call)?;
                 let rest = &body[at + helper.len() + 1..];
-                let opcode = rest.split(&[',', ')'][..]).next()?.trim();
-                Some((declared.get(opcode).copied(), *words, opcode.to_string()))
+                let mut arguments = rest.split(&[',', ')'][..]);
+                let opcode = arguments.next()?.trim();
+                let length = match words {
+                    Some(words) => Length::Fixed(*words),
+                    None => Length::Leading(
+                        arguments
+                            .next()
+                            .and_then(|lead| lead.trim().parse().ok())
+                            .unwrap_or_else(|| panic!("{name} passes {helper} no literal lead")),
+                    ),
+                };
+                Some((declared.get(opcode).copied(), length, opcode.to_string()))
             });
 
             let (opcode, words) = match delegated {
@@ -358,7 +434,10 @@ mod canvas2d_agreement {
                     let opcode = *declared
                         .get(opcode_name)
                         .unwrap_or_else(|| panic!("{name} names undeclared {opcode_name}"));
-                    (opcode, word_count_of(body))
+                    let words = word_count_of(body).unwrap_or_else(|| {
+                        panic!("{name} writes a variable record without a helper's lead")
+                    });
+                    (opcode, Length::Fixed(words))
                 }
             };
 
@@ -378,16 +457,25 @@ mod canvas2d_agreement {
             by_opcode.len()
         );
 
-        for (opcode, (name, words)) in &by_opcode {
+        for (opcode, (name, length)) in &by_opcode {
             let spec = frame_wire::canvas2d::record_spec(*opcode)
                 .unwrap_or_else(|| panic!("{name} encodes opcode {opcode}, which has no spec"));
-            let RecordSpec::Fixed { word_count, .. } = spec else {
-                panic!("{name} encodes opcode {opcode}, which is not a fixed-length record");
-            };
-            assert_eq!(
-                *words, word_count,
-                "{name} writes {words} words for opcode {opcode}; the reader expects {word_count}"
-            );
+            match (spec, *length) {
+                (RecordSpec::Fixed { word_count, .. }, Length::Fixed(words)) => assert_eq!(
+                    words, word_count,
+                    "{name} writes {words} words for opcode {opcode}; the reader expects {word_count}"
+                ),
+                // The count word follows the prefix, and the words follow it.
+                (RecordSpec::Words { prefix_words, .. }, Length::Leading(lead)) => assert_eq!(
+                    lead,
+                    u32::from(prefix_words) + 1,
+                    "{name} writes {lead} words before opcode {opcode}'s words; the reader reads \
+                     {prefix_words} and a count"
+                ),
+                (spec, length) => {
+                    panic!("{name} writes opcode {opcode} as {length:?}; its spec is {spec:?}")
+                }
+            }
         }
     }
 

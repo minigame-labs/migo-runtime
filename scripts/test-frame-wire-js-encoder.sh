@@ -606,6 +606,12 @@ RAN_TESTS+=("$TEST_DIR/audio-checks.test.mjs")
 # side -- and the empty answer both reads give where the op gives an empty Vec.
 node "$TEST_DIR/canvas2d-pixels.test.mjs"
 RAN_TESTS+=("$TEST_DIR/canvas2d-pixels.test.mjs")
+# `isPointInPath` / `isPointInStroke`: the same need for a host endpoint. This
+# checks the question asked -- the point, the flags, a Path2D's segments -- the
+# one-word answer read back, the requests the in-process op refuses answered
+# false without asking, and a host that cannot answer.
+node "$TEST_DIR/canvas2d-hit-test.test.mjs"
+RAN_TESTS+=("$TEST_DIR/canvas2d-hit-test.test.mjs")
 node "$TEST_DIR/put-image-data.test.mjs"
 RAN_TESTS+=("$TEST_DIR/put-image-data.test.mjs")
 node "$TEST_DIR/onscreen-canvas-size.test.mjs"

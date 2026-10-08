@@ -71,6 +71,7 @@ const WindowGlobalScope = {
     // the WebGL fixture already does.
     CanvasRenderingContext2D: core.propNonEnumerable(context2d.CanvasRenderingContext2D),
     CanvasGradient: core.propNonEnumerable(context2d.CanvasGradient),
+    Path2D: core.propNonEnumerable(context2d.Path2D),
 
     performance: core.propNonEnumerable(performance.performance),
     getPerformance: core.propNonEnumerable(performance.getPerformance),

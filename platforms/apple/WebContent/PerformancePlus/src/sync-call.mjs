@@ -19,9 +19,12 @@
 
 import { platform } from "./platform.mjs";
 import { synchronously } from "./task-gate.mjs";
+import { MAX_PATH_WORDS } from "./render-opcodes.mjs";
 import {
+  CANVAS2D_HIT_TEST_HEADER_BYTES,
   MAX_REPLY_BYTES,
   MAX_SERVICE_REPLY_BYTES,
+  SYNC_OP_CANVAS2D_HIT_TEST,
   SYNC_OP_SERVICE,
   SYNC_ERROR_BAD_DEADLINE,
   SYNC_ERROR_BAD_REPLY_RESERVATION,
@@ -36,7 +39,20 @@ export const SYNC_CALL_HEADER_BYTES = 56;
 export const SYNC_CALL_MAX_BYTES = 4096;
 /// A SERVICE call's body bound: the header and a whole service message.
 export const SERVICE_CALL_MAX_BYTES = SYNC_CALL_HEADER_BYTES + 64 * 1024 * 1024;
+/// A hit test's body bound: the header, the hit test's own, and the longest path a record carries.
+export const CANVAS2D_HIT_TEST_CALL_MAX_BYTES = SYNC_CALL_HEADER_BYTES + CANVAS2D_HIT_TEST_HEADER_BYTES + MAX_PATH_WORDS * 4;
 export const SYNC_CALL_MAX_TIMEOUT_MILLIS = 60_000;
+
+/**
+ * The largest body a call for `operation` may be (`frame_wire::sync::sync_call_max_bytes`): the two operations that
+ * carry a value of content's own -- a service message, a `Path2D` -- are bounded by that value's bound, every other by
+ * SYNC_CALL_MAX_BYTES.
+ */
+export function syncCallMaxBytes(operation) {
+  if (operation === SYNC_OP_SERVICE) return SERVICE_CALL_MAX_BYTES;
+  if (operation === SYNC_OP_CANVAS2D_HIT_TEST) return CANVAS2D_HIT_TEST_CALL_MAX_BYTES;
+  return SYNC_CALL_MAX_BYTES;
+}
 export const SYNC_ANSWER_HEADER_BYTES = 16;
 
 // Call body offsets, in the order the document lists them.
@@ -96,7 +112,7 @@ export function encodeSyncCall({
   ) {
     throw new SyncRequestError(SYNC_ERROR_BAD_DEADLINE);
   }
-  if (SYNC_CALL_HEADER_BYTES + params.byteLength > (service ? SERVICE_CALL_MAX_BYTES : SYNC_CALL_MAX_BYTES)) {
+  if (SYNC_CALL_HEADER_BYTES + params.byteLength > syncCallMaxBytes(operation)) {
     throw new SyncRequestError(SYNC_ERROR_UNSUPPORTED_OPERATION);
   }
 

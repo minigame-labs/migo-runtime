@@ -94,11 +94,30 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             counterclockwise: record[8] != 0,
         },
 
+        OP2D_ROUND_RECT => Canvas2DCmd::RoundRect {
+            x: f(record[1]),
+            y: f(record[2]),
+            w: f(record[3]),
+            h: f(record[4]),
+            radii: std::array::from_fn(|i| f(record[5 + i])),
+        },
+
         OP2D_FILL => Canvas2DCmd::Fill,
         OP2D_STROKE => Canvas2DCmd::Stroke,
         OP2D_CLIP => Canvas2DCmd::Clip,
         OP2D_FILL_EVEN_ODD => Canvas2DCmd::FillEvenOdd,
         OP2D_CLIP_EVEN_ODD => Canvas2DCmd::ClipEvenOdd,
+        OP2D_FILL_PATH => Canvas2DCmd::FillPath {
+            even_odd: fill_rule(record[1])?,
+            path: path_of(record, 2)?,
+        },
+        OP2D_STROKE_PATH => Canvas2DCmd::StrokePath {
+            path: path_of(record, 1)?,
+        },
+        OP2D_CLIP_PATH => Canvas2DCmd::ClipPath {
+            even_odd: fill_rule(record[1])?,
+            path: path_of(record, 2)?,
+        },
 
         OP2D_FILL_RECT => Canvas2DCmd::FillRect {
             x: f(record[1]),
@@ -437,6 +456,29 @@ fn bytes_of(record: &[u32], prefix_words: usize) -> Option<Vec<u8>> {
 /// A record's `f32` list: the count word at `prefix_words`, then the bits.
 ///
 /// A reinterpretation, like every other float in this block.
+/// A fill rule word: 0 nonzero, 1 even-odd. Anything else drops the command, as a malformed record does.
+fn fill_rule(word: u32) -> Option<bool> {
+    match word {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
+/// A path's segments, after the record's `count`: copied out of the record when they are segments a path can be
+/// built from (`path2d::is_valid`), and `None` -- the one command dropped -- when they are not.
+fn path_of(record: &[u32], prefix_words: usize) -> Option<Vec<u32>> {
+    let count = record[prefix_words] as usize;
+    let words = &record[prefix_words + 1..prefix_words + 1 + count];
+    if !path2d::is_valid(words) {
+        return None;
+    }
+    let mut path = Vec::new();
+    path.try_reserve_exact(count).ok()?;
+    path.extend_from_slice(words);
+    Some(path)
+}
+
 fn floats_of(record: &[u32], prefix_words: usize) -> Option<Vec<f32>> {
     let count = record[prefix_words] as usize;
     let mut values = Vec::new();
