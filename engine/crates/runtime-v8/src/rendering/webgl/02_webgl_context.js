@@ -1430,16 +1430,18 @@ function preflightTexSubImage(canvasId, level, levels, formatError, xoffset, yof
 }
 
 // `texStorage2D`'s levels and size, after the error its internal format is (`_storageFormatError`): no level, a size
-// not above 0 or past the limit, more levels than the size has, or a cube map that is not square is INVALID_VALUE. The
-// target is the caller's to have checked (`_textureFor`, "storage2D").
+// not above 0 or past the limit, or a cube map that is not square is INVALID_VALUE; then more levels than the size has
+// INVALID_OPERATION (ES 3.0 3.8.4). The target is the caller's to have checked (`_textureFor`, "storage2D").
 function preflightTexStorage2D(canvasId, target, levels, formatError, width, height) {
     if (formatError !== 0) return recordGpuPreflightError(canvasId, formatError);
     if (!NumberIsInteger(levels) || levels <= 0 ||
         !NumberIsInteger(width) || width <= 0 || width > MAX_WEBGL_GPU_2D_DIMENSION ||
         !NumberIsInteger(height) || height <= 0 || height > MAX_WEBGL_GPU_2D_DIMENSION ||
-        (target === 0x8513 && width !== height) ||
-        levels > maxMipLevels(width > height ? width : height)) {
+        (target === 0x8513 && width !== height)) {
         return recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
+    }
+    if (levels > maxMipLevels(width > height ? width : height)) {
+        return recordGpuPreflightError(canvasId, GL_INVALID_OPERATION);
     }
     return true;
 }
@@ -1455,10 +1457,10 @@ function preflightTexStorage3D(canvasId, target, levels, formatError, width, hei
         !NumberIsInteger(width) || width <= 0 || width > maxXY ||
         !NumberIsInteger(height) || height <= 0 || height > maxXY ||
         !NumberIsInteger(depth) || depth <= 0 ||
-        depth > (target === 0x806F ? MAX_WEBGL_GPU_3D_DIMENSION : MAX_WEBGL_GPU_ARRAY_LAYERS) ||
-        levels > maxMipLevels(mipBasis)) {
+        depth > (target === 0x806F ? MAX_WEBGL_GPU_3D_DIMENSION : MAX_WEBGL_GPU_ARRAY_LAYERS)) {
         return recordGpuPreflightError(canvasId, GL_INVALID_VALUE);
     }
+    if (levels > maxMipLevels(mipBasis)) return recordGpuPreflightError(canvasId, GL_INVALID_OPERATION);
     return true;
 }
 
@@ -2012,16 +2014,37 @@ function _hasEnabledDivisorZero(shadow) {
     return false;
 }
 
-// The arguments `vertexAttribPointer` / `vertexAttribIPointer` accept: what the host's decoder checks, so that the
-// shadow holds what the render side took and not what a refused call asked for.
+// The parameters `getProgramParameter` answers (WebGL 1.0 5.14.9): DELETE_STATUS, LINK_STATUS, VALIDATE_STATUS,
+// ATTACHED_SHADERS, ACTIVE_ATTRIBUTES, ACTIVE_UNIFORMS; and WebGL 2's TRANSFORM_FEEDBACK_BUFFER_MODE,
+// TRANSFORM_FEEDBACK_VARYINGS and ACTIVE_UNIFORM_BLOCKS. Any other is INVALID_ENUM and null.
+const _PROGRAM_PARAMETERS = [0x8b80, 0x8b82, 0x8b83, 0x8b85, 0x8b89, 0x8b86];
+const _WEBGL2_PROGRAM_PARAMETERS = [0x8c7f, 0x8c83, 0x8a36];
+
+// The arguments `vertexAttribPointer` / `vertexAttribIPointer` accept: what the host's decoder checks
+// (`attribute_pointer_error`), so that the shadow holds what the render side took and not what a refused call asked
+// for -- a size of 1 to 4, a type of the call's, a stride of 0 to 255 and an offset not negative, a packed type of size
+// 4, and an offset and a stride that are multiples of the type's size.
 function _attribPointerAccepted(size, type, stride, offset, integer) {
     if (!(size >= 1 && size <= 4)) return false;
     if (!(stride >= 0 && stride <= 255) || !(offset >= 0)) return false;
+    let bytes;
     switch (type) {
-        case 0x1400: case 0x1401: case 0x1402: case 0x1403: case 0x1404: case 0x1405: return true;
-        case 0x1406: case 0x140b: return !integer;   // FLOAT, HALF_FLOAT
+        case 0x1400: case 0x1401: bytes = 1; break;                                 // BYTE, UNSIGNED_BYTE
+        case 0x1402: case 0x1403: bytes = 2; break;                                 // SHORT, UNSIGNED_SHORT
+        case 0x1404: case 0x1405: bytes = 4; break;                                 // INT, UNSIGNED_INT
+        case 0x140b: if (integer) return false; bytes = 2; break;                   // HALF_FLOAT
+        case 0x1406: if (integer) return false; bytes = 4; break;                   // FLOAT
+        case 0x8d9f: case 0x8368: if (integer || size !== 4) return false; bytes = 4; break;   // the 2_10_10_10_REV pair
         default: return false;
     }
+    return offset % bytes === 0 && stride % bytes === 0;
+}
+
+// The types WebGL 1's `vertexAttribPointer` takes: BYTE, UNSIGNED_BYTE, SHORT, UNSIGNED_SHORT and FLOAT. WebGL 2's
+// more are the decoder's to judge.
+function _isWebGL1AttribType(type) {
+    const t = Number(type) >>> 0;
+    return (t >= 0x1400 && t <= 0x1403) || t === 0x1406;
 }
 
 // `texImage2D`'s 9-argument forms with bytes or a buffer offset once the call's own checks have passed: true when the
@@ -2736,6 +2759,11 @@ class WebGLRenderingContext {
     getProgramParameter(program, pname) {
         const programId = program?.id;
         if (programId === undefined) return 0;
+        pname = Number(pname) >>> 0;
+        if (!_listHas(_PROGRAM_PARAMETERS, pname) && !(this._isWebGL2() && _listHas(_WEBGL2_PROGRAM_PARAMETERS, pname))) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
         // The shaders attached are the facade's to know (see `attachShader`); a cached count went stale on the next
         // attach or detach.
         if (pname === 0x8b85) return program._shaders ? program._shaders.length : 0;   // ATTACHED_SHADERS
@@ -2833,6 +2861,11 @@ class WebGLRenderingContext {
     getShaderParameter(shader, pname) {
         const shaderId = shader?.id;
         if (shaderId === undefined) return 0;
+        pname = Number(pname) >>> 0;
+        if (pname !== 0x8b4f && pname !== 0x8b80 && pname !== 0x8b81) {       // SHADER_TYPE, DELETE_STATUS, COMPILE_STATUS
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return null;
+        }
         // SHADER_TYPE is immutable after creation -- always cacheable.
         if (pname === WebglConstants.SHADER_TYPE) {
             let inner = this._shaderParameterCache.get(shaderId);
@@ -3046,16 +3079,18 @@ class WebGLRenderingContext {
         if (withheld) restoreIncompleteTextures(this);
     }
 
-    // A name WebGL refuses is INVALID_VALUE, and a reserved one INVALID_OPERATION (WebGL 1.0 6.20).
+    // A name WebGL refuses is INVALID_VALUE, a reserved one -- GLSL's gl_ and WebGL's webgl_ and _webgl_ -- INVALID_OPERATION
+    // (WebGL 1.0 6.20, ES 3.0 2.11.5), then an index past MAX_VERTEX_ATTRIBS INVALID_VALUE.
     bindAttribLocation(program, index, name) {
         const programId = program?.id;
         if (programId === undefined) return;
         const key = `${name}`;
         const error = _glslNameError(key, this._maxNameLength());
-        if (error !== 0 || _isReservedGlslName(key)) {
+        if (error !== 0 || _isReservedGlslName(key) || StringPrototypeStartsWith(key, "gl_")) {
             recordGpuPreflightError(this._canvasId, error !== 0 ? error : GL_INVALID_OPERATION);
             return;
         }
+        if (this._refusesAttribIndex(index)) return;
         _rawBindAttribLocation(programId, index >>> 0, key);
         // Locations only change on the next link; drop any cached lookups.
         this._attribLocationCache.delete(programId);
@@ -3113,6 +3148,16 @@ class WebGLRenderingContext {
         return this._isWebGL2() ? 1024 : 256;
     }
 
+    // A location is a link's: a program never linked, or whose last link failed, is INVALID_OPERATION (ES 3.0 2.11.3,
+    // 2.12.6) -- whether it linked is asked once per link, as LINK_STATUS is. A cache hit needs no asking: every link
+    // empties the caches, which then hold only names asked after a link that succeeded. True when refused, the error
+    // recorded.
+    _refusesUnlinked(program) {
+        if ((program._links | 0) !== 0 && this.getProgramParameter(program, WebglConstants.LINK_STATUS)) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        return true;
+    }
+
     // A name WebGL refuses is INVALID_VALUE and -1, and a reserved one finds nothing; neither asks GL. Both are checked
     // only past the cache, which holds nothing but names GL was asked.
     getAttribLocation(program, name) {
@@ -3124,6 +3169,7 @@ class WebGLRenderingContext {
             const cached = inner.get(key);
             if (cached !== undefined) return cached;
         }
+        if (this._refusesUnlinked(program)) return -1;
         const error = _glslNameError(key, this._maxNameLength());
         if (error !== 0) {
             recordGpuPreflightError(this._canvasId, error);
@@ -3156,6 +3202,7 @@ class WebGLRenderingContext {
     }
 
     enableVertexAttribArray(index) {
+        if (this._refusesAttribIndex(index)) return;
         // opcode 16: H C U. index is u32.
         if (typeof index === "number") {
             encodeEnableVertexAttribArray(this._canvasId, index >>> 0);
@@ -3167,7 +3214,17 @@ class WebGLRenderingContext {
         if (i < _ATTRIB_SHADOW_SLOTS) this._attribShadow.enabled[i] = 1;
     }
 
+    // An index past MAX_VERTEX_ATTRIBS is INVALID_VALUE, a type WebGL 1 does not have INVALID_ENUM, before anything is
+    // sent; the rest of what the arguments may be is the decoder's (`validate_vertex_attrib_pointer`). A call it takes
+    // with no ARRAY_BUFFER bound and an offset other than 0 is INVALID_OPERATION (WebGL 1.0 6.5): it would point the
+    // attribute into no buffer.
     vertexAttribPointer(index, size, type, normalized, stride, offset) {
+        if (this._refusesAttribIndex(index)) return;
+        if (!this._isWebGL2() && !_isWebGL1AttribType(type)) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
+            return;
+        }
+        if (this._refusesBufferlessOffset(size, type, stride, offset, false)) return;
         // opcode 18: H C U I U B I I.
         // index/type are u32, size/stride/offset are i32, normalized is bool.
         if (typeof index === "number" && typeof size === "number" &&
@@ -3195,6 +3252,23 @@ class WebGLRenderingContext {
             );
         }
         this._shadowAttribPointer(index, size, type, normalized, false, stride, offset);
+    }
+
+    // INVALID_VALUE recorded and true for an attribute index past MAX_VERTEX_ATTRIBS (`_isAttribIndex`).
+    _refusesAttribIndex(index) {
+        if (this._isAttribIndex(Number(index) >>> 0)) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
+        return true;
+    }
+
+    // INVALID_OPERATION recorded and true for a pointer call the decoder would take (`_attribPointerAccepted`) with no
+    // ARRAY_BUFFER bound and an offset other than 0.
+    _refusesBufferlessOffset(size, type, stride, offset, integer) {
+        const o = Number(offset);
+        if (this._arrayBufferBinding !== null || o === 0 ||
+                !_attribPointerAccepted(Number(size) | 0, Number(type) >>> 0, Number(stride) | 0, o, integer)) return false;
+        recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+        return true;
     }
 
     _shadowAttribPointer(index, size, type, normalized, integer, stride, offset) {
@@ -3390,6 +3464,7 @@ class WebGLRenderingContext {
             const cached = inner.get(key);
             if (cached !== undefined) return cached;
         }
+        if (this._refusesUnlinked(program)) return null;
         const error = _glslNameError(key, this._maxNameLength());
         if (error !== 0) {
             recordGpuPreflightError(this._canvasId, error);
@@ -4868,6 +4943,7 @@ class WebGLRenderingContext {
     }
 
     disableVertexAttribArray(index) {
+        if (this._refusesAttribIndex(index)) return;
         // opcode 17: H C U.
         if (typeof index === "number") {
             encodeDisableVertexAttribArray(this._canvasId, index >>> 0);
@@ -4883,6 +4959,7 @@ class WebGLRenderingContext {
     // What an attribute reads while its array is disabled. All four arities cross as one record: a call that gives
     // fewer than four components leaves the rest at 0, 0, 0, 1 as the specification has them.
     _vertexAttribF(index, x, y, z, w) {
+        if (this._refusesAttribIndex(index)) return;
         if (typeof index === "number" && typeof x === "number" && typeof y === "number" &&
             typeof z === "number" && typeof w === "number") {
             encodeVertexAttrib4f(this._canvasId, index, x, y, z, w);
@@ -5556,21 +5633,25 @@ class WebGLRenderingContext {
         const object = texture === undefined ? null : texture;
         const lv = level | 0;
         const fb = this._attachmentFramebuffer(target, attachment, () => {
-            if (tt !== 0x0de1 && !(tt >= 0x8515 && tt <= 0x851a)) return GL_INVALID_ENUM;
-            if (object !== null) {
-                if (!(object instanceof WebglObject) || object._kind !== "texture") {
-                    throw new TypeError("Failed to execute 'framebufferTexture2D' on 'WebGLRenderingContext': parameter 4 is not of type 'WebGLTexture'.");
-                }
-                if (object._deleted || object._ownerId !== this._canvasId ||
-                        object._target !== (tt === 0x0de1 ? 0x0de1 : 0x8513)) return GL_INVALID_OPERATION;
+            // Detaching: the textarget and level name no image and are ignored (ES 3.0 4.4.2.4), but for WebGL 1's
+            // level, which is 0 or INVALID_VALUE whatever the texture, as a browser has it.
+            if (object === null) {
+                return !this._isWebGL2() && this._oesFboRenderMipmap === undefined && lv !== 0 ? GL_INVALID_VALUE : 0;
             }
+            if (tt !== 0x0de1 && !(tt >= 0x8515 && tt <= 0x851a)) return GL_INVALID_ENUM;
+            if (!(object instanceof WebglObject) || object._kind !== "texture") {
+                throw new TypeError("Failed to execute 'framebufferTexture2D' on 'WebGLRenderingContext': parameter 4 is not of type 'WebGLTexture'.");
+            }
+            if (object._deleted || object._ownerId !== this._canvasId ||
+                    object._target !== (tt === 0x0de1 ? 0x0de1 : 0x8513)) return GL_INVALID_OPERATION;
             if (lv < 0 || (this._isWebGL2() || this._oesFboRenderMipmap !== undefined ? lv >= this._levelLimit(tt)
                 : lv !== 0)) return GL_INVALID_VALUE;
             return 0;
         });
         if (fb === undefined) return;
         this._noteAttachment(target, attachment, object ? { type: 0x1702, object, level: lv, face: tt } : null);
-        _rawFramebufferTexture2D(this._canvasId, target, attachment, tt, object ? object.id : -1, lv);
+        _rawFramebufferTexture2D(this._canvasId, target, attachment, object ? tt : 0x0de1, object ? object.id : -1,
+            object ? lv : 0);
     }
     // Refused before anything is sent (`_attachmentFramebuffer`): a renderbuffertarget other than RENDERBUFFER is
     // INVALID_ENUM; a renderbuffer of another context, a deleted one, or one never bound INVALID_OPERATION.
@@ -6087,6 +6168,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
 
     // ---- Integer vertex attributes (WebGL 2) ------------------------------------------------------------------------
     vertexAttribI4i(index, x, y, z, w) {
+        if (this._refusesAttribIndex(index)) return;
         if (typeof index === "number" && typeof x === "number" && typeof y === "number" &&
             typeof z === "number" && typeof w === "number") {
             encodeVertexAttribI4i(this._canvasId, index, x, y, z, w);
@@ -6102,6 +6184,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         }
     }
     vertexAttribI4ui(index, x, y, z, w) {
+        if (this._refusesAttribIndex(index)) return;
         if (typeof index === "number" && typeof x === "number" && typeof y === "number" &&
             typeof z === "number" && typeof w === "number") {
             encodeVertexAttribI4ui(this._canvasId, index, x, y, z, w);
@@ -6119,6 +6202,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     vertexAttribI4iv(index, v) { if (this._attribList("vertexAttribI4iv", v, 4)) this.vertexAttribI4i(index, v[0], v[1], v[2], v[3]); }
     vertexAttribI4uiv(index, v) { if (this._attribList("vertexAttribI4uiv", v, 4)) this.vertexAttribI4ui(index, v[0], v[1], v[2], v[3]); }
     vertexAttribIPointer(index, size, type, stride, offset) {
+        if (this._refusesAttribIndex(index) || this._refusesBufferlessOffset(size, type, stride, offset, true)) return;
         if (typeof index === "number" && typeof size === "number" && typeof type === "number" &&
             typeof stride === "number" && typeof offset === "number") {
             encodeVertexAttribIPointer(this._canvasId, index >>> 0, size | 0, type >>> 0, stride | 0, offset | 0);
@@ -6273,10 +6357,7 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     // ---- Instanced drawing -------------------------------------
     // An index past MAX_VERTEX_ATTRIBS is INVALID_VALUE.
     vertexAttribDivisor(index, divisor) {
-        if (!this._isAttribIndex(Number(index) >>> 0)) {
-            recordGpuPreflightError(this._canvasId, GL_INVALID_VALUE);
-            return;
-        }
+        if (this._refusesAttribIndex(index)) return;
         // opcode 19: H C U U.
         if (typeof index === "number" && typeof divisor === "number") {
             encodeVertexAttribDivisor(this._canvasId, index >>> 0, divisor >>> 0);
@@ -6602,7 +6683,9 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         });
         if (fb === undefined) return;
         this._noteAttachment(t, attachment, object ? { type: 0x1702, object, level: lv, face: 0, layer: ly } : null);
-        _rawFramebufferTextureLayer(this._canvasId, t, attachment >>> 0, object ? object.id : -1, lv, ly);
+        // Detaching ignores the level and layer (ES 3.0 4.4.2.4): the driver is given 0 for each.
+        _rawFramebufferTextureLayer(this._canvasId, t, attachment >>> 0, object ? object.id : -1, object ? lv : 0,
+            object ? ly : 0);
     }
 
     // ---- Copies (WebGL 2) -------------------------------------------------------------------------------------------
@@ -6858,7 +6941,14 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
     }
 
     // ---- Fence syncs -------------------------------------------
+    // SYNC_GPU_COMMANDS_COMPLETE, the one condition, else INVALID_ENUM; flags 0, the only ones, else INVALID_VALUE (ES 3.0
+    // 5.2). Either is null and makes no fence.
     fenceSync(condition, flags) {
+        const c = Number(condition) >>> 0;
+        if (c !== 0x9117 || (Number(flags) >>> 0) !== 0) {
+            recordGpuPreflightError(this._canvasId, c !== 0x9117 ? GL_INVALID_ENUM : GL_INVALID_VALUE);
+            return null;
+        }
         // op_alloc_gl_resource_id: direct, no-submit.
         const id = op_alloc_gl_resource_id_webgl2();
         _rawFenceSync(this._canvasId, id, condition, flags);
@@ -7180,6 +7270,17 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
      */
     transformFeedbackVaryings(program, varyings, bufferMode) {
         if (!program || !program._id) return;
+        // INTERLEAVED_ATTRIBS or SEPARATE_ATTRIBS, else INVALID_ENUM; separate, no more varyings than
+        // MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS, else INVALID_VALUE (ES 3.0 2.11.8).
+        const mode = Number(bufferMode) >>> 0;
+        const count = varyings ? varyings.length >>> 0 : 0;
+        const error = mode !== 0x8c8c && mode !== 0x8c8d ? GL_INVALID_ENUM
+            : mode === 0x8c8d && count > 4 && count > this._cachedLimit("_maxTransformFeedbackBindings", 0x8c8b, 4)
+                ? GL_INVALID_VALUE : 0;
+        if (error !== 0) {
+            recordGpuPreflightError(this._canvasId, error);
+            return;
+        }
         const joined = (varyings || []).join('\x1f');
         _rawTransformFeedbackVaryings(this._canvasId, program._id, joined, bufferMode);
     }

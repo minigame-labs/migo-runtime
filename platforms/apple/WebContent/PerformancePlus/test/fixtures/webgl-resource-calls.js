@@ -101,7 +101,7 @@ gl.pauseTransformFeedback();
 gl.resumeTransformFeedback();
 gl.endTransformFeedback();
 gl.bindTransformFeedback(0x8e22, null);
-const sync = gl.fenceSync(0x9116, 0); // SYNC_GL_FENCE
+const sync = gl.fenceSync(0x9117, 0); // SYNC_GPU_COMMANDS_COMPLETE, the one condition
 gl.waitSync(sync, 0, -1); // TIMEOUT_IGNORED
 gl.deleteSync(sync);
 

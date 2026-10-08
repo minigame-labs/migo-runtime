@@ -157,6 +157,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL: the calls a browser refuses are refused, each with its error, where they reached the driver or were taken: an
+  attribute index past MAX_VERTEX_ATTRIBS on every attribute call (INVALID_VALUE); WebGL 2's attribute types in WebGL 1
+  (INVALID_ENUM); an attribute offset or stride off its type's size, a packed type not of size 4, an offset into no
+  buffer (INVALID_OPERATION; WebGL 2's packed attribute types are taken, where the decoder refused them); a gl_ name
+  bound (INVALID_OPERATION); an attribute or uniform location looked up in a program never linked, or whose link
+  failed (INVALID_OPERATION); a program or shader parameter WebGL does not have (INVALID_ENUM and null); a fence of
+  another condition (INVALID_ENUM) or flags (INVALID_VALUE); more storage levels than the size has (INVALID_OPERATION,
+  was INVALID_VALUE); a transform feedback buffer mode of none (INVALID_ENUM) or more separate varyings than there are
+  bindings (INVALID_VALUE). A detach ignores the textarget, and in WebGL 2 the level, as ES 3.0 has it, and gives the
+  driver TEXTURE_2D's level 0.
 - WebGL: every state setter refuses what WebGL refuses, and the state stays as it was: a comparison function, face,
   stencil operation or blend factor that is none (INVALID_ENUM), a constant colour factor with a constant alpha one
   among the colour factors (INVALID_OPERATION), SRC_ALPHA_SATURATE as a WebGL 1 destination factor (INVALID_ENUM), a

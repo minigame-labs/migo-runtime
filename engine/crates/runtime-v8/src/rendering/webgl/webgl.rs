@@ -391,6 +391,105 @@ pub(super) mod tests {
         );
     }
 
+    /// What the sweep against a browser found refused there and taken here, refused now as WebGL has it: an attribute
+    /// index past MAX_VERTEX_ATTRIBS (INVALID_VALUE) on every attribute call; WebGL 2's attribute types in WebGL 1
+    /// (INVALID_ENUM); an offset or stride off the type's size, a packed type not of size 4, an offset into no buffer
+    /// (INVALID_OPERATION); a reserved name bound (INVALID_OPERATION); a location looked up in a program not linked
+    /// (INVALID_OPERATION); a program or shader parameter of none (INVALID_ENUM); a fence of another condition
+    /// (INVALID_ENUM) or flags (INVALID_VALUE); more storage levels than the size has (INVALID_OPERATION); a buffer
+    /// mode of none (INVALID_ENUM) or more separate varyings than there are bindings (INVALID_VALUE). A detach ignores
+    /// the textarget and, in WebGL 2, the level, and gives the driver TEXTURE_2D's level 0.
+    #[test]
+    fn the_calls_a_browser_refuses_are_refused() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "browser_refusals.js",
+                r#"
+                const errOf = (gl) => (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502, AB = 0x8892, FLOAT = 0x1406, FB = 0x8d40, COLOR0 = 0x8ce0;
+                const gl1 = new WebGLRenderingContext({ _rid: 310, width: 4, height: 4 }, {});
+                const gl2 = new WebGL2RenderingContext({ _rid: 311, width: 4, height: 4 }, {});
+                for (const gl of [gl1, gl2]) {
+                    const err = errOf(gl), v = gl === gl2 ? "WebGL 2" : "WebGL 1";
+                    gl.enableVertexAttribArray(1000); err(VALUE, `enableVertexAttribArray past the limit, ${v}`);
+                    gl.disableVertexAttribArray(1000); err(VALUE, `disableVertexAttribArray past it, ${v}`);
+                    gl.vertexAttrib4f(1000, 0, 0, 0, 1); err(VALUE, `vertexAttrib4f past it, ${v}`);
+                    gl.vertexAttrib2fv(1000, [0, 0]); err(VALUE, `vertexAttrib2fv past it, ${v}`);
+                    gl.vertexAttribPointer(1000, 2, 0x1234, false, 0, 0); err(VALUE, `the index before the type, ${v}`);
+                    gl.bindBuffer(AB, gl.createBuffer());
+                    gl.vertexAttribPointer(0, 2, 0x1402, false, 0, 1); err(OPERATION, `an offset off SHORT's size, ${v}`);
+                    gl.vertexAttribPointer(0, 2, 0x1402, false, 3, 0); err(OPERATION, `a stride off it, ${v}`);
+                    gl.vertexAttribPointer(0, 2, 0x1400, false, 3, 1); err(0, `BYTE's offset and stride, ${v}`);
+                    gl.vertexAttribPointer(0, 5, FLOAT, false, 0, 2); err(VALUE, `a size out of range is judged first, ${v}`);
+                    gl.vertexAttribPointer(0, 2, 0x1404, false, 0, 0); err(gl === gl2 ? 0 : ENUM, `INT, ${v}`);
+                    gl.vertexAttribPointer(0, 4, 0x140b, false, 0, 0); err(gl === gl2 ? 0 : ENUM, `HALF_FLOAT, ${v}`);
+                    gl.vertexAttribPointer(0, 4, 0x8d9f, false, 0, 0); err(gl === gl2 ? 0 : ENUM, `INT_2_10_10_10_REV, ${v}`);
+                    gl.vertexAttribPointer(0, 3, 0x8368, false, 0, 0); err(gl === gl2 ? OPERATION : ENUM, `a packed type of size 3, ${v}`);
+                    gl.bindBuffer(AB, null);
+                    gl.vertexAttribPointer(0, 2, FLOAT, false, 0, 0); err(0, `no buffer and offset 0, ${v}`);
+                    gl.vertexAttribPointer(0, 2, FLOAT, false, 0, 4); err(OPERATION, `an offset into no buffer, ${v}`);
+                    gl.vertexAttribPointer(0, 2, FLOAT, false, 0, 2); err(OPERATION, `a misaligned offset into no buffer, once, ${v}`);
+                    gl.getVertexAttribOffset(1000, 0x8645); err(VALUE, `getVertexAttribOffset past the limit, ${v}`);
+                    const p = gl.createProgram();
+                    gl.bindAttribLocation(p, 0, "gl_x"); err(OPERATION, `binding gl_x, ${v}`);
+                    gl.bindAttribLocation(p, 1000, "gl_x"); err(OPERATION, `a reserved name before the index, ${v}`);
+                    gl.bindAttribLocation(p, 1000, "a"); err(VALUE, `an index past the limit, ${v}`);
+                    check(gl.getAttribLocation(p, "a") === -1, `-1 from a program never linked, ${v}`); err(OPERATION, "INVALID_OPERATION");
+                    check(gl.getAttribLocation(p, "webgl_a") === -1, `before the name is judged, ${v}`); err(OPERATION, "INVALID_OPERATION");
+                    check(gl.getUniformLocation(p, "u") === null, `null from it, ${v}`); err(OPERATION, "INVALID_OPERATION");
+                    check(gl.getProgramParameter(p, 0x8b84) === null, `INFO_LOG_LENGTH is no WebGL parameter, ${v}`); err(ENUM, "INVALID_ENUM");
+                    if (gl === gl1) {
+                        check(gl.getProgramParameter(p, 0x8a36) === null, "ACTIVE_UNIFORM_BLOCKS is WebGL 2's"); err(ENUM, "INVALID_ENUM");
+                    }
+                    check(gl.getShaderParameter(gl.createShader(0x8b31), 0x8b88) === null, `SHADER_SOURCE_LENGTH is no WebGL parameter, ${v}`);
+                    err(ENUM, "INVALID_ENUM");
+                    gl.bindFramebuffer(FB, gl.createFramebuffer());
+                    gl.framebufferTexture2D(FB, COLOR0, 0x1234, null, 0); err(0, `a detach ignores the textarget, ${v}`);
+                    gl.framebufferTexture2D(FB, COLOR0, 0x0de1, null, 5); err(gl === gl2 ? 0 : VALUE, `and in WebGL 2 the level, ${v}`);
+                    gl.bindFramebuffer(FB, null);
+                    gl.flush();
+                }
+                const err = errOf(gl2);
+                gl2.vertexAttribI4i(1000, 0, 0, 0, 0); err(VALUE, "vertexAttribI4i past the limit");
+                gl2.bindBuffer(AB, gl2.createBuffer());
+                gl2.vertexAttribIPointer(1000, 2, 0x1404, 0, 0); err(VALUE, "vertexAttribIPointer past it");
+                gl2.vertexAttribIPointer(0, 2, 0x1404, 0, 2); err(OPERATION, "an integer pointer off INT's size");
+                check(gl2.fenceSync(0x1234, 0) === null, "no fence of another condition"); err(ENUM, "INVALID_ENUM");
+                check(gl2.fenceSync(0x9117, 1) === null, "nor of flags"); err(VALUE, "INVALID_VALUE");
+                gl2.bindTexture(0x0de1, gl2.createTexture());
+                gl2.texStorage2D(0x0de1, 4, 0x8058, 4, 4); err(OPERATION, "more levels than 4 x 4 has");
+                gl2.texStorage2D(0x0de1, 0, 0x8058, 4, 4); err(VALUE, "no level");
+                gl2.bindTexture(0x806f, gl2.createTexture());
+                gl2.texStorage3D(0x806f, 4, 0x8058, 4, 2, 2); err(OPERATION, "more levels than 4 x 2 x 2 has");
+                const q = gl2.createProgram();
+                gl2.transformFeedbackVaryings(q, ["a"], 0x1234); err(ENUM, "a buffer mode of none");
+                gl2._driverParameter = (pname) => pname === 0x8c8b ? 4 : null;
+                gl2.transformFeedbackVaryings(q, ["a", "b", "c", "d", "e"], 0x8c8d); err(VALUE, "five separate varyings, four bindings");
+                gl2.transformFeedbackVaryings(q, ["a", "b", "c", "d", "e"], 0x8c8c); err(0, "five interleaved");
+                gl2.flush();
+                "#,
+            )
+            .expect("every call a browser refuses should be refused");
+        let detaches: Vec<(u32, Option<u32>, i32)> = drain_gl_commands(&render_rx)
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                GLCmd::FramebufferTexture2D {
+                    textarget,
+                    texture,
+                    level,
+                    ..
+                } => Some((textarget, texture.map(u32::from), level)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !detaches.is_empty() && detaches.iter().all(|d| *d == (0x0DE1, None, 0)),
+            "a detach gives the driver TEXTURE_2D's level 0: {detaches:?}"
+        );
+    }
+
     /// WebGL 1's HALF_FLOAT_OES is ES 3.0's HALF_FLOAT to the driver: a read of it reaches the renderer as one, into
     /// the Uint16Array it was given.
     #[test]
@@ -1490,6 +1589,7 @@ pub(super) mod tests {
                 gl.vertexAttrib3fv(6, new Float32Array([11, 12, 13, 99]));
                 gl.vertexAttribI4i(7, -1, 2, -3, 4);
                 gl.vertexAttribI4uiv(8, new Uint32Array([1, 2, 3, 4]));
+                gl.bindBuffer(0x8892, gl.createBuffer());                   // an offset other than 0 points into one
                 gl.vertexAttribIPointer(9, 2, 0x1404, 8, 4);
                 gl.flush();
                 "#,
@@ -2593,6 +2693,8 @@ pub(super) mod tests {
                     }) => {
                         let bits = |f: f32| f.to_bits().to_string();
                         let answer = match (query, name.as_str()) {
+                            // LINK_RESULT: every program here linked, consuming no attribute location.
+                            (9, _) => "{\"v\":[true,[]]}".to_string(),
                             (7, "f") => format!("{{\"v\":[\"f\",[{}]]}}", bits(0.1)),
                             (7, "v") => format!(
                                 "{{\"v\":[\"f\",[{},{},{},{}]]}}",
@@ -2692,11 +2794,15 @@ pub(super) mod tests {
             .expect("the getUniform script should run");
         drop(runtime);
         let asked = responder.join().expect("the responder must not panic");
-        let mut expected: Vec<String> = ["f", "v", "i", "b", "bv", "u", "iv", "uv", "e"]
-            .iter()
-            .flat_map(|name| [format!("loc {name}"), format!("7 0 {name}")])
-            .collect();
+        // Whether the link succeeded is asked once per link, before the first lookup after it (LINK_RESULT, 9).
+        let mut expected: Vec<String> = vec!["9 0 ".to_string()];
+        expected.extend(
+            ["f", "v", "i", "b", "bv", "u", "iv", "uv", "e"]
+                .iter()
+                .flat_map(|name| [format!("loc {name}"), format!("7 0 {name}")]),
+        );
         // after the relink: `at("f")` for the other program's test, then the longest name there is
+        expected.push("9 0 ".to_string());
         expected.push("loc f".to_string());
         expected.push(format!("loc {}", "x".repeat(1024)));
         expected.push("8 0 color".to_string());
