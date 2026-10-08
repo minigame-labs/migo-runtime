@@ -26,6 +26,19 @@ fn blends_float32(embedded: bool, gl_extensions: &str) -> bool {
     !embedded || has_extension(gl_extensions, "GL_EXT_float_blend")
 }
 
+/// Whether the driver filters anisotropically, which WebGL's EXT_texture_filter_anisotropic needs: the EXT extension
+/// (GL ES and desktop GL alike), or the ARB one of desktop GL 4.6.
+fn filters_anisotropically(gl_extensions: &str) -> bool {
+    has_extension(gl_extensions, "GL_EXT_texture_filter_anisotropic")
+        || has_extension(gl_extensions, "GL_ARB_texture_filter_anisotropic")
+}
+
+/// Whether the driver renders to the 16-bit float colour formats -- R16F, RG16F, RGBA16F --, which WebGL's
+/// EXT_color_buffer_half_float needs: GL_EXT_color_buffer_half_float, or whatever renders to every float format.
+fn renders_half_float_colour_buffers(float_colour_buffers: bool, gl_extensions: &str) -> bool {
+    float_colour_buffers || has_extension(gl_extensions, "GL_EXT_color_buffer_half_float")
+}
+
 #[inline]
 fn ahb_api_supported(android_api: Option<u32>) -> bool {
     android_api.is_some_and(|level| level >= 26)
@@ -68,6 +81,12 @@ pub struct DeviceCapabilities {
     /// `GL_EXT_float_blend` (or desktop GL): blending into 32-bit float colour buffers. What lets a WebGL 2 context offer
     /// EXT_float_blend; without it, a draw that would blend into one is INVALID_OPERATION.
     pub has_float_blend: bool,
+    /// Anisotropic texture filtering (`GL_EXT_texture_filter_anisotropic`): what lets a context offer
+    /// EXT_texture_filter_anisotropic.
+    pub has_anisotropic_filtering: bool,
+    /// The 16-bit float formats are colour-renderable (`GL_EXT_color_buffer_half_float`, or every float format is): what
+    /// lets a WebGL 2 context offer EXT_color_buffer_half_float.
+    pub has_color_buffer_half_float: bool,
 }
 
 /// Coarse device classification that gates optimisation paths.
@@ -138,6 +157,9 @@ impl DeviceCapabilities {
 
         let has_color_buffer_float = renders_float_colour_buffers(gles_version, &gl_extensions);
         let has_float_blend = blends_float32(gl.version().is_embedded, &gl_extensions);
+        let has_anisotropic_filtering = filters_anisotropically(&gl_extensions);
+        let has_color_buffer_half_float =
+            renders_half_float_colour_buffers(has_color_buffer_float, &gl_extensions);
 
         Self {
             gles_version,
@@ -152,6 +174,8 @@ impl DeviceCapabilities {
             has_parallel_shader_compile,
             has_color_buffer_float,
             has_float_blend,
+            has_anisotropic_filtering,
+            has_color_buffer_half_float,
         }
     }
 
@@ -286,6 +310,26 @@ mod tests {
             "GL_EXT_color_buffer_float GL_EXT_float_blend_func"
         ));
         assert!(!blends_float32(true, ""));
+    }
+
+    #[test]
+    fn anisotropic_filtering_and_half_float_colour_buffers_are_extensions() {
+        assert!(filters_anisotropically(
+            "GL_OES_EGL_image GL_EXT_texture_filter_anisotropic"
+        ));
+        assert!(filters_anisotropically("GL_ARB_texture_filter_anisotropic"));
+        assert!(!filters_anisotropically(
+            "GL_EXT_texture_filter_anisotropic_extra"
+        ));
+        assert!(renders_half_float_colour_buffers(true, ""));
+        assert!(renders_half_float_colour_buffers(
+            false,
+            "GL_EXT_color_buffer_half_float"
+        ));
+        assert!(!renders_half_float_colour_buffers(
+            false,
+            "GL_EXT_color_buffer_float_half"
+        ));
     }
 
     #[test]

@@ -42,6 +42,8 @@ pub struct GpuCaps {
     ahb: AtomicBool,
     color_buffer_float: AtomicBool,
     float_blend: AtomicBool,
+    anisotropic_filtering: AtomicBool,
+    color_buffer_half_float: AtomicBool,
     /// Set to `true` after `set()` is called.  `wait_ready()` blocks
     /// until this flag is true, ensuring no early snapshot reads
     /// uninitialized (all-false) caps.
@@ -60,6 +62,8 @@ impl Default for GpuCaps {
             ahb: AtomicBool::new(false),
             color_buffer_float: AtomicBool::new(false),
             float_blend: AtomicBool::new(false),
+            anisotropic_filtering: AtomicBool::new(false),
+            color_buffer_half_float: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             ready_lock: Mutex::new(false),
@@ -83,6 +87,10 @@ impl GpuCaps {
         self.color_buffer_float
             .store(caps.color_buffer_float, Ordering::Release);
         self.float_blend.store(caps.float_blend, Ordering::Release);
+        self.anisotropic_filtering
+            .store(caps.anisotropic_filtering, Ordering::Release);
+        self.color_buffer_half_float
+            .store(caps.color_buffer_half_float, Ordering::Release);
         self.ready.store(true, Ordering::Release);
         if let Ok(mut ready) = self.ready_lock.lock() {
             *ready = true;
@@ -183,17 +191,22 @@ impl GpuCaps {
             ahb: self.ahb.load(Ordering::Acquire),
             color_buffer_float: self.color_buffer_float.load(Ordering::Acquire),
             float_blend: self.float_blend.load(Ordering::Acquire),
+            anisotropic_filtering: self.anisotropic_filtering.load(Ordering::Acquire),
+            color_buffer_half_float: self.color_buffer_half_float.load(Ordering::Acquire),
         }
     }
 
     /// The bits `op_webgl_query_gpu_caps` answers content's WebGL with: 0 ETC2/EAC, 1 ASTC LDR, 2 float colour
-    /// buffers (EXT_color_buffer_float), 3 blending into 32-bit float ones (EXT_float_blend). The embedded op and the external session's service both answer these.
+    /// buffers (EXT_color_buffer_float), 3 blending into 32-bit float ones (EXT_float_blend), 4 anisotropic filtering
+    /// (EXT_texture_filter_anisotropic), 5 16-bit float colour buffers (EXT_color_buffer_half_float). The embedded op and the external session's service both answer these.
     pub fn webgl_bits(&self) -> u32 {
         let caps = self.snapshot();
         u32::from(caps.etc2)
             | (u32::from(caps.astc) << 1)
             | (u32::from(caps.color_buffer_float) << 2)
             | (u32::from(caps.float_blend) << 3)
+            | (u32::from(caps.anisotropic_filtering) << 4)
+            | (u32::from(caps.color_buffer_half_float) << 5)
     }
 }
 
@@ -212,6 +225,10 @@ pub struct GpuCapsSnapshot {
     pub color_buffer_float: bool,
     /// 32-bit float colour buffers can be blended into (`GL_EXT_float_blend`).
     pub float_blend: bool,
+    /// Textures can be filtered anisotropically (`GL_EXT_texture_filter_anisotropic`).
+    pub anisotropic_filtering: bool,
+    /// The 16-bit float formats are colour-renderable (`GL_EXT_color_buffer_half_float`).
+    pub color_buffer_half_float: bool,
 }
 
 #[cfg(test)]
@@ -231,6 +248,8 @@ mod tests {
                 ahb: true,
                 color_buffer_float: false,
                 float_blend: false,
+                anisotropic_filtering: false,
+                color_buffer_half_float: false,
             });
         });
         assert!(matches!(
@@ -271,6 +290,8 @@ mod tests {
             ahb: true,
             color_buffer_float: false,
             float_blend: false,
+            anisotropic_filtering: false,
+            color_buffer_half_float: false,
         });
         let started = Instant::now() - Duration::from_secs(1);
 
@@ -322,6 +343,8 @@ mod tests {
                 ahb: false,
                 color_buffer_float: false,
                 float_blend: false,
+                anisotropic_filtering: false,
+                color_buffer_half_float: false,
             });
         });
 
@@ -341,6 +364,8 @@ mod tests {
             ahb: true,
             color_buffer_float: false,
             float_blend: false,
+            anisotropic_filtering: false,
+            color_buffer_half_float: false,
         });
         assert!(caps.snapshot().ahb);
         assert!(caps.disable_ahb());

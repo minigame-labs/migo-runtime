@@ -115,7 +115,7 @@ fn array<T: ToString>(items: impl IntoIterator<Item = T>) -> String {
 
 /// A JSON string literal. GLSL identifiers cannot hold a quote, a backslash or a control character; escaping them
 /// anyway means a driver that reports one cannot make the reply unparseable.
-fn json_string(text: &str) -> String {
+pub(crate) fn json_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for c in text.chars() {

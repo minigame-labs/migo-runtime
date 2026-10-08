@@ -3670,6 +3670,103 @@ pub(super) mod tests {
         );
     }
 
+    /// Every extension a context offers is the extension table's: a WebGL 1 one that is WebGL 2 core is not offered to
+    /// WebGL 2, one the renderer cannot back is not offered at all, a name the registry does not have is answered by
+    /// nothing, names compare case-insensitively, the object is the same every call, and a lost context offers none.
+    /// VENDOR and RENDERER are a browser's masked strings, the driver's behind WEBGL_debug_renderer_info's enums.
+    /// TEXTURE_MAX_ANISOTROPY_EXT is a parameter only once EXT_texture_filter_anisotropic is enabled, from 1 to the
+    /// driver's maximum; EXT_color_buffer_half_float makes the 16-bit floats, and only those, colour-renderable.
+    #[test]
+    fn extensions_are_the_table_s_and_each_does_what_it_says() {
+        let (mut runtime, _render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "extensions.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const errOf = (gl) => (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const ENUM = 0x0500, VALUE = 0x0501, T2D = 0x0de1, FB = 0x8d40, RB = 0x8d41;
+                const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+                const gl = new WebGL2RenderingContext({ _rid: 250, width: 4, height: 4 }, {});
+                gl._gpuCapsCache = 63;
+                check(same(gl.getSupportedExtensions(), [
+                    "EXT_color_buffer_float", "EXT_color_buffer_half_float", "EXT_float_blend",
+                    "EXT_texture_filter_anisotropic", "WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc",
+                    "WEBGL_compressed_texture_etc1", "WEBGL_debug_renderer_info", "WEBGL_lose_context",
+                ]), `WebGL 2 lists ${gl.getSupportedExtensions()}`);
+                for (const name of ["ANGLE_instanced_arrays", "OES_vertex_array_object", "WEBGL_draw_buffers", "OES_element_index_uint"]) {
+                    check(gl.getExtension(name) === null, `${name} is WebGL 2 core, not a WebGL 2 extension`);
+                }
+                for (const name of ["EXT_instanced_arrays", "WEBGL_instanced_arrays", "OES_nothing"]) {
+                    check(gl.getExtension(name) === null, `${name} is no registry name`);
+                }
+                const debug = gl.getExtension("webgl_DEBUG_renderer_INFO");
+                check(debug !== null && debug === gl.getExtension("WEBGL_debug_renderer_info"), "case-insensitive, one object");
+                const gl1 = new WebGLRenderingContext({ _rid: 251, width: 4, height: 4 }, {});
+                gl1._gpuCapsCache = 63;
+                check(same(gl1.getSupportedExtensions(), [
+                    "ANGLE_instanced_arrays", "EXT_texture_filter_anisotropic", "OES_element_index_uint", "OES_vertex_array_object",
+                    "WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1",
+                    "WEBGL_debug_renderer_info", "WEBGL_draw_buffers", "WEBGL_lose_context",
+                ]), `WebGL 1 lists ${gl1.getSupportedExtensions()}`);
+                check(gl1.getExtension("EXT_color_buffer_float") === null, "a WebGL 2 extension is not WebGL 1's");
+                const bare = new WebGL2RenderingContext({ _rid: 252, width: 4, height: 4 }, {});
+                bare._gpuCapsCache = 0;
+                check(same(bare.getSupportedExtensions(), ["WEBGL_debug_renderer_info", "WEBGL_lose_context"]), "nothing the renderer cannot back");
+                check(bare.getExtension("EXT_texture_filter_anisotropic") === null, "anisotropy needs the renderer's");
+                // VENDOR and RENDERER.
+                check(gl.getParameter(0x1f00) === "WebKit" && gl.getParameter(0x1f01) === "WebKit WebGL", "masked");
+                gl._unmaskedVendor = "The Vendor"; gl._unmaskedRenderer = "The GPU";
+                check(gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) === "The Vendor" &&
+                    gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) === "The GPU", "the driver's behind the debug enums");
+                // Anisotropy.
+                const err = errOf(gl);
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.texParameterf(T2D, 0x84fe, 4); err(ENUM, "no anisotropy before the extension");
+                check(gl.getParameter(0x84ff) === null, "nor its maximum"); err(ENUM, "INVALID_ENUM");
+                const anisotropy = gl.getExtension("EXT_texture_filter_anisotropic");
+                check(anisotropy.TEXTURE_MAX_ANISOTROPY_EXT === 0x84fe && anisotropy.MAX_TEXTURE_MAX_ANISOTROPY_EXT === 0x84ff, "its enums");
+                gl._maxAnisotropyCache = 16;
+                check(gl.getParameter(0x84ff) === 16, "the driver's maximum");
+                check(gl.getTexParameter(T2D, 0x84fe) === 1, "1 until set");
+                gl.texParameterf(T2D, 0x84fe, 4.5); err(0, "4.5");
+                check(gl.getTexParameter(T2D, 0x84fe) === 4.5, "recorded as a float");
+                gl.texParameterf(T2D, 0x84fe, 0.5); err(VALUE, "below 1");
+                gl.texParameteri(T2D, 0x84fe, 17); err(VALUE, "past the maximum");
+                check(gl.getTexParameter(T2D, 0x84fe) === 4.5, "a refused value is not recorded");
+                const sampler = gl.createSampler();
+                gl.samplerParameterf(sampler, 0x84fe, 3); err(0, "a sampler's");
+                check(gl.getSamplerParameter(sampler, 0x84fe) === 3, "recorded");
+                gl.samplerParameteri(sampler, 0x84fe, 0); err(VALUE, "a sampler's below 1");
+                // Half floats.
+                const half = new WebGL2RenderingContext({ _rid: 253, width: 4, height: 4 }, {});
+                half._gpuCapsCache = 32;
+                const herr = errOf(half);
+                check(half.getExtension("EXT_color_buffer_float") === null && half.getExtension("EXT_color_buffer_half_float") !== null,
+                    "half floats where the renderer has them alone");
+                half.bindFramebuffer(FB, half.createFramebuffer());
+                const rb = half.createRenderbuffer();
+                half.bindRenderbuffer(RB, rb);
+                half.renderbufferStorage(RB, 0x881a, 4, 4); herr(0, "an RGBA16F renderbuffer");
+                half.renderbufferStorage(RB, 0x8814, 4, 4); herr(ENUM, "an RGBA32F one is EXT_color_buffer_float's");
+                half.renderbufferStorage(RB, 0x8c3a, 4, 4); herr(ENUM, "so is R11F_G11F_B10F");
+                half.renderbufferStorage(RB, 0x881a, 4, 4);
+                half.framebufferRenderbuffer(FB, 0x8ce0, RB, rb);
+                half.clear(0);
+                const bound = half._framebufferBinding;
+                bound._driverGeneration = bound._statusGeneration;
+                check(half.checkFramebufferStatus(FB) === 0x8cd5, "an RGBA16F attachment is complete");
+                half.bindTexture(T2D, half.createTexture());
+                half.copyTexImage2D(T2D, 0, 0x881a, 0, 0, 2, 2, 0); herr(0, "a copy into RGBA16F from it");
+                half.copyTexImage2D(T2D, 0, 0x8814, 0, 0, 2, 2, 0); herr(ENUM, "RGBA32F is not renderable here");
+                // A lost context offers nothing.
+                gl._lostByExtension = true;     // what loseContext() sets; its event needs an event loop this test has not
+                check(gl.getSupportedExtensions() === null && gl.getExtension("WEBGL_lose_context") === null, "a lost context offers none");
+                "#,
+            )
+            .expect("every extension should be the table's");
+    }
+
     /// EXT_color_buffer_float is offered to a WebGL 2 context whose renderer renders to float colour buffers (caps bit
     /// 2), to no other. Until it is enabled a float image is not colour-renderable: a framebuffer with one attached is
     /// INCOMPLETE_ATTACHMENT, a float renderbuffer or copy INVALID_ENUM, a mipmap of one INVALID_OPERATION. Enabling it

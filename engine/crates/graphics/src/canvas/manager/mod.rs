@@ -1335,6 +1335,8 @@ impl CanvasManager {
             ahb: self.device_caps.ahb_available,
             color_buffer_float: self.device_caps.has_color_buffer_float,
             float_blend: self.device_caps.has_float_blend,
+            anisotropic_filtering: self.device_caps.has_anisotropic_filtering,
+            color_buffer_half_float: self.device_caps.has_color_buffer_half_float,
         };
         self.gpu_caps.set(caps);
     }

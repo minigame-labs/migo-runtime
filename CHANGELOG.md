@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- WebGL: `EXT_texture_filter_anisotropic`, where the driver filters anisotropically: TEXTURE_MAX_ANISOTROPY_EXT on a
+  texture or a sampler, from 1 to MAX_TEXTURE_MAX_ANISOTROPY_EXT (INVALID_VALUE outside it, INVALID_ENUM before the
+  extension is enabled). `WEBGL_debug_renderer_info`, whose UNMASKED_VENDOR_WEBGL and UNMASKED_RENDERER_WEBGL are the
+  driver's strings, answered whether or not it is enabled, as browsers now answer them; VENDOR and RENDERER are a
+  browser's masked "WebKit" and "WebKit WebGL". WebGL 2's `EXT_color_buffer_half_float`, where the driver renders to
+  the 16-bit float formats: R16F, RG16F and RGBA16F become colour-renderable, and EXT_color_buffer_float's other
+  formats do not.
 - WebGL 2: `EXT_color_buffer_float`, offered where the renderer's driver renders to float colour buffers (ES 3.2, or
   `GL_EXT_color_buffer_float`). Enabled, R16F, RG16F, RGBA16F, R32F, RG32F, RGBA32F and R11F_G11F_B10F are
   colour-renderable: a framebuffer with such an attachment is complete, a renderbuffer and a copy may have such a
@@ -132,6 +139,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
   JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
   body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL: every extension a context offers is one table's -- the registry's names, the WebGL versions that have each and
+  the renderer capability each needs -- which both `getExtension` and `getSupportedExtensions` read. A WebGL 2 context
+  offered WebGL 1's ANGLE_instanced_arrays, OES_vertex_array_object, WEBGL_draw_buffers and OES_element_index_uint,
+  which are WebGL 2 core and which no browser offers it; every context answered `EXT_instanced_arrays` and
+  `WEBGL_instanced_arrays`, names the registry does not have. Names now compare case-insensitively, as WebGL specifies,
+  and a lost context answers null to both calls. A driver's VENDOR, RENDERER, VERSION or SHADING_LANGUAGE_VERSION
+  string is escaped in the renderer's answer: a quote or a backslash in one made the answer unreadable.
 - WebGL: the default framebuffer's draw and read buffers. Where the engine's drawing buffer stands in for the default
   framebuffer -- an FBO, which takes no BACK --, `drawBuffers([BACK])` and `readBuffer(BACK)` reached the driver as BACK
   and were refused there, unseen: once content had turned either to NONE it could not turn it back, and drew or read

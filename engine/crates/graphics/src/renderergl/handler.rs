@@ -1679,8 +1679,9 @@ impl RendererGL {
                         | glow::RENDERER
                         | glow::VERSION
                         | glow::SHADING_LANGUAGE_VERSION => {
+                            // Escaped: a driver's string is the driver's, quotes and backslashes included.
                             let val = gl.get_parameter_string(pname);
-                            format!("\"{}\"", val)
+                            super::program_state::json_string(&val)
                         }
                         // Boolean params
                         glow::DEPTH_WRITEMASK
@@ -1706,7 +1707,8 @@ impl RendererGL {
                         | glow::LINE_WIDTH
                         | glow::POLYGON_OFFSET_FACTOR
                         | glow::POLYGON_OFFSET_UNITS
-                        | glow::SAMPLE_COVERAGE_VALUE => {
+                        | glow::SAMPLE_COVERAGE_VALUE
+                        | glow::MAX_TEXTURE_MAX_ANISOTROPY_EXT => {
                             let val = gl.get_parameter_f32(pname);
                             format!("{}", val)
                         }

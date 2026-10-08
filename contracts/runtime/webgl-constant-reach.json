@@ -67,6 +67,7 @@
     "EXTENSIONS": "WebGL replaces the GL string query with getSupportedExtensions(), which is implemented. Declaring the enum would offer content a getParameter path WebGL does not define.",
     "PROGRAM_BINARY_LENGTH": "WebGL exposes no program-binary API: getProgramBinary/programBinary are GLES calls with no WebGL counterpart and no extension that adds one. The shader cache uses this to size its own buffer, and content has no way to ask for a binary at all.",
     "NUM_PROGRAM_BINARY_FORMATS": "Same as PROGRAM_BINARY_LENGTH: WebGL has no program-binary API, so there is nothing for content to enumerate formats for.",
+    "MAX_TEXTURE_MAX_ANISOTROPY_EXT": "An extension's constant: content names it on the object getExtension('EXT_texture_filter_anisotropic') returns, as in a browser, where the context itself has no such member. getParameter answers it once the extension is enabled.",
     "MAP_READ_BIT": "An access bit for glMapBufferRange, which WebGL 2 does not have: content reads a buffer back with getBufferSubData, and the engine maps only its own pack buffers."
   },
   "internal_only": {
